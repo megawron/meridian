@@ -261,7 +261,12 @@ impl TasksPage {
                                 &task.component,
                             );
                             task_store_for_load.append(&task_object);
-                            append_task_row(&task_list_for_load, &task_object);
+                            append_task_row(
+                                &task_list_for_load,
+                                &task_store_for_load,
+                                &empty_tasks_for_load,
+                                &task_object,
+                            );
                         }
                     }
                 }
@@ -494,7 +499,12 @@ impl TasksPage {
                                 &component,
                             );
                             task_store_for_result.append(&task);
-                            append_task_row(&task_list_for_result, &task);
+                            append_task_row(
+                                &task_list_for_result,
+                                &task_store_for_result,
+                                &empty_tasks_for_result,
+                                &task,
+                            );
                             empty_tasks_for_result.set_visible(false);
                             page.show_toast(&format!("Aufgabe gespeichert ({uid})"));
                         }
@@ -524,7 +534,12 @@ impl TasksPage {
     }
 }
 
-fn append_task_row(task_list: &gtk::ListBox, task: &TaskItemObject) {
+fn append_task_row(
+    task_list: &gtk::ListBox,
+    task_store: &gio::ListStore,
+    empty_tasks: &gtk::Label,
+    task: &TaskItemObject,
+) {
     let row = adw::ActionRow::builder()
         .title(&task.title())
         .subtitle(&format!(
@@ -618,6 +633,107 @@ fn append_task_row(task_list: &gtk::ListBox, task: &TaskItemObject) {
         });
     });
     row.add_prefix(&check);
+
+    let delete_button = gtk::Button::builder()
+        .icon_name("user-trash-symbolic")
+        .tooltip_text("Aufgabe löschen")
+        .css_classes(vec!["flat", "destructive-action"])
+        .valign(gtk::Align::Center)
+        .build();
+    row.add_suffix(&delete_button);
+    let task_for_delete = task.clone();
+    let task_store_for_delete = task_store.clone();
+    let task_list_for_delete = task_list.clone();
+    let empty_tasks_for_delete = empty_tasks.clone();
+    let delete_button_for_signal = delete_button.clone();
+    delete_button_for_signal.connect_clicked(move |_| {
+        let source_uid = task_for_delete.source_uid();
+        if source_uid.is_empty() {
+            show_toast_for_widget(
+                &delete_button,
+                "Lokale Aufgaben können ohne EDS-Quelle nicht gelöscht werden",
+            );
+            return;
+        }
+        let confirmation = adw::AlertDialog::new(
+            Some("Aufgabe löschen?"),
+            Some("Die Aufgabe wird dauerhaft aus der EDS-Aufgabenliste entfernt."),
+        );
+        confirmation.add_responses(&[("cancel", "Abbrechen"), ("delete", "Löschen")]);
+        confirmation.set_response_appearance("delete", adw::ResponseAppearance::Destructive);
+        let task_for_response = task_for_delete.clone();
+        let task_store_for_response = task_store_for_delete.clone();
+        let task_list_for_response = task_list_for_delete.clone();
+        let empty_tasks_for_response = empty_tasks_for_delete.clone();
+        let delete_button_for_response = delete_button.clone();
+        confirmation.connect_response(None, move |dialog: &adw::AlertDialog, response: &str| {
+            if response != "delete" {
+                return;
+            }
+            let source_uid = task_for_response.source_uid();
+            let uid = task_for_response.id();
+            let (sender, receiver) = async_channel::bounded(1);
+            delete_button_for_response.set_sensitive(false);
+            std::thread::spawn(move || {
+                let result =
+                    ECalService::new().remove_component(&source_uid, ECalComponentType::Task, &uid);
+                if let Err(error) = sender.send_blocking(result) {
+                    tracing::debug!(%error, "Task deletion result was dropped");
+                }
+            });
+
+            let dialog_for_result = dialog.clone();
+            let task_store_for_result = task_store_for_response.clone();
+            let task_list_for_result = task_list_for_response.clone();
+            let empty_tasks_for_result = empty_tasks_for_response.clone();
+            let delete_button_for_result = delete_button_for_response.clone();
+            glib::spawn_future_local(async move {
+                match receiver.recv().await {
+                    Ok(Ok(result)) => {
+                        let uid = result.uid;
+                        let mut store_index = None;
+                        for index in 0..task_store_for_result.n_items() {
+                            if task_store_for_result
+                                .item(index)
+                                .and_downcast::<TaskItemObject>()
+                                .is_some_and(|task| task.id() == uid)
+                            {
+                                store_index = Some(index);
+                                break;
+                            }
+                        }
+                        if let Some(index) = store_index {
+                            task_store_for_result.remove(index);
+                        }
+                        if let Some(row) = delete_button_for_result
+                            .ancestor(adw::ActionRow::static_type())
+                            .and_downcast::<adw::ActionRow>()
+                        {
+                            task_list_for_result.remove(&row);
+                        }
+                        empty_tasks_for_result.set_visible(task_store_for_result.n_items() == 0);
+                        show_toast_for_widget(
+                            &delete_button_for_result,
+                            &format!("Aufgabe gelöscht ({uid})"),
+                        );
+                        dialog_for_result.close();
+                    }
+                    Ok(Err(error)) => {
+                        delete_button_for_result.set_sensitive(true);
+                        show_toast_for_widget(
+                            &delete_button_for_result,
+                            &format!("Aufgabe konnte nicht gelöscht werden: {error}"),
+                        );
+                    }
+                    Err(error) => {
+                        delete_button_for_result.set_sensitive(true);
+                        tracing::debug!(%error, "Task deletion channel closed");
+                    }
+                }
+            });
+        });
+        confirmation.present(Some(&delete_button));
+    });
     task_list.append(&row);
 }
 
