@@ -138,16 +138,22 @@ Status:
   `CamelTransport::send_to_sync()`-Pfad auf. Offen sind der Linux-Build gegen
   die installierten Header sowie der Laufzeittest mit Passwort-, OAuth2- und
   unterschiedlichen SMTP/Submission-Providern.
-- `[ ]` Entwurf speichern, ändern, löschen und aus EDS-Drafts wieder öffnen.
+- `[~]` Der Composer hängt RFC822-Entwürfe im nativen Linux-Build in den von
+  `ESourceMailComposition` konfigurierten EDS-Drafts-Ordner ein; außerhalb
+  eines EDS-Builds bleibt der app-eigene Store der Fallback. Ändern, löschen,
+  wieder öffnen, mehrere Entwurfsrevisionen und die Linux-Laufzeitprüfung
+  fehlen noch.
 - `[~]` Die GTK4-rs-Compose-Strecke hält To/Cc/Bcc, Anhänge,
   Reply-/Forward-Vorbelegung und lokale HTML-Entwürfe vor. Der Composer baut
   jetzt einen getesteten RFC822/MIME-Body, liest Anhänge im Worker und reicht
   ihn an den Linux-Camel-Transport weiter. EDS-Draft-/Sent-Ordner, Inline-CID,
   Signatur, Quoting und Autosave müssen noch gegen echte Provider verifiziert
   werden.
-- `[ ]` Gesendet-Ordner, Serverantwort, Message-ID und Fehler beim Versand
-  verifizieren; ein Versand darf bei fehlender Bestätigung nicht als Erfolg
-  erscheinen.
+- `[~]` Der native Versand nutzt bei fehlender Camel-Sent-Bestätigung den von
+  `ESourceMailSubmission` konfigurierten Gesendet-Ordner als Fallback. Gegen
+  echte Serverantworten müssen Message-ID, providerabhängige Sent-Kopien und
+  Fehlerfälle noch auf Linux verifiziert werden; ein bereits vom Transport
+  akzeptierter Versand wird dabei nicht fälschlich als fehlgeschlagen gemeldet.
 - `[ ]` TLS-Zertifikatsfehler, Offline-Versand, SMTP-Authentifizierung und
   Serverlimits testen.
 

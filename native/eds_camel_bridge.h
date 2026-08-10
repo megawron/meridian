@@ -57,6 +57,11 @@ typedef struct {
 } EvolutionEdsCamelOperation;
 
 typedef enum {
+    EVOLUTION_EDS_CAMEL_SAVE_DRAFT = 1,
+    EVOLUTION_EDS_CAMEL_SAVE_SENT = 2,
+} EvolutionEdsCamelSaveFolder;
+
+typedef enum {
     EVOLUTION_EDS_CAMEL_SYNC_DISCOVERING = 1,
     EVOLUTION_EDS_CAMEL_SYNC_CONNECTING = 2,
     EVOLUTION_EDS_CAMEL_SYNC_LOADING_FOLDERS = 3,
@@ -175,6 +180,15 @@ int evolution_eds_camel_send_message(
     const uint8_t *raw_message,
     size_t raw_message_len,
     int *out_sent_message_saved,
+    char **out_error);
+
+/* Append a complete RFC822 message to the EDS-configured Drafts or Sent
+ * folder for the selected mail-account source. */
+int evolution_eds_camel_save_message(
+    const char *source_uid,
+    const uint8_t *raw_message,
+    size_t raw_message_len,
+    EvolutionEdsCamelSaveFolder folder,
     char **out_error);
 
 /* Return 1 on success, 0 on an ordinary backend error and 2 when the

@@ -448,8 +448,9 @@ werden.
 - [~] Konto-Setup und Composer sind vorhanden; der GTK4-rs-Composer kann
   Entwürfe ohne Kontogeheimnisse in einem app-eigenen Store persistieren und
   der Start zeigt gespeicherte EDS-Mailkonten. EDS-Identität und der native
-  Camel-Transport sind jetzt als Versandpfad angebunden; echte Draft-/Sent-
-  Folder, Kontoänderungen und Linux-Laufzeitabnahme fehlen noch.
+  Camel-Transport sowie das Einhängen in EDS-Drafts/Sent sind jetzt als
+  Versandpfad angebunden; Entwurfsverwaltung, Kontoänderungen und Linux-
+  Laufzeitabnahme fehlen noch.
 - [~] Sichtbare Lese-/Datenschutz-/PGP-Optionen werden über GSettings
   persistiert, sofern das Schema installiert ist.
 - [~] EDS-Quellen dynamisch als Konten anzeigen; das Setup speichert zusätzlich
@@ -461,9 +462,9 @@ werden.
 - [~] GTK4-rs-Composer zeigt aktive EDS-Mailkonten, persistiert To/Cc/Bcc,
   Anhänge und HTML-Entwürfe, kann Entwürfe wieder aufnehmen und erzeugt
   Reply-/Forward-Vorbelegungen. Ein getesteter RFC822/MIME-Builder und die
-  native CamelTransport-Aufrufstrecke sind angeschlossen; EDS-Drafts/Sent-
-  Folder, Reply-All mit vollständigem Kontext, Signaturen, Quoting und
-  Autosave fehlen noch.
+  native CamelTransport-Aufrufstrecke sowie EDS-Drafts/Sent-Fallback sind
+  angeschlossen; Entwurfsverwaltung, Reply-All mit vollständigem Kontext,
+  Signaturen, Quoting und Autosave fehlen noch.
 - [~] Synchronisationsstatus, Cancellation und begrenztes Retry/Backoff sind
   für den nativen Mail-Ladepfad vorhanden; Netzwerkwechsel, domänenweite
   Offline-/Online-Zustände, vollständige Wiederaufnahme und sauberes

@@ -473,7 +473,7 @@ impl ComposeDialog {
             }
         });
 
-        let draft_store = DraftStoreService::default();
+        let native_adapter_available = camel_mail_service::native_adapter_available();
         btn_save_draft.connect_clicked(glib::clone!(
             #[weak(rename_to = dialog)]
             self,
@@ -490,7 +490,6 @@ impl ComposeDialog {
             #[strong]
             html_editor,
             move |_| {
-                let draft_store = draft_store.clone();
                 let to = entry_to.text().to_string();
                 let cc = entry_cc.text().to_string();
                 let bcc = entry_bcc.text().to_string();
@@ -500,43 +499,85 @@ impl ComposeDialog {
                 let attachments = dialog.imp().attachments.borrow().clone();
                 let draft_id = dialog.imp().draft_id.borrow().clone();
                 let updated_at = Utc::now().to_rfc3339();
+                let dialog_weak = dialog.downgrade();
 
                 html_editor.read_html(move |result| match result {
                     Ok(html_body) => {
-                        let draft = DraftMessage {
-                            id: draft_id,
-                            from,
-                            source_uid,
-                            to,
-                            cc,
-                            bcc,
-                            subject,
-                            html_body,
-                            updated_at,
-                            attachments,
-                        };
-                        match draft_store.save(draft) {
-                            Ok(()) => {
-                                tracing::info!("Draft saved to application-owned draft store");
-                                if let Some(parent) = dialog.transient_for() {
-                                    if let Ok(window) =
-                                        parent.downcast::<crate::window::EvolutionWindow>()
-                                    {
-                                        window.add_toast(&adw::Toast::new(
-                                            "Entwurf lokal gespeichert",
-                                        ));
+                        if native_adapter_available {
+                            let outgoing = OutgoingMessage {
+                                source_uid,
+                                to,
+                                cc,
+                                bcc,
+                                subject,
+                                html_body,
+                                attachments,
+                            };
+                            let raw_message = match mail_composer_service::build_rfc822(&outgoing) {
+                                Ok(raw_message) => raw_message,
+                                Err(error) => {
+                                    if let Some(dialog) = dialog_weak.upgrade() {
+                                        dialog.show_toast(&error);
+                                    }
+                                    return;
+                                }
+                            };
+                            let source_uid = outgoing.source_uid;
+                            let (sender, receiver) = async_channel::bounded(1);
+                            std::thread::spawn(move || {
+                                let result = camel_mail_service::save_message(
+                                    &source_uid,
+                                    &raw_message,
+                                    camel_mail_service::CamelSaveFolder::Drafts,
+                                );
+                                if let Err(error) = sender.send_blocking(result) {
+                                    tracing::debug!(%error, "Draft save result was dropped");
+                                }
+                            });
+                            glib::spawn_future_local(async move {
+                                let result = receiver.recv().await;
+                                let Some(dialog) = dialog_weak.upgrade() else {
+                                    return;
+                                };
+                                match result {
+                                    Ok(Ok(())) => {
+                                        tracing::info!("Draft saved to EDS Drafts folder");
+                                        dialog.show_toast("Entwurf in EDS gespeichert");
+                                    }
+                                    Ok(Err(error)) => dialog.show_toast(&format!(
+                                        "Entwurf konnte nicht in EDS gespeichert werden: {error}"
+                                    )),
+                                    Err(error) => dialog.show_toast(&format!(
+                                        "Entwurfsspeicherung abgebrochen: {error}"
+                                    )),
+                                }
+                            });
+                        } else {
+                            let draft = DraftMessage {
+                                id: draft_id,
+                                from,
+                                source_uid,
+                                to,
+                                cc,
+                                bcc,
+                                subject,
+                                html_body,
+                                updated_at,
+                                attachments,
+                            };
+                            match DraftStoreService::default().save(draft) {
+                                Ok(()) => {
+                                    tracing::info!("Draft saved to application-owned draft store");
+                                    if let Some(dialog) = dialog_weak.upgrade() {
+                                        dialog.show_toast("Entwurf lokal gespeichert");
                                     }
                                 }
-                            }
-                            Err(error) => {
-                                tracing::error!(%error, "Could not save draft");
-                                if let Some(parent) = dialog.transient_for() {
-                                    if let Ok(window) =
-                                        parent.downcast::<crate::window::EvolutionWindow>()
-                                    {
-                                        window.add_toast(&adw::Toast::new(&format!(
+                                Err(error) => {
+                                    tracing::error!(%error, "Could not save draft");
+                                    if let Some(dialog) = dialog_weak.upgrade() {
+                                        dialog.show_toast(&format!(
                                             "Entwurf konnte nicht gespeichert werden: {error}"
-                                        )));
+                                        ));
                                     }
                                 }
                             }
@@ -544,6 +585,11 @@ impl ComposeDialog {
                     }
                     Err(error) => {
                         tracing::error!(%error, "Could not read HTML editor contents");
+                        if let Some(dialog) = dialog_weak.upgrade() {
+                            dialog.show_toast(&format!(
+                                "Entwurf konnte nicht gelesen werden: {error}"
+                            ));
+                        }
                     }
                 });
             }

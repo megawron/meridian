@@ -284,6 +284,14 @@ mod ffi {
             out_error: *mut *mut c_char,
         ) -> i32;
 
+        pub(super) fn evolution_eds_camel_save_message(
+            source_uid: *const c_char,
+            raw_message: *const u8,
+            raw_message_len: usize,
+            folder: i32,
+            out_error: *mut *mut c_char,
+        ) -> i32;
+
         pub(super) fn evolution_eds_camel_watcher_new(
             source_uid: *const c_char,
             out_watcher: *mut *mut c_void,
@@ -1130,6 +1138,64 @@ pub(crate) fn send_message(source_uid: &str, raw_message: &[u8]) -> Result<bool,
         let _ = (source_uid, raw_message);
         Err("native EDS/Camel adapter is not available in this build".to_string())
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CamelSaveFolder {
+    Drafts,
+    Sent,
+}
+
+pub(crate) fn save_message(
+    source_uid: &str,
+    raw_message: &[u8],
+    folder: CamelSaveFolder,
+) -> Result<(), String> {
+    #[cfg(eds_camel_bridge)]
+    {
+        use std::ffi::{CStr, CString, c_char};
+
+        let source_uid = CString::new(source_uid)
+            .map_err(|_| "EDS source UID enthält ein ungültiges NUL-Byte".to_string())?;
+        if raw_message.is_empty() {
+            return Err("Die RFC822-Nachricht ist leer".to_string());
+        }
+        let folder = match folder {
+            CamelSaveFolder::Drafts => 1,
+            CamelSaveFolder::Sent => 2,
+        };
+        let mut error_message: *mut c_char = std::ptr::null_mut();
+        let result = unsafe {
+            ffi::evolution_eds_camel_save_message(
+                source_uid.as_ptr(),
+                raw_message.as_ptr(),
+                raw_message.len(),
+                folder,
+                &mut error_message,
+            )
+        };
+        let error = (!error_message.is_null()).then(|| unsafe {
+            let message = CStr::from_ptr(error_message).to_string_lossy().into_owned();
+            ffi::evolution_eds_camel_free_error(error_message);
+            message
+        });
+
+        if result == 1 {
+            Ok(())
+        } else {
+            Err(error.unwrap_or_else(|| "EDS-Draft-Speicherung fehlgeschlagen".to_string()))
+        }
+    }
+
+    #[cfg(not(eds_camel_bridge))]
+    {
+        let _ = (source_uid, raw_message, folder);
+        Err("native EDS/Camel adapter is not available in this build".to_string())
+    }
+}
+
+pub(crate) const fn native_adapter_available() -> bool {
+    cfg!(eds_camel_bridge)
 }
 
 #[cfg(eds_camel_bridge)]

@@ -15,6 +15,7 @@
 #include <libedataserver/e-source-camel.h>
 #include <libedataserver/e-source-credentials-provider.h>
 #include <libedataserver/e-source-mail-account.h>
+#include <libedataserver/e-source-mail-composition.h>
 #include <libedataserver/e-source-mail-identity.h>
 #include <libedataserver/e-source-mail-submission.h>
 #include <libedataserver/e-source-mail-transport.h>
@@ -2257,6 +2258,283 @@ finish:
     return success ? 1 : (conflict ? 2 : 0);
 }
 
+static CamelFolder *
+open_special_folder (CamelStore *store,
+                     ESource *identity_source,
+                     ESource *account_source,
+                     CamelFolderInfoFlags folder_type,
+                     gboolean drafts,
+                     GCancellable *cancellable,
+                     GError **error)
+{
+    ESourceMailComposition *composition_extension = NULL;
+    ESourceMailSubmission *submission_extension = NULL;
+    CamelFolderInfo *folder_info = NULL;
+    CamelFolder *folder = NULL;
+    gchar *configured_folder = NULL;
+    const gchar *folder_name = NULL;
+
+    if (drafts) {
+        if (identity_source)
+            composition_extension = (ESourceMailComposition *) e_source_get_extension (
+                identity_source, E_SOURCE_EXTENSION_MAIL_COMPOSITION);
+        if (!composition_extension && account_source)
+            composition_extension = (ESourceMailComposition *) e_source_get_extension (
+                account_source, E_SOURCE_EXTENSION_MAIL_COMPOSITION);
+        if (composition_extension)
+            configured_folder = e_source_mail_composition_dup_drafts_folder (
+                composition_extension);
+    } else {
+        if (identity_source)
+            submission_extension = (ESourceMailSubmission *) e_source_get_extension (
+                identity_source, E_SOURCE_EXTENSION_MAIL_SUBMISSION);
+        if (!submission_extension && account_source)
+            submission_extension = (ESourceMailSubmission *) e_source_get_extension (
+                account_source, E_SOURCE_EXTENSION_MAIL_SUBMISSION);
+        if (submission_extension)
+            configured_folder = e_source_mail_submission_dup_sent_folder (
+                submission_extension);
+    }
+
+    /* EDS stores this as a client-defined identifier.  Evolution commonly
+     * uses folder:// URIs, while CamelStore expects the provider's full
+     * folder name.  Try both the configured value and its final path part. */
+    if (configured_folder && *configured_folder) {
+        folder = camel_store_get_folder_sync (
+            store, configured_folder, CAMEL_STORE_FOLDER_NONE,
+            cancellable, error);
+        if (!folder) {
+            g_clear_error (error);
+            const gchar *last_separator = strrchr (configured_folder, '/');
+            if (last_separator && *(last_separator + 1))
+                folder = camel_store_get_folder_sync (
+                    store, last_separator + 1, CAMEL_STORE_FOLDER_NONE,
+                    cancellable, error);
+        }
+        if (folder)
+            goto finish;
+        g_clear_error (error);
+    }
+
+    folder_info = camel_store_get_folder_info_sync (
+        store, NULL,
+        CAMEL_STORE_FOLDER_INFO_RECURSIVE |
+        CAMEL_STORE_FOLDER_INFO_NO_VIRTUAL |
+        CAMEL_STORE_FOLDER_INFO_REFRESH,
+        cancellable, error);
+    if (!folder_info)
+        goto finish;
+
+    folder_name = find_folder_name_by_type (folder_info, folder_type);
+    if (!folder_name) {
+        g_set_error_literal (
+            error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
+            drafts
+                ? "Für dieses EDS-Konto ist kein Entwurfsordner vorhanden"
+                : "Für dieses EDS-Konto ist kein Gesendet-Ordner vorhanden");
+        goto finish;
+    }
+
+    folder = camel_store_get_folder_sync (
+        store, folder_name, CAMEL_STORE_FOLDER_NONE,
+        cancellable, error);
+
+finish:
+    camel_folder_info_free (folder_info);
+    g_free (configured_folder);
+    return folder;
+}
+
+static gboolean
+set_message_identity (CamelMimeMessage *message,
+                       ESource *identity_source,
+                       const gchar *source_uid,
+                       GError **error)
+{
+    ESourceMailIdentity *identity_extension;
+    CamelInternetAddress *from = NULL;
+    gchar *address = NULL;
+    gchar *name = NULL;
+    gboolean success = FALSE;
+
+    identity_extension = identity_source
+        ? (ESourceMailIdentity *) e_source_get_extension (
+            identity_source, E_SOURCE_EXTENSION_MAIL_IDENTITY)
+        : NULL;
+    address = identity_extension
+        ? e_source_mail_identity_dup_address (identity_extension)
+        : NULL;
+    name = identity_extension
+        ? e_source_mail_identity_dup_name (identity_extension)
+        : NULL;
+    if (!address || !*address) {
+        g_set_error_literal (
+            error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
+            "Die EDS-Mail-Identität enthält keine Absenderadresse");
+        goto finish;
+    }
+
+    from = camel_internet_address_new ();
+    if (!camel_internet_address_add (
+            from, name && *name ? name : NULL, address)) {
+        g_set_error_literal (
+            error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
+            "Die EDS-Absenderadresse konnte nicht als Internetadresse gelesen werden");
+        goto finish;
+    }
+
+    camel_mime_message_set_from (message, from);
+    camel_mime_message_set_source (message, source_uid);
+    success = TRUE;
+
+finish:
+    g_clear_object (&from);
+    g_free (address);
+    g_free (name);
+    return success;
+}
+
+static CamelMimeMessage *
+parse_raw_message (const guint8 *raw_message,
+                   gsize raw_message_len,
+                   GCancellable *cancellable,
+                   GError **error)
+{
+    CamelMimeMessage *message;
+    CamelStream *stream;
+
+    message = camel_mime_message_new ();
+    stream = camel_stream_mem_new_with_buffer (
+        (const gchar *) raw_message, raw_message_len);
+    if (!camel_data_wrapper_construct_from_stream_sync (
+            CAMEL_DATA_WRAPPER (message), stream, cancellable, error)) {
+        g_clear_object (&stream);
+        g_clear_object (&message);
+        return NULL;
+    }
+
+    g_clear_object (&stream);
+    return message;
+}
+
+int
+evolution_eds_camel_save_message (
+    const char *source_uid,
+    const uint8_t *raw_message,
+    size_t raw_message_len,
+    EvolutionEdsCamelSaveFolder folder,
+    char **out_error)
+{
+    ESourceRegistry *registry = NULL;
+    EdsCamelSession *session = NULL;
+    ESource *source = NULL;
+    ESource *identity_source = NULL;
+    CamelStore *store = NULL;
+    CamelFolder *target_folder = NULL;
+    CamelMimeMessage *message = NULL;
+    GCancellable *cancellable = NULL;
+    GError *error = NULL;
+    ESourceMailAccount *account_extension;
+    gchar *identity_uid = NULL;
+    gboolean drafts;
+    gboolean success = FALSE;
+    gchar *appended_uid = NULL;
+
+    if (out_error)
+        *out_error = NULL;
+
+    if (!source_uid || !*source_uid || !raw_message || raw_message_len == 0) {
+        if (out_error)
+            *out_error = g_strdup (
+                "EDS-Speicherung benötigt ein Konto und eine RFC822-Nachricht");
+        return 0;
+    }
+    if (folder != EVOLUTION_EDS_CAMEL_SAVE_DRAFT &&
+        folder != EVOLUTION_EDS_CAMEL_SAVE_SENT) {
+        if (out_error)
+            *out_error = g_strdup ("Unbekannter EDS-Mailordner");
+        return 0;
+    }
+    drafts = folder == EVOLUTION_EDS_CAMEL_SAVE_DRAFT;
+
+    camel_provider_init ();
+    registry = e_source_registry_new_sync (NULL, &error);
+    if (!registry)
+        goto finish;
+    source = e_source_registry_ref_source (registry, source_uid);
+    if (!source) {
+        g_set_error_literal (
+            &error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
+            "Das EDS-Mailkonto existiert nicht mehr");
+        goto finish;
+    }
+    if (!e_source_get_enabled (source)) {
+        g_set_error_literal (
+            &error, G_IO_ERROR, G_IO_ERROR_FAILED,
+            "Das EDS-Mailkonto ist deaktiviert");
+        goto finish;
+    }
+
+    account_extension = (ESourceMailAccount *) e_source_get_extension (
+        source, E_SOURCE_EXTENSION_MAIL_ACCOUNT);
+    identity_uid = account_extension
+        ? e_source_mail_account_dup_identity_uid (account_extension)
+        : NULL;
+    if (!identity_uid || !*identity_uid) {
+        g_set_error_literal (
+            &error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
+            "Für das EDS-Mailkonto ist keine Mail-Identität konfiguriert");
+        goto finish;
+    }
+    identity_source = e_source_registry_ref_source (registry, identity_uid);
+    if (!identity_source) {
+        g_set_error_literal (
+            &error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
+            "Die Mail-Identität des EDS-Kontos existiert nicht mehr");
+        goto finish;
+    }
+
+    session = eds_camel_session_new (registry);
+    cancellable = g_cancellable_new ();
+    store = open_store_for_source (session, source, cancellable, &error);
+    if (!store)
+        goto finish;
+    message = parse_raw_message (
+        raw_message, raw_message_len, cancellable, &error);
+    if (!message)
+        goto finish;
+    if (!set_message_identity (message, identity_source, source_uid, &error))
+        goto finish;
+
+    target_folder = open_special_folder (
+        store, identity_source, source,
+        drafts ? CAMEL_FOLDER_TYPE_DRAFTS : CAMEL_FOLDER_TYPE_SENT,
+        drafts, cancellable, &error);
+    if (!target_folder)
+        goto finish;
+
+    success = camel_folder_append_message_sync (
+        target_folder, message, NULL, &appended_uid,
+        cancellable, &error);
+
+finish:
+    if (!success && out_error && error)
+        *out_error = g_strdup (error->message);
+    g_clear_error (&error);
+    g_free (appended_uid);
+    g_clear_object (&target_folder);
+    g_clear_object (&message);
+    g_clear_object (&store);
+    g_clear_object (&cancellable);
+    g_clear_object (&session);
+    g_clear_object (&identity_source);
+    g_clear_object (&source);
+    g_clear_pointer (&identity_uid, g_free);
+    g_clear_object (&registry);
+
+    return success ? 1 : 0;
+}
+
 int
 evolution_eds_camel_send_message (
     const char *source_uid,
@@ -2271,6 +2549,8 @@ evolution_eds_camel_send_message (
     ESource *identity_source = NULL;
     ESource *transport_source = NULL;
     CamelService *transport_service = NULL;
+    CamelStore *sent_store = NULL;
+    CamelFolder *sent_folder = NULL;
     CamelMimeMessage *message = NULL;
     CamelStream *stream = NULL;
     CamelInternetAddress *from = NULL;
@@ -2461,6 +2741,38 @@ evolution_eds_camel_send_message (
         CAMEL_ADDRESS (from), CAMEL_ADDRESS (recipients),
         &sent_message_saved, cancellable, &error);
 
+    /* Some Camel transports report a successful SMTP submission without
+     * storing a Sent copy.  Honor the EDS submission setting and append the
+     * exact transport-ready message when Camel did not do so itself.  A Sent
+     * copy failure must remain a visible status detail, not turn a message
+     * which was already accepted by SMTP into a false send failure. */
+    if (success && !sent_message_saved &&
+        (!submission_extension ||
+         e_source_mail_submission_get_use_sent_folder (submission_extension))) {
+        GError *sent_error = NULL;
+
+        sent_store = open_store_for_source (
+            session, source, cancellable, &sent_error);
+        if (sent_store)
+            sent_folder = open_special_folder (
+                sent_store, identity_source, source,
+                CAMEL_FOLDER_TYPE_SENT, FALSE,
+                cancellable, &sent_error);
+        if (sent_folder) {
+            gchar *appended_uid = NULL;
+
+            sent_message_saved = camel_folder_append_message_sync (
+                sent_folder, message, NULL, &appended_uid,
+                cancellable, &sent_error);
+            g_free (appended_uid);
+        }
+        if (!sent_message_saved && sent_error) {
+            g_warning ("EDS Sent-Kopie konnte nicht gespeichert werden: %s",
+                       sent_error->message);
+        }
+        g_clear_error (&sent_error);
+    }
+
 finish:
     if (!success && out_error && error)
         *out_error = g_strdup (error->message);
@@ -2475,6 +2787,8 @@ finish:
     g_clear_object (&from);
     g_clear_object (&stream);
     g_clear_object (&message);
+    g_clear_object (&sent_folder);
+    g_clear_object (&sent_store);
     g_clear_object (&transport_service);
     g_clear_object (&transport_source);
     g_clear_object (&identity_source);
