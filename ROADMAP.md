@@ -41,9 +41,19 @@ Da es keine vorgefertigten Rust-Crates für `libcamel`, `libedataserver`, `libec
 └─────────────────────────────────────────────────────┘
 ```
 
-**Phase 1 (MVP):** `zbus` für D-Bus-Kommunikation mit EDS. Das erlaubt sofortigen Zugriff auf Kontakte, Kalender und Quellenverwaltung, ohne eigene Bindings generieren zu müssen.
+**Phase 1 (MVP):** zbus für die Quellenverwaltung und native C-ABI-Brücken
+für die synchronisierten EDS-Domänen. Das erlaubt den produktiven Zugriff auf
+Camel- und ECal-Daten, ohne Widget-Code oder eine zweite UI-Schicht in die
+Backend-Integration einzuführen.
 
-**Phase 2 (Full Parity):** GIR-generierte Bindings für `libcamel` (Low-Level-Mailzugriff, MIME-Parsing, Store/Folder-API), da der D-Bus-Layer für performantes Mail-Handling (große Mailboxen, Streaming) nicht ausreicht.
+**Phase 2 (Full Parity):** GIR-generierte Bindings für libcamel
+(Low-Level-Mailzugriff, MIME-Parsing, Store/Folder-API), da der D-Bus-Layer für
+performantes Mail-Handling (große Mailboxen, Streaming) nicht ausreicht.
+
+Der aktuelle Native-Pfad nutzt bewusst kleine, überprüfte C-ABI-Adapter um die
+originalen EDS-Bibliotheken. Camel und ECal liefern dabei thread-sichere,
+framework-neutrale Rust-Werte; GIR-Bindings bleiben eine spätere Optimierung
+für APIs, die über diese Adapter hinaus benötigt werden.
 
 #### GIR-Generierung: Technischer Ablauf
 
@@ -125,7 +135,7 @@ status = "generate"
 │                     Service / Repository Layer                │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐       │
 │  │  MailService  │  │ CalService   │  │ContactService│       │
-│  │  (libcamel)   │  │ (ECal/D-Bus) │  │(EBook/D-Bus) │       │
+│  │  (libcamel)   │  │ (libecal)    │  │(EBook/D-Bus) │       │
 │  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘       │
 │         │                  │                  │               │
 │  ┌──────▼──────────────────▼──────────────────▼──────┐       │
@@ -210,7 +220,7 @@ Implementierungsdetails getrennt.
 
 | Evolution-Feature | GTK4-Implementierung | EDS-Schnittstelle |
 |:---|:---|:---|
-| **Tag/Woche/Monat-Ansicht** | Custom `GtkWidget`-Subklassen: `DayView`, `WeekView`, `MonthView`. Rendering via `GtkSnapshot` / Cairo. Umschaltung über `AdwViewSwitcher`. | `ECal` via D-Bus / `ecal-rs` |
+| **Tag/Woche/Monat-Ansicht** | Custom `GtkWidget`-Subklassen: `DayView`, `WeekView`, `MonthView`. Rendering via `GtkSnapshot` / Cairo. Umschaltung über `AdwViewSwitcher`. | `libecal-2.0` über den EDS-Adapter |
 | **Event-Erstellung** | `AdwDialog` mit Start/Ende-Picker (`GtkCalendar` + Time-Spinner), Wiederholung, Alarme, Teilnehmer. | `ECalComponent`, `ICalComponent` |
 | **ITIP Meeting-Einladungen** | Im Mail-View: Inline-Banner bei `text/calendar` MIME-Parts. Buttons: „Annehmen / Tentativ / Ablehnen". Klick → ITIP-Response via `ECal`. | `ECalComponent`, ITIP-Utility-Funktionen |
 | **Aufgaben (Tasks)** | `GtkColumnView` mit Spalten: Checkbox, Titel, Fällig, Priorität. Inline-Edit. | `ECal` (VTODO), `ECalComponent` |
@@ -319,14 +329,17 @@ Test auf der Service-Ebene.
   Einstiegspunkt.
 - [~] Adaptive Navigation, Mail-Drei-Spalten-Ansicht, sicherer Viewer,
   Kalender, Kontakte, Aufgaben, Memos und Composer sind vorhanden; die neuen
-  EDS/Camel-Mail-Ladestrecke ist initial in die Mailansicht integriert; die
-  vollständige Integration aller EDS/Camel/ECal/EBook-Streams fehlt noch.
+  EDS/Camel-Mail- und ECal-Ladestrecken sind initial in die GTK4-rs-Ansichten
+  integriert. ECal-Erstellung für Termine, Aufgaben und Memos sowie die
+  VTODO-Statusänderung sind angebunden; vollständige Mutationen und die
+  EBook-Integration fehlen noch.
 - [~] GObject-Modelle, GListModels und Worker-Channels werden für große
   Datenmengen weiter vereinheitlicht. Vollständige Domain-States, Mutationen
   und Fehlerdialoge fehlen noch.
-- [~] Die GTK4-rs-Mailansicht ist initial mit dem nativen EDS/Camel-Lade- und
-  Aktionspfad verbunden; Kalender-, Kontakte-, Aufgaben- und Memo-Streams
-  sowie die zugehörigen vollständigen Service-Tests fehlen noch.
+- [~] Die GTK4-rs-Mailansicht ist mit dem nativen EDS/Camel-Lade- und
+  Aktionspfad verbunden. Kalender-, Aufgaben- und Memo-Ansichten laden
+  synchronisierte ECal-Komponenten über Worker-Channels; EBook-Streams,
+  Mutationen und die vollständigen Service-Tests fehlen noch.
 
 #### Phase 1 — Mail lesen (lokal, erster echter Backend-Schnitt)
 
@@ -362,8 +375,10 @@ Test auf der Service-Ebene.
   GSettings-gesteuertes Hintergrund-Polling, native Camel-
   Ordneränderungssignale und detaillierte Konto-/Ordner-/Nachrichten-
   Fortschrittsmeldungen sind angebunden. Cancellation innerhalb laufender
-  Camel-Aufrufe, inkrementelle statt seitenweiser Synchronisation und
-  Retry/Backoff fehlen noch.
+  Camel-Aufrufe, UID-basierte inkrementelle Nachrichtenaktualisierung und
+  begrenztes Retry/Backoff für Mail-Ladevorgänge sind ebenfalls angebunden.
+  Eine vollständige inkrementelle Ordner-/Kontosynchronisation und eine
+  einheitliche Retry-/Netzwerkstrategie für alle EDS-Domänen fehlen noch.
 - [~] Native Linux-Camel-Brücke öffnet die aktivierten EDS-Mailquellen über
   `e_source_camel_configure_service()`, verwendet EDS-/GOA-Credentials und
   lädt Ordnerzusammenfassungen sowie begrenzte RFC-822-Nachrichten in
@@ -377,8 +392,10 @@ Test auf der Service-Ebene.
   Servicepfad ausgeführt; Camel-Änderungs-, Lösch- und Umbenennungssignale
   werden über einen langlebigen nativen Watcher in die Mailansicht geleitet.
   Serverzustände werden nach Mutationen verifiziert und als explizite
-  Konflikte zurückgegeben. Threads, echte inkrementelle Synchronisation und
-  der Linux-Laufzeittest mit einem realen GNOME-Konto stehen noch aus.
+  Konflikte zurückgegeben; betroffene Nachrichten werden über ihre Camel-UIDs
+  inkrementell nachgeladen oder entfernt. Threads, strukturelle Ordner-
+  synchronisation und der Linux-Laufzeittest mit einem realen GNOME-Konto
+  stehen noch aus.
 - [~] Mailaktionen besitzen eine zentrale Backend-Schnittstelle. Lokale
   Nachrichten behalten den schreibgeschützten Import mit Sidecar für
   Lesestatus/Markierung; Remote-Nachrichten verwenden Camel für Lesen, Flags,
@@ -404,22 +421,35 @@ Test auf der Service-Ebene.
   OAuth2, TLS, Passwort-/Secret-Service und Offline-Fehlerzuständen.
 - [ ] CamelTransport für echten Versand, EDS-Drafts/Sent-Folder, Bcc/Cc,
   Reply/Reply-All/Forward, Signaturen, Quoting und Autosave.
-- [ ] Synchronisationsstatus, Retry/Backoff, Netzwerkwechsel und sauberes
-  Herunterfahren.
+- [~] Synchronisationsstatus, Cancellation und begrenztes Retry/Backoff sind
+  für den nativen Mail-Ladepfad vorhanden; Netzwerkwechsel, domänenweite
+  Offline-/Online-Zustände, vollständige Wiederaufnahme und sauberes
+  Herunterfahren fehlen noch.
 
 #### Phase 3 — Kalender, Aufgaben und Memos
 
 - [~] Monatsansicht, Navigation, View-Switcher und Dialoge sind vorhanden;
-  die GTK4-rs-Kalenderansicht zeigt EDS-Quellenstatus und lokale VEVENTs,
-  echte ECal-Ansichten fehlen noch.
-- [~] GTK4-rs-Aufgaben- und Memo-Ansichten laden lokale VTODO-/VJOURNAL-Daten
-  aus iCalendar-Dateien; ECal-Streams und Mutationen fehlen noch.
+  die GTK4-rs-Kalenderansicht zeigt EDS-Quellenstatus und lädt VEVENTs aus
+  aktivierten ECal-Quellen und kann neue VEVENTs über den nativen ECal-Adapter
+  speichern. Die vollständigen Tages-/Wochen-/Agenda-Modelle sowie Bearbeiten,
+  Löschen und Wiederholungen fehlen noch.
+- [~] GTK4-rs-Aufgaben- und Memo-Ansichten laden VTODO-/VJOURNAL-Komponenten
+  über die native libecal-2.0-Brücke aus den aktivierten EDS-Quellen. Neue
+  VTODOs/VJOURNALs sowie VTODO-Statusänderungen werden persistent über EDS
+  geschrieben. Der lokale iCalendar-Importer bleibt ein expliziter Fallback;
+  vollständiges CRUD und inkrementelle ECal-Signale fehlen noch.
 - [~] EDS-Source-Registry und ESource-basierte Kalenderauswahl werden dynamisch
-  angezeigt; ECal-Client/VEVENT-Streams und Mutationen fehlen noch.
+  angezeigt; Kalender-, Aufgaben- und Memo-Quellen werden per
+  e_cal_client_connect_sync() gelesen, inklusive Quellidentität und
+  Backend-Warnungen. Der native Adapter liefert bereits Create/Modify/Remove-
+  Operationen mit Konfliktstatus; UI-seitige Bearbeiten-/Löschen-Flows und
+  Konfliktauflösung fehlen noch.
 - [ ] Tag-/Arbeitswoche-/Woche-/Monat-/Agenda-Ansichten mit echten VEvents.
 - [ ] Wiederholungen, Zeitzonen, Teilnehmer, iTIP/iMIP, freie Zeiten,
   Einladungsantworten, Alarme, Kategorien, Anhänge und Offline-Sync.
-- [ ] VTODO/VJOURNAL CRUD, Sortierung, Prioritäten, Fälligkeiten und Sync.
+- [~] VTODO/VJOURNAL-Erstellung, VTODO-Status, Prioritäten und Fälligkeiten
+  werden über den EDS-Adapter persistiert. Vollständiges CRUD, Sortierung,
+  Erinnerungen und inkrementelle Synchronisation fehlen noch.
 
 #### Phase 4 — Kontakte und Adressbücher
 
@@ -504,13 +534,15 @@ nicht als vollständiger Ersatz beworben werden.
 
 ### Nächster Entwicklungsblock
 
-1. Die native EDS/Camel-Ladestrecke sowie den Signal-Watcher auf Linux gegen
-   ein echtes GNOME-/GOA-Konto testen; danach inkrementelle Synchronisation,
-   Cancellation innerhalb laufender Camel-Aufrufe und Retry/Backoff ergänzen.
+1. Die native EDS/Camel-Ladestrecke, UID-basierte Signalaktualisierung und den
+   Signal-Watcher auf Linux gegen ein echtes GNOME-/GOA-Konto testen; danach
+   strukturelle Ordner-/Kontosynchronisation, Netzwerkwechsel und eine
+   domänenweite Offline-/Online-Wiederaufnahme ergänzen.
 2. Das GTK4-rs-Mailmodell um echte Thread-Modelle, inverse Undo/Redo-
    Operationen und Konfliktanzeigen erweitern.
-3. EDS-Sources in persistente Konto-/Ordnermodelle und echte ECal-/EBook-
-   Streams überführen; die Ergebnisse über GLib-Futures, Worker und
-   GListModel-Updates anbinden.
+3. Die ECal-Mutationsstrecke um UI-seitiges Bearbeiten/Löschen, echte
+   Konfliktauflösung, inkrementelle ECal-Signale und GListModel-Updates
+   erweitern; danach denselben Adaptervertrag für EBook-Kontakte
+   implementieren.
 4. Camel-Transport, EDS-Drafts/Sent-Folder und die Dialog-Components für
    Konto-, Empfangs- und Versandoptionen vervollständigen.

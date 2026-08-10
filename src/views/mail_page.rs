@@ -129,13 +129,18 @@ fn load_mail_backend(
     cancelled: &AtomicBool,
     progress_sender: Option<&async_channel::Sender<camel_mail_service::CamelSyncProgress>>,
 ) -> MailPageLoadResult {
-    let camel_result = camel_mail_service::load_messages_page_with_progress(
+    let camel_result = camel_mail_service::load_messages_page_with_progress_and_cancellation(
         request.source_uid.as_deref(),
         request.folder_name.as_deref(),
         request.offset,
         request.max_messages_per_folder,
+        Some(cancelled),
         progress_sender,
     );
+
+    if cancelled.load(Ordering::Relaxed) {
+        return MailPageLoadResult::Error("Mail-Ladevorgang wurde abgebrochen.".to_string());
+    }
 
     if request.is_remote_or_paged() {
         return match camel_result {
@@ -226,9 +231,11 @@ mod imp {
         pub load_generation: Cell<u64>,
         pub mail_loading: Cell<bool>,
         pub mail_change_pending: Cell<bool>,
+        pub mail_incremental_loading: Cell<bool>,
         pub updating_folder_rows: Cell<bool>,
         pub mail_sync_source: RefCell<Option<glib::SourceId>>,
         pub mail_load_cancellation: RefCell<Option<Arc<AtomicBool>>>,
+        pub mail_incremental_cancellation: RefCell<Option<Arc<AtomicBool>>>,
         pub mail_change_cancellation: RefCell<Option<Arc<AtomicBool>>>,
         pub search_entry: RefCell<Option<gtk::SearchEntry>>,
     }
@@ -300,6 +307,9 @@ mod imp {
                 source.remove();
             }
             if let Some(cancelled) = self.mail_load_cancellation.borrow().as_ref() {
+                cancelled.store(true, Ordering::Relaxed);
+            }
+            if let Some(cancelled) = self.mail_incremental_cancellation.borrow().as_ref() {
                 cancelled.store(true, Ordering::Relaxed);
             }
             if let Some(cancelled) = self.mail_change_cancellation.borrow().as_ref() {
@@ -1910,7 +1920,7 @@ impl MailPage {
                 }
             }
             camel_mail_service::CamelSyncEvent::Change(change) => {
-                if self.imp().mail_loading.get() {
+                if self.imp().mail_loading.get() || self.imp().mail_incremental_loading.get() {
                     self.imp().mail_change_pending.set(true);
                     return;
                 }
@@ -1938,7 +1948,7 @@ impl MailPage {
                         change.recent_count
                     ));
                 }
-                self.refresh_mail();
+                self.start_incremental_camel_update(change);
             }
             camel_mail_service::CamelSyncEvent::Error(error) => {
                 tracing::warn!(%error, "Native Camel change monitor stopped");
@@ -1951,6 +1961,128 @@ impl MailPage {
                 }
             }
         }
+    }
+
+    fn start_incremental_camel_update(&self, change: camel_mail_service::CamelChangeEvent) {
+        if change.kind != camel_mail_service::CamelChangeKind::Changed {
+            self.refresh_mail();
+            return;
+        }
+
+        let mut message_uids = Vec::new();
+        for uid in change
+            .added_uids
+            .iter()
+            .chain(change.changed_uids.iter())
+            .chain(change.recent_uids.iter())
+        {
+            if !message_uids.contains(uid) {
+                message_uids.push(uid.clone());
+            }
+        }
+        let removed_ids = change
+            .removed_uids
+            .iter()
+            .map(|uid| format!("eds:{}:{}:{}", change.source_uid, change.folder_name, uid))
+            .collect::<std::collections::HashSet<_>>();
+        let replaced_ids = message_uids
+            .iter()
+            .map(|uid| format!("eds:{}:{}:{}", change.source_uid, change.folder_name, uid))
+            .collect::<std::collections::HashSet<_>>();
+
+        let store = self.imp().message_store.borrow().clone();
+        if let Some(store) = store.as_ref() {
+            Self::remove_message_ids(store, &removed_ids);
+        }
+
+        if message_uids.is_empty() {
+            if let Some(filter) = self.imp().message_filter.borrow().as_ref() {
+                filter.changed(gtk::FilterChange::Different);
+            }
+            if let Some(state) = self.imp().message_state.borrow().as_ref() {
+                state.set_label(&format!(
+                    "EDS/Camel: Änderungen in {} inkrementell übernommen",
+                    change.folder_name
+                ));
+            }
+            return;
+        }
+
+        let generation = self.imp().load_generation.get();
+        let cancellation = Arc::new(AtomicBool::new(false));
+        self.imp()
+            .mail_incremental_cancellation
+            .replace(Some(cancellation.clone()));
+        self.imp().mail_incremental_loading.set(true);
+        if let Some(state) = self.imp().message_state.borrow().as_ref() {
+            state.set_label(&format!(
+                "EDS/Camel: {} Nachrichten in {} werden inkrementell aktualisiert …",
+                message_uids.len(),
+                change.folder_name
+            ));
+        }
+
+        let source_uid = change.source_uid.clone();
+        let folder_name = change.folder_name.clone();
+        let worker_folder_name = folder_name.clone();
+        let (sender, receiver) = async_channel::bounded(1);
+        let worker_cancellation = cancellation.clone();
+        std::thread::spawn(move || {
+            let result = camel_mail_service::load_messages_for_uids(
+                &source_uid,
+                &worker_folder_name,
+                &message_uids,
+                &worker_cancellation,
+            );
+            if let Err(error) = sender.send_blocking(result) {
+                tracing::debug!(%error, "Incremental Camel result was dropped");
+            }
+        });
+
+        let page = self.downgrade();
+        glib::spawn_future_local(async move {
+            let result = receiver.recv().await.unwrap_or_else(|_| {
+                Err("Inkrementelles Camel-Laden wurde abgebrochen".to_string())
+            });
+            let Some(page) = page.upgrade() else {
+                return;
+            };
+            if page.imp().load_generation.get() != generation {
+                return;
+            }
+            page.imp().mail_incremental_loading.set(false);
+            match result {
+                Ok(messages) => {
+                    let previous_selected_id = page.selected_message_id();
+                    if let Some(store) = page.imp().message_store.borrow().as_ref() {
+                        Self::remove_message_ids(store, &removed_ids);
+                        Self::remove_message_ids(store, &replaced_ids);
+                        Self::replace_or_append_messages(store, messages);
+                    }
+                    if let Some(filter) = page.imp().message_filter.borrow().as_ref() {
+                        filter.changed(gtk::FilterChange::Different);
+                    }
+                    page.select_message_after_reload(previous_selected_id.as_deref());
+                    if let Some(state) = page.imp().message_state.borrow().as_ref() {
+                        state.set_label(&format!(
+                            "EDS/Camel: Änderungen in {} inkrementell übernommen",
+                            folder_name
+                        ));
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "Incremental Camel update failed");
+                    if let Some(state) = page.imp().message_state.borrow().as_ref() {
+                        state.set_label(&format!(
+                            "EDS/Camel-Inkrementalsynchronisation fehlgeschlagen: {error}"
+                        ));
+                    }
+                }
+            }
+            if page.imp().mail_change_pending.replace(false) {
+                page.refresh_mail();
+            }
+        });
     }
 
     fn update_camel_sync_progress(&self, progress: &camel_mail_service::CamelSyncProgress) {
@@ -2000,6 +2132,10 @@ impl MailPage {
             camel_mail_service::CamelSyncPhase::Failed => {
                 format!("EDS/Camel: Synchronisation fehlgeschlagen{account_progress}")
             }
+            camel_mail_service::CamelSyncPhase::Retrying => format!(
+                "EDS/Camel: vorübergehender Fehler · neuer Versuch {}/{} …",
+                progress.attempt, progress.max_attempts
+            ),
         };
         state.set_label(&label);
     }
@@ -2033,6 +2169,10 @@ impl MailPage {
         if let Some(cancelled) = self.imp().mail_load_cancellation.borrow().as_ref() {
             cancelled.store(true, Ordering::Relaxed);
         }
+        if let Some(cancelled) = self.imp().mail_incremental_cancellation.borrow().as_ref() {
+            cancelled.store(true, Ordering::Relaxed);
+        }
+        self.imp().mail_incremental_loading.set(false);
 
         let generation = self.imp().load_generation.get().wrapping_add(1);
         self.imp().load_generation.set(generation);
@@ -2244,6 +2384,35 @@ impl MailPage {
             }
         }
         appended
+    }
+
+    fn remove_message_ids(store: &gio::ListStore, ids: &std::collections::HashSet<String>) {
+        if ids.is_empty() {
+            return;
+        }
+
+        let mut indices = Vec::new();
+        for index in 0..store.n_items() {
+            if let Some(message) = store.item(index).and_downcast::<MailMessageObject>() {
+                if ids.contains(&message.id()) {
+                    indices.push(index);
+                }
+            }
+        }
+        for index in indices.into_iter().rev() {
+            store.remove(index);
+        }
+    }
+
+    fn replace_or_append_messages(store: &gio::ListStore, messages: Vec<ParsedMail>) {
+        let ids = messages
+            .iter()
+            .map(|message| message.id.clone())
+            .collect::<std::collections::HashSet<_>>();
+        Self::remove_message_ids(store, &ids);
+        for message in messages {
+            store.append(&message.into_object());
+        }
     }
 
     fn update_camel_folder_counts(

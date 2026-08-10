@@ -80,6 +80,9 @@ typedef void (*EvolutionEdsCamelProgressCallback) (
     const EvolutionEdsCamelSyncProgress *progress,
     void *user_data);
 
+typedef int (*EvolutionEdsCamelCancellationCallback) (
+    void *user_data);
+
 typedef enum {
     EVOLUTION_EDS_CAMEL_CHANGE = 1,
     EVOLUTION_EDS_CAMEL_FOLDER_DELETED = 2,
@@ -95,6 +98,14 @@ typedef struct {
     size_t removed_count;
     size_t changed_count;
     size_t recent_count;
+    char **added_uids;
+    size_t added_uid_count;
+    char **removed_uids;
+    size_t removed_uid_count;
+    char **changed_uids;
+    size_t changed_uid_count;
+    char **recent_uids;
+    size_t recent_uid_count;
 } EvolutionEdsCamelChangeEvent;
 
 typedef struct _EvolutionEdsCamelWatcher EvolutionEdsCamelWatcher;
@@ -123,7 +134,22 @@ int evolution_eds_camel_load_messages(
     size_t *out_failed_sources,
     char **out_error,
     EvolutionEdsCamelProgressCallback progress_callback,
-    void *progress_user_data);
+    void *progress_user_data,
+    EvolutionEdsCamelCancellationCallback cancellation_callback,
+    void *cancellation_user_data);
+
+/* Load only the UIDs reported by CamelFolder::changed.  This keeps signal
+ * handling incremental while retaining the normal RFC-822 parsing path. */
+int evolution_eds_camel_load_messages_by_uid(
+    const char *source_uid,
+    const char *folder_name,
+    const char * const *message_uids,
+    size_t message_uid_count,
+    EvolutionEdsCamelMessage **out_messages,
+    size_t *out_count,
+    char **out_error,
+    EvolutionEdsCamelCancellationCallback cancellation_callback,
+    void *cancellation_user_data);
 
 void evolution_eds_camel_free_messages(
     EvolutionEdsCamelMessage *messages,

@@ -7,7 +7,7 @@ use adw::subclass::prelude::*;
 use chrono::Datelike;
 use gtk::glib;
 
-use crate::services::calendar_store_service::CalendarStoreService;
+use crate::services::ecal_service::{CalendarDataOrigin, load_snapshot_prefer_eds};
 use crate::services::eds_service;
 
 // ─── GObject Subclass ───────────────────────────────────────────────────────
@@ -151,24 +151,68 @@ impl CalendarPage {
             .build();
         sidebar_box.append(&local_item_state);
 
+        let event_list = gtk::ListBox::builder()
+            .selection_mode(gtk::SelectionMode::None)
+            .css_classes(vec!["boxed-list"])
+            .build();
+        sidebar_box.append(&event_list);
+
         let local_item_state_for_load = local_item_state.clone();
+        let event_list_for_load = event_list.clone();
         let (local_sender, local_receiver) = async_channel::bounded(1);
         std::thread::spawn(move || {
-            let snapshot = CalendarStoreService::new().load_snapshot();
-            if let Err(error) = local_sender.send_blocking(snapshot) {
+            let result = load_snapshot_prefer_eds();
+            if let Err(error) = local_sender.send_blocking(result) {
                 tracing::debug!(%error, "Calendar snapshot was dropped before delivery");
             }
         });
         glib::spawn_future_local(async move {
             match local_receiver.recv().await {
-                Ok(snapshot) => {
-                    let count = snapshot.events.len();
+                Ok(result) => {
+                    let count = result.snapshot.events.len();
+                    if let Some(warning) = result.warning {
+                        tracing::warn!(%warning, "Calendar data loaded with a backend warning");
+                    }
                     if count == 0 {
-                        local_item_state_for_load.set_label("Keine lokalen VEVENT-Daten gefunden");
+                        event_list_for_load.set_visible(false);
+                        match result.origin {
+                            CalendarDataOrigin::Eds => {
+                                local_item_state_for_load
+                                    .set_label("Keine VEVENT-Daten aus EDS gefunden");
+                            }
+                            CalendarDataOrigin::Local => {
+                                local_item_state_for_load
+                                    .set_label("Keine lokalen VEVENT-Daten gefunden");
+                            }
+                        }
                     } else {
-                        local_item_state_for_load.set_label(&format!(
-                            "{count} lokale(r) Termin(e) aus iCalendar gefunden; ECal-Ansicht folgt."
-                        ));
+                        event_list_for_load.set_visible(true);
+                        let origin = match result.origin {
+                            CalendarDataOrigin::Eds => "EDS",
+                            CalendarDataOrigin::Local => "lokalem iCalendar",
+                        };
+                        local_item_state_for_load
+                            .set_label(&format!("{count} Termin(e) aus {origin} geladen."));
+                        for event in result.snapshot.events.iter().take(25) {
+                            let source = if event.source_display_name.is_empty() {
+                                String::new()
+                            } else {
+                                format!(" · {}", event.source_display_name)
+                            };
+                            let row = adw::ActionRow::builder()
+                                .title(&event.summary)
+                                .subtitle(&format!(
+                                    "{}{}",
+                                    if event.end.is_empty() {
+                                        event.start.clone()
+                                    } else {
+                                        format!("{}–{}", event.start, event.end)
+                                    },
+                                    source
+                                ))
+                                .build();
+                            event_list_for_load.append(&row);
+                        }
                     }
                 }
                 Err(error) => tracing::debug!(%error, "Calendar snapshot unavailable"),

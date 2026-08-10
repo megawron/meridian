@@ -7,6 +7,7 @@ use std::process::Command;
 
 fn main() {
     println!("cargo:rustc-check-cfg=cfg(eds_camel_bridge)");
+    println!("cargo:rustc-check-cfg=cfg(eds_ecal_bridge)");
 
     if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("linux") {
         return;
@@ -26,6 +27,10 @@ fn main() {
         .cargo_metadata(false)
         .probe("libedataserver-1.2")
         .expect("libedataserver-1.2 development files are required on Linux; install evolution-data-server-devel");
+    let ecal = pkg_config::Config::new()
+        .cargo_metadata(false)
+        .probe("libecal-2.0")
+        .expect("libecal-2.0 development files are required on Linux; install evolution-data-server-devel");
 
     let manifest_dir = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap());
     let bridge = manifest_dir.join("../native/eds_camel_bridge.c");
@@ -34,7 +39,7 @@ fn main() {
     let archive = out_dir.join("libevolution_eds_camel_bridge.a");
     let compiler = env::var_os("CC").unwrap_or_else(|| "cc".into());
     let archiver = env::var_os("AR").unwrap_or_else(|| "ar".into());
-    let mut compile = Command::new(compiler);
+    let mut compile = Command::new(&compiler);
     compile
         .arg("-std=c11")
         .arg("-fPIC")
@@ -66,7 +71,7 @@ fn main() {
         "the EDS/Camel bridge failed to compile"
     );
 
-    let archive_status = Command::new(archiver)
+    let archive_status = Command::new(&archiver)
         .arg("crus")
         .arg(&archive)
         .arg(&object)
@@ -77,20 +82,80 @@ fn main() {
         "the EDS/Camel bridge failed to create a static archive"
     );
 
+    let ecal_bridge = manifest_dir.join("../native/eds_ecal_bridge.c");
+    let ecal_object = out_dir.join("eds_ecal_bridge.o");
+    let ecal_archive = out_dir.join("libevolution_eds_ecal_bridge.a");
+    let mut ecal_compile = Command::new(&compiler);
+    ecal_compile
+        .arg("-std=c11")
+        .arg("-fPIC")
+        .arg("-c")
+        .arg(&ecal_bridge)
+        .arg("-o")
+        .arg(&ecal_object)
+        .arg("-I")
+        .arg(manifest_dir.join("../native"));
+    for include_path in ecal
+        .include_paths
+        .iter()
+        .chain(eds.include_paths.iter())
+        .chain(camel.include_paths.iter())
+    {
+        ecal_compile.arg("-I").arg(include_path);
+    }
+    for (name, value) in ecal
+        .defines
+        .iter()
+        .chain(eds.defines.iter())
+        .chain(camel.defines.iter())
+    {
+        ecal_compile.arg(match value {
+            Some(value) => format!("-D{name}={value}"),
+            None => format!("-D{name}"),
+        });
+    }
+    let ecal_compile_status = ecal_compile
+        .status()
+        .expect("could not execute the C compiler for the EDS/ECal bridge");
+    assert!(
+        ecal_compile_status.success(),
+        "the EDS/ECal bridge failed to compile"
+    );
+
+    let ecal_archive_status = Command::new(&archiver)
+        .arg("crus")
+        .arg(&ecal_archive)
+        .arg(&ecal_object)
+        .status()
+        .expect("could not execute ar for the EDS/ECal bridge");
+    assert!(
+        ecal_archive_status.success(),
+        "the EDS/ECal bridge failed to create a static archive"
+    );
+
     // Keep the generated object out of incremental rebuild surprises while
     // retaining the archive in OUT_DIR for Cargo's linker invocation.
     let _ = fs::remove_file(object);
+    let _ = fs::remove_file(ecal_object);
     println!("cargo:rustc-link-search=native={}", out_dir.display());
     println!("cargo:rustc-link-lib=static=evolution_eds_camel_bridge");
+    println!("cargo:rustc-link-lib=static=evolution_eds_ecal_bridge");
     emit_link_metadata(&camel);
     emit_link_metadata(&eds);
+    emit_link_metadata(&ecal);
     println!("cargo:rerun-if-changed={}", bridge.display());
     println!(
         "cargo:rerun-if-changed={}",
         manifest_dir.join("../native/eds_camel_bridge.h").display()
     );
+    println!("cargo:rerun-if-changed={}", ecal_bridge.display());
+    println!(
+        "cargo:rerun-if-changed={}",
+        manifest_dir.join("../native/eds_ecal_bridge.h").display()
+    );
 
     println!("cargo:rustc-cfg=eds_camel_bridge");
+    println!("cargo:rustc-cfg=eds_ecal_bridge");
 }
 
 fn emit_link_metadata(library: &pkg_config::Library) {

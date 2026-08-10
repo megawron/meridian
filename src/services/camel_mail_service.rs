@@ -45,6 +45,7 @@ pub(crate) enum CamelSyncPhase {
     SourceComplete,
     Complete,
     Failed,
+    Retrying,
 }
 
 impl CamelSyncPhase {
@@ -57,6 +58,7 @@ impl CamelSyncPhase {
             5 => Self::SourceComplete,
             6 => Self::Complete,
             7 => Self::Failed,
+            8 => Self::Retrying,
             _ => return None,
         })
     }
@@ -74,6 +76,8 @@ pub(crate) struct CamelSyncProgress {
     pub(crate) failed_sources: usize,
     pub(crate) folders_seen: usize,
     pub(crate) messages_loaded: usize,
+    pub(crate) attempt: usize,
+    pub(crate) max_attempts: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -93,6 +97,10 @@ pub(crate) struct CamelChangeEvent {
     pub(crate) removed_count: usize,
     pub(crate) changed_count: usize,
     pub(crate) recent_count: usize,
+    pub(crate) added_uids: Vec<String>,
+    pub(crate) removed_uids: Vec<String>,
+    pub(crate) changed_uids: Vec<String>,
+    pub(crate) recent_uids: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -202,12 +210,23 @@ mod ffi {
         pub(super) removed_count: usize,
         pub(super) changed_count: usize,
         pub(super) recent_count: usize,
+        pub(super) added_uids: *mut *mut c_char,
+        pub(super) added_uid_count: usize,
+        pub(super) removed_uids: *mut *mut c_char,
+        pub(super) removed_uid_count: usize,
+        pub(super) changed_uids: *mut *mut c_char,
+        pub(super) changed_uid_count: usize,
+        pub(super) recent_uids: *mut *mut c_char,
+        pub(super) recent_uid_count: usize,
     }
 
     pub(super) type EvolutionEdsCamelProgressCallback = unsafe extern "C" fn(
         progress: *const EvolutionEdsCamelSyncProgress,
         user_data: *mut c_void,
     );
+
+    pub(super) type EvolutionEdsCamelCancellationCallback =
+        unsafe extern "C" fn(user_data: *mut c_void) -> i32;
 
     unsafe extern "C" {
         pub(super) fn evolution_eds_camel_load_messages(
@@ -225,6 +244,20 @@ mod ffi {
             out_error: *mut *mut c_char,
             progress_callback: Option<EvolutionEdsCamelProgressCallback>,
             progress_user_data: *mut c_void,
+            cancellation_callback: Option<EvolutionEdsCamelCancellationCallback>,
+            cancellation_user_data: *mut c_void,
+        ) -> i32;
+
+        pub(super) fn evolution_eds_camel_load_messages_by_uid(
+            source_uid: *const c_char,
+            folder_name: *const c_char,
+            message_uids: *const *const c_char,
+            message_uid_count: usize,
+            out_messages: *mut *mut EvolutionEdsCamelMessage,
+            out_count: *mut usize,
+            out_error: *mut *mut c_char,
+            cancellation_callback: Option<EvolutionEdsCamelCancellationCallback>,
+            cancellation_user_data: *mut c_void,
         ) -> i32;
 
         pub(super) fn evolution_eds_camel_free_messages(
@@ -302,15 +335,85 @@ pub(crate) fn load_messages_page_with_progress(
     max_messages_per_folder: i32,
     progress_sender: Option<&async_channel::Sender<CamelSyncProgress>>,
 ) -> Result<CamelMailLoad, String> {
+    load_messages_page_with_progress_and_cancellation(
+        source_uid,
+        folder_name,
+        message_offset,
+        max_messages_per_folder,
+        None,
+        progress_sender,
+    )
+}
+
+pub(crate) fn load_messages_page_with_progress_and_cancellation(
+    source_uid: Option<&str>,
+    folder_name: Option<&str>,
+    message_offset: usize,
+    max_messages_per_folder: i32,
+    cancelled: Option<&AtomicBool>,
+    progress_sender: Option<&async_channel::Sender<CamelSyncProgress>>,
+) -> Result<CamelMailLoad, String> {
     #[cfg(eds_camel_bridge)]
     {
-        return load_messages_native(
-            source_uid,
-            folder_name,
-            message_offset,
-            max_messages_per_folder,
-            progress_sender,
-        );
+        const MAX_ATTEMPTS: usize = 3;
+
+        for attempt in 1..=MAX_ATTEMPTS {
+            if cancelled.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
+                return Err("Mail-Ladevorgang wurde abgebrochen.".to_string());
+            }
+
+            let result = load_messages_native(
+                source_uid,
+                folder_name,
+                message_offset,
+                max_messages_per_folder,
+                cancelled,
+                progress_sender,
+            );
+            let retryable = match &result {
+                Ok(load) => {
+                    load.configured_sources > 0
+                        && load.successful_sources == 0
+                        && load.failed_sources > 0
+                        && load.warning.is_some()
+                }
+                Err(_) => true,
+            };
+
+            if attempt == MAX_ATTEMPTS || !retryable {
+                return result;
+            }
+
+            if let Some(sender) = progress_sender {
+                let _ = sender.try_send(CamelSyncProgress {
+                    phase: CamelSyncPhase::Retrying,
+                    source_uid: source_uid.map(str::to_string),
+                    source_display_name: None,
+                    folder_name: folder_name.map(str::to_string),
+                    configured_sources: 0,
+                    processed_sources: 0,
+                    successful_sources: 0,
+                    failed_sources: 0,
+                    folders_seen: 0,
+                    messages_loaded: 0,
+                    attempt: attempt + 1,
+                    max_attempts: MAX_ATTEMPTS,
+                });
+            }
+
+            let delay_milliseconds = 250_u64.saturating_mul(1_u64 << (attempt - 1));
+            let mut waited = 0;
+            while waited < delay_milliseconds {
+                if cancelled.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
+                    return Err("Mail-Ladevorgang wurde abgebrochen.".to_string());
+                }
+                let slice = (delay_milliseconds - waited).min(25);
+                std::thread::sleep(std::time::Duration::from_millis(slice));
+                waited += slice;
+            }
+        }
+
+        unreachable!("Camel retry loop always returns on its final attempt")
     }
 
     #[cfg(not(eds_camel_bridge))]
@@ -320,6 +423,7 @@ pub(crate) fn load_messages_page_with_progress(
             folder_name,
             message_offset,
             max_messages_per_folder,
+            cancelled,
             progress_sender,
         );
         Err("native EDS/Camel adapter is not available in this build".to_string())
@@ -332,6 +436,7 @@ fn load_messages_native(
     folder_name: Option<&str>,
     message_offset: usize,
     max_messages_per_folder: i32,
+    cancelled: Option<&AtomicBool>,
     progress_sender: Option<&async_channel::Sender<CamelSyncProgress>>,
 ) -> Result<CamelMailLoad, String> {
     use std::ffi::{CStr, CString, c_char, c_void};
@@ -366,6 +471,8 @@ fn load_messages_native(
             failed_sources: progress.failed_sources,
             folders_seen: progress.folders_seen,
             messages_loaded: progress.messages_loaded,
+            attempt: 1,
+            max_attempts: 1,
         });
     }
 
@@ -377,6 +484,15 @@ fn load_messages_native(
         fn into_option(self) -> Option<String> {
             (!self.is_empty()).then_some(self)
         }
+    }
+
+    unsafe extern "C" fn cancellation_callback(user_data: *mut c_void) -> i32 {
+        if user_data.is_null() {
+            return 0;
+        }
+
+        let cancelled = unsafe { &*(user_data as *const AtomicBool) };
+        cancelled.load(Ordering::Relaxed) as i32
     }
 
     let message_offset = message_offset.min(i32::MAX as usize) as i32;
@@ -417,6 +533,11 @@ fn load_messages_native(
     let progress_callback = progress_context
         .as_ref()
         .map(|_| progress_callback as ffi::EvolutionEdsCamelProgressCallback);
+    let cancellation_user_data = cancelled.map_or(std::ptr::null_mut(), |cancelled| {
+        cancelled as *const AtomicBool as *mut c_void
+    });
+    let cancellation_callback =
+        cancelled.map(|_| cancellation_callback as ffi::EvolutionEdsCamelCancellationCallback);
 
     // Passing null filters asks the adapter to load every enabled EDS mail
     // account and selectable folder.  The GTK view supplies source/folder
@@ -437,6 +558,8 @@ fn load_messages_native(
             &mut error_message,
             progress_callback,
             progress_user_data,
+            cancellation_callback,
+            cancellation_user_data,
         ) != 0
     };
 
@@ -474,48 +597,10 @@ fn load_messages_native(
         unsafe { ffi::evolution_eds_camel_free_folders(folders, folder_count) };
     }
 
-    let mut messages = Vec::with_capacity(record_count);
+    let messages = parse_native_messages(records, record_count);
     if !records.is_null() {
-        let records_slice = unsafe { slice::from_raw_parts(records, record_count) };
-        for record in records_slice {
-            if record.raw_message.is_null() || record.raw_message_len == 0 {
-                continue;
-            }
-
-            let source_uid = c_string(record.source_uid);
-            let folder_name = c_string(record.folder_name);
-            let folder_id = c_string(record.folder_id);
-            let message_uid = c_string(record.message_uid);
-            let location = MailBackendLocation {
-                source_uid: source_uid.clone(),
-                folder_name: folder_name.clone(),
-                message_uid: message_uid.clone(),
-            };
-            let raw = unsafe { slice::from_raw_parts(record.raw_message, record.raw_message_len) };
-            let raw = String::from_utf8_lossy(raw);
-            let id = format!("eds:{source_uid}:{folder_name}:{message_uid}");
-
-            if let Some(mut parsed) = parse_rfc822(
-                &id,
-                if folder_id.is_empty() {
-                    "all"
-                } else {
-                    &folder_id
-                },
-                &raw,
-                record.is_unread != 0,
-            ) {
-                parsed.is_flagged = record.is_flagged != 0;
-                parsed.folder_name = folder_name;
-                parsed.backend_location = Some(location);
-                messages.push(parsed);
-            }
-        }
-
         unsafe { ffi::evolution_eds_camel_free_messages(records, record_count) };
     }
-
-    MailStoreService::new().apply_backend_filters(&mut messages);
 
     Ok(CamelMailLoad {
         messages,
@@ -525,6 +610,154 @@ fn load_messages_native(
         failed_sources,
         warning,
     })
+}
+
+#[cfg(eds_camel_bridge)]
+fn parse_native_messages(
+    records: *const ffi::EvolutionEdsCamelMessage,
+    record_count: usize,
+) -> Vec<ParsedMail> {
+    use std::slice;
+
+    let mut messages = Vec::with_capacity(record_count);
+    if records.is_null() {
+        return messages;
+    }
+
+    let records_slice = unsafe { slice::from_raw_parts(records, record_count) };
+    for record in records_slice {
+        if record.raw_message.is_null() || record.raw_message_len == 0 {
+            continue;
+        }
+
+        let source_uid = c_string(record.source_uid);
+        let folder_name = c_string(record.folder_name);
+        let folder_id = c_string(record.folder_id);
+        let message_uid = c_string(record.message_uid);
+        let location = MailBackendLocation {
+            source_uid: source_uid.clone(),
+            folder_name: folder_name.clone(),
+            message_uid: message_uid.clone(),
+        };
+        let raw = unsafe { slice::from_raw_parts(record.raw_message, record.raw_message_len) };
+        let raw = String::from_utf8_lossy(raw);
+        let id = format!("eds:{source_uid}:{folder_name}:{message_uid}");
+
+        if let Some(mut parsed) = parse_rfc822(
+            &id,
+            if folder_id.is_empty() {
+                "all"
+            } else {
+                &folder_id
+            },
+            &raw,
+            record.is_unread != 0,
+        ) {
+            parsed.is_flagged = record.is_flagged != 0;
+            parsed.folder_name = folder_name;
+            parsed.backend_location = Some(location);
+            messages.push(parsed);
+        }
+    }
+
+    MailStoreService::new().apply_backend_filters(&mut messages);
+    messages
+}
+
+pub(crate) fn load_messages_for_uids(
+    source_uid: &str,
+    folder_name: &str,
+    message_uids: &[String],
+    cancelled: &AtomicBool,
+) -> Result<Vec<ParsedMail>, String> {
+    #[cfg(eds_camel_bridge)]
+    {
+        return load_messages_for_uids_native(source_uid, folder_name, message_uids, cancelled);
+    }
+
+    #[cfg(not(eds_camel_bridge))]
+    {
+        let _ = (source_uid, folder_name, message_uids, cancelled);
+        Err("native EDS/Camel adapter is not available in this build".to_string())
+    }
+}
+
+#[cfg(eds_camel_bridge)]
+fn load_messages_for_uids_native(
+    source_uid: &str,
+    folder_name: &str,
+    message_uids: &[String],
+    cancelled: &AtomicBool,
+) -> Result<Vec<ParsedMail>, String> {
+    use std::ffi::{CStr, CString, c_char, c_void};
+
+    if message_uids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    unsafe extern "C" fn cancellation_callback(user_data: *mut c_void) -> i32 {
+        if user_data.is_null() {
+            return 0;
+        }
+
+        let cancelled = unsafe { &*(user_data as *const AtomicBool) };
+        cancelled.load(Ordering::Relaxed) as i32
+    }
+
+    let source_uid = CString::new(source_uid)
+        .map_err(|_| "EDS source UID contains an invalid NUL byte".to_string())?;
+    let folder_name = CString::new(folder_name)
+        .map_err(|_| "EDS folder name contains an invalid NUL byte".to_string())?;
+    let message_uids = message_uids
+        .iter()
+        .map(|uid| {
+            CString::new(uid.as_str())
+                .map_err(|_| "EDS message UID contains an invalid NUL byte".to_string())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let message_uid_ptrs = message_uids
+        .iter()
+        .map(|uid| uid.as_ptr())
+        .collect::<Vec<*const c_char>>();
+    let cancellation_user_data = cancelled as *const AtomicBool as *mut c_void;
+    let mut records = std::ptr::null_mut();
+    let mut record_count = 0usize;
+    let mut error_message: *mut c_char = std::ptr::null_mut();
+    let success = unsafe {
+        ffi::evolution_eds_camel_load_messages_by_uid(
+            source_uid.as_ptr(),
+            folder_name.as_ptr(),
+            message_uid_ptrs.as_ptr(),
+            message_uid_ptrs.len(),
+            &mut records,
+            &mut record_count,
+            &mut error_message,
+            Some(cancellation_callback as ffi::EvolutionEdsCamelCancellationCallback),
+            cancellation_user_data,
+        ) != 0
+    };
+    let warning = (!error_message.is_null()).then(|| unsafe {
+        let message = CStr::from_ptr(error_message).to_string_lossy().into_owned();
+        ffi::evolution_eds_camel_free_error(error_message);
+        message
+    });
+
+    if !success {
+        if !records.is_null() {
+            unsafe { ffi::evolution_eds_camel_free_messages(records, record_count) };
+        }
+        return Err(warning
+            .unwrap_or_else(|| "Inkrementelles EDS/Camel-Laden ist fehlgeschlagen".to_string()));
+    }
+
+    let messages = parse_native_messages(records, record_count);
+    if !records.is_null() {
+        unsafe { ffi::evolution_eds_camel_free_messages(records, record_count) };
+    }
+    if cancelled.load(Ordering::Relaxed) {
+        return Err("Inkrementelles Camel-Laden wurde abgebrochen".to_string());
+    }
+    Ok(messages)
 }
 
 pub(crate) fn start_change_monitor()
@@ -584,6 +817,14 @@ pub(crate) fn start_change_monitor()
                     removed_count: 0,
                     changed_count: 0,
                     recent_count: 0,
+                    added_uids: std::ptr::null_mut(),
+                    added_uid_count: 0,
+                    removed_uids: std::ptr::null_mut(),
+                    removed_uid_count: 0,
+                    changed_uids: std::ptr::null_mut(),
+                    changed_uid_count: 0,
+                    recent_uids: std::ptr::null_mut(),
+                    recent_uid_count: 0,
                 };
                 let next = unsafe {
                     ffi::evolution_eds_camel_watcher_next_event(watcher, 1000, &mut raw_event)
@@ -614,6 +855,10 @@ pub(crate) fn start_change_monitor()
                     removed_count: raw_event.removed_count,
                     changed_count: raw_event.changed_count,
                     recent_count: raw_event.recent_count,
+                    added_uids: c_strings(raw_event.added_uids, raw_event.added_uid_count),
+                    removed_uids: c_strings(raw_event.removed_uids, raw_event.removed_uid_count),
+                    changed_uids: c_strings(raw_event.changed_uids, raw_event.changed_uid_count),
+                    recent_uids: c_strings(raw_event.recent_uids, raw_event.recent_uid_count),
                 };
                 unsafe { ffi::evolution_eds_camel_free_change_event(&mut raw_event) };
                 if sender.try_send(CamelSyncEvent::Change(event)).is_err() {
@@ -673,6 +918,19 @@ mod tests {
         assert!(!load.has_more_for(Some("account-b"), Some("INBOX"), 0, 10));
         assert!(!load.has_more_for(Some("account-a"), Some("Sent"), 0, 10));
         assert!(!load.has_more_for(Some("account-a"), Some("INBOX"), 10, 10));
+    }
+
+    #[test]
+    fn native_sync_phases_are_represented_without_accepting_unknown_values() {
+        assert_eq!(
+            CamelSyncPhase::from_native(1),
+            Some(CamelSyncPhase::Discovering)
+        );
+        assert_eq!(
+            CamelSyncPhase::from_native(8),
+            Some(CamelSyncPhase::Retrying)
+        );
+        assert_eq!(CamelSyncPhase::from_native(99), None);
     }
 }
 
@@ -805,4 +1063,14 @@ fn c_string(pointer: *const std::ffi::c_char) -> String {
     unsafe { std::ffi::CStr::from_ptr(pointer) }
         .to_string_lossy()
         .into_owned()
+}
+
+#[cfg(eds_camel_bridge)]
+fn c_strings(pointer: *mut *mut std::ffi::c_char, count: usize) -> Vec<String> {
+    if pointer.is_null() || count == 0 {
+        return Vec::new();
+    }
+
+    let pointers = unsafe { std::slice::from_raw_parts(pointer, count) };
+    pointers.iter().map(|pointer| c_string(*pointer)).collect()
 }

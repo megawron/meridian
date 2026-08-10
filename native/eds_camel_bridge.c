@@ -238,10 +238,87 @@ typedef struct {
     gchar *first_error;
     EvolutionEdsCamelProgressCallback progress_callback;
     void *progress_user_data;
+    EvolutionEdsCamelCancellationCallback cancellation_callback;
+    void *cancellation_user_data;
+    gboolean cancelled;
     size_t folders_seen;
     size_t messages_loaded;
     size_t processed_sources;
 } LoadContext;
+
+typedef struct {
+    GCancellable *cancellable;
+    EvolutionEdsCamelCancellationCallback callback;
+    void *user_data;
+    gint stop;
+    GThread *thread;
+} CancellationMonitor;
+
+static gboolean
+load_cancelled (LoadContext *context)
+{
+    if (context->cancelled)
+        return TRUE;
+
+    if (context->cancellation_callback &&
+        context->cancellation_callback (context->cancellation_user_data)) {
+        context->cancelled = TRUE;
+        return TRUE;
+    }
+
+    return FALSE;
+}
+
+static gpointer
+cancellation_monitor_thread (gpointer user_data)
+{
+    CancellationMonitor *monitor = user_data;
+
+    while (!g_atomic_int_get (&monitor->stop)) {
+        if (monitor->callback && monitor->callback (monitor->user_data)) {
+            g_cancellable_cancel (monitor->cancellable);
+            break;
+        }
+        g_usleep (20 * 1000);
+    }
+
+    return NULL;
+}
+
+static CancellationMonitor *
+cancellation_monitor_start (
+    GCancellable *cancellable,
+    EvolutionEdsCamelCancellationCallback callback,
+    void *user_data)
+{
+    CancellationMonitor *monitor;
+
+    if (!callback)
+        return NULL;
+
+    monitor = g_new0 (CancellationMonitor, 1);
+    monitor->cancellable = g_object_ref (cancellable);
+    monitor->callback = callback;
+    monitor->user_data = user_data;
+    monitor->stop = 0;
+    monitor->thread = g_thread_new (
+        "evolution-camel-cancel", cancellation_monitor_thread, monitor);
+
+    return monitor;
+}
+
+static void
+cancellation_monitor_free (CancellationMonitor *monitor)
+{
+    if (!monitor)
+        return;
+
+    g_atomic_int_set (&monitor->stop, 1);
+    if (monitor->thread)
+        g_thread_join (monitor->thread);
+    g_clear_object (&monitor->cancellable);
+    g_free (monitor);
+}
 
 static void
 emit_progress (LoadContext *context,
@@ -448,8 +525,8 @@ load_folder (LoadContext *context,
              const gchar *source_uid,
              const gchar *source_display_name,
              const gchar *folder_name,
-             CamelFolderInfo *folder_info,
-             GCancellable *cancellable)
+    CamelFolderInfo *folder_info,
+    GCancellable *cancellable)
 {
     CamelFolderInfo *current;
 
@@ -457,6 +534,9 @@ load_folder (LoadContext *context,
         CamelFolder *folder = NULL;
         GPtrArray *uids = NULL;
         GError *error = NULL;
+
+        if (load_cancelled (context))
+            return;
 
         append_folder (
             context, source_uid, source_display_name, current);
@@ -503,6 +583,7 @@ load_folder (LoadContext *context,
                     }
 
                     while (start > 0 &&
+                           !load_cancelled (context) &&
                            loaded < (gsize) context->max_messages_per_folder) {
                         const gchar *message_uid;
                         CamelMessageInfo *message_info;
@@ -545,6 +626,9 @@ load_folder (LoadContext *context,
                 g_object_unref (folder);
             }
         }
+
+        if (load_cancelled (context))
+            return;
 
         if (current->child)
             load_folder (
@@ -632,6 +716,9 @@ load_source (LoadContext *context,
         g_str_equal (backend_name, "vfolder"))
         return FALSE;
 
+    if (load_cancelled (context))
+        return FALSE;
+
     context->configured_sources++;
     emit_progress (
         context, EVOLUTION_EDS_CAMEL_SYNC_CONNECTING,
@@ -674,6 +761,10 @@ load_source (LoadContext *context,
             e_source_get_display_name (source), folder_name,
             folder_info, cancellable);
         camel_folder_info_free (folder_info);
+        if (context->cancelled) {
+            g_object_unref (store);
+            return FALSE;
+        }
         context->processed_sources++;
         emit_progress (
             context, EVOLUTION_EDS_CAMEL_SYNC_SOURCE_COMPLETE,
@@ -699,13 +790,16 @@ evolution_eds_camel_load_messages (const char *source_uid,
                                    size_t *out_failed_sources,
                                    char **out_error,
                                    EvolutionEdsCamelProgressCallback progress_callback,
-                                   void *progress_user_data)
+                                   void *progress_user_data,
+                                   EvolutionEdsCamelCancellationCallback cancellation_callback,
+                                   void *cancellation_user_data)
 {
     ESourceRegistry *registry = NULL;
     EdsCamelSession *session = NULL;
     GList *sources = NULL;
     GList *link;
     GCancellable *cancellable = NULL;
+    CancellationMonitor *cancellation_monitor = NULL;
     LoadContext context = { 0 };
     GError *error = NULL;
     int result = 0;
@@ -733,6 +827,8 @@ evolution_eds_camel_load_messages (const char *source_uid,
         : DEFAULT_MESSAGES_PER_FOLDER;
     context.progress_callback = progress_callback;
     context.progress_user_data = progress_user_data;
+    context.cancellation_callback = cancellation_callback;
+    context.cancellation_user_data = cancellation_user_data;
 
     emit_progress (
         &context, EVOLUTION_EDS_CAMEL_SYNC_DISCOVERING, NULL, NULL, NULL);
@@ -751,11 +847,16 @@ evolution_eds_camel_load_messages (const char *source_uid,
 
     session = eds_camel_session_new (registry);
     cancellable = g_cancellable_new ();
+    cancellation_monitor = cancellation_monitor_start (
+        cancellable, cancellation_callback, cancellation_user_data);
     sources = e_source_registry_list_enabled (
         registry, E_SOURCE_EXTENSION_MAIL_ACCOUNT);
 
     for (link = sources; link != NULL; link = link->next) {
         ESource *source = E_SOURCE (link->data);
+
+        if (load_cancelled (&context))
+            break;
 
         if (source_uid &&
             !g_str_equal (source_uid, e_source_get_uid (source)))
@@ -764,6 +865,8 @@ evolution_eds_camel_load_messages (const char *source_uid,
         load_source (&context, session, source, folder_name, cancellable);
     }
 
+    load_cancelled (&context);
+
     if (out_configured_sources)
         *out_configured_sources = context.configured_sources;
     if (out_successful_sources)
@@ -771,7 +874,12 @@ evolution_eds_camel_load_messages (const char *source_uid,
     if (out_failed_sources)
         *out_failed_sources = context.failed_sources;
 
-    if (context.successful_sources > 0 || context.configured_sources == 0) {
+    if (context.cancelled) {
+        if (!context.first_error)
+            context.first_error = g_strdup (
+                "EDS/Camel-Ladevorgang wurde abgebrochen");
+        result = 0;
+    } else if (context.successful_sources > 0 || context.configured_sources == 0) {
         if (out_messages)
             *out_messages = context.messages;
         if (out_count)
@@ -814,7 +922,8 @@ evolution_eds_camel_load_messages (const char *source_uid,
 
     emit_progress (
         &context,
-        context.failed_sources > 0 && context.successful_sources == 0
+        context.cancelled ||
+        (context.failed_sources > 0 && context.successful_sources == 0)
             ? EVOLUTION_EDS_CAMEL_SYNC_FAILED
             : EVOLUTION_EDS_CAMEL_SYNC_COMPLETE,
         NULL, NULL, NULL);
@@ -822,12 +931,201 @@ evolution_eds_camel_load_messages (const char *source_uid,
     g_free (context.first_error);
     evolution_eds_camel_free_messages (context.messages, context.count);
     evolution_eds_camel_free_folders (context.folders, context.folder_count);
+    cancellation_monitor_free (cancellation_monitor);
     g_clear_object (&cancellable);
     g_list_free_full (sources, g_object_unref);
     g_clear_object (&session);
     g_clear_object (&registry);
 
     return result;
+}
+
+static CamelFolderInfo *
+find_folder_info_by_name (CamelFolderInfo *folder_info,
+                          const gchar *folder_name)
+{
+    CamelFolderInfo *current;
+
+    for (current = folder_info; current != NULL; current = current->next) {
+        if (current->full_name &&
+            g_str_equal (current->full_name, folder_name))
+            return current;
+
+        if (current->child) {
+            CamelFolderInfo *match = find_folder_info_by_name (
+                current->child, folder_name);
+            if (match)
+                return match;
+        }
+    }
+
+    return NULL;
+}
+
+int
+evolution_eds_camel_load_messages_by_uid (
+    const char *source_uid,
+    const char *folder_name,
+    const char * const *message_uids,
+    size_t message_uid_count,
+    EvolutionEdsCamelMessage **out_messages,
+    size_t *out_count,
+    char **out_error,
+    EvolutionEdsCamelCancellationCallback cancellation_callback,
+    void *cancellation_user_data)
+{
+    ESourceRegistry *registry = NULL;
+    EdsCamelSession *session = NULL;
+    ESource *source = NULL;
+    CamelStore *store = NULL;
+    CamelFolder *folder = NULL;
+    CamelFolderInfo *folder_info = NULL;
+    GCancellable *cancellable = NULL;
+    CancellationMonitor *cancellation_monitor = NULL;
+    LoadContext context = { 0 };
+    CamelFolderInfo synthetic_folder = { 0 };
+    CamelFolderInfo *matching_folder = NULL;
+    GError *error = NULL;
+    gboolean success = FALSE;
+    size_t ii;
+
+    if (out_messages)
+        *out_messages = NULL;
+    if (out_count)
+        *out_count = 0;
+    if (out_error)
+        *out_error = NULL;
+
+    if (!source_uid || !*source_uid || !folder_name || !*folder_name ||
+        !message_uids || message_uid_count == 0) {
+        if (out_error)
+            *out_error = g_strdup (
+                "Inkrementelles Camel-Laden benötigt Konto, Ordner und UIDs");
+        return 0;
+    }
+
+    context.cancellation_callback = cancellation_callback;
+    context.cancellation_user_data = cancellation_user_data;
+    camel_provider_init ();
+
+    registry = e_source_registry_new_sync (NULL, &error);
+    if (!registry)
+        goto finish;
+
+    source = e_source_registry_ref_source (registry, source_uid);
+    if (!source) {
+        g_set_error_literal (
+            &error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
+            "EDS source for incremental Camel loading no longer exists");
+        goto finish;
+    }
+    if (!e_source_get_enabled (source)) {
+        g_set_error_literal (
+            &error, G_IO_ERROR, G_IO_ERROR_FAILED,
+            "EDS source for incremental Camel loading is disabled");
+        goto finish;
+    }
+
+    session = eds_camel_session_new (registry);
+    cancellable = g_cancellable_new ();
+    cancellation_monitor = cancellation_monitor_start (
+        cancellable, cancellation_callback, cancellation_user_data);
+    store = open_store_for_source (session, source, cancellable, &error);
+    if (!store)
+        goto finish;
+
+    folder = camel_store_get_folder_sync (
+        store, folder_name, CAMEL_STORE_FOLDER_NONE,
+        cancellable, &error);
+    if (!folder)
+        goto finish;
+
+    if (!camel_folder_refresh_info_sync (folder, cancellable, &error)) {
+        remember_error (&context, folder_name, error);
+        g_clear_error (&error);
+    }
+
+    folder_info = camel_store_get_folder_info_sync (
+        store, NULL,
+        CAMEL_STORE_FOLDER_INFO_RECURSIVE |
+        CAMEL_STORE_FOLDER_INFO_NO_VIRTUAL |
+        CAMEL_STORE_FOLDER_INFO_REFRESH,
+        cancellable, &error);
+    if (folder_info)
+        matching_folder = find_folder_info_by_name (folder_info, folder_name);
+    else
+        g_clear_error (&error);
+
+    synthetic_folder.full_name = (gchar *) folder_name;
+    synthetic_folder.display_name = (gchar *) folder_name;
+    synthetic_folder.flags = 0;
+    if (!matching_folder)
+        matching_folder = &synthetic_folder;
+
+    for (ii = 0; ii < message_uid_count; ii++) {
+        CamelMessageInfo *message_info = NULL;
+        CamelMimeMessage *message = NULL;
+
+        if (load_cancelled (&context))
+            break;
+        if (!message_uids[ii] || !*message_uids[ii])
+            continue;
+
+        message_info = camel_folder_get_message_info (
+            folder, message_uids[ii]);
+        if (!message_info)
+            continue;
+
+        message = camel_folder_get_message_sync (
+            folder, message_uids[ii], cancellable, &error);
+        if (!message) {
+            remember_error (&context, folder_name, error);
+            g_clear_error (&error);
+            g_object_unref (message_info);
+            continue;
+        }
+
+        append_message (
+            &context, source_uid, matching_folder, message_uids[ii],
+            message_info, message, cancellable);
+        g_object_unref (message);
+        g_object_unref (message_info);
+    }
+
+    load_cancelled (&context);
+    success = !context.cancelled;
+    if (context.cancelled && !context.first_error)
+        context.first_error = g_strdup (
+            "Inkrementelles Camel-Laden wurde abgebrochen");
+
+finish:
+    if (!success && !context.first_error && error)
+        context.first_error = g_strdup (error->message);
+    if (out_error && context.first_error)
+        *out_error = g_strdup (context.first_error);
+
+    if (success) {
+        if (out_messages)
+            *out_messages = context.messages;
+        if (out_count)
+            *out_count = context.count;
+        context.messages = NULL;
+        context.count = 0;
+    }
+
+    g_free (context.first_error);
+    evolution_eds_camel_free_messages (context.messages, context.count);
+    camel_folder_info_free (folder_info);
+    g_clear_error (&error);
+    cancellation_monitor_free (cancellation_monitor);
+    g_clear_object (&cancellable);
+    g_clear_object (&folder);
+    g_clear_object (&store);
+    g_clear_object (&session);
+    g_clear_object (&source);
+    g_clear_object (&registry);
+
+    return success ? 1 : 0;
 }
 
 void
@@ -896,6 +1194,40 @@ struct _EvolutionEdsCamelWatcher {
     EdsCamelSession *session;
 };
 
+static char **
+copy_uid_array (GPtrArray *uids,
+                size_t *out_count)
+{
+    char **copy;
+    guint ii;
+
+    if (out_count)
+        *out_count = 0;
+    if (!uids || uids->len == 0)
+        return NULL;
+
+    copy = g_new0 (char *, uids->len);
+    for (ii = 0; ii < uids->len; ii++)
+        copy[ii] = g_strdup (g_ptr_array_index (uids, ii));
+    if (out_count)
+        *out_count = uids->len;
+
+    return copy;
+}
+
+static void
+free_uid_array (char **uids,
+                size_t count)
+{
+    size_t ii;
+
+    if (!uids)
+        return;
+    for (ii = 0; ii < count; ii++)
+        g_free (uids[ii]);
+    g_free (uids);
+}
+
 static void
 free_watcher_event (CamelWatcherEvent *queued_event)
 {
@@ -905,6 +1237,18 @@ free_watcher_event (CamelWatcherEvent *queued_event)
     g_free (queued_event->event.source_uid);
     g_free (queued_event->event.folder_name);
     g_free (queued_event->event.old_folder_name);
+    free_uid_array (
+        queued_event->event.added_uids,
+        queued_event->event.added_uid_count);
+    free_uid_array (
+        queued_event->event.removed_uids,
+        queued_event->event.removed_uid_count);
+    free_uid_array (
+        queued_event->event.changed_uids,
+        queued_event->event.changed_uid_count);
+    free_uid_array (
+        queued_event->event.recent_uids,
+        queued_event->event.recent_uid_count);
     g_free (queued_event);
 }
 
@@ -981,6 +1325,14 @@ queue_watcher_event (CamelWatcherFolder *watch_folder,
             ? changes->uid_changed->len : 0;
         queued_event->event.recent_count = changes->uid_recent
             ? changes->uid_recent->len : 0;
+        queued_event->event.added_uids = copy_uid_array (
+            changes->uid_added, &queued_event->event.added_uid_count);
+        queued_event->event.removed_uids = copy_uid_array (
+            changes->uid_removed, &queued_event->event.removed_uid_count);
+        queued_event->event.changed_uids = copy_uid_array (
+            changes->uid_changed, &queued_event->event.changed_uid_count);
+        queued_event->event.recent_uids = copy_uid_array (
+            changes->uid_recent, &queued_event->event.recent_uid_count);
     }
 
     g_queue_push_tail (watcher->events, queued_event);
@@ -1295,6 +1647,10 @@ evolution_eds_camel_free_change_event (EvolutionEdsCamelChangeEvent *event)
     g_free (event->source_uid);
     g_free (event->folder_name);
     g_free (event->old_folder_name);
+    free_uid_array (event->added_uids, event->added_uid_count);
+    free_uid_array (event->removed_uids, event->removed_uid_count);
+    free_uid_array (event->changed_uids, event->changed_uid_count);
+    free_uid_array (event->recent_uids, event->recent_uid_count);
     memset (event, 0, sizeof (*event));
 }
 

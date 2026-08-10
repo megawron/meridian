@@ -13,6 +13,8 @@ mod imp {
     #[derive(Debug, Default)]
     pub struct TaskItemObject {
         pub id: RefCell<String>,
+        pub source_uid: RefCell<String>,
+        pub component: RefCell<String>,
         pub title: RefCell<String>,
         pub due_date: RefCell<String>,
         pub priority: RefCell<String>,
@@ -34,10 +36,20 @@ glib::wrapper! {
 }
 
 impl TaskItemObject {
-    pub fn new(id: &str, title: &str, due_date: &str, priority: &str, is_completed: bool) -> Self {
+    pub fn new(
+        source_uid: &str,
+        id: &str,
+        title: &str,
+        due_date: &str,
+        priority: &str,
+        is_completed: bool,
+        component: &str,
+    ) -> Self {
         let obj: Self = Object::builder().build();
         let imp = obj.imp();
         *imp.id.borrow_mut() = id.to_string();
+        *imp.source_uid.borrow_mut() = source_uid.to_string();
+        *imp.component.borrow_mut() = component.to_string();
         *imp.title.borrow_mut() = title.to_string();
         *imp.due_date.borrow_mut() = due_date.to_string();
         *imp.priority.borrow_mut() = priority.to_string();
@@ -47,6 +59,14 @@ impl TaskItemObject {
 
     pub fn id(&self) -> String {
         self.imp().id.borrow().clone()
+    }
+
+    pub fn source_uid(&self) -> String {
+        self.imp().source_uid.borrow().clone()
+    }
+
+    pub fn component(&self) -> String {
+        self.imp().component.borrow().clone()
     }
 
     pub fn title(&self) -> String {
@@ -67,5 +87,9 @@ impl TaskItemObject {
 
     pub fn set_completed(&self, completed: bool) {
         *self.imp().is_completed.borrow_mut() = completed;
+    }
+
+    pub fn set_component(&self, component: String) {
+        *self.imp().component.borrow_mut() = component;
     }
 }

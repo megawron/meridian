@@ -10,6 +10,9 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CalendarEventRecord {
     pub uid: String,
+    pub source_uid: String,
+    pub source_display_name: String,
+    pub component: String,
     pub summary: String,
     pub start: String,
     pub end: String,
@@ -21,6 +24,9 @@ pub struct CalendarEventRecord {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaskRecord {
     pub uid: String,
+    pub source_uid: String,
+    pub source_display_name: String,
+    pub component: String,
     pub summary: String,
     pub due: String,
     pub priority: u8,
@@ -30,6 +36,9 @@ pub struct TaskRecord {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemoRecord {
     pub uid: String,
+    pub source_uid: String,
+    pub source_display_name: String,
+    pub component: String,
     pub summary: String,
     pub description: String,
     pub updated: String,
@@ -75,21 +84,7 @@ impl CalendarStoreService {
             };
             parse_ical(&raw, &path, &mut snapshot);
         }
-        snapshot.events.sort_by(|left, right| {
-            left.start
-                .cmp(&right.start)
-                .then_with(|| left.uid.cmp(&right.uid))
-        });
-        snapshot.tasks.sort_by(|left, right| {
-            left.due
-                .cmp(&right.due)
-                .then_with(|| left.uid.cmp(&right.uid))
-        });
-        snapshot.memos.sort_by(|left, right| {
-            left.updated
-                .cmp(&right.updated)
-                .then_with(|| left.uid.cmp(&right.uid))
-        });
+        sort_snapshot(&mut snapshot);
         snapshot
     }
 }
@@ -98,6 +93,24 @@ impl Default for CalendarStoreService {
     fn default() -> Self {
         Self::new()
     }
+}
+
+pub(crate) fn sort_snapshot(snapshot: &mut CalendarSnapshot) {
+    snapshot.events.sort_by(|left, right| {
+        left.start
+            .cmp(&right.start)
+            .then_with(|| left.uid.cmp(&right.uid))
+    });
+    snapshot.tasks.sort_by(|left, right| {
+        left.due
+            .cmp(&right.due)
+            .then_with(|| left.uid.cmp(&right.uid))
+    });
+    snapshot.memos.sort_by(|left, right| {
+        left.updated
+            .cmp(&right.updated)
+            .then_with(|| left.uid.cmp(&right.uid))
+    });
 }
 
 fn collect_calendar_files(root: &Path, paths: &mut Vec<PathBuf>) {
@@ -127,6 +140,31 @@ fn collect_calendar_files(root: &Path, paths: &mut Vec<PathBuf>) {
 }
 
 fn parse_ical(raw: &str, path: &Path, snapshot: &mut CalendarSnapshot) {
+    parse_ical_with_source(raw, path, "", "", snapshot);
+}
+
+pub(crate) fn parse_ical_component(
+    raw: &str,
+    source_uid: &str,
+    source_display_name: &str,
+    snapshot: &mut CalendarSnapshot,
+) {
+    parse_ical_with_source(
+        raw,
+        Path::new("<eds-calendar-component>"),
+        source_uid,
+        source_display_name,
+        snapshot,
+    );
+}
+
+fn parse_ical_with_source(
+    raw: &str,
+    path: &Path,
+    source_uid: &str,
+    source_display_name: &str,
+    snapshot: &mut CalendarSnapshot,
+) {
     let lines = unfold_lines(raw);
     let mut current: Option<CurrentComponent> = None;
     let mut component_index = 0;
@@ -144,20 +182,49 @@ fn parse_ical(raw: &str, path: &Path, snapshot: &mut CalendarSnapshot) {
             current = Some(CurrentComponent::new("VJOURNAL"));
             continue;
         }
-        if line.starts_with("BEGIN:") || line.eq_ignore_ascii_case("END:VCALENDAR") {
+        if line.starts_with("BEGIN:") {
+            if let Some(component) = current.as_mut() {
+                component.raw_lines.push(line.clone());
+                component.nested_depth = component.nested_depth.saturating_add(1);
+            }
             continue;
         }
-        if line.eq_ignore_ascii_case("END:VEVENT")
-            || line.eq_ignore_ascii_case("END:VTODO")
-            || line.eq_ignore_ascii_case("END:VJOURNAL")
-        {
-            if let Some(component) = current.take() {
-                component_index += 1;
-                append_component(component, path, component_index, snapshot);
+        if line.starts_with("END:") {
+            if line.eq_ignore_ascii_case("END:VCALENDAR") {
+                continue;
+            }
+            if let Some(component) = current.as_mut() {
+                if component.nested_depth > 0 {
+                    component.raw_lines.push(line.clone());
+                    component.nested_depth -= 1;
+                    continue;
+                }
+            }
+            if line.eq_ignore_ascii_case("END:VEVENT")
+                || line.eq_ignore_ascii_case("END:VTODO")
+                || line.eq_ignore_ascii_case("END:VJOURNAL")
+            {
+                if let Some(component) = current.take() {
+                    let mut component = component;
+                    component.raw_lines.push(line.clone());
+                    component_index += 1;
+                    append_component(
+                        component,
+                        path,
+                        component_index,
+                        source_uid,
+                        source_display_name,
+                        snapshot,
+                    );
+                }
             }
             continue;
         }
         if let Some(component) = current.as_mut() {
+            component.raw_lines.push(line.clone());
+            if component.nested_depth > 0 {
+                continue;
+            }
             let Some((property, value)) = line.split_once(':') else {
                 continue;
             };
@@ -185,14 +252,23 @@ struct CurrentComponent {
     kind: String,
     properties: std::collections::HashMap<String, String>,
     date_properties: std::collections::HashSet<String>,
+    raw_lines: Vec<String>,
+    nested_depth: usize,
 }
 
 impl CurrentComponent {
     fn new(kind: &str) -> Self {
         Self {
             kind: kind.to_string(),
+            raw_lines: vec![format!("BEGIN:{kind}")],
             ..Self::default()
         }
+    }
+
+    fn raw_string(&self) -> String {
+        let mut raw = self.raw_lines.join("\r\n");
+        raw.push_str("\r\n");
+        raw
     }
 }
 
@@ -200,8 +276,11 @@ fn append_component(
     component: CurrentComponent,
     path: &Path,
     index: usize,
+    source_uid: &str,
+    source_display_name: &str,
     snapshot: &mut CalendarSnapshot,
 ) {
+    let raw_component = component.raw_string();
     let uid = component
         .properties
         .get("UID")
@@ -227,6 +306,9 @@ fn append_component(
                 .unwrap_or_default();
             snapshot.events.push(CalendarEventRecord {
                 uid,
+                source_uid: source_uid.to_string(),
+                source_display_name: source_display_name.to_string(),
+                component: raw_component,
                 summary,
                 start,
                 end,
@@ -255,6 +337,9 @@ fn append_component(
                 .is_some_and(|value| value.eq_ignore_ascii_case("COMPLETED"));
             snapshot.tasks.push(TaskRecord {
                 uid,
+                source_uid: source_uid.to_string(),
+                source_display_name: source_display_name.to_string(),
+                component: raw_component,
                 summary,
                 due: component
                     .properties
@@ -268,6 +353,9 @@ fn append_component(
         "VJOURNAL" => {
             snapshot.memos.push(MemoRecord {
                 uid,
+                source_uid: source_uid.to_string(),
+                source_display_name: source_display_name.to_string(),
+                component: raw_component,
                 summary,
                 description: component
                     .properties
@@ -307,6 +395,67 @@ fn unescape(value: &str) -> String {
         .replace("\\,", ",")
         .replace("\\;", ";")
         .replace("\\\\", "\\")
+}
+
+/// Replace or remove a top-level iCalendar property while preserving the rest
+/// of the component, including nested alarms and vendor-specific fields.
+pub(crate) fn update_ical_property(raw: &str, property_name: &str, value: Option<&str>) -> String {
+    let target = property_name.to_ascii_uppercase();
+    let mut lines = Vec::new();
+    let mut replaced = false;
+    let mut skip_folded = false;
+
+    for line in unfold_lines(raw) {
+        if skip_folded && (line.starts_with(' ') || line.starts_with('\t')) {
+            continue;
+        }
+        skip_folded = false;
+
+        let property = line
+            .split_once(':')
+            .map(|(property, _)| property)
+            .unwrap_or(line.as_str())
+            .split(';')
+            .next()
+            .unwrap_or_default()
+            .to_ascii_uppercase();
+        if property == target {
+            skip_folded = true;
+            if !replaced {
+                if let Some(value) = value {
+                    lines.push(format!("{property_name}:{value}"));
+                }
+                replaced = true;
+            }
+            continue;
+        }
+        lines.push(line);
+    }
+
+    if value.is_some() && !replaced {
+        let insertion = lines
+            .iter()
+            .position(|line| line.eq_ignore_ascii_case("END:VEVENT"))
+            .or_else(|| {
+                lines
+                    .iter()
+                    .position(|line| line.eq_ignore_ascii_case("END:VTODO"))
+            })
+            .or_else(|| {
+                lines
+                    .iter()
+                    .position(|line| line.eq_ignore_ascii_case("END:VJOURNAL"))
+            })
+            .unwrap_or(lines.len());
+        lines.insert(
+            insertion,
+            format!("{property_name}:{}", value.unwrap_or_default()),
+        );
+    }
+
+    let mut result = lines.join("\r\n");
+    result.push_str("\r\n");
+    result
 }
 
 fn format_ical_datetime(value: &str) -> String {
@@ -372,6 +521,63 @@ mod tests {
             CalendarStoreService::with_calendar_dir(&root).load_snapshot(),
             CalendarSnapshot::default()
         );
+    }
+
+    #[test]
+    fn parses_native_eds_component_with_source_identity() {
+        let mut snapshot = CalendarSnapshot::default();
+        parse_ical_component(
+            concat!(
+                "BEGIN:VEVENT\r\nUID:eds-event-1\r\nSUMMARY:Remote meeting\r\n",
+                "DTSTART:20260810T120000Z\r\nDTEND:20260810T130000Z\r\n",
+                "END:VEVENT\r\n"
+            ),
+            "source-uid",
+            "Remote calendar",
+            &mut snapshot,
+        );
+
+        assert_eq!(snapshot.events.len(), 1);
+        assert_eq!(snapshot.events[0].source_uid, "source-uid");
+        assert_eq!(snapshot.events[0].source_display_name, "Remote calendar");
+        assert_eq!(snapshot.events[0].summary, "Remote meeting");
+    }
+
+    #[test]
+    fn nested_alarm_properties_do_not_replace_event_properties() {
+        let mut snapshot = CalendarSnapshot::default();
+        parse_ical_component(
+            concat!(
+                "BEGIN:VEVENT\r\nUID:eds-event-2\r\nSUMMARY:Remote meeting\r\n",
+                "DESCRIPTION:Event description\r\n",
+                "BEGIN:VALARM\r\nDESCRIPTION:Alarm description\r\n",
+                "END:VALARM\r\nEND:VEVENT\r\n"
+            ),
+            "source-uid",
+            "Remote calendar",
+            &mut snapshot,
+        );
+
+        assert_eq!(snapshot.events.len(), 1);
+        assert_eq!(snapshot.events[0].description, "Event description");
+    }
+
+    #[test]
+    fn component_properties_can_be_updated_without_losing_nested_data() {
+        let raw = concat!(
+            "BEGIN:VTODO\r\nUID:task-1\r\nSUMMARY:Keep this\r\n",
+            "BEGIN:VALARM\r\nTRIGGER:-PT10M\r\nEND:VALARM\r\n",
+            "END:VTODO\r\n"
+        );
+        let updated = update_ical_property(raw, "STATUS", Some("COMPLETED"));
+        let updated = update_ical_property(&updated, "PERCENT-COMPLETE", Some("100"));
+        assert!(updated.contains("STATUS:COMPLETED\r\n"));
+        assert!(updated.contains("PERCENT-COMPLETE:100\r\n"));
+        assert!(updated.contains("BEGIN:VALARM\r\nTRIGGER:-PT10M\r\nEND:VALARM"));
+
+        let removed = update_ical_property(&updated, "STATUS", None);
+        assert!(!removed.contains("STATUS:"));
+        assert!(removed.ends_with("END:VTODO\r\n"));
     }
 
     fn temporary_directory(label: &str) -> PathBuf {
