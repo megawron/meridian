@@ -432,7 +432,7 @@ werden.
   kann bei verlorener Camel-UID danach suchen. Die Verifikation dieser
   providerabhängigen UID-Neuvergabe auf Linux sowie komplexe Ordneränderungen
   fehlen noch. Konflikte aus dem nativen Camel-Backend werden als eigener
-  Fehlerzustand behandelt.
+  Fehlerzustand behandelt und Batch-Fehler im sichtbaren Mailstatus angezeigt.
 - [ ] Serverseitige Suche und virtuelle Suchordner.
 
 #### Phase 2 — Konten, Empfang und Mailversand
