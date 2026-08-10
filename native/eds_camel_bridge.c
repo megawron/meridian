@@ -1800,6 +1800,87 @@ message_exists (CamelFolder *folder,
     return TRUE;
 }
 
+static gboolean
+message_ids_equal (const gchar *left,
+                   const gchar *right)
+{
+    gchar *left_copy;
+    gchar *right_copy;
+    gsize left_length;
+    gsize right_length;
+    gboolean equal;
+
+    if (!left || !right || !*left || !*right)
+        return FALSE;
+
+    left_copy = g_strdup (left);
+    right_copy = g_strdup (right);
+    g_strstrip (left_copy);
+    g_strstrip (right_copy);
+
+    left_length = strlen (left_copy);
+    if (left_length >= 2 && left_copy[0] == '<' &&
+        left_copy[left_length - 1] == '>') {
+        memmove (left_copy, left_copy + 1, left_length - 2);
+        left_copy[left_length - 2] = '\0';
+    }
+
+    right_length = strlen (right_copy);
+    if (right_length >= 2 && right_copy[0] == '<' &&
+        right_copy[right_length - 1] == '>') {
+        memmove (right_copy, right_copy + 1, right_length - 2);
+        right_copy[right_length - 2] = '\0';
+    }
+
+    equal = g_ascii_strcasecmp (left_copy, right_copy) == 0;
+    g_free (left_copy);
+    g_free (right_copy);
+    return equal;
+}
+
+static gchar *
+find_message_uid_by_id (CamelFolder *folder,
+                        const gchar *message_id,
+                        GCancellable *cancellable)
+{
+    GPtrArray *uids;
+    gchar *match = NULL;
+
+    if (!message_id || !*message_id)
+        return NULL;
+
+    uids = camel_folder_get_uids (folder);
+    if (!uids)
+        return NULL;
+
+    for (guint index = 0; index < uids->len; index++) {
+        const gchar *uid = g_ptr_array_index (uids, index);
+        CamelMimeMessage *message;
+        GError *local_error = NULL;
+
+        if (!uid || !*uid)
+            continue;
+
+        message = camel_folder_get_message_sync (
+            folder, uid, cancellable, &local_error);
+        if (!message) {
+            g_clear_error (&local_error);
+            continue;
+        }
+
+        if (message_ids_equal (
+                camel_mime_message_get_message_id (message), message_id))
+            match = g_strdup (uid);
+
+        g_object_unref (message);
+        if (match)
+            break;
+    }
+
+    camel_folder_free_uids (folder, uids);
+    return match;
+}
+
 static void
 set_conflict_error (GError **error,
                     const gchar *message)
@@ -1863,11 +1944,14 @@ evolution_eds_camel_apply_operation (
     CamelStore *store = NULL;
     CamelFolder *folder = NULL;
     CamelFolder *destination = NULL;
+    CamelFolder *restore_source = NULL;
     CamelFolder *trash = NULL;
     CamelFolderInfo *folder_info = NULL;
     GCancellable *cancellable = NULL;
     GError *error = NULL;
     const gchar *destination_name = NULL;
+    const gchar *message_uid;
+    gchar *resolved_message_uid = NULL;
     gboolean success = FALSE;
     gboolean conflict = FALSE;
 
@@ -1883,6 +1967,8 @@ evolution_eds_camel_apply_operation (
                 "EDS/Camel operation is missing a source, folder or message UID");
         return 0;
     }
+
+    message_uid = operation->message_uid;
 
     camel_provider_init ();
     registry = e_source_registry_new_sync (NULL, &error);
@@ -1916,11 +2002,19 @@ evolution_eds_camel_apply_operation (
     if (!folder)
         goto finish;
 
-    if (!message_exists (folder, operation->message_uid)) {
-        set_conflict_error (
-            &error, "Die Nachricht existiert im Quellordner nicht mehr");
-        conflict = TRUE;
-        goto finish;
+    if (operation->kind != EVOLUTION_EDS_CAMEL_RESTORE_DELETED &&
+        operation->kind != EVOLUTION_EDS_CAMEL_RESTORE_ARCHIVED &&
+        !message_exists (folder, message_uid)) {
+        resolved_message_uid = find_message_uid_by_id (
+            folder, operation->message_id, cancellable);
+        if (resolved_message_uid)
+            message_uid = resolved_message_uid;
+        if (!message_exists (folder, message_uid)) {
+            set_conflict_error (
+                &error, "Die Nachricht existiert im Quellordner nicht mehr");
+            conflict = TRUE;
+            goto finish;
+        }
     }
 
     switch (operation->kind) {
@@ -1934,11 +2028,11 @@ evolution_eds_camel_apply_operation (
             set |= CAMEL_MESSAGE_FLAGGED;
 
         success = synchronize_message_flags (
-            folder, operation->message_uid, mask, set,
+            folder, message_uid, mask, set,
             cancellable, &error);
         if (success)
             success = verify_message_flags (
-                folder, operation->message_uid, mask, set, &error);
+                folder, message_uid, mask, set, &error);
         break;
     }
     case EVOLUTION_EDS_CAMEL_SET_JUNK: {
@@ -1947,25 +2041,25 @@ evolution_eds_camel_apply_operation (
             : CAMEL_MESSAGE_NOTJUNK;
 
         success = synchronize_message_flags (
-            folder, operation->message_uid,
+            folder, message_uid,
             CAMEL_MESSAGE_JUNK | CAMEL_MESSAGE_NOTJUNK,
             set, cancellable, &error);
         if (success)
             success = verify_message_flags (
-                folder, operation->message_uid,
+                folder, message_uid,
                 CAMEL_MESSAGE_JUNK | CAMEL_MESSAGE_NOTJUNK,
                 set, &error);
         break;
     }
     case EVOLUTION_EDS_CAMEL_SET_IMPORTANT:
         success = synchronize_message_flags (
-            folder, operation->message_uid,
+            folder, message_uid,
             CAMEL_MESSAGE_FLAGGED,
             operation->is_important ? CAMEL_MESSAGE_FLAGGED : 0,
             cancellable, &error);
         if (success)
             success = verify_message_flags (
-                folder, operation->message_uid,
+                folder, message_uid,
                 CAMEL_MESSAGE_FLAGGED,
                 operation->is_important ? CAMEL_MESSAGE_FLAGGED : 0,
                 &error);
@@ -2006,11 +2100,11 @@ evolution_eds_camel_apply_operation (
             break;
 
         success = transfer_one_message (
-            folder, destination, operation->message_uid, TRUE,
+            folder, destination, message_uid, TRUE,
             cancellable, &error);
         if (success)
             success = verify_message_moved (
-                folder, operation->message_uid, &error);
+                folder, message_uid, &error);
         break;
     case EVOLUTION_EDS_CAMEL_DELETE_MESSAGE:
         trash = camel_store_get_trash_folder_sync (
@@ -2021,11 +2115,11 @@ evolution_eds_camel_apply_operation (
 
             if (g_strcmp0 (folder_name, trash_name) != 0) {
                 success = transfer_one_message (
-                    folder, trash, operation->message_uid, TRUE,
+                    folder, trash, message_uid, TRUE,
                     cancellable, &error);
                 if (success)
                     success = verify_message_moved (
-                        folder, operation->message_uid, &error);
+                        folder, message_uid, &error);
                 break;
             }
         } else {
@@ -2035,19 +2129,102 @@ evolution_eds_camel_apply_operation (
         }
 
         if (camel_folder_set_message_flags (
-                folder, operation->message_uid,
+                folder, message_uid,
                 CAMEL_MESSAGE_DELETED | CAMEL_MESSAGE_SEEN,
                 CAMEL_MESSAGE_DELETED | CAMEL_MESSAGE_SEEN)) {
             success = camel_folder_synchronize_sync (
                 folder, TRUE, cancellable, &error);
             if (success)
                 success = verify_message_moved (
-                    folder, operation->message_uid, &error);
+                    folder, message_uid, &error);
         } else {
             g_set_error_literal (
                 &error, G_IO_ERROR, G_IO_ERROR_FAILED,
                 "Camel refused to delete the message");
         }
+        break;
+    case EVOLUTION_EDS_CAMEL_RESTORE_DELETED:
+        restore_source = camel_store_get_trash_folder_sync (
+            store, cancellable, &error);
+        if (!restore_source)
+            break;
+        if (g_strcmp0 (
+                camel_folder_get_full_name (restore_source),
+                camel_folder_get_full_name (folder)) == 0) {
+            g_set_error_literal (
+                &error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
+                "Deleted message cannot be restored into the same Trash folder");
+            break;
+        }
+        g_clear_pointer (&resolved_message_uid, g_free);
+        message_uid = operation->message_uid;
+        if (!message_exists (restore_source, message_uid))
+            resolved_message_uid = find_message_uid_by_id (
+                restore_source, operation->message_id, cancellable);
+        if (resolved_message_uid)
+            message_uid = resolved_message_uid;
+        if (!message_exists (restore_source, message_uid)) {
+            set_conflict_error (
+                &error, "Die gelöschte Nachricht existiert im Papierkorb nicht mehr");
+            conflict = TRUE;
+            break;
+        }
+        success = transfer_one_message (
+            restore_source, folder, message_uid, TRUE,
+            cancellable, &error);
+        if (success)
+            success = verify_message_moved (
+                restore_source, message_uid, &error);
+        break;
+    case EVOLUTION_EDS_CAMEL_RESTORE_ARCHIVED:
+        folder_info = camel_store_get_folder_info_sync (
+            store, NULL,
+            CAMEL_STORE_FOLDER_INFO_RECURSIVE |
+            CAMEL_STORE_FOLDER_INFO_NO_VIRTUAL |
+            CAMEL_STORE_FOLDER_INFO_REFRESH,
+            cancellable, &error);
+        if (!folder_info)
+            break;
+        destination_name = find_folder_name_by_type (
+            folder_info, CAMEL_FOLDER_TYPE_ARCHIVE);
+        if (!destination_name) {
+            g_set_error_literal (
+                &error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
+                "No Archive folder is configured for this EDS account");
+            break;
+        }
+        restore_source = camel_store_get_folder_sync (
+            store, destination_name, CAMEL_STORE_FOLDER_NONE,
+            cancellable, &error);
+        if (!restore_source)
+            break;
+        if (g_strcmp0 (
+                camel_folder_get_full_name (restore_source),
+                camel_folder_get_full_name (folder)) == 0) {
+            g_set_error_literal (
+                &error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
+                "Archived message cannot be restored into the same Archive folder");
+            break;
+        }
+        g_clear_pointer (&resolved_message_uid, g_free);
+        message_uid = operation->message_uid;
+        if (!message_exists (restore_source, message_uid))
+            resolved_message_uid = find_message_uid_by_id (
+                restore_source, operation->message_id, cancellable);
+        if (resolved_message_uid)
+            message_uid = resolved_message_uid;
+        if (!message_exists (restore_source, message_uid)) {
+            set_conflict_error (
+                &error, "Die archivierte Nachricht existiert im Archiv nicht mehr");
+            conflict = TRUE;
+            break;
+        }
+        success = transfer_one_message (
+            restore_source, folder, message_uid, TRUE,
+            cancellable, &error);
+        if (success)
+            success = verify_message_moved (
+                restore_source, message_uid, &error);
         break;
     default:
         g_set_error_literal (
@@ -2064,6 +2241,8 @@ finish:
     g_clear_error (&error);
     camel_folder_info_free (folder_info);
     g_clear_object (&trash);
+    g_clear_object (&restore_source);
+    g_clear_pointer (&resolved_message_uid, g_free);
     g_clear_object (&destination);
     g_clear_object (&folder);
     g_clear_object (&store);

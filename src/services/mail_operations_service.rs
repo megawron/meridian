@@ -118,6 +118,14 @@ pub(crate) enum MailOperation {
         location: Option<MailBackendLocation>,
         is_important: bool,
     },
+    RestoreDeleted {
+        id: String,
+        location: Option<MailBackendLocation>,
+    },
+    RestoreArchived {
+        id: String,
+        location: Option<MailBackendLocation>,
+    },
 }
 
 /// A reversible user action.  The backend mutation is executed before a
@@ -168,6 +176,7 @@ impl MailCommand {
             source_uid: location.source_uid.clone(),
             folder_name: destination.clone(),
             message_uid: location.message_uid.clone(),
+            message_id: location.message_id.clone(),
         };
         Self {
             forward: MailOperation::Move {
@@ -233,6 +242,36 @@ impl MailCommand {
             } else {
                 "Wichtig-Markierung entfernen".to_string()
             },
+        }
+    }
+
+    pub(crate) fn delete(id: impl Into<String>, location: MailBackendLocation) -> Self {
+        let id = id.into();
+        Self {
+            forward: MailOperation::Delete {
+                id: id.clone(),
+                location: Some(location.clone()),
+            },
+            inverse: MailOperation::RestoreDeleted {
+                id,
+                location: Some(location),
+            },
+            description: "Nachricht löschen".to_string(),
+        }
+    }
+
+    pub(crate) fn archive(id: impl Into<String>, location: MailBackendLocation) -> Self {
+        let id = id.into();
+        Self {
+            forward: MailOperation::Archive {
+                id: id.clone(),
+                location: Some(location.clone()),
+            },
+            inverse: MailOperation::RestoreArchived {
+                id,
+                location: Some(location),
+            },
+            description: "Nachricht archivieren".to_string(),
         }
     }
 
@@ -545,6 +584,20 @@ impl MailOperationsService {
                 } else {
                     MailOperationKind::MarkNotImportant
                 })),
+            },
+            MailOperation::RestoreDeleted { location, .. } => match location {
+                Some(location) => self.apply_camel(
+                    CamelMailOperation::RestoreDeleted { location },
+                    MailOperationKind::Delete,
+                ),
+                None => Err(Self::unsupported(MailOperationKind::Delete)),
+            },
+            MailOperation::RestoreArchived { location, .. } => match location {
+                Some(location) => self.apply_camel(
+                    CamelMailOperation::RestoreArchived { location },
+                    MailOperationKind::Archive,
+                ),
+                None => Err(Self::unsupported(MailOperationKind::Archive)),
             },
         }
     }
@@ -889,6 +942,7 @@ mod tests {
             source_uid: "source".to_string(),
             folder_name: "INBOX".to_string(),
             message_uid: "uid".to_string(),
+            message_id: None,
         };
 
         assert!(
@@ -929,6 +983,7 @@ mod tests {
             source_uid: "source".to_string(),
             folder_name: "INBOX".to_string(),
             message_uid: "uid".to_string(),
+            message_id: None,
         };
 
         assert!(
@@ -983,6 +1038,48 @@ mod tests {
         assert!(!reloaded.can_redo());
 
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn destructive_commands_keep_backend_restore_locations() {
+        let location = MailBackendLocation {
+            source_uid: "source".to_string(),
+            folder_name: "INBOX".to_string(),
+            message_uid: "uid".to_string(),
+            message_id: Some("message@example.org".to_string()),
+        };
+
+        let delete = MailCommand::delete("delete-message", location.clone());
+        assert!(matches!(
+            &delete.inverse,
+            MailOperation::RestoreDeleted {
+                id,
+                location: Some(saved_location)
+            } if id == "delete-message" && saved_location == &location
+        ));
+
+        let archive = MailCommand::archive("archive-message", location.clone());
+        assert!(matches!(
+            &archive.inverse,
+            MailOperation::RestoreArchived {
+                id,
+                location: Some(saved_location)
+            } if id == "archive-message" && saved_location == &location
+        ));
+    }
+
+    #[test]
+    fn legacy_backend_locations_load_without_message_id() {
+        let location: MailBackendLocation = serde_json::from_str(
+            r#"{
+                "source_uid":"source",
+                "folder_name":"INBOX",
+                "message_uid":"uid"
+            }"#,
+        )
+        .expect("legacy location should remain readable");
+
+        assert_eq!(location.message_id, None);
     }
 
     fn temporary_directory(label: &str) -> PathBuf {

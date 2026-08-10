@@ -408,10 +408,15 @@ impl MailPage {
 
         let operations = MailOperationsService::new();
         let result = match message.backend_location() {
-            Some(location) => operations.delete_for_location(&message.id(), &location),
+            Some(location) => {
+                self.execute_mail_command(MailCommand::delete(message.id(), location))
+            }
             None => operations.delete(&message.id()),
         };
-        result.map(|()| true)
+        result.map(|()| {
+            self.refresh_mail();
+            true
+        })
     }
 
     pub fn undo(&self) -> Result<bool, MailOperationError> {
@@ -558,23 +563,25 @@ impl MailPage {
 
     fn archive_batch(&self) -> Result<(), MailOperationError> {
         let messages = self.selected_batch_messages();
+        let commands = messages
+            .iter()
+            .map(|message| {
+                message
+                    .backend_location()
+                    .map(|location| MailCommand::archive(message.id(), location))
+                    .ok_or_else(|| MailOperationError::Unsupported {
+                        operation:
+                            crate::services::mail_operations_service::MailOperationKind::Archive,
+                        backend: "lokaler Nur-Lese-Import",
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         let operations = MailOperationsService::new();
-        let mut archived = 0;
-        for message in &messages {
-            let result = match message.backend_location() {
-                Some(location) => operations.archive_for_location(&message.id(), &location),
-                None => operations.archive(&message.id()),
-            };
-            match result {
-                Ok(()) => archived += 1,
-                Err(error) => {
-                    if archived > 0 {
-                        self.refresh_mail();
-                    }
-                    return Err(error);
-                }
-            }
-        }
+        let archived = self
+            .imp()
+            .mail_commands
+            .borrow_mut()
+            .execute_batch(&operations, commands)?;
         self.clear_batch_selection();
         if archived > 0 {
             self.refresh_mail();
@@ -616,23 +623,25 @@ impl MailPage {
 
     fn delete_batch(&self) -> Result<(), MailOperationError> {
         let messages = self.selected_batch_messages();
+        let commands = messages
+            .iter()
+            .map(|message| {
+                message
+                    .backend_location()
+                    .map(|location| MailCommand::delete(message.id(), location))
+                    .ok_or_else(|| MailOperationError::Unsupported {
+                        operation:
+                            crate::services::mail_operations_service::MailOperationKind::Delete,
+                        backend: "lokaler Nur-Lese-Import",
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         let operations = MailOperationsService::new();
-        let mut deleted = 0;
-        for message in &messages {
-            let result = match message.backend_location() {
-                Some(location) => operations.delete_for_location(&message.id(), &location),
-                None => operations.delete(&message.id()),
-            };
-            match result {
-                Ok(()) => deleted += 1,
-                Err(error) => {
-                    if deleted > 0 {
-                        self.refresh_mail();
-                    }
-                    return Err(error);
-                }
-            }
-        }
+        let deleted = self
+            .imp()
+            .mail_commands
+            .borrow_mut()
+            .execute_batch(&operations, commands)?;
         self.clear_batch_selection();
         if deleted > 0 {
             self.refresh_mail();

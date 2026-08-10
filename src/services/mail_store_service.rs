@@ -37,6 +37,10 @@ pub(crate) struct MailBackendLocation {
     pub(crate) source_uid: String,
     pub(crate) folder_name: String,
     pub(crate) message_uid: String,
+    /// Stable RFC-822 identity used when a provider assigns a new UID after
+    /// moving a message between folders.
+    #[serde(default)]
+    pub(crate) message_id: Option<String>,
 }
 
 #[derive(Debug, Clone)]

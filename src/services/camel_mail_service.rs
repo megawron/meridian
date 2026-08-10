@@ -179,6 +179,7 @@ mod ffi {
         pub(super) source_uid: *const c_char,
         pub(super) folder_name: *const c_char,
         pub(super) message_uid: *const c_char,
+        pub(super) message_id: *const c_char,
         pub(super) destination_folder: *const c_char,
         pub(super) is_unread: i32,
         pub(super) is_flagged: i32,
@@ -634,11 +635,6 @@ fn parse_native_messages(
         let folder_name = c_string(record.folder_name);
         let folder_id = c_string(record.folder_id);
         let message_uid = c_string(record.message_uid);
-        let location = MailBackendLocation {
-            source_uid: source_uid.clone(),
-            folder_name: folder_name.clone(),
-            message_uid: message_uid.clone(),
-        };
         let raw = unsafe { slice::from_raw_parts(record.raw_message, record.raw_message_len) };
         let raw = String::from_utf8_lossy(raw);
         let id = format!("eds:{source_uid}:{folder_name}:{message_uid}");
@@ -655,6 +651,12 @@ fn parse_native_messages(
         ) {
             parsed.is_flagged = record.is_flagged != 0;
             parsed.folder_name = folder_name;
+            let location = MailBackendLocation {
+                source_uid,
+                folder_name: parsed.folder_name.clone(),
+                message_uid,
+                message_id: parsed.message_id.clone(),
+            };
             parsed.backend_location = Some(location);
             messages.push(parsed);
         }
@@ -960,6 +962,12 @@ pub(crate) enum CamelMailOperation {
         location: MailBackendLocation,
         is_important: bool,
     },
+    RestoreDeleted {
+        location: MailBackendLocation,
+    },
+    RestoreArchived {
+        location: MailBackendLocation,
+    },
 }
 
 pub(crate) fn apply_operation(operation: CamelMailOperation) -> Result<(), String> {
@@ -991,6 +999,12 @@ pub(crate) fn apply_operation(operation: CamelMailOperation) -> Result<(), Strin
                     location,
                     is_important,
                 } => (6, location, None, false, false, false, is_important),
+                CamelMailOperation::RestoreDeleted { location } => {
+                    (7, location, None, false, false, false, false)
+                }
+                CamelMailOperation::RestoreArchived { location } => {
+                    (8, location, None, false, false, false, false)
+                }
             };
 
         let source_uid = CString::new(location.source_uid)
@@ -1006,12 +1020,21 @@ pub(crate) fn apply_operation(operation: CamelMailOperation) -> Result<(), Strin
         let destination_ptr = destination
             .as_ref()
             .map_or(std::ptr::null(), |value| value.as_ptr());
+        let message_id = location
+            .message_id
+            .map(CString::new)
+            .transpose()
+            .map_err(|_| "RFC-822 Message-ID contains an invalid NUL byte".to_string())?;
+        let message_id_ptr = message_id
+            .as_ref()
+            .map_or(std::ptr::null(), |value| value.as_ptr());
         let mut error_message: *mut c_char = std::ptr::null_mut();
         let ffi_operation = ffi::EvolutionEdsCamelOperation {
             kind,
             source_uid: source_uid.as_ptr(),
             folder_name: folder_name.as_ptr(),
             message_uid: message_uid.as_ptr(),
+            message_id: message_id_ptr,
             destination_folder: destination_ptr,
             is_unread: is_unread as i32,
             is_flagged: is_flagged as i32,

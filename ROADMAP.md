@@ -302,6 +302,13 @@ Nachweis für eine fertige Funktion. Jede abgeschlossene Funktion braucht einen
 negativen Fehlerpfad, Persistenz, reale Daten und mindestens einen automatischen
 Test auf der Service-Ebene.
 
+Alle Prüfungen, die zwingend eine Linux-Umgebung mit installierten
+EDS-/Camel-/ECal-/EBook-Entwicklungsbibliotheken, laufenden EDS-Factories oder
+einem echten GNOME-/GOA-Konto benötigen, sind zusätzlich in der
+[Linux-Roadmap](ROADMAP_LINUX.md) aufgeführt. Diese Punkte dürfen auf macOS
+weiter vorbereitet, aber erst nach dem Linux-Lauf als verifiziert markiert
+werden.
+
 ### Ist-Stand nach der ersten Bestandsaufnahme
 
 #### Phase 0 — Foundation & Tooling
@@ -314,7 +321,8 @@ Test auf der Service-Ebene.
 - [~] GTK4/libadwaita/WebKitGTK/EDS sind als Abhängigkeiten beschrieben; der
   Build muss noch in einer reproduzierbaren Linux-/Flatpak-Umgebung verifiziert
   werden. Die GIR-Spezifikationen für Camel, EDataServer, ECal und EBook sind
-  vorbereitet, aber noch nicht auf Linux generiert und eingebunden.
+  vorbereitet, aber noch nicht auf Linux generiert und eingebunden. Die
+  konkreten Linux-Abnahmeschritte stehen in [ROADMAP_LINUX.md](ROADMAP_LINUX.md).
 - [~] Meson ist vorhanden und das Cargo-Kopieren ist korrigiert; CI, installierte
   GSettings-Schemas und ein vollständiger Pakettest fehlen noch.
 - [ ] Flatpak-Manifest reproduzierbar bauen (`sha256` und Cargo-Offline-Quellen
@@ -418,9 +426,13 @@ Test auf der Service-Ebene.
   Undo/Redo und Konfliktschutz; Verschieben verwendet einen reversiblen
   Command auch in Batch-Aktionen. Der letzte Verlauf mit bis zu 100 Befehlen
   wird atomar im Benutzer-Datenverzeichnis gespeichert und beim Start wieder
-  geladen. Inverse Undo-Operationen für Delete/Archive und komplexe
-  Ordneränderungen fehlen; Konflikte aus dem nativen Camel-Backend werden jetzt
-  als eigener Fehlerzustand behandelt.
+  geladen. Inverse Undo-Operationen für Delete/Archive verwenden jetzt native
+  Restore-Operationen aus Papierkorb bzw. Archiv und prüfen Quell-/Zielzustand.
+  Backend-Locations tragen zusätzlich die RFC-822-Message-ID; der native Pfad
+  kann bei verlorener Camel-UID danach suchen. Die Verifikation dieser
+  providerabhängigen UID-Neuvergabe auf Linux sowie komplexe Ordneränderungen
+  fehlen noch. Konflikte aus dem nativen Camel-Backend werden als eigener
+  Fehlerzustand behandelt.
 - [ ] Serverseitige Suche und virtuelle Suchordner.
 
 #### Phase 2 — Konten, Empfang und Mailversand
@@ -564,12 +576,14 @@ nicht als vollständiger Ersatz beworben werden.
 ### Nächster Entwicklungsblock
 
 1. Die native EDS/Camel-Ladestrecke, UID-basierte Signalaktualisierung und den
-   Signal-Watcher auf Linux gegen ein echtes GNOME-/GOA-Konto testen; danach
-   strukturelle Ordner-/Kontosynchronisation, Netzwerkwechsel und eine
-   domänenweite Offline-/Online-Wiederaufnahme ergänzen.
+   Signal-Watcher auf Linux gegen ein echtes GNOME-/GOA-Konto testen. Die
+   vollständige Checkliste dafür befindet sich in
+   [ROADMAP_LINUX.md](ROADMAP_LINUX.md); danach strukturelle Ordner-/Konto-
+   synchronisation, Netzwerkwechsel und eine domänenweite Offline-/Online-
+   Wiederaufnahme ergänzen.
 2. Das GTK4-rs-Mailmodell um ein echtes CamelFolderThread-/TreeListModel-
-   Modell, inverse Delete-/Archive-Undo-Operationen und Konfliktanzeigen
-   erweitern.
+   Modell, providerabhängige UID-Neuzuordnung nach Transfers und sichtbare
+   Konflikt-/Restore-Fehleranzeigen erweitern.
 3. Die ECal-/EBook-Mutationsstrecke um echte Konfliktauflösung und vollständige
    vCard-Felder erweitern und die Linux-Laufzeit mit einem echten Konto
    verifizieren.

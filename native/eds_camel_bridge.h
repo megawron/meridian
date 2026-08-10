@@ -39,6 +39,8 @@ typedef enum {
     EVOLUTION_EDS_CAMEL_ARCHIVE_MESSAGE = 4,
     EVOLUTION_EDS_CAMEL_SET_JUNK = 5,
     EVOLUTION_EDS_CAMEL_SET_IMPORTANT = 6,
+    EVOLUTION_EDS_CAMEL_RESTORE_DELETED = 7,
+    EVOLUTION_EDS_CAMEL_RESTORE_ARCHIVED = 8,
 } EvolutionEdsCamelOperationKind;
 
 typedef struct {
@@ -46,6 +48,7 @@ typedef struct {
     const char *source_uid;
     const char *folder_name;
     const char *message_uid;
+    const char *message_id;
     const char *destination_folder;
     int is_unread;
     int is_flagged;
