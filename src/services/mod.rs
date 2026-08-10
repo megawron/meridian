@@ -17,6 +17,7 @@ pub mod mail_filter_service;
 pub mod mail_metadata_service;
 pub mod mail_operations_service;
 pub mod mail_store_service;
+pub mod mail_thread_service;
 pub mod search_engine;
 pub mod search_folder_service;
 pub mod settings_service;

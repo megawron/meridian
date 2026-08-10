@@ -6,7 +6,7 @@ use adw::prelude::*;
 use adw::subclass::prelude::*;
 use gtk::{gio, glib};
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -18,8 +18,11 @@ use crate::services::AppSettings;
 use crate::services::account_config_service::AccountConfigStore;
 use crate::services::camel_mail_service::{self, CamelMailLoad};
 use crate::services::eds_service;
-use crate::services::mail_operations_service::{MailOperationError, MailOperationsService};
+use crate::services::mail_operations_service::{
+    MailCommand, MailCommandStack, MailOperationError, MailOperationsService,
+};
 use crate::services::mail_store_service::ParsedMail;
+use crate::services::mail_thread_service::{ThreadIdentity, group_messages};
 use crate::views::MailViewer;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -227,6 +230,10 @@ mod imp {
         pub message_state: RefCell<Option<gtk::Label>>,
         pub refresh_button: RefCell<Option<gtk::Button>>,
         pub load_more_button: RefCell<Option<gtk::Button>>,
+        pub batch_action_bar: RefCell<Option<gtk::Box>>,
+        pub batch_action_label: RefCell<Option<gtk::Label>>,
+        pub(crate) batch_selection: RefCell<HashSet<String>>,
+        pub(crate) batch_binding: Cell<bool>,
         pub(super) active_request: RefCell<Option<MailLoadRequest>>,
         pub load_generation: Cell<u64>,
         pub mail_loading: Cell<bool>,
@@ -237,6 +244,7 @@ mod imp {
         pub mail_load_cancellation: RefCell<Option<Arc<AtomicBool>>>,
         pub mail_incremental_cancellation: RefCell<Option<Arc<AtomicBool>>>,
         pub mail_change_cancellation: RefCell<Option<Arc<AtomicBool>>>,
+        pub(crate) mail_commands: RefCell<MailCommandStack>,
         pub search_entry: RefCell<Option<gtk::SearchEntry>>,
     }
 
@@ -254,6 +262,7 @@ mod imp {
     impl ObjectImpl for MailPage {
         fn constructed(&self) {
             self.parent_constructed();
+            self.mail_commands.replace(MailCommandStack::persistent());
             let obj = self.obj();
 
             let (sidebar, source_store, source_state, folder_section, folder_list, search_list) =
@@ -267,8 +276,16 @@ mod imp {
                 message_filter,
                 folder_selection,
             ) = obj.build_message_list();
-            let (detail_view, mail_viewer, lbl_subject, lbl_from, lbl_to, lbl_date, attachment_bar) =
-                obj.build_detail_view();
+            let (
+                detail_view,
+                mail_viewer,
+                lbl_subject,
+                lbl_from,
+                lbl_to,
+                lbl_date,
+                attachment_bar,
+                thread_context,
+            ) = obj.build_detail_view();
 
             obj.connect_selection_handler(
                 &selection,
@@ -280,6 +297,7 @@ mod imp {
                 &lbl_to,
                 &lbl_date,
                 &attachment_bar,
+                &thread_context,
             );
             obj.connect_folder_filters(
                 &folder_list,
@@ -396,6 +414,30 @@ impl MailPage {
         result.map(|()| true)
     }
 
+    pub fn undo(&self) -> Result<bool, MailOperationError> {
+        let operations = MailOperationsService::new();
+        let command = self.imp().mail_commands.borrow_mut().undo(&operations)?;
+        if let Some(command) = command {
+            tracing::info!(operation = command.description(), "Mail command undone");
+            self.refresh_mail();
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    pub fn redo(&self) -> Result<bool, MailOperationError> {
+        let operations = MailOperationsService::new();
+        let command = self.imp().mail_commands.borrow_mut().redo(&operations)?;
+        if let Some(command) = command {
+            tracing::info!(operation = command.description(), "Mail command redone");
+            self.refresh_mail();
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
     pub fn mark_selected_unread(&self) -> Result<bool, MailOperationError> {
         let selected = self
             .imp()
@@ -409,23 +451,265 @@ impl MailPage {
             return Ok(false);
         };
 
-        let operations = MailOperationsService::new();
-        match message.backend_location() {
-            Some(location) => {
-                operations.set_message_state_for_location(
-                    &message.id(),
-                    &location,
-                    true,
-                    message.is_flagged(),
-                )?;
-            }
-            None => operations.mark_unread(&message.id(), message.is_flagged())?,
-        }
+        let command = MailCommand::set_message_state(
+            message.id(),
+            message.backend_location(),
+            message.is_unread(),
+            message.is_flagged(),
+            true,
+            message.is_flagged(),
+        );
+        self.execute_mail_command(command)?;
         message.set_unread(true);
         if let Some(filter) = self.imp().message_filter.borrow().as_ref() {
             filter.changed(gtk::FilterChange::Different);
         }
         Ok(true)
+    }
+
+    fn execute_mail_command(&self, command: MailCommand) -> Result<(), MailOperationError> {
+        let operations = MailOperationsService::new();
+        self.imp()
+            .mail_commands
+            .borrow_mut()
+            .execute(&operations, command)
+    }
+
+    fn set_batch_message_selected(&self, id: &str, selected: bool) {
+        if selected {
+            self.imp()
+                .batch_selection
+                .borrow_mut()
+                .insert(id.to_string());
+        } else {
+            self.imp().batch_selection.borrow_mut().remove(id);
+        }
+        self.update_batch_action_bar();
+    }
+
+    fn selected_batch_messages(&self) -> Vec<MailMessageObject> {
+        let selected_ids = self.imp().batch_selection.borrow().clone();
+        let Some(store) = self.imp().message_store.borrow().as_ref().cloned() else {
+            return Vec::new();
+        };
+        (0..store.n_items())
+            .filter_map(|index| store.item(index).and_downcast::<MailMessageObject>())
+            .filter(|message| selected_ids.contains(&message.id()))
+            .collect()
+    }
+
+    fn update_batch_action_bar(&self) {
+        let count = self.imp().batch_selection.borrow().len();
+        if let Some(label) = self.imp().batch_action_label.borrow().as_ref() {
+            label.set_label(&format!("{count} ausgewählt"));
+        }
+        if let Some(bar) = self.imp().batch_action_bar.borrow().as_ref() {
+            bar.set_visible(count > 0);
+        }
+    }
+
+    fn clear_batch_selection(&self) {
+        self.imp().batch_selection.borrow_mut().clear();
+        if let Some(store) = self.imp().message_store.borrow().as_ref() {
+            let count = store.n_items();
+            if count > 0 {
+                store.items_changed(0, count, count);
+            }
+        }
+        self.update_batch_action_bar();
+    }
+
+    fn mark_batch_read(&self) -> Result<(), MailOperationError> {
+        let messages = self.selected_batch_messages();
+        let commands = messages
+            .iter()
+            .filter(|message| message.is_unread())
+            .map(|message| {
+                MailCommand::set_message_state(
+                    message.id(),
+                    message.backend_location(),
+                    true,
+                    message.is_flagged(),
+                    false,
+                    message.is_flagged(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let count = commands.len();
+        if count > 0 {
+            let operations = MailOperationsService::new();
+            self.imp()
+                .mail_commands
+                .borrow_mut()
+                .execute_batch(&operations, commands)?;
+            for message in messages {
+                message.set_unread(false);
+            }
+            if let Some(filter) = self.imp().message_filter.borrow().as_ref() {
+                filter.changed(gtk::FilterChange::Different);
+            }
+        }
+        self.clear_batch_selection();
+        if let Some(state) = self.imp().message_state.borrow().as_ref() {
+            state.set_label(&format!("{count} Nachricht(en) als gelesen markiert"));
+        }
+        Ok(())
+    }
+
+    fn archive_batch(&self) -> Result<(), MailOperationError> {
+        let messages = self.selected_batch_messages();
+        let operations = MailOperationsService::new();
+        let mut archived = 0;
+        for message in &messages {
+            let result = match message.backend_location() {
+                Some(location) => operations.archive_for_location(&message.id(), &location),
+                None => operations.archive(&message.id()),
+            };
+            match result {
+                Ok(()) => archived += 1,
+                Err(error) => {
+                    if archived > 0 {
+                        self.refresh_mail();
+                    }
+                    return Err(error);
+                }
+            }
+        }
+        self.clear_batch_selection();
+        if archived > 0 {
+            self.refresh_mail();
+        }
+        if let Some(state) = self.imp().message_state.borrow().as_ref() {
+            state.set_label(&format!("{archived} Nachricht(en) archiviert"));
+        }
+        Ok(())
+    }
+
+    fn mark_batch_junk(&self) -> Result<(), MailOperationError> {
+        let messages = self.selected_batch_messages();
+        let operations = MailOperationsService::new();
+        let mut marked = 0;
+        for message in &messages {
+            let result = match message.backend_location() {
+                Some(location) => operations.set_junk_for_location(&message.id(), &location, true),
+                None => operations.set_junk(&message.id(), true),
+            };
+            match result {
+                Ok(()) => marked += 1,
+                Err(error) => {
+                    if marked > 0 {
+                        self.refresh_mail();
+                    }
+                    return Err(error);
+                }
+            }
+        }
+        self.clear_batch_selection();
+        if marked > 0 {
+            self.refresh_mail();
+        }
+        if let Some(state) = self.imp().message_state.borrow().as_ref() {
+            state.set_label(&format!("{marked} Nachricht(en) als Spam markiert"));
+        }
+        Ok(())
+    }
+
+    fn delete_batch(&self) -> Result<(), MailOperationError> {
+        let messages = self.selected_batch_messages();
+        let operations = MailOperationsService::new();
+        let mut deleted = 0;
+        for message in &messages {
+            let result = match message.backend_location() {
+                Some(location) => operations.delete_for_location(&message.id(), &location),
+                None => operations.delete(&message.id()),
+            };
+            match result {
+                Ok(()) => deleted += 1,
+                Err(error) => {
+                    if deleted > 0 {
+                        self.refresh_mail();
+                    }
+                    return Err(error);
+                }
+            }
+        }
+        self.clear_batch_selection();
+        if deleted > 0 {
+            self.refresh_mail();
+        }
+        if let Some(state) = self.imp().message_state.borrow().as_ref() {
+            state.set_label(&format!("{deleted} Nachricht(en) gelöscht"));
+        }
+        Ok(())
+    }
+
+    fn folder_destinations(&self) -> Vec<(String, String, String)> {
+        let Some(folder_list) = self.imp().folder_list.borrow().as_ref().cloned() else {
+            return Vec::new();
+        };
+        let mut destinations = Vec::new();
+        for index in 0..folder_list.observe_children().n_items() {
+            let Some(row) = folder_list
+                .row_at_index(index as i32)
+                .and_downcast::<gtk::ListBoxRow>()
+            else {
+                continue;
+            };
+            let Some(data) = Self::folder_row_data(&row) else {
+                continue;
+            };
+            let (Some(source_uid), Some(folder_name)) = (data.source_uid, data.folder_name) else {
+                continue;
+            };
+            if !destinations
+                .iter()
+                .any(|(source, folder, _)| source == &source_uid && folder == &folder_name)
+            {
+                destinations.push((source_uid, folder_name, data.folder_id));
+            }
+        }
+        destinations
+    }
+
+    fn move_batch_to(&self, destination_source: &str, destination_folder: &str) {
+        let messages = self.selected_batch_messages();
+        let commands = messages
+            .iter()
+            .filter_map(|message| {
+                let location = message.backend_location()?;
+                (location.source_uid == destination_source).then(|| {
+                    MailCommand::move_to(message.id(), location, destination_folder.to_string())
+                })
+            })
+            .collect::<Vec<_>>();
+
+        if commands.is_empty() {
+            if let Some(state) = self.imp().message_state.borrow().as_ref() {
+                state.set_label("Keine ausgewählte Nachricht gehört zu diesem EDS-Konto");
+            }
+            return;
+        }
+
+        let operations = MailOperationsService::new();
+        let result = self
+            .imp()
+            .mail_commands
+            .borrow_mut()
+            .execute_batch(&operations, commands);
+        match result {
+            Ok(count) => {
+                self.clear_batch_selection();
+                self.refresh_mail();
+                if let Some(state) = self.imp().message_state.borrow().as_ref() {
+                    state.set_label(&format!("{count} Nachricht(en) verschoben"));
+                }
+            }
+            Err(error) => {
+                if let Some(state) = self.imp().message_state.borrow().as_ref() {
+                    state.set_label(&format!("Verschieben nicht möglich: {error}"));
+                }
+            }
+        }
     }
 
     // ── Private: Build Sidebar (Folder Tree) ────────────────────────────
@@ -911,7 +1195,8 @@ impl MailPage {
 
         let factory = gtk::SignalListItemFactory::new();
 
-        factory.connect_setup(|_, list_item| {
+        let page_for_batch = self.downgrade();
+        factory.connect_setup(move |_, list_item| {
             let list_item = list_item
                 .downcast_ref::<gtk::ListItem>()
                 .expect("Expected ListItem");
@@ -929,6 +1214,28 @@ impl MailPage {
                 .orientation(gtk::Orientation::Horizontal)
                 .spacing(8)
                 .build();
+
+            let batch_check = gtk::CheckButton::builder()
+                .valign(gtk::Align::Center)
+                .tooltip_text("Nachricht für eine Mehrfachaktion auswählen")
+                .build();
+            let list_item_for_batch = list_item.downgrade();
+            let page_for_batch = page_for_batch.clone();
+            batch_check.connect_toggled(move |check| {
+                let Some(page) = page_for_batch.upgrade() else {
+                    return;
+                };
+                if page.imp().batch_binding.get() {
+                    return;
+                }
+                let Some(list_item) = list_item_for_batch.upgrade() else {
+                    return;
+                };
+                let Some(message) = list_item.item().and_downcast::<MailMessageObject>() else {
+                    return;
+                };
+                page.set_batch_message_selected(&message.id(), check.is_active());
+            });
 
             let avatar = adw::Avatar::builder().size(32).show_initials(true).build();
 
@@ -957,6 +1264,7 @@ impl MailPage {
                 .build();
 
             sender_box.append(&sender);
+            header_box.append(&batch_check);
             header_box.append(&avatar);
             header_box.append(&sender_box);
             header_box.append(&date);
@@ -992,6 +1300,7 @@ impl MailPage {
         });
 
         let filter_for_bind = custom_filter.clone();
+        let page_for_bind = self.downgrade();
         factory.connect_bind(move |_, list_item| {
             let list_item = list_item
                 .downcast_ref::<gtk::ListItem>()
@@ -1017,12 +1326,33 @@ impl MailPage {
                 .and_downcast::<gtk::Box>()
                 .expect("Expected header Box");
 
-            if let Some(avatar) = header_box.first_child().and_downcast::<adw::Avatar>() {
+            if let Some(page) = page_for_bind.upgrade() {
+                if let Some(batch_check) = header_box
+                    .first_child()
+                    .and_downcast::<gtk::CheckButton>()
+                {
+                    page.imp().batch_binding.set(true);
+                    batch_check.set_active(
+                        page.imp()
+                            .batch_selection
+                            .borrow()
+                            .contains(&msg.id()),
+                    );
+                    page.imp().batch_binding.set(false);
+                }
+            }
+
+            if let Some(avatar) = header_box
+                .first_child()
+                .and_then(|child| child.next_sibling())
+                .and_downcast::<adw::Avatar>()
+            {
                 avatar.set_text(Some(&msg.sender_name()));
             }
 
             if let Some(sender_box) = header_box
                 .first_child()
+                .and_then(|w| w.next_sibling())
                 .and_then(|w| w.next_sibling())
                 .and_downcast::<gtk::Box>()
             {
@@ -1040,6 +1370,7 @@ impl MailPage {
                 .first_child()
                 .and_then(|w| w.next_sibling())
                 .and_then(|w| w.next_sibling())
+                .and_then(|w| w.next_sibling())
                 .and_downcast::<gtk::Label>()
             {
                 date.set_label(&msg.date_str());
@@ -1052,24 +1383,29 @@ impl MailPage {
                     btn_star.set_icon_name("non-starred-symbolic");
                 }
                 let msg_clone = msg.clone();
-                let operations = MailOperationsService::new();
                 let filter_for_star = filter_for_bind.clone();
+                let page_for_star = page_for_bind.clone();
                 btn_star.connect_clicked(move |btn| {
                     let current = msg_clone.is_flagged();
                     let next_flagged = !current;
-                    let result = match msg_clone.backend_location() {
-                        Some(location) => operations.set_flagged_for_location(
-                            &msg_clone.id(),
-                            &location,
-                            msg_clone.is_unread(),
-                            next_flagged,
-                        ),
-                        None => operations.set_flagged(
-                            &msg_clone.id(),
-                            msg_clone.is_unread(),
-                            next_flagged,
-                        ),
-                    };
+                    let command = MailCommand::set_message_state(
+                        msg_clone.id(),
+                        msg_clone.backend_location(),
+                        msg_clone.is_unread(),
+                        current,
+                        msg_clone.is_unread(),
+                        next_flagged,
+                    );
+                    let result = page_for_star
+                        .upgrade()
+                        .map(|page| page.execute_mail_command(command))
+                        .unwrap_or_else(|| {
+                            Err(MailOperationError::Backend {
+                                operation:
+                                    crate::services::mail_operations_service::MailOperationKind::SetMessageState,
+                                message: "Mailansicht ist nicht mehr verfügbar".to_string(),
+                            })
+                        });
                     if let Err(error) = result {
                         tracing::error!(%error, "Could not persist message flag");
                         return;
@@ -1089,7 +1425,12 @@ impl MailPage {
                 .and_then(|w| w.next_sibling())
                 .and_downcast::<gtk::Label>()
             {
-                subject.set_label(&msg.subject());
+                let subject_text = if msg.thread_size() > 1 {
+                    format!("{}  ·  {} Nachrichten", msg.subject(), msg.thread_size())
+                } else {
+                    msg.subject()
+                };
+                subject.set_label(&subject_text);
             }
 
             if let Some(preview) = vbox.last_child().and_downcast::<gtk::Label>() {
@@ -1179,7 +1520,139 @@ impl MailPage {
         message_state_box.append(&message_state);
         message_state_box.append(&load_more_button);
         message_state_box.append(&refresh_button);
+
+        let batch_action_bar = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(6)
+            .margin_start(8)
+            .margin_end(8)
+            .margin_bottom(6)
+            .visible(false)
+            .build();
+        let batch_action_label = gtk::Label::builder()
+            .css_classes(vec!["caption", "dim-label"])
+            .hexpand(true)
+            .halign(gtk::Align::Start)
+            .build();
+        batch_action_bar.append(&batch_action_label);
+
+        let batch_read_button = gtk::Button::builder()
+            .label("Gelesen")
+            .tooltip_text("Ausgewählte Nachrichten als gelesen markieren")
+            .css_classes(vec!["flat"])
+            .build();
+        let page_for_batch_read = self.downgrade();
+        batch_read_button.connect_clicked(move |_| {
+            if let Some(page) = page_for_batch_read.upgrade() {
+                if let Err(error) = page.mark_batch_read() {
+                    tracing::warn!(%error, "Batch read operation was not applied");
+                }
+            }
+        });
+        batch_action_bar.append(&batch_read_button);
+
+        let batch_archive_button = gtk::Button::builder()
+            .label("Archivieren")
+            .tooltip_text("Ausgewählte Nachrichten archivieren")
+            .css_classes(vec!["flat"])
+            .build();
+        let page_for_batch_archive = self.downgrade();
+        batch_archive_button.connect_clicked(move |_| {
+            if let Some(page) = page_for_batch_archive.upgrade() {
+                if let Err(error) = page.archive_batch() {
+                    tracing::warn!(%error, "Batch archive operation was not applied");
+                }
+            }
+        });
+        batch_action_bar.append(&batch_archive_button);
+
+        let batch_junk_button = gtk::Button::builder()
+            .label("Spam")
+            .tooltip_text("Ausgewählte Nachrichten als Spam markieren")
+            .css_classes(vec!["flat"])
+            .build();
+        let page_for_batch_junk = self.downgrade();
+        batch_junk_button.connect_clicked(move |_| {
+            if let Some(page) = page_for_batch_junk.upgrade() {
+                if let Err(error) = page.mark_batch_junk() {
+                    tracing::warn!(%error, "Batch junk operation was not applied");
+                }
+            }
+        });
+        batch_action_bar.append(&batch_junk_button);
+
+        let move_popover_content = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(4)
+            .margin_start(8)
+            .margin_end(8)
+            .margin_top(8)
+            .margin_bottom(8)
+            .build();
+        let move_popover = gtk::Popover::builder().child(&move_popover_content).build();
+        let page_for_move_menu = self.downgrade();
+        let move_popover_weak = move_popover.downgrade();
+        move_popover.connect_show(move |_| {
+            while let Some(child) = move_popover_content.first_child() {
+                move_popover_content.remove(&child);
+            }
+            let Some(page) = page_for_move_menu.upgrade() else {
+                return;
+            };
+            let destinations = page.folder_destinations();
+            if destinations.is_empty() {
+                move_popover_content.append(
+                    &gtk::Label::builder()
+                        .label("Keine EDS-Ordner verfügbar")
+                        .css_classes(vec!["caption", "dim-label"])
+                        .build(),
+                );
+                return;
+            }
+            for (source_uid, folder_name, folder_id) in destinations {
+                let button = gtk::Button::builder()
+                    .label(&format!("{folder_id} · {folder_name}"))
+                    .halign(gtk::Align::Fill)
+                    .css_classes(vec!["flat"])
+                    .build();
+                let page_for_destination = page.downgrade();
+                let popover_for_destination = move_popover_weak.clone();
+                button.connect_clicked(move |_| {
+                    if let Some(page) = page_for_destination.upgrade() {
+                        page.move_batch_to(&source_uid, &folder_name);
+                    }
+                    if let Some(popover) = popover_for_destination.upgrade() {
+                        popover.popdown();
+                    }
+                });
+                move_popover_content.append(&button);
+            }
+        });
+        let move_button = gtk::MenuButton::builder()
+            .label("Verschieben")
+            .tooltip_text("Ausgewählte Nachrichten in einen EDS-Ordner verschieben")
+            .popover(&move_popover)
+            .css_classes(vec!["flat"])
+            .build();
+        batch_action_bar.append(&move_button);
+
+        let batch_delete_button = gtk::Button::builder()
+            .label("Löschen")
+            .tooltip_text("Ausgewählte Nachrichten löschen")
+            .css_classes(vec!["flat", "destructive-action"])
+            .build();
+        let page_for_batch_delete = self.downgrade();
+        batch_delete_button.connect_clicked(move |_| {
+            if let Some(page) = page_for_batch_delete.upgrade() {
+                if let Err(error) = page.delete_batch() {
+                    tracing::warn!(%error, "Batch delete operation was not applied");
+                }
+            }
+        });
+        batch_action_bar.append(&batch_delete_button);
+
         list_container.append(&message_state_box);
+        list_container.append(&batch_action_bar);
         list_container.append(&search_box);
         list_container.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
 
@@ -1195,6 +1668,10 @@ impl MailPage {
 
         self.imp().refresh_button.replace(Some(refresh_button));
         self.imp().load_more_button.replace(Some(load_more_button));
+        self.imp().batch_action_bar.replace(Some(batch_action_bar));
+        self.imp()
+            .batch_action_label
+            .replace(Some(batch_action_label));
 
         (
             list_container,
@@ -1332,6 +1809,7 @@ impl MailPage {
         gtk::Label,
         gtk::Label,
         gtk::Box,
+        gtk::ListBox,
     ) {
         let detail_view = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
@@ -1542,6 +2020,16 @@ impl MailPage {
 
         let header_separator = gtk::Separator::new(gtk::Orientation::Horizontal);
 
+        let thread_context = gtk::ListBox::builder()
+            .selection_mode(gtk::SelectionMode::None)
+            .css_classes(vec!["thread-context"])
+            .margin_start(12)
+            .margin_end(12)
+            .margin_top(8)
+            .margin_bottom(8)
+            .visible(false)
+            .build();
+
         let mail_viewer = MailViewer::new();
 
         let attachment_bar = gtk::Box::builder()
@@ -1560,6 +2048,7 @@ impl MailPage {
 
         detail_view.append(&header_box);
         detail_view.append(&header_separator);
+        detail_view.append(&thread_context);
         detail_view.append(&mail_viewer);
         detail_view.append(&attachment_separator);
         detail_view.append(&attachment_bar);
@@ -1572,6 +2061,7 @@ impl MailPage {
             lbl_to,
             lbl_date,
             attachment_bar,
+            thread_context,
         )
     }
 
@@ -1589,9 +2079,12 @@ impl MailPage {
         lbl_to: &gtk::Label,
         lbl_date: &gtk::Label,
         attachment_bar: &gtk::Box,
+        thread_context: &gtk::ListBox,
     ) {
         let operations = MailOperationsService::new();
         let filter_for_selection = custom_filter.clone();
+        let store_for_thread_context = store.clone();
+        let selection_for_thread_context = selection.clone();
         selection.connect_selected_item_notify(glib::clone!(
             #[strong]
             operations,
@@ -1609,6 +2102,12 @@ impl MailPage {
             lbl_date,
             #[weak]
             attachment_bar,
+            #[strong]
+            store_for_thread_context,
+            #[strong]
+            selection_for_thread_context,
+            #[weak]
+            thread_context,
             move |sel| {
                 if let Some(item) = sel.selected_item() {
                     if let Ok(msg) = item.downcast::<MailMessageObject>() {
@@ -1637,6 +2136,13 @@ impl MailPage {
                         ));
                         lbl_to.set_label(&msg.recipient_to());
                         lbl_date.set_label(&msg.date_str());
+
+                        Self::render_thread_context(
+                            &store_for_thread_context,
+                            &selection_for_thread_context,
+                            &msg,
+                            &thread_context,
+                        );
 
                         mail_viewer.load_html(&msg.html_body(), None);
 
@@ -1734,6 +2240,93 @@ impl MailPage {
         if store.n_items() > 0 {
             selection.set_selected(0);
         }
+    }
+
+    fn render_thread_context(
+        store: &gio::ListStore,
+        selection: &gtk::SingleSelection,
+        selected: &MailMessageObject,
+        thread_context: &gtk::ListBox,
+    ) {
+        while let Some(child) = thread_context.first_child() {
+            thread_context.remove(&child);
+        }
+
+        let thread_id = selected.thread_id();
+        if thread_id.is_empty() || selected.thread_size() <= 1 {
+            thread_context.set_visible(false);
+            return;
+        }
+
+        let mut messages = Vec::new();
+        for index in 0..store.n_items() {
+            let Some(message) = store.item(index).and_downcast::<MailMessageObject>() else {
+                continue;
+            };
+            if message.thread_id() == thread_id {
+                messages.push(message);
+            }
+        }
+        messages.sort_by_key(|message| (message.thread_position(), message.id()));
+
+        let header = gtk::Label::builder()
+            .label(&format!("Konversation · {} Nachrichten", messages.len()))
+            .css_classes(vec!["caption", "dim-label"])
+            .halign(gtk::Align::Start)
+            .margin_start(8)
+            .margin_bottom(4)
+            .build();
+        let header_row = gtk::ListBoxRow::builder()
+            .child(&header)
+            .activatable(false)
+            .build();
+        thread_context.append(&header_row);
+
+        let message_count = messages.len();
+        for message in &messages {
+            let label = gtk::Label::builder()
+                .label(&format!(
+                    "{} · {}\n{}",
+                    message.sender_name(),
+                    message.date_str(),
+                    message.subject()
+                ))
+                .halign(gtk::Align::Start)
+                .ellipsize(pango::EllipsizeMode::End)
+                .lines(2)
+                .xalign(0.0)
+                .hexpand(true)
+                .build();
+            let button = gtk::Button::builder()
+                .child(&label)
+                .css_classes(vec!["flat", "thread-message"])
+                .halign(gtk::Align::Fill)
+                .hexpand(true)
+                .build();
+            if message.id() == selected.id() {
+                button.add_css_class("accent");
+                button.set_sensitive(false);
+            } else {
+                let message_id = message.id();
+                let selection = selection.clone();
+                button.connect_clicked(move |_| {
+                    for index in 0..selection.n_items() {
+                        let Some(candidate) =
+                            selection.item(index).and_downcast::<MailMessageObject>()
+                        else {
+                            continue;
+                        };
+                        if candidate.id() == message_id {
+                            selection.set_selected(index);
+                            break;
+                        }
+                    }
+                });
+            }
+            let row = gtk::ListBoxRow::builder().child(&button).build();
+            thread_context.append(&row);
+        }
+        thread_context.set_visible(message_count > 1);
     }
 
     // ── Private: Assemble the split layout ──────────────────────────────
@@ -1994,6 +2587,11 @@ impl MailPage {
         if let Some(store) = store.as_ref() {
             Self::remove_message_ids(store, &removed_ids);
         }
+        self.imp()
+            .batch_selection
+            .borrow_mut()
+            .retain(|id| !removed_ids.contains(id));
+        self.update_batch_action_bar();
 
         if message_uids.is_empty() {
             if let Some(filter) = self.imp().message_filter.borrow().as_ref() {
@@ -2241,6 +2839,9 @@ impl MailPage {
 
     fn apply_mail_load(&self, request: MailLoadRequest, result: MailPageLoadResult, replace: bool) {
         let previous_selected_id = replace.then(|| self.selected_message_id()).flatten();
+        if replace {
+            self.clear_batch_selection();
+        }
         self.imp().mail_loading.set(false);
         if let Some(button) = self.imp().refresh_button.borrow().as_ref() {
             button.set_sensitive(true);
@@ -2323,6 +2924,7 @@ impl MailPage {
                         }
                         store.append(&record.into_object());
                     }
+                    Self::refresh_thread_metadata(store);
                 }
                 if let Some(folder_list) = folder_list.as_ref() {
                     Self::update_folder_counts(folder_list, &folder_counts);
@@ -2383,6 +2985,7 @@ impl MailPage {
                 appended += 1;
             }
         }
+        Self::refresh_thread_metadata(store);
         appended
     }
 
@@ -2412,6 +3015,49 @@ impl MailPage {
         Self::remove_message_ids(store, &ids);
         for message in messages {
             store.append(&message.into_object());
+        }
+        Self::refresh_thread_metadata(store);
+    }
+
+    fn refresh_thread_metadata(store: &gio::ListStore) {
+        let messages = (0..store.n_items())
+            .filter_map(|index| store.item(index).and_downcast::<MailMessageObject>())
+            .collect::<Vec<_>>();
+        let message_ids = messages
+            .iter()
+            .map(MailMessageObject::message_id)
+            .collect::<Vec<_>>();
+        let in_reply_to = messages
+            .iter()
+            .map(MailMessageObject::in_reply_to)
+            .collect::<Vec<_>>();
+        let references = messages
+            .iter()
+            .map(MailMessageObject::references)
+            .collect::<Vec<_>>();
+        let subjects = messages
+            .iter()
+            .map(MailMessageObject::subject)
+            .collect::<Vec<_>>();
+        let inputs = (0..messages.len())
+            .map(|index| ThreadIdentity {
+                message_id: message_ids[index].as_deref(),
+                in_reply_to: &in_reply_to[index],
+                references: &references[index],
+                subject: &subjects[index],
+            })
+            .collect::<Vec<_>>();
+        let memberships = group_messages(&inputs);
+        for (message, membership) in messages.iter().zip(memberships) {
+            message.set_thread_metadata(
+                &membership.thread_id,
+                membership.size,
+                membership.position,
+            );
+        }
+        if store.n_items() > 0 {
+            let count = store.n_items();
+            store.items_changed(0, count, count);
         }
     }
 

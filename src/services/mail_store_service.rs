@@ -19,15 +19,20 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use serde::{Deserialize, Serialize};
+
 use crate::models::mail_message::{AttachmentInfo, MailMessageObject};
 use crate::services::mail_filter_service::{
     FilterAction, FilterScope, MailFilterRule, MailFilterStore,
 };
 use crate::services::mail_metadata_service::{MailMessageState, MailMetadataStore};
+use crate::services::mail_thread_service::{
+    ThreadIdentity, extract_message_ids, group_messages, normalize_message_id,
+};
 
 /// Thread-safe parser output.  GTK objects are created only after this value
 /// returns to the main context.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct MailBackendLocation {
     pub(crate) source_uid: String,
     pub(crate) folder_name: String,
@@ -44,6 +49,12 @@ pub struct ParsedMail {
     pub sender_email: String,
     pub recipient_to: String,
     pub subject: String,
+    pub message_id: Option<String>,
+    pub in_reply_to: Vec<String>,
+    pub references: Vec<String>,
+    pub thread_id: String,
+    pub thread_size: usize,
+    pub thread_position: usize,
     pub date_str: String,
     pub preview_snippet: String,
     pub html_body: String,
@@ -61,6 +72,12 @@ impl ParsedMail {
             sender_email,
             recipient_to,
             subject,
+            message_id,
+            in_reply_to,
+            references,
+            thread_id,
+            thread_size,
+            thread_position,
             date_str,
             preview_snippet,
             html_body,
@@ -78,6 +95,12 @@ impl ParsedMail {
             &sender_email,
             &recipient_to,
             &subject,
+            message_id,
+            in_reply_to,
+            references,
+            &thread_id,
+            thread_size,
+            thread_position,
             &date_str,
             &preview_snippet,
             &html_body,
@@ -212,6 +235,8 @@ impl MailStoreService {
         for message in &mut messages {
             apply_client_state(&metadata, &filter_rules, message);
         }
+
+        assign_thread_metadata(&mut messages);
 
         messages
     }
@@ -494,6 +519,17 @@ pub(crate) fn parse_rfc822(
         .get("date")
         .map(|value| decode_mime_header(value))
         .unwrap_or_default();
+    let message_id = headers
+        .get("message-id")
+        .and_then(|value| normalize_message_id(value));
+    let in_reply_to = headers
+        .get("in-reply-to")
+        .map(|value| extract_message_ids(value))
+        .unwrap_or_default();
+    let references = headers
+        .get("references")
+        .map(|value| extract_message_ids(value))
+        .unwrap_or_default();
 
     let mut html_body = String::new();
     let mut plain_body = String::new();
@@ -529,6 +565,12 @@ pub(crate) fn parse_rfc822(
         sender_email,
         recipient_to: recipient,
         subject,
+        message_id,
+        in_reply_to,
+        references,
+        thread_id: String::new(),
+        thread_size: 1,
+        thread_position: 0,
         date_str: date,
         preview_snippet: preview,
         html_body: body_html,
@@ -536,6 +578,24 @@ pub(crate) fn parse_rfc822(
         is_flagged: false,
         attachments,
     })
+}
+
+pub(crate) fn assign_thread_metadata(messages: &mut [ParsedMail]) {
+    let inputs = messages
+        .iter()
+        .map(|message| ThreadIdentity {
+            message_id: message.message_id.as_deref(),
+            in_reply_to: &message.in_reply_to,
+            references: &message.references,
+            subject: &message.subject,
+        })
+        .collect::<Vec<_>>();
+    let memberships = group_messages(&inputs);
+    for (message, membership) in messages.iter_mut().zip(memberships) {
+        message.thread_id = membership.thread_id;
+        message.thread_size = membership.size;
+        message.thread_position = membership.position;
+    }
 }
 
 fn parse_headers(header_text: &str) -> HashMap<String, String> {
@@ -889,6 +949,55 @@ mod tests {
         assert_eq!(message.folder_id, "inbox");
         assert!(message.html_body.contains("Hallo Welt"));
         assert!(message.is_unread);
+    }
+
+    #[test]
+    fn parses_message_thread_headers_and_assigns_transitive_membership() {
+        let root = parse_rfc822(
+            "root",
+            "inbox",
+            concat!(
+                "Message-ID: <root@example.org>\n",
+                "Subject: Project\n\n",
+                "Root"
+            ),
+            false,
+        )
+        .expect("root message should parse");
+        let reply = parse_rfc822(
+            "reply",
+            "inbox",
+            concat!(
+                "Message-ID: <reply@example.org>\n",
+                "References: <root@example.org>\n",
+                "Subject: Re: Project\n\n",
+                "Reply"
+            ),
+            false,
+        )
+        .expect("reply message should parse");
+        let nested_reply = parse_rfc822(
+            "nested",
+            "inbox",
+            concat!(
+                "Message-ID: <nested@example.org>\n",
+                "In-Reply-To: <reply@example.org>\n",
+                "Subject: Re: Project\n\n",
+                "Nested reply"
+            ),
+            false,
+        )
+        .expect("nested reply should parse");
+
+        let mut messages = vec![root, reply, nested_reply];
+        assign_thread_metadata(&mut messages);
+
+        assert_eq!(messages[0].message_id.as_deref(), Some("root@example.org"));
+        assert_eq!(messages[0].thread_id, "root@example.org");
+        assert_eq!(messages[1].thread_id, "root@example.org");
+        assert_eq!(messages[2].thread_id, "root@example.org");
+        assert_eq!(messages[0].thread_size, 3);
+        assert_eq!(messages[2].thread_position, 2);
     }
 
     #[test]

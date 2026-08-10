@@ -12,7 +12,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 
 #[cfg(eds_camel_bridge)]
-use super::mail_store_service::{MailStoreService, parse_rfc822};
+use super::mail_store_service::{MailStoreService, assign_thread_metadata, parse_rfc822};
 
 #[derive(Debug, Clone)]
 pub(crate) struct CamelFolderSummary {
@@ -661,6 +661,7 @@ fn parse_native_messages(
     }
 
     MailStoreService::new().apply_backend_filters(&mut messages);
+    assign_thread_metadata(&mut messages);
     messages
 }
 

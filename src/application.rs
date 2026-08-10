@@ -167,6 +167,8 @@ impl EvolutionApplication {
         self.set_accels_for_action("app.preferences", &["<Ctrl>comma"]);
         self.set_accels_for_action("win.search", &["<Ctrl>F"]);
         self.set_accels_for_action("win.refresh-mail", &["F5"]);
+        self.set_accels_for_action("win.undo", &["<Ctrl>Z"]);
+        self.set_accels_for_action("win.redo", &["<Ctrl><Shift>Z", "<Ctrl>Y"]);
         self.set_accels_for_action("win.toggle-sidebar", &["F9"]);
 
         // Module switching: Ctrl+1/2/3

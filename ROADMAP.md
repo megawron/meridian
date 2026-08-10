@@ -370,7 +370,9 @@ Test auf der Service-Ebene.
   Detailauswahl sowie Lesen, Markieren und Löschen werden für Remote-Nachrichten
   aus dem Servicepfad in diese Oberfläche zurückgeführt. Für den lokalen Import
   werden Zustände in einem app-eigenen Sidecar persistiert; Remote-Flags werden
-  über Camel/EDS gelesen und zurückgeschrieben. Batch-Aktionen, serverseitige
+  über Camel/EDS gelesen und zurückgeschrieben. Mehrfachauswahl mit Gelesen-,
+  Archiv-, Spam-, Lösch- und Verschiebeaktionen ist angebunden; die Ziele
+  werden aus der dynamischen EDS-Ordnerliste angeboten. Serverseitige
   Suchordner und die übrigen Remote-Aktionen in der Oberfläche fehlen.
 - [~] Anhang „Speichern unter“ ist für lokal gelesene MIME-Anhänge angebunden;
   EDS-/Remote-Anhänge und Inline-CID-Auflösung fehlen.
@@ -399,16 +401,26 @@ Test auf der Service-Ebene.
   werden über einen langlebigen nativen Watcher in die Mailansicht geleitet.
   Serverzustände werden nach Mutationen verifiziert und als explizite
   Konflikte zurückgegeben; betroffene Nachrichten werden über ihre Camel-UIDs
-  inkrementell nachgeladen oder entfernt. Threads, strukturelle Ordner-
-  synchronisation und der Linux-Laufzeittest mit einem realen GNOME-Konto
-  stehen noch aus.
+  inkrementell nachgeladen oder entfernt. RFC-822-Thread-Identitäten,
+  transitive Antwortketten und ein anklickbarer Konversationskontext sind für
+  lokale und partiell geladene Camel-Nachrichten angebunden; CamelFolderThread-
+  basierte Baumdarstellung, vollständiges Nachladen aller Thread-Mitglieder,
+  strukturelle Ordnersynchronisation und der Linux-Laufzeittest mit einem
+  realen GNOME-Konto stehen noch aus.
 - [~] Mailaktionen besitzen eine zentrale Backend-Schnittstelle. Lokale
   Nachrichten behalten den schreibgeschützten Import mit Sidecar für
   Lesestatus/Markierung; Remote-Nachrichten verwenden Camel für Lesen, Flags,
   Archivieren, Verschieben, Spam-Markierung und Löschen. Batch-Aktionen und
-  Undo werden aus dem Servicepfad in die GTK4-rs-Mailansicht übernommen;
-  inverse Undo-Operationen für Ordneränderungen fehlen; Konflikte aus dem
-  nativen Camel-Backend werden jetzt als eigener Fehlerzustand behandelt.
+  der zentrale Aktionspfad werden aus dem Servicepfad in die GTK4-rs-Mailansicht
+  übernommen. Mehrfachauswahl für Gelesen, Archivieren, Spam und Löschen sowie
+  atomare Batch-Zustandsänderungen mit Rollback sind vorhanden. Der
+  Command-Stack unterstützt erfolgreiche Lese-/Flag-Änderungen inklusive
+  Undo/Redo und Konfliktschutz; Verschieben verwendet einen reversiblen
+  Command auch in Batch-Aktionen. Der letzte Verlauf mit bis zu 100 Befehlen
+  wird atomar im Benutzer-Datenverzeichnis gespeichert und beim Start wieder
+  geladen. Inverse Undo-Operationen für Delete/Archive und komplexe
+  Ordneränderungen fehlen; Konflikte aus dem nativen Camel-Backend werden jetzt
+  als eigener Fehlerzustand behandelt.
 - [ ] Serverseitige Suche und virtuelle Suchordner.
 
 #### Phase 2 — Konten, Empfang und Mailversand
@@ -555,8 +567,9 @@ nicht als vollständiger Ersatz beworben werden.
    Signal-Watcher auf Linux gegen ein echtes GNOME-/GOA-Konto testen; danach
    strukturelle Ordner-/Kontosynchronisation, Netzwerkwechsel und eine
    domänenweite Offline-/Online-Wiederaufnahme ergänzen.
-2. Das GTK4-rs-Mailmodell um echte Thread-Modelle, inverse Undo/Redo-
-   Operationen und Konfliktanzeigen erweitern.
+2. Das GTK4-rs-Mailmodell um ein echtes CamelFolderThread-/TreeListModel-
+   Modell, inverse Delete-/Archive-Undo-Operationen und Konfliktanzeigen
+   erweitern.
 3. Die ECal-/EBook-Mutationsstrecke um echte Konfliktauflösung und vollständige
    vCard-Felder erweitern und die Linux-Laufzeit mit einem echten Konto
    verifizieren.

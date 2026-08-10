@@ -31,6 +31,12 @@ mod imp {
         pub sender_email: RefCell<String>,
         pub recipient_to: RefCell<String>,
         pub subject: RefCell<String>,
+        pub message_id: RefCell<Option<String>>,
+        pub in_reply_to: RefCell<Vec<String>>,
+        pub references: RefCell<Vec<String>>,
+        pub thread_id: RefCell<String>,
+        pub thread_size: RefCell<usize>,
+        pub thread_position: RefCell<usize>,
         pub date_str: RefCell<String>,
         pub preview_snippet: RefCell<String>,
         pub html_body: RefCell<String>,
@@ -63,6 +69,12 @@ impl MailMessageObject {
         sender_email: &str,
         recipient_to: &str,
         subject: &str,
+        message_id: Option<String>,
+        in_reply_to: Vec<String>,
+        references: Vec<String>,
+        thread_id: &str,
+        thread_size: usize,
+        thread_position: usize,
         date_str: &str,
         preview_snippet: &str,
         html_body: &str,
@@ -79,6 +91,12 @@ impl MailMessageObject {
         *imp.sender_email.borrow_mut() = sender_email.to_string();
         *imp.recipient_to.borrow_mut() = recipient_to.to_string();
         *imp.subject.borrow_mut() = subject.to_string();
+        *imp.message_id.borrow_mut() = message_id;
+        *imp.in_reply_to.borrow_mut() = in_reply_to;
+        *imp.references.borrow_mut() = references;
+        *imp.thread_id.borrow_mut() = thread_id.to_string();
+        *imp.thread_size.borrow_mut() = thread_size.max(1);
+        *imp.thread_position.borrow_mut() = thread_position;
         *imp.date_str.borrow_mut() = date_str.to_string();
         *imp.preview_snippet.borrow_mut() = preview_snippet.to_string();
         *imp.html_body.borrow_mut() = html_body.to_string();
@@ -111,6 +129,36 @@ impl MailMessageObject {
 
     pub fn subject(&self) -> String {
         self.imp().subject.borrow().clone()
+    }
+
+    pub fn message_id(&self) -> Option<String> {
+        self.imp().message_id.borrow().clone()
+    }
+
+    pub fn in_reply_to(&self) -> Vec<String> {
+        self.imp().in_reply_to.borrow().clone()
+    }
+
+    pub fn references(&self) -> Vec<String> {
+        self.imp().references.borrow().clone()
+    }
+
+    pub fn thread_id(&self) -> String {
+        self.imp().thread_id.borrow().clone()
+    }
+
+    pub fn thread_size(&self) -> usize {
+        (*self.imp().thread_size.borrow()).max(1)
+    }
+
+    pub fn thread_position(&self) -> usize {
+        *self.imp().thread_position.borrow()
+    }
+
+    pub(crate) fn set_thread_metadata(&self, thread_id: &str, size: usize, position: usize) {
+        *self.imp().thread_id.borrow_mut() = thread_id.to_string();
+        *self.imp().thread_size.borrow_mut() = size.max(1);
+        *self.imp().thread_position.borrow_mut() = position;
     }
 
     pub fn date_str(&self) -> String {

@@ -236,6 +236,8 @@ impl EvolutionWindow {
         let section1 = gio::Menu::new();
         section1.append(Some("Neue E-Mail"), Some("app.compose"));
         section1.append(Some("Mail aktualisieren"), Some("win.refresh-mail"));
+        section1.append(Some("Rückgängig"), Some("win.undo"));
+        section1.append(Some("Wiederholen"), Some("win.redo"));
         menu.append_section(None, &section1);
 
         let section2 = gio::Menu::new();
@@ -284,6 +286,68 @@ impl EvolutionWindow {
             }
         ));
         self.add_action(&action_refresh_mail);
+
+        let action_undo = gio::SimpleAction::new("undo", None);
+        action_undo.connect_activate(glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            move |_, _| {
+                let result = win
+                    .imp()
+                    .view_stack
+                    .borrow()
+                    .as_ref()
+                    .and_then(|view_stack| {
+                        view_stack
+                            .child_by_name("mail")
+                            .and_then(|widget| widget.downcast::<MailPage>().ok())
+                    })
+                    .map(|mail_page| mail_page.undo());
+
+                let message = match result {
+                    Some(Ok(true)) => "Letzte Mailaktion rückgängig gemacht".to_string(),
+                    Some(Ok(false)) => "Keine Mailaktion zum Rückgängigmachen".to_string(),
+                    Some(Err(error)) => {
+                        tracing::warn!(%error, "Mail undo operation was not applied");
+                        format!("Rückgängig nicht möglich: {error}")
+                    }
+                    None => "Mailansicht ist nicht verfügbar".to_string(),
+                };
+                win.add_toast(&adw::Toast::new(&message));
+            }
+        ));
+        self.add_action(&action_undo);
+
+        let action_redo = gio::SimpleAction::new("redo", None);
+        action_redo.connect_activate(glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            move |_, _| {
+                let result = win
+                    .imp()
+                    .view_stack
+                    .borrow()
+                    .as_ref()
+                    .and_then(|view_stack| {
+                        view_stack
+                            .child_by_name("mail")
+                            .and_then(|widget| widget.downcast::<MailPage>().ok())
+                    })
+                    .map(|mail_page| mail_page.redo());
+
+                let message = match result {
+                    Some(Ok(true)) => "Letzte Mailaktion wiederholt".to_string(),
+                    Some(Ok(false)) => "Keine Mailaktion zum Wiederholen".to_string(),
+                    Some(Err(error)) => {
+                        tracing::warn!(%error, "Mail redo operation was not applied");
+                        format!("Wiederholen nicht möglich: {error}")
+                    }
+                    None => "Mailansicht ist nicht verfügbar".to_string(),
+                };
+                win.add_toast(&adw::Toast::new(&message));
+            }
+        ));
+        self.add_action(&action_redo);
 
         for (action_name, stack_page) in [
             ("switch-mail", "mail"),
