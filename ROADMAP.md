@@ -220,7 +220,7 @@ Implementierungsdetails getrennt.
 
 | Evolution-Feature | GTK4-Implementierung | EDS-Schnittstelle |
 |:---|:---|:---|
-| **Tag/Woche/Monat-Ansicht** | Custom `GtkWidget`-Subklassen: `DayView`, `WeekView`, `MonthView`. Rendering via `GtkSnapshot` / Cairo. Umschaltung über `AdwViewSwitcher`. | `libecal-2.0` über den EDS-Adapter |
+| **Tag/Woche/Monat-Ansicht** | GTK4-rs `AdwViewStack` mit dynamischer Tagesliste, Sieben-Tage-Liste und datumsrichtigem Monatsraster; Navigation und ECal-Signalaktualisierung sind verbunden. Agenda-/Arbeitswochenraster und vollständige Zeitachsen fehlen noch. | `libecal-2.0` über den EDS-Adapter |
 | **Event-Erstellung** | `AdwDialog` mit Start/Ende-Picker (`GtkCalendar` + Time-Spinner), Wiederholung, Alarme, Teilnehmer. | `ECalComponent`, `ICalComponent` |
 | **ITIP Meeting-Einladungen** | Im Mail-View: Inline-Banner bei `text/calendar` MIME-Parts. Buttons: „Annehmen / Tentativ / Ablehnen". Klick → ITIP-Response via `ECal`. | `ECalComponent`, ITIP-Utility-Funktionen |
 | **Aufgaben (Tasks)** | `GtkColumnView` mit Spalten: Checkbox, Titel, Fällig, Priorität. Inline-Edit. | `ECal` (VTODO), `ECalComponent` |
@@ -375,6 +375,9 @@ werden.
   MIME-Semantik und serverseitige Synchronisation fehlen noch; der lokale
   Import bleibt bewusst schreibgeschützt.
 - [~] Suche, Stern, Ordnerfilter und „gelesen“ existieren im GTK4-rs-UI;
+  die lokale Schnellsuche versteht zusätzlich `from:`, `to:`, `subject:`,
+  `is:unread`, `is:read`, `is:starred` und `has:attachment` und durchsucht
+  auch Empfänger, Vorschau und HTML-Inhalt;
   Detailauswahl sowie Lesen, Markieren und Löschen werden für Remote-Nachrichten
   aus dem Servicepfad in diese Oberfläche zurückgeführt. Für den lokalen Import
   werden Zustände in einem app-eigenen Sidecar persistiert; Remote-Flags werden
@@ -404,17 +407,22 @@ werden.
   zurückgeschrieben. Begrenzte Folge-Seiten, Refresh, Kontoauswahl und
   account-spezifische Camel-Ordnerauswahl werden über denselben Servicepfad
   geladen. Der lokale EML/Maildir/mbox-Importer bleibt der explizite Fallback.
+  Die GTK4-rs-Seitenleiste bildet die geladenen EDS-Ordner einschließlich
+  Unterordnern als aufklappbares TreeListModel mit stabilen Konto-/Ordner-
+  Schlüsseln ab; providerabhängige Hierarchie-Separatoren und strukturelle
+  Lebenszyklusänderungen werden noch auf Linux verifiziert.
   Archivieren, Verschieben und Spam-Markierung werden über denselben
   Servicepfad ausgeführt; Camel-Änderungs-, Lösch- und Umbenennungssignale
   werden über einen langlebigen nativen Watcher in die Mailansicht geleitet.
   Serverzustände werden nach Mutationen verifiziert und als explizite
   Konflikte zurückgegeben; betroffene Nachrichten werden über ihre Camel-UIDs
   inkrementell nachgeladen oder entfernt. RFC-822-Thread-Identitäten,
-  transitive Antwortketten und ein anklickbarer Konversationskontext sind für
-  lokale und partiell geladene Camel-Nachrichten angebunden; CamelFolderThread-
-  basierte Baumdarstellung, vollständiges Nachladen aller Thread-Mitglieder,
-  strukturelle Ordnersynchronisation und der Linux-Laufzeittest mit einem
-  realen GNOME-Konto stehen noch aus.
+  transitive Antwortketten, ein anklickbarer Konversationskontext und eine
+  aufklappbare GTK4-rs-TreeListModel-Darstellung sind für lokale und partiell
+  geladene Camel-Nachrichten angebunden; die servernahe CamelFolderThread-
+  Prüfung, vollständiges Nachladen aller Thread-Mitglieder, strukturelle
+  Ordnersynchronisation und der Linux-Laufzeittest mit einem realen GNOME-
+  Konto stehen noch aus.
 - [~] Mailaktionen besitzen eine zentrale Backend-Schnittstelle. Lokale
   Nachrichten behalten den schreibgeschützten Import mit Sidecar für
   Lesestatus/Markierung; Remote-Nachrichten verwenden Camel für Lesen, Flags,
@@ -439,8 +447,9 @@ werden.
 
 - [~] Konto-Setup und Composer sind vorhanden; der GTK4-rs-Composer kann
   Entwürfe ohne Kontogeheimnisse in einem app-eigenen Store persistieren und
-  der Start zeigt gespeicherte EDS-Mailkonten. EDS-Absender, Camel-Transport
-  und echte Draft-/Sent-Folder fehlen noch.
+  der Start zeigt gespeicherte EDS-Mailkonten. EDS-Identität und der native
+  Camel-Transport sind jetzt als Versandpfad angebunden; echte Draft-/Sent-
+  Folder, Kontoänderungen und Linux-Laufzeitabnahme fehlen noch.
 - [~] Sichtbare Lese-/Datenschutz-/PGP-Optionen werden über GSettings
   persistiert, sofern das Schema installiert ist.
 - [~] EDS-Quellen dynamisch als Konten anzeigen; das Setup speichert zusätzlich
@@ -449,8 +458,12 @@ werden.
   fehlen noch.
 - [ ] IMAP/IMAPX, POP3, lokale Ordner, SMTP und Exchange/Microsoft-365 mit
   OAuth2, TLS, Passwort-/Secret-Service und Offline-Fehlerzuständen.
-- [ ] CamelTransport für echten Versand, EDS-Drafts/Sent-Folder, Bcc/Cc,
-  Reply/Reply-All/Forward, Signaturen, Quoting und Autosave.
+- [~] GTK4-rs-Composer zeigt aktive EDS-Mailkonten, persistiert To/Cc/Bcc,
+  Anhänge und HTML-Entwürfe, kann Entwürfe wieder aufnehmen und erzeugt
+  Reply-/Forward-Vorbelegungen. Ein getesteter RFC822/MIME-Builder und die
+  native CamelTransport-Aufrufstrecke sind angeschlossen; EDS-Drafts/Sent-
+  Folder, Reply-All mit vollständigem Kontext, Signaturen, Quoting und
+  Autosave fehlen noch.
 - [~] Synchronisationsstatus, Cancellation und begrenztes Retry/Backoff sind
   für den nativen Mail-Ladepfad vorhanden; Netzwerkwechsel, domänenweite
   Offline-/Online-Zustände, vollständige Wiederaufnahme und sauberes
@@ -458,12 +471,15 @@ werden.
 
 #### Phase 3 — Kalender, Aufgaben und Memos
 
-- [~] Monatsansicht, Navigation, View-Switcher und Dialoge sind vorhanden;
-  die GTK4-rs-Kalenderansicht zeigt EDS-Quellenstatus und lädt VEVENTs aus
-  aktivierten ECal-Quellen und kann neue VEVENTs über den nativen ECal-Adapter
-  speichern. Bearbeiten und Löschen sind für geladene VEVENTs ebenfalls an den
-  nativen Adapter angebunden. Die vollständigen Tages-/Wochen-/Agenda-Modelle
-  und Wiederholungen fehlen noch.
+- [~] Monatsansicht, Navigation, View-Switcher sowie echte Tages- und
+  Wochenlisten sind vorhanden;
+  die GTK4-rs-Kalenderansicht berechnet den Monatsraster datumsrichtig,
+  markiert den heutigen Tag, zeigt geladene VEVENTs direkt in den Tageszellen
+  und berücksichtigt in Tag/Woche auch zeit- und ganztägige Mehrtagstermine.
+  EDS-Quellenstatus wird angezeigt und neue VEVENTs können über den nativen
+  ECal-Adapter gespeichert, bearbeitet und gelöscht werden; Agenda,
+  Arbeitswochenraster, Zeitachsen, Drag-and-drop und Wiederholungen fehlen
+  noch.
 - [~] GTK4-rs-Aufgaben- und Memo-Ansichten laden VTODO-/VJOURNAL-Komponenten
   über die native libecal-2.0-Brücke aus den aktivierten EDS-Quellen. Neue
   VTODOs/VJOURNALs, VTODO-Statusänderungen und vollständiges VTODO-Bearbeiten
@@ -478,7 +494,9 @@ werden.
   Operationen mit Konfliktstatus; UI-seitige Bearbeiten-/Löschen-Flows sind für
   Termine, Aufgaben und Notizen angebunden. Eine vollständige
   Konfliktauflösung fehlt noch; die ECal-Signalaktualisierung ist umgesetzt.
-- [ ] Tag-/Arbeitswoche-/Woche-/Monat-/Agenda-Ansichten mit echten VEvents.
+- [~] Tag-/Woche-/Monat-Ansichten mit echten VEVENTs sind im GTK4-rs-Frontend
+  vorhanden; Arbeitswochenraster, Agenda, Zeitachsen und Linux-Laufzeitprüfung
+  gegen DST/Zeitzonen stehen noch aus.
 - [ ] Wiederholungen, Zeitzonen, Teilnehmer, iTIP/iMIP, freie Zeiten,
   Einladungsantworten, Alarme, Kategorien, Anhänge und Offline-Sync.
 - [~] VTODO/VJOURNAL-Erstellung, VTODO-Status, Notizbearbeitung/-löschung,
@@ -552,8 +570,8 @@ angewendet und migrierbar ist.
 | Allgemein | Sprache, Zeitzone, Datums-/Zeitformat, Startansicht, Fenstergröße/-position, Maximierung, Benachrichtigungen, Bestätigungsdialoge | `[~]` |
 | Mail lesen | Vorschaufenster, Threading, Sortierung, Gruppierung, Zitierstil, Schriftarten, HTML/Text, externe Bilder, Tracking, Markieren als gelesen | `[~]` |
 | Mail empfangen | Konten, Aktivierung, Abrufintervall, IMAP-Ordner, Offline-Modus, Synchronisationsumfang, Junk/Spam, Quoten, Empfangsbenachrichtigung | `[ ]` |
-| Mail senden | SMTP/Transport, Authentifizierung, TLS, Port, Absender, Antwortadresse, Bcc, DSN/Lesebestätigung, Signatur, Autosave, gesendeter Ordner | `[ ]` |
-| Composer | HTML/Text, Formatvorlage, Schrift, Rechtschreibung, Wörterbücher, Zitate, Inline-Anhänge, Vorlagen, Snippets, Entwürfe, Undo/Redo | `[ ]` |
+| Mail senden | SMTP/Transport, Authentifizierung, TLS, Port, Absender, Antwortadresse, Bcc, DSN/Lesebestätigung, Signatur, Autosave, gesendeter Ordner | `[~]` |
+| Composer | HTML/Text, Formatvorlage, Schrift, Rechtschreibung, Wörterbücher, Zitate, Inline-Anhänge, Vorlagen, Snippets, Entwürfe, Undo/Redo | `[~]` |
 | Konten & Identitäten | mehrere Identitäten, Alias-Adressen, Signaturen, Standardkonto, Ordnerzuordnung, Passwort/Secret-Service, OAuth2 | `[~]` |
 | Kalender | Standardkalender, Arbeitswoche, Arbeitstage/-zeiten, Zeitzonen, Wochenstart, Erinnerungen, Snooze, Kategorien, Farben, Wetter/Feiertage | `[ ]` |
 | Termine | Wiederholung, Teilnehmer, iTIP/iMIP, freie Zeit, Einladungsantworten, private Termine, Alarme, Konferenzanbieter, Anhänge | `[ ]` |
@@ -581,9 +599,11 @@ nicht als vollständiger Ersatz beworben werden.
    [ROADMAP_LINUX.md](ROADMAP_LINUX.md); danach strukturelle Ordner-/Konto-
    synchronisation, Netzwerkwechsel und eine domänenweite Offline-/Online-
    Wiederaufnahme ergänzen.
-2. Das GTK4-rs-Mailmodell um ein echtes CamelFolderThread-/TreeListModel-
-   Modell, providerabhängige UID-Neuzuordnung nach Transfers und sichtbare
-   Konflikt-/Restore-Fehleranzeigen erweitern.
+2. Das GTK4-rs-Mailmodell mit der echten CamelFolderThread-Strecke,
+   vollständigem Nachladen aller Thread-Mitglieder und providerabhängiger
+   UID-Neuzuordnung nach Transfers gegen Linux-EDS verifizieren; sichtbare
+   Konflikt-/Restore-Fehleranzeigen und die aufklappbare TreeListModel-
+   Grundlage sind vorhanden.
 3. Die ECal-/EBook-Mutationsstrecke um echte Konfliktauflösung und vollständige
    vCard-Felder erweitern und die Linux-Laufzeit mit einem echten Konto
    verifizieren.

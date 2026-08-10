@@ -4,7 +4,7 @@
 
 use adw::prelude::*;
 use adw::subclass::prelude::*;
-use chrono::Datelike;
+use chrono::{Datelike, Duration, Local, NaiveDate, NaiveDateTime};
 use gtk::glib;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -16,6 +16,13 @@ use crate::services::ecal_service::{
 };
 use crate::services::eds_service;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CalendarView {
+    Day,
+    Week,
+    Month,
+}
+
 // ─── GObject Subclass ───────────────────────────────────────────────────────
 
 mod imp {
@@ -24,16 +31,26 @@ mod imp {
 
     #[derive(Debug)]
     pub struct CalendarPage {
-        pub current_year: RefCell<i32>,
-        pub current_month: RefCell<u32>,
+        pub current_date: RefCell<NaiveDate>,
+        pub(crate) current_view: RefCell<CalendarView>,
+        pub month_grid: RefCell<Option<gtk::Grid>>,
+        pub month_date_label: RefCell<Option<gtk::Label>>,
+        pub day_view: RefCell<Option<gtk::Box>>,
+        pub week_view: RefCell<Option<gtk::Box>>,
+        pub event_records: RefCell<Option<Rc<RefCell<Vec<CalendarEventRecord>>>>>,
         pub ecal_monitor_cancel: RefCell<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>>,
     }
 
     impl Default for CalendarPage {
         fn default() -> Self {
             Self {
-                current_year: RefCell::new(2026),
-                current_month: RefCell::new(8),
+                current_date: RefCell::new(Local::now().date_naive()),
+                current_view: RefCell::new(CalendarView::Month),
+                month_grid: RefCell::new(None),
+                month_date_label: RefCell::new(None),
+                day_view: RefCell::new(None),
+                week_view: RefCell::new(None),
+                event_records: RefCell::new(None),
                 ecal_monitor_cancel: RefCell::new(None),
             }
         }
@@ -169,10 +186,14 @@ impl CalendarPage {
             .build();
         sidebar_box.append(&event_list);
         let event_records = Rc::new(RefCell::new(Vec::<CalendarEventRecord>::new()));
+        self.imp()
+            .event_records
+            .replace(Some(Rc::clone(&event_records)));
 
         let local_item_state_for_load = local_item_state.clone();
         let event_list_for_load = event_list.clone();
         let event_records_for_load = Rc::clone(&event_records);
+        let page_for_load = self.downgrade();
         let (local_sender, local_receiver) = async_channel::bounded(1);
         std::thread::spawn(move || {
             let result = load_snapshot_prefer_eds();
@@ -214,6 +235,9 @@ impl CalendarPage {
                                 event,
                             );
                         }
+                        if let Some(page) = page_for_load.upgrade() {
+                            page.refresh_calendar_views();
+                        }
                     }
                 }
                 Err(error) => tracing::debug!(%error, "Calendar snapshot unavailable"),
@@ -225,6 +249,7 @@ impl CalendarPage {
             let event_list_for_monitor = event_list.clone();
             let event_records_for_monitor = Rc::clone(&event_records);
             let local_item_state_for_monitor = local_item_state.clone();
+            let page_for_monitor = self.downgrade();
             glib::spawn_future_local(async move {
                 while let Ok(event) = receiver.recv().await {
                     match event {
@@ -269,6 +294,9 @@ impl CalendarPage {
                     if count > 0 {
                         local_item_state_for_monitor
                             .set_label(&format!("{count} Termin(e) aus EDS synchronisiert."));
+                    }
+                    if let Some(page) = page_for_monitor.upgrade() {
+                        page.refresh_calendar_views();
                     }
                 }
             });
@@ -381,7 +409,7 @@ impl CalendarPage {
         let prev_btn = gtk::Button::builder()
             .icon_name("go-previous-symbolic")
             .css_classes(vec!["flat"])
-            .tooltip_text("Vorheriger Monat")
+            .tooltip_text("Vorheriger Zeitraum")
             .build();
 
         let today_btn = gtk::Button::builder()
@@ -393,14 +421,17 @@ impl CalendarPage {
         let next_btn = gtk::Button::builder()
             .icon_name("go-next-symbolic")
             .css_classes(vec!["flat"])
-            .tooltip_text("Nächster Monat")
+            .tooltip_text("Nächster Zeitraum")
             .build();
 
         let date_label = gtk::Label::builder()
-            .label("August 2026")
+            .label("")
             .css_classes(vec!["title-3"])
             .hexpand(true)
             .build();
+        self.imp()
+            .month_date_label
+            .replace(Some(date_label.clone()));
 
         let btn_add_event = gtk::Button::builder()
             .label("Neuer Termin")
@@ -469,18 +500,7 @@ impl CalendarPage {
             .margin_bottom(4)
             .build();
 
-        let weekdays = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"];
-        for (col, day) in weekdays.iter().enumerate() {
-            let label = gtk::Label::builder()
-                .label(*day)
-                .css_classes(vec!["heading", "dim-label"])
-                .margin_top(4)
-                .margin_bottom(4)
-                .build();
-            month_grid.attach(&label, col as i32, 0, 1, 1);
-        }
-
-        Self::populate_month_grid(&month_grid);
+        self.imp().month_grid.replace(Some(month_grid.clone()));
 
         let month_scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
@@ -490,79 +510,81 @@ impl CalendarPage {
 
         calendar_stack.add_titled(&month_scroll, Some("month"), "Monat");
 
-        // 2. Day View Placeholder
-        let day_box = gtk::Box::builder()
+        // 2. Day View
+        let day_view = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .margin_start(16)
             .margin_end(16)
             .margin_top(16)
             .margin_bottom(16)
+            .spacing(8)
+            .build();
+        self.imp().day_view.replace(Some(day_view.clone()));
+        let day_scroll = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .child(&day_view)
             .build();
 
-        let day_card = adw::PreferencesGroup::builder()
-            .title("Tagesansicht — noch keine Daten")
-            .build();
+        calendar_stack.add_titled(&day_scroll, Some("day"), "Tag");
 
-        let day_state = adw::ActionRow::builder()
-            .title("Keine Termine geladen")
-            .subtitle("ECal-Synchronisation ist noch nicht verbunden")
-            .build();
-        let day_icon = gtk::Image::from_icon_name("x-office-calendar-symbolic");
-        day_state.add_prefix(&day_icon);
-        day_card.add(&day_state);
-
-        day_box.append(&day_card);
-        calendar_stack.add_titled(&day_box, Some("day"), "Tag");
-
-        // 3. Week View Placeholder
-        let week_box = gtk::Box::builder()
+        // 3. Week View
+        let week_view = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .margin_start(16)
             .margin_end(16)
             .margin_top(16)
             .margin_bottom(16)
+            .spacing(8)
+            .build();
+        self.imp().week_view.replace(Some(week_view.clone()));
+        let week_scroll = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .child(&week_view)
             .build();
 
-        let week_card = adw::PreferencesGroup::builder()
-            .title("Wochenansicht — noch keine Daten")
-            .build();
-        let week_row = adw::ActionRow::builder()
-            .title("Keine Termine geladen")
-            .subtitle("ECal-Synchronisation ist noch nicht verbunden")
-            .build();
-        week_card.add(&week_row);
-
-        week_box.append(&week_card);
-        calendar_stack.add_titled(&week_box, Some("week"), "Woche");
+        calendar_stack.add_titled(&week_scroll, Some("week"), "Woche");
 
         calendar_stack.set_visible_child_name("month");
 
         // View toggle handler
-        calendar_stack.set_visible_child_name("month");
         day_btn.connect_toggled(glib::clone!(
             #[weak]
             calendar_stack,
+            #[weak(rename_to = page)]
+            self,
             move |btn| {
                 if btn.is_active() {
                     calendar_stack.set_visible_child_name("day");
+                    *page.imp().current_view.borrow_mut() = CalendarView::Day;
+                    page.refresh_calendar_views();
                 }
             }
         ));
         week_btn.connect_toggled(glib::clone!(
             #[weak]
             calendar_stack,
+            #[weak(rename_to = page)]
+            self,
             move |btn| {
                 if btn.is_active() {
                     calendar_stack.set_visible_child_name("week");
+                    *page.imp().current_view.borrow_mut() = CalendarView::Week;
+                    page.refresh_calendar_views();
                 }
             }
         ));
         month_btn.connect_toggled(glib::clone!(
             #[weak]
             calendar_stack,
+            #[weak(rename_to = page)]
+            self,
             move |btn| {
                 if btn.is_active() {
                     calendar_stack.set_visible_child_name("month");
+                    *page.imp().current_view.borrow_mut() = CalendarView::Month;
+                    page.refresh_calendar_views();
                 }
             }
         ));
@@ -571,61 +593,35 @@ impl CalendarPage {
         prev_btn.connect_clicked(glib::clone!(
             #[weak(rename_to = page)]
             self,
-            #[weak]
-            date_label,
             move |_| {
-                let mut m = *page.imp().current_month.borrow();
-                let mut y = *page.imp().current_year.borrow();
-                if m == 1 {
-                    m = 12;
-                    y -= 1;
-                } else {
-                    m -= 1;
-                }
-                *page.imp().current_month.borrow_mut() = m;
-                *page.imp().current_year.borrow_mut() = y;
-                date_label.set_label(&format!("{} {}", Self::month_name(m), y));
+                page.shift_period(-1);
+                page.refresh_calendar_views();
             }
         ));
 
         next_btn.connect_clicked(glib::clone!(
             #[weak(rename_to = page)]
             self,
-            #[weak]
-            date_label,
             move |_| {
-                let mut m = *page.imp().current_month.borrow();
-                let mut y = *page.imp().current_year.borrow();
-                if m == 12 {
-                    m = 1;
-                    y += 1;
-                } else {
-                    m += 1;
-                }
-                *page.imp().current_month.borrow_mut() = m;
-                *page.imp().current_year.borrow_mut() = y;
-                date_label.set_label(&format!("{} {}", Self::month_name(m), y));
+                page.shift_period(1);
+                page.refresh_calendar_views();
             }
         ));
 
         today_btn.connect_clicked(glib::clone!(
             #[weak(rename_to = page)]
             self,
-            #[weak]
-            date_label,
             move |_| {
-                let now = chrono::Local::now();
-                let month = now.month();
-                let year = now.year();
-                *page.imp().current_month.borrow_mut() = month;
-                *page.imp().current_year.borrow_mut() = year;
-                date_label.set_label(&format!("{} {}", Self::month_name(month), year));
+                *page.imp().current_date.borrow_mut() = Local::now().date_naive();
+                page.refresh_calendar_views();
             }
         ));
 
         calendar_stack.set_vexpand(true);
         content_box.set_vexpand(true);
         content_box.append(&calendar_stack);
+
+        self.refresh_calendar_views();
 
         let content_page = adw::NavigationPage::builder()
             .title("Kalenderansicht")
@@ -638,48 +634,385 @@ impl CalendarPage {
         split.set_parent(self);
     }
 
-    fn populate_month_grid(grid: &gtk::Grid) {
-        let mut day_num = 1;
-        for row in 1..=5 {
-            for col in 0..7 {
-                if row == 1 && col < 5 {
-                    // Previous month padding
-                    let pad_cell = gtk::Frame::builder()
-                        .css_classes(vec!["card", "dim-label"])
-                        .build();
-                    grid.attach(&pad_cell, col, row, 1, 1);
-                    continue;
+    fn shift_period(&self, direction: i32) {
+        let current = *self.imp().current_date.borrow();
+        let view = *self.imp().current_view.borrow();
+        let next = match view {
+            CalendarView::Day => current + Duration::days(i64::from(direction)),
+            CalendarView::Week => current + Duration::days(i64::from(direction) * 7),
+            CalendarView::Month => shift_month(current, direction),
+        };
+        *self.imp().current_date.borrow_mut() = next;
+    }
+
+    fn refresh_calendar_views(&self) {
+        self.refresh_month_grid();
+        self.refresh_day_view();
+        self.refresh_week_view();
+        self.refresh_period_label();
+    }
+
+    fn refresh_period_label(&self) {
+        let Some(label) = self.imp().month_date_label.borrow().as_ref().cloned() else {
+            return;
+        };
+        let date = *self.imp().current_date.borrow();
+        let view = *self.imp().current_view.borrow();
+        let text = match view {
+            CalendarView::Day => format!(
+                "{}, {}. {} {}",
+                weekday_name(date),
+                date.day(),
+                Self::month_name(date.month()),
+                date.year()
+            ),
+            CalendarView::Week => {
+                let start = date - Duration::days(i64::from(date.weekday().num_days_from_monday()));
+                let end = start + Duration::days(6);
+                if start.month() == end.month() {
+                    format!(
+                        "{}.\u{2013}{}. {} {}",
+                        start.day(),
+                        end.day(),
+                        Self::month_name(start.month()),
+                        start.year()
+                    )
+                } else {
+                    format!(
+                        "{}. {}\u{2013}{}. {} {}",
+                        start.day(),
+                        Self::month_name(start.month()),
+                        end.day(),
+                        Self::month_name(end.month()),
+                        end.year()
+                    )
                 }
-                if day_num > 31 {
-                    break;
-                }
+            }
+            CalendarView::Month => {
+                format!("{} {}", Self::month_name(date.month()), date.year())
+            }
+        };
+        label.set_label(&text);
+    }
 
-                let cell_box = gtk::Box::builder()
-                    .orientation(gtk::Orientation::Vertical)
-                    .spacing(2)
-                    .margin_start(4)
-                    .margin_end(4)
-                    .margin_top(4)
-                    .margin_bottom(4)
-                    .build();
+    fn refresh_day_view(&self) {
+        let Some(view) = self.imp().day_view.borrow().as_ref().cloned() else {
+            return;
+        };
+        clear_box(&view);
+        let date = *self.imp().current_date.borrow();
+        let heading = gtk::Label::builder()
+            .label(&format!(
+                "{}, {}. {} {}",
+                weekday_name(date),
+                date.day(),
+                Self::month_name(date.month()),
+                date.year()
+            ))
+            .css_classes(vec!["title-3"])
+            .halign(gtk::Align::Start)
+            .build();
+        view.append(&heading);
 
-                let day_lbl = gtk::Label::builder()
-                    .label(&day_num.to_string())
-                    .halign(gtk::Align::Start)
-                    .css_classes(vec!["caption"])
-                    .build();
-                cell_box.append(&day_lbl);
-
-                let cell_frame = gtk::Frame::builder()
-                    .child(&cell_box)
-                    .css_classes(vec!["card"])
-                    .build();
-
-                grid.attach(&cell_frame, col, row, 1, 1);
-                day_num += 1;
+        let list = gtk::ListBox::builder()
+            .selection_mode(gtk::SelectionMode::None)
+            .css_classes(vec!["boxed-list"])
+            .build();
+        let mut events = self.events_for_date(date);
+        events.sort_by_key(|event| event_start_datetime(event));
+        if events.is_empty() {
+            list.append(&empty_period_row(
+                "Keine Termine",
+                "Für diesen Tag sind keine VEVENTs geladen.",
+            ));
+        } else {
+            for event in events {
+                list.append(&calendar_event_row(&event));
             }
         }
+        view.append(&list);
     }
+
+    fn refresh_week_view(&self) {
+        let Some(view) = self.imp().week_view.borrow().as_ref().cloned() else {
+            return;
+        };
+        clear_box(&view);
+        let date = *self.imp().current_date.borrow();
+        let week_start = date - Duration::days(i64::from(date.weekday().num_days_from_monday()));
+        let week_heading = gtk::Label::builder()
+            .label("Termine dieser Woche")
+            .css_classes(vec!["title-3"])
+            .halign(gtk::Align::Start)
+            .build();
+        view.append(&week_heading);
+
+        for offset in 0..7_i64 {
+            let day = week_start + Duration::days(offset);
+            let day_box = gtk::Box::builder()
+                .orientation(gtk::Orientation::Vertical)
+                .spacing(4)
+                .build();
+            day_box.add_css_class("card");
+            let heading = gtk::Label::builder()
+                .label(&format!(
+                    "{}, {}. {}",
+                    weekday_name(day),
+                    day.day(),
+                    Self::month_name(day.month())
+                ))
+                .halign(gtk::Align::Start)
+                .margin_start(10)
+                .margin_top(8)
+                .build();
+            if day == Local::now().date_naive() {
+                heading.add_css_class("accent");
+            }
+            day_box.append(&heading);
+
+            let list = gtk::ListBox::builder()
+                .selection_mode(gtk::SelectionMode::None)
+                .css_classes(vec!["boxed-list"])
+                .margin_start(4)
+                .margin_end(4)
+                .margin_bottom(4)
+                .build();
+            let mut events = self.events_for_date(day);
+            events.sort_by_key(|event| event_start_datetime(event));
+            if events.is_empty() {
+                list.append(&empty_period_row("Keine Termine", ""));
+            } else {
+                for event in events {
+                    list.append(&calendar_event_row(&event));
+                }
+            }
+            day_box.append(&list);
+            view.append(&day_box);
+        }
+    }
+
+    fn events_for_date(&self, date: NaiveDate) -> Vec<CalendarEventRecord> {
+        self.imp()
+            .event_records
+            .borrow()
+            .as_ref()
+            .map(|records| {
+                records
+                    .borrow()
+                    .iter()
+                    .filter(|event| event_occurs_on(event, date))
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn refresh_month_grid(&self) {
+        let Some(grid) = self.imp().month_grid.borrow().as_ref().cloned() else {
+            return;
+        };
+        let current_date = *self.imp().current_date.borrow();
+        let year = current_date.year();
+        let month = current_date.month();
+        let Some(month_start) = NaiveDate::from_ymd_opt(year, month, 1) else {
+            return;
+        };
+        let next_month = if month == 12 {
+            NaiveDate::from_ymd_opt(year + 1, 1, 1)
+        } else {
+            NaiveDate::from_ymd_opt(year, month + 1, 1)
+        };
+        let Some(next_month) = next_month else {
+            return;
+        };
+        let days_in_month = (next_month - Duration::days(1)).day();
+        let first_weekday = month_start.weekday().num_days_from_monday();
+        let today = Local::now().date_naive();
+        let events = self
+            .imp()
+            .event_records
+            .borrow()
+            .as_ref()
+            .map(|records| records.borrow().clone())
+            .unwrap_or_default();
+
+        while let Some(child) = grid.first_child() {
+            grid.remove(&child);
+        }
+
+        for (column, weekday) in ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"]
+            .iter()
+            .enumerate()
+        {
+            let label = gtk::Label::builder()
+                .label(*weekday)
+                .css_classes(vec!["heading", "dim-label"])
+                .margin_top(4)
+                .margin_bottom(4)
+                .build();
+            grid.attach(&label, column as i32, 0, 1, 1);
+        }
+
+        for cell_index in 0..42_i32 {
+            let row = cell_index / 7 + 1;
+            let column = cell_index % 7;
+            let day = cell_index - first_weekday as i32 + 1;
+            let cell_box = gtk::Box::builder()
+                .orientation(gtk::Orientation::Vertical)
+                .spacing(2)
+                .margin_start(4)
+                .margin_end(4)
+                .margin_top(4)
+                .margin_bottom(4)
+                .build();
+
+            let cell_frame = gtk::Frame::builder().child(&cell_box).build();
+            if !(1..=days_in_month as i32).contains(&day) {
+                cell_frame.add_css_class("dim-label");
+                grid.attach(&cell_frame, column, row, 1, 1);
+                continue;
+            }
+
+            let date = month_start + Duration::days(i64::from(day - 1));
+            let day_label = gtk::Label::builder()
+                .label(&day.to_string())
+                .halign(gtk::Align::Start)
+                .css_classes(vec!["caption"])
+                .build();
+            if date == today {
+                day_label.add_css_class("accent");
+                day_label.add_css_class("title-4");
+            }
+            cell_box.append(&day_label);
+
+            let day_events = events
+                .iter()
+                .filter(|event| event_occurs_on(event, date))
+                .collect::<Vec<_>>();
+            for event in day_events.iter().take(3) {
+                let event_label = gtk::Label::builder()
+                    .label(&format!("• {}", event.summary))
+                    .halign(gtk::Align::Start)
+                    .ellipsize(gtk::pango::EllipsizeMode::End)
+                    .css_classes(vec!["caption"])
+                    .build();
+                cell_box.append(&event_label);
+            }
+            if day_events.len() > 3 {
+                let more_label = gtk::Label::builder()
+                    .label(&format!("+{} weitere", day_events.len() - 3))
+                    .halign(gtk::Align::Start)
+                    .css_classes(vec!["caption", "dim-label"])
+                    .build();
+                cell_box.append(&more_label);
+            }
+
+            cell_frame.add_css_class("card");
+            grid.attach(&cell_frame, column, row, 1, 1);
+        }
+    }
+}
+
+fn shift_month(date: NaiveDate, direction: i32) -> NaiveDate {
+    let mut year = date.year();
+    let mut month = date.month() as i32 + direction;
+    if month == 0 {
+        year -= 1;
+        month = 12;
+    } else if month == 13 {
+        year += 1;
+        month = 1;
+    }
+    NaiveDate::from_ymd_opt(year, month as u32, 1).unwrap_or(date)
+}
+
+fn weekday_name(date: NaiveDate) -> &'static str {
+    [
+        "Montag",
+        "Dienstag",
+        "Mittwoch",
+        "Donnerstag",
+        "Freitag",
+        "Samstag",
+        "Sonntag",
+    ][date.weekday().num_days_from_monday() as usize]
+}
+
+fn clear_box(container: &gtk::Box) {
+    while let Some(child) = container.first_child() {
+        container.remove(&child);
+    }
+}
+
+fn empty_period_row(title: &str, subtitle: &str) -> adw::ActionRow {
+    adw::ActionRow::builder()
+        .title(title)
+        .subtitle(subtitle)
+        .sensitive(false)
+        .build()
+}
+
+fn calendar_event_row(event: &CalendarEventRecord) -> adw::ActionRow {
+    let mut details = vec![event_time_text(event)];
+    if !event.location.trim().is_empty() {
+        details.push(event.location.trim().to_string());
+    }
+    if !event.source_display_name.trim().is_empty() {
+        details.push(event.source_display_name.trim().to_string());
+    }
+    adw::ActionRow::builder()
+        .title(if event.summary.trim().is_empty() {
+            "(Ohne Titel)"
+        } else {
+            event.summary.as_str()
+        })
+        .subtitle(&details.join(" · "))
+        .build()
+}
+
+fn event_time_text(event: &CalendarEventRecord) -> String {
+    if event.all_day || event.start.len() <= 10 {
+        return "Ganztägig".to_string();
+    }
+    let start = event.start.get(11..16).unwrap_or(event.start.as_str());
+    if event.end.len() > 15 {
+        let end = event.end.get(11..16).unwrap_or(event.end.as_str());
+        format!("{start}–{end}")
+    } else {
+        start.to_string()
+    }
+}
+
+fn event_start_date(event: &CalendarEventRecord) -> Option<NaiveDate> {
+    NaiveDate::parse_from_str(event.start.get(..10)?, "%Y-%m-%d").ok()
+}
+
+fn event_end_date(event: &CalendarEventRecord) -> Option<NaiveDate> {
+    NaiveDate::parse_from_str(event.end.get(..10)?, "%Y-%m-%d").ok()
+}
+
+fn event_start_datetime(event: &CalendarEventRecord) -> Option<NaiveDateTime> {
+    let date = event_start_date(event)?;
+    if let Some(value) = event.start.get(..16) {
+        if let Ok(datetime) = NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M") {
+            return Some(datetime);
+        }
+    }
+    date.and_hms_opt(0, 0, 0)
+}
+
+fn event_occurs_on(event: &CalendarEventRecord, date: NaiveDate) -> bool {
+    let Some(start) = event_start_date(event) else {
+        return false;
+    };
+    let mut end = event_end_date(event).unwrap_or(start);
+    if event.all_day && end > start {
+        end -= Duration::days(1);
+    }
+    if end < start {
+        end = start;
+    }
+    (start..=end).contains(&date)
 }
 
 fn upsert_event_row(
@@ -871,5 +1204,81 @@ fn show_toast_for_widget<W: IsA<gtk::Widget>>(widget: &W, message: &str) {
 impl Default for CalendarPage {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn event_with_start(start: &str) -> CalendarEventRecord {
+        CalendarEventRecord {
+            uid: "event-1".to_string(),
+            source_uid: "source-1".to_string(),
+            source_display_name: "Kalender".to_string(),
+            component: String::new(),
+            summary: "Termin".to_string(),
+            start: start.to_string(),
+            end: String::new(),
+            location: String::new(),
+            description: String::new(),
+            all_day: false,
+        }
+    }
+
+    #[test]
+    fn month_event_date_uses_the_calendar_date_for_all_day_and_timed_events() {
+        assert_eq!(
+            event_start_date(&event_with_start("2026-08-10")),
+            NaiveDate::from_ymd_opt(2026, 8, 10)
+        );
+        assert_eq!(
+            event_start_date(&event_with_start("2026-08-10 12:00")),
+            NaiveDate::from_ymd_opt(2026, 8, 10)
+        );
+    }
+
+    #[test]
+    fn month_event_date_rejects_unparseable_backend_values() {
+        assert_eq!(event_start_date(&event_with_start("not-a-date")), None);
+    }
+
+    #[test]
+    fn event_occurrence_includes_timed_and_all_day_spans() {
+        let mut timed = event_with_start("2026-08-10 23:00");
+        timed.end = "2026-08-11 01:00".to_string();
+        assert!(event_occurs_on(
+            &timed,
+            NaiveDate::from_ymd_opt(2026, 8, 10).unwrap()
+        ));
+        assert!(event_occurs_on(
+            &timed,
+            NaiveDate::from_ymd_opt(2026, 8, 11).unwrap()
+        ));
+
+        let mut all_day = event_with_start("2026-08-10");
+        all_day.all_day = true;
+        all_day.end = "2026-08-13".to_string();
+        assert!(event_occurs_on(
+            &all_day,
+            NaiveDate::from_ymd_opt(2026, 8, 10).unwrap()
+        ));
+        assert!(event_occurs_on(
+            &all_day,
+            NaiveDate::from_ymd_opt(2026, 8, 12).unwrap()
+        ));
+        assert!(!event_occurs_on(
+            &all_day,
+            NaiveDate::from_ymd_opt(2026, 8, 13).unwrap()
+        ));
+    }
+
+    #[test]
+    fn event_time_text_distinguishes_all_day_and_timed_events() {
+        let mut event = event_with_start("2026-08-10 09:30");
+        event.end = "2026-08-10 10:45".to_string();
+        assert_eq!(event_time_text(&event), "09:30–10:45");
+        event.all_day = true;
+        assert_eq!(event_time_text(&event), "Ganztägig");
     }
 }

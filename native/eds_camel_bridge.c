@@ -15,6 +15,9 @@
 #include <libedataserver/e-source-camel.h>
 #include <libedataserver/e-source-credentials-provider.h>
 #include <libedataserver/e-source-mail-account.h>
+#include <libedataserver/e-source-mail-identity.h>
+#include <libedataserver/e-source-mail-submission.h>
+#include <libedataserver/e-source-mail-transport.h>
 #include <libedataserver/e-source-registry.h>
 #undef __LIBEDATASERVER_H_INSIDE__
 
@@ -2252,6 +2255,235 @@ finish:
     g_clear_object (&registry);
 
     return success ? 1 : (conflict ? 2 : 0);
+}
+
+int
+evolution_eds_camel_send_message (
+    const char *source_uid,
+    const uint8_t *raw_message,
+    size_t raw_message_len,
+    int *out_sent_message_saved,
+    char **out_error)
+{
+    ESourceRegistry *registry = NULL;
+    EdsCamelSession *session = NULL;
+    ESource *source = NULL;
+    ESource *identity_source = NULL;
+    ESource *transport_source = NULL;
+    CamelService *transport_service = NULL;
+    CamelMimeMessage *message = NULL;
+    CamelStream *stream = NULL;
+    CamelInternetAddress *from = NULL;
+    CamelInternetAddress *recipients = NULL;
+    GCancellable *cancellable = NULL;
+    GError *error = NULL;
+    ESourceMailAccount *account_extension;
+    ESourceMailIdentity *identity_extension;
+    ESourceMailSubmission *submission_extension;
+    ESourceBackend *transport_backend;
+    gchar *identity_uid = NULL;
+    gchar *transport_uid = NULL;
+    gchar *identity_address = NULL;
+    gchar *identity_name = NULL;
+    const gchar *backend_name;
+    gboolean sent_message_saved = FALSE;
+    gboolean success = FALSE;
+
+    if (out_error)
+        *out_error = NULL;
+    if (out_sent_message_saved)
+        *out_sent_message_saved = 0;
+
+    if (!source_uid || !*source_uid || !raw_message || raw_message_len == 0) {
+        if (out_error)
+            *out_error = g_strdup (
+                "Versand benötigt ein EDS-Konto und eine RFC822-Nachricht");
+        return 0;
+    }
+
+    camel_provider_init ();
+    registry = e_source_registry_new_sync (NULL, &error);
+    if (!registry)
+        goto finish;
+
+    source = e_source_registry_ref_source (registry, source_uid);
+    if (!source) {
+        g_set_error_literal (
+            &error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
+            "Das ausgewählte EDS-Mailkonto existiert nicht mehr");
+        goto finish;
+    }
+    if (!e_source_get_enabled (source)) {
+        g_set_error_literal (
+            &error, G_IO_ERROR, G_IO_ERROR_FAILED,
+            "Das ausgewählte EDS-Mailkonto ist deaktiviert");
+        goto finish;
+    }
+
+    account_extension = (ESourceMailAccount *) e_source_get_extension (
+        source, E_SOURCE_EXTENSION_MAIL_ACCOUNT);
+    identity_uid = account_extension
+        ? e_source_mail_account_dup_identity_uid (account_extension)
+        : NULL;
+    if (!identity_uid || !*identity_uid) {
+        g_set_error_literal (
+            &error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
+            "Für das EDS-Mailkonto ist keine Mail-Identität konfiguriert");
+        goto finish;
+    }
+
+    identity_source = e_source_registry_ref_source (registry, identity_uid);
+    if (!identity_source) {
+        g_set_error_literal (
+            &error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
+            "Die Mail-Identität des EDS-Kontos existiert nicht mehr");
+        goto finish;
+    }
+
+    identity_extension = (ESourceMailIdentity *) e_source_get_extension (
+        identity_source, E_SOURCE_EXTENSION_MAIL_IDENTITY);
+    identity_address = identity_extension
+        ? e_source_mail_identity_dup_address (identity_extension)
+        : NULL;
+    identity_name = identity_extension
+        ? e_source_mail_identity_dup_name (identity_extension)
+        : NULL;
+    if (!identity_address || !*identity_address) {
+        g_set_error_literal (
+            &error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
+            "Die ausgewählte EDS-Mail-Identität enthält keine Absenderadresse");
+        goto finish;
+    }
+
+    submission_extension = (ESourceMailSubmission *) e_source_get_extension (
+        identity_source, E_SOURCE_EXTENSION_MAIL_SUBMISSION);
+    if (!submission_extension)
+        submission_extension = (ESourceMailSubmission *) e_source_get_extension (
+            source, E_SOURCE_EXTENSION_MAIL_SUBMISSION);
+    transport_uid = submission_extension
+        ? e_source_mail_submission_dup_transport_uid (submission_extension)
+        : NULL;
+    if (!transport_uid || !*transport_uid) {
+        g_set_error_literal (
+            &error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
+            "Für die EDS-Mail-Identität ist kein Mail-Transport konfiguriert");
+        goto finish;
+    }
+
+    if (g_strcmp0 (transport_uid, source_uid) == 0)
+        transport_source = g_object_ref (source);
+    else
+        transport_source = e_source_registry_ref_source (registry, transport_uid);
+    if (!transport_source) {
+        g_set_error_literal (
+            &error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
+            "Der konfigurierte EDS-Mail-Transport existiert nicht mehr");
+        goto finish;
+    }
+
+    transport_backend = (ESourceBackend *) e_source_get_extension (
+        transport_source, E_SOURCE_EXTENSION_MAIL_TRANSPORT);
+    backend_name = transport_backend
+        ? e_source_backend_get_backend_name (transport_backend)
+        : NULL;
+    if (!backend_name || !*backend_name) {
+        g_set_error_literal (
+            &error, G_IO_ERROR, G_IO_ERROR_NOT_SUPPORTED,
+            "Der EDS-Mail-Transport enthält keinen Camel-Backendnamen");
+        goto finish;
+    }
+
+    session = eds_camel_session_new (registry);
+    cancellable = g_cancellable_new ();
+    transport_service = camel_session_add_service (
+        CAMEL_SESSION (session), transport_uid, backend_name,
+        CAMEL_PROVIDER_TRANSPORT, &error);
+    if (!transport_service)
+        goto finish;
+
+    e_source_camel_configure_service (transport_source, transport_service);
+    if (!camel_service_connect_sync (
+            transport_service, cancellable, &error))
+        goto finish;
+    if (!CAMEL_IS_TRANSPORT (transport_service)) {
+        g_set_error_literal (
+            &error, G_IO_ERROR, G_IO_ERROR_NOT_SUPPORTED,
+            "Der EDS-Mail-Transport ist kein Camel-Transport");
+        goto finish;
+    }
+
+    message = camel_mime_message_new ();
+    stream = camel_stream_mem_new_with_buffer (
+        (const gchar *) raw_message, raw_message_len);
+    if (!camel_data_wrapper_construct_from_stream_sync (
+            CAMEL_DATA_WRAPPER (message), stream, cancellable, &error))
+        goto finish;
+
+    from = camel_internet_address_new ();
+    if (!camel_internet_address_add (
+            from,
+            identity_name && *identity_name ? identity_name : NULL,
+            identity_address)) {
+        g_set_error_literal (
+            &error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
+            "Die EDS-Absenderadresse konnte nicht als Internetadresse gelesen werden");
+        goto finish;
+    }
+    camel_mime_message_set_from (message, from);
+    camel_mime_message_set_source (message, source_uid);
+
+    recipients = camel_internet_address_new ();
+    CamelInternetAddress *part = camel_mime_message_get_recipients (
+        message, CAMEL_RECIPIENT_TYPE_TO);
+    if (part)
+        camel_address_cat (CAMEL_ADDRESS (recipients), CAMEL_ADDRESS (part));
+    part = camel_mime_message_get_recipients (
+        message, CAMEL_RECIPIENT_TYPE_CC);
+    if (part)
+        camel_address_cat (CAMEL_ADDRESS (recipients), CAMEL_ADDRESS (part));
+    part = camel_mime_message_get_recipients (
+        message, CAMEL_RECIPIENT_TYPE_BCC);
+    if (part)
+        camel_address_cat (CAMEL_ADDRESS (recipients), CAMEL_ADDRESS (part));
+    if (camel_address_length (CAMEL_ADDRESS (recipients)) == 0) {
+        g_set_error_literal (
+            &error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
+            "Die RFC822-Nachricht enthält keine gültigen Empfänger");
+        goto finish;
+    }
+
+    /* Camel converts 8-bit parts to a transport-safe representation when
+     * necessary; this also keeps locally generated UTF-8 HTML valid for SMTP
+     * providers that do not advertise 8BITMIME. */
+    camel_mime_message_encode_8bit_parts (message);
+    success = camel_transport_send_to_sync (
+        CAMEL_TRANSPORT (transport_service), message,
+        CAMEL_ADDRESS (from), CAMEL_ADDRESS (recipients),
+        &sent_message_saved, cancellable, &error);
+
+finish:
+    if (!success && out_error && error)
+        *out_error = g_strdup (error->message);
+    if (out_sent_message_saved)
+        *out_sent_message_saved = sent_message_saved ? 1 : 0;
+    g_clear_error (&error);
+    g_clear_pointer (&identity_uid, g_free);
+    g_clear_pointer (&transport_uid, g_free);
+    g_clear_pointer (&identity_address, g_free);
+    g_clear_pointer (&identity_name, g_free);
+    g_clear_object (&recipients);
+    g_clear_object (&from);
+    g_clear_object (&stream);
+    g_clear_object (&message);
+    g_clear_object (&transport_service);
+    g_clear_object (&transport_source);
+    g_clear_object (&identity_source);
+    g_clear_object (&cancellable);
+    g_clear_object (&session);
+    g_clear_object (&source);
+    g_clear_object (&registry);
+
+    return success ? 1 : 0;
 }
 
 void

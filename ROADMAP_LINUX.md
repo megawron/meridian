@@ -112,9 +112,12 @@ Status:
     Berechtigung müssen als nicht ausführbare bzw. konflikthafte Aktion enden.
   - den persistenten Verlauf schließen, neu starten und mit maximal 100
     Einträgen wieder laden.
-- `[ ]` Vollständige Ordnerhierarchie als `GtkTreeListModel` mit stabilen
-  EDS-/Camel-Identitäten anbinden. Erweitern, Einklappen, Umbenennen, Löschen,
-  Neuordnen und Kontowechsel müssen ohne Vollreload funktionieren.
+- `[~]` Die GTK4-rs-Seitenleiste stellt die aus CamelFolderInfo geladenen
+  EDS-Ordner bereits als aufklappbares `GtkTreeListModel` mit stabilen
+  Konto-/Ordner-Schlüsseln dar. Auf Linux müssen noch die reale
+  Provider-Hierarchie, Ordner-Separatoren und der Lebenszyklus verifiziert
+  werden: Erweitern, Einklappen, Umbenennen, Löschen, Neuordnen und
+  Kontowechsel müssen ohne Vollreload funktionieren.
 - `[ ]` CamelFolderThread bzw. eine gleichwertige servernahe Threadstrecke
   gegen echte RFC-822-Referenzen prüfen. Große Threads, fehlende Referenzen,
   Betreffänderungen und mehrere Konten müssen korrekt gruppiert werden.
@@ -129,11 +132,19 @@ Status:
 
 ## 4. EDS-Versand und Kontofunktionen
 
-- `[ ]` CamelTransport für SMTP/Submission konfigurieren und mit Passwort- und
-  OAuth2-Konten testen.
+- `[~]` Die native Camel-Schnittstelle löst aus einem EDS-Mailkonto die
+  zugehörige Mail-Identität, Submission-Quelle und den konfigurierten
+  Transport auf, liest RFC822-Nachrichten ein und ruft den originalen
+  `CamelTransport::send_to_sync()`-Pfad auf. Offen sind der Linux-Build gegen
+  die installierten Header sowie der Laufzeittest mit Passwort-, OAuth2- und
+  unterschiedlichen SMTP/Submission-Providern.
 - `[ ]` Entwurf speichern, ändern, löschen und aus EDS-Drafts wieder öffnen.
-- `[ ]` Mail mit To/Cc/Bcc, Reply, Reply-All, Forward, Anhängen, Inline-CID,
-  Signatur, Quoting und Autosave versenden.
+- `[~]` Die GTK4-rs-Compose-Strecke hält To/Cc/Bcc, Anhänge,
+  Reply-/Forward-Vorbelegung und lokale HTML-Entwürfe vor. Der Composer baut
+  jetzt einen getesteten RFC822/MIME-Body, liest Anhänge im Worker und reicht
+  ihn an den Linux-Camel-Transport weiter. EDS-Draft-/Sent-Ordner, Inline-CID,
+  Signatur, Quoting und Autosave müssen noch gegen echte Provider verifiziert
+  werden.
 - `[ ]` Gesendet-Ordner, Serverantwort, Message-ID und Fehler beim Versand
   verifizieren; ein Versand darf bei fehlender Bestätigung nicht als Erfolg
   erscheinen.
@@ -152,8 +163,9 @@ Status:
 - `[ ]` Wiederholungen, Zeitzonen, Teilnehmer, iTIP/iMIP, freie Zeit,
   Einladungsantworten, private Termine, Kategorien, Anhänge und Alarme mit
   realen EDS-Kalendern testen.
-- `[ ]` Tages-, Arbeitswochen-, Wochen-, Monats- und Agendaansicht gegen
-  Zeitzonenwechsel, DST-Grenzen und wiederkehrende Termine prüfen.
+- `[~]` Native Datenpfade speisen Tages-, Wochen- und Monatsansicht; die
+  Linux-Laufzeitprüfung gegen Zeitzonenwechsel, DST-Grenzen und wiederkehrende
+  Termine sowie Arbeitswochenraster/Agenda stehen noch aus.
 - `[ ]` Offline-/Online-Wiederaufnahme und Erinnerungsdienst testen, inklusive
   Neustart der EDS-Kalenderfactory.
 

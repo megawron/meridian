@@ -13,6 +13,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::models::eds_source::EdsSourceObject;
+use crate::models::folder::FolderObject;
 use crate::models::mail_message::MailMessageObject;
 use crate::services::AppSettings;
 use crate::services::account_config_service::AccountConfigStore;
@@ -78,24 +79,122 @@ impl Default for FolderSelection {
     }
 }
 
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct MessageSearchQuery {
+    text_terms: Vec<String>,
+    from: Option<String>,
+    to: Option<String>,
+    subject: Option<String>,
+    unread: Option<bool>,
+    flagged: Option<bool>,
+    has_attachment: Option<bool>,
+}
+
+impl MessageSearchQuery {
+    fn parse(input: &str) -> Self {
+        let mut query = Self::default();
+        for token in input.split_whitespace() {
+            let Some((key, value)) = token.split_once(':') else {
+                query.text_terms.push(token.to_lowercase());
+                continue;
+            };
+            let value = value.trim().to_lowercase();
+            if value.is_empty() {
+                query.text_terms.push(token.to_lowercase());
+                continue;
+            }
+            match key.to_ascii_lowercase().as_str() {
+                "from" => query.from = Some(value),
+                "to" => query.to = Some(value),
+                "subject" => query.subject = Some(value),
+                "is" => match value.as_str() {
+                    "unread" => query.unread = Some(true),
+                    "read" => query.unread = Some(false),
+                    "starred" | "flagged" => query.flagged = Some(true),
+                    _ => query.text_terms.push(token.to_lowercase()),
+                },
+                "has" => match value.as_str() {
+                    "attachment" | "attachments" => query.has_attachment = Some(true),
+                    _ => query.text_terms.push(token.to_lowercase()),
+                },
+                _ => query.text_terms.push(token.to_lowercase()),
+            }
+        }
+        query
+    }
+
+    fn is_empty(&self) -> bool {
+        self.text_terms.is_empty()
+            && self.from.is_none()
+            && self.to.is_none()
+            && self.subject.is_none()
+            && self.unread.is_none()
+            && self.flagged.is_none()
+            && self.has_attachment.is_none()
+    }
+}
+
 fn message_matches_filter(
     message: &MailMessageObject,
-    query: &str,
+    query: &MessageSearchQuery,
     filter: MessageFilter,
     folder_selection: &FolderSelection,
 ) -> bool {
-    let query_matches = query.is_empty()
-        || message.subject().to_lowercase().contains(query)
-        || message.sender_name().to_lowercase().contains(query)
-        || message.sender_email().to_lowercase().contains(query)
-        || message.preview_snippet().to_lowercase().contains(query);
+    let subject = message.subject().to_lowercase();
+    let sender_name = message.sender_name().to_lowercase();
+    let sender_email = message.sender_email().to_lowercase();
+    let recipient_to = message.recipient_to().to_lowercase();
+    let preview = message.preview_snippet().to_lowercase();
+    let body = message.html_body().to_lowercase();
+    let searchable_text = [
+        subject.as_str(),
+        sender_name.as_str(),
+        sender_email.as_str(),
+        recipient_to.as_str(),
+        preview.as_str(),
+        body.as_str(),
+    ]
+    .join(" ");
+    let text_matches = query
+        .text_terms
+        .iter()
+        .all(|term| searchable_text.contains(term));
+    let field_matches = query
+        .from
+        .as_deref()
+        .map(|value| sender_name.contains(value) || sender_email.contains(value))
+        .unwrap_or(true)
+        && query
+            .to
+            .as_deref()
+            .map(|value| recipient_to.contains(value))
+            .unwrap_or(true)
+        && query
+            .subject
+            .as_deref()
+            .map(|value| subject.contains(value))
+            .unwrap_or(true)
+        && query
+            .unread
+            .map(|unread| message.is_unread() == unread)
+            .unwrap_or(true)
+        && query
+            .flagged
+            .map(|flagged| message.is_flagged() == flagged)
+            .unwrap_or(true)
+        && query
+            .has_attachment
+            .map(|has_attachment| message.attachments().is_empty() != has_attachment)
+            .unwrap_or(true);
     let state_matches = match filter {
         MessageFilter::All => true,
         MessageFilter::Unread => message.is_unread(),
         MessageFilter::Flagged => message.is_flagged(),
     };
 
-    query_matches && state_matches && folder_selection.matches(message)
+    (query.is_empty() || (text_matches && field_matches))
+        && state_matches
+        && folder_selection.matches(message)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -113,6 +212,19 @@ impl FolderRowData {
             folder_name: self.folder_name.clone(),
         }
     }
+}
+
+#[derive(Clone, Debug)]
+struct DynamicFolderNode {
+    source_uid: String,
+    source_display_name: String,
+    folder_name: String,
+    display_name: String,
+    icon_name: String,
+    unread_count: u32,
+    total_count: u32,
+    selectable: bool,
+    parent_name: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -252,6 +364,10 @@ mod imp {
         pub thread_selection_syncing: Cell<bool>,
         pub(super) folder_selection: RefCell<Option<Rc<RefCell<FolderSelection>>>>,
         pub folder_list: RefCell<Option<gtk::ListBox>>,
+        pub dynamic_folder_store: RefCell<Option<gio::ListStore>>,
+        pub dynamic_folder_selection: RefCell<Option<gtk::SingleSelection>>,
+        pub dynamic_folder_children: RefCell<Option<Rc<RefCell<HashMap<String, gio::ListStore>>>>>,
+        pub dynamic_folder_index: RefCell<Option<Rc<RefCell<HashMap<String, FolderObject>>>>>,
         pub folder_section: RefCell<Option<gtk::Box>>,
         pub message_state: RefCell<Option<gtk::Label>>,
         pub refresh_button: RefCell<Option<gtk::Button>>,
@@ -924,6 +1040,164 @@ impl MailPage {
             folder_list.append(&row);
         }
 
+        let dynamic_folder_store = gio::ListStore::new::<FolderObject>();
+        let dynamic_folder_children =
+            Rc::new(RefCell::new(HashMap::<String, gio::ListStore>::new()));
+        let dynamic_folder_index = Rc::new(RefCell::new(HashMap::<String, FolderObject>::new()));
+        let children_for_dynamic_model = Rc::clone(&dynamic_folder_children);
+        let dynamic_tree_model =
+            gtk::TreeListModel::new(dynamic_folder_store.clone(), false, false, move |item| {
+                let folder = item.downcast_ref::<FolderObject>()?;
+                children_for_dynamic_model
+                    .borrow()
+                    .get(&folder.id())
+                    .cloned()
+                    .map(|store| store.upcast::<gio::ListModel>())
+            });
+        let dynamic_folder_selection = gtk::SingleSelection::new(Some(dynamic_tree_model));
+        dynamic_folder_selection.set_autoselect(false);
+        dynamic_folder_selection.set_can_unselect(true);
+
+        let dynamic_factory = gtk::SignalListItemFactory::new();
+        dynamic_factory.connect_setup(|_, list_item| {
+            let list_item = list_item
+                .downcast_ref::<gtk::ListItem>()
+                .expect("Expected ListItem");
+            let expander = gtk::TreeExpander::new();
+            let row = gtk::Box::builder()
+                .orientation(gtk::Orientation::Horizontal)
+                .spacing(8)
+                .margin_start(8)
+                .margin_end(8)
+                .margin_top(5)
+                .margin_bottom(5)
+                .build();
+            let icon = gtk::Image::new();
+            icon.add_css_class("dim-label");
+            let label = gtk::Label::builder()
+                .halign(gtk::Align::Start)
+                .hexpand(true)
+                .ellipsize(pango::EllipsizeMode::End)
+                .build();
+            let badge = gtk::Label::builder()
+                .css_classes(vec!["badge", "numeric"])
+                .halign(gtk::Align::End)
+                .build();
+            row.append(&icon);
+            row.append(&label);
+            row.append(&badge);
+            expander.set_child(Some(&row));
+            list_item.set_child(Some(&expander));
+        });
+        dynamic_factory.connect_bind(|_, list_item| {
+            let list_item = list_item
+                .downcast_ref::<gtk::ListItem>()
+                .expect("Expected ListItem");
+            let tree_row = list_item
+                .item()
+                .and_downcast::<gtk::TreeListRow>()
+                .expect("Expected TreeListRow");
+            let folder = tree_row
+                .item()
+                .and_downcast::<FolderObject>()
+                .expect("Expected FolderObject");
+            let expander = list_item
+                .child()
+                .and_downcast::<gtk::TreeExpander>()
+                .expect("Expected TreeExpander");
+            expander.set_list_row(Some(&tree_row));
+            let row = expander
+                .child()
+                .and_downcast::<gtk::Box>()
+                .expect("Expected folder row");
+            if let Some(icon) = row.first_child().and_downcast::<gtk::Image>() {
+                icon.set_icon_name(Some(&folder.icon_name()));
+            }
+            if let Some(label) = row
+                .first_child()
+                .and_then(|child| child.next_sibling())
+                .and_downcast::<gtk::Label>()
+            {
+                label.set_label(&folder.name());
+                label.set_sensitive(folder.selectable());
+            }
+            if let Some(badge) = row.last_child().and_downcast::<gtk::Label>() {
+                let count = if folder.unread_count() > 0 {
+                    folder.unread_count()
+                } else {
+                    folder.total_count()
+                };
+                badge.set_label(&count.to_string());
+                badge.set_visible(count > 0);
+            }
+        });
+        dynamic_factory.connect_unbind(|_, list_item| {
+            let list_item = list_item
+                .downcast_ref::<gtk::ListItem>()
+                .expect("Expected ListItem");
+            if let Some(expander) = list_item.child().and_downcast::<gtk::TreeExpander>() {
+                expander.set_list_row(None);
+            }
+        });
+        let dynamic_folder_view = gtk::ListView::builder()
+            .model(&dynamic_folder_selection)
+            .factory(&dynamic_factory)
+            .css_classes(vec!["navigation-sidebar"])
+            .build();
+
+        self.imp()
+            .dynamic_folder_store
+            .replace(Some(dynamic_folder_store));
+        self.imp()
+            .dynamic_folder_selection
+            .replace(Some(dynamic_folder_selection.clone()));
+        self.imp()
+            .dynamic_folder_children
+            .replace(Some(Rc::clone(&dynamic_folder_children)));
+        self.imp()
+            .dynamic_folder_index
+            .replace(Some(Rc::clone(&dynamic_folder_index)));
+
+        let page_for_dynamic_selection = self.downgrade();
+        dynamic_folder_selection.connect_selected_item_notify(move |selection| {
+            let Some(page) = page_for_dynamic_selection.upgrade() else {
+                return;
+            };
+            if page.imp().updating_folder_rows.get() {
+                return;
+            }
+            let Some(row) = selection.selected_item().and_downcast::<gtk::TreeListRow>() else {
+                return;
+            };
+            let Some(folder) = row.item().and_downcast::<FolderObject>() else {
+                return;
+            };
+            if !folder.selectable() {
+                return;
+            }
+            let (Some(source_uid), Some(folder_name)) = (folder.source_uid(), folder.folder_name())
+            else {
+                return;
+            };
+            let folder_selection = FolderSelection {
+                folder_id: folder.id(),
+                source_uid: Some(source_uid.clone()),
+                folder_name: Some(folder_name.clone()),
+            };
+            if let Some(current) = page.imp().folder_selection.borrow().as_ref() {
+                current.replace(folder_selection);
+            }
+            page.start_mail_load(
+                MailLoadRequest {
+                    source_uid: Some(source_uid),
+                    folder_name: Some(folder_name),
+                    offset: 0,
+                    max_messages_per_folder: camel_mail_service::default_page_limit(),
+                },
+                true,
+            );
+        });
+
         let search_header = gtk::Label::builder()
             .label("Suchordner")
             .css_classes(vec!["title-4"])
@@ -953,6 +1227,16 @@ impl MailPage {
             .visible(false)
             .build();
         folder_section.append(&folder_list);
+        let dynamic_header = gtk::Label::builder()
+            .label("EDS-Ordner")
+            .css_classes(vec!["title-4"])
+            .halign(gtk::Align::Start)
+            .margin_start(12)
+            .margin_top(16)
+            .margin_bottom(4)
+            .build();
+        folder_section.append(&dynamic_header);
+        folder_section.append(&dynamic_folder_view);
         folder_section.append(&search_header);
         folder_section.append(&search_list);
 
@@ -1064,40 +1348,6 @@ impl MailPage {
         row
     }
 
-    fn create_camel_folder_row(folder: &camel_mail_service::CamelFolderSummary) -> gtk::ListBoxRow {
-        let label = if folder.source_display_name.is_empty() {
-            folder.display_name.clone()
-        } else {
-            format!("{} · {}", folder.source_display_name, folder.display_name)
-        };
-        let icon = match folder.folder_id.as_str() {
-            "inbox" => "mail-inbox-symbolic",
-            "sent" => "mail-sent-symbolic",
-            "drafts" => "mail-drafts-symbolic",
-            "trash" => "edit-delete-symbolic",
-            "archive" => "mail-archive-symbolic",
-            "junk" => "dialog-warning-symbolic",
-            _ => "folder-symbolic",
-        };
-        let badge = if folder.unread_count > 0 {
-            folder.unread_count.to_string()
-        } else if folder.total_count > 0 {
-            folder.total_count.to_string()
-        } else {
-            String::new()
-        };
-
-        Self::create_folder_row_with_backend(
-            &folder.folder_id,
-            icon,
-            &label,
-            &badge,
-            Some(&folder.source_uid),
-            Some(&folder.folder_name),
-            true,
-        )
-    }
-
     fn update_folder_counts(folder_list: &gtk::ListBox, counts: &HashMap<String, (u32, u32)>) {
         for index in 0..folder_list.observe_children().n_items() {
             let Some(row) = folder_list
@@ -1171,10 +1421,144 @@ impl MailPage {
             folder_list.remove(&row);
         }
 
-        for folder in folders.iter().filter(|folder| folder.is_selectable) {
-            folder_list.append(&Self::create_camel_folder_row(folder));
+        let Some(root_store) = self.imp().dynamic_folder_store.borrow().as_ref().cloned() else {
+            self.imp().updating_folder_rows.set(was_updating);
+            return;
+        };
+        let Some(children) = self
+            .imp()
+            .dynamic_folder_children
+            .borrow()
+            .as_ref()
+            .cloned()
+        else {
+            self.imp().updating_folder_rows.set(was_updating);
+            return;
+        };
+        let Some(index) = self.imp().dynamic_folder_index.borrow().as_ref().cloned() else {
+            self.imp().updating_folder_rows.set(was_updating);
+            return;
+        };
+
+        let mut nodes = Vec::<DynamicFolderNode>::new();
+        for folder in folders {
+            let parent_name = Self::parent_folder_name(&folder.folder_name);
+            nodes.push(DynamicFolderNode {
+                source_uid: folder.source_uid.clone(),
+                source_display_name: folder.source_display_name.clone(),
+                folder_name: folder.folder_name.clone(),
+                display_name: folder.display_name.clone(),
+                icon_name: Self::folder_icon_name(&folder.folder_id).to_string(),
+                unread_count: folder.unread_count,
+                total_count: folder.total_count,
+                selectable: folder.is_selectable,
+                parent_name,
+            });
+        }
+
+        let mut known_nodes = nodes
+            .iter()
+            .map(|node| Self::dynamic_folder_key(&node.source_uid, &node.folder_name))
+            .collect::<HashSet<_>>();
+        let mut synthetic_nodes = Vec::new();
+        for node in &nodes {
+            let mut parent_name = node.parent_name.clone();
+            while let Some(parent) = parent_name {
+                let key = Self::dynamic_folder_key(&node.source_uid, &parent);
+                if known_nodes.insert(key) {
+                    synthetic_nodes.push(DynamicFolderNode {
+                        source_uid: node.source_uid.clone(),
+                        source_display_name: node.source_display_name.clone(),
+                        folder_name: parent.clone(),
+                        display_name: parent
+                            .rsplit('/')
+                            .next()
+                            .filter(|name| !name.is_empty())
+                            .unwrap_or(parent.as_str())
+                            .to_string(),
+                        icon_name: "folder-symbolic".to_string(),
+                        unread_count: 0,
+                        total_count: 0,
+                        selectable: false,
+                        parent_name: Self::parent_folder_name(&parent),
+                    });
+                }
+                parent_name = Self::parent_folder_name(&parent);
+            }
+        }
+        nodes.extend(synthetic_nodes);
+        nodes.sort_by(|left, right| {
+            left.source_display_name
+                .cmp(&right.source_display_name)
+                .then_with(|| left.folder_name.cmp(&right.folder_name))
+        });
+
+        let mut roots = Vec::new();
+        let mut child_stores = HashMap::<String, gio::ListStore>::new();
+        let mut folder_index = HashMap::<String, FolderObject>::new();
+        for node in nodes {
+            let id = Self::dynamic_folder_key(&node.source_uid, &node.folder_name);
+            let parent_id = node
+                .parent_name
+                .as_deref()
+                .map(|name| Self::dynamic_folder_key(&node.source_uid, name));
+            let label = if node.parent_name.is_none() && !node.source_display_name.is_empty() {
+                format!("{} · {}", node.source_display_name, node.display_name)
+            } else {
+                node.display_name.clone()
+            };
+            let folder = FolderObject::new_backend(
+                &id,
+                &label,
+                &node.icon_name,
+                node.unread_count,
+                node.total_count,
+                &node.source_uid,
+                &node.folder_name,
+                parent_id.as_deref(),
+                node.selectable,
+            );
+            if let Some(parent_id) = parent_id {
+                child_stores
+                    .entry(parent_id)
+                    .or_insert_with(|| gio::ListStore::new::<FolderObject>())
+                    .append(&folder);
+            } else {
+                roots.push(folder.clone());
+            }
+            folder_index.insert(id, folder);
+        }
+
+        root_store.remove_all();
+        children.replace(child_stores);
+        index.replace(folder_index);
+        for root in roots {
+            root_store.append(&root);
         }
         self.imp().updating_folder_rows.set(was_updating);
+    }
+
+    fn dynamic_folder_key(source_uid: &str, folder_name: &str) -> String {
+        format!("{source_uid}\u{0}{folder_name}")
+    }
+
+    fn parent_folder_name(folder_name: &str) -> Option<String> {
+        folder_name
+            .rsplit_once('/')
+            .map(|(parent, _)| parent.to_string())
+            .filter(|parent| !parent.is_empty())
+    }
+
+    fn folder_icon_name(folder_id: &str) -> &'static str {
+        match folder_id {
+            "inbox" => "mail-inbox-symbolic",
+            "sent" => "mail-sent-symbolic",
+            "drafts" => "mail-drafts-symbolic",
+            "trash" => "edit-delete-symbolic",
+            "archive" => "mail-archive-symbolic",
+            "junk" => "dialog-warning-symbolic",
+            _ => "folder-symbolic",
+        }
     }
 
     fn select_folder_row(&self, selection: &FolderSelection) {
@@ -1200,6 +1584,38 @@ impl MailPage {
             }
         }
         folder_list.select_row(matching_row.as_ref());
+        if let Some(dynamic_selection) = self
+            .imp()
+            .dynamic_folder_selection
+            .borrow()
+            .as_ref()
+            .cloned()
+        {
+            if matching_row.is_some() {
+                dynamic_selection.set_selected(gtk::INVALID_LIST_POSITION);
+            } else {
+                for index in 0..dynamic_selection.n_items() {
+                    let Some(row) = dynamic_selection
+                        .item(index)
+                        .and_downcast::<gtk::TreeListRow>()
+                    else {
+                        continue;
+                    };
+                    let Some(folder) = row.item().and_downcast::<FolderObject>() else {
+                        continue;
+                    };
+                    let current = FolderSelection {
+                        folder_id: folder.id(),
+                        source_uid: folder.source_uid(),
+                        folder_name: folder.folder_name(),
+                    };
+                    if current == *selection {
+                        dynamic_selection.set_selected(index);
+                        break;
+                    }
+                }
+            }
+        }
         self.imp().updating_folder_rows.set(false);
     }
 
@@ -1220,7 +1636,7 @@ impl MailPage {
         let store = gio::ListStore::new::<MailMessageObject>();
 
         // Custom filter for real-time search
-        let query = Rc::new(RefCell::new(String::new()));
+        let query = Rc::new(RefCell::new(MessageSearchQuery::default()));
         let message_filter = Rc::new(Cell::new(MessageFilter::All));
         let folder_selection = Rc::new(RefCell::new(FolderSelection::all()));
         let query_for_filter = Rc::clone(&query);
@@ -1235,7 +1651,7 @@ impl MailPage {
             let selected_folder = folder_selection_for_filter.borrow();
             message_matches_filter(
                 msg,
-                query.as_str(),
+                &query,
                 message_filter_for_filter.get(),
                 &selected_folder,
             )
@@ -1265,7 +1681,7 @@ impl MailPage {
                     messages.iter().any(|message| {
                         message_matches_filter(
                             message,
-                            query.as_str(),
+                            &query,
                             message_filter_for_thread_filter.get(),
                             &selected_folder,
                         )
@@ -1274,7 +1690,7 @@ impl MailPage {
                 .unwrap_or_else(|| {
                     message_matches_filter(
                         root,
-                        query.as_str(),
+                        &query,
                         message_filter_for_thread_filter.get(),
                         &selected_folder,
                     )
@@ -1626,7 +2042,7 @@ impl MailPage {
             .build();
 
         let search_entry = gtk::SearchEntry::builder()
-            .placeholder_text("Mails durchsuchen…")
+            .placeholder_text("Mails durchsuchen (from:, is:unread, has:attachment)…")
             .hexpand(true)
             .build();
 
@@ -1634,7 +2050,7 @@ impl MailPage {
         let filter_for_search = custom_filter.clone();
         let thread_filter_for_search = thread_filter.clone();
         search_entry.connect_search_changed(move |entry| {
-            *query_for_search.borrow_mut() = entry.text().to_lowercase();
+            *query_for_search.borrow_mut() = MessageSearchQuery::parse(entry.text().as_str());
             filter_for_search.changed(gtk::FilterChange::Different);
             thread_filter_for_search.changed(gtk::FilterChange::Different);
         });
@@ -3111,7 +3527,7 @@ impl MailPage {
                     if replace {
                         self.rebuild_camel_folder_rows(folder_list, &camel.folders);
                     }
-                    Self::update_camel_folder_counts(folder_list, &camel.folders);
+                    self.update_camel_folder_counts(folder_list, &camel.folders);
                 }
 
                 let appended = if let Some(store) = self.imp().message_store.borrow().as_ref() {
@@ -3366,6 +3782,7 @@ impl MailPage {
     }
 
     fn update_camel_folder_counts(
+        &self,
         folder_list: &gtk::ListBox,
         folders: &[camel_mail_service::CamelFolderSummary],
     ) {
@@ -3421,6 +3838,36 @@ impl MailPage {
             });
             badge.set_visible(unread > 0 || total > 0);
         }
+
+        if let Some(index) = self.imp().dynamic_folder_index.borrow().as_ref().cloned() {
+            let index = index.borrow();
+            for folder in folders {
+                let id = Self::dynamic_folder_key(&folder.source_uid, &folder.folder_name);
+                if let Some(object) = index.get(&id) {
+                    object.set_counts(folder.unread_count, folder.total_count);
+                }
+            }
+        }
+        if let Some(root_store) = self.imp().dynamic_folder_store.borrow().as_ref() {
+            let count = root_store.n_items();
+            if count > 0 {
+                root_store.items_changed(0, count, count);
+            }
+        }
+        if let Some(children) = self
+            .imp()
+            .dynamic_folder_children
+            .borrow()
+            .as_ref()
+            .cloned()
+        {
+            for store in children.borrow().values() {
+                let count = store.n_items();
+                if count > 0 {
+                    store.items_changed(0, count, count);
+                }
+            }
+        }
     }
 }
 
@@ -3447,5 +3894,26 @@ mod tests {
 
         assert!(status.contains("1 Konto nicht synchronisiert"));
         assert!(status.contains("OAuth-Anmeldung fehlgeschlagen"));
+    }
+
+    #[test]
+    fn message_search_query_parses_field_and_state_operators() {
+        let query = MessageSearchQuery::parse(
+            "from:alice@example.test subject:Roadmap is:unread has:attachment deploy",
+        );
+
+        assert_eq!(query.from.as_deref(), Some("alice@example.test"));
+        assert_eq!(query.subject.as_deref(), Some("roadmap"));
+        assert_eq!(query.unread, Some(true));
+        assert_eq!(query.has_attachment, Some(true));
+        assert_eq!(query.text_terms, vec!["deploy"]);
+    }
+
+    #[test]
+    fn message_search_query_keeps_unknown_operators_as_text() {
+        let query = MessageSearchQuery::parse("label:important is:read");
+
+        assert_eq!(query.unread, Some(false));
+        assert_eq!(query.text_terms, vec!["label:important"]);
     }
 }

@@ -276,6 +276,14 @@ mod ffi {
             out_error: *mut *mut c_char,
         ) -> i32;
 
+        pub(super) fn evolution_eds_camel_send_message(
+            source_uid: *const c_char,
+            raw_message: *const u8,
+            raw_message_len: usize,
+            out_sent_message_saved: *mut i32,
+            out_error: *mut *mut c_char,
+        ) -> i32;
+
         pub(super) fn evolution_eds_camel_watcher_new(
             source_uid: *const c_char,
             out_watcher: *mut *mut c_void,
@@ -1074,6 +1082,52 @@ pub(crate) fn apply_operation(operation: CamelMailOperation) -> Result<(), Strin
     #[cfg(not(eds_camel_bridge))]
     {
         let _ = operation;
+        Err("native EDS/Camel adapter is not available in this build".to_string())
+    }
+}
+
+/// Send one complete RFC822 message through the transport configured for an
+/// EDS mail-account source.  The operation is intentionally synchronous here;
+/// callers run it on a worker thread so Camel can authenticate and perform
+/// network I/O without blocking GTK's main context.
+pub(crate) fn send_message(source_uid: &str, raw_message: &[u8]) -> Result<bool, String> {
+    #[cfg(eds_camel_bridge)]
+    {
+        use std::ffi::{CStr, CString, c_char};
+
+        let source_uid = CString::new(source_uid)
+            .map_err(|_| "EDS source UID enthält ein ungültiges NUL-Byte".to_string())?;
+        if raw_message.is_empty() {
+            return Err("Die RFC822-Nachricht ist leer".to_string());
+        }
+
+        let mut sent_message_saved = 0;
+        let mut error_message: *mut c_char = std::ptr::null_mut();
+        let result = unsafe {
+            ffi::evolution_eds_camel_send_message(
+                source_uid.as_ptr(),
+                raw_message.as_ptr(),
+                raw_message.len(),
+                &mut sent_message_saved,
+                &mut error_message,
+            )
+        };
+        let error = (!error_message.is_null()).then(|| unsafe {
+            let message = CStr::from_ptr(error_message).to_string_lossy().into_owned();
+            ffi::evolution_eds_camel_free_error(error_message);
+            message
+        });
+
+        if result == 1 {
+            Ok(sent_message_saved != 0)
+        } else {
+            Err(error.unwrap_or_else(|| "EDS/Camel-Versand fehlgeschlagen".to_string()))
+        }
+    }
+
+    #[cfg(not(eds_camel_bridge))]
+    {
+        let _ = (source_uid, raw_message);
         Err("native EDS/Camel adapter is not available in this build".to_string())
     }
 }

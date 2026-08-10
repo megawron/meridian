@@ -13,12 +13,28 @@ const CURRENT_VERSION: u32 = 1;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DraftMessage {
     pub id: String,
+    #[serde(default)]
+    pub from: String,
+    #[serde(default)]
+    pub source_uid: String,
     pub to: String,
     pub cc: String,
     pub bcc: String,
     pub subject: String,
     pub html_body: String,
     pub updated_at: String,
+    #[serde(default)]
+    pub attachments: Vec<DraftAttachment>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DraftAttachment {
+    pub path: String,
+    pub filename: String,
+    #[serde(default)]
+    pub mime_type: String,
+    #[serde(default)]
+    pub size: u64,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -112,12 +128,15 @@ mod tests {
         let store = DraftStoreService::new(root.join("drafts.json"));
         let draft = DraftMessage {
             id: "draft-1".to_string(),
+            from: String::new(),
+            source_uid: String::new(),
             to: "person@example.org".to_string(),
             cc: String::new(),
             bcc: String::new(),
             subject: "Subject".to_string(),
             html_body: "<p>Hello</p>".to_string(),
             updated_at: "2026-08-10T12:00:00Z".to_string(),
+            attachments: Vec::new(),
         };
 
         store.save(draft.clone()).expect("draft should persist");

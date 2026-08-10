@@ -166,6 +166,17 @@ int evolution_eds_camel_apply_operation(
     const EvolutionEdsCamelOperation *operation,
     char **out_error);
 
+/* Send a complete RFC822 message through the EDS-configured transport linked
+ * to the selected mail-account source.  Returns 1 on success and 0 on an
+ * ordinary backend error.  out_sent_message_saved is set when the transport
+ * also saved a copy in the configured Sent folder. */
+int evolution_eds_camel_send_message(
+    const char *source_uid,
+    const uint8_t *raw_message,
+    size_t raw_message_len,
+    int *out_sent_message_saved,
+    char **out_error);
+
 /* Return 1 on success, 0 on an ordinary backend error and 2 when the
  * referenced message disappeared or could not be verified after a remote
  * mutation.  The latter is surfaced as a conflict by the Rust service. */

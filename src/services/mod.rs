@@ -14,6 +14,7 @@ pub mod eds_service;
 pub mod eds_source_cache_service;
 pub mod exchange_service;
 pub mod mail_filter_service;
+pub mod mail_composer_service;
 pub mod mail_metadata_service;
 pub mod mail_operations_service;
 pub mod mail_store_service;

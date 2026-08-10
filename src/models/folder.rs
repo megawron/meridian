@@ -17,6 +17,10 @@ mod imp {
         pub icon_name: RefCell<String>,
         pub unread_count: RefCell<u32>,
         pub total_count: RefCell<u32>,
+        pub source_uid: RefCell<Option<String>>,
+        pub folder_name: RefCell<Option<String>>,
+        pub parent_id: RefCell<Option<String>>,
+        pub selectable: RefCell<bool>,
     }
 
     #[glib::object_subclass]
@@ -45,6 +49,26 @@ impl FolderObject {
         obj
     }
 
+    pub fn new_backend(
+        id: &str,
+        name: &str,
+        icon_name: &str,
+        unread_count: u32,
+        total_count: u32,
+        source_uid: &str,
+        folder_name: &str,
+        parent_id: Option<&str>,
+        selectable: bool,
+    ) -> Self {
+        let obj = Self::new(id, name, icon_name, unread_count, total_count);
+        let imp = obj.imp();
+        *imp.source_uid.borrow_mut() = Some(source_uid.to_string());
+        *imp.folder_name.borrow_mut() = Some(folder_name.to_string());
+        *imp.parent_id.borrow_mut() = parent_id.map(str::to_string);
+        *imp.selectable.borrow_mut() = selectable;
+        obj
+    }
+
     pub fn id(&self) -> String {
         self.imp().id.borrow().clone()
     }
@@ -63,5 +87,26 @@ impl FolderObject {
 
     pub fn total_count(&self) -> u32 {
         *self.imp().total_count.borrow()
+    }
+
+    pub fn set_counts(&self, unread_count: u32, total_count: u32) {
+        *self.imp().unread_count.borrow_mut() = unread_count;
+        *self.imp().total_count.borrow_mut() = total_count;
+    }
+
+    pub fn source_uid(&self) -> Option<String> {
+        self.imp().source_uid.borrow().clone()
+    }
+
+    pub fn folder_name(&self) -> Option<String> {
+        self.imp().folder_name.borrow().clone()
+    }
+
+    pub fn parent_id(&self) -> Option<String> {
+        self.imp().parent_id.borrow().clone()
+    }
+
+    pub fn selectable(&self) -> bool {
+        *self.imp().selectable.borrow()
     }
 }

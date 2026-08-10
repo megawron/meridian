@@ -83,6 +83,25 @@ impl HtmlEditor {
         );
     }
 
+    /// Replace the editable DOM contents.  The HTML is encoded as a JSON
+    /// string before it is passed to JavaScript so quoted text from a
+    /// reply/forward or a restored draft cannot become executable code.
+    pub fn set_html(&self, html: &str) {
+        let Some(web_view) = self.imp().web_view.borrow().as_ref().cloned() else {
+            return;
+        };
+        let Ok(encoded) = serde_json::to_string(html) else {
+            return;
+        };
+        web_view.evaluate_javascript(
+            &format!("document.body.innerHTML = {encoded};"),
+            None,
+            None,
+            None::<&gio::Cancellable>,
+            |_| {},
+        );
+    }
+
     fn build_ui(&self) {
         let vbox = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
