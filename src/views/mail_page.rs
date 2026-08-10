@@ -78,6 +78,26 @@ impl Default for FolderSelection {
     }
 }
 
+fn message_matches_filter(
+    message: &MailMessageObject,
+    query: &str,
+    filter: MessageFilter,
+    folder_selection: &FolderSelection,
+) -> bool {
+    let query_matches = query.is_empty()
+        || message.subject().to_lowercase().contains(query)
+        || message.sender_name().to_lowercase().contains(query)
+        || message.sender_email().to_lowercase().contains(query)
+        || message.preview_snippet().to_lowercase().contains(query);
+    let state_matches = match filter {
+        MessageFilter::All => true,
+        MessageFilter::Unread => message.is_unread(),
+        MessageFilter::Flagged => message.is_flagged(),
+    };
+
+    query_matches && state_matches && folder_selection.matches(message)
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct FolderRowData {
     folder_id: String,
@@ -224,6 +244,12 @@ mod imp {
         pub message_selection: RefCell<Option<gtk::SingleSelection>>,
         pub message_store: RefCell<Option<gio::ListStore>>,
         pub message_filter: RefCell<Option<gtk::CustomFilter>>,
+        pub thread_selection: RefCell<Option<gtk::SingleSelection>>,
+        pub thread_root_store: RefCell<Option<gio::ListStore>>,
+        pub thread_filter: RefCell<Option<gtk::CustomFilter>>,
+        pub thread_members: RefCell<Option<Rc<RefCell<HashMap<String, Vec<MailMessageObject>>>>>>,
+        pub thread_children: RefCell<Option<Rc<RefCell<HashMap<String, gio::ListStore>>>>>,
+        pub thread_selection_syncing: Cell<bool>,
         pub(super) folder_selection: RefCell<Option<Rc<RefCell<FolderSelection>>>>,
         pub folder_list: RefCell<Option<gtk::ListBox>>,
         pub folder_section: RefCell<Option<gtk::Box>>,
@@ -273,6 +299,7 @@ mod imp {
                 list_store,
                 selection,
                 custom_filter,
+                thread_filter,
                 message_filter,
                 folder_selection,
             ) = obj.build_message_list();
@@ -291,6 +318,7 @@ mod imp {
                 &selection,
                 &list_store,
                 &custom_filter,
+                &thread_filter,
                 &mail_viewer,
                 &lbl_subject,
                 &lbl_from,
@@ -303,6 +331,7 @@ mod imp {
                 &folder_list,
                 &search_list,
                 &custom_filter,
+                &thread_filter,
                 &folder_selection,
                 &message_filter,
             );
@@ -310,6 +339,7 @@ mod imp {
             self.message_selection.replace(Some(selection.clone()));
             self.message_store.replace(Some(list_store.clone()));
             self.message_filter.replace(Some(custom_filter.clone()));
+            self.thread_filter.replace(Some(thread_filter.clone()));
             self.folder_selection
                 .replace(Some(folder_selection.clone()));
             self.folder_list.replace(Some(folder_list.clone()));
@@ -1183,6 +1213,7 @@ impl MailPage {
         gio::ListStore,
         gtk::SingleSelection,
         gtk::CustomFilter,
+        gtk::CustomFilter,
         Rc<Cell<MessageFilter>>,
         Rc<RefCell<FolderSelection>>,
     ) {
@@ -1201,26 +1232,111 @@ impl MailPage {
             };
 
             let query = query_for_filter.borrow();
-            let query_matches = query.is_empty()
-                || msg.subject().to_lowercase().contains(query.as_str())
-                || msg.sender_name().to_lowercase().contains(query.as_str())
-                || msg.sender_email().to_lowercase().contains(query.as_str())
-                || msg
-                    .preview_snippet()
-                    .to_lowercase()
-                    .contains(query.as_str());
-            let folder_matches = match message_filter_for_filter.get() {
-                MessageFilter::All => true,
-                MessageFilter::Unread => msg.is_unread(),
-                MessageFilter::Flagged => msg.is_flagged(),
-            };
             let selected_folder = folder_selection_for_filter.borrow();
-
-            query_matches && folder_matches && selected_folder.matches(msg)
+            message_matches_filter(
+                msg,
+                query.as_str(),
+                message_filter_for_filter.get(),
+                &selected_folder,
+            )
         });
         let filter_model =
             gtk::FilterListModel::new(Some(store.clone()), Some(custom_filter.clone()));
         let selection = gtk::SingleSelection::new(Some(filter_model));
+
+        let thread_root_store = gio::ListStore::new::<MailMessageObject>();
+        let thread_members = Rc::new(RefCell::new(
+            HashMap::<String, Vec<MailMessageObject>>::new(),
+        ));
+        let query_for_thread_filter = Rc::clone(&query);
+        let message_filter_for_thread_filter = Rc::clone(&message_filter);
+        let folder_selection_for_thread_filter = Rc::clone(&folder_selection);
+        let thread_members_for_filter = Rc::clone(&thread_members);
+        let thread_filter = gtk::CustomFilter::new(move |obj| {
+            let Some(root) = obj.downcast_ref::<MailMessageObject>() else {
+                return false;
+            };
+            let query = query_for_thread_filter.borrow();
+            let selected_folder = folder_selection_for_thread_filter.borrow();
+            let members = thread_members_for_filter.borrow();
+            members
+                .get(&root.thread_id())
+                .map(|messages| {
+                    messages.iter().any(|message| {
+                        message_matches_filter(
+                            message,
+                            query.as_str(),
+                            message_filter_for_thread_filter.get(),
+                            &selected_folder,
+                        )
+                    })
+                })
+                .unwrap_or_else(|| {
+                    message_matches_filter(
+                        root,
+                        query.as_str(),
+                        message_filter_for_thread_filter.get(),
+                        &selected_folder,
+                    )
+                })
+        });
+        let thread_children = Rc::new(RefCell::new(HashMap::<String, gio::ListStore>::new()));
+        let thread_children_for_model = Rc::clone(&thread_children);
+        let thread_root_filter_model =
+            gtk::FilterListModel::new(Some(thread_root_store.clone()), Some(thread_filter.clone()));
+        let thread_tree_model =
+            gtk::TreeListModel::new(thread_root_filter_model, false, false, move |item| {
+                let message = item.downcast_ref::<MailMessageObject>()?;
+                thread_children_for_model
+                    .borrow()
+                    .get(&message.thread_id())
+                    .cloned()
+                    .map(|store| store.upcast::<gio::ListModel>())
+            });
+        let thread_selection = gtk::SingleSelection::new(Some(thread_tree_model));
+
+        self.imp()
+            .thread_root_store
+            .replace(Some(thread_root_store.clone()));
+        self.imp()
+            .thread_members
+            .replace(Some(Rc::clone(&thread_members)));
+        self.imp()
+            .thread_children
+            .replace(Some(Rc::clone(&thread_children)));
+        self.imp()
+            .thread_selection
+            .replace(Some(thread_selection.clone()));
+
+        let flat_selection_for_tree = selection.clone();
+        let page_for_tree_selection = self.downgrade();
+        thread_selection.connect_selected_item_notify(move |selection| {
+            if page_for_tree_selection
+                .upgrade()
+                .map(|page| page.imp().thread_selection_syncing.get())
+                .unwrap_or(false)
+            {
+                return;
+            }
+            let Some(row) = selection.selected_item().and_downcast::<gtk::TreeListRow>() else {
+                return;
+            };
+            let Some(message) = row.item().and_downcast::<MailMessageObject>() else {
+                return;
+            };
+            for index in 0..flat_selection_for_tree.n_items() {
+                let Some(candidate) = flat_selection_for_tree
+                    .item(index)
+                    .and_downcast::<MailMessageObject>()
+                else {
+                    continue;
+                };
+                if candidate.id() == message.id() {
+                    flat_selection_for_tree.set_selected(index);
+                    break;
+                }
+            }
+        });
 
         let factory = gtk::SignalListItemFactory::new();
 
@@ -1260,7 +1376,10 @@ impl MailPage {
                 let Some(list_item) = list_item_for_batch.upgrade() else {
                     return;
                 };
-                let Some(message) = list_item.item().and_downcast::<MailMessageObject>() else {
+                let Some(row) = list_item.item().and_downcast::<gtk::TreeListRow>() else {
+                    return;
+                };
+                let Some(message) = row.item().and_downcast::<MailMessageObject>() else {
                     return;
                 };
                 page.set_batch_message_selected(&message.id(), check.is_active());
@@ -1325,25 +1444,37 @@ impl MailPage {
             outer.append(&vbox);
             outer.append(&separator);
 
-            list_item.set_child(Some(&outer));
+            let expander = gtk::TreeExpander::new();
+            expander.set_child(Some(&outer));
+            list_item.set_child(Some(&expander));
         });
 
         let filter_for_bind = custom_filter.clone();
+        let thread_filter_for_bind = thread_filter.clone();
         let page_for_bind = self.downgrade();
         factory.connect_bind(move |_, list_item| {
             let list_item = list_item
                 .downcast_ref::<gtk::ListItem>()
                 .expect("Expected ListItem");
 
-            let msg = list_item
+            let tree_row = list_item
+                .item()
+                .and_downcast::<gtk::TreeListRow>()
+                .expect("Expected TreeListRow");
+            let msg = tree_row
                 .item()
                 .and_downcast::<MailMessageObject>()
                 .expect("Expected MailMessageObject");
 
-            let outer = list_item
+            let expander = list_item
+                .child()
+                .and_downcast::<gtk::TreeExpander>()
+                .expect("Expected TreeExpander");
+            expander.set_list_row(Some(&tree_row));
+            let outer = expander
                 .child()
                 .and_downcast::<gtk::Box>()
-                .expect("Expected Box");
+                .expect("Expected message Box");
 
             let vbox = outer
                 .first_child()
@@ -1413,6 +1544,7 @@ impl MailPage {
                 }
                 let msg_clone = msg.clone();
                 let filter_for_star = filter_for_bind.clone();
+                let thread_filter_for_star = thread_filter_for_bind.clone();
                 let page_for_star = page_for_bind.clone();
                 btn_star.connect_clicked(move |btn| {
                     let current = msg_clone.is_flagged();
@@ -1441,6 +1573,7 @@ impl MailPage {
                     }
                     msg_clone.set_flagged(next_flagged);
                     filter_for_star.changed(gtk::FilterChange::Different);
+                    thread_filter_for_star.changed(gtk::FilterChange::Different);
                     if next_flagged {
                         btn.set_icon_name("starred-symbolic");
                     } else {
@@ -1454,7 +1587,7 @@ impl MailPage {
                 .and_then(|w| w.next_sibling())
                 .and_downcast::<gtk::Label>()
             {
-                let subject_text = if msg.thread_size() > 1 {
+                let subject_text = if tree_row.depth() == 0 && msg.thread_size() > 1 {
                     format!("{}  ·  {} Nachrichten", msg.subject(), msg.thread_size())
                 } else {
                     msg.subject()
@@ -1467,8 +1600,17 @@ impl MailPage {
             }
         });
 
+        factory.connect_unbind(move |_, list_item| {
+            let list_item = list_item
+                .downcast_ref::<gtk::ListItem>()
+                .expect("Expected ListItem");
+            if let Some(expander) = list_item.child().and_downcast::<gtk::TreeExpander>() {
+                expander.set_list_row(None);
+            }
+        });
+
         let list_view = gtk::ListView::builder()
-            .model(&selection)
+            .model(&thread_selection)
             .factory(&factory)
             .css_classes(vec!["message-list"])
             .build();
@@ -1490,9 +1632,11 @@ impl MailPage {
 
         let query_for_search = Rc::clone(&query);
         let filter_for_search = custom_filter.clone();
+        let thread_filter_for_search = thread_filter.clone();
         search_entry.connect_search_changed(move |entry| {
             *query_for_search.borrow_mut() = entry.text().to_lowercase();
             filter_for_search.changed(gtk::FilterChange::Different);
+            thread_filter_for_search.changed(gtk::FilterChange::Different);
         });
 
         search_box.append(&search_entry);
@@ -1712,6 +1856,7 @@ impl MailPage {
             store,
             selection,
             custom_filter,
+            thread_filter,
             message_filter,
             folder_selection,
         )
@@ -1722,12 +1867,14 @@ impl MailPage {
         folder_list: &gtk::ListBox,
         search_list: &gtk::ListBox,
         custom_filter: &gtk::CustomFilter,
+        thread_filter: &gtk::CustomFilter,
         folder_selection: &Rc<RefCell<FolderSelection>>,
         message_filter: &Rc<Cell<MessageFilter>>,
     ) {
         let folder_selection_for_rows = Rc::clone(folder_selection);
         let message_filter_for_rows = Rc::clone(message_filter);
         let custom_filter_for_rows = custom_filter.clone();
+        let thread_filter_for_rows = thread_filter.clone();
         let search_list_for_rows = search_list.clone();
         let page_for_rows = self.downgrade();
         folder_list.connect_row_selected(move |_, row| {
@@ -1749,6 +1896,7 @@ impl MailPage {
                 search_list_for_rows.unselect_all();
             }
             custom_filter_for_rows.changed(gtk::FilterChange::Different);
+            thread_filter_for_rows.changed(gtk::FilterChange::Different);
 
             if let Some(page) = page_for_rows.upgrade() {
                 if selection.is_remote() {
@@ -1781,6 +1929,7 @@ impl MailPage {
         let message_filter = Rc::clone(message_filter);
         let folder_selection = Rc::clone(folder_selection);
         let custom_filter = custom_filter.clone();
+        let thread_filter = thread_filter.clone();
         let folder_list_for_search = folder_list.clone();
         let page_for_search = self.downgrade();
         search_list.connect_row_selected(move |_, row| {
@@ -1812,6 +1961,7 @@ impl MailPage {
                 }
             }
             custom_filter.changed(gtk::FilterChange::Different);
+            thread_filter.changed(gtk::FilterChange::Different);
         });
     }
 
@@ -2106,6 +2256,7 @@ impl MailPage {
         selection: &gtk::SingleSelection,
         store: &gio::ListStore,
         custom_filter: &gtk::CustomFilter,
+        thread_filter: &gtk::CustomFilter,
         mail_viewer: &MailViewer,
         lbl_subject: &gtk::Label,
         lbl_from: &gtk::Label,
@@ -2116,6 +2267,7 @@ impl MailPage {
     ) {
         let operations = MailOperationsService::new();
         let filter_for_selection = custom_filter.clone();
+        let thread_filter_for_selection = thread_filter.clone();
         let store_for_thread_context = store.clone();
         let selection_for_thread_context = selection.clone();
         selection.connect_selected_item_notify(glib::clone!(
@@ -2159,6 +2311,7 @@ impl MailPage {
                             } else {
                                 msg.set_unread(false);
                                 filter_for_selection.changed(gtk::FilterChange::Different);
+                                thread_filter_for_selection.changed(gtk::FilterChange::Different);
                             }
                         }
                         lbl_subject.set_label(&msg.subject());
@@ -2479,11 +2632,74 @@ impl MailPage {
                 };
                 if message.id() == previous_id {
                     selection.set_selected(index);
+                    self.sync_thread_selection(Some(previous_id));
                     return;
                 }
             }
         }
         selection.set_selected(0);
+        let selected_id = selection
+            .selected_item()
+            .and_downcast::<MailMessageObject>()
+            .map(|message| message.id());
+        self.sync_thread_selection(selected_id.as_deref());
+    }
+
+    fn sync_thread_selection(&self, message_id: Option<&str>) {
+        let Some(thread_selection) = self.imp().thread_selection.borrow().as_ref().cloned() else {
+            return;
+        };
+        if thread_selection.n_items() == 0 {
+            return;
+        }
+
+        let target_thread_id = message_id.and_then(|message_id| {
+            self.imp()
+                .message_store
+                .borrow()
+                .as_ref()
+                .and_then(|store| {
+                    (0..store.n_items()).find_map(|index| {
+                        store
+                            .item(index)
+                            .and_downcast::<MailMessageObject>()
+                            .filter(|message| message.id() == message_id)
+                            .map(|message| message.thread_id())
+                    })
+                })
+        });
+        let mut selected_index = None;
+        for index in 0..thread_selection.n_items() {
+            let Some(row) = thread_selection
+                .item(index)
+                .and_downcast::<gtk::TreeListRow>()
+            else {
+                continue;
+            };
+            let Some(message) = row.item().and_downcast::<MailMessageObject>() else {
+                continue;
+            };
+            if message_id
+                .map(|message_id| message.id() == message_id)
+                .unwrap_or(false)
+            {
+                selected_index = Some(index);
+                break;
+            }
+            if selected_index.is_none()
+                && target_thread_id
+                    .as_deref()
+                    .map(|thread_id| message.thread_id() == thread_id)
+                    .unwrap_or(false)
+            {
+                selected_index = Some(index);
+            }
+        }
+
+        let index = selected_index.unwrap_or(0);
+        self.imp().thread_selection_syncing.set(true);
+        thread_selection.set_selected(index);
+        self.imp().thread_selection_syncing.set(false);
     }
 
     fn setup_mail_polling(&self) {
@@ -2619,6 +2835,7 @@ impl MailPage {
         let store = self.imp().message_store.borrow().clone();
         if let Some(store) = store.as_ref() {
             Self::remove_message_ids(store, &removed_ids);
+            self.refresh_thread_metadata(store);
         }
         self.imp()
             .batch_selection
@@ -2688,7 +2905,7 @@ impl MailPage {
                     if let Some(store) = page.imp().message_store.borrow().as_ref() {
                         Self::remove_message_ids(store, &removed_ids);
                         Self::remove_message_ids(store, &replaced_ids);
-                        Self::replace_or_append_messages(store, messages);
+                        page.replace_or_append_messages(store, messages);
                     }
                     if let Some(filter) = page.imp().message_filter.borrow().as_ref() {
                         filter.changed(gtk::FilterChange::Different);
@@ -2901,7 +3118,7 @@ impl MailPage {
                     if replace {
                         store.remove_all();
                     }
-                    Self::append_unique_messages(store, camel.messages)
+                    self.append_unique_messages(store, camel.messages)
                 } else {
                     0
                 };
@@ -2957,7 +3174,7 @@ impl MailPage {
                         }
                         store.append(&record.into_object());
                     }
-                    Self::refresh_thread_metadata(store);
+                    self.refresh_thread_metadata(store);
                 }
                 if let Some(folder_list) = folder_list.as_ref() {
                     Self::update_folder_counts(folder_list, &folder_counts);
@@ -3003,7 +3220,7 @@ impl MailPage {
         }
     }
 
-    fn append_unique_messages(store: &gio::ListStore, messages: Vec<ParsedMail>) -> usize {
+    fn append_unique_messages(&self, store: &gio::ListStore, messages: Vec<ParsedMail>) -> usize {
         let mut existing_ids = std::collections::HashSet::new();
         for index in 0..store.n_items() {
             if let Some(message) = store.item(index).and_downcast::<MailMessageObject>() {
@@ -3018,7 +3235,7 @@ impl MailPage {
                 appended += 1;
             }
         }
-        Self::refresh_thread_metadata(store);
+        self.refresh_thread_metadata(store);
         appended
     }
 
@@ -3040,7 +3257,7 @@ impl MailPage {
         }
     }
 
-    fn replace_or_append_messages(store: &gio::ListStore, messages: Vec<ParsedMail>) {
+    fn replace_or_append_messages(&self, store: &gio::ListStore, messages: Vec<ParsedMail>) {
         let ids = messages
             .iter()
             .map(|message| message.id.clone())
@@ -3049,10 +3266,10 @@ impl MailPage {
         for message in messages {
             store.append(&message.into_object());
         }
-        Self::refresh_thread_metadata(store);
+        self.refresh_thread_metadata(store);
     }
 
-    fn refresh_thread_metadata(store: &gio::ListStore) {
+    fn refresh_thread_metadata(&self, store: &gio::ListStore) {
         let messages = (0..store.n_items())
             .filter_map(|index| store.item(index).and_downcast::<MailMessageObject>())
             .collect::<Vec<_>>();
@@ -3088,6 +3305,60 @@ impl MailPage {
                 membership.position,
             );
         }
+
+        let mut thread_order = Vec::new();
+        let mut grouped_messages = HashMap::<String, Vec<MailMessageObject>>::new();
+        for message in &messages {
+            let thread_id = message.thread_id();
+            if !grouped_messages.contains_key(&thread_id) {
+                thread_order.push(thread_id.clone());
+            }
+            grouped_messages
+                .entry(thread_id)
+                .or_default()
+                .push(message.clone());
+        }
+
+        let mut roots = Vec::new();
+        let mut thread_members = HashMap::<String, Vec<MailMessageObject>>::new();
+        let mut thread_children = HashMap::<String, gio::ListStore>::new();
+        for thread_id in thread_order {
+            let Some(mut members) = grouped_messages.remove(&thread_id) else {
+                continue;
+            };
+            members.sort_by_key(|message| (message.thread_position(), message.id()));
+            let Some(root) = members.first().cloned() else {
+                continue;
+            };
+
+            let children = gio::ListStore::new::<MailMessageObject>();
+            for child in members.iter().skip(1) {
+                children.append(child);
+            }
+            roots.push(root);
+            thread_members.insert(thread_id.clone(), members);
+            thread_children.insert(thread_id, children);
+        }
+
+        let root_store = self.imp().thread_root_store.borrow().clone();
+        let members_for_model = self.imp().thread_members.borrow().as_ref().cloned();
+        let children_for_model = self.imp().thread_children.borrow().as_ref().cloned();
+        if let Some(root_store) = root_store {
+            root_store.remove_all();
+            if let Some(members_for_model) = members_for_model {
+                members_for_model.replace(thread_members);
+            }
+            if let Some(children_for_model) = children_for_model {
+                children_for_model.replace(thread_children);
+            }
+            for root in roots {
+                root_store.append(&root);
+            }
+            if let Some(filter) = self.imp().thread_filter.borrow().as_ref() {
+                filter.changed(gtk::FilterChange::Different);
+            }
+        }
+
         if store.n_items() > 0 {
             let count = store.n_items();
             store.items_changed(0, count, count);
