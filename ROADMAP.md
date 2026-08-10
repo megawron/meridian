@@ -328,8 +328,9 @@ Test auf der Service-Ebene.
   lokale Lese-/Markierungsaktionen, lokales Ordnerfiltern und dynamische
   EDS-Kontozeilen sind angebunden. Der Linux-Start lädt zusätzlich über den
   nativen EDS/Camel-Adapter aktivierte Mailkonten und RFC-822-Nachrichten;
-  EDS-Ordnerdarstellung und Camel-Flags sind lesend abgebildet; zentrale
-  Mutationen und globale Aktionsausgaben fehlen noch.
+  EDS-Ordnerdarstellung, Camel-Flags und zentrale Remote-Mailmutationen
+  einschließlich Verschieben sind über Child-Outputs angebunden; globale
+  Domain-Aktionen fehlen noch.
 - [~] Kalender-, Aufgaben-, Memo- und Kontakte-Komponenten mit typisierten
   Loading-/Refresh-Nachrichten; EDS-Streams, Mutationen und vollständige
   Detailmodelle fehlen noch.
@@ -353,34 +354,42 @@ Test auf der Service-Ebene.
   GTK-Modell in der Konten-Seitenleiste angezeigt und Kalender-/Adressbuch-
   quellen werden über eine gemeinsame Quellenklassifikation in den jeweiligen
   Seiten dynamisch aufgelistet. Nicht-sensitive letzte Quellenstände können
-  bei einem EDS-Ausfall explizit als Cache angezeigt werden; Ordner- und
-  Kontenmutationen fehlen noch.
+  bei einem EDS-Ausfall explizit als Cache angezeigt werden; Verwaltung und
+  Bearbeitung der EDS-Konten fehlen noch.
 - [~] Lokaler Mail-Store: vorhandene EML-, Maildir- und mbox-Daten werden in
   einem Worker gelesen; RFC-822-Header, MIME-Text/HTML, dekodierte Anhänge und
   stabile lokale Ordner-IDs werden unterstützt. Camel-Indizes, vollständige
-  MIME-Semantik und serverseitige Flags fehlen noch.
+  MIME-Semantik und serverseitige Synchronisation fehlen noch; der lokale
+  Import bleibt bewusst schreibgeschützt.
 - [~] Suche, Stern, Ordnerfilter und „gelesen“ existieren im imperativen UI;
   die Relm4-Mailkomponente hat Suche, Auswahl, Detailaktionen und lokale
   Lese-/Markierungszustände bereits angebunden. Für den lokalen Import werden
-  diese in einem app-eigenen Sidecar persistiert. EDS-Ordner, Camel/EDS-Flags,
-  lokale Ordnerzähler und serverseitige Suchordner fehlen noch.
+  diese in einem app-eigenen Sidecar persistiert; Remote-Flags werden über
+  Camel/EDS gelesen und zurückgeschrieben. EDS-Ordner und Ordnerzähler sind in
+  der Relm4-Seitenleiste sichtbar, serverseitige Suchordner fehlen noch.
 - [~] Anhang „Speichern unter“ ist für lokal gelesene MIME-Anhänge angebunden;
   EDS-/Remote-Anhänge und Inline-CID-Auflösung fehlen.
 - [~] Asynchrones Laden lokaler Nachrichten ohne Blockierung des GTK-Main-
-  Threads mit Abbruchsignal und 50er-Batches; echtes Paging, Fortschrittsmodell
-  und inkrementelle Änderungen aus Camel fehlen noch.
+  Threads mit Abbruchsignal und begrenzten Camel-Seiten; die Relm4-Ansicht kann
+  weitere UID-Seiten dedupliziert nachladen. Fortschrittsmodell, inkrementelle
+  Änderungsereignisse und Cancellation für Camel fehlen noch.
 - [~] Native Linux-Camel-Brücke öffnet die aktivierten EDS-Mailquellen über
   `e_source_camel_configure_service()`, verwendet EDS-/GOA-Credentials und
-  lädt Ordner sowie begrenzte RFC-822-Nachrichten in die Relm4-Ansicht. Der
-  lokale EML/Maildir/mbox-Importer bleibt der explizite Fallback. Unread-/Flagged-
-  Camel-Flags werden lesend übernommen; vollständiges Paging, Threads,
-  Änderungsereignisse und Mutationen fehlen noch. Der Linux-Laufzeittest mit
-  einem realen GNOME-Konto steht aus.
-- [~] Mailaktionen besitzen eine zentrale Backend-Schnittstelle; gelesen/
-  ungelesen und markiert werden lokal persistent ausgeführt. Löschen,
-  verschieben, archivieren, Spam/Junk, wichtig, Undo und Konfliktbehandlung
-  werden vom Nur-Lese-Importer explizit abgelehnt, bis Camel/EDS angeschlossen
-  ist.
+  lädt Ordnerzusammenfassungen sowie begrenzte RFC-822-Nachrichten in die
+  Relm4-Ansicht. Der lokale EML/Maildir/mbox-Importer bleibt der explizite
+  Fallback. Unread-/Flagged-Camel-Flags werden übernommen; Ordnerauswahl,
+  Lesestatus, Markierung, Archivieren, Verschieben, Spam-Markierung und Löschen
+  werden für Remote-Quellen über stabile EDS-/Camel-Referenzen zurückgeschrieben.
+  Threads, Änderungsereignisse und Konfliktbehandlung fehlen noch. Der
+  Linux-Laufzeittest mit einem realen GNOME-Konto steht aus.
+- [~] Mailaktionen besitzen eine zentrale Backend-Schnittstelle. Lokale
+  Nachrichten behalten den schreibgeschützten Import mit Sidecar für
+  Lesestatus/Markierung; Remote-Nachrichten verwenden Camel für Lesen, Flags,
+  Archivieren, Verschieben, Spam-Markierung und Löschen. Relm4 unterstützt
+  inzwischen Mehrfachauswahl mit Batch-Archivieren/Löschen, Batch-Lese- und
+  Batch-Markierungsaktionen, Undo für Statusänderungen und eine kontogebundene
+  Auswahl für das Remote-Verschieben; inverse Undo-Operationen für
+  Ordneränderungen und Konfliktbehandlung fehlen noch.
 - [ ] Serverseitige Suche und virtuelle Suchordner.
 
 #### Phase 2 — Konten, Empfang und Mailversand
@@ -500,11 +509,11 @@ nicht als vollständiger Ersatz beworben werden.
 ### Nächster Entwicklungsblock
 
 1. Die native EDS/Camel-Ladestrecke auf Linux gegen ein echtes GNOME-/GOA-
-   Konto testen und die geladenen Camel-Ordner/Flags als Modelle anbinden.
-2. Die Relm4-Mail-Komponente an Camel-Ordner und -Flags anschließen und danach
-   die restlichen globalen Mailaktionen über Child-Outputs führen.
+   Konto testen und Synchronisationsstatus sowie Änderungsereignisse
+   ergänzen.
+2. Die Relm4-Mailkomponente um echte Thread-Modelle, inverse Undo/Redo-
+   Operationen und Konfliktanzeigen erweitern.
 3. EDS-Sources in persistente Konto-/Ordnermodelle und echte ECal-/EBook-
    Streams überführen; die Ergebnisse als Relm4-Commands anbinden.
-4. Camel-/EDS-Mailoperationen für Lesen, Flags, Verschieben und Löschen
-   integrieren; danach SMTP/Drafts/Sent-Folder und die Dialog-Components
-   vervollständigen.
+4. Camel-Transport, EDS-Drafts/Sent-Folder und die Dialog-Components für
+   Konto-, Empfangs- und Versandoptionen vervollständigen.

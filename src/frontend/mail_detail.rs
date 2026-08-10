@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // Relm4 mail detail component.  It receives immutable message snapshots from
-// the mail component and routes local read/flag mutations through the same
-// service boundary used by the imperative frontend.  Once Camel is connected
-// the component will keep the protocol unchanged and only the service
-// implementation will change.
+// the mail component and routes local or Camel-backed mutations through the
+// same service boundary used by the imperative frontend.  Blocking backend
+// work is kept out of the GTK main thread.
 
 use super::mail::MailSummary;
 use crate::services::mail_operations_service::MailOperationsService;
@@ -21,6 +20,10 @@ pub(crate) enum MailDetailInput {
     Show(Option<MailSummary>),
     ToggleRead,
     ToggleFlag,
+    UndoState,
+    Archive,
+    MarkJunk,
+    Delete,
 }
 
 #[derive(Debug)]
@@ -30,11 +33,42 @@ pub(crate) enum MailDetailOutput {
         is_unread: bool,
         is_flagged: bool,
     },
+    MessageRemoved {
+        id: String,
+    },
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum MailDetailOperationKind {
+    State { is_unread: bool, is_flagged: bool },
+    Archive,
+    MarkJunk,
+    Delete,
+}
+
+#[derive(Debug, Clone)]
+struct MailUndoState {
+    id: String,
+    location: Option<crate::services::mail_store_service::MailBackendLocation>,
+    is_unread: bool,
+    is_flagged: bool,
+}
+
+#[derive(Debug)]
+pub(crate) enum MailDetailCommand {
+    OperationFinished {
+        id: String,
+        operation: MailDetailOperationKind,
+        result: Result<(), String>,
+    },
 }
 
 pub(crate) struct MailDetailModel {
     selected: Option<MailSummary>,
     status: String,
+    pending_operation_id: Option<String>,
+    pending_undo_state: Option<MailUndoState>,
+    undo_state: Option<MailUndoState>,
     viewer: MailViewer,
     attachment_box: gtk::Box,
 }
@@ -45,6 +79,8 @@ impl fmt::Debug for MailDetailModel {
             .debug_struct("MailDetailModel")
             .field("selected", &self.selected)
             .field("status", &self.status)
+            .field("pending_operation_id", &self.pending_operation_id)
+            .field("undo_state", &self.undo_state)
             .finish_non_exhaustive()
     }
 }
@@ -54,7 +90,7 @@ impl Component for MailDetailModel {
     type Init = ();
     type Input = MailDetailInput;
     type Output = MailDetailOutput;
-    type CommandOutput = ();
+    type CommandOutput = MailDetailCommand;
 
     view! {
         #[root]
@@ -117,7 +153,7 @@ impl Component for MailDetailModel {
                 gtk::Button {
                     #[watch]
                     set_label: &model.read_action_label(),
-                    set_sensitive: model.selected.is_some(),
+                    set_sensitive: model.selected.is_some() && model.pending_operation_id.is_none(),
                     connect_clicked => MailDetailInput::ToggleRead,
                 },
                 gtk::Button {
@@ -128,8 +164,32 @@ impl Component for MailDetailModel {
                         "non-starred-symbolic"
                     },
                     set_tooltip_text: Some("Markierung umschalten"),
-                    set_sensitive: model.selected.is_some(),
+                    set_sensitive: model.selected.is_some() && model.pending_operation_id.is_none(),
                     connect_clicked => MailDetailInput::ToggleFlag,
+                },
+                gtk::Button {
+                    set_label: "Rückgängig",
+                    #[watch]
+                    set_sensitive: model.undo_state.is_some() && model.pending_operation_id.is_none(),
+                    connect_clicked => MailDetailInput::UndoState,
+                },
+                gtk::Button {
+                    set_icon_name: "mail-archive-symbolic",
+                    set_tooltip_text: Some("Archivieren"),
+                    set_sensitive: model.selected.is_some() && model.pending_operation_id.is_none(),
+                    connect_clicked => MailDetailInput::Archive,
+                },
+                gtk::Button {
+                    set_icon_name: "mail-mark-junk-symbolic",
+                    set_tooltip_text: Some("Als Spam markieren"),
+                    set_sensitive: model.selected.is_some() && model.pending_operation_id.is_none(),
+                    connect_clicked => MailDetailInput::MarkJunk,
+                },
+                gtk::Button {
+                    set_icon_name: "user-trash-symbolic",
+                    set_tooltip_text: Some("Löschen"),
+                    set_sensitive: model.selected.is_some() && model.pending_operation_id.is_none(),
+                    connect_clicked => MailDetailInput::Delete,
                 },
                 gtk::Label {
                     #[watch]
@@ -171,6 +231,9 @@ impl Component for MailDetailModel {
         let mut model = MailDetailModel {
             selected: None,
             status: "Keine Nachricht ausgewählt".to_string(),
+            pending_operation_id: None,
+            pending_undo_state: None,
+            undo_state: None,
             viewer,
             attachment_box: gtk::Box::default(),
         };
@@ -198,59 +261,201 @@ impl Component for MailDetailModel {
                 self.render_attachments();
             }
             MailDetailInput::ToggleRead => {
-                let Some(message) = self.selected.as_mut() else {
+                let Some(message) = self.selected.as_ref() else {
                     return;
                 };
                 let next_unread = !message.is_unread;
-                let operations = MailOperationsService::new();
-                let result = if next_unread {
-                    operations.mark_unread(&message.id, message.is_flagged)
-                } else {
-                    operations.mark_read(&message.id, message.is_flagged)
-                };
-                match result {
-                    Ok(()) => {
-                        message.is_unread = next_unread;
-                        self.status = if next_unread {
-                            "Als ungelesen markiert".to_string()
-                        } else {
-                            "Als gelesen markiert".to_string()
-                        };
-                        let _ = sender.output(MailDetailOutput::StateChanged {
-                            id: message.id.clone(),
-                            is_unread: message.is_unread,
-                            is_flagged: message.is_flagged,
-                        });
-                    }
-                    Err(error) => {
-                        self.status =
-                            format!("Lesestatus konnte nicht gespeichert werden: {error}");
-                    }
-                }
+                let id = message.id.clone();
+                let location = message.backend_location.clone();
+                let is_flagged = message.is_flagged;
+                let undo_state = Some(MailUndoState {
+                    id: id.clone(),
+                    location: location.clone(),
+                    is_unread: message.is_unread,
+                    is_flagged: message.is_flagged,
+                });
+                self.start_operation(
+                    sender,
+                    id,
+                    location,
+                    MailDetailOperationKind::State {
+                        is_unread: next_unread,
+                        is_flagged,
+                    },
+                    undo_state,
+                );
             }
             MailDetailInput::ToggleFlag => {
-                let Some(message) = self.selected.as_mut() else {
+                let Some(message) = self.selected.as_ref() else {
                     return;
                 };
                 let next_flagged = !message.is_flagged;
-                let operations = MailOperationsService::new();
-                match operations.set_flagged(&message.id, message.is_unread, next_flagged) {
-                    Ok(()) => {
-                        message.is_flagged = next_flagged;
-                        self.status = if next_flagged {
-                            "Markiert".to_string()
-                        } else {
-                            "Markierung entfernt".to_string()
-                        };
-                        let _ = sender.output(MailDetailOutput::StateChanged {
-                            id: message.id.clone(),
-                            is_unread: message.is_unread,
-                            is_flagged: message.is_flagged,
-                        });
-                    }
+                let id = message.id.clone();
+                let location = message.backend_location.clone();
+                let is_unread = message.is_unread;
+                let undo_state = Some(MailUndoState {
+                    id: id.clone(),
+                    location: location.clone(),
+                    is_unread: message.is_unread,
+                    is_flagged: message.is_flagged,
+                });
+                self.start_operation(
+                    sender,
+                    id,
+                    location,
+                    MailDetailOperationKind::State {
+                        is_unread,
+                        is_flagged: next_flagged,
+                    },
+                    undo_state,
+                );
+            }
+            MailDetailInput::UndoState => {
+                let Some(undo_state) = self.undo_state.clone() else {
+                    return;
+                };
+                self.start_operation(
+                    sender,
+                    undo_state.id.clone(),
+                    undo_state.location.clone(),
+                    MailDetailOperationKind::State {
+                        is_unread: undo_state.is_unread,
+                        is_flagged: undo_state.is_flagged,
+                    },
+                    None,
+                );
+            }
+            MailDetailInput::Archive => {
+                let Some(message) = self.selected.as_ref() else {
+                    return;
+                };
+                self.start_operation(
+                    sender,
+                    message.id.clone(),
+                    message.backend_location.clone(),
+                    MailDetailOperationKind::Archive,
+                    None,
+                );
+            }
+            MailDetailInput::MarkJunk => {
+                let Some(message) = self.selected.as_ref() else {
+                    return;
+                };
+                self.start_operation(
+                    sender,
+                    message.id.clone(),
+                    message.backend_location.clone(),
+                    MailDetailOperationKind::MarkJunk,
+                    None,
+                );
+            }
+            MailDetailInput::Delete => {
+                let Some(message) = self.selected.as_ref() else {
+                    return;
+                };
+                self.start_operation(
+                    sender,
+                    message.id.clone(),
+                    message.backend_location.clone(),
+                    MailDetailOperationKind::Delete,
+                    None,
+                );
+            }
+        }
+    }
+
+    fn update_cmd(
+        &mut self,
+        message: Self::CommandOutput,
+        sender: ComponentSender<Self>,
+        _root: &Self::Root,
+    ) {
+        match message {
+            MailDetailCommand::OperationFinished {
+                id,
+                operation,
+                result,
+            } => {
+                let was_pending = self.pending_operation_id.as_deref() == Some(id.as_str());
+                let pending_undo_state = if was_pending {
+                    self.pending_undo_state.take()
+                } else {
+                    None
+                };
+                if was_pending {
+                    self.pending_operation_id = None;
+                }
+
+                match result {
+                    Ok(()) => match operation {
+                        MailDetailOperationKind::State {
+                            is_unread,
+                            is_flagged,
+                        } => {
+                            if let Some(selected) = self.selected.as_mut() {
+                                if selected.id == id {
+                                    selected.is_unread = is_unread;
+                                    selected.is_flagged = is_flagged;
+                                    self.status = if is_unread {
+                                        "Als ungelesen markiert".to_string()
+                                    } else {
+                                        "Als gelesen markiert".to_string()
+                                    };
+                                }
+                            }
+                            self.undo_state = pending_undo_state;
+                            let _ = sender.output(MailDetailOutput::StateChanged {
+                                id,
+                                is_unread,
+                                is_flagged,
+                            });
+                        }
+                        MailDetailOperationKind::Archive => {
+                            self.undo_state = None;
+                            if self
+                                .selected
+                                .as_ref()
+                                .is_some_and(|selected| selected.id == id)
+                            {
+                                self.selected = None;
+                                self.viewer.load_html("", None);
+                                self.render_attachments();
+                                self.status = "Nachricht archiviert".to_string();
+                            }
+                            let _ = sender.output(MailDetailOutput::MessageRemoved { id });
+                        }
+                        MailDetailOperationKind::MarkJunk => {
+                            self.undo_state = None;
+                            if self
+                                .selected
+                                .as_ref()
+                                .is_some_and(|selected| selected.id == id)
+                            {
+                                self.status = "Als Spam markiert".to_string();
+                            }
+                        }
+                        MailDetailOperationKind::Delete => {
+                            self.undo_state = None;
+                            if self
+                                .selected
+                                .as_ref()
+                                .is_some_and(|selected| selected.id == id)
+                            {
+                                self.selected = None;
+                                self.viewer.load_html("", None);
+                                self.render_attachments();
+                                self.status = "Nachricht gelöscht".to_string();
+                            }
+                            let _ = sender.output(MailDetailOutput::MessageRemoved { id });
+                        }
+                    },
                     Err(error) => {
-                        self.status =
-                            format!("Markierung konnte nicht gespeichert werden: {error}");
+                        if was_pending {
+                            self.undo_state = pending_undo_state;
+                            self.status = format!(
+                                "Nachrichtenstatus konnte nicht gespeichert werden: {error}"
+                            );
+                        }
                     }
                 }
             }
@@ -259,6 +464,63 @@ impl Component for MailDetailModel {
 }
 
 impl MailDetailModel {
+    fn start_operation(
+        &mut self,
+        sender: ComponentSender<Self>,
+        id: String,
+        location: Option<crate::services::mail_store_service::MailBackendLocation>,
+        operation: MailDetailOperationKind,
+        undo_state: Option<MailUndoState>,
+    ) {
+        if self.pending_operation_id.is_some() {
+            return;
+        }
+
+        self.pending_operation_id = Some(id.clone());
+        self.pending_undo_state = undo_state;
+        self.undo_state = None;
+        self.status = match operation {
+            MailDetailOperationKind::State { .. } => {
+                "Nachrichtenstatus wird gespeichert…".to_string()
+            }
+            MailDetailOperationKind::Archive => "Nachricht wird archiviert…".to_string(),
+            MailDetailOperationKind::MarkJunk => "Nachricht wird als Spam markiert…".to_string(),
+            MailDetailOperationKind::Delete => "Nachricht wird gelöscht…".to_string(),
+        };
+        sender.spawn_oneshot_command(move || {
+            let operations = MailOperationsService::new();
+            let result = match operation {
+                MailDetailOperationKind::State {
+                    is_unread,
+                    is_flagged,
+                } => match location.as_ref() {
+                    Some(location) => operations
+                        .set_message_state_for_location(&id, location, is_unread, is_flagged),
+                    None => operations.set_message_state(&id, is_unread, is_flagged),
+                },
+                MailDetailOperationKind::Archive => match location.as_ref() {
+                    Some(location) => operations.archive_for_location(&id, location),
+                    None => operations.archive(&id),
+                },
+                MailDetailOperationKind::MarkJunk => match location.as_ref() {
+                    Some(location) => operations.set_junk_for_location(&id, location, true),
+                    None => operations.set_junk(&id, true),
+                },
+                MailDetailOperationKind::Delete => match location.as_ref() {
+                    Some(location) => operations.delete_for_location(&id, location),
+                    None => operations.delete(&id),
+                },
+            }
+            .map_err(|error| error.to_string());
+
+            MailDetailCommand::OperationFinished {
+                id,
+                operation,
+                result,
+            }
+        });
+    }
+
     fn render_attachments(&self) {
         while let Some(child) = self.attachment_box.first_child() {
             self.attachment_box.remove(&child);
@@ -370,7 +632,14 @@ impl MailDetailModel {
     fn folder_label(&self) -> String {
         self.selected
             .as_ref()
-            .map(|message| format!("Ordner: {}", message.folder_id))
+            .map(|message| {
+                let folder = if message.folder_name.is_empty() {
+                    &message.folder_id
+                } else {
+                    &message.folder_name
+                };
+                format!("Ordner: {folder}")
+            })
             .unwrap_or_default()
     }
 

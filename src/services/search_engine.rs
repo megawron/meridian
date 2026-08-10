@@ -133,6 +133,8 @@ mod tests {
         let messages = [crate::services::mail_store_service::ParsedMail {
             id: "local:Inbox#0".to_string(),
             folder_id: "inbox".to_string(),
+            folder_name: "inbox".to_string(),
+            backend_location: None,
             sender_name: "Sender".to_string(),
             sender_email: "sender@example.org".to_string(),
             recipient_to: "me@example.org".to_string(),

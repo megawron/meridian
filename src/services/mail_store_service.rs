@@ -27,10 +27,19 @@ use crate::services::mail_metadata_service::{MailMessageState, MailMetadataStore
 
 /// Thread-safe parser output.  GTK objects are created only after this value
 /// returns to the main context.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct MailBackendLocation {
+    pub(crate) source_uid: String,
+    pub(crate) folder_name: String,
+    pub(crate) message_uid: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct ParsedMail {
     pub id: String,
     pub folder_id: String,
+    pub folder_name: String,
+    pub backend_location: Option<MailBackendLocation>,
     pub sender_name: String,
     pub sender_email: String,
     pub recipient_to: String,
@@ -58,6 +67,7 @@ impl ParsedMail {
             is_unread,
             is_flagged,
             attachments,
+            ..
         } = self;
 
         MailMessageObject::new(
@@ -74,6 +84,15 @@ impl ParsedMail {
             is_flagged,
             attachments,
         )
+    }
+}
+
+/* Keep the destructuring above explicit in the public GTK conversion while
+ * allowing backend-only location metadata to stay out of the legacy object. */
+impl ParsedMail {
+    #[allow(dead_code)]
+    pub(crate) fn backend_location(&self) -> Option<&MailBackendLocation> {
+        self.backend_location.as_ref()
     }
 }
 
@@ -211,18 +230,28 @@ impl MailStoreService {
     }
 
     /// Apply application-owned read/flag state and local filter rules to
-    /// records supplied by another read-only backend, such as Camel.
-    ///
-    /// The EDS/Camel source remains authoritative for message contents and
-    /// server flags.  This sidecar only preserves client UI state until the
-    /// corresponding Camel mutation boundary is connected.
+    /// records supplied by another local/read-only backend.
     #[cfg(eds_camel_bridge)]
+    #[allow(dead_code)]
     pub(crate) fn apply_client_state(&self, messages: &mut [ParsedMail]) {
         let metadata = self.metadata.load();
         let filter_rules = MailFilterStore::default().load();
 
         for message in messages {
             apply_client_state(&metadata, &filter_rules, message);
+        }
+    }
+
+    /// Apply only local incoming filter actions to messages whose flags are
+    /// already authoritative in Camel/EDS.  Remote messages must not be
+    /// overwritten by a stale client sidecar after a successful Camel
+    /// mutation.
+    #[cfg(eds_camel_bridge)]
+    pub(crate) fn apply_backend_filters(&self, messages: &mut [ParsedMail]) {
+        let filter_rules = MailFilterStore::default().load();
+
+        for message in messages {
+            apply_local_filters(&filter_rules, message);
         }
     }
 
@@ -492,6 +521,8 @@ pub(crate) fn parse_rfc822(
     Some(ParsedMail {
         id: id.to_string(),
         folder_id: folder_id.to_string(),
+        folder_name: folder_id.to_string(),
+        backend_location: None,
         sender_name,
         sender_email,
         recipient_to: recipient,

@@ -8,10 +8,12 @@
 use std::fmt;
 use std::io;
 
-use super::mail_store_service::MailStoreService;
+use super::camel_mail_service::{self, CamelMailOperation};
+use super::mail_store_service::{MailBackendLocation, MailStoreService};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MailOperationKind {
+    SetMessageState,
     Delete,
     Move,
     Archive,
@@ -24,6 +26,7 @@ pub enum MailOperationKind {
 impl fmt::Display for MailOperationKind {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let label = match self {
+            Self::SetMessageState => "Lesestatus/Markierung",
             Self::Delete => "Löschen",
             Self::Move => "Verschieben",
             Self::Archive => "Archivieren",
@@ -39,6 +42,10 @@ impl fmt::Display for MailOperationKind {
 #[derive(Debug)]
 pub enum MailOperationError {
     Io(io::Error),
+    Backend {
+        operation: MailOperationKind,
+        message: String,
+    },
     Unsupported {
         operation: MailOperationKind,
         backend: &'static str,
@@ -49,6 +56,9 @@ impl fmt::Display for MailOperationError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Io(error) => write!(formatter, "{error}"),
+            Self::Backend { operation, message } => {
+                write!(formatter, "{operation} ist fehlgeschlagen: {message}")
+            }
             Self::Unsupported { operation, backend } => write!(
                 formatter,
                 "{operation} ist mit dem Backend {backend} noch nicht verfügbar"
@@ -70,25 +80,31 @@ impl From<io::Error> for MailOperationError {
 pub enum MailOperation {
     SetMessageState {
         id: String,
+        location: Option<MailBackendLocation>,
         is_unread: bool,
         is_flagged: bool,
     },
     Delete {
         id: String,
+        location: Option<MailBackendLocation>,
     },
     Move {
         id: String,
+        location: Option<MailBackendLocation>,
         destination: String,
     },
     Archive {
         id: String,
+        location: Option<MailBackendLocation>,
     },
     SetJunk {
         id: String,
+        location: Option<MailBackendLocation>,
         is_junk: bool,
     },
     SetImportant {
         id: String,
+        location: Option<MailBackendLocation>,
         is_important: bool,
     },
 }
@@ -115,27 +131,90 @@ impl MailOperationsService {
         match operation {
             MailOperation::SetMessageState {
                 id,
+                location,
                 is_unread,
                 is_flagged,
-            } => self
-                .store
-                .persist_message_state(&id, is_unread, is_flagged)
-                .map_err(Into::into),
-            MailOperation::Delete { .. } => Err(Self::unsupported(MailOperationKind::Delete)),
-            MailOperation::Move { .. } => Err(Self::unsupported(MailOperationKind::Move)),
-            MailOperation::Archive { .. } => Err(Self::unsupported(MailOperationKind::Archive)),
-            MailOperation::SetJunk { is_junk, .. } => Err(Self::unsupported(if is_junk {
-                MailOperationKind::MarkJunk
-            } else {
-                MailOperationKind::MarkNotJunk
-            })),
-            MailOperation::SetImportant { is_important, .. } => {
-                Err(Self::unsupported(if is_important {
+            } => match location {
+                Some(location) => self.apply_camel(
+                    CamelMailOperation::SetMessageState {
+                        location,
+                        is_unread,
+                        is_flagged,
+                    },
+                    MailOperationKind::SetMessageState,
+                ),
+                None => self
+                    .store
+                    .persist_message_state(&id, is_unread, is_flagged)
+                    .map_err(Into::into),
+            },
+            MailOperation::Delete { location, .. } => match location {
+                Some(location) => self.apply_camel(
+                    CamelMailOperation::Delete { location },
+                    MailOperationKind::Delete,
+                ),
+                None => Err(Self::unsupported(MailOperationKind::Delete)),
+            },
+            MailOperation::Move {
+                location,
+                destination,
+                ..
+            } => match location {
+                Some(location) => self.apply_camel(
+                    CamelMailOperation::Move {
+                        location,
+                        destination,
+                    },
+                    MailOperationKind::Move,
+                ),
+                None => Err(Self::unsupported(MailOperationKind::Move)),
+            },
+            MailOperation::Archive { location, .. } => match location {
+                Some(location) => self.apply_camel(
+                    CamelMailOperation::Archive { location },
+                    MailOperationKind::Archive,
+                ),
+                None => Err(Self::unsupported(MailOperationKind::Archive)),
+            },
+            MailOperation::SetJunk {
+                location, is_junk, ..
+            } => match location {
+                Some(location) => self.apply_camel(
+                    CamelMailOperation::SetJunk { location, is_junk },
+                    if is_junk {
+                        MailOperationKind::MarkJunk
+                    } else {
+                        MailOperationKind::MarkNotJunk
+                    },
+                ),
+                None => Err(Self::unsupported(if is_junk {
+                    MailOperationKind::MarkJunk
+                } else {
+                    MailOperationKind::MarkNotJunk
+                })),
+            },
+            MailOperation::SetImportant {
+                location,
+                is_important,
+                ..
+            } => match location {
+                Some(location) => self.apply_camel(
+                    CamelMailOperation::SetImportant {
+                        location,
+                        is_important,
+                    },
+                    if is_important {
+                        MailOperationKind::MarkImportant
+                    } else {
+                        MailOperationKind::MarkNotImportant
+                    },
+                ),
+                None => Err(Self::unsupported(if is_important {
                     MailOperationKind::MarkImportant
                 } else {
                     MailOperationKind::MarkNotImportant
-                }))
-            }
+                })),
+            },
         }
     }
 
@@ -147,6 +226,22 @@ impl MailOperationsService {
     ) -> Result<(), MailOperationError> {
         self.apply(MailOperation::SetMessageState {
             id: id.to_string(),
+            location: None,
+            is_unread,
+            is_flagged,
+        })
+    }
+
+    pub fn set_message_state_for_location(
+        &self,
+        id: &str,
+        location: &MailBackendLocation,
+        is_unread: bool,
+        is_flagged: bool,
+    ) -> Result<(), MailOperationError> {
+        self.apply(MailOperation::SetMessageState {
+            id: id.to_string(),
+            location: Some(location.clone()),
             is_unread,
             is_flagged,
         })
@@ -171,14 +266,108 @@ impl MailOperationsService {
     }
 
     pub fn delete(&self, id: &str) -> Result<(), MailOperationError> {
-        self.apply(MailOperation::Delete { id: id.to_string() })
+        self.apply(MailOperation::Delete {
+            id: id.to_string(),
+            location: None,
+        })
+    }
+
+    pub fn delete_for_location(
+        &self,
+        id: &str,
+        location: &MailBackendLocation,
+    ) -> Result<(), MailOperationError> {
+        self.apply(MailOperation::Delete {
+            id: id.to_string(),
+            location: Some(location.clone()),
+        })
+    }
+
+    pub fn archive(&self, id: &str) -> Result<(), MailOperationError> {
+        self.apply(MailOperation::Archive {
+            id: id.to_string(),
+            location: None,
+        })
     }
 
     #[allow(dead_code)]
     pub fn move_to(&self, id: &str, destination: &str) -> Result<(), MailOperationError> {
         self.apply(MailOperation::Move {
             id: id.to_string(),
+            location: None,
             destination: destination.to_string(),
+        })
+    }
+
+    pub fn move_to_for_location(
+        &self,
+        id: &str,
+        location: &MailBackendLocation,
+        destination: &str,
+    ) -> Result<(), MailOperationError> {
+        self.apply(MailOperation::Move {
+            id: id.to_string(),
+            location: Some(location.clone()),
+            destination: destination.to_string(),
+        })
+    }
+
+    pub fn archive_for_location(
+        &self,
+        id: &str,
+        location: &MailBackendLocation,
+    ) -> Result<(), MailOperationError> {
+        self.apply(MailOperation::Archive {
+            id: id.to_string(),
+            location: Some(location.clone()),
+        })
+    }
+
+    pub fn set_junk_for_location(
+        &self,
+        id: &str,
+        location: &MailBackendLocation,
+        is_junk: bool,
+    ) -> Result<(), MailOperationError> {
+        self.apply(MailOperation::SetJunk {
+            id: id.to_string(),
+            location: Some(location.clone()),
+            is_junk,
+        })
+    }
+
+    pub fn set_junk(&self, id: &str, is_junk: bool) -> Result<(), MailOperationError> {
+        self.apply(MailOperation::SetJunk {
+            id: id.to_string(),
+            location: None,
+            is_junk,
+        })
+    }
+
+    #[allow(dead_code)]
+    pub fn set_important_for_location(
+        &self,
+        id: &str,
+        location: &MailBackendLocation,
+        is_important: bool,
+    ) -> Result<(), MailOperationError> {
+        self.apply(MailOperation::SetImportant {
+            id: id.to_string(),
+            location: Some(location.clone()),
+            is_important,
+        })
+    }
+
+    fn apply_camel(
+        &self,
+        operation: CamelMailOperation,
+        kind: MailOperationKind,
+    ) -> Result<(), MailOperationError> {
+        camel_mail_service::apply_operation(operation).map_err(|message| {
+            MailOperationError::Backend {
+                operation: kind,
+                message,
+            }
         })
     }
 
