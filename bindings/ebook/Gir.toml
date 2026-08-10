@@ -1,0 +1,21 @@
+[options]
+library = "EBook"
+version = "1.2"
+min_cfg_version = "1.2"
+target_path = "../../target/eds-bindings/ebook"
+girs_directories = ["/usr/share/gir-1.0"]
+work_mode = "normal"
+generate_safety_asserts = true
+
+[dependencies]
+glib = "0.20"
+gio = "0.20"
+ebook-contacts = "1.2"
+
+[[object]]
+name = "EBook.Client"
+status = "generate"
+
+[[object]]
+name = "EBook.Contact"
+status = "generate"

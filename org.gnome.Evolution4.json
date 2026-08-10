@@ -1,0 +1,85 @@
+{
+  "id": "org.gnome.Evolution4",
+  "runtime": "org.gnome.Platform",
+  "runtime-version": "48",
+  "sdk": "org.gnome.Sdk",
+  "sdk-extensions": [
+    "org.freedesktop.Sdk.Extension.rust-stable"
+  ],
+  "command": "evolution-gtk4",
+  "finish-args": [
+    "--share=ipc",
+    "--share=network",
+    "--socket=fallback-x11",
+    "--socket=wayland",
+    "--device=dri",
+    "--talk-name=org.gnome.evolution.dataserver.Sources5",
+    "--talk-name=org.gnome.evolution.dataserver.Calendar8",
+    "--talk-name=org.gnome.evolution.dataserver.AddressBook10",
+    "--talk-name=org.gnome.evolution.dataserver.Subprocess.Backend.*",
+    "--talk-name=org.gnome.OnlineAccounts",
+    "--talk-name=org.freedesktop.Notifications",
+    "--talk-name=org.freedesktop.secrets",
+    "--filesystem=xdg-run/gvfsd",
+    "--metadata=X-DConf=migrate-path=/org/gnome/Evolution4/"
+  ],
+  "cleanup": [
+    "/include",
+    "/lib/pkgconfig",
+    "/share/pkgconfig",
+    "*.la",
+    "*.a"
+  ],
+  "modules": [
+    {
+      "name": "evolution-data-server",
+      "buildsystem": "cmake-ninja",
+      "config-opts": [
+        "-DENABLE_GTK=OFF",
+        "-DENABLE_GTK4=ON",
+        "-DENABLE_GOA=ON",
+        "-DENABLE_OAUTH2_WEBKITGTK=OFF",
+        "-DENABLE_OAUTH2_WEBKITGTK4=ON",
+        "-DENABLE_WEATHER=OFF",
+        "-DENABLE_EXAMPLES=OFF",
+        "-DENABLE_VALA_BINDINGS=OFF",
+        "-DENABLE_INTROSPECTION=ON",
+        "-DWITH_PHONENUMBER=OFF",
+        "-DWITH_LIBDB=OFF",
+        "-DCMAKE_BUILD_TYPE=Release"
+      ],
+      "sources": [
+        {
+          "type": "archive",
+          "url": "https://download.gnome.org/sources/evolution-data-server/3.54/evolution-data-server-3.54.2.tar.xz",
+          "sha256": "FIXME"
+        }
+      ]
+    },
+    {
+      "name": "evolution-gtk4",
+      "buildsystem": "simple",
+      "build-options": {
+        "append-path": "/usr/lib/sdk/rust-stable/bin",
+        "env": {
+          "CARGO_HOME": "/run/build/evolution-gtk4/cargo",
+          "CARGO_NET_OFFLINE": "true"
+        }
+      },
+      "build-commands": [
+        "cargo --offline fetch --manifest-path Cargo.toml --verbose",
+        "cargo --offline build --release --manifest-path Cargo.toml",
+        "install -Dm755 target/release/evolution-gtk4 /app/bin/evolution-gtk4",
+        "install -Dm644 data/org.gnome.Evolution4.desktop.in /app/share/applications/org.gnome.Evolution4.desktop",
+        "install -Dm644 data/org.gnome.Evolution4.metainfo.xml.in /app/share/metainfo/org.gnome.Evolution4.metainfo.xml"
+      ],
+      "sources": [
+        {
+          "type": "dir",
+          "path": "."
+        },
+        "cargo-sources.json"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,1425 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// MailPage — Three-column mail view with dynamic message selection, real-time search filtering, and WebKitGTK 6.0 rendering.
+
+use adw::prelude::*;
+use adw::subclass::prelude::*;
+use gtk::{gio, glib};
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
+use std::fs;
+use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use crate::models::eds_source::EdsSourceObject;
+use crate::models::mail_message::MailMessageObject;
+use crate::services::account_config_service::AccountConfigStore;
+use crate::services::eds_service;
+use crate::services::mail_operations_service::{MailOperationError, MailOperationsService};
+use crate::views::MailViewer;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum MessageFilter {
+    All,
+    Unread,
+    Flagged,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FolderFilter {
+    All,
+    Inbox,
+    Sent,
+    Drafts,
+    Trash,
+    Archive,
+    Junk,
+}
+
+impl FolderFilter {
+    fn from_folder_id(folder_id: &str) -> Self {
+        match folder_id {
+            "inbox" => Self::Inbox,
+            "sent" => Self::Sent,
+            "drafts" => Self::Drafts,
+            "trash" => Self::Trash,
+            "archive" => Self::Archive,
+            "spam" | "junk" => Self::Junk,
+            _ => Self::All,
+        }
+    }
+
+    fn matches(self, message: &MailMessageObject) -> bool {
+        match self {
+            Self::All => true,
+            Self::Inbox => message.folder_id() == "inbox",
+            Self::Sent => message.folder_id() == "sent",
+            Self::Drafts => message.folder_id() == "drafts",
+            Self::Trash => message.folder_id() == "trash",
+            Self::Archive => message.folder_id() == "archive",
+            Self::Junk => message.folder_id() == "junk",
+        }
+    }
+}
+
+// ─── GObject Subclass ───────────────────────────────────────────────────────
+
+mod imp {
+    use super::*;
+
+    #[derive(Debug, Default)]
+    pub struct MailPage {
+        pub outer_split: adw::OverlaySplitView,
+        pub inner_split: adw::NavigationSplitView,
+        pub message_selection: RefCell<Option<gtk::SingleSelection>>,
+        pub message_filter: RefCell<Option<gtk::CustomFilter>>,
+        pub mail_load_cancellation: RefCell<Option<Arc<AtomicBool>>>,
+        pub search_entry: RefCell<Option<gtk::SearchEntry>>,
+    }
+
+    #[glib::object_subclass]
+    impl ObjectSubclass for MailPage {
+        const NAME: &'static str = "EvolutionMailPage";
+        type Type = super::MailPage;
+        type ParentType = gtk::Widget;
+
+        fn class_init(klass: &mut Self::Class) {
+            klass.set_layout_manager_type::<gtk::BinLayout>();
+        }
+    }
+
+    impl ObjectImpl for MailPage {
+        fn constructed(&self) {
+            self.parent_constructed();
+            let obj = self.obj();
+
+            let (sidebar, source_store, source_state, folder_section, folder_list, search_list) =
+                obj.build_sidebar();
+            let (
+                message_container,
+                list_store,
+                selection,
+                custom_filter,
+                message_filter,
+                folder_filter,
+            ) = obj.build_message_list();
+            let (detail_view, mail_viewer, lbl_subject, lbl_from, lbl_to, lbl_date, attachment_bar) =
+                obj.build_detail_view();
+
+            obj.connect_selection_handler(
+                &selection,
+                &list_store,
+                &custom_filter,
+                &mail_viewer,
+                &lbl_subject,
+                &lbl_from,
+                &lbl_to,
+                &lbl_date,
+                &attachment_bar,
+            );
+            obj.connect_folder_filters(
+                &folder_list,
+                &search_list,
+                &custom_filter,
+                &folder_filter,
+                &message_filter,
+            );
+
+            self.message_selection.replace(Some(selection.clone()));
+            self.message_filter.replace(Some(custom_filter.clone()));
+
+            obj.assemble_layout(sidebar, message_container, detail_view);
+            obj.load_initial_data(
+                &list_store,
+                &selection,
+                &source_store,
+                &source_state,
+                &folder_section,
+                &folder_list,
+            );
+        }
+
+        fn dispose(&self) {
+            if let Some(cancelled) = self.mail_load_cancellation.borrow().as_ref() {
+                cancelled.store(true, Ordering::Relaxed);
+            }
+            self.outer_split.unparent();
+        }
+    }
+
+    impl WidgetImpl for MailPage {}
+}
+
+// ─── Public API ─────────────────────────────────────────────────────────────
+
+glib::wrapper! {
+    pub struct MailPage(ObjectSubclass<imp::MailPage>)
+        @extends gtk::Widget,
+        @implements gtk::Accessible, gtk::Buildable, gtk::ConstraintTarget;
+}
+
+impl MailPage {
+    pub fn new() -> Self {
+        glib::Object::builder().build()
+    }
+
+    pub fn outer_split(&self) -> &adw::OverlaySplitView {
+        &self.imp().outer_split
+    }
+
+    pub fn inner_split(&self) -> &adw::NavigationSplitView {
+        &self.imp().inner_split
+    }
+
+    pub fn set_sidebar_visible(&self, visible: bool) {
+        self.imp().outer_split.set_show_sidebar(visible);
+    }
+
+    pub fn focus_search(&self) {
+        if let Some(search_entry) = self.imp().search_entry.borrow().as_ref() {
+            search_entry.grab_focus();
+        }
+    }
+
+    pub fn select_relative_message(&self, offset: i32) {
+        let Some(selection) = self.imp().message_selection.borrow().as_ref().cloned() else {
+            return;
+        };
+        let count = selection.n_items();
+        if count == 0 {
+            return;
+        }
+
+        let current = selection.selected();
+        let current = if current == gtk::INVALID_LIST_POSITION {
+            0
+        } else {
+            current as i32
+        };
+        let next = (current + offset).clamp(0, count.saturating_sub(1) as i32) as u32;
+        selection.set_selected(next);
+    }
+
+    /// Route destructive actions through the backend service.  The current
+    /// local importer intentionally returns an explicit unsupported error and
+    /// leaves the source files untouched.
+    pub fn delete_selected(&self) -> Result<bool, MailOperationError> {
+        let selected = self
+            .imp()
+            .message_selection
+            .borrow()
+            .as_ref()
+            .and_then(|selection| selection.selected_item())
+            .and_then(|item| item.downcast::<MailMessageObject>().ok());
+
+        let Some(message) = selected else {
+            return Ok(false);
+        };
+
+        MailOperationsService::new()
+            .delete(&message.id())
+            .map(|()| true)
+    }
+
+    pub fn mark_selected_unread(&self) -> Result<bool, MailOperationError> {
+        let selected = self
+            .imp()
+            .message_selection
+            .borrow()
+            .as_ref()
+            .and_then(|selection| selection.selected_item())
+            .and_then(|item| item.downcast::<MailMessageObject>().ok());
+
+        let Some(message) = selected else {
+            return Ok(false);
+        };
+
+        MailOperationsService::new().mark_unread(&message.id(), message.is_flagged())?;
+        message.set_unread(true);
+        if let Some(filter) = self.imp().message_filter.borrow().as_ref() {
+            filter.changed(gtk::FilterChange::Different);
+        }
+        Ok(true)
+    }
+
+    // ── Private: Build Sidebar (Folder Tree) ────────────────────────────
+
+    fn build_sidebar(
+        &self,
+    ) -> (
+        adw::NavigationPage,
+        gio::ListStore,
+        gtk::Label,
+        gtk::Box,
+        gtk::ListBox,
+        gtk::ListBox,
+    ) {
+        let source_store = gio::ListStore::new::<EdsSourceObject>();
+        let source_selection = gtk::SingleSelection::new(Some(source_store.clone()));
+        let source_factory = gtk::SignalListItemFactory::new();
+
+        source_factory.connect_setup(|_, list_item| {
+            let list_item = list_item
+                .downcast_ref::<gtk::ListItem>()
+                .expect("Expected ListItem");
+
+            let row = gtk::Box::builder()
+                .orientation(gtk::Orientation::Horizontal)
+                .spacing(8)
+                .margin_start(8)
+                .margin_end(8)
+                .margin_top(6)
+                .margin_bottom(6)
+                .build();
+
+            let icon = gtk::Image::from_icon_name("mail-account-symbolic");
+            icon.add_css_class("dim-label");
+
+            let details = gtk::Box::builder()
+                .orientation(gtk::Orientation::Vertical)
+                .spacing(2)
+                .hexpand(true)
+                .build();
+            let title = gtk::Label::builder()
+                .halign(gtk::Align::Start)
+                .ellipsize(pango::EllipsizeMode::End)
+                .build();
+            let subtitle = gtk::Label::builder()
+                .halign(gtk::Align::Start)
+                .ellipsize(pango::EllipsizeMode::End)
+                .css_classes(vec!["caption", "dim-label"])
+                .build();
+
+            details.append(&title);
+            details.append(&subtitle);
+            row.append(&icon);
+            row.append(&details);
+            list_item.set_child(Some(&row));
+        });
+
+        source_factory.connect_bind(|_, list_item| {
+            let list_item = list_item
+                .downcast_ref::<gtk::ListItem>()
+                .expect("Expected ListItem");
+            let source = list_item
+                .item()
+                .and_downcast::<EdsSourceObject>()
+                .expect("Expected EdsSourceObject");
+            let row = list_item
+                .child()
+                .and_downcast::<gtk::Box>()
+                .expect("Expected source row");
+
+            if let Some(details) = row.last_child().and_downcast::<gtk::Box>() {
+                if let Some(title) = details.first_child().and_downcast::<gtk::Label>() {
+                    title.set_label(&source.display_name());
+                }
+                if let Some(subtitle) = details.last_child().and_downcast::<gtk::Label>() {
+                    subtitle.set_label(&format!(
+                        "{} · {} · {}",
+                        source.backend_name(),
+                        if source.enabled() {
+                            "aktiv"
+                        } else {
+                            "deaktiviert / Backend ausstehend"
+                        },
+                        source.origin()
+                    ));
+                }
+            }
+            row.set_sensitive(source.enabled());
+        });
+
+        let source_view = gtk::ListView::builder()
+            .model(&source_selection)
+            .factory(&source_factory)
+            .css_classes(vec!["navigation-sidebar"])
+            .build();
+
+        source_selection.connect_selected_item_notify(|selection| {
+            if let Some(source) = selection.selected_item().and_downcast::<EdsSourceObject>() {
+                tracing::debug!(
+                    uid = %source.uid(),
+                    display_name = %source.display_name(),
+                    "EDS mail source selected"
+                );
+            }
+        });
+
+        let folder_list = gtk::ListBox::new();
+        folder_list.set_selection_mode(gtk::SelectionMode::Single);
+        folder_list.add_css_class("navigation-sidebar");
+
+        let account_header = gtk::Label::builder()
+            .label("Konten (EDS)")
+            .css_classes(vec!["title-4"])
+            .halign(gtk::Align::Start)
+            .margin_start(12)
+            .margin_top(8)
+            .margin_bottom(4)
+            .build();
+
+        let folders = [
+            ("inbox", "mail-inbox-symbolic", "Posteingang", ""),
+            ("sent", "mail-sent-symbolic", "Gesendet", ""),
+            ("drafts", "mail-drafts-symbolic", "Entwürfe", ""),
+            ("trash", "edit-delete-symbolic", "Papierkorb", ""),
+            ("archive", "mail-archive-symbolic", "Archiv", ""),
+            ("spam", "folder-symbolic", "Spam", ""),
+        ];
+
+        for (id, icon, label, badge) in folders {
+            let row = Self::create_folder_row(id, icon, label, badge);
+            folder_list.append(&row);
+        }
+
+        let search_header = gtk::Label::builder()
+            .label("Suchordner")
+            .css_classes(vec!["title-4"])
+            .halign(gtk::Align::Start)
+            .margin_start(12)
+            .margin_top(16)
+            .margin_bottom(4)
+            .build();
+
+        let search_folders = [
+            ("vfolder-unread", "edit-find-symbolic", "Ungelesen", ""),
+            ("vfolder-starred", "starred-symbolic", "Markiert", ""),
+        ];
+
+        let search_list = gtk::ListBox::new();
+        search_list.set_selection_mode(gtk::SelectionMode::Single);
+        search_list.add_css_class("navigation-sidebar");
+
+        for (id, icon, label, badge) in search_folders {
+            let row = Self::create_folder_row(id, icon, label, badge);
+            search_list.append(&row);
+        }
+
+        let folder_section = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(0)
+            .visible(false)
+            .build();
+        folder_section.append(&folder_list);
+        folder_section.append(&search_header);
+        folder_section.append(&search_list);
+
+        let sidebar_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(0)
+            .build();
+
+        sidebar_box.append(&account_header);
+        let source_state = gtk::Label::builder()
+            .label("EDS-Konten werden geladen …")
+            .css_classes(vec!["dim-label"])
+            .halign(gtk::Align::Start)
+            .wrap(true)
+            .margin_start(12)
+            .margin_end(12)
+            .margin_bottom(8)
+            .build();
+        sidebar_box.append(&source_state);
+        sidebar_box.append(&source_view);
+        sidebar_box.append(&folder_section);
+
+        let sidebar_scroll = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .child(&sidebar_box)
+            .width_request(260)
+            .build();
+
+        let page = adw::NavigationPage::builder()
+            .title("Ordner")
+            .child(&sidebar_scroll)
+            .build();
+
+        (
+            page,
+            source_store,
+            source_state,
+            folder_section,
+            folder_list,
+            search_list,
+        )
+    }
+
+    fn create_folder_row(
+        folder_id: &str,
+        icon_name: &str,
+        label_text: &str,
+        badge_text: &str,
+    ) -> gtk::ListBoxRow {
+        let hbox = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(8)
+            .margin_start(8)
+            .margin_end(8)
+            .margin_top(6)
+            .margin_bottom(6)
+            .build();
+
+        let icon = gtk::Image::from_icon_name(icon_name);
+        icon.add_css_class("dim-label");
+
+        let label = gtk::Label::builder()
+            .label(label_text)
+            .halign(gtk::Align::Start)
+            .hexpand(true)
+            .ellipsize(pango::EllipsizeMode::End)
+            .build();
+
+        hbox.append(&icon);
+        hbox.append(&label);
+
+        let badge = gtk::Label::builder()
+            .label(badge_text)
+            .css_classes(vec!["badge", "numeric"])
+            .halign(gtk::Align::End)
+            .visible(!badge_text.is_empty())
+            .build();
+        hbox.append(&badge);
+
+        let row = gtk::ListBoxRow::builder().child(&hbox).build();
+        unsafe {
+            row.set_data("folder-id", folder_id.to_string());
+            row.set_data("folder-badge", badge);
+        }
+        row
+    }
+
+    fn update_folder_counts(folder_list: &gtk::ListBox, counts: &HashMap<String, (u32, u32)>) {
+        for index in 0..folder_list.observe_children().n_items() {
+            let Some(row) = folder_list
+                .row_at_index(index as i32)
+                .and_downcast::<gtk::ListBoxRow>()
+            else {
+                continue;
+            };
+            let Some(folder_id) = Self::folder_id(&row) else {
+                continue;
+            };
+            let key = if folder_id == "spam" {
+                "junk"
+            } else {
+                folder_id.as_str()
+            };
+            let Some((unread, total)) = counts.get(key) else {
+                continue;
+            };
+            let Some(badge) = (unsafe {
+                row.data::<gtk::Label>("folder-badge")
+                    .map(|pointer| pointer.as_ref())
+            }) else {
+                continue;
+            };
+            badge.set_label(&if *unread > 0 {
+                format!("{unread}")
+            } else {
+                format!("{total}")
+            });
+            badge.set_visible(*unread > 0 || *total > 0);
+        }
+    }
+
+    // ── Private: Build Message List with GListStore & Search Filter ───────
+
+    fn build_message_list(
+        &self,
+    ) -> (
+        gtk::Box,
+        gio::ListStore,
+        gtk::SingleSelection,
+        gtk::CustomFilter,
+        Rc<Cell<MessageFilter>>,
+        Rc<Cell<FolderFilter>>,
+    ) {
+        let store = gio::ListStore::new::<MailMessageObject>();
+
+        // Custom filter for real-time search
+        let query = Rc::new(RefCell::new(String::new()));
+        let message_filter = Rc::new(Cell::new(MessageFilter::All));
+        let folder_filter = Rc::new(Cell::new(FolderFilter::All));
+        let query_for_filter = Rc::clone(&query);
+        let message_filter_for_filter = Rc::clone(&message_filter);
+        let folder_filter_for_filter = Rc::clone(&folder_filter);
+        let custom_filter = gtk::CustomFilter::new(move |obj| {
+            let Some(msg) = obj.downcast_ref::<MailMessageObject>() else {
+                return false;
+            };
+
+            let query = query_for_filter.borrow();
+            let query_matches = query.is_empty()
+                || msg.subject().to_lowercase().contains(query.as_str())
+                || msg.sender_name().to_lowercase().contains(query.as_str())
+                || msg.sender_email().to_lowercase().contains(query.as_str())
+                || msg
+                    .preview_snippet()
+                    .to_lowercase()
+                    .contains(query.as_str());
+            let folder_matches = match message_filter_for_filter.get() {
+                MessageFilter::All => true,
+                MessageFilter::Unread => msg.is_unread(),
+                MessageFilter::Flagged => msg.is_flagged(),
+            };
+            let selected_folder = folder_filter_for_filter.get();
+
+            query_matches && folder_matches && selected_folder.matches(msg)
+        });
+        let filter_model =
+            gtk::FilterListModel::new(Some(store.clone()), Some(custom_filter.clone()));
+        let selection = gtk::SingleSelection::new(Some(filter_model));
+
+        let factory = gtk::SignalListItemFactory::new();
+
+        factory.connect_setup(|_, list_item| {
+            let list_item = list_item
+                .downcast_ref::<gtk::ListItem>()
+                .expect("Expected ListItem");
+
+            let vbox = gtk::Box::builder()
+                .orientation(gtk::Orientation::Vertical)
+                .spacing(4)
+                .margin_start(12)
+                .margin_end(12)
+                .margin_top(8)
+                .margin_bottom(8)
+                .build();
+
+            let header_box = gtk::Box::builder()
+                .orientation(gtk::Orientation::Horizontal)
+                .spacing(8)
+                .build();
+
+            let avatar = adw::Avatar::builder().size(32).show_initials(true).build();
+
+            let sender_box = gtk::Box::builder()
+                .orientation(gtk::Orientation::Vertical)
+                .spacing(2)
+                .hexpand(true)
+                .build();
+
+            let sender = gtk::Label::builder()
+                .css_classes(vec!["heading"])
+                .halign(gtk::Align::Start)
+                .ellipsize(pango::EllipsizeMode::End)
+                .build();
+
+            let date = gtk::Label::builder()
+                .css_classes(vec!["caption", "dim-label"])
+                .halign(gtk::Align::End)
+                .build();
+
+            let btn_star = gtk::Button::builder()
+                .icon_name("non-starred-symbolic")
+                .css_classes(vec!["flat", "circular"])
+                .valign(gtk::Align::Center)
+                .tooltip_text("Markieren / Sternchhen setzen")
+                .build();
+
+            sender_box.append(&sender);
+            header_box.append(&avatar);
+            header_box.append(&sender_box);
+            header_box.append(&date);
+            header_box.append(&btn_star);
+
+            let subject = gtk::Label::builder()
+                .css_classes(vec!["body"])
+                .halign(gtk::Align::Start)
+                .ellipsize(pango::EllipsizeMode::End)
+                .build();
+
+            let preview = gtk::Label::builder()
+                .css_classes(vec!["caption", "dim-label"])
+                .halign(gtk::Align::Start)
+                .ellipsize(pango::EllipsizeMode::End)
+                .max_width_chars(60)
+                .build();
+
+            vbox.append(&header_box);
+            vbox.append(&subject);
+            vbox.append(&preview);
+
+            let separator = gtk::Separator::new(gtk::Orientation::Horizontal);
+            separator.set_margin_top(4);
+
+            let outer = gtk::Box::builder()
+                .orientation(gtk::Orientation::Vertical)
+                .build();
+            outer.append(&vbox);
+            outer.append(&separator);
+
+            list_item.set_child(Some(&outer));
+        });
+
+        let filter_for_bind = custom_filter.clone();
+        factory.connect_bind(move |_, list_item| {
+            let list_item = list_item
+                .downcast_ref::<gtk::ListItem>()
+                .expect("Expected ListItem");
+
+            let msg = list_item
+                .item()
+                .and_downcast::<MailMessageObject>()
+                .expect("Expected MailMessageObject");
+
+            let outer = list_item
+                .child()
+                .and_downcast::<gtk::Box>()
+                .expect("Expected Box");
+
+            let vbox = outer
+                .first_child()
+                .and_downcast::<gtk::Box>()
+                .expect("Expected inner Box");
+
+            let header_box = vbox
+                .first_child()
+                .and_downcast::<gtk::Box>()
+                .expect("Expected header Box");
+
+            if let Some(avatar) = header_box.first_child().and_downcast::<adw::Avatar>() {
+                avatar.set_text(Some(&msg.sender_name()));
+            }
+
+            if let Some(sender_box) = header_box
+                .first_child()
+                .and_then(|w| w.next_sibling())
+                .and_downcast::<gtk::Box>()
+            {
+                if let Some(sender) = sender_box.first_child().and_downcast::<gtk::Label>() {
+                    sender.set_label(&msg.sender_name());
+                    if msg.is_unread() {
+                        sender.add_css_class("title-4");
+                    } else {
+                        sender.remove_css_class("title-4");
+                    }
+                }
+            }
+
+            if let Some(date) = header_box
+                .first_child()
+                .and_then(|w| w.next_sibling())
+                .and_then(|w| w.next_sibling())
+                .and_downcast::<gtk::Label>()
+            {
+                date.set_label(&msg.date_str());
+            }
+
+            if let Some(btn_star) = header_box.last_child().and_downcast::<gtk::Button>() {
+                if msg.is_flagged() {
+                    btn_star.set_icon_name("starred-symbolic");
+                } else {
+                    btn_star.set_icon_name("non-starred-symbolic");
+                }
+                let msg_clone = msg.clone();
+                let operations = MailOperationsService::new();
+                let filter_for_star = filter_for_bind.clone();
+                btn_star.connect_clicked(move |btn| {
+                    let current = msg_clone.is_flagged();
+                    let next_flagged = !current;
+                    if let Err(error) =
+                        operations.set_flagged(&msg_clone.id(), msg_clone.is_unread(), next_flagged)
+                    {
+                        tracing::error!(%error, "Could not persist message flag");
+                        return;
+                    }
+                    msg_clone.set_flagged(next_flagged);
+                    filter_for_star.changed(gtk::FilterChange::Different);
+                    if next_flagged {
+                        btn.set_icon_name("starred-symbolic");
+                    } else {
+                        btn.set_icon_name("non-starred-symbolic");
+                    }
+                });
+            }
+
+            if let Some(subject) = vbox
+                .first_child()
+                .and_then(|w| w.next_sibling())
+                .and_downcast::<gtk::Label>()
+            {
+                subject.set_label(&msg.subject());
+            }
+
+            if let Some(preview) = vbox.last_child().and_downcast::<gtk::Label>() {
+                preview.set_label(&msg.preview_snippet());
+            }
+        });
+
+        let list_view = gtk::ListView::builder()
+            .model(&selection)
+            .factory(&factory)
+            .css_classes(vec!["message-list"])
+            .build();
+
+        // Search entry container
+        let search_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .margin_start(8)
+            .margin_end(8)
+            .margin_top(8)
+            .margin_bottom(8)
+            .spacing(6)
+            .build();
+
+        let search_entry = gtk::SearchEntry::builder()
+            .placeholder_text("Mails durchsuchen…")
+            .hexpand(true)
+            .build();
+
+        let query_for_search = Rc::clone(&query);
+        let filter_for_search = custom_filter.clone();
+        search_entry.connect_search_changed(move |entry| {
+            *query_for_search.borrow_mut() = entry.text().to_lowercase();
+            filter_for_search.changed(gtk::FilterChange::Different);
+        });
+
+        search_box.append(&search_entry);
+        self.imp().search_entry.replace(Some(search_entry.clone()));
+
+        let list_container = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .build();
+        list_container.append(&search_box);
+        list_container.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+
+        let list_scroll = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .child(&list_view)
+            .vexpand(true)
+            .width_request(340)
+            .build();
+
+        list_container.append(&list_scroll);
+
+        (
+            list_container,
+            store,
+            selection,
+            custom_filter,
+            message_filter,
+            folder_filter,
+        )
+    }
+
+    fn connect_folder_filters(
+        &self,
+        folder_list: &gtk::ListBox,
+        search_list: &gtk::ListBox,
+        custom_filter: &gtk::CustomFilter,
+        folder_filter: &Rc<Cell<FolderFilter>>,
+        message_filter: &Rc<Cell<MessageFilter>>,
+    ) {
+        let folder_filter_for_rows = Rc::clone(folder_filter);
+        let message_filter_for_rows = Rc::clone(message_filter);
+        let custom_filter_for_rows = custom_filter.clone();
+        let search_list_for_rows = search_list.clone();
+        folder_list.connect_row_selected(move |_, row| {
+            let filter = row
+                .and_then(Self::folder_id)
+                .map(|id| FolderFilter::from_folder_id(&id))
+                .unwrap_or(FolderFilter::All);
+            folder_filter_for_rows.set(filter);
+            message_filter_for_rows.set(MessageFilter::All);
+            if row.is_some() {
+                search_list_for_rows.unselect_all();
+            }
+            custom_filter_for_rows.changed(gtk::FilterChange::Different);
+        });
+
+        let message_filter = Rc::clone(message_filter);
+        let folder_filter = Rc::clone(folder_filter);
+        let custom_filter = custom_filter.clone();
+        let folder_list_for_search = folder_list.clone();
+        search_list.connect_row_selected(move |_, row| {
+            let filter = row
+                .and_then(Self::folder_id)
+                .map(|id| match id.as_str() {
+                    "vfolder-unread" => MessageFilter::Unread,
+                    "vfolder-starred" => MessageFilter::Flagged,
+                    _ => MessageFilter::All,
+                })
+                .unwrap_or(MessageFilter::All);
+            message_filter.set(filter);
+            if row.is_some() {
+                folder_filter.set(FolderFilter::All);
+                folder_list_for_search.unselect_all();
+            }
+            custom_filter.changed(gtk::FilterChange::Different);
+        });
+    }
+
+    fn folder_id(row: &gtk::ListBoxRow) -> Option<String> {
+        unsafe {
+            row.data::<String>("folder-id")
+                .map(|value| value.as_ref().clone())
+        }
+    }
+
+    // ── Private: Build Detail View ──────────────────────────────────────
+
+    #[allow(clippy::type_complexity)]
+    fn build_detail_view(
+        &self,
+    ) -> (
+        gtk::Box,
+        MailViewer,
+        gtk::Label,
+        gtk::Label,
+        gtk::Label,
+        gtk::Label,
+        gtk::Box,
+    ) {
+        let detail_view = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(0)
+            .build();
+
+        let header_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(8)
+            .margin_start(16)
+            .margin_end(16)
+            .margin_top(16)
+            .margin_bottom(12)
+            .build();
+
+        let lbl_subject = gtk::Label::builder()
+            .label("E-Mail auswählen")
+            .css_classes(vec!["title-2"])
+            .halign(gtk::Align::Start)
+            .wrap(true)
+            .build();
+
+        let meta_grid = gtk::Grid::builder()
+            .row_spacing(4)
+            .column_spacing(12)
+            .margin_top(8)
+            .build();
+
+        let from_label = gtk::Label::builder()
+            .label("Von:")
+            .css_classes(vec!["dim-label"])
+            .halign(gtk::Align::End)
+            .build();
+        let lbl_from = gtk::Label::builder()
+            .label("-")
+            .halign(gtk::Align::Start)
+            .selectable(true)
+            .build();
+
+        let to_label = gtk::Label::builder()
+            .label("An:")
+            .css_classes(vec!["dim-label"])
+            .halign(gtk::Align::End)
+            .build();
+        let lbl_to = gtk::Label::builder()
+            .label("-")
+            .halign(gtk::Align::Start)
+            .selectable(true)
+            .build();
+
+        let date_label = gtk::Label::builder()
+            .label("Datum:")
+            .css_classes(vec!["dim-label"])
+            .halign(gtk::Align::End)
+            .build();
+        let lbl_date = gtk::Label::builder()
+            .label("-")
+            .halign(gtk::Align::Start)
+            .build();
+
+        let crypto_label = gtk::Label::builder()
+            .label("Sicherheit:")
+            .css_classes(vec!["dim-label"])
+            .halign(gtk::Align::End)
+            .build();
+
+        let crypto_chip = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(4)
+            .css_classes(vec!["badge"])
+            .halign(gtk::Align::Start)
+            .build();
+        let icon_lock = gtk::Image::from_icon_name("dialog-information-symbolic");
+        let lbl_crypto = gtk::Label::builder()
+            .label("Nicht geprüft — Sicherheits-Backend fehlt")
+            .css_classes(vec!["caption"])
+            .build();
+        crypto_chip.append(&icon_lock);
+        crypto_chip.append(&lbl_crypto);
+
+        meta_grid.attach(&from_label, 0, 0, 1, 1);
+        meta_grid.attach(&lbl_from, 1, 0, 1, 1);
+        meta_grid.attach(&to_label, 0, 1, 1, 1);
+        meta_grid.attach(&lbl_to, 1, 1, 1, 1);
+        meta_grid.attach(&date_label, 0, 2, 1, 1);
+        meta_grid.attach(&lbl_date, 1, 2, 1, 1);
+        meta_grid.attach(&crypto_label, 0, 3, 1, 1);
+        meta_grid.attach(&crypto_chip, 1, 3, 1, 1);
+
+        let action_bar = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(8)
+            .margin_top(12)
+            .build();
+
+        let reply_btn = gtk::Button::builder()
+            .icon_name("mail-reply-sender-symbolic")
+            .tooltip_text("Antworten (Ctrl+R)")
+            .action_name("win.reply")
+            .css_classes(vec!["flat"])
+            .build();
+
+        let reply_all_btn = gtk::Button::builder()
+            .icon_name("mail-reply-all-symbolic")
+            .tooltip_text("Allen antworten (Ctrl+Shift+R)")
+            .action_name("win.reply-all")
+            .css_classes(vec!["flat"])
+            .build();
+
+        let forward_btn = gtk::Button::builder()
+            .icon_name("mail-forward-symbolic")
+            .tooltip_text("Weiterleiten (Ctrl+L)")
+            .action_name("win.forward")
+            .css_classes(vec!["flat"])
+            .build();
+
+        let delete_btn = gtk::Button::builder()
+            .icon_name("user-trash-symbolic")
+            .tooltip_text("Löschen (Delete)")
+            .action_name("win.delete")
+            .css_classes(vec!["flat"])
+            .build();
+
+        let unread_btn = gtk::Button::builder()
+            .icon_name("mail-unread-symbolic")
+            .tooltip_text("Als ungelesen markieren")
+            .action_name("win.mark-unread")
+            .css_classes(vec!["flat"])
+            .build();
+
+        reply_btn.connect_clicked(glib::clone!(
+            #[weak(rename_to = page)]
+            self,
+            #[weak]
+            lbl_from,
+            #[weak]
+            lbl_subject,
+            move |_| {
+                let recipient = lbl_from.text();
+                let subject = lbl_subject.text();
+                if recipient == "-" || subject == "E-Mail auswählen" {
+                    tracing::warn!("Reply requested without a selected message");
+                    return;
+                }
+                let dialog =
+                    crate::dialogs::ComposeDialog::reply_to(recipient.as_str(), subject.as_str());
+                if let Some(root) = page.root().and_downcast::<gtk::Window>() {
+                    dialog.set_transient_for(Some(&root));
+                }
+                dialog.present();
+            }
+        ));
+
+        reply_all_btn.connect_clicked(glib::clone!(
+            #[weak(rename_to = page)]
+            self,
+            #[weak]
+            lbl_from,
+            #[weak]
+            lbl_subject,
+            move |_| {
+                let recipient = lbl_from.text();
+                let subject = lbl_subject.text();
+                if recipient == "-" || subject == "E-Mail auswählen" {
+                    tracing::warn!("Reply-all requested without a selected message");
+                    return;
+                }
+                let dialog =
+                    crate::dialogs::ComposeDialog::reply_to(recipient.as_str(), subject.as_str());
+                if let Some(root) = page.root().and_downcast::<gtk::Window>() {
+                    dialog.set_transient_for(Some(&root));
+                }
+                dialog.present();
+            }
+        ));
+
+        forward_btn.connect_clicked(glib::clone!(
+            #[weak(rename_to = page)]
+            self,
+            #[weak]
+            lbl_subject,
+            move |_| {
+                let subject = lbl_subject.text();
+                if subject == "E-Mail auswählen" {
+                    tracing::warn!("Forward requested without a selected message");
+                    return;
+                }
+                let dialog = crate::dialogs::ComposeDialog::forward(subject.as_str());
+                if let Some(root) = page.root().and_downcast::<gtk::Window>() {
+                    dialog.set_transient_for(Some(&root));
+                }
+                dialog.present();
+            }
+        ));
+
+        action_bar.append(&reply_btn);
+        action_bar.append(&reply_all_btn);
+        action_bar.append(&forward_btn);
+
+        let spacer = gtk::Box::builder().hexpand(true).build();
+        action_bar.append(&spacer);
+        action_bar.append(&unread_btn);
+        action_bar.append(&delete_btn);
+
+        header_box.append(&lbl_subject);
+        header_box.append(&meta_grid);
+        header_box.append(&action_bar);
+
+        let header_separator = gtk::Separator::new(gtk::Orientation::Horizontal);
+
+        let mail_viewer = MailViewer::new();
+
+        let attachment_bar = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(8)
+            .margin_start(16)
+            .margin_end(16)
+            .margin_top(8)
+            .margin_bottom(8)
+            .build();
+
+        let attachment_separator = gtk::Separator::new(gtk::Orientation::Horizontal);
+
+        mail_viewer.set_vexpand(true);
+        detail_view.set_vexpand(true);
+
+        detail_view.append(&header_box);
+        detail_view.append(&header_separator);
+        detail_view.append(&mail_viewer);
+        detail_view.append(&attachment_separator);
+        detail_view.append(&attachment_bar);
+
+        (
+            detail_view,
+            mail_viewer,
+            lbl_subject,
+            lbl_from,
+            lbl_to,
+            lbl_date,
+            attachment_bar,
+        )
+    }
+
+    // ── Private: Connect Selection Changed Handler ──────────────────────
+
+    #[allow(clippy::too_many_arguments)]
+    fn connect_selection_handler(
+        &self,
+        selection: &gtk::SingleSelection,
+        store: &gio::ListStore,
+        custom_filter: &gtk::CustomFilter,
+        mail_viewer: &MailViewer,
+        lbl_subject: &gtk::Label,
+        lbl_from: &gtk::Label,
+        lbl_to: &gtk::Label,
+        lbl_date: &gtk::Label,
+        attachment_bar: &gtk::Box,
+    ) {
+        let operations = MailOperationsService::new();
+        let filter_for_selection = custom_filter.clone();
+        selection.connect_selected_item_notify(glib::clone!(
+            #[strong]
+            operations,
+            #[strong]
+            filter_for_selection,
+            #[weak]
+            mail_viewer,
+            #[weak]
+            lbl_subject,
+            #[weak]
+            lbl_from,
+            #[weak]
+            lbl_to,
+            #[weak]
+            lbl_date,
+            #[weak]
+            attachment_bar,
+            move |sel| {
+                if let Some(item) = sel.selected_item() {
+                    if let Ok(msg) = item.downcast::<MailMessageObject>() {
+                        let was_unread = msg.is_unread();
+                        if was_unread {
+                            if let Err(error) = operations.mark_read(&msg.id(), msg.is_flagged()) {
+                                tracing::error!(%error, "Could not persist read state");
+                            } else {
+                                msg.set_unread(false);
+                                filter_for_selection.changed(gtk::FilterChange::Different);
+                            }
+                        }
+                        lbl_subject.set_label(&msg.subject());
+                        lbl_from.set_label(&format!(
+                            "{} <{}>",
+                            msg.sender_name(),
+                            msg.sender_email()
+                        ));
+                        lbl_to.set_label(&msg.recipient_to());
+                        lbl_date.set_label(&msg.date_str());
+
+                        mail_viewer.load_html(&msg.html_body(), None);
+
+                        while let Some(child) = attachment_bar.first_child() {
+                            attachment_bar.remove(&child);
+                        }
+
+                        let attachments = msg.attachments();
+                        if attachments.is_empty() {
+                            attachment_bar.set_visible(false);
+                        } else {
+                            attachment_bar.set_visible(true);
+                            for att in attachments {
+                                let chip = gtk::Box::builder()
+                                    .orientation(gtk::Orientation::Horizontal)
+                                    .spacing(6)
+                                    .css_classes(vec!["card", "attachment-chip"])
+                                    .margin_top(4)
+                                    .margin_bottom(4)
+                                    .build();
+
+                                let icon = gtk::Image::from_icon_name("mail-attachment-symbolic");
+                                let text = gtk::Label::builder()
+                                    .label(&format!("{} ({})", att.filename, att.size_formatted))
+                                    .css_classes(vec!["caption"])
+                                    .build();
+
+                                let btn_save = gtk::Button::builder()
+                                    .icon_name("document-save-symbolic")
+                                    .tooltip_text("Anhang speichern unter…")
+                                    .css_classes(vec!["flat", "circular"])
+                                    .valign(gtk::Align::Center)
+                                    .build();
+                                let filename = att.filename.clone();
+                                let content = att.content.clone();
+                                let parent = attachment_bar.root().and_downcast::<gtk::Window>();
+                                btn_save.connect_clicked(move |_| {
+                                    let Some(parent) = parent.as_ref() else {
+                                        tracing::warn!(
+                                            "Cannot save attachment without a parent window"
+                                        );
+                                        return;
+                                    };
+
+                                    let file_dialog = gtk::FileDialog::builder()
+                                        .title("Anhang speichern")
+                                        .modal(true)
+                                        .initial_name(&filename)
+                                        .build();
+                                    let filename = filename.clone();
+                                    let content = content.clone();
+                                    file_dialog.save(
+                                        Some(parent),
+                                        None::<&gio::Cancellable>,
+                                        move |result| match result {
+                                            Ok(file) => {
+                                                let Some(path) = file.path() else {
+                                                    tracing::warn!(
+                                                        "Cannot save attachment to a non-local URI"
+                                                    );
+                                                    return;
+                                                };
+                                                if let Err(error) = fs::write(&path, &content) {
+                                                    tracing::error!(
+                                                        path = %path.display(),
+                                                        %error,
+                                                        "Could not save attachment"
+                                                    );
+                                                } else {
+                                                    tracing::info!(
+                                                        path = %path.display(),
+                                                        filename = %filename,
+                                                        "Attachment saved"
+                                                    );
+                                                }
+                                            }
+                                            Err(error) => {
+                                                tracing::debug!(%error, "Attachment save cancelled")
+                                            }
+                                        },
+                                    );
+                                });
+
+                                chip.append(&icon);
+                                chip.append(&text);
+                                chip.append(&btn_save);
+                                attachment_bar.append(&chip);
+                            }
+                        }
+                    }
+                }
+            }
+        ));
+
+        if store.n_items() > 0 {
+            selection.set_selected(0);
+        }
+    }
+
+    // ── Private: Assemble the split layout ──────────────────────────────
+
+    fn assemble_layout(
+        &self,
+        sidebar: adw::NavigationPage,
+        message_container: gtk::Box,
+        detail_view: gtk::Box,
+    ) {
+        let imp = self.imp();
+
+        imp.outer_split.set_sidebar(Some(&sidebar));
+
+        let list_page = adw::NavigationPage::builder()
+            .title("Posteingang")
+            .child(&message_container)
+            .build();
+
+        let detail_page = adw::NavigationPage::builder()
+            .title("Nachricht")
+            .child(&detail_view)
+            .build();
+
+        imp.inner_split.set_sidebar(Some(&list_page));
+        imp.inner_split.set_content(Some(&detail_page));
+        imp.inner_split.set_min_sidebar_width(300.0);
+        imp.inner_split.set_max_sidebar_width(500.0);
+
+        let inner_page = adw::NavigationPage::builder()
+            .title("Mail")
+            .child(&imp.inner_split)
+            .build();
+
+        imp.outer_split.set_content(Some(&inner_page));
+        imp.outer_split.set_show_sidebar(true);
+        imp.outer_split.set_min_sidebar_width(220.0);
+        imp.outer_split.set_max_sidebar_width(320.0);
+
+        imp.outer_split.set_parent(&*self.imp().obj());
+    }
+
+    fn load_initial_data(
+        &self,
+        store: &gio::ListStore,
+        selection: &gtk::SingleSelection,
+        source_store: &gio::ListStore,
+        source_state: &gtk::Label,
+        folder_section: &gtk::Box,
+        folder_list: &gtk::ListBox,
+    ) {
+        tracing::info!("Starting asynchronous local mail and EDS data load");
+
+        let (sender, receiver) = async_channel::bounded(8);
+        let cancellation = Arc::new(AtomicBool::new(false));
+        self.imp()
+            .mail_load_cancellation
+            .replace(Some(cancellation.clone()));
+        let mail_store = crate::services::MailStoreService::new();
+        let cancellation_for_worker = cancellation;
+        std::thread::spawn(move || {
+            let records = mail_store.load_local_records_cancelable(&cancellation_for_worker);
+            for batch in records.chunks(50) {
+                if cancellation_for_worker.load(Ordering::Relaxed) {
+                    break;
+                }
+                if let Err(error) = sender.send_blocking(batch.to_vec()) {
+                    tracing::debug!(%error, "Local mail result was dropped before delivery");
+                    break;
+                }
+            }
+        });
+
+        let store_for_load = store.clone();
+        let selection_for_load = selection.clone();
+        let folder_section_for_mail_load = folder_section.clone();
+        let folder_list_for_mail_load = folder_list.clone();
+        glib::spawn_future_local(async move {
+            let mut loaded_count = 0;
+            let mut selected_first_message = false;
+            let mut folder_counts = HashMap::new();
+            while let Ok(records) = receiver.recv().await {
+                loaded_count += records.len();
+                tracing::debug!(batch_size = records.len(), "Loaded local mail batch");
+                for record in records {
+                    let folder_counts_entry = folder_counts
+                        .entry(record.folder_id.clone())
+                        .or_insert((0_u32, 0_u32));
+                    folder_counts_entry.1 += 1;
+                    if record.is_unread {
+                        folder_counts_entry.0 += 1;
+                    }
+                    store_for_load.append(&record.into_object());
+                }
+                Self::update_folder_counts(&folder_list_for_mail_load, &folder_counts);
+                if !selected_first_message && store_for_load.n_items() > 0 {
+                    selected_first_message = true;
+                    folder_section_for_mail_load.set_visible(true);
+                    selection_for_load.set_selected(0);
+                }
+            }
+            if loaded_count > 0 {
+                tracing::info!("Loaded {loaded_count} local messages");
+            } else {
+                tracing::debug!("No local messages found");
+            }
+        });
+
+        let source_store_for_load = source_store.clone();
+        let source_state_for_load = source_state.clone();
+        let folder_section_for_load = folder_section.clone();
+        let configured_accounts = AccountConfigStore::default().load();
+        for profile in &configured_accounts {
+            source_store.append(&EdsSourceObject::from_account_profile(profile));
+        }
+        let has_configured_accounts = !configured_accounts.is_empty();
+        glib::spawn_future_local(async move {
+            match eds_service::list_mail_sources().await {
+                Ok(sources) => {
+                    tracing::info!("Loaded {} mail sources from EDS", sources.len());
+                    let has_eds_sources = !sources.is_empty();
+                    let has_enabled_source = sources.iter().any(|source| source.enabled);
+                    for source in sources {
+                        tracing::debug!("  Source: {} ({})", source.display_name, source.uid);
+                        source_store_for_load.append(&EdsSourceObject::from_source(&source));
+                    }
+                    if !has_eds_sources && has_configured_accounts {
+                        source_state_for_load.set_label("Gespeicherte Kontoprofile vorhanden; EDS/Camel-Synchronisation ist noch nicht verbunden.");
+                    } else if !has_eds_sources {
+                        source_state_for_load.set_label("Keine EDS-/GOA-Mailkonten gefunden. Das Konto-Setup ist noch nicht mit EDS verbunden.");
+                    } else if !has_enabled_source {
+                        source_state_for_load.set_label(if has_configured_accounts {
+                            "Alle gefundenen EDS-/GOA-Mailkonten sind deaktiviert; gespeicherte Kontoprofile warten auf die Backend-Anbindung."
+                        } else {
+                            "Alle gefundenen EDS-/GOA-Mailkonten sind deaktiviert."
+                        });
+                    } else {
+                        source_state_for_load.set_visible(false);
+                        folder_section_for_load.set_visible(true);
+                    }
+                }
+                Err(err) => {
+                    tracing::warn!("Failed to load EDS sources: {}", err);
+                    source_state_for_load.set_label(&format!("EDS ist nicht erreichbar: {}", err));
+                }
+            }
+        });
+    }
+}
+
+impl Default for MailPage {
+    fn default() -> Self {
+        Self::new()
+    }
+}

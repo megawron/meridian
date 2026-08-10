@@ -1,0 +1,21 @@
+[options]
+library = "ECal"
+version = "2.0"
+min_cfg_version = "2.0"
+target_path = "../../target/eds-bindings/ecal"
+girs_directories = ["/usr/share/gir-1.0"]
+work_mode = "normal"
+generate_safety_asserts = true
+
+[dependencies]
+glib = "0.20"
+gio = "0.20"
+ical-glib = "3.0"
+
+[[object]]
+name = "ECal.Client"
+status = "generate"
+
+[[object]]
+name = "ECal.Component"
+status = "generate"

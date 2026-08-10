@@ -1,0 +1,38 @@
+[package]
+name = "evolution-gtk4"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description.workspace = true
+build = "build.rs"
+
+[[bin]]
+name = "evolution-gtk4"
+path = "main.rs"
+
+[dependencies]
+gtk.workspace = true
+adw.workspace = true
+glib.workspace = true
+gio.workspace = true
+gdk.workspace = true
+webkit6.workspace = true
+pango.workspace = true
+zbus.workspace = true
+async-channel.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+once_cell.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+relm4.workspace = true
+
+[build-dependencies]
+pkg-config = "0.3"
+
+[features]
+default = []
+devel = []  # Development profile with extra debug info

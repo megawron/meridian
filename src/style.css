@@ -1,0 +1,118 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* Evolution GTK4 — Application Stylesheet */
+/* Complements the libadwaita default theme with application-specific styling */
+
+/* ── Badge (unread count) ──────────────────────────────────────────────── */
+.badge {
+  background-color: @accent_bg_color;
+  color: @accent_fg_color;
+  border-radius: 9999px;
+  padding: 1px 7px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  min-width: 18px;
+  min-height: 18px;
+}
+
+/* ── Message List ──────────────────────────────────────────────────────── */
+.message-list row {
+  transition: background-color 150ms ease;
+}
+
+.message-list row:selected {
+  background-color: alpha(@accent_bg_color, 0.15);
+}
+
+/* Unread messages get bold subject */
+.message-list row.unread .heading {
+  font-weight: 700;
+}
+
+/* ── Calendar Event Chips ──────────────────────────────────────────────── */
+.event-chip-blue {
+  background-color: alpha(@blue_3, 0.2);
+  color: @blue_4;
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-size: 0.7rem;
+}
+
+.event-chip-yellow {
+  background-color: alpha(@yellow_3, 0.2);
+  color: @yellow_5;
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-size: 0.7rem;
+}
+
+.event-chip-green {
+  background-color: alpha(@green_3, 0.2);
+  color: @green_5;
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-size: 0.7rem;
+}
+
+.event-chip-purple {
+  background-color: alpha(@purple_3, 0.2);
+  color: @purple_4;
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-size: 0.7rem;
+}
+
+/* ── Folder Sidebar ────────────────────────────────────────────────────── */
+.navigation-sidebar row {
+  border-radius: 8px;
+  margin: 2px 6px;
+}
+
+/* ── Mail Detail View ──────────────────────────────────────────────────── */
+.mail-header {
+  border-bottom: 1px solid @borders;
+}
+
+/* Crypto status banners */
+.crypto-valid {
+  background-color: alpha(@green_3, 0.15);
+  color: @green_5;
+  padding: 6px 12px;
+  border-radius: 6px;
+}
+
+.crypto-invalid {
+  background-color: alpha(@red_3, 0.15);
+  color: @red_4;
+  padding: 6px 12px;
+  border-radius: 6px;
+}
+
+.crypto-unknown {
+  background-color: alpha(@yellow_3, 0.15);
+  color: @yellow_5;
+  padding: 6px 12px;
+  border-radius: 6px;
+}
+
+/* ── Attachment Chips ──────────────────────────────────────────────────── */
+.attachment-chip {
+  background-color: alpha(@window_fg_color, 0.07);
+  border-radius: 8px;
+  padding: 4px 10px;
+  transition: background-color 150ms ease;
+}
+
+.attachment-chip:hover {
+  background-color: alpha(@window_fg_color, 0.12);
+}
+
+/* ── Contact Detail ────────────────────────────────────────────────────── */
+.contact-header {
+  padding: 32px 24px 16px 24px;
+}
+
+/* ── General Polish ────────────────────────────────────────────────────── */
+/* Subtle shadow for the sidebar separator */
+splitview > separator {
+  background-color: alpha(@borders, 0.5);
+}

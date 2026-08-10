@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<schemalist id="org.gnome.Evolution4">
+  <schema id="org.gnome.Evolution4" path="/org/gnome/evolution4/">
+    <key name="window-width" type="i">
+      <default>1100</default>
+      <summary>Default window width</summary>
+    </key>
+    <key name="window-height" type="i">
+      <default>700</default>
+      <summary>Default window height</summary>
+    </key>
+    <key name="is-maximized" type="b">
+      <default>false</default>
+      <summary>Window maximized state</summary>
+    </key>
+    <key name="active-view" type="s">
+      <default>'mail'</default>
+      <summary>Currently selected view tab (mail, calendar, contacts, tasks, memos)</summary>
+    </key>
+    <key name="auto-load-remote-images" type="b">
+      <default>false</default>
+      <summary>Automatically load remote images in HTML emails</summary>
+    </key>
+    <key name="force-dark-mode" type="b">
+      <default>true</default>
+      <summary>Inject dark mode CSS into HTML email rendering</summary>
+    </key>
+    <key name="render-html" type="b">
+      <default>true</default>
+      <summary>Render HTML mail bodies</summary>
+    </key>
+    <key name="sign-new-messages" type="b">
+      <default>false</default>
+      <summary>Sign new messages by default</summary>
+    </key>
+    <key name="default-pgp-key" type="s">
+      <default>''</default>
+      <summary>Default OpenPGP key fingerprint</summary>
+    </key>
+  </schema>
+</schemalist>

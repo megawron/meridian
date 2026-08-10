@@ -1,0 +1,20 @@
+[options]
+library = "EDataServer"
+version = "1.2"
+min_cfg_version = "1.2"
+target_path = "../../target/eds-bindings/edata-server"
+girs_directories = ["/usr/share/gir-1.0"]
+work_mode = "normal"
+generate_safety_asserts = true
+
+[dependencies]
+glib = "0.20"
+gio = "0.20"
+
+[[object]]
+name = "EDataServer.Source"
+status = "generate"
+
+[[object]]
+name = "EDataServer.SourceRegistry"
+status = "generate"

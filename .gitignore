@@ -1,0 +1,23 @@
+# Build artifacts
+/target/
+/builddir/
+
+# Cargo
+**/*.rs.bk
+*.pdb
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Flatpak
+.flatpak-builder/
+repo/
+*.flatpak
+
+# OS
+.DS_Store
+Thumbs.db
