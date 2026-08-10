@@ -55,24 +55,8 @@ mod imp {
 
             tracing::debug!("Application activate");
 
-            let relm4_requested =
-                std::env::var_os("EVOLUTION_GTK4_RELM4_FRONTEND").is_some_and(|value| value == "1");
-            let legacy_requested = std::env::var_os("EVOLUTION_GTK4_LEGACY_FRONTEND")
-                .is_some_and(|value| value == "1");
-
-            // The Linux build is the EDS/Camel target environment, so the
-            // Relm4 shell is the normal entry point there.  Keep an explicit
-            // escape hatch while the imperative shell is being retired.
-            if !legacy_requested && (relm4_requested || cfg!(target_os = "linux")) {
-                if let Some(window) = app.active_window() {
-                    window.present();
-                    return;
-                }
-                crate::frontend::launch_preview(app.upcast_ref());
-                return;
-            }
-
-            // Present existing window or create a new one
+            // GTK4-rs/libadwaita is the single production frontend.  EDS and
+            // Camel services remain independent of this widget layer.
             let window = if let Some(window) = app.active_window() {
                 window
             } else {
@@ -182,6 +166,7 @@ impl EvolutionApplication {
         self.set_accels_for_action("app.compose", &["<Ctrl>N"]);
         self.set_accels_for_action("app.preferences", &["<Ctrl>comma"]);
         self.set_accels_for_action("win.search", &["<Ctrl>F"]);
+        self.set_accels_for_action("win.refresh-mail", &["F5"]);
         self.set_accels_for_action("win.toggle-sidebar", &["F9"]);
 
         // Module switching: Ctrl+1/2/3

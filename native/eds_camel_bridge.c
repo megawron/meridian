@@ -231,10 +231,43 @@ typedef struct {
     size_t folder_count;
     size_t folder_capacity;
     size_t configured_sources;
+    size_t successful_sources;
+    size_t failed_sources;
     gint message_offset;
     gint max_messages_per_folder;
     gchar *first_error;
+    EvolutionEdsCamelProgressCallback progress_callback;
+    void *progress_user_data;
+    size_t folders_seen;
+    size_t messages_loaded;
+    size_t processed_sources;
 } LoadContext;
+
+static void
+emit_progress (LoadContext *context,
+               EvolutionEdsCamelSyncPhase phase,
+               const gchar *source_uid,
+               const gchar *source_display_name,
+               const gchar *folder_name)
+{
+    EvolutionEdsCamelSyncProgress progress;
+
+    if (!context->progress_callback)
+        return;
+
+    progress.phase = phase;
+    progress.source_uid = source_uid;
+    progress.source_display_name = source_display_name;
+    progress.folder_name = folder_name;
+    progress.configured_sources = context->configured_sources;
+    progress.processed_sources = context->processed_sources;
+    progress.successful_sources = context->successful_sources;
+    progress.failed_sources = context->failed_sources;
+    progress.folders_seen = context->folders_seen;
+    progress.messages_loaded = context->messages_loaded;
+
+    context->progress_callback (&progress, context->progress_user_data);
+}
 
 static void
 remember_error (LoadContext *context,
@@ -320,6 +353,7 @@ is_mail_folder (CamelFolderInfo *folder_info)
 static void
 append_folder (LoadContext *context,
                const gchar *source_uid,
+               const gchar *source_display_name,
                CamelFolderInfo *folder_info)
 {
     EvolutionEdsCamelFolder *record;
@@ -331,6 +365,10 @@ append_folder (LoadContext *context,
     ensure_folder_capacity (context);
     record = &context->folders[context->folder_count++];
     record->source_uid = g_strdup (source_uid);
+    record->source_display_name = g_strdup (
+        source_display_name && *source_display_name
+            ? source_display_name
+            : source_uid);
     record->folder_name = g_strdup (folder_info->full_name);
     record->folder_id = g_strdup (folder_id_from_flags (folder_info->flags));
     record->display_name = g_strdup (
@@ -399,6 +437,7 @@ append_message (LoadContext *context,
         record->is_flagged = (flags & CAMEL_MESSAGE_FLAGGED) != 0;
     }
 
+    context->messages_loaded++;
     g_object_unref (output);
     return TRUE;
 }
@@ -407,6 +446,8 @@ static void
 load_folder (LoadContext *context,
              CamelStore *store,
              const gchar *source_uid,
+             const gchar *source_display_name,
+             const gchar *folder_name,
              CamelFolderInfo *folder_info,
              GCancellable *cancellable)
 {
@@ -417,10 +458,21 @@ load_folder (LoadContext *context,
         GPtrArray *uids = NULL;
         GError *error = NULL;
 
-        append_folder (context, source_uid, current);
+        append_folder (
+            context, source_uid, source_display_name, current);
+
+        if (is_mail_folder (current)) {
+            context->folders_seen++;
+            emit_progress (
+                context, EVOLUTION_EDS_CAMEL_SYNC_LOADING_MESSAGES,
+                source_uid, source_display_name, current->full_name);
+        }
 
         if (is_mail_folder (current) &&
-            (current->flags & CAMEL_FOLDER_NOSELECT) == 0) {
+            (current->flags & CAMEL_FOLDER_NOSELECT) == 0 &&
+            (!folder_name ||
+             (current->full_name &&
+              g_str_equal (current->full_name, folder_name)))) {
             folder = camel_store_get_folder_sync (
                 store, current->full_name, CAMEL_STORE_FOLDER_NONE,
                 cancellable, &error);
@@ -496,7 +548,8 @@ load_folder (LoadContext *context,
 
         if (current->child)
             load_folder (
-                context, store, source_uid, current->child, cancellable);
+                context, store, source_uid, source_display_name,
+                folder_name, current->child, cancellable);
     }
 }
 
@@ -551,6 +604,7 @@ static gboolean
 load_source (LoadContext *context,
              EdsCamelSession *session,
              ESource *source,
+             const gchar *folder_name,
              GCancellable *cancellable)
 {
     ESourceBackend *backend;
@@ -579,9 +633,14 @@ load_source (LoadContext *context,
         return FALSE;
 
     context->configured_sources++;
+    emit_progress (
+        context, EVOLUTION_EDS_CAMEL_SYNC_CONNECTING,
+        source_uid, e_source_get_display_name (source), NULL);
 
     store = open_store_for_source (session, source, cancellable, &error);
     if (!store) {
+        context->failed_sources++;
+        context->processed_sources++;
         gchar *scope = g_strdup_printf (
             "%s (%s)", e_source_get_display_name (source), backend_name);
         remember_error (context, scope, error);
@@ -597,6 +656,8 @@ load_source (LoadContext *context,
         CAMEL_STORE_FOLDER_INFO_REFRESH,
         cancellable, &error);
     if (!folder_info) {
+        context->failed_sources++;
+        context->processed_sources++;
         gchar *scope = g_strdup_printf (
             "%s: Ordner konnten nicht geladen werden",
             e_source_get_display_name (source));
@@ -604,10 +665,19 @@ load_source (LoadContext *context,
         g_free (scope);
         g_clear_error (&error);
     } else {
+        context->successful_sources++;
+        emit_progress (
+            context, EVOLUTION_EDS_CAMEL_SYNC_LOADING_FOLDERS,
+            source_uid, e_source_get_display_name (source), NULL);
         load_folder (
             context, store, source_uid,
+            e_source_get_display_name (source), folder_name,
             folder_info, cancellable);
         camel_folder_info_free (folder_info);
+        context->processed_sources++;
+        emit_progress (
+            context, EVOLUTION_EDS_CAMEL_SYNC_SOURCE_COMPLETE,
+            source_uid, e_source_get_display_name (source), NULL);
         success = TRUE;
     }
 
@@ -617,6 +687,7 @@ load_source (LoadContext *context,
 
 int
 evolution_eds_camel_load_messages (const char *source_uid,
+                                   const char *folder_name,
                                    int message_offset,
                                    int max_messages_per_folder,
                                    EvolutionEdsCamelMessage **out_messages,
@@ -624,7 +695,11 @@ evolution_eds_camel_load_messages (const char *source_uid,
                                    EvolutionEdsCamelFolder **out_folders,
                                    size_t *out_folder_count,
                                    size_t *out_configured_sources,
-                                   char **out_error)
+                                   size_t *out_successful_sources,
+                                   size_t *out_failed_sources,
+                                   char **out_error,
+                                   EvolutionEdsCamelProgressCallback progress_callback,
+                                   void *progress_user_data)
 {
     ESourceRegistry *registry = NULL;
     EdsCamelSession *session = NULL;
@@ -645,6 +720,10 @@ evolution_eds_camel_load_messages (const char *source_uid,
         *out_folder_count = 0;
     if (out_configured_sources)
         *out_configured_sources = 0;
+    if (out_successful_sources)
+        *out_successful_sources = 0;
+    if (out_failed_sources)
+        *out_failed_sources = 0;
     if (out_error)
         *out_error = NULL;
 
@@ -652,11 +731,18 @@ evolution_eds_camel_load_messages (const char *source_uid,
     context.max_messages_per_folder = max_messages_per_folder > 0
         ? max_messages_per_folder
         : DEFAULT_MESSAGES_PER_FOLDER;
+    context.progress_callback = progress_callback;
+    context.progress_user_data = progress_user_data;
+
+    emit_progress (
+        &context, EVOLUTION_EDS_CAMEL_SYNC_DISCOVERING, NULL, NULL, NULL);
 
     camel_provider_init ();
 
     registry = e_source_registry_new_sync (NULL, &error);
     if (!registry) {
+        emit_progress (
+            &context, EVOLUTION_EDS_CAMEL_SYNC_FAILED, NULL, NULL, NULL);
         if (out_error && error)
             *out_error = g_strdup (error->message);
         g_clear_error (&error);
@@ -675,13 +761,17 @@ evolution_eds_camel_load_messages (const char *source_uid,
             !g_str_equal (source_uid, e_source_get_uid (source)))
             continue;
 
-        load_source ( &context, session, source, cancellable);
+        load_source (&context, session, source, folder_name, cancellable);
     }
 
     if (out_configured_sources)
         *out_configured_sources = context.configured_sources;
+    if (out_successful_sources)
+        *out_successful_sources = context.successful_sources;
+    if (out_failed_sources)
+        *out_failed_sources = context.failed_sources;
 
-    if (context.count > 0 || context.folder_count > 0) {
+    if (context.successful_sources > 0 || context.configured_sources == 0) {
         if (out_messages)
             *out_messages = context.messages;
         if (out_count)
@@ -695,8 +785,24 @@ evolution_eds_camel_load_messages (const char *source_uid,
         context.folders = NULL;
         context.folder_count = 0;
         result = 1;
-    } else if (context.configured_sources > 0 || context.first_error) {
-        result = 0;
+    } else if (context.configured_sources > 0) {
+        /* Keep an all-failed account result observable by the UI.  Returning
+         * an opaque failure here made the caller fall back to the unrelated
+         * local mailbox, which looked like an empty account and hid the real
+         * authentication/network/provider error. */
+        if (out_messages)
+            *out_messages = context.messages;
+        if (out_count)
+            *out_count = context.count;
+        context.messages = NULL;
+        context.count = 0;
+        if (out_folders)
+            *out_folders = context.folders;
+        if (out_folder_count)
+            *out_folder_count = context.folder_count;
+        context.folders = NULL;
+        context.folder_count = 0;
+        result = 1;
     } else {
         /* No enabled remote EDS mail account is a normal state; the Rust
          * caller will use its local Evolution mailbox fallback. */
@@ -705,6 +811,13 @@ evolution_eds_camel_load_messages (const char *source_uid,
 
     if (out_error && context.first_error)
         *out_error = g_strdup (context.first_error);
+
+    emit_progress (
+        &context,
+        context.failed_sources > 0 && context.successful_sources == 0
+            ? EVOLUTION_EDS_CAMEL_SYNC_FAILED
+            : EVOLUTION_EDS_CAMEL_SYNC_COMPLETE,
+        NULL, NULL, NULL);
 
     g_free (context.first_error);
     evolution_eds_camel_free_messages (context.messages, context.count);
@@ -748,12 +861,492 @@ evolution_eds_camel_free_folders (EvolutionEdsCamelFolder *folders,
 
     for (ii = 0; ii < count; ii++) {
         g_free (folders[ii].source_uid);
+        g_free (folders[ii].source_display_name);
         g_free (folders[ii].folder_name);
         g_free (folders[ii].folder_id);
         g_free (folders[ii].display_name);
     }
 
     g_free (folders);
+}
+
+typedef struct {
+    EvolutionEdsCamelWatcher *watcher;
+    CamelFolder *folder;
+    gulong changed_id;
+    gulong deleted_id;
+    gulong renamed_id;
+    gchar *source_uid;
+    gchar *folder_name;
+} CamelWatcherFolder;
+
+typedef struct {
+    EvolutionEdsCamelChangeEvent event;
+} CamelWatcherEvent;
+
+struct _EvolutionEdsCamelWatcher {
+    GMutex lock;
+    GCond condition;
+    gboolean stopping;
+    guint callback_count;
+    GQueue *events;
+    GPtrArray *folders;
+    GPtrArray *stores;
+    ESourceRegistry *registry;
+    EdsCamelSession *session;
+};
+
+static void
+free_watcher_event (CamelWatcherEvent *queued_event)
+{
+    if (!queued_event)
+        return;
+
+    g_free (queued_event->event.source_uid);
+    g_free (queued_event->event.folder_name);
+    g_free (queued_event->event.old_folder_name);
+    g_free (queued_event);
+}
+
+static void
+free_watcher_folder (CamelWatcherFolder *watch_folder)
+{
+    if (!watch_folder)
+        return;
+
+    g_clear_object (&watch_folder->folder);
+    g_free (watch_folder->source_uid);
+    g_free (watch_folder->folder_name);
+    g_free (watch_folder);
+}
+
+static gboolean
+watcher_callback_begin (CamelWatcherFolder *watch_folder)
+{
+    EvolutionEdsCamelWatcher *watcher = watch_folder->watcher;
+    gboolean active;
+
+    g_mutex_lock (&watcher->lock);
+    active = !watcher->stopping;
+    if (active)
+        watcher->callback_count++;
+    g_mutex_unlock (&watcher->lock);
+
+    return active;
+}
+
+static void
+watcher_callback_end (CamelWatcherFolder *watch_folder)
+{
+    EvolutionEdsCamelWatcher *watcher = watch_folder->watcher;
+
+    g_mutex_lock (&watcher->lock);
+    if (watcher->callback_count > 0)
+        watcher->callback_count--;
+    if (watcher->callback_count == 0)
+        g_cond_broadcast (&watcher->condition);
+    g_mutex_unlock (&watcher->lock);
+}
+
+static void
+queue_watcher_event (CamelWatcherFolder *watch_folder,
+                     EvolutionEdsCamelChangeKind kind,
+                     CamelFolderChangeInfo *changes,
+                     const gchar *old_folder_name)
+{
+    EvolutionEdsCamelWatcher *watcher = watch_folder->watcher;
+    CamelWatcherEvent *queued_event;
+
+    g_mutex_lock (&watcher->lock);
+    if (watcher->stopping) {
+        g_mutex_unlock (&watcher->lock);
+        return;
+    }
+
+    queued_event = g_new0 (CamelWatcherEvent, 1);
+    queued_event->event.kind = kind;
+    queued_event->event.source_uid = g_strdup (watch_folder->source_uid);
+    queued_event->event.folder_name = g_strdup (kind ==
+        EVOLUTION_EDS_CAMEL_FOLDER_RENAMED
+        ? camel_folder_get_full_name (watch_folder->folder)
+        : watch_folder->folder_name);
+    queued_event->event.old_folder_name = g_strdup (old_folder_name);
+
+    if (changes) {
+        queued_event->event.added_count = changes->uid_added
+            ? changes->uid_added->len : 0;
+        queued_event->event.removed_count = changes->uid_removed
+            ? changes->uid_removed->len : 0;
+        queued_event->event.changed_count = changes->uid_changed
+            ? changes->uid_changed->len : 0;
+        queued_event->event.recent_count = changes->uid_recent
+            ? changes->uid_recent->len : 0;
+    }
+
+    g_queue_push_tail (watcher->events, queued_event);
+    g_cond_signal (&watcher->condition);
+    g_mutex_unlock (&watcher->lock);
+}
+
+static void
+watcher_folder_changed_cb (CamelFolder *folder,
+                            CamelFolderChangeInfo *changes,
+                            gpointer user_data)
+{
+    CamelWatcherFolder *watch_folder = user_data;
+
+    (void) folder;
+    if (!watcher_callback_begin (watch_folder))
+        return;
+
+    queue_watcher_event (
+        watch_folder, EVOLUTION_EDS_CAMEL_CHANGE, changes, NULL);
+    watcher_callback_end (watch_folder);
+}
+
+static void
+watcher_folder_deleted_cb (CamelFolder *folder,
+                            gpointer user_data)
+{
+    CamelWatcherFolder *watch_folder = user_data;
+
+    (void) folder;
+    if (!watcher_callback_begin (watch_folder))
+        return;
+
+    queue_watcher_event (
+        watch_folder, EVOLUTION_EDS_CAMEL_FOLDER_DELETED, NULL, NULL);
+    watcher_callback_end (watch_folder);
+}
+
+static void
+watcher_folder_renamed_cb (CamelFolder *folder,
+                            const gchar *old_folder_name,
+                            gpointer user_data)
+{
+    CamelWatcherFolder *watch_folder = user_data;
+
+    (void) folder;
+    if (!watcher_callback_begin (watch_folder))
+        return;
+
+    queue_watcher_event (
+        watch_folder, EVOLUTION_EDS_CAMEL_FOLDER_RENAMED,
+        NULL, old_folder_name);
+    watcher_callback_end (watch_folder);
+}
+
+static void
+watcher_add_folder (EvolutionEdsCamelWatcher *watcher,
+                     CamelFolder *folder,
+                     const gchar *source_uid,
+                     const gchar *folder_name)
+{
+    CamelWatcherFolder *watch_folder;
+
+    watch_folder = g_new0 (CamelWatcherFolder, 1);
+    watch_folder->watcher = watcher;
+    watch_folder->folder = g_object_ref (folder);
+    watch_folder->source_uid = g_strdup (source_uid);
+    watch_folder->folder_name = g_strdup (folder_name);
+    watch_folder->changed_id = g_signal_connect (
+        folder, "changed", G_CALLBACK (watcher_folder_changed_cb),
+        watch_folder);
+    watch_folder->deleted_id = g_signal_connect (
+        folder, "deleted", G_CALLBACK (watcher_folder_deleted_cb),
+        watch_folder);
+    watch_folder->renamed_id = g_signal_connect (
+        folder, "renamed", G_CALLBACK (watcher_folder_renamed_cb),
+        watch_folder);
+
+    g_ptr_array_add (watcher->folders, watch_folder);
+}
+
+static void
+watcher_add_folder_tree (EvolutionEdsCamelWatcher *watcher,
+                          CamelStore *store,
+                          const gchar *source_uid,
+                          CamelFolderInfo *folder_info,
+                          GCancellable *cancellable)
+{
+    CamelFolderInfo *current;
+
+    for (current = folder_info; current != NULL; current = current->next) {
+        if (is_mail_folder (current) &&
+            (current->flags & CAMEL_FOLDER_NOSELECT) == 0 &&
+            current->full_name && *current->full_name) {
+            CamelFolder *folder;
+            GError *error = NULL;
+
+            folder = camel_store_get_folder_sync (
+                store, current->full_name, CAMEL_STORE_FOLDER_NONE,
+                cancellable, &error);
+            if (folder) {
+                watcher_add_folder (
+                    watcher, folder, source_uid, current->full_name);
+                g_object_unref (folder);
+            }
+            g_clear_error (&error);
+        }
+
+        if (current->child)
+            watcher_add_folder_tree (
+                watcher, store, source_uid, current->child, cancellable);
+    }
+}
+
+static gboolean
+watcher_backend_is_remote (ESource *source)
+{
+    ESourceBackend *backend;
+    const gchar *backend_name;
+
+    backend = E_SOURCE_BACKEND (
+        e_source_get_extension (source, E_SOURCE_EXTENSION_MAIL_ACCOUNT));
+    backend_name = backend ? e_source_backend_get_backend_name (backend) : NULL;
+
+    if (!backend_name || !*backend_name)
+        return FALSE;
+
+    return !g_str_equal (backend_name, "maildir") &&
+           !g_str_equal (backend_name, "mbox") &&
+           !g_str_equal (backend_name, "mh") &&
+           !g_str_equal (backend_name, "spool") &&
+           !g_str_equal (backend_name, "vfolder");
+}
+
+static void
+watcher_remember_error (gchar **first_error,
+                        const gchar *scope,
+                        GError *error)
+{
+    if (!*first_error && error)
+        *first_error = g_strdup_printf (
+            "%s: %s", scope ? scope : "EDS/Camel", error->message);
+}
+
+int
+evolution_eds_camel_watcher_new (const char *source_uid,
+                                 EvolutionEdsCamelWatcher **out_watcher,
+                                 size_t *out_configured_sources,
+                                 size_t *out_successful_sources,
+                                 size_t *out_failed_sources,
+                                 char **out_error)
+{
+    EvolutionEdsCamelWatcher *watcher;
+    GList *sources = NULL;
+    GList *link;
+    GCancellable *cancellable = NULL;
+    gchar *first_error = NULL;
+    size_t configured_sources = 0;
+    size_t successful_sources = 0;
+    size_t failed_sources = 0;
+    GError *error = NULL;
+
+    if (out_watcher)
+        *out_watcher = NULL;
+    if (out_configured_sources)
+        *out_configured_sources = 0;
+    if (out_successful_sources)
+        *out_successful_sources = 0;
+    if (out_failed_sources)
+        *out_failed_sources = 0;
+    if (out_error)
+        *out_error = NULL;
+
+    if (!out_watcher)
+        return 0;
+
+    camel_provider_init ();
+    watcher = g_new0 (EvolutionEdsCamelWatcher, 1);
+    g_mutex_init (&watcher->lock);
+    g_cond_init (&watcher->condition);
+    watcher->events = g_queue_new ();
+    watcher->folders = g_ptr_array_new_with_free_func (
+        (GDestroyNotify) free_watcher_folder);
+    watcher->stores = g_ptr_array_new_with_free_func (
+        (GDestroyNotify) g_object_unref);
+
+    watcher->registry = e_source_registry_new_sync (NULL, &error);
+    if (!watcher->registry) {
+        if (out_error && error)
+            *out_error = g_strdup (error->message);
+        g_clear_error (&error);
+        evolution_eds_camel_watcher_free (watcher);
+        return 0;
+    }
+
+    watcher->session = eds_camel_session_new (watcher->registry);
+    cancellable = g_cancellable_new ();
+    sources = e_source_registry_list_enabled (
+        watcher->registry, E_SOURCE_EXTENSION_MAIL_ACCOUNT);
+
+    for (link = sources; link != NULL; link = link->next) {
+        ESource *source = E_SOURCE (link->data);
+        CamelStore *store = NULL;
+        CamelFolderInfo *folder_info = NULL;
+
+        if (source_uid &&
+            !g_str_equal (source_uid, e_source_get_uid (source)))
+            continue;
+        if (!watcher_backend_is_remote (source))
+            continue;
+
+        configured_sources++;
+        store = open_store_for_source (
+            watcher->session, source, cancellable, &error);
+        if (!store) {
+            failed_sources++;
+            watcher_remember_error (
+                &first_error, e_source_get_display_name (source), error);
+            g_clear_error (&error);
+            continue;
+        }
+
+        folder_info = camel_store_get_folder_info_sync (
+            store, NULL,
+            CAMEL_STORE_FOLDER_INFO_RECURSIVE |
+            CAMEL_STORE_FOLDER_INFO_NO_VIRTUAL |
+            CAMEL_STORE_FOLDER_INFO_REFRESH,
+            cancellable, &error);
+        if (!folder_info) {
+            failed_sources++;
+            watcher_remember_error (
+                &first_error, e_source_get_display_name (source), error);
+            g_clear_error (&error);
+            g_object_unref (store);
+            continue;
+        }
+
+        successful_sources++;
+        g_ptr_array_add (watcher->stores, store);
+        watcher_add_folder_tree (
+            watcher, store, e_source_get_uid (source), folder_info,
+            cancellable);
+        camel_folder_info_free (folder_info);
+    }
+
+    if (out_configured_sources)
+        *out_configured_sources = configured_sources;
+    if (out_successful_sources)
+        *out_successful_sources = successful_sources;
+    if (out_failed_sources)
+        *out_failed_sources = failed_sources;
+    if (out_error)
+        *out_error = first_error;
+    else
+        g_free (first_error);
+
+    g_clear_object (&cancellable);
+    g_list_free_full (sources, g_object_unref);
+    *out_watcher = watcher;
+    return 1;
+}
+
+int
+evolution_eds_camel_watcher_next_event (
+    EvolutionEdsCamelWatcher *watcher,
+    int timeout_milliseconds,
+    EvolutionEdsCamelChangeEvent *out_event)
+{
+    CamelWatcherEvent *queued_event = NULL;
+    gint64 deadline;
+
+    if (!watcher || !out_event)
+        return -1;
+
+    memset (out_event, 0, sizeof (*out_event));
+    deadline = g_get_monotonic_time () +
+        (timeout_milliseconds > 0 ? timeout_milliseconds * 1000 : 0);
+
+    g_mutex_lock (&watcher->lock);
+    while (!watcher->stopping && g_queue_is_empty (watcher->events)) {
+        if (timeout_milliseconds < 0) {
+            g_cond_wait (&watcher->condition, &watcher->lock);
+        } else if (timeout_milliseconds == 0 ||
+                   !g_cond_wait_until (
+                       &watcher->condition, &watcher->lock, deadline)) {
+            break;
+        }
+    }
+
+    if (!g_queue_is_empty (watcher->events))
+        queued_event = g_queue_pop_head (watcher->events);
+    else if (watcher->stopping) {
+        g_mutex_unlock (&watcher->lock);
+        return -1;
+    }
+    g_mutex_unlock (&watcher->lock);
+
+    if (!queued_event)
+        return 0;
+
+    *out_event = queued_event->event;
+    g_free (queued_event);
+    return 1;
+}
+
+void
+evolution_eds_camel_free_change_event (EvolutionEdsCamelChangeEvent *event)
+{
+    if (!event)
+        return;
+
+    g_free (event->source_uid);
+    g_free (event->folder_name);
+    g_free (event->old_folder_name);
+    memset (event, 0, sizeof (*event));
+}
+
+void
+evolution_eds_camel_watcher_free (EvolutionEdsCamelWatcher *watcher)
+{
+    guint ii;
+
+    if (!watcher)
+        return;
+
+    g_mutex_lock (&watcher->lock);
+    watcher->stopping = TRUE;
+    g_cond_broadcast (&watcher->condition);
+    g_mutex_unlock (&watcher->lock);
+
+    for (ii = 0; ii < watcher->folders->len; ii++) {
+        CamelWatcherFolder *watch_folder = g_ptr_array_index (
+            watcher->folders, ii);
+
+        if (watch_folder->changed_id)
+            g_signal_handler_disconnect (
+                watch_folder->folder, watch_folder->changed_id);
+        if (watch_folder->deleted_id)
+            g_signal_handler_disconnect (
+                watch_folder->folder, watch_folder->deleted_id);
+        if (watch_folder->renamed_id)
+            g_signal_handler_disconnect (
+                watch_folder->folder, watch_folder->renamed_id);
+        watch_folder->changed_id = 0;
+        watch_folder->deleted_id = 0;
+        watch_folder->renamed_id = 0;
+    }
+
+    g_mutex_lock (&watcher->lock);
+    while (watcher->callback_count > 0)
+        g_cond_wait (&watcher->condition, &watcher->lock);
+    g_mutex_unlock (&watcher->lock);
+
+    g_ptr_array_set_size (watcher->folders, 0);
+    g_ptr_array_set_size (watcher->stores, 0);
+    g_clear_object (&watcher->session);
+    g_clear_object (&watcher->registry);
+
+    while (!g_queue_is_empty (watcher->events))
+        free_watcher_event (g_queue_pop_head (watcher->events));
+    g_queue_free (watcher->events);
+    g_ptr_array_unref (watcher->folders);
+    g_ptr_array_unref (watcher->stores);
+    g_cond_clear (&watcher->condition);
+    g_mutex_clear (&watcher->lock);
+    g_free (watcher);
 }
 
 static const gchar *
@@ -837,6 +1430,72 @@ transfer_one_message (CamelFolder *source,
     return success;
 }
 
+static gboolean
+message_exists (CamelFolder *folder,
+                const gchar *message_uid)
+{
+    CamelMessageInfo *message_info;
+
+    message_info = camel_folder_get_message_info (folder, message_uid);
+    if (!message_info)
+        return FALSE;
+
+    g_object_unref (message_info);
+    return TRUE;
+}
+
+static void
+set_conflict_error (GError **error,
+                    const gchar *message)
+{
+    g_set_error (
+        error, G_IO_ERROR, G_IO_ERROR_FAILED,
+        "conflict: %s", message);
+}
+
+static gboolean
+verify_message_flags (CamelFolder *folder,
+                      const gchar *message_uid,
+                      guint32 mask,
+                      guint32 expected,
+                      GError **error)
+{
+    CamelMessageInfo *message_info;
+    guint32 actual;
+
+    message_info = camel_folder_get_message_info (folder, message_uid);
+    if (!message_info) {
+        set_conflict_error (
+            error, "Die Nachricht wurde während der Änderung entfernt");
+        return FALSE;
+    }
+
+    actual = camel_message_info_get_flags (message_info);
+    g_object_unref (message_info);
+
+    if ((actual & mask) != (expected & mask)) {
+        set_conflict_error (
+            error, "Der Serverzustand der Nachricht hat sich gleichzeitig geändert");
+        return FALSE;
+    }
+
+    return TRUE;
+}
+
+static gboolean
+verify_message_moved (CamelFolder *source,
+                      const gchar *message_uid,
+                      GError **error)
+{
+    if (message_exists (source, message_uid)) {
+        set_conflict_error (
+            error, "Die Nachricht ist nach der Serveränderung noch im Quellordner");
+        return FALSE;
+    }
+
+    return TRUE;
+}
+
 int
 evolution_eds_camel_apply_operation (
     const EvolutionEdsCamelOperation *operation,
@@ -854,6 +1513,7 @@ evolution_eds_camel_apply_operation (
     GError *error = NULL;
     const gchar *destination_name = NULL;
     gboolean success = FALSE;
+    gboolean conflict = FALSE;
 
     if (out_error)
         *out_error = NULL;
@@ -900,6 +1560,13 @@ evolution_eds_camel_apply_operation (
     if (!folder)
         goto finish;
 
+    if (!message_exists (folder, operation->message_uid)) {
+        set_conflict_error (
+            &error, "Die Nachricht existiert im Quellordner nicht mehr");
+        conflict = TRUE;
+        goto finish;
+    }
+
     switch (operation->kind) {
     case EVOLUTION_EDS_CAMEL_SET_MESSAGE_STATE: {
         guint32 mask = CAMEL_MESSAGE_SEEN | CAMEL_MESSAGE_FLAGGED;
@@ -913,6 +1580,9 @@ evolution_eds_camel_apply_operation (
         success = synchronize_message_flags (
             folder, operation->message_uid, mask, set,
             cancellable, &error);
+        if (success)
+            success = verify_message_flags (
+                folder, operation->message_uid, mask, set, &error);
         break;
     }
     case EVOLUTION_EDS_CAMEL_SET_JUNK: {
@@ -924,6 +1594,11 @@ evolution_eds_camel_apply_operation (
             folder, operation->message_uid,
             CAMEL_MESSAGE_JUNK | CAMEL_MESSAGE_NOTJUNK,
             set, cancellable, &error);
+        if (success)
+            success = verify_message_flags (
+                folder, operation->message_uid,
+                CAMEL_MESSAGE_JUNK | CAMEL_MESSAGE_NOTJUNK,
+                set, &error);
         break;
     }
     case EVOLUTION_EDS_CAMEL_SET_IMPORTANT:
@@ -932,6 +1607,12 @@ evolution_eds_camel_apply_operation (
             CAMEL_MESSAGE_FLAGGED,
             operation->is_important ? CAMEL_MESSAGE_FLAGGED : 0,
             cancellable, &error);
+        if (success)
+            success = verify_message_flags (
+                folder, operation->message_uid,
+                CAMEL_MESSAGE_FLAGGED,
+                operation->is_important ? CAMEL_MESSAGE_FLAGGED : 0,
+                &error);
         break;
     case EVOLUTION_EDS_CAMEL_MOVE_MESSAGE:
     case EVOLUTION_EDS_CAMEL_ARCHIVE_MESSAGE:
@@ -971,6 +1652,9 @@ evolution_eds_camel_apply_operation (
         success = transfer_one_message (
             folder, destination, operation->message_uid, TRUE,
             cancellable, &error);
+        if (success)
+            success = verify_message_moved (
+                folder, operation->message_uid, &error);
         break;
     case EVOLUTION_EDS_CAMEL_DELETE_MESSAGE:
         trash = camel_store_get_trash_folder_sync (
@@ -983,6 +1667,9 @@ evolution_eds_camel_apply_operation (
                 success = transfer_one_message (
                     folder, trash, operation->message_uid, TRUE,
                     cancellable, &error);
+                if (success)
+                    success = verify_message_moved (
+                        folder, operation->message_uid, &error);
                 break;
             }
         } else {
@@ -997,6 +1684,9 @@ evolution_eds_camel_apply_operation (
                 CAMEL_MESSAGE_DELETED | CAMEL_MESSAGE_SEEN)) {
             success = camel_folder_synchronize_sync (
                 folder, TRUE, cancellable, &error);
+            if (success)
+                success = verify_message_moved (
+                    folder, operation->message_uid, &error);
         } else {
             g_set_error_literal (
                 &error, G_IO_ERROR, G_IO_ERROR_FAILED,
@@ -1011,6 +1701,8 @@ evolution_eds_camel_apply_operation (
     }
 
 finish:
+    conflict = conflict || (error && error->message &&
+        g_str_has_prefix (error->message, "conflict:"));
     if (!success && out_error && error)
         *out_error = g_strdup (error->message);
     g_clear_error (&error);
@@ -1024,7 +1716,7 @@ finish:
     g_clear_object (&source);
     g_clear_object (&registry);
 
-    return success ? 1 : 0;
+    return success ? 1 : (conflict ? 2 : 0);
 }
 
 void

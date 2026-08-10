@@ -102,6 +102,14 @@ impl AppSettings {
         }
     }
 
+    pub fn mail_sync_interval_seconds(&self) -> u32 {
+        self.settings.int("mail-sync-interval").clamp(0, 86_400) as u32
+    }
+
+    pub fn set_mail_sync_interval_seconds(&self, value: u32) {
+        self.set_int("mail-sync-interval", value.min(86_400) as i32);
+    }
+
     fn set_boolean(&self, key: &str, value: bool) {
         if let Err(error) = self.settings.set_boolean(key, value) {
             tracing::warn!(key, %error, "Could not persist application setting");

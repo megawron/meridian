@@ -46,6 +46,10 @@ pub enum MailOperationError {
         operation: MailOperationKind,
         message: String,
     },
+    Conflict {
+        operation: MailOperationKind,
+        message: String,
+    },
     Unsupported {
         operation: MailOperationKind,
         backend: &'static str,
@@ -58,6 +62,9 @@ impl fmt::Display for MailOperationError {
             Self::Io(error) => write!(formatter, "{error}"),
             Self::Backend { operation, message } => {
                 write!(formatter, "{operation} ist fehlgeschlagen: {message}")
+            }
+            Self::Conflict { operation, message } => {
+                write!(formatter, "Konflikt bei {operation}: {message}")
             }
             Self::Unsupported { operation, backend } => write!(
                 formatter,
@@ -251,6 +258,15 @@ impl MailOperationsService {
         self.set_message_state(id, false, is_flagged)
     }
 
+    pub fn mark_read_for_location(
+        &self,
+        id: &str,
+        location: &MailBackendLocation,
+        is_flagged: bool,
+    ) -> Result<(), MailOperationError> {
+        self.set_message_state_for_location(id, location, false, is_flagged)
+    }
+
     #[allow(dead_code)]
     pub fn mark_unread(&self, id: &str, is_flagged: bool) -> Result<(), MailOperationError> {
         self.set_message_state(id, true, is_flagged)
@@ -263,6 +279,16 @@ impl MailOperationsService {
         is_flagged: bool,
     ) -> Result<(), MailOperationError> {
         self.set_message_state(id, is_unread, is_flagged)
+    }
+
+    pub fn set_flagged_for_location(
+        &self,
+        id: &str,
+        location: &MailBackendLocation,
+        is_unread: bool,
+        is_flagged: bool,
+    ) -> Result<(), MailOperationError> {
+        self.set_message_state_for_location(id, location, is_unread, is_flagged)
     }
 
     pub fn delete(&self, id: &str) -> Result<(), MailOperationError> {
@@ -364,9 +390,20 @@ impl MailOperationsService {
         kind: MailOperationKind,
     ) -> Result<(), MailOperationError> {
         camel_mail_service::apply_operation(operation).map_err(|message| {
-            MailOperationError::Backend {
-                operation: kind,
-                message,
+            if message
+                .trim_start()
+                .to_ascii_lowercase()
+                .starts_with("conflict:")
+            {
+                MailOperationError::Conflict {
+                    operation: kind,
+                    message: message.trim_start_matches("conflict:").trim().to_string(),
+                }
+            } else {
+                MailOperationError::Backend {
+                    operation: kind,
+                    message,
+                }
             }
         })
     }

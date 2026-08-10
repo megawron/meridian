@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<schemalist id="org.gnome.Evolution4">
+<schemalist>
   <schema id="org.gnome.Evolution4" path="/org/gnome/evolution4/">
     <key name="window-width" type="i">
       <default>1100</default>
@@ -36,6 +36,10 @@
     <key name="default-pgp-key" type="s">
       <default>''</default>
       <summary>Default OpenPGP key fingerprint</summary>
+    </key>
+    <key name="mail-sync-interval" type="i">
+      <default>30</default>
+      <summary>Mail synchronization interval in seconds (0 disables automatic synchronization)</summary>
     </key>
   </schema>
 </schemalist>

@@ -235,6 +235,7 @@ impl EvolutionWindow {
 
         let section1 = gio::Menu::new();
         section1.append(Some("Neue E-Mail"), Some("app.compose"));
+        section1.append(Some("Mail aktualisieren"), Some("win.refresh-mail"));
         menu.append_section(None, &section1);
 
         let section2 = gio::Menu::new();
@@ -264,6 +265,25 @@ impl EvolutionWindow {
             }
         ));
         self.add_action(&action_sidebar);
+
+        let action_refresh_mail = gio::SimpleAction::new("refresh-mail", None);
+        action_refresh_mail.connect_activate(glib::clone!(
+            #[weak(rename_to = window)]
+            self,
+            move |_, _| {
+                if let Some(mail_page) = window
+                    .imp()
+                    .view_stack
+                    .borrow()
+                    .as_ref()
+                    .and_then(|stack| stack.child_by_name("mail"))
+                    .and_then(|widget| widget.downcast::<MailPage>().ok())
+                {
+                    mail_page.refresh_mail();
+                }
+            }
+        ));
+        self.add_action(&action_refresh_mail);
 
         for (action_name, stack_page) in [
             ("switch-mail", "mail"),

@@ -142,27 +142,24 @@ status = "generate"
 3. **Property Binding:** ViewModel-Properties (`glib::Properties`) werden direkt an Widget-Properties gebunden → automatische UI-Updates.
 4. **Command Pattern:** User-Aktionen (Löschen, Verschieben, Markieren) werden als Commands modelliert → Undo/Redo-Fähigkeit.
 
-### 1.4 Frontend-Framework: Relm4
+### 1.4 Frontend-Framework: GTK4-rs und libadwaita
 
-Die UI wird als Relm4-Komponentenbaum umgesetzt. Relm4 bleibt dabei eine
-Schicht auf gtk4-rs/libadwaita und ersetzt weder GTK noch die EDS-Adapter.
-Der originale Evolution Data Server bleibt vollständig erhalten und ist die
+Die produktive Oberfläche bleibt vollständig bei gtk4-rs/libadwaita. Der
+ursprüngliche Evolution Data Server bleibt unverändert erhalten und ist die
 autoritative Quelle für synchronisierte Konten, Ordner, Kalender und
-Adressbücher. Backend-, Service- und Domänenmodelle dürfen keine Relm4-Typen
-benötigen.
+Adressbücher. Backend-, Service- und Domänenmodelle bleiben von Widget-
+Implementierungsdetails getrennt.
 
-- Jede größere UI-Einheit ist eine `Component` mit eigenem Model sowie
-  typisierten Input-/Output-Nachrichten.
-- Asynchrone EDS-, Camel- und lokale Store-Aufgaben laufen über Relm4-
-  Commands oder Worker und melden Ergebnisse als Nachrichten zurück.
-- Wiederholte Listenzeilen werden über Relm4-Factories oder, bei sehr großen
-  Mailordnern, über GTK-GListModels mit Relm4-Controllern gerendert.
-- Dialoge und Unteransichten werden als Child-Components gekapselt; globale
-  Aktionen werden über explizite Nachrichten statt versteckter Widget-
-  Seiteneffekte angebunden.
-- Der aktuell kompatible Zielstand ist Relm4 0.9.x mit gtk4-rs 0.9 und
-  libadwaita-rs 0.7. Ein Upgrade auf spätere Relm4-/GTK-Generationen wird als
-  eigener Linux-/Flatpak-Kompatibilitätsschritt behandelt.
+- Die `EvolutionWindow`- und `views::*`-Klassen bilden den produktiven
+  GTK4-rs/libadwaita-Komponentenbaum.
+- Wiederholte Daten werden über `GListModel`, `GtkSingleSelection`,
+  `GtkListView`/`GtkListBox` und `GtkSignalListItemFactory` gerendert.
+- Asynchrone EDS-, Camel- und lokale Store-Aufgaben laufen über GLib-Futures,
+  Worker-Threads und explizite Channels zurück auf den GTK-Main-Thread.
+- Adwaita `ViewStack`, `ToolbarView`, `HeaderBar`, `NavigationSplitView` und
+  `OverlaySplitView` bilden die adaptive Evolution-Struktur.
+- Backend-Services dürfen keine GTK-Typen benötigen; die UI übersetzt
+  ausschließlich fertige, thread-sichere Domänenwerte in GObject-Modelle.
 
 ---
 
@@ -300,11 +297,10 @@ Test auf der Service-Ebene.
 #### Phase 0 — Foundation & Tooling
 
 - [x] Rust-Workspace, Cargo-Lockfile und GPL-3.0-or-later sind vorhanden.
-- [~] Relm4-Kompatibilitätsschnitt mit Root-Komponente, typisierten Messages,
-  asynchronem Command und dynamischer Listen-Factory ist verifiziert; die
-  produktive Frontend-Migration ist noch nicht abgeschlossen.
+- [x] Die produktive Oberfläche ist auf GTK4-rs/libadwaita festgelegt; die
+  kurzzeitig evaluierte alternative UI-Schicht ist entfernt.
 - [x] Architekturgrenze festgelegt: EDS/Camel/ECal/EBook werden angebunden und
-  bleiben autoritativ; Relm4 ersetzt ausschließlich die GTK4-Oberfläche.
+  bleiben autoritativ; GTK4-rs/libadwaita ersetzt ausschließlich die UI.
 - [~] GTK4/libadwaita/WebKitGTK/EDS sind als Abhängigkeiten beschrieben; der
   Build muss noch in einer reproduzierbaren Linux-/Flatpak-Umgebung verifiziert
   werden. Die GIR-Spezifikationen für Camel, EDataServer, ECal und EBook sind
@@ -316,36 +312,26 @@ Test auf der Service-Ebene.
 - [ ] CI mit Formatierung, Clippy, Unit-Tests, Integrationstests und Flatpak-
   Smoke-Test.
 
-#### Phase 0.5 — Relm4-Frontend-Rewrite
+#### Phase 0.5 — GTK4-rs-Frontend-Konsolidierung
 
-- [x] Framework-Entscheidung und Kompatibilitätsschnitt für die verwendete
-  GTK4-/libadwaita-Generation.
-- [~] Relm4-Root-Komponente mit Navigation und getrennten Mail-, Kalender-,
-  Kontakte-, Aufgaben- und Notizen-Child-Components; globale Aktionen,
-  Dialog-Output und vollständige Domain-States fehlen noch.
-- [~] Mail-Komponente mit Sidebar, Suchzustand, Mail-Fabrik und lokalem
-  Async-Command; Auswahl, Detailansicht, sicherer Viewer, Anhang-Speichern und
-  lokale Lese-/Markierungsaktionen, lokales Ordnerfiltern und dynamische
-  EDS-Kontozeilen sind angebunden. Der Linux-Start lädt zusätzlich über den
-  nativen EDS/Camel-Adapter aktivierte Mailkonten und RFC-822-Nachrichten;
-  EDS-Ordnerdarstellung, Camel-Flags und zentrale Remote-Mailmutationen
-  einschließlich Verschieben sind über Child-Outputs angebunden; globale
-  Domain-Aktionen fehlen noch.
-- [~] Kalender-, Aufgaben-, Memo- und Kontakte-Komponenten mit typisierten
-  Loading-/Refresh-Nachrichten; EDS-Streams, Mutationen und vollständige
-  Detailmodelle fehlen noch.
-- [~] Relm4-Composer mit To/Cc/Bcc/Betreff, HTML-Editor, lokalem
-  DraftStoreService, Anhang-Vormerkung und expliziten Signatur-/Verschlüsselungs-
-  Zuständen ist vorhanden; Camel-Transport, echte Anhänge, EDS-Absender und
-  Child-Outputs fehlen noch. Filter-, Konto-, Termin- und Kontakte-Dialoge
-  müssen noch als Child-Components migriert werden.
-- [ ] Altes imperatives Frontend entfernen, sobald jede Ansicht einen
-  gleichwertigen Relm4-Nachfolger mit Tests besitzt.
+- [x] GTK4-rs/libadwaita ist die einzige produktive UI-Abhängigkeit und der
+  ursprüngliche `EvolutionWindow`-Komponentenbaum ist wieder der Standard-
+  Einstiegspunkt.
+- [~] Adaptive Navigation, Mail-Drei-Spalten-Ansicht, sicherer Viewer,
+  Kalender, Kontakte, Aufgaben, Memos und Composer sind vorhanden; die neuen
+  EDS/Camel-Mail-Ladestrecke ist initial in die Mailansicht integriert; die
+  vollständige Integration aller EDS/Camel/ECal/EBook-Streams fehlt noch.
+- [~] GObject-Modelle, GListModels und Worker-Channels werden für große
+  Datenmengen weiter vereinheitlicht. Vollständige Domain-States, Mutationen
+  und Fehlerdialoge fehlen noch.
+- [~] Die GTK4-rs-Mailansicht ist initial mit dem nativen EDS/Camel-Lade- und
+  Aktionspfad verbunden; Kalender-, Kontakte-, Aufgaben- und Memo-Streams
+  sowie die zugehörigen vollständigen Service-Tests fehlen noch.
 
 #### Phase 1 — Mail lesen (lokal, erster echter Backend-Schnitt)
 
-- [~] Adaptives GTK4/libadwaita-Drei-Spalten-Layout; die produktive
-  Drei-Spalten-Mail-Komponente wird im Relm4-Rewrite neu aufgebaut.
+- [~] Adaptives GTK4/libadwaita-Drei-Spalten-Layout; die bestehende
+  GTK4-rs-Mailseite wird jetzt mit dem nativen Camel-Service verbunden.
 - [~] Sicherer WebKitGTK-Viewer: JavaScript ist deaktiviert, Navigation wird
   abgefangen und externe Bilder sind standardmäßig blockiert.
 - [~] EDS-Source-Registry-Abfrage über D-Bus; die `Data`-Keyfiles werden nach
@@ -361,40 +347,50 @@ Test auf der Service-Ebene.
   stabile lokale Ordner-IDs werden unterstützt. Camel-Indizes, vollständige
   MIME-Semantik und serverseitige Synchronisation fehlen noch; der lokale
   Import bleibt bewusst schreibgeschützt.
-- [~] Suche, Stern, Ordnerfilter und „gelesen“ existieren im imperativen UI;
-  die Relm4-Mailkomponente hat Suche, Auswahl, Detailaktionen und lokale
-  Lese-/Markierungszustände bereits angebunden. Für den lokalen Import werden
-  diese in einem app-eigenen Sidecar persistiert; Remote-Flags werden über
-  Camel/EDS gelesen und zurückgeschrieben. EDS-Ordner und Ordnerzähler sind in
-  der Relm4-Seitenleiste sichtbar, serverseitige Suchordner fehlen noch.
+- [~] Suche, Stern, Ordnerfilter und „gelesen“ existieren im GTK4-rs-UI;
+  Detailauswahl sowie Lesen, Markieren und Löschen werden für Remote-Nachrichten
+  aus dem Servicepfad in diese Oberfläche zurückgeführt. Für den lokalen Import
+  werden Zustände in einem app-eigenen Sidecar persistiert; Remote-Flags werden
+  über Camel/EDS gelesen und zurückgeschrieben. Batch-Aktionen, serverseitige
+  Suchordner und die übrigen Remote-Aktionen in der Oberfläche fehlen.
 - [~] Anhang „Speichern unter“ ist für lokal gelesene MIME-Anhänge angebunden;
   EDS-/Remote-Anhänge und Inline-CID-Auflösung fehlen.
 - [~] Asynchrones Laden lokaler Nachrichten ohne Blockierung des GTK-Main-
-  Threads mit Abbruchsignal und begrenzten Camel-Seiten; die Relm4-Ansicht kann
-  weitere UID-Seiten dedupliziert nachladen. Fortschrittsmodell, inkrementelle
-  Änderungsereignisse und Cancellation für Camel fehlen noch.
+  Threads mit Abbruchsignal ist vorhanden; die begrenzten Camel-Seiten werden
+  ebenfalls über den Worker in die GTK4-rs-Mailseite geladen. Camel-Pagination,
+  deduplizierte Aktualisierung, Refresh, account-spezifische Ordnerauswahl,
+  GSettings-gesteuertes Hintergrund-Polling, native Camel-
+  Ordneränderungssignale und detaillierte Konto-/Ordner-/Nachrichten-
+  Fortschrittsmeldungen sind angebunden. Cancellation innerhalb laufender
+  Camel-Aufrufe, inkrementelle statt seitenweiser Synchronisation und
+  Retry/Backoff fehlen noch.
 - [~] Native Linux-Camel-Brücke öffnet die aktivierten EDS-Mailquellen über
   `e_source_camel_configure_service()`, verwendet EDS-/GOA-Credentials und
-  lädt Ordnerzusammenfassungen sowie begrenzte RFC-822-Nachrichten in die
-  Relm4-Ansicht. Der lokale EML/Maildir/mbox-Importer bleibt der explizite
-  Fallback. Unread-/Flagged-Camel-Flags werden übernommen; Ordnerauswahl,
-  Lesestatus, Markierung, Archivieren, Verschieben, Spam-Markierung und Löschen
-  werden für Remote-Quellen über stabile EDS-/Camel-Referenzen zurückgeschrieben.
-  Threads, Änderungsereignisse und Konfliktbehandlung fehlen noch. Der
-  Linux-Laufzeittest mit einem realen GNOME-Konto steht aus.
+  lädt Ordnerzusammenfassungen sowie begrenzte RFC-822-Nachrichten in
+  thread-sichere Servicewerte. Die GTK4-rs-Mailseite zeigt die initial geladenen
+  Nachrichten, Status-/Ordnerzähler und übernimmt Unread-/Flagged-Camel-Flags;
+  Lesen, Markieren und Löschen werden über stabile EDS-/Camel-Referenzen
+  zurückgeschrieben. Begrenzte Folge-Seiten, Refresh, Kontoauswahl und
+  account-spezifische Camel-Ordnerauswahl werden über denselben Servicepfad
+  geladen. Der lokale EML/Maildir/mbox-Importer bleibt der explizite Fallback.
+  Archivieren, Verschieben und Spam-Markierung werden über denselben
+  Servicepfad ausgeführt; Camel-Änderungs-, Lösch- und Umbenennungssignale
+  werden über einen langlebigen nativen Watcher in die Mailansicht geleitet.
+  Serverzustände werden nach Mutationen verifiziert und als explizite
+  Konflikte zurückgegeben. Threads, echte inkrementelle Synchronisation und
+  der Linux-Laufzeittest mit einem realen GNOME-Konto stehen noch aus.
 - [~] Mailaktionen besitzen eine zentrale Backend-Schnittstelle. Lokale
   Nachrichten behalten den schreibgeschützten Import mit Sidecar für
   Lesestatus/Markierung; Remote-Nachrichten verwenden Camel für Lesen, Flags,
-  Archivieren, Verschieben, Spam-Markierung und Löschen. Relm4 unterstützt
-  inzwischen Mehrfachauswahl mit Batch-Archivieren/Löschen, Batch-Lese- und
-  Batch-Markierungsaktionen, Undo für Statusänderungen und eine kontogebundene
-  Auswahl für das Remote-Verschieben; inverse Undo-Operationen für
-  Ordneränderungen und Konfliktbehandlung fehlen noch.
+  Archivieren, Verschieben, Spam-Markierung und Löschen. Batch-Aktionen und
+  Undo werden aus dem Servicepfad in die GTK4-rs-Mailansicht übernommen;
+  inverse Undo-Operationen für Ordneränderungen fehlen; Konflikte aus dem
+  nativen Camel-Backend werden jetzt als eigener Fehlerzustand behandelt.
 - [ ] Serverseitige Suche und virtuelle Suchordner.
 
 #### Phase 2 — Konten, Empfang und Mailversand
 
-- [~] Konto-Setup und Composer sind vorhanden; der Relm4-Composer kann
+- [~] Konto-Setup und Composer sind vorhanden; der GTK4-rs-Composer kann
   Entwürfe ohne Kontogeheimnisse in einem app-eigenen Store persistieren und
   der Start zeigt gespeicherte EDS-Mailkonten. EDS-Absender, Camel-Transport
   und echte Draft-/Sent-Folder fehlen noch.
@@ -414,9 +410,9 @@ Test auf der Service-Ebene.
 #### Phase 3 — Kalender, Aufgaben und Memos
 
 - [~] Monatsansicht, Navigation, View-Switcher und Dialoge sind vorhanden;
-  die Relm4-Kalenderkomponente zeigt EDS-Quellenstatus und lokale VEVENTs,
+  die GTK4-rs-Kalenderansicht zeigt EDS-Quellenstatus und lokale VEVENTs,
   echte ECal-Ansichten fehlen noch.
-- [~] Relm4-Aufgaben- und Memo-Komponenten laden lokale VTODO-/VJOURNAL-Daten
+- [~] GTK4-rs-Aufgaben- und Memo-Ansichten laden lokale VTODO-/VJOURNAL-Daten
   aus iCalendar-Dateien; ECal-Streams und Mutationen fehlen noch.
 - [~] EDS-Source-Registry und ESource-basierte Kalenderauswahl werden dynamisch
   angezeigt; ECal-Client/VEVENT-Streams und Mutationen fehlen noch.
@@ -427,7 +423,7 @@ Test auf der Service-Ebene.
 
 #### Phase 4 — Kontakte und Adressbücher
 
-- [~] Relm4-Kontaktkomponente lädt lokale vCards und meldet EDS-Quellenstatus;
+- [~] GTK4-rs-Kontaktansicht lädt lokale vCards und meldet EDS-Quellenstatus;
   Kontaktliste mit Auswahl, Detail, Suche und Editor-UI wird noch migriert.
 - [~] Begrenzter vCard-Parser/Serializer mit Roundtrip-Test.
 - [~] EBook-/EDS-Quellen werden dynamisch erkannt; Adressbuch-Stream, CRUD,
@@ -508,12 +504,13 @@ nicht als vollständiger Ersatz beworben werden.
 
 ### Nächster Entwicklungsblock
 
-1. Die native EDS/Camel-Ladestrecke auf Linux gegen ein echtes GNOME-/GOA-
-   Konto testen und Synchronisationsstatus sowie Änderungsereignisse
-   ergänzen.
-2. Die Relm4-Mailkomponente um echte Thread-Modelle, inverse Undo/Redo-
+1. Die native EDS/Camel-Ladestrecke sowie den Signal-Watcher auf Linux gegen
+   ein echtes GNOME-/GOA-Konto testen; danach inkrementelle Synchronisation,
+   Cancellation innerhalb laufender Camel-Aufrufe und Retry/Backoff ergänzen.
+2. Das GTK4-rs-Mailmodell um echte Thread-Modelle, inverse Undo/Redo-
    Operationen und Konfliktanzeigen erweitern.
 3. EDS-Sources in persistente Konto-/Ordnermodelle und echte ECal-/EBook-
-   Streams überführen; die Ergebnisse als Relm4-Commands anbinden.
+   Streams überführen; die Ergebnisse über GLib-Futures, Worker und
+   GListModel-Updates anbinden.
 4. Camel-Transport, EDS-Drafts/Sent-Folder und die Dialog-Components für
    Konto-, Empfangs- und Versandoptionen vervollständigen.

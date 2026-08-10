@@ -349,7 +349,6 @@ dependencies = [
  "once_cell",
  "pango",
  "pkg-config",
- "relm4",
  "serde",
  "serde_json",
  "tracing",
@@ -382,49 +381,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5baebc0774151f905a1a2cc41989300b1e6fbb29aff0ceffa1064fdd3088d582"
 
 [[package]]
-name = "flume"
-version = "0.11.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "da0e4dd2a88388a1f4ccc7c9ce104604dab68d9f408dc34cd45823d5a9069095"
-dependencies = [
- "futures-core",
- "futures-sink",
- "nanorand",
- "spin",
-]
-
-[[package]]
-name = "fragile"
-version = "2.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8878864ba14bb86e818a412bfd6f18f9eabd4ec0f008a28e8f7eb61db532fcf9"
-dependencies = [
- "futures-core",
-]
-
-[[package]]
-name = "futures"
-version = "0.3.33"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a88cf1f829d945f548cf8fec32c61b1f202b6d93b45848602fc02af4b12ad218"
-dependencies = [
- "futures-channel",
- "futures-core",
- "futures-executor",
- "futures-io",
- "futures-sink",
- "futures-task",
- "futures-util",
-]
-
-[[package]]
 name = "futures-channel"
 version = "0.3.33"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "262590f4fe6afeb0bc83be1daa64e52657fe185690a958af7f3ad0e92085c5ae"
 dependencies = [
  "futures-core",
- "futures-sink",
 ]
 
 [[package]]
@@ -475,12 +437,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "futures-sink"
-version = "0.3.33"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e34418ac499d6305c2fb5ad0ed2f6ac998c5f8ca209b4510f7f94242c647e307"
-
-[[package]]
 name = "futures-task"
 version = "0.3.33"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -492,13 +448,9 @@ version = "0.3.33"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a77a90a256fce34da66415271e30f94ee91c57b04b8a2c042d9cf3220179deaa"
 dependencies = [
- "futures-channel",
  "futures-core",
- "futures-io",
  "futures-macro",
- "futures-sink",
  "futures-task",
- "memchr",
  "pin-project-lite",
  "slab",
 ]
@@ -558,19 +510,6 @@ dependencies = [
  "pango-sys",
  "pkg-config",
  "system-deps",
-]
-
-[[package]]
-name = "getrandom"
-version = "0.2.17"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ff2abc00be7fca6ebc474524697ae276ad847ad0a6b3faa4bcb027e9a4614ad0"
-dependencies = [
- "cfg-if",
- "js-sys",
- "libc",
- "wasi",
- "wasm-bindgen",
 ]
 
 [[package]]
@@ -923,15 +862,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53"
 
 [[package]]
-name = "lock_api"
-version = "0.4.14"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "224399e74b87b5f3557511d98dff8b14089b3dadafcab6bb93eab67d3aace965"
-dependencies = [
- "scopeguard",
-]
-
-[[package]]
 name = "log"
 version = "0.4.33"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -959,15 +889,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "488016bfae457b036d996092f6cb448677611ce4449e970ceaf42695203f218a"
 dependencies = [
  "autocfg",
-]
-
-[[package]]
-name = "nanorand"
-version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6a51313c5820b0b02bd422f4b44776fbf47961755c74ce64afc73bfad10226c3"
-dependencies = [
- "getrandom 0.2.17",
 ]
 
 [[package]]
@@ -1122,41 +1043,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
-name = "relm4"
-version = "0.9.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "30837553c1a8cfea1a404c83ec387c5c8ff9358e1060b057c274c5daa5035ad1"
-dependencies = [
- "flume",
- "fragile",
- "futures",
- "gtk4",
- "libadwaita",
- "once_cell",
- "relm4-css",
- "relm4-macros",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "relm4-css"
-version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1d3b924557df1cddc687b60b313c4b76620fdbf0e463afa4b29f67193ccf37f9"
-
-[[package]]
-name = "relm4-macros"
-version = "0.9.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5a895a7455441a857d100ca679bd24a92f91d28b5e3df63296792ac1af2eddde"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.119",
-]
-
-[[package]]
 name = "rustc_version"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1183,12 +1069,6 @@ name = "rustversion"
 version = "1.0.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b39cdef0fa800fc44525c84ccb54a029961a8215f9619753635a9c0d2538d46d"
-
-[[package]]
-name = "scopeguard"
-version = "1.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
 name = "semver"
@@ -1323,15 +1203,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "spin"
-version = "0.9.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3763264f6b73151db08c50ff20d7d8a0b8796e021cdea7ceedad07b80155fa0e"
-dependencies = [
- "lock_api",
-]
-
-[[package]]
 name = "syn"
 version = "2.0.119"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1379,7 +1250,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
@@ -1392,15 +1263,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ad99c4c6d32803332c548b1af0540b357b3f5fc0be8f6c6bfe8b2e6ae784070"
 dependencies = [
  "cfg-if",
-]
-
-[[package]]
-name = "tokio"
-version = "1.53.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "202caea871b69668250d242070849eb495be178ed697a3e98aebce5bc81a0bed"
-dependencies = [
- "pin-project-lite",
 ]
 
 [[package]]
@@ -1538,7 +1400,7 @@ version = "1.24.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bf3923a6f5c4c6382e0b653c4117f48d631ea17f38ed86e2a828e6f7412f5239"
 dependencies = [
- "getrandom 0.4.3",
+ "getrandom",
  "js-sys",
  "serde_core",
  "wasm-bindgen",
@@ -1555,12 +1417,6 @@ name = "version-compare"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "03c2856837ef78f57382f06b2b8563a2f512f7185d732608fd9176cb3b8edf0e"
-
-[[package]]
-name = "wasi"
-version = "0.11.1+wasi-snapshot-preview1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ccf3ec651a847eb01de73ccad15eb7d99f80485de043efb2f370cd654f4ea44b"
 
 [[package]]
 name = "wasm-bindgen"

@@ -66,6 +66,7 @@ impl ParsedMail {
             html_body,
             is_unread,
             is_flagged,
+            backend_location,
             attachments,
             ..
         } = self;
@@ -82,13 +83,14 @@ impl ParsedMail {
             &html_body,
             is_unread,
             is_flagged,
+            backend_location,
             attachments,
         )
     }
 }
 
-/* Keep the destructuring above explicit in the public GTK conversion while
- * allowing backend-only location metadata to stay out of the legacy object. */
+/* Keep the destructuring above explicit in the GTK conversion while preserving
+ * backend location metadata for remote actions in the legacy object. */
 impl ParsedMail {
     #[allow(dead_code)]
     pub(crate) fn backend_location(&self) -> Option<&MailBackendLocation> {

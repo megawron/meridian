@@ -8,7 +8,6 @@
 
 mod application;
 mod dialogs;
-mod frontend;
 mod models;
 mod services;
 mod views;

@@ -146,6 +146,24 @@ impl PreferencesDialog {
         group_filters.add(&row_add_filter);
         page_accounts.add(&group_filters);
 
+        let group_sync = adw::PreferencesGroup::builder()
+            .title("Synchronisation")
+            .description("Automatische Aktualisierung der EDS/Camel-Mailordner")
+            .build();
+        let row_sync_interval = adw::SpinRow::with_range(0.0, 86_400.0, 5.0);
+        row_sync_interval.set_title("Mail-Aktualisierungsintervall");
+        row_sync_interval.set_subtitle("Sekunden; 0 deaktiviert die automatische Aktualisierung");
+        row_sync_interval.set_digits(0);
+        row_sync_interval.set_snap_to_ticks(true);
+        if let Some(settings) = settings.clone() {
+            row_sync_interval.set_value(settings.mail_sync_interval_seconds() as f64);
+            row_sync_interval.connect_value_notify(move |row| {
+                settings.set_mail_sync_interval_seconds(row.value().round() as u32);
+            });
+        }
+        group_sync.add(&row_sync_interval);
+        page_accounts.add(&group_sync);
+
         // ── 2. Page: Erscheinungsbild & Leseansicht ─────────────────────────
         let page_appearance = adw::PreferencesPage::builder()
             .title("Erscheinungsbild")

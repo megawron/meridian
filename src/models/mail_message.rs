@@ -6,7 +6,9 @@ use glib::Object;
 use gtk::glib;
 use gtk::subclass::prelude::*;
 
-#[derive(Debug, Clone)]
+use crate::services::mail_store_service::MailBackendLocation;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AttachmentInfo {
     pub filename: String,
     pub size_formatted: String,
@@ -34,6 +36,7 @@ mod imp {
         pub html_body: RefCell<String>,
         pub is_unread: RefCell<bool>,
         pub is_flagged: RefCell<bool>,
+        pub(crate) backend_location: RefCell<Option<MailBackendLocation>>,
         pub attachments: RefCell<Vec<AttachmentInfo>>,
     }
 
@@ -53,7 +56,7 @@ glib::wrapper! {
 
 impl MailMessageObject {
     #[allow(clippy::too_many_arguments)]
-    pub fn new(
+    pub(crate) fn new(
         id: &str,
         folder_id: &str,
         sender_name: &str,
@@ -65,6 +68,7 @@ impl MailMessageObject {
         html_body: &str,
         is_unread: bool,
         is_flagged: bool,
+        backend_location: Option<MailBackendLocation>,
         attachments: Vec<AttachmentInfo>,
     ) -> Self {
         let obj: Self = Object::builder().build();
@@ -80,6 +84,7 @@ impl MailMessageObject {
         *imp.html_body.borrow_mut() = html_body.to_string();
         *imp.is_unread.borrow_mut() = is_unread;
         *imp.is_flagged.borrow_mut() = is_flagged;
+        *imp.backend_location.borrow_mut() = backend_location;
         *imp.attachments.borrow_mut() = attachments;
         obj
     }
@@ -134,6 +139,10 @@ impl MailMessageObject {
 
     pub fn set_flagged(&self, flagged: bool) {
         *self.imp().is_flagged.borrow_mut() = flagged;
+    }
+
+    pub(crate) fn backend_location(&self) -> Option<MailBackendLocation> {
+        self.imp().backend_location.borrow().clone()
     }
 
     pub fn attachments(&self) -> Vec<AttachmentInfo> {

@@ -14,9 +14,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::models::eds_source::EdsSourceObject;
 use crate::models::mail_message::MailMessageObject;
+use crate::services::AppSettings;
 use crate::services::account_config_service::AccountConfigStore;
+use crate::services::camel_mail_service::{self, CamelMailLoad};
 use crate::services::eds_service;
 use crate::services::mail_operations_service::{MailOperationError, MailOperationsService};
+use crate::services::mail_store_service::ParsedMail;
 use crate::views::MailViewer;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -26,41 +29,179 @@ enum MessageFilter {
     Flagged,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum FolderFilter {
-    All,
-    Inbox,
-    Sent,
-    Drafts,
-    Trash,
-    Archive,
-    Junk,
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct FolderSelection {
+    folder_id: String,
+    source_uid: Option<String>,
+    folder_name: Option<String>,
 }
 
-impl FolderFilter {
-    fn from_folder_id(folder_id: &str) -> Self {
-        match folder_id {
-            "inbox" => Self::Inbox,
-            "sent" => Self::Sent,
-            "drafts" => Self::Drafts,
-            "trash" => Self::Trash,
-            "archive" => Self::Archive,
-            "spam" | "junk" => Self::Junk,
-            _ => Self::All,
+impl FolderSelection {
+    fn all() -> Self {
+        Self {
+            folder_id: "all".to_string(),
+            source_uid: None,
+            folder_name: None,
         }
     }
 
-    fn matches(self, message: &MailMessageObject) -> bool {
-        match self {
-            Self::All => true,
-            Self::Inbox => message.folder_id() == "inbox",
-            Self::Sent => message.folder_id() == "sent",
-            Self::Drafts => message.folder_id() == "drafts",
-            Self::Trash => message.folder_id() == "trash",
-            Self::Archive => message.folder_id() == "archive",
-            Self::Junk => message.folder_id() == "junk",
+    fn is_remote(&self) -> bool {
+        self.source_uid.is_some() && self.folder_name.is_some()
+    }
+
+    fn matches(&self, message: &MailMessageObject) -> bool {
+        if let (Some(source_uid), Some(folder_name)) =
+            (self.source_uid.as_deref(), self.folder_name.as_deref())
+        {
+            return message
+                .backend_location()
+                .map(|location| {
+                    location.source_uid == source_uid && location.folder_name == folder_name
+                })
+                .unwrap_or(false);
+        }
+
+        match self.folder_id.as_str() {
+            "all" => true,
+            "spam" => message.folder_id() == "junk",
+            folder_id => message.folder_id() == folder_id,
         }
     }
+}
+
+impl Default for FolderSelection {
+    fn default() -> Self {
+        Self::all()
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct FolderRowData {
+    folder_id: String,
+    source_uid: Option<String>,
+    folder_name: Option<String>,
+}
+
+impl FolderRowData {
+    fn selection(&self) -> FolderSelection {
+        FolderSelection {
+            folder_id: self.folder_id.clone(),
+            source_uid: self.source_uid.clone(),
+            folder_name: self.folder_name.clone(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct MailLoadRequest {
+    source_uid: Option<String>,
+    folder_name: Option<String>,
+    offset: usize,
+    max_messages_per_folder: i32,
+}
+
+impl MailLoadRequest {
+    fn initial() -> Self {
+        Self {
+            source_uid: None,
+            folder_name: None,
+            offset: 0,
+            max_messages_per_folder: camel_mail_service::default_page_limit(),
+        }
+    }
+
+    fn is_remote_or_paged(&self) -> bool {
+        self.source_uid.is_some() || self.folder_name.is_some() || self.offset > 0
+    }
+}
+
+enum MailPageLoadResult {
+    Camel(CamelMailLoad),
+    Local {
+        reason: String,
+        messages: Vec<ParsedMail>,
+    },
+    Error(String),
+}
+
+fn load_mail_backend(
+    request: &MailLoadRequest,
+    cancelled: &AtomicBool,
+    progress_sender: Option<&async_channel::Sender<camel_mail_service::CamelSyncProgress>>,
+) -> MailPageLoadResult {
+    let camel_result = camel_mail_service::load_messages_page_with_progress(
+        request.source_uid.as_deref(),
+        request.folder_name.as_deref(),
+        request.offset,
+        request.max_messages_per_folder,
+        progress_sender,
+    );
+
+    if request.is_remote_or_paged() {
+        return match camel_result {
+            Ok(camel) => MailPageLoadResult::Camel(camel),
+            Err(error) => MailPageLoadResult::Error(error),
+        };
+    }
+
+    match camel_result {
+        Ok(camel)
+            if camel.configured_sources > 0
+                || !camel.messages.is_empty()
+                || !camel.folders.is_empty() =>
+        {
+            MailPageLoadResult::Camel(camel)
+        }
+        Ok(_) => MailPageLoadResult::Local {
+            reason: "Keine aktiven EDS-Mailkonten; lokaler Evolution-Speicher".to_string(),
+            messages: crate::services::MailStoreService::new()
+                .load_local_records_cancelable(cancelled),
+        },
+        Err(error) => MailPageLoadResult::Local {
+            reason: format!("EDS/Camel nicht verfügbar ({error}); lokaler Evolution-Speicher"),
+            messages: crate::services::MailStoreService::new()
+                .load_local_records_cancelable(cancelled),
+        },
+    }
+}
+
+fn format_camel_status(camel: &CamelMailLoad) -> String {
+    let account_label = if camel.configured_sources == 1 {
+        "Konto"
+    } else {
+        "Konten"
+    };
+    let message_label = if camel.messages.len() == 1 {
+        "Nachricht"
+    } else {
+        "Nachrichten"
+    };
+    let sync_status = if camel.failed_sources == 0 {
+        format!(
+            "{} {account_label} synchronisiert",
+            camel.successful_sources
+        )
+    } else if camel.successful_sources > 0 {
+        format!(
+            "{}/{} {account_label} synchronisiert, {} mit Fehler",
+            camel.successful_sources, camel.configured_sources, camel.failed_sources
+        )
+    } else {
+        format!(
+            "{} {account_label} nicht synchronisiert",
+            camel.failed_sources
+        )
+    };
+    let warning = camel
+        .warning
+        .as_deref()
+        .map(|warning| format!(" · Hinweis: {warning}"))
+        .unwrap_or_default();
+
+    format!(
+        "EDS/Camel: {sync_status}, {} {message_label} geladen{warning}",
+        camel.messages.len()
+    )
 }
 
 // ─── GObject Subclass ───────────────────────────────────────────────────────
@@ -73,8 +214,22 @@ mod imp {
         pub outer_split: adw::OverlaySplitView,
         pub inner_split: adw::NavigationSplitView,
         pub message_selection: RefCell<Option<gtk::SingleSelection>>,
+        pub message_store: RefCell<Option<gio::ListStore>>,
         pub message_filter: RefCell<Option<gtk::CustomFilter>>,
+        pub(super) folder_selection: RefCell<Option<Rc<RefCell<FolderSelection>>>>,
+        pub folder_list: RefCell<Option<gtk::ListBox>>,
+        pub folder_section: RefCell<Option<gtk::Box>>,
+        pub message_state: RefCell<Option<gtk::Label>>,
+        pub refresh_button: RefCell<Option<gtk::Button>>,
+        pub load_more_button: RefCell<Option<gtk::Button>>,
+        pub(super) active_request: RefCell<Option<MailLoadRequest>>,
+        pub load_generation: Cell<u64>,
+        pub mail_loading: Cell<bool>,
+        pub mail_change_pending: Cell<bool>,
+        pub updating_folder_rows: Cell<bool>,
+        pub mail_sync_source: RefCell<Option<glib::SourceId>>,
         pub mail_load_cancellation: RefCell<Option<Arc<AtomicBool>>>,
+        pub mail_change_cancellation: RefCell<Option<Arc<AtomicBool>>>,
         pub search_entry: RefCell<Option<gtk::SearchEntry>>,
     }
 
@@ -98,11 +253,12 @@ mod imp {
                 obj.build_sidebar();
             let (
                 message_container,
+                message_state,
                 list_store,
                 selection,
                 custom_filter,
                 message_filter,
-                folder_filter,
+                folder_selection,
             ) = obj.build_message_list();
             let (detail_view, mail_viewer, lbl_subject, lbl_from, lbl_to, lbl_date, attachment_bar) =
                 obj.build_detail_view();
@@ -122,26 +278,31 @@ mod imp {
                 &folder_list,
                 &search_list,
                 &custom_filter,
-                &folder_filter,
+                &folder_selection,
                 &message_filter,
             );
 
             self.message_selection.replace(Some(selection.clone()));
+            self.message_store.replace(Some(list_store.clone()));
             self.message_filter.replace(Some(custom_filter.clone()));
+            self.folder_selection
+                .replace(Some(folder_selection.clone()));
+            self.folder_list.replace(Some(folder_list.clone()));
+            self.folder_section.replace(Some(folder_section.clone()));
+            self.message_state.replace(Some(message_state.clone()));
 
             obj.assemble_layout(sidebar, message_container, detail_view);
-            obj.load_initial_data(
-                &list_store,
-                &selection,
-                &source_store,
-                &source_state,
-                &folder_section,
-                &folder_list,
-            );
+            obj.load_initial_data(&source_store, &source_state, &folder_section);
         }
 
         fn dispose(&self) {
+            if let Some(source) = self.mail_sync_source.borrow_mut().take() {
+                source.remove();
+            }
             if let Some(cancelled) = self.mail_load_cancellation.borrow().as_ref() {
+                cancelled.store(true, Ordering::Relaxed);
+            }
+            if let Some(cancelled) = self.mail_change_cancellation.borrow().as_ref() {
                 cancelled.store(true, Ordering::Relaxed);
             }
             self.outer_split.unparent();
@@ -217,9 +378,12 @@ impl MailPage {
             return Ok(false);
         };
 
-        MailOperationsService::new()
-            .delete(&message.id())
-            .map(|()| true)
+        let operations = MailOperationsService::new();
+        let result = match message.backend_location() {
+            Some(location) => operations.delete_for_location(&message.id(), &location),
+            None => operations.delete(&message.id()),
+        };
+        result.map(|()| true)
     }
 
     pub fn mark_selected_unread(&self) -> Result<bool, MailOperationError> {
@@ -235,7 +399,18 @@ impl MailPage {
             return Ok(false);
         };
 
-        MailOperationsService::new().mark_unread(&message.id(), message.is_flagged())?;
+        let operations = MailOperationsService::new();
+        match message.backend_location() {
+            Some(location) => {
+                operations.set_message_state_for_location(
+                    &message.id(),
+                    &location,
+                    true,
+                    message.is_flagged(),
+                )?;
+            }
+            None => operations.mark_unread(&message.id(), message.is_flagged())?,
+        }
         message.set_unread(true);
         if let Some(filter) = self.imp().message_filter.borrow().as_ref() {
             filter.changed(gtk::FilterChange::Different);
@@ -257,6 +432,8 @@ impl MailPage {
     ) {
         let source_store = gio::ListStore::new::<EdsSourceObject>();
         let source_selection = gtk::SingleSelection::new(Some(source_store.clone()));
+        source_selection.set_autoselect(false);
+        source_selection.set_can_unselect(true);
         let source_factory = gtk::SignalListItemFactory::new();
 
         source_factory.connect_setup(|_, list_item| {
@@ -337,13 +514,32 @@ impl MailPage {
             .css_classes(vec!["navigation-sidebar"])
             .build();
 
-        source_selection.connect_selected_item_notify(|selection| {
+        let page_for_source = self.downgrade();
+        source_selection.connect_selected_item_notify(move |selection| {
             if let Some(source) = selection.selected_item().and_downcast::<EdsSourceObject>() {
                 tracing::debug!(
                     uid = %source.uid(),
                     display_name = %source.display_name(),
                     "EDS mail source selected"
                 );
+                if let Some(page) = page_for_source.upgrade() {
+                    if let Some(folder_selection) = page.imp().folder_selection.borrow().as_ref() {
+                        folder_selection.replace(FolderSelection::all());
+                    }
+                    page.select_folder_row(&FolderSelection::all());
+                    if let Some(filter) = page.imp().message_filter.borrow().as_ref() {
+                        filter.changed(gtk::FilterChange::Different);
+                    }
+                    page.start_mail_load(
+                        MailLoadRequest {
+                            source_uid: Some(source.uid()),
+                            folder_name: None,
+                            offset: 0,
+                            max_messages_per_folder: camel_mail_service::default_page_limit(),
+                        },
+                        true,
+                    );
+                }
             }
         });
 
@@ -361,6 +557,7 @@ impl MailPage {
             .build();
 
         let folders = [
+            ("all", "mail-symbolic", "Alle Nachrichten", ""),
             ("inbox", "mail-inbox-symbolic", "Posteingang", ""),
             ("sent", "mail-sent-symbolic", "Gesendet", ""),
             ("drafts", "mail-drafts-symbolic", "Entwürfe", ""),
@@ -453,6 +650,20 @@ impl MailPage {
         label_text: &str,
         badge_text: &str,
     ) -> gtk::ListBoxRow {
+        Self::create_folder_row_with_backend(
+            folder_id, icon_name, label_text, badge_text, None, None, false,
+        )
+    }
+
+    fn create_folder_row_with_backend(
+        folder_id: &str,
+        icon_name: &str,
+        label_text: &str,
+        badge_text: &str,
+        source_uid: Option<&str>,
+        folder_name: Option<&str>,
+        dynamic: bool,
+    ) -> gtk::ListBoxRow {
         let hbox = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(8)
@@ -487,8 +698,51 @@ impl MailPage {
         unsafe {
             row.set_data("folder-id", folder_id.to_string());
             row.set_data("folder-badge", badge);
+            row.set_data(
+                "folder-row-data",
+                FolderRowData {
+                    folder_id: folder_id.to_string(),
+                    source_uid: source_uid.map(str::to_string),
+                    folder_name: folder_name.map(str::to_string),
+                },
+            );
+            row.set_data("folder-dynamic", dynamic);
         }
         row
+    }
+
+    fn create_camel_folder_row(folder: &camel_mail_service::CamelFolderSummary) -> gtk::ListBoxRow {
+        let label = if folder.source_display_name.is_empty() {
+            folder.display_name.clone()
+        } else {
+            format!("{} · {}", folder.source_display_name, folder.display_name)
+        };
+        let icon = match folder.folder_id.as_str() {
+            "inbox" => "mail-inbox-symbolic",
+            "sent" => "mail-sent-symbolic",
+            "drafts" => "mail-drafts-symbolic",
+            "trash" => "edit-delete-symbolic",
+            "archive" => "mail-archive-symbolic",
+            "junk" => "dialog-warning-symbolic",
+            _ => "folder-symbolic",
+        };
+        let badge = if folder.unread_count > 0 {
+            folder.unread_count.to_string()
+        } else if folder.total_count > 0 {
+            folder.total_count.to_string()
+        } else {
+            String::new()
+        };
+
+        Self::create_folder_row_with_backend(
+            &folder.folder_id,
+            icon,
+            &label,
+            &badge,
+            Some(&folder.source_uid),
+            Some(&folder.folder_name),
+            true,
+        )
     }
 
     fn update_folder_counts(folder_list: &gtk::ListBox, counts: &HashMap<String, (u32, u32)>) {
@@ -507,8 +761,20 @@ impl MailPage {
             } else {
                 folder_id.as_str()
             };
-            let Some((unread, total)) = counts.get(key) else {
-                continue;
+            let (unread, total) = if folder_id == "all" {
+                counts
+                    .values()
+                    .fold((0_u32, 0_u32), |(unread, total), value| {
+                        (
+                            unread.saturating_add(value.0),
+                            total.saturating_add(value.1),
+                        )
+                    })
+            } else {
+                let Some((unread, total)) = counts.get(key) else {
+                    continue;
+                };
+                (*unread, *total)
             };
             let Some(badge) = (unsafe {
                 row.data::<gtk::Label>("folder-badge")
@@ -516,13 +782,72 @@ impl MailPage {
             }) else {
                 continue;
             };
-            badge.set_label(&if *unread > 0 {
+            badge.set_label(&if unread > 0 {
                 format!("{unread}")
             } else {
                 format!("{total}")
             });
-            badge.set_visible(*unread > 0 || *total > 0);
+            badge.set_visible(unread > 0 || total > 0);
         }
+    }
+
+    fn rebuild_camel_folder_rows(
+        &self,
+        folder_list: &gtk::ListBox,
+        folders: &[camel_mail_service::CamelFolderSummary],
+    ) {
+        let was_updating = self.imp().updating_folder_rows.replace(true);
+        let mut dynamic_rows = Vec::new();
+        for index in 0..folder_list.observe_children().n_items() {
+            let Some(row) = folder_list
+                .row_at_index(index as i32)
+                .and_downcast::<gtk::ListBoxRow>()
+            else {
+                continue;
+            };
+            let is_dynamic = unsafe {
+                row.data::<bool>("folder-dynamic")
+                    .map(|value| *value.as_ref())
+                    .unwrap_or(false)
+            };
+            if is_dynamic {
+                dynamic_rows.push(row);
+            }
+        }
+        for row in dynamic_rows {
+            folder_list.remove(&row);
+        }
+
+        for folder in folders.iter().filter(|folder| folder.is_selectable) {
+            folder_list.append(&Self::create_camel_folder_row(folder));
+        }
+        self.imp().updating_folder_rows.set(was_updating);
+    }
+
+    fn select_folder_row(&self, selection: &FolderSelection) {
+        let Some(folder_list) = self.imp().folder_list.borrow().as_ref().cloned() else {
+            return;
+        };
+
+        self.imp().updating_folder_rows.set(true);
+        let mut matching_row = None;
+        for index in 0..folder_list.observe_children().n_items() {
+            let Some(row) = folder_list
+                .row_at_index(index as i32)
+                .and_downcast::<gtk::ListBoxRow>()
+            else {
+                continue;
+            };
+            if Self::folder_row_data(&row)
+                .map(|data| data.selection() == *selection)
+                .unwrap_or(false)
+            {
+                matching_row = Some(row);
+                break;
+            }
+        }
+        folder_list.select_row(matching_row.as_ref());
+        self.imp().updating_folder_rows.set(false);
     }
 
     // ── Private: Build Message List with GListStore & Search Filter ───────
@@ -531,21 +856,22 @@ impl MailPage {
         &self,
     ) -> (
         gtk::Box,
+        gtk::Label,
         gio::ListStore,
         gtk::SingleSelection,
         gtk::CustomFilter,
         Rc<Cell<MessageFilter>>,
-        Rc<Cell<FolderFilter>>,
+        Rc<RefCell<FolderSelection>>,
     ) {
         let store = gio::ListStore::new::<MailMessageObject>();
 
         // Custom filter for real-time search
         let query = Rc::new(RefCell::new(String::new()));
         let message_filter = Rc::new(Cell::new(MessageFilter::All));
-        let folder_filter = Rc::new(Cell::new(FolderFilter::All));
+        let folder_selection = Rc::new(RefCell::new(FolderSelection::all()));
         let query_for_filter = Rc::clone(&query);
         let message_filter_for_filter = Rc::clone(&message_filter);
-        let folder_filter_for_filter = Rc::clone(&folder_filter);
+        let folder_selection_for_filter = Rc::clone(&folder_selection);
         let custom_filter = gtk::CustomFilter::new(move |obj| {
             let Some(msg) = obj.downcast_ref::<MailMessageObject>() else {
                 return false;
@@ -565,7 +891,7 @@ impl MailPage {
                 MessageFilter::Unread => msg.is_unread(),
                 MessageFilter::Flagged => msg.is_flagged(),
             };
-            let selected_folder = folder_filter_for_filter.get();
+            let selected_folder = folder_selection_for_filter.borrow();
 
             query_matches && folder_matches && selected_folder.matches(msg)
         });
@@ -721,9 +1047,20 @@ impl MailPage {
                 btn_star.connect_clicked(move |btn| {
                     let current = msg_clone.is_flagged();
                     let next_flagged = !current;
-                    if let Err(error) =
-                        operations.set_flagged(&msg_clone.id(), msg_clone.is_unread(), next_flagged)
-                    {
+                    let result = match msg_clone.backend_location() {
+                        Some(location) => operations.set_flagged_for_location(
+                            &msg_clone.id(),
+                            &location,
+                            msg_clone.is_unread(),
+                            next_flagged,
+                        ),
+                        None => operations.set_flagged(
+                            &msg_clone.id(),
+                            msg_clone.is_unread(),
+                            next_flagged,
+                        ),
+                    };
+                    if let Err(error) = result {
                         tracing::error!(%error, "Could not persist message flag");
                         return;
                     }
@@ -784,6 +1121,55 @@ impl MailPage {
         let list_container = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .build();
+        let message_state = gtk::Label::builder()
+            .label("Nachrichten werden geladen …")
+            .css_classes(vec!["caption", "dim-label"])
+            .halign(gtk::Align::Start)
+            .margin_start(12)
+            .margin_end(12)
+            .margin_top(6)
+            .margin_bottom(6)
+            .wrap(true)
+            .build();
+
+        let refresh_button = gtk::Button::builder()
+            .icon_name("view-refresh-symbolic")
+            .tooltip_text("Nachrichten aktualisieren (F5)")
+            .css_classes(vec!["flat", "circular"])
+            .build();
+        let page_for_refresh = self.downgrade();
+        refresh_button.connect_clicked(move |_| {
+            if let Some(page) = page_for_refresh.upgrade() {
+                page.refresh_mail();
+            }
+        });
+
+        let load_more_button = gtk::Button::builder()
+            .label("Mehr laden")
+            .tooltip_text("Weitere Nachrichten laden")
+            .css_classes(vec!["flat"])
+            .visible(false)
+            .build();
+        let page_for_more = self.downgrade();
+        load_more_button.connect_clicked(move |_| {
+            if let Some(page) = page_for_more.upgrade() {
+                page.load_more_mail();
+            }
+        });
+
+        let message_state_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(6)
+            .margin_start(12)
+            .margin_end(8)
+            .margin_top(6)
+            .margin_bottom(6)
+            .build();
+        message_state.set_hexpand(true);
+        message_state_box.append(&message_state);
+        message_state_box.append(&load_more_button);
+        message_state_box.append(&refresh_button);
+        list_container.append(&message_state_box);
         list_container.append(&search_box);
         list_container.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
 
@@ -797,13 +1183,17 @@ impl MailPage {
 
         list_container.append(&list_scroll);
 
+        self.imp().refresh_button.replace(Some(refresh_button));
+        self.imp().load_more_button.replace(Some(load_more_button));
+
         (
             list_container,
+            message_state,
             store,
             selection,
             custom_filter,
             message_filter,
-            folder_filter,
+            folder_selection,
         )
     }
 
@@ -812,30 +1202,67 @@ impl MailPage {
         folder_list: &gtk::ListBox,
         search_list: &gtk::ListBox,
         custom_filter: &gtk::CustomFilter,
-        folder_filter: &Rc<Cell<FolderFilter>>,
+        folder_selection: &Rc<RefCell<FolderSelection>>,
         message_filter: &Rc<Cell<MessageFilter>>,
     ) {
-        let folder_filter_for_rows = Rc::clone(folder_filter);
+        let folder_selection_for_rows = Rc::clone(folder_selection);
         let message_filter_for_rows = Rc::clone(message_filter);
         let custom_filter_for_rows = custom_filter.clone();
         let search_list_for_rows = search_list.clone();
+        let page_for_rows = self.downgrade();
         folder_list.connect_row_selected(move |_, row| {
-            let filter = row
-                .and_then(Self::folder_id)
-                .map(|id| FolderFilter::from_folder_id(&id))
-                .unwrap_or(FolderFilter::All);
-            folder_filter_for_rows.set(filter);
+            if page_for_rows
+                .upgrade()
+                .map(|page| page.imp().updating_folder_rows.get())
+                .unwrap_or(false)
+            {
+                return;
+            }
+
+            let selection = row
+                .and_then(Self::folder_row_data)
+                .map(|data| data.selection())
+                .unwrap_or_default();
+            folder_selection_for_rows.replace(selection.clone());
             message_filter_for_rows.set(MessageFilter::All);
             if row.is_some() {
                 search_list_for_rows.unselect_all();
             }
             custom_filter_for_rows.changed(gtk::FilterChange::Different);
+
+            if let Some(page) = page_for_rows.upgrade() {
+                if selection.is_remote() {
+                    page.start_mail_load(
+                        MailLoadRequest {
+                            source_uid: selection.source_uid.clone(),
+                            folder_name: selection.folder_name.clone(),
+                            offset: 0,
+                            max_messages_per_folder: camel_mail_service::default_page_limit(),
+                        },
+                        true,
+                    );
+                } else {
+                    let needs_all_mail_reload = page
+                        .imp()
+                        .active_request
+                        .borrow()
+                        .as_ref()
+                        .map(|request| {
+                            request.source_uid.is_some() || request.folder_name.is_some()
+                        })
+                        .unwrap_or(false);
+                    if needs_all_mail_reload {
+                        page.start_mail_load(MailLoadRequest::initial(), true);
+                    }
+                }
+            }
         });
 
         let message_filter = Rc::clone(message_filter);
-        let folder_filter = Rc::clone(folder_filter);
+        let folder_selection = Rc::clone(folder_selection);
         let custom_filter = custom_filter.clone();
         let folder_list_for_search = folder_list.clone();
+        let page_for_search = self.downgrade();
         search_list.connect_row_selected(move |_, row| {
             let filter = row
                 .and_then(Self::folder_id)
@@ -847,8 +1274,22 @@ impl MailPage {
                 .unwrap_or(MessageFilter::All);
             message_filter.set(filter);
             if row.is_some() {
-                folder_filter.set(FolderFilter::All);
+                folder_selection.replace(FolderSelection::all());
                 folder_list_for_search.unselect_all();
+                if let Some(page) = page_for_search.upgrade() {
+                    let needs_all_mail_reload = page
+                        .imp()
+                        .active_request
+                        .borrow()
+                        .as_ref()
+                        .map(|request| {
+                            request.source_uid.is_some() || request.folder_name.is_some()
+                        })
+                        .unwrap_or(false);
+                    if needs_all_mail_reload {
+                        page.start_mail_load(MailLoadRequest::initial(), true);
+                    }
+                }
             }
             custom_filter.changed(gtk::FilterChange::Different);
         });
@@ -856,7 +1297,14 @@ impl MailPage {
 
     fn folder_id(row: &gtk::ListBoxRow) -> Option<String> {
         unsafe {
-            row.data::<String>("folder-id")
+            row.data::<FolderRowData>("folder-row-data")
+                .map(|value| value.as_ref().folder_id.clone())
+        }
+    }
+
+    fn folder_row_data(row: &gtk::ListBoxRow) -> Option<FolderRowData> {
+        unsafe {
+            row.data::<FolderRowData>("folder-row-data")
                 .map(|value| value.as_ref().clone())
         }
     }
@@ -1156,7 +1604,15 @@ impl MailPage {
                     if let Ok(msg) = item.downcast::<MailMessageObject>() {
                         let was_unread = msg.is_unread();
                         if was_unread {
-                            if let Err(error) = operations.mark_read(&msg.id(), msg.is_flagged()) {
+                            let result = match msg.backend_location() {
+                                Some(location) => operations.mark_read_for_location(
+                                    &msg.id(),
+                                    &location,
+                                    msg.is_flagged(),
+                                ),
+                                None => operations.mark_read(&msg.id(), msg.is_flagged()),
+                            };
+                            if let Err(error) = result {
                                 tracing::error!(%error, "Could not persist read state");
                             } else {
                                 msg.set_unread(false);
@@ -1312,69 +1768,14 @@ impl MailPage {
 
     fn load_initial_data(
         &self,
-        store: &gio::ListStore,
-        selection: &gtk::SingleSelection,
         source_store: &gio::ListStore,
         source_state: &gtk::Label,
         folder_section: &gtk::Box,
-        folder_list: &gtk::ListBox,
     ) {
-        tracing::info!("Starting asynchronous local mail and EDS data load");
-
-        let (sender, receiver) = async_channel::bounded(8);
-        let cancellation = Arc::new(AtomicBool::new(false));
-        self.imp()
-            .mail_load_cancellation
-            .replace(Some(cancellation.clone()));
-        let mail_store = crate::services::MailStoreService::new();
-        let cancellation_for_worker = cancellation;
-        std::thread::spawn(move || {
-            let records = mail_store.load_local_records_cancelable(&cancellation_for_worker);
-            for batch in records.chunks(50) {
-                if cancellation_for_worker.load(Ordering::Relaxed) {
-                    break;
-                }
-                if let Err(error) = sender.send_blocking(batch.to_vec()) {
-                    tracing::debug!(%error, "Local mail result was dropped before delivery");
-                    break;
-                }
-            }
-        });
-
-        let store_for_load = store.clone();
-        let selection_for_load = selection.clone();
-        let folder_section_for_mail_load = folder_section.clone();
-        let folder_list_for_mail_load = folder_list.clone();
-        glib::spawn_future_local(async move {
-            let mut loaded_count = 0;
-            let mut selected_first_message = false;
-            let mut folder_counts = HashMap::new();
-            while let Ok(records) = receiver.recv().await {
-                loaded_count += records.len();
-                tracing::debug!(batch_size = records.len(), "Loaded local mail batch");
-                for record in records {
-                    let folder_counts_entry = folder_counts
-                        .entry(record.folder_id.clone())
-                        .or_insert((0_u32, 0_u32));
-                    folder_counts_entry.1 += 1;
-                    if record.is_unread {
-                        folder_counts_entry.0 += 1;
-                    }
-                    store_for_load.append(&record.into_object());
-                }
-                Self::update_folder_counts(&folder_list_for_mail_load, &folder_counts);
-                if !selected_first_message && store_for_load.n_items() > 0 {
-                    selected_first_message = true;
-                    folder_section_for_mail_load.set_visible(true);
-                    selection_for_load.set_selected(0);
-                }
-            }
-            if loaded_count > 0 {
-                tracing::info!("Loaded {loaded_count} local messages");
-            } else {
-                tracing::debug!("No local messages found");
-            }
-        });
+        self.select_folder_row(&FolderSelection::all());
+        self.start_mail_load(MailLoadRequest::initial(), true);
+        self.setup_mail_polling();
+        self.setup_camel_change_monitor();
 
         let source_store_for_load = source_store.clone();
         let source_state_for_load = source_state.clone();
@@ -1416,10 +1817,516 @@ impl MailPage {
             }
         });
     }
+
+    fn selected_message_id(&self) -> Option<String> {
+        self.imp()
+            .message_selection
+            .borrow()
+            .as_ref()
+            .and_then(|selection| selection.selected_item())
+            .and_then(|item| item.downcast::<MailMessageObject>().ok())
+            .map(|message| message.id())
+    }
+
+    fn select_message_after_reload(&self, previous_id: Option<&str>) {
+        let Some(selection) = self.imp().message_selection.borrow().as_ref().cloned() else {
+            return;
+        };
+        if selection.n_items() == 0 {
+            return;
+        }
+        if let Some(previous_id) = previous_id {
+            for index in 0..selection.n_items() {
+                let Some(message) = selection.item(index).and_downcast::<MailMessageObject>()
+                else {
+                    continue;
+                };
+                if message.id() == previous_id {
+                    selection.set_selected(index);
+                    return;
+                }
+            }
+        }
+        selection.set_selected(0);
+    }
+
+    fn setup_mail_polling(&self) {
+        let Some(settings) = AppSettings::try_new() else {
+            return;
+        };
+        let interval = settings.mail_sync_interval_seconds();
+        if interval == 0 {
+            return;
+        }
+
+        let page = self.downgrade();
+        let source = glib::timeout_add_seconds_local(interval, move || {
+            let Some(page) = page.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
+            if !page.imp().mail_loading.get() {
+                page.refresh_mail();
+            }
+            glib::ControlFlow::Continue
+        });
+        self.imp().mail_sync_source.replace(Some(source));
+    }
+
+    fn setup_camel_change_monitor(&self) {
+        let Some((cancellation, receiver)) = camel_mail_service::start_change_monitor() else {
+            return;
+        };
+
+        self.imp()
+            .mail_change_cancellation
+            .replace(Some(cancellation));
+        let page = self.downgrade();
+        glib::spawn_future_local(async move {
+            while let Ok(event) = receiver.recv().await {
+                let Some(page) = page.upgrade() else {
+                    break;
+                };
+                page.handle_camel_sync_event(event);
+            }
+        });
+    }
+
+    fn handle_camel_sync_event(&self, event: camel_mail_service::CamelSyncEvent) {
+        match event {
+            camel_mail_service::CamelSyncEvent::Ready(status) => {
+                if status.failed_sources > 0 && !self.imp().mail_loading.get() {
+                    if let Some(state) = self.imp().message_state.borrow().as_ref() {
+                        state.set_label(&format!(
+                            "EDS/Camel-Signalmonitor aktiv · {}/{} Konten verfügbar{}",
+                            status.successful_sources,
+                            status.configured_sources,
+                            status
+                                .warning
+                                .as_deref()
+                                .map(|warning| format!(" · {warning}"))
+                                .unwrap_or_default()
+                        ));
+                    }
+                }
+            }
+            camel_mail_service::CamelSyncEvent::Change(change) => {
+                if self.imp().mail_loading.get() {
+                    self.imp().mail_change_pending.set(true);
+                    return;
+                }
+
+                if let Some(state) = self.imp().message_state.borrow().as_ref() {
+                    let kind = match change.kind {
+                        camel_mail_service::CamelChangeKind::Changed => "geändert",
+                        camel_mail_service::CamelChangeKind::FolderDeleted => "gelöscht",
+                        camel_mail_service::CamelChangeKind::FolderRenamed => "umbenannt",
+                    };
+                    let rename_hint = change
+                        .old_folder_name
+                        .as_deref()
+                        .map(|old_name| format!(" von {old_name}"))
+                        .unwrap_or_default();
+                    state.set_label(&format!(
+                        "EDS/Camel: Ordner {} in {} wurde {}{} (＋{} / −{} / ~{} / neu {}) · Aktualisierung …",
+                        change.folder_name,
+                        change.source_uid,
+                        kind,
+                        rename_hint,
+                        change.added_count,
+                        change.removed_count,
+                        change.changed_count,
+                        change.recent_count
+                    ));
+                }
+                self.refresh_mail();
+            }
+            camel_mail_service::CamelSyncEvent::Error(error) => {
+                tracing::warn!(%error, "Native Camel change monitor stopped");
+                if !self.imp().mail_loading.get() {
+                    if let Some(state) = self.imp().message_state.borrow().as_ref() {
+                        state.set_label(&format!(
+                            "EDS/Camel-Signalmonitor nicht verfügbar: {error}"
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    fn update_camel_sync_progress(&self, progress: &camel_mail_service::CamelSyncProgress) {
+        let message_state = self.imp().message_state.borrow();
+        let Some(state) = message_state.as_ref() else {
+            return;
+        };
+
+        let account = progress
+            .source_display_name
+            .as_deref()
+            .or(progress.source_uid.as_deref())
+            .unwrap_or("EDS-Konto");
+        let account_progress = if progress.configured_sources > 0 {
+            format!(
+                " ({}/{} Konten, {} erfolgreich, {} Fehler, {} Ordner, {} Nachrichten)",
+                progress.processed_sources,
+                progress.configured_sources,
+                progress.successful_sources,
+                progress.failed_sources,
+                progress.folders_seen,
+                progress.messages_loaded
+            )
+        } else {
+            String::new()
+        };
+        let label = match progress.phase {
+            camel_mail_service::CamelSyncPhase::Discovering => {
+                "EDS/Camel: Mailkonten werden gesucht …".to_string()
+            }
+            camel_mail_service::CamelSyncPhase::Connecting => {
+                format!("EDS/Camel: Verbinde mit {account}{account_progress} …")
+            }
+            camel_mail_service::CamelSyncPhase::LoadingFolders => {
+                format!("EDS/Camel: Lade Ordner von {account}{account_progress} …")
+            }
+            camel_mail_service::CamelSyncPhase::LoadingMessages => format!(
+                "EDS/Camel: Lade {} von {account}{account_progress} …",
+                progress.folder_name.as_deref().unwrap_or("Nachrichten")
+            ),
+            camel_mail_service::CamelSyncPhase::SourceComplete => {
+                format!("EDS/Camel: {account} synchronisiert{account_progress}")
+            }
+            camel_mail_service::CamelSyncPhase::Complete => {
+                format!("EDS/Camel: Synchronisation abgeschlossen{account_progress}")
+            }
+            camel_mail_service::CamelSyncPhase::Failed => {
+                format!("EDS/Camel: Synchronisation fehlgeschlagen{account_progress}")
+            }
+        };
+        state.set_label(&label);
+    }
+
+    pub fn refresh_mail(&self) {
+        let mut request = self
+            .imp()
+            .active_request
+            .borrow()
+            .clone()
+            .unwrap_or_else(MailLoadRequest::initial);
+        request.offset = 0;
+        self.start_mail_load(request, true);
+    }
+
+    pub fn load_more_mail(&self) {
+        if self.imp().mail_loading.get() {
+            return;
+        }
+
+        let Some(mut request) = self.imp().active_request.borrow().clone() else {
+            return;
+        };
+        request.offset = request
+            .offset
+            .saturating_add(request.max_messages_per_folder.max(1) as usize);
+        self.start_mail_load(request, false);
+    }
+
+    fn start_mail_load(&self, request: MailLoadRequest, replace: bool) {
+        if let Some(cancelled) = self.imp().mail_load_cancellation.borrow().as_ref() {
+            cancelled.store(true, Ordering::Relaxed);
+        }
+
+        let generation = self.imp().load_generation.get().wrapping_add(1);
+        self.imp().load_generation.set(generation);
+        self.imp().mail_loading.set(true);
+        if let Some(button) = self.imp().refresh_button.borrow().as_ref() {
+            button.set_sensitive(false);
+        }
+        if let Some(button) = self.imp().load_more_button.borrow().as_ref() {
+            button.set_visible(false);
+            button.set_sensitive(false);
+        }
+        if let Some(state) = self.imp().message_state.borrow().as_ref() {
+            state.set_label(if replace {
+                "Nachrichten werden aktualisiert …"
+            } else {
+                "Weitere Nachrichten werden geladen …"
+            });
+        }
+
+        let (sender, receiver) = async_channel::bounded(1);
+        let (progress_sender, progress_receiver) = async_channel::bounded(32);
+        let cancellation = Arc::new(AtomicBool::new(false));
+        self.imp()
+            .mail_load_cancellation
+            .replace(Some(cancellation.clone()));
+        let request_for_worker = request.clone();
+        let progress_sender_for_worker = progress_sender.clone();
+        std::thread::spawn(move || {
+            let result = load_mail_backend(
+                &request_for_worker,
+                &cancellation,
+                Some(&progress_sender_for_worker),
+            );
+            drop(progress_sender_for_worker);
+            if let Err(error) = sender.send_blocking(result) {
+                tracing::debug!(%error, "Mail result was dropped before delivery");
+            }
+        });
+
+        let page_for_progress = self.downgrade();
+        glib::spawn_future_local(async move {
+            while let Ok(progress) = progress_receiver.recv().await {
+                let Some(page) = page_for_progress.upgrade() else {
+                    break;
+                };
+                if page.imp().load_generation.get() == generation {
+                    page.update_camel_sync_progress(&progress);
+                }
+            }
+        });
+
+        let page = self.downgrade();
+        glib::spawn_future_local(async move {
+            let result = receiver.recv().await.unwrap_or_else(|_| {
+                MailPageLoadResult::Error("Mail-Ladevorgang wurde abgebrochen.".to_string())
+            });
+            let Some(page) = page.upgrade() else {
+                return;
+            };
+            if page.imp().load_generation.get() != generation {
+                return;
+            }
+            page.apply_mail_load(request, result, replace);
+        });
+    }
+
+    fn apply_mail_load(&self, request: MailLoadRequest, result: MailPageLoadResult, replace: bool) {
+        let previous_selected_id = replace.then(|| self.selected_message_id()).flatten();
+        self.imp().mail_loading.set(false);
+        if let Some(button) = self.imp().refresh_button.borrow().as_ref() {
+            button.set_sensitive(true);
+        }
+
+        match result {
+            MailPageLoadResult::Camel(camel) => {
+                let status = format_camel_status(&camel);
+                let has_more = camel.has_more_for(
+                    request.source_uid.as_deref(),
+                    request.folder_name.as_deref(),
+                    request.offset,
+                    request.max_messages_per_folder,
+                );
+                let folder_list = self.imp().folder_list.borrow().clone();
+                if let Some(folder_list) = folder_list.as_ref() {
+                    if replace {
+                        self.rebuild_camel_folder_rows(folder_list, &camel.folders);
+                    }
+                    Self::update_camel_folder_counts(folder_list, &camel.folders);
+                }
+
+                let appended = if let Some(store) = self.imp().message_store.borrow().as_ref() {
+                    if replace {
+                        store.remove_all();
+                    }
+                    Self::append_unique_messages(store, camel.messages)
+                } else {
+                    0
+                };
+
+                self.imp().active_request.replace(Some(request.clone()));
+                if let Some(section) = self.imp().folder_section.borrow().as_ref() {
+                    section.set_visible(true);
+                }
+                if let Some(button) = self.imp().load_more_button.borrow().as_ref() {
+                    button.set_visible(has_more);
+                    button.set_sensitive(true);
+                }
+                if let Some(state) = self.imp().message_state.borrow().as_ref() {
+                    state.set_label(&format!(
+                        "{status} · {appended} Nachricht(en) in dieser Seite"
+                    ));
+                }
+
+                if replace {
+                    self.select_message_after_reload(previous_selected_id.as_deref());
+                    let selected_folder = self
+                        .imp()
+                        .folder_selection
+                        .borrow()
+                        .as_ref()
+                        .map(|selection| selection.borrow().clone());
+                    if let Some(selected_folder) = selected_folder {
+                        if selected_folder.is_remote() {
+                            self.select_folder_row(&selected_folder);
+                        }
+                    }
+                }
+            }
+            MailPageLoadResult::Local { reason, messages } => {
+                let folder_list = self.imp().folder_list.borrow().clone();
+                if let Some(folder_list) = folder_list.as_ref() {
+                    self.rebuild_camel_folder_rows(folder_list, &[]);
+                }
+                let mut loaded_count = 0;
+                let mut folder_counts = HashMap::new();
+                if let Some(store) = self.imp().message_store.borrow().as_ref() {
+                    if replace {
+                        store.remove_all();
+                    }
+                    for record in messages {
+                        loaded_count += 1;
+                        let folder_counts_entry = folder_counts
+                            .entry(record.folder_id.clone())
+                            .or_insert((0_u32, 0_u32));
+                        folder_counts_entry.1 += 1;
+                        if record.is_unread {
+                            folder_counts_entry.0 += 1;
+                        }
+                        store.append(&record.into_object());
+                    }
+                }
+                if let Some(folder_list) = folder_list.as_ref() {
+                    Self::update_folder_counts(folder_list, &folder_counts);
+                }
+                self.imp().active_request.replace(None);
+                if let Some(button) = self.imp().load_more_button.borrow().as_ref() {
+                    button.set_visible(false);
+                    button.set_sensitive(true);
+                }
+                if let Some(state) = self.imp().message_state.borrow().as_ref() {
+                    state.set_label(&format!(
+                        "{reason} · {loaded_count} lokale Nachricht(en) geladen"
+                    ));
+                }
+                if let Some(selection) = self.imp().folder_selection.borrow().as_ref() {
+                    selection.replace(FolderSelection::all());
+                }
+                self.select_folder_row(&FolderSelection::all());
+                if let Some(filter) = self.imp().message_filter.borrow().as_ref() {
+                    filter.changed(gtk::FilterChange::Different);
+                }
+                if loaded_count > 0 {
+                    if let Some(section) = self.imp().folder_section.borrow().as_ref() {
+                        section.set_visible(true);
+                    }
+                    self.select_message_after_reload(None);
+                }
+            }
+            MailPageLoadResult::Error(error) => {
+                if let Some(button) = self.imp().load_more_button.borrow().as_ref() {
+                    button.set_visible(false);
+                    button.set_sensitive(true);
+                }
+                if let Some(state) = self.imp().message_state.borrow().as_ref() {
+                    state.set_label(&format!("EDS/Camel-Laden nicht möglich: {error}"));
+                }
+                tracing::warn!(%error, "Mail backend load failed");
+            }
+        }
+
+        if self.imp().mail_change_pending.replace(false) && !self.imp().mail_loading.get() {
+            self.refresh_mail();
+        }
+    }
+
+    fn append_unique_messages(store: &gio::ListStore, messages: Vec<ParsedMail>) -> usize {
+        let mut existing_ids = std::collections::HashSet::new();
+        for index in 0..store.n_items() {
+            if let Some(message) = store.item(index).and_downcast::<MailMessageObject>() {
+                existing_ids.insert(message.id());
+            }
+        }
+
+        let mut appended = 0;
+        for record in messages {
+            if existing_ids.insert(record.id.clone()) {
+                store.append(&record.into_object());
+                appended += 1;
+            }
+        }
+        appended
+    }
+
+    fn update_camel_folder_counts(
+        folder_list: &gtk::ListBox,
+        folders: &[camel_mail_service::CamelFolderSummary],
+    ) {
+        for index in 0..folder_list.observe_children().n_items() {
+            let Some(row) = folder_list
+                .row_at_index(index as i32)
+                .and_downcast::<gtk::ListBoxRow>()
+            else {
+                continue;
+            };
+            let Some(data) = Self::folder_row_data(&row) else {
+                continue;
+            };
+            let (unread, total) = if let (Some(source_uid), Some(folder_name)) =
+                (data.source_uid.as_deref(), data.folder_name.as_deref())
+            {
+                folders
+                    .iter()
+                    .find(|folder| {
+                        folder.source_uid == source_uid && folder.folder_name == folder_name
+                    })
+                    .map(|folder| (folder.unread_count, folder.total_count))
+                    .unwrap_or((0, 0))
+            } else {
+                folders
+                    .iter()
+                    .filter(|folder| {
+                        data.folder_id == "all"
+                            || folder.folder_id
+                                == if data.folder_id == "spam" {
+                                    "junk"
+                                } else {
+                                    data.folder_id.as_str()
+                                }
+                    })
+                    .fold((0_u32, 0_u32), |(unread, total), folder| {
+                        (
+                            unread.saturating_add(folder.unread_count),
+                            total.saturating_add(folder.total_count),
+                        )
+                    })
+            };
+            let Some(badge) = (unsafe {
+                row.data::<gtk::Label>("folder-badge")
+                    .map(|pointer| pointer.as_ref())
+            }) else {
+                continue;
+            };
+            badge.set_label(&if unread > 0 {
+                unread.to_string()
+            } else {
+                total.to_string()
+            });
+            badge.set_visible(unread > 0 || total > 0);
+        }
+    }
 }
 
 impl Default for MailPage {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn camel_status_keeps_failed_account_warning_visible() {
+        let status = format_camel_status(&CamelMailLoad {
+            messages: Vec::new(),
+            folders: Vec::new(),
+            configured_sources: 1,
+            successful_sources: 0,
+            failed_sources: 1,
+            warning: Some("OAuth-Anmeldung fehlgeschlagen".to_string()),
+        });
+
+        assert!(status.contains("1 Konto nicht synchronisiert"));
+        assert!(status.contains("OAuth-Anmeldung fehlgeschlagen"));
     }
 }
