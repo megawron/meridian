@@ -513,6 +513,19 @@ impl MailPage {
         }
     }
 
+    fn clear_operation_error(&self) {
+        if let Some(state) = self.imp().message_state.borrow().as_ref() {
+            state.remove_css_class("error");
+        }
+    }
+
+    fn report_operation_error(&self, action: &str, error: &MailOperationError) {
+        if let Some(state) = self.imp().message_state.borrow().as_ref() {
+            state.add_css_class("error");
+            state.set_label(&format!("{action}: {error}"));
+        }
+    }
+
     fn clear_batch_selection(&self) {
         self.imp().batch_selection.borrow_mut().clear();
         if let Some(store) = self.imp().message_store.borrow().as_ref() {
@@ -525,6 +538,7 @@ impl MailPage {
     }
 
     fn mark_batch_read(&self) -> Result<(), MailOperationError> {
+        self.clear_operation_error();
         let messages = self.selected_batch_messages();
         let commands = messages
             .iter()
@@ -562,6 +576,7 @@ impl MailPage {
     }
 
     fn archive_batch(&self) -> Result<(), MailOperationError> {
+        self.clear_operation_error();
         let messages = self.selected_batch_messages();
         let commands = messages
             .iter()
@@ -593,6 +608,7 @@ impl MailPage {
     }
 
     fn mark_batch_junk(&self) -> Result<(), MailOperationError> {
+        self.clear_operation_error();
         let messages = self.selected_batch_messages();
         let operations = MailOperationsService::new();
         let mut marked = 0;
@@ -622,6 +638,7 @@ impl MailPage {
     }
 
     fn delete_batch(&self) -> Result<(), MailOperationError> {
+        self.clear_operation_error();
         let messages = self.selected_batch_messages();
         let commands = messages
             .iter()
@@ -693,9 +710,13 @@ impl MailPage {
             .collect::<Vec<_>>();
 
         if commands.is_empty() {
-            if let Some(state) = self.imp().message_state.borrow().as_ref() {
-                state.set_label("Keine ausgewählte Nachricht gehört zu diesem EDS-Konto");
-            }
+            self.report_operation_error(
+                "Verschieben nicht möglich",
+                &MailOperationError::Unsupported {
+                    operation: crate::services::mail_operations_service::MailOperationKind::Move,
+                    backend: "kein gemeinsames EDS-Konto",
+                },
+            );
             return;
         }
 
@@ -707,6 +728,7 @@ impl MailPage {
             .execute_batch(&operations, commands);
         match result {
             Ok(count) => {
+                self.clear_operation_error();
                 self.clear_batch_selection();
                 self.refresh_mail();
                 if let Some(state) = self.imp().message_state.borrow().as_ref() {
@@ -714,9 +736,7 @@ impl MailPage {
                 }
             }
             Err(error) => {
-                if let Some(state) = self.imp().message_state.borrow().as_ref() {
-                    state.set_label(&format!("Verschieben nicht möglich: {error}"));
-                }
+                self.report_operation_error("Verschieben nicht möglich", &error);
             }
         }
     }
@@ -1554,6 +1574,7 @@ impl MailPage {
         batch_read_button.connect_clicked(move |_| {
             if let Some(page) = page_for_batch_read.upgrade() {
                 if let Err(error) = page.mark_batch_read() {
+                    page.report_operation_error("Gelesen-Markierung nicht möglich", &error);
                     tracing::warn!(%error, "Batch read operation was not applied");
                 }
             }
@@ -1569,6 +1590,7 @@ impl MailPage {
         batch_archive_button.connect_clicked(move |_| {
             if let Some(page) = page_for_batch_archive.upgrade() {
                 if let Err(error) = page.archive_batch() {
+                    page.report_operation_error("Archivieren nicht möglich", &error);
                     tracing::warn!(%error, "Batch archive operation was not applied");
                 }
             }
@@ -1584,6 +1606,7 @@ impl MailPage {
         batch_junk_button.connect_clicked(move |_| {
             if let Some(page) = page_for_batch_junk.upgrade() {
                 if let Err(error) = page.mark_batch_junk() {
+                    page.report_operation_error("Spam-Markierung nicht möglich", &error);
                     tracing::warn!(%error, "Batch junk operation was not applied");
                 }
             }
@@ -1654,6 +1677,7 @@ impl MailPage {
         batch_delete_button.connect_clicked(move |_| {
             if let Some(page) = page_for_batch_delete.upgrade() {
                 if let Err(error) = page.delete_batch() {
+                    page.report_operation_error("Löschen nicht möglich", &error);
                     tracing::warn!(%error, "Batch delete operation was not applied");
                 }
             }
