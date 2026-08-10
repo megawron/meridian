@@ -27,6 +27,25 @@ typedef enum {
     EVOLUTION_EDS_ECAL_REMOVE = 3,
 } EvolutionEdsECalOperationKind;
 
+typedef enum {
+    EVOLUTION_EDS_ECAL_OBJECT_ADDED = 1,
+    EVOLUTION_EDS_ECAL_OBJECT_MODIFIED = 2,
+    EVOLUTION_EDS_ECAL_OBJECT_REMOVED = 3,
+    EVOLUTION_EDS_ECAL_WATCHER_ERROR = 4,
+} EvolutionEdsECalWatcherEventKind;
+
+typedef struct {
+    EvolutionEdsECalSourceType source_type;
+    EvolutionEdsECalWatcherEventKind kind;
+    char *source_uid;
+    char *source_display_name;
+    char *uid;
+    char *component;
+    char *error;
+} EvolutionEdsECalWatcherEvent;
+
+typedef struct _EvolutionEdsECalWatcher EvolutionEdsECalWatcher;
+
 /* Load all enabled EDS calendar objects of one source type.  The component
  * strings are owned by the caller and must be released with
  * evolution_eds_ecal_free_components(). */
@@ -57,6 +76,27 @@ int evolution_eds_ecal_apply_operation(
     char **out_error);
 
 void evolution_eds_ecal_free_error(char *error_message);
+
+/* Watch enabled ECal sources through ECalClientView signals.  The watcher
+ * owns the EDS clients and views; next_event may be called from a worker
+ * thread and returns 1 for an event, 0 on timeout and -1 after stop. */
+int evolution_eds_ecal_watcher_new(
+    EvolutionEdsECalWatcher **out_watcher,
+    size_t *out_configured_sources,
+    size_t *out_active_sources,
+    size_t *out_failed_sources,
+    char **out_error);
+
+int evolution_eds_ecal_watcher_next_event(
+    EvolutionEdsECalWatcher *watcher,
+    int timeout_milliseconds,
+    EvolutionEdsECalWatcherEvent *out_event);
+
+void evolution_eds_ecal_free_watcher_event(
+    EvolutionEdsECalWatcherEvent *event);
+
+void evolution_eds_ecal_watcher_free(
+    EvolutionEdsECalWatcher *watcher);
 
 #ifdef __cplusplus
 }

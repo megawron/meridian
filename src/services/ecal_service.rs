@@ -4,9 +4,13 @@
 // EDS remains authoritative; the local iCalendar importer is only used when
 // the native ECal bridge is unavailable (for example on non-Linux dev hosts).
 
-use super::calendar_store_service::CalendarSnapshot;
 #[cfg(all(target_os = "linux", eds_ecal_bridge))]
-use super::calendar_store_service::{parse_ical_component, sort_snapshot};
+use super::calendar_store_service::sort_snapshot;
+use super::calendar_store_service::{
+    CalendarEventRecord, CalendarSnapshot, MemoRecord, TaskRecord, parse_ical_component,
+};
+#[cfg(all(target_os = "linux", eds_ecal_bridge))]
+use std::time::Duration;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CalendarDataOrigin {
@@ -72,6 +76,73 @@ pub(crate) struct ECalMutationResult {
     pub(crate) component: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ECalChangeKind {
+    Added,
+    Modified,
+    Removed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ECalChangeEvent {
+    pub(crate) source_type: ECalComponentType,
+    pub(crate) kind: ECalChangeKind,
+    pub(crate) source_uid: String,
+    pub(crate) source_display_name: String,
+    pub(crate) uid: String,
+    pub(crate) component: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ECalRecord {
+    Event(CalendarEventRecord),
+    Task(TaskRecord),
+    Memo(MemoRecord),
+}
+
+pub(crate) fn parse_change_record(event: &ECalChangeEvent) -> Option<ECalRecord> {
+    let component = event.component.as_deref()?;
+    let mut snapshot = CalendarSnapshot::default();
+    parse_ical_component(
+        component,
+        &event.source_uid,
+        &event.source_display_name,
+        &mut snapshot,
+    );
+    match event.source_type {
+        ECalComponentType::Event => snapshot
+            .events
+            .into_iter()
+            .find(|record| record.uid == event.uid)
+            .map(ECalRecord::Event),
+        ECalComponentType::Task => snapshot
+            .tasks
+            .into_iter()
+            .find(|record| record.uid == event.uid)
+            .map(ECalRecord::Task),
+        ECalComponentType::Memo => snapshot
+            .memos
+            .into_iter()
+            .find(|record| record.uid == event.uid)
+            .map(ECalRecord::Memo),
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ECalWatcherStatus {
+    pub(crate) configured_sources: usize,
+    pub(crate) active_sources: usize,
+    pub(crate) failed_sources: usize,
+    pub(crate) warning: Option<String>,
+}
+
+#[derive(Debug)]
+pub(crate) enum ECalSyncEvent {
+    Ready(ECalWatcherStatus),
+    Change(ECalChangeEvent),
+    Error(String),
+}
+
 #[derive(Debug, Default, Clone, Copy)]
 pub(crate) struct ECalService;
 
@@ -124,6 +195,57 @@ impl ECalService {
         component_uid: &str,
     ) -> Result<ECalMutationResult, ECalMutationError> {
         self.apply_operation(source_uid, component_type, 3, "", Some(component_uid))
+    }
+
+    pub(crate) fn start_change_monitor(
+        &self,
+    ) -> Option<(
+        std::sync::Arc<std::sync::atomic::AtomicBool>,
+        async_channel::Receiver<ECalSyncEvent>,
+    )> {
+        #[cfg(all(target_os = "linux", eds_ecal_bridge))]
+        {
+            use std::sync::Arc;
+            use std::sync::atomic::{AtomicBool, Ordering};
+
+            let (sender, receiver) = async_channel::bounded(32);
+            let cancelled = Arc::new(AtomicBool::new(false));
+            let cancellation = cancelled.clone();
+
+            std::thread::spawn(move || {
+                let watcher = match ECalWatcher::new() {
+                    Ok(watcher) => watcher,
+                    Err(error) => {
+                        let _ = sender.try_send(ECalSyncEvent::Error(error.to_string()));
+                        return;
+                    }
+                };
+
+                let _ = sender.try_send(ECalSyncEvent::Ready(watcher.status.clone()));
+                let mut watcher = watcher;
+                while !cancellation.load(Ordering::Relaxed) {
+                    match watcher.next_event(Duration::from_millis(1000)) {
+                        Ok(Some(event)) => {
+                            if sender.try_send(ECalSyncEvent::Change(event)).is_err() {
+                                break;
+                            }
+                        }
+                        Ok(None) => {}
+                        Err(error) => {
+                            let _ = sender.try_send(ECalSyncEvent::Error(error.to_string()));
+                            break;
+                        }
+                    }
+                }
+            });
+
+            Some((cancelled, receiver))
+        }
+
+        #[cfg(not(all(target_os = "linux", eds_ecal_bridge)))]
+        {
+            None
+        }
     }
 
     #[cfg(all(target_os = "linux", eds_ecal_bridge))]
@@ -199,6 +321,151 @@ impl ECalService {
     }
 }
 
+#[cfg(all(target_os = "linux", eds_ecal_bridge))]
+#[derive(Debug)]
+struct ECalWatcher {
+    raw: *mut std::ffi::c_void,
+    status: ECalWatcherStatus,
+}
+
+#[cfg(all(target_os = "linux", eds_ecal_bridge))]
+unsafe impl Send for ECalWatcher {}
+
+#[cfg(all(target_os = "linux", eds_ecal_bridge))]
+impl ECalWatcher {
+    fn new() -> Result<Self, ECalServiceError> {
+        use std::ffi::c_void;
+        use std::ptr;
+
+        let mut raw: *mut c_void = ptr::null_mut();
+        let mut configured_sources = 0;
+        let mut active_sources = 0;
+        let mut failed_sources = 0;
+        let mut error = ptr::null_mut();
+        let result = unsafe {
+            ffi::evolution_eds_ecal_watcher_new(
+                &mut raw,
+                &mut configured_sources,
+                &mut active_sources,
+                &mut failed_sources,
+                &mut error,
+            )
+        };
+        let warning = c_string(error);
+        if !error.is_null() {
+            unsafe { ffi::evolution_eds_ecal_free_error(error) };
+        }
+        if result == 0 || raw.is_null() {
+            return Err(ECalServiceError::Backend(warning.unwrap_or_else(|| {
+                "EDS/ECal-Signalmonitor konnte nicht gestartet werden".to_string()
+            })));
+        }
+
+        Ok(Self {
+            raw,
+            status: ECalWatcherStatus {
+                configured_sources,
+                active_sources,
+                failed_sources,
+                warning,
+            },
+        })
+    }
+
+    fn next_event(
+        &mut self,
+        timeout: Duration,
+    ) -> Result<Option<ECalChangeEvent>, ECalServiceError> {
+        let timeout_milliseconds = timeout.as_millis().min(i32::MAX as u128) as i32;
+        let mut raw_event = ffi::EvolutionEdsECalWatcherEvent {
+            source_type: 0,
+            kind: 0,
+            source_uid: std::ptr::null_mut(),
+            source_display_name: std::ptr::null_mut(),
+            uid: std::ptr::null_mut(),
+            component: std::ptr::null_mut(),
+            error: std::ptr::null_mut(),
+        };
+        let result = unsafe {
+            ffi::evolution_eds_ecal_watcher_next_event(
+                self.raw,
+                timeout_milliseconds,
+                &mut raw_event,
+            )
+        };
+        if result < 0 {
+            return Err(ECalServiceError::Backend(
+                "EDS/ECal-Signalmonitor wurde beendet".to_string(),
+            ));
+        }
+        if result == 0 {
+            return Ok(None);
+        }
+
+        let source_uid = c_string(raw_event.source_uid).unwrap_or_default();
+        let source_display_name = c_string(raw_event.source_display_name).unwrap_or_default();
+        let uid = c_string(raw_event.uid).unwrap_or_default();
+        let component = c_string(raw_event.component);
+        let error = c_string(raw_event.error);
+        let source_type = match raw_event.source_type {
+            0 => ECalComponentType::Event,
+            1 => ECalComponentType::Task,
+            2 => ECalComponentType::Memo,
+            _ => {
+                unsafe {
+                    ffi::evolution_eds_ecal_free_watcher_event(&mut raw_event);
+                }
+                return Err(ECalServiceError::Backend(
+                    "EDS/ECal-Signalmonitor lieferte einen unbekannten Quellentyp".to_string(),
+                ));
+            }
+        };
+        let kind = match raw_event.kind {
+            1 => ECalChangeKind::Added,
+            2 => ECalChangeKind::Modified,
+            3 => ECalChangeKind::Removed,
+            4 => {
+                unsafe {
+                    ffi::evolution_eds_ecal_free_watcher_event(&mut raw_event);
+                }
+                return Err(ECalServiceError::Backend(error.unwrap_or_else(|| {
+                    "EDS/ECal-Signalmonitor meldete einen Fehler".to_string()
+                })));
+            }
+            _ => {
+                unsafe {
+                    ffi::evolution_eds_ecal_free_watcher_event(&mut raw_event);
+                }
+                return Err(ECalServiceError::Backend(
+                    "EDS/ECal-Signalmonitor lieferte einen unbekannten Ereignistyp".to_string(),
+                ));
+            }
+        };
+
+        unsafe {
+            ffi::evolution_eds_ecal_free_watcher_event(&mut raw_event);
+        }
+        Ok(Some(ECalChangeEvent {
+            source_type,
+            kind,
+            source_uid,
+            source_display_name,
+            uid,
+            component,
+        }))
+    }
+}
+
+#[cfg(all(target_os = "linux", eds_ecal_bridge))]
+impl Drop for ECalWatcher {
+    fn drop(&mut self) {
+        if !self.raw.is_null() {
+            unsafe { ffi::evolution_eds_ecal_watcher_free(self.raw) };
+            self.raw = std::ptr::null_mut();
+        }
+    }
+}
+
 pub(crate) fn load_snapshot_prefer_eds() -> CalendarLoadResult {
     let ecal = ECalService::new();
     match ecal.load_snapshot() {
@@ -234,15 +501,67 @@ mod tests {
     }
 }
 
+#[cfg(test)]
+mod change_tests {
+    use super::*;
+
+    #[test]
+    fn change_components_are_parsed_into_the_matching_record_type() {
+        let event = ECalChangeEvent {
+            source_type: ECalComponentType::Task,
+            kind: ECalChangeKind::Modified,
+            source_uid: "tasks".to_string(),
+            source_display_name: "Meine Aufgaben".to_string(),
+            uid: "task-1".to_string(),
+            component: Some(
+                "BEGIN:VTODO\r\nUID:task-1\r\nSUMMARY:Bericht\r\n".to_string()
+                    + "DUE;VALUE=DATE:20260812\r\nEND:VTODO\r\n",
+            ),
+        };
+
+        let Some(ECalRecord::Task(task)) = parse_change_record(&event) else {
+            panic!("the VTODO change should parse as a task");
+        };
+        assert_eq!(task.uid, "task-1");
+        assert_eq!(task.source_uid, "tasks");
+        assert_eq!(task.due, "2026-08-12");
+    }
+
+    #[test]
+    fn removed_change_does_not_require_a_component_payload() {
+        let event = ECalChangeEvent {
+            source_type: ECalComponentType::Memo,
+            kind: ECalChangeKind::Removed,
+            source_uid: "memos".to_string(),
+            source_display_name: "Notizen".to_string(),
+            uid: "memo-1".to_string(),
+            component: None,
+        };
+
+        assert!(parse_change_record(&event).is_none());
+    }
+}
+
 #[cfg(all(target_os = "linux", eds_ecal_bridge))]
 mod ffi {
-    use std::ffi::{c_char, c_int};
+    use std::ffi::{c_char, c_int, c_void};
 
     #[repr(C)]
     pub(super) struct EvolutionEdsECalComponent {
         pub(super) source_uid: *mut c_char,
         pub(super) source_display_name: *mut c_char,
         pub(super) component: *mut c_char,
+    }
+
+    #[repr(C)]
+    pub(super) struct EvolutionEdsECalWatcherEvent {
+        pub(super) source_type: c_int,
+        pub(super) kind: c_int,
+        pub(super) source_uid: *mut c_char,
+        pub(super) source_display_name: *mut c_char,
+        pub(super) uid: *mut c_char,
+        pub(super) component: *mut c_char,
+        pub(super) error: *mut c_char,
     }
 
     unsafe extern "C" {
@@ -273,6 +592,26 @@ mod ffi {
         ) -> c_int;
 
         pub(super) fn evolution_eds_ecal_free_error(error_message: *mut c_char);
+
+        pub(super) fn evolution_eds_ecal_watcher_new(
+            out_watcher: *mut *mut c_void,
+            out_configured_sources: *mut usize,
+            out_active_sources: *mut usize,
+            out_failed_sources: *mut usize,
+            out_error: *mut *mut c_char,
+        ) -> c_int;
+
+        pub(super) fn evolution_eds_ecal_watcher_next_event(
+            watcher: *mut c_void,
+            timeout_milliseconds: c_int,
+            out_event: *mut EvolutionEdsECalWatcherEvent,
+        ) -> c_int;
+
+        pub(super) fn evolution_eds_ecal_free_watcher_event(
+            event: *mut EvolutionEdsECalWatcherEvent,
+        );
+
+        pub(super) fn evolution_eds_ecal_watcher_free(watcher: *mut c_void);
     }
 }
 

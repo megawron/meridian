@@ -450,3 +450,506 @@ evolution_eds_ecal_free_error (char *error_message)
 {
     g_free (error_message);
 }
+
+typedef struct {
+    EvolutionEdsECalWatcher *watcher;
+    ECalClient *client;
+    ECalClientView *view;
+    gulong objects_added_id;
+    gulong objects_modified_id;
+    gulong objects_removed_id;
+    gulong complete_id;
+    EvolutionEdsECalSourceType source_type;
+    gchar *source_uid;
+    gchar *source_display_name;
+} ECalWatcherView;
+
+typedef struct {
+    EvolutionEdsECalWatcherEvent event;
+} ECalWatcherQueuedEvent;
+
+struct _EvolutionEdsECalWatcher {
+    GMutex lock;
+    GCond condition;
+    gboolean stopping;
+    guint callback_count;
+    GQueue *events;
+    GPtrArray *views;
+    GMainContext *context;
+    GSource *wakeup_source;
+    ESourceRegistry *registry;
+};
+
+static gboolean
+ecal_watcher_wakeup_cb (gpointer user_data)
+{
+    (void) user_data;
+    return G_SOURCE_CONTINUE;
+}
+
+static void
+free_ecal_watcher_event (ECalWatcherQueuedEvent *queued_event)
+{
+    if (!queued_event)
+        return;
+
+    g_free (queued_event->event.source_uid);
+    g_free (queued_event->event.source_display_name);
+    g_free (queued_event->event.uid);
+    g_free (queued_event->event.component);
+    g_free (queued_event->event.error);
+    g_free (queued_event);
+}
+
+static gboolean
+ecal_watcher_callback_begin (ECalWatcherView *watch_view)
+{
+    EvolutionEdsECalWatcher *watcher = watch_view->watcher;
+    gboolean active;
+
+    g_mutex_lock (&watcher->lock);
+    active = !watcher->stopping;
+    if (active)
+        watcher->callback_count++;
+    g_mutex_unlock (&watcher->lock);
+
+    return active;
+}
+
+static void
+ecal_watcher_callback_end (ECalWatcherView *watch_view)
+{
+    EvolutionEdsECalWatcher *watcher = watch_view->watcher;
+
+    g_mutex_lock (&watcher->lock);
+    if (watcher->callback_count > 0)
+        watcher->callback_count--;
+    if (watcher->callback_count == 0)
+        g_cond_broadcast (&watcher->condition);
+    g_mutex_unlock (&watcher->lock);
+}
+
+static void
+queue_ecal_watcher_event (ECalWatcherView *watch_view,
+                          EvolutionEdsECalWatcherEventKind kind,
+                          const gchar *uid,
+                          const gchar *component,
+                          const gchar *error_message)
+{
+    EvolutionEdsECalWatcher *watcher = watch_view->watcher;
+    ECalWatcherQueuedEvent *queued_event;
+
+    g_mutex_lock (&watcher->lock);
+    if (watcher->stopping) {
+        g_mutex_unlock (&watcher->lock);
+        return;
+    }
+
+    queued_event = g_new0 (ECalWatcherQueuedEvent, 1);
+    queued_event->event.source_type = watch_view->source_type;
+    queued_event->event.kind = kind;
+    queued_event->event.source_uid = g_strdup (watch_view->source_uid);
+    queued_event->event.source_display_name = g_strdup (
+        watch_view->source_display_name);
+    queued_event->event.uid = g_strdup (uid);
+    queued_event->event.component = g_strdup (component);
+    queued_event->event.error = g_strdup (error_message);
+    g_queue_push_tail (watcher->events, queued_event);
+    g_cond_signal (&watcher->condition);
+    g_mutex_unlock (&watcher->lock);
+}
+
+static void
+ecal_watcher_objects_changed_cb (ECalClientView *view,
+                                 const GSList *objects,
+                                 gpointer user_data,
+                                 EvolutionEdsECalWatcherEventKind kind)
+{
+    ECalWatcherView *watch_view = user_data;
+    const GSList *link;
+
+    (void) view;
+    if (!ecal_watcher_callback_begin (watch_view))
+        return;
+
+    for (link = objects; link != NULL; link = link->next) {
+        ICalComponent *component = link->data;
+        gchar *component_string;
+
+        if (!component)
+            continue;
+
+        component_string = i_cal_component_as_ical_string (component);
+        if (component_string && *component_string) {
+            queue_ecal_watcher_event (
+                watch_view, kind,
+                i_cal_component_get_uid (component),
+                component_string, NULL);
+        }
+        g_free (component_string);
+    }
+
+    ecal_watcher_callback_end (watch_view);
+}
+
+static void
+ecal_watcher_objects_added_cb (ECalClientView *view,
+                               const GSList *objects,
+                               gpointer user_data)
+{
+    ecal_watcher_objects_changed_cb (
+        view, objects, user_data, EVOLUTION_EDS_ECAL_OBJECT_ADDED);
+}
+
+static void
+ecal_watcher_objects_modified_cb (ECalClientView *view,
+                                  const GSList *objects,
+                                  gpointer user_data)
+{
+    ecal_watcher_objects_changed_cb (
+        view, objects, user_data, EVOLUTION_EDS_ECAL_OBJECT_MODIFIED);
+}
+
+static void
+ecal_watcher_objects_removed_cb (ECalClientView *view,
+                                 const GSList *objects,
+                                 gpointer user_data)
+{
+    ECalWatcherView *watch_view = user_data;
+    const GSList *link;
+
+    (void) view;
+    if (!ecal_watcher_callback_begin (watch_view))
+        return;
+
+    for (link = objects; link != NULL; link = link->next) {
+        ECalComponentId *id = link->data;
+
+        if (id) {
+            queue_ecal_watcher_event (
+                watch_view, EVOLUTION_EDS_ECAL_OBJECT_REMOVED,
+                e_cal_component_id_get_uid (id), NULL, NULL);
+        }
+    }
+
+    ecal_watcher_callback_end (watch_view);
+}
+
+static void
+ecal_watcher_complete_cb (ECalClientView *view,
+                          const GError *error,
+                          gpointer user_data)
+{
+    ECalWatcherView *watch_view = user_data;
+
+    (void) view;
+    if (!ecal_watcher_callback_begin (watch_view))
+        return;
+
+    if (error) {
+        queue_ecal_watcher_event (
+            watch_view, EVOLUTION_EDS_ECAL_WATCHER_ERROR,
+            NULL, NULL, error->message);
+    }
+
+    ecal_watcher_callback_end (watch_view);
+}
+
+static void
+free_ecal_watcher_view (ECalWatcherView *watch_view)
+{
+    if (!watch_view)
+        return;
+
+    if (watch_view->view) {
+        if (watch_view->objects_added_id)
+            g_signal_handler_disconnect (
+                watch_view->view, watch_view->objects_added_id);
+        if (watch_view->objects_modified_id)
+            g_signal_handler_disconnect (
+                watch_view->view, watch_view->objects_modified_id);
+        if (watch_view->objects_removed_id)
+            g_signal_handler_disconnect (
+                watch_view->view, watch_view->objects_removed_id);
+        if (watch_view->complete_id)
+            g_signal_handler_disconnect (
+                watch_view->view, watch_view->complete_id);
+        e_cal_client_view_stop (watch_view->view, NULL);
+    }
+
+    g_clear_object (&watch_view->view);
+    g_clear_object (&watch_view->client);
+    g_free (watch_view->source_uid);
+    g_free (watch_view->source_display_name);
+    g_free (watch_view);
+}
+
+static void
+ecal_watcher_remember_error (gchar **first_error,
+                             const gchar *source_name,
+                             GError *error)
+{
+    if (!*first_error && error)
+        *first_error = g_strdup_printf (
+            "%s: %s",
+            source_name && *source_name ? source_name : "ECal-Quelle",
+            error->message);
+}
+
+static gboolean
+ecal_watcher_add_source (EvolutionEdsECalWatcher *watcher,
+                         ESource *source,
+                         EvolutionEdsECalSourceType source_type,
+                         gchar **first_error)
+{
+    ECalWatcherView *watch_view = NULL;
+    ECalClient *client = NULL;
+    ECalClientView *view = NULL;
+    GError *error = NULL;
+
+    client = e_cal_client_connect_sync (
+        source, (ECalClientSourceType) source_type, 15, NULL, &error);
+    if (!client) {
+        ecal_watcher_remember_error (
+            first_error, e_source_get_display_name (source), error);
+        g_clear_error (&error);
+        return FALSE;
+    }
+
+    if (!e_cal_client_get_view_sync (
+            client, "#t", &view, NULL, &error)) {
+        ecal_watcher_remember_error (
+            first_error, e_source_get_display_name (source), error);
+        g_clear_error (&error);
+        g_clear_object (&client);
+        return FALSE;
+    }
+
+    watch_view = g_new0 (ECalWatcherView, 1);
+    watch_view->watcher = watcher;
+    watch_view->client = client;
+    watch_view->view = view;
+    watch_view->source_type = source_type;
+    watch_view->source_uid = g_strdup (e_source_get_uid (source));
+    watch_view->source_display_name = g_strdup (
+        e_source_get_display_name (source));
+    watch_view->objects_added_id = g_signal_connect (
+        view, "objects-added",
+        G_CALLBACK (ecal_watcher_objects_added_cb), watch_view);
+    watch_view->objects_modified_id = g_signal_connect (
+        view, "objects-modified",
+        G_CALLBACK (ecal_watcher_objects_modified_cb), watch_view);
+    watch_view->objects_removed_id = g_signal_connect (
+        view, "objects-removed",
+        G_CALLBACK (ecal_watcher_objects_removed_cb), watch_view);
+    watch_view->complete_id = g_signal_connect (
+        view, "complete",
+        G_CALLBACK (ecal_watcher_complete_cb), watch_view);
+    g_ptr_array_add (watcher->views, watch_view);
+
+    e_cal_client_view_set_flags (
+        view, E_CAL_CLIENT_VIEW_FLAGS_NOTIFY_INITIAL);
+    e_cal_client_view_start (view, &error);
+    if (error) {
+        ecal_watcher_remember_error (
+            first_error, e_source_get_display_name (source), error);
+        g_clear_error (&error);
+        g_ptr_array_remove (watcher->views, watch_view);
+        return FALSE;
+    }
+
+    return TRUE;
+}
+
+int
+evolution_eds_ecal_watcher_new (
+    EvolutionEdsECalWatcher **out_watcher,
+    size_t *out_configured_sources,
+    size_t *out_active_sources,
+    size_t *out_failed_sources,
+    char **out_error)
+{
+    EvolutionEdsECalWatcher *watcher;
+    GList *sources = NULL;
+    GList *link;
+    gchar *first_error = NULL;
+    GError *error = NULL;
+    size_t configured_sources = 0;
+    size_t active_sources = 0;
+    size_t failed_sources = 0;
+
+    if (out_watcher)
+        *out_watcher = NULL;
+    if (out_configured_sources)
+        *out_configured_sources = 0;
+    if (out_active_sources)
+        *out_active_sources = 0;
+    if (out_failed_sources)
+        *out_failed_sources = 0;
+    if (out_error)
+        *out_error = NULL;
+    if (!out_watcher)
+        return 0;
+
+    watcher = g_new0 (EvolutionEdsECalWatcher, 1);
+    g_mutex_init (&watcher->lock);
+    g_cond_init (&watcher->condition);
+    watcher->events = g_queue_new ();
+    watcher->views = g_ptr_array_new_with_free_func (
+        (GDestroyNotify) free_ecal_watcher_view);
+    watcher->context = g_main_context_new ();
+    watcher->wakeup_source = g_timeout_source_new (50);
+    g_source_set_callback (
+        watcher->wakeup_source, ecal_watcher_wakeup_cb, NULL, NULL);
+    g_source_attach (watcher->wakeup_source, watcher->context);
+
+    g_main_context_push_thread_default (watcher->context);
+    watcher->registry = e_source_registry_new_sync (NULL, &error);
+    g_main_context_pop_thread_default (watcher->context);
+    if (!watcher->registry) {
+        if (out_error && error)
+            *out_error = g_strdup (error->message);
+        g_clear_error (&error);
+        evolution_eds_ecal_watcher_free (watcher);
+        return 0;
+    }
+
+    g_main_context_push_thread_default (watcher->context);
+    for (EvolutionEdsECalSourceType source_type =
+             EVOLUTION_EDS_ECAL_EVENTS;
+         source_type <= EVOLUTION_EDS_ECAL_MEMOS;
+         source_type++) {
+        const gchar *extension_name;
+
+        if (source_type == EVOLUTION_EDS_ECAL_EVENTS)
+            extension_name = E_SOURCE_EXTENSION_CALENDAR;
+        else if (source_type == EVOLUTION_EDS_ECAL_TASKS)
+            extension_name = E_SOURCE_EXTENSION_TASK_LIST;
+        else
+            extension_name = E_SOURCE_EXTENSION_MEMO_LIST;
+
+        sources = e_source_registry_list_enabled (
+            watcher->registry, extension_name);
+        for (link = sources; link != NULL; link = link->next) {
+            ESource *source = E_SOURCE (link->data);
+
+            configured_sources++;
+            if (ecal_watcher_add_source (
+                    watcher, source, source_type, &first_error))
+                active_sources++;
+            else
+                failed_sources++;
+        }
+        g_list_free_full (sources, g_object_unref);
+        sources = NULL;
+    }
+    g_main_context_pop_thread_default (watcher->context);
+
+    if (out_configured_sources)
+        *out_configured_sources = configured_sources;
+    if (out_active_sources)
+        *out_active_sources = active_sources;
+    if (out_failed_sources)
+        *out_failed_sources = failed_sources;
+
+    if (out_error)
+        *out_error = first_error;
+    else
+        g_free (first_error);
+
+    *out_watcher = watcher;
+    return 1;
+}
+
+int
+evolution_eds_ecal_watcher_next_event (
+    EvolutionEdsECalWatcher *watcher,
+    int timeout_milliseconds,
+    EvolutionEdsECalWatcherEvent *out_event)
+{
+    ECalWatcherQueuedEvent *queued_event = NULL;
+    gint64 deadline;
+
+    if (!watcher || !out_event)
+        return -1;
+
+    memset (out_event, 0, sizeof (*out_event));
+    deadline = g_get_monotonic_time () +
+        (timeout_milliseconds > 0 ? timeout_milliseconds * 1000 : 0);
+
+    for (;;) {
+        gboolean stopping;
+
+        g_mutex_lock (&watcher->lock);
+        if (!g_queue_is_empty (watcher->events))
+            queued_event = g_queue_pop_head (watcher->events);
+        stopping = watcher->stopping;
+        g_mutex_unlock (&watcher->lock);
+
+        if (queued_event)
+            break;
+        if (stopping)
+            return -1;
+
+        if (timeout_milliseconds == 0 ||
+            (timeout_milliseconds > 0 &&
+             g_get_monotonic_time () >= deadline))
+            return 0;
+
+        g_main_context_iteration (
+            watcher->context, timeout_milliseconds != 0);
+    }
+
+    *out_event = queued_event->event;
+    g_free (queued_event);
+    return 1;
+}
+
+void
+evolution_eds_ecal_free_watcher_event (
+    EvolutionEdsECalWatcherEvent *event)
+{
+    if (!event)
+        return;
+
+    g_free (event->source_uid);
+    g_free (event->source_display_name);
+    g_free (event->uid);
+    g_free (event->component);
+    g_free (event->error);
+    memset (event, 0, sizeof (*event));
+}
+
+void
+evolution_eds_ecal_watcher_free (EvolutionEdsECalWatcher *watcher)
+{
+    if (!watcher)
+        return;
+
+    g_mutex_lock (&watcher->lock);
+    watcher->stopping = TRUE;
+    g_cond_broadcast (&watcher->condition);
+    g_mutex_unlock (&watcher->lock);
+    g_main_context_wakeup (watcher->context);
+
+    g_mutex_lock (&watcher->lock);
+    while (watcher->callback_count > 0)
+        g_cond_wait (&watcher->condition, &watcher->lock);
+    g_mutex_unlock (&watcher->lock);
+
+    g_ptr_array_set_size (watcher->views, 0);
+    if (watcher->wakeup_source) {
+        g_source_destroy (watcher->wakeup_source);
+        g_source_unref (watcher->wakeup_source);
+        watcher->wakeup_source = NULL;
+    }
+    while (!g_queue_is_empty (watcher->events))
+        free_ecal_watcher_event (g_queue_pop_head (watcher->events));
+    g_queue_free (watcher->events);
+    g_ptr_array_unref (watcher->views);
+    g_clear_object (&watcher->registry);
+    g_main_context_unref (watcher->context);
+    g_cond_clear (&watcher->condition);
+    g_mutex_clear (&watcher->lock);
+    g_free (watcher);
+}

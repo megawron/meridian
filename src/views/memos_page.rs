@@ -17,7 +17,8 @@ use std::rc::Rc;
 use crate::services::calendar_store_service::MemoRecord;
 use crate::services::calendar_store_service::update_ical_property;
 use crate::services::ecal_service::{
-    CalendarDataOrigin, ECalComponentType, ECalService, load_snapshot_prefer_eds,
+    CalendarDataOrigin, ECalChangeKind, ECalComponentType, ECalRecord, ECalService, ECalSyncEvent,
+    load_snapshot_prefer_eds, parse_change_record,
 };
 use crate::services::eds_service;
 
@@ -25,7 +26,9 @@ mod imp {
     use super::*;
 
     #[derive(Debug, Default)]
-    pub struct MemosPage;
+    pub struct MemosPage {
+        pub ecal_monitor_cancel: RefCell<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>>,
+    }
 
     #[glib::object_subclass]
     impl ObjectSubclass for MemosPage {
@@ -45,6 +48,10 @@ mod imp {
         }
 
         fn dispose(&self) {
+            if let Some(cancel) = self.ecal_monitor_cancel.borrow_mut().take() {
+                use std::sync::atomic::Ordering;
+                cancel.store(true, Ordering::Relaxed);
+            }
             if let Some(child) = self.obj().first_child() {
                 child.unparent();
             }
@@ -467,20 +474,99 @@ impl MemosPage {
                             "{} Notiz(en) aus {origin} geladen",
                             result.snapshot.memos.len()
                         ));
-                        let mut records = memo_records_for_load.borrow_mut();
                         for memo in result.snapshot.memos {
-                            records.push(memo.clone());
-                            let row = adw::ActionRow::builder()
-                                .title(&memo.summary)
-                                .subtitle(&memo.updated)
-                                .build();
-                            memo_list_for_load.append(&row);
+                            upsert_memo_row(
+                                &memo_list_for_load,
+                                Rc::clone(&memo_records_for_load),
+                                memo,
+                            );
                         }
                     }
                 }
                 Err(error) => tracing::debug!(%error, "Memo snapshot unavailable"),
             }
         });
+
+        if let Some((cancel, receiver)) = ECalService::new().start_change_monitor() {
+            *self.imp().ecal_monitor_cancel.borrow_mut() = Some(cancel);
+            let memo_list_for_monitor = memo_list.clone();
+            let memo_records_for_monitor = Rc::clone(&memo_records);
+            let empty_state_for_monitor = empty_state.clone();
+            let selected_memo_for_monitor = Rc::clone(&selected_memo);
+            let memo_title_for_monitor = memo_title.clone();
+            let memo_meta_for_monitor = memo_meta.clone();
+            let memo_text_for_monitor = memo_text.clone();
+            glib::spawn_future_local(async move {
+                while let Ok(event) = receiver.recv().await {
+                    match event {
+                        ECalSyncEvent::Ready(status) => {
+                            if let Some(warning) = status.warning {
+                                tracing::warn!(
+                                    configured = status.configured_sources,
+                                    active = status.active_sources,
+                                    failed = status.failed_sources,
+                                    %warning,
+                                    "ECal memo signal monitor started with source warnings"
+                                );
+                            }
+                        }
+                        ECalSyncEvent::Change(change) => match change.kind {
+                            ECalChangeKind::Removed => {
+                                let removed = remove_memo_row(
+                                    &memo_list_for_monitor,
+                                    Rc::clone(&memo_records_for_monitor),
+                                    &change.source_uid,
+                                    &change.uid,
+                                );
+                                if removed
+                                    && selected_memo_for_monitor.borrow().as_ref().is_some_and(
+                                        |memo| {
+                                            memo.source_uid == change.source_uid
+                                                && memo.uid == change.uid
+                                        },
+                                    )
+                                {
+                                    *selected_memo_for_monitor.borrow_mut() = None;
+                                    memo_title_for_monitor.set_text("");
+                                    memo_meta_for_monitor.set_label("Keine Notiz ausgewählt");
+                                    memo_text_for_monitor
+                                        .buffer()
+                                        .set_text("Noch keine Notizdaten verfügbar.");
+                                }
+                            }
+                            ECalChangeKind::Added | ECalChangeKind::Modified => {
+                                if let Some(ECalRecord::Memo(memo)) = parse_change_record(&change) {
+                                    upsert_memo_row(
+                                        &memo_list_for_monitor,
+                                        Rc::clone(&memo_records_for_monitor),
+                                        memo.clone(),
+                                    );
+                                    if selected_memo_for_monitor.borrow().as_ref().is_some_and(
+                                        |selected| {
+                                            selected.source_uid == memo.source_uid
+                                                && selected.uid == memo.uid
+                                        },
+                                    ) {
+                                        *selected_memo_for_monitor.borrow_mut() =
+                                            Some(memo.clone());
+                                        memo_title_for_monitor.set_text(&memo.summary);
+                                        memo_meta_for_monitor
+                                            .set_label(&format!("VJOURNAL · {}", memo.updated));
+                                        memo_text_for_monitor.buffer().set_text(&memo.description);
+                                    }
+                                }
+                            }
+                        },
+                        ECalSyncEvent::Error(error) => {
+                            tracing::warn!(%error, "ECal memo signal monitor stopped");
+                            break;
+                        }
+                    }
+                    empty_state_for_monitor
+                        .set_visible(memo_records_for_monitor.borrow().is_empty());
+                }
+            });
+        }
 
         let content_page = adw::NavigationPage::builder()
             .title("Notiz-Details")
@@ -701,6 +787,49 @@ impl MemosPage {
         }
         tracing::warn!(%message, "Memo page result");
     }
+}
+
+fn upsert_memo_row(
+    memo_list: &gtk::ListBox,
+    memo_records: Rc<RefCell<Vec<MemoRecord>>>,
+    memo: MemoRecord,
+) {
+    let existing_index = memo_records
+        .borrow()
+        .iter()
+        .position(|existing| existing.source_uid == memo.source_uid && existing.uid == memo.uid);
+    if let Some(index) = existing_index {
+        memo_records.borrow_mut().remove(index);
+        if let Some(row) = memo_list.row_at_index(index as i32) {
+            memo_list.remove(&row);
+        }
+    }
+    memo_records.borrow_mut().push(memo.clone());
+    let row = adw::ActionRow::builder()
+        .title(&memo.summary)
+        .subtitle(&memo.updated)
+        .build();
+    memo_list.append(&row);
+}
+
+fn remove_memo_row(
+    memo_list: &gtk::ListBox,
+    memo_records: Rc<RefCell<Vec<MemoRecord>>>,
+    source_uid: &str,
+    uid: &str,
+) -> bool {
+    let Some(index) = memo_records
+        .borrow()
+        .iter()
+        .position(|memo| memo.source_uid == source_uid && memo.uid == uid)
+    else {
+        return false;
+    };
+    memo_records.borrow_mut().remove(index);
+    if let Some(row) = memo_list.row_at_index(index as i32) {
+        memo_list.remove(&row);
+    }
+    true
 }
 
 fn show_toast_for_widget<W: IsA<gtk::Widget>>(widget: &W, message: &str) {

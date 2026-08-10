@@ -13,9 +13,10 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use crate::models::task_item::TaskItemObject;
-use crate::services::calendar_store_service::update_ical_property;
+use crate::services::calendar_store_service::{TaskRecord, update_ical_property};
 use crate::services::ecal_service::{
-    CalendarDataOrigin, ECalComponentType, ECalService, load_snapshot_prefer_eds,
+    CalendarDataOrigin, ECalChangeKind, ECalComponentType, ECalRecord, ECalService, ECalSyncEvent,
+    load_snapshot_prefer_eds, parse_change_record,
 };
 use crate::services::eds_service;
 use adw::prelude::*;
@@ -25,7 +26,9 @@ mod imp {
     use super::*;
 
     #[derive(Debug, Default)]
-    pub struct TasksPage;
+    pub struct TasksPage {
+        pub ecal_monitor_cancel: RefCell<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>>,
+    }
 
     #[glib::object_subclass]
     impl ObjectSubclass for TasksPage {
@@ -45,6 +48,10 @@ mod imp {
         }
 
         fn dispose(&self) {
+            if let Some(cancel) = self.ecal_monitor_cancel.borrow_mut().take() {
+                use std::sync::atomic::Ordering;
+                cancel.store(true, Ordering::Relaxed);
+            }
             if let Some(child) = self.obj().first_child() {
                 child.unparent();
             }
@@ -218,12 +225,14 @@ impl TasksPage {
                 task_store_for_dialog.clone(),
                 task_list_for_dialog.clone(),
                 empty_tasks_for_dialog.clone(),
+                None,
             );
         });
 
         let task_store_for_load = task_store.clone();
         let task_list_for_load = task_list.clone();
         let empty_tasks_for_load = empty_tasks.clone();
+        let page_weak_for_load = self.downgrade();
         let (task_sender, task_receiver) = async_channel::bounded(1);
         std::thread::spawn(move || {
             let result = load_snapshot_prefer_eds();
@@ -245,27 +254,16 @@ impl TasksPage {
                         empty_tasks_for_load.set_visible(true);
                     } else {
                         empty_tasks_for_load.set_visible(false);
+                        let Some(page) = page_weak_for_load.upgrade() else {
+                            return;
+                        };
                         for task in result.snapshot.tasks {
-                            let priority = if task.priority == 0 {
-                                "normal".to_string()
-                            } else {
-                                task.priority.to_string()
-                            };
-                            let task_object = TaskItemObject::new(
-                                &task.source_uid,
-                                &task.uid,
-                                &task.summary,
-                                &task.due,
-                                &priority,
-                                task.completed,
-                                &task.component,
-                            );
-                            task_store_for_load.append(&task_object);
-                            append_task_row(
+                            upsert_task_row(
+                                &page,
                                 &task_list_for_load,
                                 &task_store_for_load,
                                 &empty_tasks_for_load,
-                                &task_object,
+                                task,
                             );
                         }
                     }
@@ -273,6 +271,58 @@ impl TasksPage {
                 Err(error) => tracing::debug!(%error, "Task snapshot unavailable"),
             }
         });
+
+        if let Some((cancel, receiver)) = ECalService::new().start_change_monitor() {
+            *self.imp().ecal_monitor_cancel.borrow_mut() = Some(cancel);
+            let task_store_for_monitor = task_store.clone();
+            let task_list_for_monitor = task_list.clone();
+            let empty_tasks_for_monitor = empty_tasks.clone();
+            let page_weak_for_monitor = self.downgrade();
+            glib::spawn_future_local(async move {
+                while let Ok(event) = receiver.recv().await {
+                    match event {
+                        ECalSyncEvent::Ready(status) => {
+                            if let Some(warning) = status.warning {
+                                tracing::warn!(
+                                    configured = status.configured_sources,
+                                    active = status.active_sources,
+                                    failed = status.failed_sources,
+                                    %warning,
+                                    "ECal task signal monitor started with source warnings"
+                                );
+                            }
+                        }
+                        ECalSyncEvent::Change(change) => match change.kind {
+                            ECalChangeKind::Removed => remove_task_record(
+                                &task_store_for_monitor,
+                                &task_list_for_monitor,
+                                &empty_tasks_for_monitor,
+                                &change.source_uid,
+                                &change.uid,
+                            ),
+                            ECalChangeKind::Added | ECalChangeKind::Modified => {
+                                let Some(page) = page_weak_for_monitor.upgrade() else {
+                                    break;
+                                };
+                                if let Some(ECalRecord::Task(task)) = parse_change_record(&change) {
+                                    upsert_task_row(
+                                        &page,
+                                        &task_list_for_monitor,
+                                        &task_store_for_monitor,
+                                        &empty_tasks_for_monitor,
+                                        task,
+                                    );
+                                }
+                            }
+                        },
+                        ECalSyncEvent::Error(error) => {
+                            tracing::warn!(%error, "ECal task signal monitor stopped");
+                            break;
+                        }
+                    }
+                }
+            });
+        }
 
         let task_scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
@@ -299,9 +349,15 @@ impl TasksPage {
         task_store: gio::ListStore,
         task_list: gtk::ListBox,
         empty_tasks: gtk::Label,
+        task_to_edit: Option<TaskItemObject>,
     ) {
+        let dialog_title = if task_to_edit.is_some() {
+            "Aufgabe bearbeiten"
+        } else {
+            "Neue Aufgabe"
+        };
         let dialog = adw::Window::builder()
-            .title("Neue Aufgabe")
+            .title(dialog_title)
             .modal(true)
             .default_width(540)
             .default_height(520)
@@ -336,6 +392,7 @@ impl TasksPage {
             .title("Aufgabenliste")
             .model(&source_model)
             .build();
+        source_row.set_sensitive(task_to_edit.is_none());
         let details = adw::PreferencesGroup::builder().title("Details").build();
         details.add(&source_row);
 
@@ -378,8 +435,24 @@ impl TasksPage {
         toolbar_view.set_content(Some(&scroll));
         dialog.set_content(Some(&toolbar_view));
 
+        let edit_source_uid = task_to_edit
+            .as_ref()
+            .map(|task| task.source_uid())
+            .filter(|uid| !uid.is_empty());
+        if let Some(task) = task_to_edit.as_ref() {
+            title_entry.set_text(&task.title());
+            due_entry.set_text(&task.due_date());
+            let priority = task.priority().parse::<f64>().unwrap_or(0.0);
+            priority_spin.set_value(priority);
+            description_view
+                .buffer()
+                .set_text(&ical_property(&task.component(), "DESCRIPTION").unwrap_or_default());
+        }
+
         let source_model_for_load = source_model.clone();
         let source_uids_for_load = Rc::clone(&source_uids);
+        let source_row_for_load = source_row.clone();
+        let edit_source_uid_for_load = edit_source_uid.clone();
         glib::spawn_future_local(async move {
             match eds_service::list_calendar_sources().await {
                 Ok(sources) => {
@@ -402,6 +475,11 @@ impl TasksPage {
                     let mut uids = source_uids_for_load.borrow_mut();
                     uids.clear();
                     uids.extend(active_sources.into_iter().map(|source| source.uid));
+                    if let Some(edit_source_uid) = edit_source_uid_for_load.as_deref() {
+                        if let Some(index) = uids.iter().position(|uid| uid == edit_source_uid) {
+                            source_row_for_load.set_selected(index as u32);
+                        }
+                    }
                     if uids.is_empty() {
                         source_model_for_load.splice(
                             0,
@@ -424,13 +502,28 @@ impl TasksPage {
         let dialog_weak = dialog.downgrade();
         let page_weak = self.downgrade();
         let source_uids_for_save = Rc::clone(&source_uids);
-        save_button.connect_clicked(move |_| {
+        let task_to_edit_for_save = task_to_edit.clone();
+        let save_button_for_signal = save_button.clone();
+        let save_button_for_closure = save_button.clone();
+        save_button_for_signal.connect_clicked(move |_| {
             let Some(dialog) = dialog_weak.upgrade() else {
                 return;
             };
-            let selected = source_row.selected() as usize;
-            let Some(source_uid) = source_uids_for_save.borrow().get(selected).cloned() else {
-                show_toast_for_widget(&dialog, "Keine aktive EDS-Aufgabenliste ist ausgewählt");
+            let source_uid = if let Some(task) = task_to_edit_for_save.as_ref() {
+                task.source_uid()
+            } else {
+                let selected = source_row.selected() as usize;
+                let Some(source_uid) = source_uids_for_save.borrow().get(selected).cloned() else {
+                    show_toast_for_widget(&dialog, "Keine aktive EDS-Aufgabenliste ist ausgewählt");
+                    return;
+                };
+                source_uid
+            };
+            if source_uid.is_empty() {
+                show_toast_for_widget(
+                    &dialog,
+                    "Lokale Aufgaben können ohne aktive EDS-Aufgabenliste nicht geändert werden",
+                );
                 return;
             };
             let description = description_view.buffer().text(
@@ -439,12 +532,26 @@ impl TasksPage {
                 false,
             );
             let priority = priority_spin.value() as u8;
-            let component = match build_task_component(
-                &title_entry.text(),
-                &due_entry.text(),
-                priority,
-                &description,
-            ) {
+            let completed = task_to_edit_for_save
+                .as_ref()
+                .is_some_and(TaskItemObject::is_completed);
+            let component_result = match task_to_edit_for_save.as_ref() {
+                Some(task) => update_task_component(
+                    &task.component(),
+                    &title_entry.text(),
+                    &due_entry.text(),
+                    priority,
+                    &description,
+                    completed,
+                ),
+                None => build_task_component(
+                    &title_entry.text(),
+                    &due_entry.text(),
+                    priority,
+                    &description,
+                ),
+            };
+            let component = match component_result {
                 Ok(component) => component,
                 Err(error) => {
                     show_toast_for_widget(&dialog, &error);
@@ -460,13 +567,23 @@ impl TasksPage {
                 priority.to_string()
             };
             let source_uid_for_model = source_uid.clone();
+            let operation_uid = task_to_edit_for_save.as_ref().map(TaskItemObject::id);
+            let task_to_edit_for_result = task_to_edit_for_save.clone();
             let (sender, receiver) = async_channel::bounded(1);
+            save_button_for_closure.set_sensitive(false);
             std::thread::spawn(move || {
-                let result = ECalService::new().create_component(
-                    &source_uid,
-                    ECalComponentType::Task,
-                    &component,
-                );
+                let service = ECalService::new();
+                let result = match operation_uid.as_deref() {
+                    Some(uid) => service.modify_component(
+                        &source_uid,
+                        ECalComponentType::Task,
+                        uid,
+                        &component,
+                    ),
+                    None => {
+                        service.create_component(&source_uid, ECalComponentType::Task, &component)
+                    }
+                };
                 if let Err(error) = sender.send_blocking(result) {
                     tracing::debug!(%error, "Task mutation result was dropped");
                 }
@@ -477,46 +594,81 @@ impl TasksPage {
             let task_store_for_result = task_store.clone();
             let task_list_for_result = task_list.clone();
             let empty_tasks_for_result = empty_tasks.clone();
+            let save_button_for_result = save_button_for_closure.clone();
             glib::spawn_future_local(async move {
                 let Ok(result) = receiver.recv().await else {
+                    save_button_for_result.set_sensitive(true);
                     return;
                 };
                 let Some(dialog) = dialog_weak_for_result.upgrade() else {
+                    save_button_for_result.set_sensitive(true);
                     return;
                 };
                 match result {
                     Ok(result) => {
-                        if let Some(page) = page_weak_for_result.upgrade() {
-                            let uid = result.uid;
-                            let component = result.component.unwrap_or(component_for_model.clone());
-                            let task = TaskItemObject::new(
-                                &source_uid_for_model,
-                                &uid,
-                                &title_for_model,
-                                &due_for_model,
-                                &priority_for_model,
-                                false,
-                                &component,
+                        let uid = result.uid;
+                        let component = result.component.unwrap_or(component_for_model.clone());
+                        if let Some(existing) = task_to_edit_for_result.as_ref() {
+                            let mut store_index = None;
+                            for index in 0..task_store_for_result.n_items() {
+                                if task_store_for_result
+                                    .item(index)
+                                    .and_downcast::<TaskItemObject>()
+                                    .is_some_and(|task| {
+                                        task.id() == existing.id()
+                                            && task.source_uid() == existing.source_uid()
+                                    })
+                                {
+                                    store_index = Some(index);
+                                    break;
+                                }
+                            }
+                            if let Some(index) = store_index {
+                                task_store_for_result.remove(index);
+                            }
+                            remove_task_row(
+                                &task_list_for_result,
+                                &existing.source_uid(),
+                                &existing.id(),
                             );
-                            task_store_for_result.append(&task);
+                        }
+                        let task = TaskItemObject::new(
+                            &source_uid_for_model,
+                            &uid,
+                            &title_for_model,
+                            &due_for_model,
+                            &priority_for_model,
+                            completed,
+                            &component,
+                        );
+                        task_store_for_result.append(&task);
+                        if let Some(page) = page_weak_for_result.upgrade() {
                             append_task_row(
+                                &page,
                                 &task_list_for_result,
                                 &task_store_for_result,
                                 &empty_tasks_for_result,
                                 &task,
                             );
                             empty_tasks_for_result.set_visible(false);
-                            page.show_toast(&format!("Aufgabe gespeichert ({uid})"));
+                            let message = if task_to_edit_for_result.is_some() {
+                                format!("Aufgabe aktualisiert ({uid})")
+                            } else {
+                                format!("Aufgabe gespeichert ({uid})")
+                            };
+                            page.show_toast(&message);
                         }
                         dialog.close();
                     }
                     Err(error) => {
+                        save_button_for_result.set_sensitive(true);
                         show_toast_for_widget(
                             &dialog,
                             &format!("Aufgabe konnte nicht gespeichert werden: {error}"),
                         );
                     }
                 }
+                save_button_for_result.set_sensitive(true);
             });
         });
 
@@ -534,7 +686,67 @@ impl TasksPage {
     }
 }
 
+fn upsert_task_row(
+    page: &TasksPage,
+    task_list: &gtk::ListBox,
+    task_store: &gio::ListStore,
+    empty_tasks: &gtk::Label,
+    task: TaskRecord,
+) {
+    let existing_index = (0..task_store.n_items()).find(|index| {
+        task_store
+            .item(*index)
+            .and_downcast::<TaskItemObject>()
+            .is_some_and(|existing| {
+                existing.id() == task.uid && existing.source_uid() == task.source_uid
+            })
+    });
+    if let Some(index) = existing_index {
+        task_store.remove(index);
+        remove_task_row(task_list, &task.source_uid, &task.uid);
+    }
+
+    let priority = if task.priority == 0 {
+        "normal".to_string()
+    } else {
+        task.priority.to_string()
+    };
+    let task_object = TaskItemObject::new(
+        &task.source_uid,
+        &task.uid,
+        &task.summary,
+        &task.due,
+        &priority,
+        task.completed,
+        &task.component,
+    );
+    task_store.append(&task_object);
+    append_task_row(page, task_list, task_store, empty_tasks, &task_object);
+    empty_tasks.set_visible(false);
+}
+
+fn remove_task_record(
+    task_store: &gio::ListStore,
+    task_list: &gtk::ListBox,
+    empty_tasks: &gtk::Label,
+    source_uid: &str,
+    task_uid: &str,
+) {
+    let store_index = (0..task_store.n_items()).find(|index| {
+        task_store
+            .item(*index)
+            .and_downcast::<TaskItemObject>()
+            .is_some_and(|task| task.id() == task_uid && task.source_uid() == source_uid)
+    });
+    if let Some(index) = store_index {
+        task_store.remove(index);
+        remove_task_row(task_list, source_uid, task_uid);
+    }
+    empty_tasks.set_visible(task_store.n_items() == 0);
+}
+
 fn append_task_row(
+    page: &TasksPage,
     task_list: &gtk::ListBox,
     task_store: &gio::ListStore,
     empty_tasks: &gtk::Label,
@@ -548,6 +760,10 @@ fn append_task_row(
             task.priority()
         ))
         .build();
+    unsafe {
+        row.set_data("task-id", task.id());
+        row.set_data("task-source-uid", task.source_uid());
+    }
 
     let check = gtk::CheckButton::builder()
         .active(task.is_completed())
@@ -633,6 +849,39 @@ fn append_task_row(
         });
     });
     row.add_prefix(&check);
+
+    let edit_button = gtk::Button::builder()
+        .icon_name("document-edit-symbolic")
+        .tooltip_text("Aufgabe bearbeiten")
+        .css_classes(vec!["flat"])
+        .valign(gtk::Align::Center)
+        .build();
+    row.add_suffix(&edit_button);
+    let page_weak_for_edit = page.downgrade();
+    let task_for_edit = task.clone();
+    let task_store_for_edit = task_store.clone();
+    let task_list_for_edit = task_list.clone();
+    let empty_tasks_for_edit = empty_tasks.clone();
+    let edit_button_for_signal = edit_button.clone();
+    let edit_button_for_closure = edit_button.clone();
+    edit_button_for_signal.connect_clicked(move |_| {
+        if task_for_edit.source_uid().is_empty() {
+            show_toast_for_widget(
+                &edit_button_for_closure,
+                "Lokale Aufgaben können ohne EDS-Quelle nicht geändert werden",
+            );
+            return;
+        }
+        let Some(page) = page_weak_for_edit.upgrade() else {
+            return;
+        };
+        page.open_task_dialog(
+            task_store_for_edit.clone(),
+            task_list_for_edit.clone(),
+            empty_tasks_for_edit.clone(),
+            Some(task_for_edit.clone()),
+        );
+    });
 
     let delete_button = gtk::Button::builder()
         .icon_name("user-trash-symbolic")
@@ -737,6 +986,31 @@ fn append_task_row(
     task_list.append(&row);
 }
 
+fn remove_task_row(task_list: &gtk::ListBox, source_uid: &str, task_uid: &str) {
+    let mut child = task_list.first_child();
+    while let Some(widget) = child {
+        child = widget.next_sibling();
+        let Ok(row) = widget.downcast::<gtk::ListBoxRow>() else {
+            continue;
+        };
+        let matches = unsafe {
+            let row_source_uid = row
+                .data::<String>("task-source-uid")
+                .map(|value| value.as_ref().clone())
+                .unwrap_or_default();
+            let row_task_uid = row
+                .data::<String>("task-id")
+                .map(|value| value.as_ref().clone())
+                .unwrap_or_default();
+            row_source_uid == source_uid && row_task_uid == task_uid
+        };
+        if matches {
+            task_list.remove(&row);
+            return;
+        }
+    }
+}
+
 fn show_toast_for_widget<W: IsA<gtk::Widget>>(widget: &W, message: &str) {
     if let Some(root) = widget.root() {
         if let Ok(window) = root.downcast::<crate::window::EvolutionWindow>() {
@@ -790,6 +1064,113 @@ fn build_task_component(
     Ok(format!("{}\r\n", component.join("\r\n")))
 }
 
+fn update_task_component(
+    existing: &str,
+    title: &str,
+    due: &str,
+    priority: u8,
+    description: &str,
+    completed: bool,
+) -> Result<String, String> {
+    let title = title.trim();
+    if title.is_empty() {
+        return Err("Eine Aufgabe benötigt einen Titel".to_string());
+    }
+    let due = due.trim();
+    if !due.is_empty() {
+        chrono::NaiveDate::parse_from_str(due, "%Y-%m-%d")
+            .map_err(|_| "Das Fälligkeitsdatum muss YYYY-MM-DD entsprechen".to_string())?;
+    }
+    if priority > 9 {
+        return Err("Die Priorität muss zwischen 0 und 9 liegen".to_string());
+    }
+
+    let mut component = update_ical_property(existing, "SUMMARY", Some(&escape_ical_text(title)));
+    component = if due.is_empty() {
+        update_ical_property(&component, "DUE", None)
+    } else {
+        update_ical_property(&component, "DUE;VALUE=DATE", Some(&due.replace('-', "")))
+    };
+    component = if priority == 0 {
+        update_ical_property(&component, "PRIORITY", None)
+    } else {
+        update_ical_property(&component, "PRIORITY", Some(&priority.to_string()))
+    };
+    component = if description.trim().is_empty() {
+        update_ical_property(&component, "DESCRIPTION", None)
+    } else {
+        update_ical_property(
+            &component,
+            "DESCRIPTION",
+            Some(&escape_ical_text(description.trim())),
+        )
+    };
+    component = update_ical_property(
+        &component,
+        "STATUS",
+        Some(if completed {
+            "COMPLETED"
+        } else {
+            "NEEDS-ACTION"
+        }),
+    );
+    component = update_ical_property(
+        &component,
+        "PERCENT-COMPLETE",
+        Some(if completed { "100" } else { "0" }),
+    );
+    component = if completed {
+        update_ical_property(
+            &component,
+            "COMPLETED",
+            Some(&Utc::now().format("%Y%m%dT%H%M%SZ").to_string()),
+        )
+    } else {
+        update_ical_property(&component, "COMPLETED", None)
+    };
+    Ok(update_ical_property(
+        &component,
+        "DTSTAMP",
+        Some(&Utc::now().format("%Y%m%dT%H%M%SZ").to_string()),
+    ))
+}
+
+fn ical_property(raw: &str, property_name: &str) -> Option<String> {
+    let target = property_name
+        .split(';')
+        .next()
+        .unwrap_or(property_name)
+        .to_ascii_uppercase();
+    let mut lines: Vec<String> = Vec::new();
+    for raw_line in raw.replace("\r\n", "\n").replace('\r', "\n").lines() {
+        if raw_line.starts_with(' ') || raw_line.starts_with('\t') {
+            if let Some(previous) = lines.last_mut() {
+                previous.push_str(raw_line.trim_start());
+            }
+        } else {
+            lines.push(raw_line.to_string());
+        }
+    }
+    lines.into_iter().find_map(|line| {
+        let (property, value) = line.split_once(':')?;
+        let property = property
+            .split(';')
+            .next()
+            .unwrap_or(property)
+            .to_ascii_uppercase();
+        (property == target).then(|| unescape_ical_text(value))
+    })
+}
+
+fn unescape_ical_text(value: &str) -> String {
+    value
+        .replace("\\n", "\n")
+        .replace("\\N", "\n")
+        .replace("\\,", ",")
+        .replace("\\;", ";")
+        .replace("\\\\", "\\")
+}
+
 fn escape_ical_text(value: &str) -> String {
     value
         .replace('\\', "\\\\")
@@ -821,6 +1202,51 @@ mod tests {
         assert!(build_task_component("", "2026-08-11", 0, "").is_err());
         assert!(build_task_component("Task", "11.08.2026", 0, "").is_err());
         assert!(build_task_component("Task", "", 10, "").is_err());
+    }
+
+    #[test]
+    fn task_component_update_preserves_uid_and_nested_alarm_data() {
+        let existing = concat!(
+            "BEGIN:VTODO\r\n",
+            "UID:task-1\r\n",
+            "DTSTAMP:20260810T090000Z\r\n",
+            "STATUS:NEEDS-ACTION\r\n",
+            "SUMMARY:Old title\r\n",
+            "DUE;VALUE=DATE:20260811\r\n",
+            "DESCRIPTION:Old description\r\n",
+            "BEGIN:VALARM\r\n",
+            "ACTION:DISPLAY\r\n",
+            "DESCRIPTION:Reminder\r\n",
+            "END:VALARM\r\n",
+            "END:VTODO\r\n"
+        );
+        let updated = update_task_component(
+            existing,
+            "New, title",
+            "2026-08-20",
+            2,
+            "New description",
+            false,
+        )
+        .expect("task update should be valid");
+        assert!(updated.contains("UID:task-1\r\n"));
+        assert!(updated.contains("SUMMARY:New\\, title\r\n"));
+        assert!(updated.contains("DUE;VALUE=DATE:20260820\r\n"));
+        assert!(updated.contains("PRIORITY:2\r\n"));
+        assert!(updated.contains("DESCRIPTION:New description\r\n"));
+        assert!(updated.contains("BEGIN:VALARM\r\n"));
+        assert!(updated.contains("DESCRIPTION:Reminder\r\n"));
+        assert!(updated.contains("STATUS:NEEDS-ACTION\r\n"));
+        assert!(!updated.contains("COMPLETED:"));
+    }
+
+    #[test]
+    fn task_description_parser_unescapes_folded_ical_values() {
+        let raw = "BEGIN:VTODO\r\nDESCRIPTION:Line one\\nLine\r\n two\r\nEND:VTODO\r\n";
+        assert_eq!(
+            ical_property(raw, "DESCRIPTION").as_deref(),
+            Some("Line one\nLinetwo")
+        );
     }
 }
 

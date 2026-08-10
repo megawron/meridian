@@ -16,6 +16,7 @@ use gtk::glib;
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use crate::services::calendar_store_service::{CalendarEventRecord, update_ical_property};
 use crate::services::ecal_service::{ECalComponentType, ECalService};
 use crate::services::eds_service;
 
@@ -23,7 +24,11 @@ mod imp {
     use super::*;
 
     #[derive(Debug, Default)]
-    pub struct EventDialog;
+    pub struct EventDialog {
+        pub edit_component: RefCell<Option<String>>,
+        pub edit_uid: RefCell<Option<String>>,
+        pub edit_source_uid: RefCell<Option<String>>,
+    }
 
     #[glib::object_subclass]
     impl ObjectSubclass for EventDialog {
@@ -33,6 +38,40 @@ mod imp {
     }
 
     impl ObjectImpl for EventDialog {
+        fn properties() -> &'static [glib::ParamSpec] {
+            use std::sync::OnceLock;
+            static PROPERTIES: OnceLock<Vec<glib::ParamSpec>> = OnceLock::new();
+            PROPERTIES.get_or_init(|| {
+                vec![
+                    glib::ParamSpecString::builder("edit-component").build(),
+                    glib::ParamSpecString::builder("edit-uid").build(),
+                    glib::ParamSpecString::builder("edit-source-uid").build(),
+                ]
+            })
+        }
+
+        fn set_property(&self, _id: usize, value: &glib::Value, pspec: &glib::ParamSpec) {
+            match pspec.name() {
+                "edit-component" => {
+                    *self.edit_component.borrow_mut() = value.get().expect("string property")
+                }
+                "edit-uid" => *self.edit_uid.borrow_mut() = value.get().expect("string property"),
+                "edit-source-uid" => {
+                    *self.edit_source_uid.borrow_mut() = value.get().expect("string property")
+                }
+                _ => unimplemented!(),
+            }
+        }
+
+        fn property(&self, _id: usize, pspec: &glib::ParamSpec) -> glib::Value {
+            match pspec.name() {
+                "edit-component" => self.edit_component.borrow().to_value(),
+                "edit-uid" => self.edit_uid.borrow().to_value(),
+                "edit-source-uid" => self.edit_source_uid.borrow().to_value(),
+                _ => unimplemented!(),
+            }
+        }
+
         fn constructed(&self) {
             self.parent_constructed();
             self.obj().build_ui();
@@ -61,7 +100,22 @@ impl EventDialog {
             .build()
     }
 
+    pub fn new_for_edit(event: &CalendarEventRecord) -> Self {
+        glib::Object::builder()
+            .property("title", "Termin bearbeiten")
+            .property("modal", true)
+            .property("default-width", 560)
+            .property("default-height", 520)
+            .property("edit-component", &event.component)
+            .property("edit-uid", &event.uid)
+            .property("edit-source-uid", &event.source_uid)
+            .build()
+    }
+
     fn build_ui(&self) {
+        let edit_component = self.imp().edit_component.borrow().clone();
+        let edit_uid = self.imp().edit_uid.borrow().clone();
+        let edit_source_uid = self.imp().edit_source_uid.borrow().clone();
         let toolbar_view = adw::ToolbarView::new();
 
         let header_bar = adw::HeaderBar::new();
@@ -132,6 +186,23 @@ impl EventDialog {
             .build();
         group_time.add(&row_end);
 
+        if let Some(component) = edit_component.as_deref() {
+            entry_title.set_text(ical_property(component, "SUMMARY").as_deref().unwrap_or(""));
+            row_location.set_text(
+                ical_property(component, "LOCATION")
+                    .as_deref()
+                    .unwrap_or(""),
+            );
+            let all_day = component_property_has_date_value(component, "DTSTART");
+            row_allday.set_active(all_day);
+            if let Some(start) = ical_property(component, "DTSTART") {
+                row_start.set_text(&format_event_datetime_for_editor(&start, all_day));
+            }
+            if let Some(end) = ical_property(component, "DTEND") {
+                row_end.set_text(&format_event_datetime_for_editor(&end, all_day));
+            }
+        }
+
         content_box.append(&group_time);
 
         // Description
@@ -147,6 +218,11 @@ impl EventDialog {
             .margin_bottom(8)
             .height_request(80)
             .build();
+        if let Some(component) = edit_component.as_deref() {
+            if let Some(description) = ical_property(component, "DESCRIPTION") {
+                text_desc.buffer().set_text(&description);
+            }
+        }
         group_desc.add(&text_desc);
         content_box.append(&group_desc);
 
@@ -156,6 +232,8 @@ impl EventDialog {
 
         let calendar_model_for_load = calendar_model.clone();
         let calendar_source_uids_for_load = Rc::clone(&calendar_source_uids);
+        let row_calendar_for_load = row_calendar.clone();
+        let edit_source_uid_for_load = edit_source_uid.clone();
         glib::spawn_future_local(async move {
             match eds_service::list_calendar_sources().await {
                 Ok(sources) => {
@@ -182,6 +260,11 @@ impl EventDialog {
                     let mut uids = calendar_source_uids_for_load.borrow_mut();
                     uids.clear();
                     uids.extend(active_sources.into_iter().map(|source| source.uid));
+                    if let Some(edit_source_uid) = edit_source_uid_for_load.as_deref() {
+                        if let Some(index) = uids.iter().position(|uid| uid == edit_source_uid) {
+                            row_calendar_for_load.set_selected(index as u32);
+                        }
+                    }
                     if uids.is_empty() {
                         calendar_model_for_load.splice(
                             0,
@@ -202,6 +285,8 @@ impl EventDialog {
         });
 
         let calendar_source_uids_for_save = Rc::clone(&calendar_source_uids);
+        let edit_component_for_save = edit_component.clone();
+        let edit_uid_for_save = edit_uid.clone();
         let dialog_weak = self.downgrade();
         btn_save.connect_clicked(move |_| {
             let Some(dialog) = dialog_weak.upgrade() else {
@@ -216,7 +301,7 @@ impl EventDialog {
                 dialog.show_toast("Kein aktiver EDS-Kalender ist ausgewählt");
                 return;
             };
-            let component = match build_event_component(
+            let new_component = match build_event_component(
                 &entry_title.text(),
                 &row_location.text(),
                 row_allday.is_active(),
@@ -235,13 +320,68 @@ impl EventDialog {
                 }
             };
 
+            let component = if let (Some(original), Some(uid)) = (
+                edit_component_for_save.as_deref(),
+                edit_uid_for_save.as_deref(),
+            ) {
+                let all_day = row_allday.is_active();
+                let start_value =
+                    parse_event_datetime(&row_start.text(), all_day, "Beginn").unwrap_or_default();
+                let end_value =
+                    parse_event_datetime(&row_end.text(), all_day, "Ende").unwrap_or_default();
+                let start_property = if all_day {
+                    "DTSTART;VALUE=DATE"
+                } else {
+                    "DTSTART"
+                };
+                let end_property = if all_day { "DTEND;VALUE=DATE" } else { "DTEND" };
+                let mut updated =
+                    update_ical_property(original, "UID", Some(&escape_ical_text(uid)));
+                updated = update_ical_property(
+                    &updated,
+                    "SUMMARY",
+                    Some(&escape_ical_text(entry_title.text().trim())),
+                );
+                updated = update_ical_property(
+                    &updated,
+                    "LOCATION",
+                    Some(&escape_ical_text(row_location.text().trim())),
+                );
+                updated = update_ical_property(&updated, start_property, Some(&start_value));
+                updated = update_ical_property(&updated, end_property, Some(&end_value));
+                updated = update_ical_property(
+                    &updated,
+                    "DESCRIPTION",
+                    Some(&escape_ical_text(&text_desc.buffer().text(
+                        &text_desc.buffer().start_iter(),
+                        &text_desc.buffer().end_iter(),
+                        false,
+                    ))),
+                );
+                updated
+            } else {
+                new_component
+            };
+            let source_uid_for_worker = source_uid.clone();
+            let operation_uid = edit_uid_for_save.clone();
+            let was_edit = edit_uid_for_save.is_some();
+            let component_for_worker = component.clone();
             let (sender, receiver) = async_channel::bounded(1);
             std::thread::spawn(move || {
-                let result = ECalService::new().create_component(
-                    &source_uid,
-                    ECalComponentType::Event,
-                    &component,
-                );
+                let service = ECalService::new();
+                let result = match operation_uid.as_deref() {
+                    Some(uid) => service.modify_component(
+                        &source_uid_for_worker,
+                        ECalComponentType::Event,
+                        uid,
+                        &component_for_worker,
+                    ),
+                    None => service.create_component(
+                        &source_uid_for_worker,
+                        ECalComponentType::Event,
+                        &component_for_worker,
+                    ),
+                };
                 if let Err(error) = sender.send_blocking(result) {
                     tracing::debug!(%error, "Event mutation result was dropped");
                 }
@@ -257,7 +397,12 @@ impl EventDialog {
                 };
                 match result {
                     Ok(result) => {
-                        dialog.show_toast(&format!("Termin gespeichert ({})", result.uid));
+                        let message = if was_edit {
+                            format!("Termin aktualisiert ({})", result.uid)
+                        } else {
+                            format!("Termin gespeichert ({})", result.uid)
+                        };
+                        dialog.show_toast(&message);
                         dialog.close();
                     }
                     Err(error) => dialog
@@ -284,6 +429,66 @@ impl Default for EventDialog {
     fn default() -> Self {
         Self::new()
     }
+}
+
+fn ical_property(raw: &str, name: &str) -> Option<String> {
+    let target = name.to_ascii_uppercase();
+    raw.replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .lines()
+        .find_map(|line| {
+            let (property, value) = line.split_once(':')?;
+            let property_name = property
+                .split(';')
+                .next()
+                .unwrap_or(property)
+                .to_ascii_uppercase();
+            (property_name == target).then(|| {
+                value
+                    .replace("\\n", "\n")
+                    .replace("\\N", "\n")
+                    .replace("\\,", ",")
+                    .replace("\\;", ";")
+                    .replace("\\\\", "\\")
+            })
+        })
+}
+
+fn component_property_has_date_value(raw: &str, name: &str) -> bool {
+    let target = name.to_ascii_uppercase();
+    raw.replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .lines()
+        .any(|line| {
+            line.split_once(':')
+                .map(|(property, _)| {
+                    property
+                        .split(';')
+                        .next()
+                        .unwrap_or(property)
+                        .eq_ignore_ascii_case(&target)
+                        && property.to_ascii_uppercase().contains("VALUE=DATE")
+                })
+                .unwrap_or(false)
+        })
+}
+
+fn format_event_datetime_for_editor(value: &str, all_day: bool) -> String {
+    let value = value.trim_end_matches('Z');
+    if all_day && value.len() >= 8 {
+        return format!("{}-{}-{}", &value[..4], &value[4..6], &value[6..8]);
+    }
+    if value.len() >= 15 && value.as_bytes().get(8) == Some(&b'T') {
+        return format!(
+            "{}-{}-{} {}:{}",
+            &value[..4],
+            &value[4..6],
+            &value[6..8],
+            &value[9..11],
+            &value[11..13]
+        );
+    }
+    value.to_string()
 }
 
 fn build_event_component(

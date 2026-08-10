@@ -400,17 +400,16 @@ fn unescape(value: &str) -> String {
 /// Replace or remove a top-level iCalendar property while preserving the rest
 /// of the component, including nested alarms and vendor-specific fields.
 pub(crate) fn update_ical_property(raw: &str, property_name: &str, value: Option<&str>) -> String {
-    let target = property_name.to_ascii_uppercase();
+    let target = property_name
+        .split(';')
+        .next()
+        .unwrap_or(property_name)
+        .to_ascii_uppercase();
     let mut lines = Vec::new();
     let mut replaced = false;
-    let mut skip_folded = false;
+    let mut component_depth = 0usize;
 
     for line in unfold_lines(raw) {
-        if skip_folded && (line.starts_with(' ') || line.starts_with('\t')) {
-            continue;
-        }
-        skip_folded = false;
-
         let property = line
             .split_once(':')
             .map(|(property, _)| property)
@@ -419,8 +418,7 @@ pub(crate) fn update_ical_property(raw: &str, property_name: &str, value: Option
             .next()
             .unwrap_or_default()
             .to_ascii_uppercase();
-        if property == target {
-            skip_folded = true;
+        if property == target && component_depth <= 1 {
             if !replaced {
                 if let Some(value) = value {
                     lines.push(format!("{property_name}:{value}"));
@@ -430,6 +428,12 @@ pub(crate) fn update_ical_property(raw: &str, property_name: &str, value: Option
             continue;
         }
         lines.push(line);
+
+        if property == "BEGIN" {
+            component_depth = component_depth.saturating_add(1);
+        } else if property == "END" {
+            component_depth = component_depth.saturating_sub(1);
+        }
     }
 
     if value.is_some() && !replaced {
@@ -566,14 +570,18 @@ mod tests {
     fn component_properties_can_be_updated_without_losing_nested_data() {
         let raw = concat!(
             "BEGIN:VTODO\r\nUID:task-1\r\nSUMMARY:Keep this\r\n",
-            "BEGIN:VALARM\r\nTRIGGER:-PT10M\r\nEND:VALARM\r\n",
+            "DESCRIPTION:Top-level description\r\n",
+            "BEGIN:VALARM\r\nTRIGGER:-PT10M\r\n",
+            "DESCRIPTION:Alarm description\r\nEND:VALARM\r\n",
             "END:VTODO\r\n"
         );
         let updated = update_ical_property(raw, "STATUS", Some("COMPLETED"));
         let updated = update_ical_property(&updated, "PERCENT-COMPLETE", Some("100"));
         assert!(updated.contains("STATUS:COMPLETED\r\n"));
         assert!(updated.contains("PERCENT-COMPLETE:100\r\n"));
-        assert!(updated.contains("BEGIN:VALARM\r\nTRIGGER:-PT10M\r\nEND:VALARM"));
+        assert!(updated.contains(
+            "BEGIN:VALARM\r\nTRIGGER:-PT10M\r\nDESCRIPTION:Alarm description\r\nEND:VALARM"
+        ));
 
         let removed = update_ical_property(&updated, "STATUS", None);
         assert!(!removed.contains("STATUS:"));

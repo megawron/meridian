@@ -89,6 +89,18 @@ impl TaskItemObject {
         *self.imp().is_completed.borrow_mut() = completed;
     }
 
+    pub fn set_title(&self, title: String) {
+        *self.imp().title.borrow_mut() = title;
+    }
+
+    pub fn set_due_date(&self, due_date: String) {
+        *self.imp().due_date.borrow_mut() = due_date;
+    }
+
+    pub fn set_priority(&self, priority: String) {
+        *self.imp().priority.borrow_mut() = priority;
+    }
+
     pub fn set_component(&self, component: String) {
         *self.imp().component.borrow_mut() = component;
     }

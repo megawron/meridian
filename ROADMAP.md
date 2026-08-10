@@ -331,15 +331,21 @@ Test auf der Service-Ebene.
   Kalender, Kontakte, Aufgaben, Memos und Composer sind vorhanden; die neuen
   EDS/Camel-Mail- und ECal-Ladestrecken sind initial in die GTK4-rs-Ansichten
   integriert. ECal-Erstellung für Termine, Aufgaben und Memos sowie die
-  VTODO-Statusänderung sind angebunden; vollständige Mutationen und die
-  EBook-Integration fehlen noch.
+  VTODO-Statusänderung sind angebunden. Der EBook-Stream sowie native
+  Kontaktmutationen für Erstellen, Bearbeiten und Löschen sind ebenfalls an
+  die GTK4-rs-Kontaktansicht angeschlossen. ECalClientView- und
+  EBookClientView-Signale sowie inkrementelle Updates der Kalender-, Aufgaben-,
+  Memo- und Kontaktmodelle sind angebunden; vollständige Backend-Parität fehlt
+  noch.
 - [~] GObject-Modelle, GListModels und Worker-Channels werden für große
   Datenmengen weiter vereinheitlicht. Vollständige Domain-States, Mutationen
   und Fehlerdialoge fehlen noch.
 - [~] Die GTK4-rs-Mailansicht ist mit dem nativen EDS/Camel-Lade- und
   Aktionspfad verbunden. Kalender-, Aufgaben- und Memo-Ansichten laden
   synchronisierte ECal-Komponenten über Worker-Channels; EBook-Streams,
-  Mutationen und die vollständigen Service-Tests fehlen noch.
+  Kontaktmutationen und die zugehörigen Service-Tests sind begonnen. ECal-
+  ClientView-Signale und UID-basierte GListModel-Updates sind angebunden;
+  vollständige Domain-States und Backend-Parität fehlen noch.
 
 #### Phase 1 — Mail lesen (lokal, erster echter Backend-Schnitt)
 
@@ -431,34 +437,45 @@ Test auf der Service-Ebene.
 - [~] Monatsansicht, Navigation, View-Switcher und Dialoge sind vorhanden;
   die GTK4-rs-Kalenderansicht zeigt EDS-Quellenstatus und lädt VEVENTs aus
   aktivierten ECal-Quellen und kann neue VEVENTs über den nativen ECal-Adapter
-  speichern. Die vollständigen Tages-/Wochen-/Agenda-Modelle sowie Bearbeiten,
-  Löschen und Wiederholungen fehlen noch.
+  speichern. Bearbeiten und Löschen sind für geladene VEVENTs ebenfalls an den
+  nativen Adapter angebunden. Die vollständigen Tages-/Wochen-/Agenda-Modelle
+  und Wiederholungen fehlen noch.
 - [~] GTK4-rs-Aufgaben- und Memo-Ansichten laden VTODO-/VJOURNAL-Komponenten
   über die native libecal-2.0-Brücke aus den aktivierten EDS-Quellen. Neue
-  VTODOs/VJOURNALs sowie VTODO-Statusänderungen werden persistent über EDS
-  geschrieben. Der lokale iCalendar-Importer bleibt ein expliziter Fallback;
-  vollständiges CRUD und inkrementelle ECal-Signale fehlen noch.
+  VTODOs/VJOURNALs, VTODO-Statusänderungen und vollständiges VTODO-Bearbeiten
+  werden persistent über EDS geschrieben. Der lokale iCalendar-Importer bleibt
+  ein expliziter Fallback; inkrementelle ECal-Signale sind für die drei
+  Listenmodelle angebunden, vollständige Erinnerungs-/Aufgabenlisten-Parität
+  fehlt noch.
 - [~] EDS-Source-Registry und ESource-basierte Kalenderauswahl werden dynamisch
   angezeigt; Kalender-, Aufgaben- und Memo-Quellen werden per
   e_cal_client_connect_sync() gelesen, inklusive Quellidentität und
   Backend-Warnungen. Der native Adapter liefert bereits Create/Modify/Remove-
-  Operationen mit Konfliktstatus; UI-seitige Bearbeiten-/Löschen-Flows und
-  Konfliktauflösung fehlen noch.
+  Operationen mit Konfliktstatus; UI-seitige Bearbeiten-/Löschen-Flows sind für
+  Termine, Aufgaben und Notizen angebunden. Eine vollständige
+  Konfliktauflösung fehlt noch; die ECal-Signalaktualisierung ist umgesetzt.
 - [ ] Tag-/Arbeitswoche-/Woche-/Monat-/Agenda-Ansichten mit echten VEvents.
 - [ ] Wiederholungen, Zeitzonen, Teilnehmer, iTIP/iMIP, freie Zeiten,
   Einladungsantworten, Alarme, Kategorien, Anhänge und Offline-Sync.
-- [~] VTODO/VJOURNAL-Erstellung, VTODO-Status, Prioritäten und Fälligkeiten
-  werden über den EDS-Adapter persistiert. Vollständiges CRUD, Sortierung,
-  Erinnerungen und inkrementelle Synchronisation fehlen noch.
+- [~] VTODO/VJOURNAL-Erstellung, VTODO-Status, Notizbearbeitung/-löschung,
+  VTODO-Bearbeitung, Prioritäten, Fälligkeiten und Notizlöschung werden über
+  den EDS-Adapter persistiert. ECal-Signalaktualisierung ist angebunden;
+  Sortierung, Erinnerungseditoren und vollständige Aufgabenlisten-Parität
+  fehlen noch.
 
 #### Phase 4 — Kontakte und Adressbücher
 
-- [~] GTK4-rs-Kontaktansicht lädt lokale vCards und meldet EDS-Quellenstatus;
-  Kontaktliste mit Auswahl, Detail, Suche und Editor-UI wird noch migriert.
+- [~] GTK4-rs-Kontaktansicht lädt Kontakte jetzt über die native EBook-/EDS-
+  Brücke aus aktivierten Adressbüchern und fällt außerhalb von Linux explizit
+  auf lokale vCards zurück; Auswahl, Detail, Suche sowie native Erstellen-,
+  Bearbeiten- und Löschen-Flows sind vorhanden. EBookClientView-Signale werden
+  UID-basiert in die Kontaktliste eingepflegt; der Linux-Laufzeittest und die
+  vollständige vCard-Feldparität fehlen noch.
 - [~] Begrenzter vCard-Parser/Serializer mit Roundtrip-Test.
-- [~] EBook-/EDS-Quellen werden dynamisch erkannt; Adressbuch-Stream, CRUD,
-  Kategorien, Fotos, mehrere
-  Adressen/Telefonnummern und Konfliktauflösung.
+- [~] EBook-/EDS-Quellen werden dynamisch erkannt; der native Adressbuch-
+  Stream liefert vCards mit Quellen- und Kontakt-UIDs; der native Adapter
+  unterstützt bereits Create/Modify/Remove mit Konfliktstatus. Kategorien,
+  Fotos, mehrere Adressen/Telefonnummern und Konfliktauflösung fehlen noch.
 - [ ] Autocomplete im Composer, GAL/LDAP/Exchange-Adressbuch und lokale
   Adressbuchauswahl.
 
@@ -540,9 +557,8 @@ nicht als vollständiger Ersatz beworben werden.
    domänenweite Offline-/Online-Wiederaufnahme ergänzen.
 2. Das GTK4-rs-Mailmodell um echte Thread-Modelle, inverse Undo/Redo-
    Operationen und Konfliktanzeigen erweitern.
-3. Die ECal-Mutationsstrecke um UI-seitiges Bearbeiten/Löschen, echte
-   Konfliktauflösung, inkrementelle ECal-Signale und GListModel-Updates
-   erweitern; danach denselben Adaptervertrag für EBook-Kontakte
-   implementieren.
+3. Die ECal-/EBook-Mutationsstrecke um echte Konfliktauflösung und vollständige
+   vCard-Felder erweitern und die Linux-Laufzeit mit einem echten Konto
+   verifizieren.
 4. Camel-Transport, EDS-Drafts/Sent-Folder und die Dialog-Components für
    Konto-, Empfangs- und Versandoptionen vervollständigen.

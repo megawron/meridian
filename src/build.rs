@@ -8,6 +8,7 @@ use std::process::Command;
 fn main() {
     println!("cargo:rustc-check-cfg=cfg(eds_camel_bridge)");
     println!("cargo:rustc-check-cfg=cfg(eds_ecal_bridge)");
+    println!("cargo:rustc-check-cfg=cfg(eds_ebook_bridge)");
 
     if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("linux") {
         return;
@@ -31,6 +32,14 @@ fn main() {
         .cargo_metadata(false)
         .probe("libecal-2.0")
         .expect("libecal-2.0 development files are required on Linux; install evolution-data-server-devel");
+    let ebook = pkg_config::Config::new()
+        .cargo_metadata(false)
+        .probe("libebook-1.2")
+        .expect("libebook-1.2 development files are required on Linux; install evolution-data-server-devel");
+    let ebook_contacts = pkg_config::Config::new()
+        .cargo_metadata(false)
+        .probe("libebook-contacts-1.2")
+        .expect("libebook-contacts-1.2 development files are required on Linux; install evolution-data-server-devel");
 
     let manifest_dir = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap());
     let bridge = manifest_dir.join("../native/eds_camel_bridge.c");
@@ -133,16 +142,71 @@ fn main() {
         "the EDS/ECal bridge failed to create a static archive"
     );
 
+    let ebook_bridge = manifest_dir.join("../native/eds_ebook_bridge.c");
+    let ebook_object = out_dir.join("eds_ebook_bridge.o");
+    let ebook_archive = out_dir.join("libevolution_eds_ebook_bridge.a");
+    let mut ebook_compile = Command::new(&compiler);
+    ebook_compile
+        .arg("-std=c11")
+        .arg("-fPIC")
+        .arg("-c")
+        .arg(&ebook_bridge)
+        .arg("-o")
+        .arg(&ebook_object)
+        .arg("-I")
+        .arg(manifest_dir.join("../native"));
+    for include_path in ebook
+        .include_paths
+        .iter()
+        .chain(ebook_contacts.include_paths.iter())
+        .chain(eds.include_paths.iter())
+    {
+        ebook_compile.arg("-I").arg(include_path);
+    }
+    for (name, value) in ebook
+        .defines
+        .iter()
+        .chain(ebook_contacts.defines.iter())
+        .chain(eds.defines.iter())
+    {
+        ebook_compile.arg(match value {
+            Some(value) => format!("-D{name}={value}"),
+            None => format!("-D{name}"),
+        });
+    }
+    let ebook_compile_status = ebook_compile
+        .status()
+        .expect("could not execute the C compiler for the EDS/EBook bridge");
+    assert!(
+        ebook_compile_status.success(),
+        "the EDS/EBook bridge failed to compile"
+    );
+
+    let ebook_archive_status = Command::new(&archiver)
+        .arg("crus")
+        .arg(&ebook_archive)
+        .arg(&ebook_object)
+        .status()
+        .expect("could not execute ar for the EDS/EBook bridge");
+    assert!(
+        ebook_archive_status.success(),
+        "the EDS/EBook bridge failed to create a static archive"
+    );
+
     // Keep the generated object out of incremental rebuild surprises while
     // retaining the archive in OUT_DIR for Cargo's linker invocation.
     let _ = fs::remove_file(object);
     let _ = fs::remove_file(ecal_object);
+    let _ = fs::remove_file(ebook_object);
     println!("cargo:rustc-link-search=native={}", out_dir.display());
     println!("cargo:rustc-link-lib=static=evolution_eds_camel_bridge");
     println!("cargo:rustc-link-lib=static=evolution_eds_ecal_bridge");
+    println!("cargo:rustc-link-lib=static=evolution_eds_ebook_bridge");
     emit_link_metadata(&camel);
     emit_link_metadata(&eds);
     emit_link_metadata(&ecal);
+    emit_link_metadata(&ebook);
+    emit_link_metadata(&ebook_contacts);
     println!("cargo:rerun-if-changed={}", bridge.display());
     println!(
         "cargo:rerun-if-changed={}",
@@ -153,9 +217,15 @@ fn main() {
         "cargo:rerun-if-changed={}",
         manifest_dir.join("../native/eds_ecal_bridge.h").display()
     );
+    println!("cargo:rerun-if-changed={}", ebook_bridge.display());
+    println!(
+        "cargo:rerun-if-changed={}",
+        manifest_dir.join("../native/eds_ebook_bridge.h").display()
+    );
 
     println!("cargo:rustc-cfg=eds_camel_bridge");
     println!("cargo:rustc-cfg=eds_ecal_bridge");
+    println!("cargo:rustc-cfg=eds_ebook_bridge");
 }
 
 fn emit_link_metadata(library: &pkg_config::Library) {

@@ -6,8 +6,14 @@ use adw::prelude::*;
 use adw::subclass::prelude::*;
 use chrono::Datelike;
 use gtk::glib;
+use std::cell::RefCell;
+use std::rc::Rc;
 
-use crate::services::ecal_service::{CalendarDataOrigin, load_snapshot_prefer_eds};
+use crate::services::calendar_store_service::CalendarEventRecord;
+use crate::services::ecal_service::{
+    CalendarDataOrigin, ECalChangeKind, ECalComponentType, ECalRecord, ECalService, ECalSyncEvent,
+    load_snapshot_prefer_eds, parse_change_record,
+};
 use crate::services::eds_service;
 
 // ─── GObject Subclass ───────────────────────────────────────────────────────
@@ -20,6 +26,7 @@ mod imp {
     pub struct CalendarPage {
         pub current_year: RefCell<i32>,
         pub current_month: RefCell<u32>,
+        pub ecal_monitor_cancel: RefCell<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>>,
     }
 
     impl Default for CalendarPage {
@@ -27,6 +34,7 @@ mod imp {
             Self {
                 current_year: RefCell::new(2026),
                 current_month: RefCell::new(8),
+                ecal_monitor_cancel: RefCell::new(None),
             }
         }
     }
@@ -49,6 +57,10 @@ mod imp {
         }
 
         fn dispose(&self) {
+            if let Some(cancel) = self.ecal_monitor_cancel.borrow_mut().take() {
+                use std::sync::atomic::Ordering;
+                cancel.store(true, Ordering::Relaxed);
+            }
             if let Some(child) = self.obj().first_child() {
                 child.unparent();
             }
@@ -156,9 +168,11 @@ impl CalendarPage {
             .css_classes(vec!["boxed-list"])
             .build();
         sidebar_box.append(&event_list);
+        let event_records = Rc::new(RefCell::new(Vec::<CalendarEventRecord>::new()));
 
         let local_item_state_for_load = local_item_state.clone();
         let event_list_for_load = event_list.clone();
+        let event_records_for_load = Rc::clone(&event_records);
         let (local_sender, local_receiver) = async_channel::bounded(1);
         std::thread::spawn(move || {
             let result = load_snapshot_prefer_eds();
@@ -193,31 +207,72 @@ impl CalendarPage {
                         };
                         local_item_state_for_load
                             .set_label(&format!("{count} Termin(e) aus {origin} geladen."));
-                        for event in result.snapshot.events.iter().take(25) {
-                            let source = if event.source_display_name.is_empty() {
-                                String::new()
-                            } else {
-                                format!(" · {}", event.source_display_name)
-                            };
-                            let row = adw::ActionRow::builder()
-                                .title(&event.summary)
-                                .subtitle(&format!(
-                                    "{}{}",
-                                    if event.end.is_empty() {
-                                        event.start.clone()
-                                    } else {
-                                        format!("{}–{}", event.start, event.end)
-                                    },
-                                    source
-                                ))
-                                .build();
-                            event_list_for_load.append(&row);
+                        for event in result.snapshot.events.into_iter().take(25) {
+                            upsert_event_row(
+                                &event_list_for_load,
+                                Rc::clone(&event_records_for_load),
+                                event,
+                            );
                         }
                     }
                 }
                 Err(error) => tracing::debug!(%error, "Calendar snapshot unavailable"),
             }
         });
+
+        if let Some((cancel, receiver)) = ECalService::new().start_change_monitor() {
+            *self.imp().ecal_monitor_cancel.borrow_mut() = Some(cancel);
+            let event_list_for_monitor = event_list.clone();
+            let event_records_for_monitor = Rc::clone(&event_records);
+            let local_item_state_for_monitor = local_item_state.clone();
+            glib::spawn_future_local(async move {
+                while let Ok(event) = receiver.recv().await {
+                    match event {
+                        ECalSyncEvent::Ready(status) => {
+                            if let Some(warning) = status.warning {
+                                tracing::warn!(
+                                    configured = status.configured_sources,
+                                    active = status.active_sources,
+                                    failed = status.failed_sources,
+                                    %warning,
+                                    "ECal signal monitor started with source warnings"
+                                );
+                            }
+                        }
+                        ECalSyncEvent::Change(change) => match change.kind {
+                            ECalChangeKind::Removed => {
+                                remove_event_row(
+                                    &event_list_for_monitor,
+                                    Rc::clone(&event_records_for_monitor),
+                                    &change.source_uid,
+                                    &change.uid,
+                                );
+                            }
+                            ECalChangeKind::Added | ECalChangeKind::Modified => {
+                                if let Some(ECalRecord::Event(event)) = parse_change_record(&change)
+                                {
+                                    upsert_event_row(
+                                        &event_list_for_monitor,
+                                        Rc::clone(&event_records_for_monitor),
+                                        event,
+                                    );
+                                }
+                            }
+                        },
+                        ECalSyncEvent::Error(error) => {
+                            tracing::warn!(%error, "ECal signal monitor stopped");
+                            break;
+                        }
+                    }
+                    let count = event_records_for_monitor.borrow().len();
+                    event_list_for_monitor.set_visible(count > 0);
+                    if count > 0 {
+                        local_item_state_for_monitor
+                            .set_label(&format!("{count} Termin(e) aus EDS synchronisiert."));
+                    }
+                }
+            });
+        }
 
         let source_list_for_load = source_list.clone();
         let calendar_state_for_load = calendar_state.clone();
@@ -625,6 +680,192 @@ impl CalendarPage {
             }
         }
     }
+}
+
+fn upsert_event_row(
+    event_list: &gtk::ListBox,
+    event_records: Rc<RefCell<Vec<CalendarEventRecord>>>,
+    event: CalendarEventRecord,
+) {
+    let existing_index = event_records
+        .borrow()
+        .iter()
+        .position(|existing| existing.source_uid == event.source_uid && existing.uid == event.uid);
+    if let Some(index) = existing_index {
+        event_records.borrow_mut().remove(index);
+        if let Some(row) = event_list.row_at_index(index as i32) {
+            event_list.remove(&row);
+        }
+    }
+    event_records.borrow_mut().push(event.clone());
+    append_event_row(event_list, event_records, event);
+}
+
+fn remove_event_row(
+    event_list: &gtk::ListBox,
+    event_records: Rc<RefCell<Vec<CalendarEventRecord>>>,
+    source_uid: &str,
+    uid: &str,
+) {
+    let Some(index) = event_records
+        .borrow()
+        .iter()
+        .position(|event| event.source_uid == source_uid && event.uid == uid)
+    else {
+        return;
+    };
+    event_records.borrow_mut().remove(index);
+    if let Some(row) = event_list.row_at_index(index as i32) {
+        event_list.remove(&row);
+    }
+}
+
+fn append_event_row(
+    event_list: &gtk::ListBox,
+    event_records: Rc<RefCell<Vec<CalendarEventRecord>>>,
+    event: CalendarEventRecord,
+) {
+    let source = if event.source_display_name.is_empty() {
+        String::new()
+    } else {
+        format!(" · {}", event.source_display_name)
+    };
+    let row = adw::ActionRow::builder()
+        .title(&event.summary)
+        .subtitle(&format!(
+            "{}{}",
+            if event.end.is_empty() {
+                event.start.clone()
+            } else {
+                format!("{}–{}", event.start, event.end)
+            },
+            source
+        ))
+        .build();
+
+    let edit_button = gtk::Button::builder()
+        .icon_name("document-edit-symbolic")
+        .tooltip_text("Termin bearbeiten")
+        .css_classes(vec!["flat"])
+        .valign(gtk::Align::Center)
+        .build();
+    let delete_button = gtk::Button::builder()
+        .icon_name("user-trash-symbolic")
+        .tooltip_text("Termin löschen")
+        .css_classes(vec!["flat", "destructive-action"])
+        .valign(gtk::Align::Center)
+        .build();
+    row.add_suffix(&edit_button);
+    row.add_suffix(&delete_button);
+
+    let event_for_edit = event.clone();
+    let edit_button_for_signal = edit_button.clone();
+    edit_button_for_signal.connect_clicked(move |_| {
+        if event_for_edit.source_uid.is_empty() {
+            show_toast_for_widget(
+                &edit_button,
+                "Lokale Termine können ohne EDS-Quelle nicht geändert werden",
+            );
+            return;
+        }
+        let dialog = crate::dialogs::EventDialog::new_for_edit(&event_for_edit);
+        if let Some(root) = edit_button.root() {
+            if let Ok(window) = root.downcast::<gtk::Window>() {
+                dialog.set_transient_for(Some(&window));
+            }
+        }
+        dialog.present();
+    });
+
+    let row_for_delete = row.clone();
+    let event_for_delete = event.clone();
+    let event_records_for_delete = Rc::clone(&event_records);
+    let event_list_for_delete = event_list.clone();
+    let delete_button_for_signal = delete_button.clone();
+    delete_button_for_signal.connect_clicked(move |_| {
+        if event_for_delete.source_uid.is_empty() {
+            show_toast_for_widget(
+                &delete_button,
+                "Lokale Termine können ohne EDS-Quelle nicht gelöscht werden",
+            );
+            return;
+        }
+        let confirmation = adw::AlertDialog::new(
+            Some("Termin löschen?"),
+            Some("Der Termin wird dauerhaft aus dem EDS-Kalender entfernt."),
+        );
+        confirmation.add_responses(&[("cancel", "Abbrechen"), ("delete", "Löschen")]);
+        confirmation.set_response_appearance("delete", adw::ResponseAppearance::Destructive);
+        let event_for_response = event_for_delete.clone();
+        let event_records_for_response = Rc::clone(&event_records_for_delete);
+        let event_list_for_response = event_list_for_delete.clone();
+        let row_for_response = row_for_delete.clone();
+        let delete_button_for_response = delete_button.clone();
+        confirmation.connect_response(None, move |dialog: &adw::AlertDialog, response: &str| {
+            if response != "delete" {
+                return;
+            }
+            let source_uid = event_for_response.source_uid.clone();
+            let uid = event_for_response.uid.clone();
+            let (sender, receiver) = async_channel::bounded(1);
+            delete_button_for_response.set_sensitive(false);
+            std::thread::spawn(move || {
+                let result = ECalService::new().remove_component(
+                    &source_uid,
+                    ECalComponentType::Event,
+                    &uid,
+                );
+                if let Err(error) = sender.send_blocking(result) {
+                    tracing::debug!(%error, "Event deletion result was dropped");
+                }
+            });
+
+            let dialog_for_result = dialog.clone();
+            let event_records_for_result = Rc::clone(&event_records_for_response);
+            let event_list_for_result = event_list_for_response.clone();
+            let row_for_result = row_for_response.clone();
+            let delete_button_for_result = delete_button_for_response.clone();
+            glib::spawn_future_local(async move {
+                match receiver.recv().await {
+                    Ok(Ok(result)) => {
+                        event_list_for_result.remove(&row_for_result);
+                        event_records_for_result
+                            .borrow_mut()
+                            .retain(|event| event.uid != result.uid);
+                        show_toast_for_widget(
+                            &delete_button_for_result,
+                            &format!("Termin gelöscht ({})", result.uid),
+                        );
+                        dialog_for_result.close();
+                    }
+                    Ok(Err(error)) => {
+                        delete_button_for_result.set_sensitive(true);
+                        show_toast_for_widget(
+                            &delete_button_for_result,
+                            &format!("Termin konnte nicht gelöscht werden: {error}"),
+                        );
+                    }
+                    Err(error) => {
+                        delete_button_for_result.set_sensitive(true);
+                        tracing::debug!(%error, "Event deletion channel closed");
+                    }
+                }
+            });
+        });
+        confirmation.present(Some(&delete_button));
+    });
+
+    event_list.append(&row);
+}
+
+fn show_toast_for_widget<W: IsA<gtk::Widget>>(widget: &W, message: &str) {
+    if let Some(root) = widget.root() {
+        if let Ok(window) = root.downcast::<crate::window::EvolutionWindow>() {
+            window.add_toast(&adw::Toast::new(message));
+            return;
+        }
+    }
+    tracing::warn!(%message, "Calendar UI result");
 }
 
 impl Default for CalendarPage {

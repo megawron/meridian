@@ -8,6 +8,7 @@ pub mod camel_mail_service;
 pub mod contact_store_service;
 pub mod crypto_service;
 pub mod draft_store_service;
+pub mod ebook_service;
 pub mod ecal_service;
 pub mod eds_service;
 pub mod eds_source_cache_service;
