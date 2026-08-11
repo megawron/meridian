@@ -848,7 +848,10 @@ werden.
   Suchordner mit serverseitiger Live-Aktualisierung fehlen noch. Lokale
   Mailtreffer berücksichtigen dabei auch Empfänger, Ordner, Labels, Status,
   Dateinamen, Nachrichtentext und vollständige Kalender-/Aufgaben-/Notizdaten;
-  aktivierbare Treffer wechseln in den passenden GTK4-rs-Hauptbereich.
+  aktivierbare Treffer wechseln in den passenden GTK4-rs-Hauptbereich. Die
+  globale lokale Mail-Suche wertet dieselben Feldpräfixe für Absender,
+  Empfänger, Betreff, Ordner, Labels und Dateinamen aus; die serverseitige
+  Camel-Syntax bleibt davon getrennt.
 - [ ] Exchange/Microsoft 365: Graph/OAuth2, Mail/Kalender/Kontakte/GAL/OOF,
   EWS-Kompatibilität nur soweit technisch notwendig.
 

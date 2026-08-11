@@ -27,6 +27,21 @@ pub struct SearchResultItem {
     pub reference_id: String,
 }
 
+#[derive(Debug, Clone)]
+struct SearchDocument {
+    result: SearchResultItem,
+    searchable_text: String,
+}
+
+impl SearchDocument {
+    fn new(result: SearchResultItem, searchable_text: impl Into<String>) -> Self {
+        Self {
+            result,
+            searchable_text: searchable_text.into(),
+        }
+    }
+}
+
 #[allow(dead_code)]
 pub struct GlobalSearchEngine;
 
@@ -51,13 +66,22 @@ impl GlobalSearchEngine {
                     .into_iter()
                     .map(|message| {
                         let snippet = local_mail_search_text(&message);
-                        SearchResultItem {
-                            domain: SearchDomain::Mail,
-                            title: message.subject,
-                            snippet,
-                            date: message.date_str,
-                            reference_id: message.id,
-                        }
+                        let searchable_text = format!(
+                            "{} {} {}",
+                            local_mail_search_index(&message),
+                            message.subject,
+                            message.date_str
+                        );
+                        SearchDocument::new(
+                            SearchResultItem {
+                                domain: SearchDomain::Mail,
+                                title: message.subject,
+                                snippet,
+                                date: message.date_str,
+                                reference_id: message.id,
+                            },
+                            searchable_text,
+                        )
                     }),
             );
         }
@@ -65,35 +89,59 @@ impl GlobalSearchEngine {
         if matches!(domain, SearchDomain::Calendar | SearchDomain::All) {
             let snapshot = crate::services::calendar_store_service::CalendarStoreService::new()
                 .load_snapshot();
-            documents.extend(snapshot.events.into_iter().map(|event| SearchResultItem {
-                domain: SearchDomain::Calendar,
-                title: event.summary,
-                snippet: format!(
+            documents.extend(snapshot.events.into_iter().map(|event| {
+                let title = event.summary;
+                let snippet = format!(
                     "{} {} {} {}",
                     event.location, event.description, event.source_display_name, event.component
-                ),
-                date: event.start,
-                reference_id: format!("{}:{}", event.source_uid, event.uid),
+                );
+                let date = event.start;
+                SearchDocument::new(
+                    SearchResultItem {
+                        domain: SearchDomain::Calendar,
+                        title: title.clone(),
+                        snippet: snippet.clone(),
+                        date: date.clone(),
+                        reference_id: format!("{}:{}", event.source_uid, event.uid),
+                    },
+                    format!("{title} {snippet} {date}"),
+                )
             }));
-            documents.extend(snapshot.tasks.into_iter().map(|task| SearchResultItem {
-                domain: SearchDomain::Calendar,
-                title: task.summary,
-                snippet: format!(
+            documents.extend(snapshot.tasks.into_iter().map(|task| {
+                let title = task.summary;
+                let snippet = format!(
                     "Aufgabe {} Priorität {} {} {}",
                     task.source_display_name, task.priority, task.due, task.component
-                ),
-                date: task.due,
-                reference_id: format!("{}:{}", task.source_uid, task.uid),
+                );
+                let date = task.due;
+                SearchDocument::new(
+                    SearchResultItem {
+                        domain: SearchDomain::Calendar,
+                        title: title.clone(),
+                        snippet: snippet.clone(),
+                        date: date.clone(),
+                        reference_id: format!("{}:{}", task.source_uid, task.uid),
+                    },
+                    format!("{title} {snippet} {date}"),
+                )
             }));
-            documents.extend(snapshot.memos.into_iter().map(|memo| SearchResultItem {
-                domain: SearchDomain::Calendar,
-                title: memo.summary,
-                snippet: format!(
+            documents.extend(snapshot.memos.into_iter().map(|memo| {
+                let title = memo.summary;
+                let snippet = format!(
                     "{} {} {}",
                     memo.description, memo.source_display_name, memo.component
-                ),
-                date: memo.updated,
-                reference_id: format!("{}:{}", memo.source_uid, memo.uid),
+                );
+                let date = memo.updated;
+                SearchDocument::new(
+                    SearchResultItem {
+                        domain: SearchDomain::Calendar,
+                        title: title.clone(),
+                        snippet: snippet.clone(),
+                        date: date.clone(),
+                        reference_id: format!("{}:{}", memo.source_uid, memo.uid),
+                    },
+                    format!("{title} {snippet} {date}"),
+                )
             }));
         }
 
@@ -102,17 +150,24 @@ impl GlobalSearchEngine {
                 crate::services::contact_store_service::ContactStoreService::new()
                     .load_contacts()
                     .into_iter()
-                    .map(|record| SearchResultItem {
-                        domain: SearchDomain::Contacts,
-                        title: record.contact.fn_name.clone(),
-                        snippet: record.contact.searchable_text(),
-                        date: String::new(),
-                        reference_id: record.id,
+                    .map(|record| {
+                        let title = record.contact.fn_name.clone();
+                        let snippet = record.contact.searchable_text();
+                        SearchDocument::new(
+                            SearchResultItem {
+                                domain: SearchDomain::Contacts,
+                                title: title.clone(),
+                                snippet: snippet.clone(),
+                                date: String::new(),
+                                reference_id: record.id,
+                            },
+                            format!("{title} {snippet}"),
+                        )
                     }),
             );
         }
 
-        Self::query_documents(domain, query_str, documents.iter())
+        Self::query_search_documents(domain, query_str, &documents)
     }
 
     /// Search an explicit repository snapshot.  This is the backend-neutral
@@ -157,17 +212,54 @@ impl GlobalSearchEngine {
     where
         I: IntoIterator<Item = &'a crate::services::mail_store_service::ParsedMail>,
     {
-        let documents: Vec<SearchResultItem> = messages
+        let documents: Vec<SearchDocument> = messages
             .into_iter()
-            .map(|message| SearchResultItem {
-                domain: SearchDomain::Mail,
-                title: message.subject.clone(),
-                snippet: local_mail_search_text(message),
-                date: message.date_str.clone(),
-                reference_id: message.id.clone(),
+            .map(|message| {
+                let snippet = local_mail_search_text(message);
+                SearchDocument::new(
+                    SearchResultItem {
+                        domain: SearchDomain::Mail,
+                        title: message.subject.clone(),
+                        snippet: snippet.clone(),
+                        date: message.date_str.clone(),
+                        reference_id: message.id.clone(),
+                    },
+                    format!(
+                        "{} {} {}",
+                        local_mail_search_index(message),
+                        message.subject,
+                        message.date_str
+                    ),
+                )
             })
             .collect();
-        Self::query_documents(SearchDomain::Mail, query_str, &documents)
+        Self::query_search_documents(SearchDomain::Mail, query_str, &documents)
+    }
+
+    fn query_search_documents(
+        domain: SearchDomain,
+        query_str: &str,
+        documents: &[SearchDocument],
+    ) -> Vec<SearchResultItem> {
+        let terms = query_str
+            .split_whitespace()
+            .map(str::to_lowercase)
+            .filter(|term| !term.is_empty())
+            .collect::<Vec<_>>();
+        if terms.is_empty() {
+            return Vec::new();
+        }
+
+        documents
+            .iter()
+            .filter(|document| {
+                (domain == SearchDomain::All || document.result.domain == domain)
+                    && terms
+                        .iter()
+                        .all(|term| document.searchable_text.to_lowercase().contains(term))
+            })
+            .map(|document| document.result.clone())
+            .collect()
     }
 }
 
@@ -205,6 +297,44 @@ fn local_mail_search_text(message: &crate::services::mail_store_service::ParsedM
         message.html_body,
         message.labels.join(" "),
         format!("{} {}", attachment_names, state_terms),
+    )
+}
+
+fn local_mail_search_index(message: &crate::services::mail_store_service::ParsedMail) -> String {
+    let attachment_names = message
+        .attachments
+        .iter()
+        .map(|attachment| attachment.filename.as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let state_terms = [
+        if message.is_unread {
+            "is:unread"
+        } else {
+            "is:read"
+        },
+        if message.is_flagged { "is:starred" } else { "" },
+        if message.attachments.is_empty() {
+            "no:attachment"
+        } else {
+            "has:attachment"
+        },
+    ]
+    .join(" ");
+    format!(
+        "from:{} {} to:{} cc:{} bcc:{} reply-to:{} folder:{} subject:{} body:{} label:{} filename:{} {}",
+        message.sender_email,
+        message.sender_name,
+        message.recipient_to,
+        message.recipient_cc,
+        message.recipient_bcc,
+        message.reply_to,
+        message.folder_name,
+        message.subject,
+        format!("{} {}", message.preview_snippet, message.html_body),
+        message.labels.join(" "),
+        attachment_names,
+        state_terms,
     )
 }
 
@@ -303,5 +433,14 @@ mod tests {
 
         let results = GlobalSearchEngine::query_local_mail("me@example.org is:unread", &messages);
         assert_eq!(results.len(), 1);
+
+        let results = GlobalSearchEngine::query_local_mail(
+            "from:sender@example.org subject:update folder:inbox",
+            &messages,
+        );
+        assert_eq!(results.len(), 1);
+
+        let results = GlobalSearchEngine::query_local_mail("from:other@example.org", &messages);
+        assert!(results.is_empty());
     }
 }
