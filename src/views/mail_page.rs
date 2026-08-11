@@ -50,6 +50,9 @@ enum MailSortField {
     Date,
     Subject,
     Sender,
+    Unread,
+    Flagged,
+    Attachments,
 }
 
 impl MailSortField {
@@ -57,6 +60,9 @@ impl MailSortField {
         match value {
             "subject" => Self::Subject,
             "sender" => Self::Sender,
+            "unread" | "status" => Self::Unread,
+            "flagged" | "starred" | "important" => Self::Flagged,
+            "attachments" | "attachment" => Self::Attachments,
             _ => Self::Date,
         }
     }
@@ -66,6 +72,9 @@ impl MailSortField {
             Self::Date => "date",
             Self::Subject => "subject",
             Self::Sender => "sender",
+            Self::Unread => "unread",
+            Self::Flagged => "flagged",
+            Self::Attachments => "attachments",
         }
     }
 }
@@ -163,6 +172,7 @@ struct MessageSearchQuery {
     bcc: Option<String>,
     subject: Option<String>,
     body: Option<String>,
+    label: Option<String>,
     filename: Option<String>,
     unread: Option<bool>,
     flagged: Option<bool>,
@@ -192,6 +202,7 @@ impl MessageSearchQuery {
                 "bcc" => query.bcc = Some(value),
                 "subject" => query.subject = Some(value),
                 "body" | "content" => query.body = Some(value),
+                "label" | "tag" | "keyword" => query.label = Some(value),
                 "filename" | "name" => query.filename = Some(value),
                 "is" => match value.as_str() {
                     "unread" => query.unread = Some(true),
@@ -239,6 +250,7 @@ impl MessageSearchQuery {
             && self.bcc.is_none()
             && self.subject.is_none()
             && self.body.is_none()
+            && self.label.is_none()
             && self.filename.is_none()
             && self.unread.is_none()
             && self.flagged.is_none()
@@ -357,6 +369,12 @@ fn message_matches_filter(
     let recipient_bcc = message.recipient_bcc().to_lowercase();
     let preview = message.preview_snippet().to_lowercase();
     let body = message.html_body().to_lowercase();
+    let label_values = message.labels();
+    let labels = label_values
+        .iter()
+        .map(|label| label.to_lowercase())
+        .collect::<Vec<_>>()
+        .join(" ");
     let filenames = message
         .attachments()
         .into_iter()
@@ -372,6 +390,7 @@ fn message_matches_filter(
         recipient_bcc.as_str(),
         preview.as_str(),
         body.as_str(),
+        labels.as_str(),
         filenames.as_str(),
     ]
     .join(" ");
@@ -412,6 +431,15 @@ fn message_matches_filter(
             .body
             .as_deref()
             .map(|value| body.contains(value) || preview.contains(value))
+            .unwrap_or(true)
+        && query
+            .label
+            .as_deref()
+            .map(|value| {
+                label_values
+                    .iter()
+                    .any(|label| label.to_lowercase().contains(value))
+            })
             .unwrap_or(true)
         && query
             .filename
@@ -912,6 +940,20 @@ impl MailPage {
                     page.refresh_mail();
                 }
             });
+            for key in [
+                "mail-show-avatar",
+                "mail-show-sender",
+                "mail-show-date",
+                "mail-show-preview-text",
+                "mail-show-labels",
+            ] {
+                let page_weak_for_columns = self.downgrade();
+                settings.connect_changed(Some(key), move |_, _| {
+                    if let Some(page) = page_weak_for_columns.upgrade() {
+                        page.refresh_mail();
+                    }
+                });
+            }
             let page_weak_for_sort_field = self.downgrade();
             settings.connect_changed(Some("mail-sort-field"), move |_, _| {
                 if let Some(page) = page_weak_for_sort_field.upgrade() {
@@ -2688,6 +2730,28 @@ impl MailPage {
             vbox.set_margin_top(row_margin);
             vbox.set_margin_bottom(row_margin);
 
+            let settings = AppSettings::try_new();
+            let show_avatar = settings
+                .as_ref()
+                .map(AppSettings::mail_show_avatar)
+                .unwrap_or(true);
+            let show_sender = settings
+                .as_ref()
+                .map(AppSettings::mail_show_sender)
+                .unwrap_or(true);
+            let show_date = settings
+                .as_ref()
+                .map(AppSettings::mail_show_date)
+                .unwrap_or(true);
+            let show_preview_text = settings
+                .as_ref()
+                .map(AppSettings::mail_show_preview_text)
+                .unwrap_or(true);
+            let show_labels = settings
+                .as_ref()
+                .map(AppSettings::mail_show_labels)
+                .unwrap_or(true);
+
             let header_box = vbox
                 .first_child()
                 .and_downcast::<gtk::Box>()
@@ -2714,6 +2778,7 @@ impl MailPage {
                 .and_then(|child| child.next_sibling())
                 .and_downcast::<adw::Avatar>()
             {
+                avatar.set_visible(show_avatar);
                 avatar.set_text(Some(&msg.sender_name()));
             }
 
@@ -2723,6 +2788,7 @@ impl MailPage {
                 .and_then(|w| w.next_sibling())
                 .and_downcast::<gtk::Box>()
             {
+                sender_box.set_visible(show_sender);
                 if let Some(sender) = sender_box.first_child().and_downcast::<gtk::Label>() {
                     sender.set_label(&msg.sender_name());
                     if msg.is_unread() {
@@ -2740,6 +2806,7 @@ impl MailPage {
                 .and_then(|w| w.next_sibling())
                 .and_downcast::<gtk::Label>()
             {
+                date.set_visible(show_date);
                 date.set_label(&format_message_date(&msg.date_str()));
             }
 
@@ -2794,15 +2861,20 @@ impl MailPage {
                 .and_then(|w| w.next_sibling())
                 .and_downcast::<gtk::Label>()
             {
-                let subject_text = if tree_row.depth() == 0 && msg.thread_size() > 1 {
+                let mut subject_text = if tree_row.depth() == 0 && msg.thread_size() > 1 {
                     format!("{}  ·  {} Nachrichten", msg.subject(), msg.thread_size())
                 } else {
                     msg.subject()
                 };
+                let labels = msg.labels();
+                if show_labels && !labels.is_empty() {
+                    subject_text.push_str(&format!("  ·  [{}]", labels.join(", ")));
+                }
                 subject.set_label(&subject_text);
             }
 
             if let Some(preview) = vbox.last_child().and_downcast::<gtk::Label>() {
+                preview.set_visible(show_preview_text);
                 preview.set_label(&msg.preview_snippet());
             }
         });
@@ -2876,12 +2948,22 @@ impl MailPage {
             thread_filter_for_search.changed(gtk::FilterChange::Different);
         });
 
-        let sort_model = gtk::StringList::new(&["Datum", "Betreff", "Absender"]);
+        let sort_model = gtk::StringList::new(&[
+            "Datum",
+            "Betreff",
+            "Absender",
+            "Ungelesen-Status",
+            "Markierung",
+            "Anhänge",
+        ]);
         let sort_selector = gtk::DropDown::new(Some(sort_model), None::<&gtk::Expression>);
         sort_selector.set_tooltip_text(Some("Mails sortieren"));
         sort_selector.set_selected(match self.imp().mail_sort_field.get() {
             MailSortField::Subject => 1,
             MailSortField::Sender => 2,
+            MailSortField::Unread => 3,
+            MailSortField::Flagged => 4,
+            MailSortField::Attachments => 5,
             MailSortField::Date => 0,
         });
         let direction_button = gtk::Button::builder()
@@ -2909,6 +2991,9 @@ impl MailPage {
             let field = match selector.selected() {
                 1 => MailSortField::Subject,
                 2 => MailSortField::Sender,
+                3 => MailSortField::Unread,
+                4 => MailSortField::Flagged,
+                5 => MailSortField::Attachments,
                 _ => MailSortField::Date,
             };
             page.imp().mail_sort_field.set(field);
@@ -4770,6 +4855,11 @@ impl MailPage {
                     .sender_name()
                     .cmp(&right.sender_name())
                     .then_with(|| left.sender_email().cmp(&right.sender_email())),
+                MailSortField::Unread => left.is_unread().cmp(&right.is_unread()),
+                MailSortField::Flagged => left.is_flagged().cmp(&right.is_flagged()),
+                MailSortField::Attachments => {
+                    left.attachments().len().cmp(&right.attachments().len())
+                }
             }
             .then_with(|| left.id().cmp(&right.id()));
             if descending {
@@ -5175,11 +5265,12 @@ mod tests {
     }
 
     #[test]
-    fn message_search_query_keeps_unknown_operators_as_text() {
+    fn message_search_query_parses_labels_and_state_operators() {
         let query = MessageSearchQuery::parse("label:important is:read");
 
         assert_eq!(query.unread, Some(false));
-        assert_eq!(query.text_terms, vec!["label:important"]);
+        assert_eq!(query.label.as_deref(), Some("important"));
+        assert!(query.text_terms.is_empty());
     }
 
     #[test]

@@ -527,14 +527,14 @@ impl AppSettings {
     pub fn mail_sort_field(&self) -> String {
         let value = self.settings.string("mail-sort-field").to_string();
         match value.as_str() {
-            "subject" | "sender" | "date" => value,
+            "subject" | "sender" | "date" | "unread" | "flagged" | "attachments" => value,
             _ => "date".to_string(),
         }
     }
 
     pub fn set_mail_sort_field(&self, value: &str) {
         let value = match value {
-            "subject" | "sender" | "date" => value,
+            "subject" | "sender" | "date" | "unread" | "flagged" | "attachments" => value,
             _ => "date",
         };
         if let Err(error) = self.settings.set_string("mail-sort-field", value) {
@@ -556,6 +556,46 @@ impl AppSettings {
 
     pub fn set_mail_threading(&self, value: bool) {
         self.set_boolean("mail-threading", value);
+    }
+
+    pub fn mail_show_avatar(&self) -> bool {
+        self.settings.boolean("mail-show-avatar")
+    }
+
+    pub fn set_mail_show_avatar(&self, value: bool) {
+        self.set_boolean("mail-show-avatar", value);
+    }
+
+    pub fn mail_show_sender(&self) -> bool {
+        self.settings.boolean("mail-show-sender")
+    }
+
+    pub fn set_mail_show_sender(&self, value: bool) {
+        self.set_boolean("mail-show-sender", value);
+    }
+
+    pub fn mail_show_date(&self) -> bool {
+        self.settings.boolean("mail-show-date")
+    }
+
+    pub fn set_mail_show_date(&self, value: bool) {
+        self.set_boolean("mail-show-date", value);
+    }
+
+    pub fn mail_show_preview_text(&self) -> bool {
+        self.settings.boolean("mail-show-preview-text")
+    }
+
+    pub fn set_mail_show_preview_text(&self, value: bool) {
+        self.set_boolean("mail-show-preview-text", value);
+    }
+
+    pub fn mail_show_labels(&self) -> bool {
+        self.settings.boolean("mail-show-labels")
+    }
+
+    pub fn set_mail_show_labels(&self, value: bool) {
+        self.set_boolean("mail-show-labels", value);
     }
 
     pub fn task_filter(&self) -> String {
@@ -652,6 +692,11 @@ impl AppSettings {
             "mail-modern-preview-position",
             "mail-classic-preview-position",
             "mail-row-density",
+            "mail-show-avatar",
+            "mail-show-sender",
+            "mail-show-date",
+            "mail-show-preview-text",
+            "mail-show-labels",
             "color-scheme",
             "sign-new-messages",
             "default-pgp-key",

@@ -503,6 +503,13 @@ fn unsupported_filter_warnings(raw: &str, path: &Path) -> Vec<String> {
                     | "copy"
                     | "copy-to"
                     | "copy-to-folder"
+                    | "set-label"
+                    | "label"
+                    | "add-label"
+                    | "tag"
+                    | "clear-label"
+                    | "remove-label"
+                    | "remove-tag"
             ) {
                 "placeholder".to_string()
             } else {
@@ -530,6 +537,7 @@ fn filter_field_from_evolution_name(name: &str) -> Option<FilterField> {
         "to" | "cc" | "bcc" | "recipient" | "mail-to" => Some(FilterField::Recipient),
         "body" | "content" | "message" => Some(FilterField::Body),
         "header" | "header-exists" => Some(FilterField::Header),
+        "label" | "tag" | "keyword" => Some(FilterField::Label),
         _ => None,
     }
 }
@@ -550,7 +558,8 @@ fn filter_operator_from_evolution_name(name: &str) -> Option<FilterOperator> {
 }
 
 fn filter_action_from_evolution_name(name: &str, target: String) -> Option<FilterAction> {
-    match name {
+    let name = name.trim().to_ascii_lowercase();
+    match name.as_str() {
         "move" | "move-to" | "move-to-folder" | "fileinto" => {
             (!target.is_empty()).then_some(FilterAction::MoveToFolder(target))
         }
@@ -567,6 +576,12 @@ fn filter_action_from_evolution_name(name: &str, target: String) -> Option<Filte
         }
         "junk" | "mark-junk" | "spam" | "mark-spam" => Some(FilterAction::SetJunk),
         "clear-junk" | "not-junk" | "not-spam" | "ham" => Some(FilterAction::ClearJunk),
+        "set-label" | "label" | "add-label" | "tag" => {
+            (!target.is_empty()).then_some(FilterAction::SetLabel(target))
+        }
+        "clear-label" | "remove-label" | "remove-tag" => {
+            (!target.is_empty()).then_some(FilterAction::ClearLabel(target))
+        }
         _ => None,
     }
 }

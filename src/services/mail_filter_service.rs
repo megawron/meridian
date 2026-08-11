@@ -27,6 +27,7 @@ pub enum FilterField {
     Recipient,
     Body,
     Header,
+    Label,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
@@ -92,6 +93,8 @@ pub enum FilterAction {
     StopProcessing,
     SetJunk,
     ClearJunk,
+    SetLabel(String),
+    ClearLabel(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -142,11 +145,13 @@ impl MailFilterRule {
         recipient: &str,
         body: &str,
         headers: &str,
+        labels: &[String],
     ) -> bool {
         if !self.enabled {
             return false;
         }
 
+        let label_text = labels.join(" ");
         let mut condition_matches = self.effective_conditions().into_iter().map(|condition| {
             let value = condition.value.trim().to_lowercase();
             if value.is_empty() && !condition.operator.allows_empty_value(condition.field) {
@@ -158,6 +163,7 @@ impl MailFilterRule {
                 FilterField::Recipient => recipient,
                 FilterField::Body => body,
                 FilterField::Header => headers,
+                FilterField::Label => &label_text,
             };
             condition
                 .operator
@@ -327,7 +333,8 @@ mod tests {
             "sender@example.org",
             "recipient@example.org",
             "body",
-            ""
+            "",
+            &[]
         ));
 
         rule.enabled = false;
@@ -336,7 +343,8 @@ mod tests {
             "sender@example.org",
             "recipient@example.org",
             "body",
-            ""
+            "",
+            &[]
         ));
     }
 
@@ -348,7 +356,8 @@ mod tests {
             "sender@example.org",
             "To recipient@example.org Cc billing@example.org",
             "body",
-            ""
+            "",
+            &[]
         ));
     }
 
@@ -356,37 +365,46 @@ mod tests {
     fn operators_cover_common_evolution_conditions() {
         let mut rule = test_rule(FilterField::Subject, "invoice");
         rule.condition.operator = FilterOperator::NotContains;
-        assert!(rule.matches("Quarterly report", "", "", "", ""));
-        assert!(!rule.matches("Invoice reminder", "", "", "", ""));
+        assert!(rule.matches("Quarterly report", "", "", "", "", &[]));
+        assert!(!rule.matches("Invoice reminder", "", "", "", "", &[]));
 
         rule.condition.operator = FilterOperator::Equals;
-        assert!(rule.matches("  INVOICE  ", "", "", "", ""));
-        assert!(!rule.matches("Invoice reminder", "", "", "", ""));
+        assert!(rule.matches("  INVOICE  ", "", "", "", "", &[]));
+        assert!(!rule.matches("Invoice reminder", "", "", "", "", &[]));
 
         rule.condition.operator = FilterOperator::NotEquals;
-        assert!(rule.matches("Invoice reminder", "", "", "", ""));
-        assert!(!rule.matches("invoice", "", "", "", ""));
+        assert!(rule.matches("Invoice reminder", "", "", "", "", &[]));
+        assert!(!rule.matches("invoice", "", "", "", "", &[]));
 
         rule.condition.operator = FilterOperator::StartsWith;
-        assert!(rule.matches("Invoice reminder", "", "", "", ""));
-        assert!(!rule.matches("Re: invoice", "", "", "", ""));
+        assert!(rule.matches("Invoice reminder", "", "", "", "", &[]));
+        assert!(!rule.matches("Re: invoice", "", "", "", "", &[]));
 
         rule.condition.operator = FilterOperator::EndsWith;
-        assert!(rule.matches("Reminder invoice", "", "", "", ""));
-        assert!(!rule.matches("Invoice reminder", "", "", "", ""));
+        assert!(rule.matches("Reminder invoice", "", "", "", "", &[]));
+        assert!(!rule.matches("Invoice reminder", "", "", "", "", &[]));
     }
 
     #[test]
     fn exists_matches_fields_and_named_headers() {
         let mut subject_rule = test_rule(FilterField::Subject, "");
         subject_rule.condition.operator = FilterOperator::Exists;
-        assert!(subject_rule.matches("Subject", "", "", "", ""));
-        assert!(!subject_rule.matches("", "", "", "", ""));
+        assert!(subject_rule.matches("Subject", "", "", "", "", &[]));
+        assert!(!subject_rule.matches("", "", "", "", "", &[]));
 
         let mut header_rule = test_rule(FilterField::Header, "x-list-id");
         header_rule.condition.operator = FilterOperator::Exists;
-        assert!(header_rule.matches("", "", "", "", "X-List-ID: team@example.org"));
-        assert!(!header_rule.matches("", "", "", "", "X-Other: team@example.org"));
+        assert!(header_rule.matches("", "", "", "", "X-List-ID: team@example.org", &[]));
+        assert!(!header_rule.matches("", "", "", "", "X-Other: team@example.org", &[]));
+    }
+
+    #[test]
+    fn label_conditions_match_case_insensitively() {
+        let rule = test_rule(FilterField::Label, "work");
+        let labels = vec!["Work".to_string(), "Follow-up".to_string()];
+
+        assert!(rule.matches("", "", "", "", "", &labels));
+        assert!(!rule.matches("", "", "", "", "", &["Personal".to_string()]));
     }
 
     #[test]
@@ -473,14 +491,16 @@ mod tests {
             "Billing <billing@example.org>",
             "recipient@example.org",
             "body",
-            ""
+            "",
+            &[]
         ));
         assert!(!rule.matches(
             "Invoice",
             "Other <other@example.org>",
             "recipient@example.org",
             "body",
-            ""
+            "",
+            &[]
         ));
         assert_eq!(rule.effective_actions().len(), 2);
 
@@ -493,7 +513,8 @@ mod tests {
             "Other <other@example.org>",
             "recipient@example.org",
             "body",
-            ""
+            "",
+            &[]
         ));
         let encoded = serde_json::to_vec(&rule).expect("multi rule should serialize");
         assert_eq!(

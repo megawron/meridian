@@ -1568,18 +1568,31 @@ impl PreferencesDialog {
             .build();
         let row_mail_sort = adw::ComboRow::builder()
             .title("Sortierfeld")
-            .model(&gtk::StringList::new(&["Datum", "Betreff", "Absender"]))
+            .model(&gtk::StringList::new(&[
+                "Datum",
+                "Betreff",
+                "Absender",
+                "Ungelesen-Status",
+                "Markierung",
+                "Anhänge",
+            ]))
             .build();
         if let Some(settings) = settings.clone() {
             row_mail_sort.set_selected(match settings.mail_sort_field().as_str() {
                 "subject" => 1,
                 "sender" => 2,
+                "unread" => 3,
+                "flagged" => 4,
+                "attachments" => 5,
                 _ => 0,
             });
             row_mail_sort.connect_selected_notify(move |row| {
                 settings.set_mail_sort_field(match row.selected() {
                     1 => "subject",
                     2 => "sender",
+                    3 => "unread",
+                    4 => "flagged",
+                    5 => "attachments",
                     _ => "date",
                 });
             });
@@ -1612,6 +1625,76 @@ impl PreferencesDialog {
         }
         group_mail_list.add(&row_mail_threading);
         page_appearance.add(&group_mail_list);
+
+        let group_mail_columns = adw::PreferencesGroup::builder()
+            .title("Mail-Zeile")
+            .description("Sichtbare Spalten und Zusatzinformationen der Nachrichtenliste")
+            .build();
+        let row_mail_show_avatar = adw::SwitchRow::builder()
+            .title("Absender-Avatare anzeigen")
+            .subtitle("Zeigt Initialen bzw. Bilder links neben dem Absender")
+            .active(true)
+            .build();
+        if let Some(settings) = settings.clone() {
+            row_mail_show_avatar.set_active(settings.mail_show_avatar());
+            row_mail_show_avatar.connect_active_notify(move |row| {
+                settings.set_mail_show_avatar(row.is_active());
+            });
+        }
+        group_mail_columns.add(&row_mail_show_avatar);
+
+        let row_mail_show_sender = adw::SwitchRow::builder()
+            .title("Absender anzeigen")
+            .subtitle("Blendet die Absender-Spalte in der Nachrichtenliste ein oder aus")
+            .active(true)
+            .build();
+        if let Some(settings) = settings.clone() {
+            row_mail_show_sender.set_active(settings.mail_show_sender());
+            row_mail_show_sender.connect_active_notify(move |row| {
+                settings.set_mail_show_sender(row.is_active());
+            });
+        }
+        group_mail_columns.add(&row_mail_show_sender);
+
+        let row_mail_show_date = adw::SwitchRow::builder()
+            .title("Datum anzeigen")
+            .subtitle("Zeigt Datum und Uhrzeit rechts in der Nachrichtenzeile")
+            .active(true)
+            .build();
+        if let Some(settings) = settings.clone() {
+            row_mail_show_date.set_active(settings.mail_show_date());
+            row_mail_show_date.connect_active_notify(move |row| {
+                settings.set_mail_show_date(row.is_active());
+            });
+        }
+        group_mail_columns.add(&row_mail_show_date);
+
+        let row_mail_show_preview_text = adw::SwitchRow::builder()
+            .title("Vorschautext anzeigen")
+            .subtitle("Zeigt den kurzen Nachrichtenauszug unter dem Betreff")
+            .active(true)
+            .build();
+        if let Some(settings) = settings.clone() {
+            row_mail_show_preview_text.set_active(settings.mail_show_preview_text());
+            row_mail_show_preview_text.connect_active_notify(move |row| {
+                settings.set_mail_show_preview_text(row.is_active());
+            });
+        }
+        group_mail_columns.add(&row_mail_show_preview_text);
+
+        let row_mail_show_labels = adw::SwitchRow::builder()
+            .title("Labels anzeigen")
+            .subtitle("Zeigt app-eigene Labels hinter dem Betreff")
+            .active(true)
+            .build();
+        if let Some(settings) = settings.clone() {
+            row_mail_show_labels.set_active(settings.mail_show_labels());
+            row_mail_show_labels.connect_active_notify(move |row| {
+                settings.set_mail_show_labels(row.is_active());
+            });
+        }
+        group_mail_columns.add(&row_mail_show_labels);
+        page_appearance.add(&group_mail_columns);
 
         // ── 3. Page: Kalender & Aufgaben ────────────────────────────────────
         let page_calendar = adw::PreferencesPage::builder()
@@ -2140,6 +2223,7 @@ fn filter_field_label(field: FilterField) -> &'static str {
         FilterField::Recipient => "Empfänger",
         FilterField::Body => "Nachricht",
         FilterField::Header => "Header",
+        FilterField::Label => "Label",
     }
 }
 
@@ -2167,6 +2251,8 @@ fn filter_action_label(action: &FilterAction) -> String {
         FilterAction::StopProcessing => "weitere Filterregeln nicht ausführen".to_string(),
         FilterAction::SetJunk => "als Spam markieren".to_string(),
         FilterAction::ClearJunk => "als kein Spam markieren".to_string(),
+        FilterAction::SetLabel(label) => format!("Label setzen „{label}“"),
+        FilterAction::ClearLabel(label) => format!("Label entfernen „{label}“"),
     }
 }
 

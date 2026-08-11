@@ -140,6 +140,26 @@
       <default>'comfortable'</default>
       <summary>Mail list density (compact, comfortable, or spacious)</summary>
     </key>
+    <key name="mail-show-avatar" type="b">
+      <default>true</default>
+      <summary>Show sender avatars in the mail list</summary>
+    </key>
+    <key name="mail-show-sender" type="b">
+      <default>true</default>
+      <summary>Show sender names in the mail list</summary>
+    </key>
+    <key name="mail-show-date" type="b">
+      <default>true</default>
+      <summary>Show message dates in the mail list</summary>
+    </key>
+    <key name="mail-show-preview-text" type="b">
+      <default>true</default>
+      <summary>Show message preview text in the mail list</summary>
+    </key>
+    <key name="mail-show-labels" type="b">
+      <default>true</default>
+      <summary>Show app-owned labels in the mail list</summary>
+    </key>
     <key name="color-scheme" type="s">
       <default>'system'</default>
       <summary>Application color scheme (system, light, or dark)</summary>
@@ -190,7 +210,7 @@
     </key>
     <key name="mail-sort-field" type="s">
       <default>'date'</default>
-      <summary>Mail list sort field (date, subject, or sender)</summary>
+      <summary>Mail list sort field (date, subject, sender, unread, flagged, or attachments)</summary>
     </key>
     <key name="mail-sort-descending" type="b">
       <default>true</default>

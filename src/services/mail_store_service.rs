@@ -82,6 +82,7 @@ pub struct ParsedMail {
     pub html_body: String,
     pub is_unread: bool,
     pub is_flagged: bool,
+    pub labels: Vec<String>,
     pub attachments: Vec<AttachmentInfo>,
 }
 
@@ -108,6 +109,7 @@ impl ParsedMail {
             html_body,
             is_unread,
             is_flagged,
+            labels,
             backend_location,
             attachments,
             ..
@@ -134,6 +136,7 @@ impl ParsedMail {
             &html_body,
             is_unread,
             is_flagged,
+            labels,
             backend_location,
             attachments,
         )
@@ -292,6 +295,7 @@ impl MailStoreService {
         let metadata = self.metadata.load();
         let folder_overrides = self.metadata.load_folder_overrides();
         let deleted = self.metadata.load_deleted();
+        let labels = self.metadata.load_labels();
         let filter_rules = MailFilterStore::default().load();
         let mut messages = self.load_raw_local_records_cancelable(cancelled);
 
@@ -300,6 +304,9 @@ impl MailStoreService {
         for message in &mut messages {
             if let Some(folder_id) = folder_overrides.get(&message.id) {
                 message.folder_id = folder_id.clone();
+            }
+            if let Some(message_labels) = labels.get(&message.id) {
+                message.labels = sorted_labels(message_labels);
             }
             if apply_client_state(&metadata, &filter_rules, message, Some(&self.metadata)) {
                 filtered_out.insert(message.id.clone());
@@ -337,6 +344,9 @@ impl MailStoreService {
                 if let Some(state) = metadata.get(&copy_id) {
                     copy.is_unread = state.is_unread;
                     copy.is_flagged = state.is_flagged;
+                }
+                if let Some(copy_labels) = labels.get(&copy_id) {
+                    copy.labels = sorted_labels(copy_labels);
                 }
                 copied_messages.push(copy);
             }
@@ -376,6 +386,7 @@ impl MailStoreService {
         let metadata = self.metadata.load();
         let folder_overrides = self.metadata.load_folder_overrides();
         let deleted = self.metadata.load_deleted();
+        let labels = self.metadata.load_labels();
         let cancelled = AtomicBool::new(false);
         let mut messages = self.load_raw_local_records_cancelable(&cancelled);
         let mut report = LocalFilterRunReport::default();
@@ -390,6 +401,9 @@ impl MailStoreService {
             if let Some(state) = metadata.get(&message.id) {
                 message.is_unread = state.is_unread;
                 message.is_flagged = state.is_flagged;
+            }
+            if let Some(message_labels) = labels.get(&message.id) {
+                message.labels = sorted_labels(message_labels);
             }
             if !message_matches_rule(&rule, message) {
                 continue;
@@ -541,7 +555,14 @@ fn message_matches_rule(rule: &MailFilterRule, message: &ParsedMail) -> bool {
         message.references.join(" "),
     );
 
-    rule.matches(&message.subject, &sender, &recipient, &body, &headers)
+    rule.matches(
+        &message.subject,
+        &sender,
+        &recipient,
+        &body,
+        &headers,
+        &message.labels,
+    )
 }
 
 fn apply_local_filters(
@@ -645,6 +666,12 @@ fn apply_filter_rule(
             FilterAction::ClearJunk => {
                 apply_local_filter_folder_action(rule, message, sidecar, "inbox", &mut effects);
             }
+            FilterAction::SetLabel(label) => {
+                apply_local_filter_label_action(rule, message, sidecar, label, true, &mut effects);
+            }
+            FilterAction::ClearLabel(label) => {
+                apply_local_filter_label_action(rule, message, sidecar, label, false, &mut effects);
+            }
             FilterAction::StopProcessing => {
                 effects.stop_processing = true;
                 break;
@@ -652,6 +679,66 @@ fn apply_filter_rule(
         }
     }
     effects
+}
+
+fn apply_local_filter_label_action(
+    rule: &MailFilterRule,
+    message: &mut ParsedMail,
+    sidecar: Option<&MailMetadataStore>,
+    label: &str,
+    labeled: bool,
+    effects: &mut FilterEffects,
+) {
+    let label = label.trim();
+    if label.is_empty() {
+        return;
+    }
+    if let Some(sidecar) = sidecar {
+        if let Err(error) = sidecar.set_label(&message.id, label, labeled) {
+            tracing::warn!(
+                %error,
+                message_id = %message.id,
+                label,
+                "Could not persist local filter label"
+            );
+            return;
+        }
+        let changed = if labeled {
+            if message
+                .labels
+                .iter()
+                .any(|candidate| candidate.eq_ignore_ascii_case(label))
+            {
+                false
+            } else {
+                message.labels.push(label.to_string());
+                message
+                    .labels
+                    .sort_by_key(|value| value.to_ascii_lowercase());
+                true
+            }
+        } else {
+            let original_len = message.labels.len();
+            message
+                .labels
+                .retain(|candidate| !candidate.eq_ignore_ascii_case(label));
+            original_len != message.labels.len()
+        };
+        effects.changed |= changed;
+    } else {
+        tracing::debug!(
+            rule = %rule.name,
+            label,
+            labeled,
+            "Local filter label action requires an app-owned sidecar or native Camel backend"
+        );
+    }
+}
+
+fn sorted_labels(labels: &std::collections::HashSet<String>) -> Vec<String> {
+    let mut labels = labels.iter().cloned().collect::<Vec<_>>();
+    labels.sort_by_key(|value| value.to_ascii_lowercase());
+    labels
 }
 
 fn apply_local_filter_folder_action(
@@ -1007,6 +1094,7 @@ pub(crate) fn parse_rfc822(
         html_body: body_html,
         is_unread: unread,
         is_flagged: false,
+        labels: Vec::new(),
         attachments,
     })
 }
@@ -1916,6 +2004,59 @@ mod tests {
             metadata.load_folder_overrides().get("junk-filter"),
             Some(&"inbox".to_string())
         );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn label_filter_actions_persist_and_update_local_messages() {
+        let root = temporary_directory("label-filter-actions");
+        let metadata = MailMetadataStore::new(root.join("state.json"));
+        let mut message = parse_rfc822(
+            "label-filter",
+            "inbox",
+            "From: Billing <billing@example.org>\nSubject: Suspicious\n\nBody",
+            true,
+        )
+        .expect("message should parse");
+        let make_rule = |action: FilterAction| MailFilterRule {
+            id: "label-rule".to_string(),
+            name: "Label rule".to_string(),
+            enabled: true,
+            scope: FilterScope::Incoming,
+            condition: FilterCondition {
+                field: FilterField::Subject,
+                value: "suspicious".to_string(),
+                operator: FilterOperator::Contains,
+            },
+            action,
+            conditions: Vec::new(),
+            actions: Vec::new(),
+            match_all: true,
+        };
+
+        assert!(!apply_client_state(
+            &HashMap::new(),
+            &[make_rule(FilterAction::SetLabel("Work".to_string()))],
+            &mut message,
+            Some(&metadata),
+        ));
+        assert_eq!(message.labels, vec!["Work"]);
+        assert!(
+            metadata
+                .load_labels()
+                .get("label-filter")
+                .is_some_and(|labels| labels.contains("Work"))
+        );
+
+        assert!(!apply_client_state(
+            &HashMap::new(),
+            &[make_rule(FilterAction::ClearLabel("work".to_string()))],
+            &mut message,
+            Some(&metadata),
+        ));
+        assert!(message.labels.is_empty());
+        assert!(metadata.load_labels().is_empty());
 
         let _ = fs::remove_dir_all(root);
     }

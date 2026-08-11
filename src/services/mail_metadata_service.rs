@@ -13,7 +13,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-const CURRENT_VERSION: u32 = 3;
+const CURRENT_VERSION: u32 = 4;
 const MIN_SUPPORTED_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -33,6 +33,8 @@ struct StateFile {
     deleted: HashSet<String>,
     #[serde(default)]
     copies: HashMap<String, HashSet<String>>,
+    #[serde(default)]
+    labels: HashMap<String, HashSet<String>>,
 }
 
 #[derive(Debug, Clone)]
@@ -63,6 +65,10 @@ impl MailMetadataStore {
 
     pub fn load_copies(&self) -> HashMap<String, HashSet<String>> {
         self.load_file().copies
+    }
+
+    pub fn load_labels(&self) -> HashMap<String, HashSet<String>> {
+        self.load_file().labels
     }
 
     pub fn set_folder_override(&self, id: &str, folder_id: Option<&str>) -> io::Result<()> {
@@ -101,6 +107,31 @@ impl MailMetadataStore {
             folders.remove(folder_id);
             if folders.is_empty() {
                 file.copies.remove(id);
+            }
+        }
+        self.save_file(&file)
+    }
+
+    pub fn set_label(&self, id: &str, label: &str, labeled: bool) -> io::Result<()> {
+        let id = id.trim();
+        let label = label.trim();
+        if id.is_empty() || label.is_empty() {
+            return Ok(());
+        }
+
+        let mut file = self.load_file();
+        if labeled {
+            let labels = file.labels.entry(id.to_string()).or_default();
+            if !labels
+                .iter()
+                .any(|candidate| candidate.eq_ignore_ascii_case(label))
+            {
+                labels.insert(label.to_string());
+            }
+        } else if let Some(labels) = file.labels.get_mut(id) {
+            labels.retain(|candidate| !candidate.eq_ignore_ascii_case(label));
+            if labels.is_empty() {
+                file.labels.remove(id);
             }
         }
         self.save_file(&file)
@@ -155,6 +186,7 @@ impl MailMetadataStore {
             folder_overrides: file.folder_overrides.clone(),
             deleted: file.deleted.clone(),
             copies: file.copies.clone(),
+            labels: file.labels.clone(),
         };
         let encoded = serde_json::to_vec_pretty(&file)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
@@ -386,6 +418,45 @@ mod tests {
         );
         assert!(MailMetadataStore::new(&path).load_deleted().is_empty());
         assert!(MailMetadataStore::new(&path).load_copies().is_empty());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn labels_are_persisted_case_insensitively_without_affecting_flags() {
+        let root = tempfile_dir("metadata-labels");
+        let path = root.join("state.json");
+        let store = MailMetadataStore::new(&path);
+        store
+            .update(
+                "message-1",
+                MailMessageState {
+                    is_unread: true,
+                    is_flagged: false,
+                },
+            )
+            .expect("message state should save");
+        store
+            .set_label("message-1", "Work", true)
+            .expect("label should save");
+        store
+            .set_label("message-1", "work", true)
+            .expect("duplicate label should save");
+
+        let reloaded = MailMetadataStore::new(&path);
+        let labels = reloaded.load_labels();
+        assert_eq!(labels.get("message-1").map(|values| values.len()), Some(1));
+        assert_eq!(
+            reloaded.load().get("message-1"),
+            Some(&MailMessageState {
+                is_unread: true,
+                is_flagged: false,
+            })
+        );
+        reloaded
+            .set_label("message-1", "WORK", false)
+            .expect("label should be removable");
+        assert!(MailMetadataStore::new(path).load_labels().is_empty());
 
         let _ = fs::remove_dir_all(root);
     }

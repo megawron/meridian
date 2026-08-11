@@ -410,7 +410,8 @@ werden.
 - [~] Die Mail-Liste kann portabel nach Datum, Betreff oder Absender sowie
   auf-/absteigend sortiert werden; Feld, Richtung und das Gruppieren von
   Unterhaltungen werden über GSettings gespeichert und beim Wiederaufbau der
-  Liste angewendet; Änderungen an diesen Einstellungen aktualisieren eine
+  Liste angewendet; neben Datum, Betreff und Absender stehen auch Ungelesen-
+  Status, Markierung und Anhänge als Sortierfelder zur Verfügung. Änderungen an diesen Einstellungen aktualisieren eine
   bereits geöffnete Ansicht ebenfalls. Vorschaufenster und die Dichte der
   Nachrichtenzeilen sowie die Mail-Arbeitsweise (modern nebeneinander oder
   klassisch Liste über Vorschau) werden ebenfalls persistent gespeichert und
@@ -418,7 +419,9 @@ werden.
   angewendet. Die Ordnerbreite sowie die Trennbalkenpositionen der modernen
   und klassischen Ansicht werden separat gespeichert, auch in Backup/Restore
   übernommen und durch responsive automatische Sidebar-Ausblendungen nicht
-  überschrieben. Eine providerunabhängige
+  überschrieben. Absender, Avatare, Datum, Vorschautext und app-eigene Labels
+  der Mail-Zeile lassen sich ebenfalls einzeln ein-/ausblenden und werden live
+  sowie in Backup/Restore angewendet. Eine providerunabhängige
   Datumsnormalisierung und serverseitige Sortierung bleiben Teil der
   Linux/Camel-Strecke.
 - [~] Anhang „Speichern unter“ ist für lokal gelesene MIME-Anhänge angebunden;
@@ -771,10 +774,11 @@ werden.
   portable Aktionen; „weitere Filterregeln nicht ausführen“ beendet die
   lokale Regelkette an der importierten Reihenfolge. Spam-/Kein-Spam-Aktionen
   verwenden portabel die Junk-/Inbox-Platzierung. Lokale Kopien werden als
-  eigene logische Datensätze mit
-  unabhängigen Zuständen dargestellt; Remote-Kopien und serverseitige
-  Mehrfachlabels benötigen weiter den Camel-/Multi-Label-Pfad;
-  die lokale Regelbedingung unterstützt Betreff, Absender, Empfänger,
+  eigene logische Datensätze mit unabhängigen Zuständen dargestellt. App-eigene
+  Labels können portabel gesetzt, entfernt, angezeigt und über
+  `label:` gesucht werden; Remote-Kopien und serverseitige Mehrfachlabels
+  benötigen weiter den Camel-/Multi-Label-Pfad. Die lokale Regelbedingung
+  unterstützt Betreff, Absender, Empfänger,
   Nachrichtentext und RFC822-Header sowie die Vergleiche enthält, enthält
   nicht, ist, ist nicht, beginnt mit, endet mit und existiert. Alte
   app-eigene Filterdateien werden mit dem bisherigen „enthält“-Standard
@@ -783,7 +787,7 @@ werden.
   zurück.
 - [ ] Camel-Filterdriver mit persistenten Regeln, Reihenfolge, Bedingungen,
   vollständigen Aktionen, Testlauf und Fehlerprotokoll.
-- [~] Die lokale Suchsprache unterstützt Feld-, Status-, Ordner-, Datums-,
+- [~] Die lokale Suchsprache unterstützt Feld-, Label-, Status-, Ordner-, Datums-,
   Zitat- und Anhangsoperatoren (`in:`/`folder:`, `on:`, `older:`/`newer:`);
   portable Suchordner können gespeichert, bearbeitet,
   beim Start geladen und aus der Sidebar entfernt werden. Eine globale GTK4-rs-Suche

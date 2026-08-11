@@ -114,6 +114,16 @@ struct BackupSettings {
     mail_classic_preview_position: i32,
     #[serde(default = "default_mail_row_density")]
     mail_row_density: String,
+    #[serde(default = "default_mail_show_avatar")]
+    mail_show_avatar: bool,
+    #[serde(default = "default_mail_show_sender")]
+    mail_show_sender: bool,
+    #[serde(default = "default_mail_show_date")]
+    mail_show_date: bool,
+    #[serde(default = "default_mail_show_preview_text")]
+    mail_show_preview_text: bool,
+    #[serde(default = "default_mail_show_labels")]
+    mail_show_labels: bool,
     color_scheme: String,
     sign_new_messages: bool,
     default_pgp_key: String,
@@ -194,6 +204,26 @@ fn default_mail_row_density() -> String {
     "comfortable".to_string()
 }
 
+fn default_mail_show_avatar() -> bool {
+    true
+}
+
+fn default_mail_show_sender() -> bool {
+    true
+}
+
+fn default_mail_show_date() -> bool {
+    true
+}
+
+fn default_mail_show_preview_text() -> bool {
+    true
+}
+
+fn default_mail_show_labels() -> bool {
+    true
+}
+
 fn default_mail_layout() -> String {
     "modern".to_string()
 }
@@ -264,6 +294,11 @@ impl BackupSettings {
             mail_modern_preview_position: settings.mail_preview_position("modern"),
             mail_classic_preview_position: settings.mail_preview_position("classic"),
             mail_row_density: settings.mail_row_density(),
+            mail_show_avatar: settings.mail_show_avatar(),
+            mail_show_sender: settings.mail_show_sender(),
+            mail_show_date: settings.mail_show_date(),
+            mail_show_preview_text: settings.mail_show_preview_text(),
+            mail_show_labels: settings.mail_show_labels(),
             color_scheme: settings.color_scheme(),
             sign_new_messages: settings.sign_new_messages(),
             default_pgp_key: settings.default_pgp_key(),
@@ -320,6 +355,11 @@ impl BackupSettings {
         settings.set_mail_preview_position("modern", self.mail_modern_preview_position);
         settings.set_mail_preview_position("classic", self.mail_classic_preview_position);
         settings.set_mail_row_density(&self.mail_row_density);
+        settings.set_mail_show_avatar(self.mail_show_avatar);
+        settings.set_mail_show_sender(self.mail_show_sender);
+        settings.set_mail_show_date(self.mail_show_date);
+        settings.set_mail_show_preview_text(self.mail_show_preview_text);
+        settings.set_mail_show_labels(self.mail_show_labels);
         settings.set_color_scheme(&self.color_scheme);
         settings.set_sign_new_messages(self.sign_new_messages);
         settings.set_default_pgp_key(&self.default_pgp_key);
@@ -923,6 +963,11 @@ mod tests {
         assert_eq!(settings.mail_modern_preview_position, 420);
         assert_eq!(settings.mail_classic_preview_position, 360);
         assert_eq!(settings.mail_row_density, "comfortable");
+        assert!(settings.mail_show_avatar);
+        assert!(settings.mail_show_sender);
+        assert!(settings.mail_show_date);
+        assert!(settings.mail_show_preview_text);
+        assert!(settings.mail_show_labels);
         assert!(!settings.calendar_show_week_numbers);
         assert_eq!(settings.mail_sort_field, "date");
         assert!(settings.mail_sort_descending);

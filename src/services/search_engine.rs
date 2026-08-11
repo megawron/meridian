@@ -250,6 +250,7 @@ mod tests {
             html_body: "<p>The project is ready</p>".to_string(),
             is_unread: true,
             is_flagged: false,
+            labels: Vec::new(),
             attachments: Vec::new(),
         }];
 

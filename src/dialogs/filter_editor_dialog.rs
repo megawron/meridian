@@ -94,6 +94,7 @@ fn filter_field_index(field: FilterField) -> u32 {
         FilterField::Recipient => 2,
         FilterField::Body => 3,
         FilterField::Header => 4,
+        FilterField::Label => 5,
     }
 }
 
@@ -133,6 +134,8 @@ fn filter_action_index(action: &FilterAction) -> u32 {
         FilterAction::StopProcessing => 7,
         FilterAction::SetJunk => 8,
         FilterAction::ClearJunk => 9,
+        FilterAction::SetLabel(_) => 10,
+        FilterAction::ClearLabel(_) => 11,
     }
 }
 
@@ -143,6 +146,7 @@ fn condition_from_editor(editor: &ConditionEditor) -> Option<FilterCondition> {
         2 => FilterField::Recipient,
         3 => FilterField::Body,
         4 => FilterField::Header,
+        5 => FilterField::Label,
         _ => FilterField::Subject,
     };
     let operator = filter_operator_from_index(editor.operator.selected());
@@ -170,7 +174,11 @@ fn action_from_editor(editor: &ActionEditor) -> Result<FilterAction, String> {
         6 => Ok(FilterAction::Delete),
         7 => Ok(FilterAction::StopProcessing),
         8 => Ok(FilterAction::SetJunk),
-        _ => Ok(FilterAction::ClearJunk),
+        9 => Ok(FilterAction::ClearJunk),
+        10 if target.is_empty() => Err("Für das Label ist ein Name erforderlich".into()),
+        10 => Ok(FilterAction::SetLabel(target)),
+        11 if target.is_empty() => Err("Für das Label ist ein Name erforderlich".into()),
+        _ => Ok(FilterAction::ClearLabel(target)),
     }
 }
 
@@ -188,6 +196,7 @@ fn append_condition_editor(
         "Empfänger",
         "Nachrichteninhalt",
         "Headerfeld",
+        "Label",
     ]);
     let field = gtk::DropDown::new(Some(field_model), None::<&gtk::Expression>);
     field.set_selected(filter_field_index(condition.field));
@@ -275,20 +284,29 @@ fn append_action_editor(
         "Weitere Filterregeln nicht ausführen",
         "Als Spam markieren",
         "Als kein Spam markieren",
+        "Label setzen",
+        "Label entfernen",
     ]);
     let action_type = gtk::DropDown::new(Some(action_model), None::<&gtk::Expression>);
     action_type.set_selected(filter_action_index(&action));
     action_type.set_width_request(220);
     let target = gtk::Entry::builder()
-        .placeholder_text("Zielordner, z. B. archive")
+        .placeholder_text("Zielordner oder Label")
         .hexpand(true)
         .build();
-    if let FilterAction::MoveToFolder(folder) | FilterAction::CopyToFolder(folder) = &action {
-        target.set_text(folder);
+    match &action {
+        FilterAction::MoveToFolder(folder)
+        | FilterAction::CopyToFolder(folder)
+        | FilterAction::SetLabel(folder)
+        | FilterAction::ClearLabel(folder) => target.set_text(folder),
+        _ => {}
     }
     target.set_sensitive(matches!(
         action,
-        FilterAction::MoveToFolder(_) | FilterAction::CopyToFolder(_)
+        FilterAction::MoveToFolder(_)
+            | FilterAction::CopyToFolder(_)
+            | FilterAction::SetLabel(_)
+            | FilterAction::ClearLabel(_)
     ));
     let remove = gtk::Button::builder()
         .icon_name("user-trash-symbolic")
@@ -307,10 +325,14 @@ fn append_action_editor(
 
     let target_for_type = target.clone();
     action_type.connect_selected_notify(move |dropdown| {
-        let needs_target = matches!(dropdown.selected(), 0 | 1);
+        let needs_target = matches!(dropdown.selected(), 0 | 1 | 10 | 11);
         target_for_type.set_sensitive(needs_target);
         if needs_target && target_for_type.text().trim().is_empty() {
-            target_for_type.set_text("archive");
+            target_for_type.set_text(if matches!(dropdown.selected(), 10 | 11) {
+                "work"
+            } else {
+                "archive"
+            });
         }
     });
 

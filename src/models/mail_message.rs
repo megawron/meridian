@@ -47,6 +47,7 @@ mod imp {
         pub html_body: RefCell<String>,
         pub is_unread: RefCell<bool>,
         pub is_flagged: RefCell<bool>,
+        pub labels: RefCell<Vec<String>>,
         pub(crate) backend_location: RefCell<Option<MailBackendLocation>>,
         pub attachments: RefCell<Vec<AttachmentInfo>>,
     }
@@ -88,6 +89,7 @@ impl MailMessageObject {
         html_body: &str,
         is_unread: bool,
         is_flagged: bool,
+        labels: Vec<String>,
         backend_location: Option<MailBackendLocation>,
         attachments: Vec<AttachmentInfo>,
     ) -> Self {
@@ -113,6 +115,7 @@ impl MailMessageObject {
         *imp.html_body.borrow_mut() = html_body.to_string();
         *imp.is_unread.borrow_mut() = is_unread;
         *imp.is_flagged.borrow_mut() = is_flagged;
+        *imp.labels.borrow_mut() = labels;
         *imp.backend_location.borrow_mut() = backend_location;
         *imp.attachments.borrow_mut() = attachments;
         obj
@@ -210,6 +213,18 @@ impl MailMessageObject {
 
     pub fn set_flagged(&self, flagged: bool) {
         *self.imp().is_flagged.borrow_mut() = flagged;
+    }
+
+    pub fn labels(&self) -> Vec<String> {
+        self.imp().labels.borrow().clone()
+    }
+
+    pub fn has_label(&self, wanted: &str) -> bool {
+        self.imp()
+            .labels
+            .borrow()
+            .iter()
+            .any(|label| label.eq_ignore_ascii_case(wanted.trim()))
     }
 
     pub(crate) fn backend_location(&self) -> Option<MailBackendLocation> {
