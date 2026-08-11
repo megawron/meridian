@@ -197,6 +197,26 @@ impl MemosPage {
             .css_classes(vec!["navigation-sidebar"])
             .build();
 
+        let source_header = gtk::Label::builder()
+            .label("Notizlisten")
+            .css_classes(vec!["title-5"])
+            .halign(gtk::Align::Start)
+            .margin_top(8)
+            .margin_bottom(2)
+            .build();
+        sidebar_box.append(&source_header);
+        let memo_source_list = gtk::ListBox::builder()
+            .selection_mode(gtk::SelectionMode::Single)
+            .css_classes(vec!["navigation-sidebar"])
+            .build();
+        sidebar_box.append(&memo_source_list);
+        let source_selector_for_sidebar = source_selector.clone();
+        memo_source_list.connect_row_selected(move |_, row| {
+            if let Some(row) = row {
+                source_selector_for_sidebar.set_selected(row.index() as u32);
+            }
+        });
+
         let memo_sort_for_list = Rc::clone(&memo_sort);
         let memo_sort_descending_for_list = Rc::clone(&memo_sort_descending);
         memo_list.set_sort_func(move |left, right| {
@@ -296,6 +316,7 @@ impl MemosPage {
 
         let memo_source_filter_for_selector = Rc::clone(&memo_source_filter);
         let source_uids_for_selector = Rc::clone(&source_uids);
+        let memo_source_list_for_selector = memo_source_list.clone();
         let search_entry_for_source = search_entry.clone();
         let memo_list_for_source = memo_list.clone();
         let memo_records_for_source = Rc::clone(&memo_records);
@@ -313,6 +334,11 @@ impl MemosPage {
             memo_source_filter_for_selector.replace(source_filter.clone());
             if let Some(settings) = AppSettings::try_new() {
                 settings.set_memo_source_filter(source_filter.as_deref().unwrap_or_default());
+            }
+            if let Some(row) =
+                memo_source_list_for_selector.row_at_index(selector.selected() as i32)
+            {
+                memo_source_list_for_selector.select_row(Some(&row));
             }
             let query = search_entry_for_source.text().trim().to_lowercase();
             if let Some(page) = page_weak_for_source.upgrade() {
@@ -388,6 +414,7 @@ impl MemosPage {
         let source_model_for_load = source_model.clone();
         let source_uids_for_load = Rc::clone(&source_uids);
         let source_selector_for_load = source_selector.clone();
+        let memo_source_list_for_load = memo_source_list.clone();
         glib::spawn_future_local(async move {
             let discovery =
                 eds_service::discover_sources(eds_service::EdsSourceKind::Calendar).await;
@@ -421,12 +448,28 @@ impl MemosPage {
             let name_refs = names.iter().map(String::as_str).collect::<Vec<_>>();
             source_model_for_load.splice(0, source_model_for_load.n_items(), &name_refs);
             source_uids_for_load.replace(uids.clone());
+            while let Some(child) = memo_source_list_for_load.first_child() {
+                memo_source_list_for_load.remove(&child);
+            }
+            for (index, name) in names.iter().enumerate() {
+                let row = adw::ActionRow::builder().title(name).build();
+                let image = gtk::Image::from_icon_name(if index == 0 {
+                    "view-list-symbolic"
+                } else {
+                    "view-list-details-symbolic"
+                });
+                row.add_prefix(&image);
+                memo_source_list_for_load.append(&row);
+            }
             let selected = initial_source_filter
                 .as_deref()
                 .and_then(|uid| uids.iter().position(|candidate| candidate == uid))
                 .map(|index| index as u32 + 1)
                 .unwrap_or(0);
             source_selector_for_load.set_selected(selected);
+            if let Some(row) = memo_source_list_for_load.row_at_index(selected as i32) {
+                memo_source_list_for_load.select_row(Some(&row));
+            }
         });
 
         let new_memo_btn = gtk::Button::builder()

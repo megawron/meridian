@@ -12,6 +12,8 @@ use std::fs;
 #[derive(Debug, Clone)]
 pub(crate) struct OutgoingMessage {
     pub(crate) source_uid: String,
+    pub(crate) from: String,
+    pub(crate) reply_to: String,
     pub(crate) to: String,
     pub(crate) cc: String,
     pub(crate) bcc: String,
@@ -64,6 +66,8 @@ pub(crate) fn build_rfc822(message: &OutgoingMessage) -> Result<Vec<u8>, String>
     validate_header_value("Cc", &message.cc)?;
     validate_header_value("Bcc", &message.bcc)?;
     validate_header_value("Betreff", &message.subject)?;
+    validate_header_value("Von", &message.from)?;
+    validate_header_value("Reply-To", &message.reply_to)?;
     if let Some(method) = message.calendar_method.as_deref() {
         validate_header_value("iTIP-Methode", method)?;
     }
@@ -92,8 +96,8 @@ pub(crate) fn build_rfc822(message: &OutgoingMessage) -> Result<Vec<u8>, String>
         .collect::<Result<Vec<_>, String>>()?;
 
     build_rfc822_parts(
-        "",
-        "",
+        &message.from,
+        &message.reply_to,
         &message.to,
         &message.cc,
         &message.bcc,
@@ -476,6 +480,8 @@ mod tests {
     fn builds_html_rfc822_message() {
         let raw = build_rfc822(&OutgoingMessage {
             source_uid: "account-1".to_string(),
+            from: "Person <person@example.org>".to_string(),
+            reply_to: "reply@example.org".to_string(),
             to: "person@example.org".to_string(),
             cc: String::new(),
             bcc: String::new(),
@@ -488,6 +494,8 @@ mod tests {
         })
         .expect("message should build");
         let text = String::from_utf8(raw).expect("message should be UTF-8");
+        assert!(text.contains("From: Person <person@example.org>\r\n"));
+        assert!(text.contains("Reply-To: reply@example.org\r\n"));
         assert!(text.contains("To: person@example.org\r\n"));
         assert!(text.contains("Subject: =?UTF-8?B?R3LDvMOfZQ==?=\r\n"));
         assert!(text.contains("Content-Type: text/html; charset=UTF-8\r\n"));
@@ -499,6 +507,8 @@ mod tests {
         let path = temporary_file("attachment", b"hello");
         let raw = build_rfc822(&OutgoingMessage {
             source_uid: "account-1".to_string(),
+            from: String::new(),
+            reply_to: String::new(),
             to: "one@example.org; two@example.org".to_string(),
             cc: String::new(),
             bcc: String::new(),
@@ -559,6 +569,8 @@ mod tests {
     fn rejects_header_injection_and_missing_recipients() {
         let mut message = OutgoingMessage {
             source_uid: "account-1".to_string(),
+            from: String::new(),
+            reply_to: String::new(),
             to: String::new(),
             cc: String::new(),
             bcc: String::new(),
@@ -587,6 +599,8 @@ mod tests {
     fn builds_plain_text_messages_without_html_mime_type() {
         let raw = build_rfc822(&OutgoingMessage {
             source_uid: "account-1".to_string(),
+            from: String::new(),
+            reply_to: String::new(),
             to: "person@example.org".to_string(),
             cc: String::new(),
             bcc: String::new(),
@@ -614,6 +628,8 @@ mod tests {
         );
         let raw = build_rfc822(&OutgoingMessage {
             source_uid: "account-1".to_string(),
+            from: String::new(),
+            reply_to: String::new(),
             to: "organizer@example.org".to_string(),
             cc: String::new(),
             bcc: String::new(),

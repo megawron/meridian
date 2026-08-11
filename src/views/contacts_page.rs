@@ -99,6 +99,27 @@ impl ContactsPage {
         book_selector.set_margin_bottom(8);
         sidebar_box.append(&book_selector);
 
+        let book_header = gtk::Label::builder()
+            .label("Adressbücher")
+            .css_classes(vec!["title-5"])
+            .halign(gtk::Align::Start)
+            .margin_start(8)
+            .margin_top(4)
+            .margin_bottom(2)
+            .build();
+        sidebar_box.append(&book_header);
+        let book_source_list = gtk::ListBox::builder()
+            .selection_mode(gtk::SelectionMode::Single)
+            .css_classes(vec!["navigation-sidebar"])
+            .build();
+        sidebar_box.append(&book_source_list);
+        let book_selector_for_sidebar = book_selector.clone();
+        book_source_list.connect_row_selected(move |_, row| {
+            if let Some(row) = row {
+                book_selector_for_sidebar.set_selected(row.index() as u32);
+            }
+        });
+
         let category_model = gtk::StringList::new(&["Alle Kategorien"]);
         let category_selector =
             gtk::DropDown::new(Some(category_model.clone()), None::<&gtk::Expression>);
@@ -134,6 +155,7 @@ impl ContactsPage {
         let book_model_for_load = book_model.clone();
         let book_source_uids_for_load = Rc::clone(&book_source_uids);
         let book_selector_for_load = book_selector.clone();
+        let book_source_list_for_load = book_source_list.clone();
         let empty_state_for_load = empty_state.clone();
         let default_source_uid = AppSettings::try_new()
             .map(|settings| settings.default_address_book_source_uid())
@@ -171,11 +193,27 @@ impl ContactsPage {
             let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
             book_model_for_load.splice(0, book_model_for_load.n_items(), &name_refs);
             book_source_uids_for_load.replace(uids.clone());
+            while let Some(child) = book_source_list_for_load.first_child() {
+                book_source_list_for_load.remove(&child);
+            }
+            for (index, name) in names.iter().enumerate() {
+                let row = adw::ActionRow::builder().title(name).build();
+                let image = gtk::Image::from_icon_name(if index == 0 {
+                    "view-list-symbolic"
+                } else {
+                    "x-office-address-book-symbolic"
+                });
+                row.add_prefix(&image);
+                book_source_list_for_load.append(&row);
+            }
             let selected_index = uids
                 .iter()
                 .position(|uid| uid == &default_source_uid)
                 .unwrap_or(0) as u32;
             book_selector_for_load.set_selected(selected_index);
+            if let Some(row) = book_source_list_for_load.row_at_index(selected_index as i32) {
+                book_source_list_for_load.select_row(Some(&row));
+            }
             empty_state_for_load.set_label(&format!(
                 "{status}; Kontakte werden nach dem EBook-Stream geladen."
             ));
@@ -233,6 +271,7 @@ impl ContactsPage {
         let selected_category_for_book = Rc::clone(&selected_category);
         let duplicate_only_for_book = Rc::clone(&duplicate_only);
         let book_source_uids_for_filter = Rc::clone(&book_source_uids);
+        let book_source_list_for_filter = book_source_list.clone();
         book_selector.connect_selected_notify(glib::clone!(
             #[weak]
             contact_list,
@@ -245,6 +284,11 @@ impl ContactsPage {
                 *selected_book_for_filter.borrow_mut() = selected.clone();
                 if let Some(settings) = AppSettings::try_new() {
                     settings.set_default_address_book_source_uid(&selected);
+                }
+                if let Some(row) =
+                    book_source_list_for_filter.row_at_index(selector.selected() as i32)
+                {
+                    book_source_list_for_filter.select_row(Some(&row));
                 }
                 set_contact_filter(
                     &contact_list,

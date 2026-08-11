@@ -620,6 +620,11 @@ werden.
   sowie EDS-Drafts/Sent-Fallback sind angeschlossen; die Composer-Quellenliste
   verwendet ebenfalls die live-/cachefähige EDS-Entdeckung und kennzeichnet
   importierte Offline-Quellen ausdrücklich. Lokale
+  aktivierte Profile werden einschließlich ihrer Alias-Adressen als getrennte
+  auswählbare Von-Identitäten angeboten; `From` und `Reply-To` werden für den
+  portablen RFC822-Versand und lokale Entwürfe aus der gewählten Identität
+  übernommen, und ein wiedergeöffneter Entwurf stellt die passende Alias-
+  Identität wieder her. Lokale
   Entwurfsverwaltung und konfigurierbares lokales Autosave sind ebenfalls
   angeschlossen. Eine lokale Klartext-Standardsignatur wird über GSettings
   verwaltet und in neue, beantwortete und weitergeleitete Nachrichten
@@ -717,8 +722,13 @@ werden.
   werden persistent über EDS geschrieben. Der lokale iCalendar-Importer bleibt
   ein expliziter Fallback und sein Quellordner ist über die Einstellungen
   auswählbar; inkrementelle ECal-Signale sind für die drei
-  Listenmodelle angebunden, vollständige Erinnerungs-/Aufgabenlisten-Parität
-  fehlt noch. Wenn EDS nicht verfügbar ist, können neue lokale VTODOs und
+  Listenmodelle angebunden. Die Kalenderseitenleiste zeigt die geladenen
+  Aufgaben jetzt ebenfalls mit Fälligkeit, Priorität und Status; der
+  Erledigt-Schalter schreibt den Status über denselben lokalen bzw. nativen
+  ECal-Mutationspfad zurück. Aufgaben- und Notizseiten zeigen ihre
+  verfügbaren EDS-/lokalen Listen zusätzlich als synchronisierte linke
+  Navigation. Eine vollständige Aufgabenlisten-Parität fehlt noch. Wenn EDS
+  nicht verfügbar ist, können neue lokale VTODOs und
   VJOURNALs im app-eigenen Kalenderbestand persistent gespeichert werden.
   Standard-Aufgabenliste und Standard-Notizliste werden getrennt von der
   Standard-Kalenderquelle in den Einstellungen vorselektiert, als lokale oder
@@ -767,6 +777,8 @@ werden.
   die Aufgabenansicht bietet Suche sowie die Kategorien Alle/Heute/Wichtig/
   Überfällig/In Bearbeitung/Abgebrochen/Erledigt und filtert nach
   Statusänderungen erneut; die Notizensuche umfasst
+  die Aufgaben-Seitenleiste zeigt die verfügbaren EDS-/lokalen Listen direkt
+  als synchronisierte Navigation neben dem Quellenfilter;
   Titel, Inhalt, Zeitstempel und die erhaltene VJOURNAL-Komponente. VTODO-
   Kategorien können bei VJOURNAL-Notizen ebenfalls portabel angelegt,
   angezeigt und beim Bearbeiten als RFC5545-CATEGORIES erhalten werden.
@@ -815,6 +827,9 @@ werden.
   importiert werden. Der app-eigene vCard-Bestand unterstützt Erstellen,
   Bearbeiten und Löschen; explizit ausgewählte externe Ordner bleiben
   schreibgeschützt. Auswahl, Detail und Suche sind vorhanden.
+  Die verfügbaren EDS-/lokalen Adressbücher werden zusätzlich als direkte
+  linke Navigation neben dem bestehenden Quellenfilter angezeigt und bleiben
+  mit ihm synchron.
   Aus dem Kontakt-Detail öffnet die Mailaktion den Composer mit den
   ausgewählten E-Mail-Adressen vorbefüllt; die sichtbaren Adressen können
   außerdem direkt in die Zwischenablage kopiert werden.

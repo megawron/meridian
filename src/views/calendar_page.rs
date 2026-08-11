@@ -4,7 +4,7 @@
 
 use adw::prelude::*;
 use adw::subclass::prelude::*;
-use chrono::{Datelike, Duration, Local, NaiveDate, NaiveDateTime, Timelike, Weekday};
+use chrono::{Datelike, Duration, Local, NaiveDate, NaiveDateTime, Timelike, Utc, Weekday};
 use gtk::{gdk, gio, glib};
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
@@ -13,7 +13,8 @@ use std::rc::Rc;
 use crate::services::calendar_category_service::CalendarCategoryStore;
 use crate::services::calendar_category_service::category_names_from_ical_component;
 use crate::services::calendar_store_service::{
-    CalendarEventRecord, CalendarStoreService, export_ical_component, update_ical_property,
+    CalendarEventRecord, CalendarStoreService, TaskRecord, export_ical_component,
+    update_ical_property,
 };
 use crate::services::ecal_service::{
     CalendarDataOrigin, ECalChangeKind, ECalComponentType, ECalRecord, ECalService, ECalSyncEvent,
@@ -80,6 +81,9 @@ mod imp {
         pub agenda_view: RefCell<Option<gtk::Box>>,
         pub event_records: RefCell<Option<Rc<RefCell<Vec<CalendarEventRecord>>>>>,
         pub event_list: RefCell<Option<gtk::ListBox>>,
+        pub task_records: RefCell<Option<Rc<RefCell<Vec<TaskRecord>>>>>,
+        pub task_list: RefCell<Option<gtk::ListBox>>,
+        pub task_state: RefCell<Option<gtk::Label>>,
         pub calendar_search_query: RefCell<String>,
         pub calendar_category_filter: RefCell<Option<String>>,
         pub calendar_category_model: RefCell<Option<gtk::StringList>>,
@@ -105,6 +109,9 @@ mod imp {
                 agenda_view: RefCell::new(None),
                 event_records: RefCell::new(None),
                 event_list: RefCell::new(None),
+                task_records: RefCell::new(None),
+                task_list: RefCell::new(None),
+                task_state: RefCell::new(None),
                 calendar_search_query: RefCell::new(String::new()),
                 calendar_category_filter: RefCell::new(None),
                 calendar_category_model: RefCell::new(None),
@@ -247,6 +254,10 @@ impl CalendarPage {
             .event_records
             .replace(Some(Rc::clone(&event_records)));
         self.imp().event_list.replace(Some(event_list.clone()));
+        let task_records = Rc::new(RefCell::new(Vec::<TaskRecord>::new()));
+        self.imp()
+            .task_records
+            .replace(Some(Rc::clone(&task_records)));
 
         let category_model = gtk::StringList::new(&["Alle Kategorien"]);
         let category_selector =
@@ -297,6 +308,7 @@ impl CalendarPage {
         let local_item_state_for_load = local_item_state.clone();
         let event_list_for_load = event_list.clone();
         let event_records_for_load = Rc::clone(&event_records);
+        let task_records_for_load = Rc::clone(&task_records);
         let page_for_load = self.downgrade();
         let (local_sender, local_receiver) = async_channel::bounded(1);
         std::thread::spawn(move || {
@@ -309,6 +321,7 @@ impl CalendarPage {
             match local_receiver.recv().await {
                 Ok(result) => {
                     let count = result.snapshot.events.len();
+                    task_records_for_load.replace(result.snapshot.tasks.clone());
                     if let Some(warning) = result.warning {
                         tracing::warn!(%warning, "Calendar data loaded with a backend warning");
                     }
@@ -339,10 +352,11 @@ impl CalendarPage {
                                 event,
                             );
                         }
-                        if let Some(page) = page_for_load.upgrade() {
-                            page.refresh_calendar_views();
-                            page.refresh_event_list_visibility();
-                        }
+                    }
+                    if let Some(page) = page_for_load.upgrade() {
+                        page.refresh_task_sidebar();
+                        page.refresh_calendar_views();
+                        page.refresh_event_list_visibility();
                     }
                 }
                 Err(error) => tracing::debug!(%error, "Calendar snapshot unavailable"),
@@ -353,6 +367,7 @@ impl CalendarPage {
             *self.imp().ecal_monitor_cancel.borrow_mut() = Some(cancel);
             let event_list_for_monitor = event_list.clone();
             let event_records_for_monitor = Rc::clone(&event_records);
+            let task_records_for_monitor = Rc::clone(&task_records);
             let local_item_state_for_monitor = local_item_state.clone();
             let page_for_monitor = self.downgrade();
             glib::spawn_future_local(async move {
@@ -371,21 +386,37 @@ impl CalendarPage {
                         }
                         ECalSyncEvent::Change(change) => match change.kind {
                             ECalChangeKind::Removed => {
-                                remove_event_row(
-                                    &event_list_for_monitor,
-                                    Rc::clone(&event_records_for_monitor),
-                                    &change.source_uid,
-                                    &change.uid,
-                                );
-                            }
-                            ECalChangeKind::Added | ECalChangeKind::Modified => {
-                                if let Some(ECalRecord::Event(event)) = parse_change_record(&change)
-                                {
-                                    upsert_event_row(
+                                if change.source_type == ECalComponentType::Task {
+                                    remove_task_record(
+                                        Rc::clone(&task_records_for_monitor),
+                                        &change.source_uid,
+                                        &change.uid,
+                                    );
+                                } else if change.source_type == ECalComponentType::Event {
+                                    remove_event_row(
                                         &event_list_for_monitor,
                                         Rc::clone(&event_records_for_monitor),
-                                        event,
+                                        &change.source_uid,
+                                        &change.uid,
                                     );
+                                }
+                            }
+                            ECalChangeKind::Added | ECalChangeKind::Modified => {
+                                match parse_change_record(&change) {
+                                    Some(ECalRecord::Event(event)) => {
+                                        upsert_event_row(
+                                            &event_list_for_monitor,
+                                            Rc::clone(&event_records_for_monitor),
+                                            event,
+                                        );
+                                    }
+                                    Some(ECalRecord::Task(task)) => {
+                                        upsert_task_record(
+                                            Rc::clone(&task_records_for_monitor),
+                                            task,
+                                        );
+                                    }
+                                    Some(ECalRecord::Memo(_)) | None => {}
                                 }
                             }
                         },
@@ -399,6 +430,9 @@ impl CalendarPage {
                     if count > 0 {
                         local_item_state_for_monitor
                             .set_label(&format!("{count} Termin(e) aus EDS synchronisiert."));
+                    }
+                    if let Some(page) = page_for_monitor.upgrade() {
+                        page.refresh_task_sidebar();
                     }
                     if let Some(page) = page_for_monitor.upgrade() {
                         page.refresh_calendar_views();
@@ -470,6 +504,7 @@ impl CalendarPage {
                     if let Some(settings) = AppSettings::try_new() {
                         settings.set_calendar_hidden_sources(&hidden_sources);
                     }
+                    page.refresh_task_sidebar();
                     page.refresh_calendar_views();
                     page.refresh_event_list_visibility();
                 });
@@ -504,6 +539,7 @@ impl CalendarPage {
                     if let Some(settings) = AppSettings::try_new() {
                         settings.set_calendar_hidden_sources(&hidden_sources);
                     }
+                    page.refresh_task_sidebar();
                     page.refresh_calendar_views();
                     page.refresh_event_list_visibility();
                 });
@@ -535,29 +571,17 @@ impl CalendarPage {
             .selection_mode(gtk::SelectionMode::None)
             .css_classes(vec!["boxed-list"])
             .build();
-
-        let tasks: [(&str, &str); 0] = [];
-
-        for (title, due) in tasks {
-            let row = adw::ActionRow::builder().title(title).subtitle(due).build();
-
-            let check = gtk::CheckButton::builder()
-                .valign(gtk::Align::Center)
-                .build();
-            row.add_prefix(&check);
-
-            task_list.append(&row);
-        }
-
         sidebar_box.append(&task_list);
+        self.imp().task_list.replace(Some(task_list));
 
         let task_state = gtk::Label::builder()
-            .label("Aufgaben werden nach der ECal-Anbindung angezeigt")
+            .label("Keine Aufgaben geladen")
             .css_classes(vec!["dim-label"])
             .wrap(true)
             .halign(gtk::Align::Start)
             .build();
         sidebar_box.append(&task_state);
+        self.imp().task_state.replace(Some(task_state));
 
         let sidebar_scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
@@ -908,6 +932,7 @@ impl CalendarPage {
             settings.connect_changed(Some("calendar-hidden-sources"), move |_, _| {
                 if let Some(page) = page_weak.upgrade() {
                     page.refresh_hidden_calendar_sources();
+                    page.refresh_task_sidebar();
                     page.refresh_calendar_views();
                     page.refresh_event_list_visibility();
                 }
@@ -1008,6 +1033,57 @@ impl CalendarPage {
             .replace(hidden_sources.into_iter().collect());
     }
 
+    fn refresh_task_sidebar(&self) {
+        let Some(task_list) = self.imp().task_list.borrow().as_ref().cloned() else {
+            return;
+        };
+        let Some(records) = self.imp().task_records.borrow().as_ref().cloned() else {
+            return;
+        };
+
+        while let Some(child) = task_list.first_child() {
+            task_list.remove(&child);
+        }
+
+        let all_count = records.borrow().len();
+        let mut tasks = records
+            .borrow()
+            .iter()
+            .filter(|task| self.calendar_source_is_visible(&task.source_uid))
+            .cloned()
+            .collect::<Vec<_>>();
+        tasks.sort_by(|left, right| {
+            left.completed
+                .cmp(&right.completed)
+                .then_with(|| compare_task_due(&left.due, &right.due))
+                .then_with(|| {
+                    left.summary
+                        .to_lowercase()
+                        .cmp(&right.summary.to_lowercase())
+                })
+        });
+
+        for task in tasks.iter().cloned() {
+            append_calendar_task_row(self, &task_list, task);
+        }
+
+        let visible_count = tasks.len();
+        task_list.set_visible(visible_count > 0);
+        if let Some(state) = self.imp().task_state.borrow().as_ref() {
+            state.set_visible(visible_count == 0);
+            let label = if all_count == 0 {
+                "Keine Aufgaben geladen".to_string()
+            } else if visible_count == 0 {
+                "Keine sichtbaren Aufgaben".to_string()
+            } else if visible_count == 1 {
+                "1 Aufgabe aus EDS/lokal geladen".to_string()
+            } else {
+                format!("{visible_count} Aufgaben aus EDS/lokal geladen")
+            };
+            state.set_label(&label);
+        }
+    }
+
     fn shift_period(&self, direction: i32) {
         let current = *self.imp().current_date.borrow();
         let view = *self.imp().current_view.borrow();
@@ -1022,6 +1098,7 @@ impl CalendarPage {
     }
 
     fn refresh_calendar_views(&self) {
+        self.refresh_task_sidebar();
         self.refresh_calendar_category_model();
         self.refresh_month_grid();
         self.refresh_day_view();
@@ -2174,6 +2251,176 @@ fn empty_period_row(title: &str, subtitle: &str) -> adw::ActionRow {
         .build()
 }
 
+fn compare_task_due(left: &str, right: &str) -> std::cmp::Ordering {
+    match (left.trim().is_empty(), right.trim().is_empty()) {
+        (true, true) => std::cmp::Ordering::Equal,
+        (true, false) => std::cmp::Ordering::Greater,
+        (false, true) => std::cmp::Ordering::Less,
+        (false, false) => left.cmp(right),
+    }
+}
+
+fn format_calendar_task_date(value: &str) -> String {
+    let date = value.split_whitespace().next().unwrap_or(value);
+    NaiveDate::parse_from_str(date, "%Y-%m-%d")
+        .map(format_date)
+        .unwrap_or_else(|_| value.to_string())
+}
+
+fn calendar_task_subtitle(task: &TaskRecord) -> String {
+    let mut details = Vec::new();
+    if !task.due.trim().is_empty() {
+        details.push(format!("Fällig: {}", format_calendar_task_date(&task.due)));
+    }
+    if task.priority > 0 {
+        let priority = match task.priority {
+            1..=4 => "hoch",
+            5 => "normal",
+            _ => "niedrig",
+        };
+        details.push(format!("Priorität: {priority}"));
+    }
+    details.push(if task.completed {
+        "Erledigt".to_string()
+    } else {
+        "Offen".to_string()
+    });
+    if !task.source_display_name.trim().is_empty() {
+        details.push(task.source_display_name.clone());
+    }
+    details.join(" · ")
+}
+
+fn set_task_completion_component(raw: &str, completed: bool) -> String {
+    let status = if completed {
+        "COMPLETED"
+    } else {
+        "NEEDS-ACTION"
+    };
+    let percent = if completed { "100" } else { "0" };
+    let mut component = update_ical_property(raw, "STATUS", Some(status));
+    component = update_ical_property(&component, "PERCENT-COMPLETE", Some(percent));
+    if completed {
+        let completed_at = Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
+        update_ical_property(&component, "COMPLETED", Some(&completed_at))
+    } else {
+        update_ical_property(&component, "COMPLETED", None)
+    }
+}
+
+fn append_calendar_task_row(page: &CalendarPage, task_list: &gtk::ListBox, task: TaskRecord) {
+    let title = if task.summary.trim().is_empty() {
+        "(Ohne Betreff)".to_string()
+    } else {
+        task.summary.clone()
+    };
+    let row = adw::ActionRow::builder()
+        .title(&title)
+        .subtitle(&calendar_task_subtitle(&task))
+        .build();
+    if task.completed {
+        row.add_css_class("dim-label");
+    }
+
+    let check = gtk::CheckButton::builder()
+        .active(task.completed)
+        .sensitive(!task.source_uid.trim().is_empty())
+        .valign(gtk::Align::Center)
+        .tooltip_text(if task.source_uid.trim().is_empty() {
+            "Importierte Aufgaben sind schreibgeschützt"
+        } else {
+            "Aufgabe als erledigt markieren"
+        })
+        .build();
+    row.add_prefix(&check);
+    task_list.append(&row);
+
+    if task.source_uid.trim().is_empty() {
+        return;
+    }
+
+    let page_weak = page.downgrade();
+    check.connect_toggled(move |check| {
+        let completed = check.is_active();
+        let task = task.clone();
+        if completed == task.completed {
+            return;
+        }
+        let source_uid = task.source_uid.clone();
+        let uid = task.uid.clone();
+        let updated_component = set_task_completion_component(&task.component, completed);
+        let (sender, receiver) = async_channel::bounded(1);
+        let component_for_worker = updated_component.clone();
+        std::thread::spawn(move || {
+            let result = ECalService::new().modify_component(
+                &source_uid,
+                ECalComponentType::Task,
+                &uid,
+                &component_for_worker,
+            );
+            if let Err(error) = sender.send_blocking(result) {
+                tracing::debug!(%error, "Task completion result was dropped");
+            }
+        });
+
+        check.set_sensitive(false);
+        let check_for_result = check.clone();
+        let page_weak = page_weak.clone();
+        glib::spawn_future_local(async move {
+            let Ok(result) = receiver.recv().await else {
+                return;
+            };
+            let Some(page) = page_weak.upgrade() else {
+                return;
+            };
+            match result {
+                Ok(result) => {
+                    let component = result.component.unwrap_or(updated_component);
+                    if let Some(records) = page.imp().task_records.borrow().as_ref().cloned() {
+                        if let Some(existing) = records.borrow_mut().iter_mut().find(|existing| {
+                            existing.source_uid == task.source_uid && existing.uid == task.uid
+                        }) {
+                            existing.component = component;
+                            existing.completed = completed;
+                        }
+                    }
+                    check_for_result.set_sensitive(true);
+                    page.refresh_task_sidebar();
+                    show_toast_for_widget(
+                        &page,
+                        if completed {
+                            "Aufgabe erledigt"
+                        } else {
+                            "Aufgabe wieder geöffnet"
+                        },
+                    );
+                }
+                Err(error) => {
+                    check_for_result.set_active(task.completed);
+                    check_for_result.set_sensitive(true);
+                    show_toast_for_widget(
+                        &page,
+                        &format!("Aufgabe konnte nicht geändert werden: {error}"),
+                    );
+                }
+            }
+        });
+    });
+}
+
+fn upsert_task_record(task_records: Rc<RefCell<Vec<TaskRecord>>>, task: TaskRecord) {
+    task_records
+        .borrow_mut()
+        .retain(|existing| existing.source_uid != task.source_uid || existing.uid != task.uid);
+    task_records.borrow_mut().push(task);
+}
+
+fn remove_task_record(task_records: Rc<RefCell<Vec<TaskRecord>>>, source_uid: &str, uid: &str) {
+    task_records
+        .borrow_mut()
+        .retain(|task| task.source_uid != source_uid || task.uid != uid);
+}
+
 fn calendar_event_search_text(event: &CalendarEventRecord) -> String {
     format!(
         "{} {} {} {} {} {}",
@@ -2740,6 +2987,27 @@ mod tests {
         assert!(search.contains("berlin büro"));
         assert!(search.contains("quartalsplanung"));
         assert!(search.contains("2026-08-10"));
+    }
+
+    #[test]
+    fn task_completion_toggle_preserves_nested_alarm_data() {
+        let task = concat!(
+            "BEGIN:VTODO\r\nUID:task-1\r\nSUMMARY:Bericht\r\n",
+            "STATUS:NEEDS-ACTION\r\nPERCENT-COMPLETE:0\r\n",
+            "BEGIN:VALARM\r\nTRIGGER:-PT15M\r\nACTION:DISPLAY\r\n",
+            "DESCRIPTION:Erinnerung\r\nEND:VALARM\r\nEND:VTODO\r\n"
+        );
+        let completed = set_task_completion_component(task, true);
+        assert!(completed.contains("STATUS:COMPLETED"));
+        assert!(completed.contains("PERCENT-COMPLETE:100"));
+        assert!(completed.contains("TRIGGER:-PT15M"));
+        assert!(completed.contains("DESCRIPTION:Erinnerung"));
+
+        let reopened = set_task_completion_component(&completed, false);
+        assert!(reopened.contains("STATUS:NEEDS-ACTION"));
+        assert!(reopened.contains("PERCENT-COMPLETE:0"));
+        assert!(!reopened.contains("COMPLETED:"));
+        assert!(reopened.contains("BEGIN:VALARM"));
     }
 
     #[test]

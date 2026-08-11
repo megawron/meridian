@@ -190,15 +190,20 @@ impl TasksPage {
             .build();
         sidebar_box.append(&header);
 
-        let empty_sidebar = gtk::Label::builder()
-            .label("Aufgabenlisten werden nach der ECal-Anbindung angezeigt")
-            .css_classes(vec!["dim-label"])
-            .wrap(true)
-            .margin_start(12)
-            .margin_end(12)
-            .margin_bottom(12)
+        let task_source_list = gtk::ListBox::builder()
+            .selection_mode(gtk::SelectionMode::Single)
+            .css_classes(vec!["navigation-sidebar"])
             .build();
-        sidebar_box.append(&empty_sidebar);
+        sidebar_box.append(&task_source_list);
+
+        let category_header = gtk::Label::builder()
+            .label("Ansichten")
+            .css_classes(vec!["title-5"])
+            .halign(gtk::Align::Start)
+            .margin_top(8)
+            .margin_bottom(2)
+            .build();
+        sidebar_box.append(&category_header);
 
         let cat_list = gtk::ListBox::builder()
             .selection_mode(gtk::SelectionMode::Single)
@@ -288,6 +293,12 @@ impl TasksPage {
         let source_selector =
             gtk::DropDown::new(Some(source_model.clone()), None::<&gtk::Expression>);
         source_selector.set_tooltip_text(Some("Aufgabenliste auswählen"));
+        let source_selector_for_sidebar = source_selector.clone();
+        task_source_list.connect_row_selected(move |_, row| {
+            if let Some(row) = row {
+                source_selector_for_sidebar.set_selected(row.index() as u32);
+            }
+        });
         let initial_source_filter = self.imp().task_source_filter.borrow().clone();
         let category_model = gtk::StringList::new(&["Alle Kategorien"]);
         let category_selector =
@@ -337,6 +348,7 @@ impl TasksPage {
         let source_model_for_load = source_model.clone();
         let source_uids_for_load = Rc::clone(&source_uids);
         let source_selector_for_load = source_selector.clone();
+        let task_source_list_for_load = task_source_list.clone();
         glib::spawn_future_local(async move {
             let discovery =
                 eds_service::discover_sources(eds_service::EdsSourceKind::Calendar).await;
@@ -370,12 +382,28 @@ impl TasksPage {
             let name_refs = names.iter().map(String::as_str).collect::<Vec<_>>();
             source_model_for_load.splice(0, source_model_for_load.n_items(), &name_refs);
             source_uids_for_load.replace(uids.clone());
+            while let Some(child) = task_source_list_for_load.first_child() {
+                task_source_list_for_load.remove(&child);
+            }
+            for (index, name) in names.iter().enumerate() {
+                let row = adw::ActionRow::builder().title(name).build();
+                let image = gtk::Image::from_icon_name(if index == 0 {
+                    "view-list-symbolic"
+                } else {
+                    "view-list-details-symbolic"
+                });
+                row.add_prefix(&image);
+                task_source_list_for_load.append(&row);
+            }
             let selected = initial_source_filter
                 .as_deref()
                 .and_then(|uid| uids.iter().position(|candidate| candidate == uid))
                 .map(|index| index as u32 + 1)
                 .unwrap_or(0);
             source_selector_for_load.set_selected(selected);
+            if let Some(row) = task_source_list_for_load.row_at_index(selected as i32) {
+                task_source_list_for_load.select_row(Some(&row));
+            }
         });
 
         let page_weak_for_search = self.downgrade();
@@ -444,6 +472,7 @@ impl TasksPage {
 
         let page_weak_for_source = self.downgrade();
         let source_uids_for_selector = Rc::clone(&source_uids);
+        let task_source_list_for_selector = task_source_list.clone();
         let task_list_for_source = task_list.clone();
         let task_store_for_source = task_store.clone();
         let empty_tasks_for_source = empty_tasks.clone();
@@ -462,6 +491,11 @@ impl TasksPage {
             page.imp().task_source_filter.replace(source_filter.clone());
             if let Some(settings) = AppSettings::try_new() {
                 settings.set_task_source_filter(source_filter.as_deref().unwrap_or_default());
+            }
+            if let Some(row) =
+                task_source_list_for_selector.row_at_index(selector.selected() as i32)
+            {
+                task_source_list_for_selector.select_row(Some(&row));
             }
             render_task_rows(
                 &page,

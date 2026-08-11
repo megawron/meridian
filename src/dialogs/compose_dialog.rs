@@ -35,6 +35,14 @@ struct RecipientSuggestion {
     address: String,
 }
 
+#[derive(Debug, Clone, Default)]
+struct ComposeIdentity {
+    source_uid: String,
+    label: String,
+    from: String,
+    reply_to: String,
+}
+
 mod imp {
     use super::*;
 
@@ -47,7 +55,9 @@ mod imp {
         pub entry_subject: RefCell<Option<gtk::Entry>>,
         pub combo_from: RefCell<Option<gtk::DropDown>>,
         pub source_uids: RefCell<Vec<String>>,
+        pub(super) source_identities: RefCell<Vec<ComposeIdentity>>,
         pub requested_source_uid: RefCell<Option<String>>,
+        pub requested_from: RefCell<Option<String>>,
         pub calendar_method: RefCell<Option<String>>,
         pub calendar_component: RefCell<Option<String>>,
         pub html_editor: RefCell<Option<crate::views::HtmlEditor>>,
@@ -203,6 +213,8 @@ impl ComposeDialog {
         *dialog.imp().draft_id.borrow_mut() = draft.id.clone();
         *dialog.imp().requested_source_uid.borrow_mut() =
             (!draft.source_uid.is_empty()).then(|| draft.source_uid.clone());
+        *dialog.imp().requested_from.borrow_mut() =
+            (!draft.from.trim().is_empty()).then(|| draft.from.clone());
         *dialog.imp().calendar_method.borrow_mut() = draft.calendar_method.clone();
         *dialog.imp().calendar_component.borrow_mut() = draft.calendar_component.clone();
         if let Some(entry) = dialog.imp().entry_to.borrow().as_ref() {
@@ -877,8 +889,11 @@ impl ComposeDialog {
             let Some(dialog) = dialog_weak_for_send.upgrade() else {
                 return;
             };
+            let identity = dialog.selected_identity(combo_from_for_send.selected());
             let outgoing = OutgoingMessage {
-                source_uid: dialog.selected_source_uid(combo_from_for_send.selected()),
+                source_uid: identity.source_uid,
+                from: identity.from,
+                reply_to: identity.reply_to,
                 to: entry_to_for_send.text().to_string(),
                 cc: entry_cc_for_send.text().to_string(),
                 bcc: entry_bcc_for_send.text().to_string(),
@@ -985,46 +1000,66 @@ impl ComposeDialog {
                 .filter(|source| source.enabled)
                 .collect();
             let local_choices = local_account_choices();
-            let mut names: Vec<String> = active_sources
+            let mut identities: Vec<ComposeIdentity> = active_sources
                 .iter()
                 .map(|source| {
-                    if source.backend_name.is_empty() {
+                    let label = if source.backend_name.is_empty() {
                         format!("{}{}", source.display_name, cache_suffix)
                     } else {
                         format!(
                             "{} · {}{}",
                             source.display_name, source.backend_name, cache_suffix
                         )
+                    };
+                    ComposeIdentity {
+                        source_uid: source.uid.clone(),
+                        label,
+                        ..ComposeIdentity::default()
                     }
                 })
                 .collect();
-            names.extend(local_choices.iter().map(|(_, label)| label.clone()));
+            identities.extend(local_choices);
+            let names: Vec<String> = identities
+                .iter()
+                .map(|identity| identity.label.clone())
+                .collect();
             let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
             source_model_for_load.splice(0, source_model_for_load.n_items(), &name_refs);
             if let Some(dialog) = dialog_for_source_load.upgrade() {
                 let requested_uid = dialog.imp().requested_source_uid.borrow().clone();
+                let requested_from = dialog.imp().requested_from.borrow().clone();
                 let preferred_uid = AppSettings::try_new()
                     .map(|settings| settings.default_account_id())
                     .filter(|uid| !uid.trim().is_empty());
                 let mut source_uids = dialog.imp().source_uids.borrow_mut();
                 source_uids.clear();
-                source_uids.extend(active_sources.iter().map(|source| source.uid.clone()));
                 source_uids.extend(
-                    local_choices
+                    identities
                         .iter()
-                        .map(|(source_uid, _)| source_uid.clone()),
+                        .map(|identity| identity.source_uid.clone()),
                 );
+                dialog.imp().source_identities.replace(identities.clone());
                 let selected_uid = requested_uid
                     .filter(|uid| !uid.trim().is_empty())
                     .or(preferred_uid);
-                if let Some(selected_uid) = selected_uid {
+                if let Some(selected_uid) = selected_uid.as_deref() {
                     let selected_uid_without_prefix = selected_uid
                         .strip_prefix("evolution-source:")
-                        .unwrap_or(&selected_uid);
-                    if let Some(index) = source_uids
-                        .iter()
-                        .position(|uid| uid == &selected_uid || uid == selected_uid_without_prefix)
-                    {
+                        .unwrap_or(selected_uid);
+                    let source_uid_matches = |identity: &ComposeIdentity| {
+                        identity.source_uid == selected_uid
+                            || identity.source_uid == selected_uid_without_prefix
+                    };
+                    let index = requested_from
+                        .as_deref()
+                        .and_then(|from| {
+                            identities.iter().position(|identity| {
+                                source_uid_matches(identity)
+                                    && compose_identity_matches_from(identity, from)
+                            })
+                        })
+                        .or_else(|| identities.iter().position(source_uid_matches));
+                    if let Some(index) = index {
                         combo_from_for_load.set_selected(index as u32);
                     }
                 }
@@ -1060,8 +1095,14 @@ impl ComposeDialog {
                 let cc = entry_cc.text().to_string();
                 let bcc = entry_bcc.text().to_string();
                 let subject = entry_subject.text().to_string();
-                let from = dropdown_text(&combo_from);
-                let source_uid = dialog.selected_source_uid(combo_from.selected());
+                let identity = dialog.selected_identity(combo_from.selected());
+                let from = if identity.from.trim().is_empty() {
+                    dropdown_text(&combo_from)
+                } else {
+                    identity.from.clone()
+                };
+                let reply_to = identity.reply_to;
+                let source_uid = identity.source_uid;
                 let attachments = dialog.imp().attachments.borrow().clone();
                 let calendar_method = dialog.imp().calendar_method.borrow().clone();
                 let calendar_component = dialog.imp().calendar_component.borrow().clone();
@@ -1074,7 +1115,9 @@ impl ComposeDialog {
                         let crate::views::EditorContent { body, plain_text } = content;
                         if native_adapter_available {
                             let outgoing = OutgoingMessage {
-                                source_uid,
+                                source_uid: source_uid.clone(),
+                                from: from.clone(),
+                                reply_to: reply_to.clone(),
                                 to,
                                 cc,
                                 bcc,
@@ -1238,8 +1281,13 @@ impl ComposeDialog {
         let cc = entry_cc.text().to_string();
         let bcc = entry_bcc.text().to_string();
         let subject = entry_subject.text().to_string();
-        let from = dropdown_text(&combo_from);
-        let source_uid = self.selected_source_uid(combo_from.selected());
+        let identity = self.selected_identity(combo_from.selected());
+        let from = if identity.from.trim().is_empty() {
+            dropdown_text(&combo_from)
+        } else {
+            identity.from.clone()
+        };
+        let source_uid = identity.source_uid;
         let draft_id = self.imp().draft_id.borrow().clone();
         let attachments = self.imp().attachments.borrow().clone();
         let calendar_method = self.imp().calendar_method.borrow().clone();
@@ -1301,9 +1349,9 @@ impl ComposeDialog {
         }
     }
 
-    fn selected_source_uid(&self, selected: u32) -> String {
+    fn selected_identity(&self, selected: u32) -> ComposeIdentity {
         self.imp()
-            .source_uids
+            .source_identities
             .borrow()
             .get(selected as usize)
             .cloned()
@@ -1402,36 +1450,68 @@ fn dropdown_text(dropdown: &gtk::DropDown) -> String {
         .unwrap_or_default()
 }
 
-fn local_account_choices() -> Vec<(String, String)> {
+fn local_account_choices() -> Vec<ComposeIdentity> {
     AccountConfigStore::default()
         .load()
         .into_iter()
         .filter(|profile| profile.enabled)
-        .map(|profile| {
-            let label = local_account_label(&profile);
-            (profile.id, label)
-        })
+        .flat_map(compose_identities_for_profile)
         .collect()
 }
 
-fn local_account_label(profile: &AccountProfile) -> String {
-    let aliases = profile
-        .aliases
-        .iter()
-        .filter(|alias| !alias.trim().is_empty())
-        .map(|alias| alias.trim())
-        .collect::<Vec<_>>();
-    let alias_suffix = if aliases.is_empty() {
-        String::new()
-    } else {
-        format!(" · Alias: {}", aliases.join(", "))
+fn compose_identities_for_profile(profile: AccountProfile) -> Vec<ComposeIdentity> {
+    let source_uid = profile.id;
+    let display_name = profile.display_name.trim().to_string();
+    let reply_to = profile.reply_to.trim().to_string();
+    let primary_address = profile.email.trim().to_string();
+    let primary_label = format!("{} <{}> · lokales Profil", display_name, primary_address);
+    let primary_from = format!("{} <{}>", display_name, primary_address);
+    let mut identities = vec![ComposeIdentity {
+        source_uid: source_uid.clone(),
+        label: primary_label,
+        from: primary_from,
+        reply_to: reply_to.clone(),
+    }];
+    identities.extend(
+        profile
+            .aliases
+            .into_iter()
+            .map(|alias| alias.trim().to_string())
+            .filter(|alias| !alias.is_empty())
+            .map(|alias| ComposeIdentity {
+                source_uid: source_uid.clone(),
+                label: format!(
+                    "{} <{}> · Alias von {}",
+                    display_name, alias, primary_address
+                ),
+                from: format!("{} <{}>", display_name, alias),
+                reply_to: reply_to.clone(),
+            }),
+    );
+    identities
+}
+
+fn compose_identity_matches_from(identity: &ComposeIdentity, requested: &str) -> bool {
+    let requested = requested.trim();
+    if requested.is_empty() {
+        return true;
+    }
+    if identity.from.eq_ignore_ascii_case(requested)
+        || identity.label.eq_ignore_ascii_case(requested)
+    {
+        return true;
+    }
+    let Some(address) = identity
+        .from
+        .split_once('<')
+        .and_then(|(_, address)| address.strip_suffix('>'))
+    else {
+        return false;
     };
-    format!(
-        "{} <{}> · lokales Profil{}",
-        profile.display_name.trim(),
-        profile.email.trim(),
-        alias_suffix
-    )
+    requested.eq_ignore_ascii_case(address.trim())
+        || requested
+            .to_ascii_lowercase()
+            .contains(&format!("<{}>", address.trim()).to_ascii_lowercase())
 }
 
 fn reply_subject(subject: &str) -> String {
@@ -1954,7 +2034,7 @@ mod tests {
     }
 
     #[test]
-    fn local_account_label_exposes_aliases_without_credentials() {
+    fn local_account_choices_expose_selectable_aliases_without_credentials() {
         let profile = AccountProfile {
             id: "local:person".to_string(),
             display_name: "Person".to_string(),
@@ -1978,9 +2058,20 @@ mod tests {
             junk_folder: String::new(),
             enabled: true,
         };
-        let label = local_account_label(&profile);
-        assert!(label.contains("Person <person@example.org>"));
-        assert!(label.contains("Alias: alias@example.org"));
-        assert!(!label.to_ascii_lowercase().contains("password"));
+        let identities = compose_identities_for_profile(profile);
+        assert_eq!(identities.len(), 2);
+        assert_eq!(identities[0].from, "Person <person@example.org>");
+        assert_eq!(identities[1].from, "Person <alias@example.org>");
+        assert!(identities[1].label.contains("Alias von person@example.org"));
+        assert!(compose_identity_matches_from(
+            &identities[1],
+            "alias@example.org"
+        ));
+        assert!(
+            !identities[1]
+                .label
+                .to_ascii_lowercase()
+                .contains("password")
+        );
     }
 }
