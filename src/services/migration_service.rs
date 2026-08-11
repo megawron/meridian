@@ -19,6 +19,7 @@ use super::mail_filter_service::{
     FilterAction, FilterCondition, FilterField, FilterOperator, FilterScope, MailFilterRule,
     MailFilterStore,
 };
+use super::mail_store_service::MailStoreService;
 use super::signature_store_service::{SignatureProfile, SignatureStore};
 use std::collections::BTreeMap;
 use std::fs;
@@ -42,6 +43,8 @@ pub struct MigrationReport {
     pub imported_calendar_files: usize,
     pub discovered_contact_files: usize,
     pub imported_contact_files: usize,
+    pub discovered_mail_files: usize,
+    pub imported_mail_files: usize,
     pub signature_text: Option<String>,
     pub warnings: Vec<String>,
 }
@@ -52,6 +55,8 @@ pub struct LocalDataMigrationReport {
     pub imported_calendar_files: usize,
     pub discovered_contact_files: usize,
     pub imported_contact_files: usize,
+    pub discovered_mail_files: usize,
+    pub imported_mail_files: usize,
     pub warnings: Vec<String>,
 }
 
@@ -163,25 +168,30 @@ pub fn import_evolution_profile_with_cache_and_local_data(
     cache: &EdsSourceCache,
     calendar_store: &CalendarStoreService,
     contact_store: &ContactStoreService,
+    mail_store: &MailStoreService,
 ) -> io::Result<MigrationReport> {
     let root = root.as_ref();
     let mut report = import_evolution_sources_with_cache(root, store, cache)?;
-    let local = import_evolution_local_data(root, calendar_store, contact_store)?;
+    let local = import_evolution_local_data(root, calendar_store, contact_store, mail_store)?;
     report.discovered_calendar_files = local.discovered_calendar_files;
     report.imported_calendar_files = local.imported_calendar_files;
     report.discovered_contact_files = local.discovered_contact_files;
     report.imported_contact_files = local.imported_contact_files;
+    report.discovered_mail_files = local.discovered_mail_files;
+    report.imported_mail_files = local.imported_mail_files;
     report.warnings.extend(local.warnings);
     Ok(report)
 }
 
-/// Discover and copy valid local iCalendar and vCard files from an explicitly
-/// selected Evolution profile copy.  The source files remain untouched and
-/// destinations use each store's non-overwriting import behavior.
+/// Discover and copy valid local mail, iCalendar and vCard files from an
+/// explicitly selected Evolution profile copy.  The source files remain
+/// untouched and destinations use each store's non-overwriting import
+/// behavior.
 pub fn import_evolution_local_data(
     root: impl AsRef<Path>,
     calendar_store: &CalendarStoreService,
     contact_store: &ContactStoreService,
+    mail_store: &MailStoreService,
 ) -> io::Result<LocalDataMigrationReport> {
     let root = root.as_ref();
     let mut candidates = Vec::new();
@@ -189,6 +199,7 @@ pub fn import_evolution_local_data(
 
     let mut calendar_files = Vec::new();
     let mut contact_files = Vec::new();
+    let mut mail_files = Vec::new();
     let mut warnings = Vec::new();
     for path in candidates {
         let raw = match fs::read_to_string(&path) {
@@ -221,6 +232,8 @@ pub fn import_evolution_local_data(
         }
     }
 
+    collect_local_mail_files(root, &mut mail_files)?;
+
     let discovered_calendar_files = calendar_files.len();
     let discovered_contact_files = contact_files.len();
     let imported_calendar_files = if discovered_calendar_files == 0 {
@@ -245,12 +258,20 @@ pub fn import_evolution_local_data(
     } else {
         contact_store.import_files(&contact_files)?
     };
+    let discovered_mail_files = mail_files.len();
+    let imported_mail_files = if discovered_mail_files == 0 {
+        0
+    } else {
+        mail_store.import_files_from_root(root, &mail_files)?
+    };
 
     Ok(LocalDataMigrationReport {
         discovered_calendar_files,
         imported_calendar_files,
         discovered_contact_files,
         imported_contact_files,
+        discovered_mail_files,
+        imported_mail_files,
         warnings,
     })
 }
@@ -688,6 +709,64 @@ fn collect_local_data_files(root: &Path, result: &mut Vec<PathBuf>) -> io::Resul
         }
     }
     Ok(())
+}
+
+fn collect_local_mail_files(root: &Path, result: &mut Vec<PathBuf>) -> io::Result<()> {
+    let metadata = fs::symlink_metadata(root)?;
+    if !metadata.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Der ausgewählte Evolution-Profilpfad ist kein Ordner",
+        ));
+    }
+
+    for entry in fs::read_dir(root)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        if file_type.is_symlink() {
+            continue;
+        }
+        let path = entry.path();
+        if file_type.is_dir() {
+            collect_local_mail_files(&path, result)?;
+        } else if file_type.is_file() && is_local_mail_candidate(&path) {
+            result.push(path);
+        }
+    }
+    Ok(())
+}
+
+fn is_local_mail_candidate(path: &Path) -> bool {
+    let extension = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| extension.to_ascii_lowercase());
+    if matches!(extension.as_deref(), Some("eml" | "mbox")) {
+        return true;
+    }
+    if path
+        .parent()
+        .and_then(Path::file_name)
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| matches!(name, "cur" | "new"))
+    {
+        return true;
+    }
+    if extension.is_some() {
+        return false;
+    }
+    let Ok(raw) = fs::read(path) else {
+        return false;
+    };
+    let text = String::from_utf8_lossy(&raw);
+    let mut lines = text.lines();
+    let looks_like_mbox = lines.next().is_some_and(|line| line.starts_with("From "))
+        && lines.any(|line| line.starts_with("From: "));
+    looks_like_mbox
+        || text.starts_with("From:")
+        || text.contains("\nFrom:")
+        || text.starts_with("Subject:")
+        || text.contains("\nSubject:")
 }
 
 fn safe_profile_path(root: &Path, parent: &Path, path_value: &str) -> Option<PathBuf> {
@@ -1561,10 +1640,16 @@ JunkFolder=Junk
         let profile_root = root.join("profile");
         let calendar_source = profile_root.join("calendar/system.ics");
         let contact_source = profile_root.join("addressbook/contacts.vcf");
+        let mail_source = profile_root.join("mail/local/cur/message-1");
+        let nested_mail_source = profile_root.join("mail/local/.Projects/.2026/cur/message-2");
         fs::create_dir_all(calendar_source.parent().unwrap())
             .expect("calendar profile directory should be created");
         fs::create_dir_all(contact_source.parent().unwrap())
             .expect("address book profile directory should be created");
+        fs::create_dir_all(mail_source.parent().unwrap())
+            .expect("mail profile directory should be created");
+        fs::create_dir_all(nested_mail_source.parent().unwrap())
+            .expect("nested mail profile directory should be created");
         fs::write(
             &calendar_source,
             "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nEND:VCALENDAR\r\n",
@@ -1575,6 +1660,16 @@ JunkFolder=Junk
             "BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Imported\r\nEND:VCARD\r\n",
         )
         .expect("contact profile file should be written");
+        fs::write(
+            &mail_source,
+            "From: sender@example.org\r\nTo: person@example.org\r\nSubject: Imported mail\r\n\r\nHello\r\n",
+        )
+        .expect("mail profile file should be written");
+        fs::write(
+            &nested_mail_source,
+            "From: nested@example.org\r\nTo: person@example.org\r\nSubject: Nested mail\r\n\r\nNested\r\n",
+        )
+        .expect("nested mail profile file should be written");
         fs::write(profile_root.join("not-a-calendar.ics"), "plain text")
             .expect("invalid calendar fixture should be written");
 
@@ -1583,15 +1678,39 @@ JunkFolder=Junk
         let calendar_store =
             CalendarStoreService::with_writable_calendar_dir(&calendar_destination);
         let contact_store = ContactStoreService::with_writable_contact_dir(&contact_destination);
-        let report = import_evolution_local_data(&profile_root, &calendar_store, &contact_store)
-            .expect("local profile data should import");
+        let mail_destination = root.join("app/mail");
+        let mail_store = MailStoreService::with_mail_dir_and_state_path(
+            &mail_destination,
+            root.join("app/mail-state.json"),
+        );
+        let report = import_evolution_local_data(
+            &profile_root,
+            &calendar_store,
+            &contact_store,
+            &mail_store,
+        )
+        .expect("local profile data should import");
 
         assert_eq!(report.discovered_calendar_files, 1);
         assert_eq!(report.imported_calendar_files, 1);
         assert_eq!(report.discovered_contact_files, 1);
         assert_eq!(report.imported_contact_files, 1);
+        assert_eq!(report.discovered_mail_files, 2);
+        assert_eq!(report.imported_mail_files, 2);
         assert!(calendar_destination.join("system.ics").is_file());
         assert!(contact_destination.join("contacts.vcf").is_file());
+        assert!(mail_destination.join("cur/message-1").is_file());
+        assert!(
+            mail_destination
+                .join(".Projects/.2026/cur/message-2")
+                .is_file()
+        );
+        assert!(
+            mail_store
+                .load_local_records()
+                .iter()
+                .any(|message| message.folder_id == "custom:Projects/2026")
+        );
         assert_eq!(
             fs::read_to_string(&calendar_source).unwrap(),
             "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nEND:VCALENDAR\r\n"
@@ -1599,6 +1718,14 @@ JunkFolder=Junk
         assert_eq!(
             fs::read_to_string(&contact_source).unwrap(),
             "BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Imported\r\nEND:VCARD\r\n"
+        );
+        assert_eq!(
+            fs::read_to_string(&mail_source).unwrap(),
+            "From: sender@example.org\r\nTo: person@example.org\r\nSubject: Imported mail\r\n\r\nHello\r\n"
+        );
+        assert_eq!(
+            fs::read_to_string(&nested_mail_source).unwrap(),
+            "From: nested@example.org\r\nTo: person@example.org\r\nSubject: Nested mail\r\n\r\nNested\r\n"
         );
 
         let _ = fs::remove_dir_all(root);

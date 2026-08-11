@@ -5,7 +5,7 @@
 // This service deliberately does not touch the original Evolution Data Server
 // profile, Camel stores, Secret Service, or user-selected external mail,
 // calendar, and contact directories.  It snapshots the JSON state, app-owned
-// local ICS/vCard stores, and the non-secret GSettings values we expose.
+// local mail/ICS/vCard stores, and the non-secret GSettings values we expose.
 
 use chrono::Utc;
 use glib::{Checksum, ChecksumType};
@@ -90,7 +90,7 @@ const APP_FILES: &[&str] = &[
     "vcards/evolution-gtk4-local.vcf",
 ];
 
-const APP_OWNED_DIRECTORIES: &[&str] = &["ical", "vcards"];
+const APP_OWNED_DIRECTORIES: &[&str] = &["ical", "vcards", "mail"];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct BackupFile {
@@ -1004,6 +1004,7 @@ mod tests {
         let root = temporary_directory("dynamic-owned-files");
         fs::create_dir_all(root.join("ical/imported")).expect("calendar directory should exist");
         fs::create_dir_all(root.join("vcards")).expect("contact directory should exist");
+        fs::create_dir_all(root.join("mail")).expect("mail directory should exist");
         fs::write(root.join("ical/imported/event.ics"), b"event")
             .expect("calendar fixture should be written");
         fs::write(root.join("vcards/imported.vcf"), b"contact")
@@ -1014,6 +1015,7 @@ mod tests {
         assert!(paths.iter().any(|path| path == "vcards/imported.vcf"));
         assert!(is_app_owned_path("ical/imported/event.ics"));
         assert!(is_app_owned_path("vcards/imported.vcf"));
+        assert!(is_app_owned_path("mail/imported/message.eml"));
         assert!(!is_app_owned_path("external/event.ics"));
 
         let bundle = BackupBundle {

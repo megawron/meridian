@@ -396,8 +396,11 @@ werden.
   Import bleibt gegenüber vorhandenen Quellen bewusst nicht überschreibend.
   EML-/mbox-Dateien und ausgewählte Maildir-Verzeichnisse können in den
   konfigurierten lokalen Ordner kopiert werden; `cur`/`new`-Strukturen und
-  Maildir-Seen-Flags bleiben beim portablen Import erhalten, Wiederholungen
-  erzeugen nummerierte Dateinamen. Der lokale Mailordner kann über die
+  Maildir-Seen-Flags sowie verschachtelte lokale Evolution-Ordner bleiben beim
+  portablen Profilimport erhalten, Wiederholungen erzeugen nummerierte
+  Dateinamen. Benutzerdefinierte importierte Ordner werden zusätzlich im
+  app-eigenen Sidecar registriert, damit auch ein Ordner ohne Nachricht nicht
+  aus der Sidebar verschwindet. Der lokale Mailordner kann über die
   Einstellungen ausgewählt oder auf den automatisch erkannten Pfad
   zurückgesetzt werden. Ein app-eigener Sidecar speichert zusätzlich logische
   Ordnerübersteuerungen, lokale Mehrfachkopien und gelöschte Einträge, ohne die
@@ -940,11 +943,13 @@ werden.
   den bestehenden Composer direkt ausgewählt. Mail-, Kalender- und
   Adressbuchquellen werden zusätzlich als geheimnisfreier Offline-Cache
   übernommen, damit importierte Quellen und ihre Aktivierung auch ohne
-  erreichbares EDS nachvollziehbar bleiben. Valide lokale iCalendar- und
-  vCard-Dateien werden beim ausdrücklich gestarteten Profilimport zusätzlich
-  nicht überschreibend in die app-eigenen Stores kopiert. Vollständige
-  Einstellungen, Evolution-Mailordner und die native EDS-Registrierung fehlen
-  noch. Nicht
+  erreichbares EDS nachvollziehbar bleiben. Valide lokale EML-/Maildir-/mbox-,
+  iCalendar- und vCard-Dateien werden beim ausdrücklich gestarteten
+  Profilimport zusätzlich nicht überschreibend in die app-eigenen Stores
+  kopiert; lokale Maildir-/mbox-Ordnerpfade werden dabei erhalten und
+  benutzerdefinierte Ordner registriert. Vollständige nicht-geheime
+  Einstellungen, native Camel-Ordnerstrukturen und die EDS-Registrierung
+  fehlen noch. Nicht
   unterstützte Filterbedingungen/-aktionen werden beim Import jetzt als
   nachvollziehbare Warnung im Bericht und Log ausgewiesen, statt still
   verloren zu gehen; bewusst verworfene geheime `.source`-Felder werden nur

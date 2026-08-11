@@ -1040,6 +1040,17 @@ impl PreferencesDialog {
                             crate::services::ContactStoreService::with_writable_contact_dir(
                                 crate::services::app_data_dir().join("vcards"),
                             );
+                        let mail_directory = crate::services::app_data_dir().join("mail");
+                        let mail_state_file =
+                            crate::services::app_data_dir().join("mail-state.json");
+                        if let Some(settings) = AppSettings::try_new() {
+                            settings.set_local_mail_directory(&mail_directory.to_string_lossy());
+                        }
+                        let mail_store =
+                            crate::services::MailStoreService::with_mail_dir_and_state_path(
+                                mail_directory,
+                                mail_state_file,
+                            );
                         let (sender, receiver) = async_channel::bounded(1);
                         std::thread::spawn(move || {
                             let result = migration_service::import_evolution_profile_with_cache_and_local_data(
@@ -1048,6 +1059,7 @@ impl PreferencesDialog {
                                 &source_cache,
                                 &calendar_store,
                                 &contact_store,
+                                &mail_store,
                             );
                             if let Err(error) = sender.send_blocking(result) {
                                 tracing::debug!(%error, "Profile migration result was dropped");
@@ -1085,7 +1097,7 @@ impl PreferencesDialog {
                                         )
                                     };
                                     dialog.show_toast(&format!(
-                                        "{} Profilquelle(n) gefunden: {} Konto/Konten, {} Mail-, {} Kalender- und {} Adressbuchquelle(n) zwischengespeichert, {} Filterregel(n), {} Signatur(en), {} iCalendar-Datei(en) und {} vCard-Datei(en) übernommen, {} übersprungen{}{}",
+                                        "{} Profilquelle(n) gefunden: {} Konto/Konten, {} Mail-, {} Kalender- und {} Adressbuchquelle(n) zwischengespeichert, {} Filterregel(n), {} Signatur(en), {} Maildatei(en), {} iCalendar-Datei(en) und {} vCard-Datei(en) übernommen, {} übersprungen{}{}",
                                         report.discovered_sources,
                                         report.imported_accounts,
                                         report.cached_mail_sources,
@@ -1093,12 +1105,19 @@ impl PreferencesDialog {
                                         report.cached_address_book_sources,
                                         report.imported_filters,
                                         report.imported_signatures,
+                                        report.imported_mail_files,
                                         report.imported_calendar_files,
                                         report.imported_contact_files,
                                         report.skipped_sources,
                                         warning_suffix,
                                         secret_suffix
                                     ));
+                                    if let Some(window) = dialog
+                                        .root()
+                                        .and_downcast::<crate::window::EvolutionWindow>()
+                                    {
+                                        window.refresh_mail_page();
+                                    }
                                 }
                                 Err(error) => dialog
                                     .show_toast(&format!("Profilimport fehlgeschlagen: {error}")),

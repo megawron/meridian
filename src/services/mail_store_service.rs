@@ -224,28 +224,56 @@ impl MailStoreService {
         let mut sources = Vec::new();
         for source in files {
             if source.is_dir() {
-                collect_import_files(source, &mut sources);
+                let mut paths = Vec::new();
+                collect_import_files(source, &mut paths);
+                sources.extend(paths.into_iter().map(|path| (path, source.clone())));
             } else if source.is_file() {
-                sources.push(source.clone());
+                sources.push((source.clone(), import_root_for_file(source)));
             }
         }
-        sources.sort();
-        sources.dedup();
+        self.copy_import_sources(sources)
+    }
+
+    /// Copy imported files while preserving their relative Evolution mailbox
+    /// layout.  In particular, `mail/local/.Projects/cur/message` remains in
+    /// `.Projects/cur` so the local folder can be reconstructed after the
+    /// profile migration.  The source is never modified and destinations are
+    /// still non-overwriting.
+    pub fn import_files_from_root(
+        &self,
+        source_root: impl AsRef<Path>,
+        files: &[PathBuf],
+    ) -> std::io::Result<usize> {
+        fs::create_dir_all(&self.mail_dir)?;
+        let source_root = source_root.as_ref().to_path_buf();
+        let mut sources = files
+            .iter()
+            .filter(|source| source.is_file())
+            .cloned()
+            .map(|source| (source, source_root.clone()))
+            .collect::<Vec<_>>();
+        sources.sort_by(|left, right| left.0.cmp(&right.0));
+        sources.dedup_by(|left, right| left.0 == right.0);
+        self.copy_import_sources(sources)
+    }
+
+    fn copy_import_sources(&self, mut sources: Vec<(PathBuf, PathBuf)>) -> std::io::Result<usize> {
+        sources.sort_by(|left, right| left.0.cmp(&right.0));
+        sources.dedup_by(|left, right| left.0 == right.0);
 
         let mut imported = 0;
-        for source in sources {
+        let mut imported_folders = HashSet::new();
+        for (source, source_root) in sources {
             let Some(file_name) = source.file_name().and_then(|name| name.to_str()) else {
                 continue;
             };
-            let target_root = source
+            let relative = relative_import_path(&source, &source_root);
+            let target_root = relative
                 .parent()
-                .and_then(Path::file_name)
-                .and_then(|name| name.to_str())
-                .filter(|name| matches!(*name, "cur" | "new"))
-                .map(|name| self.mail_dir.join(name))
+                .map(|parent| self.mail_dir.join(parent))
                 .unwrap_or_else(|| self.mail_dir.clone());
             fs::create_dir_all(&target_root)?;
-            let mut destination = target_root.join(file_name);
+            let mut destination = self.mail_dir.join(&relative);
             let stem = Path::new(file_name)
                 .file_stem()
                 .and_then(|value| value.to_str())
@@ -263,8 +291,16 @@ impl MailStoreService {
             if source == destination {
                 continue;
             }
-            fs::copy(source, destination)?;
+            fs::copy(source, &destination)?;
+            let folder_id = folder_id_for_path_with_root(&destination, Some(&self.mail_dir));
+            if folder_id.starts_with("custom:") {
+                imported_folders.insert(folder_id);
+            }
             imported += 1;
+        }
+
+        for folder_id in imported_folders {
+            self.metadata.set_local_folder(&folder_id, true)?;
         }
         Ok(imported)
     }
@@ -602,10 +638,10 @@ impl MailStoreService {
             let unread = maildir_message_is_unread(&path);
 
             if looks_like_mbox(&text) {
-                messages.extend(parse_mbox(&path, &text, unread));
+                messages.extend(parse_mbox(&path, &text, unread, Some(&self.mail_dir)));
             } else if looks_like_rfc822(&text, &path) {
                 let id = message_id(&path, 0);
-                let folder_id = folder_id_for_path(&path);
+                let folder_id = folder_id_for_path_with_root(&path, Some(&self.mail_dir));
                 if let Some(message) = parse_rfc822(&id, &folder_id, &text, unread) {
                     messages.push(message);
                 }
@@ -1123,6 +1159,72 @@ fn collect_import_files(root: &Path, paths: &mut Vec<PathBuf>) {
     }
 }
 
+fn import_root_for_file(source: &Path) -> PathBuf {
+    let Some(parent) = source.parent() else {
+        return PathBuf::new();
+    };
+    let is_maildir_message = parent
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| matches!(name, "cur" | "new"));
+    if !is_maildir_message {
+        return parent.to_path_buf();
+    }
+
+    // A directly selected message inside a hidden Maildir folder or an
+    // Evolution `.sbd` tree should retain that folder in the destination.
+    // Directory imports already provide their explicit root and do not need
+    // this heuristic.
+    let mut root = parent.parent().unwrap_or(parent).to_path_buf();
+    loop {
+        let Some(name) = root.file_name().and_then(|name| name.to_str()) else {
+            break;
+        };
+        let hidden_folder = name.starts_with('.') && name != "." && name != "..";
+        let sbd_folder = name
+            .strip_suffix(".sbd")
+            .is_some_and(|name| !name.is_empty());
+        if !(hidden_folder || sbd_folder) {
+            break;
+        }
+        let Some(parent) = root.parent() else {
+            break;
+        };
+        root = parent.to_path_buf();
+    }
+    root
+}
+
+fn relative_import_path(source: &Path, source_root: &Path) -> PathBuf {
+    let relative = source
+        .strip_prefix(source_root)
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|_| source.file_name().map(PathBuf::from).unwrap_or_default());
+    let components = relative
+        .components()
+        .filter_map(|component| component.as_os_str().to_str())
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+
+    // Evolution's local provider normally lives below `mail/local`.  The
+    // app-owned store is already the equivalent of that `local` root, so do
+    // not create an artificial `mail/local` level during migration.
+    let start = components
+        .windows(2)
+        .enumerate()
+        .find(|(_, pair)| {
+            pair[0].eq_ignore_ascii_case("mail") && pair[1].eq_ignore_ascii_case("local")
+        })
+        .map(|(index, _)| index + 2)
+        .unwrap_or(0);
+
+    let mut result = PathBuf::new();
+    for component in components.into_iter().skip(start) {
+        result.push(component);
+    }
+    result
+}
+
 fn is_import_candidate(path: &Path) -> bool {
     let extension = path
         .extension()
@@ -1173,7 +1275,11 @@ fn collect_mail_files(root: &Path, paths: &mut Vec<PathBuf>) {
 }
 
 fn is_candidate_mail_file(path: &Path) -> bool {
-    if path.extension().and_then(|ext| ext.to_str()) == Some("eml") {
+    let extension = path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(str::to_ascii_lowercase);
+    if matches!(extension.as_deref(), Some("eml" | "mbox")) {
         return true;
     }
 
@@ -1234,7 +1340,7 @@ fn maildir_message_is_unread(path: &Path) -> bool {
         .unwrap_or(true)
 }
 
-fn parse_mbox(path: &Path, raw: &str, unread: bool) -> Vec<ParsedMail> {
+fn parse_mbox(path: &Path, raw: &str, unread: bool, mail_root: Option<&Path>) -> Vec<ParsedMail> {
     let mut starts = Vec::new();
     let mut offset = 0;
 
@@ -1257,7 +1363,7 @@ fn parse_mbox(path: &Path, raw: &str, unread: bool) -> Vec<ParsedMail> {
             let record = &raw[*start..end];
             let message_start = record.find('\n').map(|line_end| line_end + 1)?;
             let id = message_id(path, index);
-            let folder_id = folder_id_for_path(path);
+            let folder_id = folder_id_for_path_with_root(path, mail_root);
             parse_rfc822(&id, &folder_id, &record[message_start..], unread)
         })
         .collect()
@@ -1265,6 +1371,60 @@ fn parse_mbox(path: &Path, raw: &str, unread: bool) -> Vec<ParsedMail> {
 
 fn message_id(path: &Path, index: usize) -> String {
     format!("local:{}#{index}", path.to_string_lossy())
+}
+
+fn folder_id_for_path_with_root(path: &Path, mail_root: Option<&Path>) -> String {
+    if let Some(mail_root) = mail_root {
+        if let Ok(relative) = path.strip_prefix(mail_root) {
+            let components = relative
+                .components()
+                .filter_map(|component| component.as_os_str().to_str())
+                .map(str::to_string)
+                .collect::<Vec<_>>();
+            if !components.is_empty() {
+                let is_maildir_message = components
+                    .get(components.len().saturating_sub(2))
+                    .is_some_and(|name| matches!(name.as_str(), "cur" | "new"));
+                let extension = path
+                    .extension()
+                    .and_then(|extension| extension.to_str())
+                    .map(str::to_ascii_lowercase);
+                let mut folder_components = if is_maildir_message {
+                    components[..components.len().saturating_sub(2)].to_vec()
+                } else if extension.as_deref() == Some("eml") {
+                    components[..components.len().saturating_sub(1)].to_vec()
+                } else {
+                    let mut components = components;
+                    if extension.as_deref() == Some("mbox") {
+                        if let Some(name) = components.last_mut() {
+                            let stem = Path::new(name)
+                                .file_stem()
+                                .and_then(|stem| stem.to_str())
+                                .map(str::to_string);
+                            if let Some(stem) = stem {
+                                *name = stem;
+                            }
+                        }
+                    }
+                    components
+                };
+
+                for component in &mut folder_components {
+                    *component = component.trim_start_matches('.').to_string();
+                    if let Some(name) = component.strip_suffix(".sbd") {
+                        *component = name.to_string();
+                    }
+                }
+                folder_components.retain(|component| !component.is_empty());
+                if folder_components.is_empty() {
+                    return "inbox".to_string();
+                }
+                return local_folder_id(&folder_components.join("/"));
+            }
+        }
+    }
+
+    folder_id_for_path(path)
 }
 
 fn folder_id_for_path(path: &Path) -> String {
@@ -1921,7 +2081,7 @@ mod tests {
             "Subject: Second\n\nTwo\n"
         );
 
-        let messages = parse_mbox(Path::new("Inbox"), raw, true);
+        let messages = parse_mbox(Path::new("Inbox"), raw, true, None);
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[0].subject, "First");
         assert_eq!(messages[1].subject, "Second");
@@ -1990,6 +2150,44 @@ mod tests {
         let records = service.load_local_records();
         assert_eq!(records.len(), 1);
         assert!(!records[0].is_unread);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn imports_nested_maildir_directories_without_flattening_folders() {
+        let root = temporary_directory("import-nested-maildir");
+        let source_dir = root.join("source-maildir");
+        let destination_dir = root.join("destination-maildir");
+        let source = source_dir.join(".Projects/.2026/cur/123:2,S");
+        fs::create_dir_all(source.parent().expect("nested maildir parent should exist"))
+            .expect("nested maildir should be created");
+        fs::write(&source, "From: sender@example.org\nSubject: Nested\n\nBody")
+            .expect("nested mail should be written");
+
+        let service = MailStoreService::with_mail_dir_and_state_path(
+            &destination_dir,
+            root.join("mail-state.json"),
+        );
+        assert_eq!(
+            service
+                .import_files_from_root(&source_dir, std::slice::from_ref(&source))
+                .expect("nested maildir should import"),
+            1
+        );
+        assert!(
+            destination_dir
+                .join(".Projects/.2026/cur/123:2,S")
+                .is_file()
+        );
+        let records = service.load_local_records();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].folder_id, "custom:Projects/2026");
+        assert!(
+            service
+                .local_folder_definitions()
+                .contains("custom:Projects/2026")
+        );
 
         let _ = fs::remove_dir_all(root);
     }
