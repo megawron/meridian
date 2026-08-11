@@ -109,6 +109,25 @@
       <default>true</default>
       <summary>Show the selected message preview pane</summary>
     </key>
+    <key name="mail-layout" type="s">
+      <default>'modern'</default>
+      <summary>Mail layout (modern side-by-side or classic top-preview)</summary>
+    </key>
+    <key name="mail-sidebar-position" type="i">
+      <default>220</default>
+      <range min="0" max="2000"/>
+      <summary>Mail folder sidebar width</summary>
+    </key>
+    <key name="mail-modern-preview-position" type="i">
+      <default>420</default>
+      <range min="120" max="4096"/>
+      <summary>Message preview divider in modern mail layout</summary>
+    </key>
+    <key name="mail-classic-preview-position" type="i">
+      <default>360</default>
+      <range min="120" max="4096"/>
+      <summary>Message preview divider in classic mail layout</summary>
+    </key>
     <key name="mail-row-density" type="s">
       <default>'comfortable'</default>
       <summary>Mail list density (compact, comfortable, or spacious)</summary>

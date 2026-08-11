@@ -70,6 +70,44 @@ impl MailSortField {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum MailLayout {
+    #[default]
+    Modern,
+    Classic,
+}
+
+impl MailLayout {
+    fn from_setting(value: &str) -> Self {
+        if value == "classic" {
+            Self::Classic
+        } else {
+            Self::Modern
+        }
+    }
+
+    fn setting_value(self) -> &'static str {
+        match self {
+            Self::Modern => "modern",
+            Self::Classic => "classic",
+        }
+    }
+
+    fn orientation(self) -> gtk::Orientation {
+        match self {
+            Self::Modern => gtk::Orientation::Horizontal,
+            Self::Classic => gtk::Orientation::Vertical,
+        }
+    }
+
+    fn default_position(self) -> i32 {
+        match self {
+            Self::Modern => 420,
+            Self::Classic => 360,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct FolderSelection {
     folder_id: String,
@@ -638,7 +676,8 @@ mod imp {
     #[derive(Debug, Default)]
     pub struct MailPage {
         pub outer_paned: gtk::Paned,
-        pub inner_split: adw::NavigationSplitView,
+        pub inner_paned: gtk::Paned,
+        pub preview_widget: RefCell<Option<gtk::Widget>>,
         pub message_selection: RefCell<Option<gtk::SingleSelection>>,
         pub message_store: RefCell<Option<gio::ListStore>>,
         pub message_filter: RefCell<Option<gtk::CustomFilter>>,
@@ -679,6 +718,7 @@ mod imp {
         pub(super) mail_sort_field: Cell<MailSortField>,
         pub mail_sort_descending: Cell<bool>,
         pub mail_threading: Cell<bool>,
+        pub(super) mail_layout: Cell<MailLayout>,
     }
 
     #[glib::object_subclass]
@@ -696,16 +736,29 @@ mod imp {
         fn constructed(&self) {
             self.parent_constructed();
             self.mail_commands.replace(MailCommandStack::persistent());
-            if let Some(settings) = AppSettings::try_new() {
+            let preview_position = if let Some(settings) = AppSettings::try_new() {
                 self.mail_sort_field
                     .set(MailSortField::from_setting(&settings.mail_sort_field()));
                 self.mail_sort_descending
                     .set(settings.mail_sort_descending());
                 self.mail_threading.set(settings.mail_threading());
+                let layout = MailLayout::from_setting(&settings.mail_layout());
+                self.mail_layout.set(layout);
+                settings.mail_preview_position(layout.setting_value())
             } else {
                 self.mail_sort_descending.set(true);
                 self.mail_threading.set(true);
-            }
+                self.mail_layout.set(MailLayout::Modern);
+                self.mail_layout.get().default_position()
+            };
+            self.inner_paned
+                .set_orientation(self.mail_layout.get().orientation());
+            self.inner_paned.set_wide_handle(true);
+            self.inner_paned.set_resize_start_child(true);
+            self.inner_paned.set_shrink_start_child(true);
+            self.inner_paned.set_resize_end_child(true);
+            self.inner_paned.set_shrink_end_child(true);
+            self.inner_paned.set_position(preview_position);
             let obj = self.obj();
 
             let (sidebar, source_store, source_state, folder_section, folder_list, search_list) =
@@ -813,17 +866,26 @@ impl MailPage {
         &self.imp().outer_paned
     }
 
-    pub fn inner_split(&self) -> &adw::NavigationSplitView {
-        &self.imp().inner_split
+    /// Returns the message-list/preview divider.  Its orientation is
+    /// horizontal for the modern layout and vertical for the classic
+    /// Evolution-compatible layout.
+    pub fn inner_paned(&self) -> &gtk::Paned {
+        &self.imp().inner_paned
+    }
+
+    pub fn preview_widget(&self) -> Option<gtk::Widget> {
+        self.imp().preview_widget.borrow().clone()
     }
 
     pub fn set_sidebar_visible(&self, visible: bool) {
         // Show/hide the folder sidebar by collapsing the paned to 0 or restoring
         let paned = &self.imp().outer_paned;
         if visible {
-            // Restore to at least 220px when showing
+            let saved_position = AppSettings::try_new()
+                .map(|settings| settings.mail_sidebar_position())
+                .unwrap_or(220);
             if paned.position() < 10 {
-                paned.set_position(220);
+                paned.set_position(saved_position.max(10));
             }
         } else {
             paned.set_position(0);
@@ -836,11 +898,13 @@ impl MailPage {
             .as_ref()
             .map(AppSettings::show_message_preview)
             .unwrap_or(true);
-        self.imp().inner_split.set_show_content(show_preview);
+        self.set_preview_visible(show_preview);
         if let Some(settings) = settings {
-            let inner_split = self.imp().inner_split.clone();
+            let page_weak_for_preview = self.downgrade();
             settings.connect_changed(Some("show-message-preview"), move |settings, _| {
-                inner_split.set_show_content(settings.boolean("show-message-preview"));
+                if let Some(page) = page_weak_for_preview.upgrade() {
+                    page.set_preview_visible(settings.boolean("show-message-preview"));
+                }
             });
             let page_weak_for_density = self.downgrade();
             settings.connect_changed(Some("mail-row-density"), move |_, _| {
@@ -866,7 +930,53 @@ impl MailPage {
                     page.reload_sort_preferences();
                 }
             });
+            let page_weak_for_layout = self.downgrade();
+            settings.connect_changed(Some("mail-layout"), move |settings, _| {
+                if let Some(page) = page_weak_for_layout.upgrade() {
+                    page.apply_mail_layout(MailLayout::from_setting(
+                        &settings.string("mail-layout"),
+                    ));
+                }
+            });
+            let settings_for_position = settings.clone();
+            let page_weak_for_position = self.downgrade();
+            self.imp()
+                .inner_paned
+                .connect_position_notify(move |paned| {
+                    if let Some(page) = page_weak_for_position.upgrade() {
+                        settings_for_position.set_mail_preview_position(
+                            page.imp().mail_layout.get().setting_value(),
+                            paned.position(),
+                        );
+                    }
+                });
             self.imp().preview_settings.replace(Some(settings));
+        }
+    }
+
+    fn apply_mail_layout(&self, layout: MailLayout) {
+        let imp = self.imp();
+        let previous_layout = imp.mail_layout.get();
+        if previous_layout == layout {
+            return;
+        }
+        let next_position = AppSettings::try_new()
+            .map(|settings| {
+                settings.set_mail_preview_position(
+                    previous_layout.setting_value(),
+                    imp.inner_paned.position(),
+                );
+                settings.mail_preview_position(layout.setting_value())
+            })
+            .unwrap_or_else(|| layout.default_position());
+        imp.mail_layout.set(layout);
+        imp.inner_paned.set_orientation(layout.orientation());
+        imp.inner_paned.set_position(next_position);
+    }
+
+    fn set_preview_visible(&self, visible: bool) {
+        if let Some(preview) = self.imp().preview_widget.borrow().as_ref() {
+            preview.set_visible(visible);
         }
     }
 
@@ -3807,16 +3917,28 @@ impl MailPage {
             .child(&detail_view)
             .build();
 
-        imp.inner_split.set_sidebar(Some(&list_page));
-        imp.inner_split.set_content(Some(&detail_page));
-        imp.inner_split.set_min_sidebar_width(300.0);
-        imp.inner_split.set_max_sidebar_width(500.0);
+        let list_widget: gtk::Widget = list_page.upcast();
+        let detail_widget: gtk::Widget = detail_page.upcast();
+        imp.inner_paned.set_start_child(Some(&list_widget));
+        imp.inner_paned.set_end_child(Some(&detail_widget));
+        imp.preview_widget.replace(Some(detail_widget));
 
-        let inner_split_widget: gtk::Widget = imp.inner_split.clone().upcast();
-        imp.outer_paned.set_end_child(Some(&inner_split_widget));
+        let inner_paned_widget: gtk::Widget = imp.inner_paned.clone().upcast();
+        imp.outer_paned.set_end_child(Some(&inner_paned_widget));
         imp.outer_paned.set_resize_end_child(true);
         imp.outer_paned.set_shrink_end_child(false);
-        imp.outer_paned.set_position(220);
+        let sidebar_position = AppSettings::try_new()
+            .map(|settings| settings.mail_sidebar_position())
+            .unwrap_or(220);
+        imp.outer_paned.set_position(sidebar_position);
+        if let Some(settings) = AppSettings::try_new() {
+            imp.outer_paned.connect_position_notify(move |paned| {
+                let position = paned.position();
+                if position > 10 {
+                    settings.set_mail_sidebar_position(position);
+                }
+            });
+        }
 
         imp.outer_paned.set_parent(&*self.imp().obj());
     }
@@ -5098,5 +5220,21 @@ mod tests {
         assert_eq!(mail_row_density_metrics("compact"), (2, 4));
         assert_eq!(mail_row_density_metrics("spacious"), (7, 14));
         assert_eq!(mail_row_density_metrics("unknown"), (4, 8));
+    }
+
+    #[test]
+    fn mail_layout_preserves_modern_and_classic_workflows() {
+        assert_eq!(MailLayout::from_setting("modern"), MailLayout::Modern);
+        assert_eq!(MailLayout::from_setting("classic"), MailLayout::Classic);
+        assert_eq!(MailLayout::from_setting("unknown"), MailLayout::Modern);
+        assert_eq!(
+            MailLayout::Modern.orientation(),
+            gtk::Orientation::Horizontal
+        );
+        assert_eq!(
+            MailLayout::Classic.orientation(),
+            gtk::Orientation::Vertical
+        );
+        assert_eq!(MailLayout::Classic.default_position(), 360);
     }
 }

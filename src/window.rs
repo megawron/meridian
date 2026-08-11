@@ -229,12 +229,16 @@ impl EvolutionWindow {
         // Responsive Breakpoints
         let bp_narrow =
             adw::Breakpoint::new(adw::BreakpointCondition::parse("max-width: 860sp").unwrap());
-        bp_narrow.add_setter(mail_page.inner_split(), "collapsed", Some(&true.to_value()));
+        if let Some(preview) = mail_page.preview_widget() {
+            bp_narrow.add_setter(&preview, "visible", Some(&false.to_value()));
+        }
 
         let bp_mobile =
             adw::Breakpoint::new(adw::BreakpointCondition::parse("max-width: 560sp").unwrap());
         bp_mobile.add_setter(mail_page.outer_paned(), "position", Some(&0_i32.to_value()));
-        bp_mobile.add_setter(mail_page.inner_split(), "collapsed", Some(&true.to_value()));
+        if let Some(preview) = mail_page.preview_widget() {
+            bp_mobile.add_setter(&preview, "visible", Some(&false.to_value()));
+        }
         bp_mobile.add_setter(&sidebar_button, "active", Some(&false.to_value()));
 
         self.add_breakpoint(bp_narrow);
@@ -263,6 +267,25 @@ impl EvolutionWindow {
         section2.append(Some("Über Evolution"), Some("app.about"));
         menu.append_section(None, &section2);
 
+        let view_menu = gio::Menu::new();
+        view_menu.append(
+            Some("Ordner-Seitenleiste ein-/ausblenden"),
+            Some("win.toggle-sidebar"),
+        );
+        view_menu.append(
+            Some("Vorschaufenster ein-/ausblenden"),
+            Some("win.toggle-preview"),
+        );
+        view_menu.append(
+            Some("Klassische Evolution-Mail-Anordnung"),
+            Some("win.use-classic-mail-layout"),
+        );
+        view_menu.append(
+            Some("Moderne Mail-Anordnung"),
+            Some("win.use-modern-mail-layout"),
+        );
+        menu.append_submenu(Some("Ansicht"), &view_menu);
+
         menu
     }
 
@@ -284,6 +307,28 @@ impl EvolutionWindow {
             }
         ));
         self.add_action(&action_sidebar);
+
+        let action_toggle_preview = gio::SimpleAction::new("toggle-preview", None);
+        action_toggle_preview.connect_activate(move |_, _| {
+            if let Some(settings) = AppSettings::try_new() {
+                settings.set_show_message_preview(!settings.show_message_preview());
+            }
+        });
+        self.add_action(&action_toggle_preview);
+
+        for (action_name, layout) in [
+            ("use-classic-mail-layout", "classic"),
+            ("use-modern-mail-layout", "modern"),
+        ] {
+            let action = gio::SimpleAction::new(action_name, None);
+            let layout = layout.to_string();
+            action.connect_activate(move |_, _| {
+                if let Some(settings) = AppSettings::try_new() {
+                    settings.set_mail_layout(&layout);
+                }
+            });
+            self.add_action(&action);
+        }
 
         let action_refresh_mail = gio::SimpleAction::new("refresh-mail", None);
         action_refresh_mail.connect_activate(glib::clone!(

@@ -1415,6 +1415,31 @@ impl PreferencesDialog {
         }
         group_reading.add(&row_message_preview);
 
+        let row_mail_layout = adw::ComboRow::builder()
+            .title("Mail-Arbeitsweise")
+            .subtitle(
+                "Modern nebeneinander oder klassisch wie Evolution: Ordner links, Liste oben, Vorschau darunter (wird sofort angewendet)",
+            )
+            .model(&gtk::StringList::new(&[
+                "Modern: Liste und Vorschau nebeneinander",
+                "Klassisch: Liste über der Vorschau",
+            ]))
+            .build();
+        if let Some(settings) = settings.clone() {
+            row_mail_layout.set_selected(match settings.mail_layout().as_str() {
+                "classic" => 1,
+                _ => 0,
+            });
+            row_mail_layout.connect_selected_notify(move |row| {
+                settings.set_mail_layout(if row.selected() == 1 {
+                    "classic"
+                } else {
+                    "modern"
+                });
+            });
+        }
+        group_reading.add(&row_mail_layout);
+
         let row_mail_density = adw::ComboRow::builder()
             .title("Dichte der Nachrichtenliste")
             .subtitle("Bestimmt den vertikalen Abstand der Mailzeilen")

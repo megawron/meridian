@@ -301,6 +301,46 @@ impl ContactDialog {
         row_photo.set_input_purpose(gtk::InputPurpose::Url);
         group_extra.add(&row_photo);
 
+        // Evolution-specific address-book properties. They are kept in the
+        // vCard even when a provider does not expose them as first-class
+        // fields, and can be edited explicitly on the portable path.
+        let group_evolution = adw::PreferencesGroup::builder()
+            .title("Evolution-Felder")
+            .description("Zusätzliche Eigenschaften des Evolution-Adressbuchs")
+            .build();
+        let row_evolution_file_as = adw::EntryRow::builder()
+            .title("Sortier-/Anzeigename")
+            .build();
+        group_evolution.add(&row_evolution_file_as);
+        let row_evolution_manager = adw::EntryRow::builder().title("Vorgesetzter").build();
+        group_evolution.add(&row_evolution_manager);
+        let row_evolution_assistant = adw::EntryRow::builder().title("Assistenz").build();
+        group_evolution.add(&row_evolution_assistant);
+        let row_evolution_spouse = adw::EntryRow::builder().title("Partner/in").build();
+        group_evolution.add(&row_evolution_spouse);
+        let row_evolution_blog_url = adw::EntryRow::builder().title("Blog-URL").build();
+        row_evolution_blog_url.set_input_purpose(gtk::InputPurpose::Url);
+        group_evolution.add(&row_evolution_blog_url);
+        let row_evolution_video_url = adw::EntryRow::builder().title("Video-URL").build();
+        row_evolution_video_url.set_input_purpose(gtk::InputPurpose::Url);
+        group_evolution.add(&row_evolution_video_url);
+        let row_evolution_wants_html = adw::SwitchRow::builder()
+            .title("HTML-Mail an diesen Kontakt")
+            .subtitle("Evolution-Präferenz X-EVOLUTION-WANTS-HTML")
+            .build();
+        group_evolution.add(&row_evolution_wants_html);
+        let row_evolution_list = adw::SwitchRow::builder()
+            .title("Mailingliste")
+            .subtitle("Kontakt als Liste behandeln")
+            .build();
+        group_evolution.add(&row_evolution_list);
+        let row_evolution_list_name = adw::EntryRow::builder().title("Listenname").build();
+        group_evolution.add(&row_evolution_list_name);
+        let row_evolution_list_show_addresses = adw::SwitchRow::builder()
+            .title("Listenadressen anzeigen")
+            .build();
+        group_evolution.add(&row_evolution_list_show_addresses);
+
         if let Some(vcard) = edit_vcard.as_deref() {
             if let Some(contact) = VCardContact::parse_vcard_string(vcard) {
                 row_name.set_text(&contact.fn_name);
@@ -346,6 +386,73 @@ impl ContactDialog {
                         row_photo.set_text(&photo.value);
                     }
                 }
+                row_evolution_file_as.set_text(
+                    &contact
+                        .extension_values("X-EVOLUTION-FILE-AS")
+                        .first()
+                        .cloned()
+                        .unwrap_or_default(),
+                );
+                row_evolution_manager.set_text(
+                    &contact
+                        .extension_values("X-EVOLUTION-MANAGER")
+                        .first()
+                        .cloned()
+                        .unwrap_or_default(),
+                );
+                row_evolution_assistant.set_text(
+                    &contact
+                        .extension_values("X-EVOLUTION-ASSISTANT")
+                        .first()
+                        .cloned()
+                        .unwrap_or_default(),
+                );
+                row_evolution_spouse.set_text(
+                    &contact
+                        .extension_values("X-EVOLUTION-SPOUSE")
+                        .first()
+                        .cloned()
+                        .unwrap_or_default(),
+                );
+                row_evolution_blog_url.set_text(
+                    &contact
+                        .extension_values("X-EVOLUTION-BLOG-URL")
+                        .first()
+                        .cloned()
+                        .unwrap_or_default(),
+                );
+                row_evolution_video_url.set_text(
+                    &contact
+                        .extension_values("X-EVOLUTION-VIDEO-URL")
+                        .first()
+                        .cloned()
+                        .unwrap_or_default(),
+                );
+                row_evolution_wants_html.set_active(
+                    contact
+                        .extension_values("X-EVOLUTION-WANTS-HTML")
+                        .first()
+                        .is_some_and(|value| parse_vcard_bool(value)),
+                );
+                row_evolution_list.set_active(
+                    contact
+                        .extension_values("X-EVOLUTION-LIST")
+                        .first()
+                        .is_some_and(|value| parse_vcard_bool(value)),
+                );
+                row_evolution_list_name.set_text(
+                    &contact
+                        .extension_values("X-EVOLUTION-LIST-NAME")
+                        .first()
+                        .cloned()
+                        .unwrap_or_default(),
+                );
+                row_evolution_list_show_addresses.set_active(
+                    contact
+                        .extension_values("X-EVOLUTION-LIST-SHOW-ADDRESSES")
+                        .first()
+                        .is_some_and(|value| parse_vcard_bool(value)),
+                );
             }
             if let Some(email) = vcard_property(vcard, "EMAIL", 1) {
                 row_email2.set_text(&email);
@@ -356,6 +463,7 @@ impl ContactDialog {
         }
 
         content_box.append(&group_extra);
+        content_box.append(&group_evolution);
 
         content_scroll.set_child(Some(&content_box));
         toolbar_view.set_content(Some(&content_scroll));
@@ -453,6 +561,16 @@ impl ContactDialog {
                 impps: row_impp.text().to_string(),
                 related: row_related.text().to_string(),
                 photo: row_photo.text().to_string(),
+                evolution_file_as: row_evolution_file_as.text().to_string(),
+                evolution_manager: row_evolution_manager.text().to_string(),
+                evolution_assistant: row_evolution_assistant.text().to_string(),
+                evolution_spouse: row_evolution_spouse.text().to_string(),
+                evolution_blog_url: row_evolution_blog_url.text().to_string(),
+                evolution_video_url: row_evolution_video_url.text().to_string(),
+                evolution_wants_html: row_evolution_wants_html.is_active(),
+                evolution_list: row_evolution_list.is_active(),
+                evolution_list_name: row_evolution_list_name.text().to_string(),
+                evolution_list_show_addresses: row_evolution_list_show_addresses.is_active(),
             };
             let mut vcard = match build_vcard_with_fields(
                 &row_name.text(),
@@ -565,6 +683,13 @@ fn vcard_property(vcard: &str, name: &str, occurrence: usize) -> Option<String> 
         .nth(occurrence)
 }
 
+fn parse_vcard_bool(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "true" | "yes" | "1" | "on"
+    )
+}
+
 #[derive(Debug, Default)]
 struct ContactVCardFields {
     family_name: String,
@@ -580,6 +705,16 @@ struct ContactVCardFields {
     impps: String,
     related: String,
     photo: String,
+    evolution_file_as: String,
+    evolution_manager: String,
+    evolution_assistant: String,
+    evolution_spouse: String,
+    evolution_blog_url: String,
+    evolution_video_url: String,
+    evolution_wants_html: bool,
+    evolution_list: bool,
+    evolution_list_name: String,
+    evolution_list_show_addresses: bool,
 }
 
 fn build_vcard(
@@ -743,6 +878,40 @@ fn build_vcard_with_fields(
     append_comma_separated_vcard_values(&mut lines, "IMPP", &fields.impps);
     append_comma_separated_vcard_values(&mut lines, "RELATED", &fields.related);
     append_photo_value(&mut lines, &fields.photo);
+    append_optional_vcard_value(&mut lines, "X-EVOLUTION-FILE-AS", &fields.evolution_file_as);
+    append_optional_vcard_value(&mut lines, "X-EVOLUTION-MANAGER", &fields.evolution_manager);
+    append_optional_vcard_value(
+        &mut lines,
+        "X-EVOLUTION-ASSISTANT",
+        &fields.evolution_assistant,
+    );
+    append_optional_vcard_value(&mut lines, "X-EVOLUTION-SPOUSE", &fields.evolution_spouse);
+    append_optional_vcard_value(
+        &mut lines,
+        "X-EVOLUTION-BLOG-URL",
+        &fields.evolution_blog_url,
+    );
+    append_optional_vcard_value(
+        &mut lines,
+        "X-EVOLUTION-VIDEO-URL",
+        &fields.evolution_video_url,
+    );
+    append_vcard_bool(
+        &mut lines,
+        "X-EVOLUTION-WANTS-HTML",
+        fields.evolution_wants_html,
+    );
+    append_vcard_bool(&mut lines, "X-EVOLUTION-LIST", fields.evolution_list);
+    append_optional_vcard_value(
+        &mut lines,
+        "X-EVOLUTION-LIST-NAME",
+        &fields.evolution_list_name,
+    );
+    append_vcard_bool(
+        &mut lines,
+        "X-EVOLUTION-LIST-SHOW-ADDRESSES",
+        fields.evolution_list_show_addresses,
+    );
     lines.push("END:VCARD".to_string());
     Ok(format!("{}\r\n", lines.join("\r\n")))
 }
@@ -751,6 +920,13 @@ fn append_optional_vcard_value(lines: &mut Vec<String>, property: &str, value: &
     if !value.trim().is_empty() {
         lines.push(format!("{property}:{}", escape_vcard_text(value.trim())));
     }
+}
+
+fn append_vcard_bool(lines: &mut Vec<String>, property: &str, value: bool) {
+    lines.push(format!(
+        "{property}:{}",
+        if value { "TRUE" } else { "FALSE" }
+    ));
 }
 
 fn append_comma_separated_vcard_values(lines: &mut Vec<String>, property: &str, values: &str) {
@@ -824,9 +1000,34 @@ fn preserve_vcard_extensions(generated: &str, original: &str) -> String {
                 related_count += 1;
                 related_count > 1
             }
-            "BEGIN" | "END" | "VERSION" | "UID" | "FN" | "N" | "ORG" | "TITLE" | "NOTE" | "URL"
-            | "NICKNAME" | "BDAY" | "CATEGORIES" | "ANNIVERSARY" | "ROLE" | "GENDER" | "TZ"
-            | "GEO" => false,
+            "BEGIN"
+            | "END"
+            | "VERSION"
+            | "UID"
+            | "FN"
+            | "N"
+            | "ORG"
+            | "TITLE"
+            | "NOTE"
+            | "URL"
+            | "NICKNAME"
+            | "BDAY"
+            | "CATEGORIES"
+            | "ANNIVERSARY"
+            | "ROLE"
+            | "GENDER"
+            | "TZ"
+            | "GEO"
+            | "X-EVOLUTION-FILE-AS"
+            | "X-EVOLUTION-MANAGER"
+            | "X-EVOLUTION-ASSISTANT"
+            | "X-EVOLUTION-SPOUSE"
+            | "X-EVOLUTION-BLOG-URL"
+            | "X-EVOLUTION-VIDEO-URL"
+            | "X-EVOLUTION-WANTS-HTML"
+            | "X-EVOLUTION-LIST"
+            | "X-EVOLUTION-LIST-NAME"
+            | "X-EVOLUTION-LIST-SHOW-ADDRESSES" => false,
             _ => true,
         };
         if preserve {
@@ -954,5 +1155,43 @@ mod tests {
         assert!(merged.contains("EMAIL;TYPE=OTHER:ada.other@example.com"));
         assert!(merged.contains("EMAIL;TYPE=HOME:ada.legacy@example.com"));
         assert!(merged.contains("CATEGORIES:Friends,Important"));
+    }
+
+    #[test]
+    fn evolution_contact_fields_are_serialized_and_toggleable() {
+        let fields = ContactVCardFields {
+            evolution_file_as: "Lovelace, Ada".to_string(),
+            evolution_manager: "Grace Hopper".to_string(),
+            evolution_wants_html: true,
+            evolution_list: false,
+            evolution_list_show_addresses: true,
+            ..Default::default()
+        };
+        let vcard = build_vcard_with_fields(
+            "Ada Lovelace",
+            "Analytical Engines",
+            "Mathematician",
+            "ada@example.com",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            &fields,
+            Some("contact-2"),
+        )
+        .expect("contact vCard should serialize");
+        assert!(vcard.contains("X-EVOLUTION-FILE-AS:Lovelace\\, Ada"));
+        assert!(vcard.contains("X-EVOLUTION-WANTS-HTML:TRUE"));
+        assert!(vcard.contains("X-EVOLUTION-LIST:FALSE"));
+        assert!(vcard.contains("X-EVOLUTION-LIST-SHOW-ADDRESSES:TRUE"));
+        assert!(parse_vcard_bool("yes"));
+        assert!(!parse_vcard_bool("FALSE"));
     }
 }

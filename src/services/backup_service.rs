@@ -97,6 +97,14 @@ struct BackupSettings {
     mark_read_on_selection: bool,
     #[serde(default = "default_show_message_preview")]
     show_message_preview: bool,
+    #[serde(default = "default_mail_layout")]
+    mail_layout: String,
+    #[serde(default = "default_mail_sidebar_position")]
+    mail_sidebar_position: i32,
+    #[serde(default = "default_mail_modern_preview_position")]
+    mail_modern_preview_position: i32,
+    #[serde(default = "default_mail_classic_preview_position")]
+    mail_classic_preview_position: i32,
     #[serde(default = "default_mail_row_density")]
     mail_row_density: String,
     color_scheme: String,
@@ -177,6 +185,22 @@ fn default_mail_row_density() -> String {
     "comfortable".to_string()
 }
 
+fn default_mail_layout() -> String {
+    "modern".to_string()
+}
+
+fn default_mail_sidebar_position() -> i32 {
+    220
+}
+
+fn default_mail_modern_preview_position() -> i32 {
+    420
+}
+
+fn default_mail_classic_preview_position() -> i32 {
+    360
+}
+
 fn default_composer_html() -> bool {
     true
 }
@@ -225,6 +249,10 @@ impl BackupSettings {
             mail_font_size: settings.mail_font_size(),
             mark_read_on_selection: settings.mark_read_on_selection(),
             show_message_preview: settings.show_message_preview(),
+            mail_layout: settings.mail_layout(),
+            mail_sidebar_position: settings.mail_sidebar_position(),
+            mail_modern_preview_position: settings.mail_preview_position("modern"),
+            mail_classic_preview_position: settings.mail_preview_position("classic"),
             mail_row_density: settings.mail_row_density(),
             color_scheme: settings.color_scheme(),
             sign_new_messages: settings.sign_new_messages(),
@@ -275,6 +303,10 @@ impl BackupSettings {
         settings.set_mail_font_size(self.mail_font_size);
         settings.set_mark_read_on_selection(self.mark_read_on_selection);
         settings.set_show_message_preview(self.show_message_preview);
+        settings.set_mail_layout(&self.mail_layout);
+        settings.set_mail_sidebar_position(self.mail_sidebar_position);
+        settings.set_mail_preview_position("modern", self.mail_modern_preview_position);
+        settings.set_mail_preview_position("classic", self.mail_classic_preview_position);
         settings.set_mail_row_density(&self.mail_row_density);
         settings.set_color_scheme(&self.color_scheme);
         settings.set_sign_new_messages(self.sign_new_messages);
@@ -868,6 +900,10 @@ mod tests {
         assert!(settings.notifications_enabled);
         assert!(settings.mark_read_on_selection);
         assert!(settings.show_message_preview);
+        assert_eq!(settings.mail_layout, "modern");
+        assert_eq!(settings.mail_sidebar_position, 220);
+        assert_eq!(settings.mail_modern_preview_position, 420);
+        assert_eq!(settings.mail_classic_preview_position, 360);
         assert_eq!(settings.mail_row_density, "comfortable");
         assert!(!settings.calendar_show_week_numbers);
         assert_eq!(settings.mail_sort_field, "date");

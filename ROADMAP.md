@@ -166,8 +166,11 @@ Implementierungsdetails getrennt.
   `GtkListView`/`GtkListBox` und `GtkSignalListItemFactory` gerendert.
 - Asynchrone EDS-, Camel- und lokale Store-Aufgaben laufen über GLib-Futures,
   Worker-Threads und explizite Channels zurück auf den GTK-Main-Thread.
-- Adwaita `ViewStack`, `ToolbarView`, `HeaderBar`, `NavigationSplitView` und
-  `OverlaySplitView` bilden die adaptive Evolution-Struktur.
+- Adwaita `ViewStack`, `ToolbarView`, `HeaderBar`, `NavigationSplitView`,
+  `OverlaySplitView` und GTK-`Paned`-Container bilden die adaptive
+  Evolution-Struktur. Die Mailansicht kann dabei pro Benutzer zwischen einer
+  modernen Seitenansicht und der klassischen Evolution-Anordnung mit Ordnern
+  links, Nachrichtenliste oben und Vorschau unten umgeschaltet werden.
 - Backend-Services dürfen keine GTK-Typen benötigen; die UI übersetzt
   ausschließlich fertige, thread-sichere Domänenwerte in GObject-Modelle.
 
@@ -357,8 +360,12 @@ werden.
 
 #### Phase 1 — Mail lesen (lokal, erster echter Backend-Schnitt)
 
-- [~] Adaptives GTK4/libadwaita-Drei-Spalten-Layout; die bestehende
-  GTK4-rs-Mailseite wird jetzt mit dem nativen Camel-Service verbunden.
+- [~] Adaptives GTK4/libadwaita-Mail-Layout; die bestehende GTK4-rs-Mailseite
+  wird jetzt mit dem nativen Camel-Service verbunden. Die Ordner-Seitenleiste
+  bleibt links, während Benutzer zwischen moderner Liste/Vorschau-
+  Seitenansicht und der klassischen Evolution-Anordnung (Liste über der
+  Vorschau) wählen können. Beide Modi verwenden denselben Auswahl-,
+  Such- und Aktionspfad; zusätzliche native Camel-Abnahme bleibt offen.
 - [~] Sicherer WebKitGTK-Viewer: JavaScript ist deaktiviert, Navigation wird
   abgefangen und externe Bilder sind standardmäßig blockiert.
   Die portable Leseeinstellung, ob eine Nachricht beim Auswählen als gelesen
@@ -405,9 +412,15 @@ werden.
   Unterhaltungen werden über GSettings gespeichert und beim Wiederaufbau der
   Liste angewendet; Änderungen an diesen Einstellungen aktualisieren eine
   bereits geöffnete Ansicht ebenfalls. Vorschaufenster und die Dichte der
-  Nachrichtenzeilen werden ebenfalls persistent gespeichert und auf die
-  GTK4-rs-Ansicht angewendet. Eine providerunabhängige Datumsnormalisierung und
-  serverseitige Sortierung bleiben Teil der Linux/Camel-Strecke.
+  Nachrichtenzeilen sowie die Mail-Arbeitsweise (modern nebeneinander oder
+  klassisch Liste über Vorschau) werden ebenfalls persistent gespeichert und
+  bei einem Einstellungswechsel sofort auf die geöffnete GTK4-rs-Ansicht
+  angewendet. Die Ordnerbreite sowie die Trennbalkenpositionen der modernen
+  und klassischen Ansicht werden separat gespeichert, auch in Backup/Restore
+  übernommen und durch responsive automatische Sidebar-Ausblendungen nicht
+  überschrieben. Eine providerunabhängige
+  Datumsnormalisierung und serverseitige Sortierung bleiben Teil der
+  Linux/Camel-Strecke.
 - [~] Anhang „Speichern unter“ ist für lokal gelesene MIME-Anhänge angebunden;
   ausgewählte Nachrichten können zusätzlich als vollständige EML/RFC822-Datei
   mit Thread-Headern und MIME-Anhängen exportiert werden. Lokale MIME-
@@ -655,7 +668,10 @@ werden.
   Datenschutzgründen nicht automatisch geladen. Inline-Fotos werden auch im
   Detailview nach Auswahl gesetzt; das Detailview zeigt zusätzlich Adressen,
   Kategorien, URLs, Geburtstage, Notizen und die übrigen sicheren RFC-Felder
-  an. Nachträgliche Dublettenänderungen invalidieren den GTK-Filter korrekt.
+  an. Die portable Kontaktbearbeitung zeigt außerdem zentrale
+  `X-EVOLUTION-*`-Felder (Sortiername, Vorgesetzter, Assistenz, Partner,
+  Blog/Video und Mailinglisten-/HTML-Präferenzen). Nachträgliche
+  Dublettenänderungen invalidieren den GTK-Filter korrekt.
 - [~] Der vCard-Parser/Serializer erhält mehrere E-Mail-Adressen,
   Telefonnummern, Adressen, Kategorien, URLs, Spitznamen und Geburtstage
   zusätzlich zu den bisherigen Kernfeldern sowie `N`, Jahrestag, Rolle,
@@ -663,8 +679,9 @@ werden.
   Inline-Bild- und Extended-Field-Tests sind vorhanden. vCard-Export ist
   verfügbar und beim Bearbeiten bestehender Kontakte bleiben nicht sichtbare
   Eigenschaften wie weitere Fotos, Kategorien, zusätzliche Kontaktwege und
-  X-Felder erhalten; escaped Kommas in Kategorien überstehen Parser-/Serializer-
-  Roundtrips.
+  beliebige `X-*`-/`X-EVOLUTION-*`-Felder erhalten; die zentralen Evolution-
+  Felder können portabel bearbeitet werden. Escaped Kommas in Kategorien
+  überstehen Parser-/Serializer-Roundtrips.
 - [~] EBook-/EDS-Quellen werden dynamisch erkannt; der native Adressbuch-
   Stream liefert vCards mit Quellen- und Kontakt-UIDs; der native Adapter
   unterstützt bereits Create/Modify/Remove mit Konfliktstatus, der app-eigene
@@ -787,7 +804,7 @@ angewendet und migrierbar ist.
 | Bereich | Abzudeckende Einstellungen | Status |
 |:---|:---|:---:|
 | Allgemein | Sprache, Zeitzone, Datums-/Zeitformat, Startansicht, Fenstergröße/-position, Maximierung, Benachrichtigungen, Bestätigungsdialoge | `[~]` |
-| Mail lesen | Vorschaufenster, Threading, Sortierung, Gruppierung, Zitierstil, Schriftarten, Listendichte, HTML/Text, externe Bilder, Tracking, Markieren als gelesen (inkl. persistentem Verhalten beim Auswählen) | `[~]` |
+| Mail lesen | Vorschaufenster, klassische oder moderne Mail-Anordnung, Threading, Sortierung, Gruppierung, Zitierstil, Schriftarten, Listendichte, HTML/Text, externe Bilder, Tracking, Markieren als gelesen (inkl. persistentem Verhalten beim Auswählen) | `[~]` |
 | Mail empfangen | Konten, Aktivierung, Abrufintervall, IMAP-Ordner, Offline-Modus, Synchronisationsumfang, Junk/Spam, Quoten, Empfangsbenachrichtigung | `[ ]` |
 | Mail senden | SMTP/Transport, Authentifizierung, TLS, Port, Absender, Antwortadresse, Bcc, DSN/Lesebestätigung, Signatur, Autosave, gesendeter Ordner | `[~]` |
 | Composer | HTML/Text, Formatvorlage, Schrift, Rechtschreibung, Wörterbücher, Zitate, Inline-Anhänge, Vorlagen, Snippets, Entwürfe, Undo/Redo | `[~]` |
@@ -812,7 +829,12 @@ nicht als vollständiger Ersatz beworben werden.
 
 ### Nächster Entwicklungsblock
 
-1. Die portable Aufgaben-/Notizen-/Kontaktansicht weiter vervollständigen:
+1. Die konfigurierbare Mailansicht weiter an Evolution angleichen:
+   klassische Werkzeugleisten- und weitere Menüpfade sowie die noch offenen
+   Mail-Leseeinstellungen ergänzen. Die Ansichts-Menüpfade für Sidebar,
+   Vorschaufenster und klassische/moderne Mail-Anordnung sind jetzt vorhanden;
+   der Wechsel wirkt live.
+2. Die portable Aufgaben-/Notizen-/Kontaktansicht weiter vervollständigen:
    verbleibende EDS-vCard-/GAL-Felder, Duplikaterkennung und die noch offenen
    Evolution-Sonderfelder. Aufgaben-/Memo-Suche, Sortierung, Export und lokale
    VTODO-/VJOURNAL-Persistenz sind ergänzt; der portable Reminder-Service, die
@@ -822,17 +844,17 @@ nicht als vollständiger Ersatz beworben werden.
    lokale Suche sowie mehrteilige portable Filterbedingungen/-aktionen und die
    Filterreihenfolge sowie die manuelle lokale Filterausführung sind ebenfalls
    umgesetzt; serverseitige Such-/Filterpfade bleiben Linux-only.
-2. Das GTK4-rs-Mailmodell mit der echten CamelFolderThread-Strecke,
+3. Das GTK4-rs-Mailmodell mit der echten CamelFolderThread-Strecke,
    vollständigem Nachladen aller Thread-Mitglieder und providerabhängiger
    UID-Neuzuordnung nach Transfers gegen Linux-EDS verifizieren; sichtbare
    Konflikt-/Restore-Fehleranzeigen und die aufklappbare TreeListModel-
    Grundlage sind vorhanden.
-3. Die portable Migration und Datenqualität vervollständigen: weitere
+4. Die portable Migration und Datenqualität vervollständigen: weitere
    Evolution-.source-Bereiche, vollständige nicht-geheime Einstellungen und
    lokale Ordner und die portable Alias-/Ordnerzuordnung,
    vollständige Export-/Restore-Prüfung, Diagnosepaket, Datenlöschung und
    Upgrade-/Rollback-Verhalten.
-4. Erst danach die native EDS/Camel-Ladestrecke, UID-basierte
+5. Erst danach die native EDS/Camel-Ladestrecke, UID-basierte
    Signalaktualisierung und den Signal-Watcher auf Linux gegen ein echtes
    GNOME-/GOA-Konto testen. Die vollständige Checkliste dafür befindet sich in
    [ROADMAP_LINUX.md](ROADMAP_LINUX.md); dort folgen strukturelle

@@ -303,6 +303,53 @@ impl AppSettings {
         self.set_boolean("show-message-preview", value);
     }
 
+    /// Select the mail workflow layout.  `modern` keeps the message list and
+    /// preview side by side; `classic` mirrors Evolution's traditional
+    /// folder-left, list-above-preview arrangement.
+    pub fn mail_layout(&self) -> String {
+        match self.settings.string("mail-layout").as_str() {
+            "classic" => "classic".to_string(),
+            _ => "modern".to_string(),
+        }
+    }
+
+    pub fn set_mail_layout(&self, value: &str) {
+        let value = if value == "classic" {
+            "classic"
+        } else {
+            "modern"
+        };
+        if let Err(error) = self.settings.set_string("mail-layout", value) {
+            tracing::warn!(%error, "Could not persist mail layout");
+        }
+    }
+
+    pub fn mail_sidebar_position(&self) -> i32 {
+        self.settings.int("mail-sidebar-position").clamp(0, 2_000)
+    }
+
+    pub fn set_mail_sidebar_position(&self, value: i32) {
+        self.set_int("mail-sidebar-position", value.clamp(0, 2_000));
+    }
+
+    pub fn mail_preview_position(&self, layout: &str) -> i32 {
+        let key = if layout == "classic" {
+            "mail-classic-preview-position"
+        } else {
+            "mail-modern-preview-position"
+        };
+        self.settings.int(key).clamp(120, 4_096)
+    }
+
+    pub fn set_mail_preview_position(&self, layout: &str, value: i32) {
+        let key = if layout == "classic" {
+            "mail-classic-preview-position"
+        } else {
+            "mail-modern-preview-position"
+        };
+        self.set_int(key, value.clamp(120, 4_096));
+    }
+
     pub fn mail_row_density(&self) -> String {
         let value = self.settings.string("mail-row-density").to_string();
         match value.as_str() {
@@ -576,6 +623,10 @@ impl AppSettings {
             "mail-font-size",
             "mark-read-on-selection",
             "show-message-preview",
+            "mail-layout",
+            "mail-sidebar-position",
+            "mail-modern-preview-position",
+            "mail-classic-preview-position",
             "mail-row-density",
             "color-scheme",
             "sign-new-messages",

@@ -1802,7 +1802,7 @@ fn quote_as_safe_text(value: &str) -> String {
                 let lower = tag.trim().to_ascii_lowercase();
                 if let Some(end_tag) = skip_until {
                     // Check if this is the closing tag we're waiting for
-                    let closing = format!("/{}" , end_tag);
+                    let closing = format!("/{}", end_tag);
                     if lower.starts_with(closing.as_str()) {
                         skip_until = None;
                     }
@@ -1940,10 +1940,7 @@ mod tests {
             "Hello team"
         );
         // Plain <script>-only input produces empty output
-        assert_eq!(
-            quote_as_safe_text("<script>evil()</script>"),
-            ""
-        );
+        assert_eq!(quote_as_safe_text("<script>evil()</script>"), "");
     }
 
     #[test]

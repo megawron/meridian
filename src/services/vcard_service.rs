@@ -22,6 +22,30 @@ pub struct VCardPhoto {
     pub encoding: Option<String>,
 }
 
+/// A vCard property which is not part of the portable core model.
+///
+/// Evolution stores a number of address-book-specific properties under the
+/// `X-EVOLUTION-*` namespace. Keeping the complete property name (including
+/// parameters) lets the portable parser and exporter round-trip those fields
+/// without silently discarding data from an existing address book. The same
+/// container is used for other `X-*` extensions from providers and imported
+/// vCards.
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VCardExtension {
+    pub property: String,
+    pub value: String,
+}
+
+impl VCardExtension {
+    pub fn property_name(&self) -> &str {
+        self.property
+            .split(';')
+            .next()
+            .unwrap_or(self.property.as_str())
+    }
+}
+
 impl VCardPhoto {
     /// Decode an inline binary photo when the vCard carries one.  URI-based
     /// photos intentionally return `None`; the caller must apply its own
@@ -68,6 +92,9 @@ pub struct VCardContact {
     pub impps: Vec<String>,
     pub related: Vec<String>,
     pub photo: Option<VCardPhoto>,
+    /// Provider- and Evolution-specific properties which are not represented
+    /// by the compact editor yet. They remain exportable and searchable.
+    pub extensions: Vec<VCardExtension>,
 }
 
 #[allow(dead_code)]
@@ -100,6 +127,7 @@ impl VCardContact {
             impps: Vec::new(),
             related: Vec::new(),
             photo: None,
+            extensions: Vec::new(),
         }
     }
 
@@ -221,6 +249,20 @@ impl VCardContact {
                 lines.push(format!("{property}:{}", photo.value.trim()));
             }
         }
+        for extension in &self.extensions {
+            let property = extension.property.trim();
+            if property.is_empty()
+                || property
+                    .split(';')
+                    .next()
+                    .is_none_or(|name| !name.to_ascii_uppercase().starts_with("X-"))
+                || extension.value.contains('\r')
+                || extension.value.contains('\n')
+            {
+                continue;
+            }
+            lines.push(format!("{property}:{}", escape_value(&extension.value)));
+        }
         lines.push("END:VCARD".to_string());
         format!("{}\r\n", lines.join("\r\n"))
     }
@@ -251,7 +293,25 @@ impl VCardContact {
         if let Some(photo) = &self.photo {
             values.push(photo.media_type.clone());
         }
+        for extension in &self.extensions {
+            values.push(extension.property.clone());
+            values.push(extension.value.clone());
+        }
         values.join(" ").to_lowercase()
+    }
+
+    /// Return all extension values for a property, ignoring parameters and
+    /// property-name casing.
+    pub fn extension_values(&self, property_name: &str) -> Vec<String> {
+        self.extensions
+            .iter()
+            .filter(|extension| {
+                extension
+                    .property_name()
+                    .eq_ignore_ascii_case(property_name)
+            })
+            .map(|extension| extension.value.clone())
+            .collect()
     }
 
     pub fn duplicate_keys(&self) -> Vec<String> {
@@ -329,6 +389,7 @@ impl VCardContact {
         let mut impps = Vec::new();
         let mut related = Vec::new();
         let mut photo = None;
+        let mut extensions = Vec::new();
 
         let mut lines: Vec<String> = Vec::new();
         for raw_line in vcard.replace("\r\n", "\n").replace('\r', "\n").lines() {
@@ -389,6 +450,12 @@ impl VCardContact {
                 "RELATED" => related.push(value),
                 "NOTE" => note = value,
                 "PHOTO" => photo = parse_photo(property, raw_value),
+                _ if property_name.starts_with("X-") => {
+                    extensions.push(VCardExtension {
+                        property: property.to_string(),
+                        value,
+                    });
+                }
                 _ => {}
             }
         }
@@ -420,6 +487,7 @@ impl VCardContact {
             impps,
             related,
             photo,
+            extensions,
         })
     }
 }
@@ -701,6 +769,31 @@ mod tests {
         assert!(roundtrip.contains("N:Lovelace;Ada;;Dr;III"));
         assert!(roundtrip.contains("PHOTO;ENCODING=b;TYPE=image/jpeg:YWJjZA=="));
         assert!(roundtrip.contains("IMPP:matrix:u@example.test"));
+    }
+
+    #[test]
+    fn evolution_extensions_roundtrip_and_are_searchable() {
+        let vcard = concat!(
+            "BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Ada Lovelace\r\n",
+            "X-EVOLUTION-FILE-AS:Lovelace\\, Ada\r\n",
+            "X-EVOLUTION-MANAGER:Grace\\, Hopper\r\n",
+            "X-EVOLUTION-WANTS-HTML:TRUE\r\n",
+            "X-PROVIDER-CUSTOM;TYPE=work:Value\\;with\\, punctuation\r\n",
+            "END:VCARD\r\n"
+        );
+        let contact = VCardContact::parse_vcard_string(vcard).expect("vCard should parse");
+        assert_eq!(
+            contact.extension_values("x-evolution-file-as"),
+            vec!["Lovelace, Ada"]
+        );
+        assert_eq!(
+            contact.extension_values("X-EVOLUTION-WANTS-HTML"),
+            vec!["TRUE"]
+        );
+        assert!(contact.searchable_text().contains("grace, hopper"));
+        let roundtrip = contact.to_vcard_string();
+        assert!(roundtrip.contains("X-EVOLUTION-FILE-AS:Lovelace\\, Ada"));
+        assert!(roundtrip.contains("X-PROVIDER-CUSTOM;TYPE=work:Value\\;with\\, punctuation"));
     }
 
     #[test]
