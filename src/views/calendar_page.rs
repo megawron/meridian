@@ -20,8 +20,11 @@ use crate::services::ecal_service::{
     load_snapshot_prefer_eds, parse_change_record,
 };
 use crate::services::eds_service;
+use crate::services::ical_time_service::{
+    property_local_date, property_local_dates, property_local_datetime, property_local_display,
+};
 use crate::services::recurrence_service::{
-    RecurrenceByDay, parse_extended_weekday_token, parse_ical_date, parse_recurrence_rule,
+    RecurrenceByDay, parse_extended_weekday_token, parse_recurrence_rule,
     recurrence_matches_without_count, recurrence_occurs_on as recurrence_rule_occurs_on,
 };
 use crate::services::settings_service::AppSettings;
@@ -1688,12 +1691,12 @@ impl CalendarPage {
                     });
                     let mut updated_event = event.clone();
                     updated_event.component = component.clone();
-                    updated_event.start = display_ical_datetime(
-                        &ical_property(&component, "DTSTART").unwrap_or_default(),
-                    );
-                    updated_event.end = ical_property(&component, "DTEND")
-                        .map(|value| display_ical_datetime(&value))
-                        .unwrap_or_default();
+                    updated_event.start =
+                        property_local_display(&component, "DTSTART", updated_event.all_day)
+                            .unwrap_or_default();
+                    updated_event.end =
+                        property_local_display(&component, "DTEND", updated_event.all_day)
+                            .unwrap_or_default();
                     let records = page.imp().event_records.borrow().as_ref().cloned();
                     if let Some(records) = records {
                         let mut records = records.borrow_mut();
@@ -1899,24 +1902,6 @@ fn shift_ical_datetime_value(value: &str, delta_days: i64) -> Option<String> {
         (datetime + Duration::days(delta_days)).format("%Y%m%dT%H%M%S"),
         suffix
     ))
-}
-
-fn display_ical_datetime(value: &str) -> String {
-    let value = value.trim_end_matches('Z');
-    if value.len() == 8 && value.chars().all(|character| character.is_ascii_digit()) {
-        return format!("{}-{}-{}", &value[..4], &value[4..6], &value[6..8]);
-    }
-    if value.len() >= 15 && value.as_bytes().get(8) == Some(&b'T') {
-        return format!(
-            "{}-{}-{} {}:{}",
-            &value[..4],
-            &value[4..6],
-            &value[6..8],
-            &value[9..11],
-            &value[11..13]
-        );
-    }
-    value.to_string()
 }
 
 fn configured_week_start(date: NaiveDate) -> NaiveDate {
@@ -2187,21 +2172,25 @@ fn format_clock_text(value: &str) -> String {
 }
 
 fn event_start_date(event: &CalendarEventRecord) -> Option<NaiveDate> {
-    NaiveDate::parse_from_str(event.start.get(..10)?, "%Y-%m-%d").ok()
+    property_local_date(&event.component, "DTSTART", event.all_day)
+        .or_else(|| NaiveDate::parse_from_str(event.start.get(..10)?, "%Y-%m-%d").ok())
 }
 
 fn event_end_date(event: &CalendarEventRecord) -> Option<NaiveDate> {
-    NaiveDate::parse_from_str(event.end.get(..10)?, "%Y-%m-%d").ok()
+    property_local_date(&event.component, "DTEND", event.all_day)
+        .or_else(|| NaiveDate::parse_from_str(event.end.get(..10)?, "%Y-%m-%d").ok())
 }
 
 fn event_start_datetime(event: &CalendarEventRecord) -> Option<NaiveDateTime> {
-    let date = event_start_date(event)?;
-    if let Some(value) = event.start.get(..16) {
-        if let Ok(datetime) = NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M") {
-            return Some(datetime);
+    property_local_datetime(&event.component, "DTSTART", event.all_day).or_else(|| {
+        let date = event_start_date(event)?;
+        if let Some(value) = event.start.get(..16) {
+            if let Ok(datetime) = NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M") {
+                return Some(datetime);
+            }
         }
-    }
-    date.and_hms_opt(0, 0, 0)
+        date.and_hms_opt(0, 0, 0)
+    })
 }
 
 fn event_occurs_on(event: &CalendarEventRecord, date: NaiveDate) -> bool {
@@ -2261,19 +2250,11 @@ fn has_exdate(event: &CalendarEventRecord, date: NaiveDate) -> bool {
 }
 
 fn exdate_values(event: &CalendarEventRecord) -> Vec<NaiveDate> {
-    ical_properties(&event.component, "EXDATE")
-        .iter()
-        .flat_map(|value| value.split(','))
-        .filter_map(parse_ical_date)
-        .collect()
+    property_local_dates(&event.component, "EXDATE")
 }
 
 fn has_rdate(event: &CalendarEventRecord, date: NaiveDate) -> bool {
-    ical_properties(&event.component, "RDATE")
-        .iter()
-        .flat_map(|value| value.split(','))
-        .filter_map(parse_ical_date)
-        .any(|included| included == date)
+    property_local_dates(&event.component, "RDATE").contains(&date)
 }
 
 fn ical_property(raw: &str, target: &str) -> Option<String> {

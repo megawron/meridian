@@ -803,12 +803,38 @@ impl PreferencesDialog {
                             return;
                         };
                         let bytes = contents.as_ref().to_vec();
+                        let inspection = match backup_service::inspect_backup(&bytes) {
+                            Ok(inspection) => inspection,
+                            Err(error) => {
+                                if let Some(dialog) = dialog_for_file.upgrade() {
+                                    dialog.show_toast(&format!(
+                                        "Sicherung ist ungültig oder beschädigt: {error}"
+                                    ));
+                                }
+                                return;
+                            }
+                        };
                         let Some(dialog) = dialog_for_file.upgrade() else {
                             return;
                         };
+                        let checksum_status = if inspection.legacy_files_without_checksum == 0 {
+                            "alle Dateien geprüft"
+                        } else {
+                            "ältere Dateien ohne Prüfsumme enthalten"
+                        };
+                        let settings_status = if inspection.settings_present {
+                            "Einstellungen enthalten"
+                        } else {
+                            "keine Einstellungen enthalten"
+                        };
                         let confirmation = adw::AlertDialog::new(
                             Some("App-Daten wiederherstellen?"),
-                            Some("Vorhandene app-eigene Dateien aus dieser Sicherung werden ersetzt. Das originale EDS-Profil bleibt unverändert."),
+                            Some(&format!(
+                                "{} Datei(en), {}; {}; vorhandene app-eigene Dateien aus dieser Sicherung werden ersetzt. Das originale EDS-Profil bleibt unverändert.",
+                                inspection.files,
+                                settings_status,
+                                checksum_status
+                            )),
                         );
                         confirmation.add_responses(&[
                             ("cancel", "Abbrechen"),
@@ -973,7 +999,7 @@ impl PreferencesDialog {
 
         let row_import_profile = adw::ActionRow::builder()
             .title("Evolution-Profil importieren")
-            .subtitle("Nicht-geheime Kontenmetadaten aus einer ausgewählten Profilkopie übernehmen")
+            .subtitle("Nicht-geheime Kontenmetadaten sowie valide lokale iCalendar-/vCard-Dateien aus einer ausgewählten Profilkopie übernehmen")
             .build();
         let import_profile_button = gtk::Button::builder()
             .icon_name("document-import-symbolic")
@@ -1006,12 +1032,22 @@ impl PreferencesDialog {
                             return;
                         };
                         let source_cache = EdsSourceCache::default();
+                        let calendar_store =
+                            crate::services::CalendarStoreService::with_writable_calendar_dir(
+                                crate::services::app_data_dir().join("ical"),
+                            );
+                        let contact_store =
+                            crate::services::ContactStoreService::with_writable_contact_dir(
+                                crate::services::app_data_dir().join("vcards"),
+                            );
                         let (sender, receiver) = async_channel::bounded(1);
                         std::thread::spawn(move || {
-                            let result = migration_service::import_evolution_sources_with_cache(
+                            let result = migration_service::import_evolution_profile_with_cache_and_local_data(
                                 path,
                                 &AccountConfigStore::default(),
                                 &source_cache,
+                                &calendar_store,
+                                &contact_store,
                             );
                             if let Err(error) = sender.send_blocking(result) {
                                 tracing::debug!(%error, "Profile migration result was dropped");
@@ -1049,7 +1085,7 @@ impl PreferencesDialog {
                                         )
                                     };
                                     dialog.show_toast(&format!(
-                                        "{} Profilquelle(n) gefunden: {} Konto/Konten, {} Mail-, {} Kalender- und {} Adressbuchquelle(n) zwischengespeichert, {} Filterregel(n), {} Signatur(en) übernommen, {} übersprungen{}{}",
+                                        "{} Profilquelle(n) gefunden: {} Konto/Konten, {} Mail-, {} Kalender- und {} Adressbuchquelle(n) zwischengespeichert, {} Filterregel(n), {} Signatur(en), {} iCalendar-Datei(en) und {} vCard-Datei(en) übernommen, {} übersprungen{}{}",
                                         report.discovered_sources,
                                         report.imported_accounts,
                                         report.cached_mail_sources,
@@ -1057,6 +1093,8 @@ impl PreferencesDialog {
                                         report.cached_address_book_sources,
                                         report.imported_filters,
                                         report.imported_signatures,
+                                        report.imported_calendar_files,
+                                        report.imported_contact_files,
                                         report.skipped_sources,
                                         warning_suffix,
                                         secret_suffix
@@ -1542,7 +1580,7 @@ impl PreferencesDialog {
             .subtitle(
                 "Zeigt die vertrauten Evolution-Aktionen für neue Mail, Antworten, Archivieren und Löschen über der Nachrichtenliste",
             )
-            .active(false)
+            .active(true)
             .build();
         if let Some(settings) = settings.clone() {
             row_mail_toolbar.set_active(settings.mail_show_toolbar());
@@ -1892,6 +1930,18 @@ impl PreferencesDialog {
             });
         }
         group_calendar_view.add(&row_time_format);
+
+        let row_calendar_time_zone = adw::EntryRow::builder().title("Kalender-Zeitzone").build();
+        row_calendar_time_zone.set_tooltip_text(Some(
+            "system für die Rechnerzeitzone, UTC oder eine IANA-Zone wie Europe/Berlin",
+        ));
+        if let Some(settings) = settings.clone() {
+            row_calendar_time_zone.set_text(&settings.calendar_time_zone());
+            row_calendar_time_zone.connect_changed(move |row| {
+                settings.set_calendar_time_zone(&row.text());
+            });
+        }
+        group_calendar_view.add(&row_calendar_time_zone);
         page_calendar.add(&group_calendar_view);
 
         let group_default_ecal_sources = adw::PreferencesGroup::builder()

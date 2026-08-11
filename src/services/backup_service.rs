@@ -39,6 +39,10 @@ fn default_mail_sort_field() -> String {
     "date".to_string()
 }
 
+fn default_calendar_time_zone() -> String {
+    "system".to_string()
+}
+
 fn default_task_filter() -> String {
     "all".to_string()
 }
@@ -133,7 +137,7 @@ struct BackupSettings {
     mail_default_folder: String,
     #[serde(default = "default_mail_layout")]
     mail_layout: String,
-    #[serde(default)]
+    #[serde(default = "default_mail_show_toolbar")]
     mail_show_toolbar: bool,
     #[serde(default = "default_mail_sidebar_position")]
     mail_sidebar_position: i32,
@@ -195,6 +199,8 @@ struct BackupSettings {
     mail_sort_descending: bool,
     #[serde(default = "default_mail_threading")]
     mail_threading: bool,
+    #[serde(default = "default_calendar_time_zone")]
+    calendar_time_zone: String,
     #[serde(default = "default_task_filter")]
     task_filter: String,
     #[serde(default = "default_task_source_filter")]
@@ -268,7 +274,11 @@ fn default_mail_show_labels() -> bool {
 }
 
 fn default_mail_layout() -> String {
-    "modern".to_string()
+    "classic".to_string()
+}
+
+fn default_mail_show_toolbar() -> bool {
+    true
 }
 
 fn default_mail_sidebar_position() -> i32 {
@@ -371,6 +381,7 @@ impl BackupSettings {
             mail_sort_field: settings.mail_sort_field(),
             mail_sort_descending: settings.mail_sort_descending(),
             mail_threading: settings.mail_threading(),
+            calendar_time_zone: settings.calendar_time_zone(),
             task_filter: settings.task_filter(),
             task_source_filter: settings.task_source_filter(),
             task_sort_field: settings.task_sort_field(),
@@ -445,6 +456,7 @@ impl BackupSettings {
         settings.set_mail_sort_field(&self.mail_sort_field);
         settings.set_mail_sort_descending(self.mail_sort_descending);
         settings.set_mail_threading(self.mail_threading);
+        settings.set_calendar_time_zone(&self.calendar_time_zone);
         settings.set_task_filter(&self.task_filter);
         settings.set_task_source_filter(&self.task_source_filter);
         settings.set_task_sort_field(&self.task_sort_field);
@@ -469,6 +481,15 @@ struct BackupBundle {
 pub struct RestoreReport {
     pub files_restored: usize,
     pub settings_restored: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackupInspection {
+    pub version: u32,
+    pub files: usize,
+    pub settings_present: bool,
+    pub checksummed_files: usize,
+    pub legacy_files_without_checksum: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -546,6 +567,28 @@ pub fn restore_backup(raw: &[u8]) -> io::Result<RestoreReport> {
     restore_bundle(bundle, &app_data_root(), AppSettings::try_new().as_ref())
 }
 
+/// Validate a backup without touching the application data directory.
+///
+/// This is used by the UI before showing a destructive restore confirmation,
+/// so malformed paths and corrupted file contents are reported early.
+pub fn inspect_backup(raw: &[u8]) -> io::Result<BackupInspection> {
+    let bundle = serde_json::from_slice::<BackupBundle>(raw)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    validate_bundle(&bundle)?;
+    let checksummed_files = bundle
+        .files
+        .iter()
+        .filter(|file| !file.checksum_sha256.is_empty())
+        .count();
+    Ok(BackupInspection {
+        version: bundle.version,
+        files: bundle.files.len(),
+        settings_present: bundle.settings.is_some(),
+        checksummed_files,
+        legacy_files_without_checksum: bundle.files.len() - checksummed_files,
+    })
+}
+
 /// Validate the complete bundle before writing anything and roll back files
 /// already replaced if a later atomic write fails.  This keeps a malformed or
 /// interrupted restore from leaving a half-restored app-owned data set.
@@ -554,15 +597,7 @@ fn restore_bundle(
     root: &Path,
     app_settings: Option<&AppSettings>,
 ) -> io::Result<RestoreReport> {
-    if bundle.version == 0 || bundle.version > CURRENT_VERSION {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!(
-                "Nicht unterstützte Sicherungsversion: {} (erwartet {})",
-                bundle.version, CURRENT_VERSION
-            ),
-        ));
-    }
+    validate_bundle(&bundle)?;
 
     if fs::symlink_metadata(root)
         .ok()
@@ -578,31 +613,7 @@ fn restore_bundle(
     let mut relative_paths = HashSet::new();
     let mut entries = Vec::with_capacity(bundle.files.len());
     for file in &bundle.files {
-        validate_relative_path(&file.relative_path)?;
-        if !is_app_owned_path(&file.relative_path) {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!(
-                    "Unbekannte app-eigene Sicherungsdatei: {}",
-                    file.relative_path
-                ),
-            ));
-        }
-        if !file.checksum_sha256.is_empty() && file.checksum_sha256 != sha256(&file.contents) {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!(
-                    "Integritätsprüfung der Sicherungsdatei fehlgeschlagen: {}",
-                    file.relative_path
-                ),
-            ));
-        }
-        if !relative_paths.insert(file.relative_path.as_str()) {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("Doppelte Sicherungsdatei: {}", file.relative_path),
-            ));
-        }
+        relative_paths.insert(file.relative_path.as_str());
         let path = safe_app_path(root, &file.relative_path)?;
         let previous = match fs::read(&path) {
             Ok(contents) => Some(contents),
@@ -635,6 +646,48 @@ fn restore_bundle(
         files_restored: entries.len(),
         settings_restored,
     })
+}
+
+fn validate_bundle(bundle: &BackupBundle) -> io::Result<()> {
+    if bundle.version == 0 || bundle.version > CURRENT_VERSION {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "Nicht unterstützte Sicherungsversion: {} (erwartet {})",
+                bundle.version, CURRENT_VERSION
+            ),
+        ));
+    }
+
+    let mut relative_paths = HashSet::new();
+    for file in &bundle.files {
+        validate_relative_path(&file.relative_path)?;
+        if !is_app_owned_path(&file.relative_path) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "Unbekannte app-eigene Sicherungsdatei: {}",
+                    file.relative_path
+                ),
+            ));
+        }
+        if !file.checksum_sha256.is_empty() && file.checksum_sha256 != sha256(&file.contents) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "Integritätsprüfung der Sicherungsdatei fehlgeschlagen: {}",
+                    file.relative_path
+                ),
+            ));
+        }
+        if !relative_paths.insert(file.relative_path.as_str()) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Doppelte Sicherungsdatei: {}", file.relative_path),
+            ));
+        }
+    }
+    Ok(())
 }
 
 struct RestoreEntry {
@@ -1068,7 +1121,9 @@ mod tests {
         assert!(settings.show_message_preview);
         assert_eq!(settings.mail_default_folder, "inbox");
         assert!(settings.spellcheck_languages.is_empty());
-        assert_eq!(settings.mail_layout, "modern");
+        assert_eq!(settings.mail_layout, "classic");
+        assert!(settings.mail_show_toolbar);
+        assert_eq!(settings.calendar_time_zone, "system");
         assert_eq!(settings.mail_sidebar_position, 220);
         assert_eq!(settings.mail_modern_preview_position, 420);
         assert_eq!(settings.mail_classic_preview_position, 360);

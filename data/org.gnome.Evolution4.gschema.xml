@@ -85,6 +85,10 @@
       <default>'24h'</default>
       <summary>Calendar time display format (24h or 12h)</summary>
     </key>
+    <key name="calendar-time-zone" type="s">
+      <default>'system'</default>
+      <summary>Calendar display time zone (system, UTC, or an IANA identifier)</summary>
+    </key>
     <key name="auto-load-remote-images" type="b">
       <default>false</default>
       <summary>Automatically load remote images in HTML emails</summary>
@@ -126,11 +130,11 @@
       <summary>Mail folder selected when the application starts</summary>
     </key>
     <key name="mail-layout" type="s">
-      <default>'modern'</default>
+      <default>'classic'</default>
       <summary>Mail layout (modern side-by-side or classic top-preview)</summary>
     </key>
     <key name="mail-show-toolbar" type="b">
-      <default>false</default>
+      <default>true</default>
       <summary>Show the classic Evolution mail toolbar</summary>
     </key>
     <key name="mail-sidebar-position" type="i">

@@ -86,16 +86,16 @@ impl MailSortField {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 enum MailLayout {
     #[default]
-    Modern,
     Classic,
+    Modern,
 }
 
 impl MailLayout {
     fn from_setting(value: &str) -> Self {
-        if value == "classic" {
-            Self::Classic
-        } else {
-            Self::Modern
+        match value {
+            "modern" => Self::Modern,
+            "classic" => Self::Classic,
+            _ => Self::Classic,
         }
     }
 
@@ -1041,7 +1041,7 @@ mod imp {
             } else {
                 self.mail_sort_descending.set(true);
                 self.mail_threading.set(true);
-                self.mail_layout.set(MailLayout::Modern);
+                self.mail_layout.set(MailLayout::Classic);
                 self.mail_layout.get().default_position()
             };
             self.inner_paned
@@ -7345,7 +7345,7 @@ mod tests {
     fn mail_layout_preserves_modern_and_classic_workflows() {
         assert_eq!(MailLayout::from_setting("modern"), MailLayout::Modern);
         assert_eq!(MailLayout::from_setting("classic"), MailLayout::Classic);
-        assert_eq!(MailLayout::from_setting("unknown"), MailLayout::Modern);
+        assert_eq!(MailLayout::from_setting("unknown"), MailLayout::Classic);
         assert_eq!(
             MailLayout::Modern.orientation(),
             gtk::Orientation::Horizontal

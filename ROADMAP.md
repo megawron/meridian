@@ -223,7 +223,7 @@ Implementierungsdetails getrennt.
 
 | Evolution-Feature | GTK4-Implementierung | EDS-Schnittstelle |
 |:---|:---|:---|
-| **Tag/Woche/Monat-Ansicht** | GTK4-rs `AdwViewStack` mit dynamischer Tagesliste, Sieben-Tage-Liste, Arbeitswochen-Zeitachse, Agenda und datumsrichtigem Monatsraster; Navigation und ECal-Signalaktualisierung sind verbunden. Zeitzonen-/DST-Abnahme und Drag-and-drop bleiben offen. | `libecal-2.0` über den EDS-Adapter |
+| **Tag/Woche/Monat-Ansicht** | GTK4-rs `AdwViewStack` mit dynamischer Tagesliste, Sieben-Tage-Liste, Arbeitswochen-Zeitachse, Agenda und datumsrichtigem Monatsraster; Navigation und ECal-Signalaktualisierung sind verbunden. Portable UTC-/TZID-Umrechnung für Anzeige und Tageszuordnung ist angebunden; komplexe DST-/EDS-Abnahme und Drag-and-drop bleiben offen. | `libecal-2.0` über den EDS-Adapter |
 | **Event-Erstellung** | `AdwDialog` mit Start/Ende-Picker (`GtkCalendar` + Time-Spinner), Wiederholung, Alarme, Teilnehmer. | `ECalComponent`, `ICalComponent` |
 | **ITIP Meeting-Einladungen** | Im Mail-View: Inline-Banner bei `text/calendar` MIME-Parts. Portable Buttons für „Zusagen / Vorbehalt / Ablehnen" erzeugen einen RFC-kompatiblen `METHOD:REPLY`-MIME-Part und persistieren einen Antwortentwurf; tatsächlicher Versand und serverseitiger Teilnehmerstatus werden unter Linux über EDS/Camel abgenommen. | `ECalComponent`, ITIP-Utility-Funktionen |
 | **Aufgaben (Tasks)** | `GtkColumnView` mit Spalten: Checkbox, Titel, Fällig, Priorität. Inline-Edit. | `ECal` (VTODO), `ECalComponent` |
@@ -457,16 +457,20 @@ werden.
   Nachrichtenzeilen sowie die Mail-Arbeitsweise (modern nebeneinander oder
   klassisch Liste über Vorschau) werden ebenfalls persistent gespeichert und
   bei einem Einstellungswechsel sofort auf die geöffnete GTK4-rs-Ansicht
-  angewendet. Die Ordnerbreite sowie die Trennbalkenpositionen der modernen
-  und klassischen Ansicht werden separat gespeichert, auch in Backup/Restore
+  angewendet. Die klassische Evolution-Drei-Bereiche-Ansicht (Ordner links,
+  Nachrichtenliste oben, Vorschau unten) ist dabei der portable Standard; die
+  moderne Anordnung bleibt als persönliche Einstellung verfügbar. Die
+  Ordnerbreite sowie die Trennbalkenpositionen der modernen und klassischen
+  Ansicht werden separat gespeichert, auch in Backup/Restore
   übernommen und durch responsive automatische Sidebar-Ausblendungen nicht
   überschrieben. Absender, Avatare, Datum, Vorschautext und app-eigene Labels
   der Mail-Zeile lassen sich ebenfalls einzeln ein-/ausblenden und werden live
   sowie in Backup/Restore angewendet. Eine providerunabhängige
   Datumsnormalisierung und serverseitige Sortierung bleiben Teil der
   Linux/Camel-Strecke.
-- [~] Die Evolution-kompatible Mail-Werkzeugleiste kann portabel ein- und
-  ausgeblendet werden. Ihre vertrauten Aktionen verwenden dieselben zentralen
+- [~] Die Evolution-kompatible Mail-Werkzeugleiste ist standardmäßig sichtbar
+  und kann portabel ein- und ausgeblendet werden. Ihre vertrauten Aktionen
+  verwenden dieselben zentralen
   Menü-, Detail- und Command-/Undo-Pfade; zusätzliche providerabhängige
   Camel-Aktionen bleiben bis zur Linux-Abnahme offen.
 - [~] Anhang „Speichern unter“ ist für lokal gelesene MIME-Anhänge angebunden;
@@ -629,7 +633,8 @@ werden.
   markiert den heutigen Tag, zeigt geladene VEVENTs direkt in den Tageszellen
   und berücksichtigt in Tag/Woche auch zeit- und ganztägige Mehrtagstermine.
   Standardansicht, Standard-ECal-Quelle, Wochenbeginn, ISO-Kalenderwochen,
-  Datums-/Zeitformat, Arbeitstage, Arbeitszeit und die Standard-Erinnerung werden über
+  Datums-/Zeitformat, auswählbare System-/UTC-/IANA-Kalenderzeitzone,
+  Arbeitstage, Arbeitszeit und die Standard-Erinnerung werden über
   GSettings persistent konfiguriert und in
   der portablen Ansicht bzw. im Termin-Editor verwendet.
   EDS-Quellenstatus wird angezeigt und neue VEVENTs können über den nativen
@@ -660,8 +665,10 @@ werden.
   schreibbar ist. Ein portables Drag-and-drop verschiebt einfache Einzeltermine
   in Monats- und Arbeitswochenansicht und erhält dabei vorhandene
   Zeitzonenparameter; das Verschieben einer geladenen Serie verschiebt portabel
-  DTSTART/DTEND, RDATE/EXDATE und ein vorhandenes RRULE-UNTIL gemeinsam. Echte
-  Zeitzonen-/DST-Umrechnung und die Linux-Abnahme bleiben offen. Der
+  DTSTART/DTEND, RDATE/EXDATE und ein vorhandenes RRULE-UNTIL gemeinsam. UTC-
+  und benannte `TZID`-Werte werden für Anzeige, Tageszuordnung und einfache
+  Erinnerungszeitpunkte portabel in die lokale Zeitzone umgerechnet; komplexe
+  Serien-DST-Umrechnung und die Linux-Abnahme bleiben offen. Der
   app-eigene lokale Kalender kann außerhalb von EDS VEVENTs persistent
   erstellen, ändern und löschen; ausdrücklich ausgewählte externe Importordner
   bleiben schreibgeschützt. Ein portabler Reminder-Service liest lokale
@@ -707,8 +714,9 @@ werden.
   View-Modi ergänzt; die Zeitachse nutzt die konfigurierbare Arbeitszeit und
   trennt Ganztages- von zeitgebundenen Terminen. Einfaches Drag-and-drop für
   Einzeltermine und geladene Serien ist in Monats- und Arbeitswochenansicht
-  vorhanden; Zeitzonen-/DST-Umrechnung und die Linux-Laufzeitprüfung stehen
-  noch aus.
+  vorhanden; die portable UTC-/TZID-Umrechnung ist für Anzeige und
+  Tageszuordnung vorhanden, die Serien-DST-Umrechnung und Linux-Laufzeitprüfung
+  stehen noch aus.
 - [~] Lokale VEVENTs unterstützen Wiederholungen und einfache Alarme; `RDATE`-
   Einzeltermine werden zusätzlich zu `RRULE` und `EXDATE` in den portablen
   Kalenderansichten und lokalen Erinnerungen ausgewertet. Der VTODO-Editor
@@ -717,7 +725,7 @@ werden.
   kann in den app-eigenen lokalen Kalender übernommen werden. Portable
   ACCEPTED/TENTATIVE/DECLINED-Antworten erzeugen bereits einen RFC-kompatiblen
   `METHOD:REPLY`-Kalenderteil und einen persistierten app-eigenen
-  Antwortentwurf. Zeitzonen, freie Zeiten, komplexe Alarmtypen sowie native
+  Antwortentwurf. Komplexe freie-Zeiten-/DST-Fälle, komplexe Alarmtypen sowie native
   EDS-/Camel-Anhangsübertragung und Offline-Sync fehlen noch; der
   serverseitige Teilnehmerstatus bleiben für die Linux-Abnahme zuständig. Der portable Reminder-Service wertet lokale
   `VALARM`-Display-Trigger aus und persistiert Zustellung/Snooze; die native
@@ -932,8 +940,11 @@ werden.
   den bestehenden Composer direkt ausgewählt. Mail-, Kalender- und
   Adressbuchquellen werden zusätzlich als geheimnisfreier Offline-Cache
   übernommen, damit importierte Quellen und ihre Aktivierung auch ohne
-  erreichbares EDS nachvollziehbar bleiben. Vollständige Einstellungen,
-  lokale Ordner und die native EDS-Registrierung fehlen noch. Nicht
+  erreichbares EDS nachvollziehbar bleiben. Valide lokale iCalendar- und
+  vCard-Dateien werden beim ausdrücklich gestarteten Profilimport zusätzlich
+  nicht überschreibend in die app-eigenen Stores kopiert. Vollständige
+  Einstellungen, Evolution-Mailordner und die native EDS-Registrierung fehlen
+  noch. Nicht
   unterstützte Filterbedingungen/-aktionen werden beim Import jetzt als
   nachvollziehbare Warnung im Bericht und Log ausgewiesen, statt still
   verloren zu gehen; bewusst verworfene geheime `.source`-Felder werden nur
@@ -946,7 +957,9 @@ werden.
   app-eigenen Vorlagen- und Textbausteinspeicher. Neue Sicherungen enthalten
   zusätzlich je Datei eine SHA-256-Prüfsumme; beschädigte oder unvollständige
   Sicherungen werden vor dem Schreiben abgewiesen, ältere Sicherungen ohne
-  Prüfsumme bleiben lesbar. EML-, ICS-
+  Prüfsumme bleiben lesbar. Die Wiederherstellung validiert die Sicherung
+  außerdem bereits vor dem Bestätigungsdialog und zeigt Dateianzahl sowie
+  Integritätsstatus an. EML-, ICS-
   und vCard-Export sowie nicht überschreibende
   lokale EML/mbox-, ICS/VCS- und VCF/vCard-Importe sind im GTK4-rs-Frontend
   verfügbar. Ein technisches, inhaltsfreies Diagnosepaket und eine
@@ -1001,7 +1014,8 @@ nicht als vollständiger Ersatz beworben werden.
 ### Nächster Entwicklungsblock
 
 1. Die konfigurierbare Mailansicht weiter an Evolution angleichen:
-   die klassische Werkzeugleiste ist jetzt portabel ein-/ausblendbar und
+   die klassische Drei-Bereiche-Anordnung und Werkzeugleiste sind jetzt der
+   Standard, bleiben aber portabel umschaltbar bzw. ein-/ausblendbar;
    weitere Menüpfade sowie die noch offenen Mail-Leseeinstellungen werden
    ergänzt. Die Ansichts-Menüpfade für Sidebar,
    Vorschaufenster und klassische/moderne Mail-Anordnung sind jetzt vorhanden;

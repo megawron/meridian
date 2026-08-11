@@ -8,9 +8,7 @@
 // calendars can use the same API once the native Linux watcher is connected;
 // the portable fallback currently consumes the local CalendarSnapshot.
 
-use chrono::{
-    Datelike, Duration, Local, LocalResult, NaiveDate, NaiveDateTime, TimeZone, Utc, Weekday,
-};
+use chrono::{Datelike, Duration, Local, LocalResult, NaiveDate, NaiveDateTime, TimeZone, Weekday};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -18,6 +16,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use super::calendar_store_service::{CalendarEventRecord, CalendarSnapshot, TaskRecord};
+use super::ical_time_service::{property_local_datetime, property_local_timestamp};
 
 const CURRENT_VERSION: u32 = 1;
 const DEFAULT_ALL_DAY_HOUR: u32 = 9;
@@ -193,10 +192,14 @@ pub fn candidates_from_snapshot(snapshot: &CalendarSnapshot, now: i64) -> Vec<Re
 }
 
 fn event_reminder_candidates(event: &CalendarEventRecord, now: i64) -> Vec<ReminderCandidate> {
-    let Some(start) = parse_display_naive(&event.start, event.all_day) else {
+    let Some(start) = property_local_datetime(&event.component, "DTSTART", event.all_day)
+        .or_else(|| parse_display_naive(&event.start, event.all_day))
+    else {
         return Vec::new();
     };
-    let end = parse_display_naive(&event.end, event.all_day).unwrap_or(start);
+    let end = property_local_datetime(&event.component, "DTEND", event.all_day)
+        .or_else(|| parse_display_naive(&event.end, event.all_day))
+        .unwrap_or(start);
     let duration = end.signed_duration_since(start);
     let dates = recurrence_dates(&event.component, start.date(), now);
     let alarms = alarm_specs(&event.component);
@@ -227,7 +230,10 @@ fn event_reminder_candidates(event: &CalendarEventRecord, now: i64) -> Vec<Remin
 }
 
 fn task_reminder_candidates(task: &TaskRecord) -> Vec<ReminderCandidate> {
-    let Some(due) = parse_display_datetime(&task.due, task.due.len() == 10) else {
+    let Some(due) = property_local_datetime(&task.component, "DUE", task.due.len() == 10)
+        .and_then(local_timestamp)
+        .or_else(|| parse_display_datetime(&task.due, task.due.len() == 10))
+    else {
         return Vec::new();
     };
     alarm_candidates_from_specs(
@@ -288,6 +294,7 @@ fn alarm_candidates_from_specs(
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct AlarmSpec {
     trigger: String,
+    trigger_property: String,
     related_end: bool,
     action: String,
 }
@@ -302,6 +309,7 @@ fn alarm_specs(component: &str) -> Vec<AlarmSpec> {
         if line.eq_ignore_ascii_case("BEGIN:VALARM") {
             current = Some(AlarmSpec {
                 trigger: String::new(),
+                trigger_property: String::new(),
                 related_end: false,
                 action: String::new(),
             });
@@ -332,6 +340,7 @@ fn alarm_specs(component: &str) -> Vec<AlarmSpec> {
             "ACTION" => alarm.action = value.trim().to_string(),
             "TRIGGER" => {
                 alarm.trigger = value.trim().to_string();
+                alarm.trigger_property = property.to_string();
                 alarm.related_end = property
                     .split(';')
                     .skip(1)
@@ -347,7 +356,11 @@ fn alarm_due_at(alarm: &AlarmSpec, start: i64, end: i64) -> Option<i64> {
     if let Some(duration) = parse_ical_duration(&alarm.trigger) {
         return (if alarm.related_end { end } else { start }).checked_add(duration);
     }
-    parse_ical_datetime(&alarm.trigger, DEFAULT_ALL_DAY_HOUR)
+    property_local_timestamp(
+        &alarm.trigger_property,
+        &alarm.trigger,
+        DEFAULT_ALL_DAY_HOUR,
+    )
 }
 
 fn parse_ical_duration(raw: &str) -> Option<i64> {
@@ -607,23 +620,6 @@ fn parse_display_naive(value: &str, all_day: bool) -> Option<NaiveDateTime> {
     }
     let normalized = value.get(..16)?;
     NaiveDateTime::parse_from_str(normalized, "%Y-%m-%d %H:%M").ok()
-}
-
-fn parse_ical_datetime(value: &str, all_day_hour: u32) -> Option<i64> {
-    let value = value.trim();
-    if value.len() == 8 && value.chars().all(|character| character.is_ascii_digit()) {
-        let date = NaiveDate::parse_from_str(value, "%Y%m%d").ok()?;
-        return local_timestamp(date.and_hms_opt(all_day_hour, 0, 0)?);
-    }
-    if value.len() < 15 || value.as_bytes().get(8) != Some(&b'T') {
-        return None;
-    }
-    let naive = NaiveDateTime::parse_from_str(&value[..15], "%Y%m%dT%H%M%S").ok()?;
-    if value[15..].starts_with('Z') {
-        Some(Utc.from_utc_datetime(&naive).timestamp())
-    } else {
-        local_timestamp(naive)
-    }
 }
 
 fn local_timestamp(naive: NaiveDateTime) -> Option<i64> {

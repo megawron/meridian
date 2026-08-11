@@ -291,6 +291,24 @@ impl AppSettings {
         }
     }
 
+    pub fn calendar_time_zone(&self) -> String {
+        let value = self.settings.string("calendar-time-zone");
+        let value = value.trim();
+        if value.is_empty() || value.eq_ignore_ascii_case("system") {
+            "system".to_string()
+        } else {
+            value.to_string()
+        }
+    }
+
+    pub fn set_calendar_time_zone(&self, value: &str) {
+        let value = value.trim();
+        let value = if value.is_empty() { "system" } else { value };
+        if let Err(error) = self.settings.set_string("calendar-time-zone", value) {
+            tracing::warn!(%error, "Could not persist calendar time zone");
+        }
+    }
+
     pub fn set_auto_load_remote_images(&self, value: bool) {
         self.set_boolean("auto-load-remote-images", value);
     }
@@ -384,7 +402,7 @@ impl AppSettings {
     pub fn mail_layout(&self) -> String {
         match self.settings.string("mail-layout").as_str() {
             "classic" => "classic".to_string(),
-            _ => "modern".to_string(),
+            _ => "classic".to_string(),
         }
     }
 
@@ -769,6 +787,7 @@ impl AppSettings {
             "calendar-show-week-numbers",
             "date-format",
             "time-format",
+            "calendar-time-zone",
             "auto-load-remote-images",
             "force-dark-mode",
             "render-html",

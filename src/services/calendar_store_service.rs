@@ -8,6 +8,8 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use super::ical_time_service::property_local_display;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CalendarEventRecord {
     pub uid: String,
@@ -682,21 +684,34 @@ fn append_component(
 
     match component.kind.as_str() {
         "VEVENT" => {
+            let all_day = component.date_properties.contains("DTSTART");
             let start = component
                 .properties
                 .get("DTSTART")
-                .map(|value| format_ical_datetime(value))
+                .and_then(|_| property_local_display(&raw_component, "DTSTART", all_day))
+                .or_else(|| {
+                    component
+                        .properties
+                        .get("DTSTART")
+                        .map(|value| format_ical_datetime(value))
+                })
                 .unwrap_or_default();
             let end = component
                 .properties
                 .get("DTEND")
-                .map(|value| format_ical_datetime(value))
+                .and_then(|_| property_local_display(&raw_component, "DTEND", all_day))
+                .or_else(|| {
+                    component
+                        .properties
+                        .get("DTEND")
+                        .map(|value| format_ical_datetime(value))
+                })
                 .unwrap_or_default();
             snapshot.events.push(CalendarEventRecord {
                 uid,
                 source_uid: source_uid.to_string(),
                 source_display_name: source_display_name.to_string(),
-                component: raw_component,
+                component: raw_component.clone(),
                 summary,
                 start,
                 end,
@@ -710,7 +725,7 @@ fn append_component(
                     .get("DESCRIPTION")
                     .cloned()
                     .unwrap_or_default(),
-                all_day: component.date_properties.contains("DTSTART"),
+                all_day,
             });
         }
         "VTODO" => {
@@ -727,12 +742,24 @@ fn append_component(
                 uid,
                 source_uid: source_uid.to_string(),
                 source_display_name: source_display_name.to_string(),
-                component: raw_component,
+                component: raw_component.clone(),
                 summary,
                 due: component
                     .properties
                     .get("DUE")
-                    .map(|value| format_ical_datetime(value))
+                    .and_then(|_| {
+                        property_local_display(
+                            &raw_component,
+                            "DUE",
+                            component.date_properties.contains("DUE"),
+                        )
+                    })
+                    .or_else(|| {
+                        component
+                            .properties
+                            .get("DUE")
+                            .map(|value| format_ical_datetime(value))
+                    })
                     .unwrap_or_default(),
                 priority,
                 completed,
@@ -743,18 +770,22 @@ fn append_component(
                 uid,
                 source_uid: source_uid.to_string(),
                 source_display_name: source_display_name.to_string(),
-                component: raw_component,
+                component: raw_component.clone(),
                 summary,
                 description: component
                     .properties
                     .get("DESCRIPTION")
                     .cloned()
                     .unwrap_or_default(),
-                updated: component
-                    .properties
-                    .get("LAST-MODIFIED")
-                    .or_else(|| component.properties.get("DTSTART"))
-                    .map(|value| format_ical_datetime(value))
+                updated: property_local_display(&raw_component, "LAST-MODIFIED", false)
+                    .or_else(|| property_local_display(&raw_component, "DTSTART", false))
+                    .or_else(|| {
+                        component
+                            .properties
+                            .get("LAST-MODIFIED")
+                            .or_else(|| component.properties.get("DTSTART"))
+                            .map(|value| format_ical_datetime(value))
+                    })
                     .unwrap_or_default(),
             });
         }
@@ -1021,7 +1052,15 @@ mod tests {
 
         let snapshot = CalendarStoreService::with_calendar_dir(&root).load_snapshot();
         assert_eq!(snapshot.events.len(), 1);
-        assert_eq!(snapshot.events[0].start, "2026-08-10 12:00");
+        assert_eq!(
+            snapshot.events[0].start,
+            property_local_display(
+                "BEGIN:VEVENT\r\nDTSTART:20260810T120000Z\r\nEND:VEVENT\r\n",
+                "DTSTART",
+                false,
+            )
+            .unwrap()
+        );
         assert_eq!(snapshot.tasks[0].due, "2026-08-11");
         assert_eq!(snapshot.tasks[0].priority, 1);
         assert_eq!(snapshot.memos[0].description, "Line one\nLine two");

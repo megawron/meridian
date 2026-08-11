@@ -10,6 +10,8 @@
 // integration task documented in ROADMAP_LINUX.md.
 
 use super::account_config_service::{AccountConfigStore, AccountProfile, AccountProtocol};
+use super::calendar_store_service::CalendarStoreService;
+use super::contact_store_service::ContactStoreService;
 use super::eds_service::{EdsSource, EdsSourceKind};
 use super::eds_source_cache_service::EdsSourceCache;
 use super::html_sanitizer::sanitize_html;
@@ -36,7 +38,20 @@ pub struct MigrationReport {
     pub discovered_filter_files: usize,
     pub imported_filters: usize,
     pub imported_signatures: usize,
+    pub discovered_calendar_files: usize,
+    pub imported_calendar_files: usize,
+    pub discovered_contact_files: usize,
+    pub imported_contact_files: usize,
     pub signature_text: Option<String>,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LocalDataMigrationReport {
+    pub discovered_calendar_files: usize,
+    pub imported_calendar_files: usize,
+    pub discovered_contact_files: usize,
+    pub imported_contact_files: usize,
     pub warnings: Vec<String>,
 }
 
@@ -133,6 +148,111 @@ pub fn import_evolution_sources_with_cache(
         &signature_store,
         cache,
     )
+}
+
+/// Import Evolution's non-secret profile metadata and copy valid local
+/// iCalendar/vCard files into explicitly supplied app-owned stores.
+///
+/// The destination services should point at the app-owned stores.  This
+/// function never writes to the selected Evolution profile or to an external
+/// read-only import directory; creating real EDS sources and migrating Camel
+/// mail stores remain Linux-side work.
+pub fn import_evolution_profile_with_cache_and_local_data(
+    root: impl AsRef<Path>,
+    store: &AccountConfigStore,
+    cache: &EdsSourceCache,
+    calendar_store: &CalendarStoreService,
+    contact_store: &ContactStoreService,
+) -> io::Result<MigrationReport> {
+    let root = root.as_ref();
+    let mut report = import_evolution_sources_with_cache(root, store, cache)?;
+    let local = import_evolution_local_data(root, calendar_store, contact_store)?;
+    report.discovered_calendar_files = local.discovered_calendar_files;
+    report.imported_calendar_files = local.imported_calendar_files;
+    report.discovered_contact_files = local.discovered_contact_files;
+    report.imported_contact_files = local.imported_contact_files;
+    report.warnings.extend(local.warnings);
+    Ok(report)
+}
+
+/// Discover and copy valid local iCalendar and vCard files from an explicitly
+/// selected Evolution profile copy.  The source files remain untouched and
+/// destinations use each store's non-overwriting import behavior.
+pub fn import_evolution_local_data(
+    root: impl AsRef<Path>,
+    calendar_store: &CalendarStoreService,
+    contact_store: &ContactStoreService,
+) -> io::Result<LocalDataMigrationReport> {
+    let root = root.as_ref();
+    let mut candidates = Vec::new();
+    collect_local_data_files(root, &mut candidates)?;
+
+    let mut calendar_files = Vec::new();
+    let mut contact_files = Vec::new();
+    let mut warnings = Vec::new();
+    for path in candidates {
+        let raw = match fs::read_to_string(&path) {
+            Ok(raw) => raw,
+            Err(error) => {
+                warnings.push(format!(
+                    "{}: lokale Profildatei konnte nicht gelesen werden: {error}",
+                    path.display()
+                ));
+                continue;
+            }
+        };
+        let extension = path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        if matches!(extension.as_str(), "ics" | "vcs")
+            && raw
+                .lines()
+                .any(|line| line.trim().eq_ignore_ascii_case("BEGIN:VCALENDAR"))
+        {
+            calendar_files.push(path);
+        } else if matches!(extension.as_str(), "vcf" | "vcard")
+            && raw
+                .lines()
+                .any(|line| line.trim().eq_ignore_ascii_case("BEGIN:VCARD"))
+        {
+            contact_files.push(path);
+        }
+    }
+
+    let discovered_calendar_files = calendar_files.len();
+    let discovered_contact_files = contact_files.len();
+    let imported_calendar_files = if discovered_calendar_files == 0 {
+        0
+    } else if !calendar_store.is_writable() {
+        warnings.push(
+            "Lokale iCalendar-Dateien wurden nicht übernommen: Zielkalender ist schreibgeschützt"
+                .to_string(),
+        );
+        0
+    } else {
+        calendar_store.import_files(&calendar_files)?
+    };
+    let imported_contact_files = if discovered_contact_files == 0 {
+        0
+    } else if !contact_store.is_writable() {
+        warnings.push(
+            "Lokale vCard-Dateien wurden nicht übernommen: Zieladressbuch ist schreibgeschützt"
+                .to_string(),
+        );
+        0
+    } else {
+        contact_store.import_files(&contact_files)?
+    };
+
+    Ok(LocalDataMigrationReport {
+        discovered_calendar_files,
+        imported_calendar_files,
+        discovered_contact_files,
+        imported_contact_files,
+        warnings,
+    })
 }
 
 /// Import source metadata, portable filters, and all safe text signatures into
@@ -531,6 +651,38 @@ fn collect_named_files(root: &Path, file_name: &str, result: &mut Vec<PathBuf>) 
             && path
                 .file_name()
                 .is_some_and(|name| name.eq_ignore_ascii_case(file_name))
+        {
+            result.push(path);
+        }
+    }
+    Ok(())
+}
+
+fn collect_local_data_files(root: &Path, result: &mut Vec<PathBuf>) -> io::Result<()> {
+    let metadata = fs::symlink_metadata(root)?;
+    if !metadata.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Der ausgewählte Evolution-Profilpfad ist kein Ordner",
+        ));
+    }
+
+    for entry in fs::read_dir(root)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        if file_type.is_symlink() {
+            continue;
+        }
+        let path = entry.path();
+        if file_type.is_dir() {
+            collect_local_data_files(&path, result)?;
+        } else if file_type.is_file()
+            && path.extension().is_some_and(|extension| {
+                matches!(
+                    extension.to_string_lossy().to_ascii_lowercase().as_str(),
+                    "ics" | "vcs" | "vcf" | "vcard"
+                )
+            })
         {
             result.push(path);
         }
@@ -1399,6 +1551,55 @@ JunkFolder=Junk
         assert_eq!(store.load().len(), 1);
         assert_eq!(store.load()[0].id, "evolution-source:mail-1");
         assert_eq!(report.warnings.len(), 1);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn imports_valid_local_calendar_and_contact_files_without_touching_profile() {
+        let root = temporary_directory("migration-local-data");
+        let profile_root = root.join("profile");
+        let calendar_source = profile_root.join("calendar/system.ics");
+        let contact_source = profile_root.join("addressbook/contacts.vcf");
+        fs::create_dir_all(calendar_source.parent().unwrap())
+            .expect("calendar profile directory should be created");
+        fs::create_dir_all(contact_source.parent().unwrap())
+            .expect("address book profile directory should be created");
+        fs::write(
+            &calendar_source,
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nEND:VCALENDAR\r\n",
+        )
+        .expect("calendar profile file should be written");
+        fs::write(
+            &contact_source,
+            "BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Imported\r\nEND:VCARD\r\n",
+        )
+        .expect("contact profile file should be written");
+        fs::write(profile_root.join("not-a-calendar.ics"), "plain text")
+            .expect("invalid calendar fixture should be written");
+
+        let calendar_destination = root.join("app/ical");
+        let contact_destination = root.join("app/vcards");
+        let calendar_store =
+            CalendarStoreService::with_writable_calendar_dir(&calendar_destination);
+        let contact_store = ContactStoreService::with_writable_contact_dir(&contact_destination);
+        let report = import_evolution_local_data(&profile_root, &calendar_store, &contact_store)
+            .expect("local profile data should import");
+
+        assert_eq!(report.discovered_calendar_files, 1);
+        assert_eq!(report.imported_calendar_files, 1);
+        assert_eq!(report.discovered_contact_files, 1);
+        assert_eq!(report.imported_contact_files, 1);
+        assert!(calendar_destination.join("system.ics").is_file());
+        assert!(contact_destination.join("contacts.vcf").is_file());
+        assert_eq!(
+            fs::read_to_string(&calendar_source).unwrap(),
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nEND:VCALENDAR\r\n"
+        );
+        assert_eq!(
+            fs::read_to_string(&contact_source).unwrap(),
+            "BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Imported\r\nEND:VCARD\r\n"
+        );
 
         let _ = fs::remove_dir_all(root);
     }
