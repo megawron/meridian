@@ -34,7 +34,7 @@ impl EdsSourceCache {
     }
 
     #[cfg(test)]
-    fn with_path(path: impl Into<PathBuf>) -> Self {
+    pub(crate) fn with_path(path: impl Into<PathBuf>) -> Self {
         Self { path: path.into() }
     }
 

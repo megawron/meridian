@@ -10,6 +10,8 @@
 // integration task documented in ROADMAP_LINUX.md.
 
 use super::account_config_service::{AccountConfigStore, AccountProfile, AccountProtocol};
+use super::eds_service::{EdsSource, EdsSourceKind};
+use super::eds_source_cache_service::EdsSourceCache;
 use super::html_sanitizer::sanitize_html;
 use super::mail_filter_service::{
     FilterAction, FilterCondition, FilterField, FilterOperator, FilterScope, MailFilterRule,
@@ -26,6 +28,9 @@ use std::path::{Path, PathBuf};
 pub struct MigrationReport {
     pub discovered_sources: usize,
     pub imported_accounts: usize,
+    pub cached_mail_sources: usize,
+    pub cached_calendar_sources: usize,
+    pub cached_address_book_sources: usize,
     pub skipped_sources: usize,
     pub ignored_secret_fields: usize,
     pub discovered_filter_files: usize,
@@ -56,6 +61,29 @@ impl SourceKeyFile {
                     .map(|(_, value)| value.clone())
             })
         })
+    }
+
+    fn has_group(&self, group: &str) -> bool {
+        self.groups
+            .keys()
+            .any(|name| name.eq_ignore_ascii_case(group))
+    }
+
+    fn kinds(&self) -> Vec<EdsSourceKind> {
+        let mut kinds = Vec::new();
+        if self.has_group("Mail Account")
+            || self.has_group("Mail Identity")
+            || self.has_group("Mail Submission")
+        {
+            kinds.push(EdsSourceKind::Mail);
+        }
+        if self.has_group("Calendar") {
+            kinds.push(EdsSourceKind::Calendar);
+        }
+        if self.has_group("Address Book") {
+            kinds.push(EdsSourceKind::AddressBook);
+        }
+        kinds
     }
 }
 
@@ -88,6 +116,25 @@ pub fn import_evolution_sources_with_filter_store(
     import_evolution_sources_with_stores(root, store, filter_store, &signature_store)
 }
 
+/// Import Evolution source metadata and update the portable, non-secret EDS
+/// source cache.  The cache is only used as an offline display fallback; it
+/// never becomes authoritative for EDS mutations or mail/calendar data.
+pub fn import_evolution_sources_with_cache(
+    root: impl AsRef<Path>,
+    store: &AccountConfigStore,
+    cache: &EdsSourceCache,
+) -> io::Result<MigrationReport> {
+    let filter_store = MailFilterStore::default();
+    let signature_store = SignatureStore::default();
+    import_evolution_sources_with_stores_and_cache(
+        root,
+        store,
+        &filter_store,
+        &signature_store,
+        cache,
+    )
+}
+
 /// Import source metadata, portable filters, and all safe text signatures into
 /// explicitly supplied app-owned stores.
 pub fn import_evolution_sources_with_stores(
@@ -96,12 +143,37 @@ pub fn import_evolution_sources_with_stores(
     filter_store: &MailFilterStore,
     signature_store: &SignatureStore,
 ) -> io::Result<MigrationReport> {
+    import_evolution_sources_inner(root, store, filter_store, signature_store, None)
+}
+
+/// Import source metadata, portable filters, signatures, and non-secret EDS
+/// source metadata into explicitly supplied stores.
+pub fn import_evolution_sources_with_stores_and_cache(
+    root: impl AsRef<Path>,
+    store: &AccountConfigStore,
+    filter_store: &MailFilterStore,
+    signature_store: &SignatureStore,
+    cache: &EdsSourceCache,
+) -> io::Result<MigrationReport> {
+    import_evolution_sources_inner(root, store, filter_store, signature_store, Some(cache))
+}
+
+fn import_evolution_sources_inner(
+    root: impl AsRef<Path>,
+    store: &AccountConfigStore,
+    filter_store: &MailFilterStore,
+    signature_store: &SignatureStore,
+    cache: Option<&EdsSourceCache>,
+) -> io::Result<MigrationReport> {
     let root = root.as_ref();
     let mut paths = Vec::new();
     collect_source_files(root, &mut paths)?;
     paths.sort();
 
     let mut report = MigrationReport::default();
+    let mut cached_mail_sources = Vec::new();
+    let mut cached_calendar_sources = Vec::new();
+    let mut cached_address_book_sources = Vec::new();
     for path in paths {
         report.discovered_sources += 1;
         let result = fs::read_to_string(&path)
@@ -109,6 +181,13 @@ pub fn import_evolution_sources_with_stores(
             .and_then(|raw| parse_source(&raw).map_err(|error| error.to_string()))
             .and_then(|source| {
                 report.ignored_secret_fields += source.ignored_secret_keys.len();
+                for (kind, eds_source) in eds_sources_from_keyfile(&path, &source) {
+                    match kind {
+                        EdsSourceKind::Mail => cached_mail_sources.push(eds_source),
+                        EdsSourceKind::Calendar => cached_calendar_sources.push(eds_source),
+                        EdsSourceKind::AddressBook => cached_address_book_sources.push(eds_source),
+                    }
+                }
                 profile_from_source(&path, &source)
             });
 
@@ -132,6 +211,33 @@ pub fn import_evolution_sources_with_stores(
                     .push(format!("{}: {reason}", path.display()));
             }
         }
+    }
+
+    normalize_cached_sources(&mut cached_mail_sources);
+    normalize_cached_sources(&mut cached_calendar_sources);
+    normalize_cached_sources(&mut cached_address_book_sources);
+    report.cached_mail_sources = cached_mail_sources.len();
+    report.cached_calendar_sources = cached_calendar_sources.len();
+    report.cached_address_book_sources = cached_address_book_sources.len();
+    if let Some(cache) = cache {
+        save_imported_sources(
+            cache,
+            EdsSourceKind::Mail,
+            &cached_mail_sources,
+            &mut report.warnings,
+        );
+        save_imported_sources(
+            cache,
+            EdsSourceKind::Calendar,
+            &cached_calendar_sources,
+            &mut report.warnings,
+        );
+        save_imported_sources(
+            cache,
+            EdsSourceKind::AddressBook,
+            &cached_address_book_sources,
+            &mut report.warnings,
+        );
     }
 
     let mut filter_paths = Vec::new();
@@ -300,6 +406,107 @@ fn collect_source_files(root: &Path, result: &mut Vec<PathBuf>) -> io::Result<()
         }
     }
     Ok(())
+}
+
+fn eds_sources_from_keyfile(
+    path: &Path,
+    source: &SourceKeyFile,
+) -> Vec<(EdsSourceKind, EdsSource)> {
+    let kinds = source.kinds();
+    if kinds.is_empty() {
+        return Vec::new();
+    }
+    let uid = first_value(
+        source,
+        &[
+            "Data Source",
+            "Source",
+            "Mail Account",
+            "Calendar",
+            "Address Book",
+        ],
+        &["UID", "Uid", "Id", "ID"],
+    )
+    .or_else(|| {
+        path.file_stem()
+            .map(|value| value.to_string_lossy().into_owned())
+    });
+    let Some(uid) = uid else {
+        return Vec::new();
+    };
+    let display_name = first_value(
+        source,
+        &[
+            "Data Source",
+            "Mail Account",
+            "Calendar",
+            "Address Book",
+            "Mail Identity",
+            "Identity",
+        ],
+        &["DisplayName", "Name", "Label"],
+    )
+    .unwrap_or_else(|| uid.clone());
+    let enabled = first_value(source, &["Data Source", "Source"], &["Enabled", "Active"])
+        .map(|value| parse_bool(&value))
+        .unwrap_or(true);
+
+    kinds
+        .into_iter()
+        .map(|kind| {
+            let section = match kind {
+                EdsSourceKind::Mail => "Mail Account",
+                EdsSourceKind::Calendar => "Calendar",
+                EdsSourceKind::AddressBook => "Address Book",
+            };
+            let backend_name = first_value(
+                source,
+                &[section, "Data Source", "Source", "Backend", "Camel"],
+                &["BackendName", "Backend", "BackendType", "Type"],
+            )
+            .unwrap_or_default();
+            (
+                kind,
+                EdsSource {
+                    uid: uid.clone(),
+                    display_name: display_name.clone(),
+                    backend_name,
+                    enabled,
+                },
+            )
+        })
+        .collect()
+}
+
+fn normalize_cached_sources(sources: &mut Vec<EdsSource>) {
+    sources.sort_by(|left, right| {
+        left.display_name
+            .to_lowercase()
+            .cmp(&right.display_name.to_lowercase())
+            .then_with(|| left.uid.cmp(&right.uid))
+    });
+    sources.dedup_by(|left, right| left.uid == right.uid);
+}
+
+fn save_imported_sources(
+    cache: &EdsSourceCache,
+    kind: EdsSourceKind,
+    sources: &[EdsSource],
+    warnings: &mut Vec<String>,
+) {
+    if sources.is_empty() {
+        return;
+    }
+    if let Err(error) = cache.save(kind, sources) {
+        warnings.push(format!(
+            "{} EDS-Quellen konnten nicht im Offline-Cache gespeichert werden: {error}",
+            match kind {
+                EdsSourceKind::Mail => "Mail",
+                EdsSourceKind::Calendar => "Kalender",
+                EdsSourceKind::AddressBook => "Adressbuch",
+            }
+        ));
+    }
 }
 
 fn collect_named_files(root: &Path, file_name: &str, result: &mut Vec<PathBuf>) -> io::Result<()> {
@@ -1131,6 +1338,26 @@ JunkFolder=Junk
     }
 
     #[test]
+    fn a_combined_source_is_cached_for_each_supported_extension() {
+        let source = parse_source(
+            "[Data Source]\nUID=combined-1\nDisplayName=Arbeitskonto\n[Mail Account]\nBackendName=imapx\n[Calendar]\nBackendName=caldav\n[Address Book]\nBackendName=ldap\n",
+        )
+        .expect("combined source should parse");
+        let cached = eds_sources_from_keyfile(Path::new("combined.source"), &source);
+
+        assert_eq!(cached.len(), 3);
+        assert!(cached.iter().any(|(kind, source)| {
+            *kind == EdsSourceKind::Mail && source.backend_name == "imapx"
+        }));
+        assert!(cached.iter().any(|(kind, source)| {
+            *kind == EdsSourceKind::Calendar && source.backend_name == "caldav"
+        }));
+        assert!(cached.iter().any(|(kind, source)| {
+            *kind == EdsSourceKind::AddressBook && source.backend_name == "ldap"
+        }));
+    }
+
+    #[test]
     fn imports_nested_sources_into_the_app_owned_store() {
         let root = temporary_directory("migration");
         let profile_root = root.join("profile").join("sources");
@@ -1155,6 +1382,60 @@ JunkFolder=Junk
         assert_eq!(store.load().len(), 1);
         assert_eq!(store.load()[0].id, "evolution-source:mail-1");
         assert_eq!(report.warnings.len(), 1);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn imports_non_secret_calendar_and_address_book_sources_into_cache() {
+        let root = temporary_directory("migration-source-cache");
+        let profile_root = root.join("profile").join("sources");
+        fs::create_dir_all(&profile_root).expect("source directory should be created");
+        fs::write(
+            profile_root.join("mail.source"),
+            "[Data Source]\nUID=mail-1\nDisplayName=Mail\nEnabled=true\n[Mail Account]\nBackendName=imapx\n[Mail Identity]\nAddress=person@example.org\n",
+        )
+        .expect("mail source should be written");
+        fs::write(
+            profile_root.join("calendar.source"),
+            "[Data Source]\nUID=calendar-1\nDisplayName=Kalender\nEnabled=false\n[Calendar]\nBackendName=caldav\nPassword=must-not-be-imported\n",
+        )
+        .expect("calendar source should be written");
+        fs::write(
+            profile_root.join("address-book.source"),
+            "[Data Source]\nUID=book-1\nDisplayName=Kontakte\n[Address Book]\nBackendName=google\nOAuthToken=must-not-be-imported\n",
+        )
+        .expect("address book source should be written");
+
+        let account_store = AccountConfigStore::new(root.join("accounts.json"));
+        let filter_store = MailFilterStore::new(root.join("mail-filters.json"));
+        let signature_store = SignatureStore::new(root.join("signatures.json"));
+        let cache = EdsSourceCache::with_path(root.join("eds-sources.json"));
+        let report = import_evolution_sources_with_stores_and_cache(
+            &root.join("profile"),
+            &account_store,
+            &filter_store,
+            &signature_store,
+            &cache,
+        )
+        .expect("source cache import should succeed");
+
+        assert_eq!(report.cached_mail_sources, 1);
+        assert_eq!(report.cached_calendar_sources, 1);
+        assert_eq!(report.cached_address_book_sources, 1);
+        assert_eq!(cache.load(EdsSourceKind::Mail)[0].uid, "mail-1");
+        assert_eq!(
+            cache.load(EdsSourceKind::Calendar)[0].display_name,
+            "Kalender"
+        );
+        assert!(!cache.load(EdsSourceKind::Calendar)[0].enabled);
+        assert_eq!(
+            cache.load(EdsSourceKind::AddressBook)[0].backend_name,
+            "google"
+        );
+        let raw_cache = fs::read_to_string(root.join("eds-sources.json"))
+            .expect("source cache should be readable");
+        assert!(!raw_cache.contains("must-not-be-imported"));
 
         let _ = fs::remove_dir_all(root);
     }

@@ -365,7 +365,9 @@ werden.
   bleibt links, während Benutzer zwischen moderner Liste/Vorschau-
   Seitenansicht und der klassischen Evolution-Anordnung (Liste über der
   Vorschau) wählen können. Beide Modi verwenden denselben Auswahl-,
-  Such- und Aktionspfad; zusätzliche native Camel-Abnahme bleibt offen.
+  Such- und Aktionspfad. Das Ansichtsmenü bietet zusätzlich direkte Umschalter
+  für Threading, Avatare, Vorschautext und Nachrichtenlistendichte; zusätzliche
+  native Camel-Abnahme bleibt offen.
 - [~] Sicherer WebKitGTK-Viewer: JavaScript ist deaktiviert, Navigation wird
   abgefangen und externe Bilder sind standardmäßig blockiert.
   Die portable Leseeinstellung, ob eine Nachricht beim Auswählen als gelesen
@@ -376,9 +378,11 @@ werden.
   gefundene Mailquellen werden als
   GTK-Modell in der Konten-Seitenleiste angezeigt und Kalender-/Adressbuch-
   quellen werden über eine gemeinsame Quellenklassifikation in den jeweiligen
-  Seiten dynamisch aufgelistet. Nicht-sensitive letzte Quellenstände können
-  bei einem EDS-Ausfall explizit als Cache angezeigt werden; Verwaltung und
-  Bearbeitung der EDS-Konten fehlen noch.
+  Seiten dynamisch aufgelistet. Mail-, Kalender- und Adressbuchansichten
+  verwenden dafür dieselbe cachefähige Quellenentdeckung; nicht-sensitive
+  letzte Quellenstände werden bei einem EDS-Ausfall ausdrücklich als
+  Offline-Cache markiert. Verwaltung und Bearbeitung der EDS-Konten fehlen
+  noch.
 - [~] Lokaler Mail-Store: vorhandene EML-, Maildir- und mbox-Daten werden in
   einem Worker gelesen; RFC-822-Header, MIME-Text/HTML, dekodierte Anhänge und
   stabile lokale Ordner-IDs werden unterstützt. Camel-Indizes, vollständige
@@ -439,6 +443,9 @@ werden.
   Fortschrittsmeldungen sind angebunden. Cancellation innerhalb laufender
   Camel-Aufrufe, UID-basierte inkrementelle Nachrichtenaktualisierung und
   begrenztes Retry/Backoff für Mail-Ladevorgänge sind ebenfalls angebunden.
+  Der sichtbare Quellenstatus bleibt bis zum tatsächlichen Backend- oder
+  lokalen Fallback-Ergebnis erhalten und unterscheidet jetzt auch ein
+  erkanntes Konto ohne lesbare Mailordner von einem erfolgreichen Laden.
   Eine vollständige inkrementelle Ordner-/Kontosynchronisation und eine
   einheitliche Retry-/Netzwerkstrategie für alle EDS-Domänen fehlen noch.
 - [~] Native Linux-Camel-Brücke öffnet die aktivierten EDS-Mailquellen über
@@ -454,6 +461,10 @@ werden.
   Unterordnern als aufklappbares TreeListModel mit stabilen Konto-/Ordner-
   Schlüsseln ab; providerabhängige Hierarchie-Separatoren und strukturelle
   Lebenszyklusänderungen werden noch auf Linux verifiziert.
+  Die native Konfiguration übernimmt die vollständige ESource-Elternkette
+  sowie geerbte GOA-/OAuth2- und EWS-Identitätsdaten; ein erfolgreicher
+  Kontozugriff ohne lesbaren Ordner wird im Status explizit als solcher
+  ausgewiesen. Der echte Provider-/Linux-Laufzeittest bleibt offen.
   Archivieren, Verschieben und Spam-Markierung werden über denselben
   Servicepfad ausgeführt; Camel-Änderungs-, Lösch- und Umbenennungssignale
   werden über einen langlebigen nativen Watcher in die Mailansicht geleitet.
@@ -508,7 +519,9 @@ werden.
   Absender angeboten; ein Versandversuch bleibt bis zur nativen Camel-
   Aktivierung ein sichtbarer Backendfehler. Die portable Profilvalidierung
   prüft E-Mail-, Alias-, Server-, Port- und TLS-Werte vor dem Speichern; EDS-
-  Kontoänderungen und die Linux-Laufzeitabnahme fehlen noch.
+  Kontoänderungen und die Linux-Laufzeitabnahme fehlen noch. Der Kontowizard
+  blendet protokollabhängige Server-, Ordner- und Zugangsfelder jetzt für
+  Exchange bzw. GOA nachvollziehbar aus oder ein.
 - [~] Sichtbare Lese-/Datenschutz-/PGP-Optionen werden über GSettings
   persistiert, sofern das Schema installiert ist; Vorschaufenster,
   Markieren-beim-Auswählen, HTML/Text, externe Bilder, Schriftfamilie/-größe,
@@ -525,7 +538,9 @@ werden.
   Standard-ECal-Quelle werden portabel über GSettings vorselektiert und in
   Backup/Restore übernommen. EDS-Verknüpfung,
   Secret-Service-Aktivierung und die native Anwendung der Zuordnung fehlen
-  noch.
+  noch. Die gespeicherte Standardkonto-ID wird beim Mailstart jetzt auch auf
+  die passende live entdeckte oder cachefähige EDS-Quelle angewendet; noch
+  nicht aktivierte lokale Profile bleiben dabei bewusst nicht auswählbar.
 - [ ] IMAP/IMAPX, POP3, lokale Ordner, SMTP und Exchange/Microsoft-365 mit
   OAuth2, TLS, Passwort-/Secret-Service und Offline-Fehlerzuständen.
 - [~] GTK4-rs-Composer zeigt aktive EDS-Mailkonten, persistiert To/Cc/Bcc,
@@ -534,7 +549,9 @@ werden.
   dedupliziert Empfänger und übernimmt den Originaltext als sicheres Zitat;
   Weiterleiten übernimmt die Originalkopfzeilen und den Nachrichtentext. Ein
   getesteter RFC822/MIME-Builder und die native CamelTransport-Aufrufstrecke
-  sowie EDS-Drafts/Sent-Fallback sind angeschlossen; lokale
+  sowie EDS-Drafts/Sent-Fallback sind angeschlossen; die Composer-Quellenliste
+  verwendet ebenfalls die live-/cachefähige EDS-Entdeckung und kennzeichnet
+  importierte Offline-Quellen ausdrücklich. Lokale
   Entwurfsverwaltung und konfigurierbares lokales Autosave sind ebenfalls
   angeschlossen. Eine lokale Klartext-Standardsignatur wird über GSettings
   verwaltet und in neue, beantwortete und weitergeleitete Nachrichten
@@ -697,6 +714,9 @@ werden.
   Zustellung/Snooze und stellt 10-Minuten-/1-Stunden-Snooze sowie Erledigt-
   Aktionen bereit. Komplexe Alarmtypen, native EDS-Aufgabenlisten-
   Synchronisation und weitere Evolution-Aufgabenlistenfunktionen fehlen noch.
+  Termin-, Aufgaben- und Notizeditoren verwenden für ihre Quellenauswahl
+  ebenfalls die cachefähige EDS-Entdeckung und zeigen bei EDS-Ausfall den
+  geheimnisfreien importierten Quellenstand als Offline-Hinweis.
   Aufgaben können portabel nach Fälligkeit, Titel oder Priorität sortiert
   werden; Sortierfeld und auf-/absteigende Richtung werden über GSettings
   gespeichert und beim Start wiederhergestellt. Die Memo-Liste bietet dieselbe
@@ -842,7 +862,10 @@ werden.
   aus `filters.xml` und alle sicher
   lesbaren Text-/HTML-Signaturen aus `signature-list.xml` werden zusätzlich in
   versionierten portablen Beständen übernommen; die erste Signatur bleibt für
-  den bestehenden Composer direkt ausgewählt. Vollständige Einstellungen,
+  den bestehenden Composer direkt ausgewählt. Mail-, Kalender- und
+  Adressbuchquellen werden zusätzlich als geheimnisfreier Offline-Cache
+  übernommen, damit importierte Quellen und ihre Aktivierung auch ohne
+  erreichbares EDS nachvollziehbar bleiben. Vollständige Einstellungen,
   lokale Ordner und die native EDS-Registrierung fehlen noch. Nicht
   unterstützte Filterbedingungen/-aktionen werden beim Import jetzt als
   nachvollziehbare Warnung im Bericht und Log ausgewiesen, statt still

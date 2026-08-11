@@ -1082,56 +1082,55 @@ impl MemosPage {
             .map(|settings| settings.default_memo_source_uid())
             .filter(|uid| !uid.trim().is_empty());
         glib::spawn_future_local(async move {
-            match eds_service::list_calendar_sources().await {
-                Ok(sources) => {
-                    let active_sources: Vec<_> = sources
-                        .into_iter()
-                        .filter(|source| source.enabled)
-                        .collect();
-                    let mut names: Vec<String> = active_sources
-                        .iter()
-                        .map(|source| {
-                            if source.backend_name.is_empty() {
-                                source.display_name.clone()
-                            } else {
-                                format!("{} · {}", source.display_name, source.backend_name)
-                            }
-                        })
-                        .collect();
-                    let mut uids = source_uids_for_load.borrow_mut();
-                    uids.clear();
-                    uids.extend(active_sources.into_iter().map(|source| source.uid));
-                    if local_calendar_available {
-                        names.push("Lokale Notizliste".to_string());
-                        uids.push("local-calendar".to_string());
-                    }
-                    if names.is_empty() {
-                        names.push("Keine aktive EDS-Notizliste verfügbar".to_string());
-                    }
-                    let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
-                    source_model_for_load.splice(0, source_model_for_load.n_items(), &name_refs);
-                    let selected_index = preferred_source_uid
-                        .as_deref()
-                        .and_then(|uid| uids.iter().position(|candidate| candidate == uid));
-                    drop(uids);
-                    if let Some(index) = selected_index {
-                        source_row_for_load.set_selected(index as u32);
-                    }
-                }
-                Err(error) => {
-                    tracing::warn!(%error, "Could not load EDS memo lists for memo dialog");
-                    let mut names = Vec::new();
-                    let mut uids = source_uids_for_load.borrow_mut();
-                    uids.clear();
-                    if local_calendar_available {
-                        names.push("Lokale Notizliste".to_string());
-                        uids.push("local-calendar".to_string());
+            let discovery =
+                eds_service::discover_sources(eds_service::EdsSourceKind::Calendar).await;
+            if let Some(error) = discovery.error.as_deref() {
+                tracing::warn!(%error, "Could not reach EDS memo lists for memo dialog");
+            }
+            let active_sources: Vec<_> = discovery
+                .sources
+                .into_iter()
+                .filter(|source| source.enabled)
+                .collect();
+            let mut names: Vec<String> = active_sources
+                .iter()
+                .map(|source| {
+                    if source.backend_name.is_empty() {
+                        source.display_name.clone()
                     } else {
-                        names.push("EDS-Notizlisten sind nicht erreichbar".to_string());
+                        format!("{} · {}", source.display_name, source.backend_name)
                     }
-                    let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
-                    source_model_for_load.splice(0, source_model_for_load.n_items(), &name_refs);
-                }
+                })
+                .collect();
+            let mut uids = source_uids_for_load.borrow_mut();
+            uids.clear();
+            uids.extend(active_sources.into_iter().map(|source| source.uid));
+            let preserved_source_uid = preferred_source_uid.as_deref().filter(|uid| {
+                *uid != "local-calendar" && !uids.iter().any(|candidate| candidate == uid)
+            });
+            if let Some(uid) = preserved_source_uid {
+                names.push(format!("Nicht verfügbare Quelle · {uid}"));
+                uids.push(uid.to_string());
+            }
+            if local_calendar_available {
+                names.push("Lokale Notizliste".to_string());
+                uids.push("local-calendar".to_string());
+            }
+            if names.is_empty() {
+                names.push(if discovery.error.is_some() {
+                    "EDS-Notizlisten sind nicht erreichbar".to_string()
+                } else {
+                    "Keine aktive EDS-Notizliste verfügbar".to_string()
+                });
+            }
+            let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
+            source_model_for_load.splice(0, source_model_for_load.n_items(), &name_refs);
+            let selected_index = preferred_source_uid
+                .as_deref()
+                .and_then(|uid| uids.iter().position(|candidate| candidate == uid));
+            drop(uids);
+            if let Some(index) = selected_index {
+                source_row_for_load.set_selected(index as u32);
             }
         });
 

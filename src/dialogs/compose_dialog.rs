@@ -22,7 +22,7 @@ use crate::services::account_config_service::{AccountConfigStore, AccountProfile
 use crate::services::camel_mail_service;
 use crate::services::contact_store_service::ContactStoreService;
 use crate::services::draft_store_service::{DraftAttachment, DraftMessage, DraftStoreService};
-use crate::services::eds_service;
+use crate::services::eds_service::{self, EdsSourceKind, EdsSourceOrigin};
 use crate::services::html_sanitizer::sanitize_html;
 use crate::services::mail_composer_service::{self, OutgoingMessage};
 use crate::services::signature_store_service::SignatureStore;
@@ -963,95 +963,70 @@ impl ComposeDialog {
         let combo_from_for_load = combo_from.clone();
         let dialog_for_source_load = self.downgrade();
         glib::spawn_future_local(async move {
-            match eds_service::list_mail_sources().await {
-                Ok(sources) => {
-                    let active_sources: Vec<_> = sources
-                        .into_iter()
-                        .filter(|source| source.enabled)
-                        .collect();
-                    let local_choices = local_account_choices();
-                    let mut names: Vec<String> = active_sources
-                        .iter()
-                        .map(|source| {
-                            if source.backend_name.is_empty() {
-                                source.display_name.clone()
-                            } else {
-                                format!("{} · {}", source.display_name, source.backend_name)
-                            }
-                        })
-                        .collect();
-                    names.extend(local_choices.iter().map(|(_, label)| label.clone()));
-                    let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
-                    source_model_for_load.splice(0, source_model_for_load.n_items(), &name_refs);
-                    if let Some(dialog) = dialog_for_source_load.upgrade() {
-                        let requested_uid = dialog.imp().requested_source_uid.borrow().clone();
-                        let preferred_uid = AppSettings::try_new()
-                            .map(|settings| settings.default_account_id())
-                            .filter(|uid| !uid.trim().is_empty());
-                        let mut source_uids = dialog.imp().source_uids.borrow_mut();
-                        source_uids.clear();
-                        source_uids.extend(active_sources.iter().map(|source| source.uid.clone()));
-                        source_uids.extend(
-                            local_choices
-                                .iter()
-                                .map(|(source_uid, _)| source_uid.clone()),
-                        );
-                        let selected_uid = requested_uid
-                            .filter(|uid| !uid.trim().is_empty())
-                            .or(preferred_uid);
-                        if let Some(selected_uid) = selected_uid {
-                            if let Some(index) =
-                                source_uids.iter().position(|uid| uid == &selected_uid)
-                            {
-                                combo_from_for_load.set_selected(index as u32);
-                            }
-                        }
-                    }
-                    if names.is_empty() {
-                        source_model_for_load.splice(
-                            0,
-                            source_model_for_load.n_items(),
-                            &["Kein aktives EDS-Mailkonto verfügbar"],
-                        );
-                    }
-                }
-                Err(error) => {
-                    tracing::warn!(%error, "Could not load EDS mail sources for composer");
-                    let local_choices = local_account_choices();
-                    let names: Vec<String> = if local_choices.is_empty() {
-                        vec!["EDS-Mailkonten sind nicht erreichbar".to_string()]
+            let discovery = eds_service::discover_sources(EdsSourceKind::Mail).await;
+            if let Some(error) = discovery.error.as_deref() {
+                tracing::warn!(%error, "Live EDS mail source discovery failed for composer");
+            }
+            let cache_suffix = (discovery.origin == EdsSourceOrigin::Cache)
+                .then_some(" · Offline-Cache")
+                .unwrap_or_default();
+            let active_sources: Vec<_> = discovery
+                .sources
+                .into_iter()
+                .filter(|source| source.enabled)
+                .collect();
+            let local_choices = local_account_choices();
+            let mut names: Vec<String> = active_sources
+                .iter()
+                .map(|source| {
+                    if source.backend_name.is_empty() {
+                        format!("{}{}", source.display_name, cache_suffix)
                     } else {
-                        local_choices
-                            .iter()
-                            .map(|(_, label)| label.clone())
-                            .collect()
-                    };
-                    let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
-                    source_model_for_load.splice(0, source_model_for_load.n_items(), &name_refs);
-                    if let Some(dialog) = dialog_for_source_load.upgrade() {
-                        let requested_uid = dialog.imp().requested_source_uid.borrow().clone();
-                        let preferred_uid = AppSettings::try_new()
-                            .map(|settings| settings.default_account_id())
-                            .filter(|uid| !uid.trim().is_empty());
-                        let mut source_uids = dialog.imp().source_uids.borrow_mut();
-                        source_uids.clear();
-                        source_uids.extend(
-                            local_choices
-                                .iter()
-                                .map(|(source_uid, _)| source_uid.clone()),
-                        );
-                        let selected_uid = requested_uid
-                            .filter(|uid| !uid.trim().is_empty())
-                            .or(preferred_uid);
-                        if let Some(selected_uid) = selected_uid {
-                            if let Some(index) =
-                                source_uids.iter().position(|uid| uid == &selected_uid)
-                            {
-                                combo_from_for_load.set_selected(index as u32);
-                            }
-                        }
+                        format!(
+                            "{} · {}{}",
+                            source.display_name, source.backend_name, cache_suffix
+                        )
+                    }
+                })
+                .collect();
+            names.extend(local_choices.iter().map(|(_, label)| label.clone()));
+            let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
+            source_model_for_load.splice(0, source_model_for_load.n_items(), &name_refs);
+            if let Some(dialog) = dialog_for_source_load.upgrade() {
+                let requested_uid = dialog.imp().requested_source_uid.borrow().clone();
+                let preferred_uid = AppSettings::try_new()
+                    .map(|settings| settings.default_account_id())
+                    .filter(|uid| !uid.trim().is_empty());
+                let mut source_uids = dialog.imp().source_uids.borrow_mut();
+                source_uids.clear();
+                source_uids.extend(active_sources.iter().map(|source| source.uid.clone()));
+                source_uids.extend(
+                    local_choices
+                        .iter()
+                        .map(|(source_uid, _)| source_uid.clone()),
+                );
+                let selected_uid = requested_uid
+                    .filter(|uid| !uid.trim().is_empty())
+                    .or(preferred_uid);
+                if let Some(selected_uid) = selected_uid {
+                    let selected_uid_without_prefix = selected_uid
+                        .strip_prefix("evolution-source:")
+                        .unwrap_or(&selected_uid);
+                    if let Some(index) = source_uids
+                        .iter()
+                        .position(|uid| uid == &selected_uid || uid == selected_uid_without_prefix)
+                    {
+                        combo_from_for_load.set_selected(index as u32);
                     }
                 }
+            }
+            if names.is_empty() {
+                let message = if discovery.origin == EdsSourceOrigin::Empty {
+                    "EDS-Mailkonten sind nicht erreichbar"
+                } else {
+                    "Kein aktives EDS-Mailkonto verfügbar"
+                };
+                source_model_for_load.splice(0, source_model_for_load.n_items(), &[message]);
             }
         });
 

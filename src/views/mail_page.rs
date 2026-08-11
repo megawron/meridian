@@ -22,7 +22,7 @@ use crate::services::camel_mail_service::{self, CamelMailLoad};
 use crate::services::crypto_service::CryptoService;
 use crate::services::draft_store_service::{DraftMessage, DraftStoreService};
 use crate::services::ecal_service::{ECalComponentType, ECalService};
-use crate::services::eds_service;
+use crate::services::eds_service::{self, EdsSourceKind, EdsSourceOrigin};
 use crate::services::inline_content_service::{InlineImage, resolve_cid_images};
 use crate::services::itip_service::{
     ItipInvitation, ItipMethod, ItipReplyStatus, build_reply_component, normalize_attendee_address,
@@ -689,10 +689,15 @@ fn format_camel_status(camel: &CamelMailLoad) -> String {
         .as_deref()
         .map(|warning| format!(" · Hinweis: {warning}"))
         .unwrap_or_default();
+    let folder_warning = (camel.configured_sources > 0
+        && camel.successful_sources > 0
+        && !camel.folders.iter().any(|folder| folder.is_selectable))
+    .then_some(" · Keine lesbaren Mailordner gefunden")
+    .unwrap_or_default();
 
     format!(
-        "EDS/Camel: {sync_status}, {} {message_label} geladen{warning}",
-        camel.messages.len()
+        "EDS/Camel: {sync_status}, {} {message_label} geladen{warning}{folder_warning}",
+        camel.messages.len(),
     )
 }
 
@@ -716,12 +721,14 @@ mod imp {
         pub thread_children: RefCell<Option<Rc<RefCell<HashMap<String, gio::ListStore>>>>>,
         pub thread_selection_syncing: Cell<bool>,
         pub(super) folder_selection: RefCell<Option<Rc<RefCell<FolderSelection>>>>,
+        pub source_selection: RefCell<Option<gtk::SingleSelection>>,
         pub folder_list: RefCell<Option<gtk::ListBox>>,
         pub dynamic_folder_store: RefCell<Option<gio::ListStore>>,
         pub dynamic_folder_selection: RefCell<Option<gtk::SingleSelection>>,
         pub dynamic_folder_children: RefCell<Option<Rc<RefCell<HashMap<String, gio::ListStore>>>>>,
         pub dynamic_folder_index: RefCell<Option<Rc<RefCell<HashMap<String, FolderObject>>>>>,
         pub folder_section: RefCell<Option<gtk::Box>>,
+        pub source_state: RefCell<Option<gtk::Label>>,
         pub search_list: RefCell<Option<gtk::ListBox>>,
         pub message_state: RefCell<Option<gtk::Label>>,
         pub refresh_button: RefCell<Option<gtk::Button>>,
@@ -848,12 +855,13 @@ mod imp {
                 .replace(Some(folder_selection.clone()));
             self.folder_list.replace(Some(folder_list.clone()));
             self.folder_section.replace(Some(folder_section.clone()));
+            self.source_state.replace(Some(source_state.clone()));
             self.search_list.replace(Some(search_list.clone()));
             self.message_state.replace(Some(message_state.clone()));
 
             obj.assemble_layout(sidebar, message_container, detail_view);
             obj.bind_preview_setting();
-            obj.load_initial_data(&source_store, &source_state, &folder_section);
+            obj.load_initial_data(&source_store, &source_state);
         }
 
         fn dispose(&self) {
@@ -1861,6 +1869,14 @@ impl MailPage {
         let page_for_source = self.downgrade();
         source_selection.connect_selected_item_notify(move |selection| {
             if let Some(source) = selection.selected_item().and_downcast::<EdsSourceObject>() {
+                if !source.enabled() {
+                    tracing::debug!(
+                        uid = %source.uid(),
+                        display_name = %source.display_name(),
+                        "Ignoring selection of a source without an active backend"
+                    );
+                    return;
+                }
                 tracing::debug!(
                     uid = %source.uid(),
                     display_name = %source.display_name(),
@@ -1886,6 +1902,9 @@ impl MailPage {
                 }
             }
         });
+        self.imp()
+            .source_selection
+            .replace(Some(source_selection.clone()));
 
         let folder_list = gtk::ListBox::new();
         folder_list.set_selection_mode(gtk::SelectionMode::Single);
@@ -4202,54 +4221,97 @@ impl MailPage {
         imp.outer_paned.set_parent(&*self.imp().obj());
     }
 
-    fn load_initial_data(
-        &self,
-        source_store: &gio::ListStore,
-        source_state: &gtk::Label,
-        folder_section: &gtk::Box,
-    ) {
+    fn load_initial_data(&self, source_store: &gio::ListStore, source_state: &gtk::Label) {
         self.select_folder_row(&FolderSelection::all());
         self.start_mail_load(MailLoadRequest::initial(), true);
         self.setup_mail_polling();
         self.setup_camel_change_monitor();
 
         let source_store_for_load = source_store.clone();
+        let source_selection_for_load = self.imp().source_selection.borrow().clone();
         let source_state_for_load = source_state.clone();
-        let folder_section_for_load = folder_section.clone();
         let configured_accounts = AccountConfigStore::default().load();
+        let preferred_account_id = AppSettings::try_new()
+            .map(|settings| settings.default_account_id())
+            .filter(|id| !id.trim().is_empty());
         for profile in &configured_accounts {
             source_store.append(&EdsSourceObject::from_account_profile(profile));
         }
         let has_configured_accounts = !configured_accounts.is_empty();
         glib::spawn_future_local(async move {
-            match eds_service::list_mail_sources().await {
-                Ok(sources) => {
-                    tracing::info!("Loaded {} mail sources from EDS", sources.len());
-                    let has_eds_sources = !sources.is_empty();
-                    let has_enabled_source = sources.iter().any(|source| source.enabled);
-                    for source in sources {
-                        tracing::debug!("  Source: {} ({})", source.display_name, source.uid);
-                        source_store_for_load.append(&EdsSourceObject::from_source(&source));
-                    }
-                    if !has_eds_sources && has_configured_accounts {
-                        source_state_for_load.set_label("Gespeicherte Kontoprofile vorhanden; EDS/Camel-Synchronisation ist noch nicht verbunden.");
-                    } else if !has_eds_sources {
-                        source_state_for_load.set_label("Keine EDS-/GOA-Mailkonten gefunden. Das Konto-Setup ist noch nicht mit EDS verbunden.");
-                    } else if !has_enabled_source {
-                        source_state_for_load.set_label(if has_configured_accounts {
-                            "Alle gefundenen EDS-/GOA-Mailkonten sind deaktiviert; gespeicherte Kontoprofile warten auf die Backend-Anbindung."
-                        } else {
-                            "Alle gefundenen EDS-/GOA-Mailkonten sind deaktiviert."
-                        });
-                    } else {
-                        source_state_for_load.set_visible(false);
-                        folder_section_for_load.set_visible(true);
-                    }
+            let discovery = eds_service::discover_sources(EdsSourceKind::Mail).await;
+            tracing::info!(
+                sources = discovery.sources.len(),
+                origin = ?discovery.origin,
+                "Loaded mail sources"
+            );
+            if let Some(error) = discovery.error.as_deref() {
+                tracing::warn!(%error, "Live EDS mail source discovery failed");
+            }
+
+            let has_eds_sources = !discovery.sources.is_empty();
+            let has_enabled_source = discovery.sources.iter().any(|source| source.enabled);
+            let source_origin = match discovery.origin {
+                EdsSourceOrigin::Live => "EDS/GOA",
+                EdsSourceOrigin::Cache => "Offline-Cache",
+                EdsSourceOrigin::Empty => "EDS nicht verfügbar",
+            };
+            for source in &discovery.sources {
+                tracing::debug!("  Source: {} ({})", source.display_name, source.uid);
+                source_store_for_load.append(&EdsSourceObject::from_source_with_origin(
+                    source,
+                    source_origin,
+                ));
+            }
+
+            if let (Some(selection), Some(preferred_account_id)) = (
+                source_selection_for_load.as_ref(),
+                preferred_account_id.as_deref(),
+            ) {
+                let preferred_uid = preferred_account_id
+                    .strip_prefix("evolution-source:")
+                    .unwrap_or(preferred_account_id);
+                let preferred_index = (0..source_store_for_load.n_items()).find(|index| {
+                    source_store_for_load
+                        .item(*index)
+                        .and_downcast::<EdsSourceObject>()
+                        .is_some_and(|source| {
+                            source.enabled()
+                                && (source.uid() == preferred_account_id
+                                    || source.uid() == preferred_uid)
+                        })
+                });
+                if let Some(index) = preferred_index {
+                    tracing::info!(
+                        preferred_account_id,
+                        preferred_uid,
+                        index,
+                        "Selecting configured default mail account"
+                    );
+                    selection.set_selected(index);
                 }
-                Err(err) => {
-                    tracing::warn!("Failed to load EDS sources: {}", err);
-                    source_state_for_load.set_label(&format!("EDS ist nicht erreichbar: {}", err));
-                }
+            }
+
+            if discovery.origin == EdsSourceOrigin::Cache {
+                source_state_for_load.set_label(&format!(
+                    "{} Die Konten stammen aus dem Offline-Cache; Ordner und Nachrichten werden nur bei erreichbarem EDS/Camel geladen.",
+                    discovery.status_text()
+                ));
+                source_state_for_load.set_visible(true);
+            } else if !has_eds_sources && has_configured_accounts {
+                source_state_for_load.set_label("Gespeicherte Kontoprofile vorhanden; EDS/Camel-Synchronisation ist noch nicht verbunden.");
+            } else if !has_eds_sources {
+                source_state_for_load.set_label("Keine EDS-/GOA-Mailkonten gefunden. Das Konto-Setup ist noch nicht mit EDS verbunden.");
+            } else if !has_enabled_source {
+                source_state_for_load.set_label(if has_configured_accounts {
+                    "Alle gefundenen EDS-/GOA-Mailkonten sind deaktiviert; gespeicherte Kontoprofile warten auf die Backend-Anbindung."
+                } else {
+                    "Alle gefundenen EDS-/GOA-Mailkonten sind deaktiviert."
+                });
+            } else {
+                source_state_for_load
+                    .set_label("EDS-Mailkonto erkannt; Ordner und Nachrichten werden geladen …");
+                source_state_for_load.set_visible(true);
             }
         });
     }
@@ -4781,6 +4843,16 @@ impl MailPage {
                 if let Some(section) = self.imp().folder_section.borrow().as_ref() {
                     section.set_visible(true);
                 }
+                if let Some(state) = self.imp().source_state.borrow().as_ref() {
+                    if camel.warning.is_some()
+                        || !camel.folders.iter().any(|folder| folder.is_selectable)
+                    {
+                        state.set_label(&status);
+                        state.set_visible(true);
+                    } else {
+                        state.set_visible(false);
+                    }
+                }
                 if let Some(button) = self.imp().load_more_button.borrow().as_ref() {
                     button.set_visible(has_more);
                     button.set_sensitive(true);
@@ -4834,6 +4906,10 @@ impl MailPage {
                     Self::update_folder_counts(folder_list, &folder_counts);
                 }
                 self.imp().active_request.replace(None);
+                if let Some(state) = self.imp().source_state.borrow().as_ref() {
+                    state.set_label(&reason);
+                    state.set_visible(true);
+                }
                 if let Some(button) = self.imp().load_more_button.borrow().as_ref() {
                     button.set_visible(false);
                     button.set_sensitive(true);
@@ -4858,6 +4934,10 @@ impl MailPage {
                 }
             }
             MailPageLoadResult::Error(error) => {
+                if let Some(state) = self.imp().source_state.borrow().as_ref() {
+                    state.set_label(&format!("EDS/Camel-Laden nicht möglich: {error}"));
+                    state.set_visible(true);
+                }
                 if let Some(button) = self.imp().load_more_button.borrow().as_ref() {
                     button.set_visible(false);
                     button.set_sensitive(true);
@@ -5419,6 +5499,21 @@ mod tests {
 
         assert!(status.contains("1 Konto nicht synchronisiert"));
         assert!(status.contains("OAuth-Anmeldung fehlgeschlagen"));
+    }
+
+    #[test]
+    fn camel_status_explains_successful_account_without_readable_folders() {
+        let status = format_camel_status(&CamelMailLoad {
+            messages: Vec::new(),
+            folders: Vec::new(),
+            configured_sources: 1,
+            successful_sources: 1,
+            failed_sources: 0,
+            warning: None,
+        });
+
+        assert!(status.contains("1 Konto synchronisiert"));
+        assert!(status.contains("Keine lesbaren Mailordner gefunden"));
     }
 
     #[test]

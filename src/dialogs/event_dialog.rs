@@ -439,66 +439,59 @@ impl EventDialog {
             .map(|settings| settings.default_calendar_source_uid())
             .filter(|uid| !uid.trim().is_empty());
         glib::spawn_future_local(async move {
-            match eds_service::list_calendar_sources().await {
-                Ok(sources) => {
-                    let active_sources: Vec<_> = sources
-                        .into_iter()
-                        .filter(|source| source.enabled)
-                        .collect();
-                    let mut names: Vec<String> = active_sources
-                        .iter()
-                        .map(|source| {
-                            if source.backend_name.is_empty() {
-                                source.display_name.clone()
-                            } else {
-                                format!("{} · {}", source.display_name, source.backend_name)
-                            }
-                        })
-                        .collect();
-                    let mut uids = calendar_source_uids_for_load.borrow_mut();
-                    uids.clear();
-                    uids.extend(active_sources.into_iter().map(|source| source.uid));
-                    if local_calendar_available {
-                        names.push("Lokaler Kalender".to_string());
-                        uids.push("local-calendar".to_string());
-                    }
-                    if names.is_empty() {
-                        names.push("Kein aktiver EDS-Kalender verfügbar".to_string());
-                    }
-                    let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
-                    calendar_model_for_load.splice(
-                        0,
-                        calendar_model_for_load.n_items(),
-                        &name_refs,
-                    );
-                    if let Some(edit_source_uid) = edit_source_uid_for_load.as_deref() {
-                        if let Some(index) = uids.iter().position(|uid| uid == edit_source_uid) {
-                            row_calendar_for_load.set_selected(index as u32);
-                        }
-                    } else if let Some(preferred_source_uid) = preferred_source_uid.as_deref() {
-                        if let Some(index) = uids.iter().position(|uid| uid == preferred_source_uid)
-                        {
-                            row_calendar_for_load.set_selected(index as u32);
-                        }
-                    }
-                }
-                Err(error) => {
-                    tracing::warn!(%error, "Could not load EDS calendars for event dialog");
-                    let mut names = Vec::new();
-                    let mut uids = calendar_source_uids_for_load.borrow_mut();
-                    uids.clear();
-                    if local_calendar_available {
-                        names.push("Lokaler Kalender".to_string());
-                        uids.push("local-calendar".to_string());
+            let discovery =
+                eds_service::discover_sources(eds_service::EdsSourceKind::Calendar).await;
+            if let Some(error) = discovery.error.as_deref() {
+                tracing::warn!(%error, "Could not reach EDS calendars for event dialog");
+            }
+            let active_sources: Vec<_> = discovery
+                .sources
+                .into_iter()
+                .filter(|source| source.enabled)
+                .collect();
+            let mut names: Vec<String> = active_sources
+                .iter()
+                .map(|source| {
+                    if source.backend_name.is_empty() {
+                        source.display_name.clone()
                     } else {
-                        names.push("EDS-Kalender sind nicht erreichbar".to_string());
+                        format!("{} · {}", source.display_name, source.backend_name)
                     }
-                    let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
-                    calendar_model_for_load.splice(
-                        0,
-                        calendar_model_for_load.n_items(),
-                        &name_refs,
-                    );
+                })
+                .collect();
+            let mut uids = calendar_source_uids_for_load.borrow_mut();
+            uids.clear();
+            uids.extend(active_sources.into_iter().map(|source| source.uid));
+            let preserved_source_uid = edit_source_uid_for_load
+                .as_deref()
+                .or(preferred_source_uid.as_deref())
+                .filter(|uid| {
+                    *uid != "local-calendar" && !uids.iter().any(|candidate| candidate == uid)
+                });
+            if let Some(uid) = preserved_source_uid {
+                names.push(format!("Nicht verfügbare Quelle · {uid}"));
+                uids.push(uid.to_string());
+            }
+            if local_calendar_available {
+                names.push("Lokaler Kalender".to_string());
+                uids.push("local-calendar".to_string());
+            }
+            if names.is_empty() {
+                names.push(if discovery.error.is_some() {
+                    "EDS-Kalender sind nicht erreichbar".to_string()
+                } else {
+                    "Kein aktiver EDS-Kalender verfügbar".to_string()
+                });
+            }
+            let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
+            calendar_model_for_load.splice(0, calendar_model_for_load.n_items(), &name_refs);
+            if let Some(edit_source_uid) = edit_source_uid_for_load.as_deref() {
+                if let Some(index) = uids.iter().position(|uid| uid == edit_source_uid) {
+                    row_calendar_for_load.set_selected(index as u32);
+                }
+            } else if let Some(preferred_source_uid) = preferred_source_uid.as_deref() {
+                if let Some(index) = uids.iter().position(|uid| uid == preferred_source_uid) {
+                    row_calendar_for_load.set_selected(index as u32);
                 }
             }
         });

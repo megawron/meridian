@@ -301,6 +301,23 @@ impl EvolutionWindow {
             Some("Moderne Mail-Anordnung"),
             Some("win.use-modern-mail-layout"),
         );
+        view_menu.append(
+            Some("Unterhaltungen gruppieren/auflösen"),
+            Some("win.toggle-mail-threading"),
+        );
+        view_menu.append(
+            Some("Vorschautext in Nachrichtenzeilen ein-/ausblenden"),
+            Some("win.toggle-mail-preview-text"),
+        );
+        view_menu.append(
+            Some("Avatare in Nachrichtenzeilen ein-/ausblenden"),
+            Some("win.toggle-mail-avatar"),
+        );
+        let density_menu = gio::Menu::new();
+        density_menu.append(Some("Kompakt"), Some("win.mail-density-compact"));
+        density_menu.append(Some("Standard"), Some("win.mail-density-normal"));
+        density_menu.append(Some("Geräumig"), Some("win.mail-density-spacious"));
+        view_menu.append_submenu(Some("Nachrichtendichte"), &density_menu);
         menu.append_submenu(Some("Ansicht"), &view_menu);
 
         menu
@@ -332,6 +349,45 @@ impl EvolutionWindow {
             }
         });
         self.add_action(&action_toggle_preview);
+
+        let action_toggle_threading = gio::SimpleAction::new("toggle-mail-threading", None);
+        action_toggle_threading.connect_activate(move |_, _| {
+            if let Some(settings) = AppSettings::try_new() {
+                settings.set_mail_threading(!settings.mail_threading());
+            }
+        });
+        self.add_action(&action_toggle_threading);
+
+        let action_toggle_preview_text = gio::SimpleAction::new("toggle-mail-preview-text", None);
+        action_toggle_preview_text.connect_activate(move |_, _| {
+            if let Some(settings) = AppSettings::try_new() {
+                settings.set_mail_show_preview_text(!settings.mail_show_preview_text());
+            }
+        });
+        self.add_action(&action_toggle_preview_text);
+
+        let action_toggle_avatar = gio::SimpleAction::new("toggle-mail-avatar", None);
+        action_toggle_avatar.connect_activate(move |_, _| {
+            if let Some(settings) = AppSettings::try_new() {
+                settings.set_mail_show_avatar(!settings.mail_show_avatar());
+            }
+        });
+        self.add_action(&action_toggle_avatar);
+
+        for (action_name, density) in [
+            ("mail-density-compact", "compact"),
+            ("mail-density-normal", "comfortable"),
+            ("mail-density-spacious", "spacious"),
+        ] {
+            let action = gio::SimpleAction::new(action_name, None);
+            let density = density.to_string();
+            action.connect_activate(move |_, _| {
+                if let Some(settings) = AppSettings::try_new() {
+                    settings.set_mail_row_density(&density);
+                }
+            });
+            self.add_action(&action);
+        }
 
         for (action_name, layout) in [
             ("use-classic-mail-layout", "classic"),

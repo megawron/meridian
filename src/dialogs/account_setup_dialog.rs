@@ -291,6 +291,72 @@ impl AccountSetupDialog {
 
         content_box.append(&group_cred);
 
+        let update_protocol_fields = {
+            let row_imap_host = row_imap_host.clone();
+            let row_smtp_host = row_smtp_host.clone();
+            let row_imap_port = row_imap_port.clone();
+            let row_smtp_port = row_smtp_port.clone();
+            let row_security = row_security.clone();
+            let row_inbox_folder = row_inbox_folder.clone();
+            let row_drafts_folder = row_drafts_folder.clone();
+            let row_sent_folder = row_sent_folder.clone();
+            let row_archive_folder = row_archive_folder.clone();
+            let row_trash_folder = row_trash_folder.clone();
+            let row_junk_folder = row_junk_folder.clone();
+            let row_username = row_username.clone();
+            let row_auth_method = row_auth_method.clone();
+            let row_password = row_password.clone();
+            move |selected: u32| {
+                let is_exchange = selected == 1;
+                let is_goa = selected == 2;
+                let is_pop3 = selected == 3;
+                let has_manual_servers = !is_goa;
+                let has_manual_smtp = !is_goa && !is_exchange;
+
+                row_imap_host.set_sensitive(has_manual_servers);
+                row_imap_host.set_title(if is_exchange {
+                    "Exchange-/EWS-Server"
+                } else if is_pop3 {
+                    "Posteingangsserver (POP3)"
+                } else if is_goa {
+                    "Posteingangsserver (über GOA verwaltet)"
+                } else {
+                    "Posteingangsserver (IMAP)"
+                });
+                row_imap_port.set_sensitive(has_manual_servers);
+                row_smtp_host.set_sensitive(has_manual_smtp);
+                row_smtp_port.set_sensitive(has_manual_smtp);
+                row_security.set_sensitive(has_manual_servers);
+
+                for row in [
+                    &row_inbox_folder,
+                    &row_drafts_folder,
+                    &row_sent_folder,
+                    &row_archive_folder,
+                    &row_trash_folder,
+                    &row_junk_folder,
+                ] {
+                    row.set_sensitive(!is_goa);
+                }
+
+                row_username.set_sensitive(!is_goa);
+                row_auth_method.set_sensitive(!is_goa);
+                row_password.set_sensitive(!is_goa);
+                if is_goa {
+                    row_username.set_tooltip_text(Some(
+                        "GOA verwaltet Benutzername und Zugangsdaten über GNOME Online Accounts",
+                    ));
+                    row_auth_method.set_text("GOA / OAuth2");
+                } else {
+                    row_username.set_tooltip_text(None);
+                }
+            }
+        };
+        update_protocol_fields(combo_type.selected());
+        combo_type.connect_selected_notify(move |combo| {
+            update_protocol_fields(combo.selected());
+        });
+
         let edit_id = edit_profile.as_ref().map(|profile| profile.id.clone());
         let edit_enabled = edit_profile
             .as_ref()

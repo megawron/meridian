@@ -20,6 +20,7 @@ use crate::services::calendar_category_service::{CalendarCategory, CalendarCateg
 use crate::services::calendar_store_service::CalendarStoreService;
 use crate::services::contact_store_service::ContactStoreService;
 use crate::services::eds_service::{self, EdsSourceKind};
+use crate::services::eds_source_cache_service::EdsSourceCache;
 use crate::services::mail_filter_service::{
     FilterAction, FilterField, FilterOperator, MailFilterStore,
 };
@@ -247,7 +248,7 @@ impl PreferencesDialog {
 
         // Filter Rules Section
         let group_filters = adw::PreferencesGroup::builder()
-            .title("Mail-Filter &amp; Sortierung")
+            .title("Mail-Filter & Sortierung")
             .description(
                 "Automatische Regeln für eingehende Mails und manuelle Ausführung im lokalen Bestand",
             )
@@ -1004,11 +1005,13 @@ impl PreferencesDialog {
                         let Some(path) = file.path() else {
                             return;
                         };
+                        let source_cache = EdsSourceCache::default();
                         let (sender, receiver) = async_channel::bounded(1);
                         std::thread::spawn(move || {
-                            let result = migration_service::import_evolution_sources(
+                            let result = migration_service::import_evolution_sources_with_cache(
                                 path,
                                 &AccountConfigStore::default(),
+                                &source_cache,
                             );
                             if let Err(error) = sender.send_blocking(result) {
                                 tracing::debug!(%error, "Profile migration result was dropped");
@@ -1046,9 +1049,12 @@ impl PreferencesDialog {
                                         )
                                     };
                                     dialog.show_toast(&format!(
-                                        "{} Profilquelle(n) gefunden: {} Konto/Konten, {} Filterregel(n), {} Signatur(en) übernommen, {} übersprungen{}{}",
+                                        "{} Profilquelle(n) gefunden: {} Konto/Konten, {} Mail-, {} Kalender- und {} Adressbuchquelle(n) zwischengespeichert, {} Filterregel(n), {} Signatur(en) übernommen, {} übersprungen{}{}",
                                         report.discovered_sources,
                                         report.imported_accounts,
+                                        report.cached_mail_sources,
+                                        report.cached_calendar_sources,
+                                        report.cached_address_book_sources,
                                         report.imported_filters,
                                         report.imported_signatures,
                                         report.skipped_sources,

@@ -46,12 +46,21 @@ impl EdsSourceObject {
     }
 
     pub fn from_source(source: &crate::services::eds_service::EdsSource) -> Self {
-        Self::new(
+        Self::from_source_with_origin(source, "EDS/GOA")
+    }
+
+    pub fn from_source_with_origin(
+        source: &crate::services::eds_service::EdsSource,
+        origin: &str,
+    ) -> Self {
+        let object = Self::new(
             &source.uid,
             &source.display_name,
             &source.backend_name,
             source.enabled,
-        )
+        );
+        *object.imp().origin.borrow_mut() = origin.to_string();
+        object
     }
 
     pub fn from_account_profile(

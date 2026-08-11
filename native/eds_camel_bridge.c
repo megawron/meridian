@@ -146,13 +146,13 @@ eds_camel_session_get_password (CamelSession *base_session,
             e_named_parameters_free (credentials);
             credentials = NULL;
         }
-        g_clear_error (&local_error);
     }
 
-    if ((!password || !*password) && local_error && error)
+    if ((!password || !*password) && local_error && error) {
         *error = local_error;
-    else
-        g_clear_error (&local_error);
+        local_error = NULL;
+    }
+    g_clear_error (&local_error);
 
     g_object_unref (source);
     return password;
@@ -169,7 +169,9 @@ eds_camel_session_get_oauth2_access_token_sync
 {
     EdsCamelSession *session = (EdsCamelSession *) base_session;
     ESource *source;
-    gboolean success;
+    ESource *current;
+    GError *first_error = NULL;
+    gboolean success = FALSE;
 
     source = eds_camel_session_ref_source (session, service);
     if (!source) {
@@ -179,9 +181,45 @@ eds_camel_session_get_oauth2_access_token_sync
         return FALSE;
     }
 
-    success = e_source_get_oauth2_access_token_sync (
-        source, cancellable, out_access_token, out_expires_in, error);
+    /* Mail account sources commonly inherit their OAuth2 extension from a
+     * GOA/provider parent.  Ask the concrete source first, then walk the
+     * complete ESource ancestry instead of assuming the account is the token
+     * owner itself. */
+    current = g_object_ref (source);
+    while (current) {
+        GError *local_error = NULL;
 
+        if (e_source_get_oauth2_access_token_sync (
+                current, cancellable, out_access_token, out_expires_in,
+                &local_error)) {
+            g_clear_error (&local_error);
+            success = TRUE;
+            break;
+        }
+
+        if (!first_error && local_error)
+            first_error = local_error;
+        else
+            g_clear_error (&local_error);
+
+        const gchar *parent_uid = e_source_get_parent (current);
+        ESource *parent = parent_uid && *parent_uid
+            ? e_source_registry_ref_source (session->registry, parent_uid)
+            : NULL;
+        g_object_unref (current);
+        current = parent;
+    }
+    g_clear_object (&current);
+
+    if (!success && error && first_error) {
+        *error = first_error;
+        first_error = NULL;
+    }
+    g_clear_error (&first_error);
+    if (!success && error && !*error)
+        g_set_error_literal (
+            error, G_IO_ERROR, G_IO_ERROR_PERMISSION_DENIED,
+            "No OAuth2 access token was available for the EDS source");
     g_object_unref (source);
     return success;
 }
@@ -272,6 +310,65 @@ eds_camel_session_new (ESourceRegistry *registry)
     camel_session_set_online (CAMEL_SESSION (session), TRUE);
 
     return session;
+}
+
+static void
+eds_camel_session_configure_service_for_source (EdsCamelSession *session,
+                                                ESource *source,
+                                                CamelService *service)
+{
+    GPtrArray *ancestry;
+    ESource *current;
+
+    if (!session || !session->registry || !source || !service)
+        return;
+
+    /* Apply configuration from the oldest ancestor to the concrete source.
+     * Identity, GOA/provider and mail-account extensions may each live on a
+     * different ESource in the same hierarchy. */
+    ancestry = g_ptr_array_new_with_free_func (g_object_unref);
+    current = g_object_ref (source);
+    while (current) {
+        g_ptr_array_add (ancestry, current);
+
+        const gchar *parent_uid = e_source_get_parent (current);
+        current = parent_uid && *parent_uid
+            ? e_source_registry_ref_source (session->registry, parent_uid)
+            : NULL;
+    }
+
+    for (gssize index = (gssize) ancestry->len - 1; index >= 0; index--)
+        e_source_camel_configure_service (
+            E_SOURCE (g_ptr_array_index (ancestry, (guint) index)), service);
+
+    g_ptr_array_unref (ancestry);
+}
+
+static ESource *
+eds_camel_session_ref_ancestor_with_extension (EdsCamelSession *session,
+                                               ESource *source,
+                                               const gchar *extension_name)
+{
+    ESource *current;
+
+    if (!session || !session->registry || !source ||
+        !extension_name || !*extension_name)
+        return NULL;
+
+    current = g_object_ref (source);
+    while (current) {
+        if (e_source_has_extension (current, extension_name))
+            return current;
+
+        const gchar *parent_uid = e_source_get_parent (current);
+        ESource *parent = parent_uid && *parent_uid
+            ? e_source_registry_ref_source (session->registry, parent_uid)
+            : NULL;
+        g_object_unref (current);
+        current = parent;
+    }
+
+    return NULL;
 }
 
 typedef struct {
@@ -718,16 +815,14 @@ open_store_for_source (EdsCamelSession *session,
         return NULL;
 
     {
-        ESource *parent = e_source_registry_ref_source (session->registry, e_source_get_parent (source));
+        ESource *parent = e_source_registry_ref_source (
+            session->registry, e_source_get_parent (source));
         g_printerr ("[EDS-DEBUG] Source '%s' (%s), parent='%s'\n",
                     e_source_get_display_name (source), source_uid,
                     parent ? e_source_get_display_name (parent) : "NULL");
-        if (parent) {
-            e_source_camel_configure_service (parent, service);
-            g_object_unref (parent);
-        }
+        g_clear_object (&parent);
     }
-    e_source_camel_configure_service (source, service);
+    eds_camel_session_configure_service_for_source (session, source, service);
 
     /* For EWS (Exchange Web Services) backends, evolution-ews requires the
      * "hosturl" or "host" setting on CamelEwsSettings. If e_source_camel_configure_service
@@ -748,9 +843,12 @@ open_store_for_source (EdsCamelSession *session,
                 g_object_get (settings, "host", &current_url, NULL);
 
             if (!current_url || !*current_url) {
-                ESource *parent = e_source_registry_ref_source (session->registry, e_source_get_parent (source));
-                if (parent) {
-                    ESourceExtension *goa_ext = e_source_get_extension (parent, "GNOME Online Accounts");
+                ESource *goa_source =
+                    eds_camel_session_ref_ancestor_with_extension (
+                        session, source, "GNOME Online Accounts");
+                if (goa_source) {
+                    ESourceExtension *goa_ext = e_source_get_extension (
+                        goa_source, "GNOME Online Accounts");
                     if (goa_ext) {
                         const gchar *account_id = e_source_goa_get_account_id (E_SOURCE_GOA (goa_ext));
                         if (account_id && *account_id) {
@@ -787,7 +885,7 @@ open_store_for_source (EdsCamelSession *session,
                             }
                         }
                     }
-                    g_object_unref (parent);
+                    g_object_unref (goa_source);
                 }
             }
             g_free (current_url);
@@ -798,18 +896,24 @@ open_store_for_source (EdsCamelSession *session,
             g_object_get (settings, "user", &curr_user, "auth-mechanism", &curr_auth, NULL);
 
             if (!curr_user || !*curr_user || !curr_auth || !*curr_auth) {
-                ESourceExtension *auth_ext = e_source_get_extension (source, "Authentication");
-                ESource *parent = e_source_registry_ref_source (session->registry, e_source_get_parent (source));
-                if (!auth_ext && parent)
-                    auth_ext = e_source_get_extension (parent, "Authentication");
+                ESource *auth_source =
+                    eds_camel_session_ref_ancestor_with_extension (
+                        session, source, "Authentication");
+                ESourceExtension *auth_ext = auth_source
+                    ? e_source_get_extension (auth_source, "Authentication")
+                    : NULL;
+                ESource *goa_source =
+                    eds_camel_session_ref_ancestor_with_extension (
+                        session, source, "GNOME Online Accounts");
 
                 if (auth_ext) {
                     const gchar *user = e_source_authentication_get_user (E_SOURCE_AUTHENTICATION (auth_ext));
                     const gchar *method = e_source_authentication_get_method (E_SOURCE_AUTHENTICATION (auth_ext));
                     gchar *dup_user = NULL;
 
-                    if ((!user || !*user) && parent && e_source_has_extension (parent, "GNOME Online Accounts")) {
-                        ESourceExtension *goa = e_source_get_extension (parent, "GNOME Online Accounts");
+                    if ((!user || !*user) && goa_source) {
+                        ESourceExtension *goa = e_source_get_extension (
+                            goa_source, "GNOME Online Accounts");
                         dup_user = e_source_goa_dup_address (E_SOURCE_GOA (goa));
                         user = dup_user;
                     }
@@ -826,7 +930,8 @@ open_store_for_source (EdsCamelSession *session,
                     }
                     g_free (dup_user);
                 }
-                if (parent) g_object_unref (parent);
+                g_clear_object (&goa_source);
+                g_clear_object (&auth_source);
             }
             g_free (curr_user);
             g_free (curr_auth);
