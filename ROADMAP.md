@@ -487,7 +487,12 @@ werden.
   providerabhängigen UID-Neuvergabe auf Linux sowie komplexe Ordneränderungen
   fehlen noch. Konflikte aus dem nativen Camel-Backend werden als eigener
   Fehlerzustand behandelt und Batch-Fehler im sichtbaren Mailstatus angezeigt.
-- [ ] Serverseitige Suche und virtuelle Suchordner.
+- [~] Portable virtuelle Suchordner sind vorhanden: drei Standardabfragen und
+  beliebig viele gespeicherte lokale Suchdefinitionen können angelegt,
+  bearbeitet und gelöscht werden. Die vorhandene lokale Suchsprache wird
+  ausgewertet; Suchordner zeigen Treffer-/Ungelesen-Zähler für den geladenen
+  Nachrichtenbestand. Serverseitige Suche, CamelVeeStore/CamelVeeFolder und
+  providerübergreifende Live-Zähler bleiben Linux-/Backend-Arbeit.
 
 #### Phase 2 — Konten, Empfang und Mailversand
 
@@ -661,6 +666,8 @@ werden.
   Überfällig/In Bearbeitung/Abgebrochen/Erledigt und filtert nach
   Statusänderungen erneut; die Notizensuche umfasst
   Titel, Inhalt, Zeitstempel und die erhaltene VJOURNAL-Komponente. VTODO-
+  Kategorien können bei VJOURNAL-Notizen ebenfalls portabel angelegt,
+  angezeigt und beim Bearbeiten als RFC5545-CATEGORIES erhalten werden.
   Statuswerte NEEDS-ACTION, IN-PROCESS, COMPLETED und CANCELLED sowie
   PERCENT-COMPLETE werden im portablen Task-Editor bearbeitet und gespeichert.
   Wiederkehrende Aufgaben können als RFC5545-RRULE eingegeben, geladen und

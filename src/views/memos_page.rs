@@ -323,8 +323,10 @@ impl MemosPage {
                 names.push(format!("Nicht verfügbare Quelle · {initial_source_filter}"));
                 uids.push(initial_source_filter.to_string());
             }
-            names.push("Lokale Notizliste".to_string());
-            uids.push("local-calendar".to_string());
+            if CalendarStoreService::new().is_writable() {
+                names.push("Lokale Notizliste".to_string());
+                uids.push("local-calendar".to_string());
+            }
 
             let name_refs = names.iter().map(String::as_str).collect::<Vec<_>>();
             source_model_for_load.splice(0, source_model_for_load.n_items(), &name_refs);
@@ -410,6 +412,11 @@ impl MemosPage {
         memo_actions.append(&export_memo_btn);
         memo_actions.append(&delete_memo_btn);
         content_box.append(&memo_actions);
+        let memo_categories = adw::EntryRow::builder()
+            .title("Kategorien (Komma getrennt)")
+            .build();
+        memo_categories.set_tooltip_text(Some("z. B. Arbeit, Privat"));
+        content_box.append(&memo_categories);
         content_box.append(&memo_meta);
         content_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
         content_box.append(&memo_text);
@@ -433,6 +440,7 @@ impl MemosPage {
         let memo_records_for_save = Rc::clone(&memo_records);
         let page_weak_for_save = self.downgrade();
         let memo_title_for_save = memo_title.clone();
+        let memo_categories_for_save = memo_categories.clone();
         let memo_text_for_save = memo_text.clone();
         let memo_list_for_save = memo_list.clone();
         let save_memo_btn_for_signal = save_memo_btn.clone();
@@ -461,6 +469,7 @@ impl MemosPage {
                     false,
                 )
                 .to_string();
+            let categories = serialize_categories(&memo_categories_for_save.text());
             let mut component =
                 update_ical_property(&memo.component, "SUMMARY", Some(&escape_ical_text(&title)));
             component = if description.trim().is_empty() {
@@ -472,6 +481,11 @@ impl MemosPage {
                     Some(&escape_ical_text(description.trim())),
                 )
             };
+            component = update_ical_property(
+                &component,
+                "CATEGORIES",
+                (!categories.is_empty()).then_some(categories.as_str()),
+            );
             component = update_ical_property(
                 &component,
                 "LAST-MODIFIED",
@@ -500,6 +514,7 @@ impl MemosPage {
             let selected_memo_for_result = Rc::clone(&selected_memo_for_save);
             let page_weak_for_result = page_weak_for_save.clone();
             let memo_title_for_result = memo_title_for_save.clone();
+            let memo_categories_for_result = memo_categories_for_save.clone();
             let memo_text_for_result = memo_text_for_save.clone();
             glib::spawn_future_local(async move {
                 let Ok(result) = receiver.recv().await else {
@@ -525,6 +540,7 @@ impl MemosPage {
                         );
                         *selected_memo_for_result.borrow_mut() = Some(updated);
                         memo_title_for_result.set_text(&title);
+                        memo_categories_for_result.set_text(&categories);
                         memo_text_for_result.buffer().set_text(&description);
                         if let Some(page) = page_weak_for_result.upgrade() {
                             page.show_toast(&format!("Notiz aktualisiert ({})", memo.uid));
@@ -594,6 +610,7 @@ impl MemosPage {
         let memo_list_for_delete = memo_list.clone();
         let empty_state_for_delete = empty_state.clone();
         let memo_title_for_delete = memo_title.clone();
+        let memo_categories_for_delete = memo_categories.clone();
         let memo_text_for_delete = memo_text.clone();
         delete_memo_btn.connect_clicked(move |_| {
             let Some(memo) = selected_memo_for_delete.borrow().clone() else {
@@ -619,6 +636,7 @@ impl MemosPage {
             let memo_list_for_action = memo_list_for_delete.clone();
             let empty_state_for_action = empty_state_for_delete.clone();
             let memo_title_for_action = memo_title_for_delete.clone();
+            let memo_categories_for_action = memo_categories_for_delete.clone();
             let memo_text_for_action = memo_text_for_delete.clone();
             crate::dialogs::run_destructive_action(
                 &memo_title_for_delete,
@@ -646,6 +664,7 @@ impl MemosPage {
                     let memo_list_for_result = memo_list_for_action.clone();
                     let empty_state_for_result = empty_state_for_action.clone();
                     let memo_title_for_result = memo_title_for_action.clone();
+                    let memo_categories_for_result = memo_categories_for_action.clone();
                     let memo_text_for_result = memo_text_for_action.clone();
                     let page_weak_for_result = page_weak_for_action.clone();
                     glib::spawn_future_local(async move {
@@ -660,6 +679,7 @@ impl MemosPage {
                                 );
                                 *selected_memo_for_result.borrow_mut() = None;
                                 memo_title_for_result.set_text("");
+                                memo_categories_for_result.set_text("");
                                 memo_text_for_result
                                     .buffer()
                                     .set_text("Noch keine Notiz ausgewählt.");
@@ -685,6 +705,8 @@ impl MemosPage {
         memo_list.connect_row_selected(glib::clone!(
             #[weak]
             memo_title,
+            #[weak]
+            memo_categories,
             #[weak]
             memo_meta,
             #[weak]
@@ -717,6 +739,7 @@ impl MemosPage {
                 };
                 *selected_memo_for_selection.borrow_mut() = Some(memo.clone());
                 memo_title.set_text(&memo.summary);
+                memo_categories.set_text(&component_categories(&memo.component));
                 memo_meta.set_label(&format!("VJOURNAL · {}", memo.updated));
                 memo_text.buffer().set_text(&memo.description);
             }
@@ -774,6 +797,7 @@ impl MemosPage {
             let empty_state_for_monitor = empty_state.clone();
             let selected_memo_for_monitor = Rc::clone(&selected_memo);
             let memo_title_for_monitor = memo_title.clone();
+            let memo_categories_for_monitor = memo_categories.clone();
             let memo_meta_for_monitor = memo_meta.clone();
             let memo_text_for_monitor = memo_text.clone();
             glib::spawn_future_local(async move {
@@ -808,6 +832,7 @@ impl MemosPage {
                                 {
                                     *selected_memo_for_monitor.borrow_mut() = None;
                                     memo_title_for_monitor.set_text("");
+                                    memo_categories_for_monitor.set_text("");
                                     memo_meta_for_monitor.set_label("Keine Notiz ausgewählt");
                                     memo_text_for_monitor
                                         .buffer()
@@ -830,6 +855,8 @@ impl MemosPage {
                                         *selected_memo_for_monitor.borrow_mut() =
                                             Some(memo.clone());
                                         memo_title_for_monitor.set_text(&memo.summary);
+                                        memo_categories_for_monitor
+                                            .set_text(&component_categories(&memo.component));
                                         memo_meta_for_monitor
                                             .set_label(&format!("VJOURNAL · {}", memo.updated));
                                         memo_text_for_monitor.buffer().set_text(&memo.description);
@@ -920,6 +947,11 @@ impl MemosPage {
         details.add(&source_row);
         let title_entry = adw::EntryRow::builder().title("Titel").build();
         details.add(&title_entry);
+        let categories_entry = adw::EntryRow::builder()
+            .title("Kategorien (Komma getrennt)")
+            .build();
+        categories_entry.set_tooltip_text(Some("z. B. Arbeit, Privat"));
+        details.add(&categories_entry);
         content_box.append(&details);
 
         let description_group = adw::PreferencesGroup::builder().title("Notiz").build();
@@ -1020,7 +1052,11 @@ impl MemosPage {
                 &description_view.buffer().end_iter(),
                 false,
             );
-            let component = match build_memo_component(&title_entry.text(), &description) {
+            let component = match build_memo_component(
+                &title_entry.text(),
+                &description,
+                &categories_entry.text(),
+            ) {
                 Ok(component) => component,
                 Err(error) => {
                     show_toast_for_widget(&dialog, &error);
@@ -1264,7 +1300,11 @@ fn show_toast_for_widget<W: IsA<gtk::Widget>>(widget: &W, message: &str) {
     tracing::warn!(%message, "Memo UI result");
 }
 
-fn build_memo_component(title: &str, description: &str) -> Result<String, String> {
+fn build_memo_component(
+    title: &str,
+    description: &str,
+    categories: &str,
+) -> Result<String, String> {
     let title = title.trim();
     if title.is_empty() {
         return Err("Eine Notiz benötigt einen Titel".to_string());
@@ -1283,6 +1323,10 @@ fn build_memo_component(title: &str, description: &str) -> Result<String, String
             escape_ical_text(description.trim())
         ));
     }
+    let categories = serialize_categories(categories);
+    if !categories.is_empty() {
+        component.push(format!("CATEGORIES:{categories}"));
+    }
     component.push("END:VJOURNAL".to_string());
     Ok(format!("{}\r\n", component.join("\r\n")))
 }
@@ -1296,23 +1340,64 @@ fn escape_ical_text(value: &str) -> String {
         .replace('\n', "\\n")
 }
 
+fn serialize_categories(value: &str) -> String {
+    value
+        .split(',')
+        .map(str::trim)
+        .filter(|category| !category.is_empty())
+        .map(escape_ical_text)
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn component_categories(component: &str) -> String {
+    component
+        .replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .lines()
+        .find_map(|line| {
+            let (property, value) = line.split_once(':')?;
+            let name = property.split(';').next().unwrap_or(property).trim();
+            (name.eq_ignore_ascii_case("CATEGORIES")).then(|| unescape_ical_text(value))
+        })
+        .unwrap_or_default()
+}
+
+fn unescape_ical_text(value: &str) -> String {
+    value
+        .replace("\\n", "\n")
+        .replace("\\N", "\n")
+        .replace("\\,", ",")
+        .replace("\\;", ";")
+        .replace("\\\\", "\\")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn memo_component_serialization_is_ical_safe() {
-        let component = build_memo_component("A, note; title", "Line one\nLine two")
-            .expect("memo component should be valid");
+        let component =
+            build_memo_component("A, note; title", "Line one\nLine two", "Work, Personal")
+                .expect("memo component should be valid");
         assert!(component.starts_with("BEGIN:VJOURNAL\r\n"));
         assert!(component.contains("SUMMARY:A\\, note\\; title\r\n"));
         assert!(component.contains("DESCRIPTION:Line one\\nLine two\r\n"));
+        assert!(component.contains("CATEGORIES:Work,Personal\r\n"));
         assert!(component.ends_with("END:VJOURNAL\r\n"));
     }
 
     #[test]
     fn memo_component_rejects_empty_title() {
-        assert!(build_memo_component("  ", "body").is_err());
+        assert!(build_memo_component("  ", "body", "").is_err());
+    }
+
+    #[test]
+    fn memo_categories_roundtrip_through_component_text() {
+        let component = "BEGIN:VJOURNAL\r\nCATEGORIES:Work\\, urgent,Personal\r\nEND:VJOURNAL\r\n";
+        assert_eq!(component_categories(component), "Work, urgent,Personal");
+        assert_eq!(serialize_categories("Work, Personal"), "Work,Personal");
     }
 
     #[test]

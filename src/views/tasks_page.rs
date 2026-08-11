@@ -348,8 +348,10 @@ impl TasksPage {
                 names.push(format!("Nicht verfügbare Quelle · {initial_source_filter}"));
                 uids.push(initial_source_filter.to_string());
             }
-            names.push("Lokale Aufgabenliste".to_string());
-            uids.push("local-calendar".to_string());
+            if CalendarStoreService::new().is_writable() {
+                names.push("Lokale Aufgabenliste".to_string());
+                uids.push("local-calendar".to_string());
+            }
 
             let name_refs = names.iter().map(String::as_str).collect::<Vec<_>>();
             source_model_for_load.splice(0, source_model_for_load.n_items(), &name_refs);

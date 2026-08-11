@@ -17,6 +17,8 @@ use crate::services::AppSettings;
 use crate::services::account_config_service::AccountConfigStore;
 use crate::services::backup_service;
 use crate::services::calendar_category_service::{CalendarCategory, CalendarCategoryStore};
+use crate::services::calendar_store_service::CalendarStoreService;
+use crate::services::contact_store_service::ContactStoreService;
 use crate::services::eds_service::{self, EdsSourceKind};
 use crate::services::mail_filter_service::{
     FilterAction, FilterField, FilterOperator, MailFilterStore,
@@ -2212,6 +2214,11 @@ fn source_preference_row(
     let row_for_load = row.clone();
     let local_uid = local_uid.to_string();
     let local_label = local_label.to_string();
+    let local_available = match kind {
+        EdsSourceKind::Calendar => CalendarStoreService::new().is_writable(),
+        EdsSourceKind::AddressBook => ContactStoreService::new().is_writable(),
+        EdsSourceKind::Mail => false,
+    };
     let subtitle = subtitle.to_string();
     glib::spawn_future_local(async move {
         let discovery = eds_service::discover_sources(kind).await;
@@ -2245,8 +2252,10 @@ fn source_preference_row(
             );
             uids.insert(0, preferred_source_uid.to_string());
         }
-        names.push(local_label);
-        uids.push(local_uid.clone());
+        if local_available {
+            names.push(local_label);
+            uids.push(local_uid.clone());
+        }
 
         let name_refs = names.iter().map(String::as_str).collect::<Vec<_>>();
         source_model_for_load.splice(0, source_model_for_load.n_items(), &name_refs);
@@ -2256,7 +2265,11 @@ fn source_preference_row(
         let selected_index = preferred_source_uid
             .as_deref()
             .and_then(|uid| uids.iter().position(|candidate| candidate == uid))
-            .or_else(|| uids.iter().position(|uid| uid == &local_uid));
+            .or_else(|| {
+                local_available
+                    .then(|| uids.iter().position(|uid| uid == &local_uid))
+                    .flatten()
+            });
         if let Some(selected_index) = selected_index {
             row_for_load.set_selected(selected_index as u32);
         }

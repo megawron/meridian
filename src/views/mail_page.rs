@@ -1180,6 +1180,58 @@ impl MailPage {
     fn refresh_search_folders(&self) {
         if let Some(search_list) = self.imp().search_list.borrow().as_ref() {
             Self::populate_search_folders(search_list);
+            self.refresh_search_folder_counts();
+        }
+    }
+
+    fn refresh_search_folder_counts(&self) {
+        let Some(search_list) = self.imp().search_list.borrow().as_ref().cloned() else {
+            return;
+        };
+        let Some(store) = self.imp().message_store.borrow().as_ref().cloned() else {
+            return;
+        };
+        let messages = (0..store.n_items())
+            .filter_map(|index| store.item(index).and_downcast::<MailMessageObject>())
+            .collect::<Vec<_>>();
+        let all_messages = FolderSelection::all();
+
+        for index in 0..search_list.observe_children().n_items() {
+            let Some(row) = search_list
+                .row_at_index(index as i32)
+                .and_downcast::<gtk::ListBoxRow>()
+            else {
+                continue;
+            };
+            let Some(query) = (unsafe {
+                row.data::<String>("search-query")
+                    .map(|value| value.as_ref().clone())
+            }) else {
+                continue;
+            };
+            let query = MessageSearchQuery::parse(&query);
+            let mut unread = 0u32;
+            let mut total = 0u32;
+            for message in &messages {
+                if message_matches_filter(message, &query, MessageFilter::All, &all_messages) {
+                    total = total.saturating_add(1);
+                    if message.is_unread() {
+                        unread = unread.saturating_add(1);
+                    }
+                }
+            }
+            let Some(badge) = (unsafe {
+                row.data::<gtk::Label>("folder-badge")
+                    .map(|value| value.as_ref().clone())
+            }) else {
+                continue;
+            };
+            badge.set_label(&if unread > 0 {
+                unread.to_string()
+            } else {
+                total.to_string()
+            });
+            badge.set_visible(total > 0);
         }
     }
 
@@ -4816,6 +4868,8 @@ impl MailPage {
                 tracing::warn!(%error, "Mail backend load failed");
             }
         }
+
+        self.refresh_search_folder_counts();
 
         if self.imp().mail_change_pending.replace(false) && !self.imp().mail_loading.get() {
             self.refresh_mail();
