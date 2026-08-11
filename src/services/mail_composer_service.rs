@@ -14,6 +14,7 @@ pub(crate) struct OutgoingMessage {
     pub(crate) source_uid: String,
     pub(crate) from: String,
     pub(crate) reply_to: String,
+    pub(crate) request_read_receipt: bool,
     pub(crate) to: String,
     pub(crate) cc: String,
     pub(crate) bcc: String,
@@ -98,6 +99,7 @@ pub(crate) fn build_rfc822(message: &OutgoingMessage) -> Result<Vec<u8>, String>
     build_rfc822_parts(
         &message.from,
         &message.reply_to,
+        message.request_read_receipt,
         &message.to,
         &message.cc,
         &message.bcc,
@@ -132,6 +134,7 @@ pub(crate) fn build_export_rfc822(message: &ExportMessage) -> Result<Vec<u8>, St
     build_rfc822_parts(
         &message.from,
         &message.reply_to,
+        false,
         &message.to,
         &message.cc,
         &message.bcc,
@@ -151,6 +154,7 @@ pub(crate) fn build_export_rfc822(message: &ExportMessage) -> Result<Vec<u8>, St
 fn build_rfc822_parts(
     from: &str,
     reply_to: &str,
+    request_read_receipt: bool,
     to: &str,
     cc: &str,
     bcc: &str,
@@ -189,6 +193,11 @@ fn build_rfc822_parts(
     if !reply_to.trim().is_empty() {
         raw.push_str("Reply-To: ");
         raw.push_str(reply_to.trim());
+        raw.push_str("\r\n");
+    }
+    if request_read_receipt && !from.trim().is_empty() {
+        raw.push_str("Disposition-Notification-To: ");
+        raw.push_str(from.trim());
         raw.push_str("\r\n");
     }
     append_recipient_header(&mut raw, "To", to);
@@ -482,6 +491,7 @@ mod tests {
             source_uid: "account-1".to_string(),
             from: "Person <person@example.org>".to_string(),
             reply_to: "reply@example.org".to_string(),
+            request_read_receipt: true,
             to: "person@example.org".to_string(),
             cc: String::new(),
             bcc: String::new(),
@@ -496,6 +506,7 @@ mod tests {
         let text = String::from_utf8(raw).expect("message should be UTF-8");
         assert!(text.contains("From: Person <person@example.org>\r\n"));
         assert!(text.contains("Reply-To: reply@example.org\r\n"));
+        assert!(text.contains("Disposition-Notification-To: Person <person@example.org>\r\n"));
         assert!(text.contains("To: person@example.org\r\n"));
         assert!(text.contains("Subject: =?UTF-8?B?R3LDvMOfZQ==?=\r\n"));
         assert!(text.contains("Content-Type: text/html; charset=UTF-8\r\n"));
@@ -509,6 +520,7 @@ mod tests {
             source_uid: "account-1".to_string(),
             from: String::new(),
             reply_to: String::new(),
+            request_read_receipt: false,
             to: "one@example.org; two@example.org".to_string(),
             cc: String::new(),
             bcc: String::new(),
@@ -571,6 +583,7 @@ mod tests {
             source_uid: "account-1".to_string(),
             from: String::new(),
             reply_to: String::new(),
+            request_read_receipt: false,
             to: String::new(),
             cc: String::new(),
             bcc: String::new(),
@@ -601,6 +614,7 @@ mod tests {
             source_uid: "account-1".to_string(),
             from: String::new(),
             reply_to: String::new(),
+            request_read_receipt: false,
             to: "person@example.org".to_string(),
             cc: String::new(),
             bcc: String::new(),
@@ -630,6 +644,7 @@ mod tests {
             source_uid: "account-1".to_string(),
             from: String::new(),
             reply_to: String::new(),
+            request_read_receipt: false,
             to: "organizer@example.org".to_string(),
             cc: String::new(),
             bcc: String::new(),

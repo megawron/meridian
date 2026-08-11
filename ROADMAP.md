@@ -447,7 +447,10 @@ werden.
   Gelesen-, Wichtigkeits-, Archiv-, Spam-, Lösch- und Verschiebeaktionen ist
   angebunden; auch die
   Einzel-Nachrichtenansicht bietet Verschieben über denselben reversiblen
-  Command-/Undo-Pfad. Die Ziele werden aus der dynamischen EDS-Ordnerliste
+  Command-/Undo-Pfad. Für lokale/app-eigene Nachrichten ist zusätzlich
+  „In Ordner kopieren“ mit persistentem Sidecar, Batch-Aktion und Undo/Redo
+  vorhanden; EDS/Camel-Kopieren bleibt bis zur nativen Linux-Abnahme offen.
+  Die Ziele werden aus der dynamischen EDS-Ordnerliste
   angeboten und für lokale Nachrichten aus der app-eigenen Ordnerhierarchie
   ergänzt; alle sichtbaren Treffer können per Menü oder `Ctrl+A` für diese
   Batch-Aktionen ausgewählt werden. Serverseitige
@@ -479,9 +482,10 @@ werden.
   Trennbalkenpositionen der modernen und klassischen Ansicht werden separat
   gespeichert, auch in Backup/Restore
   übernommen und durch responsive automatische Sidebar-Ausblendungen nicht
-  überschrieben. Absender, Avatare, Datum, Vorschautext und app-eigene Labels
-  der Mail-Zeile lassen sich ebenfalls einzeln ein-/ausblenden und werden live
-  sowie in Backup/Restore angewendet. Eine providerunabhängige
+  überschrieben. Absender, Empfänger, Avatare, Datum, Anhangssymbol,
+  Vorschautext und app-eigene Labels der Mail-Zeile lassen sich ebenfalls
+  einzeln ein-/ausblenden und werden live sowie in Backup/Restore angewendet.
+  Eine providerunabhängige
   Datumsnormalisierung und serverseitige Sortierung bleiben Teil der
   Linux/Camel-Strecke.
 - [~] Die Evolution-kompatible Mail-Werkzeugleiste ist standardmäßig sichtbar,
@@ -642,6 +646,10 @@ werden.
   Systemstandard, Deutsch, Englisch oder beiden Wörterbuchsprachen wird
   gespeichert, in Backup/Restore übernommen und auf neue Composer angewendet;
   die tatsächlich installierten Wörterbücher bleiben hostabhängig.
+  Die portable Lesebestätigungs-Standardeinstellung wird ebenfalls persistent
+  gespeichert, in Backup/Restore übernommen und beim RFC822-Versand als
+  `Disposition-Notification-To` ausgegeben; SMTP-DSN, providerabhängige
+  Zustellberichte und die native EDS/Camel-Anwendung bleiben Linux-only.
 - [~] Synchronisationsstatus, Cancellation und begrenztes Retry/Backoff sind
   für den nativen Mail-Ladepfad vorhanden; Netzwerkwechsel, domänenweite
   Offline-/Online-Zustände, vollständige Wiederaufnahme und sauberes
@@ -672,7 +680,10 @@ werden.
   können in den Einstellungen bearbeitet werden. Lokale/importierte VEVENTs werden
   zusätzlich in allen Kalenderansichten dynamisch nach RFC5545-CATEGORIES
   filterbar; konfigurierte sowie im geladenen Bestand vorhandene Kategorien
-  werden gemeinsam angeboten. Eine portable Termin-Schnellsuche durchsucht
+  werden gemeinsam angeboten. Änderungen an Kategorien und ihren app-eigenen
+  Farben aktualisieren die bereits geöffneten Kalender-, Aufgaben- und
+  Notizzeilen einschließlich ihrer Filtermodelle sofort. Eine portable
+  Termin-Schnellsuche durchsucht
   Betreff, Ort, Beschreibung, Zeitraum und Kalenderquelle und wirkt in allen
   Kalenderansichten sowie der Terminliste. Lokale/importierte VEVENTs werden
   in den Tag-, Wochen- und Monatsansichten nach DAILY/WEEKLY/MONTHLY/YEARLY-
@@ -1001,8 +1012,12 @@ werden.
   portable Sicherung gespeichert und wiederhergestellt werden; die Sicherung
   umfasst auch beliebige app-eigene ICS-/vCard-Dateien unter den lokalen
   Importverzeichnissen sowie Reminder-/Signatur-Daten und akzeptiert ältere
-  Einstellungen einschließlich des Benachrichtigungs-Schalters sowie den
-  app-eigenen Vorlagen- und Textbausteinspeicher. Neue Sicherungen enthalten
+  Einstellungen einschließlich des Benachrichtigungs-Schalters. Fehlende
+  Felder älterer Sicherungsstände werden jetzt mit den tatsächlichen
+  GSettings-Schema-Defaults ergänzt; dadurch bleiben auch Fenster-, Layout-,
+  Mail-, Kalender-, Aufgaben-, Memo- und Composer-Einstellungen bei
+  schrittweisen Upgrades lesbar. Der app-eigene Vorlagen- und
+  Textbausteinspeicher ist ebenfalls enthalten. Neue Sicherungen enthalten
   zusätzlich je Datei eine SHA-256-Prüfsumme; beschädigte oder unvollständige
   Sicherungen werden vor dem Schreiben abgewiesen, ältere Sicherungen ohne
   Prüfsumme bleiben lesbar. Die Wiederherstellung validiert die Sicherung

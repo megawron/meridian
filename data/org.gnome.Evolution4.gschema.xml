@@ -105,6 +105,10 @@
       <default>true</default>
       <summary>Use HTML mode when composing new messages</summary>
     </key>
+    <key name="request-read-receipt" type="b">
+      <default>false</default>
+      <summary>Request a read receipt for new messages</summary>
+    </key>
     <key name="spellcheck-languages" type="s">
       <default>''</default>
       <summary>Preferred spell-checking languages (comma-separated, empty for system default)</summary>
@@ -168,9 +172,17 @@
       <default>true</default>
       <summary>Show sender names in the mail list</summary>
     </key>
+    <key name="mail-show-recipient" type="b">
+      <default>false</default>
+      <summary>Show recipient names in the mail list</summary>
+    </key>
     <key name="mail-show-date" type="b">
       <default>true</default>
       <summary>Show message dates in the mail list</summary>
+    </key>
+    <key name="mail-show-attachment" type="b">
+      <default>true</default>
+      <summary>Show an attachment indicator in the mail list</summary>
     </key>
     <key name="mail-show-preview-text" type="b">
       <default>true</default>

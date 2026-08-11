@@ -1228,7 +1228,9 @@ impl MailPage {
             for key in [
                 "mail-show-avatar",
                 "mail-show-sender",
+                "mail-show-recipient",
                 "mail-show-date",
+                "mail-show-attachment",
                 "mail-show-preview-text",
                 "mail-show-labels",
             ] {
@@ -2146,6 +2148,48 @@ impl MailPage {
         Ok(true)
     }
 
+    fn copy_selected_to(
+        &self,
+        destination_source: &str,
+        destination_folder: &str,
+    ) -> Result<bool, MailOperationError> {
+        let Some(message) = self.selected_message() else {
+            return Ok(false);
+        };
+        if destination_source != "local" {
+            return Err(MailOperationError::Unsupported {
+                operation: crate::services::mail_operations_service::MailOperationKind::Copy,
+                backend: "EDS/Camel-Kopieren (Linux-Abnahme ausstehend)",
+            });
+        }
+        if message.backend_location().is_some() {
+            return Err(MailOperationError::Unsupported {
+                operation: crate::services::mail_operations_service::MailOperationKind::Copy,
+                backend: "EDS/Camel-Nachricht in den lokalen Import",
+            });
+        }
+        if message.id().contains("::copy::") {
+            return Err(MailOperationError::Unsupported {
+                operation: crate::services::mail_operations_service::MailOperationKind::Copy,
+                backend: "lokale Kopie einer Kopie",
+            });
+        }
+        if message.folder_id().eq_ignore_ascii_case(destination_folder) {
+            return Ok(true);
+        }
+
+        self.execute_mail_command(MailCommand::copy_local(
+            message.id(),
+            destination_folder.to_string(),
+        ))?;
+        self.clear_operation_error();
+        self.refresh_mail();
+        if let Some(state) = self.imp().message_state.borrow().as_ref() {
+            state.set_label("Nachricht kopiert");
+        }
+        Ok(true)
+    }
+
     fn execute_mail_command(&self, command: MailCommand) -> Result<(), MailOperationError> {
         let operations = MailOperationsService::new();
         self.imp()
@@ -2641,6 +2685,23 @@ impl MailPage {
         destinations
     }
 
+    fn copy_folder_destinations(&self) -> Vec<MoveDestination> {
+        self.folder_destinations()
+            .into_iter()
+            .filter(|destination| destination.source_uid == "local")
+            .collect()
+    }
+
+    fn copy_folder_destinations_for_messages(
+        &self,
+        messages: &[MailMessageObject],
+    ) -> Vec<MoveDestination> {
+        self.folder_destinations_for_messages(messages)
+            .into_iter()
+            .filter(|destination| destination.source_uid == "local")
+            .collect()
+    }
+
     fn move_batch_to(&self, destination_source: &str, destination_folder: &str) {
         let messages = self.selected_batch_messages();
         let has_local = messages
@@ -2712,6 +2773,70 @@ impl MailPage {
             }
             Err(error) => {
                 self.report_operation_error("Verschieben nicht möglich", &error);
+            }
+        }
+    }
+
+    fn copy_batch_to(&self, destination_source: &str, destination_folder: &str) {
+        let messages = self.selected_batch_messages();
+        if destination_source != "local"
+            || messages
+                .iter()
+                .any(|message| message.backend_location().is_some())
+        {
+            self.report_operation_error(
+                "Kopieren nicht möglich",
+                &MailOperationError::Unsupported {
+                    operation: crate::services::mail_operations_service::MailOperationKind::Copy,
+                    backend: "EDS/Camel-Kopieren (Linux-Abnahme ausstehend)",
+                },
+            );
+            return;
+        }
+        if messages
+            .iter()
+            .any(|message| message.id().contains("::copy::"))
+        {
+            self.report_operation_error(
+                "Kopieren nicht möglich",
+                &MailOperationError::Unsupported {
+                    operation: crate::services::mail_operations_service::MailOperationKind::Copy,
+                    backend: "lokale Kopie einer Kopie",
+                },
+            );
+            return;
+        }
+
+        let commands = messages
+            .iter()
+            .filter(|message| !message.folder_id().eq_ignore_ascii_case(destination_folder))
+            .map(|message| MailCommand::copy_local(message.id(), destination_folder.to_string()))
+            .collect::<Vec<_>>();
+        if commands.is_empty() {
+            self.clear_batch_selection();
+            if let Some(state) = self.imp().message_state.borrow().as_ref() {
+                state.set_label("Keine neue Kopie erforderlich");
+            }
+            return;
+        }
+
+        let operations = MailOperationsService::new();
+        let result = self
+            .imp()
+            .mail_commands
+            .borrow_mut()
+            .execute_batch(&operations, commands);
+        match result {
+            Ok(count) => {
+                self.clear_operation_error();
+                self.clear_batch_selection();
+                self.refresh_mail();
+                if let Some(state) = self.imp().message_state.borrow().as_ref() {
+                    state.set_label(&format!("{count} Nachricht(en) kopiert"));
+                }
+            }
+            Err(error) => {
+                self.report_operation_error("Kopieren nicht möglich", &error);
             }
         }
     }
@@ -4128,6 +4253,12 @@ impl MailPage {
                 .ellipsize(pango::EllipsizeMode::End)
                 .build();
 
+            let recipient = gtk::Label::builder()
+                .css_classes(vec!["caption", "dim-label"])
+                .halign(gtk::Align::Start)
+                .ellipsize(pango::EllipsizeMode::End)
+                .build();
+
             let date = gtk::Label::builder()
                 .css_classes(vec!["caption", "dim-label"])
                 .halign(gtk::Align::End)
@@ -4147,11 +4278,17 @@ impl MailPage {
                 .tooltip_text("Als wichtig markieren")
                 .build();
 
+            let attachment = gtk::Image::from_icon_name("mail-attachment-symbolic");
+            attachment.set_tooltip_text(Some("Anhänge"));
+            attachment.set_valign(gtk::Align::Center);
+
             sender_box.append(&sender);
+            sender_box.append(&recipient);
             header_box.append(&batch_check);
             header_box.append(&avatar);
             header_box.append(&sender_box);
             header_box.append(&date);
+            header_box.append(&attachment);
             header_box.append(&btn_star);
             header_box.append(&btn_important);
 
@@ -4235,9 +4372,17 @@ impl MailPage {
                 .as_ref()
                 .map(AppSettings::mail_show_sender)
                 .unwrap_or(true);
+            let show_recipient = settings
+                .as_ref()
+                .map(AppSettings::mail_show_recipient)
+                .unwrap_or(false);
             let show_date = settings
                 .as_ref()
                 .map(AppSettings::mail_show_date)
+                .unwrap_or(true);
+            let show_attachment = settings
+                .as_ref()
+                .map(AppSettings::mail_show_attachment)
                 .unwrap_or(true);
             let show_preview_text = settings
                 .as_ref()
@@ -4284,14 +4429,30 @@ impl MailPage {
                 .and_then(|w| w.next_sibling())
                 .and_downcast::<gtk::Box>()
             {
-                sender_box.set_visible(show_sender);
+                sender_box.set_visible(show_sender || show_recipient);
                 if let Some(sender) = sender_box.first_child().and_downcast::<gtk::Label>() {
+                    sender.set_visible(show_sender);
                     sender.set_label(&msg.sender_name());
                     if msg.is_unread() {
                         sender.add_css_class("title-4");
                     } else {
                         sender.remove_css_class("title-4");
                     }
+                }
+                if let Some(recipient) = sender_box
+                    .first_child()
+                    .and_then(|child| child.next_sibling())
+                    .and_downcast::<gtk::Label>()
+                {
+                    recipient.set_visible(show_recipient);
+                    let recipient_text = if !msg.recipient_to().trim().is_empty() {
+                        format!("An: {}", msg.recipient_to())
+                    } else if !msg.recipient_cc().trim().is_empty() {
+                        format!("Cc: {}", msg.recipient_cc())
+                    } else {
+                        String::new()
+                    };
+                    recipient.set_label(&recipient_text);
                 }
             }
 
@@ -4306,8 +4467,20 @@ impl MailPage {
                 date.set_label(&format_message_date(&msg.date_str()));
             }
 
+            if let Some(attachment) = header_box
+                .first_child()
+                .and_then(|child| child.next_sibling())
+                .and_then(|child| child.next_sibling())
+                .and_then(|child| child.next_sibling())
+                .and_then(|child| child.next_sibling())
+                .and_downcast::<gtk::Image>()
+            {
+                attachment.set_visible(show_attachment && !msg.attachments().is_empty());
+            }
+
             if let Some(btn_star) = header_box
                 .first_child()
+                .and_then(|child| child.next_sibling())
                 .and_then(|child| child.next_sibling())
                 .and_then(|child| child.next_sibling())
                 .and_then(|child| child.next_sibling())
@@ -4835,6 +5008,63 @@ impl MailPage {
             .css_classes(vec!["flat"])
             .build();
         batch_action_bar.append(&move_button);
+
+        let copy_popover_content = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(4)
+            .margin_start(8)
+            .margin_end(8)
+            .margin_top(8)
+            .margin_bottom(8)
+            .build();
+        let copy_popover = gtk::Popover::builder().child(&copy_popover_content).build();
+        let page_for_copy_menu = self.downgrade();
+        let copy_popover_weak = copy_popover.downgrade();
+        copy_popover.connect_show(move |_| {
+            while let Some(child) = copy_popover_content.first_child() {
+                copy_popover_content.remove(&child);
+            }
+            let Some(page) = page_for_copy_menu.upgrade() else {
+                return;
+            };
+            let destinations = page.copy_folder_destinations();
+            if destinations.is_empty() {
+                copy_popover_content.append(
+                    &gtk::Label::builder()
+                        .label("Keine lokalen Zielordner verfügbar")
+                        .css_classes(vec!["caption", "dim-label"])
+                        .build(),
+                );
+                return;
+            }
+            for destination in destinations {
+                let button = gtk::Button::builder()
+                    .label(&destination.label)
+                    .halign(gtk::Align::Fill)
+                    .css_classes(vec!["flat"])
+                    .build();
+                let page_for_destination = page.downgrade();
+                let popover_for_destination = copy_popover_weak.clone();
+                button.connect_clicked(move |_| {
+                    if let Some(page) = page_for_destination.upgrade() {
+                        page.copy_batch_to(&destination.source_uid, &destination.folder_name);
+                    }
+                    if let Some(popover) = popover_for_destination.upgrade() {
+                        popover.popdown();
+                    }
+                });
+                copy_popover_content.append(&button);
+            }
+        });
+        let copy_button = gtk::MenuButton::builder()
+            .label("Kopieren")
+            .tooltip_text(
+                "Ausgewählte lokale Nachrichten in einen weiteren lokalen Ordner kopieren",
+            )
+            .popover(&copy_popover)
+            .css_classes(vec!["flat"])
+            .build();
+        batch_action_bar.append(&copy_button);
 
         let batch_delete_button = gtk::Button::builder()
             .label("Löschen")
@@ -5420,6 +5650,79 @@ impl MailPage {
             .css_classes(vec!["flat"])
             .build();
         action_bar.append(&move_button);
+
+        let copy_popover_content = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(4)
+            .margin_start(8)
+            .margin_end(8)
+            .margin_top(8)
+            .margin_bottom(8)
+            .build();
+        let copy_popover = gtk::Popover::builder().child(&copy_popover_content).build();
+        let page_for_single_copy = self.downgrade();
+        let copy_popover_weak = copy_popover.downgrade();
+        copy_popover.connect_show(move |_| {
+            while let Some(child) = copy_popover_content.first_child() {
+                copy_popover_content.remove(&child);
+            }
+            let Some(page) = page_for_single_copy.upgrade() else {
+                return;
+            };
+            let Some(message) = page.selected_message() else {
+                copy_popover_content.append(
+                    &gtk::Label::builder()
+                        .label("Keine Nachricht ausgewählt")
+                        .css_classes(vec!["caption", "dim-label"])
+                        .build(),
+                );
+                return;
+            };
+            let destinations =
+                page.copy_folder_destinations_for_messages(std::slice::from_ref(&message));
+            if destinations.is_empty() {
+                copy_popover_content.append(
+                    &gtk::Label::builder()
+                        .label("Keine lokalen Zielordner verfügbar")
+                        .css_classes(vec!["caption", "dim-label"])
+                        .build(),
+                );
+                return;
+            }
+            for destination in destinations {
+                let button = gtk::Button::builder()
+                    .label(&destination.label)
+                    .halign(gtk::Align::Fill)
+                    .css_classes(vec!["flat"])
+                    .build();
+                let page_for_destination = page.downgrade();
+                let popover_for_destination = copy_popover_weak.clone();
+                let destination_source = destination.source_uid.clone();
+                let destination_folder = destination.folder_name.clone();
+                button.connect_clicked(move |_| {
+                    if let Some(page) = page_for_destination.upgrade() {
+                        match page.copy_selected_to(&destination_source, &destination_folder) {
+                            Ok(true) => {}
+                            Ok(false) => page.show_toast("Keine Nachricht ausgewählt"),
+                            Err(error) => {
+                                page.show_toast(&format!("Kopieren nicht möglich: {error}"))
+                            }
+                        }
+                    }
+                    if let Some(popover) = popover_for_destination.upgrade() {
+                        popover.popdown();
+                    }
+                });
+                copy_popover_content.append(&button);
+            }
+        });
+        let copy_button = gtk::MenuButton::builder()
+            .icon_name("edit-copy-symbolic")
+            .tooltip_text("Nachricht kopieren")
+            .popover(&copy_popover)
+            .css_classes(vec!["flat"])
+            .build();
+        action_bar.append(&copy_button);
 
         let spacer = gtk::Box::builder().hexpand(true).build();
         action_bar.append(&spacer);

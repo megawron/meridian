@@ -127,6 +127,30 @@ impl EvolutionWindow {
         }
     }
 
+    pub(crate) fn refresh_category_presentation(&self) {
+        let Some(view_stack) = self.imp().view_stack.borrow().as_ref().cloned() else {
+            return;
+        };
+        if let Some(calendar_page) = view_stack
+            .child_by_name("calendar")
+            .and_then(|widget| widget.downcast::<CalendarPage>().ok())
+        {
+            calendar_page.refresh_category_presentation();
+        }
+        if let Some(tasks_page) = view_stack
+            .child_by_name("tasks")
+            .and_then(|widget| widget.downcast::<crate::views::TasksPage>().ok())
+        {
+            tasks_page.refresh_category_presentation();
+        }
+        if let Some(memos_page) = view_stack
+            .child_by_name("memos")
+            .and_then(|widget| widget.downcast::<crate::views::MemosPage>().ok())
+        {
+            memos_page.refresh_category_presentation();
+        }
+    }
+
     pub(crate) fn show_search_domain(&self, domain: crate::services::search_engine::SearchDomain) {
         let page_name = match domain {
             crate::services::search_engine::SearchDomain::Mail => "mail",
@@ -356,8 +380,16 @@ impl EvolutionWindow {
             Some("win.toggle-mail-sender"),
         );
         view_menu.append(
+            Some("Empfänger in Nachrichtenzeilen ein-/ausblenden"),
+            Some("win.toggle-mail-recipient"),
+        );
+        view_menu.append(
             Some("Datum in Nachrichtenzeilen ein-/ausblenden"),
             Some("win.toggle-mail-date"),
+        );
+        view_menu.append(
+            Some("Anhangssymbole in Nachrichtenzeilen ein-/ausblenden"),
+            Some("win.toggle-mail-attachment"),
         );
         view_menu.append(
             Some("Labels in Nachrichtenzeilen ein-/ausblenden"),
@@ -436,6 +468,14 @@ impl EvolutionWindow {
         });
         self.add_action(&action_toggle_sender);
 
+        let action_toggle_recipient = gio::SimpleAction::new("toggle-mail-recipient", None);
+        action_toggle_recipient.connect_activate(move |_, _| {
+            if let Some(settings) = AppSettings::try_new() {
+                settings.set_mail_show_recipient(!settings.mail_show_recipient());
+            }
+        });
+        self.add_action(&action_toggle_recipient);
+
         let action_toggle_date = gio::SimpleAction::new("toggle-mail-date", None);
         action_toggle_date.connect_activate(move |_, _| {
             if let Some(settings) = AppSettings::try_new() {
@@ -443,6 +483,14 @@ impl EvolutionWindow {
             }
         });
         self.add_action(&action_toggle_date);
+
+        let action_toggle_attachment = gio::SimpleAction::new("toggle-mail-attachment", None);
+        action_toggle_attachment.connect_activate(move |_, _| {
+            if let Some(settings) = AppSettings::try_new() {
+                settings.set_mail_show_attachment(!settings.mail_show_attachment());
+            }
+        });
+        self.add_action(&action_toggle_attachment);
 
         let action_toggle_labels = gio::SimpleAction::new("toggle-mail-labels", None);
         action_toggle_labels.connect_activate(move |_, _| {

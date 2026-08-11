@@ -44,6 +44,9 @@ mod imp {
         pub(super) task_category_filter: RefCell<Option<String>>,
         pub(super) task_category_model: RefCell<Option<gtk::StringList>>,
         pub(super) task_category_selector: RefCell<Option<gtk::DropDown>>,
+        pub task_list: RefCell<Option<gtk::ListBox>>,
+        pub task_store: RefCell<Option<gio::ListStore>>,
+        pub task_empty_state: RefCell<Option<gtk::Label>>,
     }
 
     #[glib::object_subclass]
@@ -162,6 +165,19 @@ impl TaskSort {
 impl TasksPage {
     pub fn new() -> Self {
         glib::Object::builder().build()
+    }
+
+    /// Re-render category names and colored task rows after the presentation-
+    /// only category store changed in Preferences.
+    pub fn refresh_category_presentation(&self) {
+        let (Some(task_list), Some(task_store), Some(empty_state)) = (
+            self.imp().task_list.borrow().as_ref().cloned(),
+            self.imp().task_store.borrow().as_ref().cloned(),
+            self.imp().task_empty_state.borrow().as_ref().cloned(),
+        ) else {
+            return;
+        };
+        render_task_rows(self, &task_list, &task_store, &empty_state);
     }
 
     fn build_ui(&self) {
@@ -355,6 +371,11 @@ impl TasksPage {
             .css_classes(vec!["dim-label"])
             .margin_top(24)
             .build();
+        self.imp().task_list.replace(Some(task_list.clone()));
+        self.imp().task_store.replace(Some(task_store.clone()));
+        self.imp()
+            .task_empty_state
+            .replace(Some(empty_tasks.clone()));
         content_box.append(&empty_tasks);
 
         let source_model_for_load = source_model.clone();

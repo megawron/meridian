@@ -329,6 +329,14 @@ impl AppSettings {
         self.set_boolean("composer-html", value);
     }
 
+    pub fn request_read_receipt(&self) -> bool {
+        self.settings.boolean("request-read-receipt")
+    }
+
+    pub fn set_request_read_receipt(&self, value: bool) {
+        self.set_boolean("request-read-receipt", value);
+    }
+
     pub fn spellcheck_languages(&self) -> String {
         sanitize_spellcheck_languages(&self.settings.string("spellcheck-languages"))
     }
@@ -656,12 +664,28 @@ impl AppSettings {
         self.set_boolean("mail-show-sender", value);
     }
 
+    pub fn mail_show_recipient(&self) -> bool {
+        self.settings.boolean("mail-show-recipient")
+    }
+
+    pub fn set_mail_show_recipient(&self, value: bool) {
+        self.set_boolean("mail-show-recipient", value);
+    }
+
     pub fn mail_show_date(&self) -> bool {
         self.settings.boolean("mail-show-date")
     }
 
     pub fn set_mail_show_date(&self, value: bool) {
         self.set_boolean("mail-show-date", value);
+    }
+
+    pub fn mail_show_attachment(&self) -> bool {
+        self.settings.boolean("mail-show-attachment")
+    }
+
+    pub fn set_mail_show_attachment(&self, value: bool) {
+        self.set_boolean("mail-show-attachment", value);
     }
 
     pub fn mail_show_preview_text(&self) -> bool {
@@ -801,6 +825,7 @@ impl AppSettings {
             "force-dark-mode",
             "render-html",
             "composer-html",
+            "request-read-receipt",
             "spellcheck-languages",
             "mail-font-family",
             "mail-font-size",
@@ -816,7 +841,9 @@ impl AppSettings {
             "mail-row-density",
             "mail-show-avatar",
             "mail-show-sender",
+            "mail-show-recipient",
             "mail-show-date",
+            "mail-show-attachment",
             "mail-show-preview-text",
             "mail-show-labels",
             "color-scheme",

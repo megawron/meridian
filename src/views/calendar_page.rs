@@ -166,6 +166,13 @@ impl CalendarPage {
         glib::Object::builder().build()
     }
 
+    /// Re-render category names, colors, and all open calendar/task rows after
+    /// the presentation-only category store changed in Preferences.
+    pub fn refresh_category_presentation(&self) {
+        self.refresh_calendar_views();
+        self.refresh_event_list_visibility();
+    }
+
     fn month_name(month: u32) -> &'static str {
         match month {
             1 => "Januar",

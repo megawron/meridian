@@ -104,9 +104,13 @@ struct BackupFile {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct BackupSettings {
+    #[serde(default = "default_window_width")]
     window_width: i32,
+    #[serde(default = "default_window_height")]
     window_height: i32,
+    #[serde(default)]
     is_maximized: bool,
+    #[serde(default = "default_active_view")]
     active_view: String,
     #[serde(default)]
     default_account: String,
@@ -118,11 +122,16 @@ struct BackupSettings {
     default_task_source: String,
     #[serde(default)]
     default_memo_source: String,
+    #[serde(default)]
     auto_load_remote_images: bool,
+    #[serde(default = "default_force_dark_mode")]
     force_dark_mode: bool,
+    #[serde(default = "default_render_html")]
     render_html: bool,
     #[serde(default = "default_composer_html")]
     composer_html: bool,
+    #[serde(default)]
+    request_read_receipt: bool,
     #[serde(default)]
     spellcheck_languages: String,
     #[serde(default = "default_mail_font_family")]
@@ -153,23 +162,39 @@ struct BackupSettings {
     mail_show_avatar: bool,
     #[serde(default = "default_mail_show_sender")]
     mail_show_sender: bool,
+    #[serde(default = "default_mail_show_recipient")]
+    mail_show_recipient: bool,
     #[serde(default = "default_mail_show_date")]
     mail_show_date: bool,
+    #[serde(default = "default_mail_show_attachment")]
+    mail_show_attachment: bool,
     #[serde(default = "default_mail_show_preview_text")]
     mail_show_preview_text: bool,
     #[serde(default = "default_mail_show_labels")]
     mail_show_labels: bool,
+    #[serde(default = "default_color_scheme")]
     color_scheme: String,
+    #[serde(default)]
     sign_new_messages: bool,
+    #[serde(default)]
     default_pgp_key: String,
+    #[serde(default = "default_mail_sync_interval")]
     mail_sync_interval: u32,
+    #[serde(default = "default_draft_autosave_interval")]
     draft_autosave_interval: u32,
+    #[serde(default)]
     append_signature: bool,
+    #[serde(default)]
     signature_text: String,
+    #[serde(default)]
     local_mail_directory: String,
+    #[serde(default)]
     local_calendar_directory: String,
+    #[serde(default)]
     local_contact_directory: String,
+    #[serde(default = "default_quote_original")]
     quote_original: bool,
+    #[serde(default = "default_quote_style")]
     quote_style: String,
     #[serde(default = "default_calendar_view")]
     calendar_view: String,
@@ -219,6 +244,46 @@ struct BackupSettings {
     memo_sort_descending: bool,
 }
 
+fn default_window_width() -> i32 {
+    1_100
+}
+
+fn default_window_height() -> i32 {
+    700
+}
+
+fn default_active_view() -> String {
+    "mail".to_string()
+}
+
+fn default_force_dark_mode() -> bool {
+    true
+}
+
+fn default_render_html() -> bool {
+    true
+}
+
+fn default_color_scheme() -> String {
+    "system".to_string()
+}
+
+fn default_mail_sync_interval() -> u32 {
+    30
+}
+
+fn default_draft_autosave_interval() -> u32 {
+    30
+}
+
+fn default_quote_original() -> bool {
+    true
+}
+
+fn default_quote_style() -> String {
+    "blockquote".to_string()
+}
+
 fn default_workday_start() -> u32 {
     540
 }
@@ -263,7 +328,15 @@ fn default_mail_show_sender() -> bool {
     true
 }
 
+fn default_mail_show_recipient() -> bool {
+    false
+}
+
 fn default_mail_show_date() -> bool {
+    true
+}
+
+fn default_mail_show_attachment() -> bool {
     true
 }
 
@@ -343,6 +416,7 @@ impl BackupSettings {
             force_dark_mode: settings.force_dark_mode(),
             render_html: settings.render_html(),
             composer_html: settings.composer_html(),
+            request_read_receipt: settings.request_read_receipt(),
             spellcheck_languages: settings.spellcheck_languages(),
             mail_font_family: settings.mail_font_family(),
             mail_font_size: settings.mail_font_size(),
@@ -358,7 +432,9 @@ impl BackupSettings {
             mail_row_density: settings.mail_row_density(),
             mail_show_avatar: settings.mail_show_avatar(),
             mail_show_sender: settings.mail_show_sender(),
+            mail_show_recipient: settings.mail_show_recipient(),
             mail_show_date: settings.mail_show_date(),
+            mail_show_attachment: settings.mail_show_attachment(),
             mail_show_preview_text: settings.mail_show_preview_text(),
             mail_show_labels: settings.mail_show_labels(),
             color_scheme: settings.color_scheme(),
@@ -413,6 +489,7 @@ impl BackupSettings {
         settings.set_force_dark_mode(self.force_dark_mode);
         settings.set_render_html(self.render_html);
         settings.set_composer_html(self.composer_html);
+        settings.set_request_read_receipt(self.request_read_receipt);
         settings.set_spellcheck_languages(&self.spellcheck_languages);
         settings.set_mail_font_family(&self.mail_font_family);
         settings.set_mail_font_size(self.mail_font_size);
@@ -428,7 +505,9 @@ impl BackupSettings {
         settings.set_mail_row_density(&self.mail_row_density);
         settings.set_mail_show_avatar(self.mail_show_avatar);
         settings.set_mail_show_sender(self.mail_show_sender);
+        settings.set_mail_show_recipient(self.mail_show_recipient);
         settings.set_mail_show_date(self.mail_show_date);
+        settings.set_mail_show_attachment(self.mail_show_attachment);
         settings.set_mail_show_preview_text(self.mail_show_preview_text);
         settings.set_mail_show_labels(self.mail_show_labels);
         settings.set_color_scheme(&self.color_scheme);
@@ -1141,7 +1220,9 @@ mod tests {
         assert_eq!(settings.mail_row_density, "comfortable");
         assert!(settings.mail_show_avatar);
         assert!(settings.mail_show_sender);
+        assert!(!settings.mail_show_recipient);
         assert!(settings.mail_show_date);
+        assert!(settings.mail_show_attachment);
         assert!(settings.mail_show_preview_text);
         assert!(settings.mail_show_labels);
         assert!(!settings.calendar_show_week_numbers);
@@ -1153,6 +1234,35 @@ mod tests {
         assert!(settings.task_sort_descending);
         assert!(settings.memo_source_filter.is_empty());
         assert!(settings.memo_sort_descending);
+    }
+
+    #[test]
+    fn missing_settings_use_the_installed_schema_defaults() {
+        let settings: BackupSettings =
+            serde_json::from_value(serde_json::json!({})).expect("empty settings should parse");
+
+        assert_eq!(settings.window_width, 1_100);
+        assert_eq!(settings.window_height, 700);
+        assert!(!settings.is_maximized);
+        assert_eq!(settings.active_view, "mail");
+        assert!(!settings.auto_load_remote_images);
+        assert!(settings.force_dark_mode);
+        assert!(settings.render_html);
+        assert!(settings.composer_html);
+        assert!(!settings.request_read_receipt);
+        assert!(settings.spellcheck_languages.is_empty());
+        assert_eq!(settings.color_scheme, "system");
+        assert!(!settings.sign_new_messages);
+        assert!(settings.default_pgp_key.is_empty());
+        assert_eq!(settings.mail_sync_interval, 30);
+        assert_eq!(settings.draft_autosave_interval, 30);
+        assert!(!settings.append_signature);
+        assert!(settings.signature_text.is_empty());
+        assert!(settings.local_mail_directory.is_empty());
+        assert!(settings.local_calendar_directory.is_empty());
+        assert!(settings.local_contact_directory.is_empty());
+        assert!(settings.quote_original);
+        assert_eq!(settings.quote_style, "blockquote");
     }
 
     #[test]

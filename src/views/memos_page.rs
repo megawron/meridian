@@ -35,6 +35,11 @@ mod imp {
         pub memo_category_filter: RefCell<Option<String>>,
         pub memo_category_model: RefCell<Option<gtk::StringList>>,
         pub memo_category_selector: RefCell<Option<gtk::DropDown>>,
+        pub memo_source_filter: RefCell<Option<String>>,
+        pub memo_search_query: RefCell<String>,
+        pub memo_list: RefCell<Option<gtk::ListBox>>,
+        pub memo_records: RefCell<Option<Rc<RefCell<Vec<MemoRecord>>>>>,
+        pub memo_empty_state: RefCell<Option<gtk::Label>>,
     }
 
     #[glib::object_subclass]
@@ -105,6 +110,78 @@ impl MemosPage {
         glib::Object::builder().build()
     }
 
+    /// Rebuild memo rows so category colors and the category filter reflect
+    /// the presentation-only category store immediately.
+    pub fn refresh_category_presentation(&self) {
+        let (Some(memo_list), Some(memo_records), Some(empty_state)) = (
+            self.imp().memo_list.borrow().as_ref().cloned(),
+            self.imp().memo_records.borrow().as_ref().cloned(),
+            self.imp().memo_empty_state.borrow().as_ref().cloned(),
+        ) else {
+            return;
+        };
+
+        let selected_identity = memo_list.selected_row().and_then(|row| unsafe {
+            let uid = row.data::<String>("memo-id")?.as_ref().clone();
+            let source_uid = row.data::<String>("memo-source-uid")?.as_ref().clone();
+            Some((source_uid, uid))
+        });
+        while let Some(child) = memo_list.first_child() {
+            memo_list.remove(&child);
+        }
+        for memo in memo_records.borrow().iter() {
+            append_memo_row(&memo_list, memo);
+        }
+
+        refresh_memo_category_model(self, &memo_list);
+        let source_filter = self.imp().memo_source_filter.borrow().clone();
+        let category_filter = self.imp().memo_category_filter.borrow().clone();
+        let query = self.imp().memo_search_query.borrow().clone();
+        apply_memo_list_filter(
+            &memo_list,
+            source_filter.clone(),
+            category_filter.clone(),
+            query.clone(),
+        );
+        let has_records = memo_records.borrow().iter().any(|memo| {
+            memo_matches_filter(
+                memo,
+                source_filter.as_deref(),
+                category_filter.as_deref(),
+                &query,
+            )
+        });
+        empty_state.set_label(
+            if query.is_empty() && source_filter.is_none() && category_filter.is_none() {
+                "Keine Notizen aus EDS geladen"
+            } else {
+                "Keine passenden Notizen"
+            },
+        );
+        empty_state.set_visible(!has_records);
+
+        if let Some((source_uid, uid)) = selected_identity {
+            let mut child = memo_list.first_child();
+            while let Some(widget) = child {
+                child = widget.next_sibling();
+                let Ok(row) = widget.downcast::<gtk::ListBoxRow>() else {
+                    continue;
+                };
+                let matches = unsafe {
+                    row.data::<String>("memo-id")
+                        .is_some_and(|value| value.as_ref() == &uid)
+                        && row
+                            .data::<String>("memo-source-uid")
+                            .is_some_and(|value| value.as_ref() == &source_uid)
+                };
+                if matches {
+                    memo_list.select_row(Some(&row));
+                    break;
+                }
+            }
+        }
+    }
+
     fn build_ui(&self) {
         let split = adw::NavigationSplitView::new();
 
@@ -123,6 +200,9 @@ impl MemosPage {
                 .map(|settings| settings.memo_source_filter())
                 .filter(|source_uid| !source_uid.trim().is_empty()),
         ));
+        self.imp()
+            .memo_source_filter
+            .replace(memo_source_filter.borrow().clone());
 
         // ── Sidebar (Memo List) ─────────────────────────────────────────
 
@@ -269,6 +349,16 @@ impl MemosPage {
             .margin_top(12)
             .margin_bottom(12)
             .build();
+        self.imp().memo_list.replace(Some(memo_list.clone()));
+        self.imp()
+            .memo_records
+            .replace(Some(Rc::clone(&memo_records)));
+        self.imp()
+            .memo_empty_state
+            .replace(Some(empty_state.clone()));
+        self.imp()
+            .memo_search_query
+            .replace(search_entry.text().to_string());
         sidebar_box.append(&empty_state);
 
         sidebar_box.append(&memo_list);
@@ -282,6 +372,9 @@ impl MemosPage {
             memo_list,
             move |entry| {
                 let query = entry.text().trim().to_lowercase();
+                if let Some(page) = page_weak_for_search.upgrade() {
+                    page.imp().memo_search_query.replace(query.clone());
+                }
                 let source_filter = memo_source_filter_for_search.borrow().clone();
                 if let Some(page) = page_weak_for_search.upgrade() {
                     refresh_memo_category_model(&page, &memo_list);
@@ -332,6 +425,9 @@ impl MemosPage {
                     .cloned()
             };
             memo_source_filter_for_selector.replace(source_filter.clone());
+            if let Some(page) = page_weak_for_source.upgrade() {
+                page.imp().memo_source_filter.replace(source_filter.clone());
+            }
             if let Some(settings) = AppSettings::try_new() {
                 settings.set_memo_source_filter(source_filter.as_deref().unwrap_or_default());
             }
@@ -519,6 +615,11 @@ impl MemosPage {
                 let value = value.trim();
                 memo_source_filter_for_settings
                     .replace((!value.is_empty()).then_some(value.to_string()));
+                if let Some(page) = page_weak_for_source_settings.upgrade() {
+                    page.imp()
+                        .memo_source_filter
+                        .replace((!value.is_empty()).then_some(value.to_string()));
+                }
                 let selected = if value.is_empty() {
                     Some(0)
                 } else {

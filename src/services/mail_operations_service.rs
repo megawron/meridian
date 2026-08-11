@@ -20,6 +20,7 @@ pub enum MailOperationKind {
     SetMessageState,
     Delete,
     Move,
+    Copy,
     Archive,
     MarkJunk,
     MarkNotJunk,
@@ -34,6 +35,7 @@ impl fmt::Display for MailOperationKind {
             Self::SetMessageState => "Lesestatus/Markierung",
             Self::Delete => "Löschen",
             Self::Move => "Verschieben",
+            Self::Copy => "Kopieren",
             Self::Archive => "Archivieren",
             Self::MarkJunk => "Als Spam markieren",
             Self::MarkNotJunk => "Als Nicht-Spam markieren",
@@ -102,6 +104,16 @@ pub(crate) enum MailOperation {
         location: Option<MailBackendLocation>,
     },
     Move {
+        id: String,
+        location: Option<MailBackendLocation>,
+        destination: String,
+    },
+    Copy {
+        id: String,
+        location: Option<MailBackendLocation>,
+        destination: String,
+    },
+    RemoveCopy {
         id: String,
         location: Option<MailBackendLocation>,
         destination: String,
@@ -423,6 +435,24 @@ impl MailCommand {
         }
     }
 
+    pub(crate) fn copy_local(id: impl Into<String>, destination: impl Into<String>) -> Self {
+        let id = id.into();
+        let destination = destination.into();
+        Self {
+            forward: MailOperation::Copy {
+                id: id.clone(),
+                location: None,
+                destination: destination.clone(),
+            },
+            inverse: MailOperation::RemoveCopy {
+                id,
+                location: None,
+                destination: destination.clone(),
+            },
+            description: format!("Nachricht lokal nach {destination} kopiert"),
+        }
+    }
+
     pub(crate) fn description(&self) -> &str {
         &self.description
     }
@@ -693,6 +723,36 @@ impl MailOperationsService {
                     .store
                     .metadata_store()
                     .set_folder_override(&id, Some(&destination))
+                    .map_err(Into::into),
+            },
+            MailOperation::Copy {
+                id,
+                location,
+                destination,
+            } => match location {
+                Some(_) => Err(Self::unsupported_backend(
+                    MailOperationKind::Copy,
+                    "EDS/Camel-Copy-Backend",
+                )),
+                None => self
+                    .store
+                    .metadata_store()
+                    .set_copy(&id, &destination, true)
+                    .map_err(Into::into),
+            },
+            MailOperation::RemoveCopy {
+                id,
+                location,
+                destination,
+            } => match location {
+                Some(_) => Err(Self::unsupported_backend(
+                    MailOperationKind::Copy,
+                    "EDS/Camel-Copy-Backend",
+                )),
+                None => self
+                    .store
+                    .metadata_store()
+                    .set_copy(&id, &destination, false)
                     .map_err(Into::into),
             },
             MailOperation::Archive { id, location } => match location {
@@ -1233,6 +1293,71 @@ mod tests {
             MailMetadataStore::new(store.metadata_path())
                 .load_labels()
                 .is_empty()
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn local_copy_command_persists_and_undoes_through_the_sidecar() {
+        let root = temporary_directory("operations-local-copy");
+        let mail_dir = root.join("mail");
+        fs::create_dir_all(&mail_dir).expect("mail directory should be created");
+        let source = mail_dir.join("message.eml");
+        fs::write(
+            &source,
+            "From: Sender <sender@example.org>\nSubject: Test\n\nBody\n",
+        )
+        .expect("mail should be written");
+
+        let store =
+            MailStoreService::with_mail_dir_and_state_path(&mail_dir, root.join("state.json"));
+        let message_id = store
+            .load_local_records()
+            .first()
+            .expect("message should parse")
+            .id
+            .clone();
+        let operations = MailOperationsService::with_store(store.clone());
+        let mut history = MailCommandStack::default();
+
+        history
+            .execute(&operations, MailCommand::copy_local(&message_id, "archive"))
+            .expect("local copy should persist");
+        assert!(
+            MailMetadataStore::new(store.metadata_path())
+                .load_copies()
+                .get(&message_id)
+                .is_some_and(|folders| folders.contains("archive"))
+        );
+        assert!(
+            store
+                .load_local_records()
+                .iter()
+                .any(|message| message.id.contains("::copy::") && message.folder_id == "archive")
+        );
+        assert!(source.is_file());
+
+        history
+            .undo(&operations)
+            .expect("undo should succeed")
+            .expect("one command should be undone");
+        assert!(
+            MailMetadataStore::new(store.metadata_path())
+                .load_copies()
+                .get(&message_id)
+                .is_none_or(|folders| !folders.contains("archive"))
+        );
+
+        history
+            .redo(&operations)
+            .expect("redo should succeed")
+            .expect("one command should be redone");
+        assert!(
+            MailMetadataStore::new(store.metadata_path())
+                .load_copies()
+                .get(&message_id)
+                .is_some_and(|folders| folders.contains("archive"))
         );
 
         let _ = fs::remove_dir_all(root);

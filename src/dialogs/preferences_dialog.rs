@@ -1303,6 +1303,21 @@ impl PreferencesDialog {
         }
         group_composer.add(&row_composer_html);
 
+        let row_request_read_receipt = adw::SwitchRow::builder()
+            .title("Lesebestätigung anfordern")
+            .subtitle(
+                "Fügt neuen Nachrichten den RFC-konformen Wunsch nach einer Lesebestätigung hinzu",
+            )
+            .active(false)
+            .build();
+        if let Some(settings) = settings.clone() {
+            row_request_read_receipt.set_active(settings.request_read_receipt());
+            row_request_read_receipt.connect_active_notify(move |row| {
+                settings.set_request_read_receipt(row.is_active());
+            });
+        }
+        group_composer.add(&row_request_read_receipt);
+
         let row_spellcheck_languages = adw::ComboRow::builder()
             .title("Rechtschreibprüfung")
             .subtitle(
@@ -1834,6 +1849,19 @@ impl PreferencesDialog {
         }
         group_mail_columns.add(&row_mail_show_sender);
 
+        let row_mail_show_recipient = adw::SwitchRow::builder()
+            .title("Empfänger anzeigen")
+            .subtitle("Zeigt die An- bzw. Cc-Adresse unter dem Absender")
+            .active(false)
+            .build();
+        if let Some(settings) = settings.clone() {
+            row_mail_show_recipient.set_active(settings.mail_show_recipient());
+            row_mail_show_recipient.connect_active_notify(move |row| {
+                settings.set_mail_show_recipient(row.is_active());
+            });
+        }
+        group_mail_columns.add(&row_mail_show_recipient);
+
         let row_mail_show_date = adw::SwitchRow::builder()
             .title("Datum anzeigen")
             .subtitle("Zeigt Datum und Uhrzeit rechts in der Nachrichtenzeile")
@@ -1846,6 +1874,19 @@ impl PreferencesDialog {
             });
         }
         group_mail_columns.add(&row_mail_show_date);
+
+        let row_mail_show_attachment = adw::SwitchRow::builder()
+            .title("Anhangssymbol anzeigen")
+            .subtitle("Zeigt eine Büroklammer, wenn die Nachricht Anhänge enthält")
+            .active(true)
+            .build();
+        if let Some(settings) = settings.clone() {
+            row_mail_show_attachment.set_active(settings.mail_show_attachment());
+            row_mail_show_attachment.connect_active_notify(move |row| {
+                settings.set_mail_show_attachment(row.is_active());
+            });
+        }
+        group_mail_columns.add(&row_mail_show_attachment);
 
         let row_mail_show_preview_text = adw::SwitchRow::builder()
             .title("Vorschautext anzeigen")
@@ -2596,6 +2637,7 @@ fn append_category_editor_row(
                 category_id_for_save.replace(Some(id));
                 if let Some(parent) = parent_weak_for_save.upgrade() {
                     parent.show_toast("Kalenderkategorie gespeichert");
+                    refresh_open_category_views(&parent);
                 }
             }
             Err(error) => {
@@ -2633,6 +2675,7 @@ fn append_category_editor_row(
                     container.remove(&row);
                     if let Some(parent) = parent_weak_for_result.upgrade() {
                         parent.show_toast("Kalenderkategorie gelöscht");
+                        refresh_open_category_views(&parent);
                     }
                 }
                 Ok(false) => {
@@ -2648,6 +2691,15 @@ fn append_category_editor_row(
             },
         );
     });
+}
+
+fn refresh_open_category_views(parent: &PreferencesDialog) {
+    if let Some(window) = parent
+        .root()
+        .and_downcast::<crate::window::EvolutionWindow>()
+    {
+        window.refresh_category_presentation();
+    }
 }
 
 fn selected_file_paths(model: &gio::ListModel) -> Vec<std::path::PathBuf> {

@@ -894,6 +894,9 @@ impl ComposeDialog {
                 source_uid: identity.source_uid,
                 from: identity.from,
                 reply_to: identity.reply_to,
+                request_read_receipt: AppSettings::try_new()
+                    .map(|settings| settings.request_read_receipt())
+                    .unwrap_or(false),
                 to: entry_to_for_send.text().to_string(),
                 cc: entry_cc_for_send.text().to_string(),
                 bcc: entry_bcc_for_send.text().to_string(),
@@ -1118,6 +1121,7 @@ impl ComposeDialog {
                                 source_uid: source_uid.clone(),
                                 from: from.clone(),
                                 reply_to: reply_to.clone(),
+                                request_read_receipt: false,
                                 to,
                                 cc,
                                 bcc,
