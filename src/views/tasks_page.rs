@@ -1049,8 +1049,9 @@ fn append_task_row(
     empty_tasks: &gtk::Label,
     task: &TaskItemObject,
 ) {
+    let title = glib::markup_escape_text(&task.title());
     let row = adw::ActionRow::builder()
-        .title(&task.title())
+        .title(title.as_str())
         .subtitle(&format!(
             "Fällig: {} · Priorität: {}",
             task.due_date(),

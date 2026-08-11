@@ -1010,8 +1010,9 @@ fn append_memo_row(memo_list: &gtk::ListBox, memo: &MemoRecord) {
         row.set_data("memo-sort-title", memo.summary.to_lowercase());
         row.set_data("memo-sort-source", memo.source_display_name.to_lowercase());
     }
+    let title = glib::markup_escape_text(&memo.summary);
     let action_row = adw::ActionRow::builder()
-        .title(&memo.summary)
+        .title(title.as_str())
         .subtitle(&memo.updated)
         .build();
     if let Some(color) = CalendarCategoryStore::default().color_for_component(&memo.component) {

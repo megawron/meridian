@@ -326,8 +326,9 @@ impl CalendarPage {
                 }
                 Ok(sources) => {
                     for source in sources {
+                        let escaped_title = glib::markup_escape_text(&source.display_name);
                         let row = adw::ActionRow::builder()
-                            .title(&source.display_name)
+                            .title(escaped_title.as_str())
                             .subtitle(&format!(
                                 "{} · {}",
                                 source.backend_name,
@@ -2299,8 +2300,9 @@ fn append_event_row(
     } else {
         format!(" · {}", event.source_display_name)
     };
+    let title = glib::markup_escape_text(&event.summary);
     let row = adw::ActionRow::builder()
-        .title(&event.summary)
+        .title(title.as_str())
         .subtitle(&format!(
             "{}{}",
             if event.end.is_empty() {
