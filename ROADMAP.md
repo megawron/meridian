@@ -399,7 +399,17 @@ werden.
   Einstellungen ausgewählt oder auf den automatisch erkannten Pfad
   zurückgesetzt werden. Ein app-eigener Sidecar speichert zusätzlich logische
   Ordnerübersteuerungen, lokale Mehrfachkopien und gelöschte Einträge, ohne die
-  Originaldateien zu verändern.
+  Originaldateien zu verändern. Bereits importierte benutzerdefinierte
+  `custom:…`-Ordner werden in der portablen GTK4-rs-Mailseitenleiste ebenfalls
+  dynamisch angezeigt und filterbar gemacht. App-eigene leere lokale Ordner
+  können erstellt, umbenannt und gelöscht werden; beim Umbenennen werden
+  logische Sidecar-Platzierungen mitgeführt, und das Löschen nicht leerer
+  Ordner wird sicher abgelehnt. Benutzerdefinierte lokale Ordner stehen auch
+  als reversible Ziele für Verschiebeaktionen zur Verfügung. Eine
+  providerunabhängige logische Ordnerhierarchie ergänzt fehlende Eltern,
+  aggregiert Zähler, unterstützt Ein-/Ausklappen und führt Umbenennen/Löschen
+  auf dem gesamten Unterbaum aus; native providerabhängige Hierarchie- und
+  Separator-Semantik bleibt Linux-/Camel-Abnahme.
 - [~] Suche, Stern, Ordnerfilter und „gelesen“ existieren im GTK4-rs-UI;
   die lokale Schnellsuche versteht zusätzlich `from:`, `to:`, `subject:`,
   `cc:`, `bcc:`, `body:`, `filename:`, `in:`/`folder:`, `on:`, `after:`,
@@ -843,8 +853,10 @@ werden.
   verwenden portabel die Junk-/Inbox-Platzierung. Lokale Kopien werden als
   eigene logische Datensätze mit unabhängigen Zuständen dargestellt. App-eigene
   Labels können portabel gesetzt, entfernt, angezeigt und über
-  `label:` gesucht werden; Remote-Kopien und serverseitige Mehrfachlabels
-  benötigen weiter den Camel-/Multi-Label-Pfad. Die lokale Regelbedingung
+  `label:` gesucht werden. Die GTK4-rs-Mailansicht bietet dafür eine reversible
+  Einzel- und Batch-Aktion mit persistentem Sidecar und Undo/Redo; Remote-
+  Kopien und serverseitige Mehrfachlabels benötigen weiter den Camel-/Multi-
+  Label-Pfad. Die lokale Regelbedingung
   unterstützt Betreff, Absender, Empfänger,
   Nachrichtentext und RFC822-Header sowie die Vergleiche enthält, enthält
   nicht, ist, ist nicht, beginnt mit, endet mit und existiert. Alte

@@ -15,7 +15,7 @@
 // backend work.  Local move/archive/delete actions use only the app-owned
 // sidecar and never rewrite these source files.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -265,6 +265,135 @@ impl MailStoreService {
         Ok(imported)
     }
 
+    /// Return explicitly created, empty-capable local folders from the
+    /// app-owned sidecar.  Message-derived folders are added by the caller
+    /// while loading records, so this method never rescans the mailbox.
+    pub(crate) fn local_folder_definitions(&self) -> HashSet<String> {
+        let mut folders = self.metadata.load_local_folders();
+        expand_local_folder_ancestors(&mut folders);
+        folders
+    }
+
+    /// Create a logical local folder without changing the imported mailbox.
+    pub fn create_local_folder(&self, name: &str) -> std::io::Result<String> {
+        let folder_id = normalize_custom_folder_id(name)?;
+        if self
+            .discovered_local_folder_ids()
+            .iter()
+            .any(|candidate| candidate.eq_ignore_ascii_case(&folder_id))
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "local folder already exists",
+            ));
+        }
+        self.metadata.set_local_folder(&folder_id, true)?;
+        Ok(folder_id)
+    }
+
+    /// Rename a logical local folder and persist message placement changes in
+    /// the sidecar.  Imported EML, mbox and Maildir files remain untouched.
+    pub fn rename_local_folder(&self, from: &str, name: &str) -> std::io::Result<String> {
+        let from = normalize_custom_folder_id(from)?;
+        let to = normalize_custom_folder_id(name)?;
+        if from == to || is_folder_tree_id(&to, &from) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "local folder name did not change",
+            ));
+        }
+
+        let available = self.discovered_local_folder_ids();
+        if !available.iter().any(|candidate| {
+            candidate.eq_ignore_ascii_case(&from)
+                || is_folder_tree_id_case_insensitive(candidate, &from)
+        }) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "local folder does not exist",
+            ));
+        }
+        if available.iter().any(|candidate| {
+            !is_folder_tree_id_case_insensitive(candidate, &from)
+                && is_folder_tree_id_case_insensitive(candidate, &to)
+        }) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "local folder already exists",
+            ));
+        }
+
+        let overrides = self.metadata.load_folder_overrides();
+        let cancelled = AtomicBool::new(false);
+        let message_targets = self
+            .load_raw_local_records_cancelable(&cancelled)
+            .into_iter()
+            .filter(|message| {
+                let folder_id = overrides
+                    .get(&message.id)
+                    .map(String::as_str)
+                    .unwrap_or(message.folder_id.as_str());
+                is_folder_tree_id_case_insensitive(folder_id, &from)
+            })
+            .map(|message| {
+                let folder_id = overrides
+                    .get(&message.id)
+                    .map(String::as_str)
+                    .unwrap_or(message.folder_id.as_str());
+                (
+                    message.id,
+                    rename_folder_tree_id_case_insensitive(folder_id, &from, &to),
+                )
+            })
+            .collect::<HashMap<_, _>>();
+
+        self.metadata
+            .rename_local_folder(&from, &to, &message_targets)?;
+        Ok(to)
+    }
+
+    /// Delete an empty logical local folder.  Non-empty folders are rejected
+    /// so a mistaken click cannot hide imported messages.
+    pub fn delete_local_folder(&self, folder_id: &str) -> std::io::Result<()> {
+        let folder_id = normalize_custom_folder_id(folder_id)?;
+        let available = self.discovered_local_folder_ids();
+        if !available
+            .iter()
+            .any(|candidate| is_folder_tree_id_case_insensitive(candidate, &folder_id))
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "local folder does not exist",
+            ));
+        }
+
+        let overrides = self.metadata.load_folder_overrides();
+        let cancelled = AtomicBool::new(false);
+        let has_messages = self
+            .load_raw_local_records_cancelable(&cancelled)
+            .into_iter()
+            .any(|message| {
+                let folder = overrides
+                    .get(&message.id)
+                    .map(String::as_str)
+                    .unwrap_or(message.folder_id.as_str());
+                is_folder_tree_id_case_insensitive(folder, &folder_id)
+            });
+        let has_copies = self.metadata.load_copies().values().any(|folders| {
+            folders
+                .iter()
+                .any(|candidate| is_folder_tree_id_case_insensitive(candidate, &folder_id))
+        });
+        if has_messages || has_copies {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::DirectoryNotEmpty,
+                "local folder is not empty",
+            ));
+        }
+
+        self.metadata.remove_local_folder_tree(&folder_id)
+    }
+
     /// Read all discoverable local messages in a deterministic order.
     ///
     /// This method is synchronous by design so that it can also be used by
@@ -508,6 +637,103 @@ impl MailStoreService {
 
     pub(crate) fn metadata_store(&self) -> &MailMetadataStore {
         &self.metadata
+    }
+
+    fn discovered_local_folder_ids(&self) -> HashSet<String> {
+        let mut folders = self.metadata.load_local_folders();
+        for folder_id in self.metadata.load_folder_overrides().values() {
+            if folder_id.starts_with("custom:") {
+                folders.insert(folder_id.clone());
+            }
+        }
+        for folder_id in self.metadata.load_copies().values().flatten() {
+            if folder_id.starts_with("custom:") {
+                folders.insert(folder_id.clone());
+            }
+        }
+
+        let cancelled = AtomicBool::new(false);
+        for message in self.load_raw_local_records_cancelable(&cancelled) {
+            if message.folder_id.starts_with("custom:") {
+                folders.insert(message.folder_id);
+            }
+        }
+        expand_local_folder_ancestors(&mut folders);
+        folders
+    }
+}
+
+fn normalize_custom_folder_id(name: &str) -> std::io::Result<String> {
+    let folder_id = local_folder_id(name);
+    let Some(folder_name) = folder_id.strip_prefix("custom:") else {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "built-in folders cannot be created here",
+        ));
+    };
+    if folder_name.trim().is_empty()
+        || folder_name.chars().any(char::is_control)
+        || !folder_name.split('/').all(|part| {
+            let part = part.trim();
+            !part.is_empty() && part != "." && part != ".."
+        })
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "invalid local folder name",
+        ));
+    }
+    Ok(folder_id)
+}
+
+fn expand_local_folder_ancestors(folders: &mut HashSet<String>) {
+    let existing = folders.clone();
+    for folder_id in existing {
+        let Some(path) = folder_id.strip_prefix("custom:") else {
+            continue;
+        };
+        let mut prefix = String::new();
+        for segment in path.split('/').filter(|segment| !segment.is_empty()) {
+            if !prefix.is_empty() {
+                prefix.push('/');
+            }
+            prefix.push_str(segment);
+            folders.insert(format!("custom:{prefix}"));
+        }
+    }
+}
+
+fn is_folder_tree_id(folder_id: &str, root: &str) -> bool {
+    folder_id == root
+        || folder_id
+            .strip_prefix(root)
+            .is_some_and(|rest| rest.starts_with('/'))
+}
+
+fn is_folder_tree_id_case_insensitive(folder_id: &str, root: &str) -> bool {
+    folder_id.eq_ignore_ascii_case(root)
+        || folder_id
+            .get(..root.len())
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(root))
+            && folder_id
+                .get(root.len()..)
+                .is_some_and(|rest| rest.starts_with('/'))
+}
+
+fn rename_folder_tree_id_case_insensitive(folder_id: &str, from: &str, to: &str) -> String {
+    if folder_id.eq_ignore_ascii_case(from) {
+        return to.to_string();
+    }
+    let Some(prefix) = folder_id.get(..from.len()) else {
+        return folder_id.to_string();
+    };
+    let Some(rest) = folder_id.get(from.len()..) else {
+        return folder_id.to_string();
+    };
+    if prefix.eq_ignore_ascii_case(from) && rest.starts_with('/') {
+        format!("{to}{rest}")
+    } else {
+        folder_id.to_string()
     }
 }
 
@@ -2090,6 +2316,56 @@ mod tests {
                 .any(|record| record.folder_id == "archive" && record.id.contains("::copy::"))
         );
         assert!(mail_dir.join("message.eml").is_file());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn local_folder_lifecycle_preserves_source_files_and_rejects_non_empty_delete() {
+        let root = temporary_directory("local-folder-lifecycle");
+        let mail_dir = root.join("mail");
+        let source_folder = mail_dir.join("Projects");
+        fs::create_dir_all(&source_folder).expect("source folder should be created");
+        let source_file = source_folder.join("message.eml");
+        fs::write(
+            &source_file,
+            "From: Sender <sender@example.org>\nSubject: Test\n\nBody\n",
+        )
+        .expect("mail should be written");
+
+        let store =
+            MailStoreService::with_mail_dir_and_state_path(&mail_dir, root.join("state.json"));
+        let empty = store
+            .create_local_folder("Empty")
+            .expect("empty folder should be created");
+        assert!(store.local_folder_definitions().contains(&empty));
+        let original = store
+            .load_local_records()
+            .into_iter()
+            .next()
+            .expect("message should parse");
+        MailMetadataStore::new(store.metadata_path())
+            .set_folder_override(&original.id, Some("custom:Projects/2026"))
+            .expect("child placement should save");
+
+        let renamed = store
+            .rename_local_folder("custom:Projects", "Archive")
+            .expect("message folder should be renamed");
+        let records = store.load_local_records();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].folder_id, "custom:Archive/2026");
+        assert_eq!(renamed, "custom:Archive");
+        assert!(source_file.is_file());
+
+        store
+            .delete_local_folder(&empty)
+            .expect("empty folder should be deleted");
+        assert!(!store.local_folder_definitions().contains(&empty));
+        let error = store
+            .delete_local_folder(&renamed)
+            .expect_err("non-empty folder deletion should be rejected");
+        assert_eq!(error.kind(), std::io::ErrorKind::DirectoryNotEmpty);
+        assert!(source_file.is_file());
 
         let _ = fs::remove_dir_all(root);
     }

@@ -13,7 +13,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-const CURRENT_VERSION: u32 = 4;
+const CURRENT_VERSION: u32 = 5;
 const MIN_SUPPORTED_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -35,6 +35,8 @@ struct StateFile {
     copies: HashMap<String, HashSet<String>>,
     #[serde(default)]
     labels: HashMap<String, HashSet<String>>,
+    #[serde(default)]
+    local_folders: HashSet<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -69,6 +71,88 @@ impl MailMetadataStore {
 
     pub fn load_labels(&self) -> HashMap<String, HashSet<String>> {
         self.load_file().labels
+    }
+
+    pub fn load_local_folders(&self) -> HashSet<String> {
+        self.load_file().local_folders
+    }
+
+    pub fn set_local_folder(&self, folder_id: &str, present: bool) -> io::Result<()> {
+        let folder_id = folder_id.trim();
+        if !is_valid_local_folder_id(folder_id) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "invalid local folder id",
+            ));
+        }
+
+        let mut file = self.load_file();
+        if present {
+            file.local_folders.insert(folder_id.to_string());
+        } else {
+            file.local_folders.remove(folder_id);
+        }
+        self.save_file(&file)
+    }
+
+    pub fn rename_local_folder(
+        &self,
+        from: &str,
+        to: &str,
+        message_targets: &HashMap<String, String>,
+    ) -> io::Result<()> {
+        let from = from.trim();
+        let to = to.trim();
+        if !is_valid_local_folder_id(from) || !is_valid_local_folder_id(to) || from == to {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "invalid local folder rename",
+            ));
+        }
+
+        let mut file = self.load_file();
+        file.local_folders = file
+            .local_folders
+            .into_iter()
+            .map(|folder_id| rename_folder_tree_id(&folder_id, from, to))
+            .collect();
+
+        for (message_id, folder_id) in message_targets {
+            file.folder_overrides
+                .insert(message_id.clone(), folder_id.clone());
+        }
+        for folder_id in file.folder_overrides.values_mut() {
+            *folder_id = rename_folder_tree_id(folder_id, from, to);
+        }
+        for folders in file.copies.values_mut() {
+            *folders = folders
+                .drain()
+                .map(|folder_id| rename_folder_tree_id(&folder_id, from, to))
+                .collect();
+        }
+
+        self.save_file(&file)
+    }
+
+    pub fn remove_local_folder_tree(&self, folder_id: &str) -> io::Result<()> {
+        let folder_id = folder_id.trim();
+        if !is_valid_local_folder_id(folder_id) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "invalid local folder id",
+            ));
+        }
+
+        let mut file = self.load_file();
+        file.local_folders
+            .retain(|candidate| !is_folder_tree_id(candidate, folder_id));
+        file.folder_overrides
+            .retain(|_, candidate| !is_folder_tree_id(candidate, folder_id));
+        file.copies.retain(|_, folders| {
+            folders.retain(|candidate| !is_folder_tree_id(candidate, folder_id));
+            !folders.is_empty()
+        });
+        self.save_file(&file)
     }
 
     pub fn set_folder_override(&self, id: &str, folder_id: Option<&str>) -> io::Result<()> {
@@ -187,6 +271,7 @@ impl MailMetadataStore {
             deleted: file.deleted.clone(),
             copies: file.copies.clone(),
             labels: file.labels.clone(),
+            local_folders: file.local_folders.clone(),
         };
         let encoded = serde_json::to_vec_pretty(&file)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
@@ -195,6 +280,39 @@ impl MailMetadataStore {
         fs::write(&temporary_path, encoded)?;
         fs::rename(temporary_path, &self.path)
     }
+}
+
+fn is_valid_local_folder_id(folder_id: &str) -> bool {
+    let Some(name) = folder_id.strip_prefix("custom:") else {
+        return false;
+    };
+    if name.trim().is_empty() || name.chars().any(char::is_control) {
+        return false;
+    }
+    name.split('/').all(|part| {
+        let part = part.trim();
+        !part.is_empty() && part != "." && part != ".."
+    })
+}
+
+fn is_folder_tree_id(folder_id: &str, root: &str) -> bool {
+    folder_id == root
+        || folder_id
+            .strip_prefix(root)
+            .is_some_and(|rest| rest.starts_with('/'))
+}
+
+fn rename_folder_tree_id(folder_id: &str, from: &str, to: &str) -> String {
+    if folder_id == from {
+        return to.to_string();
+    }
+    let Some(rest) = folder_id.strip_prefix(from) else {
+        return folder_id.to_string();
+    };
+    if !rest.starts_with('/') {
+        return folder_id.to_string();
+    }
+    format!("{to}{rest}")
 }
 
 const REMOTE_CONTENT_VERSION: u32 = 1;
@@ -457,6 +575,67 @@ mod tests {
             .set_label("message-1", "WORK", false)
             .expect("label should be removable");
         assert!(MailMetadataStore::new(path).load_labels().is_empty());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn local_folder_definitions_and_references_are_renamed_atomically() {
+        let root = tempfile_dir("metadata-local-folders");
+        let path = root.join("state.json");
+        let store = MailMetadataStore::new(&path);
+        store
+            .set_local_folder("custom:Projects", true)
+            .expect("local folder should save");
+        store
+            .set_folder_override("message-1", Some("custom:Projects"))
+            .expect("message placement should save");
+        store
+            .set_copy("message-2", "custom:Projects", true)
+            .expect("copy placement should save");
+        store
+            .set_local_folder("custom:Projects/2026", true)
+            .expect("child folder should save");
+        store
+            .set_copy("message-4", "custom:Projects/2026", true)
+            .expect("child copy placement should save");
+
+        store
+            .rename_local_folder(
+                "custom:Projects",
+                "custom:Archive",
+                &HashMap::from([("message-3".to_string(), "custom:Archive".to_string())]),
+            )
+            .expect("local folder should be renamed");
+
+        let reloaded = MailMetadataStore::new(&path);
+        assert!(!reloaded.load_local_folders().contains("custom:Projects"));
+        assert!(reloaded.load_local_folders().contains("custom:Archive"));
+        assert!(
+            reloaded
+                .load_local_folders()
+                .contains("custom:Archive/2026")
+        );
+        assert_eq!(
+            reloaded.load_folder_overrides().get("message-1"),
+            Some(&"custom:Archive".to_string())
+        );
+        assert_eq!(
+            reloaded.load_folder_overrides().get("message-3"),
+            Some(&"custom:Archive".to_string())
+        );
+        assert!(
+            reloaded
+                .load_copies()
+                .get("message-2")
+                .is_some_and(|folders| folders.contains("custom:Archive"))
+        );
+        assert!(
+            reloaded
+                .load_copies()
+                .get("message-4")
+                .is_some_and(|folders| folders.contains("custom:Archive/2026"))
+        );
 
         let _ = fs::remove_dir_all(root);
     }

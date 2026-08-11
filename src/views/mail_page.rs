@@ -171,7 +171,14 @@ impl FolderSelection {
         match self.folder_id.as_str() {
             "all" => true,
             "spam" => message.folder_id() == "junk",
-            folder_id => message.folder_id() == folder_id,
+            folder_id => {
+                message.folder_id() == folder_id
+                    || (folder_id.starts_with("custom:")
+                        && message
+                            .folder_id()
+                            .strip_prefix(folder_id)
+                            .is_some_and(|rest| rest.starts_with('/')))
+            }
         }
     }
 }
@@ -521,7 +528,14 @@ fn message_folder_matches(message: &MailMessageObject, query: &str) -> bool {
         "trash" | "deleted" => folder == "trash",
         "junk" | "spam" => folder == "junk",
         "archive" | "all-mail" => folder == "archive",
-        value => folder == value || folder.trim_start_matches("custom:") == value,
+        value => {
+            let local_path = folder.trim_start_matches("custom:");
+            folder == value
+                || local_path == value
+                || local_path
+                    .strip_prefix(value)
+                    .is_some_and(|rest| rest.starts_with('/'))
+        }
     };
     if matches_alias(&message.folder_id().to_ascii_lowercase()) {
         return true;
@@ -626,6 +640,7 @@ enum MailPageLoadResult {
     Local {
         reason: String,
         messages: Vec<ParsedMail>,
+        local_folders: HashSet<String>,
     },
     Error(String),
 }
@@ -663,16 +678,22 @@ fn load_mail_backend(
         {
             MailPageLoadResult::Camel(camel)
         }
-        Ok(_) => MailPageLoadResult::Local {
-            reason: "Keine aktiven EDS-Mailkonten; lokaler Evolution-Speicher".to_string(),
-            messages: crate::services::MailStoreService::new()
-                .load_local_records_cancelable(cancelled),
-        },
-        Err(error) => MailPageLoadResult::Local {
-            reason: format!("EDS/Camel nicht verfügbar ({error}); lokaler Evolution-Speicher"),
-            messages: crate::services::MailStoreService::new()
-                .load_local_records_cancelable(cancelled),
-        },
+        Ok(_) => {
+            let store = crate::services::MailStoreService::new();
+            MailPageLoadResult::Local {
+                reason: "Keine aktiven EDS-Mailkonten; lokaler Evolution-Speicher".to_string(),
+                messages: store.load_local_records_cancelable(cancelled),
+                local_folders: store.local_folder_definitions(),
+            }
+        }
+        Err(error) => {
+            let store = crate::services::MailStoreService::new();
+            MailPageLoadResult::Local {
+                reason: format!("EDS/Camel nicht verfügbar ({error}); lokaler Evolution-Speicher"),
+                messages: store.load_local_records_cancelable(cancelled),
+                local_folders: store.local_folder_definitions(),
+            }
+        }
     }
 }
 
@@ -743,6 +764,8 @@ mod imp {
         pub(super) folder_selection: RefCell<Option<Rc<RefCell<FolderSelection>>>>,
         pub source_selection: RefCell<Option<gtk::SingleSelection>>,
         pub folder_list: RefCell<Option<gtk::ListBox>>,
+        pub local_folder_ids: RefCell<HashSet<String>>,
+        pub local_folder_collapsed: RefCell<HashSet<String>>,
         pub dynamic_folder_store: RefCell<Option<gio::ListStore>>,
         pub dynamic_folder_selection: RefCell<Option<gtk::SingleSelection>>,
         pub dynamic_folder_children: RefCell<Option<Rc<RefCell<HashMap<String, gio::ListStore>>>>>,
@@ -1247,6 +1270,82 @@ impl MailPage {
         true
     }
 
+    fn present_local_folder_dialog(&self, current_folder: Option<&str>) {
+        let Some(root) = self.root().and_downcast::<gtk::Window>() else {
+            self.show_toast("Kein Fenster für die lokalen Ordner verfügbar");
+            return;
+        };
+
+        let is_rename = current_folder.is_some();
+        let initial_name = current_folder
+            .and_then(|folder_id| folder_id.strip_prefix("custom:"))
+            .unwrap_or_default();
+        let entry = gtk::Entry::builder()
+            .text(initial_name)
+            .placeholder_text("z. B. Projekte/2026")
+            .hexpand(true)
+            .activates_default(true)
+            .build();
+        let content = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(6)
+            .margin_top(6)
+            .build();
+        let hint = gtk::Label::builder()
+            .label("Unterordner können mit / getrennt werden. Die importierten Maildateien bleiben unverändert.")
+            .wrap(true)
+            .halign(gtk::Align::Start)
+            .css_classes(vec!["dim-label"])
+            .build();
+        content.append(&entry);
+        content.append(&hint);
+
+        let heading = if is_rename {
+            "Lokalen Ordner umbenennen"
+        } else {
+            "Lokalen Ordner erstellen"
+        };
+        let dialog = adw::AlertDialog::builder()
+            .heading(heading)
+            .body("Der Ordner wird ausschließlich im app-eigenen lokalen Mailbestand angelegt.")
+            .extra_child(&content)
+            .default_response("save")
+            .focus_widget(&entry)
+            .build();
+        dialog.add_responses(&[("cancel", "Abbrechen"), ("save", "Speichern")]);
+
+        let page = self.downgrade();
+        let current_folder = current_folder.map(str::to_string);
+        let entry_for_response = entry.clone();
+        dialog.connect_response(None, move |dialog, response| {
+            if response != "save" {
+                return;
+            }
+            let name = entry_for_response.text().to_string();
+            let result = if let Some(from) = current_folder.as_deref() {
+                crate::services::MailStoreService::new().rename_local_folder(from, &name)
+            } else {
+                crate::services::MailStoreService::new().create_local_folder(&name)
+            };
+            match result {
+                Ok(_) => {
+                    dialog.close();
+                    if let Some(page) = page.upgrade() {
+                        page.refresh_mail();
+                    }
+                }
+                Err(error) => {
+                    if let Some(page) = page.upgrade() {
+                        page.show_toast(&format!(
+                            "Lokaler Ordner konnte nicht gespeichert werden: {error}"
+                        ));
+                    }
+                }
+            }
+        });
+        dialog.present(Some(&root));
+    }
+
     fn show_toast(&self, message: &str) {
         if let Some(root) = self.root() {
             if let Ok(window) = root.downcast::<crate::window::EvolutionWindow>() {
@@ -1457,6 +1556,204 @@ impl MailPage {
             filter.changed(gtk::FilterChange::Different);
         }
         Ok(true)
+    }
+
+    fn set_selected_label(&self, label: &str, labeled: bool) -> Result<bool, MailOperationError> {
+        let label = label.trim();
+        if label.is_empty() {
+            return Ok(false);
+        }
+        let Some(message) = self.selected_message() else {
+            return Ok(false);
+        };
+        if message.backend_location().is_some() {
+            return Err(MailOperationError::Unsupported {
+                operation: crate::services::mail_operations_service::MailOperationKind::SetLabel,
+                backend: "EDS/Camel-Multi-Label-Backend",
+            });
+        }
+
+        let before = message.has_label(label);
+        if before == labeled {
+            return Ok(true);
+        }
+        self.execute_mail_command(MailCommand::set_label_local(
+            message.id(),
+            label,
+            before,
+            labeled,
+        ))?;
+        message.set_label(label, labeled);
+        self.refresh_mail();
+        Ok(true)
+    }
+
+    fn set_batch_label(&self, label: &str, labeled: bool) -> Result<usize, MailOperationError> {
+        let label = label.trim();
+        if label.is_empty() {
+            return Ok(0);
+        }
+        let messages = self.selected_batch_messages();
+        if messages.is_empty() {
+            return Ok(0);
+        }
+        if messages
+            .iter()
+            .any(|message| message.backend_location().is_some())
+        {
+            return Err(MailOperationError::Unsupported {
+                operation: crate::services::mail_operations_service::MailOperationKind::SetLabel,
+                backend: "EDS/Camel-Multi-Label-Backend",
+            });
+        }
+
+        let commands = messages
+            .iter()
+            .filter_map(|message| {
+                let before = message.has_label(label);
+                (before != labeled)
+                    .then(|| MailCommand::set_label_local(message.id(), label, before, labeled))
+            })
+            .collect::<Vec<_>>();
+        let count = commands.len();
+        if count > 0 {
+            let operations = MailOperationsService::new();
+            self.imp()
+                .mail_commands
+                .borrow_mut()
+                .execute_batch(&operations, commands)?;
+            for message in messages {
+                message.set_label(label, labeled);
+            }
+            self.refresh_mail();
+        }
+        self.clear_batch_selection();
+        Ok(count)
+    }
+
+    fn present_label_editor(&self) {
+        let has_batch = !self.imp().batch_selection.borrow().is_empty();
+        if !has_batch && self.selected_message().is_none() {
+            self.show_toast("Keine Nachricht ausgewählt");
+            return;
+        }
+        let Some(parent) = self.root().and_downcast::<gtk::Window>() else {
+            tracing::warn!("Cannot open label editor without a parent window");
+            return;
+        };
+
+        let dialog = adw::Window::builder()
+            .title(if has_batch {
+                "Label für Auswahl"
+            } else {
+                "Label der Nachricht"
+            })
+            .modal(true)
+            .default_width(420)
+            .default_height(180)
+            .build();
+        dialog.set_transient_for(Some(&parent));
+
+        let toolbar = adw::ToolbarView::new();
+        let header = adw::HeaderBar::new();
+        let set_button = gtk::Button::builder()
+            .label("Setzen")
+            .css_classes(vec!["suggested-action"])
+            .build();
+        let remove_button = gtk::Button::builder()
+            .label("Entfernen")
+            .css_classes(vec!["destructive-action"])
+            .build();
+        header.pack_start(&remove_button);
+        header.pack_end(&set_button);
+        toolbar.add_top_bar(&header);
+
+        let content = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(8)
+            .margin_start(20)
+            .margin_end(20)
+            .margin_top(20)
+            .margin_bottom(20)
+            .build();
+        let label_entry = adw::EntryRow::builder()
+            .title("Label")
+            .show_apply_button(false)
+            .build();
+        label_entry.set_tooltip_text(Some("z. B. Arbeit oder Rechnungen"));
+        content.append(&label_entry);
+        content.append(
+            &gtk::Label::builder()
+                .label("Labels werden bei lokalen/importierten Nachrichten im app-eigenen Sidecar gespeichert.")
+                .wrap(true)
+                .halign(gtk::Align::Start)
+                .css_classes(vec!["caption", "dim-label"])
+                .build(),
+        );
+        toolbar.set_content(Some(&content));
+        dialog.set_content(Some(&toolbar));
+
+        let page_for_set = self.downgrade();
+        let dialog_for_set = dialog.clone();
+        let entry_for_set = label_entry.clone();
+        set_button.connect_clicked(move |_| {
+            let label = entry_for_set.text().trim().to_string();
+            let Some(page) = page_for_set.upgrade() else {
+                return;
+            };
+            if label.is_empty() {
+                page.show_toast("Bitte einen Labelnamen eingeben");
+                return;
+            }
+            let result = if has_batch {
+                page.set_batch_label(&label, true)
+                    .map(|count| format!("{count} Nachricht(en) mit Label versehen"))
+            } else {
+                page.set_selected_label(&label, true)
+                    .map(|_| "Label gesetzt".to_string())
+            };
+            match result {
+                Ok(message) => {
+                    page.show_toast(&message);
+                    dialog_for_set.close();
+                }
+                Err(error) => {
+                    page.show_toast(&format!("Label konnte nicht gesetzt werden: {error}"))
+                }
+            }
+        });
+
+        let page_for_remove = self.downgrade();
+        let dialog_for_remove = dialog.clone();
+        let entry_for_remove = label_entry.clone();
+        remove_button.connect_clicked(move |_| {
+            let label = entry_for_remove.text().trim().to_string();
+            let Some(page) = page_for_remove.upgrade() else {
+                return;
+            };
+            if label.is_empty() {
+                page.show_toast("Bitte einen Labelnamen eingeben");
+                return;
+            }
+            let result = if has_batch {
+                page.set_batch_label(&label, false)
+                    .map(|count| format!("Label von {count} Nachricht(en) entfernt"))
+            } else {
+                page.set_selected_label(&label, false)
+                    .map(|_| "Label entfernt".to_string())
+            };
+            match result {
+                Ok(message) => {
+                    page.show_toast(&message);
+                    dialog_for_remove.close();
+                }
+                Err(error) => {
+                    page.show_toast(&format!("Label konnte nicht entfernt werden: {error}"))
+                }
+            }
+        });
+
+        dialog.present();
     }
 
     pub fn archive_selected(&self) -> Result<bool, MailOperationError> {
@@ -1800,6 +2097,19 @@ impl MailPage {
                     source_uid: "local".to_string(),
                     folder_name: folder_name.to_string(),
                     label: label.to_string(),
+                });
+            }
+            for folder_id in self
+                .imp()
+                .local_folder_ids
+                .borrow()
+                .iter()
+                .filter(|folder_id| folder_id.starts_with("custom:"))
+            {
+                destinations.push(MoveDestination {
+                    source_uid: "local".to_string(),
+                    folder_name: folder_id.clone(),
+                    label: format!("Lokal · {}", Self::local_folder_label(folder_id)),
                 });
             }
         }
@@ -2228,11 +2538,41 @@ impl MailPage {
         search_list.add_css_class("navigation-sidebar");
         Self::populate_search_folders(&search_list);
 
+        let local_folder_toolbar = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(6)
+            .margin_start(12)
+            .margin_end(8)
+            .margin_top(16)
+            .margin_bottom(4)
+            .build();
+        let local_folder_header = gtk::Label::builder()
+            .label("Lokale Ordner")
+            .css_classes(vec!["title-4"])
+            .halign(gtk::Align::Start)
+            .hexpand(true)
+            .build();
+        let new_local_folder_button = gtk::Button::builder()
+            .icon_name("folder-new-symbolic")
+            .tooltip_text("Lokalen Ordner erstellen")
+            .css_classes(vec!["flat", "circular"])
+            .valign(gtk::Align::Center)
+            .build();
+        local_folder_toolbar.append(&local_folder_header);
+        local_folder_toolbar.append(&new_local_folder_button);
+
         let folder_section = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .spacing(0)
             .visible(false)
             .build();
+        let page_for_new_local_folder = self.downgrade();
+        new_local_folder_button.connect_clicked(move |_| {
+            if let Some(page) = page_for_new_local_folder.upgrade() {
+                page.present_local_folder_dialog(None);
+            }
+        });
+        folder_section.append(&local_folder_toolbar);
         folder_section.append(&folder_list);
         let dynamic_header = gtk::Label::builder()
             .label("EDS-Ordner")
@@ -2474,6 +2814,22 @@ impl MailPage {
                             total.saturating_add(value.1),
                         )
                     })
+            } else if folder_id.starts_with("custom:") {
+                counts
+                    .iter()
+                    .filter(|(candidate, _)| {
+                        let candidate = candidate.as_str();
+                        candidate == folder_id
+                            || candidate
+                                .strip_prefix(&folder_id)
+                                .is_some_and(|rest| rest.starts_with('/'))
+                    })
+                    .fold((0_u32, 0_u32), |(unread, total), (_, value)| {
+                        (
+                            unread.saturating_add(value.0),
+                            total.saturating_add(value.1),
+                        )
+                    })
             } else {
                 let Some((unread, total)) = counts.get(key) else {
                     continue;
@@ -2493,6 +2849,242 @@ impl MailPage {
             });
             badge.set_visible(unread > 0 || total > 0);
         }
+    }
+
+    fn rebuild_local_folder_rows(
+        &self,
+        folder_list: &gtk::ListBox,
+        counts: &HashMap<String, (u32, u32)>,
+        definitions: &HashSet<String>,
+    ) {
+        let was_updating = self.imp().updating_folder_rows.replace(true);
+        let mut stale_rows = Vec::new();
+        for index in 0..folder_list.observe_children().n_items() {
+            let Some(row) = folder_list
+                .row_at_index(index as i32)
+                .and_downcast::<gtk::ListBoxRow>()
+            else {
+                continue;
+            };
+            let is_local_dynamic = unsafe {
+                row.data::<bool>("folder-local-dynamic")
+                    .map(|value| *value.as_ref())
+                    .unwrap_or(false)
+            };
+            if is_local_dynamic {
+                stale_rows.push(row);
+            }
+        }
+        for row in stale_rows {
+            folder_list.remove(&row);
+        }
+
+        let mut local_folders = HashSet::new();
+        for folder_id in counts.keys().chain(definitions.iter()) {
+            if folder_id.starts_with("custom:") {
+                Self::add_local_folder_tree_ids(&mut local_folders, folder_id);
+            }
+        }
+        let mut ordered_folders = local_folders.iter().cloned().collect::<Vec<_>>();
+        ordered_folders.sort_by(|left, right| {
+            Self::local_folder_label(left)
+                .to_ascii_lowercase()
+                .cmp(&Self::local_folder_label(right).to_ascii_lowercase())
+                .then_with(|| left.cmp(right))
+        });
+
+        let collapsed = self.imp().local_folder_collapsed.borrow().clone();
+        for folder_id in ordered_folders {
+            if Self::local_folder_has_collapsed_parent(&folder_id, &collapsed) {
+                continue;
+            }
+            let has_children = local_folders.iter().any(|candidate| {
+                candidate != &folder_id
+                    && candidate
+                        .strip_prefix(&format!("{folder_id}/"))
+                        .is_some_and(|rest| !rest.is_empty())
+            });
+            let row = Self::create_folder_row_with_backend(
+                &folder_id,
+                "folder-symbolic",
+                &Self::local_folder_display_label(&folder_id),
+                "",
+                None,
+                None,
+                true,
+            );
+            if let Some(container) = row.child().and_downcast::<gtk::Box>() {
+                container.set_margin_start(
+                    8 + (Self::local_folder_depth(&folder_id) as i32).saturating_mul(16),
+                );
+            }
+            unsafe {
+                row.set_data("folder-local-dynamic", true);
+            }
+            self.add_local_folder_expander(&row, &folder_id, has_children);
+            self.add_local_folder_actions(&row, &folder_id);
+            folder_list.append(&row);
+        }
+        Self::update_folder_counts(folder_list, counts);
+        self.imp().updating_folder_rows.set(was_updating);
+    }
+
+    fn add_local_folder_tree_ids(folder_ids: &mut HashSet<String>, folder_id: &str) {
+        let Some(path) = folder_id.strip_prefix("custom:") else {
+            return;
+        };
+        let mut prefix = String::new();
+        for segment in path.split('/').filter(|segment| !segment.is_empty()) {
+            if !prefix.is_empty() {
+                prefix.push('/');
+            }
+            prefix.push_str(segment);
+            folder_ids.insert(format!("custom:{prefix}"));
+        }
+    }
+
+    fn local_folder_depth(folder_id: &str) -> usize {
+        folder_id
+            .strip_prefix("custom:")
+            .map(|path| {
+                path.split('/')
+                    .filter(|segment| !segment.is_empty())
+                    .count()
+            })
+            .unwrap_or(1)
+            .saturating_sub(1)
+    }
+
+    fn local_folder_display_label(folder_id: &str) -> String {
+        folder_id
+            .strip_prefix("custom:")
+            .unwrap_or(folder_id)
+            .rsplit('/')
+            .next()
+            .filter(|segment| !segment.is_empty())
+            .unwrap_or(folder_id)
+            .to_string()
+    }
+
+    fn local_folder_has_collapsed_parent(folder_id: &str, collapsed: &HashSet<String>) -> bool {
+        let Some(path) = folder_id.strip_prefix("custom:") else {
+            return false;
+        };
+        let segments = path.split('/').filter(|segment| !segment.is_empty());
+        let mut prefix = String::new();
+        for (index, segment) in segments.enumerate() {
+            if index + 1 == path.split('/').filter(|value| !value.is_empty()).count() {
+                break;
+            }
+            if !prefix.is_empty() {
+                prefix.push('/');
+            }
+            prefix.push_str(segment);
+            if collapsed.contains(&format!("custom:{prefix}")) {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn add_local_folder_expander(
+        &self,
+        row: &gtk::ListBoxRow,
+        folder_id: &str,
+        has_children: bool,
+    ) {
+        if !has_children {
+            return;
+        }
+        let collapsed = self
+            .imp()
+            .local_folder_collapsed
+            .borrow()
+            .contains(folder_id);
+        let button = gtk::Button::builder()
+            .icon_name(if collapsed {
+                "pan-end-symbolic"
+            } else {
+                "pan-down-symbolic"
+            })
+            .tooltip_text(if collapsed {
+                "Unterordner einblenden"
+            } else {
+                "Unterordner ausblenden"
+            })
+            .css_classes(vec!["flat", "circular"])
+            .valign(gtk::Align::Center)
+            .build();
+        if let Some(container) = row.child().and_downcast::<gtk::Box>() {
+            container.prepend(&button);
+        }
+        let folder_id = folder_id.to_string();
+        let page = self.downgrade();
+        button.connect_clicked(move |_| {
+            let Some(page) = page.upgrade() else {
+                return;
+            };
+            let mut collapsed = page.imp().local_folder_collapsed.borrow_mut();
+            if !collapsed.insert(folder_id.clone()) {
+                collapsed.remove(&folder_id);
+            }
+            drop(collapsed);
+            page.refresh_mail();
+        });
+    }
+
+    fn add_local_folder_actions(&self, row: &gtk::ListBoxRow, folder_id: &str) {
+        let Some(container) = row.child().and_downcast::<gtk::Box>() else {
+            return;
+        };
+
+        let rename_button = gtk::Button::builder()
+            .icon_name("document-edit-symbolic")
+            .tooltip_text("Lokalen Ordner umbenennen")
+            .css_classes(vec!["flat", "circular"])
+            .valign(gtk::Align::Center)
+            .build();
+        let delete_button = gtk::Button::builder()
+            .icon_name("user-trash-symbolic")
+            .tooltip_text("Leeren lokalen Ordner löschen")
+            .css_classes(vec!["flat", "circular"])
+            .valign(gtk::Align::Center)
+            .build();
+        container.append(&rename_button);
+        container.append(&delete_button);
+
+        let folder_id_for_rename = folder_id.to_string();
+        let page_for_rename = self.downgrade();
+        rename_button.connect_clicked(move |_| {
+            if let Some(page) = page_for_rename.upgrade() {
+                page.present_local_folder_dialog(Some(&folder_id_for_rename));
+            }
+        });
+
+        let folder_id_for_delete = folder_id.to_string();
+        let page_for_delete = self.downgrade();
+        delete_button.connect_clicked(move |button| {
+            let folder_id = folder_id_for_delete.clone();
+            let page = page_for_delete.clone();
+            crate::dialogs::run_destructive_action(
+                button,
+                "Lokalen Ordner löschen?",
+                "Nur leere app-eigene Ordner können gelöscht werden. Importierte Maildateien bleiben unverändert.",
+                "Löschen",
+                move || {
+                    let result = crate::services::MailStoreService::new()
+                        .delete_local_folder(&folder_id);
+                    if let Some(page) = page.upgrade() {
+                        match result {
+                            Ok(()) => page.refresh_mail(),
+                            Err(error) => page.show_toast(&format!(
+                                "Lokaler Ordner konnte nicht gelöscht werden: {error}"
+                            )),
+                        }
+                    }
+                },
+            );
+        });
     }
 
     fn rebuild_camel_folder_rows(
@@ -2660,6 +3252,20 @@ impl MailPage {
             "junk" => "dialog-warning-symbolic",
             _ => "folder-symbolic",
         }
+    }
+
+    fn local_folder_label(folder_id: &str) -> String {
+        folder_id
+            .strip_prefix("custom:")
+            .unwrap_or(folder_id)
+            .replace('/', " / ")
+    }
+
+    fn is_builtin_folder_id(folder_id: &str) -> bool {
+        matches!(
+            folder_id,
+            "all" | "inbox" | "sent" | "drafts" | "trash" | "archive" | "junk" | "spam"
+        )
     }
 
     fn select_folder_row(&self, selection: &FolderSelection) {
@@ -3420,6 +4026,19 @@ impl MailPage {
         });
         batch_action_bar.append(&batch_flag_button);
 
+        let batch_label_button = gtk::Button::builder()
+            .label("Label")
+            .tooltip_text("Label der ausgewählten Nachrichten setzen oder entfernen")
+            .css_classes(vec!["flat"])
+            .build();
+        let page_for_batch_label = self.downgrade();
+        batch_label_button.connect_clicked(move |_| {
+            if let Some(page) = page_for_batch_label.upgrade() {
+                page.present_label_editor();
+            }
+        });
+        batch_action_bar.append(&batch_label_button);
+
         let batch_archive_button = gtk::Button::builder()
             .label("Archivieren")
             .tooltip_text("Ausgewählte Nachrichten archivieren")
@@ -3857,6 +4476,12 @@ impl MailPage {
             .css_classes(vec!["flat"])
             .build();
 
+        let label_btn = gtk::Button::builder()
+            .icon_name("tag-symbolic")
+            .tooltip_text("Label setzen oder entfernen")
+            .css_classes(vec!["flat"])
+            .build();
+
         let delete_btn = gtk::Button::builder()
             .icon_name("user-trash-symbolic")
             .tooltip_text("Löschen (Delete)")
@@ -3929,6 +4554,12 @@ impl MailPage {
             }
         ));
 
+        label_btn.connect_clicked(glib::clone!(
+            #[weak(rename_to = page)]
+            self,
+            move |_| page.present_label_editor()
+        ));
+
         flag_btn.connect_clicked(glib::clone!(
             #[weak(rename_to = page)]
             self,
@@ -3963,6 +4594,7 @@ impl MailPage {
         action_bar.append(&reply_all_btn);
         action_bar.append(&forward_btn);
         action_bar.append(&export_btn);
+        action_bar.append(&label_btn);
 
         let spacer = gtk::Box::builder().hexpand(true).build();
         action_bar.append(&spacer);
@@ -4992,6 +5624,9 @@ impl MailPage {
 
         match result {
             MailPageLoadResult::Camel(camel) => {
+                if replace {
+                    self.imp().local_folder_ids.replace(HashSet::new());
+                }
                 let status = format_camel_status(&camel);
                 let has_more = camel.has_more_for(
                     request.source_uid.as_deref(),
@@ -5055,7 +5690,12 @@ impl MailPage {
                     }
                 }
             }
-            MailPageLoadResult::Local { reason, messages } => {
+            MailPageLoadResult::Local {
+                reason,
+                messages,
+                local_folders,
+            } => {
+                let mut visible_local_folders = local_folders;
                 let folder_list = self.imp().folder_list.borrow().clone();
                 if let Some(folder_list) = folder_list.as_ref() {
                     self.rebuild_camel_folder_rows(folder_list, &[]);
@@ -5079,9 +5719,22 @@ impl MailPage {
                     }
                     self.refresh_thread_metadata(store);
                 }
+                visible_local_folders.extend(
+                    folder_counts
+                        .keys()
+                        .filter(|folder_id| folder_id.starts_with("custom:"))
+                        .cloned(),
+                );
                 if let Some(folder_list) = folder_list.as_ref() {
-                    Self::update_folder_counts(folder_list, &folder_counts);
+                    self.rebuild_local_folder_rows(
+                        folder_list,
+                        &folder_counts,
+                        &visible_local_folders,
+                    );
                 }
+                self.imp()
+                    .local_folder_ids
+                    .replace(visible_local_folders.clone());
                 self.imp().active_request.replace(None);
                 if let Some(state) = self.imp().source_state.borrow().as_ref() {
                     state.set_label(&reason);
@@ -5111,7 +5764,7 @@ impl MailPage {
                 if let Some(filter) = self.imp().message_filter.borrow().as_ref() {
                     filter.changed(gtk::FilterChange::Different);
                 }
-                if loaded_count > 0 {
+                if loaded_count > 0 || !visible_local_folders.is_empty() {
                     if let Some(section) = self.imp().folder_section.borrow().as_ref() {
                         section.set_visible(true);
                     }
@@ -5801,5 +6454,44 @@ mod tests {
             FolderSelection::from_folder_id("provider-specific").folder_id,
             "inbox"
         );
+    }
+
+    #[test]
+    fn local_folder_rows_keep_custom_folder_names_readable() {
+        assert_eq!(
+            MailPage::local_folder_label("custom:Projects/2026"),
+            "Projects / 2026"
+        );
+        assert_eq!(MailPage::local_folder_label("archive"), "archive");
+        assert!(MailPage::is_builtin_folder_id("junk"));
+        assert!(!MailPage::is_builtin_folder_id("custom:Projects"));
+    }
+
+    #[test]
+    fn local_folder_tree_adds_parents_and_honors_collapsed_ancestors() {
+        let mut ids = HashSet::new();
+        MailPage::add_local_folder_tree_ids(&mut ids, "custom:Projects/2026/Invoices");
+
+        assert!(ids.contains("custom:Projects"));
+        assert!(ids.contains("custom:Projects/2026"));
+        assert!(ids.contains("custom:Projects/2026/Invoices"));
+        assert_eq!(
+            MailPage::local_folder_display_label("custom:Projects/2026/Invoices"),
+            "Invoices"
+        );
+        assert_eq!(
+            MailPage::local_folder_depth("custom:Projects/2026/Invoices"),
+            2
+        );
+
+        let collapsed = HashSet::from(["custom:Projects".to_string()]);
+        assert!(MailPage::local_folder_has_collapsed_parent(
+            "custom:Projects/2026/Invoices",
+            &collapsed
+        ));
+        assert!(!MailPage::local_folder_has_collapsed_parent(
+            "custom:Projects",
+            &collapsed
+        ));
     }
 }

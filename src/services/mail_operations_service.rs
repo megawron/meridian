@@ -25,6 +25,7 @@ pub enum MailOperationKind {
     MarkNotJunk,
     MarkImportant,
     MarkNotImportant,
+    SetLabel,
 }
 
 impl fmt::Display for MailOperationKind {
@@ -38,6 +39,7 @@ impl fmt::Display for MailOperationKind {
             Self::MarkNotJunk => "Als Nicht-Spam markieren",
             Self::MarkImportant => "Als wichtig markieren",
             Self::MarkNotImportant => "Wichtig-Markierung entfernen",
+            Self::SetLabel => "Label ändern",
         };
         formatter.write_str(label)
     }
@@ -117,6 +119,12 @@ pub(crate) enum MailOperation {
         id: String,
         location: Option<MailBackendLocation>,
         is_important: bool,
+    },
+    SetLabel {
+        id: String,
+        location: Option<MailBackendLocation>,
+        label: String,
+        labeled: bool,
     },
     RestoreDeleted {
         id: String,
@@ -262,6 +270,35 @@ impl MailCommand {
                 "Als wichtig markieren".to_string()
             } else {
                 "Wichtig-Markierung entfernen".to_string()
+            },
+        }
+    }
+
+    pub(crate) fn set_label_local(
+        id: impl Into<String>,
+        label: impl Into<String>,
+        before: bool,
+        after: bool,
+    ) -> Self {
+        let id = id.into();
+        let label = label.into().trim().to_string();
+        Self {
+            forward: MailOperation::SetLabel {
+                id: id.clone(),
+                location: None,
+                label: label.clone(),
+                labeled: after,
+            },
+            inverse: MailOperation::SetLabel {
+                id,
+                location: None,
+                label,
+                labeled: before,
+            },
+            description: if after {
+                "Label gesetzt".to_string()
+            } else {
+                "Label entfernt".to_string()
             },
         }
     }
@@ -672,6 +709,22 @@ impl MailOperationsService {
                     MailOperationKind::MarkNotImportant
                 })),
             },
+            MailOperation::SetLabel {
+                id,
+                location,
+                label,
+                labeled,
+            } => match location {
+                Some(_) => Err(Self::unsupported_backend(
+                    MailOperationKind::SetLabel,
+                    "EDS/Camel-Multi-Label-Backend",
+                )),
+                None => self
+                    .store
+                    .metadata_store()
+                    .set_label(&id, &label, labeled)
+                    .map_err(Into::into),
+            },
             MailOperation::RestoreDeleted { id, location } => match location {
                 Some(location) => self.apply_camel(
                     CamelMailOperation::RestoreDeleted { location },
@@ -881,10 +934,14 @@ impl MailOperationsService {
     }
 
     fn unsupported(operation: MailOperationKind) -> MailOperationError {
-        MailOperationError::Unsupported {
-            operation,
-            backend: "lokaler Nur-Lese-Import",
-        }
+        Self::unsupported_backend(operation, "lokaler Nur-Lese-Import")
+    }
+
+    fn unsupported_backend(
+        operation: MailOperationKind,
+        backend: &'static str,
+    ) -> MailOperationError {
+        MailOperationError::Unsupported { operation, backend }
     }
 }
 
@@ -1029,6 +1086,54 @@ mod tests {
             .expect("junk command should be undone");
         assert_eq!(store.load_local_records()[0].folder_id, original_folder);
         assert!(source.is_file());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn local_label_command_persists_and_undoes_through_the_sidecar() {
+        let root = temporary_directory("operations-local-label");
+        let mail_dir = root.join("mail");
+        fs::create_dir_all(&mail_dir).expect("mail directory should be created");
+        fs::write(
+            mail_dir.join("message.eml"),
+            "From: Sender <sender@example.org>\nSubject: Test\n\nBody\n",
+        )
+        .expect("mail should be written");
+
+        let store =
+            MailStoreService::with_mail_dir_and_state_path(&mail_dir, root.join("state.json"));
+        let message_id = store
+            .load_local_records()
+            .first()
+            .expect("message should parse")
+            .id
+            .clone();
+        let operations = MailOperationsService::with_store(store.clone());
+        let mut history = MailCommandStack::default();
+
+        history
+            .execute(
+                &operations,
+                MailCommand::set_label_local(&message_id, "Work", false, true),
+            )
+            .expect("local label should persist");
+        assert!(
+            MailMetadataStore::new(store.metadata_path())
+                .load_labels()
+                .get(&message_id)
+                .is_some_and(|labels| labels.contains("Work"))
+        );
+
+        history
+            .undo(&operations)
+            .expect("undo should succeed")
+            .expect("label command should be undone");
+        assert!(
+            MailMetadataStore::new(store.metadata_path())
+                .load_labels()
+                .is_empty()
+        );
 
         let _ = fs::remove_dir_all(root);
     }

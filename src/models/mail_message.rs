@@ -227,11 +227,63 @@ impl MailMessageObject {
             .any(|label| label.eq_ignore_ascii_case(wanted.trim()))
     }
 
+    /// Update one app-owned label in the in-memory row.  The sidecar write is
+    /// performed by `MailOperationsService`; keeping this small UI update
+    /// separate lets a successful command refresh without changing any EDS
+    /// message data.
+    pub fn set_label(&self, label: &str, labeled: bool) -> bool {
+        let mut labels = self.imp().labels.borrow_mut();
+        let changed = update_label_values(&mut labels, label, labeled);
+        if changed {
+            labels.sort_by_key(|value| value.to_ascii_lowercase());
+        }
+        changed
+    }
+
     pub(crate) fn backend_location(&self) -> Option<MailBackendLocation> {
         self.imp().backend_location.borrow().clone()
     }
 
     pub fn attachments(&self) -> Vec<AttachmentInfo> {
         self.imp().attachments.borrow().clone()
+    }
+}
+
+fn update_label_values(labels: &mut Vec<String>, label: &str, labeled: bool) -> bool {
+    let label = label.trim();
+    if label.is_empty() {
+        return false;
+    }
+
+    if labeled {
+        if labels
+            .iter()
+            .any(|candidate| candidate.eq_ignore_ascii_case(label))
+        {
+            return false;
+        }
+        labels.push(label.to_string());
+        true
+    } else {
+        let original_len = labels.len();
+        labels.retain(|candidate| !candidate.eq_ignore_ascii_case(label));
+        original_len != labels.len()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::update_label_values;
+
+    #[test]
+    fn label_updates_are_case_insensitive_and_idempotent() {
+        let mut labels = vec!["Work".to_string()];
+        assert!(!update_label_values(&mut labels, " work ", true));
+        assert_eq!(labels, ["Work"]);
+        assert!(update_label_values(&mut labels, "Personal", true));
+        assert_eq!(labels, ["Work", "Personal"]);
+        assert!(update_label_values(&mut labels, "WORK", false));
+        assert_eq!(labels, ["Personal"]);
+        assert!(!update_label_values(&mut labels, "", true));
     }
 }
