@@ -4565,7 +4565,7 @@ impl MailPage {
         classic_toolbar.set_visible(
             AppSettings::try_new()
                 .map(|settings| settings.mail_show_toolbar())
-                .unwrap_or(false),
+                .unwrap_or(true),
         );
         self.imp()
             .classic_toolbar
