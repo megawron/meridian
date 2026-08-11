@@ -73,6 +73,10 @@
       <default>false</default>
       <summary>Show ISO week numbers in calendar views</summary>
     </key>
+    <key name="calendar-hidden-sources" type="s">
+      <default>''</default>
+      <summary>Hidden calendar source UIDs</summary>
+    </key>
     <key name="date-format" type="s">
       <default>'german'</default>
       <summary>Calendar date display format (german, iso, or us)</summary>
@@ -224,6 +228,10 @@
       <default>'all'</default>
       <summary>Initial task filter (all, today, important, or completed)</summary>
     </key>
+    <key name="task-source-filter" type="s">
+      <default>''</default>
+      <summary>Selected task source filter</summary>
+    </key>
     <key name="task-sort-field" type="s">
       <default>'due'</default>
       <summary>Task list sort field (due, title, or priority)</summary>
@@ -235,6 +243,10 @@
     <key name="memo-sort-field" type="s">
       <default>'updated'</default>
       <summary>Memo list sort field (updated, title, or source)</summary>
+    </key>
+    <key name="memo-source-filter" type="s">
+      <default>''</default>
+      <summary>Selected memo source filter</summary>
     </key>
     <key name="memo-sort-descending" type="b">
       <default>true</default>

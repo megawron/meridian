@@ -225,6 +225,32 @@ impl AppSettings {
         self.set_boolean("calendar-show-week-numbers", value);
     }
 
+    pub fn calendar_hidden_sources(&self) -> Vec<String> {
+        self.settings
+            .string("calendar-hidden-sources")
+            .split(',')
+            .map(str::trim)
+            .filter(|uid| !uid.is_empty())
+            .map(ToOwned::to_owned)
+            .collect()
+    }
+
+    pub fn set_calendar_hidden_sources(&self, source_uids: &[String]) {
+        let mut source_uids = source_uids
+            .iter()
+            .map(|uid| uid.trim())
+            .filter(|uid| !uid.is_empty())
+            .collect::<Vec<_>>();
+        source_uids.sort_unstable();
+        source_uids.dedup();
+        if let Err(error) = self
+            .settings
+            .set_string("calendar-hidden-sources", &source_uids.join(","))
+        {
+            tracing::warn!(%error, "Could not persist hidden calendar sources");
+        }
+    }
+
     pub fn date_format(&self) -> String {
         let value = self.settings.string("date-format").to_string();
         match value.as_str() {
@@ -616,6 +642,16 @@ impl AppSettings {
         }
     }
 
+    pub fn task_source_filter(&self) -> String {
+        self.settings.string("task-source-filter").to_string()
+    }
+
+    pub fn set_task_source_filter(&self, value: &str) {
+        if let Err(error) = self.settings.set_string("task-source-filter", value.trim()) {
+            tracing::warn!(%error, "Could not persist task source filter");
+        }
+    }
+
     pub fn task_sort_field(&self) -> String {
         let value = self.settings.string("task-sort-field").to_string();
         match value.as_str() {
@@ -657,6 +693,16 @@ impl AppSettings {
         };
         if let Err(error) = self.settings.set_string("memo-sort-field", value) {
             tracing::warn!(%error, "Could not persist memo sort field");
+        }
+    }
+
+    pub fn memo_source_filter(&self) -> String {
+        self.settings.string("memo-source-filter").to_string()
+    }
+
+    pub fn set_memo_source_filter(&self, value: &str) {
+        if let Err(error) = self.settings.set_string("memo-source-filter", value.trim()) {
+            tracing::warn!(%error, "Could not persist memo source filter");
         }
     }
 
@@ -729,9 +775,11 @@ impl AppSettings {
             "mail-sort-descending",
             "mail-threading",
             "task-filter",
+            "task-source-filter",
             "task-sort-field",
             "task-sort-descending",
             "memo-sort-field",
+            "memo-source-filter",
             "memo-sort-descending",
         ] {
             self.settings.reset(key);

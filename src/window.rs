@@ -127,6 +127,23 @@ impl EvolutionWindow {
         }
     }
 
+    pub(crate) fn show_search_domain(&self, domain: crate::services::search_engine::SearchDomain) {
+        let page_name = match domain {
+            crate::services::search_engine::SearchDomain::Mail => "mail",
+            crate::services::search_engine::SearchDomain::Calendar => "calendar",
+            crate::services::search_engine::SearchDomain::Contacts => "contacts",
+            crate::services::search_engine::SearchDomain::All => return,
+        };
+        if let Some(view_stack) = self.imp().view_stack.borrow().as_ref() {
+            view_stack.set_visible_child_name(page_name);
+        }
+        self.add_toast(&adw::Toast::new(match page_name {
+            "mail" => "Mailbereich geöffnet",
+            "calendar" => "Kalender-/Aufgaben-/Notizbereich geöffnet",
+            _ => "Kontaktbereich geöffnet",
+        }));
+    }
+
     fn setup_layout(&self) {
         let view_stack = adw::ViewStack::new();
 

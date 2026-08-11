@@ -602,7 +602,9 @@ werden.
   portable Kalenderansicht bietet zusätzlich eine lokale Freie-Zeiten-Abfrage
   innerhalb der konfigurierten Arbeitszeit, die überlappende Termine zusammen-
   führt und eine Mindestdauer berücksichtigt; native EDS-Free/Busy-Daten und
-  Teilnehmerverfügbarkeit bleiben Linux-only.
+  Teilnehmerverfügbarkeit bleiben Linux-only. Die Kalenderansicht listet EDS-
+  und lokale Kalenderquellen mit persistenten Sichtbarkeitsschaltern; ausge-
+  blendete Quellen werden in Monats-, Tages- und Wochenansicht berücksichtigt.
 - [~] GTK4-rs-Aufgaben- und Memo-Ansichten laden VTODO-/VJOURNAL-Komponenten
   über die native libecal-2.0-Brücke aus den aktivierten EDS-Quellen. Neue
   VTODOs/VJOURNALs, VTODO-Statusänderungen und vollständiges VTODO-Bearbeiten
@@ -613,8 +615,11 @@ werden.
   fehlt noch. Wenn EDS nicht verfügbar ist, können neue lokale VTODOs und
   VJOURNALs im app-eigenen Kalenderbestand persistent gespeichert werden.
   Standard-Aufgabenliste und Standard-Notizliste werden getrennt von der
-  Standard-Kalenderquelle persistent vorselektiert und in Backup/Restore
-  übernommen.
+  Standard-Kalenderquelle in den Einstellungen vorselektiert, als lokale oder
+  EDS-Quelle angezeigt und in Backup/Restore übernommen. Aufgaben- und
+  Notizlisten können zusätzlich über eine persistente Quellen-Auswahl gefiltert
+  werden; nicht mehr verfügbare gespeicherte Quellen bleiben als Hinweis
+  sichtbar.
 - [~] EDS-Source-Registry und ESource-basierte Kalenderauswahl werden dynamisch
   angezeigt; Kalender-, Aufgaben- und Memo-Quellen werden per
   e_cal_client_connect_sync() gelesen, inklusive Quellidentität und
@@ -728,9 +733,10 @@ werden.
   Kontakt-Schnellsuche durchsucht Name, E-Mail, Organisation, Titel, Telefon,
   Notiz, Kategorien, Adressen und die erhaltene vCard. Der portable
   Adressbuchfilter kann EDS-Quellen bzw. das lokale Adressbuch auswählen und
-  Dubletten anhand normalisierter E-Mail-/Telefonwerte anzeigen. EDS-
-  Adressbuchauswahl, GAL/LDAP/Exchange-Suche und serverseitige Kontaktsuche
-  fehlen noch.
+  Dubletten anhand normalisierter E-Mail-/Telefonwerte anzeigen. Die
+  Adressbuchauswahl ist als persistente Standardquelle in den Einstellungen
+  verfügbar; GAL/LDAP/Exchange-Suche und serverseitige Kontaktsuche fehlen
+  noch.
 
 #### Phase 5 — Sicherheit und Datenschutz
 
@@ -795,7 +801,10 @@ werden.
   durchsucht zusätzlich den lokalen Mail-, Kalender-, Aufgaben-, Notizen- und
   Kontaktbestand über einen gemeinsamen Service und kann den Suchbereich auf
   Alle, Mail, Kalender/Aufgaben/Notizen oder Kontakte einschränken. Server-/Camel-Suche und
-  Suchordner mit serverseitiger Live-Aktualisierung fehlen noch.
+  Suchordner mit serverseitiger Live-Aktualisierung fehlen noch. Lokale
+  Mailtreffer berücksichtigen dabei auch Empfänger, Ordner, Labels, Status,
+  Dateinamen, Nachrichtentext und vollständige Kalender-/Aufgaben-/Notizdaten;
+  aktivierbare Treffer wechseln in den passenden GTK4-rs-Hauptbereich.
 - [ ] Exchange/Microsoft 365: Graph/OAuth2, Mail/Kalender/Kontakte/GAL/OOF,
   EWS-Kompatibilität nur soweit technisch notwendig.
 

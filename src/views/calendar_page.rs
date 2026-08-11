@@ -7,11 +7,12 @@ use adw::subclass::prelude::*;
 use chrono::{Datelike, Duration, Local, NaiveDate, NaiveDateTime, Timelike, Weekday};
 use gtk::{gdk, gio, glib};
 use std::cell::RefCell;
+use std::collections::HashSet;
 use std::rc::Rc;
 
 use crate::services::calendar_category_service::CalendarCategoryStore;
 use crate::services::calendar_store_service::{
-    CalendarEventRecord, export_ical_component, update_ical_property,
+    CalendarEventRecord, CalendarStoreService, export_ical_component, update_ical_property,
 };
 use crate::services::ecal_service::{
     CalendarDataOrigin, ECalChangeKind, ECalComponentType, ECalRecord, ECalService, ECalSyncEvent,
@@ -50,6 +51,8 @@ mod imp {
         pub workweek_view: RefCell<Option<gtk::Box>>,
         pub agenda_view: RefCell<Option<gtk::Box>>,
         pub event_records: RefCell<Option<Rc<RefCell<Vec<CalendarEventRecord>>>>>,
+        pub event_list: RefCell<Option<gtk::ListBox>>,
+        pub hidden_calendar_sources: RefCell<HashSet<String>>,
         pub ecal_monitor_cancel: RefCell<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>>,
     }
 
@@ -65,6 +68,8 @@ mod imp {
                 workweek_view: RefCell::new(None),
                 agenda_view: RefCell::new(None),
                 event_records: RefCell::new(None),
+                event_list: RefCell::new(None),
+                hidden_calendar_sources: RefCell::new(HashSet::new()),
                 ecal_monitor_cancel: RefCell::new(None),
             }
         }
@@ -133,6 +138,11 @@ impl CalendarPage {
     }
 
     fn build_ui(&self) {
+        if let Some(settings) = AppSettings::try_new() {
+            self.imp()
+                .hidden_calendar_sources
+                .replace(settings.calendar_hidden_sources().into_iter().collect());
+        }
         let paned = gtk::Paned::new(gtk::Orientation::Horizontal);
         paned.set_resize_start_child(false);
         paned.set_shrink_start_child(false);
@@ -167,20 +177,6 @@ impl CalendarPage {
             .css_classes(vec!["boxed-list"])
             .build();
 
-        let calendars: [(&str, &str, bool); 0] = [];
-
-        for (name, _color, active) in calendars {
-            let row = adw::ActionRow::builder().title(name).build();
-
-            let check = gtk::CheckButton::builder()
-                .active(active)
-                .valign(gtk::Align::Center)
-                .build();
-
-            row.add_prefix(&check);
-            source_list.append(&row);
-        }
-
         sidebar_box.append(&source_list);
 
         let calendar_state = gtk::Label::builder()
@@ -208,6 +204,7 @@ impl CalendarPage {
         self.imp()
             .event_records
             .replace(Some(Rc::clone(&event_records)));
+        self.imp().event_list.replace(Some(event_list.clone()));
 
         let local_item_state_for_load = local_item_state.clone();
         let event_list_for_load = event_list.clone();
@@ -256,6 +253,7 @@ impl CalendarPage {
                         }
                         if let Some(page) = page_for_load.upgrade() {
                             page.refresh_calendar_views();
+                            page.refresh_event_list_visibility();
                         }
                     }
                 }
@@ -316,6 +314,7 @@ impl CalendarPage {
                     }
                     if let Some(page) = page_for_monitor.upgrade() {
                         page.refresh_calendar_views();
+                        page.refresh_event_list_visibility();
                     }
                 }
             });
@@ -323,42 +322,116 @@ impl CalendarPage {
 
         let source_list_for_load = source_list.clone();
         let calendar_state_for_load = calendar_state.clone();
+        let page_weak_for_source = self.downgrade();
         glib::spawn_future_local(async move {
-            match eds_service::list_calendar_sources().await {
-                Ok(sources) if sources.is_empty() => {
-                    calendar_state_for_load.set_label("Keine Kalenderquellen in EDS gefunden.");
-                }
-                Ok(sources) => {
-                    for source in sources {
-                        let escaped_title = glib::markup_escape_text(&source.display_name);
-                        let row = adw::ActionRow::builder()
-                            .title(escaped_title.as_str())
-                            .subtitle(&format!(
-                                "{} · {}",
-                                source.backend_name,
-                                if source.enabled {
-                                    "aktiv"
-                                } else {
-                                    "deaktiviert"
-                                }
-                            ))
-                            .build();
-                        let check = gtk::CheckButton::builder()
-                            .active(source.enabled)
-                            .sensitive(false)
-                            .valign(gtk::Align::Center)
-                            .tooltip_text("Kalenderquellen werden über EDS verwaltet")
-                            .build();
-                        row.add_prefix(&check);
-                        source_list_for_load.append(&row);
+            let discovery =
+                eds_service::discover_sources(eds_service::EdsSourceKind::Calendar).await;
+            let mut sources = discovery.sources;
+            sources.sort_by_cached_key(|source| {
+                (source.display_name.to_lowercase(), source.uid.clone())
+            });
+            let hidden_sources = page_weak_for_source
+                .upgrade()
+                .map(|page| page.imp().hidden_calendar_sources.borrow().clone())
+                .unwrap_or_default();
+            let mut displayed_sources = 0usize;
+
+            for source in sources {
+                let source_uid = source.uid.clone();
+                let escaped_title = glib::markup_escape_text(&source.display_name);
+                let subtitle = if source.backend_name.trim().is_empty() {
+                    if source.enabled {
+                        "aktiv".to_string()
+                    } else {
+                        "deaktiviert".to_string()
                     }
-                    calendar_state_for_load.set_visible(false);
-                }
-                Err(error) => {
-                    tracing::warn!(%error, "Could not load calendar sources from EDS");
-                    calendar_state_for_load
-                        .set_label(&format!("EDS-Kalender sind nicht erreichbar: {error}"));
-                }
+                } else {
+                    format!(
+                        "{} · {}",
+                        source.backend_name,
+                        if source.enabled {
+                            "aktiv"
+                        } else {
+                            "deaktiviert"
+                        }
+                    )
+                };
+                let row = adw::ActionRow::builder()
+                    .title(escaped_title.as_str())
+                    .subtitle(&subtitle)
+                    .build();
+                let check = gtk::CheckButton::builder()
+                    .active(source.enabled && !hidden_sources.contains(&source_uid))
+                    .sensitive(source.enabled)
+                    .valign(gtk::Align::Center)
+                    .tooltip_text("Kalender in den Ansichten ein-/ausblenden")
+                    .build();
+                let page_weak_for_toggle = page_weak_for_source.clone();
+                let source_uid_for_toggle = source_uid.clone();
+                check.connect_toggled(move |check| {
+                    let Some(page) = page_weak_for_toggle.upgrade() else {
+                        return;
+                    };
+                    let mut hidden_sources = page.imp().hidden_calendar_sources.borrow_mut();
+                    if check.is_active() {
+                        hidden_sources.remove(&source_uid_for_toggle);
+                    } else {
+                        hidden_sources.insert(source_uid_for_toggle.clone());
+                    }
+                    let hidden_sources = hidden_sources.iter().cloned().collect::<Vec<_>>();
+                    if let Some(settings) = AppSettings::try_new() {
+                        settings.set_calendar_hidden_sources(&hidden_sources);
+                    }
+                    page.refresh_calendar_views();
+                    page.refresh_event_list_visibility();
+                });
+                row.add_prefix(&check);
+                source_list_for_load.append(&row);
+                displayed_sources += 1;
+            }
+
+            if CalendarStoreService::new().is_writable() {
+                let source_uid = "local-calendar".to_string();
+                let row = adw::ActionRow::builder()
+                    .title("Lokaler Kalender")
+                    .subtitle("App-eigener iCalendar-Speicher")
+                    .build();
+                let check = gtk::CheckButton::builder()
+                    .active(!hidden_sources.contains(&source_uid))
+                    .valign(gtk::Align::Center)
+                    .tooltip_text("Kalender in den Ansichten ein-/ausblenden")
+                    .build();
+                let page_weak_for_toggle = page_weak_for_source.clone();
+                check.connect_toggled(move |check| {
+                    let Some(page) = page_weak_for_toggle.upgrade() else {
+                        return;
+                    };
+                    let mut hidden_sources = page.imp().hidden_calendar_sources.borrow_mut();
+                    if check.is_active() {
+                        hidden_sources.remove("local-calendar");
+                    } else {
+                        hidden_sources.insert("local-calendar".to_string());
+                    }
+                    let hidden_sources = hidden_sources.iter().cloned().collect::<Vec<_>>();
+                    if let Some(settings) = AppSettings::try_new() {
+                        settings.set_calendar_hidden_sources(&hidden_sources);
+                    }
+                    page.refresh_calendar_views();
+                    page.refresh_event_list_visibility();
+                });
+                row.add_prefix(&check);
+                source_list_for_load.append(&row);
+                displayed_sources += 1;
+            }
+
+            if displayed_sources == 0 {
+                let status = discovery
+                    .error
+                    .map(|error| format!("EDS-Kalender sind nicht erreichbar: {error}"))
+                    .unwrap_or_else(|| "Keine Kalenderquellen verfügbar".to_string());
+                calendar_state_for_load.set_label(&status);
+            } else {
+                calendar_state_for_load.set_visible(false);
             }
         });
 
@@ -799,6 +872,31 @@ impl CalendarPage {
         self.refresh_period_label();
     }
 
+    fn refresh_event_list_visibility(&self) {
+        let Some(event_list) = self.imp().event_list.borrow().as_ref().cloned() else {
+            return;
+        };
+        let mut visible_count = 0usize;
+        let mut child = event_list.first_child();
+        while let Some(widget) = child {
+            child = widget.next_sibling();
+            let Ok(row) = widget.downcast::<gtk::ListBoxRow>() else {
+                continue;
+            };
+            let source_uid = unsafe {
+                row.data::<String>("event-source-uid")
+                    .map(|value| value.as_ref().clone())
+                    .unwrap_or_default()
+            };
+            let visible = self.calendar_source_is_visible(&source_uid);
+            row.set_visible(visible);
+            if visible {
+                visible_count += 1;
+            }
+        }
+        event_list.set_visible(visible_count > 0);
+    }
+
     fn refresh_period_label(&self) {
         let Some(label) = self.imp().month_date_label.borrow().as_ref().cloned() else {
             return;
@@ -1223,7 +1321,34 @@ impl CalendarPage {
                 records
                     .borrow()
                     .iter()
-                    .filter(|event| event_occurs_on(event, date))
+                    .filter(|event| {
+                        self.calendar_source_is_visible(&event.source_uid)
+                            && event_occurs_on(event, date)
+                    })
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn calendar_source_is_visible(&self, source_uid: &str) -> bool {
+        !self
+            .imp()
+            .hidden_calendar_sources
+            .borrow()
+            .contains(source_uid)
+    }
+
+    fn visible_event_records(&self) -> Vec<CalendarEventRecord> {
+        self.imp()
+            .event_records
+            .borrow()
+            .as_ref()
+            .map(|records| {
+                records
+                    .borrow()
+                    .iter()
+                    .filter(|event| self.calendar_source_is_visible(&event.source_uid))
                     .cloned()
                     .collect()
             })
@@ -1255,13 +1380,7 @@ impl CalendarPage {
             .map(|settings| settings.calendar_show_week_numbers())
             .unwrap_or(false);
         let column_offset = if show_week_numbers { 1 } else { 0 };
-        let events = self
-            .imp()
-            .event_records
-            .borrow()
-            .as_ref()
-            .map(|records| records.borrow().clone())
-            .unwrap_or_default();
+        let events = self.visible_event_records();
 
         while let Some(child) = grid.first_child() {
             grid.remove(&child);

@@ -30,6 +30,10 @@ fn default_calendar_workdays() -> String {
     "monday,tuesday,wednesday,thursday,friday".to_string()
 }
 
+fn default_calendar_hidden_sources() -> String {
+    String::new()
+}
+
 fn default_mail_sort_field() -> String {
     "date".to_string()
 }
@@ -42,12 +46,20 @@ fn default_task_sort_field() -> String {
     "due".to_string()
 }
 
+fn default_task_source_filter() -> String {
+    String::new()
+}
+
 fn default_task_sort_descending() -> bool {
     true
 }
 
 fn default_memo_sort_field() -> String {
     "updated".to_string()
+}
+
+fn default_memo_source_filter() -> String {
+    String::new()
 }
 
 fn default_memo_sort_descending() -> bool {
@@ -162,6 +174,8 @@ struct BackupSettings {
     confirm_destructive_actions: bool,
     #[serde(default)]
     calendar_show_week_numbers: bool,
+    #[serde(default = "default_calendar_hidden_sources")]
+    calendar_hidden_sources: String,
     #[serde(default = "default_date_format")]
     date_format: String,
     #[serde(default = "default_time_format")]
@@ -174,12 +188,16 @@ struct BackupSettings {
     mail_threading: bool,
     #[serde(default = "default_task_filter")]
     task_filter: String,
+    #[serde(default = "default_task_source_filter")]
+    task_source_filter: String,
     #[serde(default = "default_task_sort_field")]
     task_sort_field: String,
     #[serde(default = "default_task_sort_descending")]
     task_sort_descending: bool,
     #[serde(default = "default_memo_sort_field")]
     memo_sort_field: String,
+    #[serde(default = "default_memo_source_filter")]
+    memo_source_filter: String,
     #[serde(default = "default_memo_sort_descending")]
     memo_sort_descending: bool,
 }
@@ -332,15 +350,18 @@ impl BackupSettings {
             notifications_enabled: settings.notifications_enabled(),
             confirm_destructive_actions: settings.confirm_destructive_actions(),
             calendar_show_week_numbers: settings.calendar_show_week_numbers(),
+            calendar_hidden_sources: settings.calendar_hidden_sources().join(","),
             date_format: settings.date_format(),
             time_format: settings.time_format(),
             mail_sort_field: settings.mail_sort_field(),
             mail_sort_descending: settings.mail_sort_descending(),
             mail_threading: settings.mail_threading(),
             task_filter: settings.task_filter(),
+            task_source_filter: settings.task_source_filter(),
             task_sort_field: settings.task_sort_field(),
             task_sort_descending: settings.task_sort_descending(),
             memo_sort_field: settings.memo_sort_field(),
+            memo_source_filter: settings.memo_source_filter(),
             memo_sort_descending: settings.memo_sort_descending(),
         }
     }
@@ -395,15 +416,24 @@ impl BackupSettings {
         settings.set_notifications_enabled(self.notifications_enabled);
         settings.set_confirm_destructive_actions(self.confirm_destructive_actions);
         settings.set_calendar_show_week_numbers(self.calendar_show_week_numbers);
+        settings.set_calendar_hidden_sources(
+            &self
+                .calendar_hidden_sources
+                .split(',')
+                .map(str::to_string)
+                .collect::<Vec<_>>(),
+        );
         settings.set_date_format(&self.date_format);
         settings.set_time_format(&self.time_format);
         settings.set_mail_sort_field(&self.mail_sort_field);
         settings.set_mail_sort_descending(self.mail_sort_descending);
         settings.set_mail_threading(self.mail_threading);
         settings.set_task_filter(&self.task_filter);
+        settings.set_task_source_filter(&self.task_source_filter);
         settings.set_task_sort_field(&self.task_sort_field);
         settings.set_task_sort_descending(self.task_sort_descending);
         settings.set_memo_sort_field(&self.memo_sort_field);
+        settings.set_memo_source_filter(&self.memo_source_filter);
         settings.set_memo_sort_descending(self.memo_sort_descending);
     }
 }
@@ -985,10 +1015,13 @@ mod tests {
         assert!(settings.mail_show_preview_text);
         assert!(settings.mail_show_labels);
         assert!(!settings.calendar_show_week_numbers);
+        assert!(settings.calendar_hidden_sources.is_empty());
         assert_eq!(settings.mail_sort_field, "date");
         assert!(settings.mail_sort_descending);
         assert!(settings.mail_threading);
+        assert!(settings.task_source_filter.is_empty());
         assert!(settings.task_sort_descending);
+        assert!(settings.memo_source_filter.is_empty());
         assert!(settings.memo_sort_descending);
     }
 

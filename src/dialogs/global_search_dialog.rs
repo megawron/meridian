@@ -172,11 +172,11 @@ impl GlobalSearchDialog {
             results.len()
         ));
         for result in results {
-            list.append(&Self::result_row(&result));
+            list.append(&self.result_row(&result));
         }
     }
 
-    fn result_row(result: &SearchResultItem) -> adw::ActionRow {
+    fn result_row(&self, result: &SearchResultItem) -> adw::ActionRow {
         let title = if result.title.trim().is_empty() {
             "(Ohne Titel)"
         } else {
@@ -197,11 +197,29 @@ impl GlobalSearchDialog {
             subtitle.push_str(" · ");
             subtitle.push_str(&snippet);
         }
-        adw::ActionRow::builder()
+        let row = adw::ActionRow::builder()
             .title(title)
             .subtitle(&subtitle)
+            .activatable(result.domain != SearchDomain::All)
             .selectable(false)
-            .build()
+            .build();
+        if result.domain != SearchDomain::All {
+            let domain = result.domain;
+            row.connect_activated(glib::clone!(
+                #[weak(rename_to = dialog)]
+                self,
+                move |_| {
+                    let Some(parent) = dialog.transient_for().and_then(|window| {
+                        window.downcast::<crate::window::EvolutionWindow>().ok()
+                    }) else {
+                        return;
+                    };
+                    parent.show_search_domain(domain);
+                    dialog.close();
+                }
+            ));
+        }
+        row
     }
 
     fn set_status(&self, message: &str) {

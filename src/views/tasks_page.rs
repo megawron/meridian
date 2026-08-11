@@ -37,6 +37,7 @@ mod imp {
     pub struct TasksPage {
         pub ecal_monitor_cancel: RefCell<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>>,
         pub(super) task_filter: Cell<TaskFilter>,
+        pub(super) task_source_filter: RefCell<Option<String>>,
         pub(super) task_sort: Cell<TaskSort>,
         pub(super) task_sort_descending: Cell<bool>,
         pub task_query: RefCell<String>,
@@ -153,6 +154,10 @@ impl TasksPage {
             self.imp()
                 .task_filter
                 .set(TaskFilter::from_setting(&settings.task_filter()));
+            let source_filter = settings.task_source_filter();
+            self.imp()
+                .task_source_filter
+                .replace((!source_filter.trim().is_empty()).then_some(source_filter));
             self.imp()
                 .task_sort
                 .set(TaskSort::from_setting(&settings.task_sort_field()));
@@ -275,6 +280,13 @@ impl TasksPage {
         };
         set_direction_button(&direction_button, self.imp().task_sort_descending.get());
 
+        let source_model = gtk::StringList::new(&["Alle Aufgabenlisten"]);
+        let source_uids = Rc::new(RefCell::new(Vec::<String>::new()));
+        let source_selector =
+            gtk::DropDown::new(Some(source_model.clone()), None::<&gtk::Expression>);
+        source_selector.set_tooltip_text(Some("Aufgabenliste auswählen"));
+        let initial_source_filter = self.imp().task_source_filter.borrow().clone();
+
         let btn_add_task = gtk::Button::builder()
             .label("Neue Aufgabe")
             .icon_name("list-add-symbolic")
@@ -284,6 +296,7 @@ impl TasksPage {
         toolbar.append(&search_entry);
         toolbar.append(&sort_selector);
         toolbar.append(&direction_button);
+        toolbar.append(&source_selector);
         toolbar.append(&btn_add_task);
 
         content_box.append(&toolbar);
@@ -306,6 +319,48 @@ impl TasksPage {
             .margin_top(24)
             .build();
         content_box.append(&empty_tasks);
+
+        let source_model_for_load = source_model.clone();
+        let source_uids_for_load = Rc::clone(&source_uids);
+        let source_selector_for_load = source_selector.clone();
+        glib::spawn_future_local(async move {
+            let discovery =
+                eds_service::discover_sources(eds_service::EdsSourceKind::Calendar).await;
+            let mut sources = discovery.sources;
+            sources.retain(|source| source.enabled);
+            sources.sort_by_cached_key(|source| {
+                (source.display_name.to_lowercase(), source.uid.clone())
+            });
+
+            let mut names = vec!["Alle Aufgabenlisten".to_string()];
+            let mut uids = Vec::new();
+            for source in sources {
+                names.push(if source.backend_name.trim().is_empty() {
+                    source.display_name
+                } else {
+                    format!("{} · {}", source.display_name, source.backend_name)
+                });
+                uids.push(source.uid);
+            }
+            if let Some(initial_source_filter) = initial_source_filter.as_deref()
+                && !uids.iter().any(|uid| uid == initial_source_filter)
+            {
+                names.push(format!("Nicht verfügbare Quelle · {initial_source_filter}"));
+                uids.push(initial_source_filter.to_string());
+            }
+            names.push("Lokale Aufgabenliste".to_string());
+            uids.push("local-calendar".to_string());
+
+            let name_refs = names.iter().map(String::as_str).collect::<Vec<_>>();
+            source_model_for_load.splice(0, source_model_for_load.n_items(), &name_refs);
+            source_uids_for_load.replace(uids.clone());
+            let selected = initial_source_filter
+                .as_deref()
+                .and_then(|uid| uids.iter().position(|candidate| candidate == uid))
+                .map(|index| index as u32 + 1)
+                .unwrap_or(0);
+            source_selector_for_load.set_selected(selected);
+        });
 
         let page_weak_for_search = self.downgrade();
         let task_list_for_search = task_list.clone();
@@ -368,6 +423,35 @@ impl TasksPage {
                 &task_list_for_direction,
                 &task_store_for_direction,
                 &empty_tasks_for_direction,
+            );
+        });
+
+        let page_weak_for_source = self.downgrade();
+        let source_uids_for_selector = Rc::clone(&source_uids);
+        let task_list_for_source = task_list.clone();
+        let task_store_for_source = task_store.clone();
+        let empty_tasks_for_source = empty_tasks.clone();
+        source_selector.connect_selected_notify(move |selector| {
+            let Some(page) = page_weak_for_source.upgrade() else {
+                return;
+            };
+            let source_filter = if selector.selected() == 0 {
+                None
+            } else {
+                source_uids_for_selector
+                    .borrow()
+                    .get(selector.selected() as usize - 1)
+                    .cloned()
+            };
+            page.imp().task_source_filter.replace(source_filter.clone());
+            if let Some(settings) = AppSettings::try_new() {
+                settings.set_task_source_filter(source_filter.as_deref().unwrap_or_default());
+            }
+            render_task_rows(
+                &page,
+                &task_list_for_source,
+                &task_store_for_source,
+                &empty_tasks_for_source,
             );
         });
 
@@ -1093,6 +1177,7 @@ fn render_task_rows(
     }
 
     let filter = page.imp().task_filter.get();
+    let source_filter = page.imp().task_source_filter.borrow().clone();
     let sort = page.imp().task_sort.get();
     let query = page.imp().task_query.borrow().trim().to_lowercase();
     let mut visible = 0;
@@ -1101,7 +1186,7 @@ fn render_task_rows(
         let Some(task) = task_store.item(index).and_downcast::<TaskItemObject>() else {
             continue;
         };
-        if task_matches_filter(&task, filter, &query) {
+        if task_matches_filter_with_source(&task, filter, source_filter.as_deref(), &query) {
             tasks.push(task);
         }
     }
@@ -1182,6 +1267,18 @@ fn compare_optional_dates(left: Option<NaiveDate>, right: Option<NaiveDate>) -> 
 }
 
 fn task_matches_filter(task: &TaskItemObject, filter: TaskFilter, query: &str) -> bool {
+    task_matches_filter_with_source(task, filter, None, query)
+}
+
+fn task_matches_filter_with_source(
+    task: &TaskItemObject,
+    filter: TaskFilter,
+    source_filter: Option<&str>,
+    query: &str,
+) -> bool {
+    if source_filter.is_some_and(|source_uid| task.source_uid() != source_uid) {
+        return false;
+    }
     let matches_filter = match filter {
         TaskFilter::All => true,
         TaskFilter::Today => {
@@ -2384,6 +2481,18 @@ mod tests {
         assert!(task_matches_filter(&task, TaskFilter::Today, ""));
         assert!(task_matches_filter(&task, TaskFilter::Important, ""));
         assert!(task_matches_filter(&task, TaskFilter::All, "electricity"));
+        assert!(task_matches_filter_with_source(
+            &task,
+            TaskFilter::All,
+            Some("local-calendar"),
+            ""
+        ));
+        assert!(!task_matches_filter_with_source(
+            &task,
+            TaskFilter::All,
+            Some("other-source"),
+            ""
+        ));
         assert!(!task_matches_filter(&task, TaskFilter::Completed, ""));
 
         task.set_completed(true);

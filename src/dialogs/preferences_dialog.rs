@@ -17,6 +17,7 @@ use crate::services::AppSettings;
 use crate::services::account_config_service::AccountConfigStore;
 use crate::services::backup_service;
 use crate::services::calendar_category_service::{CalendarCategory, CalendarCategoryStore};
+use crate::services::eds_service::{self, EdsSourceKind};
 use crate::services::mail_filter_service::{
     FilterAction, FilterField, FilterOperator, MailFilterStore,
 };
@@ -679,6 +680,22 @@ impl PreferencesDialog {
         ));
         group_local_sources.add(&row_import_contacts);
         page_accounts.add(&group_local_sources);
+
+        let group_default_address_book = adw::PreferencesGroup::builder()
+            .title("Standardadressbuch")
+            .description("Neue Kontakte und die lokale Kontaktsuche verwenden diese Quelle")
+            .build();
+        group_default_address_book.add(&source_preference_row(
+            "Standardadressbuch",
+            "EDS-Adressbücher und lokales Adressbuch",
+            EdsSourceKind::AddressBook,
+            "local-addressbook",
+            "Lokales Adressbuch",
+            settings.clone(),
+            AppSettings::default_address_book_source_uid,
+            AppSettings::set_default_address_book_source_uid,
+        ));
+        page_accounts.add(&group_default_address_book);
 
         let group_backup = adw::PreferencesGroup::builder()
             .title("Daten &amp; Sicherung")
@@ -1814,6 +1831,42 @@ impl PreferencesDialog {
         group_calendar_view.add(&row_time_format);
         page_calendar.add(&group_calendar_view);
 
+        let group_default_ecal_sources = adw::PreferencesGroup::builder()
+            .title("Standardquellen")
+            .description("Quellen für neue Termine, Aufgaben und Notizen")
+            .build();
+        group_default_ecal_sources.add(&source_preference_row(
+            "Standardkalender",
+            "Neue Termine werden hier angelegt",
+            EdsSourceKind::Calendar,
+            "local-calendar",
+            "Lokaler Kalender",
+            settings.clone(),
+            AppSettings::default_calendar_source_uid,
+            AppSettings::set_default_calendar_source_uid,
+        ));
+        group_default_ecal_sources.add(&source_preference_row(
+            "Standardaufgabenliste",
+            "Neue Aufgaben werden hier angelegt",
+            EdsSourceKind::Calendar,
+            "local-calendar",
+            "Lokale Aufgabenliste",
+            settings.clone(),
+            AppSettings::default_task_source_uid,
+            AppSettings::set_default_task_source_uid,
+        ));
+        group_default_ecal_sources.add(&source_preference_row(
+            "Standardnotizliste",
+            "Neue Notizen werden hier angelegt",
+            EdsSourceKind::Calendar,
+            "local-calendar",
+            "Lokale Notizliste",
+            settings.clone(),
+            AppSettings::default_memo_source_uid,
+            AppSettings::set_default_memo_source_uid,
+        ));
+        page_calendar.add(&group_default_ecal_sources);
+
         let group_calendar_days = adw::PreferencesGroup::builder()
             .title("Arbeitstage")
             .description("Diese Wochentage werden in der Arbeitswochenansicht angezeigt")
@@ -2114,6 +2167,102 @@ impl PreferencesDialog {
         }
         tracing::warn!(%message, "Preferences dialog result");
     }
+}
+
+fn source_preference_row(
+    title: &str,
+    subtitle: &str,
+    kind: EdsSourceKind,
+    local_uid: &str,
+    local_label: &str,
+    settings: Option<AppSettings>,
+    get_source: fn(&AppSettings) -> String,
+    set_source: fn(&AppSettings, &str),
+) -> adw::ComboRow {
+    let source_model = gtk::StringList::new(&["Quellen werden geladen…"]);
+    let source_uids = Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+    let row = adw::ComboRow::builder()
+        .title(title)
+        .subtitle(subtitle)
+        .model(&source_model)
+        .build();
+
+    let source_uids_for_selection = Rc::clone(&source_uids);
+    let settings_for_selection = settings.clone();
+    row.connect_selected_notify(move |row| {
+        let Some(settings) = settings_for_selection.as_ref() else {
+            return;
+        };
+        let Some(source_uid) = source_uids_for_selection
+            .borrow()
+            .get(row.selected() as usize)
+            .cloned()
+        else {
+            return;
+        };
+        set_source(settings, &source_uid);
+    });
+
+    let preferred_source_uid = settings
+        .as_ref()
+        .map(get_source)
+        .filter(|uid| !uid.trim().is_empty());
+    let source_model_for_load = source_model.clone();
+    let source_uids_for_load = Rc::clone(&source_uids);
+    let row_for_load = row.clone();
+    let local_uid = local_uid.to_string();
+    let local_label = local_label.to_string();
+    let subtitle = subtitle.to_string();
+    glib::spawn_future_local(async move {
+        let discovery = eds_service::discover_sources(kind).await;
+        let discovery_status = discovery.status_text();
+        let mut sources = discovery.sources;
+        sources.retain(|source| source.enabled);
+        sources
+            .sort_by_cached_key(|source| (source.display_name.to_lowercase(), source.uid.clone()));
+
+        let mut names = sources
+            .iter()
+            .map(|source| {
+                if source.backend_name.trim().is_empty() {
+                    source.display_name.clone()
+                } else {
+                    format!("{} · {}", source.display_name, source.backend_name)
+                }
+            })
+            .collect::<Vec<_>>();
+        let mut uids = sources
+            .into_iter()
+            .map(|source| source.uid)
+            .collect::<Vec<_>>();
+
+        if let Some(preferred_source_uid) = preferred_source_uid.as_deref()
+            && !uids.iter().any(|uid| uid == preferred_source_uid)
+        {
+            names.insert(
+                0,
+                format!("Nicht verfügbare Quelle · {preferred_source_uid}"),
+            );
+            uids.insert(0, preferred_source_uid.to_string());
+        }
+        names.push(local_label);
+        uids.push(local_uid.clone());
+
+        let name_refs = names.iter().map(String::as_str).collect::<Vec<_>>();
+        source_model_for_load.splice(0, source_model_for_load.n_items(), &name_refs);
+        source_uids_for_load.replace(uids.clone());
+        row_for_load.set_subtitle(&format!("{subtitle} · {discovery_status}"));
+
+        let selected_index = preferred_source_uid
+            .as_deref()
+            .and_then(|uid| uids.iter().position(|candidate| candidate == uid))
+            .or_else(|| uids.iter().position(|uid| uid == &local_uid));
+        if let Some(selected_index) = selected_index {
+            row_for_load.set_selected(selected_index as u32);
+        }
+    });
+
+    row
 }
 
 fn directory_picker_row<F>(

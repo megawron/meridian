@@ -115,6 +115,11 @@ impl MemosPage {
                 .map(|settings| settings.memo_sort_descending())
                 .unwrap_or(true),
         ));
+        let memo_source_filter = Rc::new(RefCell::new(
+            AppSettings::try_new()
+                .map(|settings| settings.memo_source_filter())
+                .filter(|source_uid| !source_uid.trim().is_empty()),
+        ));
 
         // ── Sidebar (Memo List) ─────────────────────────────────────────
 
@@ -155,6 +160,12 @@ impl MemosPage {
             }));
         };
         set_direction_button(&direction_button, memo_sort_descending.get());
+        let source_model = gtk::StringList::new(&["Alle Notizlisten"]);
+        let source_uids = Rc::new(RefCell::new(Vec::<String>::new()));
+        let source_selector =
+            gtk::DropDown::new(Some(source_model.clone()), None::<&gtk::Expression>);
+        source_selector.set_tooltip_text(Some("Notizliste auswählen"));
+        let initial_source_filter = memo_source_filter.borrow().clone();
         search_entry.set_hexpand(true);
         let search_toolbar = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
@@ -164,6 +175,7 @@ impl MemosPage {
         search_toolbar.append(&search_entry);
         search_toolbar.append(&sort_selector);
         search_toolbar.append(&direction_button);
+        search_toolbar.append(&source_selector);
         sidebar_box.append(&search_toolbar);
 
         let memo_list = gtk::ListBox::builder()
@@ -228,34 +240,102 @@ impl MemosPage {
         sidebar_box.append(&memo_list);
 
         let memo_records_for_search = Rc::clone(&memo_records);
+        let memo_source_filter_for_search = Rc::clone(&memo_source_filter);
         let empty_state_for_search = empty_state.clone();
         search_entry.connect_search_changed(glib::clone!(
             #[weak]
             memo_list,
             move |entry| {
                 let query = entry.text().trim().to_lowercase();
-                if query.is_empty() {
-                    memo_list.set_filter_func(|_| true);
-                    empty_state_for_search.set_label("Keine Notizen aus EDS geladen");
+                let source_filter = memo_source_filter_for_search.borrow().clone();
+                apply_memo_list_filter(&memo_list, source_filter.clone(), query.clone());
+                empty_state_for_search.set_label(if query.is_empty() && source_filter.is_none() {
+                    "Keine Notizen aus EDS geladen"
                 } else {
-                    let query_for_filter = query.clone();
-                    memo_list.set_filter_func(move |row| unsafe {
-                        row.data::<String>("memo-search")
-                            .is_some_and(|value| value.as_ref().contains(&query_for_filter))
-                    });
-                    empty_state_for_search.set_label("Keine passenden Notizen");
-                }
-                let has_records = if query.is_empty() {
-                    !memo_records_for_search.borrow().is_empty()
-                } else {
-                    memo_records_for_search
-                        .borrow()
-                        .iter()
-                        .any(|memo| memo_search_text(memo).contains(&query))
-                };
+                    "Keine passenden Notizen"
+                });
+                let has_records = memo_records_for_search
+                    .borrow()
+                    .iter()
+                    .any(|memo| memo_matches_filter(memo, source_filter.as_deref(), &query));
                 empty_state_for_search.set_visible(!has_records);
             }
         ));
+
+        let memo_source_filter_for_selector = Rc::clone(&memo_source_filter);
+        let source_uids_for_selector = Rc::clone(&source_uids);
+        let search_entry_for_source = search_entry.clone();
+        let memo_list_for_source = memo_list.clone();
+        let memo_records_for_source = Rc::clone(&memo_records);
+        let empty_state_for_source = empty_state.clone();
+        source_selector.connect_selected_notify(move |selector| {
+            let source_filter = if selector.selected() == 0 {
+                None
+            } else {
+                source_uids_for_selector
+                    .borrow()
+                    .get(selector.selected() as usize - 1)
+                    .cloned()
+            };
+            memo_source_filter_for_selector.replace(source_filter.clone());
+            if let Some(settings) = AppSettings::try_new() {
+                settings.set_memo_source_filter(source_filter.as_deref().unwrap_or_default());
+            }
+            let query = search_entry_for_source.text().trim().to_lowercase();
+            apply_memo_list_filter(&memo_list_for_source, source_filter.clone(), query.clone());
+            empty_state_for_source.set_label(if query.is_empty() && source_filter.is_none() {
+                "Keine Notizen aus EDS geladen"
+            } else {
+                "Keine passenden Notizen"
+            });
+            let has_records = memo_records_for_source
+                .borrow()
+                .iter()
+                .any(|memo| memo_matches_filter(memo, source_filter.as_deref(), &query));
+            empty_state_for_source.set_visible(!has_records);
+        });
+
+        let source_model_for_load = source_model.clone();
+        let source_uids_for_load = Rc::clone(&source_uids);
+        let source_selector_for_load = source_selector.clone();
+        glib::spawn_future_local(async move {
+            let discovery =
+                eds_service::discover_sources(eds_service::EdsSourceKind::Calendar).await;
+            let mut sources = discovery.sources;
+            sources.retain(|source| source.enabled);
+            sources.sort_by_cached_key(|source| {
+                (source.display_name.to_lowercase(), source.uid.clone())
+            });
+
+            let mut names = vec!["Alle Notizlisten".to_string()];
+            let mut uids = Vec::new();
+            for source in sources {
+                names.push(if source.backend_name.trim().is_empty() {
+                    source.display_name
+                } else {
+                    format!("{} · {}", source.display_name, source.backend_name)
+                });
+                uids.push(source.uid);
+            }
+            if let Some(initial_source_filter) = initial_source_filter.as_deref()
+                && !uids.iter().any(|uid| uid == initial_source_filter)
+            {
+                names.push(format!("Nicht verfügbare Quelle · {initial_source_filter}"));
+                uids.push(initial_source_filter.to_string());
+            }
+            names.push("Lokale Notizliste".to_string());
+            uids.push("local-calendar".to_string());
+
+            let name_refs = names.iter().map(String::as_str).collect::<Vec<_>>();
+            source_model_for_load.splice(0, source_model_for_load.n_items(), &name_refs);
+            source_uids_for_load.replace(uids.clone());
+            let selected = initial_source_filter
+                .as_deref()
+                .and_then(|uid| uids.iter().position(|candidate| candidate == uid))
+                .map(|index| index as u32 + 1)
+                .unwrap_or(0);
+            source_selector_for_load.set_selected(selected);
+        });
 
         let new_memo_btn = gtk::Button::builder()
             .label("Neue Notiz")
@@ -1074,6 +1154,25 @@ fn memo_search_text(memo: &MemoRecord) -> String {
         memo.summary, memo.description, memo.updated, memo.source_display_name, memo.component
     )
     .to_lowercase()
+}
+
+fn memo_matches_filter(memo: &MemoRecord, source_filter: Option<&str>, query: &str) -> bool {
+    source_filter.is_none_or(|source_uid| memo.source_uid == source_uid)
+        && (query.is_empty() || memo_search_text(memo).contains(query))
+}
+
+fn apply_memo_list_filter(memo_list: &gtk::ListBox, source_filter: Option<String>, query: String) {
+    memo_list.set_filter_func(move |row| unsafe {
+        let source_matches = source_filter.as_deref().is_none_or(|source_uid| {
+            row.data::<String>("memo-source-uid")
+                .is_some_and(|value| value.as_ref() == source_uid)
+        });
+        let query_matches = query.is_empty()
+            || row
+                .data::<String>("memo-search")
+                .is_some_and(|value| value.as_ref().contains(&query));
+        source_matches && query_matches
+    });
 }
 
 fn compare_memo_rows(
