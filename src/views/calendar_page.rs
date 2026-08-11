@@ -872,6 +872,17 @@ impl CalendarPage {
             }
         ));
 
+        if let Some(settings) = AppSettings::try_new() {
+            for key in ["calendar-time-zone", "date-format", "time-format"] {
+                let page_weak = self.downgrade();
+                settings.connect_changed(Some(key), move |_, _| {
+                    if let Some(page) = page_weak.upgrade() {
+                        page.refresh_calendar_time_display();
+                    }
+                });
+            }
+        }
+
         // Date navigation handlers
         prev_btn.connect_clicked(glib::clone!(
             #[weak(rename_to = page)]
@@ -931,6 +942,33 @@ impl CalendarPage {
         self.refresh_workweek_view();
         self.refresh_agenda_view();
         self.refresh_period_label();
+    }
+
+    fn refresh_calendar_time_display(&self) {
+        if let Some(records) = self.imp().event_records.borrow().as_ref().cloned() {
+            for event in records.borrow_mut().iter_mut() {
+                if let Some(start) =
+                    property_local_display(&event.component, "DTSTART", event.all_day)
+                {
+                    event.start = start;
+                }
+                if let Some(end) = property_local_display(&event.component, "DTEND", event.all_day)
+                {
+                    event.end = end;
+                }
+            }
+
+            if let Some(event_list) = self.imp().event_list.borrow().as_ref().cloned() {
+                while let Some(child) = event_list.first_child() {
+                    event_list.remove(&child);
+                }
+                for event in records.borrow().iter().cloned() {
+                    append_event_row(&event_list, Rc::clone(&records), event);
+                }
+            }
+        }
+        self.refresh_calendar_views();
+        self.refresh_event_list_visibility();
     }
 
     fn refresh_calendar_category_model(&self) {
