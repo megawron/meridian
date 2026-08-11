@@ -15,7 +15,8 @@ use std::rc::Rc;
 use crate::models::task_item::TaskItemObject;
 use crate::services::calendar_category_service::CalendarCategoryStore;
 use crate::services::calendar_store_service::{
-    CalendarStoreService, TaskRecord, export_ical_component, update_ical_property,
+    CalendarStoreService, TaskRecord, export_ical_component, replace_ical_attachments,
+    serialize_ical_attachment_value, update_ical_property,
 };
 use crate::services::ecal_service::{
     CalendarDataOrigin, ECalChangeKind, ECalComponentType, ECalRecord, ECalService, ECalSyncEvent,
@@ -572,6 +573,48 @@ impl TasksPage {
             .title("Kategorien (Komma getrennt)")
             .build();
         details.add(&categories_entry);
+        let attachment_view = gtk::TextView::builder()
+            .wrap_mode(gtk::WrapMode::None)
+            .height_request(72)
+            .margin_start(12)
+            .margin_end(12)
+            .margin_top(6)
+            .margin_bottom(6)
+            .build();
+        let attachment_buffer = attachment_view.buffer();
+        let attachment_scroll = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Automatic)
+            .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .min_content_height(72)
+            .max_content_height(160)
+            .build();
+        attachment_scroll.set_child(Some(&attachment_view));
+        let attachment_picker = gtk::Button::builder()
+            .icon_name("mail-attachment-symbolic")
+            .tooltip_text("Dateien als Aufgabenanhänge auswählen")
+            .css_classes(vec!["flat"])
+            .valign(gtk::Align::Center)
+            .build();
+        let attachment_header = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(6)
+            .margin_start(12)
+            .margin_end(6)
+            .margin_top(6)
+            .build();
+        let attachment_title = gtk::Label::builder()
+            .label("Anhänge (eine URI oder Datei pro Zeile)")
+            .halign(gtk::Align::Start)
+            .hexpand(true)
+            .build();
+        attachment_header.append(&attachment_title);
+        attachment_header.append(&attachment_picker);
+        let attachment_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .build();
+        attachment_box.append(&attachment_header);
+        attachment_box.append(&attachment_scroll);
+        details.add(&attachment_box);
         let reminder_row = adw::SpinRow::with_range(0.0, 10_080.0, 5.0);
         reminder_row.set_title("Erinnerung vorher (Minuten)");
         reminder_row.set_subtitle("0 deaktiviert die Erinnerung");
@@ -579,6 +622,44 @@ impl TasksPage {
         reminder_row.set_snap_to_ticks(true);
         details.add(&reminder_row);
         content_box.append(&details);
+
+        let attachment_buffer_for_picker = attachment_buffer.clone();
+        attachment_picker.connect_clicked(move |button| {
+            let Some(root) = button.root().and_downcast::<gtk::Window>() else {
+                return;
+            };
+            let file_dialog = gtk::FileDialog::builder()
+                .title("Aufgabenanhänge auswählen")
+                .modal(true)
+                .build();
+            let attachment_buffer_for_result = attachment_buffer_for_picker.clone();
+            file_dialog.open_multiple(Some(&root), None::<&gio::Cancellable>, move |result| {
+                let Ok(files) = result else {
+                    return;
+                };
+                let mut values = attachment_buffer_for_result
+                    .text(
+                        &attachment_buffer_for_result.start_iter(),
+                        &attachment_buffer_for_result.end_iter(),
+                        false,
+                    )
+                    .lines()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(ToOwned::to_owned)
+                    .collect::<Vec<_>>();
+                for index in 0..files.n_items() {
+                    let Some(file) = files.item(index).and_downcast::<gio::File>() else {
+                        continue;
+                    };
+                    let uri = file.uri().to_string();
+                    if !uri.is_empty() && !values.iter().any(|value| value == &uri) {
+                        values.push(uri);
+                    }
+                }
+                attachment_buffer_for_result.set_text(&values.join("\n"));
+            });
+        });
 
         let description_group = adw::PreferencesGroup::builder()
             .title("Beschreibung")
@@ -613,6 +694,7 @@ impl TasksPage {
             priority_spin.set_value(priority);
             categories_entry
                 .set_text(&ical_property(&task.component(), "CATEGORIES").unwrap_or_default());
+            attachment_buffer.set_text(&ical_properties(&task.component(), "ATTACH").join("\n"));
             reminder_row
                 .set_value(parse_ical_alarm_minutes(&task.component()).unwrap_or_default() as f64);
             description_view
@@ -715,6 +797,11 @@ impl TasksPage {
                 &description_view.buffer().end_iter(),
                 false,
             );
+            let attachments = attachment_buffer.text(
+                &attachment_buffer.start_iter(),
+                &attachment_buffer.end_iter(),
+                false,
+            );
             let priority = priority_spin.value() as u8;
             let categories = categories_entry.text();
             let reminder_minutes = reminder_row.value().round() as u32;
@@ -730,6 +817,7 @@ impl TasksPage {
                     &categories,
                     reminder_minutes,
                     &description,
+                    &attachments,
                     completed,
                 ),
                 None => build_task_component(
@@ -739,6 +827,7 @@ impl TasksPage {
                     &categories,
                     reminder_minutes,
                     &description,
+                    &attachments,
                 ),
             };
             let component = match component_result {
@@ -1407,6 +1496,7 @@ fn build_task_component(
     categories: &str,
     reminder_minutes: u32,
     description: &str,
+    attachments: &str,
 ) -> Result<String, String> {
     let title = title.trim();
     if title.is_empty() {
@@ -1439,6 +1529,16 @@ fn build_task_component(
     if !categories.is_empty() {
         component.push(format!("CATEGORIES:{categories}"));
     }
+    component.extend(
+        parse_attachments(attachments)
+            .into_iter()
+            .map(|attachment| {
+                format!(
+                    "ATTACH;VALUE=URI:{}",
+                    serialize_ical_attachment_value(&attachment)
+                )
+            }),
+    );
     if reminder_minutes > 0 {
         component.extend([
             "BEGIN:VALARM".to_string(),
@@ -1466,6 +1566,7 @@ fn update_task_component(
     categories: &str,
     reminder_minutes: u32,
     description: &str,
+    attachments: &str,
     completed: bool,
 ) -> Result<String, String> {
     let title = title.trim();
@@ -1498,6 +1599,7 @@ fn update_task_component(
     } else {
         update_ical_property(&component, "CATEGORIES", Some(&categories))
     };
+    component = replace_ical_attachments(&component, &parse_attachments(attachments));
     component = update_ical_alarm(&component, reminder_minutes, title);
     component = if description.trim().is_empty() {
         update_ical_property(&component, "DESCRIPTION", None)
@@ -1563,6 +1665,35 @@ fn ical_property(raw: &str, property_name: &str) -> Option<String> {
             .to_ascii_uppercase();
         (property == target).then(|| unescape_ical_text(value))
     })
+}
+
+fn ical_properties(raw: &str, property_name: &str) -> Vec<String> {
+    let target = property_name
+        .split(';')
+        .next()
+        .unwrap_or(property_name)
+        .to_ascii_uppercase();
+    unfold_ical_lines(raw)
+        .into_iter()
+        .filter_map(|line| {
+            let (property, value) = line.split_once(':')?;
+            let property = property
+                .split(';')
+                .next()
+                .unwrap_or(property)
+                .to_ascii_uppercase();
+            (property == target).then(|| unescape_ical_text(value))
+        })
+        .collect()
+}
+
+fn parse_attachments(value: &str) -> Vec<String> {
+    value
+        .lines()
+        .map(str::trim)
+        .filter(|attachment| !attachment.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
 }
 
 fn unescape_ical_text(value: &str) -> String {
@@ -1689,6 +1820,7 @@ mod tests {
             "Work, Important",
             30,
             "Line one\nLine two",
+            "",
         )
         .expect("task component should be valid");
         assert!(component.starts_with("BEGIN:VTODO\r\n"));
@@ -1703,9 +1835,9 @@ mod tests {
 
     #[test]
     fn task_component_rejects_invalid_due_date_and_empty_title() {
-        assert!(build_task_component("", "2026-08-11", 0, "", 0, "").is_err());
-        assert!(build_task_component("Task", "11.08.2026", 0, "", 0, "").is_err());
-        assert!(build_task_component("Task", "", 10, "", 0, "").is_err());
+        assert!(build_task_component("", "2026-08-11", 0, "", 0, "", "").is_err());
+        assert!(build_task_component("Task", "11.08.2026", 0, "", 0, "", "").is_err());
+        assert!(build_task_component("Task", "", 10, "", 0, "", "").is_err());
     }
 
     #[test]
@@ -1732,6 +1864,7 @@ mod tests {
             "Work,Next",
             10,
             "New description",
+            "",
             false,
         )
         .expect("task update should be valid");
@@ -1755,10 +1888,54 @@ mod tests {
             "Work,Next",
             0,
             "New description",
+            "",
             false,
         )
         .expect("task reminder should be removable");
         assert!(!cleared.contains("BEGIN:VALARM"));
+    }
+
+    #[test]
+    fn task_attachments_roundtrip_and_preserve_existing_parameters() {
+        let component = build_task_component(
+            "Prepare report",
+            "2026-08-11",
+            1,
+            "Work",
+            0,
+            "",
+            "https://files.example.test/report.pdf?kind=a,b;rev=2\nfile:///tmp/notes.txt",
+        )
+        .expect("task with attachments should serialize");
+        assert!(
+            component
+                .contains("ATTACH;VALUE=URI:https://files.example.test/report.pdf?kind=a,b;rev=2")
+        );
+        assert!(component.contains("ATTACH;VALUE=URI:file:///tmp/notes.txt"));
+
+        let existing = concat!(
+            "BEGIN:VTODO\r\nUID:task-1\r\n",
+            "ATTACH;FMTTYPE=application/pdf;VALUE=URI:https://files.example.test/report.pdf?kind=a,b;rev=2\r\n",
+            "ATTACH;VALUE=URI:https://files.example.test/old.pdf\r\n",
+            "END:VTODO\r\n"
+        );
+        let updated = update_task_component(
+            existing,
+            "Prepare report",
+            "",
+            0,
+            "",
+            0,
+            "",
+            "https://files.example.test/report.pdf?kind=a,b;rev=2\nhttps://files.example.test/new.pdf",
+            false,
+        )
+        .expect("task attachment update should be valid");
+        assert!(updated.contains(
+            "ATTACH;FMTTYPE=application/pdf;VALUE=URI:https://files.example.test/report.pdf?kind=a,b;rev=2"
+        ));
+        assert!(updated.contains("ATTACH;VALUE=URI:https://files.example.test/new.pdf"));
+        assert!(!updated.contains("https://files.example.test/old.pdf"));
     }
 
     #[test]

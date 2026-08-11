@@ -28,6 +28,9 @@ mod imp {
         pub banner: adw::Banner,
         pub webview: Option<webkit6::WebView>,
         pub current_message_id: RefCell<Option<String>>,
+        pub current_html: RefCell<Option<String>>,
+        pub current_base_uri: RefCell<Option<String>>,
+        pub settings: RefCell<Option<AppSettings>>,
     }
 
     #[glib::object_subclass]
@@ -116,6 +119,24 @@ impl MailViewer {
             .vexpand(true)
             .build();
 
+        if let Some(settings) = AppSettings::try_new() {
+            for key in [
+                "auto-load-remote-images",
+                "render-html",
+                "force-dark-mode",
+                "mail-font-family",
+                "mail-font-size",
+            ] {
+                let viewer_weak = self.downgrade();
+                settings.connect_changed(Some(key), move |_, _| {
+                    if let Some(viewer) = viewer_weak.upgrade() {
+                        viewer.reload_current();
+                    }
+                });
+            }
+            self.imp().settings.replace(Some(settings));
+        }
+
         // Block external navigation links in WebView, handle via xdg-open
         webview.connect_decide_policy(|_, decision, decision_type| {
             if decision_type == webkit6::PolicyDecisionType::NavigationAction {
@@ -172,6 +193,12 @@ impl MailViewer {
         self.imp()
             .current_message_id
             .replace(message_id.map(str::to_string));
+        self.imp()
+            .current_html
+            .replace(Some(html_content.to_string()));
+        self.imp()
+            .current_base_uri
+            .replace(base_uri.map(str::to_string));
         let global_remote_images = AppSettings::try_new()
             .as_ref()
             .map(AppSettings::auto_load_remote_images)
@@ -255,6 +282,15 @@ impl MailViewer {
 
             webview.load_html(&styled_html, base_uri);
         }
+    }
+
+    fn reload_current(&self) {
+        let Some(html) = self.imp().current_html.borrow().clone() else {
+            return;
+        };
+        let message_id = self.imp().current_message_id.borrow().clone();
+        let base_uri = self.imp().current_base_uri.borrow().clone();
+        self.load_html_for_message(message_id.as_deref(), &html, base_uri.as_deref());
     }
 
     /// Allow remote image loading for the current email.

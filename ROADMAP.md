@@ -497,13 +497,16 @@ werden.
   entfernt werden. Wenn EDS nicht erreichbar ist, werden aktivierte lokale
   Kontoprofile samt Alias-Adressen im Composer als ausdrücklich lokaler
   Absender angeboten; ein Versandversuch bleibt bis zur nativen Camel-
-  Aktivierung ein sichtbarer Backendfehler. EDS-Kontoänderungen und die
-  Linux-Laufzeitabnahme fehlen noch.
+  Aktivierung ein sichtbarer Backendfehler. Die portable Profilvalidierung
+  prüft E-Mail-, Alias-, Server-, Port- und TLS-Werte vor dem Speichern; EDS-
+  Kontoänderungen und die Linux-Laufzeitabnahme fehlen noch.
 - [~] Sichtbare Lese-/Datenschutz-/PGP-Optionen werden über GSettings
   persistiert, sofern das Schema installiert ist; Vorschaufenster,
   Markieren-beim-Auswählen, HTML/Text, externe Bilder, Schriftfamilie/-größe,
   Dark-Mode und Bestätigungsdialoge werden auch auf laufenden Ansichten
-  berücksichtigt.
+  berücksichtigt. Der geöffnete MailViewer speichert den aktuellen Inhalt
+  für eine sichere Neudarstellung und übernimmt diese Leseeinstellungen
+  sofort, ohne die Nachricht neu auswählen zu müssen.
 - [~] EDS-Quellen dynamisch als Konten anzeigen; das Setup speichert zusätzlich
   nicht-geheime Kontoprofile und kennzeichnet sie bis zur EDS/Camel-Aktivierung
   als ausstehend. Lokale Profile lassen sich bearbeiten, deaktivieren und
@@ -536,8 +539,10 @@ werden.
   Nummernlisten, Blockzitate sowie Undo/Redo; der Nur-Text-Modus wird als
   `text/plain` ausgegeben und die Standardwahl wird über GSettings gespeichert.
   Mail-/Composer-Schriftfamilie und -größe werden persistent angewendet, und
-  die WebKit-Rechtschreibprüfung ist aktiviert; Wörterbuch- und Sprachwahl
-  bleiben offen.
+  die WebKit-Rechtschreibprüfung ist aktiviert. Die portable Auswahl von
+  Systemstandard, Deutsch, Englisch oder beiden Wörterbuchsprachen wird
+  gespeichert, in Backup/Restore übernommen und auf neue Composer angewendet;
+  die tatsächlich installierten Wörterbücher bleiben hostabhängig.
 - [~] Synchronisationsstatus, Cancellation und begrenztes Retry/Backoff sind
   für den nativen Mail-Ladepfad vorhanden; Netzwerkwechsel, domänenweite
   Offline-/Online-Zustände, vollständige Wiederaufnahme und sauberes
@@ -556,8 +561,10 @@ werden.
   der portablen Ansicht bzw. im Termin-Editor verwendet.
   EDS-Quellenstatus wird angezeigt und neue VEVENTs können über den nativen
   ECal-Adapter gespeichert, bearbeitet und gelöscht werden; iCalendar-Export,
-  Wiederholungsregeln, Teilnehmer, Kategorien, private Termine, Konferenz-URLs
-  und einfache Erinnerungen sind im Editor vorbereitet. Kategoriebezeichnungen werden
+  Wiederholungsregeln, Teilnehmer, Kategorien, private Termine, Konferenz-URLs,
+  einfache Erinnerungen und portable Datei-/URI-Anhänge sind im Editor vorbereitet.
+  Beim Bearbeiten bleiben bestehende `ATTACH`-Parameter für unveränderte URIs erhalten;
+  eine Dateiauswahl ergänzt mehrere Anhänge zeilenweise. Kategoriebezeichnungen werden
   zusätzlich in einem portablen, versionierten Farbspeicher verwaltet und
   können in den Einstellungen bearbeitet werden. Lokale/importierte VEVENTs werden
   in den Tag-, Wochen- und Monatsansichten nach DAILY/WEEKLY/MONTHLY/YEARLY-
@@ -623,12 +630,15 @@ werden.
   kann in den app-eigenen lokalen Kalender übernommen werden. Portable
   ACCEPTED/TENTATIVE/DECLINED-Antworten erzeugen bereits einen RFC-kompatiblen
   `METHOD:REPLY`-Kalenderteil und einen persistierten app-eigenen
-  Antwortentwurf. Zeitzonen, freie Zeiten, komplexe Alarmtypen, Anhänge und
-  Offline-Sync fehlen noch; der native EDS/Camel-Transport und der
+  Antwortentwurf. Zeitzonen, freie Zeiten, komplexe Alarmtypen sowie native
+  EDS-/Camel-Anhangsübertragung und Offline-Sync fehlen noch; der
   serverseitige Teilnehmerstatus bleiben für die Linux-Abnahme zuständig. Der portable Reminder-Service wertet lokale
   `VALARM`-Display-Trigger aus und persistiert Zustellung/Snooze; die native
   EDS-Quelle, komplexe Wiederholungs-/Zeitzonenfälle und Linux-Abnahme bleiben
-  offen. Der Editor erhält beim Ändern bestehende Teilnehmerparameter und
+  offen. Portable Datei-/URI-Anhänge werden im Editor gespeichert und beim Ändern
+  für unveränderte URIs mit ihren bestehenden Parametern bewahrt; native EDS-/Camel-
+  Anhangsübertragung und Download-/Upload-Abnahme bleiben Linux-only. Der Editor erhält
+  beim Ändern bestehende Teilnehmerparameter und
   unbekannte Alarmtypen, während einfache Display-Alarme separat gepflegt
   werden.
 - [~] VTODO/VJOURNAL-Erstellung, VTODO-Status, Notizbearbeitung/-löschung,
@@ -640,7 +650,11 @@ werden.
   Kategorien werden im Editor geladen, als RFC5545-CATEGORIES gespeichert und
   beim Bearbeiten aktualisiert; einfache VTODO-Display-Erinnerungen werden als
   VALARM/TRIGGER gespeichert und beim Bearbeiten angepasst. Der portable
-  Reminder-Service wertet diese Alarme aus, persistiert Zustellung/Snooze und
+  VTODO-Editor bietet zusätzlich eine mehrzeilige Datei-/URI-Anhangsliste mit
+  Dateiauswahl; bestehende ATTACH-Parameter unveränderter URIs bleiben beim
+  Bearbeiten erhalten. Native EDS-Anhangsübertragung und Linux-Abnahme bleiben
+  offen. Der portable Reminder-Service wertet diese Alarme aus, persistiert
+  Zustellung/Snooze und
   stellt 10-Minuten-/1-Stunden-Snooze sowie Erledigt-Aktionen bereit. Komplexe
   Alarmtypen, native EDS-Aufgabenlisten-Synchronisation und weitere
   Evolution-Aufgabenlistenfunktionen fehlen noch. Aufgaben können portabel
@@ -810,7 +824,7 @@ angewendet und migrierbar ist.
 | Composer | HTML/Text, Formatvorlage, Schrift, Rechtschreibung, Wörterbücher, Zitate, Inline-Anhänge, Vorlagen, Snippets, Entwürfe, Undo/Redo | `[~]` |
 | Konten & Identitäten | mehrere Identitäten, Alias-Adressen, Signaturen, Standardkonto, Ordnerzuordnung, Passwort/Secret-Service, OAuth2 | `[~]` |
 | Kalender | Standardkalender, Arbeitswoche, Arbeitstage/-zeiten, Zeitzonen, Wochenstart, Erinnerungen, Snooze, Kategorien, Farben, Wetter/Feiertage | `[~]` |
-| Termine | Wiederholung, Teilnehmer, iTIP/iMIP, freie Zeit, Einladungsantworten, private Termine, Alarme, Konferenzanbieter, Anhänge | `[ ]` |
+| Termine | Wiederholung, Teilnehmer, iTIP/iMIP, freie Zeit, Einladungsantworten, private Termine, Alarme, Konferenzanbieter, Anhänge | `[~]` |
 | Aufgaben & Memos | Standardlisten, Priorität, Status, Fälligkeit, Erinnerungen, Sortierung, Kategorien, VTODO/VJOURNAL-Sync | `[~]` |
 | Kontakte | Standardadressbuch, Autocomplete, GAL/LDAP, vCard-Felder, Kategorien, Fotos, Dubletten, Telefon-/Adressformate | `[~]` |
 | Sicherheit | OpenPGP, S/MIME, Schlüssel/Zertifikate, Trust, Ablauf/Widerruf, Verschlüsselungsstandard, sichere Speicherung, Remote-Content | `[~]` |

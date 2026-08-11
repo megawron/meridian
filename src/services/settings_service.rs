@@ -267,6 +267,17 @@ impl AppSettings {
         self.set_boolean("composer-html", value);
     }
 
+    pub fn spellcheck_languages(&self) -> String {
+        sanitize_spellcheck_languages(&self.settings.string("spellcheck-languages"))
+    }
+
+    pub fn set_spellcheck_languages(&self, value: &str) {
+        let value = sanitize_spellcheck_languages(value);
+        if let Err(error) = self.settings.set_string("spellcheck-languages", &value) {
+            tracing::warn!(%error, "Could not persist spell-checking languages");
+        }
+    }
+
     pub fn mail_font_family(&self) -> String {
         let value = self.settings.string("mail-font-family").to_string();
         sanitize_font_family(&value)
@@ -619,6 +630,7 @@ impl AppSettings {
             "force-dark-mode",
             "render-html",
             "composer-html",
+            "spellcheck-languages",
             "mail-font-family",
             "mail-font-size",
             "mark-read-on-selection",
@@ -675,5 +687,35 @@ fn sanitize_font_family(value: &str) -> String {
         "system-ui, sans-serif".to_string()
     } else {
         value.to_string()
+    }
+}
+
+fn sanitize_spellcheck_languages(value: &str) -> String {
+    let mut languages = Vec::new();
+    for language in value.split(',').map(str::trim).filter(|language| {
+        !language.is_empty()
+            && language.len() <= 35
+            && language
+                .chars()
+                .all(|character| character.is_ascii_alphanumeric() || character == '-')
+    }) {
+        if !languages.contains(&language) {
+            languages.push(language);
+        }
+    }
+    languages.join(",")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sanitize_spellcheck_languages;
+
+    #[test]
+    fn spellcheck_language_values_are_sanitized_and_deduplicated() {
+        assert_eq!(
+            sanitize_spellcheck_languages(" de-DE,invalid! ,en-US,de-DE "),
+            "de-DE,en-US"
+        );
+        assert_eq!(sanitize_spellcheck_languages(""), "");
     }
 }

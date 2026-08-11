@@ -89,6 +89,8 @@ struct BackupSettings {
     render_html: bool,
     #[serde(default = "default_composer_html")]
     composer_html: bool,
+    #[serde(default)]
+    spellcheck_languages: String,
     #[serde(default = "default_mail_font_family")]
     mail_font_family: String,
     #[serde(default = "default_mail_font_size")]
@@ -245,6 +247,7 @@ impl BackupSettings {
             force_dark_mode: settings.force_dark_mode(),
             render_html: settings.render_html(),
             composer_html: settings.composer_html(),
+            spellcheck_languages: settings.spellcheck_languages(),
             mail_font_family: settings.mail_font_family(),
             mail_font_size: settings.mail_font_size(),
             mark_read_on_selection: settings.mark_read_on_selection(),
@@ -299,6 +302,7 @@ impl BackupSettings {
         settings.set_force_dark_mode(self.force_dark_mode);
         settings.set_render_html(self.render_html);
         settings.set_composer_html(self.composer_html);
+        settings.set_spellcheck_languages(&self.spellcheck_languages);
         settings.set_mail_font_family(&self.mail_font_family);
         settings.set_mail_font_size(self.mail_font_size);
         settings.set_mark_read_on_selection(self.mark_read_on_selection);
@@ -900,6 +904,7 @@ mod tests {
         assert!(settings.notifications_enabled);
         assert!(settings.mark_read_on_selection);
         assert!(settings.show_message_preview);
+        assert!(settings.spellcheck_languages.is_empty());
         assert_eq!(settings.mail_layout, "modern");
         assert_eq!(settings.mail_sidebar_position, 220);
         assert_eq!(settings.mail_modern_preview_position, 420);

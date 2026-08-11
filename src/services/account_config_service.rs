@@ -33,6 +33,16 @@ impl AccountProtocol {
     }
 }
 
+impl AccountProtocol {
+    fn requires_mail_servers(self) -> bool {
+        matches!(self, Self::ImapSmtp | Self::Pop3)
+    }
+
+    fn incoming_server_label(self) -> &'static str {
+        if self == Self::Pop3 { "POP3" } else { "IMAP" }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AccountProfile {
     pub id: String,
@@ -75,12 +85,66 @@ pub struct AccountProfile {
     pub enabled: bool,
 }
 
+impl AccountProfile {
+    /// Validate portable profile data before it is written.  This deliberately
+    /// does not validate passwords or OAuth tokens because those secrets are
+    /// never part of the local profile file.
+    pub fn validate(&self) -> Result<(), String> {
+        let email = self.email.trim();
+        if email.is_empty() || !is_plausible_address(email) {
+            return Err("Bitte eine gültige E-Mail-Adresse eingeben".to_string());
+        }
+        if self.display_name.trim().is_empty() {
+            return Err("Der Anzeigename darf nicht leer sein".to_string());
+        }
+        if self.id.trim().is_empty() {
+            return Err("Das Konto besitzt keine gültige interne ID".to_string());
+        }
+        if !matches!(self.tls_mode.as_str(), "tls" | "starttls" | "none") {
+            return Err("Die Verschlüsselungsart ist ungültig".to_string());
+        }
+        if self.imap_port == 0 || self.smtp_port == 0 {
+            return Err("IMAP-/SMTP-Ports müssen zwischen 1 und 65535 liegen".to_string());
+        }
+        if self.protocol.requires_mail_servers() && self.imap_host.trim().is_empty() {
+            return Err(format!(
+                "Bitte einen {}-Posteingangsserver eingeben",
+                self.protocol.incoming_server_label()
+            ));
+        }
+        if matches!(self.protocol, AccountProtocol::ImapSmtp) && self.smtp_host.trim().is_empty() {
+            return Err("Bitte einen SMTP-Postausgangsserver eingeben".to_string());
+        }
+        if self
+            .aliases
+            .iter()
+            .any(|alias| !alias.trim().is_empty() && !is_plausible_address(alias.trim()))
+        {
+            return Err("Jede Alias-Adresse muss eine gültige E-Mail-Adresse sein".to_string());
+        }
+        if !self.reply_to.trim().is_empty() && !is_plausible_address(self.reply_to.trim()) {
+            return Err("Die Antwortadresse ist ungültig".to_string());
+        }
+        Ok(())
+    }
+}
+
 fn default_imap_port() -> u16 {
     993
 }
 
 fn default_smtp_port() -> u16 {
     465
+}
+
+fn is_plausible_address(value: &str) -> bool {
+    let Some((local, domain)) = value.split_once('@') else {
+        return false;
+    };
+    !local.trim().is_empty()
+        && !domain.trim().is_empty()
+        && !value.chars().any(char::is_whitespace)
+        && domain.contains('.')
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -226,6 +290,7 @@ mod tests {
         store
             .upsert(profile.clone())
             .expect("profile should persist");
+        assert!(profile.validate().is_ok());
         assert_eq!(store.load(), vec![profile.clone()]);
         assert!(
             store
@@ -262,6 +327,39 @@ mod tests {
         assert!(profile.archive_folder.is_empty());
         assert!(profile.trash_folder.is_empty());
         assert!(profile.junk_folder.is_empty());
+    }
+
+    #[test]
+    fn account_profile_validation_rejects_invalid_portable_values() {
+        let mut profile = AccountProfile {
+            id: "account:test@example.org".to_string(),
+            display_name: "Test".to_string(),
+            email: "test@example.org".to_string(),
+            protocol: AccountProtocol::ImapSmtp,
+            imap_host: "imap.example.org".to_string(),
+            smtp_host: "smtp.example.org".to_string(),
+            tls_mode: "tls".to_string(),
+            username: "test@example.org".to_string(),
+            imap_port: 993,
+            smtp_port: 465,
+            auth_method: "password".to_string(),
+            reply_to: String::new(),
+            organization: String::new(),
+            aliases: vec!["alias@example.org".to_string()],
+            inbox_folder: String::new(),
+            drafts_folder: String::new(),
+            sent_folder: String::new(),
+            archive_folder: String::new(),
+            trash_folder: String::new(),
+            junk_folder: String::new(),
+            enabled: true,
+        };
+        assert!(profile.validate().is_ok());
+        profile.email = "not-an-address".to_string();
+        assert!(profile.validate().is_err());
+        profile.email = "test@example.org".to_string();
+        profile.smtp_host.clear();
+        assert!(profile.validate().is_err());
     }
 
     fn temporary_directory(label: &str) -> PathBuf {

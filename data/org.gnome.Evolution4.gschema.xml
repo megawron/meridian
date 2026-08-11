@@ -93,6 +93,10 @@
       <default>true</default>
       <summary>Use HTML mode when composing new messages</summary>
     </key>
+    <key name="spellcheck-languages" type="s">
+      <default>''</default>
+      <summary>Preferred spell-checking languages (comma-separated, empty for system default)</summary>
+    </key>
     <key name="mail-font-family" type="s">
       <default>'system-ui, sans-serif'</default>
       <summary>Font family used for mail and composer text</summary>

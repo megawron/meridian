@@ -12,13 +12,14 @@
 use adw::prelude::*;
 use adw::subclass::prelude::*;
 use chrono::{Duration, Local, NaiveDate, NaiveDateTime, Utc};
-use gtk::glib;
+use gtk::{gio, glib};
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::services::calendar_category_service::CalendarCategoryStore;
 use crate::services::calendar_store_service::{
-    CalendarEventRecord, CalendarStoreService, update_ical_property,
+    CalendarEventRecord, CalendarStoreService, replace_ical_attachments,
+    serialize_ical_attachment_value, update_ical_property,
 };
 use crate::services::ecal_service::{ECalComponentType, ECalService};
 use crate::services::eds_service;
@@ -228,6 +229,48 @@ impl EventDialog {
         group_recurrence.add(&row_attendees);
         let row_categories = adw::EntryRow::builder().title("Kategorien").build();
         group_recurrence.add(&row_categories);
+        let attachment_view = gtk::TextView::builder()
+            .wrap_mode(gtk::WrapMode::None)
+            .height_request(72)
+            .margin_start(12)
+            .margin_end(12)
+            .margin_top(6)
+            .margin_bottom(6)
+            .build();
+        let attachment_buffer = attachment_view.buffer();
+        let attachment_scroll = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Automatic)
+            .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .min_content_height(72)
+            .max_content_height(160)
+            .build();
+        attachment_scroll.set_child(Some(&attachment_view));
+        let attachment_picker = gtk::Button::builder()
+            .icon_name("mail-attachment-symbolic")
+            .tooltip_text("Dateien als Terminanhänge auswählen")
+            .css_classes(vec!["flat"])
+            .valign(gtk::Align::Center)
+            .build();
+        let attachment_header = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(6)
+            .margin_start(12)
+            .margin_end(6)
+            .margin_top(6)
+            .build();
+        let attachment_title = gtk::Label::builder()
+            .label("Anhänge (eine URI oder Datei pro Zeile)")
+            .halign(gtk::Align::Start)
+            .hexpand(true)
+            .build();
+        attachment_header.append(&attachment_title);
+        attachment_header.append(&attachment_picker);
+        let attachment_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .build();
+        attachment_box.append(&attachment_header);
+        attachment_box.append(&attachment_scroll);
+        group_recurrence.add(&attachment_box);
         let row_alarm = adw::SpinRow::with_range(0.0, 10_080.0, 5.0);
         row_alarm.set_title("Erinnerung vorher (Minuten)");
         row_alarm.set_digits(0);
@@ -244,6 +287,44 @@ impl EventDialog {
             .build();
         group_recurrence.add(&row_private);
         content_box.append(&group_recurrence);
+
+        let attachment_buffer_for_picker = attachment_buffer.clone();
+        attachment_picker.connect_clicked(move |button| {
+            let Some(root) = button.root().and_downcast::<gtk::Window>() else {
+                return;
+            };
+            let file_dialog = gtk::FileDialog::builder()
+                .title("Terminanhänge auswählen")
+                .modal(true)
+                .build();
+            let attachment_buffer_for_result = attachment_buffer_for_picker.clone();
+            file_dialog.open_multiple(Some(&root), None::<&gio::Cancellable>, move |result| {
+                let Ok(files) = result else {
+                    return;
+                };
+                let mut values = attachment_buffer_for_result
+                    .text(
+                        &attachment_buffer_for_result.start_iter(),
+                        &attachment_buffer_for_result.end_iter(),
+                        false,
+                    )
+                    .lines()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(ToOwned::to_owned)
+                    .collect::<Vec<_>>();
+                for index in 0..files.n_items() {
+                    let Some(file) = files.item(index).and_downcast::<gio::File>() else {
+                        continue;
+                    };
+                    let uri = file.uri().to_string();
+                    if !uri.is_empty() && !values.iter().any(|value| value == &uri) {
+                        values.push(uri);
+                    }
+                }
+                attachment_buffer_for_result.set_text(&values.join("\n"));
+            });
+        });
 
         if let Some(component) = edit_component.as_deref() {
             entry_title.set_text(ical_property(component, "SUMMARY").as_deref().unwrap_or(""));
@@ -269,6 +350,7 @@ impl EventDialog {
             row_recurrence.set_text(&ical_property(component, "RRULE").unwrap_or_default());
             row_attendees.set_text(&ical_properties(component, "ATTENDEE").join(", "));
             row_categories.set_text(&ical_property(component, "CATEGORIES").unwrap_or_default());
+            attachment_buffer.set_text(&ical_properties(component, "ATTACH").join("\n"));
             row_alarm.set_value(ical_alarm_minutes(component).unwrap_or(0) as f64);
             row_private.set_active(
                 ical_property(component, "CLASS")
@@ -400,6 +482,11 @@ impl EventDialog {
                 };
                 source_uid
             };
+            let attachments = attachment_buffer.text(
+                &attachment_buffer.start_iter(),
+                &attachment_buffer.end_iter(),
+                false,
+            );
             let new_component = match build_event_component(
                 &entry_title.text(),
                 &row_location.text(),
@@ -415,6 +502,7 @@ impl EventDialog {
                 &row_recurrence.text(),
                 &row_attendees.text(),
                 &row_categories.text(),
+                &attachments,
                 row_alarm.value().round() as u32,
                 row_private.is_active(),
             ) {
@@ -501,6 +589,12 @@ impl EventDialog {
                 );
                 let attendees = parse_attendees(&row_attendees.text());
                 updated = replace_ical_attendees(&updated, &attendees);
+                let attachments = parse_attachments(&attachment_buffer.text(
+                    &attachment_buffer.start_iter(),
+                    &attachment_buffer.end_iter(),
+                    false,
+                ));
+                updated = replace_ical_attachments(&updated, &attachments);
                 updated = replace_ical_alarm(&updated, row_alarm.value().round() as u32);
                 updated
             } else {
@@ -687,6 +781,15 @@ fn parse_attendees(value: &str) -> Vec<String> {
         .collect()
 }
 
+fn parse_attachments(value: &str) -> Vec<String> {
+    value
+        .lines()
+        .map(str::trim)
+        .filter(|attachment| !attachment.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
 fn component_property_has_date_value(raw: &str, name: &str) -> bool {
     let target = name.to_ascii_uppercase();
     raw.replace("\r\n", "\n")
@@ -749,6 +852,7 @@ fn build_event_component(
     recurrence: &str,
     attendees: &str,
     categories: &str,
+    attachments: &str,
     alarm_minutes: u32,
     private: bool,
 ) -> Result<String, String> {
@@ -804,6 +908,15 @@ fn build_event_component(
     } else {
         format!("CATEGORIES:{}\r\n", serialize_categories(categories.trim()))
     };
+    let attachment_lines = parse_attachments(attachments)
+        .into_iter()
+        .map(|attachment| {
+            format!(
+                "ATTACH;VALUE=URI:{}\r\n",
+                serialize_ical_attachment_value(&attachment)
+            )
+        })
+        .collect::<String>();
     let conference_line = if conference.trim().is_empty() {
         String::new()
     } else {
@@ -822,7 +935,7 @@ fn build_event_component(
 
     Ok(format!(
         "BEGIN:VEVENT\r\nUID:{uid}\r\nDTSTAMP:{stamp}\r\nSUMMARY:{}\r\n{}\
-         \r\n{}\r\nLOCATION:{}\r\nDESCRIPTION:{}\r\n{}{}{}{}{}{}END:VEVENT\r\n",
+         \r\n{}\r\nLOCATION:{}\r\nDESCRIPTION:{}\r\n{}{}{}{}{}{}{}END:VEVENT\r\n",
         escape_ical_text(title),
         start_line,
         end_line,
@@ -832,6 +945,7 @@ fn build_event_component(
         attendee_lines,
         conference_line,
         categories_line,
+        attachment_lines,
         class_line,
         alarm,
     ))
@@ -1068,6 +1182,7 @@ mod tests {
             "FREQ=WEEKLY;BYDAY=MO",
             "mailto:person@example.org",
             "Work",
+            "",
             15,
             true,
         )
@@ -1102,6 +1217,7 @@ mod tests {
                 "",
                 "",
                 "",
+                "",
                 0,
                 false,
             )
@@ -1115,6 +1231,7 @@ mod tests {
                 false,
                 "2026-08-10 13:00",
                 "2026-08-10 12:00",
+                "",
                 "",
                 "",
                 "",
@@ -1147,6 +1264,49 @@ mod tests {
         );
         assert!(updated.contains("ATTENDEE:mailto:new@example.test"));
         assert!(!updated.contains("alice@example.test"));
+    }
+
+    #[test]
+    fn event_attachments_roundtrip_and_preserve_existing_parameters() {
+        let component = build_event_component(
+            "Planning",
+            "Room",
+            "",
+            false,
+            "2026-08-10 12:00",
+            "2026-08-10 13:00",
+            "",
+            "",
+            "",
+            "",
+            "https://calendar.example.test/agenda.ics?tags=a,b;kind=agenda\nfile:///tmp/notes.pdf",
+            0,
+            false,
+        )
+        .expect("event with attachments should serialize");
+        assert!(component.contains(
+            "ATTACH;VALUE=URI:https://calendar.example.test/agenda.ics?tags=a,b;kind=agenda"
+        ));
+        assert!(component.contains("ATTACH;VALUE=URI:file:///tmp/notes.pdf"));
+
+        let raw = concat!(
+            "BEGIN:VEVENT\r\nUID:event-1\r\n",
+            "ATTACH;FMTTYPE=application/pdf;VALUE=URI:https://calendar.example.test/agenda.ics?tags=a,b;kind=agenda\r\n",
+            "ATTACH;VALUE=URI:https://calendar.example.test/old.ics\r\n",
+            "END:VEVENT\r\n"
+        );
+        let updated = replace_ical_attachments(
+            raw,
+            &[
+                "https://calendar.example.test/agenda.ics?tags=a,b;kind=agenda".to_string(),
+                "https://calendar.example.test/new.ics".to_string(),
+            ],
+        );
+        assert!(updated.contains(
+            "ATTACH;FMTTYPE=application/pdf;VALUE=URI:https://calendar.example.test/agenda.ics?tags=a,b;kind=agenda"
+        ));
+        assert!(updated.contains("ATTACH;VALUE=URI:https://calendar.example.test/new.ics"));
+        assert!(!updated.contains("https://calendar.example.test/old.ics"));
     }
 
     #[test]

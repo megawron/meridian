@@ -850,6 +850,110 @@ pub(crate) fn update_ical_property(raw: &str, property_name: &str, value: Option
     result
 }
 
+/// Replace top-level ATTACH properties while retaining parameters for URIs that
+/// remain attached to the component.
+pub(crate) fn replace_ical_attachments(raw: &str, values: &[String]) -> String {
+    let existing = existing_attachment_properties(raw);
+    let mut lines = Vec::new();
+    let mut replaced = false;
+    let mut depth = 0usize;
+    for line in unfold_lines(raw) {
+        let property_part = line
+            .split_once(':')
+            .map(|(property, _)| property)
+            .unwrap_or(line.as_str());
+        let property = property_part
+            .split(';')
+            .next()
+            .unwrap_or_default()
+            .to_ascii_uppercase();
+        if property == "ATTACH" && depth <= 1 {
+            if !replaced {
+                let mut used = vec![false; existing.len()];
+                for value in values {
+                    let matching_existing =
+                        existing
+                            .iter()
+                            .enumerate()
+                            .find(|(index, (existing_value, _))| {
+                                !used[*index] && existing_value.eq_ignore_ascii_case(value)
+                            });
+                    let line = if let Some((index, (_, property_prefix))) = matching_existing {
+                        used[index] = true;
+                        format!(
+                            "{property_prefix}:{}",
+                            serialize_ical_attachment_value(value)
+                        )
+                    } else {
+                        format!(
+                            "ATTACH;VALUE=URI:{}",
+                            serialize_ical_attachment_value(value)
+                        )
+                    };
+                    lines.push(line);
+                }
+                replaced = true;
+            }
+            continue;
+        }
+        lines.push(line);
+        if property == "BEGIN" {
+            depth = depth.saturating_add(1);
+        } else if property == "END" {
+            depth = depth.saturating_sub(1);
+        }
+    }
+    if !replaced && !values.is_empty() {
+        let insertion = lines
+            .iter()
+            .position(|line| {
+                line.eq_ignore_ascii_case("END:VEVENT")
+                    || line.eq_ignore_ascii_case("END:VTODO")
+                    || line.eq_ignore_ascii_case("END:VJOURNAL")
+            })
+            .unwrap_or(lines.len());
+        let attachments = values.iter().map(|value| {
+            format!(
+                "ATTACH;VALUE=URI:{}",
+                serialize_ical_attachment_value(value)
+            )
+        });
+        lines.splice(insertion..insertion, attachments);
+    }
+    format!("{}\r\n", lines.join("\r\n"))
+}
+
+fn existing_attachment_properties(raw: &str) -> Vec<(String, String)> {
+    let mut attachments = Vec::new();
+    let mut depth = 0usize;
+    for line in unfold_lines(raw) {
+        let Some((property, value)) = line.split_once(':') else {
+            continue;
+        };
+        let name = property
+            .split(';')
+            .next()
+            .unwrap_or(property)
+            .to_ascii_uppercase();
+        if name == "ATTACH" && depth == 1 {
+            attachments.push((unescape(value), property.to_string()));
+        }
+        if name == "BEGIN" {
+            depth = depth.saturating_add(1);
+        } else if name == "END" {
+            depth = depth.saturating_sub(1);
+        }
+    }
+    attachments
+}
+
+pub(crate) fn serialize_ical_attachment_value(value: &str) -> String {
+    value
+        .chars()
+        .filter(|character| *character != '\r' && *character != '\n')
+        .collect()
+}
+
 /// Return a standards-shaped iCalendar document for a single component.
 ///
 /// ECal and the local parser work with bare VEVENT/VTODO/VJOURNAL components,

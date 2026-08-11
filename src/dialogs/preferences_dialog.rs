@@ -1190,6 +1190,37 @@ impl PreferencesDialog {
             });
         }
         group_composer.add(&row_composer_html);
+
+        let row_spellcheck_languages = adw::ComboRow::builder()
+            .title("Rechtschreibprüfung")
+            .subtitle(
+                "Wörterbuchsprachen für neue Composer (Systemstandard, Deutsch oder Englisch)",
+            )
+            .model(&gtk::StringList::new(&[
+                "Systemstandard",
+                "Deutsch",
+                "Englisch",
+                "Deutsch und Englisch",
+            ]))
+            .build();
+        if let Some(settings) = settings.clone() {
+            row_spellcheck_languages.set_selected(match settings.spellcheck_languages().as_str() {
+                "de-DE" => 1,
+                "en-US" => 2,
+                "de-DE,en-US" => 3,
+                _ => 0,
+            });
+            row_spellcheck_languages.connect_selected_notify(move |row| {
+                settings.set_spellcheck_languages(match row.selected() {
+                    1 => "de-DE",
+                    2 => "en-US",
+                    3 => "de-DE,en-US",
+                    _ => "",
+                });
+            });
+        }
+        group_composer.add(&row_spellcheck_languages);
+
         let row_append_signature = adw::SwitchRow::builder()
             .title("Signatur automatisch einfügen")
             .subtitle("Wird als Klartext am Ende neuer Nachrichten eingefügt")

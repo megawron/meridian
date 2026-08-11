@@ -413,6 +413,15 @@ impl AccountSetupDialog {
                     enabled: edit_enabled,
                 };
 
+                if let Err(error) = profile.validate() {
+                    if let Some(parent) = dialog.transient_for() {
+                        if let Ok(window) = parent.downcast::<crate::window::EvolutionWindow>() {
+                            window.add_toast(&adw::Toast::new(&error));
+                        }
+                    }
+                    return;
+                }
+
                 let profile_id = profile.id.clone();
                 match AccountConfigStore::default().upsert(profile) {
                     Ok(()) => {

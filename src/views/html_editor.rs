@@ -310,6 +310,16 @@ impl HtmlEditor {
         // WebKit6 WebView Canvas
         let web_context = webkit6::WebContext::new();
         web_context.set_spell_checking_enabled(true);
+        if let Some(settings) = AppSettings::try_new() {
+            let language_setting = settings.spellcheck_languages();
+            let languages = language_setting
+                .split(',')
+                .filter(|language| !language.is_empty())
+                .collect::<Vec<_>>();
+            if !languages.is_empty() {
+                web_context.set_spell_checking_languages(&languages);
+            }
+        }
         let web_view = webkit6::WebView::builder()
             .web_context(&web_context)
             .vexpand(true)
