@@ -24,7 +24,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::models::mail_message::{AttachmentInfo, MailMessageObject};
 use crate::services::mail_filter_service::{
-    FilterAction, FilterOperator, FilterScope, MailFilterRule, MailFilterStore,
+    FilterAction, FilterMessageContext, FilterOperator, FilterScope, MailFilterRule,
+    MailFilterStore,
 };
 use crate::services::mail_metadata_service::{MailMessageState, MailMetadataStore};
 use crate::services::mail_thread_service::{
@@ -424,7 +425,7 @@ impl MailStoreService {
     /// no longer needed.  The parser returns records collected before the
     /// cancellation was observed and never mutates the source mailbox.
     pub fn load_local_records_cancelable(&self, cancelled: &AtomicBool) -> Vec<ParsedMail> {
-        let metadata = self.metadata.load();
+        let mut metadata = self.metadata.load();
         let folder_overrides = self.metadata.load_folder_overrides();
         let deleted = self.metadata.load_deleted();
         let labels = self.metadata.load_labels();
@@ -440,7 +441,25 @@ impl MailStoreService {
             if let Some(message_labels) = labels.get(&message.id) {
                 message.labels = sorted_labels(message_labels);
             }
-            if apply_client_state(&metadata, &filter_rules, message, Some(&self.metadata)) {
+            let effects =
+                apply_client_state(&metadata, &filter_rules, message, Some(&self.metadata));
+            if effects.state_changed {
+                let state = MailMessageState {
+                    is_unread: message.is_unread,
+                    is_flagged: message.is_flagged,
+                    is_important: message.is_important,
+                };
+                if let Err(error) = self.metadata.update(&message.id, state) {
+                    tracing::warn!(
+                        %error,
+                        message_id = %message.id,
+                        "Could not persist local filter message state"
+                    );
+                } else {
+                    metadata.insert(message.id.clone(), state);
+                }
+            }
+            if effects.deleted {
                 filtered_out.insert(message.id.clone());
             }
         }
@@ -768,14 +787,14 @@ fn apply_client_state(
     filter_rules: &[MailFilterRule],
     message: &mut ParsedMail,
     sidecar: Option<&MailMetadataStore>,
-) -> bool {
+) -> FilterEffects {
     if let Some(state) = metadata.get(&message.id) {
         message.is_unread = state.is_unread;
         message.is_flagged = state.is_flagged;
         message.is_important = state.is_important;
     }
 
-    apply_local_filters(filter_rules, message, sidecar)
+    apply_local_filter_effects(filter_rules, message, sidecar)
 }
 
 #[derive(Debug, Default)]
@@ -808,13 +827,22 @@ fn message_matches_rule(rule: &MailFilterRule, message: &ParsedMail) -> bool {
         message.references.join(" "),
     );
 
-    rule.matches(
+    rule.matches_with_context(
         &message.subject,
         &sender,
         &recipient,
         &body,
         &headers,
         &message.labels,
+        FilterMessageContext {
+            date: &message.date_str,
+            folder: &message.folder_id,
+            is_unread: message.is_unread,
+            is_flagged: message.is_flagged,
+            is_important: message.is_important,
+            is_junk: message.folder_id == "junk" || message.folder_id.starts_with("junk/"),
+            has_attachment: !message.attachments.is_empty(),
+        },
     )
 }
 
@@ -823,18 +851,31 @@ fn apply_local_filters(
     message: &mut ParsedMail,
     sidecar: Option<&MailMetadataStore>,
 ) -> bool {
-    let mut deleted = false;
+    apply_local_filter_effects(rules, message, sidecar).deleted
+}
+
+fn apply_local_filter_effects(
+    rules: &[MailFilterRule],
+    message: &mut ParsedMail,
+    sidecar: Option<&MailMetadataStore>,
+) -> FilterEffects {
+    let mut total_effects = FilterEffects::default();
     for rule in rules {
         if rule.scope != FilterScope::Incoming || !message_matches_rule(rule, message) {
             continue;
         }
         let effects = apply_filter_rule(rule, message, sidecar);
-        deleted |= effects.deleted;
+        total_effects.changed |= effects.changed;
+        total_effects.state_changed |= effects.state_changed;
+        total_effects.moved |= effects.moved;
+        total_effects.copied |= effects.copied;
+        total_effects.deleted |= effects.deleted;
         if effects.stop_processing {
+            total_effects.stop_processing = true;
             break;
         }
     }
-    deleted
+    total_effects
 }
 
 fn apply_filter_rule(
@@ -869,6 +910,20 @@ fn apply_filter_rule(
             FilterAction::ClearFlagged => {
                 if message.is_flagged {
                     message.is_flagged = false;
+                    effects.changed = true;
+                    effects.state_changed = true;
+                }
+            }
+            FilterAction::SetImportant => {
+                if !message.is_important {
+                    message.is_important = true;
+                    effects.changed = true;
+                    effects.state_changed = true;
+                }
+            }
+            FilterAction::ClearImportant => {
+                if message.is_important {
+                    message.is_important = false;
                     effects.changed = true;
                     effects.state_changed = true;
                 }
@@ -2032,6 +2087,7 @@ mod tests {
                 actions: vec![
                     FilterAction::MarkRead,
                     FilterAction::SetFlagged,
+                    FilterAction::SetImportant,
                     FilterAction::MoveToFolder("archive".to_string()),
                     FilterAction::CopyToFolder("sent".to_string()),
                 ],
@@ -2073,7 +2129,7 @@ mod tests {
             Some(&MailMessageState {
                 is_unread: false,
                 is_flagged: true,
-                is_important: false,
+                is_important: true,
             })
         );
 
@@ -2081,8 +2137,35 @@ mod tests {
         assert_eq!(records.len(), 2);
         assert!(records.iter().all(|record| !record.is_unread));
         assert!(records.iter().all(|record| record.is_flagged));
+        assert!(records.iter().all(|record| record.is_important));
         assert!(records.iter().any(|record| record.folder_id == "archive"));
         assert!(records.iter().any(|record| record.folder_id == "sent"));
+
+        let mut clear_rule = filter_store
+            .load()
+            .into_iter()
+            .next()
+            .expect("saved rule should be available for editing");
+        clear_rule.id = "manual-clear-important".to_string();
+        clear_rule.name = "Clear important status".to_string();
+        clear_rule.action = FilterAction::ClearImportant;
+        clear_rule.actions = vec![FilterAction::ClearImportant];
+        filter_store
+            .upsert(clear_rule)
+            .expect("clear rule should persist");
+        let clear_report = store
+            .run_filter_rule_with_store("manual-clear-important", &filter_store)
+            .expect("clear rule should run")
+            .expect("clear rule should be found");
+        assert_eq!(clear_report.changed_messages, 1);
+        assert_eq!(
+            metadata.load().get(&message_id).copied(),
+            Some(MailMessageState {
+                is_unread: false,
+                is_flagged: true,
+                is_important: false,
+            })
+        );
 
         let _ = fs::remove_dir_all(root);
     }
@@ -2123,6 +2206,62 @@ mod tests {
     }
 
     #[test]
+    fn incoming_filter_matches_important_and_attachment_state() {
+        let mut message = parse_rfc822(
+            "status-filter",
+            "inbox",
+            "From: Billing <billing@example.org>\nSubject: Invoice\n\nBody",
+            true,
+        )
+        .expect("message should parse");
+        message.is_important = true;
+        message.attachments.push(AttachmentInfo {
+            filename: "invoice.pdf".to_string(),
+            size_formatted: "1 KiB".to_string(),
+            mime_type: "application/pdf".to_string(),
+            content_id: None,
+            content: vec![1, 2, 3],
+        });
+
+        let make_rule =
+            |field: FilterField, value: &str, operator: FilterOperator, action| MailFilterRule {
+                id: "status-rule".to_string(),
+                name: "Status rule".to_string(),
+                enabled: true,
+                scope: FilterScope::Incoming,
+                condition: FilterCondition {
+                    field,
+                    value: value.to_string(),
+                    operator,
+                },
+                action,
+                conditions: Vec::new(),
+                actions: Vec::new(),
+                match_all: true,
+            };
+
+        let important_rule = make_rule(
+            FilterField::Important,
+            "ja",
+            FilterOperator::Equals,
+            FilterAction::SetFlagged,
+        );
+        let _ = apply_local_filters(&[important_rule], &mut message, None);
+        assert!(message.is_flagged);
+
+        message.is_important = false;
+        message.is_flagged = false;
+        let attachment_rule = make_rule(
+            FilterField::Attachment,
+            "",
+            FilterOperator::Exists,
+            FilterAction::SetImportant,
+        );
+        let _ = apply_local_filters(&[attachment_rule], &mut message, None);
+        assert!(message.is_important);
+    }
+
+    #[test]
     fn local_folder_and_delete_filters_persist_in_the_app_sidecar() {
         let root = temporary_directory("local-filter-sidecar");
         let metadata = MailMetadataStore::new(root.join("state.json"));
@@ -2148,12 +2287,10 @@ mod tests {
             actions: Vec::new(),
             match_all: true,
         };
-        assert!(!apply_client_state(
-            &HashMap::new(),
-            &[move_rule],
-            &mut message,
-            Some(&metadata),
-        ));
+        assert!(
+            !apply_client_state(&HashMap::new(), &[move_rule], &mut message, Some(&metadata),)
+                .deleted
+        );
         assert_eq!(message.folder_id, "archive");
         assert_eq!(
             metadata.load_folder_overrides().get("filter-sidecar"),
@@ -2175,12 +2312,10 @@ mod tests {
             actions: Vec::new(),
             match_all: true,
         };
-        assert!(!apply_client_state(
-            &HashMap::new(),
-            &[copy_rule],
-            &mut message,
-            Some(&metadata),
-        ));
+        assert!(
+            !apply_client_state(&HashMap::new(), &[copy_rule], &mut message, Some(&metadata),)
+                .deleted
+        );
         assert!(
             metadata
                 .load_copies()
@@ -2203,12 +2338,15 @@ mod tests {
             actions: Vec::new(),
             match_all: true,
         };
-        assert!(apply_client_state(
-            &HashMap::new(),
-            &[delete_rule],
-            &mut message,
-            Some(&metadata),
-        ));
+        assert!(
+            apply_client_state(
+                &HashMap::new(),
+                &[delete_rule],
+                &mut message,
+                Some(&metadata),
+            )
+            .deleted
+        );
         assert!(metadata.load_deleted().contains("filter-sidecar"));
         let _ = fs::remove_dir_all(root);
     }
@@ -2240,20 +2378,26 @@ mod tests {
             match_all: true,
         };
 
-        assert!(!apply_client_state(
-            &HashMap::new(),
-            &[make_rule(FilterAction::SetJunk)],
-            &mut message,
-            Some(&metadata),
-        ));
+        assert!(
+            !apply_client_state(
+                &HashMap::new(),
+                &[make_rule(FilterAction::SetJunk)],
+                &mut message,
+                Some(&metadata),
+            )
+            .deleted
+        );
         assert_eq!(message.folder_id, "junk");
 
-        assert!(!apply_client_state(
-            &HashMap::new(),
-            &[make_rule(FilterAction::ClearJunk)],
-            &mut message,
-            Some(&metadata),
-        ));
+        assert!(
+            !apply_client_state(
+                &HashMap::new(),
+                &[make_rule(FilterAction::ClearJunk)],
+                &mut message,
+                Some(&metadata),
+            )
+            .deleted
+        );
         assert_eq!(message.folder_id, "inbox");
         assert_eq!(
             metadata.load_folder_overrides().get("junk-filter"),
@@ -2290,12 +2434,15 @@ mod tests {
             match_all: true,
         };
 
-        assert!(!apply_client_state(
-            &HashMap::new(),
-            &[make_rule(FilterAction::SetLabel("Work".to_string()))],
-            &mut message,
-            Some(&metadata),
-        ));
+        assert!(
+            !apply_client_state(
+                &HashMap::new(),
+                &[make_rule(FilterAction::SetLabel("Work".to_string()))],
+                &mut message,
+                Some(&metadata),
+            )
+            .deleted
+        );
         assert_eq!(message.labels, vec!["Work"]);
         assert!(
             metadata
@@ -2304,12 +2451,15 @@ mod tests {
                 .is_some_and(|labels| labels.contains("Work"))
         );
 
-        assert!(!apply_client_state(
-            &HashMap::new(),
-            &[make_rule(FilterAction::ClearLabel("work".to_string()))],
-            &mut message,
-            Some(&metadata),
-        ));
+        assert!(
+            !apply_client_state(
+                &HashMap::new(),
+                &[make_rule(FilterAction::ClearLabel("work".to_string()))],
+                &mut message,
+                Some(&metadata),
+            )
+            .deleted
+        );
         assert!(message.labels.is_empty());
         assert!(metadata.load_labels().is_empty());
 

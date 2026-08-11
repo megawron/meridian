@@ -745,6 +745,13 @@ fn filter_field_from_evolution_name(name: &str) -> Option<FilterField> {
         "body" | "content" | "message" => Some(FilterField::Body),
         "header" | "header-exists" => Some(FilterField::Header),
         "label" | "tag" | "keyword" => Some(FilterField::Label),
+        "unread" | "is-unread" | "read-status" => Some(FilterField::Unread),
+        "flagged" | "is-flagged" | "starred" | "is-starred" => Some(FilterField::Flagged),
+        "important" | "is-important" | "high-priority" => Some(FilterField::Important),
+        "attachment" | "attachments" | "has-attachment" => Some(FilterField::Attachment),
+        "date" | "sent-date" | "received-date" | "date-received" => Some(FilterField::Date),
+        "folder" | "mail-folder" | "in-folder" => Some(FilterField::Folder),
+        "junk" | "spam" | "is-junk" | "is-spam" => Some(FilterField::Junk),
         _ => None,
     }
 }
@@ -759,6 +766,8 @@ fn filter_operator_from_evolution_name(name: &str) -> Option<FilterOperator> {
         "is-not" | "isnt" | "not-equal" | "not-equals" => Some(FilterOperator::NotEquals),
         "begins-with" | "starts-with" => Some(FilterOperator::StartsWith),
         "ends-with" => Some(FilterOperator::EndsWith),
+        "before" | "earlier-than" | "older-than" => Some(FilterOperator::Before),
+        "after" | "later-than" | "newer-than" => Some(FilterOperator::After),
         "exists" | "header-exists" => Some(FilterOperator::Exists),
         _ => None,
     }
@@ -775,8 +784,16 @@ fn filter_action_from_evolution_name(name: &str, target: String) -> Option<Filte
         }
         "mark-read" | "markread" | "seen" => Some(FilterAction::MarkRead),
         "mark-unread" | "markunread" | "unseen" => Some(FilterAction::MarkUnread),
-        "set-flagged" | "flag" | "important" => Some(FilterAction::SetFlagged),
-        "clear-flagged" | "unflag" | "not-important" => Some(FilterAction::ClearFlagged),
+        "set-flagged" | "flag" | "starred" | "set-starred" => Some(FilterAction::SetFlagged),
+        "clear-flagged" | "unflag" | "unstarred" | "clear-starred" => {
+            Some(FilterAction::ClearFlagged)
+        }
+        "important" | "set-important" | "mark-important" | "high-priority" => {
+            Some(FilterAction::SetImportant)
+        }
+        "not-important" | "clear-important" | "unmark-important" | "normal-priority" => {
+            Some(FilterAction::ClearImportant)
+        }
         "delete" | "discard" | "trash" => Some(FilterAction::Delete),
         "stop" | "stop-processing" | "stop-processing-filters" | "stop-processing-rule" => {
             Some(FilterAction::StopProcessing)
@@ -1472,9 +1489,12 @@ JunkFolder=Junk
     <rule name="Rechnungen" enabled="true" source="incoming" match="any">
       <part name="subject"><value name="is" type="string">Rechnung &amp; Vertrag</value></part>
       <part name="from"><value name="does-not-contain" type="string">spam.example.org</value></part>
+      <part name="important"><value name="is" type="boolean">yes</value></part>
+      <part name="date-received"><value name="after" type="date">2026-08-01</value></part>
       <action name="move"><value name="folder">archive</value></action>
       <action name="mark-read" />
       <action name="stop-processing" />
+      <action name="important" />
       <action name="junk" />
     </rule>
     <rule name="Beim Senden markieren" enabled="false" source="outgoing">
@@ -1519,10 +1539,16 @@ JunkFolder=Junk
             rules[0].action,
             FilterAction::MoveToFolder("archive".to_string())
         );
-        assert_eq!(rules[0].conditions.len(), 2);
-        assert_eq!(rules[0].actions.len(), 4);
+        assert_eq!(rules[0].conditions.len(), 4);
+        assert_eq!(rules[0].conditions[2].field, FilterField::Important);
+        assert_eq!(rules[0].conditions[2].value, "yes");
+        assert_eq!(rules[0].conditions[3].field, FilterField::Date);
+        assert_eq!(rules[0].conditions[3].operator, FilterOperator::After);
+        assert_eq!(rules[0].conditions[3].value, "2026-08-01");
+        assert_eq!(rules[0].actions.len(), 5);
         assert_eq!(rules[0].actions[2], FilterAction::StopProcessing);
-        assert_eq!(rules[0].actions[3], FilterAction::SetJunk);
+        assert_eq!(rules[0].actions[3], FilterAction::SetImportant);
+        assert_eq!(rules[0].actions[4], FilterAction::SetJunk);
         assert!(!rules[0].match_all);
         assert_eq!(rules[1].scope, FilterScope::Outgoing);
         assert!(!rules[1].enabled);

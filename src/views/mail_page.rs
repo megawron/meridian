@@ -4,7 +4,7 @@
 
 use adw::prelude::*;
 use adw::subclass::prelude::*;
-use chrono::{Duration, Local, NaiveDate, Utc};
+use chrono::{Duration, Local, NaiveDate, NaiveDateTime, Utc};
 use gtk::{gio, glib};
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
@@ -193,9 +193,24 @@ impl Default for FolderSelection {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum MessageSearchField {
+    From,
+    To,
+    Cc,
+    Bcc,
+    Subject,
+    Body,
+    Label,
+    Filename,
+    Folder,
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 struct MessageSearchQuery {
     text_terms: Vec<String>,
+    negative_text_terms: Vec<String>,
+    negative_fields: Vec<(MessageSearchField, String)>,
     from: Option<String>,
     to: Option<String>,
     cc: Option<String>,
@@ -207,69 +222,80 @@ struct MessageSearchQuery {
     unread: Option<bool>,
     flagged: Option<bool>,
     important: Option<bool>,
+    junk: Option<bool>,
     has_attachment: Option<bool>,
     folder: Option<String>,
     date_after: Option<NaiveDate>,
     date_before: Option<NaiveDate>,
+    date_not_after: Option<NaiveDate>,
+    date_not_before: Option<NaiveDate>,
+    date_not_on: Option<NaiveDate>,
 }
 
 impl MessageSearchQuery {
     fn parse(input: &str) -> Self {
         let mut query = Self::default();
-        for token in search_tokens(input) {
-            let Some((key, value)) = token.split_once(':') else {
-                query.text_terms.push(token.to_lowercase());
+        for raw_token in search_tokens(input) {
+            let (negated, token) = split_search_negation(&raw_token);
+            let Some((raw_key, raw_value)) = token.split_once(':') else {
+                query.push_text(token, negated);
                 continue;
             };
-            let value = value.trim().to_lowercase();
+            let raw_value = raw_value.trim();
+            let value = raw_value.to_lowercase();
             if value.is_empty() {
-                query.text_terms.push(token.to_lowercase());
+                query.push_text(token, negated);
                 continue;
             }
-            match key.to_ascii_lowercase().as_str() {
-                "from" => query.from = Some(value),
-                "to" => query.to = Some(value),
-                "cc" => query.cc = Some(value),
-                "bcc" => query.bcc = Some(value),
-                "subject" => query.subject = Some(value),
-                "body" | "content" => query.body = Some(value),
-                "label" | "tag" | "keyword" => query.label = Some(value),
-                "filename" | "name" => query.filename = Some(value),
-                "is" => match value.as_str() {
-                    "unread" => query.unread = Some(true),
-                    "read" => query.unread = Some(false),
-                    "starred" | "flagged" => query.flagged = Some(true),
-                    "important" => query.important = Some(true),
-                    "not-important" => query.important = Some(false),
-                    "inbox" | "sent" | "sent-mail" | "draft" | "drafts" | "trash" | "deleted"
-                    | "junk" | "spam" | "archive" | "all-mail" => query.folder = Some(value),
-                    _ => query.text_terms.push(token.to_lowercase()),
-                },
-                "has" => match value.as_str() {
-                    "attachment" | "attachments" => query.has_attachment = Some(true),
-                    _ => query.text_terms.push(token.to_lowercase()),
-                },
-                "no" => match value.as_str() {
-                    "attachment" | "attachments" => query.has_attachment = Some(false),
-                    _ => query.text_terms.push(token.to_lowercase()),
-                },
-                "after" | "newer" => match parse_search_date(&value, false) {
+            let raw_key = raw_key.to_ascii_lowercase();
+            let (key, key_negated) = raw_key
+                .strip_prefix("not-")
+                .map(|key| (key, true))
+                .unwrap_or((raw_key.as_str(), false));
+            let negated = negated ^ key_negated;
+            match key {
+                "from" => query.push_field(MessageSearchField::From, value, negated),
+                "to" => query.push_field(MessageSearchField::To, value, negated),
+                "cc" => query.push_field(MessageSearchField::Cc, value, negated),
+                "bcc" => query.push_field(MessageSearchField::Bcc, value, negated),
+                "subject" => query.push_field(MessageSearchField::Subject, value, negated),
+                "body" | "content" => query.push_field(MessageSearchField::Body, value, negated),
+                "label" | "tag" | "keyword" => {
+                    query.push_field(MessageSearchField::Label, value, negated)
+                }
+                "filename" | "name" => {
+                    query.push_field(MessageSearchField::Filename, value, negated)
+                }
+                "is" => query.parse_is_value(&value, negated),
+                "has" | "no" => {
+                    if matches!(value.as_str(), "attachment" | "attachments") {
+                        let expected = key == "has";
+                        query.has_attachment = Some(expected ^ negated);
+                    } else {
+                        query.push_text(token, negated);
+                    }
+                }
+                "after" | "newer" => match parse_search_date(raw_value, false) {
+                    Some(date) if negated => query.date_not_after = Some(date),
                     Some(date) => query.date_after = Some(date),
-                    None => query.text_terms.push(token.to_lowercase()),
+                    None => query.push_text(token, negated),
                 },
-                "before" | "older" => match parse_search_date(&value, true) {
+                "before" | "older" => match parse_search_date(raw_value, true) {
+                    Some(date) if negated => query.date_not_before = Some(date),
                     Some(date) => query.date_before = Some(date),
-                    None => query.text_terms.push(token.to_lowercase()),
+                    None => query.push_text(token, negated),
                 },
-                "on" => match parse_search_date(&value, false) {
+                "on" => match parse_search_date(raw_value, false) {
+                    Some(date) if negated => query.date_not_on = Some(date),
                     Some(date) => {
                         query.date_after = Some(date);
                         query.date_before = date.checked_add_signed(Duration::days(1));
                     }
-                    None => query.text_terms.push(token.to_lowercase()),
+                    None => query.push_text(token, negated),
                 },
-                "in" | "folder" => query.folder = Some(value),
-                _ => query.text_terms.push(token.to_lowercase()),
+                "in" | "folder" => query.push_field(MessageSearchField::Folder, value, negated),
+                "not" => query.push_text(&value, !negated),
+                _ => query.push_text(token, negated),
             }
         }
         query
@@ -277,6 +303,8 @@ impl MessageSearchQuery {
 
     fn is_empty(&self) -> bool {
         self.text_terms.is_empty()
+            && self.negative_text_terms.is_empty()
+            && self.negative_fields.is_empty()
             && self.from.is_none()
             && self.to.is_none()
             && self.cc.is_none()
@@ -288,11 +316,69 @@ impl MessageSearchQuery {
             && self.unread.is_none()
             && self.flagged.is_none()
             && self.important.is_none()
+            && self.junk.is_none()
             && self.has_attachment.is_none()
             && self.folder.is_none()
             && self.date_after.is_none()
             && self.date_before.is_none()
+            && self.date_not_after.is_none()
+            && self.date_not_before.is_none()
+            && self.date_not_on.is_none()
     }
+
+    fn push_text(&mut self, value: &str, negated: bool) {
+        if negated {
+            self.negative_text_terms.push(value.to_lowercase());
+        } else {
+            self.text_terms.push(value.to_lowercase());
+        }
+    }
+
+    fn push_field(&mut self, field: MessageSearchField, value: String, negated: bool) {
+        if negated {
+            self.negative_fields.push((field, value));
+            return;
+        }
+        match field {
+            MessageSearchField::From => self.from = Some(value),
+            MessageSearchField::To => self.to = Some(value),
+            MessageSearchField::Cc => self.cc = Some(value),
+            MessageSearchField::Bcc => self.bcc = Some(value),
+            MessageSearchField::Subject => self.subject = Some(value),
+            MessageSearchField::Body => self.body = Some(value),
+            MessageSearchField::Label => self.label = Some(value),
+            MessageSearchField::Filename => self.filename = Some(value),
+            MessageSearchField::Folder => self.folder = Some(value),
+        }
+    }
+
+    fn parse_is_value(&mut self, value: &str, negated: bool) {
+        let (value, value_negated) = value
+            .strip_prefix("not-")
+            .map(|value| (value, true))
+            .unwrap_or((value, false));
+        let negated = negated ^ value_negated;
+        match value {
+            "unread" => self.unread = Some(true ^ negated),
+            "read" => self.unread = Some(false ^ negated),
+            "starred" | "flagged" => self.flagged = Some(true ^ negated),
+            "important" => self.important = Some(true ^ negated),
+            "junk" | "spam" => self.junk = Some(true ^ negated),
+            "attachment" | "attachments" => self.has_attachment = Some(true ^ negated),
+            "inbox" | "sent" | "sent-mail" | "draft" | "drafts" | "trash" | "deleted"
+            | "archive" => self.push_field(MessageSearchField::Folder, value.to_string(), negated),
+            "all" | "all-mail" if !negated => {}
+            _ => self.push_text(&format!("is:{value}"), negated),
+        }
+    }
+}
+
+fn split_search_negation(token: &str) -> (bool, &str) {
+    token
+        .strip_prefix('-')
+        .filter(|value| !value.is_empty())
+        .map(|value| (true, value))
+        .unwrap_or((false, token))
 }
 
 fn search_tokens(input: &str) -> Vec<String> {
@@ -327,13 +413,38 @@ fn search_tokens(input: &str) -> Vec<String> {
 }
 
 fn parse_search_date(value: &str, inclusive_next_day: bool) -> Option<NaiveDate> {
+    let value = value.trim();
     if let Some(days) = value
         .strip_suffix('d')
         .and_then(|value| value.parse::<i64>().ok())
     {
         return Some(Local::now().date_naive() - Duration::days(days.max(0)));
     }
-    let date = NaiveDate::parse_from_str(value, "%Y-%m-%d").ok()?;
+    let relative = match value.to_ascii_lowercase().as_str() {
+        "today" | "heute" => Some(Local::now().date_naive()),
+        "yesterday" | "gestern" => Some(Local::now().date_naive() - Duration::days(1)),
+        "tomorrow" | "morgen" => Some(Local::now().date_naive() + Duration::days(1)),
+        _ => None,
+    };
+    let date = relative
+        .or_else(|| NaiveDate::parse_from_str(value, "%Y-%m-%d").ok())
+        .or_else(|| NaiveDate::parse_from_str(value, "%Y%m%d").ok())
+        .or_else(|| {
+            chrono::DateTime::parse_from_rfc3339(value)
+                .ok()
+                .map(|date| date.date_naive())
+        })
+        .or_else(|| {
+            chrono::DateTime::parse_from_rfc2822(value)
+                .ok()
+                .map(|date| date.date_naive())
+        })
+        .or_else(|| {
+            ["%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y%m%dT%H%M%S"]
+                .into_iter()
+                .find_map(|format| NaiveDateTime::parse_from_str(value, format).ok())
+                .map(|date| date.date())
+        })?;
     if inclusive_next_day {
         date.checked_add_signed(Duration::days(1))
     } else {
@@ -432,6 +543,14 @@ fn message_matches_filter(
         .text_terms
         .iter()
         .all(|term| searchable_text.contains(term));
+    let negative_text_matches = query
+        .negative_text_terms
+        .iter()
+        .all(|term| !searchable_text.contains(term));
+    let negative_field_matches = query
+        .negative_fields
+        .iter()
+        .all(|(field, value)| !message_search_field_matches(message, *field, value));
     let field_matches = query
         .from
         .as_deref()
@@ -493,6 +612,10 @@ fn message_matches_filter(
             .map(|important| message.is_important() == important)
             .unwrap_or(true)
         && query
+            .junk
+            .map(|junk| message_is_junk(message) == junk)
+            .unwrap_or(true)
+        && query
             .has_attachment
             .map(|has_attachment| message.attachments().is_empty() != has_attachment)
             .unwrap_or(true)
@@ -516,6 +639,30 @@ fn message_matches_filter(
                     .map(|value| value < date)
                     .unwrap_or(false)
             })
+            .unwrap_or(true)
+        && query
+            .date_not_after
+            .map(|date| {
+                message_date(message)
+                    .map(|value| value < date)
+                    .unwrap_or(false)
+            })
+            .unwrap_or(true)
+        && query
+            .date_not_before
+            .map(|date| {
+                message_date(message)
+                    .map(|value| value >= date)
+                    .unwrap_or(false)
+            })
+            .unwrap_or(true)
+        && query
+            .date_not_on
+            .map(|date| {
+                message_date(message)
+                    .map(|value| value != date)
+                    .unwrap_or(false)
+            })
             .unwrap_or(true);
     let state_matches = match filter {
         MessageFilter::All => true,
@@ -524,9 +671,61 @@ fn message_matches_filter(
         MessageFilter::Important => message.is_important(),
     };
 
-    (query.is_empty() || (text_matches && field_matches))
+    (query.is_empty()
+        || (text_matches && negative_text_matches && negative_field_matches && field_matches))
         && state_matches
         && folder_selection.matches(message)
+}
+
+fn message_search_field_matches(
+    message: &MailMessageObject,
+    field: MessageSearchField,
+    value: &str,
+) -> bool {
+    let value = value.to_ascii_lowercase();
+    match field {
+        MessageSearchField::From => {
+            message.sender_name().to_ascii_lowercase().contains(&value)
+                || message.sender_email().to_ascii_lowercase().contains(&value)
+        }
+        MessageSearchField::To => [
+            message.recipient_to(),
+            message.recipient_cc(),
+            message.recipient_bcc(),
+        ]
+        .into_iter()
+        .any(|recipient| recipient.to_ascii_lowercase().contains(&value)),
+        MessageSearchField::Cc => message.recipient_cc().to_ascii_lowercase().contains(&value),
+        MessageSearchField::Bcc => message
+            .recipient_bcc()
+            .to_ascii_lowercase()
+            .contains(&value),
+        MessageSearchField::Subject => message.subject().to_ascii_lowercase().contains(&value),
+        MessageSearchField::Body => {
+            message.html_body().to_ascii_lowercase().contains(&value)
+                || message
+                    .preview_snippet()
+                    .to_ascii_lowercase()
+                    .contains(&value)
+        }
+        MessageSearchField::Label => message
+            .labels()
+            .iter()
+            .any(|label| label.to_ascii_lowercase().contains(&value)),
+        MessageSearchField::Filename => message
+            .attachments()
+            .into_iter()
+            .any(|attachment| attachment.filename.to_ascii_lowercase().contains(&value)),
+        MessageSearchField::Folder => message_folder_matches(message, &value),
+    }
+}
+
+fn message_is_junk(message: &MailMessageObject) -> bool {
+    let folder_id = message.folder_id().to_ascii_lowercase();
+    folder_id == "junk"
+        || folder_id == "spam"
+        || folder_id.starts_with("junk/")
+        || message_folder_matches(message, "junk")
 }
 
 fn message_folder_matches(message: &MailMessageObject, query: &str) -> bool {
@@ -540,7 +739,8 @@ fn message_folder_matches(message: &MailMessageObject, query: &str) -> bool {
         "draft" | "drafts" => folder == "drafts",
         "trash" | "deleted" => folder == "trash",
         "junk" | "spam" => folder == "junk",
-        "archive" | "all-mail" => folder == "archive",
+        "archive" => folder == "archive",
+        "all" | "all-mail" => true,
         value => {
             let local_path = folder.trim_start_matches("custom:");
             folder == value
@@ -6831,6 +7031,74 @@ mod tests {
 
         let sent = MessageSearchQuery::parse("is:sent");
         assert_eq!(sent.folder.as_deref(), Some("sent"));
+    }
+
+    #[test]
+    fn message_search_query_supports_negated_evolution_predicates() {
+        let query = MessageSearchQuery::parse(
+            "-from:blocked@example.test -body:secret is:not-unread is:not-starred is:not-important is:junk -has:attachment after:2026-08-01",
+        );
+
+        assert_eq!(query.unread, Some(false));
+        assert_eq!(query.flagged, Some(false));
+        assert_eq!(query.important, Some(false));
+        assert_eq!(query.junk, Some(true));
+        assert_eq!(query.has_attachment, Some(false));
+        assert!(
+            query
+                .negative_fields
+                .contains(&(MessageSearchField::From, "blocked@example.test".to_string()))
+        );
+        assert!(
+            query
+                .negative_fields
+                .contains(&(MessageSearchField::Body, "secret".to_string()))
+        );
+        assert!(!query.is_empty());
+
+        let date_query = MessageSearchQuery::parse("on:2026-08-11T14:30:00Z");
+        assert_eq!(date_query.date_after, NaiveDate::from_ymd_opt(2026, 8, 11));
+        assert_eq!(date_query.date_before, NaiveDate::from_ymd_opt(2026, 8, 12));
+    }
+
+    #[test]
+    fn message_search_filter_evaluates_negated_fields_and_junk_state() {
+        let message = MailMessageObject::new(
+            "message-1",
+            "junk",
+            "Alice",
+            "alice@example.test",
+            "me@example.test",
+            "",
+            "",
+            "",
+            "Roadmap",
+            None,
+            Vec::new(),
+            Vec::new(),
+            "message-1",
+            1,
+            0,
+            "Tue, 11 Aug 2026 14:30:00 +0000",
+            "The project is ready",
+            "<p>The project is ready</p>",
+            false,
+            false,
+            false,
+            Vec::new(),
+            None,
+            Vec::new(),
+        );
+        let query = MessageSearchQuery::parse(
+            "-from:blocked@example.test -body:secret is:not-unread is:not-starred is:not-important is:junk -has:attachment after:2026-08-01",
+        );
+
+        assert!(message_matches_filter(
+            &message,
+            &query,
+            MessageFilter::All,
+            &FolderSelection::all(),
+        ));
     }
 
     #[test]

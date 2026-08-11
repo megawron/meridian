@@ -95,6 +95,13 @@ fn filter_field_index(field: FilterField) -> u32 {
         FilterField::Body => 3,
         FilterField::Header => 4,
         FilterField::Label => 5,
+        FilterField::Unread => 6,
+        FilterField::Flagged => 7,
+        FilterField::Important => 8,
+        FilterField::Attachment => 9,
+        FilterField::Date => 10,
+        FilterField::Folder => 11,
+        FilterField::Junk => 12,
     }
 }
 
@@ -106,7 +113,9 @@ fn filter_operator_index(operator: FilterOperator) -> u32 {
         FilterOperator::NotEquals => 3,
         FilterOperator::StartsWith => 4,
         FilterOperator::EndsWith => 5,
-        FilterOperator::Exists => 6,
+        FilterOperator::Before => 6,
+        FilterOperator::After => 7,
+        FilterOperator::Exists => 8,
     }
 }
 
@@ -117,7 +126,9 @@ fn filter_operator_from_index(index: u32) -> FilterOperator {
         3 => FilterOperator::NotEquals,
         4 => FilterOperator::StartsWith,
         5 => FilterOperator::EndsWith,
-        6 => FilterOperator::Exists,
+        6 => FilterOperator::Before,
+        7 => FilterOperator::After,
+        8 => FilterOperator::Exists,
         _ => FilterOperator::Contains,
     }
 }
@@ -130,12 +141,14 @@ fn filter_action_index(action: &FilterAction) -> u32 {
         FilterAction::MarkUnread => 3,
         FilterAction::SetFlagged => 4,
         FilterAction::ClearFlagged => 5,
-        FilterAction::Delete => 6,
-        FilterAction::StopProcessing => 7,
-        FilterAction::SetJunk => 8,
-        FilterAction::ClearJunk => 9,
-        FilterAction::SetLabel(_) => 10,
-        FilterAction::ClearLabel(_) => 11,
+        FilterAction::SetImportant => 6,
+        FilterAction::ClearImportant => 7,
+        FilterAction::Delete => 8,
+        FilterAction::StopProcessing => 9,
+        FilterAction::SetJunk => 10,
+        FilterAction::ClearJunk => 11,
+        FilterAction::SetLabel(_) => 12,
+        FilterAction::ClearLabel(_) => 13,
     }
 }
 
@@ -147,6 +160,13 @@ fn condition_from_editor(editor: &ConditionEditor) -> Option<FilterCondition> {
         3 => FilterField::Body,
         4 => FilterField::Header,
         5 => FilterField::Label,
+        6 => FilterField::Unread,
+        7 => FilterField::Flagged,
+        8 => FilterField::Important,
+        9 => FilterField::Attachment,
+        10 => FilterField::Date,
+        11 => FilterField::Folder,
+        12 => FilterField::Junk,
         _ => FilterField::Subject,
     };
     let operator = filter_operator_from_index(editor.operator.selected());
@@ -171,13 +191,15 @@ fn action_from_editor(editor: &ActionEditor) -> Result<FilterAction, String> {
         3 => Ok(FilterAction::MarkUnread),
         4 => Ok(FilterAction::SetFlagged),
         5 => Ok(FilterAction::ClearFlagged),
-        6 => Ok(FilterAction::Delete),
-        7 => Ok(FilterAction::StopProcessing),
-        8 => Ok(FilterAction::SetJunk),
-        9 => Ok(FilterAction::ClearJunk),
-        10 if target.is_empty() => Err("Für das Label ist ein Name erforderlich".into()),
-        10 => Ok(FilterAction::SetLabel(target)),
-        11 if target.is_empty() => Err("Für das Label ist ein Name erforderlich".into()),
+        6 => Ok(FilterAction::SetImportant),
+        7 => Ok(FilterAction::ClearImportant),
+        8 => Ok(FilterAction::Delete),
+        9 => Ok(FilterAction::StopProcessing),
+        10 => Ok(FilterAction::SetJunk),
+        11 => Ok(FilterAction::ClearJunk),
+        12 if target.is_empty() => Err("Für das Label ist ein Name erforderlich".into()),
+        12 => Ok(FilterAction::SetLabel(target)),
+        13 if target.is_empty() => Err("Für das Label ist ein Name erforderlich".into()),
         _ => Ok(FilterAction::ClearLabel(target)),
     }
 }
@@ -197,6 +219,13 @@ fn append_condition_editor(
         "Nachrichteninhalt",
         "Headerfeld",
         "Label",
+        "Ungelesen",
+        "Stern-/Markierungsstatus",
+        "Wichtigkeit",
+        "Anhang vorhanden",
+        "Datum",
+        "Ordner",
+        "Spam/Junk",
     ]);
     let field = gtk::DropDown::new(Some(field_model), None::<&gtk::Expression>);
     field.set_selected(filter_field_index(condition.field));
@@ -208,6 +237,8 @@ fn append_condition_editor(
         "ist nicht",
         "beginnt mit",
         "endet mit",
+        "vor",
+        "nach",
         "existiert",
     ]);
     let operator = gtk::DropDown::new(Some(operator_model), None::<&gtk::Expression>);
@@ -278,8 +309,10 @@ fn append_action_editor(
         "In Ordner kopieren",
         "Als gelesen markieren",
         "Als ungelesen markieren",
-        "Wichtig-Flag setzen",
-        "Wichtig-Flag entfernen",
+        "Stern-/Markierungsstatus setzen",
+        "Stern-/Markierungsstatus entfernen",
+        "Als wichtig markieren",
+        "Wichtigkeitsmarkierung entfernen",
         "Löschen",
         "Weitere Filterregeln nicht ausführen",
         "Als Spam markieren",
@@ -325,10 +358,10 @@ fn append_action_editor(
 
     let target_for_type = target.clone();
     action_type.connect_selected_notify(move |dropdown| {
-        let needs_target = matches!(dropdown.selected(), 0 | 1 | 10 | 11);
+        let needs_target = matches!(dropdown.selected(), 0 | 1 | 12 | 13);
         target_for_type.set_sensitive(needs_target);
         if needs_target && target_for_type.text().trim().is_empty() {
-            target_for_type.set_text(if matches!(dropdown.selected(), 10 | 11) {
+            target_for_type.set_text(if matches!(dropdown.selected(), 12 | 13) {
                 "work"
             } else {
                 "archive"

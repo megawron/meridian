@@ -866,18 +866,24 @@ werden.
   Löschen und der lokale Status wird persistent im Sidecar gespeichert.
   Die portable Regelengine unterstützt Verschieben, Löschen und Kopieren über
   den app-eigenen Sidecar sowie Gelesen/Ungelesen und Flag setzen/entfernen als
-  portable Aktionen; „weitere Filterregeln nicht ausführen“ beendet die
-  lokale Regelkette an der importierten Reihenfolge. Spam-/Kein-Spam-Aktionen
+  portable Aktionen; Stern-/Markierungsstatus und Wichtigkeitsstatus sind dabei
+  getrennt und können in lokalen Regeln unabhängig gesetzt oder entfernt werden;
+  Bedingungen können zusätzlich Ungelesen-, Stern-/Markierungs-, Wichtigkeits-,
+  Anhangs-, Datums-, Ordner- und Junk-/Spamstatus auswerten; Datum wird dabei
+  providerunabhängig aus RFC-822-/RFC-3339- und ISO-Werten normalisiert und
+  unterstützt „vor“/„nach“;
+  „weitere Filterregeln nicht ausführen“ beendet die lokale Regelkette an der
+  importierten Reihenfolge. Spam-/Kein-Spam-Aktionen
   verwenden portabel die Junk-/Inbox-Platzierung. Lokale Kopien werden als
   eigene logische Datensätze mit unabhängigen Zuständen dargestellt. App-eigene
   Labels können portabel gesetzt, entfernt, angezeigt und über
   `label:` gesucht werden. Die GTK4-rs-Mailansicht bietet dafür eine reversible
   Einzel- und Batch-Aktion mit persistentem Sidecar und Undo/Redo; Remote-
   Kopien und serverseitige Mehrfachlabels benötigen weiter den Camel-/Multi-
-  Label-Pfad. Die lokale Regelbedingung
-  unterstützt Betreff, Absender, Empfänger,
-  Nachrichtentext und RFC822-Header sowie die Vergleiche enthält, enthält
-  nicht, ist, ist nicht, beginnt mit, endet mit und existiert. Alte
+  Label-Pfad. Die lokale Regelbedingung unterstützt Betreff, Absender,
+  Empfänger, Nachrichtentext, RFC822-Header, Ordner, Datum und Junk-/Spamstatus
+  sowie die Vergleiche enthält, enthält nicht, ist, ist nicht, beginnt mit,
+  endet mit, vor, nach und existiert. Alte
   app-eigene Filterdateien werden mit dem bisherigen „enthält“-Standard
   weitergelesen; Evolution-XML-Importe übernehmen bekannte Vergleichsnamen
   und melden unbekannte Operatoren transparent als verlustarm auf „enthält“
@@ -885,14 +891,18 @@ werden.
 - [ ] Camel-Filterdriver mit persistenten Regeln, Reihenfolge, Bedingungen,
   vollständigen Aktionen, Testlauf und Fehlerprotokoll.
 - [~] Die lokale Suchsprache unterstützt Feld-, Label-, Status-, Ordner-, Datums-,
-  Zitat- und Anhangsoperatoren (`in:`/`folder:`, `on:`, `older:`/`newer:`);
+  Zitat- und Anhangsoperatoren (`in:`/`folder:`, `on:`, `older:`/`newer:`) sowie
+  negative Evolution-Prädikate (`-from:`, `-body:`, `is:not-*`, `-has:`);
+  Datumswerte werden zusätzlich als ISO-Kompakt-, RFC-3339-/RFC-822- und
+  relative Werte (`today`/`yesterday`/`7d`) erkannt;
   portable Suchordner können gespeichert, bearbeitet,
   beim Start geladen und aus der Sidebar entfernt werden. Eine globale GTK4-rs-Suche
   durchsucht zusätzlich den lokalen Mail-, Kalender-, Aufgaben-, Notizen- und
   Kontaktbestand über einen gemeinsamen Service und kann den Suchbereich auf
   Alle, Mail, Kalender/Aufgaben/Notizen oder Kontakte einschränken. Server-/Camel-Suche und
   Suchordner mit serverseitiger Live-Aktualisierung fehlen noch. Lokale
-  Mailtreffer berücksichtigen dabei auch Empfänger, Ordner, Labels, Status,
+  Mailtreffer berücksichtigen dabei auch Empfänger, Ordner, Labels,
+  Ungelesen-, Stern-, Wichtigkeits-, Junk- und Anhangsstatus, Negationsprädikate,
   Dateinamen, Nachrichtentext und vollständige Kalender-/Aufgaben-/Notizdaten;
   aktivierbare Treffer wechseln in den passenden GTK4-rs-Hauptbereich. Die
   globale lokale Mail-Suche wertet dieselben Feldpräfixe für Absender,

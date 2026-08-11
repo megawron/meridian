@@ -221,10 +221,16 @@ oder in CI-Artefakte übernehmen.
   gegen echte RFC-822-Referenzen prüfen. Große Threads, fehlende Referenzen,
   Betreffänderungen und mehrere Konten müssen korrekt gruppiert werden.
 - `[ ]` Serverseitige Suche und virtuelle Suchordner implementieren und auf
-  IMAP/IMAPX gegen echte Ordner, Flags, Paging und Live-Updates testen.
+  IMAP/IMAPX gegen echte Ordner, Flags, Paging und Live-Updates testen; die
+  native Suchsyntax muss die portable Feld-/Status-/Datumssemantik inklusive
+  negativer Prädikate und gespeicherter Suchordner ohne Bedeutungsänderung
+  übernehmen.
 - `[ ]` CamelFilterDriver gegen die importierten Regeln abgleichen und den
   manuellen „Jetzt ausführen“-Pfad für echte Camel-Ordner implementieren:
-  Reihenfolge, UND/ODER-Bedingungen, alle Aktionen, Dry-Run/Testbericht,
+  Reihenfolge, UND/ODER-Bedingungen, Text-, Header-, Label-, Datums- („vor“/
+  „nach“), Ordner-, Ungelesen-, Anhangs- und Junk-/Spam-Bedingungen sowie alle
+  Aktionen einschließlich getrenntem Stern-/Flag- und Wichtigkeitsstatus,
+  Dry-Run/Testbericht,
   Berechtigungsfehler, UID-Neuzuordnung und Wiederaufnahme nach Offline-
   Unterbrechung müssen mit einem Testkonto verifiziert werden. Der portable
   lokale Sidecar-Lauf darf dabei nicht als serverseitige Ausführung gezählt

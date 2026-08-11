@@ -181,11 +181,7 @@ impl GlobalSearchEngine {
     where
         I: IntoIterator<Item = &'a SearchResultItem>,
     {
-        let terms = query_str
-            .split_whitespace()
-            .map(str::to_lowercase)
-            .filter(|term| !term.is_empty())
-            .collect::<Vec<_>>();
+        let terms = search_query_terms(query_str);
         if terms.is_empty() {
             return Vec::new();
         }
@@ -199,7 +195,13 @@ impl GlobalSearchEngine {
                 let searchable =
                     format!("{} {} {}", document.title, document.snippet, document.date)
                         .to_lowercase();
-                terms.iter().all(|term| searchable.contains(term))
+                terms.iter().all(|term| {
+                    if term.negated {
+                        !searchable.contains(&term.value)
+                    } else {
+                        searchable.contains(&term.value)
+                    }
+                })
             })
             .cloned()
             .collect()
@@ -241,11 +243,7 @@ impl GlobalSearchEngine {
         query_str: &str,
         documents: &[SearchDocument],
     ) -> Vec<SearchResultItem> {
-        let terms = query_str
-            .split_whitespace()
-            .map(str::to_lowercase)
-            .filter(|term| !term.is_empty())
-            .collect::<Vec<_>>();
+        let terms = search_query_terms(query_str);
         if terms.is_empty() {
             return Vec::new();
         }
@@ -254,13 +252,136 @@ impl GlobalSearchEngine {
             .iter()
             .filter(|document| {
                 (domain == SearchDomain::All || document.result.domain == domain)
-                    && terms
-                        .iter()
-                        .all(|term| document.searchable_text.to_lowercase().contains(term))
+                    && terms.iter().all(|term| {
+                        let searchable = document.searchable_text.to_lowercase();
+                        if term.negated {
+                            !searchable.contains(&term.value)
+                        } else {
+                            searchable.contains(&term.value)
+                        }
+                    })
             })
             .map(|document| document.result.clone())
             .collect()
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SearchQueryTerm {
+    value: String,
+    negated: bool,
+}
+
+fn search_query_terms(input: &str) -> Vec<SearchQueryTerm> {
+    search_tokens(input)
+        .into_iter()
+        .filter_map(|token| normalize_search_query_term(&token))
+        .collect()
+}
+
+fn normalize_search_query_term(token: &str) -> Option<SearchQueryTerm> {
+    let (initial_negated, token) = token
+        .strip_prefix('-')
+        .filter(|value| !value.is_empty())
+        .map(|value| (true, value))
+        .unwrap_or((false, token));
+    let token = token.to_ascii_lowercase();
+    if token.is_empty() {
+        return None;
+    }
+
+    let mut term = token.clone();
+    let mut negated = initial_negated;
+    if let Some(status) = token.strip_prefix("is:") {
+        let (canonical, status_negated) = match status {
+            "not-unread" => ("is:unread", true),
+            "not-read" => ("is:read", true),
+            "not-starred" | "not-flagged" => ("is:starred", true),
+            "not-important" => ("is:important", true),
+            "not-junk" | "not-spam" => ("is:junk", true),
+            "attachment" | "attachments" => ("has:attachment", false),
+            "not-attachment" | "not-attachments" => ("has:attachment", true),
+            "inbox" | "sent" | "sent-mail" | "draft" | "drafts" | "trash" | "deleted"
+            | "archive" | "junk" | "spam" => {
+                return Some(SearchQueryTerm {
+                    value: if matches!(status, "junk" | "spam") {
+                        "is:junk".to_string()
+                    } else {
+                        format!("folder:{status}")
+                    },
+                    negated,
+                });
+            }
+            value if value.starts_with("not-") => {
+                let folder = value.trim_start_matches("not-");
+                if matches!(folder, "inbox" | "sent" | "drafts" | "trash" | "archive") {
+                    return Some(SearchQueryTerm {
+                        value: format!("folder:{folder}"),
+                        negated: !negated,
+                    });
+                }
+                (token.as_str(), false)
+            }
+            "all" | "all-mail" => return None,
+            _ => (token.as_str(), false),
+        };
+        term = canonical.to_string();
+        negated ^= status_negated;
+    } else if token == "no:attachment" || token == "no:attachments" {
+        term = "has:attachment".to_string();
+        negated = !negated;
+    } else if token == "not:attachment" || token == "not:attachments" {
+        term = "has:attachment".to_string();
+        negated = !negated;
+    } else if let Some(value) = token.strip_prefix("not:") {
+        if value.is_empty() {
+            return None;
+        }
+        term = value.to_string();
+        negated = !negated;
+    } else if let Some(value) = token.strip_prefix("not-") {
+        if value.is_empty() {
+            return None;
+        }
+        term = value.to_string();
+        negated = !negated;
+    }
+
+    Some(SearchQueryTerm {
+        value: term,
+        negated,
+    })
+}
+
+fn search_tokens(input: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    let mut quoted = false;
+    let mut escaped = false;
+    for character in input.chars() {
+        if escaped {
+            current.push(character);
+            escaped = false;
+            continue;
+        }
+        match character {
+            '\\' if quoted => escaped = true,
+            '"' => quoted = !quoted,
+            character if character.is_whitespace() && !quoted => {
+                if !current.is_empty() {
+                    tokens.push(std::mem::take(&mut current));
+                }
+            }
+            character => current.push(character),
+        }
+    }
+    if escaped {
+        current.push('\\');
+    }
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+    tokens
 }
 
 fn local_mail_search_text(message: &crate::services::mail_store_service::ParsedMail) -> String {
@@ -270,20 +391,7 @@ fn local_mail_search_text(message: &crate::services::mail_store_service::ParsedM
         .map(|attachment| attachment.filename.as_str())
         .collect::<Vec<_>>()
         .join(" ");
-    let state_terms = [
-        if message.is_unread {
-            "is:unread"
-        } else {
-            "is:read"
-        },
-        if message.is_flagged { "is:starred" } else { "" },
-        if message.attachments.is_empty() {
-            "no:attachment"
-        } else {
-            "has:attachment"
-        },
-    ]
-    .join(" ");
+    let state_terms = local_mail_state_terms(message);
     format!(
         "{} {} {} {} {} {} {} {} {} {} {}",
         message.sender_name,
@@ -307,22 +415,9 @@ fn local_mail_search_index(message: &crate::services::mail_store_service::Parsed
         .map(|attachment| attachment.filename.as_str())
         .collect::<Vec<_>>()
         .join(" ");
-    let state_terms = [
-        if message.is_unread {
-            "is:unread"
-        } else {
-            "is:read"
-        },
-        if message.is_flagged { "is:starred" } else { "" },
-        if message.attachments.is_empty() {
-            "no:attachment"
-        } else {
-            "has:attachment"
-        },
-    ]
-    .join(" ");
+    let state_terms = local_mail_state_terms(message);
     format!(
-        "from:{} {} to:{} cc:{} bcc:{} reply-to:{} folder:{} subject:{} body:{} label:{} filename:{} {}",
+        "from:{} {} to:{} cc:{} bcc:{} reply-to:{} folder:{} in:{} subject:{} body:{} label:{} filename:{} {}",
         message.sender_email,
         message.sender_name,
         message.recipient_to,
@@ -330,12 +425,45 @@ fn local_mail_search_index(message: &crate::services::mail_store_service::Parsed
         message.recipient_bcc,
         message.reply_to,
         message.folder_name,
+        message.folder_id,
         message.subject,
         format!("{} {}", message.preview_snippet, message.html_body),
         message.labels.join(" "),
         attachment_names,
         state_terms,
     )
+}
+
+fn local_mail_state_terms(message: &crate::services::mail_store_service::ParsedMail) -> String {
+    let folder = message.folder_id.to_ascii_lowercase();
+    [
+        if message.is_unread {
+            "is:unread"
+        } else {
+            "is:read"
+        },
+        if message.is_flagged {
+            "is:starred"
+        } else {
+            "is:not-starred"
+        },
+        if message.is_important {
+            "is:important"
+        } else {
+            "is:not-important"
+        },
+        if folder == "junk" || folder == "spam" || folder.starts_with("junk/") {
+            "is:junk"
+        } else {
+            "is:not-junk"
+        },
+        if message.attachments.is_empty() {
+            "no:attachment"
+        } else {
+            "has:attachment"
+        },
+    ]
+    .join(" ")
 }
 
 #[cfg(test)]
@@ -442,6 +570,16 @@ mod tests {
         assert_eq!(results.len(), 1);
 
         let results = GlobalSearchEngine::query_local_mail("from:other@example.org", &messages);
+        assert!(results.is_empty());
+
+        let results =
+            GlobalSearchEngine::query_local_mail("is:not-important is:not-junk", &messages);
+        assert_eq!(results.len(), 1);
+
+        let results = GlobalSearchEngine::query_local_mail("-from:other@example.org", &messages);
+        assert_eq!(results.len(), 1);
+
+        let results = GlobalSearchEngine::query_local_mail("is:important", &messages);
         assert!(results.is_empty());
     }
 }

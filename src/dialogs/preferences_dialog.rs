@@ -2544,6 +2544,13 @@ fn filter_field_label(field: FilterField) -> &'static str {
         FilterField::Body => "Nachricht",
         FilterField::Header => "Header",
         FilterField::Label => "Label",
+        FilterField::Unread => "Ungelesen",
+        FilterField::Flagged => "Stern-/Markierungsstatus",
+        FilterField::Important => "Wichtigkeit",
+        FilterField::Attachment => "Anhang vorhanden",
+        FilterField::Date => "Datum",
+        FilterField::Folder => "Ordner",
+        FilterField::Junk => "Spam/Junk",
     }
 }
 
@@ -2555,6 +2562,8 @@ fn filter_operator_label(operator: FilterOperator) -> &'static str {
         FilterOperator::NotEquals => "ist nicht",
         FilterOperator::StartsWith => "beginnt mit",
         FilterOperator::EndsWith => "endet mit",
+        FilterOperator::Before => "vor",
+        FilterOperator::After => "nach",
         FilterOperator::Exists => "existiert",
     }
 }
@@ -2565,8 +2574,10 @@ fn filter_action_label(action: &FilterAction) -> String {
         FilterAction::CopyToFolder(folder) => format!("kopieren nach {folder}"),
         FilterAction::MarkRead => "als gelesen markieren".to_string(),
         FilterAction::MarkUnread => "als ungelesen markieren".to_string(),
-        FilterAction::SetFlagged => "Wichtig-Flag setzen".to_string(),
-        FilterAction::ClearFlagged => "Wichtig-Flag entfernen".to_string(),
+        FilterAction::SetFlagged => "Stern-/Markierungsstatus setzen".to_string(),
+        FilterAction::ClearFlagged => "Stern-/Markierungsstatus entfernen".to_string(),
+        FilterAction::SetImportant => "Wichtigkeit setzen".to_string(),
+        FilterAction::ClearImportant => "Wichtigkeit entfernen".to_string(),
         FilterAction::Delete => "löschen".to_string(),
         FilterAction::StopProcessing => "weitere Filterregeln nicht ausführen".to_string(),
         FilterAction::SetJunk => "als Spam markieren".to_string(),

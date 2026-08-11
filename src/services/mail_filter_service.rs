@@ -6,6 +6,7 @@
 // to CamelFilterDriver later, while local imports and tests can already use
 // the same matching semantics without inventing successful server actions.
 
+use chrono::{DateTime, NaiveDate, NaiveDateTime};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io;
@@ -28,6 +29,13 @@ pub enum FilterField {
     Body,
     Header,
     Label,
+    Unread,
+    Flagged,
+    Important,
+    Attachment,
+    Date,
+    Folder,
+    Junk,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
@@ -39,6 +47,8 @@ pub enum FilterOperator {
     NotEquals,
     StartsWith,
     EndsWith,
+    Before,
+    After,
     Exists,
 }
 
@@ -65,6 +75,8 @@ impl FilterOperator {
             Self::EndsWith => {
                 !value.is_empty() && lowercase(haystack.trim()).ends_with(&lowercase(value))
             }
+            Self::Before => !value.is_empty() && haystack.trim() < value,
+            Self::After => !value.is_empty() && haystack.trim() > value,
         }
     }
 
@@ -89,6 +101,8 @@ pub enum FilterAction {
     MarkUnread,
     SetFlagged,
     ClearFlagged,
+    SetImportant,
+    ClearImportant,
     Delete,
     StopProcessing,
     SetJunk,
@@ -121,6 +135,23 @@ pub struct MailFilterRule {
     pub match_all: bool,
 }
 
+/// Message metadata needed by conditions that are not plain text fields.
+///
+/// The context is intentionally borrowed from the backend-neutral message
+/// representation.  Local mail can fill every field today, while the native
+/// Camel path can use the same semantics once its complete message metadata
+/// is available.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FilterMessageContext<'a> {
+    pub date: &'a str,
+    pub folder: &'a str,
+    pub is_unread: bool,
+    pub is_flagged: bool,
+    pub is_important: bool,
+    pub is_junk: bool,
+    pub has_attachment: bool,
+}
+
 impl MailFilterRule {
     pub fn effective_conditions(&self) -> Vec<&FilterCondition> {
         if self.conditions.is_empty() {
@@ -147,6 +178,67 @@ impl MailFilterRule {
         headers: &str,
         labels: &[String],
     ) -> bool {
+        self.matches_with_context(
+            subject,
+            sender,
+            recipient,
+            body,
+            headers,
+            labels,
+            FilterMessageContext {
+                date: "",
+                folder: "",
+                is_unread: false,
+                is_flagged: false,
+                is_important: false,
+                is_junk: false,
+                has_attachment: false,
+            },
+        )
+    }
+
+    pub fn matches_with_status(
+        &self,
+        subject: &str,
+        sender: &str,
+        recipient: &str,
+        body: &str,
+        headers: &str,
+        labels: &[String],
+        is_unread: bool,
+        is_flagged: bool,
+        is_important: bool,
+        has_attachment: bool,
+    ) -> bool {
+        self.matches_with_context(
+            subject,
+            sender,
+            recipient,
+            body,
+            headers,
+            labels,
+            FilterMessageContext {
+                date: "",
+                folder: "",
+                is_unread,
+                is_flagged,
+                is_important,
+                is_junk: false,
+                has_attachment,
+            },
+        )
+    }
+
+    pub fn matches_with_context(
+        &self,
+        subject: &str,
+        sender: &str,
+        recipient: &str,
+        body: &str,
+        headers: &str,
+        labels: &[String],
+        context: FilterMessageContext<'_>,
+    ) -> bool {
         if !self.enabled {
             return false;
         }
@@ -154,20 +246,46 @@ impl MailFilterRule {
         let label_text = labels.join(" ");
         let mut condition_matches = self.effective_conditions().into_iter().map(|condition| {
             let value = condition.value.trim().to_lowercase();
-            if value.is_empty() && !condition.operator.allows_empty_value(condition.field) {
-                return false;
+            match condition.field {
+                FilterField::Date => {
+                    date_condition_matches(condition.operator, context.date, condition.value.trim())
+                }
+                FilterField::Junk => {
+                    boolean_condition_matches(condition.operator, &value, context.is_junk)
+                }
+                FilterField::Unread => {
+                    boolean_condition_matches(condition.operator, &value, context.is_unread)
+                }
+                FilterField::Flagged => {
+                    boolean_condition_matches(condition.operator, &value, context.is_flagged)
+                }
+                FilterField::Important => {
+                    boolean_condition_matches(condition.operator, &value, context.is_important)
+                }
+                FilterField::Attachment => {
+                    boolean_condition_matches(condition.operator, &value, context.has_attachment)
+                }
+                field => {
+                    if value.is_empty() && !condition.operator.allows_empty_value(field) {
+                        return false;
+                    }
+                    let haystack = match field {
+                        FilterField::Subject => subject,
+                        FilterField::Sender => sender,
+                        FilterField::Recipient => recipient,
+                        FilterField::Body => body,
+                        FilterField::Header => headers,
+                        FilterField::Label => &label_text,
+                        FilterField::Folder => context.folder,
+                        FilterField::Date | FilterField::Junk => unreachable!(),
+                        FilterField::Unread
+                        | FilterField::Flagged
+                        | FilterField::Important
+                        | FilterField::Attachment => unreachable!(),
+                    };
+                    condition.operator.matches(field, haystack, &value)
+                }
             }
-            let haystack = match condition.field {
-                FilterField::Subject => subject,
-                FilterField::Sender => sender,
-                FilterField::Recipient => recipient,
-                FilterField::Body => body,
-                FilterField::Header => headers,
-                FilterField::Label => &label_text,
-            };
-            condition
-                .operator
-                .matches(condition.field, haystack, &value)
         });
 
         if self.match_all {
@@ -176,6 +294,87 @@ impl MailFilterRule {
             condition_matches.any(|matches| matches)
         }
     }
+}
+
+fn boolean_condition_matches(operator: FilterOperator, value: &str, actual: bool) -> bool {
+    if operator == FilterOperator::Exists {
+        return actual;
+    }
+
+    let Some(expected) = parse_boolean_value(value) else {
+        return false;
+    };
+    match operator {
+        FilterOperator::NotContains | FilterOperator::NotEquals => actual != expected,
+        _ => actual == expected,
+    }
+}
+
+fn parse_boolean_value(value: &str) -> Option<bool> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "true" | "yes" | "y" | "ja" | "j" | "1" | "on" | "unread" | "starred" | "flagged"
+        | "important" | "attachment" | "attachments" | "has-attachment" | "has_attachment" => {
+            Some(true)
+        }
+        "false" | "no" | "n" | "nein" | "0" | "off" | "read" | "not-important"
+        | "not_important" | "unflagged" | "unstarred" | "no-attachment" | "no_attachment"
+        | "none" => Some(false),
+        _ => None,
+    }
+}
+
+fn date_condition_matches(operator: FilterOperator, actual: &str, wanted: &str) -> bool {
+    if operator == FilterOperator::Exists {
+        return !actual.trim().is_empty();
+    }
+
+    if wanted.trim().is_empty() {
+        return false;
+    }
+
+    let actual = normalize_date_value(actual);
+    let wanted = normalize_date_value(wanted);
+    match operator {
+        FilterOperator::Contains => actual.contains(&wanted),
+        FilterOperator::NotContains => !actual.contains(&wanted),
+        FilterOperator::Equals => actual == wanted,
+        FilterOperator::NotEquals => actual != wanted,
+        FilterOperator::StartsWith => actual.starts_with(&wanted),
+        FilterOperator::EndsWith => actual.ends_with(&wanted),
+        FilterOperator::Before => actual < wanted,
+        FilterOperator::After => actual > wanted,
+        FilterOperator::Exists => unreachable!(),
+    }
+}
+
+fn normalize_date_value(value: &str) -> String {
+    let value = value.trim();
+    if let Ok(date) = NaiveDate::parse_from_str(value, "%Y-%m-%d") {
+        return date.format("%Y-%m-%d").to_string();
+    }
+    if value.len() >= 8 {
+        if let Ok(date) = NaiveDate::parse_from_str(&value[..8], "%Y%m%d") {
+            return date.format("%Y-%m-%d").to_string();
+        }
+    }
+    if let Ok(date_time) = DateTime::parse_from_rfc3339(value) {
+        return date_time.date_naive().format("%Y-%m-%d").to_string();
+    }
+    if let Ok(date_time) = DateTime::parse_from_rfc2822(value) {
+        return date_time.date_naive().format("%Y-%m-%d").to_string();
+    }
+    for format in [
+        "%Y%m%dT%H%M%S",
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%dT%H:%M",
+        "%Y-%m-%d %H:%M",
+    ] {
+        if let Ok(date_time) = NaiveDateTime::parse_from_str(value, format) {
+            return date_time.date().format("%Y-%m-%d").to_string();
+        }
+    }
+    value.to_ascii_lowercase()
 }
 
 fn default_match_all() -> bool {
@@ -408,6 +607,97 @@ mod tests {
     }
 
     #[test]
+    fn status_and_attachment_conditions_use_message_metadata() {
+        let important = test_rule(FilterField::Important, "ja");
+        assert!(important.matches_with_status("", "", "", "", "", &[], false, false, true, false));
+        assert!(!important.matches_with_status(
+            "",
+            "",
+            "",
+            "",
+            "",
+            &[],
+            false,
+            false,
+            false,
+            false
+        ));
+
+        let mut not_flagged = test_rule(FilterField::Flagged, "true");
+        not_flagged.condition.operator = FilterOperator::NotEquals;
+        assert!(not_flagged.matches_with_status(
+            "",
+            "",
+            "",
+            "",
+            "",
+            &[],
+            false,
+            false,
+            false,
+            false
+        ));
+        assert!(!not_flagged.matches_with_status(
+            "",
+            "",
+            "",
+            "",
+            "",
+            &[],
+            false,
+            true,
+            false,
+            false
+        ));
+
+        let mut attachment = test_rule(FilterField::Attachment, "");
+        attachment.condition.operator = FilterOperator::Exists;
+        assert!(attachment.matches_with_status("", "", "", "", "", &[], false, false, false, true));
+        assert!(!attachment.matches_with_status(
+            "",
+            "",
+            "",
+            "",
+            "",
+            &[],
+            false,
+            false,
+            false,
+            false
+        ));
+    }
+
+    #[test]
+    fn date_folder_and_junk_conditions_use_message_context() {
+        let context = FilterMessageContext {
+            date: "Mon, 10 Aug 2026 12:00:00 +0000",
+            folder: "archive/2026",
+            is_unread: false,
+            is_flagged: false,
+            is_important: false,
+            is_junk: true,
+            has_attachment: false,
+        };
+
+        let date = test_rule(FilterField::Date, "2026-08-10");
+        assert!(date.matches_with_context("", "", "", "", "", &[], context));
+
+        let mut after = test_rule(FilterField::Date, "2026-08-09");
+        after.condition.operator = FilterOperator::After;
+        assert!(after.matches_with_context("", "", "", "", "", &[], context));
+
+        let mut before = test_rule(FilterField::Date, "2026-08-11");
+        before.condition.operator = FilterOperator::Before;
+        assert!(before.matches_with_context("", "", "", "", "", &[], context));
+
+        let folder = test_rule(FilterField::Folder, "archive");
+        assert!(folder.matches_with_context("", "", "", "", "", &[], context));
+
+        let junk = test_rule(FilterField::Junk, "ja");
+        assert!(junk.matches_with_context("", "", "", "", "", &[], context));
+    }
+
+    #[test]
     fn rules_roundtrip_without_losing_actions() {
         let root = temporary_directory("filter-roundtrip");
         let store = MailFilterStore::new(root.join("filters.json"));
@@ -483,7 +773,11 @@ mod tests {
                     operator: FilterOperator::Contains,
                 },
             ],
-            actions: vec![FilterAction::MarkRead, FilterAction::SetFlagged],
+            actions: vec![
+                FilterAction::MarkRead,
+                FilterAction::SetFlagged,
+                FilterAction::SetImportant,
+            ],
             match_all: true,
         };
         assert!(rule.matches(
@@ -502,7 +796,7 @@ mod tests {
             "",
             &[]
         ));
-        assert_eq!(rule.effective_actions().len(), 2);
+        assert_eq!(rule.effective_actions().len(), 3);
 
         let any_rule = MailFilterRule {
             match_all: false,
