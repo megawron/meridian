@@ -1031,9 +1031,11 @@ werden.
   Fehlerberichte und Upgrade-/Rollback-Prüfung fehlen noch.
 - [~] Tastaturbedienung besitzt echte globale GTK-Aktionen für Navigation,
   Suche, Synchronisation, Sidebar, Mailaktionen und Modulwechsel; das
-  Shortcuts-Fenster zeigt dieselben Beschleuniger. Lokalisierung, IME, RTL,
-  HiDPI, vollständige Screenreader-Beschriftungen und GNOME-HIG-Review fehlen
-  noch.
+  Shortcuts-Fenster zeigt dieselben Beschleuniger. Die klassische Mailansicht
+  sowie Kalender, Aufgaben, Memos und Kontakte setzen nun für Nachrichten-,
+  Termin-, Aufgaben- und Kontaktaktionen Accessible-Labels, einschließlich
+  dynamischer Sortier- und Statusaktionen. Lokalisierung, IME, RTL, HiDPI,
+  vollständige AT-SPI-Prüfung und ein GNOME-HIG-Review fehlen noch.
 - [ ] Performance-Ziele für große Ordner, Speicher-/Thread-Leaks,
   Crash-Recovery und Telemetrie-freie Fehlerdiagnose.
 - [ ] Signierte Release-Artefakte, Flatpak-Review, AppStream-Validierung,

@@ -29,6 +29,7 @@ use crate::services::recurrence_service::{
     recurrence_matches_without_count, recurrence_occurs_on as recurrence_rule_occurs_on,
 };
 use crate::services::settings_service::AppSettings;
+use crate::views::accessibility::set_accessible_label;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CalendarView {
@@ -618,18 +619,21 @@ impl CalendarPage {
             .css_classes(vec!["flat"])
             .tooltip_text("Vorheriger Zeitraum")
             .build();
+        set_accessible_label(&prev_btn, "Vorherigen Kalenderzeitraum anzeigen");
 
         let today_btn = gtk::Button::builder()
             .label("Heute")
             .css_classes(vec!["flat"])
             .tooltip_text("Zu heute wechseln")
             .build();
+        set_accessible_label(&today_btn, "Zum heutigen Datum wechseln");
 
         let next_btn = gtk::Button::builder()
             .icon_name("go-next-symbolic")
             .css_classes(vec!["flat"])
             .tooltip_text("Nächster Zeitraum")
             .build();
+        set_accessible_label(&next_btn, "Nächsten Kalenderzeitraum anzeigen");
 
         let date_label = gtk::Label::builder()
             .label("")
@@ -1762,6 +1766,7 @@ impl CalendarPage {
                     .css_classes(vec!["flat", "caption"])
                     .child(&event_label)
                     .build();
+                set_accessible_label(&event_button, &format!("Termin öffnen: {}", event.summary));
                 let event_for_click = (*event).clone();
                 event_button.connect_clicked(move |button| {
                     open_event_editor_for_widget(button, &event_for_click);
@@ -2743,18 +2748,21 @@ fn append_event_row(
         .css_classes(vec!["flat"])
         .valign(gtk::Align::Center)
         .build();
+    set_accessible_label(&edit_button, "Termin bearbeiten");
     let delete_button = gtk::Button::builder()
         .icon_name("user-trash-symbolic")
         .tooltip_text("Termin löschen")
         .css_classes(vec!["flat", "destructive-action"])
         .valign(gtk::Align::Center)
         .build();
+    set_accessible_label(&delete_button, "Termin löschen");
     let export_button = gtk::Button::builder()
         .icon_name("document-save-symbolic")
         .tooltip_text("Termin als iCalendar exportieren")
         .css_classes(vec!["flat"])
         .valign(gtk::Align::Center)
         .build();
+    set_accessible_label(&export_button, "Termin als iCalendar exportieren");
     row.add_suffix(&edit_button);
     row.add_suffix(&export_button);
     row.add_suffix(&delete_button);

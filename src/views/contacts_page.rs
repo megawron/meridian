@@ -15,6 +15,7 @@ use crate::services::ebook_service::{
 use crate::services::eds_service;
 use crate::services::settings_service::AppSettings;
 use crate::services::vcard_service::VCardContact;
+use crate::views::accessibility::set_accessible_label;
 
 // ─── GObject Subclass ───────────────────────────────────────────────────────
 
@@ -493,6 +494,7 @@ impl ContactsPage {
             .tooltip_text("E-Mail senden")
             .css_classes(vec!["circular", "suggested-action"])
             .build();
+        set_accessible_label(&email_btn, "E-Mail an den Kontakt senden");
 
         let selected_contact_for_email = Rc::clone(&selected_contact);
         email_btn.connect_clicked(glib::clone!(
@@ -521,6 +523,7 @@ impl ContactsPage {
             .tooltip_text("Bearbeiten")
             .css_classes(vec!["circular"])
             .build();
+        set_accessible_label(&edit_btn, "Kontakt bearbeiten");
 
         let selected_contact_for_edit = Rc::clone(&selected_contact);
         let selected_contact_for_edit_refresh = Rc::clone(&selected_contact);
@@ -577,12 +580,14 @@ impl ContactsPage {
             .tooltip_text("Löschen")
             .css_classes(vec!["circular", "destructive-action"])
             .build();
+        set_accessible_label(&delete_btn, "Kontakt löschen");
 
         let export_btn = gtk::Button::builder()
             .icon_name("document-save-symbolic")
             .tooltip_text("Kontakt als vCard exportieren")
             .css_classes(vec!["circular"])
             .build();
+        set_accessible_label(&export_btn, "Kontakt als vCard exportieren");
         let selected_contact_for_export = Rc::clone(&selected_contact);
         export_btn.connect_clicked(glib::clone!(
             #[weak(rename_to = page)]
@@ -769,6 +774,7 @@ impl ContactsPage {
             .css_classes(vec!["flat"])
             .tooltip_text("Kopieren")
             .build();
+        set_accessible_label(&copy_btn1, "E-Mail-Adresse kopieren");
         let selected_contact_for_copy = Rc::clone(&selected_contact);
         copy_btn1.connect_clicked(glib::clone!(
             #[weak(rename_to = page)]

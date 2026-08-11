@@ -2,6 +2,7 @@
 //
 // Views module — contains all major page views of the application.
 
+pub(crate) mod accessibility;
 mod calendar_page;
 mod contacts_page;
 mod html_editor;

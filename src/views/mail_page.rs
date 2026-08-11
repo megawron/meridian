@@ -36,6 +36,7 @@ use crate::services::mail_store_service::ParsedMail;
 use crate::services::mail_thread_service::{ThreadIdentity, group_messages};
 use crate::services::search_folder_service::SearchFolderService;
 use crate::views::MailViewer;
+use crate::views::accessibility::set_accessible_label;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum MessageFilter {
@@ -3978,12 +3979,14 @@ impl MailPage {
             .build();
 
         let button = |icon_name: &str, tooltip: &str, action_name: &str| {
-            gtk::Button::builder()
+            let button = gtk::Button::builder()
                 .icon_name(icon_name)
                 .tooltip_text(tooltip)
                 .action_name(action_name)
                 .css_classes(vec!["flat"])
-                .build()
+                .build();
+            set_accessible_label(&button, tooltip);
+            button
         };
 
         for (icon_name, tooltip, action_name) in [
@@ -4218,6 +4221,7 @@ impl MailPage {
                 .valign(gtk::Align::Center)
                 .tooltip_text("Nachricht für eine Mehrfachaktion auswählen")
                 .build();
+            set_accessible_label(&batch_check, "Nachricht für eine Mehrfachaktion auswählen");
             let list_item_for_batch = list_item.downgrade();
             let page_for_batch = page_for_batch.clone();
             batch_check.connect_toggled(move |check| {
@@ -4270,6 +4274,7 @@ impl MailPage {
                 .valign(gtk::Align::Center)
                 .tooltip_text("Markieren / Sternchhen setzen")
                 .build();
+            set_accessible_label(&btn_star, "Nachricht markieren");
 
             let btn_important = gtk::Button::builder()
                 .icon_name("emblem-important")
@@ -4277,6 +4282,7 @@ impl MailPage {
                 .valign(gtk::Align::Center)
                 .tooltip_text("Als wichtig markieren")
                 .build();
+            set_accessible_label(&btn_important, "Nachricht als wichtig markieren");
 
             let attachment = gtk::Image::from_icon_name("mail-attachment-symbolic");
             attachment.set_tooltip_text(Some("Anhänge"));
@@ -4339,6 +4345,29 @@ impl MailPage {
                 .item()
                 .and_downcast::<MailMessageObject>()
                 .expect("Expected MailMessageObject");
+
+            let thread_label = if msg.thread_size() > 1 {
+                format!("{} Nachrichten", msg.thread_size())
+            } else {
+                "Einzelne Nachricht".to_string()
+            };
+            list_item.set_accessible_label(&format!(
+                "{} von {} · {} · {}",
+                msg.subject(),
+                sender_header(&msg),
+                format_message_date(&msg.date_str()),
+                thread_label
+            ));
+            list_item.set_accessible_description(&format!(
+                "{}{}{}",
+                if msg.is_unread() { "Ungelesen. " } else { "Gelesen. " },
+                if msg.is_flagged() { "Markiert. " } else { "" },
+                if msg.attachments().is_empty() {
+                    "Keine Anhänge."
+                } else {
+                    "Anhänge vorhanden."
+                }
+            ));
 
             let expander = list_item
                 .child()
@@ -4489,8 +4518,10 @@ impl MailPage {
             {
                 if msg.is_flagged() {
                     btn_star.set_icon_name("starred-symbolic");
+                    set_accessible_label(&btn_star, "Markierung entfernen");
                 } else {
                     btn_star.set_icon_name("non-starred-symbolic");
+                    set_accessible_label(&btn_star, "Nachricht markieren");
                 }
                 let msg_clone = msg.clone();
                 let filter_for_star = filter_for_bind.clone();
@@ -4538,6 +4569,14 @@ impl MailPage {
                 } else {
                     "emblem-important"
                 });
+                set_accessible_label(
+                    &btn_important,
+                    if msg.is_important() {
+                        "Wichtigkeitsmarkierung entfernen"
+                    } else {
+                        "Nachricht als wichtig markieren"
+                    },
+                );
                 let msg_clone = msg.clone();
                 let filter_for_important = filter_for_bind.clone();
                 let thread_filter_for_important = thread_filter_for_bind.clone();
@@ -4636,6 +4675,10 @@ impl MailPage {
             .tooltip_text("Aktuelle Suche als Suchordner speichern")
             .css_classes(vec!["flat", "circular"])
             .build();
+        set_accessible_label(
+            &save_search_button,
+            "Aktuelle Suche als Suchordner speichern",
+        );
         let page_for_save_search = self.downgrade();
         let search_entry_for_save = search_entry.clone();
         save_search_button.connect_clicked(move |_| {
@@ -4699,11 +4742,13 @@ impl MailPage {
             } else {
                 "view-sort-ascending-symbolic"
             });
-            button.set_tooltip_text(Some(if descending {
-                "Absteigend sortiert"
+            let label = if descending {
+                "Sortierung absteigend; Sortierrichtung umschalten"
             } else {
-                "Aufsteigend sortiert"
-            }));
+                "Sortierung aufsteigend; Sortierrichtung umschalten"
+            };
+            button.set_tooltip_text(Some(label));
+            set_accessible_label(button, label);
         };
         set_direction_button(&direction_button, self.imp().mail_sort_descending.get());
 
@@ -4781,6 +4826,7 @@ impl MailPage {
             .tooltip_text("Nachrichten aktualisieren (F5)")
             .css_classes(vec!["flat", "circular"])
             .build();
+        set_accessible_label(&refresh_button, "Nachrichten aktualisieren");
         let page_for_refresh = self.downgrade();
         refresh_button.connect_clicked(move |_| {
             if let Some(page) = page_for_refresh.upgrade() {
@@ -4794,6 +4840,7 @@ impl MailPage {
             .css_classes(vec!["flat"])
             .visible(false)
             .build();
+        set_accessible_label(&load_more_button, "Weitere Nachrichten laden");
         let page_for_more = self.downgrade();
         load_more_button.connect_clicked(move |_| {
             if let Some(page) = page_for_more.upgrade() {
@@ -5474,6 +5521,24 @@ impl MailPage {
             .css_classes(vec!["flat"])
             .build();
 
+        for (button, label) in [
+            (&reply_btn, "Auf Nachricht antworten"),
+            (&reply_all_btn, "Allen Empfängern antworten"),
+            (&forward_btn, "Nachricht weiterleiten"),
+            (&export_btn, "Nachricht als EML exportieren"),
+            (&label_btn, "Label bearbeiten"),
+            (&delete_btn, "Nachricht löschen"),
+            (&unread_btn, "Nachricht als ungelesen markieren"),
+            (&read_btn, "Nachricht als gelesen markieren"),
+            (&flag_btn, "Markierung umschalten"),
+            (&important_btn, "Wichtigkeitsmarkierung umschalten"),
+            (&archive_btn, "Nachricht archivieren"),
+            (&junk_btn, "Nachricht als Spam markieren"),
+            (&not_junk_btn, "Nachricht als Nicht-Spam markieren"),
+        ] {
+            set_accessible_label(button, label);
+        }
+
         reply_btn.connect_clicked(glib::clone!(
             #[weak(rename_to = page)]
             self,
@@ -5649,6 +5714,7 @@ impl MailPage {
             .popover(&move_popover)
             .css_classes(vec!["flat"])
             .build();
+        set_accessible_label(&move_button, "Nachricht in einen Ordner verschieben");
         action_bar.append(&move_button);
 
         let copy_popover_content = gtk::Box::builder()
@@ -5722,6 +5788,7 @@ impl MailPage {
             .popover(&copy_popover)
             .css_classes(vec!["flat"])
             .build();
+        set_accessible_label(&copy_button, "Nachricht in einen weiteren Ordner kopieren");
         action_bar.append(&copy_button);
 
         let spacer = gtk::Box::builder().hexpand(true).build();

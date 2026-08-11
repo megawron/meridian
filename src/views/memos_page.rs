@@ -25,6 +25,7 @@ use crate::services::ecal_service::{
 };
 use crate::services::eds_service;
 use crate::services::settings_service::AppSettings;
+use crate::views::accessibility::set_accessible_label;
 
 mod imp {
     use super::*;
@@ -241,6 +242,14 @@ impl MemosPage {
             } else {
                 "Aufsteigend sortiert"
             }));
+            set_accessible_label(
+                button,
+                if descending {
+                    "Sortierung aufsteigend ändern"
+                } else {
+                    "Sortierung absteigend ändern"
+                },
+            );
         };
         set_direction_button(&direction_button, memo_sort_descending.get());
         let source_model = gtk::StringList::new(&["Alle Notizlisten"]);
@@ -599,6 +608,14 @@ impl MemosPage {
                 } else {
                     "Aufsteigend sortiert"
                 }));
+                set_accessible_label(
+                    &direction_button_for_settings,
+                    if descending {
+                        "Sortierung aufsteigend ändern"
+                    } else {
+                        "Sortierung absteigend ändern"
+                    },
+                );
                 memo_list_for_direction_settings.invalidate_sort();
             });
 

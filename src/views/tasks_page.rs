@@ -27,6 +27,7 @@ use crate::services::recurrence_service::{
     next_recurrence_date, parse_ical_date, parse_recurrence_rule,
 };
 use crate::services::settings_service::AppSettings;
+use crate::views::accessibility::set_accessible_label;
 use adw::prelude::*;
 use adw::subclass::prelude::*;
 
@@ -313,6 +314,14 @@ impl TasksPage {
             } else {
                 "Aufsteigend sortiert"
             }));
+            set_accessible_label(
+                button,
+                if descending {
+                    "Sortierung aufsteigend ändern"
+                } else {
+                    "Sortierung absteigend ändern"
+                },
+            );
         };
         set_direction_button(&direction_button, self.imp().task_sort_descending.get());
 
@@ -718,6 +727,14 @@ impl TasksPage {
                 } else {
                     "Aufsteigend sortiert"
                 }));
+                set_accessible_label(
+                    &direction_button_for_settings,
+                    if descending {
+                        "Sortierung aufsteigend ändern"
+                    } else {
+                        "Sortierung absteigend ändern"
+                    },
+                );
                 if let Some(page) = page_weak.upgrade() {
                     render_task_rows(
                         &page,
@@ -1006,6 +1023,7 @@ impl TasksPage {
             .css_classes(vec!["flat"])
             .valign(gtk::Align::Center)
             .build();
+        set_accessible_label(&attachment_picker, "Dateien als Aufgabenanhänge auswählen");
         let attachment_header = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(6)
@@ -1861,6 +1879,14 @@ fn append_task_row(
         .active(task.is_completed())
         .valign(gtk::Align::Center)
         .build();
+    set_accessible_label(
+        &check,
+        &if task.is_completed() {
+            format!("Aufgabe als offen markieren: {}", task.title())
+        } else {
+            format!("Aufgabe als erledigt markieren: {}", task.title())
+        },
+    );
     let task_clone = task.clone();
     let source_uid = task.source_uid();
     let updating = Rc::new(Cell::new(false));
@@ -1964,6 +1990,7 @@ fn append_task_row(
         .css_classes(vec!["flat"])
         .valign(gtk::Align::Center)
         .build();
+    set_accessible_label(&edit_button, "Aufgabe bearbeiten");
     row.add_suffix(&edit_button);
     let page_weak_for_edit = page.downgrade();
     let task_for_edit = task.clone();
@@ -1997,6 +2024,7 @@ fn append_task_row(
         .css_classes(vec!["flat"])
         .valign(gtk::Align::Center)
         .build();
+    set_accessible_label(&export_button, "Aufgabe als iCalendar exportieren");
     row.add_suffix(&export_button);
     let task_component_for_export = task.component();
     export_button.connect_clicked(move |button| {
@@ -2049,6 +2077,7 @@ fn append_task_row(
         .css_classes(vec!["flat", "destructive-action"])
         .valign(gtk::Align::Center)
         .build();
+    set_accessible_label(&delete_button, "Aufgabe löschen");
     row.add_suffix(&delete_button);
     let task_for_delete = task.clone();
     let task_store_for_delete = task_store.clone();
