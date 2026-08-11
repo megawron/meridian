@@ -472,6 +472,103 @@ impl MemosPage {
             }
         });
 
+        if let Some(settings) = AppSettings::try_new() {
+            let memo_sort_for_settings = Rc::clone(&memo_sort);
+            let sort_selector_for_settings = sort_selector.clone();
+            let memo_list_for_sort_settings = memo_list.clone();
+            settings.connect_changed(Some("memo-sort-field"), move |settings, _| {
+                let sort = MemoSort::from_setting(settings.string("memo-sort-field").as_str());
+                memo_sort_for_settings.set(sort);
+                sort_selector_for_settings.set_selected(match sort {
+                    MemoSort::Updated => 0,
+                    MemoSort::Title => 1,
+                    MemoSort::Source => 2,
+                });
+                memo_list_for_sort_settings.invalidate_sort();
+            });
+
+            let memo_sort_descending_for_settings = Rc::clone(&memo_sort_descending);
+            let direction_button_for_settings = direction_button.clone();
+            let memo_list_for_direction_settings = memo_list.clone();
+            settings.connect_changed(Some("memo-sort-descending"), move |settings, _| {
+                let descending = settings.boolean("memo-sort-descending");
+                memo_sort_descending_for_settings.set(descending);
+                direction_button_for_settings.set_icon_name(if descending {
+                    "view-sort-descending-symbolic"
+                } else {
+                    "view-sort-ascending-symbolic"
+                });
+                direction_button_for_settings.set_tooltip_text(Some(if descending {
+                    "Absteigend sortiert"
+                } else {
+                    "Aufsteigend sortiert"
+                }));
+                memo_list_for_direction_settings.invalidate_sort();
+            });
+
+            let memo_source_filter_for_settings = Rc::clone(&memo_source_filter);
+            let source_uids_for_settings = Rc::clone(&source_uids);
+            let source_selector_for_settings = source_selector.clone();
+            let memo_list_for_source_settings = memo_list.clone();
+            let memo_records_for_source_settings = Rc::clone(&memo_records);
+            let empty_state_for_source_settings = empty_state.clone();
+            let search_entry_for_source_settings = search_entry.clone();
+            let page_weak_for_source_settings = self.downgrade();
+            settings.connect_changed(Some("memo-source-filter"), move |settings, _| {
+                let value = settings.string("memo-source-filter");
+                let value = value.trim();
+                memo_source_filter_for_settings
+                    .replace((!value.is_empty()).then_some(value.to_string()));
+                let selected = if value.is_empty() {
+                    Some(0)
+                } else {
+                    source_uids_for_settings
+                        .borrow()
+                        .iter()
+                        .position(|uid| uid == value)
+                        .map(|index| index as u32 + 1)
+                };
+                if let Some(selected) = selected {
+                    source_selector_for_settings.set_selected(selected);
+                    return;
+                }
+
+                let source_filter = (!value.is_empty()).then_some(value.to_string());
+                let query = search_entry_for_source_settings
+                    .text()
+                    .trim()
+                    .to_lowercase();
+                let category_filter = page_weak_for_source_settings
+                    .upgrade()
+                    .and_then(|page| page.imp().memo_category_filter.borrow().clone());
+                apply_memo_list_filter(
+                    &memo_list_for_source_settings,
+                    source_filter.clone(),
+                    category_filter.clone(),
+                    query.clone(),
+                );
+                let has_records = memo_records_for_source_settings
+                    .borrow()
+                    .iter()
+                    .any(|memo| {
+                        memo_matches_filter(
+                            memo,
+                            source_filter.as_deref(),
+                            category_filter.as_deref(),
+                            &query,
+                        )
+                    });
+                empty_state_for_source_settings.set_label(
+                    if query.is_empty() && source_filter.is_none() && category_filter.is_none() {
+                        "Keine Notizen aus EDS geladen"
+                    } else {
+                        "Keine passenden Notizen"
+                    },
+                );
+                empty_state_for_source_settings.set_visible(!has_records);
+            });
+        }
+
         let new_memo_btn = gtk::Button::builder()
             .label("Neue Notiz")
             .icon_name("list-add-symbolic")

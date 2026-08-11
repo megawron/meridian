@@ -129,6 +129,18 @@ impl TaskFilter {
     }
 }
 
+fn task_filter_index(filter: TaskFilter) -> i32 {
+    match filter {
+        TaskFilter::All => 0,
+        TaskFilter::Today => 1,
+        TaskFilter::Important => 2,
+        TaskFilter::Overdue => 3,
+        TaskFilter::InProgress => 4,
+        TaskFilter::Cancelled => 5,
+        TaskFilter::Completed => 6,
+    }
+}
+
 impl TaskSort {
     fn from_setting(value: &str) -> Self {
         match value {
@@ -572,6 +584,128 @@ impl TasksPage {
         };
         if let Some(row) = cat_list.row_at_index(initial_filter_index) {
             cat_list.select_row(Some(&row));
+        }
+
+        if let Some(settings) = AppSettings::try_new() {
+            let page_weak = self.downgrade();
+            let cat_list_for_settings = cat_list.clone();
+            let task_list_for_settings = task_list.clone();
+            let task_store_for_settings = task_store.clone();
+            let empty_tasks_for_settings = empty_tasks.clone();
+            settings.connect_changed(Some("task-filter"), move |settings, _| {
+                let Some(page) = page_weak.upgrade() else {
+                    return;
+                };
+                let filter = TaskFilter::from_setting(settings.string("task-filter").as_str());
+                page.imp().task_filter.set(filter);
+                let index = task_filter_index(filter);
+                if let Some(row) = cat_list_for_settings.row_at_index(index) {
+                    cat_list_for_settings.select_row(Some(&row));
+                }
+                render_task_rows(
+                    &page,
+                    &task_list_for_settings,
+                    &task_store_for_settings,
+                    &empty_tasks_for_settings,
+                );
+            });
+
+            let page_weak = self.downgrade();
+            let task_list_for_source_settings = task_list.clone();
+            let task_store_for_source_settings = task_store.clone();
+            let empty_tasks_for_source_settings = empty_tasks.clone();
+            let source_selector_for_settings = source_selector.clone();
+            let source_uids_for_settings = Rc::clone(&source_uids);
+            settings.connect_changed(Some("task-source-filter"), move |settings, _| {
+                let value = settings.string("task-source-filter");
+                let Some(selected) = (if value.trim().is_empty() {
+                    Some(0)
+                } else {
+                    source_uids_for_settings
+                        .borrow()
+                        .iter()
+                        .position(|uid| uid == value.as_str())
+                        .map(|index| index as u32 + 1)
+                }) else {
+                    return;
+                };
+                let Some(page) = page_weak.upgrade() else {
+                    return;
+                };
+                page.imp()
+                    .task_source_filter
+                    .replace(if value.trim().is_empty() {
+                        None
+                    } else {
+                        Some(value.to_string())
+                    });
+                source_selector_for_settings.set_selected(selected);
+                render_task_rows(
+                    &page,
+                    &task_list_for_source_settings,
+                    &task_store_for_source_settings,
+                    &empty_tasks_for_source_settings,
+                );
+            });
+
+            let page_weak = self.downgrade();
+            let task_list_for_sort_settings = task_list.clone();
+            let task_store_for_sort_settings = task_store.clone();
+            let empty_tasks_for_sort_settings = empty_tasks.clone();
+            let sort_selector_for_settings = sort_selector.clone();
+            settings.connect_changed(Some("task-sort-field"), move |settings, _| {
+                let selected = match settings.string("task-sort-field").as_str() {
+                    "title" => 1,
+                    "priority" => 2,
+                    _ => 0,
+                };
+                if let Some(page) = page_weak.upgrade() {
+                    page.imp().task_sort.set(match selected {
+                        1 => TaskSort::Title,
+                        2 => TaskSort::Priority,
+                        _ => TaskSort::DueDate,
+                    });
+                }
+                sort_selector_for_settings.set_selected(selected);
+                if let Some(page) = page_weak.upgrade() {
+                    render_task_rows(
+                        &page,
+                        &task_list_for_sort_settings,
+                        &task_store_for_sort_settings,
+                        &empty_tasks_for_sort_settings,
+                    );
+                }
+            });
+
+            let page_weak = self.downgrade();
+            let task_list_for_direction_settings = task_list.clone();
+            let task_store_for_direction_settings = task_store.clone();
+            let empty_tasks_for_direction_settings = empty_tasks.clone();
+            let direction_button_for_settings = direction_button.clone();
+            settings.connect_changed(Some("task-sort-descending"), move |settings, _| {
+                let descending = settings.boolean("task-sort-descending");
+                if let Some(page) = page_weak.upgrade() {
+                    page.imp().task_sort_descending.set(descending);
+                }
+                direction_button_for_settings.set_icon_name(if descending {
+                    "view-sort-descending-symbolic"
+                } else {
+                    "view-sort-ascending-symbolic"
+                });
+                direction_button_for_settings.set_tooltip_text(Some(if descending {
+                    "Absteigend sortiert"
+                } else {
+                    "Aufsteigend sortiert"
+                }));
+                if let Some(page) = page_weak.upgrade() {
+                    render_task_rows(
+                        &page,
+                        &task_list_for_direction_settings,
+                        &task_store_for_direction_settings,
+                        &empty_tasks_for_direction_settings,
+                    );
+                }
+            });
         }
 
         let page_weak = self.downgrade();

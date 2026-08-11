@@ -811,8 +811,10 @@ werden.
   geheimnisfreien importierten Quellenstand als Offline-Hinweis.
   Aufgaben können portabel nach Fälligkeit, Titel oder Priorität sortiert
   werden; Sortierfeld und auf-/absteigende Richtung werden über GSettings
-  gespeichert und beim Start wiederhergestellt. Die Memo-Liste bietet dieselbe
-  persistente Auswahl für Änderungszeitpunkt, Titel und Quelle. Memo-
+  gespeichert, beim Start wiederhergestellt und bei Änderungen in den
+  geöffneten Ansichten live synchronisiert. Die Memo-Liste bietet dieselbe
+  persistente Auswahl für Änderungszeitpunkt, Titel und Quelle und übernimmt
+  Änderungen ebenfalls live. Memo-
   Änderungen aktualisieren dabei auch die sichtbare sortierte Suchliste, und
   lokale VTODO-/VJOURNAL-Create/Modify/Remove-Operationen sind durch den
   app-eigenen ICS-Speicher persistent getestet. Termine, Aufgaben und Memos
@@ -869,6 +871,8 @@ werden.
   Die Kontaktliste bietet zusätzlich einen dynamischen RFC6350-CATEGORIES-
   Filter; Kategorien aus dem geladenen EDS-/vCard-Bestand werden gemeinsam
   angeboten und bei Änderungen automatisch aktualisiert.
+  Änderungen an der gespeicherten Standardadressbuchquelle werden bei
+  geöffneter Kontaktansicht ebenfalls live in Auswahl und Filter übernommen.
   Auch der Kontakteditor verwendet dieselbe cachefähige Quellenentdeckung,
   bewahrt eine gespeicherte, aktuell nicht erreichbare Quelle sichtbar und
   bietet das lokale Adressbuch nur bei schreibbarer Verfügbarkeit an.

@@ -300,6 +300,22 @@ impl ContactsPage {
             }
         ));
 
+        if let Some(settings) = AppSettings::try_new() {
+            let book_selector_for_settings = book_selector.clone();
+            let book_source_uids_for_settings = Rc::clone(&book_source_uids);
+            settings.connect_changed(Some("default-address-book-source"), move |settings, _| {
+                let value = settings.string("default-address-book-source");
+                let Some(selected) = book_source_uids_for_settings
+                    .borrow()
+                    .iter()
+                    .position(|uid| uid == value.as_str())
+                else {
+                    return;
+                };
+                book_selector_for_settings.set_selected(selected as u32);
+            });
+        }
+
         let search_query_for_duplicates = Rc::clone(&search_query);
         let selected_book_for_duplicates = Rc::clone(&selected_book);
         let selected_category_for_duplicates = Rc::clone(&selected_category);
