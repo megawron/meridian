@@ -164,24 +164,34 @@ pub struct MailStoreService {
     /// an explicit mailbox without relying on environment variables.
     pub mail_dir: PathBuf,
     metadata: MailMetadataStore,
+    writable: bool,
 }
 
 impl MailStoreService {
-    /// Create a service pointing at the user's existing Evolution local store.
+    /// Create a service pointing at the configured local store.
     ///
-    /// No directory is created and no sample data is written.  The optional
-    /// `EVOLUTION_GTK4_MAIL_DIR` override is useful for tests and for users
-    /// importing a local mailbox from another location.
+    /// Existing Evolution directories and an explicit external setting are
+    /// read-only sources.  User-initiated imports use [`Self::import_destination`]
+    /// so the original store is never modified.  No directory is created and
+    /// no sample data is written.  The optional `EVOLUTION_GTK4_MAIL_DIR`
+    /// override is useful for tests and for inspecting another mailbox.
     pub fn new() -> Self {
-        let mail_dir = std::env::var_os("EVOLUTION_GTK4_MAIL_DIR")
-            .map(PathBuf::from)
-            .or_else(|| {
-                crate::services::settings_service::AppSettings::try_new()
-                    .map(|settings| settings.local_mail_directory())
-                    .filter(|path| !path.trim().is_empty())
-                    .map(PathBuf::from)
-            })
-            .unwrap_or_else(|| gtk::glib::user_data_dir().join("evolution/mail/local"));
+        let (mail_dir, writable) =
+            if let Some(path) = std::env::var_os("EVOLUTION_GTK4_MAIL_DIR").map(PathBuf::from) {
+                (path, false)
+            } else if let Some(path) = crate::services::settings_service::AppSettings::try_new()
+                .map(|settings| settings.local_mail_directory())
+                .filter(|path| !path.trim().is_empty())
+                .map(PathBuf::from)
+            {
+                let writable = crate::services::is_app_owned_store_path(&path);
+                (path, writable)
+            } else {
+                // With no installed schema there is no persistent external-path
+                // setting. Keep the development fallback app-owned so imports do
+                // not silently target the user's Evolution directory.
+                (crate::services::app_data_dir().join("mail"), true)
+            };
         let metadata_path = std::env::var_os("EVOLUTION_GTK4_MAIL_STATE_FILE")
             .map(PathBuf::from)
             .unwrap_or_else(|| crate::services::app_data_dir().join("mail-state.json"));
@@ -189,6 +199,7 @@ impl MailStoreService {
         Self {
             mail_dir,
             metadata: MailMetadataStore::new(metadata_path),
+            writable,
         }
     }
 
@@ -200,6 +211,7 @@ impl MailStoreService {
         Self {
             mail_dir,
             metadata: MailMetadataStore::new(metadata_path),
+            writable: true,
         }
     }
 
@@ -213,13 +225,41 @@ impl MailStoreService {
         Self {
             mail_dir: mail_dir.into(),
             metadata: MailMetadataStore::new(state_path),
+            writable: true,
+        }
+    }
+
+    #[cfg(test)]
+    fn with_read_only_mail_dir(mail_dir: impl Into<PathBuf>) -> Self {
+        let mail_dir = mail_dir.into();
+        Self {
+            metadata: MailMetadataStore::new(mail_dir.join(".evolution-gtk4-state.json")),
+            mail_dir,
+            writable: false,
+        }
+    }
+
+    /// Return the safe app-owned destination for a user-initiated import.
+    /// Existing Evolution stores are read-only sources and therefore redirect
+    /// imports into the app's local mail tree.
+    pub fn import_destination(&self) -> PathBuf {
+        if self.writable {
+            self.mail_dir.clone()
+        } else {
+            crate::services::app_data_dir().join("mail")
         }
     }
 
     /// Copy user-selected EML, Maildir files or mbox files into the configured
-    /// read-only import root.  The importer never overwrites an existing file;
+    /// writable destination.  The importer never overwrites an existing file;
     /// a numbered name is chosen instead so an import can be repeated safely.
     pub fn import_files(&self, files: &[PathBuf]) -> std::io::Result<usize> {
+        if !self.writable {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "configured local mail store is read-only",
+            ));
+        }
         fs::create_dir_all(&self.mail_dir)?;
         let mut sources = Vec::new();
         for source in files {
@@ -244,6 +284,12 @@ impl MailStoreService {
         source_root: impl AsRef<Path>,
         files: &[PathBuf],
     ) -> std::io::Result<usize> {
+        if !self.writable {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "configured local mail store is read-only",
+            ));
+        }
         fs::create_dir_all(&self.mail_dir)?;
         let source_root = source_root.as_ref().to_path_buf();
         let mut sources = files
@@ -255,6 +301,42 @@ impl MailStoreService {
         sources.sort_by(|left, right| left.0.cmp(&right.0));
         sources.dedup_by(|left, right| left.0 == right.0);
         self.copy_import_sources(sources)
+    }
+
+    /// Register local folders discovered in an Evolution mailbox layout.
+    /// Empty folders are represented only by their mailbox path, so they need
+    /// a sidecar definition even when no message file can be copied.
+    pub(crate) fn register_folder_layout_from_root(
+        &self,
+        source_root: impl AsRef<Path>,
+        paths: &[PathBuf],
+    ) -> std::io::Result<usize> {
+        if !self.writable {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "configured local mail store is read-only",
+            ));
+        }
+        fs::create_dir_all(&self.mail_dir)?;
+        let source_root = source_root.as_ref();
+        let mut folder_ids = HashSet::new();
+        for source in paths {
+            let relative = relative_import_path(source, source_root);
+            if relative.as_os_str().is_empty() {
+                continue;
+            }
+            let destination = self.mail_dir.join(relative);
+            let folder_id = folder_id_for_path_with_root(&destination, Some(&self.mail_dir));
+            if folder_id.starts_with("custom:") {
+                folder_ids.insert(folder_id);
+            }
+        }
+
+        let imported = folder_ids.len();
+        for folder_id in folder_ids {
+            self.metadata.set_local_folder(&folder_id, true)?;
+        }
+        Ok(imported)
     }
 
     fn copy_import_sources(&self, mut sources: Vec<(PathBuf, PathBuf)>) -> std::io::Result<usize> {
@@ -2124,6 +2206,23 @@ mod tests {
     }
 
     #[test]
+    fn rejects_import_into_read_only_mail_store() {
+        let root = temporary_directory("read-only-mail-import");
+        let source = root.join("source.eml");
+        let destination = root.join("evolution-mail");
+        fs::write(&source, "From: sender@example.org\nSubject: Test\n\nBody")
+            .expect("source message should be written");
+
+        let error = MailStoreService::with_read_only_mail_dir(&destination)
+            .import_files(std::slice::from_ref(&source))
+            .expect_err("read-only stores must reject imports");
+        assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+        assert!(!destination.exists());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn imports_maildir_directories_and_preserves_seen_flags() {
         let root = temporary_directory("import-maildir");
         let source_dir = root.join("source-maildir");
@@ -2188,6 +2287,44 @@ mod tests {
                 .local_folder_definitions()
                 .contains("custom:Projects/2026")
         );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn loads_evolution_sbd_trees_and_mbox_extensions_with_folder_ids() {
+        let root = temporary_directory("nested-evolution-mbox");
+        let mail_dir = root.join("mail");
+        let nested = mail_dir.join("Inbox.sbd/Projects.mbox");
+        let archive = mail_dir.join("Archive.mbox");
+        fs::create_dir_all(nested.parent().expect("sbd parent should exist"))
+            .expect("sbd folder should be created");
+        let mbox = concat!(
+            "From sender@example.org Mon Aug 10 12:00:00 2026\n",
+            "From: Sender <sender@example.org>\n",
+            "Subject: Nested mbox\n\nNested\n"
+        );
+        fs::write(&nested, mbox).expect("nested mbox should be written");
+        fs::write(
+            &archive,
+            concat!(
+                "From archive@example.org Mon Aug 10 12:01:00 2026\n",
+                "From: Archive <archive@example.org>\n",
+                "Subject: Archive mbox\n\nArchive\n"
+            ),
+        )
+        .expect("archive mbox should be written");
+
+        let records =
+            MailStoreService::with_mail_dir_and_state_path(&mail_dir, root.join("mail-state.json"))
+                .load_local_records();
+        assert_eq!(records.len(), 2);
+        assert!(
+            records
+                .iter()
+                .any(|record| record.folder_id == "custom:Inbox/Projects")
+        );
+        assert!(records.iter().any(|record| record.folder_id == "archive"));
 
         let _ = fs::remove_dir_all(root);
     }

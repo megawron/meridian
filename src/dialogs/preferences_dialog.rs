@@ -584,15 +584,18 @@ impl PreferencesDialog {
                         if paths.is_empty() {
                             return;
                         }
-                        let destination = crate::services::CalendarStoreService::new()
-                            .calendar_dir()
-                            .to_path_buf();
+                        let destination_service = crate::services::CalendarStoreService::new();
+                        if !destination_service.is_writable() {
+                            if let Some(dialog) = dialog_for_file.upgrade() {
+                                dialog.show_toast(
+                                    "Der konfigurierte Kalenderordner ist extern und read-only; bitte zuerst einen app-eigenen Ordner wählen",
+                                );
+                            }
+                            return;
+                        }
                         let (sender, receiver) = async_channel::bounded(1);
                         std::thread::spawn(move || {
-                            let result = crate::services::CalendarStoreService::with_calendar_dir(
-                                destination,
-                            )
-                            .import_files(&paths);
+                            let result = destination_service.import_files(&paths);
                             if let Err(error) = sender.send_blocking(result) {
                                 tracing::debug!(%error, "Calendar import result was dropped");
                             }
@@ -651,14 +654,18 @@ impl PreferencesDialog {
                     if paths.is_empty() {
                         return;
                     }
-                    let destination = crate::services::ContactStoreService::new()
-                        .contact_dir()
-                        .to_path_buf();
+                    let destination_service = crate::services::ContactStoreService::new();
+                    if !destination_service.is_writable() {
+                        if let Some(dialog) = dialog_for_file.upgrade() {
+                            dialog.show_toast(
+                                "Der konfigurierte Kontaktordner ist extern und read-only; bitte zuerst einen app-eigenen Ordner wählen",
+                            );
+                        }
+                        return;
+                    }
                     let (sender, receiver) = async_channel::bounded(1);
                     std::thread::spawn(move || {
-                        let result =
-                            crate::services::ContactStoreService::with_contact_dir(destination)
-                                .import_files(&paths);
+                        let result = destination_service.import_files(&paths);
                         if let Err(error) = sender.send_blocking(result) {
                             tracing::debug!(%error, "Contact import result was dropped");
                         }
@@ -1097,7 +1104,7 @@ impl PreferencesDialog {
                                         )
                                     };
                                     dialog.show_toast(&format!(
-                                        "{} Profilquelle(n) gefunden: {} Konto/Konten, {} Mail-, {} Kalender- und {} Adressbuchquelle(n) zwischengespeichert, {} Filterregel(n), {} Signatur(en), {} Maildatei(en), {} iCalendar-Datei(en) und {} vCard-Datei(en) übernommen, {} übersprungen{}{}",
+                                        "{} Profilquelle(n) gefunden: {} Konto/Konten, {} Mail-, {} Kalender- und {} Adressbuchquelle(n) zwischengespeichert, {} Filterregel(n), {} Signatur(en), {} Maildatei(en), {} lokale Mailordner, {} iCalendar-Datei(en) und {} vCard-Datei(en) übernommen, {} übersprungen{}{}",
                                         report.discovered_sources,
                                         report.imported_accounts,
                                         report.cached_mail_sources,
@@ -1106,6 +1113,7 @@ impl PreferencesDialog {
                                         report.imported_filters,
                                         report.imported_signatures,
                                         report.imported_mail_files,
+                                        report.imported_mail_folders,
                                         report.imported_calendar_files,
                                         report.imported_contact_files,
                                         report.skipped_sources,
@@ -1170,11 +1178,20 @@ impl PreferencesDialog {
                     if paths.is_empty() {
                         return;
                     }
-                    let destination = crate::services::MailStoreService::new().mail_dir.clone();
+                    let source_store = crate::services::MailStoreService::new();
+                    let destination = source_store.import_destination();
+                    let state_path = crate::services::app_data_dir().join("mail-state.json");
+                    if let Some(settings) = AppSettings::try_new() {
+                        settings.set_local_mail_directory(&destination.to_string_lossy());
+                    }
+                    let destination_store =
+                        crate::services::MailStoreService::with_mail_dir_and_state_path(
+                            destination,
+                            state_path,
+                        );
                     let (sender, receiver) = async_channel::bounded(1);
                     std::thread::spawn(move || {
-                        let result = crate::services::MailStoreService::with_mail_dir(destination)
-                            .import_files(&paths);
+                        let result = destination_store.import_files(&paths);
                         if let Err(error) = sender.send_blocking(result) {
                             tracing::debug!(%error, "Mail import result was dropped");
                         }
@@ -1227,11 +1244,20 @@ impl PreferencesDialog {
                         let Some(path) = folder.path() else {
                             return;
                         };
-                        let destination =
-                            crate::services::MailStoreService::new().mail_dir.clone();
+                        let source_store = crate::services::MailStoreService::new();
+                        let destination = source_store.import_destination();
+                        let state_path = crate::services::app_data_dir().join("mail-state.json");
+                        if let Some(settings) = AppSettings::try_new() {
+                            settings.set_local_mail_directory(&destination.to_string_lossy());
+                        }
+                        let destination_store =
+                            crate::services::MailStoreService::with_mail_dir_and_state_path(
+                                destination,
+                                state_path,
+                            );
                         let (sender, receiver) = async_channel::bounded(1);
                         std::thread::spawn(move || {
-                            let result = crate::services::MailStoreService::with_mail_dir(destination)
+                            let result = destination_store
                                 .import_files(std::slice::from_ref(&path));
                             if let Err(error) = sender.send_blocking(result) {
                                 tracing::debug!(%error, "Mail folder import result was dropped");

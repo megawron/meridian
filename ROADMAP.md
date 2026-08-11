@@ -398,9 +398,15 @@ werden.
   konfigurierten lokalen Ordner kopiert werden; `cur`/`new`-Strukturen und
   Maildir-Seen-Flags sowie verschachtelte lokale Evolution-Ordner bleiben beim
   portablen Profilimport erhalten, Wiederholungen erzeugen nummerierte
-  Dateinamen. Benutzerdefinierte importierte Ordner werden zusätzlich im
+  Dateinamen. Der automatisch erkannte Evolution-Mailstore bleibt dabei eine
+  read-only Quelle; direkte Datei-/Ordnerimporte werden in den app-eigenen
+  Mailbestand umgeleitet und der Zielpfad persistent gesetzt, damit weder
+  Originaldateien noch Camel-Indizes verändert werden. Benutzerdefinierte
+  importierte Ordner werden zusätzlich im
   app-eigenen Sidecar registriert, damit auch ein Ordner ohne Nachricht nicht
-  aus der Sidebar verschwindet. Der lokale Mailordner kann über die
+  aus der Sidebar verschwindet; leere Mailbox-Dateien und erkannte
+  Maildir-/`.sbd`-Ordner werden dabei ebenfalls registriert. Der lokale
+  Mailordner kann über die
   Einstellungen ausgewählt oder auf den automatisch erkannten Pfad
   zurückgesetzt werden. Ein app-eigener Sidecar speichert zusätzlich logische
   Ordnerübersteuerungen, lokale Mehrfachkopien und gelöschte Einträge, ohne die
@@ -414,7 +420,10 @@ werden.
   providerunabhängige logische Ordnerhierarchie ergänzt fehlende Eltern,
   aggregiert Zähler, unterstützt Ein-/Ausklappen und führt Umbenennen/Löschen
   auf dem gesamten Unterbaum aus; native providerabhängige Hierarchie- und
-  Separator-Semantik bleibt Linux-/Camel-Abnahme.
+  Separator-Semantik bleibt Linux-/Camel-Abnahme. Beim initialen Laden bleiben
+  diese lokalen Nachrichten und Ordner auch bei vorhandenen EDS-Konten als
+  eigener „Auf diesem Computer“-Bestand neben den nativen Konten sichtbar;
+  paginierte native Ordnerabfragen bleiben davon getrennt.
 - [~] Suche, Stern, Wichtigkeitsstatus, Ordnerfilter und „gelesen“ existieren
   im GTK4-rs-UI;
   die lokale Schnellsuche versteht zusätzlich `from:`, `to:`, `subject:`,
@@ -689,6 +698,9 @@ werden.
   Teilnehmerverfügbarkeit bleiben Linux-only. Die Kalenderansicht listet EDS-
   und lokale Kalenderquellen mit persistenten Sichtbarkeitsschaltern; ausge-
   blendete Quellen werden in Monats-, Tages- und Wochenansicht berücksichtigt.
+  Ein app-eigener `ical`-Ordner bleibt nach dem Speichern seines Pfads
+  weiterhin schreibbar; ausdrücklich externe Kalenderpfade bleiben dagegen
+  read-only.
 - [~] GTK4-rs-Aufgaben- und Memo-Ansichten laden VTODO-/VJOURNAL-Komponenten
   über die native libecal-2.0-Brücke aus den aktivierten EDS-Quellen. Neue
   VTODOs/VJOURNALs, VTODO-Statusänderungen und vollständiges VTODO-Bearbeiten
@@ -826,7 +838,9 @@ werden.
   Kontaktwege, strukturierte Namens-/Zusatzfelder, Kategorien und
   Inline-Fotos anzeigen und bearbeiten. Die Standardadressbuch-UID wird aus
   der Quellenauswahl persistent gespeichert und beim nächsten Start
-  vorselektiert.
+  vorselektiert. Ein app-eigener `vcards`-Ordner bleibt nach dem Speichern
+  seines Pfads weiterhin schreibbar; ausdrücklich externe vCard-Pfade bleiben
+  dagegen read-only.
   Die Kontaktliste bietet zusätzlich einen dynamischen RFC6350-CATEGORIES-
   Filter; Kategorien aus dem geladenen EDS-/vCard-Bestand werden gemeinsam
   angeboten und bei Änderungen automatisch aktualisiert.

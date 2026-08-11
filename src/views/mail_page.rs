@@ -850,6 +850,11 @@ impl MailLoadRequest {
 
 enum MailPageLoadResult {
     Camel(CamelMailLoad),
+    Combined {
+        camel: CamelMailLoad,
+        local_messages: Vec<ParsedMail>,
+        local_folders: HashSet<String>,
+    },
     Local {
         reason: String,
         messages: Vec<ParsedMail>,
@@ -889,7 +894,18 @@ fn load_mail_backend(
                 || !camel.messages.is_empty()
                 || !camel.folders.is_empty() =>
         {
-            MailPageLoadResult::Camel(camel)
+            let store = crate::services::MailStoreService::new();
+            let local_folders = store.local_folder_definitions();
+            let local_messages = store.load_local_records_cancelable(cancelled);
+            if local_messages.is_empty() && local_folders.is_empty() {
+                MailPageLoadResult::Camel(camel)
+            } else {
+                MailPageLoadResult::Combined {
+                    camel,
+                    local_messages,
+                    local_folders,
+                }
+            }
         }
         Ok(_) => {
             let store = crate::services::MailStoreService::new();
@@ -6430,6 +6446,22 @@ impl MailPage {
         }
 
         match result {
+            MailPageLoadResult::Combined {
+                camel,
+                local_messages,
+                local_folders,
+            } => {
+                let camel_folders = camel.folders.clone();
+                self.apply_mail_load(request.clone(), MailPageLoadResult::Camel(camel), replace);
+                let local_counts = self.append_local_messages(local_messages, local_folders, false);
+                if let Some(folder_list) = self.imp().folder_list.borrow().as_ref() {
+                    self.update_camel_folder_counts(
+                        folder_list,
+                        &camel_folders,
+                        Some(&local_counts),
+                    );
+                }
+            }
             MailPageLoadResult::Camel(camel) => {
                 if replace {
                     self.imp().local_folder_ids.replace(HashSet::new());
@@ -6446,7 +6478,7 @@ impl MailPage {
                     if replace {
                         self.rebuild_camel_folder_rows(folder_list, &camel.folders);
                     }
-                    self.update_camel_folder_counts(folder_list, &camel.folders);
+                    self.update_camel_folder_counts(folder_list, &camel.folders, None);
                 }
 
                 let appended = if let Some(store) = self.imp().message_store.borrow().as_ref() {
@@ -6599,6 +6631,83 @@ impl MailPage {
         if self.imp().mail_change_pending.replace(false) && !self.imp().mail_loading.get() {
             self.refresh_mail();
         }
+    }
+
+    fn append_local_messages(
+        &self,
+        messages: Vec<ParsedMail>,
+        local_folders: HashSet<String>,
+        replace: bool,
+    ) -> HashMap<String, (u32, u32)> {
+        let mut visible_local_folders = local_folders;
+        let mut folder_counts = HashMap::new();
+        let mut loaded_count = 0;
+        if let Some(store) = self.imp().message_store.borrow().as_ref() {
+            if replace {
+                store.remove_all();
+            }
+            for record in messages {
+                loaded_count += 1;
+                let folder_counts_entry = folder_counts
+                    .entry(record.folder_id.clone())
+                    .or_insert((0_u32, 0_u32));
+                folder_counts_entry.1 += 1;
+                if record.is_unread {
+                    folder_counts_entry.0 += 1;
+                }
+                store.append(&record.into_object());
+            }
+            self.refresh_thread_metadata(store);
+        }
+
+        visible_local_folders.extend(
+            folder_counts
+                .keys()
+                .filter(|folder_id| folder_id.starts_with("custom:"))
+                .cloned(),
+        );
+        if let Some(folder_list) = self.imp().folder_list.borrow().as_ref() {
+            self.rebuild_local_folder_rows(folder_list, &folder_counts, &visible_local_folders);
+        }
+        self.imp()
+            .local_folder_ids
+            .replace(visible_local_folders.clone());
+
+        if let Some(state) = self.imp().message_state.borrow().as_ref() {
+            let current = state.label().to_string();
+            let suffix = format!("{loaded_count} lokale Nachricht(en) verfügbar");
+            let label = if current.is_empty() {
+                suffix
+            } else {
+                format!("{current} · {suffix}")
+            };
+            state.set_label(&label);
+        }
+        let selected_folder = self
+            .imp()
+            .folder_selection
+            .borrow()
+            .as_ref()
+            .map(|selection| selection.borrow().clone())
+            .unwrap_or_else(FolderSelection::configured_initial);
+        if !selected_folder.is_remote() {
+            if let Some(selection) = self.imp().folder_selection.borrow().as_ref() {
+                selection.replace(selected_folder.clone());
+            }
+            self.select_folder_row(&selected_folder);
+            if loaded_count > 0 {
+                self.select_message_after_reload(None);
+            }
+        }
+        if loaded_count > 0 || !visible_local_folders.is_empty() {
+            if let Some(section) = self.imp().folder_section.borrow().as_ref() {
+                section.set_visible(true);
+            }
+            if let Some(filter) = self.imp().message_filter.borrow().as_ref() {
+                filter.changed(gtk::FilterChange::Different);
+            }
+        }
+        folder_counts
     }
 
     fn append_unique_messages(&self, store: &gio::ListStore, messages: Vec<ParsedMail>) -> usize {
@@ -6814,6 +6923,7 @@ impl MailPage {
         &self,
         folder_list: &gtk::ListBox,
         folders: &[camel_mail_service::CamelFolderSummary],
+        local_counts: Option<&HashMap<String, (u32, u32)>>,
     ) {
         for index in 0..folder_list.observe_children().n_items() {
             let Some(row) = folder_list
@@ -6825,6 +6935,9 @@ impl MailPage {
             let Some(data) = Self::folder_row_data(&row) else {
                 continue;
             };
+            if data.source_uid.is_none() && data.folder_id.starts_with("custom:") {
+                continue;
+            }
             let (unread, total) = if let (Some(source_uid), Some(folder_name)) =
                 (data.source_uid.as_deref(), data.folder_name.as_deref())
             {
@@ -6836,6 +6949,29 @@ impl MailPage {
                     .map(|folder| (folder.unread_count, folder.total_count))
                     .unwrap_or((0, 0))
             } else {
+                let local_key = if data.folder_id == "spam" {
+                    "junk"
+                } else {
+                    data.folder_id.as_str()
+                };
+                let local = if data.folder_id == "all" {
+                    local_counts
+                        .map(|counts| {
+                            counts
+                                .values()
+                                .fold((0_u32, 0_u32), |(unread, total), value| {
+                                    (
+                                        unread.saturating_add(value.0),
+                                        total.saturating_add(value.1),
+                                    )
+                                })
+                        })
+                        .unwrap_or((0, 0))
+                } else {
+                    local_counts
+                        .and_then(|counts| counts.get(local_key).copied())
+                        .unwrap_or((0, 0))
+                };
                 folders
                     .iter()
                     .filter(|folder| {
@@ -6847,7 +6983,7 @@ impl MailPage {
                                     data.folder_id.as_str()
                                 }
                     })
-                    .fold((0_u32, 0_u32), |(unread, total), folder| {
+                    .fold(local, |(unread, total), folder| {
                         (
                             unread.saturating_add(folder.unread_count),
                             total.saturating_add(folder.total_count),

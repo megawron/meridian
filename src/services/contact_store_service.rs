@@ -32,8 +32,12 @@ impl ContactStoreService {
                 .map(|settings| settings.local_contact_directory())
                 .filter(|path| !path.trim().is_empty())
                 .map(PathBuf::from)
+                .map(|path| {
+                    let writable = crate::services::is_app_owned_store_path(&path);
+                    (path, writable)
+                })
             {
-                (path, false)
+                path
             } else {
                 (crate::services::app_data_dir().join("vcards"), true)
             };
@@ -58,6 +62,7 @@ impl ContactStoreService {
         }
     }
 
+    #[allow(dead_code)]
     pub fn contact_dir(&self) -> &Path {
         &self.contact_dir
     }

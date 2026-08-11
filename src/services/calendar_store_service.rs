@@ -69,8 +69,12 @@ impl CalendarStoreService {
                 .map(|settings| settings.local_calendar_directory())
                 .filter(|path| !path.trim().is_empty())
                 .map(PathBuf::from)
+                .map(|path| {
+                    let writable = crate::services::is_app_owned_store_path(&path);
+                    (path, writable)
+                })
             {
-                (path, false)
+                path
             } else {
                 (crate::services::app_data_dir().join("ical"), true)
             };
@@ -95,6 +99,7 @@ impl CalendarStoreService {
         }
     }
 
+    #[allow(dead_code)]
     pub fn calendar_dir(&self) -> &Path {
         &self.calendar_dir
     }

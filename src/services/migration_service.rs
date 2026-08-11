@@ -45,6 +45,7 @@ pub struct MigrationReport {
     pub imported_contact_files: usize,
     pub discovered_mail_files: usize,
     pub imported_mail_files: usize,
+    pub imported_mail_folders: usize,
     pub signature_text: Option<String>,
     pub warnings: Vec<String>,
 }
@@ -57,6 +58,7 @@ pub struct LocalDataMigrationReport {
     pub imported_contact_files: usize,
     pub discovered_mail_files: usize,
     pub imported_mail_files: usize,
+    pub imported_mail_folders: usize,
     pub warnings: Vec<String>,
 }
 
@@ -179,6 +181,7 @@ pub fn import_evolution_profile_with_cache_and_local_data(
     report.imported_contact_files = local.imported_contact_files;
     report.discovered_mail_files = local.discovered_mail_files;
     report.imported_mail_files = local.imported_mail_files;
+    report.imported_mail_folders = local.imported_mail_folders;
     report.warnings.extend(local.warnings);
     Ok(report)
 }
@@ -200,6 +203,7 @@ pub fn import_evolution_local_data(
     let mut calendar_files = Vec::new();
     let mut contact_files = Vec::new();
     let mut mail_files = Vec::new();
+    let mut mail_layout_paths = Vec::new();
     let mut warnings = Vec::new();
     for path in candidates {
         let raw = match fs::read_to_string(&path) {
@@ -233,6 +237,7 @@ pub fn import_evolution_local_data(
     }
 
     collect_local_mail_files(root, &mut mail_files)?;
+    collect_local_mail_layout_paths(root, &mut mail_layout_paths)?;
 
     let discovered_calendar_files = calendar_files.len();
     let discovered_contact_files = contact_files.len();
@@ -264,6 +269,11 @@ pub fn import_evolution_local_data(
     } else {
         mail_store.import_files_from_root(root, &mail_files)?
     };
+    let imported_mail_folders = if mail_layout_paths.is_empty() {
+        0
+    } else {
+        mail_store.register_folder_layout_from_root(root, &mail_layout_paths)?
+    };
 
     Ok(LocalDataMigrationReport {
         discovered_calendar_files,
@@ -272,6 +282,7 @@ pub fn import_evolution_local_data(
         imported_contact_files,
         discovered_mail_files,
         imported_mail_files,
+        imported_mail_folders,
         warnings,
     })
 }
@@ -734,6 +745,154 @@ fn collect_local_mail_files(root: &Path, result: &mut Vec<PathBuf>) -> io::Resul
         }
     }
     Ok(())
+}
+
+fn collect_local_mail_layout_paths(root: &Path, result: &mut Vec<PathBuf>) -> io::Result<()> {
+    let mut local_roots = Vec::new();
+    collect_evolution_local_mail_roots(root, &mut local_roots)?;
+    local_roots.sort();
+    local_roots.dedup();
+    for local_root in local_roots {
+        collect_local_mail_layout_entries(&local_root, &local_root, result)?;
+    }
+    result.sort();
+    result.dedup();
+    Ok(())
+}
+
+fn collect_evolution_local_mail_roots(root: &Path, result: &mut Vec<PathBuf>) -> io::Result<()> {
+    let metadata = fs::symlink_metadata(root)?;
+    if !metadata.is_dir() {
+        return Ok(());
+    }
+
+    let is_local_root = root
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.eq_ignore_ascii_case("local"))
+        && root
+            .parent()
+            .and_then(Path::file_name)
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.eq_ignore_ascii_case("mail"));
+    if is_local_root {
+        result.push(root.to_path_buf());
+    }
+
+    for entry in fs::read_dir(root)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        if file_type.is_symlink() || !file_type.is_dir() {
+            continue;
+        }
+        collect_evolution_local_mail_roots(&entry.path(), result)?;
+    }
+    Ok(())
+}
+
+fn collect_local_mail_layout_entries(
+    root: &Path,
+    current: &Path,
+    result: &mut Vec<PathBuf>,
+) -> io::Result<()> {
+    for entry in fs::read_dir(current)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        if file_type.is_symlink() {
+            continue;
+        }
+        let path = entry.path();
+        if file_type.is_dir() {
+            let name = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or_default();
+            if name.eq_ignore_ascii_case("cur")
+                || name.eq_ignore_ascii_case("new")
+                || name.eq_ignore_ascii_case("tmp")
+            {
+                continue;
+            }
+
+            let has_maildir_children = directory_has_maildir_children(&path);
+            let hidden_folder = name.starts_with('.') && name != "." && name != "..";
+            let sbd_folder = name
+                .to_ascii_lowercase()
+                .strip_suffix(".sbd")
+                .is_some_and(|name| !name.is_empty());
+            if has_maildir_children || hidden_folder || sbd_folder {
+                result.push(path.clone());
+            }
+            collect_local_mail_layout_entries(root, &path, result)?;
+        } else if file_type.is_file() && is_local_mail_layout_file(root, &path) {
+            result.push(path);
+        }
+    }
+    Ok(())
+}
+
+fn directory_has_maildir_children(path: &Path) -> bool {
+    let Ok(entries) = fs::read_dir(path) else {
+        return false;
+    };
+    entries.flatten().any(|entry| {
+        let Ok(file_type) = entry.file_type() else {
+            return false;
+        };
+        file_type.is_dir()
+            && (entry
+                .file_name()
+                .to_string_lossy()
+                .eq_ignore_ascii_case("cur")
+                || entry
+                    .file_name()
+                    .to_string_lossy()
+                    .eq_ignore_ascii_case("new"))
+    })
+}
+
+fn is_local_mail_layout_file(root: &Path, path: &Path) -> bool {
+    let parent_name = path
+        .parent()
+        .and_then(Path::file_name)
+        .and_then(|name| name.to_str())
+        .unwrap_or_default();
+    if parent_name.eq_ignore_ascii_case("cur")
+        || parent_name.eq_ignore_ascii_case("new")
+        || parent_name.eq_ignore_ascii_case("tmp")
+    {
+        return false;
+    }
+
+    let extension = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| extension.to_ascii_lowercase());
+    if matches!(extension.as_deref(), Some("eml" | "mbox")) {
+        return true;
+    }
+    if extension.is_some() {
+        return false;
+    }
+
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default();
+    if file_name.starts_with('.') {
+        return false;
+    }
+    path.parent().is_some_and(|parent| {
+        parent == root
+            || parent
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| {
+                    name.to_ascii_lowercase()
+                        .strip_suffix(".sbd")
+                        .is_some_and(|name| !name.is_empty())
+                })
+    })
 }
 
 fn is_local_mail_candidate(path: &Path) -> bool {
@@ -1642,6 +1801,7 @@ JunkFolder=Junk
         let contact_source = profile_root.join("addressbook/contacts.vcf");
         let mail_source = profile_root.join("mail/local/cur/message-1");
         let nested_mail_source = profile_root.join("mail/local/.Projects/.2026/cur/message-2");
+        let empty_mail_folder = profile_root.join("mail/local/.Empty");
         fs::create_dir_all(calendar_source.parent().unwrap())
             .expect("calendar profile directory should be created");
         fs::create_dir_all(contact_source.parent().unwrap())
@@ -1650,6 +1810,7 @@ JunkFolder=Junk
             .expect("mail profile directory should be created");
         fs::create_dir_all(nested_mail_source.parent().unwrap())
             .expect("nested mail profile directory should be created");
+        fs::create_dir_all(&empty_mail_folder).expect("empty mail folder should be created");
         fs::write(
             &calendar_source,
             "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nEND:VCALENDAR\r\n",
@@ -1697,6 +1858,7 @@ JunkFolder=Junk
         assert_eq!(report.imported_contact_files, 1);
         assert_eq!(report.discovered_mail_files, 2);
         assert_eq!(report.imported_mail_files, 2);
+        assert_eq!(report.imported_mail_folders, 3);
         assert!(calendar_destination.join("system.ics").is_file());
         assert!(contact_destination.join("contacts.vcf").is_file());
         assert!(mail_destination.join("cur/message-1").is_file());
@@ -1704,6 +1866,11 @@ JunkFolder=Junk
             mail_destination
                 .join(".Projects/.2026/cur/message-2")
                 .is_file()
+        );
+        assert!(
+            mail_store
+                .local_folder_definitions()
+                .contains("custom:Empty")
         );
         assert!(
             mail_store

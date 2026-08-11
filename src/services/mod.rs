@@ -51,3 +51,30 @@ pub(crate) fn app_data_dir() -> std::path::PathBuf {
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| gtk::glib::user_data_dir().join("evolution-gtk4"))
 }
+
+/// Return whether a configured local store is inside the application's own
+/// data tree.  Paths selected outside that tree are intentionally treated as
+/// read-only import sources; app-owned paths remain editable after a restart
+/// or a profile migration has persisted their location in GSettings.
+pub(crate) fn is_app_owned_store_path(path: &std::path::Path) -> bool {
+    path.starts_with(app_data_dir())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{app_data_dir, is_app_owned_store_path};
+
+    #[test]
+    fn app_owned_store_path_is_component_bounded() {
+        let root = app_data_dir();
+        assert!(is_app_owned_store_path(&root.join("ical")));
+
+        let sibling = root.with_file_name(format!(
+            "{}-external",
+            root.file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("evolution-gtk4")
+        ));
+        assert!(!is_app_owned_store_path(&sibling.join("ical")));
+    }
+}
