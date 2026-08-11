@@ -351,6 +351,26 @@ impl AppSettings {
         self.set_boolean("show-message-preview", value);
     }
 
+    /// Select the folder shown when the mail view is opened.
+    pub fn mail_default_folder(&self) -> String {
+        match self.settings.string("mail-default-folder").as_str() {
+            "all" | "inbox" | "sent" | "drafts" | "trash" | "archive" | "spam" => {
+                self.settings.string("mail-default-folder").to_string()
+            }
+            _ => "inbox".to_string(),
+        }
+    }
+
+    pub fn set_mail_default_folder(&self, value: &str) {
+        let value = match value {
+            "all" | "inbox" | "sent" | "drafts" | "trash" | "archive" | "spam" => value,
+            _ => "inbox",
+        };
+        if let Err(error) = self.settings.set_string("mail-default-folder", value) {
+            tracing::warn!(%error, "Could not persist default mail folder");
+        }
+    }
+
     /// Select the mail workflow layout.  `modern` keeps the message list and
     /// preview side by side; `classic` mirrors Evolution's traditional
     /// folder-left, list-above-preview arrangement.
@@ -749,6 +769,7 @@ impl AppSettings {
             "mail-font-size",
             "mark-read-on-selection",
             "show-message-preview",
+            "mail-default-folder",
             "mail-layout",
             "mail-sidebar-position",
             "mail-modern-preview-position",

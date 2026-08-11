@@ -121,6 +121,10 @@
       <default>true</default>
       <summary>Show the selected message preview pane</summary>
     </key>
+    <key name="mail-default-folder" type="s">
+      <default>'inbox'</default>
+      <summary>Mail folder selected when the application starts</summary>
+    </key>
     <key name="mail-layout" type="s">
       <default>'modern'</default>
       <summary>Mail layout (modern side-by-side or classic top-preview)</summary>

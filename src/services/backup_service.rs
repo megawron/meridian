@@ -124,6 +124,8 @@ struct BackupSettings {
     mark_read_on_selection: bool,
     #[serde(default = "default_show_message_preview")]
     show_message_preview: bool,
+    #[serde(default = "default_mail_default_folder")]
+    mail_default_folder: String,
     #[serde(default = "default_mail_layout")]
     mail_layout: String,
     #[serde(default = "default_mail_sidebar_position")]
@@ -230,6 +232,10 @@ fn default_show_message_preview() -> bool {
     true
 }
 
+fn default_mail_default_folder() -> String {
+    "inbox".to_string()
+}
+
 fn default_mail_row_density() -> String {
     "comfortable".to_string()
 }
@@ -319,6 +325,7 @@ impl BackupSettings {
             mail_font_size: settings.mail_font_size(),
             mark_read_on_selection: settings.mark_read_on_selection(),
             show_message_preview: settings.show_message_preview(),
+            mail_default_folder: settings.mail_default_folder(),
             mail_layout: settings.mail_layout(),
             mail_sidebar_position: settings.mail_sidebar_position(),
             mail_modern_preview_position: settings.mail_preview_position("modern"),
@@ -385,6 +392,7 @@ impl BackupSettings {
         settings.set_mail_font_size(self.mail_font_size);
         settings.set_mark_read_on_selection(self.mark_read_on_selection);
         settings.set_show_message_preview(self.show_message_preview);
+        settings.set_mail_default_folder(&self.mail_default_folder);
         settings.set_mail_layout(&self.mail_layout);
         settings.set_mail_sidebar_position(self.mail_sidebar_position);
         settings.set_mail_preview_position("modern", self.mail_modern_preview_position);
@@ -1003,6 +1011,7 @@ mod tests {
         assert!(settings.notifications_enabled);
         assert!(settings.mark_read_on_selection);
         assert!(settings.show_message_preview);
+        assert_eq!(settings.mail_default_folder, "inbox");
         assert!(settings.spellcheck_languages.is_empty());
         assert_eq!(settings.mail_layout, "modern");
         assert_eq!(settings.mail_sidebar_position, 220);

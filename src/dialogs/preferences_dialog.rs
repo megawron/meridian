@@ -1475,6 +1475,43 @@ impl PreferencesDialog {
         }
         group_reading.add(&row_message_preview);
 
+        let row_mail_default_folder = adw::ComboRow::builder()
+            .title("Startordner")
+            .subtitle("Ordner, der beim Öffnen der Mailansicht zuerst ausgewählt wird")
+            .model(&gtk::StringList::new(&[
+                "Posteingang",
+                "Alle Nachrichten",
+                "Gesendet",
+                "Entwürfe",
+                "Papierkorb",
+                "Archiv",
+                "Spam",
+            ]))
+            .build();
+        if let Some(settings) = settings.clone() {
+            row_mail_default_folder.set_selected(match settings.mail_default_folder().as_str() {
+                "all" => 1,
+                "sent" => 2,
+                "drafts" => 3,
+                "trash" => 4,
+                "archive" => 5,
+                "spam" => 6,
+                _ => 0,
+            });
+            row_mail_default_folder.connect_selected_notify(move |row| {
+                settings.set_mail_default_folder(match row.selected() {
+                    1 => "all",
+                    2 => "sent",
+                    3 => "drafts",
+                    4 => "trash",
+                    5 => "archive",
+                    6 => "spam",
+                    _ => "inbox",
+                });
+            });
+        }
+        group_reading.add(&row_mail_default_folder);
+
         let row_mail_layout = adw::ComboRow::builder()
             .title("Mail-Arbeitsweise")
             .subtitle(

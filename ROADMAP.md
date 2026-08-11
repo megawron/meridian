@@ -411,6 +411,11 @@ werden.
   Archiv-, Spam-, Lösch- und Verschiebeaktionen ist angebunden; die Ziele
   werden aus der dynamischen EDS-Ordnerliste angeboten. Serverseitige
   Suchordner und die übrigen Remote-Aktionen in der Oberfläche fehlen.
+- [~] Der Startordner der Mailansicht ist als portable Einstellung mit
+  Posteingang, Alle Nachrichten, Gesendet, Entwürfe, Papierkorb, Archiv und
+  Spam konfigurierbar und wird in Backup/Restore sowie beim lokalen Fallback
+  berücksichtigt; providerabhängige Alias-/Ordnerauflösung bleibt Teil der
+  Linux/Camel-Strecke.
 - [~] Die Mail-Liste kann portabel nach Datum, Betreff oder Absender sowie
   auf-/absteigend sortiert werden; Feld, Richtung und das Gruppieren von
   Unterhaltungen werden über GSettings gespeichert und beim Wiederaufbau der

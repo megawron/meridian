@@ -133,6 +133,17 @@ impl FolderSelection {
         }
     }
 
+    fn configured_initial() -> Self {
+        let folder_id = AppSettings::try_new()
+            .map(|settings| settings.mail_default_folder())
+            .unwrap_or_else(|| "all".to_string());
+        Self {
+            folder_id,
+            source_uid: None,
+            folder_name: None,
+        }
+    }
+
     fn is_remote(&self) -> bool {
         self.source_uid.is_some() && self.folder_name.is_some()
     }
@@ -1883,10 +1894,11 @@ impl MailPage {
                     "EDS mail source selected"
                 );
                 if let Some(page) = page_for_source.upgrade() {
+                    let initial_folder = FolderSelection::configured_initial();
                     if let Some(folder_selection) = page.imp().folder_selection.borrow().as_ref() {
-                        folder_selection.replace(FolderSelection::all());
+                        folder_selection.replace(initial_folder.clone());
                     }
-                    page.select_folder_row(&FolderSelection::all());
+                    page.select_folder_row(&initial_folder);
                     if let Some(filter) = page.imp().message_filter.borrow().as_ref() {
                         filter.changed(gtk::FilterChange::Different);
                     }
@@ -4222,7 +4234,11 @@ impl MailPage {
     }
 
     fn load_initial_data(&self, source_store: &gio::ListStore, source_state: &gtk::Label) {
-        self.select_folder_row(&FolderSelection::all());
+        let initial_folder = FolderSelection::configured_initial();
+        if let Some(selection) = self.imp().folder_selection.borrow().as_ref() {
+            selection.replace(initial_folder.clone());
+        }
+        self.select_folder_row(&initial_folder);
         self.start_mail_load(MailLoadRequest::initial(), true);
         self.setup_mail_polling();
         self.setup_camel_change_monitor();
@@ -4919,10 +4935,18 @@ impl MailPage {
                         "{reason} · {loaded_count} lokale Nachricht(en) geladen"
                     ));
                 }
+                let selected_folder = self
+                    .imp()
+                    .folder_selection
+                    .borrow()
+                    .as_ref()
+                    .map(|selection| selection.borrow().clone())
+                    .filter(|selection| !selection.is_remote())
+                    .unwrap_or_else(FolderSelection::configured_initial);
                 if let Some(selection) = self.imp().folder_selection.borrow().as_ref() {
-                    selection.replace(FolderSelection::all());
+                    selection.replace(selected_folder.clone());
                 }
-                self.select_folder_row(&FolderSelection::all());
+                self.select_folder_row(&selected_folder);
                 if let Some(filter) = self.imp().message_filter.borrow().as_ref() {
                     filter.changed(gtk::FilterChange::Different);
                 }
