@@ -780,6 +780,7 @@ impl AppSettings {
             "show-message-preview",
             "mail-default-folder",
             "mail-layout",
+            "mail-show-toolbar",
             "mail-sidebar-position",
             "mail-modern-preview-position",
             "mail-classic-preview-position",
