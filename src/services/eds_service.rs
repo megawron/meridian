@@ -177,7 +177,11 @@ fn extract_source(
     >,
     kind: EdsSourceKind,
 ) -> Option<(String, String, String, bool)> {
-    let uid = path.as_str().rsplit('/').next().unwrap_or("").to_string();
+    let uid = source_props
+        .get("UID")
+        .and_then(value_to_string)
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| path.as_str().rsplit('/').next().unwrap_or("").to_string());
 
     let property_display_name = source_props
         .get("DisplayName")

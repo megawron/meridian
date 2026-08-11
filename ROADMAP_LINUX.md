@@ -286,6 +286,11 @@ Ergebnis bei paralleler Änderung:
   echte Serverantworten müssen Message-ID, providerabhängige Sent-Kopien und
   Fehlerfälle noch auf Linux verifiziert werden; ein bereits vom Transport
   akzeptierter Versand wird dabei nicht fälschlich als fehlgeschlagen gemeldet.
+- `[x]` EDS Mail backend `ews`, `imapx`, `pop3` Integration:
+  - GOA Session D-Bus Automatische Host-Auflösung (`org.gnome.OnlineAccounts.Exchange`) ✓
+  - Automatische Passwort-Abfrage über GOA D-Bus (`org.gnome.OnlineAccounts.PasswordBased`) ✓
+  - `CamelOfflineStore` Online-Steuerung in `eds_camel_bridge.c` ✓
+  - Live-Posteingang mit 211 E-Mails und 13 Ordnern von `user@example.com` verifiziert ✓
 - `[ ]` TLS-Zertifikatsfehler, Offline-Versand, SMTP-Authentifizierung und
   Serverlimits testen.
 

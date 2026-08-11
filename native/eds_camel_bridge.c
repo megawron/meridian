@@ -3,6 +3,9 @@
 #include "eds_camel_bridge.h"
 
 #include <camel/camel.h>
+#define __CAMEL_H_INSIDE__
+#include <camel/camel-offline-store.h>
+#undef __CAMEL_H_INSIDE__
 #include <gio/gio.h>
 #include <glib.h>
 
@@ -11,9 +14,11 @@
  * marker while including only the source/registry APIs used here. */
 #define __LIBEDATASERVER_H_INSIDE__
 #include <libedataserver/e-source.h>
+#include <libedataserver/e-source-authentication.h>
 #include <libedataserver/e-source-backend.h>
 #include <libedataserver/e-source-camel.h>
 #include <libedataserver/e-source-credentials-provider.h>
+#include <libedataserver/e-source-goa.h>
 #include <libedataserver/e-source-mail-account.h>
 #include <libedataserver/e-source-mail-composition.h>
 #include <libedataserver/e-source-mail-identity.h>
@@ -86,32 +91,69 @@ eds_camel_session_get_password (CamelSession *base_session,
     if (!source)
         return NULL;
 
-    if (!session->credentials_provider) {
-        g_set_error_literal (
-            error, G_IO_ERROR, G_IO_ERROR_FAILED,
-            "EDS credential provider is not available");
-        g_object_unref (source);
-        return NULL;
+    /* 1. First, check if source or any ancestor has GNOME Online Accounts extension */
+    {
+        ESource *curr = g_object_ref (source);
+        while (curr) {
+            if (e_source_has_extension (curr, "GNOME Online Accounts")) {
+                ESourceExtension *goa_ext = e_source_get_extension (curr, "GNOME Online Accounts");
+                if (goa_ext) {
+                    const gchar *account_id = e_source_goa_get_account_id (E_SOURCE_GOA (goa_ext));
+                    if (account_id && *account_id) {
+                        GDBusConnection *bus = g_bus_get_sync (G_BUS_TYPE_SESSION, NULL, NULL);
+                        if (bus) {
+                            gchar *obj_path = g_strdup_printf (
+                                "/org/gnome/OnlineAccounts/Accounts/%s", account_id);
+                            GVariant *reply = g_dbus_connection_call_sync (
+                                bus, "org.gnome.OnlineAccounts", obj_path,
+                                "org.gnome.OnlineAccounts.PasswordBased",
+                                "GetPassword", g_variant_new ("(s)", "password"),
+                                G_VARIANT_TYPE ("(s)"), G_DBUS_CALL_FLAGS_NONE,
+                                5000, NULL, NULL);
+                            if (reply) {
+                                const gchar *goa_pass = NULL;
+                                g_variant_get (reply, "(&s)", &goa_pass);
+                                if (goa_pass && *goa_pass) {
+                                    password = g_strdup (goa_pass);
+                                    g_printerr ("[EDS] Successfully fetched GOA password for %s\n", account_id);
+                                }
+                                g_variant_unref (reply);
+                            }
+                            g_free (obj_path);
+                            g_object_unref (bus);
+                        }
+                    }
+                }
+                g_object_unref (curr);
+                break;
+            }
+            const gchar *parent_uid = e_source_get_parent (curr);
+            ESource *parent = parent_uid ? e_source_registry_ref_source (session->registry, parent_uid) : NULL;
+            g_object_unref (curr);
+            curr = parent;
+        }
     }
 
-    if (!e_source_credentials_provider_lookup_sync (
-            session->credentials_provider, source, NULL,
-            &credentials, &local_error)) {
-        if (error && local_error)
-            *error = local_error;
-        else
-            g_clear_error (&local_error);
-    } else if (credentials) {
-        const gchar *stored_password = e_named_parameters_get (
-            credentials, E_SOURCE_CREDENTIAL_PASSWORD);
-
-        /* GOA OAuth2 accounts intentionally return an empty credential set.
-         * Camel then uses get_oauth2_access_token_sync() for XOAUTH2. */
-        password = g_strdup (stored_password);
+    /* 2. Fallback to EDS CredentialsProvider */
+    if ((!password || !*password) && session->credentials_provider) {
+        if (e_source_credentials_provider_lookup_sync (
+                session->credentials_provider, source, NULL,
+                &credentials, &local_error) && credentials) {
+            const gchar *stored = e_named_parameters_get (
+                credentials, E_SOURCE_CREDENTIAL_PASSWORD);
+            if (stored && *stored)
+                password = g_strdup (stored);
+            e_named_parameters_free (credentials);
+            credentials = NULL;
+        }
+        g_clear_error (&local_error);
     }
 
-    if (credentials)
-        e_named_parameters_free (credentials);
+    if ((!password || !*password) && local_error && error)
+        *error = local_error;
+    else
+        g_clear_error (&local_error);
+
     g_object_unref (source);
     return password;
 }
@@ -153,7 +195,12 @@ eds_camel_session_authenticate_sync (CamelSession *base_session,
 {
     CamelAuthenticationResult result;
 
-    (void) base_session;
+    gchar *password = camel_session_get_password (base_session, service, "Authentication", "Password", 0, NULL);
+    if (password && *password) {
+        camel_service_set_password (service, password);
+        g_printerr ("[EDS] Set password on service for %s\n", camel_service_get_uid (service));
+        g_free (password);
+    }
 
     result = camel_service_authenticate_sync (
         service, mechanism, cancellable, error);
@@ -670,31 +717,120 @@ open_store_for_source (EdsCamelSession *session,
     if (!service)
         return NULL;
 
+    {
+        ESource *parent = e_source_registry_ref_source (session->registry, e_source_get_parent (source));
+        g_printerr ("[EDS-DEBUG] Source '%s' (%s), parent='%s'\n",
+                    e_source_get_display_name (source), source_uid,
+                    parent ? e_source_get_display_name (parent) : "NULL");
+        if (parent) {
+            e_source_camel_configure_service (parent, service);
+            g_object_unref (parent);
+        }
+    }
     e_source_camel_configure_service (source, service);
 
-    /* Validate network host before connecting.  EWS and other network
-     * backends require a non-empty host; a NULL or empty host causes
-     * GLib-Critical assertions deep inside the provider plugin.  Catch
-     * this early and emit a user-readable error instead. */
-    {
+    /* For EWS (Exchange Web Services) backends, evolution-ews requires the
+     * "hosturl" or "host" setting on CamelEwsSettings. If e_source_camel_configure_service
+     * did not populate it from the ESource, check if the ESource has an
+     * EWS extension or parent EWS extension and copy HostURL. */
+    if (g_str_equal (backend_name, "ews")) {
         CamelSettings *settings = camel_service_ref_settings (service);
         if (settings) {
-            if (CAMEL_IS_NETWORK_SETTINGS (settings)) {
-                CamelNetworkSettings *net = CAMEL_NETWORK_SETTINGS (settings);
-                const gchar *host = camel_network_settings_get_host (net);
-                if (!host || !*host) {
-                    g_set_error (
-                        error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
-                        "Das %s-Konto '%s' hat keine Server-URL. "
-                        "Bitte das Konto in den GNOME Online-Konten "
-                        "oder in Evolution konfigurieren.",
-                        backend_name,
-                        e_source_get_display_name (source));
-                    g_object_unref (settings);
-                    g_object_unref (service);
-                    return NULL;
+            GParamSpec *pspec_hosturl = g_object_class_find_property (
+                G_OBJECT_GET_CLASS (settings), "hosturl");
+            GParamSpec *pspec_host = g_object_class_find_property (
+                G_OBJECT_GET_CLASS (settings), "host");
+
+            gchar *current_url = NULL;
+            if (pspec_hosturl)
+                g_object_get (settings, "hosturl", &current_url, NULL);
+            if ((!current_url || !*current_url) && pspec_host)
+                g_object_get (settings, "host", &current_url, NULL);
+
+            if (!current_url || !*current_url) {
+                ESource *parent = e_source_registry_ref_source (session->registry, e_source_get_parent (source));
+                if (parent) {
+                    ESourceExtension *goa_ext = e_source_get_extension (parent, "GNOME Online Accounts");
+                    if (goa_ext) {
+                        const gchar *account_id = e_source_goa_get_account_id (E_SOURCE_GOA (goa_ext));
+                        if (account_id && *account_id) {
+                            GDBusConnection *bus = g_bus_get_sync (G_BUS_TYPE_SESSION, NULL, NULL);
+                            if (bus) {
+                                gchar *obj_path = g_strdup_printf (
+                                    "/org/gnome/OnlineAccounts/Accounts/%s", account_id);
+                                GVariant *reply = g_dbus_connection_call_sync (
+                                    bus, "org.gnome.OnlineAccounts", obj_path,
+                                    "org.freedesktop.DBus.Properties", "Get",
+                                    g_variant_new ("(ss)", "org.gnome.OnlineAccounts.Exchange", "Host"),
+                                    G_VARIANT_TYPE ("(v)"), G_DBUS_CALL_FLAGS_NONE, 3000, NULL, NULL);
+                                if (reply) {
+                                    GVariant *var = NULL;
+                                    g_variant_get (reply, "(v)", &var);
+                                    if (var) {
+                                        const gchar *host = g_variant_get_string (var, NULL);
+                                        if (host && *host) {
+                                            gchar *ews_url = g_strdup_printf ("https://%s/EWS/Exchange.asmx", host);
+                                            g_printerr ("[EDS] Resolved GOA Exchange host for %s: %s (URL: %s)\n",
+                                                        e_source_get_display_name (source), host, ews_url);
+                                            if (pspec_hosturl)
+                                                g_object_set (settings, "hosturl", ews_url, NULL);
+                                            if (pspec_host)
+                                                g_object_set (settings, "host", host, NULL);
+                                            g_free (ews_url);
+                                        }
+                                        g_variant_unref (var);
+                                    }
+                                    g_variant_unref (reply);
+                                }
+                                g_free (obj_path);
+                                g_object_unref (bus);
+                            }
+                        }
+                    }
+                    g_object_unref (parent);
                 }
             }
+            g_free (current_url);
+
+            /* Ensure user, email, and auth-mechanism are set on settings */
+            gchar *curr_user = NULL;
+            gchar *curr_auth = NULL;
+            g_object_get (settings, "user", &curr_user, "auth-mechanism", &curr_auth, NULL);
+
+            if (!curr_user || !*curr_user || !curr_auth || !*curr_auth) {
+                ESourceExtension *auth_ext = e_source_get_extension (source, "Authentication");
+                ESource *parent = e_source_registry_ref_source (session->registry, e_source_get_parent (source));
+                if (!auth_ext && parent)
+                    auth_ext = e_source_get_extension (parent, "Authentication");
+
+                if (auth_ext) {
+                    const gchar *user = e_source_authentication_get_user (E_SOURCE_AUTHENTICATION (auth_ext));
+                    const gchar *method = e_source_authentication_get_method (E_SOURCE_AUTHENTICATION (auth_ext));
+                    gchar *dup_user = NULL;
+
+                    if ((!user || !*user) && parent && e_source_has_extension (parent, "GNOME Online Accounts")) {
+                        ESourceExtension *goa = e_source_get_extension (parent, "GNOME Online Accounts");
+                        dup_user = e_source_goa_dup_address (E_SOURCE_GOA (goa));
+                        user = dup_user;
+                    }
+                    if (user && *user) {
+                        g_object_set (settings, "user", user, "email", user, NULL);
+                        g_printerr ("[EDS] Configured CamelSettings user/email = '%s'\n", user);
+                    }
+                    if (!method || !*method || g_str_equal (method, "none"))
+                        method = "NTLM";
+
+                    if (method && *method) {
+                        g_object_set (settings, "auth-mechanism", method, NULL);
+                        g_printerr ("[EDS] Configured CamelSettings auth-mechanism = '%s'\n", method);
+                    }
+                    g_free (dup_user);
+                }
+                if (parent) g_object_unref (parent);
+            }
+            g_free (curr_user);
+            g_free (curr_auth);
+
             g_object_unref (settings);
         }
     }
@@ -702,6 +838,15 @@ open_store_for_source (EdsCamelSession *session,
     if (!camel_service_connect_sync (service, cancellable, error)) {
         g_object_unref (service);
         return NULL;
+    }
+
+    if (CAMEL_IS_OFFLINE_STORE (service)) {
+        if (!camel_offline_store_set_online_sync (
+                CAMEL_OFFLINE_STORE (service), TRUE, cancellable, NULL)) {
+            g_printerr ("[EDS] Failed to set CamelOfflineStore online for %s\n", source_uid);
+        } else {
+            g_printerr ("[EDS] Successfully set CamelOfflineStore online for %s\n", source_uid);
+        }
     }
 
     if (!CAMEL_IS_STORE (service)) {
