@@ -313,6 +313,18 @@ impl EvolutionWindow {
             Some("Avatare in Nachrichtenzeilen ein-/ausblenden"),
             Some("win.toggle-mail-avatar"),
         );
+        view_menu.append(
+            Some("Absender in Nachrichtenzeilen ein-/ausblenden"),
+            Some("win.toggle-mail-sender"),
+        );
+        view_menu.append(
+            Some("Datum in Nachrichtenzeilen ein-/ausblenden"),
+            Some("win.toggle-mail-date"),
+        );
+        view_menu.append(
+            Some("Labels in Nachrichtenzeilen ein-/ausblenden"),
+            Some("win.toggle-mail-labels"),
+        );
         let density_menu = gio::Menu::new();
         density_menu.append(Some("Kompakt"), Some("win.mail-density-compact"));
         density_menu.append(Some("Standard"), Some("win.mail-density-normal"));
@@ -373,6 +385,30 @@ impl EvolutionWindow {
             }
         });
         self.add_action(&action_toggle_avatar);
+
+        let action_toggle_sender = gio::SimpleAction::new("toggle-mail-sender", None);
+        action_toggle_sender.connect_activate(move |_, _| {
+            if let Some(settings) = AppSettings::try_new() {
+                settings.set_mail_show_sender(!settings.mail_show_sender());
+            }
+        });
+        self.add_action(&action_toggle_sender);
+
+        let action_toggle_date = gio::SimpleAction::new("toggle-mail-date", None);
+        action_toggle_date.connect_activate(move |_, _| {
+            if let Some(settings) = AppSettings::try_new() {
+                settings.set_mail_show_date(!settings.mail_show_date());
+            }
+        });
+        self.add_action(&action_toggle_date);
+
+        let action_toggle_labels = gio::SimpleAction::new("toggle-mail-labels", None);
+        action_toggle_labels.connect_activate(move |_, _| {
+            if let Some(settings) = AppSettings::try_new() {
+                settings.set_mail_show_labels(!settings.mail_show_labels());
+            }
+        });
+        self.add_action(&action_toggle_labels);
 
         for (action_name, density) in [
             ("mail-density-compact", "compact"),

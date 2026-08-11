@@ -389,7 +389,10 @@ Mit einem Testkonto ohne produktive Empfänger prüfen:
 
 - `[~]` Flatpak-Manifest vervollständigen:
   - EDS-Version, Runtime-Version und Buildoptionen festlegen.
-  - echte Commit-SHA/Quellen und `cargo-sources.json` erzeugen und prüfen.
+  - EDS ist auf den Commit `a12493abe06ecaba8207939c8049b7b5b7085ce9`
+    gepinnt; `scripts/generate-cargo-sources.sh` erzeugt die noch fehlende
+    `cargo-sources.json`, und `scripts/verify-flatpak-manifest.sh` prüft beide
+    Dateien statisch.
   - benötigte D-Bus-, Secret-Service-, Netzwerk-, Wayland- und Download-
     Berechtigungen minimal halten.
 - `[ ]` Reproduzierbaren Flatpak-Build durchführen:

@@ -431,9 +431,30 @@ impl ContactsPage {
         let email_btn = gtk::Button::builder()
             .icon_name("mail-message-new-symbolic")
             .tooltip_text("E-Mail senden")
-            .action_name("app.compose")
             .css_classes(vec!["circular", "suggested-action"])
             .build();
+
+        let selected_contact_for_email = Rc::clone(&selected_contact);
+        email_btn.connect_clicked(glib::clone!(
+            #[weak(rename_to = page)]
+            self,
+            move |_| {
+                let Some(record) = selected_contact_for_email.borrow().clone() else {
+                    page.show_toast("Kein Kontakt ausgewählt");
+                    return;
+                };
+                let recipient = contact_email_text(&record.contact);
+                if recipient.trim().is_empty() {
+                    page.show_toast("Der ausgewählte Kontakt hat keine E-Mail-Adresse");
+                    return;
+                }
+                let dialog = crate::dialogs::ComposeDialog::to_recipient(&recipient);
+                if let Some(window) = page.root().and_downcast::<gtk::Window>() {
+                    dialog.set_transient_for(Some(&window));
+                }
+                dialog.present();
+            }
+        ));
 
         let edit_btn = gtk::Button::builder()
             .icon_name("document-edit-symbolic")
@@ -682,13 +703,31 @@ impl ContactsPage {
             .title("Keine E-Mail-Adresse")
             .subtitle("Kein Kontakt ausgewählt")
             .build();
-        let _copy_btn1 = gtk::Button::builder()
+        let copy_btn1 = gtk::Button::builder()
             .icon_name("edit-copy-symbolic")
             .valign(gtk::Align::Center)
             .css_classes(vec!["flat"])
             .tooltip_text("Kopieren")
             .build();
-        email_row1.add_suffix(&_copy_btn1);
+        let selected_contact_for_copy = Rc::clone(&selected_contact);
+        copy_btn1.connect_clicked(glib::clone!(
+            #[weak(rename_to = page)]
+            self,
+            move |button| {
+                let Some(record) = selected_contact_for_copy.borrow().clone() else {
+                    page.show_toast("Kein Kontakt ausgewählt");
+                    return;
+                };
+                let email = contact_email_text(&record.contact);
+                if email.trim().is_empty() {
+                    page.show_toast("Keine E-Mail-Adresse zum Kopieren vorhanden");
+                    return;
+                }
+                button.display().clipboard().set_text(&email);
+                page.show_toast("E-Mail-Adresse kopiert");
+            }
+        ));
+        email_row1.add_suffix(&copy_btn1);
         email_group.add(&email_row1);
 
         info_box.append(&email_group);

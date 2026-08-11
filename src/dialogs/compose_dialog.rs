@@ -100,6 +100,15 @@ impl ComposeDialog {
         dialog
     }
 
+    /// Open a new message with the supplied address already in the To field.
+    pub fn to_recipient(recipient: &str) -> Self {
+        let dialog = Self::new();
+        if let Some(entry) = dialog.imp().entry_to.borrow().as_ref() {
+            entry.set_text(recipient.trim());
+        }
+        dialog
+    }
+
     pub fn reply_to(recipient: &str, subject: &str) -> Self {
         Self::reply_to_message(recipient, "", subject, "")
     }

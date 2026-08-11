@@ -328,10 +328,13 @@ werden.
   konkreten Linux-Abnahmeschritte stehen in [ROADMAP_LINUX.md](ROADMAP_LINUX.md).
 - [~] Meson ist vorhanden und das Cargo-Kopieren ist korrigiert; CI, installierte
   GSettings-Schemas und ein vollständiger Pakettest fehlen noch.
-- [ ] Flatpak-Manifest reproduzierbar bauen (`sha256` und Cargo-Offline-Quellen
-  müssen vollständig und geprüft sein).
-- [ ] CI mit Formatierung, Clippy, Unit-Tests, Integrationstests und Flatpak-
-  Smoke-Test.
+- [~] Flatpak-Manifest reproduzierbar vorbereiten: EDS ist jetzt auf einen
+  unveränderlichen Upstream-Commit gepinnt; Generator und statischer Validator
+  für `cargo-sources.json` sind vorhanden. Die Cargo-Quellenliste und der
+  echte Sandbox-Build bleiben Linux-Abnahme.
+- [~] CI-Gates sind durch portable Format-/Schema-/Diff-Prüfungen und die
+  Flatpak-Manifest-Validierung vorbereitet; ein vollständiger Linux-Lauf mit
+  Clippy, Unit-/Integrationstests und Flatpak-Smoke-Test bleibt offen.
 
 #### Phase 0.5 — GTK4-rs-Frontend-Konsolidierung
 
@@ -366,7 +369,8 @@ werden.
   Seitenansicht und der klassischen Evolution-Anordnung (Liste über der
   Vorschau) wählen können. Beide Modi verwenden denselben Auswahl-,
   Such- und Aktionspfad. Das Ansichtsmenü bietet zusätzlich direkte Umschalter
-  für Threading, Avatare, Vorschautext und Nachrichtenlistendichte; zusätzliche
+  für Threading, Avatare, Absender, Datum, Labels, Vorschautext und
+  Nachrichtenlistendichte; zusätzliche
   native Camel-Abnahme bleibt offen.
 - [~] Sicherer WebKitGTK-Viewer: JavaScript ist deaktiviert, Navigation wird
   abgefangen und externe Bilder sind standardmäßig blockiert.
@@ -414,8 +418,10 @@ werden.
 - [~] Der Startordner der Mailansicht ist als portable Einstellung mit
   Posteingang, Alle Nachrichten, Gesendet, Entwürfe, Papierkorb, Archiv und
   Spam konfigurierbar und wird in Backup/Restore sowie beim lokalen Fallback
-  berücksichtigt; providerabhängige Alias-/Ordnerauflösung bleibt Teil der
-  Linux/Camel-Strecke.
+  berücksichtigt. Änderungen an der Einstellung werden auch in einer bereits
+  geöffneten Mailansicht sofort auf die statische Auswahl und den aktuell
+  gewählten EDS-Konto-Ladepfad angewendet; providerabhängige Alias- und
+  Ordnerauflösung bleibt Teil der Linux/Camel-Strecke.
 - [~] Die Mail-Liste kann portabel nach Datum, Betreff oder Absender sowie
   auf-/absteigend sortiert werden; Feld, Richtung und das Gruppieren von
   Unterhaltungen werden über GSettings gespeichert und beim Wiederaufbau der
@@ -503,6 +509,8 @@ werden.
   providerabhängigen UID-Neuvergabe auf Linux sowie komplexe Ordneränderungen
   fehlen noch. Konflikte aus dem nativen Camel-Backend werden als eigener
   Fehlerzustand behandelt und Batch-Fehler im sichtbaren Mailstatus angezeigt.
+  Der Detailkopf bietet für eine einzelne Auswahl ebenfalls direkte
+  Markierungs-, Archiv- und Spam-Aktionen über denselben Command-/Undo-Pfad.
 - [~] Portable virtuelle Suchordner sind vorhanden: drei Standardabfragen und
   beliebig viele gespeicherte lokale Suchdefinitionen können angelegt,
   bearbeitet und gelöscht werden. Die vorhandene lokale Suchsprache wird
@@ -740,6 +748,9 @@ werden.
   importiert werden. Der app-eigene vCard-Bestand unterstützt Erstellen,
   Bearbeiten und Löschen; explizit ausgewählte externe Ordner bleiben
   schreibgeschützt. Auswahl, Detail und Suche sind vorhanden.
+  Aus dem Kontakt-Detail öffnet die Mailaktion den Composer mit den
+  ausgewählten E-Mail-Adressen vorbefüllt; die sichtbaren Adressen können
+  außerdem direkt in die Zwischenablage kopiert werden.
   EBookClientView-Signale werden
   UID-basiert in die Kontaktliste eingepflegt; der Linux-Laufzeittest und die
   vollständige native vCard-Feldparität fehlen noch. Der portable Pfad kann

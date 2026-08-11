@@ -133,15 +133,23 @@ impl FolderSelection {
         }
     }
 
+    fn from_folder_id(folder_id: &str) -> Self {
+        let folder_id = match folder_id {
+            "all" | "inbox" | "sent" | "drafts" | "trash" | "archive" | "spam" => folder_id,
+            _ => "inbox",
+        };
+        Self {
+            folder_id: folder_id.to_string(),
+            source_uid: None,
+            folder_name: None,
+        }
+    }
+
     fn configured_initial() -> Self {
         let folder_id = AppSettings::try_new()
             .map(|settings| settings.mail_default_folder())
             .unwrap_or_else(|| "all".to_string());
-        Self {
-            folder_id,
-            source_uid: None,
-            folder_name: None,
-        }
+        Self::from_folder_id(&folder_id)
     }
 
     fn is_remote(&self) -> bool {
@@ -725,6 +733,7 @@ mod imp {
         pub message_selection: RefCell<Option<gtk::SingleSelection>>,
         pub message_store: RefCell<Option<gio::ListStore>>,
         pub message_filter: RefCell<Option<gtk::CustomFilter>>,
+        pub(super) message_filter_state: RefCell<Option<Rc<Cell<MessageFilter>>>>,
         pub thread_selection: RefCell<Option<gtk::SingleSelection>>,
         pub thread_root_store: RefCell<Option<gio::ListStore>>,
         pub thread_filter: RefCell<Option<gtk::CustomFilter>>,
@@ -761,6 +770,7 @@ mod imp {
         pub(crate) mail_commands: RefCell<MailCommandStack>,
         pub preview_settings: RefCell<Option<AppSettings>>,
         pub search_entry: RefCell<Option<gtk::SearchEntry>>,
+        pub(super) search_query: RefCell<Option<Rc<RefCell<MessageSearchQuery>>>>,
         pub(super) mail_sort_field: Cell<MailSortField>,
         pub mail_sort_descending: Cell<bool>,
         pub mail_threading: Cell<bool>,
@@ -861,6 +871,8 @@ mod imp {
             self.message_selection.replace(Some(selection.clone()));
             self.message_store.replace(Some(list_store.clone()));
             self.message_filter.replace(Some(custom_filter.clone()));
+            self.message_filter_state
+                .replace(Some(message_filter.clone()));
             self.thread_filter.replace(Some(thread_filter.clone()));
             self.folder_selection
                 .replace(Some(folder_selection.clone()));
@@ -868,6 +880,7 @@ mod imp {
             self.folder_section.replace(Some(folder_section.clone()));
             self.source_state.replace(Some(source_state.clone()));
             self.search_list.replace(Some(search_list.clone()));
+            self.search_query.replace(Some(search_query.clone()));
             self.message_state.replace(Some(message_state.clone()));
 
             obj.assemble_layout(sidebar, message_container, detail_view);
@@ -1005,6 +1018,12 @@ impl MailPage {
                     ));
                 }
             });
+            let page_weak_for_default_folder = self.downgrade();
+            settings.connect_changed(Some("mail-default-folder"), move |settings, _| {
+                if let Some(page) = page_weak_for_default_folder.upgrade() {
+                    page.apply_default_folder(&settings.string("mail-default-folder"));
+                }
+            });
             let settings_for_position = settings.clone();
             let page_weak_for_position = self.downgrade();
             self.imp()
@@ -1039,6 +1058,48 @@ impl MailPage {
         imp.mail_layout.set(layout);
         imp.inner_paned.set_orientation(layout.orientation());
         imp.inner_paned.set_position(next_position);
+    }
+
+    fn apply_default_folder(&self, folder_id: &str) {
+        let selection = FolderSelection::from_folder_id(folder_id);
+        if let Some(current) = self.imp().folder_selection.borrow().as_ref() {
+            current.replace(selection.clone());
+        }
+        self.select_folder_row(&selection);
+
+        if let Some(search_list) = self.imp().search_list.borrow().as_ref() {
+            search_list.unselect_all();
+        }
+        if let Some(search_entry) = self.imp().search_entry.borrow().as_ref() {
+            search_entry.set_text("");
+        }
+        if let Some(message_filter) = self.imp().message_filter_state.borrow().as_ref() {
+            message_filter.set(MessageFilter::All);
+        }
+        if let Some(query) = self.imp().search_query.borrow().as_ref() {
+            query.replace(MessageSearchQuery::default());
+        }
+        if let Some(filter) = self.imp().message_filter.borrow().as_ref() {
+            filter.changed(gtk::FilterChange::Different);
+        }
+        if let Some(filter) = self.imp().thread_filter.borrow().as_ref() {
+            filter.changed(gtk::FilterChange::Different);
+        }
+
+        // If an account is selected, retain that account while switching the
+        // built-in folder.  The native loader returns all selectable folders
+        // for the account and the portable folder selection filters the result
+        // by its normalized folder id.  Without an account selection, reload
+        // the normal aggregate request.
+        let mut request = self
+            .imp()
+            .active_request
+            .borrow()
+            .clone()
+            .unwrap_or_else(MailLoadRequest::initial);
+        request.folder_name = None;
+        request.offset = 0;
+        self.start_mail_load(request, true);
     }
 
     fn set_preview_visible(&self, visible: bool) {
@@ -1374,6 +1435,55 @@ impl MailPage {
         if let Some(filter) = self.imp().message_filter.borrow().as_ref() {
             filter.changed(gtk::FilterChange::Different);
         }
+        Ok(true)
+    }
+
+    pub fn toggle_selected_flagged(&self) -> Result<bool, MailOperationError> {
+        let Some(message) = self.selected_message() else {
+            return Ok(false);
+        };
+        let next_flagged = !message.is_flagged();
+        let command = MailCommand::set_message_state(
+            message.id(),
+            message.backend_location(),
+            message.is_unread(),
+            message.is_flagged(),
+            message.is_unread(),
+            next_flagged,
+        );
+        self.execute_mail_command(command)?;
+        message.set_flagged(next_flagged);
+        if let Some(filter) = self.imp().message_filter.borrow().as_ref() {
+            filter.changed(gtk::FilterChange::Different);
+        }
+        Ok(true)
+    }
+
+    pub fn archive_selected(&self) -> Result<bool, MailOperationError> {
+        let Some(message) = self.selected_message() else {
+            return Ok(false);
+        };
+        let command = message
+            .backend_location()
+            .map(|location| MailCommand::archive(message.id(), location))
+            .unwrap_or_else(|| MailCommand::archive_local(message.id(), message.folder_id()));
+        self.execute_mail_command(command)?;
+        self.refresh_mail();
+        Ok(true)
+    }
+
+    pub fn mark_selected_junk(&self) -> Result<bool, MailOperationError> {
+        let Some(message) = self.selected_message() else {
+            return Ok(false);
+        };
+        let command = message
+            .backend_location()
+            .map(|location| {
+                MailCommand::set_junk(message.id(), location, message.folder_id() == "junk", true)
+            })
+            .unwrap_or_else(|| MailCommand::set_junk_local(message.id(), message.folder_id()));
+        self.execute_mail_command(command)?;
+        self.refresh_mail();
         Ok(true)
     }
 
@@ -3761,6 +3871,24 @@ impl MailPage {
             .css_classes(vec!["flat"])
             .build();
 
+        let flag_btn = gtk::Button::builder()
+            .icon_name("starred-symbolic")
+            .tooltip_text("Markierung umschalten")
+            .css_classes(vec!["flat"])
+            .build();
+
+        let archive_btn = gtk::Button::builder()
+            .icon_name("mail-archive-symbolic")
+            .tooltip_text("Archivieren")
+            .css_classes(vec!["flat"])
+            .build();
+
+        let junk_btn = gtk::Button::builder()
+            .icon_name("dialog-warning-symbolic")
+            .tooltip_text("Als Spam markieren")
+            .css_classes(vec!["flat"])
+            .build();
+
         reply_btn.connect_clicked(glib::clone!(
             #[weak(rename_to = page)]
             self,
@@ -3801,6 +3929,36 @@ impl MailPage {
             }
         ));
 
+        flag_btn.connect_clicked(glib::clone!(
+            #[weak(rename_to = page)]
+            self,
+            move |_| match page.toggle_selected_flagged() {
+                Ok(true) => {}
+                Ok(false) => page.show_toast("Keine Nachricht ausgewählt"),
+                Err(error) => page.show_toast(&format!("Markierung nicht möglich: {error}")),
+            }
+        ));
+
+        archive_btn.connect_clicked(glib::clone!(
+            #[weak(rename_to = page)]
+            self,
+            move |_| match page.archive_selected() {
+                Ok(true) => {}
+                Ok(false) => page.show_toast("Keine Nachricht ausgewählt"),
+                Err(error) => page.show_toast(&format!("Archivieren nicht möglich: {error}")),
+            }
+        ));
+
+        junk_btn.connect_clicked(glib::clone!(
+            #[weak(rename_to = page)]
+            self,
+            move |_| match page.mark_selected_junk() {
+                Ok(true) => {}
+                Ok(false) => page.show_toast("Keine Nachricht ausgewählt"),
+                Err(error) => page.show_toast(&format!("Spam-Markierung nicht möglich: {error}")),
+            }
+        ));
+
         action_bar.append(&reply_btn);
         action_bar.append(&reply_all_btn);
         action_bar.append(&forward_btn);
@@ -3808,6 +3966,9 @@ impl MailPage {
 
         let spacer = gtk::Box::builder().hexpand(true).build();
         action_bar.append(&spacer);
+        action_bar.append(&flag_btn);
+        action_bar.append(&archive_btn);
+        action_bar.append(&junk_btn);
         action_bar.append(&unread_btn);
         action_bar.append(&delete_btn);
 
@@ -5629,5 +5790,16 @@ mod tests {
             gtk::Orientation::Vertical
         );
         assert_eq!(MailLayout::Classic.default_position(), 360);
+    }
+
+    #[test]
+    fn folder_selection_normalizes_supported_default_folders() {
+        assert_eq!(FolderSelection::from_folder_id("inbox").folder_id, "inbox");
+        assert_eq!(FolderSelection::from_folder_id("all").folder_id, "all");
+        assert_eq!(FolderSelection::from_folder_id("spam").folder_id, "spam");
+        assert_eq!(
+            FolderSelection::from_folder_id("provider-specific").folder_id,
+            "inbox"
+        );
     }
 }

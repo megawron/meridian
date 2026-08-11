@@ -50,9 +50,9 @@
       ],
       "sources": [
         {
-          "type": "archive",
-          "url": "https://download.gnome.org/sources/evolution-data-server/3.54/evolution-data-server-3.54.2.tar.xz",
-          "sha256": "FIXME"
+          "type": "git",
+          "url": "https://gitlab.gnome.org/GNOME/evolution-data-server.git",
+          "commit": "a12493abe06ecaba8207939c8049b7b5b7085ce9"
         }
       ]
     },
