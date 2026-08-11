@@ -278,6 +278,25 @@ impl EvolutionWindow {
         section1.append(Some("Wiederholen"), Some("win.redo"));
         menu.append_section(None, &section1);
 
+        let message_menu = gio::Menu::new();
+        message_menu.append(Some("Antworten"), Some("win.reply"));
+        message_menu.append(Some("Allen antworten"), Some("win.reply-all"));
+        message_menu.append(Some("Weiterleiten"), Some("win.forward"));
+        message_menu.append(
+            Some("Alle sichtbaren Nachrichten auswählen"),
+            Some("win.select-all-mail"),
+        );
+        message_menu.append(Some("Als ungelesen markieren"), Some("win.mark-unread"));
+        message_menu.append(Some("Markierung umschalten"), Some("win.toggle-flag"));
+        message_menu.append(
+            Some("Wichtigkeitsmarkierung umschalten"),
+            Some("win.toggle-important"),
+        );
+        message_menu.append(Some("Archivieren"), Some("win.archive"));
+        message_menu.append(Some("Als Spam markieren"), Some("win.mark-junk"));
+        message_menu.append(Some("Löschen"), Some("win.delete"));
+        menu.append_section(Some("Nachricht"), &message_menu);
+
         let section2 = gio::Menu::new();
         section2.append(Some("Einstellungen"), Some("app.preferences"));
         section2.append(Some("Tastenkombinationen"), Some("win.show-help-overlay"));
@@ -668,6 +687,110 @@ impl EvolutionWindow {
             }
         ));
         self.add_action(&action_mark_unread);
+
+        let action_select_all_mail = gio::SimpleAction::new("select-all-mail", None);
+        action_select_all_mail.connect_activate(glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            move |_, _| {
+                let count = win
+                    .mail_page()
+                    .map(|mail_page| mail_page.select_all_visible_messages())
+                    .unwrap_or(0);
+                win.add_toast(&adw::Toast::new(&format!(
+                    "{count} sichtbare Nachricht(en) ausgewählt"
+                )));
+            }
+        ));
+        self.add_action(&action_select_all_mail);
+
+        let action_toggle_flag = gio::SimpleAction::new("toggle-flag", None);
+        action_toggle_flag.connect_activate(glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            move |_, _| {
+                let result = win
+                    .mail_page()
+                    .map(|mail_page| mail_page.toggle_selected_flagged());
+                let message = match result {
+                    Some(Ok(true)) => "Markierung geändert".to_string(),
+                    Some(Ok(false)) => "Keine Nachricht ausgewählt".to_string(),
+                    Some(Err(error)) => {
+                        tracing::warn!(%error, "Mail flag operation was not applied");
+                        format!("Markierung nicht möglich: {error}")
+                    }
+                    None => "Mailansicht ist nicht verfügbar".to_string(),
+                };
+                win.add_toast(&adw::Toast::new(&message));
+            }
+        ));
+        self.add_action(&action_toggle_flag);
+
+        let action_toggle_important = gio::SimpleAction::new("toggle-important", None);
+        action_toggle_important.connect_activate(glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            move |_, _| {
+                let result = win
+                    .mail_page()
+                    .map(|mail_page| mail_page.toggle_selected_important());
+                let message = match result {
+                    Some(Ok(true)) => "Wichtigkeitsmarkierung geändert".to_string(),
+                    Some(Ok(false)) => "Keine Nachricht ausgewählt".to_string(),
+                    Some(Err(error)) => {
+                        tracing::warn!(%error, "Mail important operation was not applied");
+                        format!("Wichtigkeitsmarkierung nicht möglich: {error}")
+                    }
+                    None => "Mailansicht ist nicht verfügbar".to_string(),
+                };
+                win.add_toast(&adw::Toast::new(&message));
+            }
+        ));
+        self.add_action(&action_toggle_important);
+
+        let action_archive = gio::SimpleAction::new("archive", None);
+        action_archive.connect_activate(glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            move |_, _| {
+                let result = win
+                    .mail_page()
+                    .map(|mail_page| mail_page.archive_selected());
+                let message = match result {
+                    Some(Ok(true)) => "Nachricht archiviert".to_string(),
+                    Some(Ok(false)) => "Keine Nachricht ausgewählt".to_string(),
+                    Some(Err(error)) => {
+                        tracing::warn!(%error, "Mail archive operation was not applied");
+                        format!("Archivieren nicht möglich: {error}")
+                    }
+                    None => "Mailansicht ist nicht verfügbar".to_string(),
+                };
+                win.add_toast(&adw::Toast::new(&message));
+            }
+        ));
+        self.add_action(&action_archive);
+
+        let action_mark_junk = gio::SimpleAction::new("mark-junk", None);
+        action_mark_junk.connect_activate(glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            move |_, _| {
+                let result = win
+                    .mail_page()
+                    .map(|mail_page| mail_page.mark_selected_junk());
+                let message = match result {
+                    Some(Ok(true)) => "Nachricht als Spam markiert".to_string(),
+                    Some(Ok(false)) => "Keine Nachricht ausgewählt".to_string(),
+                    Some(Err(error)) => {
+                        tracing::warn!(%error, "Mail junk operation was not applied");
+                        format!("Spam-Markierung nicht möglich: {error}")
+                    }
+                    None => "Mailansicht ist nicht verfügbar".to_string(),
+                };
+                win.add_toast(&adw::Toast::new(&message));
+            }
+        ));
+        self.add_action(&action_mark_junk);
 
         let action_shortcuts = gio::SimpleAction::new("show-help-overlay", None);
         action_shortcuts.connect_activate(glib::clone!(

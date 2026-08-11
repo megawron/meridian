@@ -348,6 +348,8 @@ impl EvolutionApplication {
         self.set_accels_for_action("win.export", &["<Ctrl><Shift>S"]);
         self.set_accels_for_action("win.delete", &["Delete"]);
         self.set_accels_for_action("win.mark-unread", &["<Ctrl>U"]);
+        self.set_accels_for_action("win.toggle-important", &["<Ctrl>I"]);
+        self.set_accels_for_action("win.select-all-mail", &["<Ctrl>A"]);
 
         tracing::debug!("Keyboard accelerators registered");
     }

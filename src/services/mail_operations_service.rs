@@ -274,6 +274,27 @@ impl MailCommand {
         }
     }
 
+    pub(crate) fn set_important_local(id: impl Into<String>, before: bool, after: bool) -> Self {
+        let id = id.into();
+        Self {
+            forward: MailOperation::SetImportant {
+                id: id.clone(),
+                location: None,
+                is_important: after,
+            },
+            inverse: MailOperation::SetImportant {
+                id,
+                location: None,
+                is_important: before,
+            },
+            description: if after {
+                "Als wichtig markieren".to_string()
+            } else {
+                "Wichtig-Markierung entfernen".to_string()
+            },
+        }
+    }
+
     pub(crate) fn set_label_local(
         id: impl Into<String>,
         label: impl Into<String>,
@@ -688,9 +709,9 @@ impl MailOperationsService {
                     .map_err(Into::into),
             },
             MailOperation::SetImportant {
+                id,
                 location,
                 is_important,
-                ..
             } => match location {
                 Some(location) => self.apply_camel(
                     CamelMailOperation::SetImportant {
@@ -703,11 +724,10 @@ impl MailOperationsService {
                         MailOperationKind::MarkNotImportant
                     },
                 ),
-                None => Err(Self::unsupported(if is_important {
-                    MailOperationKind::MarkImportant
-                } else {
-                    MailOperationKind::MarkNotImportant
-                })),
+                None => self
+                    .store
+                    .persist_important_state(&id, is_important)
+                    .map_err(Into::into),
             },
             MailOperation::SetLabel {
                 id,
@@ -989,7 +1009,59 @@ mod tests {
             Some(&MailMessageState {
                 is_unread: false,
                 is_flagged: true,
+                is_important: false,
             })
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn local_important_command_is_persistent_and_undoable() {
+        let root = temporary_directory("operations-local-important");
+        let mail_dir = root.join("mail");
+        fs::create_dir_all(&mail_dir).expect("mail directory should be created");
+        let source = mail_dir.join("message.eml");
+        fs::write(
+            &source,
+            "From: Sender <sender@example.org>\nSubject: Test\n\nBody\n",
+        )
+        .expect("mail should be written");
+
+        let store =
+            MailStoreService::with_mail_dir_and_state_path(&mail_dir, root.join("state.json"));
+        let message_id = store
+            .load_local_records()
+            .first()
+            .expect("message should parse")
+            .id
+            .clone();
+        let operations = MailOperationsService::with_store(store.clone());
+        let mut history = MailCommandStack::default();
+
+        history
+            .execute(
+                &operations,
+                MailCommand::set_important_local(&message_id, false, true),
+            )
+            .expect("local important state should persist");
+        assert!(
+            MailMetadataStore::new(store.metadata_path())
+                .load()
+                .get(&message_id)
+                .is_some_and(|state| state.is_important)
+        );
+        assert!(source.is_file());
+
+        history
+            .undo(&operations)
+            .expect("undo should succeed")
+            .expect("one command should be undone");
+        assert!(
+            !MailMetadataStore::new(store.metadata_path())
+                .load()
+                .get(&message_id)
+                .is_some_and(|state| state.is_important)
         );
 
         let _ = fs::remove_dir_all(root);
@@ -1175,6 +1247,7 @@ mod tests {
             Some(&MailMessageState {
                 is_unread: false,
                 is_flagged: true,
+                is_important: false,
             })
         );
 
@@ -1191,6 +1264,7 @@ mod tests {
             Some(&MailMessageState {
                 is_unread: true,
                 is_flagged: false,
+                is_important: false,
             })
         );
 
@@ -1284,6 +1358,7 @@ mod tests {
             Some(&MailMessageState {
                 is_unread: true,
                 is_flagged: false,
+                is_important: false,
             })
         );
 

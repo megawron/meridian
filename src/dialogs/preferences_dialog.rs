@@ -1636,6 +1636,7 @@ impl PreferencesDialog {
                 "Absender",
                 "Ungelesen-Status",
                 "Markierung",
+                "Wichtigkeit",
                 "Anhänge",
             ]))
             .build();
@@ -1645,7 +1646,8 @@ impl PreferencesDialog {
                 "sender" => 2,
                 "unread" => 3,
                 "flagged" => 4,
-                "attachments" => 5,
+                "important" => 5,
+                "attachments" => 6,
                 _ => 0,
             });
             row_mail_sort.connect_selected_notify(move |row| {
@@ -1654,7 +1656,8 @@ impl PreferencesDialog {
                     2 => "sender",
                     3 => "unread",
                     4 => "flagged",
-                    5 => "attachments",
+                    5 => "important",
+                    6 => "attachments",
                     _ => "date",
                 });
             });

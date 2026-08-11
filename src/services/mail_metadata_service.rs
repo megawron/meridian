@@ -13,13 +13,15 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-const CURRENT_VERSION: u32 = 5;
+const CURRENT_VERSION: u32 = 6;
 const MIN_SUPPORTED_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MailMessageState {
     pub is_unread: bool,
     pub is_flagged: bool,
+    #[serde(default)]
+    pub is_important: bool,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -418,6 +420,7 @@ mod tests {
         let state = MailMessageState {
             is_unread: false,
             is_flagged: true,
+            is_important: false,
         };
 
         store.update("message-1", state).expect("state should save");
@@ -456,6 +459,13 @@ mod tests {
         let store = MailMetadataStore::new(&path);
         assert!(store.load_copies().is_empty());
         assert_eq!(
+            store
+                .load()
+                .get("message-1")
+                .map(|state| state.is_important),
+            Some(false)
+        );
+        assert_eq!(
             store.load_folder_overrides().get("message-1"),
             Some(&"archive".to_string())
         );
@@ -485,6 +495,7 @@ mod tests {
                 MailMessageState {
                     is_unread: false,
                     is_flagged: true,
+                    is_important: false,
                 },
             )
             .expect("flag state should save");
@@ -506,6 +517,7 @@ mod tests {
             Some(&MailMessageState {
                 is_unread: false,
                 is_flagged: true,
+                is_important: false,
             })
         );
 
@@ -551,6 +563,7 @@ mod tests {
                 MailMessageState {
                     is_unread: true,
                     is_flagged: false,
+                    is_important: false,
                 },
             )
             .expect("message state should save");
@@ -569,6 +582,7 @@ mod tests {
             Some(&MailMessageState {
                 is_unread: true,
                 is_flagged: false,
+                is_important: false,
             })
         );
         reloaded

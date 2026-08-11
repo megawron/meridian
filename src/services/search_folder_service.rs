@@ -46,6 +46,13 @@ impl SearchFolderService {
                 0,
             ),
             SearchFolderObject::new(
+                "vfolder-important",
+                "Wichtig",
+                "emblem-important-symbolic",
+                "is:important",
+                0,
+            ),
+            SearchFolderObject::new(
                 "vfolder-recent",
                 "Letzte 7 Tage",
                 "appointment-soon-symbolic",
@@ -130,7 +137,7 @@ mod tests {
     #[test]
     fn test_default_vfolders() {
         let vfolders = SearchFolderService::default_vfolders();
-        assert_eq!(vfolders.len(), 3);
+        assert_eq!(vfolders.len(), 4);
         assert_eq!(vfolders[0].name(), "Ungelesen (Alle Konten)");
         assert_eq!(vfolders[0].query_expression(), "is:unread");
         assert_eq!(vfolders[0].unread_count(), 0);

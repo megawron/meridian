@@ -370,7 +370,9 @@ werden.
   Vorschau) wählen können. Beide Modi verwenden denselben Auswahl-,
   Such- und Aktionspfad. Das Ansichtsmenü bietet zusätzlich direkte Umschalter
   für Threading, Avatare, Absender, Datum, Labels, Vorschautext und
-  Nachrichtenlistendichte; zusätzliche
+  Nachrichtenlistendichte; das Hauptmenü stellt die klassischen Einzel-
+  Nachrichtenpfade für Antworten, Weiterleiten, Markieren, Archivieren,
+  Spam und Löschen ebenfalls über dieselben Aktionen bereit. Zusätzliche
   native Camel-Abnahme bleibt offen.
 - [~] Sicherer WebKitGTK-Viewer: JavaScript ist deaktiviert, Navigation wird
   abgefangen und externe Bilder sind standardmäßig blockiert.
@@ -410,10 +412,12 @@ werden.
   aggregiert Zähler, unterstützt Ein-/Ausklappen und führt Umbenennen/Löschen
   auf dem gesamten Unterbaum aus; native providerabhängige Hierarchie- und
   Separator-Semantik bleibt Linux-/Camel-Abnahme.
-- [~] Suche, Stern, Ordnerfilter und „gelesen“ existieren im GTK4-rs-UI;
+- [~] Suche, Stern, Wichtigkeitsstatus, Ordnerfilter und „gelesen“ existieren
+  im GTK4-rs-UI;
   die lokale Schnellsuche versteht zusätzlich `from:`, `to:`, `subject:`,
   `cc:`, `bcc:`, `body:`, `filename:`, `in:`/`folder:`, `on:`, `after:`,
   `before:`, `older:`, `newer:`, `is:unread`, `is:read`, `is:starred`,
+  `is:important`, `is:not-important`,
   `is:sent`/`is:junk` und `has:attachment`/`no:attachment` und
   durchsucht auch Empfänger, Vorschau, HTML-Inhalt und Dateinamen;
   Mail- und Thread-Datumsanzeigen verwenden die persistenten Kalender-
@@ -421,9 +425,17 @@ werden.
   Detailauswahl sowie Lesen, Markieren und Löschen werden für Remote-Nachrichten
   aus dem Servicepfad in diese Oberfläche zurückgeführt. Für den lokalen Import
   werden Zustände in einem app-eigenen Sidecar persistiert; Remote-Flags werden
-  über Camel/EDS gelesen und zurückgeschrieben. Mehrfachauswahl mit Gelesen-,
-  Archiv-, Spam-, Lösch- und Verschiebeaktionen ist angebunden; die Ziele
-  werden aus der dynamischen EDS-Ordnerliste angeboten. Serverseitige
+  über Camel/EDS gelesen und zurückgeschrieben. Die lokale Wichtigkeits-
+  markierung wird separat im Sidecar gespeichert; die providerabhängige
+  Remote-Wichtigkeitssemantik bleibt bis zur Linux/Camel-Abnahme ausdrücklich
+  offen. Mehrfachauswahl mit
+  Gelesen-, Wichtigkeits-, Archiv-, Spam-, Lösch- und Verschiebeaktionen ist
+  angebunden; auch die
+  Einzel-Nachrichtenansicht bietet Verschieben über denselben reversiblen
+  Command-/Undo-Pfad. Die Ziele werden aus der dynamischen EDS-Ordnerliste
+  angeboten und für lokale Nachrichten aus der app-eigenen Ordnerhierarchie
+  ergänzt; alle sichtbaren Treffer können per Menü oder `Ctrl+A` für diese
+  Batch-Aktionen ausgewählt werden. Serverseitige
   Suchordner und die übrigen Remote-Aktionen in der Oberfläche fehlen.
 - [~] Der Startordner der Mailansicht ist als portable Einstellung mit
   Posteingang, Alle Nachrichten, Gesendet, Entwürfe, Papierkorb, Archiv und
@@ -432,11 +444,15 @@ werden.
   geöffneten Mailansicht sofort auf die statische Auswahl und den aktuell
   gewählten EDS-Konto-Ladepfad angewendet; providerabhängige Alias- und
   Ordnerauflösung bleibt Teil der Linux/Camel-Strecke.
-- [~] Die Mail-Liste kann portabel nach Datum, Betreff oder Absender sowie
+- [~] Die Mail-Liste kann portabel nach Datum, Betreff, Absender und
+  Wichtigkeitsstatus sowie
   auf-/absteigend sortiert werden; Feld, Richtung und das Gruppieren von
   Unterhaltungen werden über GSettings gespeichert und beim Wiederaufbau der
   Liste angewendet; neben Datum, Betreff und Absender stehen auch Ungelesen-
-  Status, Markierung und Anhänge als Sortierfelder zur Verfügung. Änderungen an diesen Einstellungen aktualisieren eine
+  Status, Markierung, Wichtigkeit und Anhänge als Sortierfelder zur Verfügung; die
+  portable Datumssortierung normalisiert RFC-2822-/RFC-3339-Werte statt rohe
+  Headerstrings zu vergleichen und sortiert Betreff/Absender ohne
+  Groß-/Kleinschreibungsartefakte. Änderungen an diesen Einstellungen aktualisieren eine
   bereits geöffnete Ansicht ebenfalls. Vorschaufenster und die Dichte der
   Nachrichtenzeilen sowie die Mail-Arbeitsweise (modern nebeneinander oder
   klassisch Liste über Vorschau) werden ebenfalls persistent gespeichert und
@@ -500,12 +516,14 @@ werden.
   Konto stehen noch aus.
 - [~] Mailaktionen besitzen eine zentrale Backend-Schnittstelle. Lokale
   Nachrichten behalten den schreibgeschützten Import mit Sidecar für
-  Lesestatus/Markierung; lokale Archivieren-, Verschieben- und Löschen-Aktionen
+  Lesestatus/Markierung/Wichtigkeit; lokale Archivieren-, Verschieben-,
+  Wichtigkeits- und Löschen-Aktionen
   werden ebenfalls nur im app-eigenen Sidecar persistiert und sind über den
   Command-Stack rückgängig machbar. Remote-Nachrichten verwenden Camel für
   Lesen, Flags, Archivieren, Verschieben, Spam-Markierung und Löschen. Batch-Aktionen und
   der zentrale Aktionspfad werden aus dem Servicepfad in die GTK4-rs-Mailansicht
-  übernommen. Mehrfachauswahl für Gelesen/Ungelesen, Markierung, Archivieren,
+  übernommen. Mehrfachauswahl für Gelesen/Ungelesen, Markierung, Wichtigkeit,
+  Archivieren,
   Spam und Löschen sowie
   atomare Batch-Zustandsänderungen mit Rollback sind vorhanden. Der
   Command-Stack unterstützt erfolgreiche Lese-/Flag-Änderungen inklusive
@@ -521,7 +539,7 @@ werden.
   Fehlerzustand behandelt und Batch-Fehler im sichtbaren Mailstatus angezeigt.
   Der Detailkopf bietet für eine einzelne Auswahl ebenfalls direkte
   Markierungs-, Archiv- und Spam-Aktionen über denselben Command-/Undo-Pfad.
-- [~] Portable virtuelle Suchordner sind vorhanden: drei Standardabfragen und
+- [~] Portable virtuelle Suchordner sind vorhanden: vier Standardabfragen und
   beliebig viele gespeicherte lokale Suchdefinitionen können angelegt,
   bearbeitet und gelöscht werden. Die vorhandene lokale Suchsprache wird
   ausgewertet; Suchordner zeigen Treffer-/Ungelesen-Zähler für den geladenen

@@ -171,7 +171,12 @@ oder in CI-Artefakte übernehmen.
 
 - `[~]` Native Camel-Brücke gegen die auf dem Linux-System installierte
   EDS-Version bauen. Versionsabhängige API-Annahmen, insbesondere UID- und
-  Ordnerflags, mit den installierten Headern prüfen.
+  Ordnerflags, mit den installierten Headern prüfen. Der Status „wichtig“ darf
+  dabei nicht automatisch mit dem Stern-/`CAMEL_MESSAGE_FLAGGED`-Status
+  gleichgesetzt werden: die native Nachrichtenstruktur, das C-ABI, das Parsen,
+  Schreiben und die Verifikation müssen das providerabhängige Important-/High-
+  Priority-/User-Flag korrekt abbilden oder eine fehlende Providerfähigkeit
+  ausdrücklich melden.
 - `[~]` Echtes Konto laden:
   - Quelle über EDS auswählen.
   - Camel-Service konfigurieren und authentifizieren.
@@ -191,6 +196,9 @@ oder in CI-Artefakte übernehmen.
 - `[~]` Remote-Aktionen mit einem Testkonto testen:
   - gelesen/ungelesen, markiert, wichtig, Spam, Archiv, Verschieben und
     Löschen.
+  - Stern/Flagged und Wichtigkeit getrennt in Evolution und auf dem Server
+    prüfen; eine nicht unterstützte Camel-Flagsemantik darf weder den Stern
+    überschreiben noch als erfolgreicher Wichtigkeitsstatus erscheinen.
   - nach jeder Aktion Serverzustand, UI-Zustand und Konfliktmeldung prüfen.
   - absichtliche Paralleländerung in Evolution erzeugen und den Konfliktpfad
     bestätigen.
@@ -408,7 +416,44 @@ Mit einem Testkonto ohne produktive Empfänger prüfen:
   dokumentieren. Geheimnisse, Mailinhalte und persönliche Quellen-IDs dürfen
   nicht in CI-Artefakte oder Logs gelangen.
 
-## 10. Linux-Abnahmeprotokoll
+## 10. Querliegende Vollparitäts-Blocker
+
+Diese Checkliste sammelt die Linux-Arbeiten, die in mehreren Hauptblöcken
+benötigt werden, aber für eine vollständige Evolution-Parität nicht entfallen
+dürfen:
+
+- `[ ]` EDS-/D-Bus-/GOA-Lebenszyklus vollständig abnehmen: Quellen anlegen,
+  ändern, aktivieren, deaktivieren und entfernen; OAuth2-/Passwortablauf,
+  Secret-Service-Fehler, EDS-Neustart, D-Bus-Unterbrechung und native
+  Übernahme eines vorhandenen Evolution-Profils verifizieren.
+- `[ ]` Mailanbieter-Parität abnehmen: IMAP/IMAPX, POP3, SMTP/Submission,
+  EWS/Exchange und Microsoft 365/Graph mit Ordnern, Identitäten,
+  serverseitiger Suche, Vee-Suchordnern, Filtern, Threads, Paging,
+  Offline-Wiederaufnahme, Konflikten und UID-/Message-ID-Neuzuordnung.
+- `[ ]` Den vollständigen Mail-Lebenszyklus gegen echte Konten verifizieren:
+  RFC822/MIME, Anhänge und Inline-CID, Draft-Autosave, Wiederöffnen,
+  Änderungen, Löschen, Versand, Sent-Kopie, Antworten/Weiterleiten,
+  Identitäts-/Signaturauswahl und providerabhängige Fehler.
+- `[ ]` Kalender-, Aufgaben- und Memo-Parität abnehmen: EDS-UIDs,
+  Wiederholungen, Zeitzonen/DST, Teilnehmer, iTIP/iMIP, Free/Busy,
+  private Termine, Anhänge, VALARM, Snooze und Offline-/Factory-Neustart.
+- `[ ]` Adressbuch- und Empfänger-Parität abnehmen: vollständige vCard-/EDS-
+  Felder, Fotos, Kategorien, lokale Autocomplete-, LDAP-/GAL-/Exchange-
+  Suche, Pagination, Datenschutz und schreibgeschützte Quellen.
+- `[ ]` Sicherheit und Datenschutz unter Linux abnehmen: OpenPGP/GnuPG,
+  S/MIME, Trust-/Widerrufsprüfung, fehlende Schlüssel/Zertifikate,
+  Passphrase-Dialoge, Remote-Content, Tracking-Schutz und Secret-Service-
+  Berechtigungen.
+- `[ ]` Originalgetreue Arbeitsweise verifizieren: Evolution-kompatible
+  Konten-/Ordner-/Identitäts-/Signatur-/Filter-/Suchordner-Einstellungen,
+  klassische Layoutoptionen, Tastaturbedienung, Barrierefreiheit,
+  Lokalisierung und Migration dürfen keinen Workflowwechsel erzwingen.
+- `[ ]` Desktop- und Release-Parität abnehmen: Wayland/X11, HiDPI/mehrere
+  Monitore, GNOME-Sitzung, Flatpak-Sandbox, Download-/Temporärpfade,
+  Performance großer Mailboxen, Speicher-/Thread-Leaks, Upgrade/Rollback,
+  signierte Artefakte und reproduzierbare Linux-CI.
+
+## 11. Linux-Abnahmeprotokoll
 
 Für jeden Linux-Lauf sind mindestens folgende Angaben zu protokollieren:
 

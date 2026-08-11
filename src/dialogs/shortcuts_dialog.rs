@@ -83,12 +83,22 @@ pub fn show_shortcuts_dialog<W: IsA<gtk::Window>>(parent: &W) {
         .title("Nachricht löschen")
         .accelerator("Delete")
         .build();
+    let m6 = gtk::ShortcutsShortcut::builder()
+        .title("Alle sichtbaren Nachrichten auswählen")
+        .accelerator("<Control>a")
+        .build();
+    let m7 = gtk::ShortcutsShortcut::builder()
+        .title("Wichtigkeitsmarkierung umschalten")
+        .accelerator("<Control>i")
+        .build();
 
     group_mail.append(&m1);
     group_mail.append(&m2);
     group_mail.append(&m3);
     group_mail.append(&m4);
     group_mail.append(&m5);
+    group_mail.append(&m6);
+    group_mail.append(&m7);
     section.append(&group_mail);
 
     // Group 3: Module navigation

@@ -16,6 +16,13 @@ pub struct AppSettings {
     settings: gio::Settings,
 }
 
+fn normalized_mail_sort_field(value: &str) -> &str {
+    match value {
+        "subject" | "sender" | "date" | "unread" | "flagged" | "important" | "attachments" => value,
+        _ => "date",
+    }
+}
+
 impl AppSettings {
     /// Open the application schema if it is available in the current process.
     pub fn try_new() -> Option<Self> {
@@ -572,17 +579,11 @@ impl AppSettings {
 
     pub fn mail_sort_field(&self) -> String {
         let value = self.settings.string("mail-sort-field").to_string();
-        match value.as_str() {
-            "subject" | "sender" | "date" | "unread" | "flagged" | "attachments" => value,
-            _ => "date".to_string(),
-        }
+        normalized_mail_sort_field(&value).to_string()
     }
 
     pub fn set_mail_sort_field(&self, value: &str) {
-        let value = match value {
-            "subject" | "sender" | "date" | "unread" | "flagged" | "attachments" => value,
-            _ => "date",
-        };
+        let value = normalized_mail_sort_field(value);
         if let Err(error) = self.settings.set_string("mail-sort-field", value) {
             tracing::warn!(%error, "Could not persist mail sort field");
         }
@@ -877,7 +878,9 @@ fn sanitize_calendar_workdays(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{sanitize_calendar_workdays, sanitize_spellcheck_languages};
+    use super::{
+        normalized_mail_sort_field, sanitize_calendar_workdays, sanitize_spellcheck_languages,
+    };
 
     #[test]
     fn spellcheck_language_values_are_sanitized_and_deduplicated() {
@@ -898,5 +901,11 @@ mod tests {
             sanitize_calendar_workdays(""),
             "monday,tuesday,wednesday,thursday,friday"
         );
+    }
+
+    #[test]
+    fn mail_sort_field_accepts_important_and_rejects_unknown_values() {
+        assert_eq!(normalized_mail_sort_field("important"), "important");
+        assert_eq!(normalized_mail_sort_field("unknown"), "date");
     }
 }

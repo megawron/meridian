@@ -82,6 +82,7 @@ pub struct ParsedMail {
     pub html_body: String,
     pub is_unread: bool,
     pub is_flagged: bool,
+    pub is_important: bool,
     pub labels: Vec<String>,
     pub attachments: Vec<AttachmentInfo>,
 }
@@ -109,6 +110,7 @@ impl ParsedMail {
             html_body,
             is_unread,
             is_flagged,
+            is_important,
             labels,
             backend_location,
             attachments,
@@ -136,6 +138,7 @@ impl ParsedMail {
             &html_body,
             is_unread,
             is_flagged,
+            is_important,
             labels,
             backend_location,
             attachments,
@@ -473,6 +476,7 @@ impl MailStoreService {
                 if let Some(state) = metadata.get(&copy_id) {
                     copy.is_unread = state.is_unread;
                     copy.is_flagged = state.is_flagged;
+                    copy.is_important = state.is_important;
                 }
                 if let Some(copy_labels) = labels.get(&copy_id) {
                     copy.labels = sorted_labels(copy_labels);
@@ -530,6 +534,7 @@ impl MailStoreService {
             if let Some(state) = metadata.get(&message.id) {
                 message.is_unread = state.is_unread;
                 message.is_flagged = state.is_flagged;
+                message.is_important = state.is_important;
             }
             if let Some(message_labels) = labels.get(&message.id) {
                 message.labels = sorted_labels(message_labels);
@@ -546,6 +551,7 @@ impl MailStoreService {
                     MailMessageState {
                         is_unread: message.is_unread,
                         is_flagged: message.is_flagged,
+                        is_important: message.is_important,
                     },
                 )?;
             }
@@ -595,11 +601,31 @@ impl MailStoreService {
         is_unread: bool,
         is_flagged: bool,
     ) -> std::io::Result<()> {
+        let is_important = self
+            .metadata
+            .load()
+            .get(id)
+            .copied()
+            .unwrap_or_default()
+            .is_important;
         self.metadata.update(
             id,
             MailMessageState {
                 is_unread,
                 is_flagged,
+                is_important,
+            },
+        )
+    }
+
+    pub fn persist_important_state(&self, id: &str, is_important: bool) -> std::io::Result<()> {
+        let current = self.metadata.load().get(id).copied().unwrap_or_default();
+        self.metadata.update(
+            id,
+            MailMessageState {
+                is_unread: current.is_unread,
+                is_flagged: current.is_flagged,
+                is_important,
             },
         )
     }
@@ -746,6 +772,7 @@ fn apply_client_state(
     if let Some(state) = metadata.get(&message.id) {
         message.is_unread = state.is_unread;
         message.is_flagged = state.is_flagged;
+        message.is_important = state.is_important;
     }
 
     apply_local_filters(filter_rules, message, sidecar)
@@ -1320,6 +1347,7 @@ pub(crate) fn parse_rfc822(
         html_body: body_html,
         is_unread: unread,
         is_flagged: false,
+        is_important: false,
         labels: Vec::new(),
         attachments,
     })
@@ -2045,6 +2073,7 @@ mod tests {
             Some(&MailMessageState {
                 is_unread: false,
                 is_flagged: true,
+                is_important: false,
             })
         );
 

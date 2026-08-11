@@ -42,6 +42,7 @@ enum MessageFilter {
     All,
     Unread,
     Flagged,
+    Important,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -52,6 +53,7 @@ enum MailSortField {
     Sender,
     Unread,
     Flagged,
+    Important,
     Attachments,
 }
 
@@ -61,7 +63,8 @@ impl MailSortField {
             "subject" => Self::Subject,
             "sender" => Self::Sender,
             "unread" | "status" => Self::Unread,
-            "flagged" | "starred" | "important" => Self::Flagged,
+            "flagged" | "starred" => Self::Flagged,
+            "important" => Self::Important,
             "attachments" | "attachment" => Self::Attachments,
             _ => Self::Date,
         }
@@ -74,6 +77,7 @@ impl MailSortField {
             Self::Sender => "sender",
             Self::Unread => "unread",
             Self::Flagged => "flagged",
+            Self::Important => "important",
             Self::Attachments => "attachments",
         }
     }
@@ -202,6 +206,7 @@ struct MessageSearchQuery {
     filename: Option<String>,
     unread: Option<bool>,
     flagged: Option<bool>,
+    important: Option<bool>,
     has_attachment: Option<bool>,
     folder: Option<String>,
     date_after: Option<NaiveDate>,
@@ -233,7 +238,9 @@ impl MessageSearchQuery {
                 "is" => match value.as_str() {
                     "unread" => query.unread = Some(true),
                     "read" => query.unread = Some(false),
-                    "starred" | "flagged" | "important" => query.flagged = Some(true),
+                    "starred" | "flagged" => query.flagged = Some(true),
+                    "important" => query.important = Some(true),
+                    "not-important" => query.important = Some(false),
                     "inbox" | "sent" | "sent-mail" | "draft" | "drafts" | "trash" | "deleted"
                     | "junk" | "spam" | "archive" | "all-mail" => query.folder = Some(value),
                     _ => query.text_terms.push(token.to_lowercase()),
@@ -280,6 +287,7 @@ impl MessageSearchQuery {
             && self.filename.is_none()
             && self.unread.is_none()
             && self.flagged.is_none()
+            && self.important.is_none()
             && self.has_attachment.is_none()
             && self.folder.is_none()
             && self.date_after.is_none()
@@ -481,6 +489,10 @@ fn message_matches_filter(
             .map(|flagged| message.is_flagged() == flagged)
             .unwrap_or(true)
         && query
+            .important
+            .map(|important| message.is_important() == important)
+            .unwrap_or(true)
+        && query
             .has_attachment
             .map(|has_attachment| message.attachments().is_empty() != has_attachment)
             .unwrap_or(true)
@@ -509,6 +521,7 @@ fn message_matches_filter(
         MessageFilter::All => true,
         MessageFilter::Unread => message.is_unread(),
         MessageFilter::Flagged => message.is_flagged(),
+        MessageFilter::Important => message.is_important(),
     };
 
     (query.is_empty() || (text_matches && field_matches))
@@ -1558,6 +1571,36 @@ impl MailPage {
         Ok(true)
     }
 
+    pub fn toggle_selected_important(&self) -> Result<bool, MailOperationError> {
+        let Some(message) = self.selected_message() else {
+            return Ok(false);
+        };
+        if message.backend_location().is_some() {
+            return Err(MailOperationError::Unsupported {
+                operation: if message.is_important() {
+                    crate::services::mail_operations_service::MailOperationKind::MarkNotImportant
+                } else {
+                    crate::services::mail_operations_service::MailOperationKind::MarkImportant
+                },
+                backend: "EDS/Camel-Wichtig-Flag (Linux-Abnahme ausstehend)",
+            });
+        }
+        let next_important = !message.is_important();
+        self.execute_mail_command(MailCommand::set_important_local(
+            message.id(),
+            message.is_important(),
+            next_important,
+        ))?;
+        message.set_important(next_important);
+        if let Some(filter) = self.imp().message_filter.borrow().as_ref() {
+            filter.changed(gtk::FilterChange::Different);
+        }
+        if let Some(filter) = self.imp().thread_filter.borrow().as_ref() {
+            filter.changed(gtk::FilterChange::Different);
+        }
+        Ok(true)
+    }
+
     fn set_selected_label(&self, label: &str, labeled: bool) -> Result<bool, MailOperationError> {
         let label = label.trim();
         if label.is_empty() {
@@ -1784,6 +1827,52 @@ impl MailPage {
         Ok(true)
     }
 
+    fn move_selected_to(
+        &self,
+        destination_source: &str,
+        destination_folder: &str,
+    ) -> Result<bool, MailOperationError> {
+        let Some(message) = self.selected_message() else {
+            return Ok(false);
+        };
+
+        let command = if destination_source == "local" {
+            if message.backend_location().is_some() {
+                return Err(MailOperationError::Unsupported {
+                    operation: crate::services::mail_operations_service::MailOperationKind::Move,
+                    backend: "EDS/Camel-Nachricht in den lokalen Import",
+                });
+            }
+            MailCommand::move_local(
+                message.id(),
+                message.folder_id(),
+                destination_folder.to_string(),
+            )
+        } else {
+            let Some(location) = message.backend_location() else {
+                return Err(MailOperationError::Unsupported {
+                    operation: crate::services::mail_operations_service::MailOperationKind::Move,
+                    backend: "lokaler Import in ein EDS/Camel-Konto",
+                });
+            };
+            if location.source_uid != destination_source {
+                return Err(MailOperationError::Unsupported {
+                    operation: crate::services::mail_operations_service::MailOperationKind::Move,
+                    backend: "anderes EDS/Camel-Konto",
+                });
+            }
+            MailCommand::move_to(message.id(), location, destination_folder.to_string())
+        };
+
+        self.execute_mail_command(command)?;
+        self.clear_operation_error();
+        self.refresh_mail();
+        if let Some(state) = self.imp().message_state.borrow().as_ref() {
+            state.set_label("Nachricht verschoben");
+        }
+        Ok(true)
+    }
+
     fn execute_mail_command(&self, command: MailCommand) -> Result<(), MailOperationError> {
         let operations = MailOperationsService::new();
         self.imp()
@@ -1813,6 +1902,52 @@ impl MailPage {
             .filter_map(|index| store.item(index).and_downcast::<MailMessageObject>())
             .filter(|message| selected_ids.contains(&message.id()))
             .collect()
+    }
+
+    pub fn select_all_visible_messages(&self) -> usize {
+        let Some(store) = self.imp().message_store.borrow().as_ref().cloned() else {
+            return 0;
+        };
+        let query = self
+            .imp()
+            .search_query
+            .borrow()
+            .as_ref()
+            .map(|query| query.borrow().clone())
+            .unwrap_or_default();
+        let folder_selection = self
+            .imp()
+            .folder_selection
+            .borrow()
+            .as_ref()
+            .map(|selection| selection.borrow().clone())
+            .unwrap_or_default();
+        let message_filter = self
+            .imp()
+            .message_filter_state
+            .borrow()
+            .as_ref()
+            .map(|filter| filter.get())
+            .unwrap_or(MessageFilter::All);
+
+        let mut batch_selection = self.imp().batch_selection.borrow_mut();
+        for index in 0..store.n_items() {
+            let Some(message) = store.item(index).and_downcast::<MailMessageObject>() else {
+                continue;
+            };
+            if message_matches_filter(&message, &query, message_filter, &folder_selection) {
+                batch_selection.insert(message.id());
+            }
+        }
+        let count = batch_selection.len();
+        drop(batch_selection);
+
+        let item_count = store.n_items();
+        if item_count > 0 {
+            store.items_changed(0, item_count, item_count);
+        }
+        self.update_batch_action_bar();
+        count
     }
 
     fn update_batch_action_bar(&self) {
@@ -1971,6 +2106,62 @@ impl MailPage {
         Ok(())
     }
 
+    fn toggle_batch_important(&self) -> Result<(), MailOperationError> {
+        self.clear_operation_error();
+        let messages = self.selected_batch_messages();
+        if messages
+            .iter()
+            .any(|message| message.backend_location().is_some())
+        {
+            return Err(MailOperationError::Unsupported {
+                operation:
+                    crate::services::mail_operations_service::MailOperationKind::MarkImportant,
+                backend: "EDS/Camel-Wichtig-Flag (Linux-Abnahme ausstehend)",
+            });
+        }
+        let next_important = messages.iter().any(|message| !message.is_important());
+        let commands = messages
+            .iter()
+            .filter(|message| message.is_important() != next_important)
+            .map(|message| {
+                MailCommand::set_important_local(
+                    message.id(),
+                    message.is_important(),
+                    next_important,
+                )
+            })
+            .collect::<Vec<_>>();
+        let count = commands.len();
+        if count > 0 {
+            let operations = MailOperationsService::new();
+            self.imp()
+                .mail_commands
+                .borrow_mut()
+                .execute_batch(&operations, commands)?;
+            for message in messages {
+                message.set_important(next_important);
+            }
+            if let Some(filter) = self.imp().message_filter.borrow().as_ref() {
+                filter.changed(gtk::FilterChange::Different);
+            }
+            if let Some(filter) = self.imp().thread_filter.borrow().as_ref() {
+                filter.changed(gtk::FilterChange::Different);
+            }
+        }
+        self.clear_batch_selection();
+        if let Some(state) = self.imp().message_state.borrow().as_ref() {
+            state.set_label(&format!(
+                "{count} Nachricht(en) {}",
+                if next_important {
+                    "als wichtig markiert"
+                } else {
+                    "nicht mehr wichtig markiert"
+                }
+            ));
+        }
+        Ok(())
+    }
+
     fn archive_batch(&self) -> Result<(), MailOperationError> {
         self.clear_operation_error();
         let messages = self.selected_batch_messages();
@@ -2061,7 +2252,21 @@ impl MailPage {
     }
 
     fn folder_destinations(&self) -> Vec<MoveDestination> {
+        let messages = self.selected_batch_messages();
+        self.folder_destinations_for_messages(&messages)
+    }
+
+    fn folder_destinations_for_messages(
+        &self,
+        messages: &[MailMessageObject],
+    ) -> Vec<MoveDestination> {
         let mut destinations = Vec::new();
+        let single_local_message = messages.len() == 1 && messages[0].backend_location().is_none();
+        let single_remote_source = (messages.len() == 1).then(|| {
+            messages[0]
+                .backend_location()
+                .map(|location| location.source_uid)
+        });
         if let Some(folder_index) = self.imp().dynamic_folder_index.borrow().as_ref().cloned() {
             for folder in folder_index.borrow().values() {
                 let (Some(source_uid), Some(folder_name)) =
@@ -2069,6 +2274,13 @@ impl MailPage {
                 else {
                     continue;
                 };
+                if single_local_message
+                    || single_remote_source
+                        .as_ref()
+                        .is_some_and(|source| source.as_deref() != Some(source_uid.as_str()))
+                {
+                    continue;
+                }
                 if !folder.selectable() {
                     continue;
                 }
@@ -2080,8 +2292,7 @@ impl MailPage {
             }
         }
 
-        let has_local_messages = self
-            .selected_batch_messages()
+        let has_local_messages = messages
             .iter()
             .any(|message| message.backend_location().is_none());
         if has_local_messages {
@@ -3535,12 +3746,20 @@ impl MailPage {
                 .tooltip_text("Markieren / Sternchhen setzen")
                 .build();
 
+            let btn_important = gtk::Button::builder()
+                .icon_name("emblem-important")
+                .css_classes(vec!["flat", "circular"])
+                .valign(gtk::Align::Center)
+                .tooltip_text("Als wichtig markieren")
+                .build();
+
             sender_box.append(&sender);
             header_box.append(&batch_check);
             header_box.append(&avatar);
             header_box.append(&sender_box);
             header_box.append(&date);
             header_box.append(&btn_star);
+            header_box.append(&btn_important);
 
             let subject = gtk::Label::builder()
                 .css_classes(vec!["body"])
@@ -3693,7 +3912,14 @@ impl MailPage {
                 date.set_label(&format_message_date(&msg.date_str()));
             }
 
-            if let Some(btn_star) = header_box.last_child().and_downcast::<gtk::Button>() {
+            if let Some(btn_star) = header_box
+                .first_child()
+                .and_then(|child| child.next_sibling())
+                .and_then(|child| child.next_sibling())
+                .and_then(|child| child.next_sibling())
+                .and_then(|child| child.next_sibling())
+                .and_downcast::<gtk::Button>()
+            {
                 if msg.is_flagged() {
                     btn_star.set_icon_name("starred-symbolic");
                 } else {
@@ -3736,6 +3962,52 @@ impl MailPage {
                     } else {
                         btn.set_icon_name("non-starred-symbolic");
                     }
+                });
+            }
+
+            if let Some(btn_important) = header_box.last_child().and_downcast::<gtk::Button>() {
+                btn_important.set_icon_name(if msg.is_important() {
+                    "emblem-important-symbolic"
+                } else {
+                    "emblem-important"
+                });
+                let msg_clone = msg.clone();
+                let filter_for_important = filter_for_bind.clone();
+                let thread_filter_for_important = thread_filter_for_bind.clone();
+                let page_for_important = page_for_bind.clone();
+                btn_important.connect_clicked(move |btn| {
+                    let current = msg_clone.is_important();
+                    let Some(page) = page_for_important.upgrade() else {
+                        return;
+                    };
+                    let result = if msg_clone.backend_location().is_some() {
+                        Err(MailOperationError::Unsupported {
+                            operation: if current {
+                                crate::services::mail_operations_service::MailOperationKind::MarkNotImportant
+                            } else {
+                                crate::services::mail_operations_service::MailOperationKind::MarkImportant
+                            },
+                            backend: "EDS/Camel-Wichtig-Flag (Linux-Abnahme ausstehend)",
+                        })
+                    } else {
+                        page.execute_mail_command(MailCommand::set_important_local(
+                            msg_clone.id(),
+                            current,
+                            !current,
+                        ))
+                    };
+                    if let Err(error) = result {
+                        page.show_toast(&format!("Wichtig-Markierung nicht möglich: {error}"));
+                        return;
+                    }
+                    msg_clone.set_important(!current);
+                    filter_for_important.changed(gtk::FilterChange::Different);
+                    thread_filter_for_important.changed(gtk::FilterChange::Different);
+                    btn.set_icon_name(if !current {
+                        "emblem-important-symbolic"
+                    } else {
+                        "emblem-important"
+                    });
                 });
             }
 
@@ -3837,6 +4109,7 @@ impl MailPage {
             "Absender",
             "Ungelesen-Status",
             "Markierung",
+            "Wichtigkeit",
             "Anhänge",
         ]);
         let sort_selector = gtk::DropDown::new(Some(sort_model), None::<&gtk::Expression>);
@@ -3846,7 +4119,8 @@ impl MailPage {
             MailSortField::Sender => 2,
             MailSortField::Unread => 3,
             MailSortField::Flagged => 4,
-            MailSortField::Attachments => 5,
+            MailSortField::Important => 5,
+            MailSortField::Attachments => 6,
             MailSortField::Date => 0,
         });
         let direction_button = gtk::Button::builder()
@@ -3876,7 +4150,8 @@ impl MailPage {
                 2 => MailSortField::Sender,
                 3 => MailSortField::Unread,
                 4 => MailSortField::Flagged,
-                5 => MailSortField::Attachments,
+                5 => MailSortField::Important,
+                6 => MailSortField::Attachments,
                 _ => MailSortField::Date,
             };
             page.imp().mail_sort_field.set(field);
@@ -4025,6 +4300,22 @@ impl MailPage {
             }
         });
         batch_action_bar.append(&batch_flag_button);
+
+        let batch_important_button = gtk::Button::builder()
+            .label("Wichtig")
+            .tooltip_text("Wichtigkeit der ausgewählten Nachrichten umschalten")
+            .css_classes(vec!["flat"])
+            .build();
+        let page_for_batch_important = self.downgrade();
+        batch_important_button.connect_clicked(move |_| {
+            if let Some(page) = page_for_batch_important.upgrade() {
+                if let Err(error) = page.toggle_batch_important() {
+                    page.report_operation_error("Wichtig-Markierung nicht möglich", &error);
+                    tracing::warn!(%error, "Batch important operation was not applied");
+                }
+            }
+        });
+        batch_action_bar.append(&batch_important_button);
 
         let batch_label_button = gtk::Button::builder()
             .label("Label")
@@ -4269,7 +4560,8 @@ impl MailPage {
             let folder_id = row.and_then(Self::folder_id).unwrap_or_default();
             let filter = match folder_id.as_str() {
                 "vfolder-unread" => MessageFilter::Unread,
-                "vfolder-starred" => MessageFilter::Flagged,
+                "vfolder-flagged" => MessageFilter::Flagged,
+                "vfolder-important" => MessageFilter::Important,
                 _ => MessageFilter::All,
             };
             message_filter.set(filter);
@@ -4502,6 +4794,12 @@ impl MailPage {
             .css_classes(vec!["flat"])
             .build();
 
+        let important_btn = gtk::Button::builder()
+            .icon_name("emblem-important-symbolic")
+            .tooltip_text("Wichtig-Markierung umschalten")
+            .css_classes(vec!["flat"])
+            .build();
+
         let archive_btn = gtk::Button::builder()
             .icon_name("mail-archive-symbolic")
             .tooltip_text("Archivieren")
@@ -4570,6 +4868,17 @@ impl MailPage {
             }
         ));
 
+        important_btn.connect_clicked(glib::clone!(
+            #[weak(rename_to = page)]
+            self,
+            move |_| match page.toggle_selected_important() {
+                Ok(true) => {}
+                Ok(false) => page.show_toast("Keine Nachricht ausgewählt"),
+                Err(error) =>
+                    page.show_toast(&format!("Wichtig-Markierung nicht möglich: {error}")),
+            }
+        ));
+
         archive_btn.connect_clicked(glib::clone!(
             #[weak(rename_to = page)]
             self,
@@ -4596,9 +4905,83 @@ impl MailPage {
         action_bar.append(&export_btn);
         action_bar.append(&label_btn);
 
+        let move_popover_content = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(4)
+            .margin_start(8)
+            .margin_end(8)
+            .margin_top(8)
+            .margin_bottom(8)
+            .build();
+        let move_popover = gtk::Popover::builder().child(&move_popover_content).build();
+        let page_for_single_move = self.downgrade();
+        let move_popover_weak = move_popover.downgrade();
+        move_popover.connect_show(move |_| {
+            while let Some(child) = move_popover_content.first_child() {
+                move_popover_content.remove(&child);
+            }
+            let Some(page) = page_for_single_move.upgrade() else {
+                return;
+            };
+            let Some(message) = page.selected_message() else {
+                move_popover_content.append(
+                    &gtk::Label::builder()
+                        .label("Keine Nachricht ausgewählt")
+                        .css_classes(vec!["caption", "dim-label"])
+                        .build(),
+                );
+                return;
+            };
+            let destinations =
+                page.folder_destinations_for_messages(std::slice::from_ref(&message));
+            if destinations.is_empty() {
+                move_popover_content.append(
+                    &gtk::Label::builder()
+                        .label("Keine verfügbaren Zielordner")
+                        .css_classes(vec!["caption", "dim-label"])
+                        .build(),
+                );
+                return;
+            }
+            for destination in destinations {
+                let button = gtk::Button::builder()
+                    .label(&destination.label)
+                    .halign(gtk::Align::Fill)
+                    .css_classes(vec!["flat"])
+                    .build();
+                let page_for_destination = page.downgrade();
+                let popover_for_destination = move_popover_weak.clone();
+                let destination_source = destination.source_uid.clone();
+                let destination_folder = destination.folder_name.clone();
+                button.connect_clicked(move |_| {
+                    if let Some(page) = page_for_destination.upgrade() {
+                        match page.move_selected_to(&destination_source, &destination_folder) {
+                            Ok(true) => {}
+                            Ok(false) => page.show_toast("Keine Nachricht ausgewählt"),
+                            Err(error) => {
+                                page.show_toast(&format!("Verschieben nicht möglich: {error}"))
+                            }
+                        }
+                    }
+                    if let Some(popover) = popover_for_destination.upgrade() {
+                        popover.popdown();
+                    }
+                });
+                move_popover_content.append(&button);
+            }
+        });
+        let move_button = gtk::MenuButton::builder()
+            .icon_name("folder-symbolic")
+            .tooltip_text("Nachricht verschieben")
+            .popover(&move_popover)
+            .css_classes(vec!["flat"])
+            .build();
+        action_bar.append(&move_button);
+
         let spacer = gtk::Box::builder().hexpand(true).build();
         action_bar.append(&spacer);
         action_bar.append(&flag_btn);
+        action_bar.append(&important_btn);
         action_bar.append(&archive_btn);
         action_bar.append(&junk_btn);
         action_bar.append(&unread_btn);
@@ -5937,14 +6320,27 @@ impl MailPage {
         let descending = self.imp().mail_sort_descending.get();
         roots.sort_by(|left, right| {
             let ordering = match sort_field {
-                MailSortField::Date => left.date_str().cmp(&right.date_str()),
-                MailSortField::Subject => left.subject().cmp(&right.subject()),
+                MailSortField::Date => message_date(left)
+                    .cmp(&message_date(right))
+                    .then_with(|| left.date_str().cmp(&right.date_str())),
+                MailSortField::Subject => left
+                    .subject()
+                    .to_lowercase()
+                    .cmp(&right.subject().to_lowercase())
+                    .then_with(|| left.subject().cmp(&right.subject())),
                 MailSortField::Sender => left
                     .sender_name()
-                    .cmp(&right.sender_name())
-                    .then_with(|| left.sender_email().cmp(&right.sender_email())),
+                    .to_lowercase()
+                    .cmp(&right.sender_name().to_lowercase())
+                    .then_with(|| {
+                        left.sender_email()
+                            .to_lowercase()
+                            .cmp(&right.sender_email().to_lowercase())
+                    })
+                    .then_with(|| left.sender_name().cmp(&right.sender_name())),
                 MailSortField::Unread => left.is_unread().cmp(&right.is_unread()),
                 MailSortField::Flagged => left.is_flagged().cmp(&right.is_flagged()),
+                MailSortField::Important => left.is_important().cmp(&right.is_important()),
                 MailSortField::Attachments => {
                     left.attachments().len().cmp(&right.attachments().len())
                 }
@@ -6374,6 +6770,30 @@ mod tests {
         assert_eq!(query.unread, Some(false));
         assert_eq!(query.label.as_deref(), Some("important"));
         assert!(query.text_terms.is_empty());
+    }
+
+    #[test]
+    fn message_search_query_keeps_important_separate_from_starred() {
+        let important = MessageSearchQuery::parse("is:important");
+        assert_eq!(important.important, Some(true));
+        assert_eq!(important.flagged, None);
+
+        let not_important = MessageSearchQuery::parse("is:not-important");
+        assert_eq!(not_important.important, Some(false));
+        assert!(!not_important.is_empty());
+    }
+
+    #[test]
+    fn mail_sort_settings_roundtrip_important_status() {
+        assert_eq!(
+            MailSortField::from_setting("important"),
+            MailSortField::Important
+        );
+        assert_eq!(MailSortField::Important.setting_value(), "important");
+        assert_eq!(
+            MailSortField::from_setting("starred"),
+            MailSortField::Flagged
+        );
     }
 
     #[test]

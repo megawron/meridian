@@ -218,7 +218,7 @@
     </key>
     <key name="mail-sort-field" type="s">
       <default>'date'</default>
-      <summary>Mail list sort field (date, subject, sender, unread, flagged, or attachments)</summary>
+      <summary>Mail list sort field (date, subject, sender, unread, flagged, important, or attachments)</summary>
     </key>
     <key name="mail-sort-descending" type="b">
       <default>true</default>
