@@ -12,7 +12,8 @@
 use super::account_config_service::{AccountConfigStore, AccountProfile, AccountProtocol};
 use super::html_sanitizer::sanitize_html;
 use super::mail_filter_service::{
-    FilterAction, FilterCondition, FilterField, FilterScope, MailFilterRule, MailFilterStore,
+    FilterAction, FilterCondition, FilterField, FilterOperator, FilterScope, MailFilterRule,
+    MailFilterStore,
 };
 use super::signature_store_service::{SignatureProfile, SignatureStore};
 use std::collections::BTreeMap;
@@ -373,13 +374,22 @@ fn parse_evolution_filters(raw: &str, path: &Path) -> Result<Vec<MailFilterRule>
             else {
                 continue;
             };
-            let Some((_, value_body)) = extract_xml_blocks(&part_body, "value").into_iter().next()
+            let Some((value_tag, value_body)) =
+                extract_xml_blocks(&part_body, "value").into_iter().next()
             else {
                 continue;
             };
+            let operator = attribute_value(&value_tag, "name")
+                .as_deref()
+                .and_then(filter_operator_from_evolution_name)
+                .unwrap_or_default();
             let value = decode_xml_entities(strip_xml_tags(&value_body).trim());
-            if !value.is_empty() {
-                conditions.push(FilterCondition { field, value });
+            if !value.is_empty() || operator.allows_empty_value(field) {
+                conditions.push(FilterCondition {
+                    field,
+                    value,
+                    operator,
+                });
             }
         }
         let Some(condition) = conditions.first().cloned() else {
@@ -415,6 +425,7 @@ fn parse_evolution_filters(raw: &str, path: &Path) -> Result<Vec<MailFilterRule>
         for condition in &conditions {
             condition.field.hash(&mut hasher);
             condition.value.hash(&mut hasher);
+            condition.operator.hash(&mut hasher);
         }
         for action in &actions {
             action.hash(&mut hasher);
@@ -453,6 +464,30 @@ fn unsupported_filter_warnings(raw: &str, path: &Path) -> Vec<String> {
                     "{}: Bedingung „{}“ in „{}“ wird portabel nicht ausgewertet",
                     path.display(),
                     name,
+                    rule_name
+                ));
+            }
+        }
+        for (part_tag, part_body) in extract_xml_blocks(&body, "part") {
+            if filter_field_from_evolution_name(
+                &attribute_value(&part_tag, "name").unwrap_or_default(),
+            )
+            .is_none()
+            {
+                continue;
+            }
+            let Some((value_tag, _)) = extract_xml_blocks(&part_body, "value").into_iter().next()
+            else {
+                continue;
+            };
+            let operator_name = attribute_value(&value_tag, "name").unwrap_or_default();
+            if !operator_name.trim().is_empty()
+                && filter_operator_from_evolution_name(&operator_name).is_none()
+            {
+                warnings.push(format!(
+                    "{}: Vergleich „{}“ in „{}“ wird portabel als „enthält“ importiert",
+                    path.display(),
+                    operator_name,
                     rule_name
                 ));
             }
@@ -499,6 +534,21 @@ fn filter_field_from_evolution_name(name: &str) -> Option<FilterField> {
     }
 }
 
+fn filter_operator_from_evolution_name(name: &str) -> Option<FilterOperator> {
+    match name.trim().to_ascii_lowercase().as_str() {
+        "contains" | "contains-word" | "contains-text" => Some(FilterOperator::Contains),
+        "does-not-contain" | "doesnt-contain" | "not-contains" | "not-containing" => {
+            Some(FilterOperator::NotContains)
+        }
+        "is" | "equals" | "equal" => Some(FilterOperator::Equals),
+        "is-not" | "isnt" | "not-equal" | "not-equals" => Some(FilterOperator::NotEquals),
+        "begins-with" | "starts-with" => Some(FilterOperator::StartsWith),
+        "ends-with" => Some(FilterOperator::EndsWith),
+        "exists" | "header-exists" => Some(FilterOperator::Exists),
+        _ => None,
+    }
+}
+
 fn filter_action_from_evolution_name(name: &str, target: String) -> Option<FilterAction> {
     match name {
         "move" | "move-to" | "move-to-folder" | "fileinto" => {
@@ -512,6 +562,11 @@ fn filter_action_from_evolution_name(name: &str, target: String) -> Option<Filte
         "set-flagged" | "flag" | "important" => Some(FilterAction::SetFlagged),
         "clear-flagged" | "unflag" | "not-important" => Some(FilterAction::ClearFlagged),
         "delete" | "discard" | "trash" => Some(FilterAction::Delete),
+        "stop" | "stop-processing" | "stop-processing-filters" | "stop-processing-rule" => {
+            Some(FilterAction::StopProcessing)
+        }
+        "junk" | "mark-junk" | "spam" | "mark-spam" => Some(FilterAction::SetJunk),
+        "clear-junk" | "not-junk" | "not-spam" | "ham" => Some(FilterAction::ClearJunk),
         _ => None,
     }
 }
@@ -1119,10 +1174,12 @@ JunkFolder=Junk
 <filteroptions>
   <ruleset>
     <rule name="Rechnungen" enabled="true" source="incoming" match="any">
-      <part name="subject"><value name="contains" type="string">Rechnung &amp; Vertrag</value></part>
-      <part name="from"><value name="contains" type="string">billing@example.org</value></part>
+      <part name="subject"><value name="is" type="string">Rechnung &amp; Vertrag</value></part>
+      <part name="from"><value name="does-not-contain" type="string">spam.example.org</value></part>
       <action name="move"><value name="folder">archive</value></action>
       <action name="mark-read" />
+      <action name="stop-processing" />
+      <action name="junk" />
     </rule>
     <rule name="Beim Senden markieren" enabled="false" source="outgoing">
       <part name="from"><value name="contains">example.org</value></part>
@@ -1160,12 +1217,16 @@ JunkFolder=Junk
         let rules = filter_store.load();
         assert_eq!(rules.len(), 2);
         assert_eq!(rules[0].condition.value, "Rechnung & Vertrag");
+        assert_eq!(rules[0].condition.operator, FilterOperator::Equals);
+        assert_eq!(rules[0].conditions[1].operator, FilterOperator::NotContains);
         assert_eq!(
             rules[0].action,
             FilterAction::MoveToFolder("archive".to_string())
         );
         assert_eq!(rules[0].conditions.len(), 2);
-        assert_eq!(rules[0].actions.len(), 2);
+        assert_eq!(rules[0].actions.len(), 4);
+        assert_eq!(rules[0].actions[2], FilterAction::StopProcessing);
+        assert_eq!(rules[0].actions[3], FilterAction::SetJunk);
         assert!(!rules[0].match_all);
         assert_eq!(rules[1].scope, FilterScope::Outgoing);
         assert!(!rules[1].enabled);
@@ -1181,7 +1242,7 @@ JunkFolder=Junk
         fs::write(
             profile_root.join("filters.xml"),
             r#"<filteroptions><rule name="Teilweise unterstützt">
-              <part name="subject"><value>Rechnung</value></part>
+              <part name="subject"><value name="regex">Rechnung</value></part>
               <part name="score"><value>10</value></part>
               <action name="mark-read" />
               <action name="play-sound"><value>bell</value></action>
@@ -1212,6 +1273,12 @@ JunkFolder=Junk
                 .warnings
                 .iter()
                 .any(|warning| warning.contains("play-sound"))
+        );
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("regex"))
         );
 
         let _ = fs::remove_dir_all(root);

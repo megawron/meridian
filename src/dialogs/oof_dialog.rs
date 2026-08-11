@@ -11,6 +11,8 @@ use adw::prelude::*;
 use adw::subclass::prelude::*;
 use gtk::glib;
 
+use crate::services::out_of_office_service::{OutOfOfficeSettings, OutOfOfficeStore};
+
 mod imp {
     use super::*;
 
@@ -61,23 +63,6 @@ impl OutOfOfficeDialog {
             .label("Speichern")
             .css_classes(vec!["suggested-action"])
             .build();
-        btn_save.connect_clicked(glib::clone!(
-            #[weak(rename_to = dialog)]
-            self,
-            move |_| {
-                tracing::warn!(
-                    "Out-of-office save requested, but the account backend is not connected"
-                );
-                let toast = adw::Toast::new(
-                    "Speichern ist noch nicht verbunden — die Abwesenheitsnotiz bleibt geöffnet",
-                );
-                if let Some(parent) = dialog.transient_for() {
-                    if let Ok(window) = parent.downcast::<crate::window::EvolutionWindow>() {
-                        window.add_toast(&toast);
-                    }
-                }
-            }
-        ));
         header_bar.pack_end(&btn_save);
         toolbar_view.add_top_bar(&header_bar);
 
@@ -102,7 +87,7 @@ impl OutOfOfficeDialog {
 
         let row_enabled = adw::SwitchRow::builder()
             .title("Abwesenheitsnotiz aktivieren")
-            .subtitle("Automatische Antworten auf eingehende E-Mails senden")
+            .subtitle("Konfiguration wird persistent gespeichert; Serveraktivierung folgt über EDS")
             .active(false)
             .build();
         group_status.add(&row_enabled);
@@ -113,17 +98,21 @@ impl OutOfOfficeDialog {
             .build();
         group_status.add(&row_schedule);
 
-        let row_start = adw::ActionRow::builder()
-            .title("Startdatum")
-            .subtitle("Noch nicht festgelegt")
+        let row_start = adw::EntryRow::builder()
+            .title("Startdatum (YYYY-MM-DD, optional)")
             .build();
         group_status.add(&row_start);
 
-        let row_end = adw::ActionRow::builder()
-            .title("Enddatum")
-            .subtitle("Noch nicht festgelegt")
+        let row_end = adw::EntryRow::builder()
+            .title("Enddatum (YYYY-MM-DD, optional)")
             .build();
         group_status.add(&row_end);
+
+        let saved_settings = OutOfOfficeStore::default().load();
+        row_enabled.set_active(saved_settings.enabled);
+        row_schedule.set_active(saved_settings.use_schedule);
+        row_start.set_text(&saved_settings.start_date);
+        row_end.set_text(&saved_settings.end_date);
 
         content_box.append(&group_status);
 
@@ -159,10 +148,81 @@ impl OutOfOfficeDialog {
         group_external.add(&text_external);
         content_box.append(&group_external);
 
+        text_internal
+            .buffer()
+            .set_text(&saved_settings.internal_message);
+        text_external
+            .buffer()
+            .set_text(&saved_settings.external_message);
+        row_start.set_sensitive(saved_settings.use_schedule);
+        row_end.set_sensitive(saved_settings.use_schedule);
+        let row_start_for_schedule = row_start.clone();
+        let row_end_for_schedule = row_end.clone();
+        row_schedule.connect_active_notify(move |row| {
+            row_start_for_schedule.set_sensitive(row.is_active());
+            row_end_for_schedule.set_sensitive(row.is_active());
+        });
+
+        let dialog_for_save = self.clone();
+        let row_enabled_for_save = row_enabled.clone();
+        let row_schedule_for_save = row_schedule.clone();
+        let row_start_for_save = row_start.clone();
+        let row_end_for_save = row_end.clone();
+        let internal_buffer_for_save = text_internal.buffer();
+        let external_buffer_for_save = text_external.buffer();
+        btn_save.connect_clicked(move |_| {
+            let internal_message = internal_buffer_for_save.text(
+                &internal_buffer_for_save.start_iter(),
+                &internal_buffer_for_save.end_iter(),
+                false,
+            );
+            let external_message = external_buffer_for_save.text(
+                &external_buffer_for_save.start_iter(),
+                &external_buffer_for_save.end_iter(),
+                false,
+            );
+            let settings = OutOfOfficeSettings {
+                enabled: row_enabled_for_save.is_active(),
+                use_schedule: row_schedule_for_save.is_active(),
+                start_date: row_start_for_save.text().trim().to_string(),
+                end_date: row_end_for_save.text().trim().to_string(),
+                internal_message: internal_message.to_string(),
+                external_message: external_message.to_string(),
+            };
+            if let Err(error) = settings.validate() {
+                show_dialog_toast(&dialog_for_save, &error);
+                return;
+            }
+            match OutOfOfficeStore::default().save(&settings) {
+                Ok(()) => {
+                    show_dialog_toast(
+                        &dialog_for_save,
+                        "Abwesenheitsnotiz lokal gespeichert; EDS-Serveraktivierung bleibt ausstehend",
+                    );
+                    dialog_for_save.close();
+                }
+                Err(error) => show_dialog_toast(
+                    &dialog_for_save,
+                    &format!("Abwesenheitsnotiz konnte nicht gespeichert werden: {error}"),
+                ),
+            }
+        });
+
         content_scroll.set_child(Some(&content_box));
         toolbar_view.set_content(Some(&content_scroll));
         self.set_content(Some(&toolbar_view));
     }
+}
+
+fn show_dialog_toast(dialog: &OutOfOfficeDialog, message: &str) {
+    let toast = adw::Toast::new(message);
+    if let Some(parent) = dialog.transient_for() {
+        if let Ok(window) = parent.downcast::<crate::window::EvolutionWindow>() {
+            window.add_toast(&toast);
+            return;
+        }
+    }
+    tracing::info!(%message, "Out-of-office dialog result");
 }
 
 impl Default for OutOfOfficeDialog {

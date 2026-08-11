@@ -84,6 +84,9 @@ enum TaskFilter {
     All,
     Today,
     Important,
+    Overdue,
+    InProgress,
+    Cancelled,
     Completed,
 }
 
@@ -100,6 +103,9 @@ impl TaskFilter {
         match value {
             "today" => Self::Today,
             "important" => Self::Important,
+            "overdue" => Self::Overdue,
+            "in-progress" => Self::InProgress,
+            "cancelled" => Self::Cancelled,
             "completed" => Self::Completed,
             _ => Self::All,
         }
@@ -110,6 +116,9 @@ impl TaskFilter {
             Self::All => "all",
             Self::Today => "today",
             Self::Important => "important",
+            Self::Overdue => "overdue",
+            Self::InProgress => "in-progress",
+            Self::Cancelled => "cancelled",
             Self::Completed => "completed",
         }
     }
@@ -188,6 +197,9 @@ impl TasksPage {
             ("view-list-symbolic", "Alle Aufgaben"),
             ("alarm-symbolic", "Heute fällig"),
             ("emblem-important-symbolic", "Wichtig"),
+            ("appointment-missed-symbolic", "Überfällig"),
+            ("media-playback-start-symbolic", "In Bearbeitung"),
+            ("window-close-symbolic", "Abgebrochen"),
             ("emblem-ok-symbolic", "Erledigt"),
         ];
 
@@ -328,7 +340,10 @@ impl TasksPage {
             let filter = match row.index() {
                 1 => TaskFilter::Today,
                 2 => TaskFilter::Important,
-                3 => TaskFilter::Completed,
+                3 => TaskFilter::Overdue,
+                4 => TaskFilter::InProgress,
+                5 => TaskFilter::Cancelled,
+                6 => TaskFilter::Completed,
                 _ => TaskFilter::All,
             };
             page.imp().task_filter.set(filter);
@@ -346,7 +361,10 @@ impl TasksPage {
             TaskFilter::All => 0,
             TaskFilter::Today => 1,
             TaskFilter::Important => 2,
-            TaskFilter::Completed => 3,
+            TaskFilter::Overdue => 3,
+            TaskFilter::InProgress => 4,
+            TaskFilter::Cancelled => 5,
+            TaskFilter::Completed => 6,
         };
         if let Some(row) = cat_list.row_at_index(initial_filter_index) {
             cat_list.select_row(Some(&row));
@@ -1054,6 +1072,9 @@ fn render_task_rows(
                 TaskFilter::All => "Keine Aufgaben geladen",
                 TaskFilter::Today => "Keine heute fällige Aufgabe",
                 TaskFilter::Important => "Keine wichtigen Aufgaben",
+                TaskFilter::Overdue => "Keine überfällige Aufgabe",
+                TaskFilter::InProgress => "Keine Aufgabe in Bearbeitung",
+                TaskFilter::Cancelled => "Keine abgebrochene Aufgabe",
                 TaskFilter::Completed => "Keine erledigten Aufgaben",
             }
         } else {
@@ -1112,7 +1133,14 @@ fn task_matches_filter(task: &TaskItemObject, filter: TaskFilter, query: &str) -
             .priority()
             .parse::<u8>()
             .is_ok_and(|priority| priority > 0),
-        TaskFilter::Completed => task.is_completed(),
+        TaskFilter::Overdue => {
+            task_next_due_date(task, Local::now().date_naive())
+                .is_some_and(|due| due < Local::now().date_naive())
+                && !task.is_completed()
+        }
+        TaskFilter::InProgress => task_status_value(&task.component()) == "IN-PROCESS",
+        TaskFilter::Cancelled => task_status_value(&task.component()) == "CANCELLED",
+        TaskFilter::Completed => task_status_value(&task.component()) == "COMPLETED",
     };
     if !matches_filter || query.is_empty() {
         return matches_filter;
@@ -2333,6 +2361,52 @@ mod tests {
             task_next_due_date(&task, NaiveDate::from_ymd_opt(2026, 9, 1).unwrap()),
             None
         );
+    }
+
+    #[test]
+    fn task_status_filters_cover_overdue_progress_and_cancelled_states() {
+        let today = Local::now().date_naive();
+        let overdue = TaskItemObject::new(
+            "local-calendar",
+            "task-overdue",
+            "Overdue",
+            &today.pred_opt().unwrap().format("%Y-%m-%d").to_string(),
+            "normal",
+            false,
+            "BEGIN:VTODO\r\nSTATUS:NEEDS-ACTION\r\nEND:VTODO\r\n",
+        );
+        assert!(task_matches_filter(&overdue, TaskFilter::Overdue, ""));
+
+        let in_progress = TaskItemObject::new(
+            "local-calendar",
+            "task-progress",
+            "In progress",
+            "",
+            "normal",
+            false,
+            "BEGIN:VTODO\r\nSTATUS:IN-PROCESS\r\nEND:VTODO\r\n",
+        );
+        assert!(task_matches_filter(
+            &in_progress,
+            TaskFilter::InProgress,
+            ""
+        ));
+        assert!(!task_matches_filter(
+            &in_progress,
+            TaskFilter::Cancelled,
+            ""
+        ));
+
+        let cancelled = TaskItemObject::new(
+            "local-calendar",
+            "task-cancelled",
+            "Cancelled",
+            "",
+            "normal",
+            false,
+            "BEGIN:VTODO\r\nSTATUS:CANCELLED\r\nEND:VTODO\r\n",
+        );
+        assert!(task_matches_filter(&cancelled, TaskFilter::Cancelled, ""));
     }
 }
 

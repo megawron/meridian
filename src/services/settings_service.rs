@@ -561,14 +561,14 @@ impl AppSettings {
     pub fn task_filter(&self) -> String {
         let value = self.settings.string("task-filter").to_string();
         match value.as_str() {
-            "today" | "important" | "completed" => value,
+            "today" | "important" | "overdue" | "in-progress" | "cancelled" | "completed" => value,
             _ => "all".to_string(),
         }
     }
 
     pub fn set_task_filter(&self, value: &str) {
         let value = match value {
-            "today" | "important" | "completed" => value,
+            "today" | "important" | "overdue" | "in-progress" | "cancelled" | "completed" => value,
             _ => "all",
         };
         if let Err(error) = self.settings.set_string("task-filter", value) {

@@ -29,10 +29,55 @@ pub enum FilterField {
     Header,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+pub enum FilterOperator {
+    #[default]
+    Contains,
+    NotContains,
+    Equals,
+    NotEquals,
+    StartsWith,
+    EndsWith,
+    Exists,
+}
+
+impl FilterOperator {
+    pub fn matches(self, field: FilterField, haystack: &str, value: &str) -> bool {
+        let value = value.trim();
+        match self {
+            Self::Exists => {
+                if field == FilterField::Header {
+                    !value.is_empty() && header_exists(haystack, value)
+                } else {
+                    !haystack.trim().is_empty()
+                }
+            }
+            Self::Contains => !value.is_empty() && lowercase(haystack).contains(&lowercase(value)),
+            Self::NotContains => {
+                !value.is_empty() && !lowercase(haystack).contains(&lowercase(value))
+            }
+            Self::Equals => !value.is_empty() && haystack.trim().eq_ignore_ascii_case(value),
+            Self::NotEquals => !value.is_empty() && !haystack.trim().eq_ignore_ascii_case(value),
+            Self::StartsWith => {
+                !value.is_empty() && lowercase(haystack.trim()).starts_with(&lowercase(value))
+            }
+            Self::EndsWith => {
+                !value.is_empty() && lowercase(haystack.trim()).ends_with(&lowercase(value))
+            }
+        }
+    }
+
+    pub fn allows_empty_value(self, field: FilterField) -> bool {
+        self == Self::Exists && field != FilterField::Header
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct FilterCondition {
     pub field: FilterField,
     pub value: String,
+    #[serde(default)]
+    pub operator: FilterOperator,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -44,6 +89,9 @@ pub enum FilterAction {
     SetFlagged,
     ClearFlagged,
     Delete,
+    StopProcessing,
+    SetJunk,
+    ClearJunk,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -101,7 +149,7 @@ impl MailFilterRule {
 
         let mut condition_matches = self.effective_conditions().into_iter().map(|condition| {
             let value = condition.value.trim().to_lowercase();
-            if value.is_empty() {
+            if value.is_empty() && !condition.operator.allows_empty_value(condition.field) {
                 return false;
             }
             let haystack = match condition.field {
@@ -111,7 +159,9 @@ impl MailFilterRule {
                 FilterField::Body => body,
                 FilterField::Header => headers,
             };
-            haystack.to_lowercase().contains(&value)
+            condition
+                .operator
+                .matches(condition.field, haystack, &value)
         });
 
         if self.match_all {
@@ -124,6 +174,17 @@ impl MailFilterRule {
 
 fn default_match_all() -> bool {
     true
+}
+
+fn lowercase(value: &str) -> String {
+    value.to_lowercase()
+}
+
+fn header_exists(headers: &str, wanted: &str) -> bool {
+    headers.lines().any(|line| {
+        line.split_once(':')
+            .is_some_and(|(name, _)| name.trim().eq_ignore_ascii_case(wanted))
+    })
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -292,6 +353,43 @@ mod tests {
     }
 
     #[test]
+    fn operators_cover_common_evolution_conditions() {
+        let mut rule = test_rule(FilterField::Subject, "invoice");
+        rule.condition.operator = FilterOperator::NotContains;
+        assert!(rule.matches("Quarterly report", "", "", "", ""));
+        assert!(!rule.matches("Invoice reminder", "", "", "", ""));
+
+        rule.condition.operator = FilterOperator::Equals;
+        assert!(rule.matches("  INVOICE  ", "", "", "", ""));
+        assert!(!rule.matches("Invoice reminder", "", "", "", ""));
+
+        rule.condition.operator = FilterOperator::NotEquals;
+        assert!(rule.matches("Invoice reminder", "", "", "", ""));
+        assert!(!rule.matches("invoice", "", "", "", ""));
+
+        rule.condition.operator = FilterOperator::StartsWith;
+        assert!(rule.matches("Invoice reminder", "", "", "", ""));
+        assert!(!rule.matches("Re: invoice", "", "", "", ""));
+
+        rule.condition.operator = FilterOperator::EndsWith;
+        assert!(rule.matches("Reminder invoice", "", "", "", ""));
+        assert!(!rule.matches("Invoice reminder", "", "", "", ""));
+    }
+
+    #[test]
+    fn exists_matches_fields_and_named_headers() {
+        let mut subject_rule = test_rule(FilterField::Subject, "");
+        subject_rule.condition.operator = FilterOperator::Exists;
+        assert!(subject_rule.matches("Subject", "", "", "", ""));
+        assert!(!subject_rule.matches("", "", "", "", ""));
+
+        let mut header_rule = test_rule(FilterField::Header, "x-list-id");
+        header_rule.condition.operator = FilterOperator::Exists;
+        assert!(header_rule.matches("", "", "", "", "X-List-ID: team@example.org"));
+        assert!(!header_rule.matches("", "", "", "", "X-Other: team@example.org"));
+    }
+
+    #[test]
     fn rules_roundtrip_without_losing_actions() {
         let root = temporary_directory("filter-roundtrip");
         let store = MailFilterStore::new(root.join("filters.json"));
@@ -303,6 +401,7 @@ mod tests {
             condition: FilterCondition {
                 field: FilterField::Sender,
                 value: "billing@example.org".to_string(),
+                operator: FilterOperator::Contains,
             },
             action: FilterAction::MoveToFolder("archive".to_string()),
             conditions: Vec::new(),
@@ -351,16 +450,19 @@ mod tests {
             condition: FilterCondition {
                 field: FilterField::Subject,
                 value: "invoice".to_string(),
+                operator: FilterOperator::Contains,
             },
             action: FilterAction::MarkRead,
             conditions: vec![
                 FilterCondition {
                     field: FilterField::Subject,
                     value: "invoice".to_string(),
+                    operator: FilterOperator::Contains,
                 },
                 FilterCondition {
                     field: FilterField::Sender,
                     value: "billing@example.org".to_string(),
+                    operator: FilterOperator::Contains,
                 },
             ],
             actions: vec![FilterAction::MarkRead, FilterAction::SetFlagged],
@@ -412,6 +514,7 @@ mod tests {
             condition: FilterCondition {
                 field: FilterField::Subject,
                 value: id.to_string(),
+                operator: FilterOperator::Contains,
             },
             action: FilterAction::MarkRead,
             conditions: Vec::new(),
@@ -444,6 +547,7 @@ mod tests {
             condition: FilterCondition {
                 field,
                 value: value.to_string(),
+                operator: FilterOperator::Contains,
             },
             action: FilterAction::SetFlagged,
             conditions: Vec::new(),

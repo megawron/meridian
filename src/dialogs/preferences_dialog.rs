@@ -17,7 +17,9 @@ use crate::services::AppSettings;
 use crate::services::account_config_service::AccountConfigStore;
 use crate::services::backup_service;
 use crate::services::calendar_category_service::{CalendarCategory, CalendarCategoryStore};
-use crate::services::mail_filter_service::{FilterAction, FilterField, MailFilterStore};
+use crate::services::mail_filter_service::{
+    FilterAction, FilterField, FilterOperator, MailFilterStore,
+};
 use crate::services::mail_store_service::MailStoreService;
 use crate::services::migration_service;
 use crate::services::signature_store_service::SignatureStore;
@@ -274,11 +276,13 @@ impl PreferencesDialog {
                 .effective_conditions()
                 .into_iter()
                 .map(|condition| {
-                    format!(
-                        "{} enthält „{}“",
-                        filter_field_label(condition.field),
-                        condition.value
-                    )
+                    let field = filter_field_label(condition.field);
+                    let operator = filter_operator_label(condition.operator);
+                    if condition.value.is_empty() {
+                        format!("{field} {operator}")
+                    } else {
+                        format!("{field} {operator} „{}“", condition.value)
+                    }
                 })
                 .collect::<Vec<_>>()
                 .join(if rule.match_all { " UND " } else { " ODER " });
@@ -2139,6 +2143,18 @@ fn filter_field_label(field: FilterField) -> &'static str {
     }
 }
 
+fn filter_operator_label(operator: FilterOperator) -> &'static str {
+    match operator {
+        FilterOperator::Contains => "enthält",
+        FilterOperator::NotContains => "enthält nicht",
+        FilterOperator::Equals => "ist",
+        FilterOperator::NotEquals => "ist nicht",
+        FilterOperator::StartsWith => "beginnt mit",
+        FilterOperator::EndsWith => "endet mit",
+        FilterOperator::Exists => "existiert",
+    }
+}
+
 fn filter_action_label(action: &FilterAction) -> String {
     match action {
         FilterAction::MoveToFolder(folder) => format!("verschieben nach {folder}"),
@@ -2148,6 +2164,9 @@ fn filter_action_label(action: &FilterAction) -> String {
         FilterAction::SetFlagged => "Wichtig-Flag setzen".to_string(),
         FilterAction::ClearFlagged => "Wichtig-Flag entfernen".to_string(),
         FilterAction::Delete => "löschen".to_string(),
+        FilterAction::StopProcessing => "weitere Filterregeln nicht ausführen".to_string(),
+        FilterAction::SetJunk => "als Spam markieren".to_string(),
+        FilterAction::ClearJunk => "als kein Spam markieren".to_string(),
     }
 }
 

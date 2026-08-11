@@ -4,7 +4,7 @@
 //
 // Features:
 // - Rule name & Scope (Incoming / Outgoing / Manual)
-// - Matching Conditions (Subject, Sender, Recipient, Body, Header)
+// - Matching Conditions (field + contains/equality/prefix/existence operator)
 // - Action Types (Move to folder, Copy, Mark as read, Set flag, Delete, Play sound)
 
 use adw::prelude::*;
@@ -14,7 +14,8 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use crate::services::mail_filter_service::{
-    FilterAction, FilterCondition, FilterField, FilterScope, MailFilterRule, MailFilterStore,
+    FilterAction, FilterCondition, FilterField, FilterOperator, FilterScope, MailFilterRule,
+    MailFilterStore,
 };
 
 mod imp {
@@ -74,6 +75,7 @@ glib::wrapper! {
 struct ConditionEditor {
     id: u64,
     field: gtk::DropDown,
+    operator: gtk::DropDown,
     value: gtk::Entry,
     row: gtk::Box,
 }
@@ -95,6 +97,30 @@ fn filter_field_index(field: FilterField) -> u32 {
     }
 }
 
+fn filter_operator_index(operator: FilterOperator) -> u32 {
+    match operator {
+        FilterOperator::Contains => 0,
+        FilterOperator::NotContains => 1,
+        FilterOperator::Equals => 2,
+        FilterOperator::NotEquals => 3,
+        FilterOperator::StartsWith => 4,
+        FilterOperator::EndsWith => 5,
+        FilterOperator::Exists => 6,
+    }
+}
+
+fn filter_operator_from_index(index: u32) -> FilterOperator {
+    match index {
+        1 => FilterOperator::NotContains,
+        2 => FilterOperator::Equals,
+        3 => FilterOperator::NotEquals,
+        4 => FilterOperator::StartsWith,
+        5 => FilterOperator::EndsWith,
+        6 => FilterOperator::Exists,
+        _ => FilterOperator::Contains,
+    }
+}
+
 fn filter_action_index(action: &FilterAction) -> u32 {
     match action {
         FilterAction::MoveToFolder(_) => 0,
@@ -104,14 +130,14 @@ fn filter_action_index(action: &FilterAction) -> u32 {
         FilterAction::SetFlagged => 4,
         FilterAction::ClearFlagged => 5,
         FilterAction::Delete => 6,
+        FilterAction::StopProcessing => 7,
+        FilterAction::SetJunk => 8,
+        FilterAction::ClearJunk => 9,
     }
 }
 
 fn condition_from_editor(editor: &ConditionEditor) -> Option<FilterCondition> {
     let value = editor.value.text().trim().to_string();
-    if value.is_empty() {
-        return None;
-    }
     let field = match editor.field.selected() {
         1 => FilterField::Sender,
         2 => FilterField::Recipient,
@@ -119,7 +145,15 @@ fn condition_from_editor(editor: &ConditionEditor) -> Option<FilterCondition> {
         4 => FilterField::Header,
         _ => FilterField::Subject,
     };
-    Some(FilterCondition { field, value })
+    let operator = filter_operator_from_index(editor.operator.selected());
+    if value.is_empty() && !operator.allows_empty_value(field) {
+        return None;
+    }
+    Some(FilterCondition {
+        field,
+        value,
+        operator,
+    })
 }
 
 fn action_from_editor(editor: &ActionEditor) -> Result<FilterAction, String> {
@@ -133,7 +167,10 @@ fn action_from_editor(editor: &ActionEditor) -> Result<FilterAction, String> {
         3 => Ok(FilterAction::MarkUnread),
         4 => Ok(FilterAction::SetFlagged),
         5 => Ok(FilterAction::ClearFlagged),
-        _ => Ok(FilterAction::Delete),
+        6 => Ok(FilterAction::Delete),
+        7 => Ok(FilterAction::StopProcessing),
+        8 => Ok(FilterAction::SetJunk),
+        _ => Ok(FilterAction::ClearJunk),
     }
 }
 
@@ -146,17 +183,29 @@ fn append_condition_editor(
     let id = next_id.get();
     next_id.set(id.saturating_add(1));
     let field_model = gtk::StringList::new(&[
-        "Betreff enthält",
-        "Absender enthält",
-        "Empfänger enthält",
-        "Nachrichteninhalt enthält",
-        "Headerfeld existiert",
+        "Betreff",
+        "Absender",
+        "Empfänger",
+        "Nachrichteninhalt",
+        "Headerfeld",
     ]);
     let field = gtk::DropDown::new(Some(field_model), None::<&gtk::Expression>);
     field.set_selected(filter_field_index(condition.field));
-    field.set_width_request(190);
+    field.set_width_request(150);
+    let operator_model = gtk::StringList::new(&[
+        "enthält",
+        "enthält nicht",
+        "ist",
+        "ist nicht",
+        "beginnt mit",
+        "endet mit",
+        "existiert",
+    ]);
+    let operator = gtk::DropDown::new(Some(operator_model), None::<&gtk::Expression>);
+    operator.set_selected(filter_operator_index(condition.operator));
+    operator.set_width_request(135);
     let value = gtk::Entry::builder()
-        .placeholder_text("Suchwert")
+        .placeholder_text("Suchwert oder Headername")
         .hexpand(true)
         .build();
     value.set_text(&condition.value);
@@ -171,6 +220,7 @@ fn append_condition_editor(
         .spacing(6)
         .build();
     row.append(&field);
+    row.append(&operator);
     row.append(&value);
     row.append(&remove);
     container.append(&row);
@@ -178,6 +228,7 @@ fn append_condition_editor(
     editors.borrow_mut().push(ConditionEditor {
         id,
         field,
+        operator,
         value,
         row: row.clone(),
     });
@@ -221,6 +272,9 @@ fn append_action_editor(
         "Wichtig-Flag setzen",
         "Wichtig-Flag entfernen",
         "Löschen",
+        "Weitere Filterregeln nicht ausführen",
+        "Als Spam markieren",
+        "Als kein Spam markieren",
     ]);
     let action_type = gtk::DropDown::new(Some(action_model), None::<&gtk::Expression>);
     action_type.set_selected(filter_action_index(&action));
@@ -411,6 +465,7 @@ impl FilterEditorDialog {
                 vec![FilterCondition {
                     field: FilterField::Subject,
                     value: String::new(),
+                    operator: FilterOperator::Contains,
                 }]
             });
         for condition in initial_conditions {
@@ -436,6 +491,7 @@ impl FilterEditorDialog {
                     FilterCondition {
                         field: FilterField::Subject,
                         value: String::new(),
+                        operator: FilterOperator::Contains,
                     },
                 );
             }

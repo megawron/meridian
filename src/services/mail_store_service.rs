@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::models::mail_message::{AttachmentInfo, MailMessageObject};
 use crate::services::mail_filter_service::{
-    FilterAction, FilterScope, MailFilterRule, MailFilterStore,
+    FilterAction, FilterOperator, FilterScope, MailFilterRule, MailFilterStore,
 };
 use crate::services::mail_metadata_service::{MailMessageState, MailMetadataStore};
 use crate::services::mail_thread_service::{
@@ -518,6 +518,7 @@ struct FilterEffects {
     moved: bool,
     copied: bool,
     deleted: bool,
+    stop_processing: bool,
 }
 
 fn message_matches_rule(rule: &MailFilterRule, message: &ParsedMail) -> bool {
@@ -553,7 +554,11 @@ fn apply_local_filters(
         if rule.scope != FilterScope::Incoming || !message_matches_rule(rule, message) {
             continue;
         }
-        deleted |= apply_filter_rule(rule, message, sidecar).deleted;
+        let effects = apply_filter_rule(rule, message, sidecar);
+        deleted |= effects.deleted;
+        if effects.stop_processing {
+            break;
+        }
     }
     deleted
 }
@@ -595,22 +600,7 @@ fn apply_filter_rule(
                 }
             }
             FilterAction::MoveToFolder(folder) => {
-                let folder_id = local_folder_id(folder);
-                if let Some(sidecar) = sidecar {
-                    if let Err(error) = sidecar.set_folder_override(&message.id, Some(&folder_id)) {
-                        tracing::warn!(%error, message_id = %message.id, "Could not persist local filter folder");
-                    } else if message.folder_id != folder_id {
-                        message.folder_id = folder_id;
-                        effects.changed = true;
-                        effects.moved = true;
-                    }
-                } else {
-                    tracing::debug!(
-                        rule = %rule.name,
-                        folder,
-                        "Local filter matched folder action; Camel backend is required to apply it"
-                    );
-                }
+                apply_local_filter_folder_action(rule, message, sidecar, folder, &mut effects);
             }
             FilterAction::CopyToFolder(folder) => {
                 let folder_id = local_folder_id(folder);
@@ -649,9 +639,49 @@ fn apply_filter_rule(
                     );
                 }
             }
+            FilterAction::SetJunk => {
+                apply_local_filter_folder_action(rule, message, sidecar, "junk", &mut effects);
+            }
+            FilterAction::ClearJunk => {
+                apply_local_filter_folder_action(rule, message, sidecar, "inbox", &mut effects);
+            }
+            FilterAction::StopProcessing => {
+                effects.stop_processing = true;
+                break;
+            }
         }
     }
     effects
+}
+
+fn apply_local_filter_folder_action(
+    rule: &MailFilterRule,
+    message: &mut ParsedMail,
+    sidecar: Option<&MailMetadataStore>,
+    folder: &str,
+    effects: &mut FilterEffects,
+) {
+    let folder_id = local_folder_id(folder);
+    if let Some(sidecar) = sidecar {
+        if let Err(error) = sidecar.set_folder_override(&message.id, Some(&folder_id)) {
+            tracing::warn!(
+                %error,
+                message_id = %message.id,
+                folder = %folder_id,
+                "Could not persist local filter folder"
+            );
+        } else if message.folder_id != folder_id {
+            message.folder_id = folder_id;
+            effects.changed = true;
+            effects.moved = true;
+        }
+    } else {
+        tracing::debug!(
+            rule = %rule.name,
+            folder,
+            "Local filter matched folder action; Camel backend is required to apply it"
+        );
+    }
 }
 
 fn local_folder_id(folder: &str) -> String {
@@ -1584,6 +1614,7 @@ mod tests {
             condition: FilterCondition {
                 field: FilterField::Subject,
                 value: "invoice".to_string(),
+                operator: FilterOperator::Contains,
             },
             action: FilterAction::MarkRead,
             conditions: Vec::new(),
@@ -1592,6 +1623,41 @@ mod tests {
         };
 
         let _ = apply_local_filters(&[rule], &mut message, None);
+
+        assert!(!message.is_unread);
+    }
+
+    #[test]
+    fn stop_processing_prevents_following_matching_rules() {
+        let mut message = parse_rfc822(
+            "filter-stop",
+            "inbox",
+            "From: Billing <billing@example.org>\nSubject: Invoice\n\nBody",
+            true,
+        )
+        .expect("message should parse");
+        let make_rule = |id: &str, action: FilterAction| MailFilterRule {
+            id: id.to_string(),
+            name: id.to_string(),
+            enabled: true,
+            scope: FilterScope::Incoming,
+            condition: FilterCondition {
+                field: FilterField::Subject,
+                value: "invoice".to_string(),
+                operator: FilterOperator::Contains,
+            },
+            action,
+            conditions: Vec::new(),
+            actions: Vec::new(),
+            match_all: true,
+        };
+        let first_rule = MailFilterRule {
+            actions: vec![FilterAction::MarkRead, FilterAction::StopProcessing],
+            ..make_rule("stop-after-read", FilterAction::MarkRead)
+        };
+        let second_rule = make_rule("mark-unread", FilterAction::MarkUnread);
+
+        let _ = apply_local_filters(&[first_rule, second_rule], &mut message, None);
 
         assert!(!message.is_unread);
     }
@@ -1617,6 +1683,7 @@ mod tests {
                 condition: FilterCondition {
                     field: FilterField::Subject,
                     value: "invoice".to_string(),
+                    operator: FilterOperator::Contains,
                 },
                 action: FilterAction::MarkRead,
                 conditions: Vec::new(),
@@ -1699,6 +1766,7 @@ mod tests {
             condition: FilterCondition {
                 field: FilterField::Header,
                 value: "billing@example.org".to_string(),
+                operator: FilterOperator::Contains,
             },
             action: FilterAction::SetFlagged,
             conditions: Vec::new(),
@@ -1730,6 +1798,7 @@ mod tests {
             condition: FilterCondition {
                 field: FilterField::Subject,
                 value: "invoice".to_string(),
+                operator: FilterOperator::Contains,
             },
             action: FilterAction::MoveToFolder("archive".to_string()),
             conditions: Vec::new(),
@@ -1756,6 +1825,7 @@ mod tests {
             condition: FilterCondition {
                 field: FilterField::Subject,
                 value: "invoice".to_string(),
+                operator: FilterOperator::Contains,
             },
             action: FilterAction::CopyToFolder("sent".to_string()),
             conditions: Vec::new(),
@@ -1783,6 +1853,7 @@ mod tests {
             condition: FilterCondition {
                 field: FilterField::Subject,
                 value: "invoice".to_string(),
+                operator: FilterOperator::Contains,
             },
             action: FilterAction::Delete,
             conditions: Vec::new(),
@@ -1796,6 +1867,56 @@ mod tests {
             Some(&metadata),
         ));
         assert!(metadata.load_deleted().contains("filter-sidecar"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn junk_filter_actions_use_local_folder_semantics() {
+        let root = temporary_directory("junk-filter-actions");
+        let metadata = MailMetadataStore::new(root.join("state.json"));
+        let mut message = parse_rfc822(
+            "junk-filter",
+            "inbox",
+            "From: Billing <billing@example.org>\nSubject: Suspicious\n\nBody",
+            true,
+        )
+        .expect("message should parse");
+        let make_rule = |action: FilterAction| MailFilterRule {
+            id: "junk-rule".to_string(),
+            name: "Junk rule".to_string(),
+            enabled: true,
+            scope: FilterScope::Incoming,
+            condition: FilterCondition {
+                field: FilterField::Subject,
+                value: "suspicious".to_string(),
+                operator: FilterOperator::Contains,
+            },
+            action,
+            conditions: Vec::new(),
+            actions: Vec::new(),
+            match_all: true,
+        };
+
+        assert!(!apply_client_state(
+            &HashMap::new(),
+            &[make_rule(FilterAction::SetJunk)],
+            &mut message,
+            Some(&metadata),
+        ));
+        assert_eq!(message.folder_id, "junk");
+
+        assert!(!apply_client_state(
+            &HashMap::new(),
+            &[make_rule(FilterAction::ClearJunk)],
+            &mut message,
+            Some(&metadata),
+        ));
+        assert_eq!(message.folder_id, "inbox");
+        assert_eq!(
+            metadata.load_folder_overrides().get("junk-filter"),
+            Some(&"inbox".to_string())
+        );
+
         let _ = fs::remove_dir_all(root);
     }
 

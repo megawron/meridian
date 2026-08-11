@@ -649,7 +649,8 @@ werden.
   VTODO-Bearbeitung, Prioritäten, Fälligkeiten und Notizlöschung werden über
   den EDS-Adapter persistiert. ECal-Signalaktualisierung ist angebunden;
   die Aufgabenansicht bietet Suche sowie die Kategorien Alle/Heute/Wichtig/
-  Erledigt und filtert nach Statusänderungen erneut; die Notizensuche umfasst
+  Überfällig/In Bearbeitung/Abgebrochen/Erledigt und filtert nach
+  Statusänderungen erneut; die Notizensuche umfasst
   Titel, Inhalt, Zeitstempel und die erhaltene VJOURNAL-Komponente. VTODO-
   Statuswerte NEEDS-ACTION, IN-PROCESS, COMPLETED und CANCELLED sowie
   PERCENT-COMPLETE werden im portablen Task-Editor bearbeitet und gespeichert.
@@ -670,7 +671,8 @@ werden.
   stellt 10-Minuten-/1-Stunden-Snooze sowie Erledigt-Aktionen bereit. Komplexe
   Alarmtypen, native EDS-Aufgabenlisten-Synchronisation und weitere
   Evolution-Aufgabenlistenfunktionen fehlen noch. Aufgaben können portabel
-  nach Fälligkeit, Titel oder Priorität sortiert werden; Aufgabenfilter und
+  nach Fälligkeit, Titel oder Priorität sortiert werden; die erweiterten
+  Aufgabenfilter und Aufgaben-/Memo-Sortierung werden über
   Aufgaben-/Memo-Sortierung werden über GSettings wiederhergestellt. Memo-
   Änderungen aktualisieren dabei auch die sichtbare sortierte Suchliste, und
   lokale VTODO-/VJOURNAL-Create/Modify/Remove-Operationen sind durch den
@@ -751,7 +753,11 @@ werden.
 #### Phase 6 — Regeln, Suche und Enterprise
 
 - [~] Filter-, Abwesenheits-, Suchordner- und Exchange-Dialoge existieren als
-  UI/Service-Skelette; Filterregeln werden versioniert persistent gespeichert,
+  UI/Service-Strecken; die nicht-geheime Abwesenheitskonfiguration (Status,
+  Zeitraum sowie interne/externe Nachricht) wird portabel versioniert im
+  app-eigenen Store gespeichert und in Backup/Restore aufgenommen. Die native
+  Serveraktivierung bleibt EDS/Camel- und Linux-spezifisch. Filterregeln werden
+  versioniert persistent gespeichert,
   können bearbeitet, aktiviert, geordnet und entfernt werden und unterstützte
   lokale Eingangsaktionen werden ausgewertet. Der GTK4-rs-Filtereditor kann
   mehrere Bedingungen und Aktionen dynamisch hinzufügen, entfernen und als
@@ -762,11 +768,19 @@ werden.
   Löschen und der lokale Status wird persistent im Sidecar gespeichert.
   Die portable Regelengine unterstützt Verschieben, Löschen und Kopieren über
   den app-eigenen Sidecar sowie Gelesen/Ungelesen und Flag setzen/entfernen als
-  portable Aktionen. Lokale Kopien werden als eigene logische Datensätze mit
+  portable Aktionen; „weitere Filterregeln nicht ausführen“ beendet die
+  lokale Regelkette an der importierten Reihenfolge. Spam-/Kein-Spam-Aktionen
+  verwenden portabel die Junk-/Inbox-Platzierung. Lokale Kopien werden als
+  eigene logische Datensätze mit
   unabhängigen Zuständen dargestellt; Remote-Kopien und serverseitige
   Mehrfachlabels benötigen weiter den Camel-/Multi-Label-Pfad;
   die lokale Regelbedingung unterstützt Betreff, Absender, Empfänger,
-  Nachrichtentext und RFC822-Header.
+  Nachrichtentext und RFC822-Header sowie die Vergleiche enthält, enthält
+  nicht, ist, ist nicht, beginnt mit, endet mit und existiert. Alte
+  app-eigene Filterdateien werden mit dem bisherigen „enthält“-Standard
+  weitergelesen; Evolution-XML-Importe übernehmen bekannte Vergleichsnamen
+  und melden unbekannte Operatoren transparent als verlustarm auf „enthält“
+  zurück.
 - [ ] Camel-Filterdriver mit persistenten Regeln, Reihenfolge, Bedingungen,
   vollständigen Aktionen, Testlauf und Fehlerprotokoll.
 - [~] Die lokale Suchsprache unterstützt Feld-, Status-, Ordner-, Datums-,

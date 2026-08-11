@@ -60,6 +60,7 @@ const APP_FILES: &[&str] = &[
     "mail-snippets.json",
     "mail-templates.json",
     "calendar-categories.json",
+    "out-of-office.json",
     "ical/evolution-gtk4-local.ics",
     "vcards/evolution-gtk4-local.vcf",
 ];
