@@ -426,6 +426,14 @@ impl AppSettings {
         self.set_boolean("mail-show-toolbar", value);
     }
 
+    pub fn mail_show_sidebar(&self) -> bool {
+        self.settings.boolean("mail-show-sidebar")
+    }
+
+    pub fn set_mail_show_sidebar(&self, value: bool) {
+        self.set_boolean("mail-show-sidebar", value);
+    }
+
     pub fn mail_sidebar_position(&self) -> i32 {
         self.settings.int("mail-sidebar-position").clamp(0, 2_000)
     }
@@ -801,6 +809,7 @@ impl AppSettings {
             "mail-default-folder",
             "mail-layout",
             "mail-show-toolbar",
+            "mail-show-sidebar",
             "mail-sidebar-position",
             "mail-modern-preview-position",
             "mail-classic-preview-position",

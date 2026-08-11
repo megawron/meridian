@@ -472,16 +472,18 @@ werden.
   angewendet. Die klassische Evolution-Drei-Bereiche-Ansicht (Ordner links,
   Nachrichtenliste oben, Vorschau unten) ist dabei der portable Standard; die
   moderne Anordnung bleibt als persönliche Einstellung verfügbar. Die
-  Ordnerbreite sowie die Trennbalkenpositionen der modernen und klassischen
-  Ansicht werden separat gespeichert, auch in Backup/Restore
+  Sichtbarkeit und Breite der Ordner-Seitenleiste sowie die
+  Trennbalkenpositionen der modernen und klassischen Ansicht werden separat
+  gespeichert, auch in Backup/Restore
   übernommen und durch responsive automatische Sidebar-Ausblendungen nicht
   überschrieben. Absender, Avatare, Datum, Vorschautext und app-eigene Labels
   der Mail-Zeile lassen sich ebenfalls einzeln ein-/ausblenden und werden live
   sowie in Backup/Restore angewendet. Eine providerunabhängige
   Datumsnormalisierung und serverseitige Sortierung bleiben Teil der
   Linux/Camel-Strecke.
-- [~] Die Evolution-kompatible Mail-Werkzeugleiste ist standardmäßig sichtbar
-  und kann portabel ein- und ausgeblendet werden. Ihre vertrauten Aktionen
+- [~] Die Evolution-kompatible Mail-Werkzeugleiste ist standardmäßig sichtbar,
+  sitzt über dem gesamten Mailbereich (Nachrichtenliste und Vorschau) und kann
+  portabel ein- und ausgeblendet werden. Ihre vertrauten Aktionen
   verwenden dieselben zentralen
   Menü-, Detail- und Command-/Undo-Pfade; zusätzliche providerabhängige
   Camel-Aktionen bleiben bis zur Linux-Abnahme offen.

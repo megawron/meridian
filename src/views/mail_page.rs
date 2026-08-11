@@ -1279,6 +1279,12 @@ impl MailPage {
                     }
                 }
             });
+            let page_weak_for_sidebar = self.downgrade();
+            settings.connect_changed(Some("mail-show-sidebar"), move |settings, _| {
+                if let Some(page) = page_weak_for_sidebar.upgrade() {
+                    page.set_sidebar_visible(settings.boolean("mail-show-sidebar"));
+                }
+            });
             let page_weak_for_default_folder = self.downgrade();
             settings.connect_changed(Some("mail-default-folder"), move |settings, _| {
                 if let Some(page) = page_weak_for_default_folder.upgrade() {
@@ -4586,7 +4592,6 @@ impl MailPage {
         self.imp()
             .classic_toolbar
             .replace(Some(classic_toolbar.clone()));
-        list_container.append(&classic_toolbar);
         let message_state = gtk::Label::builder()
             .label("Nachrichten werden geladen …")
             .css_classes(vec!["caption", "dim-label"])
@@ -5829,14 +5834,31 @@ impl MailPage {
         imp.inner_paned.set_end_child(Some(&detail_widget));
         imp.preview_widget.replace(Some(detail_widget));
 
+        let message_area = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .vexpand(true)
+            .hexpand(true)
+            .build();
+        if let Some(toolbar) = imp.classic_toolbar.borrow().as_ref().cloned() {
+            message_area.append(&toolbar);
+        }
+        imp.inner_paned.set_vexpand(true);
+        imp.inner_paned.set_hexpand(true);
         let inner_paned_widget: gtk::Widget = imp.inner_paned.clone().upcast();
-        imp.outer_paned.set_end_child(Some(&inner_paned_widget));
+        message_area.append(&inner_paned_widget);
+        imp.outer_paned.set_end_child(Some(&message_area));
         imp.outer_paned.set_resize_end_child(true);
         imp.outer_paned.set_shrink_end_child(false);
-        let sidebar_position = AppSettings::try_new()
-            .map(|settings| settings.mail_sidebar_position())
-            .unwrap_or(220);
-        imp.outer_paned.set_position(sidebar_position);
+        let (sidebar_visible, sidebar_position) = AppSettings::try_new()
+            .map(|settings| {
+                (
+                    settings.mail_show_sidebar(),
+                    settings.mail_sidebar_position(),
+                )
+            })
+            .unwrap_or((true, 220));
+        imp.outer_paned
+            .set_position(if sidebar_visible { sidebar_position } else { 0 });
         if let Some(settings) = AppSettings::try_new() {
             imp.outer_paned.connect_position_notify(move |paned| {
                 let position = paned.position();

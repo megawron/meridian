@@ -139,6 +139,8 @@ struct BackupSettings {
     mail_layout: String,
     #[serde(default = "default_mail_show_toolbar")]
     mail_show_toolbar: bool,
+    #[serde(default = "default_mail_show_sidebar")]
+    mail_show_sidebar: bool,
     #[serde(default = "default_mail_sidebar_position")]
     mail_sidebar_position: i32,
     #[serde(default = "default_mail_modern_preview_position")]
@@ -281,6 +283,10 @@ fn default_mail_show_toolbar() -> bool {
     true
 }
 
+fn default_mail_show_sidebar() -> bool {
+    true
+}
+
 fn default_mail_sidebar_position() -> i32 {
     220
 }
@@ -345,6 +351,7 @@ impl BackupSettings {
             mail_default_folder: settings.mail_default_folder(),
             mail_layout: settings.mail_layout(),
             mail_show_toolbar: settings.mail_show_toolbar(),
+            mail_show_sidebar: settings.mail_show_sidebar(),
             mail_sidebar_position: settings.mail_sidebar_position(),
             mail_modern_preview_position: settings.mail_preview_position("modern"),
             mail_classic_preview_position: settings.mail_preview_position("classic"),
@@ -414,6 +421,7 @@ impl BackupSettings {
         settings.set_mail_default_folder(&self.mail_default_folder);
         settings.set_mail_layout(&self.mail_layout);
         settings.set_mail_show_toolbar(self.mail_show_toolbar);
+        settings.set_mail_show_sidebar(self.mail_show_sidebar);
         settings.set_mail_sidebar_position(self.mail_sidebar_position);
         settings.set_mail_preview_position("modern", self.mail_modern_preview_position);
         settings.set_mail_preview_position("classic", self.mail_classic_preview_position);
@@ -1125,6 +1133,7 @@ mod tests {
         assert!(settings.spellcheck_languages.is_empty());
         assert_eq!(settings.mail_layout, "classic");
         assert!(settings.mail_show_toolbar);
+        assert!(settings.mail_show_sidebar);
         assert_eq!(settings.calendar_time_zone, "system");
         assert_eq!(settings.mail_sidebar_position, 220);
         assert_eq!(settings.mail_modern_preview_position, 420);

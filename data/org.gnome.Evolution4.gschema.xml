@@ -137,6 +137,10 @@
       <default>true</default>
       <summary>Show the classic Evolution mail toolbar</summary>
     </key>
+    <key name="mail-show-sidebar" type="b">
+      <default>true</default>
+      <summary>Show the mail folder sidebar</summary>
+    </key>
     <key name="mail-sidebar-position" type="i">
       <default>220</default>
       <range min="0" max="2000"/>

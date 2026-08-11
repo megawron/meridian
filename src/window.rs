@@ -194,19 +194,32 @@ impl EvolutionWindow {
 
         let header_bar = adw::HeaderBar::new();
 
+        let sidebar_visible = AppSettings::try_new()
+            .map(|settings| settings.mail_show_sidebar())
+            .unwrap_or(true);
         let sidebar_button = gtk::ToggleButton::builder()
             .icon_name("sidebar-show-symbolic")
             .tooltip_text("Sidebar ein-/ausblenden (F9)")
-            .active(true)
+            .active(sidebar_visible)
             .build();
 
-        sidebar_button.connect_toggled(glib::clone!(
+        sidebar_button.connect_clicked(glib::clone!(
             #[weak]
             mail_page,
             move |btn| {
                 mail_page.set_sidebar_visible(btn.is_active());
+                if let Some(settings) = AppSettings::try_new() {
+                    settings.set_mail_show_sidebar(btn.is_active());
+                }
             }
         ));
+
+        if let Some(settings) = AppSettings::try_new() {
+            let sidebar_button_for_settings = sidebar_button.clone();
+            settings.connect_changed(Some("mail-show-sidebar"), move |settings, _| {
+                sidebar_button_for_settings.set_active(settings.boolean("mail-show-sidebar"));
+            });
+        }
 
         header_bar.pack_start(&sidebar_button);
 
@@ -372,7 +385,11 @@ impl EvolutionWindow {
                         .and_then(|w| w.downcast::<MailPage>().ok())
                     {
                         let current = mail_page.outer_paned().position();
-                        mail_page.set_sidebar_visible(current < 10);
+                        let visible = current < 10;
+                        mail_page.set_sidebar_visible(visible);
+                        if let Some(settings) = AppSettings::try_new() {
+                            settings.set_mail_show_sidebar(visible);
+                        }
                     }
                 }
             }

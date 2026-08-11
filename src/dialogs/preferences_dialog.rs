@@ -1623,7 +1623,7 @@ impl PreferencesDialog {
         let row_mail_toolbar = adw::SwitchRow::builder()
             .title("Klassische Mail-Werkzeugleiste anzeigen")
             .subtitle(
-                "Zeigt die vertrauten Evolution-Aktionen für neue Mail, Antworten, Archivieren und Löschen über der Nachrichtenliste",
+                "Zeigt die vertrauten Evolution-Aktionen für neue Mail, Antworten, Archivieren und Löschen über dem gesamten Mailbereich",
             )
             .active(true)
             .build();
@@ -1634,6 +1634,21 @@ impl PreferencesDialog {
             });
         }
         group_reading.add(&row_mail_toolbar);
+
+        let row_mail_sidebar = adw::SwitchRow::builder()
+            .title("Ordner-Seitenleiste anzeigen")
+            .subtitle(
+                "Behält die klassische Evolution-Ordneransicht links neben Nachrichtenliste und Vorschau sichtbar",
+            )
+            .active(true)
+            .build();
+        if let Some(settings) = settings.clone() {
+            row_mail_sidebar.set_active(settings.mail_show_sidebar());
+            row_mail_sidebar.connect_active_notify(move |row| {
+                settings.set_mail_show_sidebar(row.is_active());
+            });
+        }
+        group_reading.add(&row_mail_sidebar);
 
         let row_mail_density = adw::ComboRow::builder()
             .title("Dichte der Nachrichtenliste")
