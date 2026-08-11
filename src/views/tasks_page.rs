@@ -618,7 +618,7 @@ impl TasksPage {
             let source_uids_for_settings = Rc::clone(&source_uids);
             settings.connect_changed(Some("task-source-filter"), move |settings, _| {
                 let value = settings.string("task-source-filter");
-                let Some(selected) = (if value.trim().is_empty() {
+                let selected = if value.trim().is_empty() {
                     Some(0)
                 } else {
                     source_uids_for_settings
@@ -626,8 +626,6 @@ impl TasksPage {
                         .iter()
                         .position(|uid| uid == value.as_str())
                         .map(|index| index as u32 + 1)
-                }) else {
-                    return;
                 };
                 let Some(page) = page_weak.upgrade() else {
                     return;
@@ -639,7 +637,9 @@ impl TasksPage {
                     } else {
                         Some(value.to_string())
                     });
-                source_selector_for_settings.set_selected(selected);
+                if let Some(selected) = selected {
+                    source_selector_for_settings.set_selected(selected);
+                }
                 render_task_rows(
                     &page,
                     &task_list_for_source_settings,
