@@ -677,7 +677,7 @@ impl PreferencesDialog {
         page_accounts.add(&group_local_sources);
 
         let group_backup = adw::PreferencesGroup::builder()
-            .title("Daten & Sicherung")
+            .title("Daten &amp; Sicherung")
             .description(
                 "App-eigene Zustände sichern, diagnostizieren, migrieren oder löschen; das originale EDS-Profil bleibt unberührt",
             )
@@ -1285,8 +1285,8 @@ impl PreferencesDialog {
         group_composer.add(&signature_view);
         page_accounts.add(&group_composer);
 
-        let group_quoting = adw::PreferencesGroup::builder()
-            .title("Antworten & Weiterleiten")
+        let group_reply = adw::PreferencesGroup::builder()
+            .title("Antworten &amp; Weiterleiten")
             .description("Verhalten für den übernommenen Originaltext")
             .build();
         let row_quote_original = adw::SwitchRow::builder()
@@ -1302,7 +1302,7 @@ impl PreferencesDialog {
                 settings.set_quote_original(row.is_active());
             });
         }
-        group_quoting.add(&row_quote_original);
+        group_reply.add(&row_quote_original);
 
         let row_quote_style = adw::ComboRow::builder()
             .title("Zitatformat")
@@ -1325,8 +1325,8 @@ impl PreferencesDialog {
                 });
             });
         }
-        group_quoting.add(&row_quote_style);
-        page_accounts.add(&group_quoting);
+        group_reply.add(&row_quote_style);
+        page_accounts.add(&group_reply);
 
         // ── 2. Page: Erscheinungsbild & Leseansicht ─────────────────────────
         let page_appearance = adw::PreferencesPage::builder()
@@ -1672,7 +1672,7 @@ impl PreferencesDialog {
         page_calendar.add(&group_calendar_view);
 
         let group_calendar_time = adw::PreferencesGroup::builder()
-            .title("Arbeitszeit & Erinnerungen")
+            .title("Arbeitszeit &amp; Erinnerungen")
             .description("Zeiten werden als Minuten nach Mitternacht gespeichert; 0 Minuten deaktiviert Erinnerungen")
             .build();
         let row_workday_start = adw::SpinRow::with_range(0.0, 1_439.0, 15.0);

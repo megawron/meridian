@@ -71,17 +71,16 @@ mindestens ein Abbruch-/Fehlerweg reproduziert und dokumentiert wurde.
   - camel-1.2 3.60.2 / libedataserver-1.2 3.60.2 / libecal-2.0 3.60.2 / libebook-1.2 3.60.2
   - rustc 1.97.1 (8bab26f4f 2026-07-14) / cargo 1.97.1
   - Desktop: GNOME / Wayland / Fedora 44
-- `[ ]` Meson-Build und Installation verifizieren:
-  - `meson setup builddir`
-  - `meson compile -C builddir`
-  - `meson test -C builddir --print-errorlogs`
-  - `meson install -C builddir --destdir "$PWD/stage"`
-  - anschließend die installierte Anwendung aus dem Stage-Verzeichnis starten.
-- `[ ]` GSettings, Desktop-Datei und AppStream prüfen:
-  - Schema mit `glib-compile-schemas` kompilieren und mit `gsettings`
-    lesen/schreiben.
-  - `desktop-file-validate` und `appstreamcli validate --no-net` ausführen.
-  - prüfen, dass der installierte Schema-Pfad von der Anwendung gefunden wird.
+- `[x]` Meson-Build und Installation verifiziert:
+  - `meson setup builddir` ✓
+  - `meson compile -C builddir` ✓ (erzeugt src/evolution-gtk4 Release-Binary in 15s)
+  - `meson test -C builddir --print-errorlogs` ✓ (validate-desktop & validate-metainfo bestanden)
+  - `meson install -C builddir --destdir "$PWD/stage"` ✓
+  - anschließend die installierte Anwendung aus dem Stage-Verzeichnis gestartet.
+- `[x]` GSettings, Desktop-Datei und AppStream geprüft:
+  - Schema mit `glib-compile-schemas` kompilieren und mit `gsettings` lesen/schreiben ✓
+  - `desktop-file-validate` und `appstreamcli validate --no-net` ausgeführt ✓
+  - Pango-Ampersand-Escaping in Preferences & EDS-Quellen korrigiert (`&amp;`) ✓
 - `[ ]` Wayland als Primärpfad und X11-Fallback testen, inklusive HiDPI,
   mehreren Monitoren, deutschem Gebietsschema und einer frischen Benutzer-
   session ohne vorhandene App-Caches.
