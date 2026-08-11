@@ -63,7 +63,9 @@ impl GlobalSearchDialog {
         let toolbar_view = adw::ToolbarView::new();
         let header_bar = adw::HeaderBar::new();
         let search_entry = gtk::SearchEntry::builder()
-            .placeholder_text("Mail, Kalender, Aufgaben, Notizen oder Kontakte durchsuchen…")
+            .placeholder_text(
+                "Mail, Kalender, Aufgaben, Notizen oder Kontakte durchsuchen (on:2026-08-11, after:7d)…",
+            )
             .hexpand(true)
             .build();
         let domain_selector = gtk::DropDown::new(

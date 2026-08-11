@@ -2,6 +2,8 @@
 //
 // search_engine — Unified cross-component search engine (Mail, Contacts, Calendar).
 
+use chrono::{DateTime, Local, NaiveDate, NaiveDateTime};
+
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SearchDomain {
@@ -195,13 +197,10 @@ impl GlobalSearchEngine {
                 let searchable =
                     format!("{} {} {}", document.title, document.snippet, document.date)
                         .to_lowercase();
-                terms.iter().all(|term| {
-                    if term.negated {
-                        !searchable.contains(&term.value)
-                    } else {
-                        searchable.contains(&term.value)
-                    }
-                })
+                let document_date = result_date(&document.date);
+                terms
+                    .iter()
+                    .all(|term| search_term_matches(term, &searchable, document_date))
             })
             .cloned()
             .collect()
@@ -251,15 +250,14 @@ impl GlobalSearchEngine {
         documents
             .iter()
             .filter(|document| {
-                (domain == SearchDomain::All || document.result.domain == domain)
-                    && terms.iter().all(|term| {
-                        let searchable = document.searchable_text.to_lowercase();
-                        if term.negated {
-                            !searchable.contains(&term.value)
-                        } else {
-                            searchable.contains(&term.value)
-                        }
-                    })
+                if domain != SearchDomain::All && document.result.domain != domain {
+                    return false;
+                }
+                let searchable = document.searchable_text.to_lowercase();
+                let document_date = result_date(&document.result.date);
+                terms
+                    .iter()
+                    .all(|term| search_term_matches(term, &searchable, document_date))
             })
             .map(|document| document.result.clone())
             .collect()
@@ -270,6 +268,15 @@ impl GlobalSearchEngine {
 struct SearchQueryTerm {
     value: String,
     negated: bool,
+    kind: SearchTermKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SearchTermKind {
+    Text,
+    DateAtOrAfter(NaiveDate),
+    DateAtOrBefore(NaiveDate),
+    DateOn(NaiveDate),
 }
 
 fn search_query_terms(input: &str) -> Vec<SearchQueryTerm> {
@@ -292,6 +299,30 @@ fn normalize_search_query_term(token: &str) -> Option<SearchQueryTerm> {
 
     let mut term = token.clone();
     let mut negated = initial_negated;
+    let date_token = token.strip_prefix("not-").unwrap_or(token.as_str());
+    let date_negated = date_token != token;
+    if let Some((key, value)) = date_token.split_once(':') {
+        let date_kind = match key {
+            "on" | "date" => Some(0),
+            "after" | "newer" => Some(1),
+            "before" | "older" => Some(2),
+            _ => None,
+        };
+        if let Some(date_kind) = date_kind {
+            if let Some(date) = parse_search_date(value) {
+                let kind = match date_kind {
+                    0 => SearchTermKind::DateOn(date),
+                    1 => SearchTermKind::DateAtOrAfter(date),
+                    _ => SearchTermKind::DateAtOrBefore(date),
+                };
+                return Some(SearchQueryTerm {
+                    value: date_token.to_string(),
+                    negated: negated ^ date_negated,
+                    kind,
+                });
+            }
+        }
+    }
     if let Some(status) = token.strip_prefix("is:") {
         let (canonical, status_negated) = match status {
             "not-unread" => ("is:unread", true),
@@ -310,6 +341,7 @@ fn normalize_search_query_term(token: &str) -> Option<SearchQueryTerm> {
                         format!("folder:{status}")
                     },
                     negated,
+                    kind: SearchTermKind::Text,
                 });
             }
             value if value.starts_with("not-") => {
@@ -318,6 +350,7 @@ fn normalize_search_query_term(token: &str) -> Option<SearchQueryTerm> {
                     return Some(SearchQueryTerm {
                         value: format!("folder:{folder}"),
                         negated: !negated,
+                        kind: SearchTermKind::Text,
                     });
                 }
                 (token.as_str(), false)
@@ -350,7 +383,79 @@ fn normalize_search_query_term(token: &str) -> Option<SearchQueryTerm> {
     Some(SearchQueryTerm {
         value: term,
         negated,
+        kind: SearchTermKind::Text,
     })
+}
+
+fn parse_search_date(value: &str) -> Option<NaiveDate> {
+    let value = value.trim();
+    if let Some(days) = value
+        .strip_suffix('d')
+        .and_then(|value| value.parse::<i64>().ok())
+    {
+        return Some(Local::now().date_naive() - chrono::Duration::days(days.max(0)));
+    }
+
+    let relative = match value.to_ascii_lowercase().as_str() {
+        "today" | "heute" => Some(Local::now().date_naive()),
+        "yesterday" | "gestern" => Some(Local::now().date_naive() - chrono::Duration::days(1)),
+        "tomorrow" | "morgen" => Some(Local::now().date_naive() + chrono::Duration::days(1)),
+        _ => None,
+    };
+
+    relative
+        .or_else(|| NaiveDate::parse_from_str(value, "%Y-%m-%d").ok())
+        .or_else(|| NaiveDate::parse_from_str(value, "%Y%m%d").ok())
+        .or_else(|| {
+            DateTime::parse_from_rfc3339(value)
+                .ok()
+                .map(|date| date.date_naive())
+        })
+        .or_else(|| {
+            DateTime::parse_from_rfc2822(value)
+                .ok()
+                .map(|date| date.date_naive())
+        })
+        .or_else(|| {
+            [
+                "%Y-%m-%dT%H:%M:%S",
+                "%Y-%m-%d %H:%M:%S",
+                "%Y-%m-%d %H:%M",
+                "%Y%m%dT%H%M%S",
+            ]
+            .into_iter()
+            .find_map(|format| NaiveDateTime::parse_from_str(value, format).ok())
+            .map(|date| date.date())
+        })
+}
+
+fn result_date(value: &str) -> Option<NaiveDate> {
+    let value = value.trim();
+    parse_search_date(value).or_else(|| {
+        value
+            .split_once(':')
+            .and_then(|(_, value)| parse_search_date(value))
+    })
+}
+
+fn search_term_matches(
+    term: &SearchQueryTerm,
+    searchable: &str,
+    document_date: Option<NaiveDate>,
+) -> bool {
+    let matches = match term.kind {
+        SearchTermKind::Text => searchable.contains(&term.value),
+        SearchTermKind::DateAtOrAfter(date) => {
+            document_date.is_some_and(|document_date| document_date >= date)
+        }
+        SearchTermKind::DateAtOrBefore(date) => {
+            document_date.is_some_and(|document_date| document_date <= date)
+        }
+        SearchTermKind::DateOn(date) => {
+            document_date.is_some_and(|document_date| document_date == date)
+        }
+    };
+    if term.negated { !matches } else { matches }
 }
 
 fn search_tokens(input: &str) -> Vec<String> {
@@ -527,6 +632,66 @@ mod tests {
     }
 
     #[test]
+    fn search_supports_date_predicates_across_domains() {
+        let documents = vec![
+            SearchResultItem {
+                domain: SearchDomain::Calendar,
+                title: "Team Meeting".to_string(),
+                snippet: "Room 1".to_string(),
+                date: "2026-08-10 12:00".to_string(),
+                reference_id: "event-1".to_string(),
+            },
+            SearchResultItem {
+                domain: SearchDomain::Mail,
+                title: "Invoice".to_string(),
+                snippet: "Finance".to_string(),
+                date: "2026-08-11".to_string(),
+                reference_id: "message-1".to_string(),
+            },
+            SearchResultItem {
+                domain: SearchDomain::Contacts,
+                title: "Ada Lovelace".to_string(),
+                snippet: "Analytical Engine".to_string(),
+                date: String::new(),
+                reference_id: "contact-1".to_string(),
+            },
+        ];
+
+        let results =
+            GlobalSearchEngine::query_documents(SearchDomain::All, "on:2026-08-10", &documents);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].reference_id, "event-1");
+
+        let results =
+            GlobalSearchEngine::query_documents(SearchDomain::All, "after:2026-08-10", &documents);
+        assert_eq!(
+            results
+                .iter()
+                .map(|result| result.reference_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["event-1", "message-1"]
+        );
+
+        let results = GlobalSearchEngine::query_documents(
+            SearchDomain::All,
+            "older:2026-08-10 -on:2026-08-11",
+            &documents,
+        );
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].reference_id, "event-1");
+
+        let results =
+            GlobalSearchEngine::query_documents(SearchDomain::All, "-after:2026-08-10", &documents);
+        assert_eq!(
+            results
+                .iter()
+                .map(|result| result.reference_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["contact-1"]
+        );
+    }
+
+    #[test]
     fn local_mail_search_returns_stable_message_references() {
         let messages = [crate::services::mail_store_service::ParsedMail {
             id: "local:Inbox#0".to_string(),
@@ -580,6 +745,12 @@ mod tests {
         assert_eq!(results.len(), 1);
 
         let results = GlobalSearchEngine::query_local_mail("is:important", &messages);
+        assert!(results.is_empty());
+
+        let results = GlobalSearchEngine::query_local_mail("newer:2026-08-10", &messages);
+        assert_eq!(results.len(), 1);
+
+        let results = GlobalSearchEngine::query_local_mail("-on:2026-08-10", &messages);
         assert!(results.is_empty());
     }
 }

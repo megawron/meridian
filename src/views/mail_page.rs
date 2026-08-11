@@ -1005,6 +1005,7 @@ mod imp {
         pub mail_change_cancellation: RefCell<Option<Arc<AtomicBool>>>,
         pub(crate) mail_commands: RefCell<MailCommandStack>,
         pub preview_settings: RefCell<Option<AppSettings>>,
+        pub classic_toolbar: RefCell<Option<gtk::Box>>,
         pub search_entry: RefCell<Option<gtk::SearchEntry>>,
         pub(super) search_query: RefCell<Option<Rc<RefCell<MessageSearchQuery>>>>,
         pub(super) mail_sort_field: Cell<MailSortField>,
@@ -1252,6 +1253,14 @@ impl MailPage {
                     page.apply_mail_layout(MailLayout::from_setting(
                         &settings.string("mail-layout"),
                     ));
+                }
+            });
+            let page_weak_for_toolbar = self.downgrade();
+            settings.connect_changed(Some("mail-show-toolbar"), move |settings, _| {
+                if let Some(page) = page_weak_for_toolbar.upgrade() {
+                    if let Some(toolbar) = page.imp().classic_toolbar.borrow().as_ref() {
+                        toolbar.set_visible(settings.boolean("mail-show-toolbar"));
+                    }
                 }
             });
             let page_weak_for_default_folder = self.downgrade();
@@ -1747,6 +1756,32 @@ impl MailPage {
         if let Some(filter) = self.imp().message_filter.borrow().as_ref() {
             filter.changed(gtk::FilterChange::Different);
         }
+        if let Some(filter) = self.imp().thread_filter.borrow().as_ref() {
+            filter.changed(gtk::FilterChange::Different);
+        }
+        Ok(true)
+    }
+
+    pub fn mark_selected_read(&self) -> Result<bool, MailOperationError> {
+        let Some(message) = self.selected_message() else {
+            return Ok(false);
+        };
+        let command = MailCommand::set_message_state(
+            message.id(),
+            message.backend_location(),
+            message.is_unread(),
+            message.is_flagged(),
+            false,
+            message.is_flagged(),
+        );
+        self.execute_mail_command(command)?;
+        message.set_unread(false);
+        if let Some(filter) = self.imp().message_filter.borrow().as_ref() {
+            filter.changed(gtk::FilterChange::Different);
+        }
+        if let Some(filter) = self.imp().thread_filter.borrow().as_ref() {
+            filter.changed(gtk::FilterChange::Different);
+        }
         Ok(true)
     }
 
@@ -2019,9 +2054,25 @@ impl MailPage {
         let command = message
             .backend_location()
             .map(|location| {
-                MailCommand::set_junk(message.id(), location, message.folder_id() == "junk", true)
+                MailCommand::set_junk(message.id(), location, message_is_junk(&message), true)
             })
             .unwrap_or_else(|| MailCommand::set_junk_local(message.id(), message.folder_id()));
+        self.execute_mail_command(command)?;
+        self.refresh_mail();
+        Ok(true)
+    }
+
+    pub fn mark_selected_not_junk(&self) -> Result<bool, MailOperationError> {
+        let Some(message) = self.selected_message() else {
+            return Ok(false);
+        };
+        if !message_is_junk(&message) {
+            return Ok(true);
+        }
+        let command = message
+            .backend_location()
+            .map(|location| MailCommand::set_junk(message.id(), location, true, false))
+            .unwrap_or_else(|| MailCommand::clear_junk_local(message.id()));
         self.execute_mail_command(command)?;
         self.refresh_mail();
         Ok(true)
@@ -2399,12 +2450,9 @@ impl MailPage {
         let commands = messages
             .iter()
             .map(|message| match message.backend_location() {
-                Some(location) => MailCommand::set_junk(
-                    message.id(),
-                    location,
-                    message.folder_id() == "junk",
-                    true,
-                ),
+                Some(location) => {
+                    MailCommand::set_junk(message.id(), location, message_is_junk(message), true)
+                }
                 None => MailCommand::set_junk_local(message.id(), message.folder_id()),
             })
             .collect::<Vec<_>>();
@@ -2419,6 +2467,40 @@ impl MailPage {
         }
         if let Some(state) = self.imp().message_state.borrow().as_ref() {
             state.set_label(&format!("{marked} Nachricht(en) als Spam markiert"));
+        }
+        Ok(())
+    }
+
+    fn mark_batch_not_junk(&self) -> Result<(), MailOperationError> {
+        self.clear_operation_error();
+        let messages = self
+            .selected_batch_messages()
+            .into_iter()
+            .filter(message_is_junk)
+            .collect::<Vec<_>>();
+        let operations = MailOperationsService::new();
+        let commands = messages
+            .iter()
+            .map(|message| {
+                message
+                    .backend_location()
+                    .map(|location| MailCommand::set_junk(message.id(), location, true, false))
+                    .unwrap_or_else(|| MailCommand::clear_junk_local(message.id()))
+            })
+            .collect::<Vec<_>>();
+        let cleared = self
+            .imp()
+            .mail_commands
+            .borrow_mut()
+            .execute_batch(&operations, commands)?;
+        self.clear_batch_selection();
+        if cleared > 0 {
+            self.refresh_mail();
+        }
+        if let Some(state) = self.imp().message_state.borrow().as_ref() {
+            state.set_label(&format!(
+                "Bei {cleared} Nachricht(en) Spam-Markierung entfernt"
+            ));
         }
         Ok(())
     }
@@ -3737,6 +3819,96 @@ impl MailPage {
         self.imp().updating_folder_rows.set(false);
     }
 
+    fn build_classic_mail_toolbar(&self) -> gtk::Box {
+        let toolbar = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(2)
+            .margin_start(8)
+            .margin_end(8)
+            .margin_top(6)
+            .margin_bottom(2)
+            .css_classes(vec!["toolbar"])
+            .build();
+
+        let button = |icon_name: &str, tooltip: &str, action_name: &str| {
+            gtk::Button::builder()
+                .icon_name(icon_name)
+                .tooltip_text(tooltip)
+                .action_name(action_name)
+                .css_classes(vec!["flat"])
+                .build()
+        };
+
+        for (icon_name, tooltip, action_name) in [
+            (
+                "mail-message-new-symbolic",
+                "Neue E-Mail (Ctrl+N)",
+                "app.compose",
+            ),
+            (
+                "mail-reply-sender-symbolic",
+                "Antworten (Ctrl+R)",
+                "win.reply",
+            ),
+            (
+                "mail-reply-all-symbolic",
+                "Allen antworten (Ctrl+Shift+R)",
+                "win.reply-all",
+            ),
+            (
+                "mail-forward-symbolic",
+                "Weiterleiten (Ctrl+L)",
+                "win.forward",
+            ),
+        ] {
+            toolbar.append(&button(icon_name, tooltip, action_name));
+        }
+
+        toolbar.append(&gtk::Separator::new(gtk::Orientation::Vertical));
+
+        for (icon_name, tooltip, action_name) in [
+            (
+                "mail-read-symbolic",
+                "Als gelesen markieren",
+                "win.mark-read",
+            ),
+            (
+                "mail-unread-symbolic",
+                "Als ungelesen markieren",
+                "win.mark-unread",
+            ),
+            (
+                "starred-symbolic",
+                "Markierung umschalten",
+                "win.toggle-flag",
+            ),
+            (
+                "emblem-important-symbolic",
+                "Wichtigkeitsmarkierung umschalten",
+                "win.toggle-important",
+            ),
+            ("mail-archive-symbolic", "Archivieren", "win.archive"),
+            (
+                "dialog-warning-symbolic",
+                "Als Spam markieren",
+                "win.mark-junk",
+            ),
+            ("user-trash-symbolic", "Löschen", "win.delete"),
+        ] {
+            toolbar.append(&button(icon_name, tooltip, action_name));
+        }
+
+        toolbar.append(&gtk::Separator::new(gtk::Orientation::Vertical));
+        toolbar.append(&button(
+            "view-refresh-symbolic",
+            "Mail aktualisieren (F5)",
+            "win.refresh-mail",
+        ));
+        toolbar.append(&button("edit-undo-symbolic", "Rückgängig", "win.undo"));
+        toolbar.append(&button("edit-redo-symbolic", "Wiederholen", "win.redo"));
+        toolbar
+    }
+
     // ── Private: Build Message List with GListStore & Search Filter ───────
 
     fn build_message_list(
@@ -4389,6 +4561,16 @@ impl MailPage {
         let list_container = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .build();
+        let classic_toolbar = self.build_classic_mail_toolbar();
+        classic_toolbar.set_visible(
+            AppSettings::try_new()
+                .map(|settings| settings.mail_show_toolbar())
+                .unwrap_or(false),
+        );
+        self.imp()
+            .classic_toolbar
+            .replace(Some(classic_toolbar.clone()));
+        list_container.append(&classic_toolbar);
         let message_state = gtk::Label::builder()
             .label("Nachrichten werden geladen …")
             .css_classes(vec!["caption", "dim-label"])
@@ -4561,6 +4743,22 @@ impl MailPage {
             }
         });
         batch_action_bar.append(&batch_junk_button);
+
+        let batch_not_junk_button = gtk::Button::builder()
+            .label("Nicht Spam")
+            .tooltip_text("Ausgewählten Nachrichten die Spam-Markierung entziehen")
+            .css_classes(vec!["flat"])
+            .build();
+        let page_for_batch_not_junk = self.downgrade();
+        batch_not_junk_button.connect_clicked(move |_| {
+            if let Some(page) = page_for_batch_not_junk.upgrade() {
+                if let Err(error) = page.mark_batch_not_junk() {
+                    page.report_operation_error("Nicht-Spam-Markierung nicht möglich", &error);
+                    tracing::warn!(%error, "Batch not-junk operation was not applied");
+                }
+            }
+        });
+        batch_action_bar.append(&batch_not_junk_button);
 
         let move_popover_content = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
@@ -4988,6 +5186,13 @@ impl MailPage {
             .css_classes(vec!["flat"])
             .build();
 
+        let read_btn = gtk::Button::builder()
+            .icon_name("mail-read-symbolic")
+            .tooltip_text("Als gelesen markieren")
+            .action_name("win.mark-read")
+            .css_classes(vec!["flat"])
+            .build();
+
         let flag_btn = gtk::Button::builder()
             .icon_name("starred-symbolic")
             .tooltip_text("Markierung umschalten")
@@ -5009,6 +5214,12 @@ impl MailPage {
         let junk_btn = gtk::Button::builder()
             .icon_name("dialog-warning-symbolic")
             .tooltip_text("Als Spam markieren")
+            .css_classes(vec!["flat"])
+            .build();
+
+        let not_junk_btn = gtk::Button::builder()
+            .icon_name("mail-inbox-symbolic")
+            .tooltip_text("Als Nicht-Spam markieren")
             .css_classes(vec!["flat"])
             .build();
 
@@ -5099,6 +5310,17 @@ impl MailPage {
             }
         ));
 
+        not_junk_btn.connect_clicked(glib::clone!(
+            #[weak(rename_to = page)]
+            self,
+            move |_| match page.mark_selected_not_junk() {
+                Ok(true) => {}
+                Ok(false) => page.show_toast("Keine Nachricht ausgewählt"),
+                Err(error) =>
+                    page.show_toast(&format!("Nicht-Spam-Markierung nicht möglich: {error}")),
+            }
+        ));
+
         action_bar.append(&reply_btn);
         action_bar.append(&reply_all_btn);
         action_bar.append(&forward_btn);
@@ -5184,7 +5406,9 @@ impl MailPage {
         action_bar.append(&important_btn);
         action_bar.append(&archive_btn);
         action_bar.append(&junk_btn);
+        action_bar.append(&not_junk_btn);
         action_bar.append(&unread_btn);
+        action_bar.append(&read_btn);
         action_bar.append(&delete_btn);
 
         header_box.append(&lbl_subject);

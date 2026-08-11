@@ -465,6 +465,10 @@ werden.
   sowie in Backup/Restore angewendet. Eine providerunabhängige
   Datumsnormalisierung und serverseitige Sortierung bleiben Teil der
   Linux/Camel-Strecke.
+- [~] Die Evolution-kompatible Mail-Werkzeugleiste kann portabel ein- und
+  ausgeblendet werden. Ihre vertrauten Aktionen verwenden dieselben zentralen
+  Menü-, Detail- und Command-/Undo-Pfade; zusätzliche providerabhängige
+  Camel-Aktionen bleiben bis zur Linux-Abnahme offen.
 - [~] Anhang „Speichern unter“ ist für lokal gelesene MIME-Anhänge angebunden;
   ausgewählte Nachrichten können zusätzlich als vollständige EML/RFC822-Datei
   mit Thread-Headern und MIME-Anhängen exportiert werden. Lokale MIME-
@@ -502,7 +506,7 @@ werden.
   sowie geerbte GOA-/OAuth2- und EWS-Identitätsdaten; ein erfolgreicher
   Kontozugriff ohne lesbaren Ordner wird im Status explizit als solcher
   ausgewiesen. Der echte Provider-/Linux-Laufzeittest bleibt offen.
-  Archivieren, Verschieben und Spam-Markierung werden über denselben
+  Archivieren, Verschieben und Spam-/Nicht-Spam-Markierung werden über denselben
   Servicepfad ausgeführt; Camel-Änderungs-, Lösch- und Umbenennungssignale
   werden über einen langlebigen nativen Watcher in die Mailansicht geleitet.
   Serverzustände werden nach Mutationen verifiziert und als explizite
@@ -520,11 +524,12 @@ werden.
   Wichtigkeits- und Löschen-Aktionen
   werden ebenfalls nur im app-eigenen Sidecar persistiert und sind über den
   Command-Stack rückgängig machbar. Remote-Nachrichten verwenden Camel für
-  Lesen, Flags, Archivieren, Verschieben, Spam-Markierung und Löschen. Batch-Aktionen und
+  Lesen, Flags, Archivieren, Verschieben, Spam-/Nicht-Spam-Markierung und
+  Löschen. Batch-Aktionen und
   der zentrale Aktionspfad werden aus dem Servicepfad in die GTK4-rs-Mailansicht
   übernommen. Mehrfachauswahl für Gelesen/Ungelesen, Markierung, Wichtigkeit,
   Archivieren,
-  Spam und Löschen sowie
+  Spam/Nicht-Spam und Löschen sowie
   atomare Batch-Zustandsänderungen mit Rollback sind vorhanden. Der
   Command-Stack unterstützt erfolgreiche Lese-/Flag-Änderungen inklusive
   Undo/Redo und Konfliktschutz; Verschieben verwendet einen reversiblen
@@ -538,7 +543,8 @@ werden.
   fehlen noch. Konflikte aus dem nativen Camel-Backend werden als eigener
   Fehlerzustand behandelt und Batch-Fehler im sichtbaren Mailstatus angezeigt.
   Der Detailkopf bietet für eine einzelne Auswahl ebenfalls direkte
-  Markierungs-, Archiv- und Spam-Aktionen über denselben Command-/Undo-Pfad.
+  Markierungs-, Archiv- und Spam-/Nicht-Spam-Aktionen über denselben
+  Command-/Undo-Pfad.
 - [~] Portable virtuelle Suchordner sind vorhanden: vier Standardabfragen und
   beliebig viele gespeicherte lokale Suchdefinitionen können angelegt,
   bearbeitet und gelöscht werden. Die vorhandene lokale Suchsprache wird
@@ -906,7 +912,9 @@ werden.
   Dateinamen, Nachrichtentext und vollständige Kalender-/Aufgaben-/Notizdaten;
   aktivierbare Treffer wechseln in den passenden GTK4-rs-Hauptbereich. Die
   globale lokale Mail-Suche wertet dieselben Feldpräfixe für Absender,
-  Empfänger, Betreff, Ordner, Labels und Dateinamen aus; die serverseitige
+  Empfänger, Betreff, Ordner, Labels und Dateinamen aus und unterstützt die
+  Datumsprädikate `on:`, `after:`/`newer:` und `before:`/`older:` einschließlich
+  negativer Formen für Mail, Kalender, Aufgaben und Notizen; die serverseitige
   Camel-Syntax bleibt davon getrennt.
 - [ ] Exchange/Microsoft 365: Graph/OAuth2, Mail/Kalender/Kontakte/GAL/OOF,
   EWS-Kompatibilität nur soweit technisch notwendig.
@@ -935,7 +943,10 @@ werden.
   umfasst auch beliebige app-eigene ICS-/vCard-Dateien unter den lokalen
   Importverzeichnissen sowie Reminder-/Signatur-Daten und akzeptiert ältere
   Einstellungen einschließlich des Benachrichtigungs-Schalters sowie den
-  app-eigenen Vorlagen- und Textbausteinspeicher. EML-, ICS-
+  app-eigenen Vorlagen- und Textbausteinspeicher. Neue Sicherungen enthalten
+  zusätzlich je Datei eine SHA-256-Prüfsumme; beschädigte oder unvollständige
+  Sicherungen werden vor dem Schreiben abgewiesen, ältere Sicherungen ohne
+  Prüfsumme bleiben lesbar. EML-, ICS-
   und vCard-Export sowie nicht überschreibende
   lokale EML/mbox-, ICS/VCS- und VCF/vCard-Importe sind im GTK4-rs-Frontend
   verfügbar. Ein technisches, inhaltsfreies Diagnosepaket und eine
@@ -990,8 +1001,9 @@ nicht als vollständiger Ersatz beworben werden.
 ### Nächster Entwicklungsblock
 
 1. Die konfigurierbare Mailansicht weiter an Evolution angleichen:
-   klassische Werkzeugleisten- und weitere Menüpfade sowie die noch offenen
-   Mail-Leseeinstellungen ergänzen. Die Ansichts-Menüpfade für Sidebar,
+   die klassische Werkzeugleiste ist jetzt portabel ein-/ausblendbar und
+   weitere Menüpfade sowie die noch offenen Mail-Leseeinstellungen werden
+   ergänzt. Die Ansichts-Menüpfade für Sidebar,
    Vorschaufenster und klassische/moderne Mail-Anordnung sind jetzt vorhanden;
    der Wechsel wirkt live.
 2. Die portable Aufgaben-/Notizen-/Kontaktansicht weiter vervollständigen:

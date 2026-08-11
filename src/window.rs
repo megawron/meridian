@@ -286,6 +286,7 @@ impl EvolutionWindow {
             Some("Alle sichtbaren Nachrichten auswählen"),
             Some("win.select-all-mail"),
         );
+        message_menu.append(Some("Als gelesen markieren"), Some("win.mark-read"));
         message_menu.append(Some("Als ungelesen markieren"), Some("win.mark-unread"));
         message_menu.append(Some("Markierung umschalten"), Some("win.toggle-flag"));
         message_menu.append(
@@ -294,6 +295,7 @@ impl EvolutionWindow {
         );
         message_menu.append(Some("Archivieren"), Some("win.archive"));
         message_menu.append(Some("Als Spam markieren"), Some("win.mark-junk"));
+        message_menu.append(Some("Als Nicht-Spam markieren"), Some("win.mark-not-junk"));
         message_menu.append(Some("Löschen"), Some("win.delete"));
         menu.append_section(Some("Nachricht"), &message_menu);
 
@@ -319,6 +321,10 @@ impl EvolutionWindow {
         view_menu.append(
             Some("Moderne Mail-Anordnung"),
             Some("win.use-modern-mail-layout"),
+        );
+        view_menu.append(
+            Some("Klassische Mail-Werkzeugleiste ein-/ausblenden"),
+            Some("win.toggle-mail-toolbar"),
         );
         view_menu.append(
             Some("Unterhaltungen gruppieren/auflösen"),
@@ -457,6 +463,14 @@ impl EvolutionWindow {
             });
             self.add_action(&action);
         }
+
+        let action_toggle_mail_toolbar = gio::SimpleAction::new("toggle-mail-toolbar", None);
+        action_toggle_mail_toolbar.connect_activate(move |_, _| {
+            if let Some(settings) = AppSettings::try_new() {
+                settings.set_mail_show_toolbar(!settings.mail_show_toolbar());
+            }
+        });
+        self.add_action(&action_toggle_mail_toolbar);
 
         let action_refresh_mail = gio::SimpleAction::new("refresh-mail", None);
         action_refresh_mail.connect_activate(glib::clone!(
@@ -688,6 +702,28 @@ impl EvolutionWindow {
         ));
         self.add_action(&action_mark_unread);
 
+        let action_mark_read = gio::SimpleAction::new("mark-read", None);
+        action_mark_read.connect_activate(glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            move |_, _| {
+                let result = win
+                    .mail_page()
+                    .map(|mail_page| mail_page.mark_selected_read());
+                let message = match result {
+                    Some(Ok(true)) => "Nachricht als gelesen markiert".to_string(),
+                    Some(Ok(false)) => "Keine Nachricht ausgewählt".to_string(),
+                    Some(Err(error)) => {
+                        tracing::warn!(%error, "Mark-read operation was not applied");
+                        format!("Als gelesen markieren nicht möglich: {error}")
+                    }
+                    None => "Mailansicht ist nicht verfügbar".to_string(),
+                };
+                win.add_toast(&adw::Toast::new(&message));
+            }
+        ));
+        self.add_action(&action_mark_read);
+
         let action_select_all_mail = gio::SimpleAction::new("select-all-mail", None);
         action_select_all_mail.connect_activate(glib::clone!(
             #[weak(rename_to = win)]
@@ -791,6 +827,28 @@ impl EvolutionWindow {
             }
         ));
         self.add_action(&action_mark_junk);
+
+        let action_mark_not_junk = gio::SimpleAction::new("mark-not-junk", None);
+        action_mark_not_junk.connect_activate(glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            move |_, _| {
+                let result = win
+                    .mail_page()
+                    .map(|mail_page| mail_page.mark_selected_not_junk());
+                let message = match result {
+                    Some(Ok(true)) => "Spam-Markierung entfernt".to_string(),
+                    Some(Ok(false)) => "Keine Nachricht ausgewählt".to_string(),
+                    Some(Err(error)) => {
+                        tracing::warn!(%error, "Mail not-junk operation was not applied");
+                        format!("Nicht-Spam-Markierung nicht möglich: {error}")
+                    }
+                    None => "Mailansicht ist nicht verfügbar".to_string(),
+                };
+                win.add_toast(&adw::Toast::new(&message));
+            }
+        ));
+        self.add_action(&action_mark_not_junk);
 
         let action_shortcuts = gio::SimpleAction::new("show-help-overlay", None);
         action_shortcuts.connect_activate(glib::clone!(

@@ -194,8 +194,8 @@ oder in CI-Artefakte übernehmen.
   - prüfen, dass UID-basierte Updates keine Duplikate oder veraltete Zeilen
     erzeugen.
 - `[~]` Remote-Aktionen mit einem Testkonto testen:
-  - gelesen/ungelesen, markiert, wichtig, Spam, Archiv, Verschieben und
-    Löschen.
+  - gelesen/ungelesen, markiert, wichtig, Spam/Nicht-Spam, Archiv, Verschieben
+    und Löschen.
   - Stern/Flagged und Wichtigkeit getrennt in Evolution und auf dem Server
     prüfen; eine nicht unterstützte Camel-Flagsemantik darf weder den Stern
     überschreiben noch als erfolgreicher Wichtigkeitsstatus erscheinen.

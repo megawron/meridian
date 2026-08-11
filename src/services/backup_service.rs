@@ -8,6 +8,7 @@
 // local ICS/vCard stores, and the non-secret GSettings values we expose.
 
 use chrono::Utc;
+use glib::{Checksum, ChecksumType};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fs;
@@ -91,6 +92,10 @@ const APP_OWNED_DIRECTORIES: &[&str] = &["ical", "vcards"];
 struct BackupFile {
     relative_path: String,
     contents: Vec<u8>,
+    /// Optional for backwards compatibility with version-3 backups created
+    /// before integrity metadata was added.
+    #[serde(default)]
+    checksum_sha256: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -128,6 +133,8 @@ struct BackupSettings {
     mail_default_folder: String,
     #[serde(default = "default_mail_layout")]
     mail_layout: String,
+    #[serde(default)]
+    mail_show_toolbar: bool,
     #[serde(default = "default_mail_sidebar_position")]
     mail_sidebar_position: i32,
     #[serde(default = "default_mail_modern_preview_position")]
@@ -327,6 +334,7 @@ impl BackupSettings {
             show_message_preview: settings.show_message_preview(),
             mail_default_folder: settings.mail_default_folder(),
             mail_layout: settings.mail_layout(),
+            mail_show_toolbar: settings.mail_show_toolbar(),
             mail_sidebar_position: settings.mail_sidebar_position(),
             mail_modern_preview_position: settings.mail_preview_position("modern"),
             mail_classic_preview_position: settings.mail_preview_position("classic"),
@@ -394,6 +402,7 @@ impl BackupSettings {
         settings.set_show_message_preview(self.show_message_preview);
         settings.set_mail_default_folder(&self.mail_default_folder);
         settings.set_mail_layout(&self.mail_layout);
+        settings.set_mail_show_toolbar(self.mail_show_toolbar);
         settings.set_mail_sidebar_position(self.mail_sidebar_position);
         settings.set_mail_preview_position("modern", self.mail_modern_preview_position);
         settings.set_mail_preview_position("classic", self.mail_classic_preview_position);
@@ -497,6 +506,7 @@ pub fn create_backup() -> io::Result<Vec<u8>> {
             match fs::read(&path) {
                 Ok(contents) => Some(Ok(BackupFile {
                     relative_path: relative_path.clone(),
+                    checksum_sha256: sha256(&contents),
                     contents,
                 })),
                 Err(error) if error.kind() == io::ErrorKind::NotFound => None,
@@ -574,6 +584,15 @@ fn restore_bundle(
                 io::ErrorKind::InvalidData,
                 format!(
                     "Unbekannte app-eigene Sicherungsdatei: {}",
+                    file.relative_path
+                ),
+            ));
+        }
+        if !file.checksum_sha256.is_empty() && file.checksum_sha256 != sha256(&file.contents) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "Integritätsprüfung der Sicherungsdatei fehlgeschlagen: {}",
                     file.relative_path
                 ),
             ));
@@ -718,6 +737,15 @@ fn diagnostic_bundle(root: &Path, settings_available: bool) -> io::Result<Diagno
 
 fn app_data_root() -> PathBuf {
     crate::services::app_data_dir()
+}
+
+fn sha256(contents: &[u8]) -> String {
+    let mut checksum = Checksum::new(ChecksumType::Sha256)
+        .expect("GLib must provide the SHA-256 checksum implementation");
+    checksum.update(contents);
+    checksum
+        .string()
+        .expect("GLib must return a SHA-256 checksum string")
 }
 
 fn is_app_owned_path(relative_path: &str) -> bool {
@@ -880,12 +908,35 @@ mod tests {
             files: vec![BackupFile {
                 relative_path: "drafts.json".to_string(),
                 contents: br#"{"version":1}"#.to_vec(),
+                checksum_sha256: sha256(br#"{"version":1}"#),
             }],
         };
         let raw = serde_json::to_vec(&bundle).expect("bundle should serialize");
         let decoded: BackupBundle = serde_json::from_slice(&raw).expect("bundle should parse");
         assert_eq!(decoded, bundle);
         assert!(!String::from_utf8_lossy(&raw).contains("password"));
+    }
+
+    #[test]
+    fn rejects_backup_file_with_modified_contents() {
+        let root = temporary_directory("restore-checksum");
+        let bundle = BackupBundle {
+            version: CURRENT_VERSION,
+            created_at: "2026-08-11T12:00:00Z".to_string(),
+            settings: None,
+            files: vec![BackupFile {
+                relative_path: "accounts.json".to_string(),
+                contents: b"modified".to_vec(),
+                checksum_sha256: sha256(b"original"),
+            }],
+        };
+
+        let error = restore_bundle(bundle, &root, None).expect_err("checksum must fail");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("Integritätsprüfung"));
+        assert!(!root.join("accounts.json").exists());
+
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -920,10 +971,12 @@ mod tests {
                 BackupFile {
                     relative_path: "ical/imported/event.ics".to_string(),
                     contents: b"restored event".to_vec(),
+                    checksum_sha256: String::new(),
                 },
                 BackupFile {
                     relative_path: "vcards/imported.vcf".to_string(),
                     contents: b"restored contact".to_vec(),
+                    checksum_sha256: String::new(),
                 },
             ],
         };
@@ -954,10 +1007,12 @@ mod tests {
                 BackupFile {
                     relative_path: "accounts.json".to_string(),
                     contents: b"replacement".to_vec(),
+                    checksum_sha256: String::new(),
                 },
                 BackupFile {
                     relative_path: "../outside.json".to_string(),
                     contents: b"must not be written".to_vec(),
+                    checksum_sha256: String::new(),
                 },
             ],
         };

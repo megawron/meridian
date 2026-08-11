@@ -129,6 +129,10 @@
       <default>'modern'</default>
       <summary>Mail layout (modern side-by-side or classic top-preview)</summary>
     </key>
+    <key name="mail-show-toolbar" type="b">
+      <default>false</default>
+      <summary>Show the classic Evolution mail toolbar</summary>
+    </key>
     <key name="mail-sidebar-position" type="i">
       <default>220</default>
       <range min="0" max="2000"/>

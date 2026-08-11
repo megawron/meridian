@@ -248,6 +248,23 @@ impl MailCommand {
         }
     }
 
+    pub(crate) fn clear_junk_local(id: impl Into<String>) -> Self {
+        let id = id.into();
+        Self {
+            forward: MailOperation::SetJunk {
+                id: id.clone(),
+                location: None,
+                is_junk: false,
+            },
+            inverse: MailOperation::SetJunk {
+                id,
+                location: None,
+                is_junk: true,
+            },
+            description: "Lokale Spam-Markierung entfernen".to_string(),
+        }
+    }
+
     pub(crate) fn set_important(
         id: impl Into<String>,
         location: MailBackendLocation,
@@ -1153,9 +1170,20 @@ mod tests {
         assert_eq!(store.load_local_records()[0].folder_id, "junk");
 
         history
+            .execute(&operations, MailCommand::clear_junk_local(&message_id))
+            .expect("local not-junk command should succeed");
+        assert_eq!(store.load_local_records()[0].folder_id, original_folder);
+
+        history
             .undo(&operations)
             .expect("undo should succeed")
-            .expect("junk command should be undone");
+            .expect("not-junk command should be undone");
+        assert_eq!(store.load_local_records()[0].folder_id, "junk");
+
+        history
+            .redo(&operations)
+            .expect("redo should succeed")
+            .expect("not-junk command should be redone");
         assert_eq!(store.load_local_records()[0].folder_id, original_folder);
         assert!(source.is_file());
 

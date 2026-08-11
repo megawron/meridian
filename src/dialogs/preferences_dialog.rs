@@ -1537,6 +1537,21 @@ impl PreferencesDialog {
         }
         group_reading.add(&row_mail_layout);
 
+        let row_mail_toolbar = adw::SwitchRow::builder()
+            .title("Klassische Mail-Werkzeugleiste anzeigen")
+            .subtitle(
+                "Zeigt die vertrauten Evolution-Aktionen für neue Mail, Antworten, Archivieren und Löschen über der Nachrichtenliste",
+            )
+            .active(false)
+            .build();
+        if let Some(settings) = settings.clone() {
+            row_mail_toolbar.set_active(settings.mail_show_toolbar());
+            row_mail_toolbar.connect_active_notify(move |row| {
+                settings.set_mail_show_toolbar(row.is_active());
+            });
+        }
+        group_reading.add(&row_mail_toolbar);
+
         let row_mail_density = adw::ComboRow::builder()
             .title("Dichte der Nachrichtenliste")
             .subtitle("Bestimmt den vertikalen Abstand der Mailzeilen")
