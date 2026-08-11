@@ -129,80 +129,46 @@ impl ContactsPage {
             .map(|settings| settings.default_address_book_source_uid())
             .unwrap_or_default();
         glib::spawn_future_local(async move {
-            match eds_service::list_address_book_sources().await {
-                Ok(sources) if sources.is_empty() => {
-                    let mut names = vec!["Alle Kontakte".to_string()];
-                    let mut source_uids = book_source_uids_for_load.borrow_mut();
-                    source_uids.clear();
-                    source_uids.push(String::new());
-                    if crate::services::contact_store_service::ContactStoreService::new()
-                        .is_writable()
-                    {
-                        names.push("Lokales Adressbuch".to_string());
-                        source_uids.push("local-addressbook".to_string());
-                    }
-                    let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
-                    book_model_for_load.splice(0, book_model_for_load.n_items(), &name_refs);
-                    let selected_index = source_uids
-                        .iter()
-                        .position(|uid| uid == &default_source_uid)
-                        .unwrap_or(0) as u32;
-                    drop(source_uids);
-                    book_selector_for_load.set_selected(selected_index);
-                    empty_state_for_load.set_label("Keine Adressbuchquellen in EDS gefunden.");
-                }
-                Ok(sources) => {
-                    let source_count = sources.len();
-                    let mut names = vec!["Alle Kontakte".to_string()];
-                    let mut source_uids = book_source_uids_for_load.borrow_mut();
-                    source_uids.clear();
-                    source_uids.push(String::new());
-                    for source in sources {
-                        names.push(source.display_name);
-                        source_uids.push(source.uid);
-                    }
-                    if crate::services::contact_store_service::ContactStoreService::new()
-                        .is_writable()
-                    {
-                        names.push("Lokales Adressbuch".to_string());
-                        source_uids.push("local-addressbook".to_string());
-                    }
-                    let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
-                    book_model_for_load.splice(0, book_model_for_load.n_items(), &name_refs);
-                    let selected_index = source_uids
-                        .iter()
-                        .position(|uid| uid == &default_source_uid)
-                        .unwrap_or(0) as u32;
-                    drop(source_uids);
-                    book_selector_for_load.set_selected(selected_index);
-                    empty_state_for_load.set_label(&format!(
-                        "{source_count} Adressbuchquelle(n) aus EDS gefunden; Kontakte werden nach dem EBook-Stream geladen."
-                    ));
-                }
-                Err(error) => {
-                    tracing::warn!(%error, "Could not load address book sources from EDS");
-                    let mut names = vec!["Alle Kontakte".to_string()];
-                    let mut source_uids = book_source_uids_for_load.borrow_mut();
-                    source_uids.clear();
-                    source_uids.push(String::new());
-                    if crate::services::contact_store_service::ContactStoreService::new()
-                        .is_writable()
-                    {
-                        names.push("Lokales Adressbuch".to_string());
-                        source_uids.push("local-addressbook".to_string());
-                    }
-                    let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
-                    book_model_for_load.splice(0, book_model_for_load.n_items(), &name_refs);
-                    let selected_index = source_uids
-                        .iter()
-                        .position(|uid| uid == &default_source_uid)
-                        .unwrap_or(0) as u32;
-                    drop(source_uids);
-                    book_selector_for_load.set_selected(selected_index);
-                    empty_state_for_load
-                        .set_label(&format!("EDS-Adressbücher sind nicht erreichbar: {error}"));
-                }
+            let discovery =
+                eds_service::discover_sources(eds_service::EdsSourceKind::AddressBook).await;
+            let status = discovery.status_text();
+            let mut sources = discovery.sources;
+            sources.retain(|source| source.enabled);
+            sources.sort_by_cached_key(|source| {
+                (source.display_name.to_lowercase(), source.uid.clone())
+            });
+
+            let mut names = vec!["Alle Kontakte".to_string()];
+            let mut uids = vec![String::new()];
+            for source in sources {
+                names.push(if source.backend_name.trim().is_empty() {
+                    source.display_name
+                } else {
+                    format!("{} · {}", source.display_name, source.backend_name)
+                });
+                uids.push(source.uid);
             }
+            if !default_source_uid.trim().is_empty()
+                && !uids.iter().any(|uid| uid == &default_source_uid)
+            {
+                names.push(format!("Nicht verfügbare Quelle · {default_source_uid}"));
+                uids.push(default_source_uid.clone());
+            }
+            if crate::services::contact_store_service::ContactStoreService::new().is_writable() {
+                names.push("Lokales Adressbuch".to_string());
+                uids.push("local-addressbook".to_string());
+            }
+            let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
+            book_model_for_load.splice(0, book_model_for_load.n_items(), &name_refs);
+            book_source_uids_for_load.replace(uids.clone());
+            let selected_index = uids
+                .iter()
+                .position(|uid| uid == &default_source_uid)
+                .unwrap_or(0) as u32;
+            book_selector_for_load.set_selected(selected_index);
+            empty_state_for_load.set_label(&format!(
+                "{status}; Kontakte werden nach dem EBook-Stream geladen."
+            ));
         });
 
         sidebar_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
