@@ -299,7 +299,7 @@ impl CalendarPage {
                         };
                         local_item_state_for_load
                             .set_label(&format!("{count} Termin(e) aus {origin} geladen."));
-                        for event in result.snapshot.events.into_iter().take(25) {
+                        for event in result.snapshot.events {
                             upsert_event_row(
                                 &event_list_for_load,
                                 Rc::clone(&event_records_for_load),
