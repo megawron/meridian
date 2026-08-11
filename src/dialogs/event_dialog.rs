@@ -188,6 +188,22 @@ impl EventDialog {
         ));
         group_details.add(&row_conference);
 
+        let row_status = adw::ComboRow::builder()
+            .title("Terminstatus")
+            .model(&gtk::StringList::new(&[
+                "Bestätigt",
+                "Vorläufig",
+                "Abgesagt",
+            ]))
+            .build();
+        group_details.add(&row_status);
+        let row_transparency = adw::ComboRow::builder()
+            .title("Verfügbarkeit")
+            .subtitle("Ob der Zeitraum als belegt gilt")
+            .model(&gtk::StringList::new(&["Beschäftigt", "Frei"]))
+            .build();
+        group_details.add(&row_transparency);
+
         let row_allday = adw::SwitchRow::builder()
             .title("Ganztägig")
             .active(false)
@@ -223,6 +239,16 @@ impl EventDialog {
         row_recurrence.set_text("");
         row_recurrence.set_tooltip_text(Some("z. B. FREQ=WEEKLY;BYDAY=MO;COUNT=10"));
         group_recurrence.add(&row_recurrence);
+        let row_rdates = adw::EntryRow::builder()
+            .title("Zusätzliche Vorkommen (RDATE, kommasepariert)")
+            .build();
+        row_rdates.set_tooltip_text(Some("z. B. 20260812,20260819 oder 20260812T120000Z"));
+        group_recurrence.add(&row_rdates);
+        let row_exdates = adw::EntryRow::builder()
+            .title("Ausnahmen (EXDATE, kommasepariert)")
+            .build();
+        row_exdates.set_tooltip_text(Some("z. B. 20260815,20260822"));
+        group_recurrence.add(&row_exdates);
         let row_attendees = adw::EntryRow::builder()
             .title("Teilnehmer (durch Komma getrennt)")
             .build();
@@ -339,6 +365,22 @@ impl EventDialog {
                     .as_deref()
                     .unwrap_or(""),
             );
+            row_status.set_selected(
+                match ical_property(component, "STATUS")
+                    .unwrap_or_default()
+                    .to_ascii_uppercase()
+                    .as_str()
+                {
+                    "TENTATIVE" => 1,
+                    "CANCELLED" => 2,
+                    _ => 0,
+                },
+            );
+            row_transparency.set_selected(
+                (ical_property(component, "TRANSP")
+                    .map(|value| value.eq_ignore_ascii_case("TRANSPARENT"))
+                    .unwrap_or(false)) as u32,
+            );
             let all_day = component_property_has_date_value(component, "DTSTART");
             row_allday.set_active(all_day);
             if let Some(start) = ical_property(component, "DTSTART") {
@@ -348,6 +390,8 @@ impl EventDialog {
                 row_end.set_text(&format_event_datetime_for_editor(&end, all_day));
             }
             row_recurrence.set_text(&ical_property(component, "RRULE").unwrap_or_default());
+            row_rdates.set_text(&ical_properties(component, "RDATE").join(","));
+            row_exdates.set_text(&ical_properties(component, "EXDATE").join(","));
             row_attendees.set_text(&ical_properties(component, "ATTENDEE").join(", "));
             row_categories.set_text(&ical_property(component, "CATEGORIES").unwrap_or_default());
             attachment_buffer.set_text(&ical_properties(component, "ATTACH").join("\n"));
@@ -491,6 +535,12 @@ impl EventDialog {
                 &entry_title.text(),
                 &row_location.text(),
                 &row_conference.text(),
+                match row_status.selected() {
+                    1 => "TENTATIVE",
+                    2 => "CANCELLED",
+                    _ => "CONFIRMED",
+                },
+                row_transparency.selected() == 1,
                 row_allday.is_active(),
                 &row_start.text(),
                 &row_end.text(),
@@ -500,6 +550,8 @@ impl EventDialog {
                     false,
                 ),
                 &row_recurrence.text(),
+                &row_rdates.text(),
+                &row_exdates.text(),
                 &row_attendees.text(),
                 &row_categories.text(),
                 &attachments,
@@ -555,6 +607,24 @@ impl EventDialog {
                 let conference_value =
                     (!conference.trim().is_empty()).then(|| escape_ical_text(conference.trim()));
                 updated = update_ical_property(&updated, "CONFERENCE", conference_value.as_deref());
+                updated = update_ical_property(
+                    &updated,
+                    "STATUS",
+                    Some(match row_status.selected() {
+                        1 => "TENTATIVE",
+                        2 => "CANCELLED",
+                        _ => "CONFIRMED",
+                    }),
+                );
+                updated = update_ical_property(
+                    &updated,
+                    "TRANSP",
+                    Some(if row_transparency.selected() == 1 {
+                        "TRANSPARENT"
+                    } else {
+                        "OPAQUE"
+                    }),
+                );
                 updated = update_ical_property(&updated, &start_property, Some(&start_value));
                 updated = update_ical_property(&updated, &end_property, Some(&end_value));
                 updated = update_ical_property(
@@ -571,6 +641,22 @@ impl EventDialog {
                     &updated,
                     "RRULE",
                     (!recurrence.trim().is_empty()).then_some(recurrence.as_str()),
+                );
+                let rdate_prefix = ical_recurrence_property_prefix(original, "RDATE", all_day)
+                    .unwrap_or_else(|| default_recurrence_property_prefix("RDATE", all_day));
+                let rdates = serialize_recurrence_values(&row_rdates.text());
+                updated = update_ical_property(
+                    &updated,
+                    &rdate_prefix,
+                    (!rdates.is_empty()).then_some(rdates.as_str()),
+                );
+                let exdate_prefix = ical_recurrence_property_prefix(original, "EXDATE", all_day)
+                    .unwrap_or_else(|| default_recurrence_property_prefix("EXDATE", all_day));
+                let exdates = serialize_recurrence_values(&row_exdates.text());
+                updated = update_ical_property(
+                    &updated,
+                    &exdate_prefix,
+                    (!exdates.is_empty()).then_some(exdates.as_str()),
                 );
                 let categories = serialize_categories(&row_categories.text());
                 updated = update_ical_property(
@@ -754,6 +840,66 @@ fn serialize_categories(value: &str) -> String {
         .join(",")
 }
 
+fn parse_recurrence_values(value: &str) -> Vec<String> {
+    value
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+fn serialize_recurrence_values(value: &str) -> String {
+    parse_recurrence_values(value).join(",")
+}
+
+fn default_recurrence_property_prefix(name: &str, all_day: bool) -> String {
+    if all_day {
+        format!("{name};VALUE=DATE")
+    } else {
+        name.to_string()
+    }
+}
+
+fn build_recurrence_property_line(name: &str, value: &str, all_day: bool) -> String {
+    let values = serialize_recurrence_values(value);
+    if values.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "{}:{}\r\n",
+            default_recurrence_property_prefix(name, all_day),
+            values
+        )
+    }
+}
+
+fn ical_recurrence_property_prefix(raw: &str, name: &str, all_day: bool) -> Option<String> {
+    let target = name.to_ascii_uppercase();
+    let mut depth = 0usize;
+    for line in unfold_ical_lines(raw) {
+        let property = line
+            .split_once(':')
+            .map(|(property, _)| property)
+            .unwrap_or(line.as_str());
+        let property_name = property
+            .split(';')
+            .next()
+            .unwrap_or(property)
+            .to_ascii_uppercase();
+        let is_date_value = property.to_ascii_uppercase().contains("VALUE=DATE");
+        if property_name == target && depth == 1 && is_date_value == all_day {
+            return Some(property.to_string());
+        }
+        if property_name == "BEGIN" {
+            depth = depth.saturating_add(1);
+        } else if property_name == "END" {
+            depth = depth.saturating_sub(1);
+        }
+    }
+    None
+}
+
 fn ical_alarm_minutes(raw: &str) -> Option<u32> {
     raw.replace("\r\n", "\n")
         .replace('\r', "\n")
@@ -845,11 +991,15 @@ fn build_event_component(
     title: &str,
     location: &str,
     conference: &str,
+    status: &str,
+    transparent: bool,
     all_day: bool,
     start: &str,
     end: &str,
     description: &str,
     recurrence: &str,
+    rdates: &str,
+    exdates: &str,
     attendees: &str,
     categories: &str,
     attachments: &str,
@@ -865,8 +1015,16 @@ fn build_event_component(
     if !all_day && end_value <= start_value {
         return Err("Das Ende muss nach dem Beginn liegen".to_string());
     }
+    let status = match status.to_ascii_uppercase().as_str() {
+        "TENTATIVE" => "TENTATIVE",
+        "CANCELLED" => "CANCELLED",
+        "CONFIRMED" => "CONFIRMED",
+        _ => return Err("Der Terminstatus ist ungültig".to_string()),
+    };
     for (field, value) in [
         ("RRULE", recurrence),
+        ("RDATE", rdates),
+        ("EXDATE", exdates),
         ("Teilnehmer", attendees),
         ("Konferenz-URL", conference),
     ] {
@@ -897,6 +1055,14 @@ fn build_event_component(
     } else {
         format!("RRULE:{}\r\n", recurrence.trim())
     };
+    let status_line = format!("STATUS:{status}\r\n");
+    let transparency_line = if transparent {
+        "TRANSP:TRANSPARENT\r\n"
+    } else {
+        "TRANSP:OPAQUE\r\n"
+    };
+    let rdate_line = build_recurrence_property_line("RDATE", rdates, all_day);
+    let exdate_line = build_recurrence_property_line("EXDATE", exdates, all_day);
     let attendee_lines = attendees
         .split(|character| character == ',' || character == ';')
         .map(str::trim)
@@ -935,13 +1101,17 @@ fn build_event_component(
 
     Ok(format!(
         "BEGIN:VEVENT\r\nUID:{uid}\r\nDTSTAMP:{stamp}\r\nSUMMARY:{}\r\n{}\
-         \r\n{}\r\nLOCATION:{}\r\nDESCRIPTION:{}\r\n{}{}{}{}{}{}{}END:VEVENT\r\n",
+         \r\n{}\r\nLOCATION:{}\r\nDESCRIPTION:{}\r\n{}{}{}{}{}{}{}{}{}{}{}END:VEVENT\r\n",
         escape_ical_text(title),
         start_line,
         end_line,
         escape_ical_text(location.trim()),
         escape_ical_text(description.trim()),
+        status_line,
+        transparency_line,
         recurrence_line,
+        rdate_line,
+        exdate_line,
         attendee_lines,
         conference_line,
         categories_line,
@@ -1175,11 +1345,15 @@ mod tests {
             "Team, Sync",
             "Room; 42",
             "https://meet.example.test/room?x=1&y=2",
+            "CONFIRMED",
+            false,
             false,
             "2026-08-10 12:00",
             "2026-08-10 13:00",
             "Line one\nLine two",
             "FREQ=WEEKLY;BYDAY=MO",
+            "20260812T120000Z,20260819T120000Z",
+            "20260815T120000Z",
             "mailto:person@example.org",
             "Work",
             "",
@@ -1195,7 +1369,11 @@ mod tests {
         assert!(component.contains("DESCRIPTION:Line one\\nLine two"));
         assert!(component.contains("DTSTART:20260810T120000"));
         assert!(component.contains("DTEND:20260810T130000"));
+        assert!(component.contains("STATUS:CONFIRMED"));
+        assert!(component.contains("TRANSP:OPAQUE"));
         assert!(component.contains("RRULE:FREQ=WEEKLY;BYDAY=MO"));
+        assert!(component.contains("RDATE:20260812T120000Z,20260819T120000Z"));
+        assert!(component.contains("EXDATE:20260815T120000Z"));
         assert!(component.contains("ATTENDEE:mailto:person@example.org"));
         assert!(component.contains("CATEGORIES:Work"));
         assert!(component.contains("TRIGGER:-PT15M"));
@@ -1210,9 +1388,13 @@ mod tests {
                 "Title",
                 "",
                 "",
+                "CONFIRMED",
+                false,
                 false,
                 "not-a-date",
                 "2026-08-10 13:00",
+                "",
+                "",
                 "",
                 "",
                 "",
@@ -1228,9 +1410,13 @@ mod tests {
                 "Title",
                 "",
                 "",
+                "CONFIRMED",
+                false,
                 false,
                 "2026-08-10 13:00",
                 "2026-08-10 12:00",
+                "",
+                "",
                 "",
                 "",
                 "",
@@ -1272,9 +1458,13 @@ mod tests {
             "Planning",
             "Room",
             "",
+            "CONFIRMED",
+            false,
             false,
             "2026-08-10 12:00",
             "2026-08-10 13:00",
+            "",
+            "",
             "",
             "",
             "",
@@ -1325,6 +1515,28 @@ mod tests {
         assert_eq!(
             ical_datetime_property_prefix(raw, "DTEND").as_deref(),
             Some("DTEND;TZID=Europe/Berlin")
+        );
+    }
+
+    #[test]
+    fn recurrence_date_prefixes_preserve_date_and_timezone_parameters() {
+        let raw = concat!(
+            "BEGIN:VEVENT\r\n",
+            "RDATE;TZID=Europe/Berlin:20260812T120000,20260819T120000\r\n",
+            "EXDATE;VALUE=DATE:20260815\r\n",
+            "END:VEVENT\r\n"
+        );
+        assert_eq!(
+            ical_recurrence_property_prefix(raw, "RDATE", false).as_deref(),
+            Some("RDATE;TZID=Europe/Berlin")
+        );
+        assert_eq!(
+            ical_recurrence_property_prefix(raw, "EXDATE", true).as_deref(),
+            Some("EXDATE;VALUE=DATE")
+        );
+        assert_eq!(
+            build_recurrence_property_line("RDATE", "20260812,20260819", true),
+            "RDATE;VALUE=DATE:20260812,20260819\r\n"
         );
     }
 

@@ -45,6 +45,10 @@
       <default>'monday'</default>
       <summary>First weekday shown in calendar grids (monday or sunday)</summary>
     </key>
+    <key name="calendar-workdays" type="s">
+      <default>'monday,tuesday,wednesday,thursday,friday'</default>
+      <summary>Working weekdays used by the workweek calendar view</summary>
+    </key>
     <key name="calendar-workday-start" type="i">
       <default>540</default>
       <summary>Start of the working day in minutes after midnight</summary>

@@ -23,6 +23,9 @@ use crate::services::ecal_service::{
     load_snapshot_prefer_eds, parse_change_record,
 };
 use crate::services::eds_service;
+use crate::services::recurrence_service::{
+    next_recurrence_date, parse_ical_date, parse_recurrence_rule,
+};
 use crate::services::settings_service::AppSettings;
 use adw::prelude::*;
 use adw::subclass::prelude::*;
@@ -559,6 +562,11 @@ impl TasksPage {
             .title("Fällig am (YYYY-MM-DD, optional)")
             .build();
         details.add(&due_entry);
+        let recurrence_entry = adw::EntryRow::builder()
+            .title("Wiederholung (RRULE, optional)")
+            .build();
+        recurrence_entry.set_tooltip_text(Some("z. B. FREQ=WEEKLY;BYDAY=MO;COUNT=10"));
+        details.add(&recurrence_entry);
 
         let priority_row = adw::ActionRow::builder()
             .title("Priorität (1 = hoch, 0 = normal)")
@@ -568,6 +576,22 @@ impl TasksPage {
         priority_spin.set_value(0.0);
         priority_row.add_suffix(&priority_spin);
         details.add(&priority_row);
+
+        let status_row = adw::ComboRow::builder()
+            .title("Status")
+            .model(&gtk::StringList::new(&[
+                "Nicht begonnen",
+                "In Bearbeitung",
+                "Erledigt",
+                "Abgebrochen",
+            ]))
+            .build();
+        details.add(&status_row);
+        let percent_row = adw::SpinRow::with_range(0.0, 100.0, 5.0);
+        percent_row.set_title("Fortschritt (Prozent)");
+        percent_row.set_digits(0);
+        percent_row.set_snap_to_ticks(true);
+        details.add(&percent_row);
 
         let categories_entry = adw::EntryRow::builder()
             .title("Kategorien (Komma getrennt)")
@@ -690,8 +714,12 @@ impl TasksPage {
         if let Some(task) = task_to_edit.as_ref() {
             title_entry.set_text(&task.title());
             due_entry.set_text(&task.due_date());
+            recurrence_entry
+                .set_text(&ical_property(&task.component(), "RRULE").unwrap_or_default());
             let priority = task.priority().parse::<f64>().unwrap_or(0.0);
             priority_spin.set_value(priority);
+            status_row.set_selected(task_status_index(&task.component()));
+            percent_row.set_value(parse_task_percent(&task.component()) as f64);
             categories_entry
                 .set_text(&ical_property(&task.component(), "CATEGORIES").unwrap_or_default());
             attachment_buffer.set_text(&ical_properties(&task.component(), "ATTACH").join("\n"));
@@ -802,32 +830,41 @@ impl TasksPage {
                 &attachment_buffer.end_iter(),
                 false,
             );
+            let recurrence = recurrence_entry.text();
             let priority = priority_spin.value() as u8;
             let categories = categories_entry.text();
             let reminder_minutes = reminder_row.value().round() as u32;
-            let completed = task_to_edit_for_save
-                .as_ref()
-                .is_some_and(TaskItemObject::is_completed);
+            let status = task_status_from_index(status_row.selected());
+            let percent = match status {
+                "COMPLETED" => 100,
+                "NEEDS-ACTION" => 0,
+                _ => percent_row.value().round().clamp(0.0, 100.0) as u8,
+            };
             let component_result = match task_to_edit_for_save.as_ref() {
                 Some(task) => update_task_component(
                     &task.component(),
                     &title_entry.text(),
                     &due_entry.text(),
+                    &recurrence,
                     priority,
                     &categories,
                     reminder_minutes,
                     &description,
                     &attachments,
-                    completed,
+                    status,
+                    percent,
                 ),
                 None => build_task_component(
                     &title_entry.text(),
                     &due_entry.text(),
+                    &recurrence,
                     priority,
                     &categories,
                     reminder_minutes,
                     &description,
                     &attachments,
+                    status,
+                    percent,
                 ),
             };
             let component = match component_result {
@@ -845,6 +882,7 @@ impl TasksPage {
             } else {
                 priority.to_string()
             };
+            let completed = status == "COMPLETED";
             let source_uid_for_model = source_uid.clone();
             let operation_uid = task_to_edit_for_save.as_ref().map(TaskItemObject::id);
             let task_to_edit_for_result = task_to_edit_for_save.clone();
@@ -1013,7 +1051,10 @@ fn compare_tasks(
 ) -> std::cmp::Ordering {
     let completed_order = left.is_completed().cmp(&right.is_completed());
     let ordering = match sort {
-        TaskSort::DueDate => compare_optional_dates(&left.due_date(), &right.due_date()),
+        TaskSort::DueDate => compare_optional_dates(
+            task_next_due_date(left, Local::now().date_naive()),
+            task_next_due_date(right, Local::now().date_naive()),
+        ),
         TaskSort::Title => left
             .title()
             .to_lowercase()
@@ -1034,8 +1075,8 @@ fn compare_tasks(
         .then_with(|| left.id().cmp(&right.id()))
 }
 
-fn compare_optional_dates(left: &str, right: &str) -> std::cmp::Ordering {
-    match (task_due_date(left), task_due_date(right)) {
+fn compare_optional_dates(left: Option<NaiveDate>, right: Option<NaiveDate>) -> std::cmp::Ordering {
+    match (left, right) {
         (Some(left), Some(right)) => left.cmp(&right),
         (Some(_), None) => std::cmp::Ordering::Less,
         (None, Some(_)) => std::cmp::Ordering::Greater,
@@ -1046,7 +1087,9 @@ fn compare_optional_dates(left: &str, right: &str) -> std::cmp::Ordering {
 fn task_matches_filter(task: &TaskItemObject, filter: TaskFilter, query: &str) -> bool {
     let matches_filter = match filter {
         TaskFilter::All => true,
-        TaskFilter::Today => task_due_date(&task.due_date()) == Some(Local::now().date_naive()),
+        TaskFilter::Today => {
+            task_next_due_date(task, Local::now().date_naive()) == Some(Local::now().date_naive())
+        }
         TaskFilter::Important => task
             .priority()
             .parse::<u8>()
@@ -1071,6 +1114,84 @@ fn task_due_date(value: &str) -> Option<NaiveDate> {
     NaiveDate::parse_from_str(value.trim(), "%Y-%m-%d")
         .or_else(|_| NaiveDate::parse_from_str(value.trim(), "%Y%m%d"))
         .ok()
+}
+
+fn task_excluded_dates(task: &TaskItemObject) -> Vec<NaiveDate> {
+    ical_properties(&task.component(), "EXDATE")
+        .iter()
+        .flat_map(|value| value.split(','))
+        .filter_map(parse_ical_date)
+        .collect()
+}
+
+fn task_next_due_date(task: &TaskItemObject, from: NaiveDate) -> Option<NaiveDate> {
+    let due = task_due_date(&task.due_date())?;
+    let Some(raw_rule) = ical_property(&task.component(), "RRULE") else {
+        return Some(due);
+    };
+    let Some(rule) = parse_recurrence_rule(&raw_rule) else {
+        return Some(due);
+    };
+    next_recurrence_date(&rule, due, from, &task_excluded_dates(task))
+}
+
+fn task_status_value(raw: &str) -> &'static str {
+    let status = ical_property(raw, "STATUS")
+        .unwrap_or_default()
+        .to_ascii_uppercase();
+    match status.as_str() {
+        "IN-PROCESS" => "IN-PROCESS",
+        "COMPLETED" => "COMPLETED",
+        "CANCELLED" => "CANCELLED",
+        _ => "NEEDS-ACTION",
+    }
+}
+
+fn task_status_index(raw: &str) -> u32 {
+    match task_status_value(raw) {
+        "IN-PROCESS" => 1,
+        "COMPLETED" => 2,
+        "CANCELLED" => 3,
+        _ => 0,
+    }
+}
+
+fn task_status_from_index(index: u32) -> &'static str {
+    match index {
+        1 => "IN-PROCESS",
+        2 => "COMPLETED",
+        3 => "CANCELLED",
+        _ => "NEEDS-ACTION",
+    }
+}
+
+fn task_status_label(raw: &str) -> &'static str {
+    match task_status_value(raw) {
+        "IN-PROCESS" => "In Bearbeitung",
+        "COMPLETED" => "Erledigt",
+        "CANCELLED" => "Abgebrochen",
+        _ => "Nicht begonnen",
+    }
+}
+
+fn parse_task_percent(raw: &str) -> u8 {
+    let default = (task_status_value(raw) == "COMPLETED")
+        .then_some(100)
+        .unwrap_or(0);
+    ical_property(raw, "PERCENT-COMPLETE")
+        .and_then(|value| value.parse::<u8>().ok())
+        .unwrap_or(default)
+        .min(100)
+}
+
+fn normalize_task_status(value: &str) -> Result<&'static str, String> {
+    match value.to_ascii_uppercase().as_str() {
+        "NEEDS-ACTION" => Ok("NEEDS-ACTION"),
+        "IN-PROCESS" => Ok("IN-PROCESS"),
+        "COMPLETED" => Ok("COMPLETED"),
+        "CANCELLED" => Ok("CANCELLED"),
+        _ => Err("Der Aufgabenstatus ist ungültig".to_string()),
+    }
 }
 
 fn upsert_task_row(
@@ -1139,12 +1260,26 @@ fn append_task_row(
     task: &TaskItemObject,
 ) {
     let title = glib::markup_escape_text(&task.title());
+    let due = task.due_date();
+    let today = Local::now().date_naive();
+    let recurrence_due = task_next_due_date(task, today);
+    let due_text = match (task_due_date(&due), recurrence_due) {
+        (Some(base), Some(next)) if base != next => format!(
+            "Fällig: {} · Nächste Fälligkeit: {}",
+            due,
+            next.format("%Y-%m-%d")
+        ),
+        (Some(_), None) if ical_property(&task.component(), "RRULE").is_some() => {
+            format!("Fällig: {due} · Serie beendet")
+        }
+        _ => format!("Fällig: {due}"),
+    };
     let row = adw::ActionRow::builder()
         .title(title.as_str())
         .subtitle(&format!(
-            "Fällig: {} · Priorität: {}",
-            task.due_date(),
-            task.priority()
+            "{due_text} · Priorität: {} · {}",
+            task.priority(),
+            task_status_label(&task.component())
         ))
         .build();
     unsafe {
@@ -1492,11 +1627,14 @@ fn show_toast_for_widget<W: IsA<gtk::Widget>>(widget: &W, message: &str) {
 fn build_task_component(
     title: &str,
     due: &str,
+    recurrence: &str,
     priority: u8,
     categories: &str,
     reminder_minutes: u32,
     description: &str,
     attachments: &str,
+    status: &str,
+    percent: u8,
 ) -> Result<String, String> {
     let title = title.trim();
     if title.is_empty() {
@@ -1507,20 +1645,35 @@ fn build_task_component(
         chrono::NaiveDate::parse_from_str(due, "%Y-%m-%d")
             .map_err(|_| "Das Fälligkeitsdatum muss YYYY-MM-DD entsprechen".to_string())?;
     }
+    if recurrence
+        .chars()
+        .any(|character| character == '\r' || character == '\n')
+    {
+        return Err("Die Wiederholungsregel enthält ungültige Zeilenumbrüche".to_string());
+    }
     if priority > 9 {
         return Err("Die Priorität muss zwischen 0 und 9 liegen".to_string());
     }
+    let status = normalize_task_status(status)?;
+    let percent = match status {
+        "COMPLETED" => 100,
+        "NEEDS-ACTION" => 0,
+        _ => percent.min(100),
+    };
 
     let mut component = vec![
         "BEGIN:VTODO".to_string(),
         format!("UID:evolution-gtk4-{}", uuid::Uuid::new_v4()),
         format!("DTSTAMP:{}", Utc::now().format("%Y%m%dT%H%M%SZ")),
-        "STATUS:NEEDS-ACTION".to_string(),
-        "PERCENT-COMPLETE:0".to_string(),
+        format!("STATUS:{status}"),
+        format!("PERCENT-COMPLETE:{percent}"),
         format!("SUMMARY:{}", escape_ical_text(title)),
     ];
     if !due.is_empty() {
         component.push(format!("DUE;VALUE=DATE:{}", due.replace('-', "")));
+    }
+    if !recurrence.trim().is_empty() {
+        component.push(format!("RRULE:{}", recurrence.trim()));
     }
     if priority > 0 {
         component.push(format!("PRIORITY:{priority}"));
@@ -1554,6 +1707,9 @@ fn build_task_component(
             escape_ical_text(description.trim())
         ));
     }
+    if status == "COMPLETED" {
+        component.push(format!("COMPLETED:{}", Utc::now().format("%Y%m%dT%H%M%SZ")));
+    }
     component.push("END:VTODO".to_string());
     Ok(format!("{}\r\n", component.join("\r\n")))
 }
@@ -1562,12 +1718,14 @@ fn update_task_component(
     existing: &str,
     title: &str,
     due: &str,
+    recurrence: &str,
     priority: u8,
     categories: &str,
     reminder_minutes: u32,
     description: &str,
     attachments: &str,
-    completed: bool,
+    status: &str,
+    percent: u8,
 ) -> Result<String, String> {
     let title = title.trim();
     if title.is_empty() {
@@ -1578,9 +1736,21 @@ fn update_task_component(
         chrono::NaiveDate::parse_from_str(due, "%Y-%m-%d")
             .map_err(|_| "Das Fälligkeitsdatum muss YYYY-MM-DD entsprechen".to_string())?;
     }
+    if recurrence
+        .chars()
+        .any(|character| character == '\r' || character == '\n')
+    {
+        return Err("Die Wiederholungsregel enthält ungültige Zeilenumbrüche".to_string());
+    }
     if priority > 9 {
         return Err("Die Priorität muss zwischen 0 und 9 liegen".to_string());
     }
+    let status = normalize_task_status(status)?;
+    let percent = match status {
+        "COMPLETED" => 100,
+        "NEEDS-ACTION" => 0,
+        _ => percent.min(100),
+    };
 
     let mut component = update_ical_property(existing, "SUMMARY", Some(&escape_ical_text(title)));
     component = if due.is_empty() {
@@ -1588,6 +1758,11 @@ fn update_task_component(
     } else {
         update_ical_property(&component, "DUE;VALUE=DATE", Some(&due.replace('-', "")))
     };
+    component = update_ical_property(
+        &component,
+        "RRULE",
+        (!recurrence.trim().is_empty()).then_some(recurrence.trim()),
+    );
     component = if priority == 0 {
         update_ical_property(&component, "PRIORITY", None)
     } else {
@@ -1610,21 +1785,9 @@ fn update_task_component(
             Some(&escape_ical_text(description.trim())),
         )
     };
-    component = update_ical_property(
-        &component,
-        "STATUS",
-        Some(if completed {
-            "COMPLETED"
-        } else {
-            "NEEDS-ACTION"
-        }),
-    );
-    component = update_ical_property(
-        &component,
-        "PERCENT-COMPLETE",
-        Some(if completed { "100" } else { "0" }),
-    );
-    component = if completed {
+    component = update_ical_property(&component, "STATUS", Some(status));
+    component = update_ical_property(&component, "PERCENT-COMPLETE", Some(&percent.to_string()));
+    component = if status == "COMPLETED" {
         update_ical_property(
             &component,
             "COMPLETED",
@@ -1816,16 +1979,20 @@ mod tests {
         let component = build_task_component(
             "Prepare, report; Q4",
             "2026-08-11",
+            "FREQ=WEEKLY;BYDAY=MO;COUNT=4",
             1,
             "Work, Important",
             30,
             "Line one\nLine two",
             "",
+            "NEEDS-ACTION",
+            0,
         )
         .expect("task component should be valid");
         assert!(component.starts_with("BEGIN:VTODO\r\n"));
         assert!(component.contains("SUMMARY:Prepare\\, report\\; Q4\r\n"));
         assert!(component.contains("DUE;VALUE=DATE:20260811\r\n"));
+        assert!(component.contains("RRULE:FREQ=WEEKLY;BYDAY=MO;COUNT=4\r\n"));
         assert!(component.contains("PRIORITY:1\r\n"));
         assert!(component.contains("CATEGORIES:Work,Important\r\n"));
         assert!(component.contains("TRIGGER:-PT30M\r\n"));
@@ -1835,9 +2002,28 @@ mod tests {
 
     #[test]
     fn task_component_rejects_invalid_due_date_and_empty_title() {
-        assert!(build_task_component("", "2026-08-11", 0, "", 0, "", "").is_err());
-        assert!(build_task_component("Task", "11.08.2026", 0, "", 0, "", "").is_err());
-        assert!(build_task_component("Task", "", 10, "", 0, "", "").is_err());
+        assert!(
+            build_task_component("", "2026-08-11", "", 0, "", 0, "", "", "NEEDS-ACTION", 0,)
+                .is_err()
+        );
+        assert!(
+            build_task_component(
+                "Task",
+                "11.08.2026",
+                "",
+                0,
+                "",
+                0,
+                "",
+                "",
+                "NEEDS-ACTION",
+                0,
+            )
+            .is_err()
+        );
+        assert!(
+            build_task_component("Task", "", "", 10, "", 0, "", "", "NEEDS-ACTION", 0).is_err()
+        );
     }
 
     #[test]
@@ -1860,17 +2046,20 @@ mod tests {
             existing,
             "New, title",
             "2026-08-20",
+            "FREQ=MONTHLY;COUNT=2",
             2,
             "Work,Next",
             10,
             "New description",
             "",
-            false,
+            "NEEDS-ACTION",
+            0,
         )
         .expect("task update should be valid");
         assert!(updated.contains("UID:task-1\r\n"));
         assert!(updated.contains("SUMMARY:New\\, title\r\n"));
         assert!(updated.contains("DUE;VALUE=DATE:20260820\r\n"));
+        assert!(updated.contains("RRULE:FREQ=MONTHLY;COUNT=2\r\n"));
         assert!(updated.contains("PRIORITY:2\r\n"));
         assert!(updated.contains("CATEGORIES:Work,Next\r\n"));
         assert!(updated.contains("DESCRIPTION:New description\r\n"));
@@ -1880,16 +2069,36 @@ mod tests {
         assert!(updated.contains("STATUS:NEEDS-ACTION\r\n"));
         assert!(!updated.contains("COMPLETED:"));
 
+        let in_progress = update_task_component(
+            existing,
+            "New, title",
+            "2026-08-20",
+            "",
+            2,
+            "Work,Next",
+            10,
+            "New description",
+            "",
+            "IN-PROCESS",
+            45,
+        )
+        .expect("in-progress task update should be valid");
+        assert!(in_progress.contains("STATUS:IN-PROCESS\r\n"));
+        assert!(in_progress.contains("PERCENT-COMPLETE:45\r\n"));
+        assert!(!in_progress.contains("COMPLETED:"));
+
         let cleared = update_task_component(
             existing,
             "New, title",
             "2026-08-20",
+            "",
             2,
             "Work,Next",
             0,
             "New description",
             "",
-            false,
+            "NEEDS-ACTION",
+            0,
         )
         .expect("task reminder should be removable");
         assert!(!cleared.contains("BEGIN:VALARM"));
@@ -1900,11 +2109,14 @@ mod tests {
         let component = build_task_component(
             "Prepare report",
             "2026-08-11",
+            "",
             1,
             "Work",
             0,
             "",
             "https://files.example.test/report.pdf?kind=a,b;rev=2\nfile:///tmp/notes.txt",
+            "NEEDS-ACTION",
+            0,
         )
         .expect("task with attachments should serialize");
         assert!(
@@ -1923,12 +2135,14 @@ mod tests {
             existing,
             "Prepare report",
             "",
+            "",
             0,
             "",
             0,
             "",
             "https://files.example.test/report.pdf?kind=a,b;rev=2\nhttps://files.example.test/new.pdf",
-            false,
+            "NEEDS-ACTION",
+            0,
         )
         .expect("task attachment update should be valid");
         assert!(updated.contains(
@@ -1968,6 +2182,35 @@ mod tests {
 
         task.set_completed(true);
         assert!(task_matches_filter(&task, TaskFilter::Completed, "bill"));
+    }
+
+    #[test]
+    fn recurring_task_uses_next_due_date_without_replacing_base_due_date() {
+        let task = TaskItemObject::new(
+            "local-calendar",
+            "task-recurring",
+            "Water plants",
+            "2026-08-01",
+            "normal",
+            false,
+            concat!(
+                "BEGIN:VTODO\r\n",
+                "UID:task-recurring\r\n",
+                "DUE;VALUE=DATE:20260801\r\n",
+                "RRULE:FREQ=WEEKLY;BYDAY=MO;COUNT=4\r\n",
+                "END:VTODO\r\n"
+            ),
+        );
+
+        assert_eq!(task.due_date(), "2026-08-01");
+        assert_eq!(
+            task_next_due_date(&task, NaiveDate::from_ymd_opt(2026, 8, 11).unwrap()),
+            Some(NaiveDate::from_ymd_opt(2026, 8, 17).unwrap())
+        );
+        assert_eq!(
+            task_next_due_date(&task, NaiveDate::from_ymd_opt(2026, 9, 1).unwrap()),
+            None
+        );
     }
 }
 

@@ -1727,6 +1727,41 @@ impl PreferencesDialog {
         group_calendar_view.add(&row_time_format);
         page_calendar.add(&group_calendar_view);
 
+        let group_calendar_days = adw::PreferencesGroup::builder()
+            .title("Arbeitstage")
+            .description("Diese Wochentage werden in der Arbeitswochenansicht angezeigt")
+            .build();
+        for (day, label) in [
+            ("monday", "Montag"),
+            ("tuesday", "Dienstag"),
+            ("wednesday", "Mittwoch"),
+            ("thursday", "Donnerstag"),
+            ("friday", "Freitag"),
+            ("saturday", "Samstag"),
+            ("sunday", "Sonntag"),
+        ] {
+            let row = adw::SwitchRow::builder().title(label).build();
+            if let Some(settings) = settings.clone() {
+                let configured_days = settings.calendar_workdays();
+                row.set_active(configured_days.split(',').any(|candidate| candidate == day));
+                let day = day.to_string();
+                row.connect_active_notify(move |row| {
+                    let configured_days = settings.calendar_workdays();
+                    let mut days = configured_days
+                        .split(',')
+                        .filter(|candidate| !candidate.is_empty() && *candidate != day)
+                        .map(ToOwned::to_owned)
+                        .collect::<Vec<_>>();
+                    if row.is_active() {
+                        days.push(day.clone());
+                    }
+                    settings.set_calendar_workdays(&days.join(","));
+                });
+            }
+            group_calendar_days.add(&row);
+        }
+        page_calendar.add(&group_calendar_days);
+
         let group_calendar_time = adw::PreferencesGroup::builder()
             .title("Arbeitszeit &amp; Erinnerungen")
             .description("Zeiten werden als Minuten nach Mitternacht gespeichert; 0 Minuten deaktiviert Erinnerungen")

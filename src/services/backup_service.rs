@@ -16,7 +16,7 @@ use std::path::{Component, Path, PathBuf};
 
 use super::settings_service::AppSettings;
 
-const CURRENT_VERSION: u32 = 2;
+const CURRENT_VERSION: u32 = 3;
 
 fn default_calendar_view() -> String {
     "month".to_string()
@@ -24,6 +24,10 @@ fn default_calendar_view() -> String {
 
 fn default_calendar_week_start() -> String {
     "monday".to_string()
+}
+
+fn default_calendar_workdays() -> String {
+    "monday,tuesday,wednesday,thursday,friday".to_string()
 }
 
 fn default_mail_sort_field() -> String {
@@ -125,6 +129,8 @@ struct BackupSettings {
     calendar_view: String,
     #[serde(default = "default_calendar_week_start")]
     calendar_week_start: String,
+    #[serde(default = "default_calendar_workdays")]
+    calendar_workdays: String,
     #[serde(default = "default_workday_start")]
     calendar_workday_start: u32,
     #[serde(default = "default_workday_end")]
@@ -271,6 +277,7 @@ impl BackupSettings {
             quote_style: settings.quote_style(),
             calendar_view: settings.calendar_view(),
             calendar_week_start: settings.calendar_week_start(),
+            calendar_workdays: settings.calendar_workdays(),
             calendar_workday_start: settings.calendar_workday_start_minutes(),
             calendar_workday_end: settings.calendar_workday_end_minutes(),
             calendar_default_reminder: settings.calendar_default_reminder_minutes(),
@@ -326,6 +333,7 @@ impl BackupSettings {
         settings.set_quote_style(&self.quote_style);
         settings.set_calendar_view(&self.calendar_view);
         settings.set_calendar_week_start(&self.calendar_week_start);
+        settings.set_calendar_workdays(&self.calendar_workdays);
         settings.set_calendar_workday_start_minutes(self.calendar_workday_start);
         settings.set_calendar_workday_end_minutes(self.calendar_workday_end);
         settings.set_calendar_default_reminder_minutes(self.calendar_default_reminder);
@@ -898,6 +906,10 @@ mod tests {
         assert!(settings.default_task_source.is_empty());
         assert!(settings.default_memo_source.is_empty());
         assert_eq!(settings.calendar_week_start, "monday");
+        assert_eq!(
+            settings.calendar_workdays,
+            "monday,tuesday,wednesday,thursday,friday"
+        );
         assert_eq!(settings.calendar_workday_start, 540);
         assert_eq!(settings.calendar_workday_end, 1_020);
         assert_eq!(settings.calendar_default_reminder, 15);

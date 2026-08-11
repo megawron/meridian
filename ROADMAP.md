@@ -556,15 +556,18 @@ werden.
   markiert den heutigen Tag, zeigt geladene VEVENTs direkt in den Tageszellen
   und berücksichtigt in Tag/Woche auch zeit- und ganztägige Mehrtagstermine.
   Standardansicht, Standard-ECal-Quelle, Wochenbeginn, ISO-Kalenderwochen,
-  Datums-/Zeitformat, Arbeitszeit und die Standard-Erinnerung werden über
+  Datums-/Zeitformat, Arbeitstage, Arbeitszeit und die Standard-Erinnerung werden über
   GSettings persistent konfiguriert und in
   der portablen Ansicht bzw. im Termin-Editor verwendet.
   EDS-Quellenstatus wird angezeigt und neue VEVENTs können über den nativen
   ECal-Adapter gespeichert, bearbeitet und gelöscht werden; iCalendar-Export,
-  Wiederholungsregeln, Teilnehmer, Kategorien, private Termine, Konferenz-URLs,
-  einfache Erinnerungen und portable Datei-/URI-Anhänge sind im Editor vorbereitet.
+  Wiederholungsregeln, Teilnehmer, Kategorien, private Termine, Status/Verfügbarkeit,
+  Konferenz-URLs, einfache Erinnerungen und portable Datei-/URI-Anhänge sind im Editor
+  vorbereitet.
   Beim Bearbeiten bleiben bestehende `ATTACH`-Parameter für unveränderte URIs erhalten;
-  eine Dateiauswahl ergänzt mehrere Anhänge zeilenweise. Kategoriebezeichnungen werden
+  eine Dateiauswahl ergänzt mehrere Anhänge zeilenweise. Zusätzliche Vorkommen und
+  Ausnahmen werden über `RDATE`/`EXDATE` kommasepariert bearbeitet und behalten bei
+  vorhandenen Einträgen die DATE-/Zeitzonen-Parameter. Kategoriebezeichnungen werden
   zusätzlich in einem portablen, versionierten Farbspeicher verwaltet und
   können in den Einstellungen bearbeitet werden. Lokale/importierte VEVENTs werden
   in den Tag-, Wochen- und Monatsansichten nach DAILY/WEEKLY/MONTHLY/YEARLY-
@@ -647,6 +650,13 @@ werden.
   die Aufgabenansicht bietet Suche sowie die Kategorien Alle/Heute/Wichtig/
   Erledigt und filtert nach Statusänderungen erneut; die Notizensuche umfasst
   Titel, Inhalt, Zeitstempel und die erhaltene VJOURNAL-Komponente. VTODO-
+  Statuswerte NEEDS-ACTION, IN-PROCESS, COMPLETED und CANCELLED sowie
+  PERCENT-COMPLETE werden im portablen Task-Editor bearbeitet und gespeichert.
+  Wiederkehrende Aufgaben können als RFC5545-RRULE eingegeben, geladen und
+  geändert werden. Kalender und Aufgaben verwenden dafür denselben portablen
+  RRULE-Rechenkern; die Aufgabenliste berechnet COUNT/UNTIL/EXDATE-bewusst die
+  nächste Fälligkeit und verwendet sie für Heute-Filter, Sortierung und Anzeige.
+  Die native EDS-Serienmutation und die Linux-Laufzeitabnahme bleiben offen.
   Kategorien werden im Editor geladen, als RFC5545-CATEGORIES gespeichert und
   beim Bearbeiten aktualisiert; einfache VTODO-Display-Erinnerungen werden als
   VALARM/TRIGGER gespeichert und beim Bearbeiten angepasst. Der portable

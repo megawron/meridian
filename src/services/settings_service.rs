@@ -164,6 +164,17 @@ impl AppSettings {
         }
     }
 
+    pub fn calendar_workdays(&self) -> String {
+        sanitize_calendar_workdays(&self.settings.string("calendar-workdays"))
+    }
+
+    pub fn set_calendar_workdays(&self, value: &str) {
+        let value = sanitize_calendar_workdays(value);
+        if let Err(error) = self.settings.set_string("calendar-workdays", &value) {
+            tracing::warn!(%error, "Could not persist calendar workdays");
+        }
+    }
+
     pub fn calendar_workday_start_minutes(&self) -> u32 {
         self.settings.int("calendar-workday-start").clamp(0, 1_439) as u32
     }
@@ -618,6 +629,7 @@ impl AppSettings {
             "default-memo-source",
             "calendar-view",
             "calendar-week-start",
+            "calendar-workdays",
             "calendar-workday-start",
             "calendar-workday-end",
             "calendar-default-reminder",
@@ -706,9 +718,34 @@ fn sanitize_spellcheck_languages(value: &str) -> String {
     languages.join(",")
 }
 
+fn sanitize_calendar_workdays(value: &str) -> String {
+    const DAYS: [&str; 7] = [
+        "monday",
+        "tuesday",
+        "wednesday",
+        "thursday",
+        "friday",
+        "saturday",
+        "sunday",
+    ];
+    let selected = DAYS
+        .into_iter()
+        .filter(|day| {
+            value
+                .split(|character: char| character == ',' || character.is_ascii_whitespace())
+                .any(|candidate| candidate.eq_ignore_ascii_case(day))
+        })
+        .collect::<Vec<_>>();
+    if selected.is_empty() {
+        "monday,tuesday,wednesday,thursday,friday".to_string()
+    } else {
+        selected.join(",")
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::sanitize_spellcheck_languages;
+    use super::{sanitize_calendar_workdays, sanitize_spellcheck_languages};
 
     #[test]
     fn spellcheck_language_values_are_sanitized_and_deduplicated() {
@@ -717,5 +754,17 @@ mod tests {
             "de-DE,en-US"
         );
         assert_eq!(sanitize_spellcheck_languages(""), "");
+    }
+
+    #[test]
+    fn calendar_workdays_are_normalized_in_week_order() {
+        assert_eq!(
+            sanitize_calendar_workdays("sunday,Monday,friday,Monday"),
+            "monday,friday,sunday"
+        );
+        assert_eq!(
+            sanitize_calendar_workdays(""),
+            "monday,tuesday,wednesday,thursday,friday"
+        );
     }
 }
