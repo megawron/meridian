@@ -401,6 +401,7 @@ impl AppSettings {
     /// folder-left, list-above-preview arrangement.
     pub fn mail_layout(&self) -> String {
         match self.settings.string("mail-layout").as_str() {
+            "modern" => "modern".to_string(),
             "classic" => "classic".to_string(),
             _ => "classic".to_string(),
         }
