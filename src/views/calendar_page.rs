@@ -1136,7 +1136,7 @@ impl CalendarPage {
                     &event.component,
                     &format!("{} · {}", event_time_text(&event), title),
                 ));
-                install_event_drag_source(&event_label, &event);
+                install_event_drag_source(&event_label, &event, *day);
                 cells[day_index][slot as usize].append(&event_label);
             }
         }
@@ -1340,7 +1340,7 @@ impl CalendarPage {
                 event_button.connect_clicked(move |button| {
                     open_event_editor_for_widget(button, &event_for_click);
                 });
-                install_event_drag_source(&event_button, event);
+                install_event_drag_source(&event_button, event, date);
                 cell_box.append(&event_button);
             }
             if day_events.len() > 3 {
@@ -1450,11 +1450,20 @@ impl CalendarPage {
     }
 }
 
-fn install_event_drag_source<W: IsA<gtk::Widget>>(widget: &W, event: &CalendarEventRecord) {
+fn install_event_drag_source<W: IsA<gtk::Widget>>(
+    widget: &W,
+    event: &CalendarEventRecord,
+    occurrence_date: NaiveDate,
+) {
     if event.source_uid.trim().is_empty() || event.uid.trim().is_empty() {
         return;
     }
-    let payload = format!("{}\n{}", event.source_uid, event.uid);
+    let payload = format!(
+        "{}\n{}\n{}",
+        event.source_uid,
+        event.uid,
+        occurrence_date.format("%Y-%m-%d")
+    );
     let drag_source = gtk::DragSource::new();
     drag_source.set_actions(gdk::DragAction::MOVE);
     drag_source
@@ -1473,9 +1482,16 @@ fn install_day_drop_target<W: IsA<gtk::Widget>>(
         let Ok(payload) = value.get::<String>() else {
             return false;
         };
-        let Some((source_uid, uid)) = payload.split_once('\n') else {
+        let mut payload_parts = payload.splitn(3, '\n');
+        let Some(source_uid) = payload_parts.next() else {
             return false;
         };
+        let Some(uid) = payload_parts.next() else {
+            return false;
+        };
+        let occurrence_date = payload_parts
+            .next()
+            .and_then(|value| NaiveDate::parse_from_str(value, "%Y-%m-%d").ok());
         let Some(page) = page_weak.upgrade() else {
             return false;
         };
@@ -1490,7 +1506,7 @@ fn install_day_drop_target<W: IsA<gtk::Widget>>(
             show_toast_for_widget(&page, "Der gezogene Termin ist nicht mehr geladen");
             return false;
         };
-        let Some(start_date) = event_start_date(&event) else {
+        let Some(start_date) = occurrence_date.or_else(|| event_start_date(&event)) else {
             show_toast_for_widget(&page, "Der Termin besitzt kein gültiges Startdatum");
             return false;
         };
@@ -1504,14 +1520,9 @@ fn shift_event_component(raw: &str, delta_days: i64) -> Result<String, String> {
     if raw.trim().is_empty() {
         return Err("Der Termin enthält keine iCalendar-Daten".to_string());
     }
-    if ical_property(raw, "RRULE").is_some() {
-        return Err(
-            "Wiederkehrende Termine bitte über „Bearbeiten“ verschieben; die Serie bleibt so unverändert".to_string(),
-        );
-    }
 
     let mut updated = raw.to_string();
-    for property_name in ["DTSTART", "DTEND"] {
+    for property_name in ["DTSTART", "DTEND", "RECURRENCE-ID"] {
         let Some(value) = ical_property(&updated, property_name) else {
             continue;
         };
@@ -1524,7 +1535,67 @@ fn shift_event_component(raw: &str, delta_days: i64) -> Result<String, String> {
             .unwrap_or_else(|| property_name.to_string());
         updated = update_ical_property(&updated, &property_prefix, Some(&shifted));
     }
+    for property_name in ["RDATE", "EXDATE"] {
+        updated = shift_ical_date_list_property(&updated, property_name, delta_days)?;
+    }
+    updated = shift_rrule_until(&updated, delta_days)?;
     Ok(updated)
+}
+
+fn shift_ical_date_list_property(
+    raw: &str,
+    property_name: &str,
+    delta_days: i64,
+) -> Result<String, String> {
+    let Some(property_prefix) = ical_property_prefix(raw, property_name) else {
+        return Ok(raw.to_string());
+    };
+    let shifted_values = ical_properties(raw, property_name)
+        .iter()
+        .flat_map(|value| value.split(','))
+        .map(|value| {
+            shift_ical_datetime_value(value, delta_days).ok_or_else(|| {
+                format!("{property_name} konnte beim Verschieben nicht ausgewertet werden")
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(update_ical_property(
+        raw,
+        &property_prefix,
+        Some(&shifted_values.join(",")),
+    ))
+}
+
+fn shift_rrule_until(raw: &str, delta_days: i64) -> Result<String, String> {
+    let Some(rule) = ical_property(raw, "RRULE") else {
+        return Ok(raw.to_string());
+    };
+    let mut changed = false;
+    let shifted_rule = rule
+        .split(';')
+        .map(|part| {
+            let Some((key, value)) = part.split_once('=') else {
+                return Ok(part.to_string());
+            };
+            if !key.eq_ignore_ascii_case("UNTIL") {
+                return Ok(part.to_string());
+            }
+            let shifted = shift_ical_datetime_value(value, delta_days)
+                .ok_or_else(|| "RRULE-UNTIL konnte beim Verschieben nicht ausgewertet werden")?;
+            changed = true;
+            Ok(format!("{key}={shifted}"))
+        })
+        .collect::<Result<Vec<_>, String>>()?
+        .join(";");
+    if !changed {
+        return Ok(raw.to_string());
+    }
+    let property_prefix = ical_property_prefix(raw, "RRULE").unwrap_or_else(|| "RRULE".to_string());
+    Ok(update_ical_property(
+        raw,
+        &property_prefix,
+        Some(&shifted_rule),
+    ))
 }
 
 fn ical_property_prefix(raw: &str, target: &str) -> Option<String> {
@@ -2520,12 +2591,21 @@ mod tests {
     }
 
     #[test]
-    fn moving_recurring_event_requires_explicit_series_edit() {
+    fn moving_recurring_event_shifts_series_dates_and_until() {
         let raw = concat!(
             "BEGIN:VEVENT\r\nUID:event-1\r\n",
-            "DTSTART:20260810T120000Z\r\nRRULE:FREQ=WEEKLY\r\nEND:VEVENT\r\n"
+            "DTSTART:20260810T120000Z\r\n",
+            "DTEND:20260810T130000Z\r\n",
+            "RRULE:FREQ=WEEKLY;UNTIL=20260901T120000Z\r\n",
+            "RDATE:20260817T120000Z,20260824T120000Z\r\n",
+            "EXDATE:20260831T120000Z\r\n",
+            "END:VEVENT\r\n"
         );
-        let error = shift_event_component(raw, 1).expect_err("series move should be explicit");
-        assert!(error.contains("Wiederkehrende Termine"));
+        let shifted = shift_event_component(raw, 2).expect("series move should work");
+        assert!(shifted.contains("DTSTART:20260812T120000Z"));
+        assert!(shifted.contains("DTEND:20260812T130000Z"));
+        assert!(shifted.contains("RRULE:FREQ=WEEKLY;UNTIL=20260903T120000Z"));
+        assert!(shifted.contains("RDATE:20260819T120000Z,20260826T120000Z"));
+        assert!(shifted.contains("EXDATE:20260902T120000Z"));
     }
 }

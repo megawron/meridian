@@ -567,6 +567,16 @@ impl TasksPage {
             .build();
         recurrence_entry.set_tooltip_text(Some("z. B. FREQ=WEEKLY;BYDAY=MO;COUNT=10"));
         details.add(&recurrence_entry);
+        let rdate_entry = adw::EntryRow::builder()
+            .title("Zusätzliche Fälligkeiten (RDATE, kommasepariert)")
+            .build();
+        rdate_entry.set_tooltip_text(Some("z. B. 20260812,20260819"));
+        details.add(&rdate_entry);
+        let exdate_entry = adw::EntryRow::builder()
+            .title("Ausnahmen (EXDATE, kommasepariert)")
+            .build();
+        exdate_entry.set_tooltip_text(Some("z. B. 20260815,20260822"));
+        details.add(&exdate_entry);
 
         let priority_row = adw::ActionRow::builder()
             .title("Priorität (1 = hoch, 0 = normal)")
@@ -716,6 +726,8 @@ impl TasksPage {
             due_entry.set_text(&task.due_date());
             recurrence_entry
                 .set_text(&ical_property(&task.component(), "RRULE").unwrap_or_default());
+            rdate_entry.set_text(&ical_properties(&task.component(), "RDATE").join(","));
+            exdate_entry.set_text(&ical_properties(&task.component(), "EXDATE").join(","));
             let priority = task.priority().parse::<f64>().unwrap_or(0.0);
             priority_spin.set_value(priority);
             status_row.set_selected(task_status_index(&task.component()));
@@ -831,6 +843,8 @@ impl TasksPage {
                 false,
             );
             let recurrence = recurrence_entry.text();
+            let rdates = rdate_entry.text();
+            let exdates = exdate_entry.text();
             let priority = priority_spin.value() as u8;
             let categories = categories_entry.text();
             let reminder_minutes = reminder_row.value().round() as u32;
@@ -846,6 +860,8 @@ impl TasksPage {
                     &title_entry.text(),
                     &due_entry.text(),
                     &recurrence,
+                    &rdates,
+                    &exdates,
                     priority,
                     &categories,
                     reminder_minutes,
@@ -858,6 +874,8 @@ impl TasksPage {
                     &title_entry.text(),
                     &due_entry.text(),
                     &recurrence,
+                    &rdates,
+                    &exdates,
                     priority,
                     &categories,
                     reminder_minutes,
@@ -1124,15 +1142,58 @@ fn task_excluded_dates(task: &TaskItemObject) -> Vec<NaiveDate> {
         .collect()
 }
 
+fn task_additional_dates(task: &TaskItemObject) -> Vec<NaiveDate> {
+    ical_properties(&task.component(), "RDATE")
+        .iter()
+        .flat_map(|value| value.split(','))
+        .filter_map(parse_ical_date)
+        .collect()
+}
+
 fn task_next_due_date(task: &TaskItemObject, from: NaiveDate) -> Option<NaiveDate> {
-    let due = task_due_date(&task.due_date())?;
-    let Some(raw_rule) = ical_property(&task.component(), "RRULE") else {
-        return Some(due);
-    };
-    let Some(rule) = parse_recurrence_rule(&raw_rule) else {
-        return Some(due);
-    };
-    next_recurrence_date(&rule, due, from, &task_excluded_dates(task))
+    let excluded_dates = task_excluded_dates(task);
+    let rule_next = task_due_date(&task.due_date()).and_then(|due| {
+        let Some(raw_rule) = ical_property(&task.component(), "RRULE") else {
+            return Some(due);
+        };
+        let Some(rule) = parse_recurrence_rule(&raw_rule) else {
+            return Some(due);
+        };
+        next_recurrence_date(&rule, due, from, &excluded_dates)
+    });
+    let rdate_next = task_additional_dates(task)
+        .into_iter()
+        .filter(|date| *date >= from && !excluded_dates.contains(date))
+        .min();
+    match (rule_next, rdate_next) {
+        (Some(rule_next), Some(rdate_next)) => Some(rule_next.min(rdate_next)),
+        (Some(rule_next), None) => Some(rule_next),
+        (None, Some(rdate_next)) => Some(rdate_next),
+        (None, None) => None,
+    }
+}
+
+fn normalize_task_date_list(value: &str, field: &str) -> Result<String, String> {
+    if value
+        .chars()
+        .any(|character| character == '\r' || character == '\n')
+    {
+        return Err(format!("{field} enthält ungültige Zeilenumbrüche"));
+    }
+    value
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| {
+            task_due_date(value)
+                .or_else(|| parse_ical_date(value))
+                .map(|date| date.format("%Y%m%d").to_string())
+                .ok_or_else(|| {
+                    format!("{field} muss gültige YYYY-MM-DD- oder YYYYMMDD-Werte enthalten")
+                })
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map(|values| values.join(","))
 }
 
 fn task_status_value(raw: &str) -> &'static str {
@@ -1272,6 +1333,7 @@ fn append_task_row(
         (Some(_), None) if ical_property(&task.component(), "RRULE").is_some() => {
             format!("Fällig: {due} · Serie beendet")
         }
+        (None, Some(next)) => format!("Nächste Fälligkeit: {}", next.format("%Y-%m-%d")),
         _ => format!("Fällig: {due}"),
     };
     let row = adw::ActionRow::builder()
@@ -1628,6 +1690,8 @@ fn build_task_component(
     title: &str,
     due: &str,
     recurrence: &str,
+    rdates: &str,
+    exdates: &str,
     priority: u8,
     categories: &str,
     reminder_minutes: u32,
@@ -1651,6 +1715,8 @@ fn build_task_component(
     {
         return Err("Die Wiederholungsregel enthält ungültige Zeilenumbrüche".to_string());
     }
+    let rdates = normalize_task_date_list(rdates, "RDATE")?;
+    let exdates = normalize_task_date_list(exdates, "EXDATE")?;
     if priority > 9 {
         return Err("Die Priorität muss zwischen 0 und 9 liegen".to_string());
     }
@@ -1674,6 +1740,12 @@ fn build_task_component(
     }
     if !recurrence.trim().is_empty() {
         component.push(format!("RRULE:{}", recurrence.trim()));
+    }
+    if !rdates.is_empty() {
+        component.push(format!("RDATE;VALUE=DATE:{rdates}"));
+    }
+    if !exdates.is_empty() {
+        component.push(format!("EXDATE;VALUE=DATE:{exdates}"));
     }
     if priority > 0 {
         component.push(format!("PRIORITY:{priority}"));
@@ -1719,6 +1791,8 @@ fn update_task_component(
     title: &str,
     due: &str,
     recurrence: &str,
+    rdates: &str,
+    exdates: &str,
     priority: u8,
     categories: &str,
     reminder_minutes: u32,
@@ -1742,6 +1816,8 @@ fn update_task_component(
     {
         return Err("Die Wiederholungsregel enthält ungültige Zeilenumbrüche".to_string());
     }
+    let rdates = normalize_task_date_list(rdates, "RDATE")?;
+    let exdates = normalize_task_date_list(exdates, "EXDATE")?;
     if priority > 9 {
         return Err("Die Priorität muss zwischen 0 und 9 liegen".to_string());
     }
@@ -1762,6 +1838,16 @@ fn update_task_component(
         &component,
         "RRULE",
         (!recurrence.trim().is_empty()).then_some(recurrence.trim()),
+    );
+    component = update_ical_property(
+        &component,
+        "RDATE;VALUE=DATE",
+        (!rdates.is_empty()).then_some(rdates.as_str()),
+    );
+    component = update_ical_property(
+        &component,
+        "EXDATE;VALUE=DATE",
+        (!exdates.is_empty()).then_some(exdates.as_str()),
     );
     component = if priority == 0 {
         update_ical_property(&component, "PRIORITY", None)
@@ -1980,6 +2066,8 @@ mod tests {
             "Prepare, report; Q4",
             "2026-08-11",
             "FREQ=WEEKLY;BYDAY=MO;COUNT=4",
+            "2026-08-12,20260819",
+            "2026-08-15",
             1,
             "Work, Important",
             30,
@@ -1993,6 +2081,8 @@ mod tests {
         assert!(component.contains("SUMMARY:Prepare\\, report\\; Q4\r\n"));
         assert!(component.contains("DUE;VALUE=DATE:20260811\r\n"));
         assert!(component.contains("RRULE:FREQ=WEEKLY;BYDAY=MO;COUNT=4\r\n"));
+        assert!(component.contains("RDATE;VALUE=DATE:20260812,20260819\r\n"));
+        assert!(component.contains("EXDATE;VALUE=DATE:20260815\r\n"));
         assert!(component.contains("PRIORITY:1\r\n"));
         assert!(component.contains("CATEGORIES:Work,Important\r\n"));
         assert!(component.contains("TRIGGER:-PT30M\r\n"));
@@ -2003,13 +2093,11 @@ mod tests {
     #[test]
     fn task_component_rejects_invalid_due_date_and_empty_title() {
         assert!(
-            build_task_component("", "2026-08-11", "", 0, "", 0, "", "", "NEEDS-ACTION", 0,)
-                .is_err()
-        );
-        assert!(
             build_task_component(
-                "Task",
-                "11.08.2026",
+                "",
+                "2026-08-11",
+                "",
+                "",
                 "",
                 0,
                 "",
@@ -2022,7 +2110,25 @@ mod tests {
             .is_err()
         );
         assert!(
-            build_task_component("Task", "", "", 10, "", 0, "", "", "NEEDS-ACTION", 0).is_err()
+            build_task_component(
+                "Task",
+                "11.08.2026",
+                "",
+                "",
+                "",
+                0,
+                "",
+                0,
+                "",
+                "",
+                "NEEDS-ACTION",
+                0,
+            )
+            .is_err()
+        );
+        assert!(
+            build_task_component("Task", "", "", "", "", 10, "", 0, "", "", "NEEDS-ACTION", 0,)
+                .is_err()
         );
     }
 
@@ -2035,6 +2141,8 @@ mod tests {
             "STATUS:NEEDS-ACTION\r\n",
             "SUMMARY:Old title\r\n",
             "DUE;VALUE=DATE:20260811\r\n",
+            "RDATE;VALUE=DATE:20260812\r\n",
+            "EXDATE;VALUE=DATE:20260813\r\n",
             "DESCRIPTION:Old description\r\n",
             "BEGIN:VALARM\r\n",
             "ACTION:DISPLAY\r\n",
@@ -2047,6 +2155,8 @@ mod tests {
             "New, title",
             "2026-08-20",
             "FREQ=MONTHLY;COUNT=2",
+            "2026-08-22,20260829",
+            "20260824",
             2,
             "Work,Next",
             10,
@@ -2060,6 +2170,8 @@ mod tests {
         assert!(updated.contains("SUMMARY:New\\, title\r\n"));
         assert!(updated.contains("DUE;VALUE=DATE:20260820\r\n"));
         assert!(updated.contains("RRULE:FREQ=MONTHLY;COUNT=2\r\n"));
+        assert!(updated.contains("RDATE;VALUE=DATE:20260822,20260829\r\n"));
+        assert!(updated.contains("EXDATE;VALUE=DATE:20260824\r\n"));
         assert!(updated.contains("PRIORITY:2\r\n"));
         assert!(updated.contains("CATEGORIES:Work,Next\r\n"));
         assert!(updated.contains("DESCRIPTION:New description\r\n"));
@@ -2073,6 +2185,8 @@ mod tests {
             existing,
             "New, title",
             "2026-08-20",
+            "",
+            "",
             "",
             2,
             "Work,Next",
@@ -2092,6 +2206,8 @@ mod tests {
             "New, title",
             "2026-08-20",
             "",
+            "",
+            "",
             2,
             "Work,Next",
             0,
@@ -2109,6 +2225,8 @@ mod tests {
         let component = build_task_component(
             "Prepare report",
             "2026-08-11",
+            "",
+            "",
             "",
             1,
             "Work",
@@ -2134,6 +2252,8 @@ mod tests {
         let updated = update_task_component(
             existing,
             "Prepare report",
+            "",
+            "",
             "",
             "",
             0,
@@ -2198,6 +2318,8 @@ mod tests {
                 "UID:task-recurring\r\n",
                 "DUE;VALUE=DATE:20260801\r\n",
                 "RRULE:FREQ=WEEKLY;BYDAY=MO;COUNT=4\r\n",
+                "RDATE;VALUE=DATE:20260812\r\n",
+                "EXDATE;VALUE=DATE:20260812\r\n",
                 "END:VTODO\r\n"
             ),
         );

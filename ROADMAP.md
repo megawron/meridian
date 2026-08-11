@@ -581,8 +581,9 @@ werden.
   Monatstermin-Chips öffnen den Bearbeitungsdialog, sofern die Quelle
   schreibbar ist. Ein portables Drag-and-drop verschiebt einfache Einzeltermine
   in Monats- und Arbeitswochenansicht und erhält dabei vorhandene
-  Zeitzonenparameter; Serien, echte Zeitzonen-/DST-Umrechnung und die
-  Linux-Abnahme bleiben offen. Der
+  Zeitzonenparameter; das Verschieben einer geladenen Serie verschiebt portabel
+  DTSTART/DTEND, RDATE/EXDATE und ein vorhandenes RRULE-UNTIL gemeinsam. Echte
+  Zeitzonen-/DST-Umrechnung und die Linux-Abnahme bleiben offen. Der
   app-eigene lokale Kalender kann außerhalb von EDS VEVENTs persistent
   erstellen, ändern und löschen; ausdrücklich ausgewählte externe Importordner
   bleiben schreibgeschützt. Ein portabler Reminder-Service liest lokale
@@ -622,8 +623,8 @@ werden.
   portable Agenda und die Arbeitswochen-Zeitachse sind als eigene, persistente
   View-Modi ergänzt; die Zeitachse nutzt die konfigurierbare Arbeitszeit und
   trennt Ganztages- von zeitgebundenen Terminen. Einfaches Drag-and-drop für
-  Einzeltermine ist in Monats- und Arbeitswochenansicht vorhanden; Serien-
-  verschiebung, Zeitzonen-/DST-Umrechnung und die Linux-Laufzeitprüfung stehen
+  Einzeltermine und geladene Serien ist in Monats- und Arbeitswochenansicht
+  vorhanden; Zeitzonen-/DST-Umrechnung und die Linux-Laufzeitprüfung stehen
   noch aus.
 - [~] Lokale VEVENTs unterstützen Wiederholungen und einfache Alarme; `RDATE`-
   Einzeltermine werden zusätzlich zu `RRULE` und `EXDATE` in den portablen
@@ -654,8 +655,9 @@ werden.
   PERCENT-COMPLETE werden im portablen Task-Editor bearbeitet und gespeichert.
   Wiederkehrende Aufgaben können als RFC5545-RRULE eingegeben, geladen und
   geändert werden. Kalender und Aufgaben verwenden dafür denselben portablen
-  RRULE-Rechenkern; die Aufgabenliste berechnet COUNT/UNTIL/EXDATE-bewusst die
-  nächste Fälligkeit und verwendet sie für Heute-Filter, Sortierung und Anzeige.
+  RRULE-Rechenkern; VTODO-RDATE/EXDATE werden zusätzlich bearbeitet und die
+  Aufgabenliste berechnet COUNT/UNTIL/EXDATE-bewusst die nächste Fälligkeit und
+  verwendet sie für Heute-Filter, Sortierung und Anzeige.
   Die native EDS-Serienmutation und die Linux-Laufzeitabnahme bleiben offen.
   Kategorien werden im Editor geladen, als RFC5545-CATEGORIES gespeichert und
   beim Bearbeiten aktualisiert; einfache VTODO-Display-Erinnerungen werden als
