@@ -459,6 +459,190 @@ dürfen:
   Performance großer Mailboxen, Speicher-/Thread-Leaks, Upgrade/Rollback,
   signierte Artefakte und reproduzierbare Linux-CI.
 
+### 10.1 Ergänzende, bisher nur implizit erfasste Linux-Lücken
+
+Die folgenden Punkte sind bewusst zusätzlich und konkreter formuliert. Sie
+betreffen keine portable Parser- oder GTK-Arbeit, sondern die Stelle, an der
+die Anwendung unter Linux mit EDS, Camel, den Provider-Backends, GNOME und dem
+Desktop zusammenarbeiten muss. Ein vorhandener Button, ein lokaler Sidecar
+oder ein erfolgreicher Fallback zählt bei diesen Punkten nicht als Ersatz für
+die native Abnahme.
+
+#### Native ABI-, Provider- und Ressourcenabdeckung
+
+- `[ ]` Eine unterstützte EDS-/GTK-/WebKitGTK-Versionsmatrix festlegen und
+  den nativen Build gegen mindestens die älteste und die aktuelle unterstützte
+  EDS-Version prüfen. Für jede Version müssen C-ABI-Strukturen, Enum-Werte,
+  Nullable-Felder, String-Encoding, `GError`-Ownership und die Freigabe von
+  Camel-/ECal-/EBook-Objekten automatisiert geprüft werden. Abweichungen
+  dürfen nicht still über ein erfolgreiches Fallback verdeckt werden.
+- `[ ]` Die vorbereiteten GIR-Spezifikationen entweder auf Linux generieren
+  und als reproduzierbaren Binding-Build verifizieren oder verbindlich
+  dokumentieren, welche API dauerhaft über die geprüften C-Adapter läuft.
+  Nicht verwendete generierte Bindings dürfen nicht als vorhandene
+  Vollabdeckung gelten; der gewählte Pfad muss pro EDS-Version baubar sein.
+- `[ ]` Native C-Brücken mit C-Warnungen als Fehlern sowie AddressSanitizer,
+  UndefinedBehaviorSanitizer und einem Leak-/Thread-Sanitizer-Lauf prüfen.
+  Dabei besonders Camel-UID-Arrays, ECal-/EBook-Signal-Callbacks,
+  `GError`-Pfade, Abbruch während blockierender Aufrufe und das Freigeben
+  laufender Watcher nach einem EDS-Neustart abdecken.
+- `[ ]` Eine providerabhängige Capability-Matrix aus ESource/Camel/ECal/EBook
+  ableiten: Lesen, Schreiben, Flags, User-Tags, Suche, Threads, Anhänge,
+  Kalenderteilnehmer, Free/Busy, Fotos, Offlinebetrieb und Quoten. Die UI
+  muss nicht verfügbare Fähigkeiten ausblenden oder als nicht unterstützt
+  melden, statt einen erfolgreichen Vorgang vorzutäuschen.
+
+#### Native Mailordner, Zustände und Empfang
+
+- `[ ]` Vollständige Camel-Ordnerverwaltung testen: Ordner anlegen,
+  umbenennen, löschen, abonnieren/abbestellen, als `NOSELECT` behandeln,
+  Hierarchietrenner pro Provider auswerten, Sonderordner anhand der
+  `CamelFolderInfo`-Flags erkennen und nach externen Änderungen ohne
+  Vollreload aktualisieren. Inbox, Drafts, Sent, Archive, Trash, Junk und
+  Outbox müssen auch bei providerabhängigen Namen korrekt zugeordnet werden.
+- `[ ]` Camel-Quoten und Ordnerfähigkeiten anzeigen und bei fehlender
+  Berechtigung verständlich behandeln. Das gilt auch für schreibgeschützte
+  Ordner, serverseitiges Expunge, „Papierkorb leeren“, „Junk leeren“ und
+  die endgültige Löschung nach einer vorherigen Undo-Aktion.
+- `[ ]` Serverseitige Evolution-Labels/User-Tags ergänzen und prüfen:
+  mehrere Labels pro Nachricht, Anlegen/Umbenennen/Löschen eines Tags,
+  Zuordnung und Entfernung in Einzel- und Batch-Aktionen, Persistenz nach
+  Neustart, Suche/Filterung und das getrennte Verhalten von Label, Stern,
+  Junk und Important. Provider ohne diese Fähigkeit müssen explizit als
+  eingeschränkt erscheinen; ein lokales Sidecar darf nicht als Remote-Label
+  ausgegeben werden.
+- `[ ]` Junk-/Spam-Parität mit echten Providern prüfen: Junk und Not-Junk,
+  Rückverschieben in den ursprünglichen bzw. konfigurierten Ordner,
+  serverseitige Junk-Flags/Header, Junk-Filter, Spam-Report und die
+  Wechselwirkung mit Suchordnern und Filtern. Die Behandlung darf nicht nur
+  vom Ordnernamen abhängen und darf `CAMEL_MESSAGE_JUNK` nicht mit einem
+  beliebigen lokalen Status verwechseln.
+- `[ ]` Empfangsoptionen und Benachrichtigungen gegen einen laufenden GNOME-
+  Desktop prüfen: Abrufintervall, Hintergrundabruf, neue-Mail-Signale,
+  Benachrichtigungsgruppierung, Ton/Do-Not-Disturb, Konto-/Ordnerfilter und
+  Verhalten beim gesperrten Bildschirm. Nach Netzwerkwechsel, Suspend und
+  Neustart des EDS dürfen weder doppelte Benachrichtigungen noch verlorene
+  neue Nachrichten entstehen.
+- `[ ]` Große MIME-Nachrichten und problematische RFC822-Fälle nativ prüfen:
+  Streaming/Abbruch bei großen Anhängen, Charset-/Transfer-Encoding-
+  Kombinationen, `message/rfc822`, verschachtelte Multipart-Strukturen,
+  Inline-CID, Kalenderteile sowie beschädigte oder unvollständige Nachrichten.
+  Der native Pfad muss denselben sicheren Inhalt anzeigen und exportieren wie
+  der portable Parser, ohne Daten still abzuschneiden.
+
+#### Identitäten, Versand und serverseitige Kontofunktionen
+
+- `[ ]` Mehrere EDS-Identitäten und Aliase abnehmen: From/Reply-To,
+  Standardidentität, Empfänger- und Signaturauswahl, Drafts-/Sent-Zuordnung,
+  Bcc, Antwort- und Weiterleitungsregeln sowie die Vermeidung falscher
+  Absender bei einem Kontowechsel. Der ausgewählte Alias muss im erzeugten
+  RFC822 und in der nativen Sent-Kopie identisch bleiben.
+- `[ ]` SMTP-/Submission-Fähigkeiten vollständig prüfen: TLS-Version und
+  Zertifikatsfehler, SASL-Mechanismen, Passwort-/OAuth2-Erneuerung,
+  Serverlimits, Größenfehler, Proxy-/Netzwerkfehler, Offline-Outbox,
+  Wiederaufnahme und die Unterscheidung zwischen Transporterfolg und
+  fehlgeschlagener Sent-Kopie.
+- `[ ]` DSN-, Zustell- und Lesebestätigungen gegen einen Testtransport prüfen.
+  Die Einstellungen müssen sich in den MIME-/SMTP-Headern wiederfinden;
+  Provider, die diese Option nicht unterstützen, müssen einen sichtbaren
+  Hinweis liefern. Es darf keine Bestätigung als erfolgreich gelten, nur weil
+  der Transport die ursprüngliche Nachricht angenommen hat.
+- `[ ]` Native Draft-/Outbox-Lebenszyklen unter Abbruch abnehmen:
+  Autosave während des Schreibens, Wiederöffnen, parallele Änderungen,
+  Anhänge in temporären Dateien, Löschen nach Versand, Offline-Warteschlange,
+  erneuter Versand und Aufräumen verwaister Drafts. EDS-Drafts, lokale
+  Fallback-Drafts und Camel-Sent-Kopien müssen anhand von Message-ID und
+  UID ohne Doppelkopien auseinandergehalten werden.
+
+#### ECal-/EBook-Sonderfälle, die nur mit EDS verifizierbar sind
+
+- `[ ]` ECal-Zeitzonen vollständig abnehmen: lokale/floating Zeiten,
+  `DATE`-Werte, `VTIMEZONE`, Systemzeitzone, unterschiedliche Kalender-
+  Zeitzonen, DST-Grenzen, Ganztagstermine und verschobene Serien. Die
+  Anzeige, Speicherung, Suche, Drag-and-drop-Verschiebung und Erinnerung
+  müssen denselben Zeitpunkt ergeben wie Evolution.
+- `[ ]` Native ECal-Alarme und Desktop-Benachrichtigungen prüfen:
+  `VALARM`-Display, Audio, E-Mail und prozedurale Typen, absolute und
+  relative Trigger, `RELATED=END`, Snooze/Dismiss, wiederkehrende Termine,
+  Offline-Zustellung und nachträgliches Zurückziehen. Nicht unterstützte
+  Alarmtypen müssen erhalten bleiben und dürfen nicht als gelöscht gelten.
+- `[ ]` Kalenderberechtigungen und Quellenmetadaten abnehmen:
+  read-only, Schreibrechte, Delegation, Quellefarbe, Sichtbarkeit,
+  Standardquelle, Aktualisierungsintervall, abonnierte Kalender und
+  serverseitige Free/Busy-Berechtigungen. Eine parallele Änderung muss als
+  Konflikt mit erneuter Entscheidung erscheinen.
+- `[ ]` iTIP/iMIP mit Organizer und mehreren Teilnehmern Ende-zu-Ende
+  prüfen: REQUEST, REPLY, CANCEL, COUNTER, DECLINECOUNTER, Delegation,
+  Teilnahmeparameter, private Termine, Konferenz-URLs, Anhänge,
+  EDS-/Camel-Versand, Sent/Drafts und den tatsächlich vom Server
+  gespeicherten Teilnehmerstatus.
+- `[ ]` EBook-vCard-Kompatibilität gegen echte lokale, LDAP-, GOA- und
+  Exchange-Quellen prüfen: vCard-3/4-Version, Foldings/Charsets, strukturierte
+  Namen, mehrere Typ-Parameter, Kategorien, X-EVOLUTION-Felder, URI-/Inline-
+  Fotos, große Fotos, Geburtstage, Beziehungen, IMPP und unbekannte
+  Erweiterungen. Create/Modify/Remove muss verlustfrei sein, soweit der
+  Provider das Feld unterstützt, und Einschränkungen müssen sichtbar werden.
+- `[ ]` LDAP-/GAL-Betrieb abnehmen: TLS/Trust, Filter, Pagination, Timeout,
+  serverseitige Sortierung, Dubletten, schreibgeschützte Treffer,
+  Datenschutzgrenzen, Offlineverhalten und die klare Trennung zwischen
+  lokalem vCard-Autocomplete und einem serverseitigen Verzeichnis.
+- `[ ]` Native Duplikat- und Zusammenführungsfälle bei Kontakten prüfen:
+  gleiche E-Mail/Telefonwerte aus mehreren Quellen, identische Namen mit
+  unterschiedlichen UIDs, konkurrierende Änderungen und Rückgängigmachen.
+  Die Anwendung darf keine fremde EBook-UID durch eine lokale Dublette
+  überschreiben.
+
+#### Sicherheit, Einstellungen, Migration und Desktop
+
+- `[ ]` OpenPGP/GnuPG unter einer realen GNOME-Sitzung abnehmen:
+  GPG-Agent/Pinentry, Schlüsselbund- und Smartcard-Fälle, Schlüsselwahl,
+  Trust- und Widerrufsstatus, abgelaufene/fehlende Schlüssel, signierte und
+  verschlüsselte Anhänge, Passphrase-Abbruch sowie sichere Fehlerlogs.
+- `[ ]` S/MIME gegen den auf der Distribution verfügbaren Zertifikatsspeicher
+  prüfen: Import/ Auswahl von Zertifikaten, vollständige Trust Chain,
+  Ablauf/Widerruf, fehlende Zwischenzertifikate, verschlüsselte Anhänge,
+  Signaturprüfung, Passphrase-/Token-Abbruch und Fehler bei nicht passenden
+  Empfängerzertifikaten.
+- `[ ]` Die vollständige Evolution-Einstellungs-Matrix auf Linux abgleichen:
+  jede Einstellung muss gespeichert, nach Neustart geladen, auf den nativen
+  EDS-/Camel-/ECal-/EBook-Vorgang angewendet und bei einer Änderung durch
+  Evolution oder GSettings korrekt neu eingelesen werden. Besonders zu
+  prüfen sind Abrufintervall, Offlineumfang, Quoten, Junk, DSN/Lesebestätigung,
+  Identitäten, Standardquellen, Zeitzonen, Erinnerungen, Farben, Ansichten,
+  klassische Layoutpositionen, Tastenkürzel, Schriftarten und externe Inhalte.
+- `[ ]` Eine vollständige Migration eines realen Evolution-Profils testen:
+  nicht-geheime `.source`-Daten, Identitäten/Aliase, Ordnerzuordnung,
+  Filterreihenfolge, Suchordner, Signaturen, Templates, Views, GSettings,
+  lokale Mail-/Kalender-/Kontaktpfade und Quellaktivierung. Geheimnisse
+  müssen neu über GOA/Secret Service autorisiert werden. Import, Neustart,
+  Rollback und ein zweiter Import dürfen keine EDS-Quelle, lokale Daten oder
+  app-eigene Zustände unkontrolliert überschreiben.
+- `[ ]` Originalgetreue Arbeitsabläufe gegen Evolution vergleichen:
+  gleiche klassische Mailanordnung, Ordner-/Suchordner-Navigation,
+  Kontextmenüs, Einzel-/Batch-Aktionen, Drag-and-drop, Reply/Forward,
+  Einladungsantworten, Kontakte aus dem Composer sowie Undo/Redo. Für jede
+  Abweichung muss eine absichtliche Einstellung existieren oder die Lücke in
+  der Hauptroadmap verbleiben.
+- `[ ]` Desktop-Verträglichkeit abnehmen: Wayland und X11, HiDPI und mehrere
+  Monitore, GNOME-Skalierung, deutsches/englisches Gebietsschema, RTL und
+  IME, Screenreader/AT-SPI, Tastatur-only, Fokusreihenfolge, High-Contrast,
+  systemweite Datei-/URI-Handler, Portals, Zwischenablage und
+  Benachrichtigungsberechtigungen.
+- `[ ]` Crash-Recovery und Diagnose ohne Telemetrie testen: Absturz während
+  Camel-/ECal-/EBook-Mutation, SIGTERM/Suspend, Wiederaufnahme ungesendeter
+  Drafts, atomare Sidecar-/GSettings-Schreibvorgänge, sichere Logredaktion,
+  Diagnosepaket ohne Geheimnisse und Wiederherstellung nach beschädigter
+  lokaler Zustandsdatei.
+- `[ ]` Vollständige Linux-Performanceabnahme durchführen: große Ordner und
+  Threads, viele ECal-/EBook-Objekte, große Anhänge, parallele Quellen,
+  wiederholtes Öffnen/Schließen von Modulen, Speicherwachstum, Main-Thread-
+  Blockierung, Worker-Abbruch und Laufzeit nach EDS-/D-Bus-Neustarts.
+- `[ ]` Release- und Upgradepfade auf einer frischen Linux-VM abnehmen:
+  Flatpak und native Installation, fehlende optionale Provider, Sandbox-
+  Portale, EDS-/GOA-/Secret-Service-Kommunikation, AppStream/Desktop-Datei,
+  Signaturprüfung, reproduzierbarer Build, Upgrade, Downgrade, Rollback und
+  Deinstallation ohne Beschädigung des originalen EDS-Profils.
+
 ## 11. Linux-Abnahmeprotokoll
 
 Für jeden Linux-Lauf sind mindestens folgende Angaben zu protokollieren:
@@ -470,17 +654,20 @@ Desktop / Display server: GNOME 48 / Wayland (wayland-0)
 GTK / libadwaita / WebKitGTK: 4.22.4 / 1.9.3 / 2.52.5
 Evolution Data Server: 3.60.2
 Camel: 3.60.2
-Kontotyp und Authentifizierung: noch nicht getestet (Abschnitt 2 offen)
-Commit: c07404e (Complete portable parity block) + lokale Bridge-Fixes (noch nicht committed)
+Kontotyp und Authentifizierung: EDS/Camel-Smoke-Konto; GOA-/Passwortpfad
+  teilweise verifiziert, Ablauf-/Fehlerfälle bleiben offen
+Commit (letzter verifizierter Stand vor dieser Roadmap-Erweiterung): 9a565df
 Build-Befehl: cargo check --workspace && cargo test --workspace
-Testkonto / Testordner: keines – nur native Kompilierung und Unit-Tests
+Testkonto / Testordner: EDS-/Camel-Smoke-Konto; vollständige Kontolebenszyklus-
+  und Fehlerabnahme bleibt in den Abschnitten 2–5 offen
 Bekannte Abweichungen:
-  - Meson-Build, GSettings, Wayland-Laufzeit und EDS-Laufzeittests noch offen
-  - EDS-3.60-API-Fixes in allen drei nativen C-Brücken notwendig gewesen
-    (camel_folder_get_uids entfernt, e_cal_client_connect_sync-Rückgabetyp
-     geändert, e_vcard_to_string-Format-Parameter entfernt)
-  - 3 Rust-Unit-Testfehler korrigiert (script-Content-Filter, PHOTO-Preserve,
-    label:-Operator)
+  - Wayland-/X11-Laufzeit, native EDS-Laufzeittests, Kontolebenszyklus und
+    vollständige Offline-/Fehlerabnahme sind noch offen
+  - EDS-3.60-API-Fixes in allen drei nativen C-Brücken wurden in `bd5913d`
+    behoben (camel_folder_get_uids entfernt, e_cal_client_connect_sync-
+    Rückgabetyp geändert, e_vcard_to_string-Format-Parameter entfernt)
+  - 3 Rust-Unit-Testfehler wurden korrigiert (script-Content-Filter,
+    PHOTO-Preserve, label:-Operator)
 ```
 
 Die Anwendung darf erst als produktiver Evolution-Ersatz bezeichnet werden,
