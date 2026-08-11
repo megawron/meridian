@@ -48,7 +48,7 @@ append_contact (EBookLoadContext *context,
     if (!contact)
         return FALSE;
 
-    vcard = e_vcard_to_string (E_VCARD (contact), EVC_FORMAT_VCARD_30);
+    vcard = e_vcard_to_string (E_VCARD (contact));
     if (!vcard || !*vcard) {
         g_free (vcard);
         return FALSE;
@@ -90,7 +90,7 @@ load_source (EBookLoadContext *context,
 
     context->configured_sources++;
     display_name = e_source_get_display_name (source);
-    client = e_book_client_connect_sync (source, 15, NULL, &error);
+    client = E_BOOK_CLIENT (e_book_client_connect_sync (source, 15, NULL, &error));
     if (!client) {
         context->failed_sources++;
         remember_error (context, display_name, error);
@@ -300,7 +300,7 @@ evolution_eds_ebook_apply_operation (
         goto finish;
     }
 
-    client = e_book_client_connect_sync (source, 15, NULL, &error);
+    client = E_BOOK_CLIENT (e_book_client_connect_sync (source, 15, NULL, &error));
     if (!client)
         goto finish;
 
@@ -331,7 +331,7 @@ evolution_eds_ebook_apply_operation (
         if (uid && *uid && e_book_client_get_contact_sync (
                 client, uid, &stored_contact, NULL, &error)) {
             confirmed_vcard = e_vcard_to_string (
-                E_VCARD (stored_contact), EVC_FORMAT_VCARD_30);
+                E_VCARD (stored_contact));
         } else {
             g_clear_error (&error);
             confirmed_vcard = g_strdup (vcard);
@@ -516,7 +516,7 @@ ebook_watcher_objects_changed_cb (EBookClientView *view,
             continue;
 
         vcard = e_vcard_to_string (
-            E_VCARD (contact), EVC_FORMAT_VCARD_30);
+            E_VCARD (contact));
         if (vcard && *vcard) {
             queue_ebook_watcher_event (
                 watch_view, kind,
@@ -637,7 +637,7 @@ ebook_watcher_add_source (EvolutionEdsEBookWatcher *watcher,
     EBookClientView *view = NULL;
     GError *error = NULL;
 
-    client = e_book_client_connect_sync (source, 15, NULL, &error);
+    client = E_BOOK_CLIENT (e_book_client_connect_sync (source, 15, NULL, &error));
     if (!client) {
         ebook_watcher_remember_error (
             first_error, e_source_get_display_name (source), error);

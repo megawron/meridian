@@ -109,6 +109,24 @@ impl EvolutionWindow {
         self.imp().toast_overlay.add_toast(toast.clone());
     }
 
+    fn mail_page(&self) -> Option<MailPage> {
+        self.imp()
+            .view_stack
+            .borrow()
+            .as_ref()
+            .and_then(|view_stack| {
+                view_stack
+                    .child_by_name("mail")
+                    .and_then(|widget| widget.downcast::<MailPage>().ok())
+            })
+    }
+
+    pub(crate) fn refresh_mail_page(&self) {
+        if let Some(mail_page) = self.mail_page() {
+            mail_page.refresh_mail();
+        }
+    }
+
     fn setup_layout(&self) {
         let view_stack = adw::ViewStack::new();
 
@@ -215,11 +233,7 @@ impl EvolutionWindow {
 
         let bp_mobile =
             adw::Breakpoint::new(adw::BreakpointCondition::parse("max-width: 560sp").unwrap());
-        bp_mobile.add_setter(
-            mail_page.outer_split(),
-            "show-sidebar",
-            Some(&false.to_value()),
-        );
+        bp_mobile.add_setter(mail_page.outer_paned(), "position", Some(&0_i32.to_value()));
         bp_mobile.add_setter(mail_page.inner_split(), "collapsed", Some(&true.to_value()));
         bp_mobile.add_setter(&sidebar_button, "active", Some(&false.to_value()));
 
@@ -235,6 +249,9 @@ impl EvolutionWindow {
 
         let section1 = gio::Menu::new();
         section1.append(Some("Neue E-Mail"), Some("app.compose"));
+        section1.append(Some("Lokale Entwürfe"), Some("app.drafts"));
+        section1.append(Some("Globale Suche"), Some("app.global-search"));
+        section1.append(Some("Ausgewählte E-Mail exportieren"), Some("win.export"));
         section1.append(Some("Mail aktualisieren"), Some("win.refresh-mail"));
         section1.append(Some("Rückgängig"), Some("win.undo"));
         section1.append(Some("Wiederholen"), Some("win.redo"));
@@ -260,8 +277,8 @@ impl EvolutionWindow {
                         .child_by_name("mail")
                         .and_then(|w| w.downcast::<MailPage>().ok())
                     {
-                        let current = mail_page.outer_split().shows_sidebar();
-                        mail_page.outer_split().set_show_sidebar(!current);
+                        let current = mail_page.outer_paned().position();
+                        mail_page.set_sidebar_visible(current < 10);
                     }
                 }
             }
@@ -376,9 +393,11 @@ impl EvolutionWindow {
             #[weak(rename_to = win)]
             self,
             move |_, _| {
-                let dialog = crate::dialogs::ComposeDialog::new();
-                dialog.set_transient_for(Some(&win));
-                dialog.present();
+                if let Some(mail_page) = win.mail_page() {
+                    if !mail_page.reply_selected() {
+                        tracing::debug!("Reply action ignored without a selected message");
+                    }
+                }
             }
         ));
         self.add_action(&action_reply);
@@ -388,9 +407,11 @@ impl EvolutionWindow {
             #[weak(rename_to = win)]
             self,
             move |_, _| {
-                let dialog = crate::dialogs::ComposeDialog::new();
-                dialog.set_transient_for(Some(&win));
-                dialog.present();
+                if let Some(mail_page) = win.mail_page() {
+                    if !mail_page.reply_all_selected() {
+                        tracing::debug!("Reply-all action ignored without a selected message");
+                    }
+                }
             }
         ));
         self.add_action(&action_reply_all);
@@ -400,40 +421,65 @@ impl EvolutionWindow {
             #[weak(rename_to = win)]
             self,
             move |_, _| {
-                let dialog = crate::dialogs::ComposeDialog::new();
-                dialog.set_transient_for(Some(&win));
-                dialog.present();
+                if let Some(mail_page) = win.mail_page() {
+                    if !mail_page.forward_selected() {
+                        tracing::debug!("Forward action ignored without a selected message");
+                    }
+                }
             }
         ));
         self.add_action(&action_forward);
+
+        let action_export = gio::SimpleAction::new("export", None);
+        action_export.connect_activate(glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            move |_, _| {
+                let exported = win
+                    .mail_page()
+                    .is_some_and(|mail_page| mail_page.export_selected());
+                if !exported {
+                    win.add_toast(&adw::Toast::new("Keine E-Mail zum Exportieren ausgewählt"));
+                }
+            }
+        ));
+        self.add_action(&action_export);
 
         let action_delete = gio::SimpleAction::new("delete", None);
         action_delete.connect_activate(glib::clone!(
             #[weak(rename_to = win)]
             self,
             move |_, _| {
-                let result = win
-                    .imp()
-                    .view_stack
-                    .borrow()
-                    .as_ref()
-                    .and_then(|view_stack| {
-                        view_stack
-                            .child_by_name("mail")
-                            .and_then(|widget| widget.downcast::<MailPage>().ok())
-                    })
-                    .map(|mail_page| mail_page.delete_selected());
-
-                let message = match result {
-                    Some(Ok(true)) => "Nachricht gelöscht".to_string(),
-                    Some(Ok(false)) => "Keine Nachricht ausgewählt".to_string(),
-                    Some(Err(error)) => {
-                        tracing::warn!(%error, "Mail delete operation was not applied");
-                        format!("Löschen nicht möglich: {error}")
-                    }
-                    None => "Mailansicht ist nicht verfügbar".to_string(),
+                let Some(mail_page) = win.mail_page() else {
+                    win.add_toast(&adw::Toast::new("Mailansicht ist nicht verfügbar"));
+                    return;
                 };
-                win.add_toast(&adw::Toast::new(&message));
+                if !mail_page.has_selected_message() {
+                    win.add_toast(&adw::Toast::new("Keine Nachricht ausgewählt"));
+                    return;
+                }
+                let win_for_action = win.clone();
+                crate::dialogs::run_destructive_action(
+                    &win,
+                    "Nachricht löschen?",
+                    "Die ausgewählte Nachricht wird dauerhaft gelöscht bzw. in den Papierkorb verschoben.",
+                    "Löschen",
+                    move || {
+                        let result = win_for_action.mail_page().map(|mail_page| {
+                            mail_page.delete_selected()
+                        });
+                        let message = match result {
+                            Some(Ok(true)) => "Nachricht gelöscht".to_string(),
+                            Some(Ok(false)) => "Keine Nachricht ausgewählt".to_string(),
+                            Some(Err(error)) => {
+                                tracing::warn!(%error, "Mail delete operation was not applied");
+                                format!("Löschen nicht möglich: {error}")
+                            }
+                            None => "Mailansicht ist nicht verfügbar".to_string(),
+                        };
+                        win_for_action.add_toast(&adw::Toast::new(&message));
+                    },
+                );
             }
         ));
         self.add_action(&action_delete);

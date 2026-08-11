@@ -90,8 +90,8 @@ load_source (ECalLoadContext *context,
 
     context->configured_sources++;
     display_name = e_source_get_display_name (source);
-    client = e_cal_client_connect_sync (
-        source, (ECalClientSourceType) source_type, 15, NULL, &error);
+    client = E_CAL_CLIENT (e_cal_client_connect_sync (
+        source, (ECalClientSourceType) source_type, 15, NULL, &error));
     if (!client) {
         context->failed_sources++;
         remember_error (context, display_name, error);
@@ -357,8 +357,8 @@ evolution_eds_ecal_apply_operation (
         goto finish;
     }
 
-    client = e_cal_client_connect_sync (
-        source, (ECalClientSourceType) source_type, 15, NULL, &error);
+    client = E_CAL_CLIENT (e_cal_client_connect_sync (
+        source, (ECalClientSourceType) source_type, 15, NULL, &error));
     if (!client)
         goto finish;
 
@@ -707,8 +707,8 @@ ecal_watcher_add_source (EvolutionEdsECalWatcher *watcher,
     ECalClientView *view = NULL;
     GError *error = NULL;
 
-    client = e_cal_client_connect_sync (
-        source, (ECalClientSourceType) source_type, 15, NULL, &error);
+    client = E_CAL_CLIENT (e_cal_client_connect_sync (
+        source, (ECalClientSourceType) source_type, 15, NULL, &error));
     if (!client) {
         ecal_watcher_remember_error (
             first_error, e_source_get_display_name (source), error);
@@ -748,7 +748,7 @@ ecal_watcher_add_source (EvolutionEdsECalWatcher *watcher,
     g_ptr_array_add (watcher->views, watch_view);
 
     e_cal_client_view_set_flags (
-        view, E_CAL_CLIENT_VIEW_FLAGS_NOTIFY_INITIAL);
+        view, E_CAL_CLIENT_VIEW_FLAGS_NOTIFY_INITIAL, NULL);
     e_cal_client_view_start (view, &error);
     if (error) {
         ecal_watcher_remember_error (

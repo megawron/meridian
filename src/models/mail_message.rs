@@ -13,6 +13,8 @@ pub struct AttachmentInfo {
     pub filename: String,
     pub size_formatted: String,
     pub mime_type: String,
+    /// MIME Content-ID used by `cid:` references in an HTML body.
+    pub content_id: Option<String>,
     /// Decoded attachment bytes.  Keeping the payload with the parsed local
     /// message lets the UI offer a real “Save as…” operation without making
     /// assumptions about the lifetime of the source EML file.
@@ -30,6 +32,9 @@ mod imp {
         pub sender_name: RefCell<String>,
         pub sender_email: RefCell<String>,
         pub recipient_to: RefCell<String>,
+        pub recipient_cc: RefCell<String>,
+        pub recipient_bcc: RefCell<String>,
+        pub reply_to: RefCell<String>,
         pub subject: RefCell<String>,
         pub message_id: RefCell<Option<String>>,
         pub in_reply_to: RefCell<Vec<String>>,
@@ -68,6 +73,9 @@ impl MailMessageObject {
         sender_name: &str,
         sender_email: &str,
         recipient_to: &str,
+        recipient_cc: &str,
+        recipient_bcc: &str,
+        reply_to: &str,
         subject: &str,
         message_id: Option<String>,
         in_reply_to: Vec<String>,
@@ -90,6 +98,9 @@ impl MailMessageObject {
         *imp.sender_name.borrow_mut() = sender_name.to_string();
         *imp.sender_email.borrow_mut() = sender_email.to_string();
         *imp.recipient_to.borrow_mut() = recipient_to.to_string();
+        *imp.recipient_cc.borrow_mut() = recipient_cc.to_string();
+        *imp.recipient_bcc.borrow_mut() = recipient_bcc.to_string();
+        *imp.reply_to.borrow_mut() = reply_to.to_string();
         *imp.subject.borrow_mut() = subject.to_string();
         *imp.message_id.borrow_mut() = message_id;
         *imp.in_reply_to.borrow_mut() = in_reply_to;
@@ -125,6 +136,18 @@ impl MailMessageObject {
 
     pub fn recipient_to(&self) -> String {
         self.imp().recipient_to.borrow().clone()
+    }
+
+    pub fn recipient_cc(&self) -> String {
+        self.imp().recipient_cc.borrow().clone()
+    }
+
+    pub fn recipient_bcc(&self) -> String {
+        self.imp().recipient_bcc.borrow().clone()
+    }
+
+    pub fn reply_to(&self) -> String {
+        self.imp().reply_to.borrow().clone()
     }
 
     pub fn subject(&self) -> String {

@@ -4,8 +4,8 @@
 
 use adw::prelude::*;
 use adw::subclass::prelude::*;
-use gtk::glib;
-use std::cell::RefCell;
+use gtk::{gdk, gio, glib};
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use crate::services::ebook_service::{
@@ -13,6 +13,7 @@ use crate::services::ebook_service::{
     load_contacts_prefer_eds, parse_change_record,
 };
 use crate::services::eds_service;
+use crate::services::settings_service::AppSettings;
 use crate::services::vcard_service::VCardContact;
 
 // ─── GObject Subclass ───────────────────────────────────────────────────────
@@ -90,10 +91,24 @@ impl ContactsPage {
 
         let book_model = gtk::StringList::new(&["Alle Kontakte"]);
         let book_selector = gtk::DropDown::new(Some(book_model.clone()), None::<&gtk::Expression>);
+        book_selector.set_tooltip_text(Some(
+            "Die Auswahl wird als Standardadressbuch für den nächsten Start gespeichert",
+        ));
         book_selector.set_margin_start(8);
         book_selector.set_margin_end(8);
         book_selector.set_margin_bottom(8);
         sidebar_box.append(&book_selector);
+
+        let search_query = Rc::new(RefCell::new(String::new()));
+        let selected_book = Rc::new(RefCell::new(String::new()));
+        let book_source_uids = Rc::new(RefCell::new(vec![String::new()]));
+        let duplicate_only = Rc::new(Cell::new(false));
+
+        let duplicate_filter_row = adw::SwitchRow::builder()
+            .title("Nur Dubletten")
+            .subtitle("Gleiche E-Mail, Telefonnummer oder Name ohne Kontaktweg anzeigen")
+            .build();
+        sidebar_box.append(&duplicate_filter_row);
 
         let empty_state = gtk::Label::builder()
             .label("Noch kein Adressbuch aus EDS geladen")
@@ -107,23 +122,83 @@ impl ContactsPage {
         sidebar_box.append(&empty_state);
 
         let book_model_for_load = book_model.clone();
+        let book_source_uids_for_load = Rc::clone(&book_source_uids);
+        let book_selector_for_load = book_selector.clone();
         let empty_state_for_load = empty_state.clone();
+        let default_source_uid = AppSettings::try_new()
+            .map(|settings| settings.default_address_book_source_uid())
+            .unwrap_or_default();
         glib::spawn_future_local(async move {
             match eds_service::list_address_book_sources().await {
                 Ok(sources) if sources.is_empty() => {
+                    let mut names = vec!["Alle Kontakte".to_string()];
+                    let mut source_uids = book_source_uids_for_load.borrow_mut();
+                    source_uids.clear();
+                    source_uids.push(String::new());
+                    if crate::services::contact_store_service::ContactStoreService::new()
+                        .is_writable()
+                    {
+                        names.push("Lokales Adressbuch".to_string());
+                        source_uids.push("local-addressbook".to_string());
+                    }
+                    let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
+                    book_model_for_load.splice(0, book_model_for_load.n_items(), &name_refs);
+                    let selected_index = source_uids
+                        .iter()
+                        .position(|uid| uid == &default_source_uid)
+                        .unwrap_or(0) as u32;
+                    drop(source_uids);
+                    book_selector_for_load.set_selected(selected_index);
                     empty_state_for_load.set_label("Keine Adressbuchquellen in EDS gefunden.");
                 }
                 Ok(sources) => {
                     let source_count = sources.len();
+                    let mut names = vec!["Alle Kontakte".to_string()];
+                    let mut source_uids = book_source_uids_for_load.borrow_mut();
+                    source_uids.clear();
+                    source_uids.push(String::new());
                     for source in sources {
-                        book_model_for_load.append(&source.display_name);
+                        names.push(source.display_name);
+                        source_uids.push(source.uid);
                     }
+                    if crate::services::contact_store_service::ContactStoreService::new()
+                        .is_writable()
+                    {
+                        names.push("Lokales Adressbuch".to_string());
+                        source_uids.push("local-addressbook".to_string());
+                    }
+                    let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
+                    book_model_for_load.splice(0, book_model_for_load.n_items(), &name_refs);
+                    let selected_index = source_uids
+                        .iter()
+                        .position(|uid| uid == &default_source_uid)
+                        .unwrap_or(0) as u32;
+                    drop(source_uids);
+                    book_selector_for_load.set_selected(selected_index);
                     empty_state_for_load.set_label(&format!(
                         "{source_count} Adressbuchquelle(n) aus EDS gefunden; Kontakte werden nach dem EBook-Stream geladen."
                     ));
                 }
                 Err(error) => {
                     tracing::warn!(%error, "Could not load address book sources from EDS");
+                    let mut names = vec!["Alle Kontakte".to_string()];
+                    let mut source_uids = book_source_uids_for_load.borrow_mut();
+                    source_uids.clear();
+                    source_uids.push(String::new());
+                    if crate::services::contact_store_service::ContactStoreService::new()
+                        .is_writable()
+                    {
+                        names.push("Lokales Adressbuch".to_string());
+                        source_uids.push("local-addressbook".to_string());
+                    }
+                    let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
+                    book_model_for_load.splice(0, book_model_for_load.n_items(), &name_refs);
+                    let selected_index = source_uids
+                        .iter()
+                        .position(|uid| uid == &default_source_uid)
+                        .unwrap_or(0) as u32;
+                    drop(source_uids);
+                    book_selector_for_load.set_selected(selected_index);
                     empty_state_for_load
                         .set_label(&format!("EDS-Adressbücher sind nicht erreichbar: {error}"));
                 }
@@ -140,7 +215,12 @@ impl ContactsPage {
         let stored_contacts = Rc::new(RefCell::new(Vec::<EBookContactRecord>::new()));
         let selected_contact = Rc::new(RefCell::new(None::<EBookContactRecord>));
 
-        contact_list.set_filter_func(move |_row| true);
+        set_contact_filter(
+            &contact_list,
+            Rc::clone(&search_query),
+            Rc::clone(&selected_book),
+            Rc::clone(&duplicate_only),
+        );
 
         refresh_contacts(
             contact_list.clone(),
@@ -149,39 +229,63 @@ impl ContactsPage {
             Rc::clone(&selected_contact),
         );
 
+        let search_query_for_filter = Rc::clone(&search_query);
+        let selected_book_for_search = Rc::clone(&selected_book);
+        let duplicate_only_for_search = Rc::clone(&duplicate_only);
         search_entry.connect_search_changed(glib::clone!(
             #[weak]
             contact_list,
             move |entry| {
-                let query = entry.text().to_lowercase();
-                if query.is_empty() {
-                    contact_list.set_filter_func(|_| true);
-                } else {
-                    contact_list.set_filter_func(move |row| {
-                        if let Some(child) = row.child() {
-                            if let Ok(hbox) = child.downcast::<gtk::Box>() {
-                                if let Some(info_box) = hbox.last_child().and_downcast::<gtk::Box>()
-                                {
-                                    if let Some(name_lbl) =
-                                        info_box.first_child().and_downcast::<gtk::Label>()
-                                    {
-                                        if name_lbl.label().to_lowercase().contains(&query) {
-                                            return true;
-                                        }
-                                    }
-                                    if let Some(email_lbl) =
-                                        info_box.last_child().and_downcast::<gtk::Label>()
-                                    {
-                                        if email_lbl.label().to_lowercase().contains(&query) {
-                                            return true;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        false
-                    });
+                *search_query_for_filter.borrow_mut() = entry.text().to_lowercase();
+                set_contact_filter(
+                    &contact_list,
+                    Rc::clone(&search_query_for_filter),
+                    Rc::clone(&selected_book_for_search),
+                    Rc::clone(&duplicate_only_for_search),
+                );
+            }
+        ));
+
+        let selected_book_for_filter = Rc::clone(&selected_book);
+        let search_query_for_book = Rc::clone(&search_query);
+        let duplicate_only_for_book = Rc::clone(&duplicate_only);
+        let book_source_uids_for_filter = Rc::clone(&book_source_uids);
+        book_selector.connect_selected_notify(glib::clone!(
+            #[weak]
+            contact_list,
+            move |selector| {
+                let selected = book_source_uids_for_filter
+                    .borrow()
+                    .get(selector.selected() as usize)
+                    .cloned()
+                    .unwrap_or_default();
+                *selected_book_for_filter.borrow_mut() = selected.clone();
+                if let Some(settings) = AppSettings::try_new() {
+                    settings.set_default_address_book_source_uid(&selected);
                 }
+                set_contact_filter(
+                    &contact_list,
+                    Rc::clone(&search_query_for_book),
+                    Rc::clone(&selected_book_for_filter),
+                    Rc::clone(&duplicate_only_for_book),
+                );
+            }
+        ));
+
+        let search_query_for_duplicates = Rc::clone(&search_query);
+        let selected_book_for_duplicates = Rc::clone(&selected_book);
+        let duplicate_only_for_duplicates = Rc::clone(&duplicate_only);
+        duplicate_filter_row.connect_active_notify(glib::clone!(
+            #[weak]
+            contact_list,
+            move |row| {
+                duplicate_only_for_duplicates.set(row.is_active());
+                set_contact_filter(
+                    &contact_list,
+                    Rc::clone(&search_query_for_duplicates),
+                    Rc::clone(&selected_book_for_duplicates),
+                    Rc::clone(&duplicate_only_for_duplicates),
+                );
             }
         ));
 
@@ -282,6 +386,14 @@ impl ContactsPage {
             .wrap(true)
             .build();
 
+        let detail_extra = gtk::Label::builder()
+            .label("Keine weiteren Kontaktdaten")
+            .halign(gtk::Align::Start)
+            .wrap(true)
+            .selectable(true)
+            .css_classes(vec!["body", "dim-label"])
+            .build();
+
         header_box.append(&detail_avatar);
         header_box.append(&detail_name);
         header_box.append(&detail_title);
@@ -321,7 +433,7 @@ impl ContactsPage {
                 };
                 if record.source_uid.is_empty() {
                     page.show_toast(
-                        "Lokale vCards können ohne aktives EDS-Adressbuch nicht geändert werden",
+                        "Dieser Kontakt stammt aus einer schreibgeschützten importierten Quelle",
                     );
                     return;
                 }
@@ -353,12 +465,60 @@ impl ContactsPage {
             .css_classes(vec!["circular", "destructive-action"])
             .build();
 
+        let export_btn = gtk::Button::builder()
+            .icon_name("document-save-symbolic")
+            .tooltip_text("Kontakt als vCard exportieren")
+            .css_classes(vec!["circular"])
+            .build();
+        let selected_contact_for_export = Rc::clone(&selected_contact);
+        export_btn.connect_clicked(glib::clone!(
+            #[weak(rename_to = page)]
+            self,
+            move |_| {
+                let Some(record) = selected_contact_for_export.borrow().clone() else {
+                    page.show_toast("Kein Kontakt ausgewählt");
+                    return;
+                };
+                let Some(root) = page.root().and_downcast::<gtk::Window>() else {
+                    page.show_toast("Kein Fenster für den Export verfügbar");
+                    return;
+                };
+                let file_dialog = gtk::FileDialog::builder()
+                    .title("Kontakt als vCard speichern")
+                    .initial_name("kontakt.vcf")
+                    .modal(true)
+                    .build();
+                let page_weak = page.downgrade();
+                file_dialog.save(Some(&root), None::<&gio::Cancellable>, move |result| {
+                    let Ok(file) = result else {
+                        return;
+                    };
+                    let save_result = file.replace_contents(
+                        record.vcard.as_bytes(),
+                        None,
+                        true,
+                        gio::FileCreateFlags::NONE,
+                        None::<&gio::Cancellable>,
+                    );
+                    let Some(page) = page_weak.upgrade() else {
+                        return;
+                    };
+                    match save_result {
+                        Ok(_) => page.show_toast("Kontakt als vCard exportiert"),
+                        Err(error) => page
+                            .show_toast(&format!("vCard konnte nicht gespeichert werden: {error}")),
+                    }
+                });
+            }
+        ));
+
         let selected_contact_for_delete = Rc::clone(&selected_contact);
         let stored_contacts_for_delete = Rc::clone(&stored_contacts);
         let contact_list_for_delete = contact_list.clone();
         let detail_name_for_delete = detail_name.clone();
         let detail_title_for_delete = detail_title.clone();
         let detail_avatar_for_delete = detail_avatar.clone();
+        let detail_extra_for_delete = detail_extra.clone();
         delete_btn.connect_clicked(glib::clone!(
             #[weak(rename_to = page)]
             self,
@@ -369,34 +529,33 @@ impl ContactsPage {
                 };
                 if contact.source_uid.is_empty() {
                     page.show_toast(
-                        "Lokale vCards können ohne aktives EDS-Adressbuch nicht gelöscht werden",
+                        "Dieser Kontakt stammt aus einer schreibgeschützten importierten Quelle",
                     );
                     return;
                 }
 
-                let confirmation = adw::AlertDialog::new(
-                    Some("Kontakt löschen?"),
-                    Some("Der Kontakt wird dauerhaft aus dem EDS-Adressbuch entfernt."),
-                );
-                confirmation.add_responses(&[("cancel", "Abbrechen"), ("delete", "Löschen")]);
-                confirmation
-                    .set_response_appearance("delete", adw::ResponseAppearance::Destructive);
-                let confirmation_parent = detail_name_for_delete.clone();
-                let selected_contact_for_response = Rc::clone(&selected_contact_for_delete);
-                let stored_contacts_for_response = Rc::clone(&stored_contacts_for_delete);
-                let contact_list_for_response = contact_list_for_delete.clone();
-                let detail_name_for_response = detail_name_for_delete.clone();
-                let detail_title_for_response = detail_title_for_delete.clone();
-                let detail_avatar_for_response = detail_avatar_for_delete.clone();
-                let page_weak_for_response = page.downgrade();
-                confirmation.connect_response(
-                    None,
-                    move |dialog: &adw::AlertDialog, response: &str| {
-                        if response != "delete" {
-                            return;
-                        }
-                        let source_uid = contact.source_uid.clone();
-                        let contact_uid = contact.uid.clone();
+                let confirmation_message = if contact.source_uid == "local-addressbook" {
+                    "Der Kontakt wird dauerhaft aus dem lokalen Adressbuch entfernt."
+                } else {
+                    "Der Kontakt wird dauerhaft aus dem EDS-Adressbuch entfernt."
+                };
+                let contact_for_action = contact.clone();
+                let selected_contact_for_action = Rc::clone(&selected_contact_for_delete);
+                let stored_contacts_for_action = Rc::clone(&stored_contacts_for_delete);
+                let contact_list_for_action = contact_list_for_delete.clone();
+                let detail_name_for_action = detail_name_for_delete.clone();
+                let detail_title_for_action = detail_title_for_delete.clone();
+                let detail_avatar_for_action = detail_avatar_for_delete.clone();
+                let detail_extra_for_action = detail_extra_for_delete.clone();
+                let page_weak_for_action = page.downgrade();
+                crate::dialogs::run_destructive_action(
+                    &detail_name_for_delete,
+                    "Kontakt löschen?",
+                    confirmation_message,
+                    "Löschen",
+                    move || {
+                        let source_uid = contact_for_action.source_uid.clone();
+                        let contact_uid = contact_for_action.uid.clone();
                         let (sender, receiver) = async_channel::bounded(1);
                         std::thread::spawn(move || {
                             let result =
@@ -406,15 +565,15 @@ impl ContactsPage {
                             }
                         });
 
-                        let dialog_for_result = dialog.clone();
-                        let contact_for_result = contact.clone();
-                        let selected_contact_for_result = Rc::clone(&selected_contact_for_response);
-                        let stored_contacts_for_result = Rc::clone(&stored_contacts_for_response);
-                        let contact_list_for_result = contact_list_for_response.clone();
-                        let detail_name_for_result = detail_name_for_response.clone();
-                        let detail_title_for_result = detail_title_for_response.clone();
-                        let detail_avatar_for_result = detail_avatar_for_response.clone();
-                        let page_weak_for_result = page_weak_for_response.clone();
+                        let contact_for_result = contact_for_action.clone();
+                        let selected_contact_for_result = Rc::clone(&selected_contact_for_action);
+                        let stored_contacts_for_result = Rc::clone(&stored_contacts_for_action);
+                        let contact_list_for_result = contact_list_for_action.clone();
+                        let detail_name_for_result = detail_name_for_action.clone();
+                        let detail_title_for_result = detail_title_for_action.clone();
+                        let detail_avatar_for_result = detail_avatar_for_action.clone();
+                        let detail_extra_for_result = detail_extra_for_action.clone();
+                        let page_weak_for_result = page_weak_for_action.clone();
                         glib::spawn_future_local(async move {
                             match receiver.recv().await {
                                 Ok(Ok(result)) => {
@@ -427,11 +586,11 @@ impl ContactsPage {
                                             (item.source_uid.clone(), item.uid.clone()) == key
                                         })
                                     {
-                                        if let Some(row) =
-                                            contact_list_for_result.row_at_index(index as i32)
-                                        {
-                                            contact_list_for_result.remove(&row);
-                                        }
+                                        remove_contact_list_row(
+                                            &contact_list_for_result,
+                                            &contact_for_result.source_uid,
+                                            &uid,
+                                        );
                                         stored_contacts_for_result.borrow_mut().remove(index);
                                     }
                                     *selected_contact_for_result.borrow_mut() = None;
@@ -440,10 +599,11 @@ impl ContactsPage {
                                     detail_title_for_result.set_label(
                                         "Adressbuchdaten werden nach der EDS-Anbindung angezeigt",
                                     );
+                                    detail_extra_for_result
+                                        .set_label("Keine weiteren Kontaktdaten");
                                     if let Some(page) = page_weak_for_result.upgrade() {
                                         page.show_toast(&format!("Kontakt gelöscht ({uid})"));
                                     }
-                                    dialog_for_result.close();
                                 }
                                 Ok(Err(error)) => {
                                     show_toast_for_widget(
@@ -458,11 +618,11 @@ impl ContactsPage {
                         });
                     },
                 );
-                confirmation.present(Some(&confirmation_parent));
             }
         ));
 
         actions_box.append(&email_btn);
+        actions_box.append(&export_btn);
         actions_box.append(&edit_btn);
         actions_box.append(&delete_btn);
 
@@ -500,6 +660,7 @@ impl ContactsPage {
         email_group.add(&email_row1);
 
         info_box.append(&email_group);
+        info_box.append(&detail_extra);
         info_scroll.set_child(Some(&info_box));
         detail_box.append(&info_scroll);
 
@@ -512,6 +673,8 @@ impl ContactsPage {
             detail_name,
             #[weak]
             detail_title,
+            #[weak]
+            detail_extra,
             #[weak]
             email_row1,
             #[strong]
@@ -538,22 +701,26 @@ impl ContactsPage {
                         contact,
                     };
                     detail_avatar.set_text(Some(&record.contact.fn_name));
+                    set_avatar_photo(&detail_avatar, record.contact.photo.as_ref());
                     detail_name.set_label(&record.contact.fn_name);
-                    email_row1.set_title(if record.contact.email.is_empty() {
+                    let email_text = contact_email_text(&record.contact);
+                    let phone_text = contact_phone_text(&record.contact);
+                    email_row1.set_title(if email_text.is_empty() {
                         "Keine E-Mail-Adresse"
                     } else {
-                        &record.contact.email
+                        email_text.as_str()
                     });
-                    email_row1.set_subtitle(if record.contact.tel.is_empty() {
+                    email_row1.set_subtitle(if phone_text.is_empty() {
                         "Keine Telefonnummer"
                     } else {
-                        &record.contact.tel
+                        phone_text.as_str()
                     });
                     detail_title.set_label(if record.contact.title.is_empty() {
                         &record.contact.org
                     } else {
                         &record.contact.title
                     });
+                    detail_extra.set_label(&contact_detail_summary(&record.contact));
                     *selected_contact_for_selection.borrow_mut() = Some(record);
                 }
             }
@@ -568,6 +735,7 @@ impl ContactsPage {
             let detail_avatar_for_monitor = detail_avatar.clone();
             let detail_name_for_monitor = detail_name.clone();
             let detail_title_for_monitor = detail_title.clone();
+            let detail_extra_for_monitor = detail_extra.clone();
             let email_row_for_monitor = email_row1.clone();
             glib::spawn_future_local(async move {
                 while let Ok(event) = receiver.recv().await {
@@ -605,6 +773,8 @@ impl ContactsPage {
                                     detail_title_for_monitor.set_label(
                                         "Adressbuchdaten werden nach der EDS-Anbindung angezeigt",
                                     );
+                                    detail_extra_for_monitor
+                                        .set_label("Keine weiteren Kontaktdaten");
                                     email_row_for_monitor.set_title("Keine E-Mail-Adresse");
                                     email_row_for_monitor.set_subtitle("Kein Kontakt ausgewählt");
                                 }
@@ -629,6 +799,7 @@ impl ContactsPage {
                                             &detail_avatar_for_monitor,
                                             &detail_name_for_monitor,
                                             &detail_title_for_monitor,
+                                            &detail_extra_for_monitor,
                                             &email_row_for_monitor,
                                         );
                                     }
@@ -721,6 +892,31 @@ fn refresh_contacts(
     });
 }
 
+fn set_contact_filter(
+    contact_list: &gtk::ListBox,
+    search_query: Rc<RefCell<String>>,
+    selected_book: Rc<RefCell<String>>,
+    duplicate_only: Rc<Cell<bool>>,
+) {
+    contact_list.set_filter_func(move |row| unsafe {
+        let source_filter = selected_book.borrow().clone();
+        let query = search_query.borrow().clone();
+        let source_matches = source_filter.is_empty()
+            || row
+                .data::<String>("contact-source-uid")
+                .is_some_and(|value| value.as_ref().as_str() == source_filter.as_str());
+        let search_matches = query.is_empty()
+            || row
+                .data::<String>("contact-search")
+                .is_some_and(|value| value.as_ref().contains(query.as_str()));
+        let duplicate_matches = !duplicate_only.get()
+            || row
+                .data::<bool>("contact-duplicate")
+                .is_some_and(|value| *value.as_ref());
+        source_matches && search_matches && duplicate_matches
+    });
+}
+
 fn upsert_contact_row(
     contact_list: &gtk::ListBox,
     stored_contacts: Rc<RefCell<Vec<EBookContactRecord>>>,
@@ -731,12 +927,11 @@ fn upsert_contact_row(
     });
     if let Some(index) = existing_index {
         stored_contacts.borrow_mut().remove(index);
-        if let Some(row) = contact_list.row_at_index(index as i32) {
-            contact_list.remove(&row);
-        }
+        remove_contact_list_row(contact_list, &record.source_uid, &record.uid);
     }
     append_contact_row(contact_list, &record);
     stored_contacts.borrow_mut().push(record);
+    mark_duplicate_rows(contact_list, &stored_contacts);
 }
 
 fn remove_contact_row(
@@ -753,10 +948,82 @@ fn remove_contact_row(
         return false;
     };
     stored_contacts.borrow_mut().remove(index);
-    if let Some(row) = contact_list.row_at_index(index as i32) {
-        contact_list.remove(&row);
-    }
+    remove_contact_list_row(contact_list, source_uid, uid);
+    mark_duplicate_rows(contact_list, &stored_contacts);
     true
+}
+
+fn mark_duplicate_rows(
+    contact_list: &gtk::ListBox,
+    stored_contacts: &Rc<RefCell<Vec<EBookContactRecord>>>,
+) {
+    let contacts = stored_contacts.borrow();
+    let mut child = contact_list.first_child();
+    while let Some(widget) = child {
+        child = widget.next_sibling();
+        let Ok(row) = widget.downcast::<gtk::ListBoxRow>() else {
+            continue;
+        };
+        let (source_uid, uid) = unsafe {
+            (
+                row.data::<String>("contact-source-uid")
+                    .map(|value| value.as_ref().clone())
+                    .unwrap_or_default(),
+                row.data::<String>("contact-id")
+                    .map(|value| value.as_ref().clone())
+                    .unwrap_or_default(),
+            )
+        };
+        let duplicate = contacts
+            .iter()
+            .find(|contact| contact.source_uid == source_uid && contact.uid == uid)
+            .is_some_and(|contact| contact_has_duplicate(contact, &contacts));
+        unsafe {
+            row.set_data("contact-duplicate", duplicate);
+        }
+        if duplicate {
+            row.add_css_class("warning");
+        } else {
+            row.remove_css_class("warning");
+        }
+    }
+    contact_list.invalidate_filter();
+}
+
+fn contact_has_duplicate(contact: &EBookContactRecord, contacts: &[EBookContactRecord]) -> bool {
+    let keys = contact.contact.duplicate_keys();
+    contacts.iter().any(|other| {
+        if other.source_uid == contact.source_uid && other.uid == contact.uid {
+            return false;
+        }
+        let other_keys = other.contact.duplicate_keys();
+        keys.iter().any(|key| other_keys.contains(key))
+    })
+}
+
+fn remove_contact_list_row(contact_list: &gtk::ListBox, source_uid: &str, uid: &str) {
+    let mut child = contact_list.first_child();
+    while let Some(widget) = child {
+        child = widget.next_sibling();
+        let Ok(row) = widget.downcast::<gtk::ListBoxRow>() else {
+            continue;
+        };
+        let matches = unsafe {
+            let row_source_uid = row
+                .data::<String>("contact-source-uid")
+                .map(|value| value.as_ref().clone())
+                .unwrap_or_default();
+            let row_uid = row
+                .data::<String>("contact-id")
+                .map(|value| value.as_ref().clone())
+                .unwrap_or_default();
+            row_source_uid == source_uid && row_uid == uid
+        };
+        if matches {
+            contact_list.remove(&row);
+            return;
+        }
+    }
 }
 
 fn update_contact_detail(
@@ -764,25 +1031,30 @@ fn update_contact_detail(
     detail_avatar: &adw::Avatar,
     detail_name: &gtk::Label,
     detail_title: &gtk::Label,
+    detail_extra: &gtk::Label,
     email_row: &adw::ActionRow,
 ) {
     detail_avatar.set_text(Some(&record.contact.fn_name));
+    set_avatar_photo(detail_avatar, record.contact.photo.as_ref());
     detail_name.set_label(&record.contact.fn_name);
-    email_row.set_title(if record.contact.email.is_empty() {
+    let email_text = contact_email_text(&record.contact);
+    let phone_text = contact_phone_text(&record.contact);
+    email_row.set_title(if email_text.is_empty() {
         "Keine E-Mail-Adresse"
     } else {
-        &record.contact.email
+        email_text.as_str()
     });
-    email_row.set_subtitle(if record.contact.tel.is_empty() {
+    email_row.set_subtitle(if phone_text.is_empty() {
         "Keine Telefonnummer"
     } else {
-        &record.contact.tel
+        phone_text.as_str()
     });
     detail_title.set_label(if record.contact.title.is_empty() {
         &record.contact.org
     } else {
         &record.contact.title
     });
+    detail_extra.set_label(&contact_detail_summary(&record.contact));
 }
 
 fn show_toast_for_widget<W: IsA<gtk::Widget>>(widget: &W, message: &str) {
@@ -800,9 +1072,11 @@ fn append_contact_row(contact_list: &gtk::ListBox, record: &EBookContactRecord) 
     let row = gtk::ListBoxRow::new();
     row.set_activatable(true);
     unsafe {
+        let search_text = format!("{} {}", contact.searchable_text(), record.vcard).to_lowercase();
         row.set_data("contact-name", contact.fn_name.clone());
         row.set_data("contact-email", contact.email.clone());
         row.set_data("contact-title", contact.title.clone());
+        row.set_data("contact-search", search_text);
         row.set_data("contact-id", record.uid.clone());
         row.set_data("contact-source-uid", record.source_uid.clone());
         row.set_data("contact-source-name", record.source_display_name.clone());
@@ -822,6 +1096,7 @@ fn append_contact_row(contact_list: &gtk::ListBox, record: &EBookContactRecord) 
         .text(&contact.fn_name)
         .show_initials(true)
         .build();
+    set_avatar_photo(&avatar, contact.photo.as_ref());
     row_box.append(&avatar);
 
     let info_box = gtk::Box::builder()
@@ -834,11 +1109,12 @@ fn append_contact_row(contact_list: &gtk::ListBox, record: &EBookContactRecord) 
         .halign(gtk::Align::Start)
         .ellipsize(gtk::pango::EllipsizeMode::End)
         .build();
+    let email_text = contact_email_text(contact);
     let email = gtk::Label::builder()
-        .label(if contact.email.is_empty() {
+        .label(if email_text.is_empty() {
             "Keine E-Mail-Adresse"
         } else {
-            &contact.email
+            email_text.as_str()
         })
         .halign(gtk::Align::Start)
         .css_classes(vec!["dim-label"])
@@ -849,6 +1125,88 @@ fn append_contact_row(contact_list: &gtk::ListBox, record: &EBookContactRecord) 
     row_box.append(&info_box);
     row.set_child(Some(&row_box));
     contact_list.append(&row);
+}
+
+fn set_avatar_photo(
+    avatar: &adw::Avatar,
+    photo: Option<&crate::services::vcard_service::VCardPhoto>,
+) {
+    let Some(bytes) = photo.and_then(|photo| photo.decoded_bytes()) else {
+        avatar.set_custom_image(None::<&gdk::Texture>);
+        return;
+    };
+    let bytes = glib::Bytes::from_owned(bytes);
+    match gdk::Texture::from_bytes(&bytes) {
+        Ok(texture) => avatar.set_custom_image(Some(&texture)),
+        Err(error) => {
+            avatar.set_custom_image(None::<&gdk::Texture>);
+            tracing::debug!(%error, "Could not decode vCard avatar photo");
+        }
+    }
+}
+
+fn contact_email_text(contact: &VCardContact) -> String {
+    if contact.emails.is_empty() {
+        contact.email.clone()
+    } else {
+        contact.emails.join(", ")
+    }
+}
+
+fn contact_phone_text(contact: &VCardContact) -> String {
+    if contact.phones.is_empty() {
+        contact.tel.clone()
+    } else {
+        contact.phones.join(", ")
+    }
+}
+
+fn contact_detail_summary(contact: &VCardContact) -> String {
+    let mut lines = Vec::new();
+    if !contact.addresses.is_empty() {
+        lines.push(format!("Adresse: {}", contact.addresses.join(" · ")));
+    }
+    if !contact.categories.is_empty() {
+        lines.push(format!("Kategorien: {}", contact.categories.join(", ")));
+    }
+    if !contact.urls.is_empty() {
+        lines.push(format!("Websites: {}", contact.urls.join(", ")));
+    }
+    if !contact.nickname.trim().is_empty() {
+        lines.push(format!("Spitzname: {}", contact.nickname));
+    }
+    if !contact.birthday.trim().is_empty() {
+        lines.push(format!("Geburtstag: {}", contact.birthday));
+    }
+    if !contact.anniversary.trim().is_empty() {
+        lines.push(format!("Jahrestag: {}", contact.anniversary));
+    }
+    if !contact.role.trim().is_empty() {
+        lines.push(format!("Rolle: {}", contact.role));
+    }
+    if !contact.gender.trim().is_empty() {
+        lines.push(format!("Geschlecht: {}", contact.gender));
+    }
+    if !contact.timezone.trim().is_empty() {
+        lines.push(format!("Zeitzone: {}", contact.timezone));
+    }
+    if !contact.geo.trim().is_empty() {
+        lines.push(format!("Position: {}", contact.geo));
+    }
+    if !contact.impps.is_empty() {
+        lines.push(format!("Chat/IMPP: {}", contact.impps.join(", ")));
+    }
+    if !contact.related.is_empty() {
+        lines.push(format!("Verwandt: {}", contact.related.join(", ")));
+    }
+    if !contact.note.trim().is_empty() {
+        lines.push(format!("Notiz: {}", contact.note));
+    }
+    if lines.is_empty() {
+        "Keine weiteren Kontaktdaten".to_string()
+    } else {
+        lines.join("\n")
+    }
 }
 
 impl Default for ContactsPage {

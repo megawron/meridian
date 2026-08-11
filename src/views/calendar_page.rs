@@ -4,23 +4,29 @@
 
 use adw::prelude::*;
 use adw::subclass::prelude::*;
-use chrono::{Datelike, Duration, Local, NaiveDate, NaiveDateTime};
-use gtk::glib;
+use chrono::{Datelike, Duration, Local, NaiveDate, NaiveDateTime, Timelike, Weekday};
+use gtk::{gdk, gio, glib};
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::services::calendar_store_service::CalendarEventRecord;
+use crate::services::calendar_category_service::CalendarCategoryStore;
+use crate::services::calendar_store_service::{
+    CalendarEventRecord, export_ical_component, update_ical_property,
+};
 use crate::services::ecal_service::{
     CalendarDataOrigin, ECalChangeKind, ECalComponentType, ECalRecord, ECalService, ECalSyncEvent,
     load_snapshot_prefer_eds, parse_change_record,
 };
 use crate::services::eds_service;
+use crate::services::settings_service::AppSettings;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CalendarView {
     Day,
     Week,
+    WorkWeek,
     Month,
+    Agenda,
 }
 
 // ─── GObject Subclass ───────────────────────────────────────────────────────
@@ -37,6 +43,8 @@ mod imp {
         pub month_date_label: RefCell<Option<gtk::Label>>,
         pub day_view: RefCell<Option<gtk::Box>>,
         pub week_view: RefCell<Option<gtk::Box>>,
+        pub workweek_view: RefCell<Option<gtk::Box>>,
+        pub agenda_view: RefCell<Option<gtk::Box>>,
         pub event_records: RefCell<Option<Rc<RefCell<Vec<CalendarEventRecord>>>>>,
         pub ecal_monitor_cancel: RefCell<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>>,
     }
@@ -50,6 +58,8 @@ mod imp {
                 month_date_label: RefCell::new(None),
                 day_view: RefCell::new(None),
                 week_view: RefCell::new(None),
+                workweek_view: RefCell::new(None),
+                agenda_view: RefCell::new(None),
                 event_records: RefCell::new(None),
                 ecal_monitor_cancel: RefCell::new(None),
             }
@@ -119,7 +129,12 @@ impl CalendarPage {
     }
 
     fn build_ui(&self) {
-        let split = adw::NavigationSplitView::new();
+        let paned = gtk::Paned::new(gtk::Orientation::Horizontal);
+        paned.set_resize_start_child(false);
+        paned.set_shrink_start_child(false);
+        paned.set_resize_end_child(true);
+        paned.set_shrink_end_child(false);
+        paned.set_position(280);
 
         // ── Sidebar (Calendar Picker + Task List) ───────────────────────
 
@@ -381,14 +396,9 @@ impl CalendarPage {
         let sidebar_scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
             .child(&sidebar_box)
+            .vexpand(true)
             .build();
-
-        let sidebar_page = adw::NavigationPage::builder()
-            .title("Kalender")
-            .child(&sidebar_scroll)
-            .build();
-
-        split.set_sidebar(Some(&sidebar_page));
+        paned.set_start_child(Some(&sidebar_scroll));
 
         // ── Calendar Content (View Switcher: Day/Week/Month) ────────────
 
@@ -440,6 +450,27 @@ impl CalendarPage {
             .margin_end(8)
             .build();
 
+        let btn_availability = gtk::Button::builder()
+            .label("Freie Zeiten")
+            .icon_name("appointment-soon-symbolic")
+            .css_classes(vec!["flat"])
+            .tooltip_text("Freie Zeitblöcke im lokalen Kalender anzeigen")
+            .margin_end(8)
+            .build();
+
+        btn_availability.connect_clicked(glib::clone!(
+            #[weak(rename_to = page)]
+            self,
+            move |button| {
+                let date = *page.imp().current_date.borrow();
+                let dialog = crate::dialogs::AvailabilityDialog::new(date);
+                if let Some(window) = button.root().and_downcast::<gtk::Window>() {
+                    dialog.set_transient_for(Some(&window));
+                }
+                dialog.present();
+            }
+        ));
+
         btn_add_event.connect_clicked(glib::clone!(
             #[weak(rename_to = page)]
             self,
@@ -459,32 +490,61 @@ impl CalendarPage {
             .css_classes(vec!["linked"])
             .build();
 
-        let day_btn = gtk::ToggleButton::builder().label("Tag").build();
+        let initial_view = AppSettings::try_new()
+            .map(|settings| settings.calendar_view())
+            .unwrap_or_else(|| "month".to_string());
+        let initial_calendar_view = match initial_view.as_str() {
+            "day" => CalendarView::Day,
+            "week" => CalendarView::Week,
+            "workweek" => CalendarView::WorkWeek,
+            "agenda" => CalendarView::Agenda,
+            _ => CalendarView::Month,
+        };
+        *self.imp().current_view.borrow_mut() = initial_calendar_view;
+
+        let day_btn = gtk::ToggleButton::builder()
+            .label("Tag")
+            .active(initial_calendar_view == CalendarView::Day)
+            .build();
         let week_btn = gtk::ToggleButton::builder()
             .label("Woche")
             .group(&day_btn)
+            .active(initial_calendar_view == CalendarView::Week)
+            .build();
+        let workweek_btn = gtk::ToggleButton::builder()
+            .label("Arbeitswoche")
+            .group(&day_btn)
+            .active(initial_calendar_view == CalendarView::WorkWeek)
             .build();
         let month_btn = gtk::ToggleButton::builder()
             .label("Monat")
             .group(&day_btn)
-            .active(true)
+            .active(initial_calendar_view == CalendarView::Month)
+            .build();
+        let agenda_btn = gtk::ToggleButton::builder()
+            .label("Agenda")
+            .group(&day_btn)
+            .active(initial_calendar_view == CalendarView::Agenda)
             .build();
 
         view_toggle.append(&day_btn);
         view_toggle.append(&week_btn);
+        view_toggle.append(&workweek_btn);
         view_toggle.append(&month_btn);
+        view_toggle.append(&agenda_btn);
 
         view_toolbar.append(&prev_btn);
         view_toolbar.append(&today_btn);
         view_toolbar.append(&next_btn);
         view_toolbar.append(&date_label);
+        view_toolbar.append(&btn_availability);
         view_toolbar.append(&btn_add_event);
         view_toolbar.append(&view_toggle);
 
         content_box.append(&view_toolbar);
         content_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
 
-        // View Stack for Day/Week/Month view switching
+        // View Stack for Day/Week/Month/Agenda view switching
         let calendar_stack = adw::ViewStack::new();
 
         // 1. Month Grid View
@@ -546,7 +606,51 @@ impl CalendarPage {
 
         calendar_stack.add_titled(&week_scroll, Some("week"), "Woche");
 
-        calendar_stack.set_visible_child_name("month");
+        // 4. Workweek time grid
+        let workweek_view = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .margin_start(8)
+            .margin_end(8)
+            .margin_top(8)
+            .margin_bottom(8)
+            .spacing(8)
+            .build();
+        self.imp()
+            .workweek_view
+            .replace(Some(workweek_view.clone()));
+        let workweek_scroll = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Automatic)
+            .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .child(&workweek_view)
+            .build();
+
+        calendar_stack.add_titled(&workweek_scroll, Some("workweek"), "Arbeitswoche");
+
+        // 5. Agenda View
+        let agenda_view = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .margin_start(16)
+            .margin_end(16)
+            .margin_top(16)
+            .margin_bottom(16)
+            .spacing(8)
+            .build();
+        self.imp().agenda_view.replace(Some(agenda_view.clone()));
+        let agenda_scroll = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .child(&agenda_view)
+            .build();
+
+        calendar_stack.add_titled(&agenda_scroll, Some("agenda"), "Agenda");
+
+        calendar_stack.set_visible_child_name(match initial_calendar_view {
+            CalendarView::Day => "day",
+            CalendarView::Week => "week",
+            CalendarView::WorkWeek => "workweek",
+            CalendarView::Month => "month",
+            CalendarView::Agenda => "agenda",
+        });
 
         // View toggle handler
         day_btn.connect_toggled(glib::clone!(
@@ -558,6 +662,9 @@ impl CalendarPage {
                 if btn.is_active() {
                     calendar_stack.set_visible_child_name("day");
                     *page.imp().current_view.borrow_mut() = CalendarView::Day;
+                    if let Some(settings) = AppSettings::try_new() {
+                        settings.set_calendar_view("day");
+                    }
                     page.refresh_calendar_views();
                 }
             }
@@ -571,6 +678,25 @@ impl CalendarPage {
                 if btn.is_active() {
                     calendar_stack.set_visible_child_name("week");
                     *page.imp().current_view.borrow_mut() = CalendarView::Week;
+                    if let Some(settings) = AppSettings::try_new() {
+                        settings.set_calendar_view("week");
+                    }
+                    page.refresh_calendar_views();
+                }
+            }
+        ));
+        workweek_btn.connect_toggled(glib::clone!(
+            #[weak]
+            calendar_stack,
+            #[weak(rename_to = page)]
+            self,
+            move |btn| {
+                if btn.is_active() {
+                    calendar_stack.set_visible_child_name("workweek");
+                    *page.imp().current_view.borrow_mut() = CalendarView::WorkWeek;
+                    if let Some(settings) = AppSettings::try_new() {
+                        settings.set_calendar_view("workweek");
+                    }
                     page.refresh_calendar_views();
                 }
             }
@@ -584,6 +710,25 @@ impl CalendarPage {
                 if btn.is_active() {
                     calendar_stack.set_visible_child_name("month");
                     *page.imp().current_view.borrow_mut() = CalendarView::Month;
+                    if let Some(settings) = AppSettings::try_new() {
+                        settings.set_calendar_view("month");
+                    }
+                    page.refresh_calendar_views();
+                }
+            }
+        ));
+        agenda_btn.connect_toggled(glib::clone!(
+            #[weak]
+            calendar_stack,
+            #[weak(rename_to = page)]
+            self,
+            move |btn| {
+                if btn.is_active() {
+                    calendar_stack.set_visible_child_name("agenda");
+                    *page.imp().current_view.borrow_mut() = CalendarView::Agenda;
+                    if let Some(settings) = AppSettings::try_new() {
+                        settings.set_calendar_view("agenda");
+                    }
                     page.refresh_calendar_views();
                 }
             }
@@ -623,15 +768,8 @@ impl CalendarPage {
 
         self.refresh_calendar_views();
 
-        let content_page = adw::NavigationPage::builder()
-            .title("Kalenderansicht")
-            .child(&content_box)
-            .build();
-
-        split.set_content(Some(&content_page));
-        split.set_min_sidebar_width(260.0);
-        split.set_max_sidebar_width(360.0);
-        split.set_parent(self);
+        paned.set_end_child(Some(&content_box));
+        paned.set_parent(self);
     }
 
     fn shift_period(&self, direction: i32) {
@@ -640,7 +778,9 @@ impl CalendarPage {
         let next = match view {
             CalendarView::Day => current + Duration::days(i64::from(direction)),
             CalendarView::Week => current + Duration::days(i64::from(direction) * 7),
+            CalendarView::WorkWeek => current + Duration::days(i64::from(direction) * 7),
             CalendarView::Month => shift_month(current, direction),
+            CalendarView::Agenda => current + Duration::days(i64::from(direction) * 30),
         };
         *self.imp().current_date.borrow_mut() = next;
     }
@@ -649,6 +789,8 @@ impl CalendarPage {
         self.refresh_month_grid();
         self.refresh_day_view();
         self.refresh_week_view();
+        self.refresh_workweek_view();
+        self.refresh_agenda_view();
         self.refresh_period_label();
     }
 
@@ -667,7 +809,7 @@ impl CalendarPage {
                 date.year()
             ),
             CalendarView::Week => {
-                let start = date - Duration::days(i64::from(date.weekday().num_days_from_monday()));
+                let start = configured_week_start(date);
                 let end = start + Duration::days(6);
                 if start.month() == end.month() {
                     format!(
@@ -688,8 +830,38 @@ impl CalendarPage {
                     )
                 }
             }
+            CalendarView::WorkWeek => {
+                let start = workweek_start(date);
+                let end = start + Duration::days(4);
+                if start.month() == end.month() {
+                    format!(
+                        "Arbeitswoche {}.\u{2013}{}. {} {}",
+                        start.day(),
+                        end.day(),
+                        Self::month_name(start.month()),
+                        start.year()
+                    )
+                } else {
+                    format!(
+                        "Arbeitswoche {}. {}\u{2013}{}. {} {}",
+                        start.day(),
+                        Self::month_name(start.month()),
+                        end.day(),
+                        Self::month_name(end.month()),
+                        end.year()
+                    )
+                }
+            }
             CalendarView::Month => {
                 format!("{} {}", Self::month_name(date.month()), date.year())
+            }
+            CalendarView::Agenda => {
+                format!(
+                    "Agenda ab {}. {} {}",
+                    date.day(),
+                    Self::month_name(date.month()),
+                    date.year()
+                )
             }
         };
         label.set_label(&text);
@@ -713,6 +885,13 @@ impl CalendarPage {
             .halign(gtk::Align::Start)
             .build();
         view.append(&heading);
+        view.append(
+            &gtk::Label::builder()
+                .label(&format!("Arbeitszeit: {}", configured_workday_text()))
+                .css_classes(vec!["dim-label"])
+                .halign(gtk::Align::Start)
+                .build(),
+        );
 
         let list = gtk::ListBox::builder()
             .selection_mode(gtk::SelectionMode::None)
@@ -739,9 +918,12 @@ impl CalendarPage {
         };
         clear_box(&view);
         let date = *self.imp().current_date.borrow();
-        let week_start = date - Duration::days(i64::from(date.weekday().num_days_from_monday()));
+        let week_start = configured_week_start(date);
         let week_heading = gtk::Label::builder()
-            .label("Termine dieser Woche")
+            .label(&format!(
+                "Termine dieser Woche · Arbeitszeit: {}",
+                configured_workday_text()
+            ))
             .css_classes(vec!["title-3"])
             .halign(gtk::Align::Start)
             .build();
@@ -791,6 +973,231 @@ impl CalendarPage {
         }
     }
 
+    fn refresh_workweek_view(&self) {
+        let Some(view) = self.imp().workweek_view.borrow().as_ref().cloned() else {
+            return;
+        };
+        clear_box(&view);
+
+        let current_date = *self.imp().current_date.borrow();
+        let start_date = workweek_start(current_date);
+        let (workday_start, workday_end) = configured_workday_range();
+        let slot_count = ((workday_end - workday_start) + 29) / 30;
+
+        view.append(
+            &gtk::Label::builder()
+                .label(&format!(
+                    "Arbeitswoche · {}–{} · Zeitleiste {}–{}",
+                    format_date(start_date),
+                    format_date(start_date + Duration::days(4)),
+                    format_clock_minutes(workday_start),
+                    format_clock_minutes(workday_end),
+                ))
+                .css_classes(vec!["title-3"])
+                .halign(gtk::Align::Start)
+                .build(),
+        );
+
+        let grid = gtk::Grid::builder()
+            .column_spacing(2)
+            .row_spacing(2)
+            .hexpand(true)
+            .build();
+        grid.attach(
+            &gtk::Label::builder()
+                .label("Zeit")
+                .css_classes(vec!["heading", "dim-label"])
+                .margin_end(6)
+                .build(),
+            0,
+            0,
+            1,
+            1,
+        );
+
+        let days = (0..5_i64)
+            .map(|offset| start_date + Duration::days(offset))
+            .collect::<Vec<_>>();
+        let mut all_day_cells = Vec::with_capacity(days.len());
+        for (day_index, day) in days.iter().enumerate() {
+            let heading = gtk::Label::builder()
+                .label(&format!("{}\n{}.", weekday_name(*day), day.day()))
+                .css_classes(vec!["heading"])
+                .halign(gtk::Align::Center)
+                .hexpand(true)
+                .build();
+            if *day == Local::now().date_naive() {
+                heading.add_css_class("accent");
+            }
+            grid.attach(&heading, day_index as i32 + 1, 0, 1, 1);
+
+            let all_day_cell = gtk::Box::builder()
+                .orientation(gtk::Orientation::Vertical)
+                .spacing(2)
+                .width_request(150)
+                .build();
+            let all_day_frame = gtk::Frame::builder().child(&all_day_cell).build();
+            install_day_drop_target(&all_day_frame, self, *day);
+            grid.attach(&all_day_frame, day_index as i32 + 1, 1, 1, 1);
+            all_day_cells.push(all_day_cell);
+        }
+
+        let mut cells = (0..days.len())
+            .map(|_| Vec::<gtk::Box>::with_capacity(slot_count as usize))
+            .collect::<Vec<_>>();
+        for slot in 0..slot_count {
+            let row = slot as i32 + 2;
+            let minute = workday_start + slot * 30;
+            grid.attach(
+                &gtk::Label::builder()
+                    .label(&format_clock_minutes(minute))
+                    .css_classes(vec!["caption", "dim-label"])
+                    .halign(gtk::Align::End)
+                    .valign(gtk::Align::Start)
+                    .margin_end(6)
+                    .margin_top(6)
+                    .build(),
+                0,
+                row,
+                1,
+                1,
+            );
+            for (day_index, day_cells) in cells.iter_mut().enumerate() {
+                let cell = gtk::Box::builder()
+                    .orientation(gtk::Orientation::Vertical)
+                    .spacing(2)
+                    .width_request(150)
+                    .height_request(42)
+                    .valign(gtk::Align::Fill)
+                    .build();
+                let frame = gtk::Frame::builder().child(&cell).build();
+                if slot % 2 == 0 {
+                    frame.add_css_class("view");
+                }
+                install_day_drop_target(&frame, self, days[day_index]);
+                grid.attach(&frame, day_index as i32 + 1, row, 1, 1);
+                day_cells.push(cell);
+            }
+        }
+
+        for (day_index, day) in days.iter().enumerate() {
+            let mut events = self.events_for_date(*day);
+            events.sort_by_key(event_start_datetime);
+            for event in events {
+                if event.all_day {
+                    all_day_cells[day_index].append(&calendar_event_row(&event));
+                    continue;
+                }
+
+                let slot = event_start_datetime(&event)
+                    .filter(|start| start.date() == *day)
+                    .map(|start| {
+                        let minutes = start.time().hour() * 60 + start.time().minute();
+                        minutes
+                            .saturating_sub(workday_start)
+                            .checked_div(30)
+                            .unwrap_or(0)
+                    })
+                    .unwrap_or(0)
+                    .min(slot_count.saturating_sub(1));
+                let title = if event.summary.trim().is_empty() {
+                    "(Ohne Titel)"
+                } else {
+                    event.summary.as_str()
+                };
+                let event_label = gtk::Label::builder()
+                    .halign(gtk::Align::Fill)
+                    .valign(gtk::Align::Start)
+                    .xalign(0.0)
+                    .wrap(true)
+                    .margin_start(4)
+                    .margin_end(4)
+                    .margin_top(3)
+                    .margin_bottom(3)
+                    .css_classes(vec!["card"])
+                    .build();
+                event_label.set_markup(&calendar_event_markup(
+                    &event.component,
+                    &format!("{} · {}", event_time_text(&event), title),
+                ));
+                install_event_drag_source(&event_label, &event);
+                cells[day_index][slot as usize].append(&event_label);
+            }
+        }
+
+        view.append(&grid);
+    }
+
+    fn refresh_agenda_view(&self) {
+        let Some(view) = self.imp().agenda_view.borrow().as_ref().cloned() else {
+            return;
+        };
+        clear_box(&view);
+
+        let start_date = *self.imp().current_date.borrow();
+        let end_date = start_date + Duration::days(90);
+        view.append(
+            &gtk::Label::builder()
+                .label(&format!(
+                    "Kommende Termine · {} bis {} · Arbeitszeit: {}",
+                    format_date(start_date),
+                    format_date(end_date),
+                    configured_workday_text()
+                ))
+                .css_classes(vec!["title-3"])
+                .halign(gtk::Align::Start)
+                .build(),
+        );
+
+        let mut has_events = false;
+        let mut date = start_date;
+        while date <= end_date {
+            let mut events = self.events_for_date(date);
+            events.sort_by_key(|event| event_start_datetime(event));
+            if !events.is_empty() {
+                has_events = true;
+                let date_box = gtk::Box::builder()
+                    .orientation(gtk::Orientation::Vertical)
+                    .spacing(4)
+                    .build();
+                date_box.add_css_class("card");
+                date_box.append(
+                    &gtk::Label::builder()
+                        .label(&format!(
+                            "{} · KW {:02}",
+                            format_date(date),
+                            date.iso_week().week()
+                        ))
+                        .css_classes(vec!["title-4"])
+                        .halign(gtk::Align::Start)
+                        .margin_start(10)
+                        .margin_top(8)
+                        .build(),
+                );
+                let list = gtk::ListBox::builder()
+                    .selection_mode(gtk::SelectionMode::None)
+                    .css_classes(vec!["boxed-list"])
+                    .margin_start(4)
+                    .margin_end(4)
+                    .margin_bottom(4)
+                    .build();
+                for event in events {
+                    list.append(&calendar_event_row(&event));
+                }
+                date_box.append(&list);
+                view.append(&date_box);
+            }
+            date += Duration::days(1);
+        }
+
+        if !has_events {
+            view.append(&empty_period_row(
+                "Keine kommenden Termine",
+                "Für die nächsten 90 Tage sind keine VEVENTs geladen.",
+            ));
+        }
+    }
+
     fn events_for_date(&self, date: NaiveDate) -> Vec<CalendarEventRecord> {
         self.imp()
             .event_records
@@ -826,8 +1233,12 @@ impl CalendarPage {
             return;
         };
         let days_in_month = (next_month - Duration::days(1)).day();
-        let first_weekday = month_start.weekday().num_days_from_monday();
+        let first_weekday = configured_weekday_offset(month_start);
         let today = Local::now().date_naive();
+        let show_week_numbers = AppSettings::try_new()
+            .map(|settings| settings.calendar_show_week_numbers())
+            .unwrap_or(false);
+        let column_offset = if show_week_numbers { 1 } else { 0 };
         let events = self
             .imp()
             .event_records
@@ -840,23 +1251,29 @@ impl CalendarPage {
             grid.remove(&child);
         }
 
-        for (column, weekday) in ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"]
-            .iter()
-            .enumerate()
-        {
+        for (column, weekday) in configured_weekday_names().iter().enumerate() {
             let label = gtk::Label::builder()
                 .label(*weekday)
                 .css_classes(vec!["heading", "dim-label"])
                 .margin_top(4)
                 .margin_bottom(4)
                 .build();
-            grid.attach(&label, column as i32, 0, 1, 1);
+            grid.attach(&label, column as i32 + column_offset, 0, 1, 1);
+        }
+        if show_week_numbers {
+            let label = gtk::Label::builder()
+                .label("KW")
+                .css_classes(vec!["heading", "dim-label"])
+                .margin_top(4)
+                .margin_bottom(4)
+                .build();
+            grid.attach(&label, 0, 0, 1, 1);
         }
 
         for cell_index in 0..42_i32 {
             let row = cell_index / 7 + 1;
             let column = cell_index % 7;
-            let day = cell_index - first_weekday as i32 + 1;
+            let day = cell_index - first_weekday + 1;
             let cell_box = gtk::Box::builder()
                 .orientation(gtk::Orientation::Vertical)
                 .spacing(2)
@@ -869,11 +1286,12 @@ impl CalendarPage {
             let cell_frame = gtk::Frame::builder().child(&cell_box).build();
             if !(1..=days_in_month as i32).contains(&day) {
                 cell_frame.add_css_class("dim-label");
-                grid.attach(&cell_frame, column, row, 1, 1);
+                grid.attach(&cell_frame, column + column_offset, row, 1, 1);
                 continue;
             }
 
             let date = month_start + Duration::days(i64::from(day - 1));
+            install_day_drop_target(&cell_frame, self, date);
             let day_label = gtk::Label::builder()
                 .label(&day.to_string())
                 .halign(gtk::Align::Start)
@@ -891,12 +1309,23 @@ impl CalendarPage {
                 .collect::<Vec<_>>();
             for event in day_events.iter().take(3) {
                 let event_label = gtk::Label::builder()
-                    .label(&format!("• {}", event.summary))
-                    .halign(gtk::Align::Start)
                     .ellipsize(gtk::pango::EllipsizeMode::End)
-                    .css_classes(vec!["caption"])
+                    .xalign(0.0)
+                    .hexpand(true)
                     .build();
-                cell_box.append(&event_label);
+                event_label.set_markup(&calendar_event_markup(&event.component, &event.summary));
+                let event_button = gtk::Button::builder()
+                    .halign(gtk::Align::Fill)
+                    .hexpand(true)
+                    .css_classes(vec!["flat", "caption"])
+                    .child(&event_label)
+                    .build();
+                let event_for_click = (*event).clone();
+                event_button.connect_clicked(move |button| {
+                    open_event_editor_for_widget(button, &event_for_click);
+                });
+                install_event_drag_source(&event_button, event);
+                cell_box.append(&event_button);
             }
             if day_events.len() > 3 {
                 let more_label = gtk::Label::builder()
@@ -908,8 +1337,305 @@ impl CalendarPage {
             }
 
             cell_frame.add_css_class("card");
-            grid.attach(&cell_frame, column, row, 1, 1);
+            grid.attach(&cell_frame, column + column_offset, row, 1, 1);
         }
+
+        if show_week_numbers {
+            for row in 0..6_i32 {
+                let week_date =
+                    month_start + Duration::days(i64::from(row * 7) - i64::from(first_weekday));
+                let label = gtk::Label::builder()
+                    .label(&format!("{:02}", week_date.iso_week().week()))
+                    .css_classes(vec!["caption", "dim-label"])
+                    .valign(gtk::Align::Start)
+                    .margin_top(6)
+                    .build();
+                grid.attach(&label, 0, row + 1, 1, 1);
+            }
+        }
+    }
+
+    fn move_event_by_days(&self, event: CalendarEventRecord, delta_days: i64) {
+        if delta_days == 0 {
+            return;
+        }
+        if event.source_uid.trim().is_empty() {
+            show_toast_for_widget(
+                self,
+                "Dieser Termin stammt aus einer schreibgeschützten importierten Quelle",
+            );
+            return;
+        }
+        let updated_component = match shift_event_component(&event.component, delta_days) {
+            Ok(component) => component,
+            Err(error) => {
+                show_toast_for_widget(self, &error);
+                return;
+            }
+        };
+        let source_uid = event.source_uid.clone();
+        let uid = event.uid.clone();
+        let (sender, receiver) = async_channel::bounded(1);
+        std::thread::spawn(move || {
+            let result = ECalService::new().modify_component(
+                &source_uid,
+                ECalComponentType::Event,
+                &uid,
+                &updated_component,
+            );
+            if let Err(error) = sender.send_blocking(result) {
+                tracing::debug!(%error, "Event move result was dropped");
+            }
+        });
+
+        let page_weak = self.downgrade();
+        glib::spawn_future_local(async move {
+            let Ok(result) = receiver.recv().await else {
+                return;
+            };
+            let Some(page) = page_weak.upgrade() else {
+                return;
+            };
+            match result {
+                Ok(result) => {
+                    let component = result.component.unwrap_or_else(|| {
+                        shift_event_component(&event.component, delta_days)
+                            .unwrap_or_else(|_| event.component.clone())
+                    });
+                    let mut updated_event = event.clone();
+                    updated_event.component = component.clone();
+                    updated_event.start = display_ical_datetime(
+                        &ical_property(&component, "DTSTART").unwrap_or_default(),
+                    );
+                    updated_event.end = ical_property(&component, "DTEND")
+                        .map(|value| display_ical_datetime(&value))
+                        .unwrap_or_default();
+                    let records = page.imp().event_records.borrow().as_ref().cloned();
+                    if let Some(records) = records {
+                        let mut records = records.borrow_mut();
+                        if let Some(existing) = records.iter_mut().find(|existing| {
+                            existing.source_uid == updated_event.source_uid
+                                && existing.uid == updated_event.uid
+                        }) {
+                            *existing = updated_event;
+                        }
+                    }
+                    page.refresh_calendar_views();
+                    show_toast_for_widget(&page, &format!("Termin verschoben ({})", result.uid));
+                }
+                Err(error) => {
+                    show_toast_for_widget(
+                        &page,
+                        &format!("Termin konnte nicht verschoben werden: {error}"),
+                    );
+                }
+            }
+        });
+    }
+}
+
+fn install_event_drag_source<W: IsA<gtk::Widget>>(widget: &W, event: &CalendarEventRecord) {
+    if event.source_uid.trim().is_empty() || event.uid.trim().is_empty() {
+        return;
+    }
+    let payload = format!("{}\n{}", event.source_uid, event.uid);
+    let drag_source = gtk::DragSource::new();
+    drag_source.set_actions(gdk::DragAction::MOVE);
+    drag_source
+        .connect_prepare(move |_, _, _| Some(gdk::ContentProvider::for_value(&payload.to_value())));
+    widget.add_controller(drag_source);
+}
+
+fn install_day_drop_target<W: IsA<gtk::Widget>>(
+    widget: &W,
+    page: &CalendarPage,
+    target_date: NaiveDate,
+) {
+    let drop_target = gtk::DropTarget::new(glib::Type::STRING, gdk::DragAction::MOVE);
+    let page_weak = page.downgrade();
+    drop_target.connect_drop(move |_, value, _, _| {
+        let Ok(payload) = value.get::<String>() else {
+            return false;
+        };
+        let Some((source_uid, uid)) = payload.split_once('\n') else {
+            return false;
+        };
+        let Some(page) = page_weak.upgrade() else {
+            return false;
+        };
+        let records = page.imp().event_records.borrow().as_ref().cloned();
+        let Some(event) = records.and_then(|records| {
+            records
+                .borrow()
+                .iter()
+                .find(|event| event.source_uid == source_uid && event.uid == uid)
+                .cloned()
+        }) else {
+            show_toast_for_widget(&page, "Der gezogene Termin ist nicht mehr geladen");
+            return false;
+        };
+        let Some(start_date) = event_start_date(&event) else {
+            show_toast_for_widget(&page, "Der Termin besitzt kein gültiges Startdatum");
+            return false;
+        };
+        page.move_event_by_days(event, (target_date - start_date).num_days());
+        true
+    });
+    widget.add_controller(drop_target);
+}
+
+fn shift_event_component(raw: &str, delta_days: i64) -> Result<String, String> {
+    if raw.trim().is_empty() {
+        return Err("Der Termin enthält keine iCalendar-Daten".to_string());
+    }
+    if ical_property(raw, "RRULE").is_some() {
+        return Err(
+            "Wiederkehrende Termine bitte über „Bearbeiten“ verschieben; die Serie bleibt so unverändert".to_string(),
+        );
+    }
+
+    let mut updated = raw.to_string();
+    for property_name in ["DTSTART", "DTEND"] {
+        let Some(value) = ical_property(&updated, property_name) else {
+            continue;
+        };
+        let Some(shifted) = shift_ical_datetime_value(&value, delta_days) else {
+            return Err(format!(
+                "{property_name} konnte beim Verschieben nicht ausgewertet werden"
+            ));
+        };
+        let property_prefix = ical_property_prefix(&updated, property_name)
+            .unwrap_or_else(|| property_name.to_string());
+        updated = update_ical_property(&updated, &property_prefix, Some(&shifted));
+    }
+    Ok(updated)
+}
+
+fn ical_property_prefix(raw: &str, target: &str) -> Option<String> {
+    let target = target.to_ascii_uppercase();
+    unfold_ical_lines(raw).into_iter().find_map(|line| {
+        let (property, _) = line.split_once(':')?;
+        let name = property
+            .split(';')
+            .next()
+            .unwrap_or(property)
+            .to_ascii_uppercase();
+        (name == target).then(|| property.to_string())
+    })
+}
+
+fn shift_ical_datetime_value(value: &str, delta_days: i64) -> Option<String> {
+    let value = value.trim();
+    if value.len() == 8 {
+        let date = NaiveDate::parse_from_str(value, "%Y%m%d").ok()?;
+        return Some(
+            (date + Duration::days(delta_days))
+                .format("%Y%m%d")
+                .to_string(),
+        );
+    }
+    if value.len() < 15 || value.as_bytes().get(8) != Some(&b'T') {
+        return None;
+    }
+    let datetime = NaiveDateTime::parse_from_str(&value[..15], "%Y%m%dT%H%M%S").ok()?;
+    let suffix = &value[15..];
+    Some(format!(
+        "{}{}",
+        (datetime + Duration::days(delta_days)).format("%Y%m%dT%H%M%S"),
+        suffix
+    ))
+}
+
+fn display_ical_datetime(value: &str) -> String {
+    let value = value.trim_end_matches('Z');
+    if value.len() == 8 && value.chars().all(|character| character.is_ascii_digit()) {
+        return format!("{}-{}-{}", &value[..4], &value[4..6], &value[6..8]);
+    }
+    if value.len() >= 15 && value.as_bytes().get(8) == Some(&b'T') {
+        return format!(
+            "{}-{}-{} {}:{}",
+            &value[..4],
+            &value[4..6],
+            &value[6..8],
+            &value[9..11],
+            &value[11..13]
+        );
+    }
+    value.to_string()
+}
+
+fn configured_week_start(date: NaiveDate) -> NaiveDate {
+    let week_start = configured_first_weekday();
+    let current = i64::from(date.weekday().num_days_from_monday());
+    let first = i64::from(week_start.num_days_from_monday());
+    date - Duration::days((current - first).rem_euclid(7))
+}
+
+fn workweek_start(date: NaiveDate) -> NaiveDate {
+    date - Duration::days(i64::from(date.weekday().num_days_from_monday()))
+}
+
+fn configured_weekday_offset(date: NaiveDate) -> i32 {
+    let current = i32::try_from(date.weekday().num_days_from_monday()).unwrap_or_default();
+    let first =
+        i32::try_from(configured_first_weekday().num_days_from_monday()).unwrap_or_default();
+    (current - first).rem_euclid(7)
+}
+
+fn configured_first_weekday() -> Weekday {
+    AppSettings::try_new()
+        .map(|settings| settings.calendar_week_start())
+        .filter(|value| value == "sunday")
+        .map(|_| Weekday::Sun)
+        .unwrap_or(Weekday::Mon)
+}
+
+fn configured_weekday_names() -> [&'static str; 7] {
+    if configured_first_weekday() == Weekday::Sun {
+        ["So", "Mo", "Di", "Mi", "Do", "Fr", "Sa"]
+    } else {
+        ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"]
+    }
+}
+
+fn configured_workday_text() -> String {
+    let (start, end) = configured_workday_range();
+    format!(
+        "{}–{}",
+        format_clock_minutes(start),
+        format_clock_minutes(end)
+    )
+}
+
+fn configured_workday_range() -> (u32, u32) {
+    let settings = AppSettings::try_new();
+    let start = settings
+        .as_ref()
+        .map(|settings| settings.calendar_workday_start_minutes())
+        .unwrap_or(540)
+        .min(1_410);
+    let configured_end = settings
+        .as_ref()
+        .map(|settings| settings.calendar_workday_end_minutes())
+        .unwrap_or(1_020);
+    let end = configured_end.max(start.saturating_add(30)).min(1_440);
+    (start, end)
+}
+
+fn format_clock_minutes(minutes: u32) -> String {
+    let hour = (minutes / 60) % 24;
+    let minute = minutes % 60;
+    let use_twelve_hour_clock =
+        AppSettings::try_new().is_some_and(|settings| settings.time_format() == "12h");
+    if use_twelve_hour_clock {
+        let suffix = if hour < 12 { "AM" } else { "PM" };
+        let display_hour = match hour % 12 {
+            0 => 12,
+            value => value,
+        };
+        format!("{display_hour}:{minute:02} {suffix}")
+    } else {
+        format!("{hour:02}:{minute:02}")
     }
 }
 
@@ -938,6 +1664,23 @@ fn weekday_name(date: NaiveDate) -> &'static str {
     ][date.weekday().num_days_from_monday() as usize]
 }
 
+fn format_date(date: NaiveDate) -> String {
+    match AppSettings::try_new()
+        .map(|settings| settings.date_format())
+        .as_deref()
+    {
+        Some("iso") => date.format("%Y-%m-%d").to_string(),
+        Some("us") => format!("{:02}/{:02}/{}", date.month(), date.day(), date.year()),
+        _ => format!(
+            "{}, {}. {} {}",
+            weekday_name(date),
+            date.day(),
+            CalendarPage::month_name(date.month()),
+            date.year()
+        ),
+    }
+}
+
 fn clear_box(container: &gtk::Box) {
     while let Some(child) = container.first_child() {
         container.remove(&child);
@@ -960,27 +1703,89 @@ fn calendar_event_row(event: &CalendarEventRecord) -> adw::ActionRow {
     if !event.source_display_name.trim().is_empty() {
         details.push(event.source_display_name.trim().to_string());
     }
-    adw::ActionRow::builder()
+    let row = adw::ActionRow::builder()
         .title(if event.summary.trim().is_empty() {
             "(Ohne Titel)"
         } else {
             event.summary.as_str()
         })
         .subtitle(&details.join(" · "))
-        .build()
+        .activatable(true)
+        .build();
+    if let Some(color) = category_color_for_component(&event.component) {
+        let category_dot = gtk::Label::new(None);
+        category_dot.set_markup(&format!("<span foreground=\"{color}\">●</span>"));
+        category_dot.set_tooltip_text(Some("Kalenderkategorie"));
+        row.add_prefix(&category_dot);
+    }
+    let event_for_activation = event.clone();
+    row.connect_activated(move |row| {
+        open_event_editor_for_widget(row, &event_for_activation);
+    });
+    row
+}
+
+fn open_event_editor_for_widget<W: IsA<gtk::Widget>>(widget: &W, event: &CalendarEventRecord) {
+    if event.source_uid.trim().is_empty() || event.component.trim().is_empty() {
+        show_toast_for_widget(
+            widget,
+            "Dieser Termin stammt aus einer schreibgeschützten importierten Quelle",
+        );
+        return;
+    }
+    let dialog = crate::dialogs::EventDialog::new_for_edit(event);
+    if let Some(root) = widget.root() {
+        if let Ok(window) = root.downcast::<gtk::Window>() {
+            dialog.set_transient_for(Some(&window));
+        }
+    }
+    dialog.present();
 }
 
 fn event_time_text(event: &CalendarEventRecord) -> String {
     if event.all_day || event.start.len() <= 10 {
         return "Ganztägig".to_string();
     }
-    let start = event.start.get(11..16).unwrap_or(event.start.as_str());
+    let start = event
+        .start
+        .get(11..16)
+        .map(format_clock_text)
+        .unwrap_or_else(|| event.start.clone());
     if event.end.len() > 15 {
-        let end = event.end.get(11..16).unwrap_or(event.end.as_str());
+        let end = event
+            .end
+            .get(11..16)
+            .map(format_clock_text)
+            .unwrap_or_else(|| event.end.clone());
         format!("{start}–{end}")
     } else {
-        start.to_string()
+        start
     }
+}
+
+fn calendar_event_markup(component: &str, text: &str) -> String {
+    let escaped_text = glib::markup_escape_text(text);
+    match category_color_for_component(component) {
+        Some(color) => format!("<span foreground=\"{color}\">●</span> {escaped_text}"),
+        None => escaped_text.to_string(),
+    }
+}
+
+fn category_color_for_component(component: &str) -> Option<String> {
+    CalendarCategoryStore::default().color_for_component(component)
+}
+
+fn format_clock_text(value: &str) -> String {
+    let Some((hour, minute)) = value.split_once(':') else {
+        return value.to_string();
+    };
+    let Ok(hour) = hour.parse::<u32>() else {
+        return value.to_string();
+    };
+    let Ok(minute) = minute.parse::<u32>() else {
+        return value.to_string();
+    };
+    format_clock_minutes(hour.saturating_mul(60).saturating_add(minute))
 }
 
 fn event_start_date(event: &CalendarEventRecord) -> Option<NaiveDate> {
@@ -1012,7 +1817,442 @@ fn event_occurs_on(event: &CalendarEventRecord, date: NaiveDate) -> bool {
     if end < start {
         end = start;
     }
-    (start..=end).contains(&date)
+    if has_exdate(event, date) {
+        return false;
+    }
+    if has_rdate(event, date) {
+        return true;
+    }
+    if (start..=end).contains(&date) {
+        // EXDATE identifies an occurrence start.  Keep the complete
+        // multi-day span hidden when that start is excluded.
+        return !has_exdate(event, start);
+    }
+
+    let span_days = (end - start).num_days().max(0);
+    (0..=span_days).any(|offset| {
+        let occurrence_start = date - Duration::days(offset);
+        occurrence_start > end && recurrence_occurs_on(event, start, occurrence_start)
+    })
+}
+
+fn recurrence_occurs_on(
+    event: &CalendarEventRecord,
+    initial_start: NaiveDate,
+    date: NaiveDate,
+) -> bool {
+    if date < initial_start || event.component.trim().is_empty() {
+        return false;
+    }
+    let Some(rule) = ical_property(&event.component, "RRULE") else {
+        return false;
+    };
+
+    let Some(rule) = parse_recurrence_rule(&rule) else {
+        return false;
+    };
+    if rule.until.is_some_and(|until| date > until) {
+        return false;
+    }
+
+    if has_exdate(event, date) {
+        return false;
+    }
+
+    // DTSTART is the first instance of a VEVENT even when a later rule uses a
+    // narrower BYDAY/BYMONTHDAY selector.
+    if date == initial_start {
+        return true;
+    }
+    if !recurrence_matches_without_count(&rule, initial_start, date) {
+        return false;
+    }
+
+    let Some(count) = rule.count else {
+        return true;
+    };
+    let mut occurrences = 0_usize;
+    let mut cursor = initial_start;
+    while cursor <= date {
+        let is_occurrence = cursor == initial_start
+            || recurrence_matches_without_count(&rule, initial_start, cursor);
+        if is_occurrence && !has_exdate(event, cursor) {
+            occurrences = occurrences.saturating_add(1);
+        }
+        if occurrences > count {
+            return false;
+        }
+        cursor += Duration::days(1);
+    }
+    occurrences > 0
+}
+
+fn recurrence_matches_without_count(
+    rule: &RecurrenceRule,
+    initial_start: NaiveDate,
+    date: NaiveDate,
+) -> bool {
+    if !recurrence_candidate_matches(rule, initial_start, date) {
+        return false;
+    }
+    if rule.by_set_positions.is_empty() {
+        return true;
+    }
+
+    let (period_start, period_end) = recurrence_period_bounds(&rule.frequency, date);
+    let candidates = (0..=(period_end - period_start).num_days())
+        .map(|offset| period_start + Duration::days(offset))
+        .filter(|candidate| recurrence_candidate_matches(rule, initial_start, *candidate))
+        .collect::<Vec<_>>();
+    let Some(index) = candidates.iter().position(|candidate| *candidate == date) else {
+        return false;
+    };
+    rule.by_set_positions.iter().any(|position| {
+        if *position > 0 {
+            usize::try_from(*position - 1).ok() == Some(index)
+        } else {
+            usize::try_from(position.unsigned_abs() - 1).ok()
+                == Some(candidates.len().saturating_sub(index + 1))
+        }
+    })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RecurrenceByDay {
+    weekday: Weekday,
+    ordinal: Option<i32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RecurrenceRule {
+    frequency: String,
+    interval: i64,
+    count: Option<usize>,
+    until: Option<NaiveDate>,
+    by_days: Vec<RecurrenceByDay>,
+    by_month_days: Vec<i32>,
+    by_months: Vec<u32>,
+    by_set_positions: Vec<i32>,
+}
+
+fn parse_recurrence_rule(raw: &str) -> Option<RecurrenceRule> {
+    let mut frequency = None;
+    let mut interval = 1_i64;
+    let mut count = None;
+    let mut until = None;
+    let mut by_days = Vec::new();
+    let mut by_month_days = Vec::new();
+    let mut by_months = Vec::new();
+    let mut by_set_positions = Vec::new();
+
+    for part in raw.split(';') {
+        let Some((key, value)) = part.split_once('=') else {
+            continue;
+        };
+        match key.trim().to_ascii_uppercase().as_str() {
+            "FREQ" => frequency = Some(value.trim().to_ascii_uppercase()),
+            "INTERVAL" => {
+                interval = value
+                    .trim()
+                    .parse::<i64>()
+                    .ok()
+                    .filter(|value| *value > 0)
+                    .unwrap_or(1)
+            }
+            "COUNT" => count = value.trim().parse::<usize>().ok(),
+            "UNTIL" => until = parse_ical_date(value),
+            "BYDAY" => by_days.extend(value.split(',').filter_map(parse_extended_weekday_token)),
+            "BYMONTHDAY" => by_month_days.extend(value.split(',').filter_map(|value| {
+                let day = value.trim().parse::<i32>().ok()?;
+                (day != 0 && (-31..=31).contains(&day)).then_some(day)
+            })),
+            "BYMONTH" => by_months.extend(value.split(',').filter_map(|value| {
+                let month = value.trim().parse::<u32>().ok()?;
+                (1..=12).contains(&month).then_some(month)
+            })),
+            "BYSETPOS" => by_set_positions.extend(value.split(',').filter_map(|value| {
+                let position = value.trim().parse::<i32>().ok()?;
+                (position != 0 && (-366..=366).contains(&position)).then_some(position)
+            })),
+            _ => {}
+        }
+    }
+
+    Some(RecurrenceRule {
+        frequency: frequency?,
+        interval,
+        count,
+        until,
+        by_days,
+        by_month_days,
+        by_months,
+        by_set_positions,
+    })
+}
+
+fn recurrence_candidate_matches(
+    rule: &RecurrenceRule,
+    initial_start: NaiveDate,
+    date: NaiveDate,
+) -> bool {
+    if date < initial_start || rule.until.is_some_and(|until| date > until) {
+        return false;
+    }
+
+    let period_matches = match rule.frequency.as_str() {
+        "DAILY" => (date - initial_start).num_days() % rule.interval == 0,
+        "WEEKLY" => {
+            let weeks = (week_start(date) - week_start(initial_start))
+                .num_days()
+                .div_euclid(7);
+            weeks >= 0 && weeks % rule.interval == 0
+        }
+        "MONTHLY" => {
+            let months = month_distance(initial_start, date);
+            months >= 0 && months % rule.interval == 0
+        }
+        "YEARLY" => {
+            let years = i64::from(date.year() - initial_start.year());
+            years >= 0 && years % rule.interval == 0
+        }
+        _ => false,
+    };
+    if !period_matches {
+        return false;
+    }
+
+    if !rule.by_months.is_empty() && !rule.by_months.contains(&date.month()) {
+        return false;
+    }
+    if !rule.by_month_days.is_empty()
+        && !rule
+            .by_month_days
+            .iter()
+            .any(|day| month_day_matches(*day, date))
+    {
+        return false;
+    }
+    if !rule.by_days.is_empty()
+        && !rule.by_days.iter().any(|by_day| {
+            if by_day.weekday != date.weekday() {
+                return false;
+            }
+            match rule.frequency.as_str() {
+                "MONTHLY" => by_day_ordinal_matches_in_month(*by_day, date),
+                "YEARLY" if !rule.by_months.is_empty() => {
+                    by_day_ordinal_matches_in_month(*by_day, date)
+                }
+                "YEARLY" => by_day_ordinal_matches_in_year(*by_day, date),
+                _ => true,
+            }
+        })
+    {
+        return false;
+    }
+
+    match rule.frequency.as_str() {
+        "WEEKLY" if rule.by_days.is_empty() => date.weekday() == initial_start.weekday(),
+        "MONTHLY" if rule.by_month_days.is_empty() && rule.by_days.is_empty() => {
+            date.day() == initial_start.day()
+        }
+        "YEARLY" if rule.by_month_days.is_empty() && rule.by_days.is_empty() => {
+            date.month() == initial_start.month() && date.day() == initial_start.day()
+        }
+        _ => true,
+    }
+}
+
+fn recurrence_period_bounds(frequency: &str, date: NaiveDate) -> (NaiveDate, NaiveDate) {
+    match frequency {
+        "DAILY" => (date, date),
+        "WEEKLY" => {
+            let start = week_start(date);
+            (start, start + Duration::days(6))
+        }
+        "MONTHLY" => {
+            let start = date.with_day(1).unwrap_or(date);
+            let end = next_month(start)
+                .map(|value| value - Duration::days(1))
+                .unwrap_or(date);
+            (start, end)
+        }
+        "YEARLY" => {
+            let start = NaiveDate::from_ymd_opt(date.year(), 1, 1).unwrap_or(date);
+            let end = NaiveDate::from_ymd_opt(date.year() + 1, 1, 1)
+                .map(|value| value - Duration::days(1))
+                .unwrap_or(date);
+            (start, end)
+        }
+        _ => (date, date),
+    }
+}
+
+fn week_start(date: NaiveDate) -> NaiveDate {
+    date - Duration::days(i64::from(date.weekday().num_days_from_monday()))
+}
+
+fn month_distance(start: NaiveDate, date: NaiveDate) -> i64 {
+    i64::from(date.year() - start.year()) * 12
+        + i64::from(date.month() as i32 - start.month() as i32)
+}
+
+fn next_month(date: NaiveDate) -> Option<NaiveDate> {
+    if date.month() == 12 {
+        NaiveDate::from_ymd_opt(date.year() + 1, 1, 1)
+    } else {
+        NaiveDate::from_ymd_opt(date.year(), date.month() + 1, 1)
+    }
+}
+
+fn days_in_month(date: NaiveDate) -> u32 {
+    next_month(date)
+        .and_then(|value| value.pred_opt())
+        .map(|value| value.day())
+        .unwrap_or(31)
+}
+
+fn month_day_matches(day: i32, date: NaiveDate) -> bool {
+    if day > 0 {
+        date.day() == day as u32
+    } else {
+        let offset = day.unsigned_abs();
+        offset <= days_in_month(date) && date.day() == days_in_month(date) - offset + 1
+    }
+}
+
+fn by_day_ordinal_matches_in_month(by_day: RecurrenceByDay, date: NaiveDate) -> bool {
+    let Some(ordinal) = by_day.ordinal else {
+        return true;
+    };
+    let positive = ((date.day() - 1) / 7 + 1) as i32;
+    if ordinal > 0 {
+        positive == ordinal
+    } else {
+        let negative = -(((days_in_month(date) - date.day()) / 7 + 1) as i32);
+        negative == ordinal
+    }
+}
+
+fn by_day_ordinal_matches_in_year(by_day: RecurrenceByDay, date: NaiveDate) -> bool {
+    let Some(ordinal) = by_day.ordinal else {
+        return true;
+    };
+    let start = NaiveDate::from_ymd_opt(date.year(), 1, 1).unwrap_or(date);
+    let end = NaiveDate::from_ymd_opt(date.year() + 1, 1, 1)
+        .and_then(|value| value.pred_opt())
+        .unwrap_or(date);
+    let matching = (0..=(end - start).num_days())
+        .map(|offset| start + Duration::days(offset))
+        .filter(|candidate| candidate.weekday() == by_day.weekday)
+        .collect::<Vec<_>>();
+    let Some(index) = matching.iter().position(|candidate| *candidate == date) else {
+        return false;
+    };
+    if ordinal > 0 {
+        usize::try_from(ordinal - 1).ok() == Some(index)
+    } else {
+        usize::try_from(ordinal.unsigned_abs() - 1).ok()
+            == Some(matching.len().saturating_sub(index + 1))
+    }
+}
+
+fn parse_extended_weekday_token(value: &str) -> Option<RecurrenceByDay> {
+    let value = value.trim().to_ascii_uppercase();
+    if value.len() < 2 {
+        return None;
+    }
+    let weekday = match value.get(value.len() - 2..)? {
+        "MO" => Weekday::Mon,
+        "TU" => Weekday::Tue,
+        "WE" => Weekday::Wed,
+        "TH" => Weekday::Thu,
+        "FR" => Weekday::Fri,
+        "SA" => Weekday::Sat,
+        "SU" => Weekday::Sun,
+        _ => return None,
+    };
+    let prefix = value.get(..value.len() - 2).unwrap_or_default();
+    let ordinal = if prefix.is_empty() {
+        None
+    } else {
+        let ordinal = prefix.parse::<i32>().ok()?;
+        (ordinal != 0 && (-53..=53).contains(&ordinal)).then_some(ordinal)
+    };
+    Some(RecurrenceByDay { weekday, ordinal })
+}
+
+fn parse_ical_date(value: &str) -> Option<NaiveDate> {
+    let value = value.trim();
+    if value.len() < 8 {
+        return None;
+    }
+    NaiveDate::parse_from_str(&value[..8], "%Y%m%d").ok()
+}
+
+fn has_exdate(event: &CalendarEventRecord, date: NaiveDate) -> bool {
+    ical_properties(&event.component, "EXDATE")
+        .iter()
+        .flat_map(|value| value.split(','))
+        .filter_map(parse_ical_date)
+        .any(|excluded| excluded == date)
+}
+
+fn has_rdate(event: &CalendarEventRecord, date: NaiveDate) -> bool {
+    ical_properties(&event.component, "RDATE")
+        .iter()
+        .flat_map(|value| value.split(','))
+        .filter_map(parse_ical_date)
+        .any(|included| included == date)
+}
+
+fn ical_property(raw: &str, target: &str) -> Option<String> {
+    unfold_ical_lines(raw).into_iter().find_map(|line| {
+        let (property, value) = line.split_once(':')?;
+        let name = property
+            .split(';')
+            .next()
+            .unwrap_or(property)
+            .to_ascii_uppercase();
+        (name == target.to_ascii_uppercase()).then(|| unescape_ical_text(value))
+    })
+}
+
+fn ical_properties(raw: &str, target: &str) -> Vec<String> {
+    unfold_ical_lines(raw)
+        .into_iter()
+        .filter_map(|line| {
+            let (property, value) = line.split_once(':')?;
+            let name = property
+                .split(';')
+                .next()
+                .unwrap_or(property)
+                .to_ascii_uppercase();
+            (name == target.to_ascii_uppercase()).then(|| unescape_ical_text(value))
+        })
+        .collect()
+}
+
+fn unfold_ical_lines(raw: &str) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    for raw_line in raw.replace("\r\n", "\n").replace('\r', "\n").lines() {
+        if raw_line.starts_with(' ') || raw_line.starts_with('\t') {
+            if let Some(previous) = lines.last_mut() {
+                previous.push_str(raw_line.trim_start());
+            }
+        } else {
+            lines.push(raw_line.to_string());
+        }
+    }
+    lines
+}
+
+fn unescape_ical_text(value: &str) -> String {
+    value
+        .replace("\\n", "\n")
+        .replace("\\N", "\n")
+        .replace("\\,", ",")
+        .replace("\\;", ";")
+        .replace("\\\\", "\\")
 }
 
 fn upsert_event_row(
@@ -1026,9 +2266,7 @@ fn upsert_event_row(
         .position(|existing| existing.source_uid == event.source_uid && existing.uid == event.uid);
     if let Some(index) = existing_index {
         event_records.borrow_mut().remove(index);
-        if let Some(row) = event_list.row_at_index(index as i32) {
-            event_list.remove(&row);
-        }
+        remove_event_list_row(event_list, &event.source_uid, &event.uid);
     }
     event_records.borrow_mut().push(event.clone());
     append_event_row(event_list, event_records, event);
@@ -1048,9 +2286,7 @@ fn remove_event_row(
         return;
     };
     event_records.borrow_mut().remove(index);
-    if let Some(row) = event_list.row_at_index(index as i32) {
-        event_list.remove(&row);
-    }
+    remove_event_list_row(event_list, source_uid, uid);
 }
 
 fn append_event_row(
@@ -1075,6 +2311,10 @@ fn append_event_row(
             source
         ))
         .build();
+    unsafe {
+        row.set_data("event-id", event.uid.clone());
+        row.set_data("event-source-uid", event.source_uid.clone());
+    }
 
     let edit_button = gtk::Button::builder()
         .icon_name("document-edit-symbolic")
@@ -1088,7 +2328,14 @@ fn append_event_row(
         .css_classes(vec!["flat", "destructive-action"])
         .valign(gtk::Align::Center)
         .build();
+    let export_button = gtk::Button::builder()
+        .icon_name("document-save-symbolic")
+        .tooltip_text("Termin als iCalendar exportieren")
+        .css_classes(vec!["flat"])
+        .valign(gtk::Align::Center)
+        .build();
     row.add_suffix(&edit_button);
+    row.add_suffix(&export_button);
     row.add_suffix(&delete_button);
 
     let event_for_edit = event.clone();
@@ -1097,7 +2344,7 @@ fn append_event_row(
         if event_for_edit.source_uid.is_empty() {
             show_toast_for_widget(
                 &edit_button,
-                "Lokale Termine können ohne EDS-Quelle nicht geändert werden",
+                "Dieser Termin stammt aus einer schreibgeschützten importierten Quelle",
             );
             return;
         }
@@ -1110,6 +2357,53 @@ fn append_event_row(
         dialog.present();
     });
 
+    let event_for_export = event.clone();
+    let export_button_for_signal = export_button.clone();
+    export_button_for_signal.connect_clicked(move |_| {
+        if event_for_export.component.trim().is_empty() {
+            show_toast_for_widget(
+                &export_button,
+                "Für diesen Termin sind keine iCalendar-Daten verfügbar",
+            );
+            return;
+        }
+        let Some(root) = export_button.root() else {
+            return;
+        };
+        let Ok(window) = root.downcast::<gtk::Window>() else {
+            return;
+        };
+        let file_dialog = gtk::FileDialog::builder()
+            .title("Termin als iCalendar speichern")
+            .initial_name("termin.ics")
+            .modal(true)
+            .build();
+        let event_for_dialog = event_for_export.clone();
+        let export_button_for_result = export_button.clone();
+        file_dialog.save(Some(&window), None::<&gio::Cancellable>, move |result| {
+            let Ok(file) = result else {
+                return;
+            };
+            let save_result = file.replace_contents(
+                export_ical_component(&event_for_dialog.component).as_bytes(),
+                None,
+                true,
+                gio::FileCreateFlags::NONE,
+                None::<&gio::Cancellable>,
+            );
+            match save_result {
+                Ok(_) => show_toast_for_widget(
+                    &export_button_for_result,
+                    "Termin als iCalendar exportiert",
+                ),
+                Err(error) => show_toast_for_widget(
+                    &export_button_for_result,
+                    &format!("iCalendar konnte nicht gespeichert werden: {error}"),
+                ),
+            }
+        });
+    });
+
     let row_for_delete = row.clone();
     let event_for_delete = event.clone();
     let event_records_for_delete = Rc::clone(&event_records);
@@ -1119,76 +2413,103 @@ fn append_event_row(
         if event_for_delete.source_uid.is_empty() {
             show_toast_for_widget(
                 &delete_button,
-                "Lokale Termine können ohne EDS-Quelle nicht gelöscht werden",
+                "Dieser Termin stammt aus einer schreibgeschützten importierten Quelle",
             );
             return;
         }
-        let confirmation = adw::AlertDialog::new(
-            Some("Termin löschen?"),
-            Some("Der Termin wird dauerhaft aus dem EDS-Kalender entfernt."),
-        );
-        confirmation.add_responses(&[("cancel", "Abbrechen"), ("delete", "Löschen")]);
-        confirmation.set_response_appearance("delete", adw::ResponseAppearance::Destructive);
-        let event_for_response = event_for_delete.clone();
-        let event_records_for_response = Rc::clone(&event_records_for_delete);
-        let event_list_for_response = event_list_for_delete.clone();
-        let row_for_response = row_for_delete.clone();
-        let delete_button_for_response = delete_button.clone();
-        confirmation.connect_response(None, move |dialog: &adw::AlertDialog, response: &str| {
-            if response != "delete" {
-                return;
-            }
-            let source_uid = event_for_response.source_uid.clone();
-            let uid = event_for_response.uid.clone();
-            let (sender, receiver) = async_channel::bounded(1);
-            delete_button_for_response.set_sensitive(false);
-            std::thread::spawn(move || {
-                let result = ECalService::new().remove_component(
-                    &source_uid,
-                    ECalComponentType::Event,
-                    &uid,
-                );
-                if let Err(error) = sender.send_blocking(result) {
-                    tracing::debug!(%error, "Event deletion result was dropped");
-                }
-            });
+        let confirmation_message = if event_for_delete.source_uid == "local-calendar" {
+            "Der Termin wird dauerhaft aus dem lokalen Kalender entfernt."
+        } else {
+            "Der Termin wird dauerhaft aus dem EDS-Kalender entfernt."
+        };
+        let event_for_action = event_for_delete.clone();
+        let event_records_for_action = Rc::clone(&event_records_for_delete);
+        let event_list_for_action = event_list_for_delete.clone();
+        let row_for_action = row_for_delete.clone();
+        let delete_button_for_action = delete_button.clone();
+        crate::dialogs::run_destructive_action(
+            &delete_button,
+            "Termin löschen?",
+            confirmation_message,
+            "Löschen",
+            move || {
+                let source_uid = event_for_action.source_uid.clone();
+                let source_uid_for_result = source_uid.clone();
+                let uid = event_for_action.uid.clone();
+                let uid_for_result = uid.clone();
+                let (sender, receiver) = async_channel::bounded(1);
+                delete_button_for_action.set_sensitive(false);
+                std::thread::spawn(move || {
+                    let result = ECalService::new().remove_component(
+                        &source_uid,
+                        ECalComponentType::Event,
+                        &uid,
+                    );
+                    if let Err(error) = sender.send_blocking(result) {
+                        tracing::debug!(%error, "Event deletion result was dropped");
+                    }
+                });
 
-            let dialog_for_result = dialog.clone();
-            let event_records_for_result = Rc::clone(&event_records_for_response);
-            let event_list_for_result = event_list_for_response.clone();
-            let row_for_result = row_for_response.clone();
-            let delete_button_for_result = delete_button_for_response.clone();
-            glib::spawn_future_local(async move {
-                match receiver.recv().await {
-                    Ok(Ok(result)) => {
-                        event_list_for_result.remove(&row_for_result);
-                        event_records_for_result
-                            .borrow_mut()
-                            .retain(|event| event.uid != result.uid);
-                        show_toast_for_widget(
-                            &delete_button_for_result,
-                            &format!("Termin gelöscht ({})", result.uid),
-                        );
-                        dialog_for_result.close();
+                let event_records_for_result = Rc::clone(&event_records_for_action);
+                let event_list_for_result = event_list_for_action.clone();
+                let row_for_result = row_for_action.clone();
+                let delete_button_for_result = delete_button_for_action.clone();
+                glib::spawn_future_local(async move {
+                    match receiver.recv().await {
+                        Ok(Ok(result)) => {
+                            event_list_for_result.remove(&row_for_result);
+                            event_records_for_result.borrow_mut().retain(|event| {
+                                event.source_uid != source_uid_for_result
+                                    || event.uid != uid_for_result
+                            });
+                            show_toast_for_widget(
+                                &delete_button_for_result,
+                                &format!("Termin gelöscht ({})", result.uid),
+                            );
+                        }
+                        Ok(Err(error)) => {
+                            delete_button_for_result.set_sensitive(true);
+                            show_toast_for_widget(
+                                &delete_button_for_result,
+                                &format!("Termin konnte nicht gelöscht werden: {error}"),
+                            );
+                        }
+                        Err(error) => {
+                            delete_button_for_result.set_sensitive(true);
+                            tracing::debug!(%error, "Event deletion channel closed");
+                        }
                     }
-                    Ok(Err(error)) => {
-                        delete_button_for_result.set_sensitive(true);
-                        show_toast_for_widget(
-                            &delete_button_for_result,
-                            &format!("Termin konnte nicht gelöscht werden: {error}"),
-                        );
-                    }
-                    Err(error) => {
-                        delete_button_for_result.set_sensitive(true);
-                        tracing::debug!(%error, "Event deletion channel closed");
-                    }
-                }
-            });
-        });
-        confirmation.present(Some(&delete_button));
+                });
+            },
+        );
     });
 
     event_list.append(&row);
+}
+
+fn remove_event_list_row(event_list: &gtk::ListBox, source_uid: &str, uid: &str) {
+    let mut child = event_list.first_child();
+    while let Some(widget) = child {
+        child = widget.next_sibling();
+        let Ok(row) = widget.downcast::<gtk::ListBoxRow>() else {
+            continue;
+        };
+        let matches = unsafe {
+            let row_source_uid = row
+                .data::<String>("event-source-uid")
+                .map(|value| value.as_ref().clone())
+                .unwrap_or_default();
+            let row_uid = row
+                .data::<String>("event-id")
+                .map(|value| value.as_ref().clone())
+                .unwrap_or_default();
+            row_source_uid == source_uid && row_uid == uid
+        };
+        if matches {
+            event_list.remove(&row);
+            return;
+        }
+    }
 }
 
 fn show_toast_for_widget<W: IsA<gtk::Widget>>(widget: &W, message: &str) {
@@ -1244,6 +2565,26 @@ mod tests {
     }
 
     #[test]
+    fn workweek_always_starts_on_monday_and_contains_five_days() {
+        let sunday = NaiveDate::from_ymd_opt(2026, 8, 9).unwrap();
+        let start = workweek_start(sunday);
+        assert_eq!(start.weekday(), Weekday::Mon);
+        assert_eq!(start, NaiveDate::from_ymd_opt(2026, 8, 3).unwrap());
+        assert_eq!(
+            start + Duration::days(4),
+            NaiveDate::from_ymd_opt(2026, 8, 7).unwrap()
+        );
+    }
+
+    #[test]
+    fn workday_range_keeps_at_least_one_half_hour_slot() {
+        let (start, end) = configured_workday_range();
+        assert!(end > start);
+        assert!(end - start >= 30);
+        assert!(end <= 1_440);
+    }
+
+    #[test]
     fn event_occurrence_includes_timed_and_all_day_spans() {
         let mut timed = event_with_start("2026-08-10 23:00");
         timed.end = "2026-08-11 01:00".to_string();
@@ -1274,11 +2615,197 @@ mod tests {
     }
 
     #[test]
+    fn recurrence_rules_cover_weekdays_count_until_and_exdate() {
+        let mut event = event_with_start("2026-08-03");
+        event.all_day = true;
+        event.component = concat!(
+            "BEGIN:VEVENT\r\nUID:event-1\r\nDTSTART;VALUE=DATE:20260803\r\n",
+            "RRULE:FREQ=WEEKLY;BYDAY=MO,WE;COUNT=4\r\n",
+            "EXDATE;VALUE=DATE:20260810\r\nEND:VEVENT\r\n"
+        )
+        .to_string();
+        assert!(event_occurs_on(
+            &event,
+            NaiveDate::from_ymd_opt(2026, 8, 3).unwrap()
+        ));
+        assert!(event_occurs_on(
+            &event,
+            NaiveDate::from_ymd_opt(2026, 8, 5).unwrap()
+        ));
+        assert!(!event_occurs_on(
+            &event,
+            NaiveDate::from_ymd_opt(2026, 8, 10).unwrap()
+        ));
+        assert!(!event_occurs_on(
+            &event,
+            NaiveDate::from_ymd_opt(2026, 8, 19).unwrap()
+        ));
+    }
+
+    #[test]
+    fn recurrence_supports_ordinal_month_weekdays() {
+        let mut event = event_with_start("2026-08-03");
+        event.all_day = true;
+        event.component = concat!(
+            "BEGIN:VEVENT\r\nUID:event-ordinal\r\nDTSTART;VALUE=DATE:20260803\r\n",
+            "RRULE:FREQ=MONTHLY;BYDAY=1MO;COUNT=3\r\nEND:VEVENT\r\n"
+        )
+        .to_string();
+
+        assert!(event_occurs_on(
+            &event,
+            NaiveDate::from_ymd_opt(2026, 8, 3).unwrap()
+        ));
+        assert!(event_occurs_on(
+            &event,
+            NaiveDate::from_ymd_opt(2026, 9, 7).unwrap()
+        ));
+        assert!(event_occurs_on(
+            &event,
+            NaiveDate::from_ymd_opt(2026, 10, 5).unwrap()
+        ));
+        assert!(!event_occurs_on(
+            &event,
+            NaiveDate::from_ymd_opt(2026, 9, 14).unwrap()
+        ));
+        assert_eq!(
+            parse_extended_weekday_token("-1FR"),
+            Some(RecurrenceByDay {
+                weekday: Weekday::Fri,
+                ordinal: Some(-1)
+            })
+        );
+    }
+
+    #[test]
+    fn recurrence_supports_set_positions_and_negative_month_days() {
+        let rule =
+            parse_recurrence_rule("FREQ=MONTHLY;BYDAY=FR;BYSETPOS=-1").expect("rule should parse");
+        let start = NaiveDate::from_ymd_opt(2026, 8, 28).unwrap();
+        assert!(recurrence_matches_without_count(
+            &rule,
+            start,
+            NaiveDate::from_ymd_opt(2026, 9, 25).unwrap()
+        ));
+        assert!(!recurrence_matches_without_count(
+            &rule,
+            start,
+            NaiveDate::from_ymd_opt(2026, 9, 18).unwrap()
+        ));
+
+        let by_month_day = parse_recurrence_rule("FREQ=YEARLY;BYMONTH=2;BYMONTHDAY=-1")
+            .expect("yearly rule should parse");
+        assert!(recurrence_matches_without_count(
+            &by_month_day,
+            NaiveDate::from_ymd_opt(2026, 1, 31).unwrap(),
+            NaiveDate::from_ymd_opt(2027, 2, 28).unwrap()
+        ));
+    }
+
+    #[test]
+    fn recurrence_until_stops_later_occurrences() {
+        let mut event = event_with_start("2026-08-01");
+        event.component = concat!(
+            "BEGIN:VEVENT\r\nUID:event-2\r\nDTSTART:20260801T090000Z\r\n",
+            "RRULE:FREQ=DAILY;UNTIL=20260803T235959Z\r\nEND:VEVENT\r\n"
+        )
+        .to_string();
+        assert!(event_occurs_on(
+            &event,
+            NaiveDate::from_ymd_opt(2026, 8, 3).unwrap()
+        ));
+        assert!(!event_occurs_on(
+            &event,
+            NaiveDate::from_ymd_opt(2026, 8, 4).unwrap()
+        ));
+    }
+
+    #[test]
+    fn recurrence_exdate_can_remove_the_initial_occurrence() {
+        let mut event = event_with_start("2026-08-03");
+        event.all_day = true;
+        event.component = concat!(
+            "BEGIN:VEVENT\r\nUID:event-3\r\nDTSTART;VALUE=DATE:20260803\r\n",
+            "RRULE:FREQ=WEEKLY;COUNT=3\r\n",
+            "EXDATE;VALUE=DATE:20260803\r\nEND:VEVENT\r\n"
+        )
+        .to_string();
+        assert!(!event_occurs_on(
+            &event,
+            NaiveDate::from_ymd_opt(2026, 8, 3).unwrap()
+        ));
+        assert!(event_occurs_on(
+            &event,
+            NaiveDate::from_ymd_opt(2026, 8, 10).unwrap()
+        ));
+    }
+
+    #[test]
+    fn recurrence_rdate_adds_explicit_occurrences_without_an_rrule() {
+        let mut event = event_with_start("2026-08-03");
+        event.all_day = true;
+        event.component = concat!(
+            "BEGIN:VEVENT\r\nUID:event-rdate\r\nDTSTART;VALUE=DATE:20260803\r\n",
+            "RDATE;VALUE=DATE:20260812,20260819\r\nEND:VEVENT\r\n"
+        )
+        .to_string();
+
+        assert!(event_occurs_on(
+            &event,
+            NaiveDate::from_ymd_opt(2026, 8, 12).unwrap()
+        ));
+        assert!(event_occurs_on(
+            &event,
+            NaiveDate::from_ymd_opt(2026, 8, 19).unwrap()
+        ));
+        assert!(!event_occurs_on(
+            &event,
+            NaiveDate::from_ymd_opt(2026, 8, 20).unwrap()
+        ));
+    }
+
+    #[test]
     fn event_time_text_distinguishes_all_day_and_timed_events() {
         let mut event = event_with_start("2026-08-10 09:30");
         event.end = "2026-08-10 10:45".to_string();
         assert_eq!(event_time_text(&event), "09:30–10:45");
         event.all_day = true;
         assert_eq!(event_time_text(&event), "Ganztägig");
+    }
+
+    #[test]
+    fn moving_simple_event_shifts_dates_and_preserves_timezone_parameters() {
+        let raw = concat!(
+            "BEGIN:VEVENT\r\n",
+            "UID:event-1\r\n",
+            "DTSTART;TZID=Europe/Berlin:20260810T120000\r\n",
+            "DTEND;TZID=Europe/Berlin:20260810T130000\r\n",
+            "END:VEVENT\r\n"
+        );
+        let shifted = shift_event_component(raw, 2).expect("simple event should move");
+        assert!(shifted.contains("DTSTART;TZID=Europe/Berlin:20260812T120000"));
+        assert!(shifted.contains("DTEND;TZID=Europe/Berlin:20260812T130000"));
+    }
+
+    #[test]
+    fn moving_all_day_event_shifts_date_values() {
+        let raw = concat!(
+            "BEGIN:VEVENT\r\nUID:event-1\r\n",
+            "DTSTART;VALUE=DATE:20260810\r\n",
+            "DTEND;VALUE=DATE:20260811\r\nEND:VEVENT\r\n"
+        );
+        let shifted = shift_event_component(raw, -1).expect("all-day event should move");
+        assert!(shifted.contains("DTSTART;VALUE=DATE:20260809"));
+        assert!(shifted.contains("DTEND;VALUE=DATE:20260810"));
+    }
+
+    #[test]
+    fn moving_recurring_event_requires_explicit_series_edit() {
+        let raw = concat!(
+            "BEGIN:VEVENT\r\nUID:event-1\r\n",
+            "DTSTART:20260810T120000Z\r\nRRULE:FREQ=WEEKLY\r\nEND:VEVENT\r\n"
+        );
+        let error = shift_event_component(raw, 1).expect_err("series move should be explicit");
+        assert!(error.contains("Wiederkehrende Termine"));
     }
 }

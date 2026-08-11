@@ -220,9 +220,9 @@ Implementierungsdetails getrennt.
 
 | Evolution-Feature | GTK4-Implementierung | EDS-Schnittstelle |
 |:---|:---|:---|
-| **Tag/Woche/Monat-Ansicht** | GTK4-rs `AdwViewStack` mit dynamischer Tagesliste, Sieben-Tage-Liste und datumsrichtigem Monatsraster; Navigation und ECal-Signalaktualisierung sind verbunden. Agenda-/Arbeitswochenraster und vollständige Zeitachsen fehlen noch. | `libecal-2.0` über den EDS-Adapter |
+| **Tag/Woche/Monat-Ansicht** | GTK4-rs `AdwViewStack` mit dynamischer Tagesliste, Sieben-Tage-Liste, Arbeitswochen-Zeitachse, Agenda und datumsrichtigem Monatsraster; Navigation und ECal-Signalaktualisierung sind verbunden. Zeitzonen-/DST-Abnahme und Drag-and-drop bleiben offen. | `libecal-2.0` über den EDS-Adapter |
 | **Event-Erstellung** | `AdwDialog` mit Start/Ende-Picker (`GtkCalendar` + Time-Spinner), Wiederholung, Alarme, Teilnehmer. | `ECalComponent`, `ICalComponent` |
-| **ITIP Meeting-Einladungen** | Im Mail-View: Inline-Banner bei `text/calendar` MIME-Parts. Buttons: „Annehmen / Tentativ / Ablehnen". Klick → ITIP-Response via `ECal`. | `ECalComponent`, ITIP-Utility-Funktionen |
+| **ITIP Meeting-Einladungen** | Im Mail-View: Inline-Banner bei `text/calendar` MIME-Parts. Portable Buttons für „Zusagen / Vorbehalt / Ablehnen" erzeugen einen RFC-kompatiblen `METHOD:REPLY`-MIME-Part und persistieren einen Antwortentwurf; tatsächlicher Versand und serverseitiger Teilnehmerstatus werden unter Linux über EDS/Camel abgenommen. | `ECalComponent`, ITIP-Utility-Funktionen |
 | **Aufgaben (Tasks)** | `GtkColumnView` mit Spalten: Checkbox, Titel, Fällig, Priorität. Inline-Edit. | `ECal` (VTODO), `ECalComponent` |
 | **Memos/Notizen** | `GtkTextView` mit Rich-Text in `AdwNavigationPage`. | `ECal` (VJOURNAL) |
 | **Mehrere Kalender** | Sidebar-Checkboxes pro Kalender (farbkodiert). `GtkColorDialogButton` für Farbwahl. | `ESource` Registry |
@@ -361,6 +361,9 @@ werden.
   GTK4-rs-Mailseite wird jetzt mit dem nativen Camel-Service verbunden.
 - [~] Sicherer WebKitGTK-Viewer: JavaScript ist deaktiviert, Navigation wird
   abgefangen und externe Bilder sind standardmäßig blockiert.
+  Die portable Leseeinstellung, ob eine Nachricht beim Auswählen als gelesen
+  markiert wird, ist persistent und gilt für lokale sowie native Mailpfade;
+  providerabhängige Lesestatus-Synchronisation bleibt Linux/EDS-Abnahme.
 - [~] EDS-Source-Registry-Abfrage über D-Bus; die `Data`-Keyfiles werden nach
   echten `Mail Account`-/Kalender-/Adressbuch-Erweiterungen klassifiziert und
   gefundene Mailquellen werden als
@@ -373,11 +376,23 @@ werden.
   einem Worker gelesen; RFC-822-Header, MIME-Text/HTML, dekodierte Anhänge und
   stabile lokale Ordner-IDs werden unterstützt. Camel-Indizes, vollständige
   MIME-Semantik und serverseitige Synchronisation fehlen noch; der lokale
-  Import bleibt bewusst schreibgeschützt.
+  Import bleibt gegenüber vorhandenen Quellen bewusst nicht überschreibend.
+  EML-/mbox-Dateien und ausgewählte Maildir-Verzeichnisse können in den
+  konfigurierten lokalen Ordner kopiert werden; `cur`/`new`-Strukturen und
+  Maildir-Seen-Flags bleiben beim portablen Import erhalten, Wiederholungen
+  erzeugen nummerierte Dateinamen. Der lokale Mailordner kann über die
+  Einstellungen ausgewählt oder auf den automatisch erkannten Pfad
+  zurückgesetzt werden. Ein app-eigener Sidecar speichert zusätzlich logische
+  Ordnerübersteuerungen, lokale Mehrfachkopien und gelöschte Einträge, ohne die
+  Originaldateien zu verändern.
 - [~] Suche, Stern, Ordnerfilter und „gelesen“ existieren im GTK4-rs-UI;
   die lokale Schnellsuche versteht zusätzlich `from:`, `to:`, `subject:`,
-  `is:unread`, `is:read`, `is:starred` und `has:attachment` und durchsucht
-  auch Empfänger, Vorschau und HTML-Inhalt;
+  `cc:`, `bcc:`, `body:`, `filename:`, `in:`/`folder:`, `on:`, `after:`,
+  `before:`, `older:`, `newer:`, `is:unread`, `is:read`, `is:starred`,
+  `is:sent`/`is:junk` und `has:attachment`/`no:attachment` und
+  durchsucht auch Empfänger, Vorschau, HTML-Inhalt und Dateinamen;
+  Mail- und Thread-Datumsanzeigen verwenden die persistenten Kalender-
+  Datums-/Zeitformate;
   Detailauswahl sowie Lesen, Markieren und Löschen werden für Remote-Nachrichten
   aus dem Servicepfad in diese Oberfläche zurückgeführt. Für den lokalen Import
   werden Zustände in einem app-eigenen Sidecar persistiert; Remote-Flags werden
@@ -385,8 +400,20 @@ werden.
   Archiv-, Spam-, Lösch- und Verschiebeaktionen ist angebunden; die Ziele
   werden aus der dynamischen EDS-Ordnerliste angeboten. Serverseitige
   Suchordner und die übrigen Remote-Aktionen in der Oberfläche fehlen.
+- [~] Die Mail-Liste kann portabel nach Datum, Betreff oder Absender sowie
+  auf-/absteigend sortiert werden; Feld, Richtung und das Gruppieren von
+  Unterhaltungen werden über GSettings gespeichert und beim Wiederaufbau der
+  Liste angewendet; Änderungen an diesen Einstellungen aktualisieren eine
+  bereits geöffnete Ansicht ebenfalls. Vorschaufenster und die Dichte der
+  Nachrichtenzeilen werden ebenfalls persistent gespeichert und auf die
+  GTK4-rs-Ansicht angewendet. Eine providerunabhängige Datumsnormalisierung und
+  serverseitige Sortierung bleiben Teil der Linux/Camel-Strecke.
 - [~] Anhang „Speichern unter“ ist für lokal gelesene MIME-Anhänge angebunden;
-  EDS-/Remote-Anhänge und Inline-CID-Auflösung fehlen.
+  ausgewählte Nachrichten können zusätzlich als vollständige EML/RFC822-Datei
+  mit Thread-Headern und MIME-Anhängen exportiert werden. Lokale MIME-
+  Content-IDs werden für bekannte Rasterbilder sicher und größenbegrenzt in
+  die HTML-Darstellung eingebettet; EDS-/Remote-Anhangsdaten und die
+  Linux-Laufzeitprüfung bleiben offen.
 - [~] Asynchrones Laden lokaler Nachrichten ohne Blockierung des GTK-Main-
   Threads mit Abbruchsignal ist vorhanden; die begrenzten Camel-Seiten werden
   ebenfalls über den Worker in die GTK4-rs-Mailseite geladen. Camel-Pagination,
@@ -425,8 +452,10 @@ werden.
   Konto stehen noch aus.
 - [~] Mailaktionen besitzen eine zentrale Backend-Schnittstelle. Lokale
   Nachrichten behalten den schreibgeschützten Import mit Sidecar für
-  Lesestatus/Markierung; Remote-Nachrichten verwenden Camel für Lesen, Flags,
-  Archivieren, Verschieben, Spam-Markierung und Löschen. Batch-Aktionen und
+  Lesestatus/Markierung; lokale Archivieren-, Verschieben- und Löschen-Aktionen
+  werden ebenfalls nur im app-eigenen Sidecar persistiert und sind über den
+  Command-Stack rückgängig machbar. Remote-Nachrichten verwenden Camel für
+  Lesen, Flags, Archivieren, Verschieben, Spam-Markierung und Löschen. Batch-Aktionen und
   der zentrale Aktionspfad werden aus dem Servicepfad in die GTK4-rs-Mailansicht
   übernommen. Mehrfachauswahl für Gelesen, Archivieren, Spam und Löschen sowie
   atomare Batch-Zustandsänderungen mit Rollback sind vorhanden. Der
@@ -449,22 +478,53 @@ werden.
   Entwürfe ohne Kontogeheimnisse in einem app-eigenen Store persistieren und
   der Start zeigt gespeicherte EDS-Mailkonten. EDS-Identität und der native
   Camel-Transport sowie das Einhängen in EDS-Drafts/Sent sind jetzt als
-  Versandpfad angebunden; Entwurfsverwaltung, Kontoänderungen und Linux-
-  Laufzeitabnahme fehlen noch.
+  Versandpfad angebunden. Die portable lokale Entwurfsverwaltung kann
+  Entwürfe auflisten, öffnen, aktualisieren, löschen und nach erfolgreichem
+  Versand bereinigen; lokale Kontoprofile können bearbeitet, aktiviert und
+  entfernt werden. Wenn EDS nicht erreichbar ist, werden aktivierte lokale
+  Kontoprofile samt Alias-Adressen im Composer als ausdrücklich lokaler
+  Absender angeboten; ein Versandversuch bleibt bis zur nativen Camel-
+  Aktivierung ein sichtbarer Backendfehler. EDS-Kontoänderungen und die
+  Linux-Laufzeitabnahme fehlen noch.
 - [~] Sichtbare Lese-/Datenschutz-/PGP-Optionen werden über GSettings
-  persistiert, sofern das Schema installiert ist.
+  persistiert, sofern das Schema installiert ist; Vorschaufenster,
+  Markieren-beim-Auswählen, HTML/Text, externe Bilder, Schriftfamilie/-größe,
+  Dark-Mode und Bestätigungsdialoge werden auch auf laufenden Ansichten
+  berücksichtigt.
 - [~] EDS-Quellen dynamisch als Konten anzeigen; das Setup speichert zusätzlich
   nicht-geheime Kontoprofile und kennzeichnet sie bis zur EDS/Camel-Aktivierung
-  als ausstehend. Bearbeiten, deaktivieren, entfernen und Ordnerverknüpfung
-  fehlen noch.
+  als ausstehend. Lokale Profile lassen sich bearbeiten, deaktivieren und
+  entfernen; Alias-Adressen und die nicht-geheime Ordnerzuordnung für
+  Posteingang, Entwürfe, Gesendet, Archiv, Papierkorb und Junk werden portabel
+  gespeichert und aus Evolution-Profilen übernommen. Standardkonto und
+  Standard-ECal-Quelle werden portabel über GSettings vorselektiert und in
+  Backup/Restore übernommen. EDS-Verknüpfung,
+  Secret-Service-Aktivierung und die native Anwendung der Zuordnung fehlen
+  noch.
 - [ ] IMAP/IMAPX, POP3, lokale Ordner, SMTP und Exchange/Microsoft-365 mit
   OAuth2, TLS, Passwort-/Secret-Service und Offline-Fehlerzuständen.
 - [~] GTK4-rs-Composer zeigt aktive EDS-Mailkonten, persistiert To/Cc/Bcc,
-  Anhänge und HTML-Entwürfe, kann Entwürfe wieder aufnehmen und erzeugt
-  Reply-/Forward-Vorbelegungen. Ein getesteter RFC822/MIME-Builder und die
-  native CamelTransport-Aufrufstrecke sowie EDS-Drafts/Sent-Fallback sind
-  angeschlossen; Entwurfsverwaltung, Reply-All mit vollständigem Kontext,
-  Signaturen, Quoting und Autosave fehlen noch.
+  Anhänge sowie HTML- und Nur-Text-Entwürfe, kann Entwürfe wieder aufnehmen und erzeugt
+  Reply-/Forward-Vorbelegungen. Reply-All nutzt jetzt Reply-To, To und Cc,
+  dedupliziert Empfänger und übernimmt den Originaltext als sicheres Zitat;
+  Weiterleiten übernimmt die Originalkopfzeilen und den Nachrichtentext. Ein
+  getesteter RFC822/MIME-Builder und die native CamelTransport-Aufrufstrecke
+  sowie EDS-Drafts/Sent-Fallback sind angeschlossen; lokale
+  Entwurfsverwaltung und konfigurierbares lokales Autosave sind ebenfalls
+  angeschlossen. Eine lokale Klartext-Standardsignatur wird über GSettings
+  verwaltet und in neue, beantwortete und weitergeleitete Nachrichten
+  eingefügt. PGP-Signieren/Verschlüsseln und die native
+  EDS-Draft-Lebenszyklusprüfung bleiben offen. Das Zitat-Ein/Aus und
+  Blockzitat- bzw. `>`-Präfixformat sind persistent konfigurierbar. Der
+  Composer kann app-eigene HTML-/Betreff-Vorlagen sowie Textbausteine mit
+  optionalem Kürzel speichern, an der Cursorposition einfügen und löschen;
+  beide Speicher sind versioniert und in Backup/Restore enthalten.
+  Der Composer bietet portabel Fett/Kursiv/Unterstrichen, Aufzählungen,
+  Nummernlisten, Blockzitate sowie Undo/Redo; der Nur-Text-Modus wird als
+  `text/plain` ausgegeben und die Standardwahl wird über GSettings gespeichert.
+  Mail-/Composer-Schriftfamilie und -größe werden persistent angewendet, und
+  die WebKit-Rechtschreibprüfung ist aktiviert; Wörterbuch- und Sprachwahl
+  bleiben offen.
 - [~] Synchronisationsstatus, Cancellation und begrenztes Retry/Backoff sind
   für den nativen Mail-Ladepfad vorhanden; Netzwerkwechsel, domänenweite
   Offline-/Online-Zustände, vollständige Wiederaufnahme und sauberes
@@ -477,17 +537,56 @@ werden.
   die GTK4-rs-Kalenderansicht berechnet den Monatsraster datumsrichtig,
   markiert den heutigen Tag, zeigt geladene VEVENTs direkt in den Tageszellen
   und berücksichtigt in Tag/Woche auch zeit- und ganztägige Mehrtagstermine.
+  Standardansicht, Standard-ECal-Quelle, Wochenbeginn, ISO-Kalenderwochen,
+  Datums-/Zeitformat, Arbeitszeit und die Standard-Erinnerung werden über
+  GSettings persistent konfiguriert und in
+  der portablen Ansicht bzw. im Termin-Editor verwendet.
   EDS-Quellenstatus wird angezeigt und neue VEVENTs können über den nativen
-  ECal-Adapter gespeichert, bearbeitet und gelöscht werden; Agenda,
-  Arbeitswochenraster, Zeitachsen, Drag-and-drop und Wiederholungen fehlen
-  noch.
+  ECal-Adapter gespeichert, bearbeitet und gelöscht werden; iCalendar-Export,
+  Wiederholungsregeln, Teilnehmer, Kategorien, private Termine, Konferenz-URLs
+  und einfache Erinnerungen sind im Editor vorbereitet. Kategoriebezeichnungen werden
+  zusätzlich in einem portablen, versionierten Farbspeicher verwaltet und
+  können in den Einstellungen bearbeitet werden. Lokale/importierte VEVENTs werden
+  in den Tag-, Wochen- und Monatsansichten nach DAILY/WEEKLY/MONTHLY/YEARLY-
+  RRULE sowie COUNT/UNTIL/EXDATE ausgewertet. BYDAY mit Wochentagslisten und
+  ordinalen Monatswochen, BYMONTH, positive/negative BYMONTHDAY und BYSETPOS
+  werden portabel berücksichtigt. Eine portable Agenda zeigt die
+  kommenden 90 Tage und berücksichtigt mehrtägige/wiederkehrende VEVENTs;
+  Arbeitswochenraster und die Nutzung der Arbeitszeit in einer Zeitachse sind
+  jetzt als portabler Arbeitswochen-View mit Ganztagesterminzeile und
+  zeitlich einsortierten Terminen vorhanden; Terminzeilen und die
+  Monatstermin-Chips öffnen den Bearbeitungsdialog, sofern die Quelle
+  schreibbar ist. Ein portables Drag-and-drop verschiebt einfache Einzeltermine
+  in Monats- und Arbeitswochenansicht und erhält dabei vorhandene
+  Zeitzonenparameter; Serien, echte Zeitzonen-/DST-Umrechnung und die
+  Linux-Abnahme bleiben offen. Der
+  app-eigene lokale Kalender kann außerhalb von EDS VEVENTs persistent
+  erstellen, ändern und löschen; ausdrücklich ausgewählte externe Importordner
+  bleiben schreibgeschützt. Ein portabler Reminder-Service liest lokale
+  `VALARM`-Display-Trigger aus VEVENT/VTODO, speichert Zustellung und Snooze
+  atomar und bietet 10-Minuten-/1-Stunden-Aktionen über die App-Notification;
+  Desktop-Benachrichtigungen lassen sich persistent deaktivieren und werden
+  vom Scheduler respektiert;
+  die native EDS-Quelle, komplexe Wiederholungs-/Zeitzonenfälle und die
+  Linux-Laufzeitabnahme bleiben offen. Beim portablen Terminbearbeiten bleiben
+  bestehende ATTENDEE-Parameter sowie nicht unterstützte VALARM-Typen erhalten;
+  einfache Display-Alarme können separat geändert oder entfernt werden. Die
+  portable Kalenderansicht bietet zusätzlich eine lokale Freie-Zeiten-Abfrage
+  innerhalb der konfigurierten Arbeitszeit, die überlappende Termine zusammen-
+  führt und eine Mindestdauer berücksichtigt; native EDS-Free/Busy-Daten und
+  Teilnehmerverfügbarkeit bleiben Linux-only.
 - [~] GTK4-rs-Aufgaben- und Memo-Ansichten laden VTODO-/VJOURNAL-Komponenten
   über die native libecal-2.0-Brücke aus den aktivierten EDS-Quellen. Neue
   VTODOs/VJOURNALs, VTODO-Statusänderungen und vollständiges VTODO-Bearbeiten
   werden persistent über EDS geschrieben. Der lokale iCalendar-Importer bleibt
-  ein expliziter Fallback; inkrementelle ECal-Signale sind für die drei
+  ein expliziter Fallback und sein Quellordner ist über die Einstellungen
+  auswählbar; inkrementelle ECal-Signale sind für die drei
   Listenmodelle angebunden, vollständige Erinnerungs-/Aufgabenlisten-Parität
-  fehlt noch.
+  fehlt noch. Wenn EDS nicht verfügbar ist, können neue lokale VTODOs und
+  VJOURNALs im app-eigenen Kalenderbestand persistent gespeichert werden.
+  Standard-Aufgabenliste und Standard-Notizliste werden getrennt von der
+  Standard-Kalenderquelle persistent vorselektiert und in Backup/Restore
+  übernommen.
 - [~] EDS-Source-Registry und ESource-basierte Kalenderauswahl werden dynamisch
   angezeigt; Kalender-, Aufgaben- und Memo-Quellen werden per
   e_cal_client_connect_sync() gelesen, inklusive Quellidentität und
@@ -496,62 +595,181 @@ werden.
   Termine, Aufgaben und Notizen angebunden. Eine vollständige
   Konfliktauflösung fehlt noch; die ECal-Signalaktualisierung ist umgesetzt.
 - [~] Tag-/Woche-/Monat-Ansichten mit echten VEVENTs sind im GTK4-rs-Frontend
-  vorhanden; Arbeitswochenraster, Agenda, Zeitachsen und Linux-Laufzeitprüfung
-  gegen DST/Zeitzonen stehen noch aus.
-- [ ] Wiederholungen, Zeitzonen, Teilnehmer, iTIP/iMIP, freie Zeiten,
-  Einladungsantworten, Alarme, Kategorien, Anhänge und Offline-Sync.
+  vorhanden; Wochenbeginn und ISO-Kalenderwochen sind konfigurierbar. Die
+  portable Agenda und die Arbeitswochen-Zeitachse sind als eigene, persistente
+  View-Modi ergänzt; die Zeitachse nutzt die konfigurierbare Arbeitszeit und
+  trennt Ganztages- von zeitgebundenen Terminen. Einfaches Drag-and-drop für
+  Einzeltermine ist in Monats- und Arbeitswochenansicht vorhanden; Serien-
+  verschiebung, Zeitzonen-/DST-Umrechnung und die Linux-Laufzeitprüfung stehen
+  noch aus.
+- [~] Lokale VEVENTs unterstützen Wiederholungen und einfache Alarme; `RDATE`-
+  Einzeltermine werden zusätzlich zu `RRULE` und `EXDATE` in den portablen
+  Kalenderansichten und lokalen Erinnerungen ausgewertet. Der VTODO-Editor
+  persistiert einfache Display-Alarme und Kategorien. `text/calendar`-
+  Nachrichten werden portabel als iTIP-Einladung erkannt; REQUEST/PUBLISH/ADD
+  kann in den app-eigenen lokalen Kalender übernommen werden. Portable
+  ACCEPTED/TENTATIVE/DECLINED-Antworten erzeugen bereits einen RFC-kompatiblen
+  `METHOD:REPLY`-Kalenderteil und einen persistierten app-eigenen
+  Antwortentwurf. Zeitzonen, freie Zeiten, komplexe Alarmtypen, Anhänge und
+  Offline-Sync fehlen noch; der native EDS/Camel-Transport und der
+  serverseitige Teilnehmerstatus bleiben für die Linux-Abnahme zuständig. Der portable Reminder-Service wertet lokale
+  `VALARM`-Display-Trigger aus und persistiert Zustellung/Snooze; die native
+  EDS-Quelle, komplexe Wiederholungs-/Zeitzonenfälle und Linux-Abnahme bleiben
+  offen. Der Editor erhält beim Ändern bestehende Teilnehmerparameter und
+  unbekannte Alarmtypen, während einfache Display-Alarme separat gepflegt
+  werden.
 - [~] VTODO/VJOURNAL-Erstellung, VTODO-Status, Notizbearbeitung/-löschung,
   VTODO-Bearbeitung, Prioritäten, Fälligkeiten und Notizlöschung werden über
   den EDS-Adapter persistiert. ECal-Signalaktualisierung ist angebunden;
-  Sortierung, Erinnerungseditoren und vollständige Aufgabenlisten-Parität
-  fehlen noch.
+  die Aufgabenansicht bietet Suche sowie die Kategorien Alle/Heute/Wichtig/
+  Erledigt und filtert nach Statusänderungen erneut; die Notizensuche umfasst
+  Titel, Inhalt, Zeitstempel und die erhaltene VJOURNAL-Komponente. VTODO-
+  Kategorien werden im Editor geladen, als RFC5545-CATEGORIES gespeichert und
+  beim Bearbeiten aktualisiert; einfache VTODO-Display-Erinnerungen werden als
+  VALARM/TRIGGER gespeichert und beim Bearbeiten angepasst. Der portable
+  Reminder-Service wertet diese Alarme aus, persistiert Zustellung/Snooze und
+  stellt 10-Minuten-/1-Stunden-Snooze sowie Erledigt-Aktionen bereit. Komplexe
+  Alarmtypen, native EDS-Aufgabenlisten-Synchronisation und weitere
+  Evolution-Aufgabenlistenfunktionen fehlen noch. Aufgaben können portabel
+  nach Fälligkeit, Titel oder Priorität sortiert werden; Aufgabenfilter und
+  Aufgaben-/Memo-Sortierung werden über GSettings wiederhergestellt. Memo-
+  Änderungen aktualisieren dabei auch die sichtbare sortierte Suchliste, und
+  lokale VTODO-/VJOURNAL-Create/Modify/Remove-Operationen sind durch den
+  app-eigenen ICS-Speicher persistent getestet. Termine, Aufgaben und Memos
+  können jeweils als vollständige iCalendar-Komponente exportiert werden.
 
 #### Phase 4 — Kontakte und Adressbücher
 
 - [~] GTK4-rs-Kontaktansicht lädt Kontakte jetzt über die native EBook-/EDS-
   Brücke aus aktivierten Adressbüchern und fällt außerhalb von Linux explizit
-  auf lokale vCards zurück; Auswahl, Detail, Suche sowie native Erstellen-,
-  Bearbeiten- und Löschen-Flows sind vorhanden. EBookClientView-Signale werden
+  auf lokale vCards zurück, deren Quellordner über die Einstellungen wählbar
+  ist; VCF-/vCard-Dateien können nicht überschreibend in den lokalen Bestand
+  importiert werden. Der app-eigene vCard-Bestand unterstützt Erstellen,
+  Bearbeiten und Löschen; explizit ausgewählte externe Ordner bleiben
+  schreibgeschützt. Auswahl, Detail und Suche sind vorhanden.
+  EBookClientView-Signale werden
   UID-basiert in die Kontaktliste eingepflegt; der Linux-Laufzeittest und die
-  vollständige vCard-Feldparität fehlen noch.
-- [~] Begrenzter vCard-Parser/Serializer mit Roundtrip-Test.
+  vollständige native vCard-Feldparität fehlen noch. Der portable Pfad kann
+  strukturierte Namensbestandteile, mehrere zusätzliche RFC-Felder und
+  Inline-Fotos darstellen bzw. editieren; URI-Fotos werden aus
+  Datenschutzgründen nicht automatisch geladen. Inline-Fotos werden auch im
+  Detailview nach Auswahl gesetzt; das Detailview zeigt zusätzlich Adressen,
+  Kategorien, URLs, Geburtstage, Notizen und die übrigen sicheren RFC-Felder
+  an. Nachträgliche Dublettenänderungen invalidieren den GTK-Filter korrekt.
+- [~] Der vCard-Parser/Serializer erhält mehrere E-Mail-Adressen,
+  Telefonnummern, Adressen, Kategorien, URLs, Spitznamen und Geburtstage
+  zusätzlich zu den bisherigen Kernfeldern sowie `N`, Jahrestag, Rolle,
+  Geschlecht, Zeitzone, Geoposition, IMPP, RELATED und PHOTO; Roundtrip-,
+  Inline-Bild- und Extended-Field-Tests sind vorhanden. vCard-Export ist
+  verfügbar und beim Bearbeiten bestehender Kontakte bleiben nicht sichtbare
+  Eigenschaften wie weitere Fotos, Kategorien, zusätzliche Kontaktwege und
+  X-Felder erhalten; escaped Kommas in Kategorien überstehen Parser-/Serializer-
+  Roundtrips.
 - [~] EBook-/EDS-Quellen werden dynamisch erkannt; der native Adressbuch-
   Stream liefert vCards mit Quellen- und Kontakt-UIDs; der native Adapter
-  unterstützt bereits Create/Modify/Remove mit Konfliktstatus. Kategorien,
-  Fotos, mehrere Adressen/Telefonnummern und Konfliktauflösung fehlen noch.
-- [ ] Autocomplete im Composer, GAL/LDAP/Exchange-Adressbuch und lokale
-  Adressbuchauswahl.
+  unterstützt bereits Create/Modify/Remove mit Konfliktstatus, der app-eigene
+  lokale Bestand ebenfalls. Vollständige EDS-GAL/LDAP-Felder und
+  Konfliktauflösung fehlen noch; die portable Oberfläche kann mehrere
+  Kontaktwege, strukturierte Namens-/Zusatzfelder, Kategorien und
+  Inline-Fotos anzeigen und bearbeiten. Die Standardadressbuch-UID wird aus
+  der Quellenauswahl persistent gespeichert und beim nächsten Start
+  vorselektiert.
+- [~] Lokale vCard-Kontakte werden asynchron als Autocomplete für To/Cc/Bcc im
+  Composer angeboten und in den aktuellen Empfänger-Token eingesetzt; die
+  Kontakt-Schnellsuche durchsucht Name, E-Mail, Organisation, Titel, Telefon,
+  Notiz, Kategorien, Adressen und die erhaltene vCard. Der portable
+  Adressbuchfilter kann EDS-Quellen bzw. das lokale Adressbuch auswählen und
+  Dubletten anhand normalisierter E-Mail-/Telefonwerte anzeigen. EDS-
+  Adressbuchauswahl, GAL/LDAP/Exchange-Suche und serverseitige Kontaktsuche
+  fehlen noch.
 
 #### Phase 5 — Sicherheit und Datenschutz
 
-- [~] WebKit-Sicherheitsgrundlagen sind vorhanden.
+- [~] WebKit-Sicherheitsgrundlagen und ein portabler HTML-Sanitizer sind
+  vorhanden: JavaScript, aktive HTML-Elemente, Eventhandler, gefährliche
+  URI-Schemata und CSS-Remote-Ressourcen werden vor dem Viewer entfernt;
+  bekannte MIME-CID-Rasterbilder werden ausschließlich aus dem bereits
+  geladenen Nachrichtenspeicher und mit Größenlimit eingebettet; WebKit
+  blockiert externe Bilder standardmäßig.
 - [ ] OpenPGP über GnuPG/Camel: Erkennen, Prüfen, Signieren, Verschlüsseln,
   Entschlüsseln, Schlüsselwahl, Vertrauensstatus und Fehlermeldungen.
 - [ ] S/MIME mit Zertifikatskette, Trust Store, Ablauf-/Widerrufsprüfung und
   Zertifikatsauswahl.
-- [ ] Remote-Content-Entscheidung pro Nachricht/Konto, Tracking-Schutz,
-  sichere CID-Anhänge, Sanitizing, Secret-Service und sichere Logs.
+- [~] Remote-Content-Entscheidung pro Nachricht/Konto, Tracking-Schutz,
+  sichere CID-Anhänge, Secret-Service und sichere Logs. Die portable
+  Sanitizing-Strecke, sichere CID-Auflösung für bekannte Rasterbilder und per
+  Nachricht gespeicherte Freigaben sind umgesetzt. Der Mail-Detailheader
+  klassifiziert OpenPGP-/S/MIME-MIME-Hüllen und zeigt signierte oder
+  verschlüsselte Nachrichten ausdrücklich als erkannt, aber ohne
+  Verifikation/Entschlüsselung an; kontobezogene Freigabeverwaltung,
+  Secret-Service, echte GnuPG-/S/MIME-Operationen und Linux-/EDS-/Flatpak-
+  Abnahme fehlen noch.
 
 #### Phase 6 — Regeln, Suche und Enterprise
 
 - [~] Filter-, Abwesenheits-, Suchordner- und Exchange-Dialoge existieren als
-  UI/Service-Skelette; Filterregeln werden nun versioniert persistent
-  gespeichert und unterstützte lokale Eingangsaktionen werden ausgewertet.
+  UI/Service-Skelette; Filterregeln werden versioniert persistent gespeichert,
+  können bearbeitet, aktiviert, geordnet und entfernt werden und unterstützte
+  lokale Eingangsaktionen werden ausgewertet. Der GTK4-rs-Filtereditor kann
+  mehrere Bedingungen und Aktionen dynamisch hinzufügen, entfernen und als
+  UND/ODER-Regel speichern. Importierte Regeln können mehrere Bedingungen
+  (UND/ODER) und mehrere Aktionen verlustarm behalten. Jede gespeicherte Regel
+  kann zusätzlich asynchron im lokalen Mailbestand manuell ausgeführt werden;
+  der Ausführungsbericht zählt Treffer, Änderungen, Verschieben, Kopieren und
+  Löschen und der lokale Status wird persistent im Sidecar gespeichert.
+  Die portable Regelengine unterstützt Verschieben, Löschen und Kopieren über
+  den app-eigenen Sidecar sowie Gelesen/Ungelesen und Flag setzen/entfernen als
+  portable Aktionen. Lokale Kopien werden als eigene logische Datensätze mit
+  unabhängigen Zuständen dargestellt; Remote-Kopien und serverseitige
+  Mehrfachlabels benötigen weiter den Camel-/Multi-Label-Pfad;
+  die lokale Regelbedingung unterstützt Betreff, Absender, Empfänger,
+  Nachrichtentext und RFC822-Header.
 - [ ] Camel-Filterdriver mit persistenten Regeln, Reihenfolge, Bedingungen,
   vollständigen Aktionen, Testlauf und Fehlerprotokoll.
-- [ ] Vollständige Suchsprache, server-/lokale Suche, gespeicherte Suchen und
-  Suchordner mit Live-Aktualisierung.
+- [~] Die lokale Suchsprache unterstützt Feld-, Status-, Ordner-, Datums-,
+  Zitat- und Anhangsoperatoren (`in:`/`folder:`, `on:`, `older:`/`newer:`);
+  portable Suchordner können gespeichert, bearbeitet,
+  beim Start geladen und aus der Sidebar entfernt werden. Eine globale GTK4-rs-Suche
+  durchsucht zusätzlich den lokalen Mail-, Kalender-, Aufgaben-, Notizen- und
+  Kontaktbestand über einen gemeinsamen Service und kann den Suchbereich auf
+  Alle, Mail, Kalender/Aufgaben/Notizen oder Kontakte einschränken. Server-/Camel-Suche und
+  Suchordner mit serverseitiger Live-Aktualisierung fehlen noch.
 - [ ] Exchange/Microsoft 365: Graph/OAuth2, Mail/Kalender/Kontakte/GAL/OOF,
   EWS-Kompatibilität nur soweit technisch notwendig.
 
 #### Phase 7 — Release- und Produktqualität
 
-- [ ] Migration von Evolution-Profilen, Konten, Filtern, Signaturen,
-  Einstellungen und lokalen Ordnern ohne Datenverlust.
-- [ ] Wiederherstellung aus Backup, Import/Export (mbox, EML, ICS, vCard),
-  Datenlöschung und Diagnosepaket.
-- [ ] Accessibility, Lokalisierung, IME, RTL, HiDPI, Tastaturbedienung,
-  Screenreader und GNOME-HIG-Review.
+- [~] Nicht-geheime Evolution-.source-Dateien können aus einer ausdrücklich
+  ausgewählten Profilkopie rekursiv gelesen und Mailkonten als app-eigene
+  Profile übernommen werden; Passwörter, Tokens und private Schlüssel werden
+  ignoriert. Nicht-geheime Identitäts-/Verbindungsdaten einschließlich
+  Benutzername, Ports und Antwortadresse sowie unterstützte Evolution-Filter
+  aus `filters.xml` und alle sicher
+  lesbaren Text-/HTML-Signaturen aus `signature-list.xml` werden zusätzlich in
+  versionierten portablen Beständen übernommen; die erste Signatur bleibt für
+  den bestehenden Composer direkt ausgewählt. Vollständige Einstellungen,
+  lokale Ordner und die native EDS-Registrierung fehlen noch. Nicht
+  unterstützte Filterbedingungen/-aktionen werden beim Import jetzt als
+  nachvollziehbare Warnung im Bericht und Log ausgewiesen, statt still
+  verloren zu gehen; bewusst verworfene geheime `.source`-Felder werden nur
+  gezählt und im Ergebnis transparent angezeigt, nie gespeichert oder geloggt.
+- [~] App-eigene Einstellungen und JSON-Zustände können ohne Geheimnisse als
+  portable Sicherung gespeichert und wiederhergestellt werden; die Sicherung
+  umfasst auch beliebige app-eigene ICS-/vCard-Dateien unter den lokalen
+  Importverzeichnissen sowie Reminder-/Signatur-Daten und akzeptiert ältere
+  Einstellungen einschließlich des Benachrichtigungs-Schalters sowie den
+  app-eigenen Vorlagen- und Textbausteinspeicher. EML-, ICS-
+  und vCard-Export sowie nicht überschreibende
+  lokale EML/mbox-, ICS/VCS- und VCF/vCard-Importe sind im GTK4-rs-Frontend
+  verfügbar. Ein technisches, inhaltsfreies Diagnosepaket und eine
+  bestätigungspflichtige Löschung der app-eigenen Dateien/Einstellungen sind
+  vorhanden; vollständige Evolution-Profilmigration, Diagnose-/Restore-
+  Fehlerberichte und Upgrade-/Rollback-Prüfung fehlen noch.
+- [~] Tastaturbedienung besitzt echte globale GTK-Aktionen für Navigation,
+  Suche, Synchronisation, Sidebar, Mailaktionen und Modulwechsel; das
+  Shortcuts-Fenster zeigt dieselben Beschleuniger. Lokalisierung, IME, RTL,
+  HiDPI, vollständige Screenreader-Beschriftungen und GNOME-HIG-Review fehlen
+  noch.
 - [ ] Performance-Ziele für große Ordner, Speicher-/Thread-Leaks,
   Crash-Recovery und Telemetrie-freie Fehlerdiagnose.
 - [ ] Signierte Release-Artefakte, Flatpak-Review, AppStream-Validierung,
@@ -569,19 +787,19 @@ angewendet und migrierbar ist.
 | Bereich | Abzudeckende Einstellungen | Status |
 |:---|:---|:---:|
 | Allgemein | Sprache, Zeitzone, Datums-/Zeitformat, Startansicht, Fenstergröße/-position, Maximierung, Benachrichtigungen, Bestätigungsdialoge | `[~]` |
-| Mail lesen | Vorschaufenster, Threading, Sortierung, Gruppierung, Zitierstil, Schriftarten, HTML/Text, externe Bilder, Tracking, Markieren als gelesen | `[~]` |
+| Mail lesen | Vorschaufenster, Threading, Sortierung, Gruppierung, Zitierstil, Schriftarten, Listendichte, HTML/Text, externe Bilder, Tracking, Markieren als gelesen (inkl. persistentem Verhalten beim Auswählen) | `[~]` |
 | Mail empfangen | Konten, Aktivierung, Abrufintervall, IMAP-Ordner, Offline-Modus, Synchronisationsumfang, Junk/Spam, Quoten, Empfangsbenachrichtigung | `[ ]` |
 | Mail senden | SMTP/Transport, Authentifizierung, TLS, Port, Absender, Antwortadresse, Bcc, DSN/Lesebestätigung, Signatur, Autosave, gesendeter Ordner | `[~]` |
 | Composer | HTML/Text, Formatvorlage, Schrift, Rechtschreibung, Wörterbücher, Zitate, Inline-Anhänge, Vorlagen, Snippets, Entwürfe, Undo/Redo | `[~]` |
 | Konten & Identitäten | mehrere Identitäten, Alias-Adressen, Signaturen, Standardkonto, Ordnerzuordnung, Passwort/Secret-Service, OAuth2 | `[~]` |
-| Kalender | Standardkalender, Arbeitswoche, Arbeitstage/-zeiten, Zeitzonen, Wochenstart, Erinnerungen, Snooze, Kategorien, Farben, Wetter/Feiertage | `[ ]` |
+| Kalender | Standardkalender, Arbeitswoche, Arbeitstage/-zeiten, Zeitzonen, Wochenstart, Erinnerungen, Snooze, Kategorien, Farben, Wetter/Feiertage | `[~]` |
 | Termine | Wiederholung, Teilnehmer, iTIP/iMIP, freie Zeit, Einladungsantworten, private Termine, Alarme, Konferenzanbieter, Anhänge | `[ ]` |
-| Aufgaben & Memos | Standardlisten, Priorität, Status, Fälligkeit, Erinnerungen, Sortierung, Kategorien, VTODO/VJOURNAL-Sync | `[ ]` |
-| Kontakte | Standardadressbuch, Autocomplete, GAL/LDAP, vCard-Felder, Kategorien, Fotos, Dubletten, Telefon-/Adressformate | `[ ]` |
+| Aufgaben & Memos | Standardlisten, Priorität, Status, Fälligkeit, Erinnerungen, Sortierung, Kategorien, VTODO/VJOURNAL-Sync | `[~]` |
+| Kontakte | Standardadressbuch, Autocomplete, GAL/LDAP, vCard-Felder, Kategorien, Fotos, Dubletten, Telefon-/Adressformate | `[~]` |
 | Sicherheit | OpenPGP, S/MIME, Schlüssel/Zertifikate, Trust, Ablauf/Widerruf, Verschlüsselungsstandard, sichere Speicherung, Remote-Content | `[~]` |
 | Filter & Suche | Filterregeln, Reihenfolge, Bedingungen/Aktionen, gespeicherte Suchen, Suchordner, Volltext/Server-Suche | `[~]` |
 | Oberfläche | Theme, Dark Mode, Dichte, Icons, Sidebar, View-Switcher, Shortcuts, Accessibility, Statusleisten | `[~]` |
-| Migration | Evolution-Import, Export, Backup, Profilwechsel, Datenpfade, Upgrade-/Rollback-Verhalten | `[ ]` |
+| Migration | Evolution-Import, Export, Backup, Profilwechsel, Datenpfade, Upgrade-/Rollback-Verhalten | `[~]` |
 
 ### Abnahmekriterium für den produktiven Ersatz
 
@@ -594,19 +812,30 @@ nicht als vollständiger Ersatz beworben werden.
 
 ### Nächster Entwicklungsblock
 
-1. Die native EDS/Camel-Ladestrecke, UID-basierte Signalaktualisierung und den
-   Signal-Watcher auf Linux gegen ein echtes GNOME-/GOA-Konto testen. Die
-   vollständige Checkliste dafür befindet sich in
-   [ROADMAP_LINUX.md](ROADMAP_LINUX.md); danach strukturelle Ordner-/Konto-
-   synchronisation, Netzwerkwechsel und eine domänenweite Offline-/Online-
-   Wiederaufnahme ergänzen.
+1. Die portable Aufgaben-/Notizen-/Kontaktansicht weiter vervollständigen:
+   verbleibende EDS-vCard-/GAL-Felder, Duplikaterkennung und die noch offenen
+   Evolution-Sonderfelder. Aufgaben-/Memo-Suche, Sortierung, Export und lokale
+   VTODO-/VJOURNAL-Persistenz sind ergänzt; der portable Reminder-Service, die
+   Kalender-Agenda, Arbeitswochen-Zeitachse, Benachrichtigungseinstellung und die strukturierte
+   vCard-Foto-/Detail-Strecke, lokale Empfänger-Autovervollständigung und die
+   bearbeitbaren gespeicherten Suchordner sind ebenfalls vorhanden. Die globale
+   lokale Suche sowie mehrteilige portable Filterbedingungen/-aktionen und die
+   Filterreihenfolge sowie die manuelle lokale Filterausführung sind ebenfalls
+   umgesetzt; serverseitige Such-/Filterpfade bleiben Linux-only.
 2. Das GTK4-rs-Mailmodell mit der echten CamelFolderThread-Strecke,
    vollständigem Nachladen aller Thread-Mitglieder und providerabhängiger
    UID-Neuzuordnung nach Transfers gegen Linux-EDS verifizieren; sichtbare
    Konflikt-/Restore-Fehleranzeigen und die aufklappbare TreeListModel-
    Grundlage sind vorhanden.
-3. Die ECal-/EBook-Mutationsstrecke um echte Konfliktauflösung und vollständige
-   vCard-Felder erweitern und die Linux-Laufzeit mit einem echten Konto
-   verifizieren.
-4. Camel-Transport, EDS-Drafts/Sent-Folder und die Dialog-Components für
-   Konto-, Empfangs- und Versandoptionen vervollständigen.
+3. Die portable Migration und Datenqualität vervollständigen: weitere
+   Evolution-.source-Bereiche, vollständige nicht-geheime Einstellungen und
+   lokale Ordner und die portable Alias-/Ordnerzuordnung,
+   vollständige Export-/Restore-Prüfung, Diagnosepaket, Datenlöschung und
+   Upgrade-/Rollback-Verhalten.
+4. Erst danach die native EDS/Camel-Ladestrecke, UID-basierte
+   Signalaktualisierung und den Signal-Watcher auf Linux gegen ein echtes
+   GNOME-/GOA-Konto testen. Die vollständige Checkliste dafür befindet sich in
+   [ROADMAP_LINUX.md](ROADMAP_LINUX.md); dort folgen strukturelle
+   Ordner-/Kontosynchronisation, Netzwerkwechsel, Camel-Transport,
+   EDS-Drafts/Sent, ECal/EBook-Konfliktauflösung und die Offline-/Online-
+   Wiederaufnahme.

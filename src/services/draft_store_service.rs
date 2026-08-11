@@ -22,9 +22,18 @@ pub struct DraftMessage {
     pub bcc: String,
     pub subject: String,
     pub html_body: String,
+    /// Whether `html_body` contains the plain-text composer representation.
+    /// Older drafts default to rich HTML for backwards compatibility.
+    #[serde(default)]
+    pub plain_text: bool,
     pub updated_at: String,
     #[serde(default)]
     pub attachments: Vec<DraftAttachment>,
+    /// Optional iTIP payload for a portable invitation response draft.
+    #[serde(default)]
+    pub calendar_method: Option<String>,
+    #[serde(default)]
+    pub calendar_component: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -57,7 +66,7 @@ impl DraftStoreService {
     pub fn from_environment() -> Self {
         let path = std::env::var_os("EVOLUTION_GTK4_DRAFT_FILE")
             .map(PathBuf::from)
-            .unwrap_or_else(|| gtk::glib::user_data_dir().join("evolution-gtk4/drafts.json"));
+            .unwrap_or_else(|| crate::services::app_data_dir().join("drafts.json"));
         Self::new(path)
     }
 
@@ -94,6 +103,22 @@ impl DraftStoreService {
             drafts.push(draft);
         }
         self.save_all(&drafts)
+    }
+
+    /// Remove one draft by its stable local identifier.
+    ///
+    /// Deleting an already absent draft is intentionally idempotent.  This is
+    /// useful when a draft was sent or removed from another open composer
+    /// while the draft manager was still visible.
+    pub fn delete(&self, id: &str) -> io::Result<bool> {
+        let mut drafts = self.load();
+        let original_len = drafts.len();
+        drafts.retain(|draft| draft.id != id);
+        if drafts.len() == original_len {
+            return Ok(false);
+        }
+        self.save_all(&drafts)?;
+        Ok(true)
     }
 
     fn save_all(&self, drafts: &[DraftMessage]) -> io::Result<()> {
@@ -135,8 +160,11 @@ mod tests {
             bcc: String::new(),
             subject: "Subject".to_string(),
             html_body: "<p>Hello</p>".to_string(),
+            plain_text: false,
             updated_at: "2026-08-10T12:00:00Z".to_string(),
             attachments: Vec::new(),
+            calendar_method: None,
+            calendar_component: None,
         };
 
         store.save(draft.clone()).expect("draft should persist");
@@ -145,6 +173,72 @@ mod tests {
         store.save(updated.clone()).expect("draft should update");
 
         assert_eq!(store.load(), vec![updated]);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn delete_is_idempotent_and_removes_only_requested_draft() {
+        let root = temporary_directory("draft-delete");
+        let store = DraftStoreService::new(root.join("drafts.json"));
+        for id in ["draft-1", "draft-2"] {
+            store
+                .save(DraftMessage {
+                    id: id.to_string(),
+                    from: String::new(),
+                    source_uid: String::new(),
+                    to: String::new(),
+                    cc: String::new(),
+                    bcc: String::new(),
+                    subject: id.to_string(),
+                    html_body: String::new(),
+                    plain_text: false,
+                    updated_at: String::new(),
+                    attachments: Vec::new(),
+                    calendar_method: None,
+                    calendar_component: None,
+                })
+                .expect("draft should persist");
+        }
+
+        assert!(store.delete("draft-1").expect("draft should be deleted"));
+        assert!(!store.delete("draft-1").expect("missing draft is harmless"));
+        assert_eq!(
+            store
+                .load()
+                .into_iter()
+                .map(|draft| draft.id)
+                .collect::<Vec<_>>(),
+            vec!["draft-2"]
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn itip_response_draft_roundtrips_calendar_payload() {
+        let root = temporary_directory("draft-itip-response");
+        let store = DraftStoreService::new(root.join("drafts.json"));
+        let draft = DraftMessage {
+            id: "itip-reply-meeting-1".to_string(),
+            from: "person@example.org".to_string(),
+            source_uid: "account-1".to_string(),
+            to: "organizer@example.org".to_string(),
+            cc: String::new(),
+            bcc: String::new(),
+            subject: "Re: Meeting".to_string(),
+            html_body: "Ich nehme teil.".to_string(),
+            plain_text: true,
+            updated_at: "2026-08-10T12:00:00Z".to_string(),
+            attachments: Vec::new(),
+            calendar_method: Some("REPLY".to_string()),
+            calendar_component: Some(
+                "BEGIN:VCALENDAR\r\nMETHOD:REPLY\r\nEND:VCALENDAR\r\n".to_string(),
+            ),
+        };
+
+        store
+            .save(draft.clone())
+            .expect("iTIP draft should persist");
+        assert_eq!(store.load(), vec![draft]);
         let _ = fs::remove_dir_all(root);
     }
 

@@ -142,6 +142,9 @@ impl EBookService {
         source_uid: &str,
         vcard: &str,
     ) -> Result<EBookMutationResult, EBookMutationError> {
+        if source_uid == "local-addressbook" {
+            return self.apply_local_operation(1, vcard, None);
+        }
         self.apply_operation(source_uid, 1, vcard, None)
     }
 
@@ -151,6 +154,9 @@ impl EBookService {
         contact_uid: &str,
         vcard: &str,
     ) -> Result<EBookMutationResult, EBookMutationError> {
+        if source_uid == "local-addressbook" {
+            return self.apply_local_operation(2, vcard, Some(contact_uid));
+        }
         self.apply_operation(source_uid, 2, vcard, Some(contact_uid))
     }
 
@@ -159,6 +165,9 @@ impl EBookService {
         source_uid: &str,
         contact_uid: &str,
     ) -> Result<EBookMutationResult, EBookMutationError> {
+        if source_uid == "local-addressbook" {
+            return self.apply_local_operation(3, "", Some(contact_uid));
+        }
         self.apply_operation(source_uid, 3, "", Some(contact_uid))
     }
 
@@ -211,6 +220,32 @@ impl EBookService {
         {
             None
         }
+    }
+
+    fn apply_local_operation(
+        &self,
+        operation: i32,
+        vcard: &str,
+        contact_uid: Option<&str>,
+    ) -> Result<EBookMutationResult, EBookMutationError> {
+        let service = ContactStoreService::new();
+        let result = match operation {
+            1 => service.create_contact(vcard),
+            2 => service.modify_contact(contact_uid.unwrap_or_default(), vcard),
+            3 => service
+                .remove_contact(contact_uid.unwrap_or_default())
+                .map(|uid| (uid, String::new())),
+            _ => Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Unbekannte lokale EBook-Operation",
+            )),
+        };
+        result
+            .map(|(uid, vcard)| EBookMutationResult {
+                uid,
+                vcard: if operation == 3 { None } else { Some(vcard) },
+            })
+            .map_err(|error| EBookMutationError::Backend(error.to_string()))
     }
 
     #[cfg(all(target_os = "linux", eds_ebook_bridge))]
@@ -416,20 +451,45 @@ impl Drop for EBookWatcher {
 
 pub(crate) fn load_contacts_prefer_eds() -> EBookLoadResult {
     match EBookService::new().load_contacts() {
-        Ok((contacts, warning)) => EBookLoadResult {
-            contacts,
-            origin: EBookDataOrigin::Eds,
-            warning,
-        },
+        Ok((mut contacts, warning)) => {
+            let local_service = ContactStoreService::new();
+            if local_service.is_writable() {
+                contacts.extend(local_service.load_contacts().into_iter().map(|record| {
+                    EBookContactRecord {
+                        source_uid: "local-addressbook".to_string(),
+                        source_display_name: "Lokales Adressbuch".to_string(),
+                        uid: record.id,
+                        vcard: record.vcard,
+                        contact: record.contact,
+                    }
+                }));
+            }
+            EBookLoadResult {
+                contacts,
+                origin: EBookDataOrigin::Eds,
+                warning,
+            }
+        }
         Err(error) => {
-            let contacts = ContactStoreService::new()
+            let local_service = ContactStoreService::new();
+            let local_source_uid = if local_service.is_writable() {
+                "local-addressbook"
+            } else {
+                ""
+            };
+            let local_source_name = if local_service.is_writable() {
+                "Lokales Adressbuch"
+            } else {
+                ""
+            };
+            let contacts = local_service
                 .load_contacts()
                 .into_iter()
                 .map(|record| EBookContactRecord {
-                    source_uid: String::new(),
-                    source_display_name: String::new(),
+                    source_uid: local_source_uid.to_string(),
+                    source_display_name: local_source_name.to_string(),
                     uid: record.id,
-                    vcard: record.contact.to_vcard_string(),
+                    vcard: record.vcard,
                     contact: record.contact,
                 })
                 .collect();
@@ -468,8 +528,7 @@ mod change_tests {
             source_display_name: "Privat".to_string(),
             uid: "contact-1".to_string(),
             vcard: Some(
-                "BEGIN:VCARD\r\nVERSION:3.0\r\nUID:contact-1\r\n"
-                    .to_string()
+                "BEGIN:VCARD\r\nVERSION:3.0\r\nUID:contact-1\r\n".to_string()
                     + "FN:Max Mustermann\r\nEMAIL:max@example.test\r\nEND:VCARD\r\n",
             ),
         };

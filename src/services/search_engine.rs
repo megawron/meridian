@@ -3,12 +3,18 @@
 // search_engine — Unified cross-component search engine (Mail, Contacts, Calendar).
 
 #[allow(dead_code)]
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SearchDomain {
     Mail,
     Contacts,
     Calendar,
     All,
+}
+
+impl Default for SearchDomain {
+    fn default() -> Self {
+        Self::All
+    }
 }
 
 #[allow(dead_code)]
@@ -26,18 +32,81 @@ pub struct GlobalSearchEngine;
 
 #[allow(dead_code)]
 impl GlobalSearchEngine {
-    /// Query the currently available data source.
+    /// Query the currently available portable data sources.
     ///
-    /// There is no live repository wired yet, so returning an empty result is
-    /// safer than presenting invented mail, contact or calendar entries.  UI
-    /// integration will pass repository snapshots to `query_documents`.
+    /// This intentionally searches only app-owned/read-only local stores.
+    /// Native EDS/Camel live search is a separate Linux integration step, but
+    /// the portable application already has a useful cross-component search.
     pub fn query(domain: SearchDomain, query_str: &str) -> Vec<SearchResultItem> {
-        tracing::debug!(
-            ?domain,
-            query = query_str,
-            "Global search has no live repository yet"
-        );
-        Vec::new()
+        if query_str.trim().is_empty() {
+            return Vec::new();
+        }
+
+        let mut documents = Vec::new();
+
+        if matches!(domain, SearchDomain::Mail | SearchDomain::All) {
+            documents.extend(
+                crate::services::mail_store_service::MailStoreService::new()
+                    .load_local_records()
+                    .into_iter()
+                    .map(|message| SearchResultItem {
+                        domain: SearchDomain::Mail,
+                        title: message.subject,
+                        snippet: format!(
+                            "{} {} {} {}",
+                            message.sender_name,
+                            message.sender_email,
+                            message.preview_snippet,
+                            message.folder_name
+                        ),
+                        date: message.date_str,
+                        reference_id: message.id,
+                    }),
+            );
+        }
+
+        if matches!(domain, SearchDomain::Calendar | SearchDomain::All) {
+            let snapshot = crate::services::calendar_store_service::CalendarStoreService::new()
+                .load_snapshot();
+            documents.extend(snapshot.events.into_iter().map(|event| SearchResultItem {
+                domain: SearchDomain::Calendar,
+                title: event.summary,
+                snippet: format!("{} {}", event.location, event.description),
+                date: event.start,
+                reference_id: format!("{}:{}", event.source_uid, event.uid),
+            }));
+            documents.extend(snapshot.tasks.into_iter().map(|task| SearchResultItem {
+                domain: SearchDomain::Calendar,
+                title: task.summary,
+                snippet: format!("Aufgabe {}", task.source_display_name),
+                date: task.due,
+                reference_id: format!("{}:{}", task.source_uid, task.uid),
+            }));
+            documents.extend(snapshot.memos.into_iter().map(|memo| SearchResultItem {
+                domain: SearchDomain::Calendar,
+                title: memo.summary,
+                snippet: memo.description,
+                date: memo.updated,
+                reference_id: format!("{}:{}", memo.source_uid, memo.uid),
+            }));
+        }
+
+        if matches!(domain, SearchDomain::Contacts | SearchDomain::All) {
+            documents.extend(
+                crate::services::contact_store_service::ContactStoreService::new()
+                    .load_contacts()
+                    .into_iter()
+                    .map(|record| SearchResultItem {
+                        domain: SearchDomain::Contacts,
+                        title: record.contact.fn_name.clone(),
+                        snippet: record.contact.searchable_text(),
+                        date: String::new(),
+                        reference_id: record.id,
+                    }),
+            );
+        }
+
+        Self::query_documents(domain, query_str, documents.iter())
     }
 
     /// Search an explicit repository snapshot.  This is the backend-neutral
@@ -51,22 +120,25 @@ impl GlobalSearchEngine {
     where
         I: IntoIterator<Item = &'a SearchResultItem>,
     {
-        let query = query_str.trim().to_lowercase();
-        if query.is_empty() {
+        let terms = query_str
+            .split_whitespace()
+            .map(str::to_lowercase)
+            .filter(|term| !term.is_empty())
+            .collect::<Vec<_>>();
+        if terms.is_empty() {
             return Vec::new();
         }
 
         documents
             .into_iter()
             .filter(|document| {
-                (domain == SearchDomain::All || document.domain == domain)
-                    && [
-                        document.title.as_str(),
-                        document.snippet.as_str(),
-                        document.date.as_str(),
-                    ]
-                    .iter()
-                    .any(|field| field.to_lowercase().contains(&query))
+                if domain != SearchDomain::All && document.domain != domain {
+                    return false;
+                }
+                let searchable =
+                    format!("{} {} {}", document.title, document.snippet, document.date)
+                        .to_lowercase();
+                terms.iter().all(|term| searchable.contains(term))
             })
             .cloned()
             .collect()
@@ -98,8 +170,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn search_does_not_invent_results_without_a_repository() {
-        let results = GlobalSearchEngine::query(SearchDomain::All, "meeting");
+    fn empty_global_queries_are_empty() {
+        let results = GlobalSearchEngine::query(SearchDomain::All, "");
         assert!(results.is_empty());
     }
 
@@ -129,6 +201,31 @@ mod tests {
     }
 
     #[test]
+    fn search_requires_all_terms_and_respects_domain() {
+        let documents = vec![
+            SearchResultItem {
+                domain: SearchDomain::Contacts,
+                title: "Ada Lovelace".to_string(),
+                snippet: "Analytical Engine".to_string(),
+                date: String::new(),
+                reference_id: "contact-1".to_string(),
+            },
+            SearchResultItem {
+                domain: SearchDomain::Mail,
+                title: "Ada".to_string(),
+                snippet: "Lovelace".to_string(),
+                date: String::new(),
+                reference_id: "message-1".to_string(),
+            },
+        ];
+
+        let results =
+            GlobalSearchEngine::query_documents(SearchDomain::Contacts, "ada lovelace", &documents);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].reference_id, "contact-1");
+    }
+
+    #[test]
     fn local_mail_search_returns_stable_message_references() {
         let messages = [crate::services::mail_store_service::ParsedMail {
             id: "local:Inbox#0".to_string(),
@@ -138,6 +235,9 @@ mod tests {
             sender_name: "Sender".to_string(),
             sender_email: "sender@example.org".to_string(),
             recipient_to: "me@example.org".to_string(),
+            recipient_cc: String::new(),
+            recipient_bcc: String::new(),
+            reply_to: String::new(),
             subject: "Project update".to_string(),
             message_id: Some("message-1@example.org".to_string()),
             in_reply_to: Vec::new(),

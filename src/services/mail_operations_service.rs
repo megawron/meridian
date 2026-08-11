@@ -2,8 +2,8 @@
 //
 // Mail mutations go through this service instead of being implemented by UI
 // callbacks.  The local reader is intentionally read-only with regard to
-// Evolution's files; only client-owned read/flag metadata is writable until a
-// Camel/EDS backend is available.
+// Evolution's files; client-owned state and logical local folder/deletion
+// overrides are writable until a Camel/EDS backend is available.
 
 use std::fmt;
 use std::fs;
@@ -219,6 +219,27 @@ impl MailCommand {
         }
     }
 
+    pub(crate) fn set_junk_local(
+        id: impl Into<String>,
+        previous_folder: impl Into<String>,
+    ) -> Self {
+        let id = id.into();
+        let previous_folder = previous_folder.into();
+        Self {
+            forward: MailOperation::SetJunk {
+                id: id.clone(),
+                location: None,
+                is_junk: true,
+            },
+            inverse: MailOperation::Move {
+                id,
+                location: None,
+                destination: previous_folder,
+            },
+            description: "Nachricht lokal als Spam markieren".to_string(),
+        }
+    }
+
     pub(crate) fn set_important(
         id: impl Into<String>,
         location: MailBackendLocation,
@@ -260,6 +281,18 @@ impl MailCommand {
         }
     }
 
+    pub(crate) fn delete_local(id: impl Into<String>) -> Self {
+        let id = id.into();
+        Self {
+            forward: MailOperation::Delete {
+                id: id.clone(),
+                location: None,
+            },
+            inverse: MailOperation::RestoreDeleted { id, location: None },
+            description: "Nachricht lokal ausblenden".to_string(),
+        }
+    }
+
     pub(crate) fn archive(id: impl Into<String>, location: MailBackendLocation) -> Self {
         let id = id.into();
         Self {
@@ -272,6 +305,46 @@ impl MailCommand {
                 location: Some(location),
             },
             description: "Nachricht archivieren".to_string(),
+        }
+    }
+
+    pub(crate) fn archive_local(id: impl Into<String>, previous_folder: impl Into<String>) -> Self {
+        let id = id.into();
+        let previous_folder = previous_folder.into();
+        Self {
+            forward: MailOperation::Archive {
+                id: id.clone(),
+                location: None,
+            },
+            inverse: MailOperation::Move {
+                id,
+                location: None,
+                destination: previous_folder,
+            },
+            description: "Nachricht lokal archivieren".to_string(),
+        }
+    }
+
+    pub(crate) fn move_local(
+        id: impl Into<String>,
+        previous_folder: impl Into<String>,
+        destination: impl Into<String>,
+    ) -> Self {
+        let id = id.into();
+        let previous_folder = previous_folder.into();
+        let destination = destination.into();
+        Self {
+            forward: MailOperation::Move {
+                id: id.clone(),
+                location: None,
+                destination: destination.clone(),
+            },
+            inverse: MailOperation::Move {
+                id,
+                location: None,
+                destination: previous_folder,
+            },
+            description: format!("Nachricht lokal nach {destination} verschieben"),
         }
     }
 
@@ -295,7 +368,7 @@ impl MailCommandStack {
     pub(crate) fn persistent() -> Self {
         let path = std::env::var_os("EVOLUTION_GTK4_MAIL_UNDO_FILE")
             .map(PathBuf::from)
-            .unwrap_or_else(|| gtk::glib::user_data_dir().join("evolution-gtk4/mail-undo.json"));
+            .unwrap_or_else(|| crate::services::app_data_dir().join("mail-undo.json"));
         Self::load_from(path)
     }
 
@@ -518,17 +591,21 @@ impl MailOperationsService {
                     .persist_message_state(&id, is_unread, is_flagged)
                     .map_err(Into::into),
             },
-            MailOperation::Delete { location, .. } => match location {
+            MailOperation::Delete { id, location } => match location {
                 Some(location) => self.apply_camel(
                     CamelMailOperation::Delete { location },
                     MailOperationKind::Delete,
                 ),
-                None => Err(Self::unsupported(MailOperationKind::Delete)),
+                None => self
+                    .store
+                    .metadata_store()
+                    .set_deleted(&id, true)
+                    .map_err(Into::into),
             },
             MailOperation::Move {
+                id,
                 location,
                 destination,
-                ..
             } => match location {
                 Some(location) => self.apply_camel(
                     CamelMailOperation::Move {
@@ -537,17 +614,27 @@ impl MailOperationsService {
                     },
                     MailOperationKind::Move,
                 ),
-                None => Err(Self::unsupported(MailOperationKind::Move)),
+                None => self
+                    .store
+                    .metadata_store()
+                    .set_folder_override(&id, Some(&destination))
+                    .map_err(Into::into),
             },
-            MailOperation::Archive { location, .. } => match location {
+            MailOperation::Archive { id, location } => match location {
                 Some(location) => self.apply_camel(
                     CamelMailOperation::Archive { location },
                     MailOperationKind::Archive,
                 ),
-                None => Err(Self::unsupported(MailOperationKind::Archive)),
+                None => self
+                    .store
+                    .metadata_store()
+                    .set_folder_override(&id, Some("archive"))
+                    .map_err(Into::into),
             },
             MailOperation::SetJunk {
-                location, is_junk, ..
+                id,
+                location,
+                is_junk,
             } => match location {
                 Some(location) => self.apply_camel(
                     CamelMailOperation::SetJunk { location, is_junk },
@@ -557,11 +644,11 @@ impl MailOperationsService {
                         MailOperationKind::MarkNotJunk
                     },
                 ),
-                None => Err(Self::unsupported(if is_junk {
-                    MailOperationKind::MarkJunk
-                } else {
-                    MailOperationKind::MarkNotJunk
-                })),
+                None => self
+                    .store
+                    .metadata_store()
+                    .set_folder_override(&id, is_junk.then_some("junk"))
+                    .map_err(Into::into),
             },
             MailOperation::SetImportant {
                 location,
@@ -585,19 +672,27 @@ impl MailOperationsService {
                     MailOperationKind::MarkNotImportant
                 })),
             },
-            MailOperation::RestoreDeleted { location, .. } => match location {
+            MailOperation::RestoreDeleted { id, location } => match location {
                 Some(location) => self.apply_camel(
                     CamelMailOperation::RestoreDeleted { location },
                     MailOperationKind::Delete,
                 ),
-                None => Err(Self::unsupported(MailOperationKind::Delete)),
+                None => self
+                    .store
+                    .metadata_store()
+                    .set_deleted(&id, false)
+                    .map_err(Into::into),
             },
-            MailOperation::RestoreArchived { location, .. } => match location {
+            MailOperation::RestoreArchived { id, location } => match location {
                 Some(location) => self.apply_camel(
                     CamelMailOperation::RestoreArchived { location },
                     MailOperationKind::Archive,
                 ),
-                None => Err(Self::unsupported(MailOperationKind::Archive)),
+                None => self
+                    .store
+                    .metadata_store()
+                    .set_folder_override(&id, None)
+                    .map_err(Into::into),
             },
         }
     }
@@ -844,24 +939,96 @@ mod tests {
     }
 
     #[test]
-    fn destructive_operations_are_explicitly_rejected_by_read_only_backend() {
-        let root = temporary_directory("operations-unsupported");
-        let store = MailStoreService::with_mail_dir_and_state_path(
-            root.join("mail"),
-            root.join("state.json"),
-        );
-        let operations = MailOperationsService::with_store(store);
+    fn local_destructive_operations_use_only_the_app_owned_sidecar() {
+        let root = temporary_directory("operations-local-sidecar");
+        let mail_dir = root.join("mail");
+        fs::create_dir_all(&mail_dir).expect("mail directory should be created");
+        fs::write(
+            mail_dir.join("message.eml"),
+            "From: Sender <sender@example.org>\nSubject: Test\n\nBody\n",
+        )
+        .expect("mail should be written");
+        let store =
+            MailStoreService::with_mail_dir_and_state_path(&mail_dir, root.join("state.json"));
+        let message_id = store
+            .load_local_records()
+            .first()
+            .expect("message should parse")
+            .id
+            .clone();
+        let operations = MailOperationsService::with_store(store.clone());
 
-        let error = operations
-            .delete("local:message#0")
-            .expect_err("delete must not be reported as successful");
-        assert!(matches!(
-            error,
-            MailOperationError::Unsupported {
-                operation: MailOperationKind::Delete,
-                ..
-            }
-        ));
+        operations
+            .delete(&message_id)
+            .expect("local delete should persist in the sidecar");
+        assert!(store.load_local_records().is_empty());
+        assert!(
+            MailMetadataStore::new(store.metadata_path())
+                .load_deleted()
+                .contains(&message_id)
+        );
+        assert!(mail_dir.join("message.eml").is_file());
+
+        operations
+            .apply(MailOperation::RestoreDeleted {
+                id: message_id.clone(),
+                location: None,
+            })
+            .expect("local delete should be restorable");
+        assert_eq!(store.load_local_records().len(), 1);
+
+        operations
+            .move_to(&message_id, "archive")
+            .expect("local move should persist in the sidecar");
+        assert_eq!(store.load_local_records()[0].folder_id, "archive");
+        assert!(mail_dir.join("message.eml").is_file());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn local_junk_command_can_be_undone_without_touching_the_source_file() {
+        let root = temporary_directory("operations-local-junk");
+        let mail_dir = root.join("mail");
+        fs::create_dir_all(&mail_dir).expect("mail directory should be created");
+        let source = mail_dir.join("message.eml");
+        fs::write(
+            &source,
+            "From: Sender <sender@example.org>\nSubject: Test\n\nBody\n",
+        )
+        .expect("mail should be written");
+
+        let store =
+            MailStoreService::with_mail_dir_and_state_path(&mail_dir, root.join("state.json"));
+        let message_id = store
+            .load_local_records()
+            .first()
+            .expect("message should parse")
+            .id
+            .clone();
+        let original_folder = store
+            .load_local_records()
+            .first()
+            .expect("message should still parse")
+            .folder_id
+            .clone();
+        let operations = MailOperationsService::with_store(store.clone());
+        let mut history = MailCommandStack::default();
+
+        history
+            .execute(
+                &operations,
+                MailCommand::set_junk_local(&message_id, &original_folder),
+            )
+            .expect("local junk command should succeed");
+        assert_eq!(store.load_local_records()[0].folder_id, "junk");
+
+        history
+            .undo(&operations)
+            .expect("undo should succeed")
+            .expect("junk command should be undone");
+        assert_eq!(store.load_local_records()[0].folder_id, original_folder);
+        assert!(source.is_file());
 
         let _ = fs::remove_dir_all(root);
     }

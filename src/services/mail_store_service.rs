@@ -11,8 +11,9 @@
 //   * Maildir (cur/, new/ and tmp/)
 //   * Unix mbox files used by Evolution's local provider
 //
-// Network synchronization, flags stored in Camel indexes and mutations such
-// as move/delete are separate backend work and must not be faked here.
+// Network synchronization and flags stored in Camel indexes remain separate
+// backend work.  Local move/archive/delete actions use only the app-owned
+// sidecar and never rewrite these source files.
 
 use std::collections::HashMap;
 use std::fs;
@@ -29,6 +30,20 @@ use crate::services::mail_metadata_service::{MailMessageState, MailMetadataStore
 use crate::services::mail_thread_service::{
     ThreadIdentity, extract_message_ids, group_messages, normalize_message_id,
 };
+
+/// Result of applying one saved rule to the app-owned local mailbox.
+///
+/// The report deliberately describes only the portable sidecar operation. A
+/// Camel/EDS account is never reported as changed by this path; its native
+/// filter execution is covered by `ROADMAP_LINUX.md`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct LocalFilterRunReport {
+    pub matched_messages: usize,
+    pub changed_messages: usize,
+    pub moved_messages: usize,
+    pub copied_messages: usize,
+    pub deleted_messages: usize,
+}
 
 /// Thread-safe parser output.  GTK objects are created only after this value
 /// returns to the main context.
@@ -52,6 +67,9 @@ pub struct ParsedMail {
     pub sender_name: String,
     pub sender_email: String,
     pub recipient_to: String,
+    pub recipient_cc: String,
+    pub recipient_bcc: String,
+    pub reply_to: String,
     pub subject: String,
     pub message_id: Option<String>,
     pub in_reply_to: Vec<String>,
@@ -75,6 +93,9 @@ impl ParsedMail {
             sender_name,
             sender_email,
             recipient_to,
+            recipient_cc,
+            recipient_bcc,
+            reply_to,
             subject,
             message_id,
             in_reply_to,
@@ -98,6 +119,9 @@ impl ParsedMail {
             &sender_name,
             &sender_email,
             &recipient_to,
+            &recipient_cc,
+            &recipient_bcc,
+            &reply_to,
             &subject,
             message_id,
             in_reply_to,
@@ -144,10 +168,16 @@ impl MailStoreService {
     pub fn new() -> Self {
         let mail_dir = std::env::var_os("EVOLUTION_GTK4_MAIL_DIR")
             .map(PathBuf::from)
+            .or_else(|| {
+                crate::services::settings_service::AppSettings::try_new()
+                    .map(|settings| settings.local_mail_directory())
+                    .filter(|path| !path.trim().is_empty())
+                    .map(PathBuf::from)
+            })
             .unwrap_or_else(|| gtk::glib::user_data_dir().join("evolution/mail/local"));
         let metadata_path = std::env::var_os("EVOLUTION_GTK4_MAIL_STATE_FILE")
             .map(PathBuf::from)
-            .unwrap_or_else(|| gtk::glib::user_data_dir().join("evolution-gtk4/mail-state.json"));
+            .unwrap_or_else(|| crate::services::app_data_dir().join("mail-state.json"));
 
         Self {
             mail_dir,
@@ -179,6 +209,59 @@ impl MailStoreService {
         }
     }
 
+    /// Copy user-selected EML, Maildir files or mbox files into the configured
+    /// read-only import root.  The importer never overwrites an existing file;
+    /// a numbered name is chosen instead so an import can be repeated safely.
+    pub fn import_files(&self, files: &[PathBuf]) -> std::io::Result<usize> {
+        fs::create_dir_all(&self.mail_dir)?;
+        let mut sources = Vec::new();
+        for source in files {
+            if source.is_dir() {
+                collect_import_files(source, &mut sources);
+            } else if source.is_file() {
+                sources.push(source.clone());
+            }
+        }
+        sources.sort();
+        sources.dedup();
+
+        let mut imported = 0;
+        for source in sources {
+            let Some(file_name) = source.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            let target_root = source
+                .parent()
+                .and_then(Path::file_name)
+                .and_then(|name| name.to_str())
+                .filter(|name| matches!(*name, "cur" | "new"))
+                .map(|name| self.mail_dir.join(name))
+                .unwrap_or_else(|| self.mail_dir.clone());
+            fs::create_dir_all(&target_root)?;
+            let mut destination = target_root.join(file_name);
+            let stem = Path::new(file_name)
+                .file_stem()
+                .and_then(|value| value.to_str())
+                .unwrap_or("import");
+            let extension = Path::new(file_name)
+                .extension()
+                .and_then(|value| value.to_str())
+                .map(|value| format!(".{value}"))
+                .unwrap_or_default();
+            let mut suffix = 1;
+            while destination.exists() {
+                destination = target_root.join(format!("{stem}-{suffix}{extension}"));
+                suffix += 1;
+            }
+            if source == destination {
+                continue;
+            }
+            fs::copy(source, destination)?;
+            imported += 1;
+        }
+        Ok(imported)
+    }
+
     /// Read all discoverable local messages in a deterministic order.
     ///
     /// This method is synchronous by design so that it can also be used by
@@ -207,7 +290,132 @@ impl MailStoreService {
     /// cancellation was observed and never mutates the source mailbox.
     pub fn load_local_records_cancelable(&self, cancelled: &AtomicBool) -> Vec<ParsedMail> {
         let metadata = self.metadata.load();
+        let folder_overrides = self.metadata.load_folder_overrides();
+        let deleted = self.metadata.load_deleted();
         let filter_rules = MailFilterStore::default().load();
+        let mut messages = self.load_raw_local_records_cancelable(cancelled);
+
+        messages.retain(|message| !deleted.contains(&message.id));
+        let mut filtered_out = std::collections::HashSet::new();
+        for message in &mut messages {
+            if let Some(folder_id) = folder_overrides.get(&message.id) {
+                message.folder_id = folder_id.clone();
+            }
+            if apply_client_state(&metadata, &filter_rules, message, Some(&self.metadata)) {
+                filtered_out.insert(message.id.clone());
+            }
+        }
+        messages.retain(|message| !filtered_out.contains(&message.id));
+
+        // Filter actions may have created a new sidecar copy while processing
+        // the records above.  Reload this small map so the same refresh shows
+        // the logical copy immediately instead of requiring a second reload.
+        let copies = self.metadata.load_copies();
+        let mut copied_messages = Vec::with_capacity(messages.len());
+        for message in messages.iter() {
+            let Some(copy_folders) = copies.get(&message.id) else {
+                continue;
+            };
+            let mut copy_folders = copy_folders.iter().collect::<Vec<_>>();
+            copy_folders.sort();
+            for folder_id in copy_folders {
+                if folder_id == &message.folder_id {
+                    continue;
+                }
+                let copy_id = local_copy_id(&message.id, folder_id);
+                if deleted.contains(&copy_id) {
+                    continue;
+                }
+                let mut copy = message.clone();
+                copy.id = copy_id.clone();
+                copy.folder_id = folder_overrides
+                    .get(&copy_id)
+                    .cloned()
+                    .unwrap_or_else(|| folder_id.clone());
+                copy.folder_name = copy.folder_id.clone();
+                copy.backend_location = None;
+                if let Some(state) = metadata.get(&copy_id) {
+                    copy.is_unread = state.is_unread;
+                    copy.is_flagged = state.is_flagged;
+                }
+                copied_messages.push(copy);
+            }
+        }
+        messages.extend(copied_messages);
+
+        assign_thread_metadata(&mut messages);
+
+        messages
+    }
+
+    /// Apply one saved rule to the app-owned local mailbox.
+    ///
+    /// This is the portable equivalent of Evolution's manual filter action.
+    /// It parses the source mailbox without first running incoming rules, so a
+    /// manual run cannot accidentally hide its own input or apply an incoming
+    /// rule twice. Source files remain read-only; all changes go through the
+    /// app-owned metadata sidecar.
+    pub fn run_filter_rule(&self, rule_id: &str) -> std::io::Result<Option<LocalFilterRunReport>> {
+        let filter_store = MailFilterStore::default();
+        self.run_filter_rule_with_store(rule_id, &filter_store)
+    }
+
+    pub(crate) fn run_filter_rule_with_store(
+        &self,
+        rule_id: &str,
+        filter_store: &MailFilterStore,
+    ) -> std::io::Result<Option<LocalFilterRunReport>> {
+        let Some(rule) = filter_store
+            .load()
+            .into_iter()
+            .find(|rule| rule.id == rule_id)
+        else {
+            return Ok(None);
+        };
+
+        let metadata = self.metadata.load();
+        let folder_overrides = self.metadata.load_folder_overrides();
+        let deleted = self.metadata.load_deleted();
+        let cancelled = AtomicBool::new(false);
+        let mut messages = self.load_raw_local_records_cancelable(&cancelled);
+        let mut report = LocalFilterRunReport::default();
+
+        for message in &mut messages {
+            if deleted.contains(&message.id) {
+                continue;
+            }
+            if let Some(folder_id) = folder_overrides.get(&message.id) {
+                message.folder_id = folder_id.clone();
+            }
+            if let Some(state) = metadata.get(&message.id) {
+                message.is_unread = state.is_unread;
+                message.is_flagged = state.is_flagged;
+            }
+            if !message_matches_rule(&rule, message) {
+                continue;
+            }
+
+            report.matched_messages += 1;
+            let effects = apply_filter_rule(&rule, message, Some(&self.metadata));
+            if effects.state_changed {
+                self.metadata.update(
+                    &message.id,
+                    MailMessageState {
+                        is_unread: message.is_unread,
+                        is_flagged: message.is_flagged,
+                    },
+                )?;
+            }
+            report.changed_messages += usize::from(effects.changed);
+            report.moved_messages += usize::from(effects.moved);
+            report.copied_messages += usize::from(effects.copied);
+            report.deleted_messages += usize::from(effects.deleted);
+        }
+
+        Ok(Some(report))
+    }
+
+    fn load_raw_local_records_cancelable(&self, cancelled: &AtomicBool) -> Vec<ParsedMail> {
         let mut paths = Vec::new();
         collect_mail_files(&self.mail_dir, &mut paths);
         paths.sort();
@@ -235,13 +443,6 @@ impl MailStoreService {
                 }
             }
         }
-
-        for message in &mut messages {
-            apply_client_state(&metadata, &filter_rules, message);
-        }
-
-        assign_thread_metadata(&mut messages);
-
         messages
     }
 
@@ -269,7 +470,7 @@ impl MailStoreService {
         let filter_rules = MailFilterStore::default().load();
 
         for message in messages {
-            apply_client_state(&metadata, &filter_rules, message);
+            let _ = apply_client_state(&metadata, &filter_rules, message, None);
         }
     }
 
@@ -282,7 +483,7 @@ impl MailStoreService {
         let filter_rules = MailFilterStore::default().load();
 
         for message in messages {
-            apply_local_filters(&filter_rules, message);
+            let _ = apply_local_filters(&filter_rules, message, None);
         }
     }
 
@@ -290,56 +491,237 @@ impl MailStoreService {
     pub fn metadata_path(&self) -> &Path {
         self.metadata.path()
     }
+
+    pub(crate) fn metadata_store(&self) -> &MailMetadataStore {
+        &self.metadata
+    }
 }
 
 fn apply_client_state(
     metadata: &HashMap<String, MailMessageState>,
     filter_rules: &[MailFilterRule],
     message: &mut ParsedMail,
-) {
+    sidecar: Option<&MailMetadataStore>,
+) -> bool {
     if let Some(state) = metadata.get(&message.id) {
         message.is_unread = state.is_unread;
         message.is_flagged = state.is_flagged;
     }
 
-    apply_local_filters(filter_rules, message);
+    apply_local_filters(filter_rules, message, sidecar)
 }
 
-fn apply_local_filters(rules: &[MailFilterRule], message: &mut ParsedMail) {
+#[derive(Debug, Default)]
+struct FilterEffects {
+    changed: bool,
+    state_changed: bool,
+    moved: bool,
+    copied: bool,
+    deleted: bool,
+}
+
+fn message_matches_rule(rule: &MailFilterRule, message: &ParsedMail) -> bool {
     let body = format!("{} {}", message.preview_snippet, message.html_body);
     let sender = format!("{} <{}>", message.sender_name, message.sender_email);
+    let recipient = format!(
+        "{} {} {}",
+        message.recipient_to, message.recipient_cc, message.recipient_bcc
+    );
+    let headers = format!(
+        "From: {}\nTo: {}\nCc: {}\nBcc: {}\nReply-To: {}\nSubject: {}\nMessage-ID: {}\nIn-Reply-To: {}\nReferences: {}",
+        sender,
+        message.recipient_to,
+        message.recipient_cc,
+        message.recipient_bcc,
+        message.reply_to,
+        message.subject,
+        message.message_id.as_deref().unwrap_or_default(),
+        message.in_reply_to.join(" "),
+        message.references.join(" "),
+    );
 
+    rule.matches(&message.subject, &sender, &recipient, &body, &headers)
+}
+
+fn apply_local_filters(
+    rules: &[MailFilterRule],
+    message: &mut ParsedMail,
+    sidecar: Option<&MailMetadataStore>,
+) -> bool {
+    let mut deleted = false;
     for rule in rules {
-        if rule.scope != FilterScope::Incoming
-            || !rule.matches(&message.subject, &sender, &body, "")
-        {
+        if rule.scope != FilterScope::Incoming || !message_matches_rule(rule, message) {
             continue;
         }
+        deleted |= apply_filter_rule(rule, message, sidecar).deleted;
+    }
+    deleted
+}
 
-        match &rule.action {
-            FilterAction::MarkRead => message.is_unread = false,
-            FilterAction::SetFlagged => message.is_flagged = true,
-            FilterAction::MoveToFolder(folder) | FilterAction::CopyToFolder(folder) => {
-                tracing::debug!(
-                    rule = %rule.name,
-                    folder,
-                    "Local filter matched folder action; Camel backend is required to apply it"
-                );
+fn apply_filter_rule(
+    rule: &MailFilterRule,
+    message: &mut ParsedMail,
+    sidecar: Option<&MailMetadataStore>,
+) -> FilterEffects {
+    let mut effects = FilterEffects::default();
+    for action in rule.effective_actions() {
+        match action {
+            FilterAction::MarkRead => {
+                if message.is_unread {
+                    message.is_unread = false;
+                    effects.changed = true;
+                    effects.state_changed = true;
+                }
+            }
+            FilterAction::MarkUnread => {
+                if !message.is_unread {
+                    message.is_unread = true;
+                    effects.changed = true;
+                    effects.state_changed = true;
+                }
+            }
+            FilterAction::SetFlagged => {
+                if !message.is_flagged {
+                    message.is_flagged = true;
+                    effects.changed = true;
+                    effects.state_changed = true;
+                }
+            }
+            FilterAction::ClearFlagged => {
+                if message.is_flagged {
+                    message.is_flagged = false;
+                    effects.changed = true;
+                    effects.state_changed = true;
+                }
+            }
+            FilterAction::MoveToFolder(folder) => {
+                let folder_id = local_folder_id(folder);
+                if let Some(sidecar) = sidecar {
+                    if let Err(error) = sidecar.set_folder_override(&message.id, Some(&folder_id)) {
+                        tracing::warn!(%error, message_id = %message.id, "Could not persist local filter folder");
+                    } else if message.folder_id != folder_id {
+                        message.folder_id = folder_id;
+                        effects.changed = true;
+                        effects.moved = true;
+                    }
+                } else {
+                    tracing::debug!(
+                        rule = %rule.name,
+                        folder,
+                        "Local filter matched folder action; Camel backend is required to apply it"
+                    );
+                }
+            }
+            FilterAction::CopyToFolder(folder) => {
+                let folder_id = local_folder_id(folder);
+                if let Some(sidecar) = sidecar {
+                    if let Err(error) = sidecar.set_copy(&message.id, &folder_id, true) {
+                        tracing::warn!(
+                            %error,
+                            message_id = %message.id,
+                            folder = %folder_id,
+                            "Could not persist local filter copy"
+                        );
+                    } else {
+                        effects.changed = true;
+                        effects.copied = true;
+                    }
+                } else {
+                    tracing::debug!(
+                        rule = %rule.name,
+                        folder,
+                        "Local filter copy action requires a local sidecar or Camel multi-label backend"
+                    );
+                }
             }
             FilterAction::Delete => {
-                tracing::debug!(
-                    rule = %rule.name,
-                    "Local filter matched delete action; read-only backend left message untouched"
-                );
+                if let Some(sidecar) = sidecar {
+                    if let Err(error) = sidecar.set_deleted(&message.id, true) {
+                        tracing::warn!(%error, message_id = %message.id, "Could not persist local filter deletion");
+                    } else {
+                        effects.changed = true;
+                        effects.deleted = true;
+                    }
+                } else {
+                    tracing::debug!(
+                        rule = %rule.name,
+                        "Local filter matched delete action; remote backend must apply it"
+                    );
+                }
             }
         }
     }
+    effects
+}
+
+fn local_folder_id(folder: &str) -> String {
+    let normalized = folder.trim().trim_start_matches('.');
+    match normalized.to_ascii_lowercase().as_str() {
+        "inbox" => "inbox".to_string(),
+        "sent" | "sent-mail" => "sent".to_string(),
+        "draft" | "drafts" => "drafts".to_string(),
+        "trash" | "deleted" => "trash".to_string(),
+        "archive" | "all-mail" => "archive".to_string(),
+        "junk" | "spam" => "junk".to_string(),
+        _ if normalized.starts_with("custom:") => normalized.to_string(),
+        _ => format!("custom:{normalized}"),
+    }
+}
+
+fn local_copy_id(message_id: &str, folder_id: &str) -> String {
+    format!("{message_id}::copy::{folder_id}")
 }
 
 impl Default for MailStoreService {
     fn default() -> Self {
         Self::new()
     }
+}
+
+fn collect_import_files(root: &Path, paths: &mut Vec<PathBuf>) {
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_symlink() {
+            continue;
+        }
+        if file_type.is_dir() {
+            collect_import_files(&path, paths);
+        } else if file_type.is_file() && is_import_candidate(&path) {
+            paths.push(path);
+        }
+    }
+}
+
+fn is_import_candidate(path: &Path) -> bool {
+    let extension = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| extension.to_ascii_lowercase());
+    if matches!(extension.as_deref(), Some("eml" | "mbox")) {
+        return true;
+    }
+    if path
+        .parent()
+        .and_then(Path::file_name)
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| matches!(name, "cur" | "new"))
+    {
+        return true;
+    }
+    if extension.is_some() {
+        return false;
+    }
+    let Ok(raw) = fs::read(path) else {
+        return false;
+    };
+    let text = String::from_utf8_lossy(&raw);
+    looks_like_mbox(&text) || looks_like_rfc822(&text, path)
 }
 
 fn collect_mail_files(root: &Path, paths: &mut Vec<PathBuf>) {
@@ -514,6 +896,18 @@ pub(crate) fn parse_rfc822(
         .get("to")
         .map(|value| decode_mime_header(value))
         .unwrap_or_default();
+    let recipient_cc = headers
+        .get("cc")
+        .map(|value| decode_mime_header(value))
+        .unwrap_or_default();
+    let recipient_bcc = headers
+        .get("bcc")
+        .map(|value| decode_mime_header(value))
+        .unwrap_or_default();
+    let reply_to = headers
+        .get("reply-to")
+        .map(|value| decode_mime_header(value))
+        .unwrap_or_default();
     let subject = headers
         .get("subject")
         .map(|value| decode_mime_header(value))
@@ -568,6 +962,9 @@ pub(crate) fn parse_rfc822(
         sender_name,
         sender_email,
         recipient_to: recipient,
+        recipient_cc,
+        recipient_bcc,
+        reply_to,
         subject,
         message_id,
         in_reply_to,
@@ -707,6 +1104,9 @@ fn extract_mime_content(
         .get("content-disposition")
         .map(String::as_str)
         .unwrap_or("");
+    let content_id = headers
+        .get("content-id")
+        .and_then(|value| normalize_content_id(value));
     let filename =
         mime_parameter(disposition, "filename").or_else(|| mime_parameter(content_type, "name"));
 
@@ -717,6 +1117,7 @@ fn extract_mime_content(
             filename: decode_mime_header(&filename),
             size_formatted: format_size(decoded.len()),
             mime_type: media_type,
+            content_id,
             content: decoded,
         });
         return;
@@ -740,6 +1141,7 @@ fn extract_mime_content(
                 filename: "attachment".to_string(),
                 size_formatted: format_size(decoded.len()),
                 mime_type: media_type,
+                content_id,
                 content: decoded,
             });
         }
@@ -755,6 +1157,16 @@ fn mime_parameter(value: &str, parameter: &str) -> Option<String> {
             None
         }
     })
+}
+
+fn normalize_content_id(value: &str) -> Option<String> {
+    let decoded = decode_mime_header(value);
+    let value = decoded
+        .trim()
+        .trim_start_matches('<')
+        .trim_end_matches('>')
+        .trim();
+    (!value.is_empty()).then(|| value.to_string())
 }
 
 fn decode_transfer_encoding(body: &str, encoding: &str) -> Vec<u8> {
@@ -939,6 +1351,9 @@ mod tests {
     fn parses_folded_headers_and_plain_text() {
         let raw = concat!(
             "From: =?UTF-8?Q?M=C3=BCller?= <mueller@example.org>\r\n",
+            "Reply-To: Support <support@example.org>\r\n",
+            "To: Receiver <receiver@example.org>\r\n",
+            "Cc: Team <team@example.org>\r\n",
             "Subject: =?UTF-8?B?U3RhdHVz?=\r\n",
             "  Update\r\n",
             "Content-Type: text/plain; charset=utf-8\r\n",
@@ -949,6 +1364,9 @@ mod tests {
         let message = parse_rfc822("folded", "inbox", raw, true).expect("message should parse");
         assert_eq!(message.sender_name, "Müller");
         assert_eq!(message.sender_email, "mueller@example.org");
+        assert_eq!(message.recipient_to, "Receiver <receiver@example.org>");
+        assert_eq!(message.recipient_cc, "Team <team@example.org>");
+        assert_eq!(message.reply_to, "Support <support@example.org>");
         assert_eq!(message.subject, "Status Update");
         assert_eq!(message.folder_id, "inbox");
         assert!(message.html_body.contains("Hallo Welt"));
@@ -1034,6 +1452,38 @@ mod tests {
     }
 
     #[test]
+    fn retains_content_id_for_inline_image_parts() {
+        let raw = concat!(
+            "From: Sender <sender@example.org>\n",
+            "To: Receiver <receiver@example.org>\n",
+            "Subject: Inline image\n",
+            "Content-Type: multipart/related; boundary=related42\n",
+            "\n",
+            "--related42\n",
+            "Content-Type: text/html; charset=utf-8\n",
+            "\n",
+            "<img src=\"cid:logo@example.org\">\n",
+            "--related42\n",
+            "Content-Type: image/png\n",
+            "Content-ID: <logo@example.org>\n",
+            "Content-Disposition: inline\n",
+            "Content-Transfer-Encoding: base64\n",
+            "\n",
+            "UE5H\n",
+            "--related42--\n"
+        );
+
+        let message = parse_rfc822("inline", "inbox", raw, false).expect("message should parse");
+        assert_eq!(message.attachments.len(), 1);
+        assert_eq!(
+            message.attachments[0].content_id.as_deref(),
+            Some("logo@example.org")
+        );
+        assert_eq!(message.attachments[0].mime_type, "image/png");
+        assert_eq!(message.attachments[0].content, b"PNG");
+    }
+
+    #[test]
     fn splits_mbox_into_individual_messages() {
         let raw = concat!(
             "From sender@example.org Mon Aug 10 12:00:00 2026\n",
@@ -1059,6 +1509,65 @@ mod tests {
     }
 
     #[test]
+    fn imports_mail_files_without_overwriting_existing_files() {
+        let root = std::env::temp_dir().join(format!(
+            "evolution-gtk4-import-mail-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let source_dir = root.join("source");
+        let destination_dir = root.join("destination");
+        fs::create_dir_all(&source_dir).expect("source directory should be created");
+        fs::create_dir_all(&destination_dir).expect("destination directory should be created");
+        let source = source_dir.join("message.eml");
+        fs::write(&source, "From: sender@example.org\nSubject: Test\n\nBody")
+            .expect("source message should be written");
+        fs::write(destination_dir.join("message.eml"), b"existing")
+            .expect("existing message should be written");
+
+        let imported = MailStoreService::with_mail_dir(destination_dir.clone())
+            .import_files(std::slice::from_ref(&source))
+            .expect("mail should import");
+        assert_eq!(imported, 1);
+        assert_eq!(
+            fs::read(destination_dir.join("message.eml")).unwrap(),
+            b"existing"
+        );
+        assert!(destination_dir.join("message-1.eml").is_file());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn imports_maildir_directories_and_preserves_seen_flags() {
+        let root = temporary_directory("import-maildir");
+        let source_dir = root.join("source-maildir");
+        let destination_dir = root.join("destination-maildir");
+        fs::create_dir_all(source_dir.join("cur")).expect("maildir cur should be created");
+        fs::create_dir_all(source_dir.join("tmp")).expect("maildir tmp should be created");
+        fs::write(
+            source_dir.join("cur/123:2,S"),
+            "From: sender@example.org\nSubject: Seen\n\nBody",
+        )
+        .expect("seen mail should be written");
+        fs::write(source_dir.join("tmp/partial"), b"not a delivered message")
+            .expect("maildir temporary file should be written");
+
+        let service = MailStoreService::with_mail_dir(destination_dir.clone());
+        assert_eq!(
+            service
+                .import_files(std::slice::from_ref(&source_dir))
+                .expect("maildir should import"),
+            1
+        );
+        assert!(destination_dir.join("cur/123:2,S").is_file());
+        assert!(!destination_dir.join("tmp/partial").exists());
+        let records = service.load_local_records();
+        assert_eq!(records.len(), 1);
+        assert!(!records[0].is_unread);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn incoming_filter_applies_only_supported_local_actions() {
         let mut message = parse_rfc822(
             "filter",
@@ -1077,11 +1586,250 @@ mod tests {
                 value: "invoice".to_string(),
             },
             action: FilterAction::MarkRead,
+            conditions: Vec::new(),
+            actions: Vec::new(),
+            match_all: true,
         };
 
-        apply_local_filters(&[rule], &mut message);
+        let _ = apply_local_filters(&[rule], &mut message, None);
 
         assert!(!message.is_unread);
+    }
+
+    #[test]
+    fn manual_filter_run_persists_portable_actions_and_status() {
+        let root = temporary_directory("manual-filter-run");
+        let mail_dir = root.join("mail");
+        fs::create_dir_all(&mail_dir).expect("mail directory should be created");
+        fs::write(
+            mail_dir.join("message.eml"),
+            "From: Billing <billing@example.org>\nSubject: Invoice\n\nBody\n",
+        )
+        .expect("mail should be written");
+
+        let filter_store = MailFilterStore::new(root.join("filters.json"));
+        filter_store
+            .upsert(MailFilterRule {
+                id: "manual-invoice".to_string(),
+                name: "Invoice manual run".to_string(),
+                enabled: true,
+                scope: FilterScope::Manual,
+                condition: FilterCondition {
+                    field: FilterField::Subject,
+                    value: "invoice".to_string(),
+                },
+                action: FilterAction::MarkRead,
+                conditions: Vec::new(),
+                actions: vec![
+                    FilterAction::MarkRead,
+                    FilterAction::SetFlagged,
+                    FilterAction::MoveToFolder("archive".to_string()),
+                    FilterAction::CopyToFolder("sent".to_string()),
+                ],
+                match_all: true,
+            })
+            .expect("manual rule should persist");
+
+        let store =
+            MailStoreService::with_mail_dir_and_state_path(&mail_dir, root.join("mail-state.json"));
+        let message_id = store
+            .load_raw_local_records_cancelable(&AtomicBool::new(false))
+            .into_iter()
+            .next()
+            .expect("message should parse")
+            .id;
+        let report = store
+            .run_filter_rule_with_store("manual-invoice", &filter_store)
+            .expect("manual rule should run")
+            .expect("saved rule should be found");
+        assert_eq!(report.matched_messages, 1);
+        assert_eq!(report.changed_messages, 1);
+        assert_eq!(report.moved_messages, 1);
+        assert_eq!(report.copied_messages, 1);
+        assert_eq!(report.deleted_messages, 0);
+
+        let metadata = MailMetadataStore::new(store.metadata_path());
+        assert_eq!(
+            metadata.load_folder_overrides().get(&message_id),
+            Some(&"archive".to_string())
+        );
+        assert!(
+            metadata
+                .load_copies()
+                .get(&message_id)
+                .is_some_and(|folders| folders.contains("sent"))
+        );
+        assert_eq!(
+            metadata.load().get(&message_id),
+            Some(&MailMessageState {
+                is_unread: false,
+                is_flagged: true,
+            })
+        );
+
+        let records = store.load_local_records();
+        assert_eq!(records.len(), 2);
+        assert!(records.iter().all(|record| !record.is_unread));
+        assert!(records.iter().all(|record| record.is_flagged));
+        assert!(records.iter().any(|record| record.folder_id == "archive"));
+        assert!(records.iter().any(|record| record.folder_id == "sent"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn incoming_header_filter_uses_parsed_rfc822_headers() {
+        let mut message = parse_rfc822(
+            "header-filter",
+            "inbox",
+            concat!(
+                "From: Sender <sender@example.org>\n",
+                "To: recipient@example.org\n",
+                "Cc: Billing <billing@example.org>\n",
+                "Subject: Status\n\nBody"
+            ),
+            true,
+        )
+        .expect("message should parse");
+        let rule = MailFilterRule {
+            id: "rule-header".to_string(),
+            name: "Billing headers".to_string(),
+            enabled: true,
+            scope: FilterScope::Incoming,
+            condition: FilterCondition {
+                field: FilterField::Header,
+                value: "billing@example.org".to_string(),
+            },
+            action: FilterAction::SetFlagged,
+            conditions: Vec::new(),
+            actions: Vec::new(),
+            match_all: true,
+        };
+
+        let _ = apply_local_filters(&[rule], &mut message, None);
+
+        assert!(message.is_flagged);
+    }
+
+    #[test]
+    fn local_folder_and_delete_filters_persist_in_the_app_sidecar() {
+        let root = temporary_directory("local-filter-sidecar");
+        let metadata = MailMetadataStore::new(root.join("state.json"));
+        let mut message = parse_rfc822(
+            "filter-sidecar",
+            "inbox",
+            "From: Billing <billing@example.org>\nSubject: Invoice\n\nBody",
+            true,
+        )
+        .expect("message should parse");
+        let move_rule = MailFilterRule {
+            id: "move-rule".to_string(),
+            name: "Archive invoices".to_string(),
+            enabled: true,
+            scope: FilterScope::Incoming,
+            condition: FilterCondition {
+                field: FilterField::Subject,
+                value: "invoice".to_string(),
+            },
+            action: FilterAction::MoveToFolder("archive".to_string()),
+            conditions: Vec::new(),
+            actions: Vec::new(),
+            match_all: true,
+        };
+        assert!(!apply_client_state(
+            &HashMap::new(),
+            &[move_rule],
+            &mut message,
+            Some(&metadata),
+        ));
+        assert_eq!(message.folder_id, "archive");
+        assert_eq!(
+            metadata.load_folder_overrides().get("filter-sidecar"),
+            Some(&"archive".to_string())
+        );
+
+        let copy_rule = MailFilterRule {
+            id: "copy-rule".to_string(),
+            name: "Keep an archive copy".to_string(),
+            enabled: true,
+            scope: FilterScope::Incoming,
+            condition: FilterCondition {
+                field: FilterField::Subject,
+                value: "invoice".to_string(),
+            },
+            action: FilterAction::CopyToFolder("sent".to_string()),
+            conditions: Vec::new(),
+            actions: Vec::new(),
+            match_all: true,
+        };
+        assert!(!apply_client_state(
+            &HashMap::new(),
+            &[copy_rule],
+            &mut message,
+            Some(&metadata),
+        ));
+        assert!(
+            metadata
+                .load_copies()
+                .get("filter-sidecar")
+                .is_some_and(|folders| folders.contains("sent"))
+        );
+
+        let delete_rule = MailFilterRule {
+            id: "delete-rule".to_string(),
+            name: "Delete invoices".to_string(),
+            enabled: true,
+            scope: FilterScope::Incoming,
+            condition: FilterCondition {
+                field: FilterField::Subject,
+                value: "invoice".to_string(),
+            },
+            action: FilterAction::Delete,
+            conditions: Vec::new(),
+            actions: Vec::new(),
+            match_all: true,
+        };
+        assert!(apply_client_state(
+            &HashMap::new(),
+            &[delete_rule],
+            &mut message,
+            Some(&metadata),
+        ));
+        assert!(metadata.load_deleted().contains("filter-sidecar"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn local_sidecar_copies_are_loaded_as_separate_logical_records() {
+        let root = temporary_directory("local-copy-records");
+        let mail_dir = root.join("mail");
+        fs::create_dir_all(&mail_dir).expect("mail directory should be created");
+        fs::write(
+            mail_dir.join("message.eml"),
+            "From: Sender <sender@example.org>\nSubject: Test\n\nBody\n",
+        )
+        .expect("mail should be written");
+        let store =
+            MailStoreService::with_mail_dir_and_state_path(&mail_dir, root.join("state.json"));
+        let original = store
+            .load_local_records()
+            .into_iter()
+            .next()
+            .expect("message should parse");
+        MailMetadataStore::new(store.metadata_path())
+            .set_copy(&original.id, "archive", true)
+            .expect("copy should persist");
+
+        let records = store.load_local_records();
+        assert_eq!(records.len(), 2);
+        assert!(
+            records
+                .iter()
+                .any(|record| record.folder_id == "archive" && record.id.contains("::copy::"))
+        );
+        assert!(mail_dir.join("message.eml").is_file());
+
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -1104,5 +1852,15 @@ mod tests {
 
         assert!(records.is_empty());
         let _ = fs::remove_dir_all(root);
+    }
+
+    fn temporary_directory(label: &str) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "evolution-gtk4-mail-store-{label}-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&path);
+        fs::create_dir_all(&path).expect("temporary directory should be created");
+        path
     }
 }

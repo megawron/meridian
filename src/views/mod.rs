@@ -12,7 +12,7 @@ mod tasks_page;
 
 pub use calendar_page::CalendarPage;
 pub use contacts_page::ContactsPage;
-pub use html_editor::HtmlEditor;
+pub use html_editor::{EditorContent, HtmlEditor};
 pub use mail_page::MailPage;
 pub use mail_viewer::MailViewer;
 pub use memos_page::MemosPage;

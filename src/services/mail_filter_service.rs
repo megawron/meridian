@@ -13,33 +13,36 @@ use std::path::{Path, PathBuf};
 
 const CURRENT_VERSION: u32 = 1;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum FilterScope {
     Incoming,
     Outgoing,
     Manual,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum FilterField {
     Subject,
     Sender,
+    Recipient,
     Body,
     Header,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct FilterCondition {
     pub field: FilterField,
     pub value: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum FilterAction {
     MoveToFolder(String),
     CopyToFolder(String),
     MarkRead,
+    MarkUnread,
     SetFlagged,
+    ClearFlagged,
     Delete,
 }
 
@@ -51,27 +54,76 @@ pub struct MailFilterRule {
     pub scope: FilterScope,
     pub condition: FilterCondition,
     pub action: FilterAction,
+    /// Additional conditions imported from Evolution.  Older app-owned rule
+    /// files only contain `condition`; in that case the legacy field remains
+    /// the single effective condition.
+    #[serde(default)]
+    pub conditions: Vec<FilterCondition>,
+    /// Additional actions imported from Evolution.  Older app-owned rule
+    /// files only contain `action`; in that case the legacy field remains the
+    /// single effective action.
+    #[serde(default)]
+    pub actions: Vec<FilterAction>,
+    /// Whether all effective conditions must match.  Evolution's default is
+    /// an AND rule; the field is defaulted for backward-compatible JSON.
+    #[serde(default = "default_match_all")]
+    pub match_all: bool,
 }
 
 impl MailFilterRule {
-    pub fn matches(&self, subject: &str, sender: &str, body: &str, headers: &str) -> bool {
+    pub fn effective_conditions(&self) -> Vec<&FilterCondition> {
+        if self.conditions.is_empty() {
+            vec![&self.condition]
+        } else {
+            self.conditions.iter().collect()
+        }
+    }
+
+    pub fn effective_actions(&self) -> Vec<&FilterAction> {
+        if self.actions.is_empty() {
+            vec![&self.action]
+        } else {
+            self.actions.iter().collect()
+        }
+    }
+
+    pub fn matches(
+        &self,
+        subject: &str,
+        sender: &str,
+        recipient: &str,
+        body: &str,
+        headers: &str,
+    ) -> bool {
         if !self.enabled {
             return false;
         }
 
-        let value = self.condition.value.trim().to_lowercase();
-        if value.is_empty() {
-            return false;
-        }
+        let mut condition_matches = self.effective_conditions().into_iter().map(|condition| {
+            let value = condition.value.trim().to_lowercase();
+            if value.is_empty() {
+                return false;
+            }
+            let haystack = match condition.field {
+                FilterField::Subject => subject,
+                FilterField::Sender => sender,
+                FilterField::Recipient => recipient,
+                FilterField::Body => body,
+                FilterField::Header => headers,
+            };
+            haystack.to_lowercase().contains(&value)
+        });
 
-        let haystack = match self.condition.field {
-            FilterField::Subject => subject,
-            FilterField::Sender => sender,
-            FilterField::Body => body,
-            FilterField::Header => headers,
-        };
-        haystack.to_lowercase().contains(&value)
+        if self.match_all {
+            condition_matches.all(|matches| matches)
+        } else {
+            condition_matches.any(|matches| matches)
+        }
     }
+}
+
+fn default_match_all() -> bool {
+    true
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -94,7 +146,7 @@ impl MailFilterStore {
     pub fn from_environment() -> Self {
         let path = std::env::var_os("EVOLUTION_GTK4_FILTER_FILE")
             .map(PathBuf::from)
-            .unwrap_or_else(|| gtk::glib::user_data_dir().join("evolution-gtk4/mail-filters.json"));
+            .unwrap_or_else(|| crate::services::app_data_dir().join("mail-filters.json"));
         Self::new(path)
     }
 
@@ -147,6 +199,53 @@ impl MailFilterStore {
         }
         self.save(&rules)
     }
+
+    pub fn set_enabled(&self, id: &str, enabled: bool) -> io::Result<bool> {
+        let mut rules = self.load();
+        let Some(rule) = rules.iter_mut().find(|rule| rule.id == id) else {
+            return Ok(false);
+        };
+        if rule.enabled == enabled {
+            return Ok(true);
+        }
+        rule.enabled = enabled;
+        self.save(&rules)?;
+        Ok(true)
+    }
+
+    pub fn delete(&self, id: &str) -> io::Result<bool> {
+        let mut rules = self.load();
+        let original_len = rules.len();
+        rules.retain(|rule| rule.id != id);
+        if rules.len() == original_len {
+            return Ok(false);
+        }
+        self.save(&rules)?;
+        Ok(true)
+    }
+
+    /// Move a rule by one position while preserving the order of every other
+    /// rule.  The order is part of the portable rule semantics because later
+    /// actions may observe a folder/flag change made by an earlier rule.
+    pub fn move_rule(&self, id: &str, direction: i32) -> io::Result<bool> {
+        let mut rules = self.load();
+        let Some(index) = rules.iter().position(|rule| rule.id == id) else {
+            return Ok(false);
+        };
+        let target = if direction < 0 {
+            index.checked_sub(1)
+        } else if direction > 0 {
+            (index + 1 < rules.len()).then_some(index + 1)
+        } else {
+            None
+        };
+        let Some(target) = target else {
+            return Ok(false);
+        };
+        rules.swap(index, target);
+        self.save(&rules)?;
+        Ok(true)
+    }
 }
 
 impl Default for MailFilterStore {
@@ -162,10 +261,34 @@ mod tests {
     #[test]
     fn matching_is_case_insensitive_and_respects_disabled_rules() {
         let mut rule = test_rule(FilterField::Subject, "rechnung");
-        assert!(rule.matches("Neue RECHNUNG", "sender@example.org", "body", ""));
+        assert!(rule.matches(
+            "Neue RECHNUNG",
+            "sender@example.org",
+            "recipient@example.org",
+            "body",
+            ""
+        ));
 
         rule.enabled = false;
-        assert!(!rule.matches("Neue RECHNUNG", "sender@example.org", "body", ""));
+        assert!(!rule.matches(
+            "Neue RECHNUNG",
+            "sender@example.org",
+            "recipient@example.org",
+            "body",
+            ""
+        ));
+    }
+
+    #[test]
+    fn recipient_matching_uses_to_cc_and_bcc_input() {
+        let rule = test_rule(FilterField::Recipient, "billing@example.org");
+        assert!(rule.matches(
+            "Subject",
+            "sender@example.org",
+            "To recipient@example.org Cc billing@example.org",
+            "body",
+            ""
+        ));
     }
 
     #[test]
@@ -182,11 +305,133 @@ mod tests {
                 value: "billing@example.org".to_string(),
             },
             action: FilterAction::MoveToFolder("archive".to_string()),
+            conditions: Vec::new(),
+            actions: Vec::new(),
+            match_all: true,
         };
 
         store.upsert(rule.clone()).expect("rule should persist");
         assert_eq!(MailFilterStore::new(store.path()).load(), vec![rule]);
 
+        assert!(
+            store
+                .set_enabled("rule-1", false)
+                .expect("rule should disable")
+        );
+        assert!(!store.load()[0].enabled);
+        assert!(store.delete("rule-1").expect("rule should delete"));
+        assert!(store.load().is_empty());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn legacy_single_condition_rules_get_compatible_defaults() {
+        let raw = serde_json::json!({
+            "id": "legacy",
+            "name": "Legacy",
+            "enabled": true,
+            "scope": "Incoming",
+            "condition": {"field": "Subject", "value": "invoice"},
+            "action": "MarkRead"
+        });
+        let rule: MailFilterRule = serde_json::from_value(raw).expect("legacy rule should parse");
+        assert!(rule.match_all);
+        assert_eq!(rule.effective_conditions().len(), 1);
+        assert_eq!(rule.effective_actions().len(), 1);
+    }
+
+    #[test]
+    fn multiple_conditions_and_actions_roundtrip_and_match() {
+        let rule = MailFilterRule {
+            id: "multi".to_string(),
+            name: "Billing and invoice".to_string(),
+            enabled: true,
+            scope: FilterScope::Incoming,
+            condition: FilterCondition {
+                field: FilterField::Subject,
+                value: "invoice".to_string(),
+            },
+            action: FilterAction::MarkRead,
+            conditions: vec![
+                FilterCondition {
+                    field: FilterField::Subject,
+                    value: "invoice".to_string(),
+                },
+                FilterCondition {
+                    field: FilterField::Sender,
+                    value: "billing@example.org".to_string(),
+                },
+            ],
+            actions: vec![FilterAction::MarkRead, FilterAction::SetFlagged],
+            match_all: true,
+        };
+        assert!(rule.matches(
+            "Invoice",
+            "Billing <billing@example.org>",
+            "recipient@example.org",
+            "body",
+            ""
+        ));
+        assert!(!rule.matches(
+            "Invoice",
+            "Other <other@example.org>",
+            "recipient@example.org",
+            "body",
+            ""
+        ));
+        assert_eq!(rule.effective_actions().len(), 2);
+
+        let any_rule = MailFilterRule {
+            match_all: false,
+            ..rule.clone()
+        };
+        assert!(any_rule.matches(
+            "Invoice",
+            "Other <other@example.org>",
+            "recipient@example.org",
+            "body",
+            ""
+        ));
+        let encoded = serde_json::to_vec(&rule).expect("multi rule should serialize");
+        assert_eq!(
+            serde_json::from_slice::<MailFilterRule>(&encoded).unwrap(),
+            rule
+        );
+    }
+
+    #[test]
+    fn rule_order_can_be_moved_and_persisted() {
+        let root = temporary_directory("filter-order");
+        let store = MailFilterStore::new(root.join("filters.json"));
+        let make_rule = |id: &str| MailFilterRule {
+            id: id.to_string(),
+            name: id.to_string(),
+            enabled: true,
+            scope: FilterScope::Incoming,
+            condition: FilterCondition {
+                field: FilterField::Subject,
+                value: id.to_string(),
+            },
+            action: FilterAction::MarkRead,
+            conditions: Vec::new(),
+            actions: Vec::new(),
+            match_all: true,
+        };
+        store
+            .save(&[make_rule("one"), make_rule("two"), make_rule("three")])
+            .expect("rules should persist");
+        assert!(store.move_rule("three", -1).unwrap());
+        assert_eq!(
+            store
+                .load()
+                .into_iter()
+                .map(|rule| rule.id)
+                .collect::<Vec<_>>(),
+            vec!["one", "three", "two"]
+        );
+        assert!(!store.move_rule("one", -1).unwrap());
+        assert!(!store.move_rule("two", 1).unwrap());
         let _ = fs::remove_dir_all(root);
     }
 
@@ -201,6 +446,9 @@ mod tests {
                 value: value.to_string(),
             },
             action: FilterAction::SetFlagged,
+            conditions: Vec::new(),
+            actions: Vec::new(),
+            match_all: true,
         }
     }
 

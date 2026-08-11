@@ -7,7 +7,8 @@
 #[cfg(all(target_os = "linux", eds_ecal_bridge))]
 use super::calendar_store_service::sort_snapshot;
 use super::calendar_store_service::{
-    CalendarEventRecord, CalendarSnapshot, MemoRecord, TaskRecord, parse_ical_component,
+    CalendarEventRecord, CalendarSnapshot, CalendarStoreService, MemoRecord, TaskRecord,
+    parse_ical_component,
 };
 #[cfg(all(target_os = "linux", eds_ecal_bridge))]
 use std::time::Duration;
@@ -169,6 +170,9 @@ impl ECalService {
         component_type: ECalComponentType,
         component: &str,
     ) -> Result<ECalMutationResult, ECalMutationError> {
+        if source_uid == "local-calendar" {
+            return self.apply_local_operation(component_type, 1, component, None);
+        }
         self.apply_operation(source_uid, component_type, 1, component, None)
     }
 
@@ -179,6 +183,9 @@ impl ECalService {
         component_uid: &str,
         component: &str,
     ) -> Result<ECalMutationResult, ECalMutationError> {
+        if source_uid == "local-calendar" {
+            return self.apply_local_operation(component_type, 2, component, Some(component_uid));
+        }
         self.apply_operation(
             source_uid,
             component_type,
@@ -194,6 +201,9 @@ impl ECalService {
         component_type: ECalComponentType,
         component_uid: &str,
     ) -> Result<ECalMutationResult, ECalMutationError> {
+        if source_uid == "local-calendar" {
+            return self.apply_local_operation(component_type, 3, "", Some(component_uid));
+        }
         self.apply_operation(source_uid, component_type, 3, "", Some(component_uid))
     }
 
@@ -246,6 +256,37 @@ impl ECalService {
         {
             None
         }
+    }
+
+    fn apply_local_operation(
+        &self,
+        _component_type: ECalComponentType,
+        operation: i32,
+        component: &str,
+        component_uid: Option<&str>,
+    ) -> Result<ECalMutationResult, ECalMutationError> {
+        let service = CalendarStoreService::new();
+        let result = match operation {
+            1 => service.create_component(component),
+            2 => service.modify_component(component_uid.unwrap_or_default(), component),
+            3 => service
+                .remove_component(component_uid.unwrap_or_default())
+                .map(|uid| (uid, String::new())),
+            _ => Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Unbekannte lokale ECal-Operation",
+            )),
+        };
+        result
+            .map(|(uid, component)| ECalMutationResult {
+                uid,
+                component: if operation == 3 {
+                    None
+                } else {
+                    Some(component)
+                },
+            })
+            .map_err(|error| ECalMutationError::Backend(error.to_string()))
     }
 
     #[cfg(all(target_os = "linux", eds_ecal_bridge))]
@@ -469,11 +510,22 @@ impl Drop for ECalWatcher {
 pub(crate) fn load_snapshot_prefer_eds() -> CalendarLoadResult {
     let ecal = ECalService::new();
     match ecal.load_snapshot() {
-        Ok(snapshot) => CalendarLoadResult {
-            snapshot,
-            origin: CalendarDataOrigin::Eds,
-            warning: None,
-        },
+        Ok(mut snapshot) => {
+            let local_service = CalendarStoreService::new();
+            if local_service.is_writable() {
+                let local = local_service.load_snapshot();
+                snapshot.events.extend(local.events);
+                snapshot.tasks.extend(local.tasks);
+                snapshot.memos.extend(local.memos);
+                #[cfg(all(target_os = "linux", eds_ecal_bridge))]
+                sort_snapshot(&mut snapshot);
+            }
+            CalendarLoadResult {
+                snapshot,
+                origin: CalendarDataOrigin::Eds,
+                warning: None,
+            }
+        }
         Err(error) => {
             let snapshot =
                 super::calendar_store_service::CalendarStoreService::new().load_snapshot();

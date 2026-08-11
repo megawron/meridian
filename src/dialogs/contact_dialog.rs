@@ -14,9 +14,11 @@ use gtk::glib;
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use crate::services::contact_store_service::ContactStoreService;
 use crate::services::ebook_service::EBookContactRecord;
 use crate::services::ebook_service::EBookService;
 use crate::services::eds_service;
+use crate::services::settings_service::AppSettings;
 use crate::services::vcard_service::VCardContact;
 
 mod imp {
@@ -56,7 +58,7 @@ mod imp {
                 "edit-source-uid" => {
                     *self.edit_source_uid.borrow_mut() = value.get().expect("string")
                 }
-                _ => unimplemented!(),
+                _ => {}
             }
         }
 
@@ -65,7 +67,7 @@ mod imp {
                 "edit-vcard" => self.edit_vcard.borrow().to_value(),
                 "edit-uid" => self.edit_uid.borrow().to_value(),
                 "edit-source-uid" => self.edit_source_uid.borrow().to_value(),
-                _ => unimplemented!(),
+                _ => glib::Value::from_type(pspec.value_type()),
             }
         }
 
@@ -162,6 +164,23 @@ impl ContactDialog {
         let row_name = adw::EntryRow::builder().title("Vollständiger Name").build();
         group_general.add(&row_name);
 
+        let row_family_name = adw::EntryRow::builder().title("Nachname (N)").build();
+        group_general.add(&row_family_name);
+
+        let row_given_name = adw::EntryRow::builder().title("Vorname (N)").build();
+        group_general.add(&row_given_name);
+
+        let row_additional_name = adw::EntryRow::builder()
+            .title("Weitere Vornamen (N)")
+            .build();
+        group_general.add(&row_additional_name);
+
+        let row_name_prefix = adw::EntryRow::builder().title("Namenspräfix (N)").build();
+        group_general.add(&row_name_prefix);
+
+        let row_name_suffix = adw::EntryRow::builder().title("Namenssuffix (N)").build();
+        group_general.add(&row_name_suffix);
+
         let row_org = adw::EntryRow::builder()
             .title("Firma / Organisation")
             .build();
@@ -177,6 +196,21 @@ impl ContactDialog {
             .model(&source_model)
             .build();
         group_general.add(&source_row);
+        let settings_for_default_address_book = AppSettings::try_new();
+        let source_uids_for_selection = Rc::clone(&source_uids);
+        source_row.connect_selected_notify(move |row| {
+            let Some(settings) = settings_for_default_address_book.as_ref() else {
+                return;
+            };
+            let Some(source_uid) = source_uids_for_selection
+                .borrow()
+                .get(row.selected() as usize)
+                .cloned()
+            else {
+                return;
+            };
+            settings.set_default_address_book_source_uid(&source_uid);
+        });
 
         content_box.append(&group_general);
 
@@ -191,8 +225,17 @@ impl ContactDialog {
         let row_email2 = adw::EntryRow::builder().title("E-Mail (Arbeit)").build();
         group_contact.add(&row_email2);
 
+        let row_email3 = adw::EntryRow::builder().title("E-Mail (Weitere)").build();
+        group_contact.add(&row_email3);
+
         let row_phone = adw::EntryRow::builder().title("Telefon (Mobil)").build();
         group_contact.add(&row_phone);
+
+        let row_phone_work = adw::EntryRow::builder().title("Telefon (Arbeit)").build();
+        group_contact.add(&row_phone_work);
+
+        let row_phone_home = adw::EntryRow::builder().title("Telefon (Privat)").build();
+        group_contact.add(&row_phone_home);
 
         content_box.append(&group_contact);
 
@@ -207,14 +250,102 @@ impl ContactDialog {
         let row_note = adw::EntryRow::builder().title("Notiz").build();
         group_extra.add(&row_note);
 
+        let row_url = adw::EntryRow::builder().title("Website").build();
+        group_extra.add(&row_url);
+
+        let row_nickname = adw::EntryRow::builder().title("Spitzname").build();
+        group_extra.add(&row_nickname);
+
+        let row_birthday = adw::EntryRow::builder()
+            .title("Geburtstag (YYYY-MM-DD)")
+            .build();
+        group_extra.add(&row_birthday);
+
+        let row_categories = adw::EntryRow::builder()
+            .title("Kategorien (durch Komma getrennt)")
+            .build();
+        group_extra.add(&row_categories);
+
+        let row_anniversary = adw::EntryRow::builder()
+            .title("Jahrestag (YYYY-MM-DD)")
+            .build();
+        group_extra.add(&row_anniversary);
+
+        let row_role = adw::EntryRow::builder().title("Rolle").build();
+        group_extra.add(&row_role);
+
+        let row_gender = adw::EntryRow::builder().title("Geschlecht").build();
+        group_extra.add(&row_gender);
+
+        let row_timezone = adw::EntryRow::builder().title("Zeitzone").build();
+        group_extra.add(&row_timezone);
+
+        let row_geo = adw::EntryRow::builder()
+            .title("Geoposition (Breite;Länge)")
+            .build();
+        group_extra.add(&row_geo);
+
+        let row_impp = adw::EntryRow::builder()
+            .title("Chat/IMPP (Komma getrennt)")
+            .build();
+        group_extra.add(&row_impp);
+
+        let row_related = adw::EntryRow::builder()
+            .title("Verwandte Kontakte (Komma getrennt)")
+            .build();
+        group_extra.add(&row_related);
+
+        let row_photo = adw::EntryRow::builder()
+            .title("Foto (URI oder Base64)")
+            .build();
+        row_photo.set_input_purpose(gtk::InputPurpose::Url);
+        group_extra.add(&row_photo);
+
         if let Some(vcard) = edit_vcard.as_deref() {
             if let Some(contact) = VCardContact::parse_vcard_string(vcard) {
                 row_name.set_text(&contact.fn_name);
+                row_family_name.set_text(&contact.name.family);
+                row_given_name.set_text(&contact.name.given);
+                row_additional_name.set_text(&contact.name.additional);
+                row_name_prefix.set_text(&contact.name.prefix);
+                row_name_suffix.set_text(&contact.name.suffix);
                 row_org.set_text(&contact.org);
                 row_title.set_text(&contact.title);
                 row_email1.set_text(&contact.email);
                 row_phone.set_text(&contact.tel);
                 row_note.set_text(&contact.note);
+                if let Some(email) = contact.emails.get(2) {
+                    row_email3.set_text(email);
+                }
+                if let Some(phone) = contact.phones.get(1) {
+                    row_phone_work.set_text(phone);
+                }
+                if let Some(phone) = contact.phones.get(2) {
+                    row_phone_home.set_text(phone);
+                }
+                row_url.set_text(contact.urls.first().map(String::as_str).unwrap_or_default());
+                row_nickname.set_text(&contact.nickname);
+                row_birthday.set_text(&contact.birthday);
+                row_categories.set_text(&contact.categories.join(", "));
+                row_anniversary.set_text(&contact.anniversary);
+                row_role.set_text(&contact.role);
+                row_gender.set_text(&contact.gender);
+                row_timezone.set_text(&contact.timezone);
+                row_geo.set_text(&contact.geo);
+                row_impp.set_text(&contact.impps.join(", "));
+                row_related.set_text(&contact.related.join(", "));
+                if let Some(photo) = contact.photo.as_ref() {
+                    if photo
+                        .encoding
+                        .as_deref()
+                        .is_some_and(|encoding| encoding.eq_ignore_ascii_case("b"))
+                    {
+                        row_photo
+                            .set_text(&format!("data:{};base64,{}", photo.media_type, photo.value));
+                    } else {
+                        row_photo.set_text(&photo.value);
+                    }
+                }
             }
             if let Some(email) = vcard_property(vcard, "EMAIL", 1) {
                 row_email2.set_text(&email);
@@ -234,6 +365,10 @@ impl ContactDialog {
         let source_uids_for_load = Rc::clone(&source_uids);
         let source_row_for_load = source_row.clone();
         let edit_source_uid_for_load = edit_source_uid.clone();
+        let preferred_source_uid = AppSettings::try_new()
+            .map(|settings| settings.default_address_book_source_uid())
+            .filter(|uid| !uid.trim().is_empty());
+        let local_addressbook_available = ContactStoreService::new().is_writable();
         glib::spawn_future_local(async move {
             match eds_service::list_address_book_sources().await {
                 Ok(sources) => {
@@ -241,7 +376,7 @@ impl ContactDialog {
                         .into_iter()
                         .filter(|source| source.enabled)
                         .collect();
-                    let names: Vec<String> = active_sources
+                    let mut names: Vec<String> = active_sources
                         .iter()
                         .map(|source| {
                             if source.backend_name.is_empty() {
@@ -251,31 +386,40 @@ impl ContactDialog {
                             }
                         })
                         .collect();
-                    let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
-                    source_model_for_load.splice(0, source_model_for_load.n_items(), &name_refs);
                     let mut uids = source_uids_for_load.borrow_mut();
                     uids.clear();
                     uids.extend(active_sources.into_iter().map(|source| source.uid));
-                    if let Some(edit_source_uid) = edit_source_uid_for_load.as_deref() {
-                        if let Some(index) = uids.iter().position(|uid| uid == edit_source_uid) {
-                            source_row_for_load.set_selected(index as u32);
-                        }
+                    if local_addressbook_available {
+                        names.push("Lokales Adressbuch".to_string());
+                        uids.push("local-addressbook".to_string());
                     }
-                    if uids.is_empty() {
-                        source_model_for_load.splice(
-                            0,
-                            source_model_for_load.n_items(),
-                            &["Kein aktives EDS-Adressbuch verfügbar"],
-                        );
+                    if names.is_empty() {
+                        names.push("Kein aktives EDS-Adressbuch verfügbar".to_string());
+                    }
+                    let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
+                    source_model_for_load.splice(0, source_model_for_load.n_items(), &name_refs);
+                    let selected_index = edit_source_uid_for_load
+                        .as_deref()
+                        .or(preferred_source_uid.as_deref())
+                        .and_then(|uid| uids.iter().position(|candidate| candidate == uid));
+                    drop(uids);
+                    if let Some(index) = selected_index {
+                        source_row_for_load.set_selected(index as u32);
                     }
                 }
                 Err(error) => {
                     tracing::warn!(%error, "Could not load EDS address books for contact dialog");
-                    source_model_for_load.splice(
-                        0,
-                        source_model_for_load.n_items(),
-                        &["EDS-Adressbücher sind nicht erreichbar"],
-                    );
+                    let mut names = Vec::new();
+                    let mut uids = source_uids_for_load.borrow_mut();
+                    uids.clear();
+                    if local_addressbook_available {
+                        names.push("Lokales Adressbuch".to_string());
+                        uids.push("local-addressbook".to_string());
+                    } else {
+                        names.push("EDS-Adressbücher sind nicht erreichbar".to_string());
+                    }
+                    let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
+                    source_model_for_load.splice(0, source_model_for_load.n_items(), &name_refs);
                 }
             }
         });
@@ -295,15 +439,38 @@ impl ContactDialog {
                 dialog.show_toast("Kein aktives EDS-Adressbuch ist ausgewählt");
                 return;
             };
-            let vcard = match build_vcard(
+            let extended_fields = ContactVCardFields {
+                family_name: row_family_name.text().to_string(),
+                given_name: row_given_name.text().to_string(),
+                additional_name: row_additional_name.text().to_string(),
+                name_prefix: row_name_prefix.text().to_string(),
+                name_suffix: row_name_suffix.text().to_string(),
+                anniversary: row_anniversary.text().to_string(),
+                role: row_role.text().to_string(),
+                gender: row_gender.text().to_string(),
+                timezone: row_timezone.text().to_string(),
+                geo: row_geo.text().to_string(),
+                impps: row_impp.text().to_string(),
+                related: row_related.text().to_string(),
+                photo: row_photo.text().to_string(),
+            };
+            let mut vcard = match build_vcard_with_fields(
                 &row_name.text(),
                 &row_org.text(),
                 &row_title.text(),
                 &row_email1.text(),
                 &row_email2.text(),
+                &row_email3.text(),
                 &row_phone.text(),
+                &row_phone_work.text(),
+                &row_phone_home.text(),
                 &row_address.text(),
                 &row_note.text(),
+                &row_url.text(),
+                &row_nickname.text(),
+                &row_birthday.text(),
+                &row_categories.text(),
+                &extended_fields,
                 edit_uid_for_save.as_deref(),
             ) {
                 Ok(vcard) => vcard,
@@ -312,6 +479,9 @@ impl ContactDialog {
                     return;
                 }
             };
+            if let Some(original) = edit_vcard_for_save.as_deref() {
+                vcard = preserve_vcard_extensions(&vcard, original);
+            }
             let source_uid_for_worker = source_uid.clone();
             let operation_uid = edit_uid_for_save.clone();
             let vcard_for_worker = vcard.clone();
@@ -395,15 +565,79 @@ fn vcard_property(vcard: &str, name: &str, occurrence: usize) -> Option<String> 
         .nth(occurrence)
 }
 
+#[derive(Debug, Default)]
+struct ContactVCardFields {
+    family_name: String,
+    given_name: String,
+    additional_name: String,
+    name_prefix: String,
+    name_suffix: String,
+    anniversary: String,
+    role: String,
+    gender: String,
+    timezone: String,
+    geo: String,
+    impps: String,
+    related: String,
+    photo: String,
+}
+
 fn build_vcard(
     name: &str,
     organization: &str,
     title: &str,
     email: &str,
     email_work: &str,
+    email_other: &str,
     phone: &str,
+    phone_work: &str,
+    phone_home: &str,
     address: &str,
     note: &str,
+    url: &str,
+    nickname: &str,
+    birthday: &str,
+    categories: &str,
+    uid: Option<&str>,
+) -> Result<String, String> {
+    build_vcard_with_fields(
+        name,
+        organization,
+        title,
+        email,
+        email_work,
+        email_other,
+        phone,
+        phone_work,
+        phone_home,
+        address,
+        note,
+        url,
+        nickname,
+        birthday,
+        categories,
+        &ContactVCardFields::default(),
+        uid,
+    )
+}
+
+fn build_vcard_with_fields(
+    name: &str,
+    organization: &str,
+    title: &str,
+    email: &str,
+    email_work: &str,
+    email_other: &str,
+    phone: &str,
+    phone_work: &str,
+    phone_home: &str,
+    address: &str,
+    note: &str,
+    url: &str,
+    nickname: &str,
+    birthday: &str,
+    categories: &str,
+    fields: &ContactVCardFields,
     uid: Option<&str>,
 ) -> Result<String, String> {
     let name = name.trim();
@@ -419,7 +653,18 @@ fn build_vcard(
         "VERSION:3.0".to_string(),
         format!("UID:{uid}"),
         format!("FN:{}", escape_vcard_text(name)),
-        format!("N:{};;;;", escape_vcard_text(name)),
+        format!(
+            "N:{};{};{};{};{}",
+            escape_vcard_text(if fields.family_name.trim().is_empty() {
+                name
+            } else {
+                fields.family_name.trim()
+            }),
+            escape_vcard_text(fields.given_name.trim()),
+            escape_vcard_text(fields.additional_name.trim()),
+            escape_vcard_text(fields.name_prefix.trim()),
+            escape_vcard_text(fields.name_suffix.trim())
+        ),
     ];
     if !organization.trim().is_empty() {
         lines.push(format!("ORG:{}", escape_vcard_text(organization.trim())));
@@ -439,8 +684,26 @@ fn build_vcard(
             escape_vcard_text(email_work.trim())
         ));
     }
+    if !email_other.trim().is_empty() {
+        lines.push(format!(
+            "EMAIL;TYPE=OTHER:{}",
+            escape_vcard_text(email_other.trim())
+        ));
+    }
     if !phone.trim().is_empty() {
         lines.push(format!("TEL;TYPE=CELL:{}", escape_vcard_text(phone.trim())));
+    }
+    if !phone_work.trim().is_empty() {
+        lines.push(format!(
+            "TEL;TYPE=WORK,VOICE:{}",
+            escape_vcard_text(phone_work.trim())
+        ));
+    }
+    if !phone_home.trim().is_empty() {
+        lines.push(format!(
+            "TEL;TYPE=HOME,VOICE:{}",
+            escape_vcard_text(phone_home.trim())
+        ));
     }
     if !address.trim().is_empty() {
         lines.push(format!(
@@ -451,8 +714,153 @@ fn build_vcard(
     if !note.trim().is_empty() {
         lines.push(format!("NOTE:{}", escape_vcard_text(note.trim())));
     }
+    if !url.trim().is_empty() {
+        lines.push(format!("URL:{}", escape_vcard_text(url.trim())));
+    }
+    if !nickname.trim().is_empty() {
+        lines.push(format!("NICKNAME:{}", escape_vcard_text(nickname.trim())));
+    }
+    if !birthday.trim().is_empty() {
+        lines.push(format!("BDAY:{}", escape_vcard_text(birthday.trim())));
+    }
+    if !categories.trim().is_empty() {
+        let categories = categories
+            .split(',')
+            .map(str::trim)
+            .filter(|category| !category.is_empty())
+            .map(escape_vcard_text)
+            .collect::<Vec<_>>()
+            .join(",");
+        if !categories.is_empty() {
+            lines.push(format!("CATEGORIES:{categories}"));
+        }
+    }
+    append_optional_vcard_value(&mut lines, "ANNIVERSARY", &fields.anniversary);
+    append_optional_vcard_value(&mut lines, "ROLE", &fields.role);
+    append_optional_vcard_value(&mut lines, "GENDER", &fields.gender);
+    append_optional_vcard_value(&mut lines, "TZ", &fields.timezone);
+    append_optional_vcard_value(&mut lines, "GEO", &fields.geo);
+    append_comma_separated_vcard_values(&mut lines, "IMPP", &fields.impps);
+    append_comma_separated_vcard_values(&mut lines, "RELATED", &fields.related);
+    append_photo_value(&mut lines, &fields.photo);
     lines.push("END:VCARD".to_string());
     Ok(format!("{}\r\n", lines.join("\r\n")))
+}
+
+fn append_optional_vcard_value(lines: &mut Vec<String>, property: &str, value: &str) {
+    if !value.trim().is_empty() {
+        lines.push(format!("{property}:{}", escape_vcard_text(value.trim())));
+    }
+}
+
+fn append_comma_separated_vcard_values(lines: &mut Vec<String>, property: &str, values: &str) {
+    for value in values
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        append_optional_vcard_value(lines, property, value);
+    }
+}
+
+fn append_photo_value(lines: &mut Vec<String>, value: &str) {
+    let value = value.trim();
+    if value.is_empty() {
+        return;
+    }
+    if value.starts_with("data:") || value.starts_with("http://") || value.starts_with("https://") {
+        lines.push(format!("PHOTO:{value}"));
+    } else {
+        let compact = value
+            .chars()
+            .filter(|character| !character.is_whitespace())
+            .collect::<String>();
+        lines.push(format!("PHOTO;ENCODING=b;TYPE=JPEG:{compact}"));
+    }
+}
+
+/// Preserve vCard properties that the compact editor does not expose yet.
+/// This keeps photos, categories, URLs, custom fields, and additional contact
+/// methods intact when an existing EDS contact is edited.
+fn preserve_vcard_extensions(generated: &str, original: &str) -> String {
+    let mut extras = Vec::new();
+    let mut email_count = 0;
+    let mut phone_count = 0;
+    let mut address_count = 0;
+    let mut photo_count = 0;
+    let mut impp_count = 0;
+    let mut related_count = 0;
+    for line in unfold_vcard_lines(original) {
+        let Some((property, _)) = line.split_once(':') else {
+            continue;
+        };
+        let name = property
+            .split(';')
+            .next()
+            .unwrap_or(property)
+            .to_ascii_uppercase();
+        let preserve = match name.as_str() {
+            "EMAIL" => {
+                email_count += 1;
+                email_count > 3
+            }
+            "TEL" => {
+                phone_count += 1;
+                phone_count > 3
+            }
+            "ADR" => {
+                address_count += 1;
+                address_count > 1
+            }
+            "PHOTO" => {
+                photo_count += 1;
+                photo_count >= 1
+            }
+            "IMPP" => {
+                impp_count += 1;
+                impp_count > 1
+            }
+            "RELATED" => {
+                related_count += 1;
+                related_count > 1
+            }
+            "BEGIN" | "END" | "VERSION" | "UID" | "FN" | "N" | "ORG" | "TITLE" | "NOTE" | "URL"
+            | "NICKNAME" | "BDAY" | "CATEGORIES" | "ANNIVERSARY" | "ROLE" | "GENDER" | "TZ"
+            | "GEO" => false,
+            _ => true,
+        };
+        if preserve {
+            extras.push(line);
+        }
+    }
+    if extras.is_empty() {
+        return generated.to_string();
+    }
+
+    let mut lines = generated
+        .replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .lines()
+        .filter(|line| !line.eq_ignore_ascii_case("END:VCARD"))
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+    lines.extend(extras);
+    lines.push("END:VCARD".to_string());
+    format!("{}\r\n", lines.join("\r\n"))
+}
+
+fn unfold_vcard_lines(raw: &str) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    for line in raw.replace("\r\n", "\n").replace('\r', "\n").lines() {
+        if line.starts_with(' ') || line.starts_with('\t') {
+            if let Some(previous) = lines.last_mut() {
+                previous.push_str(line.trim_start());
+            }
+        } else {
+            lines.push(line.to_string());
+        }
+    }
+    lines
 }
 
 fn escape_vcard_text(value: &str) -> String {
@@ -476,7 +884,9 @@ mod tests {
 
     #[test]
     fn contact_vcard_requires_a_name() {
-        let result = build_vcard("  ", "", "", "", "", "", "", "", None);
+        let result = build_vcard(
+            "  ", "", "", "", "", "", "", "", "", "", "", "", "", "", "", None,
+        );
         assert_eq!(result, Err("Ein Kontakt benötigt einen Namen".to_string()));
     }
 
@@ -488,9 +898,16 @@ mod tests {
             "Mathematician",
             "ada@example.com",
             "ada.work@example.com",
+            "",
             "+44, 123",
+            "",
+            "",
             "London; UK",
             "Line one\nLine two",
+            "",
+            "",
+            "",
+            "",
             Some("contact-1"),
         )
         .expect("contact vCard should serialize");
@@ -501,5 +918,41 @@ mod tests {
         assert_eq!(parsed.fn_name, "Ada, Lovelace");
         assert_eq!(parsed.org, "Analytical; Engines");
         assert_eq!(parsed.note, "Line one\nLine two");
+    }
+
+    #[test]
+    fn editing_preserves_unexposed_vcard_properties() {
+        let generated = build_vcard(
+            "Ada Lovelace",
+            "Analytical Engines",
+            "Mathematician",
+            "ada@example.com",
+            "ada.work@example.com",
+            "ada.other@example.com",
+            "+44 123",
+            "",
+            "",
+            "London",
+            "Note",
+            "",
+            "",
+            "",
+            "Friends,Important",
+            Some("contact-1"),
+        )
+        .expect("contact vCard should serialize");
+        let original = concat!(
+            "BEGIN:VCARD\r\nVERSION:3.0\r\nUID:contact-1\r\n",
+            "FN:Ada Lovelace\r\nPHOTO;ENCODING=b:YWJj\r\n",
+            "EMAIL:ada@example.com\r\nEMAIL;TYPE=WORK:ada.work@example.com\r\n",
+            "EMAIL;TYPE=OTHER:ada.other@example.com\r\n",
+            "EMAIL;TYPE=HOME:ada.legacy@example.com\r\n",
+            "CATEGORIES:Friends,Important\r\nEND:VCARD\r\n"
+        );
+        let merged = preserve_vcard_extensions(&generated, original);
+        assert!(merged.contains("PHOTO;ENCODING=b:YWJj"));
+        assert!(merged.contains("EMAIL;TYPE=OTHER:ada.other@example.com"));
+        assert!(merged.contains("EMAIL;TYPE=HOME:ada.legacy@example.com"));
+        assert!(merged.contains("CATEGORIES:Friends,Important"));
     }
 }

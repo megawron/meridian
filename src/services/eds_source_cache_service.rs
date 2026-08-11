@@ -29,7 +29,7 @@ impl EdsSourceCache {
     pub fn new() -> Self {
         let path = std::env::var_os("EVOLUTION_GTK4_EDS_SOURCE_CACHE")
             .map(PathBuf::from)
-            .unwrap_or_else(|| glib::user_data_dir().join("evolution-gtk4/eds-sources.json"));
+            .unwrap_or_else(|| crate::services::app_data_dir().join("eds-sources.json"));
         Self { path }
     }
 

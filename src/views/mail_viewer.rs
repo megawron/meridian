@@ -13,9 +13,12 @@
 use adw::prelude::*;
 use adw::subclass::prelude::*;
 use gtk::{gio, glib};
+use std::cell::RefCell;
 use webkit6::prelude::*;
 
 use crate::services::AppSettings;
+use crate::services::html_sanitizer::sanitize_html;
+use crate::services::mail_metadata_service::RemoteContentStore;
 
 mod imp {
     use super::*;
@@ -24,6 +27,7 @@ mod imp {
     pub struct MailViewer {
         pub banner: adw::Banner,
         pub webview: Option<webkit6::WebView>,
+        pub current_message_id: RefCell<Option<String>>,
     }
 
     #[glib::object_subclass]
@@ -154,16 +158,43 @@ impl MailViewer {
 
     /// Load HTML content into the WebKitGTK WebView.
     pub fn load_html(&self, html_content: &str, base_uri: Option<&str>) {
+        self.load_html_for_message(None, html_content, base_uri);
+    }
+
+    /// Load HTML while applying the global and per-message remote-content
+    /// policy for the selected message.
+    pub fn load_html_for_message(
+        &self,
+        message_id: Option<&str>,
+        html_content: &str,
+        base_uri: Option<&str>,
+    ) {
+        self.imp()
+            .current_message_id
+            .replace(message_id.map(str::to_string));
+        let global_remote_images = AppSettings::try_new()
+            .as_ref()
+            .map(AppSettings::auto_load_remote_images)
+            .unwrap_or(false);
+        let per_message_remote_images = message_id
+            .map(|message_id| RemoteContentStore::default().is_allowed(message_id))
+            .unwrap_or(false);
+        let remote_images_allowed = global_remote_images || per_message_remote_images;
+        self.imp().banner.set_revealed(!remote_images_allowed);
+
         if let Some(ref webview) = self.imp().webview {
             let render_html = AppSettings::try_new()
                 .as_ref()
                 .map(AppSettings::render_html)
                 .unwrap_or(true);
             let body = if render_html {
-                html_content.to_string()
+                sanitize_html(html_content)
             } else {
                 format!("<pre>{}</pre>", escape_html(html_content))
             };
+            if let Some(settings) = webkit6::prelude::WebViewExt::settings(webview) {
+                settings.set_auto_load_images(remote_images_allowed);
+            }
             let dark_mode_css = if AppSettings::try_new()
                 .as_ref()
                 .map(AppSettings::force_dark_mode)
@@ -181,6 +212,14 @@ impl MailViewer {
             } else {
                 ""
             };
+            let mail_font_family = AppSettings::try_new()
+                .as_ref()
+                .map(AppSettings::mail_font_family)
+                .unwrap_or_else(|| "system-ui, sans-serif".to_string());
+            let mail_font_size = AppSettings::try_new()
+                .as_ref()
+                .map(AppSettings::mail_font_size)
+                .unwrap_or(14);
             let styled_html = format!(
                 r#"<!DOCTYPE html>
 <html>
@@ -189,8 +228,8 @@ impl MailViewer {
 <meta http-equiv="Content-Security-Policy" content="script-src 'none';">
 <style>
   body {{
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Cantarell, "GNOME Sans", sans-serif;
-    font-size: 14px;
+    font-family: {};
+    font-size: {}px;
     line-height: 1.6;
     margin: 16px;
     padding: 0;
@@ -211,7 +250,7 @@ impl MailViewer {
 {}
 </body>
 </html>"#,
-                dark_mode_css, body
+                mail_font_family, mail_font_size, dark_mode_css, body
             );
 
             webview.load_html(&styled_html, base_uri);
@@ -220,6 +259,12 @@ impl MailViewer {
 
     /// Allow remote image loading for the current email.
     pub fn allow_remote_images(&self) {
+        if let Some(message_id) = self.imp().current_message_id.borrow().as_deref() {
+            if let Err(error) = RemoteContentStore::default().set_allowed(message_id, true) {
+                tracing::warn!(%error, %message_id, "Could not persist remote content approval");
+            }
+        }
+        self.imp().banner.set_revealed(false);
         if let Some(ref webview) = self.imp().webview {
             if let Some(settings) = webkit6::prelude::WebViewExt::settings(webview) {
                 settings.set_auto_load_images(true);

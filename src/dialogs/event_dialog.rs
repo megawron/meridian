@@ -16,9 +16,13 @@ use gtk::glib;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::services::calendar_store_service::{CalendarEventRecord, update_ical_property};
+use crate::services::calendar_category_service::CalendarCategoryStore;
+use crate::services::calendar_store_service::{
+    CalendarEventRecord, CalendarStoreService, update_ical_property,
+};
 use crate::services::ecal_service::{ECalComponentType, ECalService};
 use crate::services::eds_service;
+use crate::services::settings_service::AppSettings;
 
 mod imp {
     use super::*;
@@ -59,7 +63,7 @@ mod imp {
                 "edit-source-uid" => {
                     *self.edit_source_uid.borrow_mut() = value.get().expect("string property")
                 }
-                _ => unimplemented!(),
+                _ => {}
             }
         }
 
@@ -68,7 +72,7 @@ mod imp {
                 "edit-component" => self.edit_component.borrow().to_value(),
                 "edit-uid" => self.edit_uid.borrow().to_value(),
                 "edit-source-uid" => self.edit_source_uid.borrow().to_value(),
-                _ => unimplemented!(),
+                _ => glib::Value::from_type(pspec.value_type()),
             }
         }
 
@@ -156,10 +160,32 @@ impl EventDialog {
             .title("Kalender")
             .model(&calendar_model)
             .build();
+        row_calendar.set_sensitive(edit_uid.is_none());
+        let settings_for_default_calendar = AppSettings::try_new();
+        let calendar_source_uids_for_selection = Rc::clone(&calendar_source_uids);
+        row_calendar.connect_selected_notify(move |row| {
+            let Some(settings) = settings_for_default_calendar.as_ref() else {
+                return;
+            };
+            let Some(source_uid) = calendar_source_uids_for_selection
+                .borrow()
+                .get(row.selected() as usize)
+                .cloned()
+            else {
+                return;
+            };
+            settings.set_default_calendar_source_uid(&source_uid);
+        });
         group_details.add(&row_calendar);
 
         let row_location = adw::EntryRow::builder().title("Ort").build();
         group_details.add(&row_location);
+
+        let row_conference = adw::EntryRow::builder().title("Konferenz-URL").build();
+        row_conference.set_tooltip_text(Some(
+            "z. B. https://meet.example.org/raum — wird als RFC-7986 CONFERENCE gespeichert",
+        ));
+        group_details.add(&row_conference);
 
         let row_allday = adw::SwitchRow::builder()
             .title("Ganztägig")
@@ -186,10 +212,49 @@ impl EventDialog {
             .build();
         group_time.add(&row_end);
 
+        let group_recurrence = adw::PreferencesGroup::builder()
+            .title("Wiederholung & Teilnehmer")
+            .description("RFC5545-Werte werden unverändert an ECal/Camel weitergegeben")
+            .build();
+        let row_recurrence = adw::EntryRow::builder()
+            .title("Wiederholung (RRULE)")
+            .build();
+        row_recurrence.set_text("");
+        row_recurrence.set_tooltip_text(Some("z. B. FREQ=WEEKLY;BYDAY=MO;COUNT=10"));
+        group_recurrence.add(&row_recurrence);
+        let row_attendees = adw::EntryRow::builder()
+            .title("Teilnehmer (durch Komma getrennt)")
+            .build();
+        group_recurrence.add(&row_attendees);
+        let row_categories = adw::EntryRow::builder().title("Kategorien").build();
+        group_recurrence.add(&row_categories);
+        let row_alarm = adw::SpinRow::with_range(0.0, 10_080.0, 5.0);
+        row_alarm.set_title("Erinnerung vorher (Minuten)");
+        row_alarm.set_digits(0);
+        row_alarm.set_snap_to_ticks(true);
+        row_alarm.set_value(
+            AppSettings::try_new()
+                .map(|settings| settings.calendar_default_reminder_minutes())
+                .unwrap_or(15) as f64,
+        );
+        group_recurrence.add(&row_alarm);
+        let row_private = adw::SwitchRow::builder()
+            .title("Privater Termin")
+            .subtitle("Andere Personen sehen den Termin als privat markiert")
+            .build();
+        group_recurrence.add(&row_private);
+        content_box.append(&group_recurrence);
+
         if let Some(component) = edit_component.as_deref() {
             entry_title.set_text(ical_property(component, "SUMMARY").as_deref().unwrap_or(""));
             row_location.set_text(
                 ical_property(component, "LOCATION")
+                    .as_deref()
+                    .unwrap_or(""),
+            );
+            row_conference.set_text(
+                ical_property(component, "CONFERENCE")
+                    .or_else(|| ical_property(component, "X-CONFERENCE"))
                     .as_deref()
                     .unwrap_or(""),
             );
@@ -201,6 +266,15 @@ impl EventDialog {
             if let Some(end) = ical_property(component, "DTEND") {
                 row_end.set_text(&format_event_datetime_for_editor(&end, all_day));
             }
+            row_recurrence.set_text(&ical_property(component, "RRULE").unwrap_or_default());
+            row_attendees.set_text(&ical_properties(component, "ATTENDEE").join(", "));
+            row_categories.set_text(&ical_property(component, "CATEGORIES").unwrap_or_default());
+            row_alarm.set_value(ical_alarm_minutes(component).unwrap_or(0) as f64);
+            row_private.set_active(
+                ical_property(component, "CLASS")
+                    .map(|value| value.eq_ignore_ascii_case("PRIVATE"))
+                    .unwrap_or(false),
+            );
         }
 
         content_box.append(&group_time);
@@ -234,6 +308,10 @@ impl EventDialog {
         let calendar_source_uids_for_load = Rc::clone(&calendar_source_uids);
         let row_calendar_for_load = row_calendar.clone();
         let edit_source_uid_for_load = edit_source_uid.clone();
+        let local_calendar_available = CalendarStoreService::new().is_writable();
+        let preferred_source_uid = AppSettings::try_new()
+            .map(|settings| settings.default_calendar_source_uid())
+            .filter(|uid| !uid.trim().is_empty());
         glib::spawn_future_local(async move {
             match eds_service::list_calendar_sources().await {
                 Ok(sources) => {
@@ -241,7 +319,7 @@ impl EventDialog {
                         .into_iter()
                         .filter(|source| source.enabled)
                         .collect();
-                    let names: Vec<String> = active_sources
+                    let mut names: Vec<String> = active_sources
                         .iter()
                         .map(|source| {
                             if source.backend_name.is_empty() {
@@ -251,34 +329,49 @@ impl EventDialog {
                             }
                         })
                         .collect();
+                    let mut uids = calendar_source_uids_for_load.borrow_mut();
+                    uids.clear();
+                    uids.extend(active_sources.into_iter().map(|source| source.uid));
+                    if local_calendar_available {
+                        names.push("Lokaler Kalender".to_string());
+                        uids.push("local-calendar".to_string());
+                    }
+                    if names.is_empty() {
+                        names.push("Kein aktiver EDS-Kalender verfügbar".to_string());
+                    }
                     let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
                     calendar_model_for_load.splice(
                         0,
                         calendar_model_for_load.n_items(),
                         &name_refs,
                     );
-                    let mut uids = calendar_source_uids_for_load.borrow_mut();
-                    uids.clear();
-                    uids.extend(active_sources.into_iter().map(|source| source.uid));
                     if let Some(edit_source_uid) = edit_source_uid_for_load.as_deref() {
                         if let Some(index) = uids.iter().position(|uid| uid == edit_source_uid) {
                             row_calendar_for_load.set_selected(index as u32);
                         }
-                    }
-                    if uids.is_empty() {
-                        calendar_model_for_load.splice(
-                            0,
-                            calendar_model_for_load.n_items(),
-                            &["Kein aktiver EDS-Kalender verfügbar"],
-                        );
+                    } else if let Some(preferred_source_uid) = preferred_source_uid.as_deref() {
+                        if let Some(index) = uids.iter().position(|uid| uid == preferred_source_uid)
+                        {
+                            row_calendar_for_load.set_selected(index as u32);
+                        }
                     }
                 }
                 Err(error) => {
                     tracing::warn!(%error, "Could not load EDS calendars for event dialog");
+                    let mut names = Vec::new();
+                    let mut uids = calendar_source_uids_for_load.borrow_mut();
+                    uids.clear();
+                    if local_calendar_available {
+                        names.push("Lokaler Kalender".to_string());
+                        uids.push("local-calendar".to_string());
+                    } else {
+                        names.push("EDS-Kalender sind nicht erreichbar".to_string());
+                    }
+                    let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
                     calendar_model_for_load.splice(
                         0,
                         calendar_model_for_load.n_items(),
-                        &["EDS-Kalender sind nicht erreichbar"],
+                        &name_refs,
                     );
                 }
             }
@@ -287,23 +380,30 @@ impl EventDialog {
         let calendar_source_uids_for_save = Rc::clone(&calendar_source_uids);
         let edit_component_for_save = edit_component.clone();
         let edit_uid_for_save = edit_uid.clone();
+        let edit_source_uid_for_save = edit_source_uid.clone();
         let dialog_weak = self.downgrade();
         btn_save.connect_clicked(move |_| {
             let Some(dialog) = dialog_weak.upgrade() else {
                 return;
             };
-            let selected = row_calendar.selected() as usize;
-            let Some(source_uid) = calendar_source_uids_for_save
-                .borrow()
-                .get(selected)
-                .cloned()
-            else {
-                dialog.show_toast("Kein aktiver EDS-Kalender ist ausgewählt");
-                return;
+            let source_uid = if let Some(source_uid) = edit_source_uid_for_save.clone() {
+                source_uid
+            } else {
+                let selected = row_calendar.selected() as usize;
+                let Some(source_uid) = calendar_source_uids_for_save
+                    .borrow()
+                    .get(selected)
+                    .cloned()
+                else {
+                    dialog.show_toast("Kein aktiver EDS-Kalender ist ausgewählt");
+                    return;
+                };
+                source_uid
             };
             let new_component = match build_event_component(
                 &entry_title.text(),
                 &row_location.text(),
+                &row_conference.text(),
                 row_allday.is_active(),
                 &row_start.text(),
                 &row_end.text(),
@@ -312,6 +412,11 @@ impl EventDialog {
                     &text_desc.buffer().end_iter(),
                     false,
                 ),
+                &row_recurrence.text(),
+                &row_attendees.text(),
+                &row_categories.text(),
+                row_alarm.value().round() as u32,
+                row_private.is_active(),
             ) {
                 Ok(component) => component,
                 Err(error) => {
@@ -319,6 +424,11 @@ impl EventDialog {
                     return;
                 }
             };
+
+            let category_names = split_ical_category_names(&row_categories.text());
+            if let Err(error) = CalendarCategoryStore::default().ensure_names(category_names) {
+                tracing::warn!(%error, "Could not persist calendar category metadata");
+            }
 
             let component = if let (Some(original), Some(uid)) = (
                 edit_component_for_save.as_deref(),
@@ -330,11 +440,17 @@ impl EventDialog {
                 let end_value =
                     parse_event_datetime(&row_end.text(), all_day, "Ende").unwrap_or_default();
                 let start_property = if all_day {
-                    "DTSTART;VALUE=DATE"
+                    "DTSTART;VALUE=DATE".to_string()
                 } else {
-                    "DTSTART"
+                    ical_datetime_property_prefix(original, "DTSTART")
+                        .unwrap_or_else(|| "DTSTART".to_string())
                 };
-                let end_property = if all_day { "DTEND;VALUE=DATE" } else { "DTEND" };
+                let end_property = if all_day {
+                    "DTEND;VALUE=DATE".to_string()
+                } else {
+                    ical_datetime_property_prefix(original, "DTEND")
+                        .unwrap_or_else(|| "DTEND".to_string())
+                };
                 let mut updated =
                     update_ical_property(original, "UID", Some(&escape_ical_text(uid)));
                 updated = update_ical_property(
@@ -347,8 +463,12 @@ impl EventDialog {
                     "LOCATION",
                     Some(&escape_ical_text(row_location.text().trim())),
                 );
-                updated = update_ical_property(&updated, start_property, Some(&start_value));
-                updated = update_ical_property(&updated, end_property, Some(&end_value));
+                let conference = row_conference.text();
+                let conference_value =
+                    (!conference.trim().is_empty()).then(|| escape_ical_text(conference.trim()));
+                updated = update_ical_property(&updated, "CONFERENCE", conference_value.as_deref());
+                updated = update_ical_property(&updated, &start_property, Some(&start_value));
+                updated = update_ical_property(&updated, &end_property, Some(&end_value));
                 updated = update_ical_property(
                     &updated,
                     "DESCRIPTION",
@@ -358,6 +478,30 @@ impl EventDialog {
                         false,
                     ))),
                 );
+                let recurrence = row_recurrence.text();
+                updated = update_ical_property(
+                    &updated,
+                    "RRULE",
+                    (!recurrence.trim().is_empty()).then_some(recurrence.as_str()),
+                );
+                let categories = serialize_categories(&row_categories.text());
+                updated = update_ical_property(
+                    &updated,
+                    "CATEGORIES",
+                    (!categories.is_empty()).then_some(categories.as_str()),
+                );
+                updated = update_ical_property(
+                    &updated,
+                    "CLASS",
+                    Some(if row_private.is_active() {
+                        "PRIVATE"
+                    } else {
+                        "PUBLIC"
+                    }),
+                );
+                let attendees = parse_attendees(&row_attendees.text());
+                updated = replace_ical_attendees(&updated, &attendees);
+                updated = replace_ical_alarm(&updated, row_alarm.value().round() as u32);
                 updated
             } else {
                 new_component
@@ -454,6 +598,95 @@ fn ical_property(raw: &str, name: &str) -> Option<String> {
         })
 }
 
+fn ical_properties(raw: &str, name: &str) -> Vec<String> {
+    let target = name.to_ascii_uppercase();
+    raw.replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .lines()
+        .filter_map(|line| {
+            let (property, value) = line.split_once(':')?;
+            let property_name = property
+                .split(';')
+                .next()
+                .unwrap_or(property)
+                .to_ascii_uppercase();
+            (property_name == target).then(|| {
+                value
+                    .replace("\\n", "\n")
+                    .replace("\\N", "\n")
+                    .replace("\\,", ",")
+                    .replace("\\;", ";")
+                    .replace("\\\\", "\\")
+            })
+        })
+        .collect()
+}
+
+fn split_ical_category_names(value: &str) -> Vec<String> {
+    let mut categories = Vec::new();
+    let mut current = String::new();
+    let mut escaped = false;
+    for character in value.chars() {
+        if escaped {
+            current.push(character);
+            escaped = false;
+            continue;
+        }
+        if character == '\\' {
+            escaped = true;
+        } else if character == ',' {
+            if !current.trim().is_empty() {
+                categories.push(current.trim().to_string());
+            }
+            current.clear();
+        } else {
+            current.push(character);
+        }
+    }
+    if escaped {
+        current.push('\\');
+    }
+    if !current.trim().is_empty() {
+        categories.push(current.trim().to_string());
+    }
+    categories
+}
+
+fn serialize_categories(value: &str) -> String {
+    split_ical_category_names(value)
+        .into_iter()
+        .map(|category| escape_ical_text(&category))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn ical_alarm_minutes(raw: &str) -> Option<u32> {
+    raw.replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .lines()
+        .find_map(|line| {
+            let (property, value) = line.split_once(':')?;
+            if !property
+                .split(';')
+                .next()
+                .is_some_and(|name| name.eq_ignore_ascii_case("TRIGGER"))
+            {
+                return None;
+            }
+            let value = value.strip_prefix("-PT")?.strip_suffix('M')?;
+            value.parse::<u32>().ok()
+        })
+}
+
+fn parse_attendees(value: &str) -> Vec<String> {
+    value
+        .split(|character| character == ',' || character == ';')
+        .map(str::trim)
+        .filter(|attendee| !attendee.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
 fn component_property_has_date_value(raw: &str, name: &str) -> bool {
     let target = name.to_ascii_uppercase();
     raw.replace("\r\n", "\n")
@@ -471,6 +704,20 @@ fn component_property_has_date_value(raw: &str, name: &str) -> bool {
                 })
                 .unwrap_or(false)
         })
+}
+
+fn ical_datetime_property_prefix(raw: &str, name: &str) -> Option<String> {
+    let target = name.to_ascii_uppercase();
+    unfold_ical_lines(raw).into_iter().find_map(|line| {
+        let (property, _) = line.split_once(':')?;
+        let property_name = property
+            .split(';')
+            .next()
+            .unwrap_or(property)
+            .to_ascii_uppercase();
+        (property_name == target && !property.to_ascii_uppercase().contains("VALUE=DATE"))
+            .then(|| property.to_string())
+    })
 }
 
 fn format_event_datetime_for_editor(value: &str, all_day: bool) -> String {
@@ -494,10 +741,16 @@ fn format_event_datetime_for_editor(value: &str, all_day: bool) -> String {
 fn build_event_component(
     title: &str,
     location: &str,
+    conference: &str,
     all_day: bool,
     start: &str,
     end: &str,
     description: &str,
+    recurrence: &str,
+    attendees: &str,
+    categories: &str,
+    alarm_minutes: u32,
+    private: bool,
 ) -> Result<String, String> {
     let title = title.trim();
     if title.is_empty() {
@@ -507,6 +760,18 @@ fn build_event_component(
     let end_value = parse_event_datetime(end, all_day, "Ende")?;
     if !all_day && end_value <= start_value {
         return Err("Das Ende muss nach dem Beginn liegen".to_string());
+    }
+    for (field, value) in [
+        ("RRULE", recurrence),
+        ("Teilnehmer", attendees),
+        ("Konferenz-URL", conference),
+    ] {
+        if value
+            .chars()
+            .any(|character| character == '\r' || character == '\n')
+        {
+            return Err(format!("{field} enthält ungültige Zeilenumbrüche"));
+        }
     }
 
     let uid = format!("evolution-gtk4-{}", uuid::Uuid::new_v4());
@@ -523,15 +788,238 @@ fn build_event_component(
         )
     };
 
+    let recurrence_line = if recurrence.trim().is_empty() {
+        String::new()
+    } else {
+        format!("RRULE:{}\r\n", recurrence.trim())
+    };
+    let attendee_lines = attendees
+        .split(|character| character == ',' || character == ';')
+        .map(str::trim)
+        .filter(|attendee| !attendee.is_empty())
+        .map(|attendee| format!("ATTENDEE:{}\r\n", escape_ical_text(attendee)))
+        .collect::<String>();
+    let categories_line = if categories.trim().is_empty() {
+        String::new()
+    } else {
+        format!("CATEGORIES:{}\r\n", serialize_categories(categories.trim()))
+    };
+    let conference_line = if conference.trim().is_empty() {
+        String::new()
+    } else {
+        format!("CONFERENCE:{}\r\n", escape_ical_text(conference.trim()))
+    };
+    let class_line = if private { "CLASS:PRIVATE\r\n" } else { "" };
+    let alarm = if alarm_minutes > 0 {
+        format!(
+            "BEGIN:VALARM\r\nACTION:DISPLAY\r\nDESCRIPTION:{}\r\nTRIGGER:-PT{}M\r\nEND:VALARM\r\n",
+            escape_ical_text(title),
+            alarm_minutes
+        )
+    } else {
+        String::new()
+    };
+
     Ok(format!(
         "BEGIN:VEVENT\r\nUID:{uid}\r\nDTSTAMP:{stamp}\r\nSUMMARY:{}\r\n{}\
-         \r\n{}\r\nLOCATION:{}\r\nDESCRIPTION:{}\r\nEND:VEVENT\r\n",
+         \r\n{}\r\nLOCATION:{}\r\nDESCRIPTION:{}\r\n{}{}{}{}{}{}END:VEVENT\r\n",
         escape_ical_text(title),
         start_line,
         end_line,
         escape_ical_text(location.trim()),
         escape_ical_text(description.trim()),
+        recurrence_line,
+        attendee_lines,
+        conference_line,
+        categories_line,
+        class_line,
+        alarm,
     ))
+}
+
+fn replace_ical_attendees(raw: &str, values: &[String]) -> String {
+    let existing = existing_attendee_properties(raw);
+    let mut lines = Vec::new();
+    let mut replaced = false;
+    let mut depth = 0usize;
+    for line in unfold_ical_lines(raw) {
+        let property_part = line
+            .split_once(':')
+            .map(|(property, _)| property)
+            .unwrap_or(line.as_str());
+        let property = property_part
+            .split(';')
+            .next()
+            .unwrap_or_default()
+            .to_ascii_uppercase();
+        if property == "ATTENDEE" && depth <= 1 {
+            if !replaced {
+                let mut used = vec![false; existing.len()];
+                for value in values {
+                    let matching_existing =
+                        existing
+                            .iter()
+                            .enumerate()
+                            .find(|(index, (existing_value, _))| {
+                                !used[*index] && existing_value.eq_ignore_ascii_case(value)
+                            });
+                    let line = if let Some((index, (_, property_prefix))) = matching_existing {
+                        used[index] = true;
+                        format!("{property_prefix}:{}", escape_ical_text(value))
+                    } else {
+                        format!("ATTENDEE:{}", escape_ical_text(value))
+                    };
+                    lines.push(line);
+                }
+                replaced = true;
+            }
+            continue;
+        }
+        lines.push(line);
+        if property == "BEGIN" {
+            depth = depth.saturating_add(1);
+        } else if property == "END" {
+            depth = depth.saturating_sub(1);
+        }
+    }
+    if !replaced && !values.is_empty() {
+        insert_before_event_end(
+            &mut lines,
+            values
+                .iter()
+                .map(|value| format!("ATTENDEE:{}", escape_ical_text(value))),
+        );
+    }
+    format!("{}\r\n", lines.join("\r\n"))
+}
+
+fn existing_attendee_properties(raw: &str) -> Vec<(String, String)> {
+    let mut attendees = Vec::new();
+    let mut depth = 0usize;
+    for line in unfold_ical_lines(raw) {
+        let Some((property, value)) = line.split_once(':') else {
+            continue;
+        };
+        let name = property
+            .split(';')
+            .next()
+            .unwrap_or(property)
+            .to_ascii_uppercase();
+        if name == "ATTENDEE" && depth == 1 {
+            attendees.push((unescape_ical_text(value), property.to_string()));
+        }
+        if name == "BEGIN" {
+            depth = depth.saturating_add(1);
+        } else if name == "END" {
+            depth = depth.saturating_sub(1);
+        }
+    }
+    attendees
+}
+
+fn replace_ical_alarm(raw: &str, alarm_minutes: u32) -> String {
+    let source = unfold_ical_lines(raw);
+    let mut lines = Vec::new();
+    let mut depth = 0usize;
+    let mut replaced = false;
+    let mut index = 0usize;
+    while index < source.len() {
+        let line = &source[index];
+        if line.eq_ignore_ascii_case("BEGIN:VALARM") && depth == 1 {
+            let end = source
+                .iter()
+                .enumerate()
+                .skip(index + 1)
+                .find(|(_, line)| line.eq_ignore_ascii_case("END:VALARM"))
+                .map(|(index, _)| index);
+            let Some(end) = end else {
+                lines.push(line.clone());
+                index += 1;
+                continue;
+            };
+            let alarm = &source[index..=end];
+            if is_editable_display_alarm(alarm) {
+                if alarm_minutes > 0 && !replaced {
+                    lines.extend(display_alarm_lines(alarm_minutes));
+                    replaced = true;
+                }
+            } else {
+                lines.extend(alarm.iter().cloned());
+            }
+            index = end + 1;
+            continue;
+        }
+        lines.push(line.clone());
+        if line.eq_ignore_ascii_case("BEGIN:VEVENT") {
+            depth = depth.saturating_add(1);
+        } else if line.eq_ignore_ascii_case("END:VEVENT") {
+            depth = depth.saturating_sub(1);
+        }
+        index += 1;
+    }
+    if alarm_minutes > 0 && !replaced {
+        insert_before_event_end(&mut lines, display_alarm_lines(alarm_minutes));
+    }
+    format!("{}\r\n", lines.join("\r\n"))
+}
+
+fn is_editable_display_alarm(lines: &[String]) -> bool {
+    let mut display = false;
+    let mut relative_minutes = false;
+    for line in lines {
+        let Some((property, value)) = line.split_once(':') else {
+            continue;
+        };
+        let name = property
+            .split(';')
+            .next()
+            .unwrap_or(property)
+            .to_ascii_uppercase();
+        if name == "ACTION" && value.eq_ignore_ascii_case("DISPLAY") {
+            display = true;
+        } else if name == "TRIGGER" {
+            relative_minutes = value
+                .strip_prefix("-PT")
+                .and_then(|value| value.strip_suffix('M'))
+                .is_some_and(|value| value.parse::<u32>().is_ok());
+        }
+    }
+    display && relative_minutes
+}
+
+fn display_alarm_lines(alarm_minutes: u32) -> Vec<String> {
+    vec![
+        "BEGIN:VALARM".to_string(),
+        "ACTION:DISPLAY".to_string(),
+        "DESCRIPTION:Reminder".to_string(),
+        format!("TRIGGER:-PT{alarm_minutes}M"),
+        "END:VALARM".to_string(),
+    ]
+}
+
+fn insert_before_event_end<I>(lines: &mut Vec<String>, values: I)
+where
+    I: IntoIterator<Item = String>,
+{
+    let index = lines
+        .iter()
+        .position(|line| line.eq_ignore_ascii_case("END:VEVENT"))
+        .unwrap_or(lines.len());
+    lines.splice(index..index, values);
+}
+
+fn unfold_ical_lines(raw: &str) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    for line in raw.replace("\r\n", "\n").replace('\r', "\n").lines() {
+        if line.starts_with(' ') || line.starts_with('\t') {
+            if let Some(previous) = lines.last_mut() {
+                previous.push_str(line.trim_start());
+            }
+        } else {
+            lines.push(line.to_string());
+        }
+    }
+    lines
 }
 
 fn parse_event_datetime(value: &str, all_day: bool, field_name: &str) -> Result<String, String> {
@@ -554,6 +1042,15 @@ fn escape_ical_text(value: &str) -> String {
         .replace(';', "\\;")
 }
 
+fn unescape_ical_text(value: &str) -> String {
+    value
+        .replace("\\n", "\n")
+        .replace("\\N", "\n")
+        .replace("\\,", ",")
+        .replace("\\;", ";")
+        .replace("\\\\", "\\")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -563,38 +1060,153 @@ mod tests {
         let component = build_event_component(
             "Team, Sync",
             "Room; 42",
+            "https://meet.example.test/room?x=1&y=2",
             false,
             "2026-08-10 12:00",
             "2026-08-10 13:00",
             "Line one\nLine two",
+            "FREQ=WEEKLY;BYDAY=MO",
+            "mailto:person@example.org",
+            "Work",
+            15,
+            true,
         )
         .expect("event should serialize");
 
         assert!(component.contains("BEGIN:VEVENT"));
         assert!(component.contains("SUMMARY:Team\\, Sync"));
         assert!(component.contains("LOCATION:Room\\; 42"));
+        assert!(component.contains("CONFERENCE:https://meet.example.test/room?x=1&y=2"));
         assert!(component.contains("DESCRIPTION:Line one\\nLine two"));
         assert!(component.contains("DTSTART:20260810T120000"));
         assert!(component.contains("DTEND:20260810T130000"));
+        assert!(component.contains("RRULE:FREQ=WEEKLY;BYDAY=MO"));
+        assert!(component.contains("ATTENDEE:mailto:person@example.org"));
+        assert!(component.contains("CATEGORIES:Work"));
+        assert!(component.contains("TRIGGER:-PT15M"));
+        assert!(component.contains("CLASS:PRIVATE"));
         assert!(component.ends_with("END:VEVENT\r\n"));
     }
 
     #[test]
     fn event_component_rejects_invalid_or_reversed_times() {
         assert!(
-            build_event_component("Title", "", false, "not-a-date", "2026-08-10 13:00", "",)
-                .is_err()
+            build_event_component(
+                "Title",
+                "",
+                "",
+                false,
+                "not-a-date",
+                "2026-08-10 13:00",
+                "",
+                "",
+                "",
+                "",
+                0,
+                false,
+            )
+            .is_err()
         );
         assert!(
             build_event_component(
                 "Title",
                 "",
+                "",
                 false,
                 "2026-08-10 13:00",
                 "2026-08-10 12:00",
                 "",
+                "",
+                "",
+                "",
+                0,
+                false,
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn attendee_updates_preserve_existing_parameters() {
+        let raw = concat!(
+            "BEGIN:VEVENT\r\nUID:event-1\r\n",
+            "ATTENDEE;CN=Bob Example;ROLE=REQ-PARTICIPANT:mailto:bob@example.test\r\n",
+            "ATTENDEE;CN=Alice Example:mailto:alice@example.test\r\n",
+            "END:VEVENT\r\n"
+        );
+        let updated = replace_ical_attendees(
+            raw,
+            &[
+                "mailto:bob@example.test".to_string(),
+                "mailto:new@example.test".to_string(),
+            ],
+        );
+        assert!(
+            updated
+                .contains("ATTENDEE;CN=Bob Example;ROLE=REQ-PARTICIPANT:mailto:bob@example.test")
+        );
+        assert!(updated.contains("ATTENDEE:mailto:new@example.test"));
+        assert!(!updated.contains("alice@example.test"));
+    }
+
+    #[test]
+    fn editing_preserves_timezone_property_prefix() {
+        let raw = concat!(
+            "BEGIN:VEVENT\r\n",
+            "DTSTART;TZID=Europe/Berlin:20260810T120000\r\n",
+            "DTEND;TZID=Europe/Berlin:20260810T130000\r\n",
+            "END:VEVENT\r\n"
+        );
+
+        assert_eq!(
+            ical_datetime_property_prefix(raw, "DTSTART").as_deref(),
+            Some("DTSTART;TZID=Europe/Berlin")
+        );
+        assert_eq!(
+            ical_datetime_property_prefix(raw, "DTEND").as_deref(),
+            Some("DTEND;TZID=Europe/Berlin")
+        );
+    }
+
+    #[test]
+    fn editing_simple_alarm_does_not_delete_unsupported_alarm_types() {
+        let raw = concat!(
+            "BEGIN:VEVENT\r\nUID:event-1\r\n",
+            "BEGIN:VALARM\r\nACTION:EMAIL\r\nTRIGGER:-P1D\r\n",
+            "ATTENDEE:mailto:notify@example.test\r\nEND:VALARM\r\n",
+            "BEGIN:VALARM\r\nACTION:DISPLAY\r\nTRIGGER;RELATED=START:-PT15M\r\n",
+            "DESCRIPTION:Reminder\r\nEND:VALARM\r\nEND:VEVENT\r\n"
+        );
+        assert_eq!(ical_alarm_minutes(raw), Some(15));
+        let removed = replace_ical_alarm(raw, 0);
+        assert!(removed.contains("ACTION:EMAIL"));
+        assert!(removed.contains("TRIGGER:-P1D"));
+        assert!(!removed.contains("TRIGGER;RELATED=START:-PT15M"));
+
+        let updated = replace_ical_alarm(raw, 30);
+        assert!(updated.contains("ACTION:EMAIL"));
+        assert!(updated.contains("TRIGGER:-P1D"));
+        assert!(updated.contains("TRIGGER:-PT30M"));
+        assert!(!updated.contains("TRIGGER;RELATED=START:-PT15M"));
+    }
+
+    #[test]
+    fn category_names_split_only_on_unescaped_commas() {
+        assert_eq!(
+            split_ical_category_names(r"Arbeit,Privat\, Familie,Reise"),
+            vec![
+                "Arbeit".to_string(),
+                "Privat, Familie".to_string(),
+                "Reise".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn category_serialization_keeps_category_boundaries() {
+        assert_eq!(
+            serialize_categories(r"Arbeit,Privat\, Familie,Reise"),
+            r"Arbeit,Privat\, Familie,Reise"
         );
     }
 }

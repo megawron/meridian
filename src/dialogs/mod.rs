@@ -2,22 +2,78 @@
 //
 // Dialogs module — modal windows and preferences.
 
+use adw::prelude::*;
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use crate::services::settings_service::AppSettings;
+
 pub mod about_dialog;
 pub mod account_setup_dialog;
+pub mod availability_dialog;
 pub mod compose_dialog;
 pub mod contact_dialog;
+pub mod drafts_dialog;
 pub mod event_dialog;
 pub mod filter_editor_dialog;
+pub mod global_search_dialog;
 pub mod oof_dialog;
 pub mod preferences_dialog;
+pub mod search_folder_dialog;
 pub mod shortcuts_dialog;
 
 pub use about_dialog::show_about_dialog;
 pub use account_setup_dialog::AccountSetupDialog;
+pub use availability_dialog::AvailabilityDialog;
 pub use compose_dialog::ComposeDialog;
 pub use contact_dialog::ContactDialog;
+pub use drafts_dialog::DraftsDialog;
 pub use event_dialog::EventDialog;
 pub use filter_editor_dialog::FilterEditorDialog;
+pub use global_search_dialog::GlobalSearchDialog;
 pub use oof_dialog::OutOfOfficeDialog;
 pub use preferences_dialog::PreferencesDialog;
+pub use search_folder_dialog::SearchFolderDialog;
 pub use shortcuts_dialog::show_shortcuts_dialog;
+
+/// Run a destructive operation immediately when confirmations are disabled;
+/// otherwise present one consistent confirmation dialog for all data views.
+///
+/// The default is deliberately conservative: if GSettings is not available
+/// during development, confirmation remains enabled.
+pub fn run_destructive_action<W, F>(
+    parent: &W,
+    title: &str,
+    description: &str,
+    confirm_label: &str,
+    action: F,
+) where
+    W: IsA<gtk::Widget>,
+    F: FnOnce() + 'static,
+{
+    let confirmation_enabled = AppSettings::try_new()
+        .map(|settings| settings.confirm_destructive_actions())
+        .unwrap_or(true);
+    if !confirmation_enabled {
+        action();
+        return;
+    }
+
+    let confirmation = adw::AlertDialog::new(Some(title), Some(description));
+    confirmation.add_responses(&[("cancel", "Abbrechen"), ("confirm", confirm_label)]);
+    confirmation.set_response_appearance("confirm", adw::ResponseAppearance::Destructive);
+
+    let pending_action = Rc::new(RefCell::new(Some(action)));
+    let pending_action_for_response = Rc::clone(&pending_action);
+    confirmation.connect_response(None, move |dialog, response| {
+        if response != "confirm" {
+            return;
+        }
+        dialog.close();
+        let action = pending_action_for_response.borrow_mut().take();
+        if let Some(action) = action {
+            action();
+        }
+    });
+    confirmation.present(Some(parent));
+}

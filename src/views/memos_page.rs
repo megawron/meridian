@@ -10,17 +10,21 @@
 use adw::prelude::*;
 use adw::subclass::prelude::*;
 use chrono::Utc;
-use gtk::glib;
-use std::cell::RefCell;
+use gtk::{gio, glib};
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use crate::services::calendar_store_service::MemoRecord;
+use crate::services::calendar_category_service::CalendarCategoryStore;
 use crate::services::calendar_store_service::update_ical_property;
+use crate::services::calendar_store_service::{
+    CalendarStoreService, MemoRecord, export_ical_component,
+};
 use crate::services::ecal_service::{
     CalendarDataOrigin, ECalChangeKind, ECalComponentType, ECalRecord, ECalService, ECalSyncEvent,
     load_snapshot_prefer_eds, parse_change_record,
 };
 use crate::services::eds_service;
+use crate::services::settings_service::AppSettings;
 
 mod imp {
     use super::*;
@@ -67,6 +71,32 @@ glib::wrapper! {
         @implements gtk::Accessible, gtk::Buildable, gtk::ConstraintTarget;
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum MemoSort {
+    #[default]
+    Updated,
+    Title,
+    Source,
+}
+
+impl MemoSort {
+    fn from_setting(value: &str) -> Self {
+        match value {
+            "title" => Self::Title,
+            "source" => Self::Source,
+            _ => Self::Updated,
+        }
+    }
+
+    fn setting_value(self) -> &'static str {
+        match self {
+            Self::Updated => "updated",
+            Self::Title => "title",
+            Self::Source => "source",
+        }
+    }
+}
+
 impl MemosPage {
     pub fn new() -> Self {
         glib::Object::builder().build()
@@ -74,6 +104,12 @@ impl MemosPage {
 
     fn build_ui(&self) {
         let split = adw::NavigationSplitView::new();
+
+        let memo_sort = Rc::new(Cell::new(
+            AppSettings::try_new()
+                .map(|settings| MemoSort::from_setting(&settings.memo_sort_field()))
+                .unwrap_or_default(),
+        ));
 
         // ── Sidebar (Memo List) ─────────────────────────────────────────
 
@@ -88,14 +124,52 @@ impl MemosPage {
 
         let search_entry = gtk::SearchEntry::builder()
             .placeholder_text("Notizen durchsuchen…")
+            .build();
+        let sort_model = gtk::StringList::new(&["Zuletzt geändert", "Titel", "Quelle"]);
+        let sort_selector = gtk::DropDown::new(Some(sort_model), None::<&gtk::Expression>);
+        sort_selector.set_tooltip_text(Some("Notizen sortieren"));
+        sort_selector.set_selected(match memo_sort.get() {
+            MemoSort::Updated => 0,
+            MemoSort::Title => 1,
+            MemoSort::Source => 2,
+        });
+        search_entry.set_hexpand(true);
+        let search_toolbar = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(8)
             .margin_bottom(4)
             .build();
-        sidebar_box.append(&search_entry);
+        search_toolbar.append(&search_entry);
+        search_toolbar.append(&sort_selector);
+        sidebar_box.append(&search_toolbar);
 
         let memo_list = gtk::ListBox::builder()
             .selection_mode(gtk::SelectionMode::Single)
             .css_classes(vec!["navigation-sidebar"])
             .build();
+
+        let memo_sort_for_list = Rc::clone(&memo_sort);
+        memo_list.set_sort_func(move |left, right| {
+            compare_memo_rows(left, right, memo_sort_for_list.get()).into()
+        });
+
+        let memo_sort_for_selector = Rc::clone(&memo_sort);
+        let memo_list_for_sort = memo_list.clone();
+        sort_selector.connect_selected_notify(move |selector| {
+            let sort = match selector.selected() {
+                1 => MemoSort::Title,
+                2 => MemoSort::Source,
+                _ => MemoSort::Updated,
+            };
+            memo_sort_for_selector.set(sort);
+            if let Some(settings) = AppSettings::try_new() {
+                settings.set_memo_sort_field(sort.setting_value());
+            }
+            memo_list_for_sort.invalidate_sort();
+        });
+
+        let memo_records = Rc::new(RefCell::new(Vec::<MemoRecord>::new()));
+        let selected_memo = Rc::new(RefCell::new(None::<MemoRecord>));
 
         let empty_state = gtk::Label::builder()
             .label("Keine Notizen aus EDS geladen")
@@ -109,6 +183,36 @@ impl MemosPage {
         sidebar_box.append(&empty_state);
 
         sidebar_box.append(&memo_list);
+
+        let memo_records_for_search = Rc::clone(&memo_records);
+        let empty_state_for_search = empty_state.clone();
+        search_entry.connect_search_changed(glib::clone!(
+            #[weak]
+            memo_list,
+            move |entry| {
+                let query = entry.text().trim().to_lowercase();
+                if query.is_empty() {
+                    memo_list.set_filter_func(|_| true);
+                    empty_state_for_search.set_label("Keine Notizen aus EDS geladen");
+                } else {
+                    let query_for_filter = query.clone();
+                    memo_list.set_filter_func(move |row| unsafe {
+                        row.data::<String>("memo-search")
+                            .is_some_and(|value| value.as_ref().contains(&query_for_filter))
+                    });
+                    empty_state_for_search.set_label("Keine passenden Notizen");
+                }
+                let has_records = if query.is_empty() {
+                    !memo_records_for_search.borrow().is_empty()
+                } else {
+                    memo_records_for_search
+                        .borrow()
+                        .iter()
+                        .any(|memo| memo_search_text(memo).contains(&query))
+                };
+                empty_state_for_search.set_visible(!has_records);
+            }
+        ));
 
         let new_memo_btn = gtk::Button::builder()
             .label("Neue Notiz")
@@ -175,15 +279,17 @@ impl MemosPage {
             .label("Löschen")
             .css_classes(vec!["destructive-action"])
             .build();
+        let export_memo_btn = gtk::Button::builder()
+            .label("Exportieren")
+            .icon_name("document-save-symbolic")
+            .build();
         memo_actions.append(&save_memo_btn);
+        memo_actions.append(&export_memo_btn);
         memo_actions.append(&delete_memo_btn);
         content_box.append(&memo_actions);
         content_box.append(&memo_meta);
         content_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
         content_box.append(&memo_text);
-
-        let memo_records = Rc::new(RefCell::new(Vec::<MemoRecord>::new()));
-        let selected_memo = Rc::new(RefCell::new(None::<MemoRecord>));
 
         let page_weak = self.downgrade();
         let memo_list_for_dialog = memo_list.clone();
@@ -205,6 +311,7 @@ impl MemosPage {
         let page_weak_for_save = self.downgrade();
         let memo_title_for_save = memo_title.clone();
         let memo_text_for_save = memo_text.clone();
+        let memo_list_for_save = memo_list.clone();
         let save_memo_btn_for_signal = save_memo_btn.clone();
         save_memo_btn_for_signal.connect_clicked(move |_| {
             let Some(memo) = selected_memo_for_save.borrow().clone() else {
@@ -214,7 +321,7 @@ impl MemosPage {
             if memo.source_uid.is_empty() {
                 show_toast_for_widget(
                     &memo_title_for_save,
-                    "Lokale Notizen können ohne EDS-Quelle nicht geändert werden",
+                    "Diese Notiz stammt aus einer schreibgeschützten importierten Quelle",
                 );
                 return;
             }
@@ -266,6 +373,7 @@ impl MemosPage {
 
             let save_button_for_result = save_memo_btn.clone();
             let memo_records_for_result = Rc::clone(&memo_records_for_save);
+            let memo_list_for_result = memo_list_for_save.clone();
             let selected_memo_for_result = Rc::clone(&selected_memo_for_save);
             let page_weak_for_result = page_weak_for_save.clone();
             let memo_title_for_result = memo_title_for_save.clone();
@@ -287,13 +395,11 @@ impl MemosPage {
                             description: description.clone(),
                             updated: Utc::now().format("%Y-%m-%d %H:%M").to_string(),
                         };
-                        if let Some(existing) = memo_records_for_result
-                            .borrow_mut()
-                            .iter_mut()
-                            .find(|existing| existing.uid == memo.uid)
-                        {
-                            *existing = updated.clone();
-                        }
+                        upsert_memo_row(
+                            &memo_list_for_result,
+                            Rc::clone(&memo_records_for_result),
+                            updated.clone(),
+                        );
                         *selected_memo_for_result.borrow_mut() = Some(updated);
                         memo_title_for_result.set_text(&title);
                         memo_text_for_result.buffer().set_text(&description);
@@ -307,6 +413,55 @@ impl MemosPage {
                     ),
                 }
                 save_button_for_result.set_sensitive(true);
+            });
+        });
+
+        let selected_memo_for_export = Rc::clone(&selected_memo);
+        export_memo_btn.connect_clicked(move |button| {
+            let Some(memo) = selected_memo_for_export.borrow().clone() else {
+                show_toast_for_widget(button, "Keine Notiz ausgewählt");
+                return;
+            };
+            if memo.component.trim().is_empty() {
+                show_toast_for_widget(
+                    button,
+                    "Für diese Notiz sind keine iCalendar-Daten verfügbar",
+                );
+                return;
+            }
+            let Some(root) = button.root() else {
+                return;
+            };
+            let Ok(window) = root.downcast::<gtk::Window>() else {
+                return;
+            };
+            let file_dialog = gtk::FileDialog::builder()
+                .title("Notiz als iCalendar speichern")
+                .initial_name("notiz.ics")
+                .modal(true)
+                .build();
+            let component = memo.component;
+            let button_for_result = button.clone();
+            file_dialog.save(Some(&window), None::<&gio::Cancellable>, move |result| {
+                let Ok(file) = result else {
+                    return;
+                };
+                let save_result = file.replace_contents(
+                    export_ical_component(&component).as_bytes(),
+                    None,
+                    true,
+                    gio::FileCreateFlags::NONE,
+                    None::<&gio::Cancellable>,
+                );
+                match save_result {
+                    Ok(_) => {
+                        show_toast_for_widget(&button_for_result, "Notiz als iCalendar exportiert")
+                    }
+                    Err(error) => show_toast_for_widget(
+                        &button_for_result,
+                        &format!("iCalendar konnte nicht gespeichert werden: {error}"),
+                    ),
+                }
             });
         });
 
@@ -325,32 +480,32 @@ impl MemosPage {
             if memo.source_uid.is_empty() {
                 show_toast_for_widget(
                     &memo_title_for_delete,
-                    "Lokale Notizen können ohne EDS-Quelle nicht gelöscht werden",
+                    "Diese Notiz stammt aus einer schreibgeschützten importierten Quelle",
                 );
                 return;
             }
-            let confirmation = adw::AlertDialog::new(
-                Some("Notiz löschen?"),
-                Some("Die Notiz wird dauerhaft aus der EDS-Notizliste entfernt."),
-            );
-            confirmation.add_responses(&[("cancel", "Abbrechen"), ("delete", "Löschen")]);
-            confirmation.set_response_appearance("delete", adw::ResponseAppearance::Destructive);
-            let confirmation_parent = memo_title_for_delete.clone();
-            let selected_memo_for_response = Rc::clone(&selected_memo_for_delete);
-            let memo_records_for_response = Rc::clone(&memo_records_for_delete);
-            let page_weak_for_response = page_weak_for_delete.clone();
-            let memo_list_for_response = memo_list_for_delete.clone();
-            let empty_state_for_response = empty_state_for_delete.clone();
-            let memo_title_for_response = memo_title_for_delete.clone();
-            let memo_text_for_response = memo_text_for_delete.clone();
-            confirmation.connect_response(
-                None,
-                move |dialog: &adw::AlertDialog, response: &str| {
-                    if response != "delete" {
-                        return;
-                    }
-                    let source_uid = memo.source_uid.clone();
-                    let uid = memo.uid.clone();
+            let confirmation_message = if memo.source_uid == "local-calendar" {
+                "Die Notiz wird dauerhaft aus der lokalen Notizliste entfernt."
+            } else {
+                "Die Notiz wird dauerhaft aus der EDS-Notizliste entfernt."
+            };
+            let memo_for_action = memo.clone();
+            let selected_memo_for_action = Rc::clone(&selected_memo_for_delete);
+            let memo_records_for_action = Rc::clone(&memo_records_for_delete);
+            let page_weak_for_action = page_weak_for_delete.clone();
+            let memo_list_for_action = memo_list_for_delete.clone();
+            let empty_state_for_action = empty_state_for_delete.clone();
+            let memo_title_for_action = memo_title_for_delete.clone();
+            let memo_text_for_action = memo_text_for_delete.clone();
+            crate::dialogs::run_destructive_action(
+                &memo_title_for_delete,
+                "Notiz löschen?",
+                confirmation_message,
+                "Löschen",
+                move || {
+                    let source_uid = memo_for_action.source_uid.clone();
+                    let source_uid_for_result = source_uid.clone();
+                    let uid = memo_for_action.uid.clone();
                     let (sender, receiver) = async_channel::bounded(1);
                     std::thread::spawn(move || {
                         let result = ECalService::new().remove_component(
@@ -363,30 +518,23 @@ impl MemosPage {
                         }
                     });
 
-                    let dialog_for_result = dialog.clone();
-                    let memo_records_for_result = Rc::clone(&memo_records_for_response);
-                    let selected_memo_for_result = Rc::clone(&selected_memo_for_response);
-                    let memo_list_for_result = memo_list_for_response.clone();
-                    let empty_state_for_result = empty_state_for_response.clone();
-                    let memo_title_for_result = memo_title_for_response.clone();
-                    let memo_text_for_result = memo_text_for_response.clone();
-                    let page_weak_for_result = page_weak_for_response.clone();
+                    let memo_records_for_result = Rc::clone(&memo_records_for_action);
+                    let selected_memo_for_result = Rc::clone(&selected_memo_for_action);
+                    let memo_list_for_result = memo_list_for_action.clone();
+                    let empty_state_for_result = empty_state_for_action.clone();
+                    let memo_title_for_result = memo_title_for_action.clone();
+                    let memo_text_for_result = memo_text_for_action.clone();
+                    let page_weak_for_result = page_weak_for_action.clone();
                     glib::spawn_future_local(async move {
                         match receiver.recv().await {
                             Ok(Ok(result)) => {
                                 let uid = result.uid;
-                                if let Some(index) = memo_records_for_result
-                                    .borrow()
-                                    .iter()
-                                    .position(|memo| memo.uid == uid)
-                                {
-                                    if let Some(row) =
-                                        memo_list_for_result.row_at_index(index as i32)
-                                    {
-                                        memo_list_for_result.remove(&row);
-                                    }
-                                    memo_records_for_result.borrow_mut().remove(index);
-                                }
+                                remove_memo_row(
+                                    &memo_list_for_result,
+                                    Rc::clone(&memo_records_for_result),
+                                    &source_uid_for_result,
+                                    &uid,
+                                );
                                 *selected_memo_for_result.borrow_mut() = None;
                                 memo_title_for_result.set_text("");
                                 memo_text_for_result
@@ -397,7 +545,6 @@ impl MemosPage {
                                 if let Some(page) = page_weak_for_result.upgrade() {
                                     page.show_toast(&format!("Notiz gelöscht ({uid})"));
                                 }
-                                dialog_for_result.close();
                             }
                             Ok(Err(error)) => show_toast_for_widget(
                                 &memo_title_for_result,
@@ -408,7 +555,6 @@ impl MemosPage {
                     });
                 },
             );
-            confirmation.present(Some(&confirmation_parent));
         });
 
         let memo_records_for_selection = Rc::clone(&memo_records);
@@ -427,10 +573,21 @@ impl MemosPage {
                     *selected_memo_for_selection.borrow_mut() = None;
                     return;
                 };
-                let index = row.index();
+                let (source_uid, uid) = unsafe {
+                    let source_uid = row
+                        .data::<String>("memo-source-uid")
+                        .map(|value| value.as_ref().clone())
+                        .unwrap_or_default();
+                    let uid = row
+                        .data::<String>("memo-id")
+                        .map(|value| value.as_ref().clone())
+                        .unwrap_or_default();
+                    (source_uid, uid)
+                };
                 let Some(memo) = memo_records_for_selection
                     .borrow()
-                    .get(index as usize)
+                    .iter()
+                    .find(|memo| memo.source_uid == source_uid && memo.uid == uid)
                     .cloned()
                 else {
                     return;
@@ -621,6 +778,21 @@ impl MemosPage {
             .title("Notizliste")
             .model(&source_model)
             .build();
+        let settings_for_default_memo = AppSettings::try_new();
+        let source_uids_for_selection = Rc::clone(&source_uids);
+        source_row.connect_selected_notify(move |row| {
+            let Some(settings) = settings_for_default_memo.as_ref() else {
+                return;
+            };
+            let Some(source_uid) = source_uids_for_selection
+                .borrow()
+                .get(row.selected() as usize)
+                .cloned()
+            else {
+                return;
+            };
+            settings.set_default_memo_source_uid(&source_uid);
+        });
         let details = adw::PreferencesGroup::builder().title("Details").build();
         details.add(&source_row);
         let title_entry = adw::EntryRow::builder().title("Titel").build();
@@ -649,6 +821,11 @@ impl MemosPage {
 
         let source_model_for_load = source_model.clone();
         let source_uids_for_load = Rc::clone(&source_uids);
+        let source_row_for_load = source_row.clone();
+        let local_calendar_available = CalendarStoreService::new().is_writable();
+        let preferred_source_uid = AppSettings::try_new()
+            .map(|settings| settings.default_memo_source_uid())
+            .filter(|uid| !uid.trim().is_empty());
         glib::spawn_future_local(async move {
             match eds_service::list_calendar_sources().await {
                 Ok(sources) => {
@@ -656,7 +833,7 @@ impl MemosPage {
                         .into_iter()
                         .filter(|source| source.enabled)
                         .collect();
-                    let names: Vec<String> = active_sources
+                    let mut names: Vec<String> = active_sources
                         .iter()
                         .map(|source| {
                             if source.backend_name.is_empty() {
@@ -666,26 +843,39 @@ impl MemosPage {
                             }
                         })
                         .collect();
-                    let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
-                    source_model_for_load.splice(0, source_model_for_load.n_items(), &name_refs);
                     let mut uids = source_uids_for_load.borrow_mut();
                     uids.clear();
                     uids.extend(active_sources.into_iter().map(|source| source.uid));
-                    if uids.is_empty() {
-                        source_model_for_load.splice(
-                            0,
-                            source_model_for_load.n_items(),
-                            &["Keine aktive EDS-Notizliste verfügbar"],
-                        );
+                    if local_calendar_available {
+                        names.push("Lokale Notizliste".to_string());
+                        uids.push("local-calendar".to_string());
+                    }
+                    if names.is_empty() {
+                        names.push("Keine aktive EDS-Notizliste verfügbar".to_string());
+                    }
+                    let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
+                    source_model_for_load.splice(0, source_model_for_load.n_items(), &name_refs);
+                    let selected_index = preferred_source_uid
+                        .as_deref()
+                        .and_then(|uid| uids.iter().position(|candidate| candidate == uid));
+                    drop(uids);
+                    if let Some(index) = selected_index {
+                        source_row_for_load.set_selected(index as u32);
                     }
                 }
                 Err(error) => {
                     tracing::warn!(%error, "Could not load EDS memo lists for memo dialog");
-                    source_model_for_load.splice(
-                        0,
-                        source_model_for_load.n_items(),
-                        &["EDS-Notizlisten sind nicht erreichbar"],
-                    );
+                    let mut names = Vec::new();
+                    let mut uids = source_uids_for_load.borrow_mut();
+                    uids.clear();
+                    if local_calendar_available {
+                        names.push("Lokale Notizliste".to_string());
+                        uids.push("local-calendar".to_string());
+                    } else {
+                        names.push("EDS-Notizlisten sind nicht erreichbar".to_string());
+                    }
+                    let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
+                    source_model_for_load.splice(0, source_model_for_load.n_items(), &name_refs);
                 }
             }
         });
@@ -746,21 +936,25 @@ impl MemosPage {
                     Ok(result) => {
                         let component = result.component.unwrap_or(component_for_model);
                         let uid = result.uid;
+                        let source_display_name = if source_uid_for_model == "local-calendar" {
+                            "Lokale Notizliste".to_string()
+                        } else {
+                            "EDS".to_string()
+                        };
                         let memo = MemoRecord {
                             uid: uid.clone(),
                             source_uid: source_uid_for_model,
-                            source_display_name: "EDS".to_string(),
+                            source_display_name,
                             component,
                             summary: title_for_model,
                             description: description_for_model,
                             updated: Utc::now().format("%Y-%m-%d %H:%M").to_string(),
                         };
-                        memo_records_for_result.borrow_mut().push(memo.clone());
-                        let row = adw::ActionRow::builder()
-                            .title(&memo.summary)
-                            .subtitle(&memo.updated)
-                            .build();
-                        memo_list_for_result.append(&row);
+                        upsert_memo_row(
+                            &memo_list_for_result,
+                            Rc::clone(&memo_records_for_result),
+                            memo,
+                        );
                         empty_state_for_result.set_visible(false);
                         if let Some(page) = page_weak_for_result.upgrade() {
                             page.show_toast(&format!("Notiz gespeichert ({uid})"));
@@ -800,16 +994,87 @@ fn upsert_memo_row(
         .position(|existing| existing.source_uid == memo.source_uid && existing.uid == memo.uid);
     if let Some(index) = existing_index {
         memo_records.borrow_mut().remove(index);
-        if let Some(row) = memo_list.row_at_index(index as i32) {
-            memo_list.remove(&row);
-        }
+        remove_memo_list_row(memo_list, &memo.source_uid, &memo.uid);
     }
     memo_records.borrow_mut().push(memo.clone());
-    let row = adw::ActionRow::builder()
+    append_memo_row(memo_list, &memo);
+}
+
+fn append_memo_row(memo_list: &gtk::ListBox, memo: &MemoRecord) {
+    let row = gtk::ListBoxRow::new();
+    unsafe {
+        row.set_data("memo-id", memo.uid.clone());
+        row.set_data("memo-source-uid", memo.source_uid.clone());
+        row.set_data("memo-search", memo_search_text(memo));
+        row.set_data("memo-sort-updated", memo.updated.to_lowercase());
+        row.set_data("memo-sort-title", memo.summary.to_lowercase());
+        row.set_data("memo-sort-source", memo.source_display_name.to_lowercase());
+    }
+    let action_row = adw::ActionRow::builder()
         .title(&memo.summary)
         .subtitle(&memo.updated)
         .build();
+    if let Some(color) = CalendarCategoryStore::default().color_for_component(&memo.component) {
+        let category_dot = gtk::Label::new(None);
+        category_dot.set_markup(&format!("<span foreground=\"{color}\">●</span>"));
+        category_dot.set_tooltip_text(Some("Notizkategorie"));
+        action_row.add_prefix(&category_dot);
+    }
+    row.set_child(Some(&action_row));
     memo_list.append(&row);
+}
+
+fn memo_search_text(memo: &MemoRecord) -> String {
+    format!(
+        "{} {} {} {} {}",
+        memo.summary, memo.description, memo.updated, memo.source_display_name, memo.component
+    )
+    .to_lowercase()
+}
+
+fn compare_memo_rows(
+    left: &gtk::ListBoxRow,
+    right: &gtk::ListBoxRow,
+    sort: MemoSort,
+) -> std::cmp::Ordering {
+    let data = |row: &gtk::ListBoxRow, key: &str| unsafe {
+        row.data::<String>(key)
+            .map(|value| value.as_ref().clone())
+            .unwrap_or_default()
+    };
+    let ordering = match sort {
+        MemoSort::Updated => data(right, "memo-sort-updated").cmp(&data(left, "memo-sort-updated")),
+        MemoSort::Title => data(left, "memo-sort-title").cmp(&data(right, "memo-sort-title")),
+        MemoSort::Source => data(left, "memo-sort-source").cmp(&data(right, "memo-sort-source")),
+    };
+    ordering
+        .then_with(|| data(left, "memo-source-uid").cmp(&data(right, "memo-source-uid")))
+        .then_with(|| data(left, "memo-id").cmp(&data(right, "memo-id")))
+}
+
+fn remove_memo_list_row(memo_list: &gtk::ListBox, source_uid: &str, uid: &str) {
+    let mut child = memo_list.first_child();
+    while let Some(widget) = child {
+        child = widget.next_sibling();
+        let Ok(row) = widget.downcast::<gtk::ListBoxRow>() else {
+            continue;
+        };
+        let matches = unsafe {
+            let row_source_uid = row
+                .data::<String>("memo-source-uid")
+                .map(|value| value.as_ref().clone())
+                .unwrap_or_default();
+            let row_uid = row
+                .data::<String>("memo-id")
+                .map(|value| value.as_ref().clone())
+                .unwrap_or_default();
+            row_source_uid == source_uid && row_uid == uid
+        };
+        if matches {
+            memo_list.remove(&row);
+            return;
+        }
+    }
 }
 
 fn remove_memo_row(
@@ -826,9 +1091,7 @@ fn remove_memo_row(
         return false;
     };
     memo_records.borrow_mut().remove(index);
-    if let Some(row) = memo_list.row_at_index(index as i32) {
-        memo_list.remove(&row);
-    }
+    remove_memo_list_row(memo_list, source_uid, uid);
     true
 }
 
@@ -891,6 +1154,23 @@ mod tests {
     #[test]
     fn memo_component_rejects_empty_title() {
         assert!(build_memo_component("  ", "body").is_err());
+    }
+
+    #[test]
+    fn memo_search_text_includes_title_description_and_component() {
+        let memo = MemoRecord {
+            uid: "memo-1".to_string(),
+            source_uid: "local-calendar".to_string(),
+            source_display_name: "Lokal".to_string(),
+            component: "CATEGORIES:Project-X".to_string(),
+            summary: "Release notes".to_string(),
+            description: "Remember the migration".to_string(),
+            updated: "2026-08-11 10:00".to_string(),
+        };
+        let search = memo_search_text(&memo);
+        assert!(search.contains("release notes"));
+        assert!(search.contains("migration"));
+        assert!(search.contains("project-x"));
     }
 }
 

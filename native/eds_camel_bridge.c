@@ -672,6 +672,33 @@ open_store_for_source (EdsCamelSession *session,
 
     e_source_camel_configure_service (source, service);
 
+    /* Validate network host before connecting.  EWS and other network
+     * backends require a non-empty host; a NULL or empty host causes
+     * GLib-Critical assertions deep inside the provider plugin.  Catch
+     * this early and emit a user-readable error instead. */
+    {
+        CamelSettings *settings = camel_service_ref_settings (service);
+        if (settings) {
+            if (CAMEL_IS_NETWORK_SETTINGS (settings)) {
+                CamelNetworkSettings *net = CAMEL_NETWORK_SETTINGS (settings);
+                const gchar *host = camel_network_settings_get_host (net);
+                if (!host || !*host) {
+                    g_set_error (
+                        error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
+                        "Das %s-Konto '%s' hat keine Server-URL. "
+                        "Bitte das Konto in den GNOME Online-Konten "
+                        "oder in Evolution konfigurieren.",
+                        backend_name,
+                        e_source_get_display_name (source));
+                    g_object_unref (settings);
+                    g_object_unref (service);
+                    return NULL;
+                }
+            }
+            g_object_unref (settings);
+        }
+    }
+
     if (!camel_service_connect_sync (service, cancellable, error)) {
         g_object_unref (service);
         return NULL;
@@ -1853,7 +1880,11 @@ find_message_uid_by_id (CamelFolder *folder,
     if (!message_id || !*message_id)
         return NULL;
 
+    #if EDS_BRIDGE_HAS_DUP_UIDS
+    uids = camel_folder_dup_uids (folder);
+    #else
     uids = camel_folder_get_uids (folder);
+    #endif
     if (!uids)
         return NULL;
 
@@ -1881,7 +1912,11 @@ find_message_uid_by_id (CamelFolder *folder,
             break;
     }
 
+    #if EDS_BRIDGE_HAS_DUP_UIDS
+    g_ptr_array_unref (uids);
+    #else
     camel_folder_free_uids (folder, uids);
+    #endif
     return match;
 }
 

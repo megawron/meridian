@@ -1,0 +1,939 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// Portable backup/restore for application-owned state.
+//
+// This service deliberately does not touch the original Evolution Data Server
+// profile, Camel stores, Secret Service, or user-selected external mail,
+// calendar, and contact directories.  It snapshots the JSON state, app-owned
+// local ICS/vCard stores, and the non-secret GSettings values we expose.
+
+use chrono::Utc;
+use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
+use std::fs;
+use std::io;
+use std::path::{Component, Path, PathBuf};
+
+use super::settings_service::AppSettings;
+
+const CURRENT_VERSION: u32 = 2;
+
+fn default_calendar_view() -> String {
+    "month".to_string()
+}
+
+fn default_calendar_week_start() -> String {
+    "monday".to_string()
+}
+
+fn default_mail_sort_field() -> String {
+    "date".to_string()
+}
+
+fn default_task_filter() -> String {
+    "all".to_string()
+}
+
+fn default_task_sort_field() -> String {
+    "due".to_string()
+}
+
+fn default_memo_sort_field() -> String {
+    "updated".to_string()
+}
+
+const APP_FILES: &[&str] = &[
+    "accounts.json",
+    "drafts.json",
+    "eds-sources.json",
+    "mail-filters.json",
+    "mail-state.json",
+    "mail-undo.json",
+    "remote-content.json",
+    "reminders.json",
+    "search-folders.json",
+    "signatures.json",
+    "mail-snippets.json",
+    "mail-templates.json",
+    "calendar-categories.json",
+    "ical/evolution-gtk4-local.ics",
+    "vcards/evolution-gtk4-local.vcf",
+];
+
+const APP_OWNED_DIRECTORIES: &[&str] = &["ical", "vcards"];
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct BackupFile {
+    relative_path: String,
+    contents: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct BackupSettings {
+    window_width: i32,
+    window_height: i32,
+    is_maximized: bool,
+    active_view: String,
+    #[serde(default)]
+    default_account: String,
+    #[serde(default)]
+    default_calendar_source: String,
+    #[serde(default)]
+    default_address_book_source: String,
+    #[serde(default)]
+    default_task_source: String,
+    #[serde(default)]
+    default_memo_source: String,
+    auto_load_remote_images: bool,
+    force_dark_mode: bool,
+    render_html: bool,
+    #[serde(default = "default_composer_html")]
+    composer_html: bool,
+    #[serde(default = "default_mail_font_family")]
+    mail_font_family: String,
+    #[serde(default = "default_mail_font_size")]
+    mail_font_size: u32,
+    #[serde(default = "default_mark_read_on_selection")]
+    mark_read_on_selection: bool,
+    #[serde(default = "default_show_message_preview")]
+    show_message_preview: bool,
+    #[serde(default = "default_mail_row_density")]
+    mail_row_density: String,
+    color_scheme: String,
+    sign_new_messages: bool,
+    default_pgp_key: String,
+    mail_sync_interval: u32,
+    draft_autosave_interval: u32,
+    append_signature: bool,
+    signature_text: String,
+    local_mail_directory: String,
+    local_calendar_directory: String,
+    local_contact_directory: String,
+    quote_original: bool,
+    quote_style: String,
+    #[serde(default = "default_calendar_view")]
+    calendar_view: String,
+    #[serde(default = "default_calendar_week_start")]
+    calendar_week_start: String,
+    #[serde(default = "default_workday_start")]
+    calendar_workday_start: u32,
+    #[serde(default = "default_workday_end")]
+    calendar_workday_end: u32,
+    #[serde(default = "default_reminder")]
+    calendar_default_reminder: u32,
+    #[serde(default = "default_notifications_enabled")]
+    notifications_enabled: bool,
+    #[serde(default = "default_confirm_destructive_actions")]
+    confirm_destructive_actions: bool,
+    #[serde(default)]
+    calendar_show_week_numbers: bool,
+    #[serde(default = "default_date_format")]
+    date_format: String,
+    #[serde(default = "default_time_format")]
+    time_format: String,
+    #[serde(default = "default_mail_sort_field")]
+    mail_sort_field: String,
+    #[serde(default = "default_mail_sort_descending")]
+    mail_sort_descending: bool,
+    #[serde(default = "default_mail_threading")]
+    mail_threading: bool,
+    #[serde(default = "default_task_filter")]
+    task_filter: String,
+    #[serde(default = "default_task_sort_field")]
+    task_sort_field: String,
+    #[serde(default = "default_memo_sort_field")]
+    memo_sort_field: String,
+}
+
+fn default_workday_start() -> u32 {
+    540
+}
+
+fn default_workday_end() -> u32 {
+    1_020
+}
+
+fn default_reminder() -> u32 {
+    15
+}
+
+fn default_notifications_enabled() -> bool {
+    true
+}
+
+fn default_confirm_destructive_actions() -> bool {
+    true
+}
+
+fn default_mark_read_on_selection() -> bool {
+    true
+}
+
+fn default_show_message_preview() -> bool {
+    true
+}
+
+fn default_mail_row_density() -> String {
+    "comfortable".to_string()
+}
+
+fn default_composer_html() -> bool {
+    true
+}
+
+fn default_mail_font_family() -> String {
+    "system-ui, sans-serif".to_string()
+}
+
+fn default_mail_font_size() -> u32 {
+    14
+}
+
+fn default_date_format() -> String {
+    "german".to_string()
+}
+
+fn default_time_format() -> String {
+    "24h".to_string()
+}
+
+fn default_mail_sort_descending() -> bool {
+    true
+}
+
+fn default_mail_threading() -> bool {
+    true
+}
+
+impl BackupSettings {
+    fn from_app(settings: &AppSettings) -> Self {
+        Self {
+            window_width: settings.window_width(),
+            window_height: settings.window_height(),
+            is_maximized: settings.is_maximized(),
+            active_view: settings.active_view(),
+            default_account: settings.default_account_id(),
+            default_calendar_source: settings.default_calendar_source_uid(),
+            default_address_book_source: settings.default_address_book_source_uid(),
+            default_task_source: settings.default_task_source_uid(),
+            default_memo_source: settings.default_memo_source_uid(),
+            auto_load_remote_images: settings.auto_load_remote_images(),
+            force_dark_mode: settings.force_dark_mode(),
+            render_html: settings.render_html(),
+            composer_html: settings.composer_html(),
+            mail_font_family: settings.mail_font_family(),
+            mail_font_size: settings.mail_font_size(),
+            mark_read_on_selection: settings.mark_read_on_selection(),
+            show_message_preview: settings.show_message_preview(),
+            mail_row_density: settings.mail_row_density(),
+            color_scheme: settings.color_scheme(),
+            sign_new_messages: settings.sign_new_messages(),
+            default_pgp_key: settings.default_pgp_key(),
+            mail_sync_interval: settings.mail_sync_interval_seconds(),
+            draft_autosave_interval: settings.draft_autosave_interval_seconds(),
+            append_signature: settings.append_signature(),
+            signature_text: settings.signature_text(),
+            local_mail_directory: settings.local_mail_directory(),
+            local_calendar_directory: settings.local_calendar_directory(),
+            local_contact_directory: settings.local_contact_directory(),
+            quote_original: settings.quote_original(),
+            quote_style: settings.quote_style(),
+            calendar_view: settings.calendar_view(),
+            calendar_week_start: settings.calendar_week_start(),
+            calendar_workday_start: settings.calendar_workday_start_minutes(),
+            calendar_workday_end: settings.calendar_workday_end_minutes(),
+            calendar_default_reminder: settings.calendar_default_reminder_minutes(),
+            notifications_enabled: settings.notifications_enabled(),
+            confirm_destructive_actions: settings.confirm_destructive_actions(),
+            calendar_show_week_numbers: settings.calendar_show_week_numbers(),
+            date_format: settings.date_format(),
+            time_format: settings.time_format(),
+            mail_sort_field: settings.mail_sort_field(),
+            mail_sort_descending: settings.mail_sort_descending(),
+            mail_threading: settings.mail_threading(),
+            task_filter: settings.task_filter(),
+            task_sort_field: settings.task_sort_field(),
+            memo_sort_field: settings.memo_sort_field(),
+        }
+    }
+
+    fn apply_to(&self, settings: &AppSettings) {
+        settings.set_window_width(self.window_width);
+        settings.set_window_height(self.window_height);
+        settings.set_is_maximized(self.is_maximized);
+        settings.set_active_view(&self.active_view);
+        settings.set_default_account_id(&self.default_account);
+        settings.set_default_calendar_source_uid(&self.default_calendar_source);
+        settings.set_default_address_book_source_uid(&self.default_address_book_source);
+        settings.set_default_task_source_uid(&self.default_task_source);
+        settings.set_default_memo_source_uid(&self.default_memo_source);
+        settings.set_auto_load_remote_images(self.auto_load_remote_images);
+        settings.set_force_dark_mode(self.force_dark_mode);
+        settings.set_render_html(self.render_html);
+        settings.set_composer_html(self.composer_html);
+        settings.set_mail_font_family(&self.mail_font_family);
+        settings.set_mail_font_size(self.mail_font_size);
+        settings.set_mark_read_on_selection(self.mark_read_on_selection);
+        settings.set_show_message_preview(self.show_message_preview);
+        settings.set_mail_row_density(&self.mail_row_density);
+        settings.set_color_scheme(&self.color_scheme);
+        settings.set_sign_new_messages(self.sign_new_messages);
+        settings.set_default_pgp_key(&self.default_pgp_key);
+        settings.set_mail_sync_interval_seconds(self.mail_sync_interval);
+        settings.set_draft_autosave_interval_seconds(self.draft_autosave_interval);
+        settings.set_append_signature(self.append_signature);
+        settings.set_signature_text(&self.signature_text);
+        settings.set_local_mail_directory(&self.local_mail_directory);
+        settings.set_local_calendar_directory(&self.local_calendar_directory);
+        settings.set_local_contact_directory(&self.local_contact_directory);
+        settings.set_quote_original(self.quote_original);
+        settings.set_quote_style(&self.quote_style);
+        settings.set_calendar_view(&self.calendar_view);
+        settings.set_calendar_week_start(&self.calendar_week_start);
+        settings.set_calendar_workday_start_minutes(self.calendar_workday_start);
+        settings.set_calendar_workday_end_minutes(self.calendar_workday_end);
+        settings.set_calendar_default_reminder_minutes(self.calendar_default_reminder);
+        settings.set_notifications_enabled(self.notifications_enabled);
+        settings.set_confirm_destructive_actions(self.confirm_destructive_actions);
+        settings.set_calendar_show_week_numbers(self.calendar_show_week_numbers);
+        settings.set_date_format(&self.date_format);
+        settings.set_time_format(&self.time_format);
+        settings.set_mail_sort_field(&self.mail_sort_field);
+        settings.set_mail_sort_descending(self.mail_sort_descending);
+        settings.set_mail_threading(self.mail_threading);
+        settings.set_task_filter(&self.task_filter);
+        settings.set_task_sort_field(&self.task_sort_field);
+        settings.set_memo_sort_field(&self.memo_sort_field);
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct BackupBundle {
+    version: u32,
+    created_at: String,
+    #[serde(default)]
+    settings: Option<BackupSettings>,
+    #[serde(default)]
+    files: Vec<BackupFile>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RestoreReport {
+    pub files_restored: usize,
+    pub settings_restored: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeleteReport {
+    pub files_removed: usize,
+    pub settings_reset: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct DiagnosticFile {
+    relative_path: String,
+    present: bool,
+    size_bytes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct DiagnosticBundle {
+    version: u32,
+    generated_at: String,
+    app_files: Vec<DiagnosticFile>,
+    settings_available: bool,
+}
+
+/// Create a JSON backup of application-owned state.
+pub fn create_backup() -> io::Result<Vec<u8>> {
+    let root = app_data_root();
+    let relative_paths = collect_app_owned_paths(&root)?;
+    let files = relative_paths
+        .iter()
+        .filter_map(|relative_path| {
+            let path = root.join(relative_path);
+            if let Err(error) = ensure_safe_app_path(&root, relative_path) {
+                return Some(Err(error));
+            }
+            match fs::read(&path) {
+                Ok(contents) => Some(Ok(BackupFile {
+                    relative_path: relative_path.clone(),
+                    contents,
+                })),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+                Err(error) => Some(Err(error)),
+            }
+        })
+        .collect::<io::Result<Vec<_>>>()?;
+    let settings = AppSettings::try_new()
+        .as_ref()
+        .map(BackupSettings::from_app);
+    let bundle = BackupBundle {
+        version: CURRENT_VERSION,
+        created_at: Utc::now().to_rfc3339(),
+        settings,
+        files,
+    };
+    serde_json::to_vec_pretty(&bundle)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+}
+
+/// Create a metadata-only diagnostic package.
+///
+/// The package contains file names and sizes, not file contents, settings
+/// values, mail, contact data, credentials, or tokens.
+pub fn create_diagnostic_package() -> io::Result<Vec<u8>> {
+    let bundle = diagnostic_bundle(&app_data_root(), AppSettings::try_new().is_some())?;
+    serde_json::to_vec_pretty(&bundle)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+}
+
+/// Restore a previously created backup into the current app-owned data root.
+/// Existing files listed in the backup are replaced atomically; files not
+/// present in the backup are intentionally left untouched.
+pub fn restore_backup(raw: &[u8]) -> io::Result<RestoreReport> {
+    let bundle = serde_json::from_slice::<BackupBundle>(raw)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    restore_bundle(bundle, &app_data_root(), AppSettings::try_new().as_ref())
+}
+
+/// Validate the complete bundle before writing anything and roll back files
+/// already replaced if a later atomic write fails.  This keeps a malformed or
+/// interrupted restore from leaving a half-restored app-owned data set.
+fn restore_bundle(
+    bundle: BackupBundle,
+    root: &Path,
+    app_settings: Option<&AppSettings>,
+) -> io::Result<RestoreReport> {
+    if bundle.version == 0 || bundle.version > CURRENT_VERSION {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "Nicht unterstützte Sicherungsversion: {} (erwartet {})",
+                bundle.version, CURRENT_VERSION
+            ),
+        ));
+    }
+
+    if fs::symlink_metadata(root)
+        .ok()
+        .is_some_and(|metadata| metadata.file_type().is_symlink())
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "App-Datenordner darf kein symbolischer Link sein",
+        ));
+    }
+    fs::create_dir_all(&root)?;
+
+    let mut relative_paths = HashSet::new();
+    let mut entries = Vec::with_capacity(bundle.files.len());
+    for file in &bundle.files {
+        validate_relative_path(&file.relative_path)?;
+        if !is_app_owned_path(&file.relative_path) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "Unbekannte app-eigene Sicherungsdatei: {}",
+                    file.relative_path
+                ),
+            ));
+        }
+        if !relative_paths.insert(file.relative_path.as_str()) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Doppelte Sicherungsdatei: {}", file.relative_path),
+            ));
+        }
+        let path = safe_app_path(root, &file.relative_path)?;
+        let previous = match fs::read(&path) {
+            Ok(contents) => Some(contents),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error),
+        };
+        entries.push(RestoreEntry {
+            path,
+            contents: file.contents.clone(),
+            previous,
+        });
+    }
+
+    let mut written = Vec::with_capacity(entries.len());
+    for entry in &entries {
+        if let Err(error) = write_atomic(&entry.path, &entry.contents) {
+            restore_entries(&written);
+            restore_entry(entry);
+            return Err(error);
+        }
+        written.push(entry);
+    }
+
+    let settings_restored = bundle.settings.is_some() && app_settings.is_some();
+    if let (Some(settings_snapshot), Some(settings)) = (bundle.settings.as_ref(), app_settings) {
+        settings_snapshot.apply_to(&settings);
+    }
+
+    Ok(RestoreReport {
+        files_restored: entries.len(),
+        settings_restored,
+    })
+}
+
+struct RestoreEntry {
+    path: PathBuf,
+    contents: Vec<u8>,
+    previous: Option<Vec<u8>>,
+}
+
+fn restore_entries(entries: &[&RestoreEntry]) {
+    for entry in entries.iter().rev() {
+        restore_entry(entry);
+    }
+}
+
+fn restore_entry(entry: &RestoreEntry) {
+    let result = match entry.previous.as_deref() {
+        Some(contents) => write_atomic(&entry.path, contents),
+        None => match fs::remove_file(&entry.path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error),
+        },
+    };
+    if let Err(error) = result {
+        tracing::error!(path = %entry.path.display(), %error, "Could not roll back backup restore");
+    }
+}
+
+/// Delete only files and settings owned by this application.
+///
+/// The original Evolution/EDS profile, Secret Service entries, and
+/// user-selected external mail/calendar/contact directories are preserved.
+pub fn delete_app_data() -> io::Result<DeleteReport> {
+    delete_app_data_at(&app_data_root(), AppSettings::try_new().as_ref())
+}
+
+fn delete_app_data_at(root: &Path, settings: Option<&AppSettings>) -> io::Result<DeleteReport> {
+    let mut files_removed = 0;
+    for relative_path in collect_app_owned_paths(root)? {
+        let path = safe_app_path(root, &relative_path)?;
+        match fs::symlink_metadata(&path) {
+            Ok(metadata) => {
+                if metadata.file_type().is_symlink() || metadata.is_file() {
+                    fs::remove_file(path)?;
+                    files_removed += 1;
+                } else {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("App-Datei ist kein reguläres File: {relative_path}"),
+                    ));
+                }
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+    }
+    if let Some(settings) = settings {
+        settings.reset_to_defaults();
+    }
+    Ok(DeleteReport {
+        files_removed,
+        settings_reset: settings.is_some(),
+    })
+}
+
+fn diagnostic_bundle(root: &Path, settings_available: bool) -> io::Result<DiagnosticBundle> {
+    let relative_paths = collect_app_owned_paths(root)?;
+    let mut app_files = Vec::with_capacity(relative_paths.len());
+    for relative_path in relative_paths {
+        let path = safe_app_path(root, &relative_path)?;
+        match fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("App-Datei darf kein symbolischer Link sein: {relative_path}"),
+                ));
+            }
+            Ok(metadata) => app_files.push(DiagnosticFile {
+                relative_path,
+                present: true,
+                size_bytes: metadata.len(),
+            }),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                app_files.push(DiagnosticFile {
+                    relative_path,
+                    present: false,
+                    size_bytes: 0,
+                });
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(DiagnosticBundle {
+        version: CURRENT_VERSION,
+        generated_at: Utc::now().to_rfc3339(),
+        app_files,
+        settings_available,
+    })
+}
+
+fn app_data_root() -> PathBuf {
+    crate::services::app_data_dir()
+}
+
+fn is_app_owned_path(relative_path: &str) -> bool {
+    APP_FILES.contains(&relative_path)
+        || APP_OWNED_DIRECTORIES.iter().any(|directory| {
+            relative_path
+                .strip_prefix(directory)
+                .is_some_and(|rest| rest.starts_with('/') && rest.len() > 1)
+        })
+}
+
+fn collect_app_owned_paths(root: &Path) -> io::Result<Vec<String>> {
+    let mut paths = APP_FILES
+        .iter()
+        .map(|relative_path| (*relative_path).to_string())
+        .collect::<Vec<_>>();
+    for directory in APP_OWNED_DIRECTORIES {
+        collect_owned_files(root, Path::new(directory), &mut paths)?;
+    }
+    paths.sort();
+    paths.dedup();
+    Ok(paths)
+}
+
+fn collect_owned_files(
+    root: &Path,
+    relative_directory: &Path,
+    paths: &mut Vec<String>,
+) -> io::Result<()> {
+    let directory = root.join(relative_directory);
+    let metadata = match fs::symlink_metadata(&directory) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "App-eigenes Verzeichnis ist kein reguläres Verzeichnis: {}",
+                relative_directory.display()
+            ),
+        ));
+    }
+
+    for entry in fs::read_dir(directory)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        let relative_path = relative_directory.join(entry.file_name());
+        if file_type.is_symlink() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "App-eigener Pfad darf kein symbolischer Link sein: {}",
+                    relative_path.display()
+                ),
+            ));
+        }
+        if file_type.is_dir() {
+            collect_owned_files(root, &relative_path, paths)?;
+        } else if file_type.is_file() {
+            paths.push(relative_path.to_string_lossy().replace('\\', "/"));
+        } else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "App-eigener Pfad ist kein reguläres File: {}",
+                    relative_path.display()
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_relative_path(value: &str) -> io::Result<()> {
+    let path = Path::new(value);
+    if value.trim().is_empty()
+        || path.is_absolute()
+        || path.components().any(|component| {
+            matches!(
+                component,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            )
+        })
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Ungültiger Sicherungspfad",
+        ));
+    }
+    Ok(())
+}
+
+fn safe_app_path(root: &Path, relative_path: &str) -> io::Result<PathBuf> {
+    validate_relative_path(relative_path)?;
+    ensure_safe_app_path(root, relative_path)?;
+    Ok(root.join(relative_path))
+}
+
+fn ensure_safe_app_path(root: &Path, relative_path: &str) -> io::Result<()> {
+    let root_metadata = match fs::symlink_metadata(root) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    if root_metadata.file_type().is_symlink() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "App-Datenordner darf kein symbolischer Link sein",
+        ));
+    }
+
+    let mut current = root.to_path_buf();
+    for component in Path::new(relative_path).components() {
+        if let Component::Normal(name) = component {
+            current.push(name);
+            match fs::symlink_metadata(&current) {
+                Ok(metadata) if metadata.file_type().is_symlink() => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("App-Pfad enthält einen symbolischen Link: {relative_path}"),
+                    ));
+                }
+                Ok(_) => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
+            }
+        }
+    }
+    Ok(())
+}
+
+fn write_atomic(path: &Path, contents: &[u8]) -> io::Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let temporary_path = path.with_extension("restore.tmp");
+    fs::write(&temporary_path, contents)?;
+    fs::rename(temporary_path, path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_absolute_and_parent_backup_paths() {
+        assert!(validate_relative_path("/tmp/evil").is_err());
+        assert!(validate_relative_path("../evil").is_err());
+        assert!(validate_relative_path("drafts.json").is_ok());
+    }
+
+    #[test]
+    fn backup_bundle_roundtrips_without_secrets() {
+        let bundle = BackupBundle {
+            version: CURRENT_VERSION,
+            created_at: "2026-08-10T12:00:00Z".to_string(),
+            settings: None,
+            files: vec![BackupFile {
+                relative_path: "drafts.json".to_string(),
+                contents: br#"{"version":1}"#.to_vec(),
+            }],
+        };
+        let raw = serde_json::to_vec(&bundle).expect("bundle should serialize");
+        let decoded: BackupBundle = serde_json::from_slice(&raw).expect("bundle should parse");
+        assert_eq!(decoded, bundle);
+        assert!(!String::from_utf8_lossy(&raw).contains("password"));
+    }
+
+    #[test]
+    fn backup_manifest_includes_portable_reminder_state() {
+        assert!(APP_FILES.contains(&"reminders.json"));
+        assert!(APP_FILES.contains(&"mail-snippets.json"));
+        assert!(APP_FILES.contains(&"calendar-categories.json"));
+    }
+
+    #[test]
+    fn imported_calendar_and_contact_files_are_discovered_and_restorable() {
+        let root = temporary_directory("dynamic-owned-files");
+        fs::create_dir_all(root.join("ical/imported")).expect("calendar directory should exist");
+        fs::create_dir_all(root.join("vcards")).expect("contact directory should exist");
+        fs::write(root.join("ical/imported/event.ics"), b"event")
+            .expect("calendar fixture should be written");
+        fs::write(root.join("vcards/imported.vcf"), b"contact")
+            .expect("contact fixture should be written");
+
+        let paths = collect_app_owned_paths(&root).expect("owned files should be discovered");
+        assert!(paths.iter().any(|path| path == "ical/imported/event.ics"));
+        assert!(paths.iter().any(|path| path == "vcards/imported.vcf"));
+        assert!(is_app_owned_path("ical/imported/event.ics"));
+        assert!(is_app_owned_path("vcards/imported.vcf"));
+        assert!(!is_app_owned_path("external/event.ics"));
+
+        let bundle = BackupBundle {
+            version: CURRENT_VERSION,
+            created_at: "2026-08-11T12:00:00Z".to_string(),
+            settings: None,
+            files: vec![
+                BackupFile {
+                    relative_path: "ical/imported/event.ics".to_string(),
+                    contents: b"restored event".to_vec(),
+                },
+                BackupFile {
+                    relative_path: "vcards/imported.vcf".to_string(),
+                    contents: b"restored contact".to_vec(),
+                },
+            ],
+        };
+        let report = restore_bundle(bundle, &root, None).expect("owned files should restore");
+        assert_eq!(report.files_restored, 2);
+        assert_eq!(
+            fs::read(root.join("ical/imported/event.ics")).unwrap(),
+            b"restored event"
+        );
+        assert_eq!(
+            fs::read(root.join("vcards/imported.vcf")).unwrap(),
+            b"restored contact"
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn restore_validates_the_complete_bundle_before_replacing_files() {
+        let root = temporary_directory("restore-preflight");
+        let original = root.join("accounts.json");
+        fs::write(&original, b"original").expect("original account data should be written");
+        let bundle = BackupBundle {
+            version: CURRENT_VERSION,
+            created_at: "2026-08-11T12:00:00Z".to_string(),
+            settings: None,
+            files: vec![
+                BackupFile {
+                    relative_path: "accounts.json".to_string(),
+                    contents: b"replacement".to_vec(),
+                },
+                BackupFile {
+                    relative_path: "../outside.json".to_string(),
+                    contents: b"must not be written".to_vec(),
+                },
+            ],
+        };
+        let raw = serde_json::to_vec(&bundle).expect("bundle should serialize");
+
+        let decoded = serde_json::from_slice::<BackupBundle>(&raw).expect("bundle should parse");
+        assert!(restore_bundle(decoded, &root, None).is_err());
+        assert_eq!(fs::read(&original).unwrap(), b"original");
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn legacy_settings_get_defaults_for_new_calendar_fields() {
+        let legacy = serde_json::json!({
+            "window_width": 1100,
+            "window_height": 700,
+            "is_maximized": false,
+            "active_view": "mail",
+            "auto_load_remote_images": false,
+            "force_dark_mode": false,
+            "render_html": true,
+            "color_scheme": "system",
+            "sign_new_messages": false,
+            "default_pgp_key": "",
+            "mail_sync_interval": 300,
+            "draft_autosave_interval": 60,
+            "append_signature": false,
+            "signature_text": "",
+            "local_mail_directory": "",
+            "local_calendar_directory": "",
+            "local_contact_directory": "",
+            "quote_original": true,
+            "quote_style": "blockquote"
+        });
+        let settings: BackupSettings =
+            serde_json::from_value(legacy).expect("legacy settings should remain readable");
+
+        assert_eq!(settings.calendar_view, "month");
+        assert!(settings.default_address_book_source.is_empty());
+        assert!(settings.default_task_source.is_empty());
+        assert!(settings.default_memo_source.is_empty());
+        assert_eq!(settings.calendar_week_start, "monday");
+        assert_eq!(settings.calendar_workday_start, 540);
+        assert_eq!(settings.calendar_workday_end, 1_020);
+        assert_eq!(settings.calendar_default_reminder, 15);
+        assert!(settings.notifications_enabled);
+        assert!(settings.mark_read_on_selection);
+        assert!(settings.show_message_preview);
+        assert_eq!(settings.mail_row_density, "comfortable");
+        assert!(!settings.calendar_show_week_numbers);
+        assert_eq!(settings.mail_sort_field, "date");
+        assert!(settings.mail_sort_descending);
+        assert!(settings.mail_threading);
+    }
+
+    #[test]
+    fn diagnostic_package_contains_metadata_but_no_file_contents() {
+        let root = temporary_directory("diagnostic");
+        fs::write(root.join("drafts.json"), br#"{"password":"secret"}"#)
+            .expect("diagnostic fixture should be written");
+
+        let bundle = diagnostic_bundle(&root, false).expect("diagnostic bundle should build");
+        let raw = serde_json::to_vec(&bundle).expect("diagnostic bundle should serialize");
+        assert!(String::from_utf8_lossy(&raw).contains("drafts.json"));
+        assert!(String::from_utf8_lossy(&raw).contains("size_bytes"));
+        assert!(!String::from_utf8_lossy(&raw).contains("secret"));
+        assert!(!bundle.settings_available);
+        assert_eq!(
+            bundle
+                .app_files
+                .iter()
+                .find(|file| file.relative_path == "drafts.json")
+                .map(|file| file.size_bytes),
+            Some(br#"{"password":"secret"}"#.len() as u64)
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn app_data_deletion_preserves_external_files() {
+        let root = temporary_directory("delete");
+        fs::write(root.join("accounts.json"), b"owned").expect("owned fixture should be written");
+        fs::create_dir_all(root.join("ical")).expect("owned directory should be created");
+        fs::write(
+            root.join("ical/evolution-gtk4-local.ics"),
+            b"BEGIN:VCALENDAR",
+        )
+        .expect("calendar fixture should be written");
+        fs::write(root.join("external.txt"), b"keep").expect("external fixture should be written");
+
+        let report = delete_app_data_at(&root, None).expect("app data should be deleted");
+        assert_eq!(report.files_removed, 2);
+        assert!(!root.join("accounts.json").exists());
+        assert!(!root.join("ical/evolution-gtk4-local.ics").exists());
+        assert_eq!(
+            fs::read(root.join("external.txt")).expect("external data should remain"),
+            b"keep"
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    fn temporary_directory(label: &str) -> PathBuf {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be valid")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "evolution-gtk4-{label}-{}-{unique}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&path);
+        fs::create_dir_all(&path).expect("temporary directory should be created");
+        path
+    }
+}

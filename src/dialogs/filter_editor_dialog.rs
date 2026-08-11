@@ -10,6 +10,8 @@
 use adw::prelude::*;
 use adw::subclass::prelude::*;
 use gtk::glib;
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
 
 use crate::services::mail_filter_service::{
     FilterAction, FilterCondition, FilterField, FilterScope, MailFilterRule, MailFilterStore,
@@ -19,7 +21,9 @@ mod imp {
     use super::*;
 
     #[derive(Debug, Default)]
-    pub struct FilterEditorDialog;
+    pub struct FilterEditorDialog {
+        pub edit_rule_json: RefCell<Option<String>>,
+    }
 
     #[glib::object_subclass]
     impl ObjectSubclass for FilterEditorDialog {
@@ -29,6 +33,26 @@ mod imp {
     }
 
     impl ObjectImpl for FilterEditorDialog {
+        fn properties() -> &'static [glib::ParamSpec] {
+            use std::sync::OnceLock;
+            static PROPERTIES: OnceLock<Vec<glib::ParamSpec>> = OnceLock::new();
+            PROPERTIES
+                .get_or_init(|| vec![glib::ParamSpecString::builder("edit-rule-json").build()])
+        }
+
+        fn set_property(&self, _id: usize, value: &glib::Value, pspec: &glib::ParamSpec) {
+            if pspec.name() == "edit-rule-json" {
+                *self.edit_rule_json.borrow_mut() = value.get().expect("string property");
+            }
+        }
+
+        fn property(&self, _id: usize, pspec: &glib::ParamSpec) -> glib::Value {
+            match pspec.name() {
+                "edit-rule-json" => self.edit_rule_json.borrow().to_value(),
+                _ => glib::Value::from_type(pspec.value_type()),
+            }
+        }
+
         fn constructed(&self) {
             self.parent_constructed();
             self.obj().build_ui();
@@ -47,6 +71,222 @@ glib::wrapper! {
                     gtk::Native, gtk::Root, gtk::ShortcutManager;
 }
 
+struct ConditionEditor {
+    id: u64,
+    field: gtk::DropDown,
+    value: gtk::Entry,
+    row: gtk::Box,
+}
+
+struct ActionEditor {
+    id: u64,
+    action_type: gtk::DropDown,
+    target: gtk::Entry,
+    row: gtk::Box,
+}
+
+fn filter_field_index(field: FilterField) -> u32 {
+    match field {
+        FilterField::Subject => 0,
+        FilterField::Sender => 1,
+        FilterField::Recipient => 2,
+        FilterField::Body => 3,
+        FilterField::Header => 4,
+    }
+}
+
+fn filter_action_index(action: &FilterAction) -> u32 {
+    match action {
+        FilterAction::MoveToFolder(_) => 0,
+        FilterAction::CopyToFolder(_) => 1,
+        FilterAction::MarkRead => 2,
+        FilterAction::MarkUnread => 3,
+        FilterAction::SetFlagged => 4,
+        FilterAction::ClearFlagged => 5,
+        FilterAction::Delete => 6,
+    }
+}
+
+fn condition_from_editor(editor: &ConditionEditor) -> Option<FilterCondition> {
+    let value = editor.value.text().trim().to_string();
+    if value.is_empty() {
+        return None;
+    }
+    let field = match editor.field.selected() {
+        1 => FilterField::Sender,
+        2 => FilterField::Recipient,
+        3 => FilterField::Body,
+        4 => FilterField::Header,
+        _ => FilterField::Subject,
+    };
+    Some(FilterCondition { field, value })
+}
+
+fn action_from_editor(editor: &ActionEditor) -> Result<FilterAction, String> {
+    let target = editor.target.text().trim().to_string();
+    match editor.action_type.selected() {
+        0 if target.is_empty() => Err("Für das Verschieben ist ein Zielordner erforderlich".into()),
+        0 => Ok(FilterAction::MoveToFolder(target)),
+        1 if target.is_empty() => Err("Für das Kopieren ist ein Zielordner erforderlich".into()),
+        1 => Ok(FilterAction::CopyToFolder(target)),
+        2 => Ok(FilterAction::MarkRead),
+        3 => Ok(FilterAction::MarkUnread),
+        4 => Ok(FilterAction::SetFlagged),
+        5 => Ok(FilterAction::ClearFlagged),
+        _ => Ok(FilterAction::Delete),
+    }
+}
+
+fn append_condition_editor(
+    container: &gtk::Box,
+    editors: &Rc<RefCell<Vec<ConditionEditor>>>,
+    next_id: &Rc<Cell<u64>>,
+    condition: FilterCondition,
+) {
+    let id = next_id.get();
+    next_id.set(id.saturating_add(1));
+    let field_model = gtk::StringList::new(&[
+        "Betreff enthält",
+        "Absender enthält",
+        "Empfänger enthält",
+        "Nachrichteninhalt enthält",
+        "Headerfeld existiert",
+    ]);
+    let field = gtk::DropDown::new(Some(field_model), None::<&gtk::Expression>);
+    field.set_selected(filter_field_index(condition.field));
+    field.set_width_request(190);
+    let value = gtk::Entry::builder()
+        .placeholder_text("Suchwert")
+        .hexpand(true)
+        .build();
+    value.set_text(&condition.value);
+    let remove = gtk::Button::builder()
+        .icon_name("user-trash-symbolic")
+        .tooltip_text("Bedingung entfernen")
+        .css_classes(vec!["flat", "error"])
+        .valign(gtk::Align::Center)
+        .build();
+    let row = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(6)
+        .build();
+    row.append(&field);
+    row.append(&value);
+    row.append(&remove);
+    container.append(&row);
+
+    editors.borrow_mut().push(ConditionEditor {
+        id,
+        field,
+        value,
+        row: row.clone(),
+    });
+
+    let editors_for_remove = Rc::clone(editors);
+    let container_for_remove = container.clone();
+    remove.connect_clicked(move |_| {
+        let removed = {
+            let mut editors = editors_for_remove.borrow_mut();
+            if editors.len() > 1 {
+                editors
+                    .iter()
+                    .position(|editor| editor.id == id)
+                    .map(|index| editors.remove(index))
+            } else {
+                if let Some(editor) = editors.iter().find(|editor| editor.id == id) {
+                    editor.value.set_text("");
+                }
+                None
+            }
+        };
+        if let Some(editor) = removed {
+            container_for_remove.remove(&editor.row);
+        }
+    });
+}
+
+fn append_action_editor(
+    container: &gtk::Box,
+    editors: &Rc<RefCell<Vec<ActionEditor>>>,
+    next_id: &Rc<Cell<u64>>,
+    action: FilterAction,
+) {
+    let id = next_id.get();
+    next_id.set(id.saturating_add(1));
+    let action_model = gtk::StringList::new(&[
+        "In Ordner verschieben",
+        "In Ordner kopieren",
+        "Als gelesen markieren",
+        "Als ungelesen markieren",
+        "Wichtig-Flag setzen",
+        "Wichtig-Flag entfernen",
+        "Löschen",
+    ]);
+    let action_type = gtk::DropDown::new(Some(action_model), None::<&gtk::Expression>);
+    action_type.set_selected(filter_action_index(&action));
+    action_type.set_width_request(220);
+    let target = gtk::Entry::builder()
+        .placeholder_text("Zielordner, z. B. archive")
+        .hexpand(true)
+        .build();
+    if let FilterAction::MoveToFolder(folder) | FilterAction::CopyToFolder(folder) = &action {
+        target.set_text(folder);
+    }
+    target.set_sensitive(matches!(
+        action,
+        FilterAction::MoveToFolder(_) | FilterAction::CopyToFolder(_)
+    ));
+    let remove = gtk::Button::builder()
+        .icon_name("user-trash-symbolic")
+        .tooltip_text("Aktion entfernen")
+        .css_classes(vec!["flat", "error"])
+        .valign(gtk::Align::Center)
+        .build();
+    let row = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(6)
+        .build();
+    row.append(&action_type);
+    row.append(&target);
+    row.append(&remove);
+    container.append(&row);
+
+    let target_for_type = target.clone();
+    action_type.connect_selected_notify(move |dropdown| {
+        let needs_target = matches!(dropdown.selected(), 0 | 1);
+        target_for_type.set_sensitive(needs_target);
+        if needs_target && target_for_type.text().trim().is_empty() {
+            target_for_type.set_text("archive");
+        }
+    });
+
+    editors.borrow_mut().push(ActionEditor {
+        id,
+        action_type,
+        target,
+        row: row.clone(),
+    });
+
+    let editors_for_remove = Rc::clone(editors);
+    let container_for_remove = container.clone();
+    remove.connect_clicked(move |_| {
+        let removed = {
+            let mut editors = editors_for_remove.borrow_mut();
+            if editors.len() > 1 {
+                editors
+                    .iter()
+                    .position(|editor| editor.id == id)
+                    .map(|index| editors.remove(index))
+            } else {
+                None
+            }
+        };
+        if let Some(editor) = removed {
+            container_for_remove.remove(&editor.row);
+        }
+    });
+}
+
 impl FilterEditorDialog {
     pub fn new() -> Self {
         glib::Object::builder()
@@ -57,7 +297,24 @@ impl FilterEditorDialog {
             .build()
     }
 
+    pub fn new_for_edit(rule: &MailFilterRule) -> Self {
+        let encoded = serde_json::to_string(rule).expect("filter rule should serialize");
+        glib::Object::builder()
+            .property("title", "Filterregel bearbeiten")
+            .property("modal", true)
+            .property("default-width", 620)
+            .property("default-height", 540)
+            .property("edit-rule-json", encoded)
+            .build()
+    }
+
     fn build_ui(&self) {
+        let edit_rule = self
+            .imp()
+            .edit_rule_json
+            .borrow()
+            .as_deref()
+            .and_then(|raw| serde_json::from_str::<MailFilterRule>(raw).ok());
         let toolbar_view = adw::ToolbarView::new();
 
         let header_bar = adw::HeaderBar::new();
@@ -98,61 +355,179 @@ impl FilterEditorDialog {
                 "Manuelle Ausführung",
             ]))
             .build();
+        if let Some(rule) = edit_rule.as_ref() {
+            row_scope.set_selected(match rule.scope {
+                FilterScope::Incoming => 0,
+                FilterScope::Outgoing => 1,
+                FilterScope::Manual => 2,
+            });
+        }
         group_general.add(&row_scope);
 
         content_box.append(&group_general);
 
-        // Conditions
-        let group_cond = adw::PreferencesGroup::builder()
-            .title("Bedingungen (Wenn…)")
-            .description("Alle Bedingungen müssen zutreffen (UND-Verknüpfung)")
+        // Conditions.  Use dynamic GTK rows so imported Evolution rules with
+        // multiple conditions can also be created and edited here.
+        let condition_section = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(8)
             .build();
+        let condition_header = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(8)
+            .build();
+        let condition_title = gtk::Label::builder()
+            .label("Bedingungen (Wenn…)")
+            .halign(gtk::Align::Start)
+            .hexpand(true)
+            .css_classes(vec!["heading"])
+            .build();
+        let add_condition = gtk::Button::builder()
+            .icon_name("list-add-symbolic")
+            .tooltip_text("Weitere Bedingung hinzufügen")
+            .css_classes(vec!["flat", "circular"])
+            .build();
+        condition_header.append(&condition_title);
+        condition_header.append(&add_condition);
+        condition_section.append(&condition_header);
+        let condition_rows_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(6)
+            .build();
+        condition_section.append(&condition_rows_box);
 
-        let row_cond_type = adw::ComboRow::builder()
-            .title("Feld")
+        let condition_editors = Rc::new(RefCell::new(Vec::<ConditionEditor>::new()));
+        let next_condition_id = Rc::new(Cell::new(0));
+        let initial_conditions = edit_rule
+            .as_ref()
+            .map(|rule| {
+                rule.effective_conditions()
+                    .into_iter()
+                    .cloned()
+                    .collect::<Vec<_>>()
+            })
+            .filter(|conditions| !conditions.is_empty())
+            .unwrap_or_else(|| {
+                vec![FilterCondition {
+                    field: FilterField::Subject,
+                    value: String::new(),
+                }]
+            });
+        for condition in initial_conditions {
+            append_condition_editor(
+                &condition_rows_box,
+                &condition_editors,
+                &next_condition_id,
+                condition,
+            );
+        }
+        add_condition.connect_clicked(glib::clone!(
+            #[strong]
+            condition_rows_box,
+            #[strong]
+            condition_editors,
+            #[strong]
+            next_condition_id,
+            move |_| {
+                append_condition_editor(
+                    &condition_rows_box,
+                    &condition_editors,
+                    &next_condition_id,
+                    FilterCondition {
+                        field: FilterField::Subject,
+                        value: String::new(),
+                    },
+                );
+            }
+        ));
+
+        let group_cond = adw::PreferencesGroup::builder()
+            .description("Alle Bedingungen müssen zutreffen oder mindestens eine (ODER).")
+            .build();
+        let row_match_mode = adw::ComboRow::builder()
+            .title("Bedingungsverknüpfung")
             .model(&gtk::StringList::new(&[
-                "Betreff enthält",
-                "Absender enthält",
-                "Nachrichteninhalt enthält",
-                "Headerfeld existiert",
+                "Alle Bedingungen (UND)",
+                "Eine Bedingung (ODER)",
             ]))
             .build();
-        group_cond.add(&row_cond_type);
+        if let Some(rule) = edit_rule.as_ref() {
+            row_match_mode.set_selected(if rule.match_all { 0 } else { 1 });
+        }
+        group_cond.add(&row_match_mode);
 
-        let row_cond_value = adw::EntryRow::builder().title("Suchwert").build();
-        group_cond.add(&row_cond_value);
-
+        content_box.append(&condition_section);
         content_box.append(&group_cond);
 
-        // Actions
-        let group_actions = adw::PreferencesGroup::builder()
-            .title("Aktionen (Dann…)")
+        // Actions.  Folder targets are free-form so custom Evolution folder
+        // names survive editing instead of being forced into demo choices.
+        let action_section = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(8)
+            .margin_top(8)
             .build();
-
-        let row_action_type = adw::ComboRow::builder()
-            .title("Aktion")
-            .model(&gtk::StringList::new(&[
-                "In Ordner verschieben",
-                "In Ordner kopieren",
-                "Als gelesen markieren",
-                "Wichtig-Flag setzen",
-                "Löschen",
-            ]))
+        let action_header = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(8)
             .build();
-        group_actions.add(&row_action_type);
-
-        let row_target_folder = adw::ComboRow::builder()
-            .title("Zielordner")
-            .model(&gtk::StringList::new(&[
-                "Finanzen / Rechnungen",
-                "Archiv",
-                "Arbeit",
-                "Papierkorb",
-            ]))
+        let action_title = gtk::Label::builder()
+            .label("Aktionen (Dann…)")
+            .halign(gtk::Align::Start)
+            .hexpand(true)
+            .css_classes(vec!["heading"])
             .build();
-        group_actions.add(&row_target_folder);
+        let add_action = gtk::Button::builder()
+            .icon_name("list-add-symbolic")
+            .tooltip_text("Weitere Aktion hinzufügen")
+            .css_classes(vec!["flat", "circular"])
+            .build();
+        action_header.append(&action_title);
+        action_header.append(&add_action);
+        action_section.append(&action_header);
+        let action_rows_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(6)
+            .build();
+        action_section.append(&action_rows_box);
 
-        content_box.append(&group_actions);
+        let action_editors = Rc::new(RefCell::new(Vec::<ActionEditor>::new()));
+        let next_action_id = Rc::new(Cell::new(0));
+        let initial_actions = edit_rule
+            .as_ref()
+            .map(|rule| {
+                rule.effective_actions()
+                    .into_iter()
+                    .cloned()
+                    .collect::<Vec<_>>()
+            })
+            .filter(|actions| !actions.is_empty())
+            .unwrap_or_else(|| vec![FilterAction::MoveToFolder("archive".to_string())]);
+        for action in initial_actions {
+            append_action_editor(&action_rows_box, &action_editors, &next_action_id, action);
+        }
+        add_action.connect_clicked(glib::clone!(
+            #[strong]
+            action_rows_box,
+            #[strong]
+            action_editors,
+            #[strong]
+            next_action_id,
+            move |_| {
+                append_action_editor(
+                    &action_rows_box,
+                    &action_editors,
+                    &next_action_id,
+                    FilterAction::MarkRead,
+                );
+            }
+        ));
+        content_box.append(&action_section);
+
+        let edit_id = edit_rule.as_ref().map(|rule| rule.id.clone());
+        let edit_enabled = edit_rule.as_ref().map(|rule| rule.enabled).unwrap_or(true);
+        if let Some(rule) = edit_rule.as_ref() {
+            row_rulename.set_text(&rule.name);
+        }
 
         btn_save.connect_clicked(glib::clone!(
             #[weak(rename_to = dialog)]
@@ -162,13 +537,11 @@ impl FilterEditorDialog {
             #[strong]
             row_scope,
             #[strong]
-            row_cond_type,
+            row_match_mode,
             #[strong]
-            row_cond_value,
+            condition_editors,
             #[strong]
-            row_action_type,
-            #[strong]
-            row_target_folder,
+            action_editors,
             move |_| {
                 let name = row_rulename.text().trim().to_string();
                 if name.is_empty() {
@@ -180,42 +553,70 @@ impl FilterEditorDialog {
                     }
                     return;
                 }
+                let conditions = condition_editors
+                    .borrow()
+                    .iter()
+                    .filter_map(condition_from_editor)
+                    .collect::<Vec<_>>();
+                if conditions.is_empty() {
+                    if let Some(parent) = dialog.transient_for() {
+                        if let Ok(window) = parent.downcast::<crate::window::EvolutionWindow>() {
+                            window.add_toast(&adw::Toast::new(
+                                "Bitte mindestens eine Filterbedingung mit Suchwert eingeben",
+                            ));
+                        }
+                    }
+                    return;
+                }
+
+                let actions = match action_editors
+                    .borrow()
+                    .iter()
+                    .map(action_from_editor)
+                    .collect::<Result<Vec<_>, _>>()
+                {
+                    Ok(actions) if !actions.is_empty() => actions,
+                    Ok(_) => {
+                        if let Some(parent) = dialog.transient_for() {
+                            if let Ok(window) = parent.downcast::<crate::window::EvolutionWindow>()
+                            {
+                                window.add_toast(&adw::Toast::new(
+                                    "Bitte mindestens eine Filteraktion anlegen",
+                                ));
+                            }
+                        }
+                        return;
+                    }
+                    Err(error) => {
+                        if let Some(parent) = dialog.transient_for() {
+                            if let Ok(window) = parent.downcast::<crate::window::EvolutionWindow>()
+                            {
+                                window.add_toast(&adw::Toast::new(&error));
+                            }
+                        }
+                        return;
+                    }
+                };
 
                 let scope = match row_scope.selected() {
                     1 => FilterScope::Outgoing,
                     2 => FilterScope::Manual,
                     _ => FilterScope::Incoming,
                 };
-                let field = match row_cond_type.selected() {
-                    1 => FilterField::Sender,
-                    2 => FilterField::Body,
-                    3 => FilterField::Header,
-                    _ => FilterField::Subject,
-                };
-                let target_folder = match row_target_folder.selected() {
-                    0 => "finances",
-                    1 => "archive",
-                    2 => "work",
-                    3 => "trash",
-                    _ => "archive",
-                };
-                let action = match row_action_type.selected() {
-                    1 => FilterAction::CopyToFolder(target_folder.to_string()),
-                    2 => FilterAction::MarkRead,
-                    3 => FilterAction::SetFlagged,
-                    4 => FilterAction::Delete,
-                    _ => FilterAction::MoveToFolder(target_folder.to_string()),
-                };
+                let condition = conditions[0].clone();
+                let action = actions[0].clone();
                 let rule = MailFilterRule {
-                    id: uuid::Uuid::new_v4().to_string(),
+                    id: edit_id
+                        .clone()
+                        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
                     name,
-                    enabled: true,
+                    enabled: edit_enabled,
                     scope,
-                    condition: FilterCondition {
-                        field,
-                        value: row_cond_value.text().to_string(),
-                    },
-                    action,
+                    condition: condition.clone(),
+                    action: action.clone(),
+                    conditions,
+                    actions,
+                    match_all: row_match_mode.selected() == 0,
                 };
 
                 match MailFilterStore::default().upsert(rule) {
