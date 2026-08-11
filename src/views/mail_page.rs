@@ -930,6 +930,12 @@ impl MailPage {
                     page.reload_sort_preferences();
                 }
             });
+            let page_weak_for_sync_interval = self.downgrade();
+            settings.connect_changed(Some("mail-sync-interval"), move |_, _| {
+                if let Some(page) = page_weak_for_sync_interval.upgrade() {
+                    page.restart_mail_polling();
+                }
+            });
             let page_weak_for_layout = self.downgrade();
             settings.connect_changed(Some("mail-layout"), move |settings, _| {
                 if let Some(page) = page_weak_for_layout.upgrade() {
@@ -4110,6 +4116,13 @@ impl MailPage {
             glib::ControlFlow::Continue
         });
         self.imp().mail_sync_source.replace(Some(source));
+    }
+
+    fn restart_mail_polling(&self) {
+        if let Some(source) = self.imp().mail_sync_source.borrow_mut().take() {
+            source.remove();
+        }
+        self.setup_mail_polling();
     }
 
     fn setup_camel_change_monitor(&self) {
