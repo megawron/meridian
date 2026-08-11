@@ -473,7 +473,8 @@ werden.
   Command-Stack rückgängig machbar. Remote-Nachrichten verwenden Camel für
   Lesen, Flags, Archivieren, Verschieben, Spam-Markierung und Löschen. Batch-Aktionen und
   der zentrale Aktionspfad werden aus dem Servicepfad in die GTK4-rs-Mailansicht
-  übernommen. Mehrfachauswahl für Gelesen, Archivieren, Spam und Löschen sowie
+  übernommen. Mehrfachauswahl für Gelesen/Ungelesen, Markierung, Archivieren,
+  Spam und Löschen sowie
   atomare Batch-Zustandsänderungen mit Rollback sind vorhanden. Der
   Command-Stack unterstützt erfolgreiche Lese-/Flag-Änderungen inklusive
   Undo/Redo und Konfliktschutz; Verschieben verwendet einen reversiblen
@@ -670,13 +671,13 @@ werden.
   Dateiauswahl; bestehende ATTACH-Parameter unveränderter URIs bleiben beim
   Bearbeiten erhalten. Native EDS-Anhangsübertragung und Linux-Abnahme bleiben
   offen. Der portable Reminder-Service wertet diese Alarme aus, persistiert
-  Zustellung/Snooze und
-  stellt 10-Minuten-/1-Stunden-Snooze sowie Erledigt-Aktionen bereit. Komplexe
-  Alarmtypen, native EDS-Aufgabenlisten-Synchronisation und weitere
-  Evolution-Aufgabenlistenfunktionen fehlen noch. Aufgaben können portabel
-  nach Fälligkeit, Titel oder Priorität sortiert werden; die erweiterten
-  Aufgabenfilter und Aufgaben-/Memo-Sortierung werden über
-  Aufgaben-/Memo-Sortierung werden über GSettings wiederhergestellt. Memo-
+  Zustellung/Snooze und stellt 10-Minuten-/1-Stunden-Snooze sowie Erledigt-
+  Aktionen bereit. Komplexe Alarmtypen, native EDS-Aufgabenlisten-
+  Synchronisation und weitere Evolution-Aufgabenlistenfunktionen fehlen noch.
+  Aufgaben können portabel nach Fälligkeit, Titel oder Priorität sortiert
+  werden; Sortierfeld und auf-/absteigende Richtung werden über GSettings
+  gespeichert und beim Start wiederhergestellt. Die Memo-Liste bietet dieselbe
+  persistente Auswahl für Änderungszeitpunkt, Titel und Quelle. Memo-
   Änderungen aktualisieren dabei auch die sichtbare sortierte Suchliste, und
   lokale VTODO-/VJOURNAL-Create/Modify/Remove-Operationen sind durch den
   app-eigenen ICS-Speicher persistent getestet. Termine, Aufgaben und Memos

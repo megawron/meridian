@@ -228,9 +228,17 @@
       <default>'due'</default>
       <summary>Task list sort field (due, title, or priority)</summary>
     </key>
+    <key name="task-sort-descending" type="b">
+      <default>true</default>
+      <summary>Sort tasks in descending order</summary>
+    </key>
     <key name="memo-sort-field" type="s">
       <default>'updated'</default>
       <summary>Memo list sort field (updated, title, or source)</summary>
+    </key>
+    <key name="memo-sort-descending" type="b">
+      <default>true</default>
+      <summary>Sort memos in descending order</summary>
     </key>
   </schema>
 </schemalist>

@@ -1409,6 +1409,90 @@ impl MailPage {
         Ok(())
     }
 
+    fn mark_batch_unread(&self) -> Result<(), MailOperationError> {
+        self.clear_operation_error();
+        let messages = self.selected_batch_messages();
+        let commands = messages
+            .iter()
+            .filter(|message| !message.is_unread())
+            .map(|message| {
+                MailCommand::set_message_state(
+                    message.id(),
+                    message.backend_location(),
+                    message.is_unread(),
+                    message.is_flagged(),
+                    true,
+                    message.is_flagged(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let count = commands.len();
+        if count > 0 {
+            let operations = MailOperationsService::new();
+            self.imp()
+                .mail_commands
+                .borrow_mut()
+                .execute_batch(&operations, commands)?;
+            for message in messages {
+                message.set_unread(true);
+            }
+            if let Some(filter) = self.imp().message_filter.borrow().as_ref() {
+                filter.changed(gtk::FilterChange::Different);
+            }
+        }
+        self.clear_batch_selection();
+        if let Some(state) = self.imp().message_state.borrow().as_ref() {
+            state.set_label(&format!("{count} Nachricht(en) als ungelesen markiert"));
+        }
+        Ok(())
+    }
+
+    fn toggle_batch_flagged(&self) -> Result<(), MailOperationError> {
+        self.clear_operation_error();
+        let messages = self.selected_batch_messages();
+        let next_flagged = messages.iter().any(|message| !message.is_flagged());
+        let commands = messages
+            .iter()
+            .filter(|message| message.is_flagged() != next_flagged)
+            .map(|message| {
+                MailCommand::set_message_state(
+                    message.id(),
+                    message.backend_location(),
+                    message.is_unread(),
+                    message.is_flagged(),
+                    message.is_unread(),
+                    next_flagged,
+                )
+            })
+            .collect::<Vec<_>>();
+        let count = commands.len();
+        if count > 0 {
+            let operations = MailOperationsService::new();
+            self.imp()
+                .mail_commands
+                .borrow_mut()
+                .execute_batch(&operations, commands)?;
+            for message in messages {
+                message.set_flagged(next_flagged);
+            }
+            if let Some(filter) = self.imp().message_filter.borrow().as_ref() {
+                filter.changed(gtk::FilterChange::Different);
+            }
+        }
+        self.clear_batch_selection();
+        if let Some(state) = self.imp().message_state.borrow().as_ref() {
+            state.set_label(&format!(
+                "{count} Nachricht(en) {}",
+                if next_flagged {
+                    "markiert"
+                } else {
+                    "Markierung entfernt"
+                }
+            ));
+        }
+        Ok(())
+    }
+
     fn archive_batch(&self) -> Result<(), MailOperationError> {
         self.clear_operation_error();
         let messages = self.selected_batch_messages();
@@ -3110,6 +3194,38 @@ impl MailPage {
             }
         });
         batch_action_bar.append(&batch_read_button);
+
+        let batch_unread_button = gtk::Button::builder()
+            .label("Ungelesen")
+            .tooltip_text("Ausgewählte Nachrichten als ungelesen markieren")
+            .css_classes(vec!["flat"])
+            .build();
+        let page_for_batch_unread = self.downgrade();
+        batch_unread_button.connect_clicked(move |_| {
+            if let Some(page) = page_for_batch_unread.upgrade() {
+                if let Err(error) = page.mark_batch_unread() {
+                    page.report_operation_error("Ungelesen-Markierung nicht möglich", &error);
+                    tracing::warn!(%error, "Batch unread operation was not applied");
+                }
+            }
+        });
+        batch_action_bar.append(&batch_unread_button);
+
+        let batch_flag_button = gtk::Button::builder()
+            .label("Markierung")
+            .tooltip_text("Markierung der ausgewählten Nachrichten umschalten")
+            .css_classes(vec!["flat"])
+            .build();
+        let page_for_batch_flag = self.downgrade();
+        batch_flag_button.connect_clicked(move |_| {
+            if let Some(page) = page_for_batch_flag.upgrade() {
+                if let Err(error) = page.toggle_batch_flagged() {
+                    page.report_operation_error("Markierung nicht möglich", &error);
+                    tracing::warn!(%error, "Batch flag operation was not applied");
+                }
+            }
+        });
+        batch_action_bar.append(&batch_flag_button);
 
         let batch_archive_button = gtk::Button::builder()
             .label("Archivieren")

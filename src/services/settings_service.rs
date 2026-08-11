@@ -634,6 +634,14 @@ impl AppSettings {
         }
     }
 
+    pub fn task_sort_descending(&self) -> bool {
+        self.settings.boolean("task-sort-descending")
+    }
+
+    pub fn set_task_sort_descending(&self, value: bool) {
+        self.set_boolean("task-sort-descending", value);
+    }
+
     pub fn memo_sort_field(&self) -> String {
         let value = self.settings.string("memo-sort-field").to_string();
         match value.as_str() {
@@ -650,6 +658,14 @@ impl AppSettings {
         if let Err(error) = self.settings.set_string("memo-sort-field", value) {
             tracing::warn!(%error, "Could not persist memo sort field");
         }
+    }
+
+    pub fn memo_sort_descending(&self) -> bool {
+        self.settings.boolean("memo-sort-descending")
+    }
+
+    pub fn set_memo_sort_descending(&self, value: bool) {
+        self.set_boolean("memo-sort-descending", value);
     }
 
     /// Reset every application-owned key to its schema default.
@@ -714,7 +730,9 @@ impl AppSettings {
             "mail-threading",
             "task-filter",
             "task-sort-field",
+            "task-sort-descending",
             "memo-sort-field",
+            "memo-sort-descending",
         ] {
             self.settings.reset(key);
         }

@@ -1939,6 +1939,118 @@ impl PreferencesDialog {
         group_categories.add(&add_category_button);
         page_calendar.add(&group_categories);
 
+        let group_task_memo_lists = adw::PreferencesGroup::builder()
+            .title("Aufgaben- und Notizlisten")
+            .description("Filterung und Sortierung der Aufgaben- und Memo-Ansichten")
+            .build();
+
+        let row_task_filter = adw::ComboRow::builder()
+            .title("Aufgabenfilter")
+            .model(&gtk::StringList::new(&[
+                "Alle Aufgaben",
+                "Heute fällig",
+                "Wichtig",
+                "Überfällig",
+                "In Bearbeitung",
+                "Abgebrochen",
+                "Erledigt",
+            ]))
+            .build();
+        if let Some(settings) = settings.clone() {
+            row_task_filter.set_selected(match settings.task_filter().as_str() {
+                "today" => 1,
+                "important" => 2,
+                "overdue" => 3,
+                "in-progress" => 4,
+                "cancelled" => 5,
+                "completed" => 6,
+                _ => 0,
+            });
+            row_task_filter.connect_selected_notify(move |row| {
+                settings.set_task_filter(match row.selected() {
+                    1 => "today",
+                    2 => "important",
+                    3 => "overdue",
+                    4 => "in-progress",
+                    5 => "cancelled",
+                    6 => "completed",
+                    _ => "all",
+                });
+            });
+        }
+        group_task_memo_lists.add(&row_task_filter);
+
+        let row_task_sort = adw::ComboRow::builder()
+            .title("Aufgaben sortieren nach")
+            .model(&gtk::StringList::new(&["Fälligkeit", "Titel", "Priorität"]))
+            .build();
+        if let Some(settings) = settings.clone() {
+            row_task_sort.set_selected(match settings.task_sort_field().as_str() {
+                "title" => 1,
+                "priority" => 2,
+                _ => 0,
+            });
+            row_task_sort.connect_selected_notify(move |row| {
+                settings.set_task_sort_field(match row.selected() {
+                    1 => "title",
+                    2 => "priority",
+                    _ => "due",
+                });
+            });
+        }
+        group_task_memo_lists.add(&row_task_sort);
+
+        let row_task_sort_direction = adw::SwitchRow::builder()
+            .title("Aufgaben absteigend sortieren")
+            .subtitle("Spätere Fälligkeiten, Titel oder höhere Prioritäten zuerst")
+            .active(true)
+            .build();
+        if let Some(settings) = settings.clone() {
+            row_task_sort_direction.set_active(settings.task_sort_descending());
+            row_task_sort_direction.connect_active_notify(move |row| {
+                settings.set_task_sort_descending(row.is_active());
+            });
+        }
+        group_task_memo_lists.add(&row_task_sort_direction);
+
+        let row_memo_sort = adw::ComboRow::builder()
+            .title("Notizen sortieren nach")
+            .model(&gtk::StringList::new(&[
+                "Änderungszeitpunkt",
+                "Titel",
+                "Quelle",
+            ]))
+            .build();
+        if let Some(settings) = settings.clone() {
+            row_memo_sort.set_selected(match settings.memo_sort_field().as_str() {
+                "title" => 1,
+                "source" => 2,
+                _ => 0,
+            });
+            row_memo_sort.connect_selected_notify(move |row| {
+                settings.set_memo_sort_field(match row.selected() {
+                    1 => "title",
+                    2 => "source",
+                    _ => "updated",
+                });
+            });
+        }
+        group_task_memo_lists.add(&row_memo_sort);
+
+        let row_memo_sort_direction = adw::SwitchRow::builder()
+            .title("Notizen absteigend sortieren")
+            .subtitle("Neueste Änderungen, Titel oder Quellen zuerst")
+            .active(true)
+            .build();
+        if let Some(settings) = settings.clone() {
+            row_memo_sort_direction.set_active(settings.memo_sort_descending());
+            row_memo_sort_direction.connect_active_notify(move |row| {
+                settings.set_memo_sort_descending(row.is_active());
+            });
+        }
+        group_task_memo_lists.add(&row_memo_sort_direction);
+        page_calendar.add(&group_task_memo_lists);
+
         // ── 4. Page: Sicherheit & PGP/S-MIME ───────────────────────────────
         let page_security = adw::PreferencesPage::builder()
             .title("Sicherheit")

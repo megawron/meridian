@@ -42,8 +42,16 @@ fn default_task_sort_field() -> String {
     "due".to_string()
 }
 
+fn default_task_sort_descending() -> bool {
+    true
+}
+
 fn default_memo_sort_field() -> String {
     "updated".to_string()
+}
+
+fn default_memo_sort_descending() -> bool {
+    true
 }
 
 const APP_FILES: &[&str] = &[
@@ -168,8 +176,12 @@ struct BackupSettings {
     task_filter: String,
     #[serde(default = "default_task_sort_field")]
     task_sort_field: String,
+    #[serde(default = "default_task_sort_descending")]
+    task_sort_descending: bool,
     #[serde(default = "default_memo_sort_field")]
     memo_sort_field: String,
+    #[serde(default = "default_memo_sort_descending")]
+    memo_sort_descending: bool,
 }
 
 fn default_workday_start() -> u32 {
@@ -327,7 +339,9 @@ impl BackupSettings {
             mail_threading: settings.mail_threading(),
             task_filter: settings.task_filter(),
             task_sort_field: settings.task_sort_field(),
+            task_sort_descending: settings.task_sort_descending(),
             memo_sort_field: settings.memo_sort_field(),
+            memo_sort_descending: settings.memo_sort_descending(),
         }
     }
 
@@ -388,7 +402,9 @@ impl BackupSettings {
         settings.set_mail_threading(self.mail_threading);
         settings.set_task_filter(&self.task_filter);
         settings.set_task_sort_field(&self.task_sort_field);
+        settings.set_task_sort_descending(self.task_sort_descending);
         settings.set_memo_sort_field(&self.memo_sort_field);
+        settings.set_memo_sort_descending(self.memo_sort_descending);
     }
 }
 
@@ -972,6 +988,8 @@ mod tests {
         assert_eq!(settings.mail_sort_field, "date");
         assert!(settings.mail_sort_descending);
         assert!(settings.mail_threading);
+        assert!(settings.task_sort_descending);
+        assert!(settings.memo_sort_descending);
     }
 
     #[test]

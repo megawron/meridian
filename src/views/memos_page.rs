@@ -110,6 +110,11 @@ impl MemosPage {
                 .map(|settings| MemoSort::from_setting(&settings.memo_sort_field()))
                 .unwrap_or_default(),
         ));
+        let memo_sort_descending = Rc::new(Cell::new(
+            AppSettings::try_new()
+                .map(|settings| settings.memo_sort_descending())
+                .unwrap_or(true),
+        ));
 
         // ── Sidebar (Memo List) ─────────────────────────────────────────
 
@@ -133,6 +138,23 @@ impl MemosPage {
             MemoSort::Title => 1,
             MemoSort::Source => 2,
         });
+
+        let direction_button = gtk::Button::builder()
+            .css_classes(vec!["flat", "circular"])
+            .build();
+        let set_direction_button = |button: &gtk::Button, descending: bool| {
+            button.set_icon_name(if descending {
+                "view-sort-descending-symbolic"
+            } else {
+                "view-sort-ascending-symbolic"
+            });
+            button.set_tooltip_text(Some(if descending {
+                "Absteigend sortiert"
+            } else {
+                "Aufsteigend sortiert"
+            }));
+        };
+        set_direction_button(&direction_button, memo_sort_descending.get());
         search_entry.set_hexpand(true);
         let search_toolbar = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
@@ -141,6 +163,7 @@ impl MemosPage {
             .build();
         search_toolbar.append(&search_entry);
         search_toolbar.append(&sort_selector);
+        search_toolbar.append(&direction_button);
         sidebar_box.append(&search_toolbar);
 
         let memo_list = gtk::ListBox::builder()
@@ -149,8 +172,15 @@ impl MemosPage {
             .build();
 
         let memo_sort_for_list = Rc::clone(&memo_sort);
+        let memo_sort_descending_for_list = Rc::clone(&memo_sort_descending);
         memo_list.set_sort_func(move |left, right| {
-            compare_memo_rows(left, right, memo_sort_for_list.get()).into()
+            compare_memo_rows(
+                left,
+                right,
+                memo_sort_for_list.get(),
+                memo_sort_descending_for_list.get(),
+            )
+            .into()
         });
 
         let memo_sort_for_selector = Rc::clone(&memo_sort);
@@ -166,6 +196,19 @@ impl MemosPage {
                 settings.set_memo_sort_field(sort.setting_value());
             }
             memo_list_for_sort.invalidate_sort();
+        });
+
+        let memo_sort_descending_for_button = Rc::clone(&memo_sort_descending);
+        let memo_list_for_direction = memo_list.clone();
+        let direction_button_for_signal = direction_button.clone();
+        direction_button.connect_clicked(move |_| {
+            let descending = !memo_sort_descending_for_button.get();
+            memo_sort_descending_for_button.set(descending);
+            if let Some(settings) = AppSettings::try_new() {
+                settings.set_memo_sort_descending(descending);
+            }
+            set_direction_button(&direction_button_for_signal, descending);
+            memo_list_for_direction.invalidate_sort();
         });
 
         let memo_records = Rc::new(RefCell::new(Vec::<MemoRecord>::new()));
@@ -1037,6 +1080,7 @@ fn compare_memo_rows(
     left: &gtk::ListBoxRow,
     right: &gtk::ListBoxRow,
     sort: MemoSort,
+    descending: bool,
 ) -> std::cmp::Ordering {
     let data = |row: &gtk::ListBoxRow, key: &str| unsafe {
         row.data::<String>(key)
@@ -1044,13 +1088,28 @@ fn compare_memo_rows(
             .unwrap_or_default()
     };
     let ordering = match sort {
-        MemoSort::Updated => data(right, "memo-sort-updated").cmp(&data(left, "memo-sort-updated")),
+        MemoSort::Updated => data(left, "memo-sort-updated").cmp(&data(right, "memo-sort-updated")),
         MemoSort::Title => data(left, "memo-sort-title").cmp(&data(right, "memo-sort-title")),
         MemoSort::Source => data(left, "memo-sort-source").cmp(&data(right, "memo-sort-source")),
     };
-    ordering
-        .then_with(|| data(left, "memo-source-uid").cmp(&data(right, "memo-source-uid")))
-        .then_with(|| data(left, "memo-id").cmp(&data(right, "memo-id")))
+    let ordering = if descending {
+        ordering.reverse()
+    } else {
+        ordering
+    };
+    let source_order = data(left, "memo-source-uid").cmp(&data(right, "memo-source-uid"));
+    let source_order = if descending {
+        source_order.reverse()
+    } else {
+        source_order
+    };
+    let id_order = data(left, "memo-id").cmp(&data(right, "memo-id"));
+    let id_order = if descending {
+        id_order.reverse()
+    } else {
+        id_order
+    };
+    ordering.then(source_order).then(id_order)
 }
 
 fn remove_memo_list_row(memo_list: &gtk::ListBox, source_uid: &str, uid: &str) {

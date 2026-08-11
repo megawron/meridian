@@ -38,6 +38,7 @@ mod imp {
         pub ecal_monitor_cancel: RefCell<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>>,
         pub(super) task_filter: Cell<TaskFilter>,
         pub(super) task_sort: Cell<TaskSort>,
+        pub(super) task_sort_descending: Cell<bool>,
         pub task_query: RefCell<String>,
     }
 
@@ -155,6 +156,9 @@ impl TasksPage {
             self.imp()
                 .task_sort
                 .set(TaskSort::from_setting(&settings.task_sort_field()));
+            self.imp()
+                .task_sort_descending
+                .set(settings.task_sort_descending());
         }
         let split = adw::NavigationSplitView::new();
 
@@ -254,6 +258,23 @@ impl TasksPage {
             TaskSort::DueDate => 0,
         });
 
+        let direction_button = gtk::Button::builder()
+            .css_classes(vec!["flat", "circular"])
+            .build();
+        let set_direction_button = |button: &gtk::Button, descending: bool| {
+            button.set_icon_name(if descending {
+                "view-sort-descending-symbolic"
+            } else {
+                "view-sort-ascending-symbolic"
+            });
+            button.set_tooltip_text(Some(if descending {
+                "Absteigend sortiert"
+            } else {
+                "Aufsteigend sortiert"
+            }));
+        };
+        set_direction_button(&direction_button, self.imp().task_sort_descending.get());
+
         let btn_add_task = gtk::Button::builder()
             .label("Neue Aufgabe")
             .icon_name("list-add-symbolic")
@@ -262,6 +283,7 @@ impl TasksPage {
 
         toolbar.append(&search_entry);
         toolbar.append(&sort_selector);
+        toolbar.append(&direction_button);
         toolbar.append(&btn_add_task);
 
         content_box.append(&toolbar);
@@ -323,6 +345,29 @@ impl TasksPage {
                 &task_list_for_sort,
                 &task_store_for_sort,
                 &empty_tasks_for_sort,
+            );
+        });
+
+        let page_weak_for_direction = self.downgrade();
+        let direction_button_for_signal = direction_button.clone();
+        let task_list_for_direction = task_list.clone();
+        let task_store_for_direction = task_store.clone();
+        let empty_tasks_for_direction = empty_tasks.clone();
+        direction_button.connect_clicked(move |_| {
+            let Some(page) = page_weak_for_direction.upgrade() else {
+                return;
+            };
+            let descending = !page.imp().task_sort_descending.get();
+            page.imp().task_sort_descending.set(descending);
+            if let Some(settings) = AppSettings::try_new() {
+                settings.set_task_sort_descending(descending);
+            }
+            set_direction_button(&direction_button_for_signal, descending);
+            render_task_rows(
+                &page,
+                &task_list_for_direction,
+                &task_store_for_direction,
+                &empty_tasks_for_direction,
             );
         });
 
@@ -1060,7 +1105,9 @@ fn render_task_rows(
             tasks.push(task);
         }
     }
-    tasks.sort_by(|left, right| compare_tasks(left, right, sort));
+    tasks.sort_by(|left, right| {
+        compare_tasks(left, right, sort, page.imp().task_sort_descending.get())
+    });
     for task in tasks {
         append_task_row(page, task_list, task_store, empty_tasks, &task);
         visible += 1;
@@ -1087,6 +1134,7 @@ fn compare_tasks(
     left: &TaskItemObject,
     right: &TaskItemObject,
     sort: TaskSort,
+    descending: bool,
 ) -> std::cmp::Ordering {
     let completed_order = left.is_completed().cmp(&right.is_completed());
     let ordering = match sort {
@@ -1098,19 +1146,29 @@ fn compare_tasks(
             .title()
             .to_lowercase()
             .cmp(&right.title().to_lowercase()),
-        TaskSort::Priority => right
+        TaskSort::Priority => left
             .priority()
             .parse::<u8>()
             .unwrap_or(0)
-            .cmp(&left.priority().parse::<u8>().unwrap_or(0)),
+            .cmp(&right.priority().parse::<u8>().unwrap_or(0)),
+    };
+    let ordering = if descending {
+        ordering.reverse()
+    } else {
+        ordering
+    };
+    let title_order = left
+        .title()
+        .to_lowercase()
+        .cmp(&right.title().to_lowercase());
+    let title_order = if descending {
+        title_order.reverse()
+    } else {
+        title_order
     };
     completed_order
         .then(ordering)
-        .then_with(|| {
-            left.title()
-                .to_lowercase()
-                .cmp(&right.title().to_lowercase())
-        })
+        .then(title_order)
         .then_with(|| left.id().cmp(&right.id()))
 }
 
