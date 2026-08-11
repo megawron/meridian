@@ -32,6 +32,9 @@ mod imp {
     #[derive(Debug, Default)]
     pub struct MemosPage {
         pub ecal_monitor_cancel: RefCell<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>>,
+        pub memo_category_filter: RefCell<Option<String>>,
+        pub memo_category_model: RefCell<Option<gtk::StringList>>,
+        pub memo_category_selector: RefCell<Option<gtk::DropDown>>,
     }
 
     #[glib::object_subclass]
@@ -166,6 +169,16 @@ impl MemosPage {
             gtk::DropDown::new(Some(source_model.clone()), None::<&gtk::Expression>);
         source_selector.set_tooltip_text(Some("Notizliste auswählen"));
         let initial_source_filter = memo_source_filter.borrow().clone();
+        let category_model = gtk::StringList::new(&["Alle Kategorien"]);
+        let category_selector =
+            gtk::DropDown::new(Some(category_model.clone()), None::<&gtk::Expression>);
+        category_selector.set_tooltip_text(Some("Notizkategorie auswählen"));
+        self.imp()
+            .memo_category_model
+            .replace(Some(category_model.clone()));
+        self.imp()
+            .memo_category_selector
+            .replace(Some(category_selector.clone()));
         search_entry.set_hexpand(true);
         let search_toolbar = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
@@ -176,6 +189,7 @@ impl MemosPage {
         search_toolbar.append(&sort_selector);
         search_toolbar.append(&direction_button);
         search_toolbar.append(&source_selector);
+        search_toolbar.append(&category_selector);
         sidebar_box.append(&search_toolbar);
 
         let memo_list = gtk::ListBox::builder()
@@ -241,6 +255,7 @@ impl MemosPage {
 
         let memo_records_for_search = Rc::clone(&memo_records);
         let memo_source_filter_for_search = Rc::clone(&memo_source_filter);
+        let page_weak_for_search = self.downgrade();
         let empty_state_for_search = empty_state.clone();
         search_entry.connect_search_changed(glib::clone!(
             #[weak]
@@ -248,16 +263,33 @@ impl MemosPage {
             move |entry| {
                 let query = entry.text().trim().to_lowercase();
                 let source_filter = memo_source_filter_for_search.borrow().clone();
-                apply_memo_list_filter(&memo_list, source_filter.clone(), query.clone());
-                empty_state_for_search.set_label(if query.is_empty() && source_filter.is_none() {
-                    "Keine Notizen aus EDS geladen"
-                } else {
-                    "Keine passenden Notizen"
+                if let Some(page) = page_weak_for_search.upgrade() {
+                    refresh_memo_category_model(&page, &memo_list);
+                }
+                let category_filter = page_weak_for_search
+                    .upgrade()
+                    .and_then(|page| page.imp().memo_category_filter.borrow().clone());
+                apply_memo_list_filter(
+                    &memo_list,
+                    source_filter.clone(),
+                    category_filter.clone(),
+                    query.clone(),
+                );
+                empty_state_for_search.set_label(
+                    if query.is_empty() && source_filter.is_none() && category_filter.is_none() {
+                        "Keine Notizen aus EDS geladen"
+                    } else {
+                        "Keine passenden Notizen"
+                    },
+                );
+                let has_records = memo_records_for_search.borrow().iter().any(|memo| {
+                    memo_matches_filter(
+                        memo,
+                        source_filter.as_deref(),
+                        category_filter.as_deref(),
+                        &query,
+                    )
                 });
-                let has_records = memo_records_for_search
-                    .borrow()
-                    .iter()
-                    .any(|memo| memo_matches_filter(memo, source_filter.as_deref(), &query));
                 empty_state_for_search.set_visible(!has_records);
             }
         ));
@@ -267,6 +299,7 @@ impl MemosPage {
         let search_entry_for_source = search_entry.clone();
         let memo_list_for_source = memo_list.clone();
         let memo_records_for_source = Rc::clone(&memo_records);
+        let page_weak_for_source = self.downgrade();
         let empty_state_for_source = empty_state.clone();
         source_selector.connect_selected_notify(move |selector| {
             let source_filter = if selector.selected() == 0 {
@@ -282,17 +315,74 @@ impl MemosPage {
                 settings.set_memo_source_filter(source_filter.as_deref().unwrap_or_default());
             }
             let query = search_entry_for_source.text().trim().to_lowercase();
-            apply_memo_list_filter(&memo_list_for_source, source_filter.clone(), query.clone());
-            empty_state_for_source.set_label(if query.is_empty() && source_filter.is_none() {
-                "Keine Notizen aus EDS geladen"
-            } else {
-                "Keine passenden Notizen"
+            if let Some(page) = page_weak_for_source.upgrade() {
+                refresh_memo_category_model(&page, &memo_list_for_source);
+            }
+            let category_filter = page_weak_for_source
+                .upgrade()
+                .and_then(|page| page.imp().memo_category_filter.borrow().clone());
+            apply_memo_list_filter(
+                &memo_list_for_source,
+                source_filter.clone(),
+                category_filter.clone(),
+                query.clone(),
+            );
+            empty_state_for_source.set_label(
+                if query.is_empty() && source_filter.is_none() && category_filter.is_none() {
+                    "Keine Notizen aus EDS geladen"
+                } else {
+                    "Keine passenden Notizen"
+                },
+            );
+            let has_records = memo_records_for_source.borrow().iter().any(|memo| {
+                memo_matches_filter(
+                    memo,
+                    source_filter.as_deref(),
+                    category_filter.as_deref(),
+                    &query,
+                )
             });
-            let has_records = memo_records_for_source
-                .borrow()
-                .iter()
-                .any(|memo| memo_matches_filter(memo, source_filter.as_deref(), &query));
             empty_state_for_source.set_visible(!has_records);
+        });
+
+        let page_weak_for_category = self.downgrade();
+        let category_model_for_selector = category_model.clone();
+        let memo_source_filter_for_category = Rc::clone(&memo_source_filter);
+        let search_entry_for_category = search_entry.clone();
+        let memo_list_for_category = memo_list.clone();
+        let memo_records_for_category = Rc::clone(&memo_records);
+        let empty_state_for_category = empty_state.clone();
+        category_selector.connect_selected_notify(move |selector| {
+            let Some(page) = page_weak_for_category.upgrade() else {
+                return;
+            };
+            let category = if selector.selected() == 0 {
+                None
+            } else {
+                category_model_for_selector
+                    .string(selector.selected())
+                    .map(|value| value.to_string())
+            };
+            page.imp().memo_category_filter.replace(category.clone());
+            let source_filter = memo_source_filter_for_category.borrow().clone();
+            let query = search_entry_for_category.text().trim().to_lowercase();
+            apply_memo_list_filter(
+                &memo_list_for_category,
+                source_filter.clone(),
+                category.clone(),
+                query.clone(),
+            );
+            empty_state_for_category.set_label(
+                if query.is_empty() && source_filter.is_none() && category.is_none() {
+                    "Keine Notizen aus EDS geladen"
+                } else {
+                    "Keine passenden Notizen"
+                },
+            );
+            let has_records = memo_records_for_category.borrow().iter().any(|memo| {
+                memo_matches_filter(memo, source_filter.as_deref(), category.as_deref(), &query)
+            });
+            empty_state_for_category.set_visible(!has_records);
         });
 
         let source_model_for_load = source_model.clone();
@@ -543,6 +633,7 @@ impl MemosPage {
                         memo_categories_for_result.set_text(&categories);
                         memo_text_for_result.buffer().set_text(&description);
                         if let Some(page) = page_weak_for_result.upgrade() {
+                            refresh_memo_category_model(&page, &memo_list_for_result);
                             page.show_toast(&format!("Notiz aktualisiert ({})", memo.uid));
                         }
                     }
@@ -686,6 +777,7 @@ impl MemosPage {
                                 empty_state_for_result
                                     .set_visible(memo_records_for_result.borrow().is_empty());
                                 if let Some(page) = page_weak_for_result.upgrade() {
+                                    refresh_memo_category_model(&page, &memo_list_for_result);
                                     page.show_toast(&format!("Notiz gelöscht ({uid})"));
                                 }
                             }
@@ -749,6 +841,7 @@ impl MemosPage {
         let empty_state_for_load = empty_state.clone();
         let memo_meta_for_load = memo_meta.clone();
         let memo_records_for_load = Rc::clone(&memo_records);
+        let page_weak_for_load = self.downgrade();
         let (memo_sender, memo_receiver) = async_channel::bounded(1);
         std::thread::spawn(move || {
             let result = load_snapshot_prefer_eds();
@@ -785,6 +878,9 @@ impl MemosPage {
                             );
                         }
                     }
+                    if let Some(page) = page_weak_for_load.upgrade() {
+                        refresh_memo_category_model(&page, &memo_list_for_load);
+                    }
                 }
                 Err(error) => tracing::debug!(%error, "Memo snapshot unavailable"),
             }
@@ -800,6 +896,7 @@ impl MemosPage {
             let memo_categories_for_monitor = memo_categories.clone();
             let memo_meta_for_monitor = memo_meta.clone();
             let memo_text_for_monitor = memo_text.clone();
+            let page_weak_for_monitor = self.downgrade();
             glib::spawn_future_local(async move {
                 while let Ok(event) = receiver.recv().await {
                     match event {
@@ -871,6 +968,9 @@ impl MemosPage {
                     }
                     empty_state_for_monitor
                         .set_visible(memo_records_for_monitor.borrow().is_empty());
+                    if let Some(page) = page_weak_for_monitor.upgrade() {
+                        refresh_memo_category_model(&page, &memo_list_for_monitor);
+                    }
                 }
             });
         }
@@ -1116,6 +1216,7 @@ impl MemosPage {
                         );
                         empty_state_for_result.set_visible(false);
                         if let Some(page) = page_weak_for_result.upgrade() {
+                            refresh_memo_category_model(&page, &memo_list_for_result);
                             page.show_toast(&format!("Notiz gespeichert ({uid})"));
                         }
                         dialog.close();
@@ -1165,6 +1266,7 @@ fn append_memo_row(memo_list: &gtk::ListBox, memo: &MemoRecord) {
         row.set_data("memo-id", memo.uid.clone());
         row.set_data("memo-source-uid", memo.source_uid.clone());
         row.set_data("memo-search", memo_search_text(memo));
+        row.set_data("memo-categories", component_categories(&memo.component));
         row.set_data("memo-sort-updated", memo.updated.to_lowercase());
         row.set_data("memo-sort-title", memo.summary.to_lowercase());
         row.set_data("memo-sort-source", memo.source_display_name.to_lowercase());
@@ -1192,22 +1294,105 @@ fn memo_search_text(memo: &MemoRecord) -> String {
     .to_lowercase()
 }
 
-fn memo_matches_filter(memo: &MemoRecord, source_filter: Option<&str>, query: &str) -> bool {
+fn refresh_memo_category_model(page: &MemosPage, memo_list: &gtk::ListBox) {
+    let Some(model) = page.imp().memo_category_model.borrow().as_ref().cloned() else {
+        return;
+    };
+    let Some(selector) = page.imp().memo_category_selector.borrow().as_ref().cloned() else {
+        return;
+    };
+
+    let mut categories = CalendarCategoryStore::default()
+        .load()
+        .into_iter()
+        .map(|category| category.name)
+        .collect::<Vec<_>>();
+    let mut child = memo_list.first_child();
+    while let Some(widget) = child {
+        child = widget.next_sibling();
+        let Ok(row) = widget.downcast::<gtk::ListBoxRow>() else {
+            continue;
+        };
+        let values = unsafe {
+            row.data::<String>("memo-categories")
+                .map(|value| value.as_ref().clone())
+                .unwrap_or_default()
+        };
+        categories.extend(
+            values
+                .split(',')
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned),
+        );
+    }
+    categories.sort_by_cached_key(|category| category.to_lowercase());
+    categories.dedup_by(|left, right| left.eq_ignore_ascii_case(right));
+
+    let current_filter = page.imp().memo_category_filter.borrow().clone();
+    let selected = current_filter
+        .as_deref()
+        .and_then(|filter| {
+            categories
+                .iter()
+                .position(|category| category.eq_ignore_ascii_case(filter))
+        })
+        .map(|index| index as u32 + 1)
+        .unwrap_or(0);
+    if current_filter.is_some() && selected == 0 {
+        page.imp().memo_category_filter.replace(None);
+    }
+
+    let mut names = vec!["Alle Kategorien".to_string()];
+    names.extend(categories);
+    let name_refs = names.iter().map(String::as_str).collect::<Vec<_>>();
+    model.splice(0, model.n_items(), &name_refs);
+    if selector.selected() != selected {
+        selector.set_selected(selected);
+    }
+}
+
+fn memo_matches_filter(
+    memo: &MemoRecord,
+    source_filter: Option<&str>,
+    category_filter: Option<&str>,
+    query: &str,
+) -> bool {
     source_filter.is_none_or(|source_uid| memo.source_uid == source_uid)
+        && category_filter.is_none_or(|category| {
+            component_categories(&memo.component)
+                .split(',')
+                .map(str::trim)
+                .any(|value| value.eq_ignore_ascii_case(category))
+        })
         && (query.is_empty() || memo_search_text(memo).contains(query))
 }
 
-fn apply_memo_list_filter(memo_list: &gtk::ListBox, source_filter: Option<String>, query: String) {
+fn apply_memo_list_filter(
+    memo_list: &gtk::ListBox,
+    source_filter: Option<String>,
+    category_filter: Option<String>,
+    query: String,
+) {
     memo_list.set_filter_func(move |row| unsafe {
         let source_matches = source_filter.as_deref().is_none_or(|source_uid| {
             row.data::<String>("memo-source-uid")
                 .is_some_and(|value| value.as_ref() == source_uid)
         });
+        let category_matches = category_filter.as_deref().is_none_or(|category| {
+            row.data::<String>("memo-categories").is_some_and(|value| {
+                value
+                    .as_ref()
+                    .split(',')
+                    .map(str::trim)
+                    .any(|value| value.eq_ignore_ascii_case(category))
+            })
+        });
         let query_matches = query.is_empty()
             || row
                 .data::<String>("memo-search")
                 .is_some_and(|value| value.as_ref().contains(&query));
-        source_matches && query_matches
+        source_matches && category_matches && query_matches
     });
 }
 
@@ -1415,6 +1600,8 @@ mod tests {
         assert!(search.contains("release notes"));
         assert!(search.contains("migration"));
         assert!(search.contains("project-x"));
+        assert!(memo_matches_filter(&memo, None, Some("project-x"), ""));
+        assert!(!memo_matches_filter(&memo, None, Some("personal"), ""));
     }
 }
 

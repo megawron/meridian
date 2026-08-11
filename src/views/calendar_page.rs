@@ -11,6 +11,7 @@ use std::collections::HashSet;
 use std::rc::Rc;
 
 use crate::services::calendar_category_service::CalendarCategoryStore;
+use crate::services::calendar_category_service::category_names_from_ical_component;
 use crate::services::calendar_store_service::{
     CalendarEventRecord, CalendarStoreService, export_ical_component, update_ical_property,
 };
@@ -52,6 +53,10 @@ mod imp {
         pub agenda_view: RefCell<Option<gtk::Box>>,
         pub event_records: RefCell<Option<Rc<RefCell<Vec<CalendarEventRecord>>>>>,
         pub event_list: RefCell<Option<gtk::ListBox>>,
+        pub calendar_search_query: RefCell<String>,
+        pub calendar_category_filter: RefCell<Option<String>>,
+        pub calendar_category_model: RefCell<Option<gtk::StringList>>,
+        pub calendar_category_selector: RefCell<Option<gtk::DropDown>>,
         pub hidden_calendar_sources: RefCell<HashSet<String>>,
         pub ecal_monitor_cancel: RefCell<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>>,
     }
@@ -69,6 +74,10 @@ mod imp {
                 agenda_view: RefCell::new(None),
                 event_records: RefCell::new(None),
                 event_list: RefCell::new(None),
+                calendar_search_query: RefCell::new(String::new()),
+                calendar_category_filter: RefCell::new(None),
+                calendar_category_model: RefCell::new(None),
+                calendar_category_selector: RefCell::new(None),
                 hidden_calendar_sources: RefCell::new(HashSet::new()),
                 ecal_monitor_cancel: RefCell::new(None),
             }
@@ -205,6 +214,52 @@ impl CalendarPage {
             .event_records
             .replace(Some(Rc::clone(&event_records)));
         self.imp().event_list.replace(Some(event_list.clone()));
+
+        let category_model = gtk::StringList::new(&["Alle Kategorien"]);
+        let category_selector =
+            gtk::DropDown::new(Some(category_model.clone()), None::<&gtk::Expression>);
+        category_selector.set_tooltip_text(Some("Terminkategorie auswählen"));
+        self.imp()
+            .calendar_category_model
+            .replace(Some(category_model.clone()));
+        self.imp()
+            .calendar_category_selector
+            .replace(Some(category_selector.clone()));
+
+        let calendar_search_entry = gtk::SearchEntry::builder()
+            .placeholder_text("Termine durchsuchen…")
+            .hexpand(true)
+            .width_chars(18)
+            .build();
+        let page_weak_for_search = self.downgrade();
+        calendar_search_entry.connect_search_changed(move |entry| {
+            let Some(page) = page_weak_for_search.upgrade() else {
+                return;
+            };
+            page.imp()
+                .calendar_search_query
+                .replace(entry.text().trim().to_lowercase());
+            page.refresh_calendar_views();
+            page.refresh_event_list_visibility();
+        });
+
+        let page_weak_for_category = self.downgrade();
+        let category_model_for_selector = category_model.clone();
+        category_selector.connect_selected_notify(move |selector| {
+            let Some(page) = page_weak_for_category.upgrade() else {
+                return;
+            };
+            let category = if selector.selected() == 0 {
+                None
+            } else {
+                category_model_for_selector
+                    .string(selector.selected())
+                    .map(|value| value.to_string())
+            };
+            page.imp().calendar_category_filter.replace(category);
+            page.refresh_calendar_views();
+            page.refresh_event_list_visibility();
+        });
 
         let local_item_state_for_load = local_item_state.clone();
         let event_list_for_load = event_list.clone();
@@ -617,6 +672,8 @@ impl CalendarPage {
         view_toolbar.append(&date_label);
         view_toolbar.append(&btn_availability);
         view_toolbar.append(&btn_add_event);
+        view_toolbar.append(&calendar_search_entry);
+        view_toolbar.append(&category_selector);
         view_toolbar.append(&view_toggle);
 
         content_box.append(&view_toolbar);
@@ -864,12 +921,73 @@ impl CalendarPage {
     }
 
     fn refresh_calendar_views(&self) {
+        self.refresh_calendar_category_model();
         self.refresh_month_grid();
         self.refresh_day_view();
         self.refresh_week_view();
         self.refresh_workweek_view();
         self.refresh_agenda_view();
         self.refresh_period_label();
+    }
+
+    fn refresh_calendar_category_model(&self) {
+        let Some(model) = self
+            .imp()
+            .calendar_category_model
+            .borrow()
+            .as_ref()
+            .cloned()
+        else {
+            return;
+        };
+        let Some(selector) = self
+            .imp()
+            .calendar_category_selector
+            .borrow()
+            .as_ref()
+            .cloned()
+        else {
+            return;
+        };
+
+        let mut categories = CalendarCategoryStore::default()
+            .load()
+            .into_iter()
+            .map(|category| category.name)
+            .collect::<Vec<_>>();
+        if let Some(records) = self.imp().event_records.borrow().as_ref() {
+            categories.extend(
+                records
+                    .borrow()
+                    .iter()
+                    .flat_map(|event| category_names_from_ical_component(&event.component)),
+            );
+        }
+        categories.retain(|category| !category.trim().is_empty());
+        categories.sort_by_cached_key(|category| category.to_lowercase());
+        categories.dedup_by(|left, right| left.eq_ignore_ascii_case(right));
+
+        let current_filter = self.imp().calendar_category_filter.borrow().clone();
+        let selected = current_filter
+            .as_deref()
+            .and_then(|filter| {
+                categories
+                    .iter()
+                    .position(|category| category.eq_ignore_ascii_case(filter))
+            })
+            .map(|index| index as u32 + 1)
+            .unwrap_or(0);
+        if current_filter.is_some() && selected == 0 {
+            self.imp().calendar_category_filter.replace(None);
+        }
+
+        let mut names = vec!["Alle Kategorien".to_string()];
+        names.extend(categories);
+        let name_refs = names.iter().map(String::as_str).collect::<Vec<_>>();
+        model.splice(0, model.n_items(), &name_refs);
+        if selector.selected() != selected {
+            selector.set_selected(selected);
+        }
     }
 
     fn refresh_event_list_visibility(&self) {
@@ -888,7 +1006,16 @@ impl CalendarPage {
                     .map(|value| value.as_ref().clone())
                     .unwrap_or_default()
             };
-            let visible = self.calendar_source_is_visible(&source_uid);
+            let category_matches = unsafe {
+                row.data::<String>("event-categories")
+                    .is_none_or(|value| self.calendar_category_matches(value.as_ref()))
+            };
+            let search_matches = unsafe {
+                row.data::<String>("event-search")
+                    .is_none_or(|value| self.calendar_search_matches(value.as_ref()))
+            };
+            let visible =
+                self.calendar_source_is_visible(&source_uid) && category_matches && search_matches;
             row.set_visible(visible);
             if visible {
                 visible_count += 1;
@@ -1321,10 +1448,7 @@ impl CalendarPage {
                 records
                     .borrow()
                     .iter()
-                    .filter(|event| {
-                        self.calendar_source_is_visible(&event.source_uid)
-                            && event_occurs_on(event, date)
-                    })
+                    .filter(|event| self.event_is_visible(event) && event_occurs_on(event, date))
                     .cloned()
                     .collect()
             })
@@ -1339,6 +1463,31 @@ impl CalendarPage {
             .contains(source_uid)
     }
 
+    fn calendar_category_matches(&self, categories: &str) -> bool {
+        self.imp()
+            .calendar_category_filter
+            .borrow()
+            .as_deref()
+            .is_none_or(|filter| {
+                categories
+                    .split('\u{1f}')
+                    .any(|category| category.eq_ignore_ascii_case(filter))
+            })
+    }
+
+    fn calendar_search_matches(&self, search_text: &str) -> bool {
+        let query = self.imp().calendar_search_query.borrow();
+        query.is_empty() || search_text.contains(query.as_str())
+    }
+
+    fn event_is_visible(&self, event: &CalendarEventRecord) -> bool {
+        self.calendar_source_is_visible(&event.source_uid)
+            && self.calendar_search_matches(&calendar_event_search_text(event))
+            && self.calendar_category_matches(
+                &category_names_from_ical_component(&event.component).join("\u{1f}"),
+            )
+    }
+
     fn visible_event_records(&self) -> Vec<CalendarEventRecord> {
         self.imp()
             .event_records
@@ -1348,7 +1497,7 @@ impl CalendarPage {
                 records
                     .borrow()
                     .iter()
-                    .filter(|event| self.calendar_source_is_visible(&event.source_uid))
+                    .filter(|event| self.event_is_visible(event))
                     .cloned()
                     .collect()
             })
@@ -1931,6 +2080,19 @@ fn empty_period_row(title: &str, subtitle: &str) -> adw::ActionRow {
         .build()
 }
 
+fn calendar_event_search_text(event: &CalendarEventRecord) -> String {
+    format!(
+        "{} {} {} {} {} {}",
+        event.summary,
+        event.location,
+        event.description,
+        event.start,
+        event.end,
+        event.source_display_name,
+    )
+    .to_lowercase()
+}
+
 fn calendar_event_row(event: &CalendarEventRecord) -> adw::ActionRow {
     let mut details = vec![event_time_text(event)];
     if !event.location.trim().is_empty() {
@@ -2224,6 +2386,11 @@ fn append_event_row(
     unsafe {
         row.set_data("event-id", event.uid.clone());
         row.set_data("event-source-uid", event.source_uid.clone());
+        row.set_data(
+            "event-categories",
+            category_names_from_ical_component(&event.component).join("\u{1f}"),
+        );
+        row.set_data("event-search", calendar_event_search_text(&event));
     }
 
     let edit_button = gtk::Button::builder()
@@ -2472,6 +2639,17 @@ mod tests {
     #[test]
     fn month_event_date_rejects_unparseable_backend_values() {
         assert_eq!(event_start_date(&event_with_start("not-a-date")), None);
+    }
+
+    #[test]
+    fn calendar_search_text_includes_event_metadata() {
+        let mut event = event_with_start("2026-08-10 12:00");
+        event.location = "Berlin Büro".to_string();
+        event.description = "Quartalsplanung".to_string();
+        let search = calendar_event_search_text(&event);
+        assert!(search.contains("berlin büro"));
+        assert!(search.contains("quartalsplanung"));
+        assert!(search.contains("2026-08-10"));
     }
 
     #[test]

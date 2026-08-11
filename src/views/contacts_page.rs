@@ -99,9 +99,19 @@ impl ContactsPage {
         book_selector.set_margin_bottom(8);
         sidebar_box.append(&book_selector);
 
+        let category_model = gtk::StringList::new(&["Alle Kategorien"]);
+        let category_selector =
+            gtk::DropDown::new(Some(category_model.clone()), None::<&gtk::Expression>);
+        category_selector.set_tooltip_text(Some("Kontaktkategorie auswählen"));
+        category_selector.set_margin_start(8);
+        category_selector.set_margin_end(8);
+        category_selector.set_margin_bottom(8);
+        sidebar_box.append(&category_selector);
+
         let search_query = Rc::new(RefCell::new(String::new()));
         let selected_book = Rc::new(RefCell::new(String::new()));
         let book_source_uids = Rc::new(RefCell::new(vec![String::new()]));
+        let selected_category = Rc::new(RefCell::new(String::new()));
         let duplicate_only = Rc::new(Cell::new(false));
 
         let duplicate_filter_row = adw::SwitchRow::builder()
@@ -185,6 +195,7 @@ impl ContactsPage {
             &contact_list,
             Rc::clone(&search_query),
             Rc::clone(&selected_book),
+            Rc::clone(&selected_category),
             Rc::clone(&duplicate_only),
         );
 
@@ -193,10 +204,14 @@ impl ContactsPage {
             Rc::clone(&stored_contacts),
             empty_state.clone(),
             Rc::clone(&selected_contact),
+            category_model.clone(),
+            category_selector.clone(),
+            Rc::clone(&selected_category),
         );
 
         let search_query_for_filter = Rc::clone(&search_query);
         let selected_book_for_search = Rc::clone(&selected_book);
+        let selected_category_for_search = Rc::clone(&selected_category);
         let duplicate_only_for_search = Rc::clone(&duplicate_only);
         search_entry.connect_search_changed(glib::clone!(
             #[weak]
@@ -207,6 +222,7 @@ impl ContactsPage {
                     &contact_list,
                     Rc::clone(&search_query_for_filter),
                     Rc::clone(&selected_book_for_search),
+                    Rc::clone(&selected_category_for_search),
                     Rc::clone(&duplicate_only_for_search),
                 );
             }
@@ -214,6 +230,7 @@ impl ContactsPage {
 
         let selected_book_for_filter = Rc::clone(&selected_book);
         let search_query_for_book = Rc::clone(&search_query);
+        let selected_category_for_book = Rc::clone(&selected_category);
         let duplicate_only_for_book = Rc::clone(&duplicate_only);
         let book_source_uids_for_filter = Rc::clone(&book_source_uids);
         book_selector.connect_selected_notify(glib::clone!(
@@ -233,6 +250,7 @@ impl ContactsPage {
                     &contact_list,
                     Rc::clone(&search_query_for_book),
                     Rc::clone(&selected_book_for_filter),
+                    Rc::clone(&selected_category_for_book),
                     Rc::clone(&duplicate_only_for_book),
                 );
             }
@@ -240,6 +258,7 @@ impl ContactsPage {
 
         let search_query_for_duplicates = Rc::clone(&search_query);
         let selected_book_for_duplicates = Rc::clone(&selected_book);
+        let selected_category_for_duplicates = Rc::clone(&selected_category);
         let duplicate_only_for_duplicates = Rc::clone(&duplicate_only);
         duplicate_filter_row.connect_active_notify(glib::clone!(
             #[weak]
@@ -250,7 +269,36 @@ impl ContactsPage {
                     &contact_list,
                     Rc::clone(&search_query_for_duplicates),
                     Rc::clone(&selected_book_for_duplicates),
+                    Rc::clone(&selected_category_for_duplicates),
                     Rc::clone(&duplicate_only_for_duplicates),
+                );
+            }
+        ));
+
+        let selected_category_for_selector = Rc::clone(&selected_category);
+        let search_query_for_category = Rc::clone(&search_query);
+        let selected_book_for_category = Rc::clone(&selected_book);
+        let duplicate_only_for_category = Rc::clone(&duplicate_only);
+        let category_model_for_selector = category_model.clone();
+        category_selector.connect_selected_notify(glib::clone!(
+            #[weak]
+            contact_list,
+            move |selector| {
+                let category = if selector.selected() == 0 {
+                    String::new()
+                } else {
+                    category_model_for_selector
+                        .string(selector.selected())
+                        .map(|value| value.to_string())
+                        .unwrap_or_default()
+                };
+                selected_category_for_selector.replace(category);
+                set_contact_filter(
+                    &contact_list,
+                    Rc::clone(&search_query_for_category),
+                    Rc::clone(&selected_book_for_category),
+                    Rc::clone(&selected_category_for_selector),
+                    Rc::clone(&duplicate_only_for_category),
                 );
             }
         ));
@@ -282,6 +330,9 @@ impl ContactsPage {
         let stored_contacts_for_new = Rc::clone(&stored_contacts);
         let empty_state_for_new = empty_state.clone();
         let selected_contact_for_new = Rc::clone(&selected_contact);
+        let category_model_for_new = category_model.clone();
+        let category_selector_for_new = category_selector.clone();
+        let selected_category_for_new = Rc::clone(&selected_category);
         new_contact_btn.connect_clicked(glib::clone!(
             #[weak(rename_to = page)]
             self,
@@ -295,12 +346,18 @@ impl ContactsPage {
                 let stored_contacts_for_close = Rc::clone(&stored_contacts_for_new);
                 let empty_state_for_close = empty_state_for_new.clone();
                 let selected_contact_for_close = Rc::clone(&selected_contact_for_new);
+                let category_model_for_close = category_model_for_new.clone();
+                let category_selector_for_close = category_selector_for_new.clone();
+                let selected_category_for_close = Rc::clone(&selected_category_for_new);
                 dialog.connect_close_request(move |_| {
                     refresh_contacts(
                         contact_list_for_close.clone(),
                         Rc::clone(&stored_contacts_for_close),
                         empty_state_for_close.clone(),
                         Rc::clone(&selected_contact_for_close),
+                        category_model_for_close.clone(),
+                        category_selector_for_close.clone(),
+                        Rc::clone(&selected_category_for_close),
                     );
                     glib::Propagation::Proceed
                 });
@@ -389,6 +446,9 @@ impl ContactsPage {
         let contact_list_for_edit = contact_list.clone();
         let stored_contacts_for_edit = Rc::clone(&stored_contacts);
         let empty_state_for_edit = empty_state.clone();
+        let category_model_for_edit = category_model.clone();
+        let category_selector_for_edit = category_selector.clone();
+        let selected_category_for_edit = Rc::clone(&selected_category);
         edit_btn.connect_clicked(glib::clone!(
             #[weak(rename_to = page)]
             self,
@@ -412,12 +472,18 @@ impl ContactsPage {
                 let stored_contacts_for_close = Rc::clone(&stored_contacts_for_edit);
                 let empty_state_for_close = empty_state_for_edit.clone();
                 let selected_contact_for_close = Rc::clone(&selected_contact_for_edit_refresh);
+                let category_model_for_close = category_model_for_edit.clone();
+                let category_selector_for_close = category_selector_for_edit.clone();
+                let selected_category_for_close = Rc::clone(&selected_category_for_edit);
                 dialog.connect_close_request(move |_| {
                     refresh_contacts(
                         contact_list_for_close.clone(),
                         Rc::clone(&stored_contacts_for_close),
                         empty_state_for_close.clone(),
                         Rc::clone(&selected_contact_for_close),
+                        category_model_for_close.clone(),
+                        category_selector_for_close.clone(),
+                        Rc::clone(&selected_category_for_close),
                     );
                     glib::Propagation::Proceed
                 });
@@ -703,6 +769,9 @@ impl ContactsPage {
             let detail_title_for_monitor = detail_title.clone();
             let detail_extra_for_monitor = detail_extra.clone();
             let email_row_for_monitor = email_row1.clone();
+            let category_model_for_monitor = category_model.clone();
+            let category_selector_for_monitor = category_selector.clone();
+            let selected_category_for_monitor = Rc::clone(&selected_category);
             glib::spawn_future_local(async move {
                 while let Ok(event) = receiver.recv().await {
                     match event {
@@ -779,6 +848,12 @@ impl ContactsPage {
                     }
                     empty_state_for_monitor
                         .set_visible(stored_contacts_for_monitor.borrow().is_empty());
+                    refresh_contact_category_model(
+                        &category_model_for_monitor,
+                        &category_selector_for_monitor,
+                        &stored_contacts_for_monitor,
+                        &selected_category_for_monitor,
+                    );
                 }
             });
         }
@@ -810,6 +885,9 @@ fn refresh_contacts(
     stored_contacts: Rc<RefCell<Vec<EBookContactRecord>>>,
     empty_state: gtk::Label,
     selected_contact: Rc<RefCell<Option<EBookContactRecord>>>,
+    category_model: gtk::StringList,
+    category_selector: gtk::DropDown,
+    selected_category: Rc<RefCell<String>>,
 ) {
     while let Some(row) = contact_list.row_at_index(0) {
         contact_list.remove(&row);
@@ -837,6 +915,12 @@ fn refresh_contacts(
                         EBookDataOrigin::Eds => "Keine Kontakte aus EDS geladen",
                         EBookDataOrigin::Local => "Keine lokalen vCards geladen",
                     });
+                    refresh_contact_category_model(
+                        &category_model,
+                        &category_selector,
+                        &stored_contacts,
+                        &selected_category,
+                    );
                     return;
                 }
                 let origin = match result.origin {
@@ -850,9 +934,21 @@ fn refresh_contacts(
                 for record in result.contacts {
                     upsert_contact_row(&contact_list, Rc::clone(&stored_contacts), record);
                 }
+                refresh_contact_category_model(
+                    &category_model,
+                    &category_selector,
+                    &stored_contacts,
+                    &selected_category,
+                );
             }
             Err(error) => {
                 empty_state.set_label(&format!("Kontakte konnten nicht geladen werden: {error}"));
+                refresh_contact_category_model(
+                    &category_model,
+                    &category_selector,
+                    &stored_contacts,
+                    &selected_category,
+                );
             }
         }
     });
@@ -862,10 +958,12 @@ fn set_contact_filter(
     contact_list: &gtk::ListBox,
     search_query: Rc<RefCell<String>>,
     selected_book: Rc<RefCell<String>>,
+    selected_category: Rc<RefCell<String>>,
     duplicate_only: Rc<Cell<bool>>,
 ) {
     contact_list.set_filter_func(move |row| unsafe {
         let source_filter = selected_book.borrow().clone();
+        let category_filter = selected_category.borrow().clone();
         let query = search_query.borrow().clone();
         let source_matches = source_filter.is_empty()
             || row
@@ -875,12 +973,64 @@ fn set_contact_filter(
             || row
                 .data::<String>("contact-search")
                 .is_some_and(|value| value.as_ref().contains(query.as_str()));
+        let category_matches = category_filter.is_empty()
+            || row
+                .data::<String>("contact-categories")
+                .is_some_and(|value| {
+                    contact_category_matches(value.as_ref(), category_filter.as_str())
+                });
         let duplicate_matches = !duplicate_only.get()
             || row
                 .data::<bool>("contact-duplicate")
                 .is_some_and(|value| *value.as_ref());
-        source_matches && search_matches && duplicate_matches
+        source_matches && search_matches && category_matches && duplicate_matches
     });
+}
+
+fn contact_category_matches(categories: &str, filter: &str) -> bool {
+    categories
+        .split('\u{1f}')
+        .any(|category| category.eq_ignore_ascii_case(filter))
+}
+
+fn refresh_contact_category_model(
+    category_model: &gtk::StringList,
+    category_selector: &gtk::DropDown,
+    stored_contacts: &Rc<RefCell<Vec<EBookContactRecord>>>,
+    selected_category: &Rc<RefCell<String>>,
+) {
+    let mut categories = stored_contacts
+        .borrow()
+        .iter()
+        .flat_map(|record| record.contact.categories.iter())
+        .map(|category| category.trim().to_string())
+        .filter(|category| !category.is_empty())
+        .collect::<Vec<_>>();
+    categories.sort_by_cached_key(|category| category.to_lowercase());
+    categories.dedup_by(|left, right| left.eq_ignore_ascii_case(right));
+
+    let current = selected_category.borrow().clone();
+    let selected = current
+        .is_empty()
+        .then_some(0)
+        .or_else(|| {
+            categories
+                .iter()
+                .position(|category| category.eq_ignore_ascii_case(&current))
+                .map(|index| index as u32 + 1)
+        })
+        .unwrap_or(0);
+    if !current.is_empty() && selected == 0 {
+        selected_category.replace(String::new());
+    }
+
+    let mut names = vec!["Alle Kategorien".to_string()];
+    names.extend(categories);
+    let name_refs = names.iter().map(String::as_str).collect::<Vec<_>>();
+    category_model.splice(0, category_model.n_items(), &name_refs);
+    if category_selector.selected() != selected {
+        category_selector.set_selected(selected);
+    }
 }
 
 fn upsert_contact_row(
@@ -1047,6 +1197,7 @@ fn append_contact_row(contact_list: &gtk::ListBox, record: &EBookContactRecord) 
         row.set_data("contact-source-uid", record.source_uid.clone());
         row.set_data("contact-source-name", record.source_display_name.clone());
         row.set_data("contact-vcard", record.vcard.clone());
+        row.set_data("contact-categories", contact.categories.join("\u{1f}"));
     }
 
     let row_box = gtk::Box::builder()
@@ -1178,5 +1329,17 @@ fn contact_detail_summary(contact: &VCardContact) -> String {
 impl Default for ContactsPage {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::contact_category_matches;
+
+    #[test]
+    fn contact_category_filter_is_case_insensitive() {
+        assert!(contact_category_matches("Arbeit\u{1f}Familie", "arbeit"));
+        assert!(contact_category_matches("Arbeit\u{1f}Familie", "FAMILIE"));
+        assert!(!contact_category_matches("Arbeit\u{1f}Familie", "Privat"));
     }
 }

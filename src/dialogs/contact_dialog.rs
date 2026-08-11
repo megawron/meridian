@@ -478,56 +478,52 @@ impl ContactDialog {
             .filter(|uid| !uid.trim().is_empty());
         let local_addressbook_available = ContactStoreService::new().is_writable();
         glib::spawn_future_local(async move {
-            match eds_service::list_address_book_sources().await {
-                Ok(sources) => {
-                    let active_sources: Vec<_> = sources
-                        .into_iter()
-                        .filter(|source| source.enabled)
-                        .collect();
-                    let mut names: Vec<String> = active_sources
-                        .iter()
-                        .map(|source| {
-                            if source.backend_name.is_empty() {
-                                source.display_name.clone()
-                            } else {
-                                format!("{} · {}", source.display_name, source.backend_name)
-                            }
-                        })
-                        .collect();
-                    let mut uids = source_uids_for_load.borrow_mut();
-                    uids.clear();
-                    uids.extend(active_sources.into_iter().map(|source| source.uid));
-                    if local_addressbook_available {
-                        names.push("Lokales Adressbuch".to_string());
-                        uids.push("local-addressbook".to_string());
-                    }
-                    if names.is_empty() {
-                        names.push("Kein aktives EDS-Adressbuch verfügbar".to_string());
-                    }
-                    let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
-                    source_model_for_load.splice(0, source_model_for_load.n_items(), &name_refs);
-                    let selected_index = edit_source_uid_for_load
-                        .as_deref()
-                        .or(preferred_source_uid.as_deref())
-                        .and_then(|uid| uids.iter().position(|candidate| candidate == uid));
-                    drop(uids);
-                    if let Some(index) = selected_index {
-                        source_row_for_load.set_selected(index as u32);
-                    }
-                }
-                Err(error) => {
-                    tracing::warn!(%error, "Could not load EDS address books for contact dialog");
-                    let mut names = Vec::new();
-                    let mut uids = source_uids_for_load.borrow_mut();
-                    uids.clear();
-                    if local_addressbook_available {
-                        names.push("Lokales Adressbuch".to_string());
-                        uids.push("local-addressbook".to_string());
-                    } else {
-                        names.push("EDS-Adressbücher sind nicht erreichbar".to_string());
-                    }
-                    let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
-                    source_model_for_load.splice(0, source_model_for_load.n_items(), &name_refs);
+            let discovery =
+                eds_service::discover_sources(eds_service::EdsSourceKind::AddressBook).await;
+            let mut sources = discovery.sources;
+            sources.retain(|source| source.enabled);
+            sources.sort_by_cached_key(|source| {
+                (source.display_name.to_lowercase(), source.uid.clone())
+            });
+
+            let mut names = Vec::new();
+            let mut uids = Vec::new();
+            for source in sources {
+                names.push(if source.backend_name.trim().is_empty() {
+                    source.display_name
+                } else {
+                    format!("{} · {}", source.display_name, source.backend_name)
+                });
+                uids.push(source.uid);
+            }
+
+            let preferred_uid = edit_source_uid_for_load
+                .as_deref()
+                .or(preferred_source_uid.as_deref());
+            if let Some(uid) = preferred_uid.filter(|uid| {
+                !uid.trim().is_empty() && !uids.iter().any(|candidate| candidate == *uid)
+            }) {
+                names.push(format!("Nicht verfügbare Quelle · {uid}"));
+                uids.push(uid.to_string());
+            }
+            if local_addressbook_available {
+                names.push("Lokales Adressbuch".to_string());
+                uids.push("local-addressbook".to_string());
+            }
+            if names.is_empty() {
+                names.push(
+                    discovery
+                        .error
+                        .map(|error| format!("EDS-Adressbücher sind nicht erreichbar: {error}"))
+                        .unwrap_or_else(|| "Kein aktives EDS-Adressbuch verfügbar".to_string()),
+                );
+            }
+            let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
+            source_model_for_load.splice(0, source_model_for_load.n_items(), &name_refs);
+            source_uids_for_load.replace(uids.clone());
+            if let Some(uid) = preferred_uid {
+                if let Some(index) = uids.iter().position(|candidate| candidate == uid) {
+                    source_row_for_load.set_selected(index as u32);
                 }
             }
         });

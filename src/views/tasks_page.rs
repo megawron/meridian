@@ -41,6 +41,9 @@ mod imp {
         pub(super) task_sort: Cell<TaskSort>,
         pub(super) task_sort_descending: Cell<bool>,
         pub task_query: RefCell<String>,
+        pub(super) task_category_filter: RefCell<Option<String>>,
+        pub(super) task_category_model: RefCell<Option<gtk::StringList>>,
+        pub(super) task_category_selector: RefCell<Option<gtk::DropDown>>,
     }
 
     #[glib::object_subclass]
@@ -286,6 +289,16 @@ impl TasksPage {
             gtk::DropDown::new(Some(source_model.clone()), None::<&gtk::Expression>);
         source_selector.set_tooltip_text(Some("Aufgabenliste auswählen"));
         let initial_source_filter = self.imp().task_source_filter.borrow().clone();
+        let category_model = gtk::StringList::new(&["Alle Kategorien"]);
+        let category_selector =
+            gtk::DropDown::new(Some(category_model.clone()), None::<&gtk::Expression>);
+        category_selector.set_tooltip_text(Some("Aufgabenkategorie auswählen"));
+        self.imp()
+            .task_category_model
+            .replace(Some(category_model.clone()));
+        self.imp()
+            .task_category_selector
+            .replace(Some(category_selector.clone()));
 
         let btn_add_task = gtk::Button::builder()
             .label("Neue Aufgabe")
@@ -297,6 +310,7 @@ impl TasksPage {
         toolbar.append(&sort_selector);
         toolbar.append(&direction_button);
         toolbar.append(&source_selector);
+        toolbar.append(&category_selector);
         toolbar.append(&btn_add_task);
 
         content_box.append(&toolbar);
@@ -454,6 +468,31 @@ impl TasksPage {
                 &task_list_for_source,
                 &task_store_for_source,
                 &empty_tasks_for_source,
+            );
+        });
+
+        let page_weak_for_category = self.downgrade();
+        let task_list_for_category = task_list.clone();
+        let task_store_for_category = task_store.clone();
+        let empty_tasks_for_category = empty_tasks.clone();
+        let category_model_for_selector = category_model.clone();
+        category_selector.connect_selected_notify(move |selector| {
+            let Some(page) = page_weak_for_category.upgrade() else {
+                return;
+            };
+            let category = if selector.selected() == 0 {
+                None
+            } else {
+                category_model_for_selector
+                    .string(selector.selected())
+                    .map(|value| value.to_string())
+            };
+            page.imp().task_category_filter.replace(category);
+            render_task_rows(
+                &page,
+                &task_list_for_category,
+                &task_store_for_category,
+                &empty_tasks_for_category,
             );
         });
 
@@ -1174,12 +1213,14 @@ fn render_task_rows(
     task_store: &gio::ListStore,
     empty_tasks: &gtk::Label,
 ) {
+    refresh_task_category_model(page, task_store);
     while let Some(child) = task_list.first_child() {
         task_list.remove(&child);
     }
 
     let filter = page.imp().task_filter.get();
     let source_filter = page.imp().task_source_filter.borrow().clone();
+    let category_filter = page.imp().task_category_filter.borrow().clone();
     let sort = page.imp().task_sort.get();
     let query = page.imp().task_query.borrow().trim().to_lowercase();
     let mut visible = 0;
@@ -1188,7 +1229,13 @@ fn render_task_rows(
         let Some(task) = task_store.item(index).and_downcast::<TaskItemObject>() else {
             continue;
         };
-        if task_matches_filter_with_source(&task, filter, source_filter.as_deref(), &query) {
+        if task_matches_filter_with_source_and_category(
+            &task,
+            filter,
+            source_filter.as_deref(),
+            category_filter.as_deref(),
+            &query,
+        ) {
             tasks.push(task);
         }
     }
@@ -1201,7 +1248,7 @@ fn render_task_rows(
     }
     empty_tasks.set_visible(visible == 0);
     if visible == 0 {
-        empty_tasks.set_label(if query.is_empty() {
+        empty_tasks.set_label(if query.is_empty() && category_filter.is_none() {
             match filter {
                 TaskFilter::All => "Keine Aufgaben geladen",
                 TaskFilter::Today => "Keine heute fällige Aufgabe",
@@ -1214,6 +1261,61 @@ fn render_task_rows(
         } else {
             "Keine passenden Aufgaben"
         });
+    }
+}
+
+fn refresh_task_category_model(page: &TasksPage, task_store: &gio::ListStore) {
+    let Some(model) = page.imp().task_category_model.borrow().as_ref().cloned() else {
+        return;
+    };
+    let Some(selector) = page.imp().task_category_selector.borrow().as_ref().cloned() else {
+        return;
+    };
+
+    let mut categories = CalendarCategoryStore::default()
+        .load()
+        .into_iter()
+        .map(|category| category.name)
+        .collect::<Vec<_>>();
+    for index in 0..task_store.n_items() {
+        let Some(task) = task_store.item(index).and_downcast::<TaskItemObject>() else {
+            continue;
+        };
+        categories.extend(
+            ical_properties(&task.component(), "CATEGORIES")
+                .into_iter()
+                .flat_map(|value| {
+                    value
+                        .split(',')
+                        .map(str::trim)
+                        .map(ToOwned::to_owned)
+                        .collect::<Vec<_>>()
+                }),
+        );
+    }
+    categories.retain(|category| !category.is_empty());
+    categories.sort_by_cached_key(|category| category.to_lowercase());
+    categories.dedup_by(|left, right| left.eq_ignore_ascii_case(right));
+
+    let mut names = vec!["Alle Kategorien".to_string()];
+    names.extend(categories.clone());
+    let current_filter = page.imp().task_category_filter.borrow().clone();
+    let selected = current_filter
+        .as_deref()
+        .and_then(|filter| {
+            categories
+                .iter()
+                .position(|category| category.eq_ignore_ascii_case(filter))
+        })
+        .map(|index| index as u32 + 1)
+        .unwrap_or(0);
+    if current_filter.is_some() && selected == 0 {
+        page.imp().task_category_filter.replace(None);
+    }
+    let name_refs = names.iter().map(String::as_str).collect::<Vec<_>>();
+    model.splice(0, model.n_items(), &name_refs);
+    if selector.selected() != selected {
+        selector.set_selected(selected);
     }
 }
 
@@ -1278,7 +1380,31 @@ fn task_matches_filter_with_source(
     source_filter: Option<&str>,
     query: &str,
 ) -> bool {
+    task_matches_filter_with_source_and_category(task, filter, source_filter, None, query)
+}
+
+fn task_matches_filter_with_source_and_category(
+    task: &TaskItemObject,
+    filter: TaskFilter,
+    source_filter: Option<&str>,
+    category_filter: Option<&str>,
+    query: &str,
+) -> bool {
     if source_filter.is_some_and(|source_uid| task.source_uid() != source_uid) {
+        return false;
+    }
+    if category_filter.is_some_and(|category_filter| {
+        !ical_properties(&task.component(), "CATEGORIES")
+            .into_iter()
+            .flat_map(|value| {
+                value
+                    .split(',')
+                    .map(str::trim)
+                    .map(ToOwned::to_owned)
+                    .collect::<Vec<_>>()
+            })
+            .any(|category| category.eq_ignore_ascii_case(category_filter))
+    }) {
         return false;
     }
     let matches_filter = match filter {
@@ -2476,7 +2602,7 @@ mod tests {
             &today.format("%Y-%m-%d").to_string(),
             "1",
             false,
-            "BEGIN:VTODO\r\nSUMMARY:Pay the electricity bill\r\nEND:VTODO\r\n",
+            "BEGIN:VTODO\r\nSUMMARY:Pay the electricity bill\r\nCATEGORIES:Finance,Important\r\nEND:VTODO\r\n",
         );
 
         assert!(task_matches_filter(&task, TaskFilter::All, ""));
@@ -2487,6 +2613,20 @@ mod tests {
             &task,
             TaskFilter::All,
             Some("local-calendar"),
+            ""
+        ));
+        assert!(task_matches_filter_with_source_and_category(
+            &task,
+            TaskFilter::All,
+            None,
+            Some("finance"),
+            ""
+        ));
+        assert!(!task_matches_filter_with_source_and_category(
+            &task,
+            TaskFilter::All,
+            None,
+            Some("personal"),
             ""
         ));
         assert!(!task_matches_filter_with_source(

@@ -579,6 +579,11 @@ werden.
   vorhandenen Einträgen die DATE-/Zeitzonen-Parameter. Kategoriebezeichnungen werden
   zusätzlich in einem portablen, versionierten Farbspeicher verwaltet und
   können in den Einstellungen bearbeitet werden. Lokale/importierte VEVENTs werden
+  zusätzlich in allen Kalenderansichten dynamisch nach RFC5545-CATEGORIES
+  filterbar; konfigurierte sowie im geladenen Bestand vorhandene Kategorien
+  werden gemeinsam angeboten. Eine portable Termin-Schnellsuche durchsucht
+  Betreff, Ort, Beschreibung, Zeitraum und Kalenderquelle und wirkt in allen
+  Kalenderansichten sowie der Terminliste. Lokale/importierte VEVENTs werden
   in den Tag-, Wochen- und Monatsansichten nach DAILY/WEEKLY/MONTHLY/YEARLY-
   RRULE sowie COUNT/UNTIL/EXDATE ausgewertet. BYDAY mit Wochentagslisten und
   ordinalen Monatswochen, BYMONTH, positive/negative BYMONTHDAY und BYSETPOS
@@ -675,6 +680,12 @@ werden.
   RRULE-Rechenkern; VTODO-RDATE/EXDATE werden zusätzlich bearbeitet und die
   Aufgabenliste berechnet COUNT/UNTIL/EXDATE-bewusst die nächste Fälligkeit und
   verwendet sie für Heute-Filter, Sortierung und Anzeige.
+  Die Aufgabenliste kann zusätzlich dynamisch nach RFC5545-CATEGORIES filtern;
+  konfigurierte sowie in den geladenen VTODOs vorhandene Kategorien werden
+  gemeinsam angeboten.
+  Die Notizliste bietet denselben dynamischen Filter für VJOURNAL-CATEGORIES;
+  konfigurierte sowie im geladenen Notizbestand vorhandene Kategorien werden
+  gemeinsam angeboten.
   Die native EDS-Serienmutation und die Linux-Laufzeitabnahme bleiben offen.
   Kategorien werden im Editor geladen, als RFC5545-CATEGORIES gespeichert und
   beim Bearbeiten aktualisiert; einfache VTODO-Display-Erinnerungen werden als
@@ -735,6 +746,12 @@ werden.
   Inline-Fotos anzeigen und bearbeiten. Die Standardadressbuch-UID wird aus
   der Quellenauswahl persistent gespeichert und beim nächsten Start
   vorselektiert.
+  Die Kontaktliste bietet zusätzlich einen dynamischen RFC6350-CATEGORIES-
+  Filter; Kategorien aus dem geladenen EDS-/vCard-Bestand werden gemeinsam
+  angeboten und bei Änderungen automatisch aktualisiert.
+  Auch der Kontakteditor verwendet dieselbe cachefähige Quellenentdeckung,
+  bewahrt eine gespeicherte, aktuell nicht erreichbare Quelle sichtbar und
+  bietet das lokale Adressbuch nur bei schreibbarer Verfügbarkeit an.
 - [~] Lokale vCard-Kontakte werden asynchron als Autocomplete für To/Cc/Bcc im
   Composer angeboten und in den aktuellen Empfänger-Token eingesetzt; die
   Kontakt-Schnellsuche durchsucht Name, E-Mail, Organisation, Titel, Telefon,
