@@ -6,7 +6,7 @@ use adw::prelude::*;
 use adw::subclass::prelude::*;
 use chrono::{Datelike, Duration, Local, NaiveDate, NaiveDateTime, Timelike, Weekday};
 use gtk::{gdk, gio, glib};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::rc::Rc;
 
@@ -38,6 +38,26 @@ pub(crate) enum CalendarView {
     Agenda,
 }
 
+fn calendar_view_from_name(value: &str) -> CalendarView {
+    match value {
+        "day" => CalendarView::Day,
+        "week" => CalendarView::Week,
+        "workweek" => CalendarView::WorkWeek,
+        "agenda" => CalendarView::Agenda,
+        _ => CalendarView::Month,
+    }
+}
+
+fn calendar_view_name(view: CalendarView) -> &'static str {
+    match view {
+        CalendarView::Day => "day",
+        CalendarView::Week => "week",
+        CalendarView::WorkWeek => "workweek",
+        CalendarView::Month => "month",
+        CalendarView::Agenda => "agenda",
+    }
+}
+
 // ─── GObject Subclass ───────────────────────────────────────────────────────
 
 mod imp {
@@ -48,6 +68,10 @@ mod imp {
     pub struct CalendarPage {
         pub current_date: RefCell<NaiveDate>,
         pub(crate) current_view: RefCell<CalendarView>,
+        pub settings: RefCell<Option<AppSettings>>,
+        pub calendar_stack: RefCell<Option<adw::ViewStack>>,
+        pub calendar_view_buttons: RefCell<Option<Vec<gtk::ToggleButton>>>,
+        pub syncing_calendar_view: Cell<bool>,
         pub month_grid: RefCell<Option<gtk::Grid>>,
         pub month_date_label: RefCell<Option<gtk::Label>>,
         pub day_view: RefCell<Option<gtk::Box>>,
@@ -69,6 +93,10 @@ mod imp {
             Self {
                 current_date: RefCell::new(Local::now().date_naive()),
                 current_view: RefCell::new(CalendarView::Month),
+                settings: RefCell::new(None),
+                calendar_stack: RefCell::new(None),
+                calendar_view_buttons: RefCell::new(None),
+                syncing_calendar_view: Cell::new(false),
                 month_grid: RefCell::new(None),
                 month_date_label: RefCell::new(None),
                 day_view: RefCell::new(None),
@@ -150,7 +178,9 @@ impl CalendarPage {
     }
 
     fn build_ui(&self) {
-        if let Some(settings) = AppSettings::try_new() {
+        let settings = AppSettings::try_new();
+        self.imp().settings.replace(settings.clone());
+        if let Some(settings) = settings.as_ref() {
             self.imp()
                 .hidden_calendar_sources
                 .replace(settings.calendar_hidden_sources().into_iter().collect());
@@ -626,16 +656,11 @@ impl CalendarPage {
             .css_classes(vec!["linked"])
             .build();
 
-        let initial_view = AppSettings::try_new()
+        let initial_view = settings
+            .as_ref()
             .map(|settings| settings.calendar_view())
             .unwrap_or_else(|| "month".to_string());
-        let initial_calendar_view = match initial_view.as_str() {
-            "day" => CalendarView::Day,
-            "week" => CalendarView::Week,
-            "workweek" => CalendarView::WorkWeek,
-            "agenda" => CalendarView::Agenda,
-            _ => CalendarView::Month,
-        };
+        let initial_calendar_view = calendar_view_from_name(&initial_view);
         *self.imp().current_view.borrow_mut() = initial_calendar_view;
 
         let day_btn = gtk::ToggleButton::builder()
@@ -789,90 +814,65 @@ impl CalendarPage {
             CalendarView::Month => "month",
             CalendarView::Agenda => "agenda",
         });
+        self.imp()
+            .calendar_stack
+            .replace(Some(calendar_stack.clone()));
+        self.imp().calendar_view_buttons.replace(Some(vec![
+            day_btn.clone(),
+            week_btn.clone(),
+            workweek_btn.clone(),
+            month_btn.clone(),
+            agenda_btn.clone(),
+        ]));
 
         // View toggle handler
         day_btn.connect_toggled(glib::clone!(
-            #[weak]
-            calendar_stack,
             #[weak(rename_to = page)]
             self,
             move |btn| {
                 if btn.is_active() {
-                    calendar_stack.set_visible_child_name("day");
-                    *page.imp().current_view.borrow_mut() = CalendarView::Day;
-                    if let Some(settings) = AppSettings::try_new() {
-                        settings.set_calendar_view("day");
-                    }
-                    page.refresh_calendar_views();
+                    page.select_calendar_view(CalendarView::Day);
                 }
             }
         ));
         week_btn.connect_toggled(glib::clone!(
-            #[weak]
-            calendar_stack,
             #[weak(rename_to = page)]
             self,
             move |btn| {
                 if btn.is_active() {
-                    calendar_stack.set_visible_child_name("week");
-                    *page.imp().current_view.borrow_mut() = CalendarView::Week;
-                    if let Some(settings) = AppSettings::try_new() {
-                        settings.set_calendar_view("week");
-                    }
-                    page.refresh_calendar_views();
+                    page.select_calendar_view(CalendarView::Week);
                 }
             }
         ));
         workweek_btn.connect_toggled(glib::clone!(
-            #[weak]
-            calendar_stack,
             #[weak(rename_to = page)]
             self,
             move |btn| {
                 if btn.is_active() {
-                    calendar_stack.set_visible_child_name("workweek");
-                    *page.imp().current_view.borrow_mut() = CalendarView::WorkWeek;
-                    if let Some(settings) = AppSettings::try_new() {
-                        settings.set_calendar_view("workweek");
-                    }
-                    page.refresh_calendar_views();
+                    page.select_calendar_view(CalendarView::WorkWeek);
                 }
             }
         ));
         month_btn.connect_toggled(glib::clone!(
-            #[weak]
-            calendar_stack,
             #[weak(rename_to = page)]
             self,
             move |btn| {
                 if btn.is_active() {
-                    calendar_stack.set_visible_child_name("month");
-                    *page.imp().current_view.borrow_mut() = CalendarView::Month;
-                    if let Some(settings) = AppSettings::try_new() {
-                        settings.set_calendar_view("month");
-                    }
-                    page.refresh_calendar_views();
+                    page.select_calendar_view(CalendarView::Month);
                 }
             }
         ));
         agenda_btn.connect_toggled(glib::clone!(
-            #[weak]
-            calendar_stack,
             #[weak(rename_to = page)]
             self,
             move |btn| {
                 if btn.is_active() {
-                    calendar_stack.set_visible_child_name("agenda");
-                    *page.imp().current_view.borrow_mut() = CalendarView::Agenda;
-                    if let Some(settings) = AppSettings::try_new() {
-                        settings.set_calendar_view("agenda");
-                    }
-                    page.refresh_calendar_views();
+                    page.select_calendar_view(CalendarView::Agenda);
                 }
             }
         ));
 
-        if let Some(settings) = AppSettings::try_new() {
+        if let Some(settings) = self.imp().settings.borrow().as_ref().cloned() {
             for key in ["calendar-time-zone", "date-format", "time-format"] {
                 let page_weak = self.downgrade();
                 settings.connect_changed(Some(key), move |_, _| {
@@ -881,6 +881,37 @@ impl CalendarPage {
                     }
                 });
             }
+
+            let page_weak = self.downgrade();
+            settings.connect_changed(Some("calendar-view"), move |_, _| {
+                if let Some(page) = page_weak.upgrade() {
+                    page.sync_calendar_view_from_settings();
+                }
+            });
+
+            for key in [
+                "calendar-week-start",
+                "calendar-workdays",
+                "calendar-workday-start",
+                "calendar-workday-end",
+                "calendar-show-week-numbers",
+            ] {
+                let page_weak = self.downgrade();
+                settings.connect_changed(Some(key), move |_, _| {
+                    if let Some(page) = page_weak.upgrade() {
+                        page.refresh_calendar_views();
+                    }
+                });
+            }
+
+            let page_weak = self.downgrade();
+            settings.connect_changed(Some("calendar-hidden-sources"), move |_, _| {
+                if let Some(page) = page_weak.upgrade() {
+                    page.refresh_hidden_calendar_sources();
+                    page.refresh_calendar_views();
+                    page.refresh_event_list_visibility();
+                }
+            });
         }
 
         // Date navigation handlers
@@ -919,6 +950,62 @@ impl CalendarPage {
 
         paned.set_end_child(Some(&content_box));
         paned.set_parent(self);
+    }
+
+    fn select_calendar_view(&self, view: CalendarView) {
+        if self.imp().syncing_calendar_view.get() {
+            return;
+        }
+        *self.imp().current_view.borrow_mut() = view;
+        if let Some(stack) = self.imp().calendar_stack.borrow().as_ref() {
+            stack.set_visible_child_name(calendar_view_name(view));
+        }
+        if let Some(settings) = self.imp().settings.borrow().as_ref() {
+            settings.set_calendar_view(calendar_view_name(view));
+        }
+        self.refresh_calendar_views();
+    }
+
+    fn sync_calendar_view_from_settings(&self) {
+        let view = self
+            .imp()
+            .settings
+            .borrow()
+            .as_ref()
+            .map(|settings| calendar_view_from_name(&settings.calendar_view()))
+            .unwrap_or_else(|| *self.imp().current_view.borrow());
+
+        self.imp().syncing_calendar_view.set(true);
+        *self.imp().current_view.borrow_mut() = view;
+        if let Some(stack) = self.imp().calendar_stack.borrow().as_ref() {
+            stack.set_visible_child_name(calendar_view_name(view));
+        }
+        if let Some(buttons) = self.imp().calendar_view_buttons.borrow().as_ref() {
+            for (button, candidate) in buttons.iter().zip([
+                CalendarView::Day,
+                CalendarView::Week,
+                CalendarView::WorkWeek,
+                CalendarView::Month,
+                CalendarView::Agenda,
+            ]) {
+                button.set_active(candidate == view);
+            }
+        }
+        self.imp().syncing_calendar_view.set(false);
+        self.refresh_calendar_views();
+    }
+
+    fn refresh_hidden_calendar_sources(&self) {
+        let hidden_sources = self
+            .imp()
+            .settings
+            .borrow()
+            .as_ref()
+            .map(|settings| settings.calendar_hidden_sources())
+            .unwrap_or_default();
+        self.imp()
+            .hidden_calendar_sources
+            .replace(hidden_sources.into_iter().collect());
     }
 
     fn shift_period(&self, direction: i32) {
@@ -1072,68 +1159,21 @@ impl CalendarPage {
         let date = *self.imp().current_date.borrow();
         let view = *self.imp().current_view.borrow();
         let text = match view {
-            CalendarView::Day => format!(
-                "{}, {}. {} {}",
-                weekday_name(date),
-                date.day(),
-                Self::month_name(date.month()),
-                date.year()
-            ),
+            CalendarView::Day => format_date(date),
             CalendarView::Week => {
                 let start = configured_week_start(date);
                 let end = start + Duration::days(6);
-                if start.month() == end.month() {
-                    format!(
-                        "{}.\u{2013}{}. {} {}",
-                        start.day(),
-                        end.day(),
-                        Self::month_name(start.month()),
-                        start.year()
-                    )
-                } else {
-                    format!(
-                        "{}. {}\u{2013}{}. {} {}",
-                        start.day(),
-                        Self::month_name(start.month()),
-                        end.day(),
-                        Self::month_name(end.month()),
-                        end.year()
-                    )
-                }
+                format!("Woche {}", format_calendar_range(start, end))
             }
             CalendarView::WorkWeek => {
                 let start = workweek_start(date);
                 let end = start + Duration::days(4);
-                if start.month() == end.month() {
-                    format!(
-                        "Arbeitswoche {}.\u{2013}{}. {} {}",
-                        start.day(),
-                        end.day(),
-                        Self::month_name(start.month()),
-                        start.year()
-                    )
-                } else {
-                    format!(
-                        "Arbeitswoche {}. {}\u{2013}{}. {} {}",
-                        start.day(),
-                        Self::month_name(start.month()),
-                        end.day(),
-                        Self::month_name(end.month()),
-                        end.year()
-                    )
-                }
+                format!("Arbeitswoche {}", format_calendar_range(start, end))
             }
             CalendarView::Month => {
                 format!("{} {}", Self::month_name(date.month()), date.year())
             }
-            CalendarView::Agenda => {
-                format!(
-                    "Agenda ab {}. {} {}",
-                    date.day(),
-                    Self::month_name(date.month()),
-                    date.year()
-                )
-            }
+            CalendarView::Agenda => format!("Agenda ab {}", format_date(date)),
         };
         label.set_label(&text);
     }
@@ -1145,13 +1185,7 @@ impl CalendarPage {
         clear_box(&view);
         let date = *self.imp().current_date.borrow();
         let heading = gtk::Label::builder()
-            .label(&format!(
-                "{}, {}. {} {}",
-                weekday_name(date),
-                date.day(),
-                Self::month_name(date.month()),
-                date.year()
-            ))
+            .label(&format_date(date))
             .css_classes(vec!["title-3"])
             .halign(gtk::Align::Start)
             .build();
@@ -1190,9 +1224,13 @@ impl CalendarPage {
         clear_box(&view);
         let date = *self.imp().current_date.borrow();
         let week_start = configured_week_start(date);
+        let week_number = AppSettings::try_new()
+            .filter(|settings| settings.calendar_show_week_numbers())
+            .map(|_| format!(" · KW {:02}", week_start.iso_week().week()))
+            .unwrap_or_default();
         let week_heading = gtk::Label::builder()
             .label(&format!(
-                "Termine dieser Woche · Arbeitszeit: {}",
+                "Termine dieser Woche{week_number} · Arbeitszeit: {}",
                 configured_workday_text()
             ))
             .css_classes(vec!["title-3"])
@@ -1208,12 +1246,7 @@ impl CalendarPage {
                 .build();
             day_box.add_css_class("card");
             let heading = gtk::Label::builder()
-                .label(&format!(
-                    "{}, {}. {}",
-                    weekday_name(day),
-                    day.day(),
-                    Self::month_name(day.month())
-                ))
+                .label(&format_date(day))
                 .halign(gtk::Align::Start)
                 .margin_start(10)
                 .margin_top(8)
@@ -2070,6 +2103,44 @@ fn weekday_name(date: NaiveDate) -> &'static str {
         "Samstag",
         "Sonntag",
     ][date.weekday().num_days_from_monday() as usize]
+}
+
+fn format_calendar_range(start: NaiveDate, end: NaiveDate) -> String {
+    match AppSettings::try_new()
+        .map(|settings| settings.date_format())
+        .as_deref()
+    {
+        Some("iso") => format!(
+            "{} \u{2013} {}",
+            start.format("%Y-%m-%d"),
+            end.format("%Y-%m-%d")
+        ),
+        Some("us") => format!(
+            "{:02}/{:02}/{} \u{2013} {:02}/{:02}/{}",
+            start.month(),
+            start.day(),
+            start.year(),
+            end.month(),
+            end.day(),
+            end.year()
+        ),
+        _ if start.month() == end.month() && start.year() == end.year() => format!(
+            "{}.\u{2013}{}. {} {}",
+            start.day(),
+            end.day(),
+            CalendarPage::month_name(start.month()),
+            start.year()
+        ),
+        _ => format!(
+            "{}. {} {} \u{2013} {}. {} {}",
+            start.day(),
+            CalendarPage::month_name(start.month()),
+            start.year(),
+            end.day(),
+            CalendarPage::month_name(end.month()),
+            end.year()
+        ),
+    }
 }
 
 fn format_date(date: NaiveDate) -> String {

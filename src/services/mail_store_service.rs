@@ -15,7 +15,7 @@
 // backend work.  Local move/archive/delete actions use only the app-owned
 // sidecar and never rewrite these source files.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -1795,12 +1795,14 @@ fn extract_mime_content(
     match media_type.as_str() {
         "text/html" => {
             if html_body.trim().is_empty() {
-                *html_body = String::from_utf8_lossy(&decoded).into_owned();
+                *html_body =
+                    decode_mime_bytes(&decoded, mime_parameter(content_type, "charset").as_deref());
             }
         }
         "text/plain" | "" => {
             if plain_body.trim().is_empty() {
-                *plain_body = String::from_utf8_lossy(&decoded).into_owned();
+                *plain_body =
+                    decode_mime_bytes(&decoded, mime_parameter(content_type, "charset").as_deref());
             }
         }
         _ => {
@@ -1818,14 +1820,142 @@ fn extract_mime_content(
 }
 
 fn mime_parameter(value: &str, parameter: &str) -> Option<String> {
-    value.split(';').skip(1).find_map(|part| {
-        let (name, value) = part.split_once('=')?;
-        if name.trim().eq_ignore_ascii_case(parameter) {
-            Some(value.trim().trim_matches('"').to_string())
-        } else {
-            None
+    let target = parameter.trim().to_ascii_lowercase();
+    let continuation_prefix = format!("{target}*");
+    let mut plain = None;
+    let mut extended = None;
+    let mut continuations = BTreeMap::<usize, (bool, String)>::new();
+
+    for (name, raw_value) in mime_parameter_parts(value) {
+        if name == target {
+            plain = Some(raw_value);
+        } else if name == continuation_prefix {
+            extended = Some(decode_rfc2231_value(&raw_value));
+        } else if let Some(index_value) = name.strip_prefix(&continuation_prefix) {
+            let (index_value, encoded) = index_value
+                .strip_suffix('*')
+                .map(|value| (value, true))
+                .unwrap_or((index_value, false));
+            if let Ok(index) = index_value.parse::<usize>() {
+                continuations.insert(index, (encoded, raw_value));
+            }
         }
-    })
+    }
+
+    if let Some((first_index, _)) = continuations.first_key_value()
+        && *first_index == 0
+    {
+        let mut joined = String::new();
+        let mut expected = 0;
+        for (index, (encoded, part)) in continuations {
+            if index != expected {
+                break;
+            }
+            let decoded_part = if encoded {
+                decode_rfc2231_value(&part)
+            } else {
+                part
+            };
+            joined.push_str(&decoded_part);
+            expected += 1;
+        }
+        if expected > 0 {
+            return Some(joined);
+        }
+    }
+
+    extended.or(plain)
+}
+
+fn mime_parameter_parts(value: &str) -> Vec<(String, String)> {
+    let mut segments = Vec::new();
+    let mut start = 0;
+    let mut quoted = false;
+    let mut escaped = false;
+
+    for (index, character) in value.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match character {
+            '\\' if quoted => escaped = true,
+            '"' => quoted = !quoted,
+            ';' if !quoted => {
+                segments.push(&value[start..index]);
+                start = index + character.len_utf8();
+            }
+            _ => {}
+        }
+    }
+    segments.push(&value[start..]);
+
+    segments
+        .into_iter()
+        .skip(1)
+        .filter_map(|segment| {
+            let (name, raw_value) = segment.split_once('=')?;
+            let name = name.trim().to_ascii_lowercase();
+            if name.is_empty() {
+                return None;
+            }
+            Some((name, unquote_mime_parameter(raw_value.trim())))
+        })
+        .collect()
+}
+
+fn unquote_mime_parameter(value: &str) -> String {
+    let value = value.trim();
+    if value.len() < 2 || !value.starts_with('"') || !value.ends_with('"') {
+        return value.to_string();
+    }
+
+    let mut result = String::with_capacity(value.len() - 2);
+    let mut escaped = false;
+    for character in value[1..value.len() - 1].chars() {
+        if escaped {
+            result.push(character);
+            escaped = false;
+        } else if character == '\\' {
+            escaped = true;
+        } else {
+            result.push(character);
+        }
+    }
+    if escaped {
+        result.push('\\');
+    }
+    result
+}
+
+fn decode_rfc2231_value(value: &str) -> String {
+    let value = value.trim();
+    let payload = value
+        .split_once('\'')
+        .and_then(|(_, rest)| rest.split_once('\''))
+        .map(|(_, payload)| payload)
+        .unwrap_or(value);
+    String::from_utf8_lossy(&percent_decode(payload)).into_owned()
+}
+
+fn percent_decode(value: &str) -> Vec<u8> {
+    let bytes = value.as_bytes();
+    let mut result = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' && index + 2 < bytes.len() {
+            if let (Some(high), Some(low)) =
+                (hex_value(bytes[index + 1]), hex_value(bytes[index + 2]))
+            {
+                result.push(high * 16 + low);
+                index += 3;
+                continue;
+            }
+        }
+        result.push(bytes[index]);
+        index += 1;
+    }
+    result
 }
 
 fn normalize_content_id(value: &str) -> Option<String> {
@@ -1934,18 +2064,20 @@ fn decode_mime_header(value: &str) -> String {
         };
         let word = &encoded[2..end];
         let mut fields = word.splitn(3, '?');
-        let _charset = fields.next();
+        let charset = fields.next();
         let encoding = fields.next();
         let payload = fields.next();
 
         let decoded = match (encoding, payload) {
             (Some(encoding), Some(payload)) if encoding.eq_ignore_ascii_case("b") => {
-                decode_base64(payload).map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+                decode_base64(payload).map(|bytes| decode_mime_bytes(&bytes, charset))
             }
-            (Some(encoding), Some(payload)) if encoding.eq_ignore_ascii_case("q") => Some(
-                String::from_utf8_lossy(&decode_quoted_printable(&payload.replace('_', " ")))
-                    .into_owned(),
-            ),
+            (Some(encoding), Some(payload)) if encoding.eq_ignore_ascii_case("q") => {
+                Some(decode_mime_bytes(
+                    &decode_quoted_printable(&payload.replace('_', " ")),
+                    charset,
+                ))
+            }
             _ => None,
         };
 
@@ -1959,6 +2091,68 @@ fn decode_mime_header(value: &str) -> String {
 
     result.push_str(rest);
     result.trim().to_string()
+}
+
+fn decode_mime_bytes(bytes: &[u8], charset: Option<&str>) -> String {
+    let charset = charset
+        .unwrap_or("utf-8")
+        .trim()
+        .trim_matches('"')
+        .to_ascii_lowercase();
+    match charset.as_str() {
+        "iso-8859-1" | "iso8859-1" | "latin1" | "latin-1" => {
+            bytes.iter().map(|byte| char::from(*byte)).collect()
+        }
+        "windows-1252" | "cp1252" => bytes
+            .iter()
+            .map(|byte| decode_windows_1252_byte(*byte))
+            .collect(),
+        "us-ascii" | "ascii" => bytes
+            .iter()
+            .map(|byte| {
+                if byte.is_ascii() {
+                    char::from(*byte)
+                } else {
+                    '\u{FFFD}'
+                }
+            })
+            .collect(),
+        _ => String::from_utf8_lossy(bytes).into_owned(),
+    }
+}
+
+fn decode_windows_1252_byte(byte: u8) -> char {
+    match byte {
+        0x80 => '\u{20AC}',
+        0x82 => '\u{201A}',
+        0x83 => '\u{0192}',
+        0x84 => '\u{201E}',
+        0x85 => '\u{2026}',
+        0x86 => '\u{2020}',
+        0x87 => '\u{2021}',
+        0x88 => '\u{02C6}',
+        0x89 => '\u{2030}',
+        0x8A => '\u{0160}',
+        0x8B => '\u{2039}',
+        0x8C => '\u{0152}',
+        0x8E => '\u{017D}',
+        0x91 => '\u{2018}',
+        0x92 => '\u{2019}',
+        0x93 => '\u{201C}',
+        0x94 => '\u{201D}',
+        0x95 => '\u{2022}',
+        0x96 => '\u{2013}',
+        0x97 => '\u{2014}',
+        0x98 => '\u{02DC}',
+        0x99 => '\u{2122}',
+        0x9A => '\u{0161}',
+        0x9B => '\u{203A}',
+        0x9C => '\u{0153}',
+        0x9E => '\u{017E}',
+        0x9F => '\u{0178}',
+        0x81 | 0x8D | 0x8F | 0x90 | 0x9D => '\u{FFFD}',
+        _ => char::from(byte),
+    }
 }
 
 fn escape_html(value: &str) -> String {
@@ -2043,6 +2237,16 @@ mod tests {
     }
 
     #[test]
+    fn decodes_legacy_mime_charsets_in_headers_and_text() {
+        assert_eq!(decode_mime_header("=?ISO-8859-1?Q?M=FCller?="), "Müller");
+        assert_eq!(decode_mime_header("=?windows-1252?B?gA==?="), "€");
+        assert_eq!(
+            decode_mime_bytes(&[b'G', b'r', 0xfc, b's', b'e'], Some("iso-8859-1")),
+            "Grüse"
+        );
+    }
+
+    #[test]
     fn parses_message_thread_headers_and_assigns_transitive_membership() {
         let root = parse_rfc822(
             "root",
@@ -2118,6 +2322,47 @@ mod tests {
         assert_eq!(message.attachments[0].filename, "report.pdf");
         assert_eq!(message.attachments[0].content, b"Hi");
         assert_eq!(message.folder_id, "sent");
+    }
+
+    #[test]
+    fn decodes_rfc2231_attachment_filename() {
+        let raw = concat!(
+            "From: Sender <sender@example.org>\n",
+            "Subject: International attachment\n",
+            "Content-Type: multipart/mixed; boundary=boundary43\n",
+            "\n",
+            "--boundary43\n",
+            "Content-Type: application/pdf\n",
+            "Content-Disposition: attachment; filename*=UTF-8''rapport%20%C3%A4.pdf\n",
+            "\n",
+            "PDF\n",
+            "--boundary43--\n"
+        );
+
+        let message = parse_rfc822("rfc2231", "inbox", raw, false).expect("message should parse");
+        assert_eq!(message.attachments.len(), 1);
+        assert_eq!(message.attachments[0].filename, "rapport ä.pdf");
+    }
+
+    #[test]
+    fn joins_rfc2231_attachment_filename_continuations() {
+        let raw = concat!(
+            "From: Sender <sender@example.org>\n",
+            "Subject: Long attachment\n",
+            "Content-Type: multipart/mixed; boundary=boundary44\n",
+            "\n",
+            "--boundary44\n",
+            "Content-Type: application/octet-stream\n",
+            "Content-Disposition: attachment; filename*0*=UTF-8''very%20long%20; filename*1*=report.pdf\n",
+            "\n",
+            "data\n",
+            "--boundary44--\n"
+        );
+
+        let message = parse_rfc822("rfc2231-continuation", "inbox", raw, false)
+            .expect("message should parse");
+        assert_eq!(message.attachments.len(), 1);
+        assert_eq!(message.attachments[0].filename, "very long report.pdf");
     }
 
     #[test]

@@ -223,7 +223,7 @@ Implementierungsdetails getrennt.
 
 | Evolution-Feature | GTK4-Implementierung | EDS-Schnittstelle |
 |:---|:---|:---|
-| **Tag/Woche/Monat-Ansicht** | GTK4-rs `AdwViewStack` mit dynamischer Tagesliste, Sieben-Tage-Liste, Arbeitswochen-Zeitachse, Agenda und datumsrichtigem Monatsraster; Navigation und ECal-Signalaktualisierung sind verbunden. Portable UTC-/TZID-Umrechnung für Anzeige und Tageszuordnung ist angebunden; komplexe DST-/EDS-Abnahme und Drag-and-drop bleiben offen. | `libecal-2.0` über den EDS-Adapter |
+| **Tag/Woche/Monat-Ansicht** | GTK4-rs `AdwViewStack` mit dynamischer Tagesliste, Sieben-Tage-Liste, Arbeitswochen-Zeitachse, Agenda und datumsrichtigem Monatsraster; Navigation und ECal-Signalaktualisierung sind verbunden. Wochenbeginn, Kalenderwochen, Arbeitszeiten, Zeitzone, Datums-/Zeitformat und aktive Standardansicht werden persistent gespeichert und bei Änderungen auch in einer bereits geöffneten Ansicht live synchronisiert. Portable UTC-/TZID-Umrechnung für Anzeige und Tageszuordnung ist angebunden; komplexe DST-/EDS-Abnahme und Drag-and-drop bleiben offen. | `libecal-2.0` über den EDS-Adapter |
 | **Event-Erstellung** | `AdwDialog` mit Start/Ende-Picker (`GtkCalendar` + Time-Spinner), Wiederholung, Alarme, Teilnehmer. | `ECalComponent`, `ICalComponent` |
 | **ITIP Meeting-Einladungen** | Im Mail-View: Inline-Banner bei `text/calendar` MIME-Parts. Portable Buttons für „Zusagen / Vorbehalt / Ablehnen" erzeugen einen RFC-kompatiblen `METHOD:REPLY`-MIME-Part und persistieren einen Antwortentwurf; tatsächlicher Versand und serverseitiger Teilnehmerstatus werden unter Linux über EDS/Camel abgenommen. | `ECalComponent`, ITIP-Utility-Funktionen |
 | **Aufgaben (Tasks)** | `GtkColumnView` mit Spalten: Checkbox, Titel, Fällig, Priorität. Inline-Edit. | `ECal` (VTODO), `ECalComponent` |
@@ -391,7 +391,10 @@ werden.
   noch.
 - [~] Lokaler Mail-Store: vorhandene EML-, Maildir- und mbox-Daten werden in
   einem Worker gelesen; RFC-822-Header, MIME-Text/HTML, dekodierte Anhänge und
-  stabile lokale Ordner-IDs werden unterstützt. Camel-Indizes, vollständige
+  stabile lokale Ordner-IDs werden unterstützt; RFC-2231-Parameter für
+  internationale und segmentierte MIME-Dateinamen sowie UTF-8-, ISO-8859-1-
+  und Windows-1252-Header/Text werden beim Anhang-/Nachrichtenimport dekodiert.
+  Camel-Indizes, vollständige
   MIME-Semantik und serverseitige Synchronisation fehlen noch; der lokale
   Import bleibt gegenüber vorhandenen Quellen bewusst nicht überschreibend.
   EML-/mbox-Dateien und ausgewählte Maildir-Verzeichnisse können in den
@@ -703,6 +706,11 @@ werden.
   Ein app-eigener `ical`-Ordner bleibt nach dem Speichern seines Pfads
   weiterhin schreibbar; ausdrücklich externe Kalenderpfade bleiben dagegen
   read-only.
+- [~] Änderungen an Kalenderansicht, Wochenbeginn, Kalenderwochen,
+  Arbeitstagen/-zeiten und ausgeblendeten Quellen werden auch bei geöffneter
+  Kalenderseite live aus GSettings übernommen; die aktive View-Schaltfläche
+  und die Kalenderwochenanzeige bleiben dabei synchron. Die native EDS-
+  Laufzeitabnahme der Quelle bleibt Linux-only.
 - [~] GTK4-rs-Aufgaben- und Memo-Ansichten laden VTODO-/VJOURNAL-Komponenten
   über die native libecal-2.0-Brücke aus den aktivierten EDS-Quellen. Neue
   VTODOs/VJOURNALs, VTODO-Statusänderungen und vollständiges VTODO-Bearbeiten
