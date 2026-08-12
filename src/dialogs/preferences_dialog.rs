@@ -15,7 +15,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::services::AppSettings;
-use crate::services::account_config_service::AccountConfigStore;
+use crate::services::account_config_service::{AccountConfigStore, AccountProfile, AccountProtocol};
 use crate::services::backup_service;
 use crate::services::calendar_category_service::{CalendarCategory, CalendarCategoryStore};
 use crate::services::calendar_store_service::CalendarStoreService;
@@ -46,6 +46,8 @@ mod imp {
     impl ObjectImpl for PreferencesDialog {
         fn constructed(&self) {
             self.parent_constructed();
+            self.obj().set_content_width(880);
+            self.obj().set_content_height(620);
             self.obj().build_ui();
         }
     }
@@ -76,19 +78,13 @@ impl PreferencesDialog {
             .build();
 
         let group_accounts = adw::PreferencesGroup::builder()
-            .title("E-Mail-Konten (EDS)")
-            .description("Verwaltete Konten im Evolution Data Server")
+            .title("E-Mail-Konten &amp; Server-Einstellungen")
+            .description("Verwaltete Konten im Evolution Data Server (EDS) und GNOME Online Accounts")
             .build();
 
-        let no_accounts = adw::ActionRow::builder()
-            .title("Keine EDS-Konten gefunden")
-            .subtitle("Konten werden nach der EDS-Integration hier verwaltet")
-            .build();
-        let icon_no_accounts = gtk::Image::from_icon_name("dialog-information-symbolic");
-        no_accounts.add_prefix(&icon_no_accounts);
         let row_add_account = adw::ActionRow::builder()
             .title("Neues Konto hinzufügen…")
-            .subtitle("IMAP, POP3, Exchange (EWS) oder GOA")
+            .subtitle("IMAP, POP3, Exchange (EWS) oder GOA einrichten")
             .activatable(true)
             .build();
         let icon_add = gtk::Image::from_icon_name("list-add-symbolic");
@@ -106,6 +102,8 @@ impl PreferencesDialog {
                 dialog.present();
             }
         ));
+        group_accounts.add(&row_add_account);
+
         let row_oof = adw::ActionRow::builder()
             .title("Abwesenheitsnotiz (Auto-Responder)…")
             .subtitle("Automatische Antwort für Urlaub und Abwesenheiten einrichten")
@@ -128,8 +126,72 @@ impl PreferencesDialog {
         ));
         group_accounts.add(&row_oof);
 
-        group_accounts.add(&no_accounts);
-        group_accounts.add(&row_add_account);
+        // Fetch live/cached EDS mail sources
+        let eds_sources = EdsSourceCache::new().load(EdsSourceKind::Mail);
+        if eds_sources.is_empty() {
+            let no_accounts = adw::ActionRow::builder()
+                .title("Keine aktiven EDS-Konten gefunden")
+                .subtitle("Verwenden Sie „Neues Konto hinzufügen…“, um ein Konto einzurichten")
+                .build();
+            let icon_no_accounts = gtk::Image::from_icon_name("dialog-information-symbolic");
+            no_accounts.add_prefix(&icon_no_accounts);
+            group_accounts.add(&no_accounts);
+        } else {
+            for source in eds_sources {
+                let row = adw::ActionRow::builder()
+                    .title(&source.display_name)
+                    .subtitle(&format!("EDS Mail  ·  {}", source.backend_name))
+                    .activatable(true)
+                    .build();
+                let icon_mail = gtk::Image::from_icon_name("mail-read-symbolic");
+                row.add_prefix(&icon_mail);
+
+                let edit_btn = gtk::Button::builder()
+                    .label("Bearbeiten…")
+                    .css_classes(vec!["flat"])
+                    .valign(gtk::Align::Center)
+                    .build();
+                let source_name_for_edit = source.display_name.clone();
+                let source_uid_for_edit = source.uid.clone();
+                let dialog_weak_for_edit = self.downgrade();
+                edit_btn.connect_clicked(move |_| {
+                    let dummy_profile = AccountProfile {
+                        id: source_uid_for_edit.clone(),
+                        display_name: source_name_for_edit.clone(),
+                        email: source_name_for_edit.clone(),
+                        protocol: AccountProtocol::ImapSmtp,
+                        imap_host: String::new(),
+                        smtp_host: String::new(),
+                        tls_mode: "starttls".to_string(),
+                        username: source_name_for_edit.clone(),
+                        imap_port: 993,
+                        smtp_port: 587,
+                        auth_method: "password".to_string(),
+                        reply_to: String::new(),
+                        organization: String::new(),
+                        aliases: Vec::new(),
+                        inbox_folder: String::new(),
+                        drafts_folder: String::new(),
+                        sent_folder: String::new(),
+                        archive_folder: String::new(),
+                        trash_folder: String::new(),
+                        junk_folder: String::new(),
+                        enabled: true,
+                    };
+                    let dialog = crate::dialogs::AccountSetupDialog::new_for_edit(&dummy_profile);
+                    if let Some(pref_dialog) = dialog_weak_for_edit.upgrade() {
+                        if let Some(root) = pref_dialog.root() {
+                            if let Ok(win) = root.downcast::<gtk::Window>() {
+                                dialog.set_transient_for(Some(&win));
+                            }
+                        }
+                    }
+                    dialog.present();
+                });
+                row.add_suffix(&edit_btn);
+                group_accounts.add(&row);
+            }
+        }
 
         page_accounts.add(&group_accounts);
 
@@ -250,7 +312,7 @@ impl PreferencesDialog {
 
         // Filter Rules Section
         let group_filters = adw::PreferencesGroup::builder()
-            .title("Mail-Filter & Sortierung")
+            .title("Mail-Filter &amp; Sortierung")
             .description(
                 "Automatische Regeln für eingehende Mails und manuelle Ausführung im lokalen Bestand",
             )

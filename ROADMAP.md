@@ -452,7 +452,10 @@ werden.
   Einzel-Nachrichtenansicht bietet Verschieben über denselben reversiblen
   Command-/Undo-Pfad. Für lokale/app-eigene Nachrichten ist zusätzlich
   „In Ordner kopieren“ mit persistentem Sidecar, Batch-Aktion und Undo/Redo
-  vorhanden; EDS/Camel-Kopieren bleibt bis zur nativen Linux-Abnahme offen.
+  vorhanden. Microsoft-Graph-Nachrichten werden serverseitig in den gewählten
+  Ordner kopiert; die von Graph vergebene neue Nachrichten-ID wird im
+  Command-/Undo-Verlauf gespeichert, sodass Undo/Redo nur die Kopie betrifft.
+  Native EDS/Camel-Kopien bleiben bis zur Linux-Abnahme offen.
   Die Ziele werden aus der dynamischen EDS-Ordnerliste
   angeboten und für lokale Nachrichten aus der app-eigenen Ordnerhierarchie
   ergänzt; alle sichtbaren Treffer können per Menü oder `Ctrl+A` für diese
@@ -462,7 +465,8 @@ werden.
   abbrechbar und paginiert an denselben Mail-/Threadpfad angebunden; negative
   Prädikate sowie Status-, Label-, Ordner- und Datumsfeinheiten bleiben als
   lokaler Nachfilter erhalten. Native Camel-Suche, CamelVee-Suchordner und
-  providerabhängige Remote-Kopier-/Live-Zähler bleiben Linux-/Backend-Abnahme.
+  native EDS/Camel-Kopien und providerabhängige Live-Zähler bleiben
+  Linux-/Backend-Abnahme.
 - [~] Der Startordner der Mailansicht ist als portable Einstellung mit
   Posteingang, Alle Nachrichten, Gesendet, Entwürfe, Papierkorb, Archiv und
   Spam konfigurierbar und wird in Backup/Restore sowie beim lokalen Fallback
@@ -525,7 +529,19 @@ werden.
   Dauer-Watcher initialisieren muss; nicht sichtbare EDS-Module werden beim
   ersten Öffnen lazy erzeugt. Eine vollständige inkrementelle
   Ordner-/Kontosynchronisation und eine einheitliche Retry-/Netzwerkstrategie
-  für alle EDS-Domänen fehlen noch.
+  für alle EDS-Domänen fehlen noch. Der GTK-Modellaufbau ist zusätzlich in
+  32er-Hauptschleifen-Chunks aufgeteilt: Nachrichten, Threadgruppen und
+  Threadzeilen werden nach jedem Chunk zurück an GTK übergeben, damit große
+  EDS-/lokale Mailboxen den Start nicht mehr als „Programm reagiert nicht“
+  erscheinen lassen. Der erste Mail-Worker wird erst nach dem Präsentieren
+  des Fensters gestartet; die EDS-Quellenerkennung läuft zusätzlich in einem
+  eigenen Worker-Kontext und aktualisiert GTK nur mit fertigen, einfachen
+  Daten. Die Startdiagnose protokolliert die Zeitpunkte von Fensterpräsentation,
+  Backend-Rückkehr, Quellenentdeckung und Modellabschluss; die tatsächliche
+  Linux-EDS-/Camel-Abnahme bleibt in [ROADMAP_LINUX.md](ROADMAP_LINUX.md).
+  Die automatische Markierung einer ausgewählten Nachricht als gelesen läuft
+  jetzt ebenfalls vollständig im Worker; der GTK-Auswahlcallback wartet nicht
+  mehr synchron auf Camel/EDS-Authentifizierung oder Ordnersynchronisation.
 - [~] Native Linux-Camel-Brücke öffnet die aktivierten EDS-Mailquellen über
   `e_source_camel_configure_service()`, verwendet EDS-/GOA-Credentials und
   lädt Ordnerzusammenfassungen sowie begrenzte RFC-822-Nachrichten in
@@ -633,7 +649,7 @@ werden.
   portable Microsoft-Graph-Client ist für typisierte Fehler, geheimnisfreie
   Token-Injektion, GAL-Suche, OOF, Ordnerhierarchie/Pagination, Mail-Lesen
   einschließlich Graph-Anhängen, MIME-Versand/Entwürfe, Zustände/Labels/
-  Verschieben, Kalenderansicht mit CRUD und Grundserien sowie Kontakte mit
+  Verschieben/Kopieren, Kalenderansicht mit CRUD und Grundserien sowie Kontakte mit
   CRUD implementiert und in die bestehenden Mail-, ECal- und EBook-Verträge
   überführt. Die GTK4-rs-UI fällt bei einem passenden Exchange-Profil auf
   diesen Pfad zurück. Interaktive OAuth2-/EDS-/GOA-Tokenbeschaffung, Delta-
@@ -872,6 +888,13 @@ werden.
   Die verfügbaren EDS-/lokalen Adressbücher werden zusätzlich als direkte
   linke Navigation neben dem bestehenden Quellenfilter angezeigt und bleiben
   mit ihm synchron.
+  Die portable Dublettenerkennung kann Kontakte derselben schreibbaren Quelle
+  nach normalisierten E-Mail-/Telefon-/Namensschlüsseln in einem
+  Bestätigungsdialog zusammenführen. Dabei bleibt die Primär-UID erhalten,
+  unbekannte vCard-/X-Eigenschaften werden übernommen und der lokale Bestand
+  wird über einen atomaren Mehrkarten-Schreibvorgang aktualisiert; EDS-/Graph-
+  Mutationen verwenden bis zur Linux-Abnahme den expliziten Modify-/Remove-
+  Fehlerpfad ohne vorgetäuschte Transaktionsgarantie.
   Aus dem Kontakt-Detail öffnet die Mailaktion den Composer mit den
   ausgewählten E-Mail-Adressen vorbefüllt; die sichtbaren Adressen können
   außerdem direkt in die Zwischenablage kopiert werden.
@@ -1004,9 +1027,11 @@ werden.
   eigene logische Datensätze mit unabhängigen Zuständen dargestellt. App-eigene
   Labels können portabel gesetzt, entfernt, angezeigt und über
   `label:` gesucht werden. Die GTK4-rs-Mailansicht bietet dafür eine reversible
-  Einzel- und Batch-Aktion mit persistentem Sidecar und Undo/Redo; Remote-
-  Kopien und serverseitige Mehrfachlabels benötigen weiter den Camel-/Multi-
-  Label-Pfad. Die lokale Regelbedingung unterstützt Betreff, Absender,
+  Einzel- und Batch-Aktion mit persistentem Sidecar und Undo/Redo; Graph-Kopien
+  laufen serverseitig über den Graph-Copy-Endpunkt und sind im selben
+  Command-/Undo-Pfad enthalten. Native EDS/Camel-Kopien und serverseitige
+  Mehrfachlabels benötigen weiter den Camel-/Multi-Label-Pfad. Die lokale
+  Regelbedingung unterstützt Betreff, Absender,
   Empfänger, Nachrichtentext, RFC822-Header, Ordner, Datum und Junk-/Spamstatus
   sowie die Vergleiche enthält, enthält nicht, ist, ist nicht, beginnt mit,
   endet mit, vor, nach und existiert. Alte
@@ -1041,7 +1066,7 @@ werden.
   negativer Formen für Mail, Kalender, Aufgaben und Notizen; die serverseitige
   Camel-Syntax bleibt davon getrennt.
 - [~] Exchange/Microsoft 365: Der portable Graph-Pfad deckt Mail, Ordner,
-  MIME-Versand/Entwürfe, Zustände/Labels, Kalender-CRUD mit grundlegenden
+  MIME-Versand/Entwürfe, Zustände/Labels/Kopieren, Kalender-CRUD mit grundlegenden
   Serien, Kontakte-CRUD, GAL und OOF ab; EWS-Kompatibilität bleibt nur soweit
   technisch notwendig. Interaktive OAuth2-/EDS-/GOA-Anmeldung, Delta-/Offline-
   Synchronisation, komplexe Serien-/Zeitzonen-/Meeting-Fälle und die reale
@@ -1103,7 +1128,10 @@ werden.
   vollständige AT-SPI-Prüfung und ein GNOME-HIG-Review fehlen noch.
 - [~] Performance-Ziele für große Ordner, Speicher-/Thread-Leaks,
   Startup-Konkurrenz und
-  Crash-Recovery und Telemetrie-freie Fehlerdiagnose.
+  Crash-Recovery und Telemetrie-freie Fehlerdiagnose. Der Mail-Startpfad
+  hält Worker-I/O und GTK-Modellaufbau getrennt und verarbeitet große
+  Nachrichten-/Threadmodelle inkrementell; Linux-Abnahme mit echten EDS-
+  Konten, Provider-Latenz, Leakprüfung und Crash-Recovery bleibt offen.
 - [ ] Signierte Release-Artefakte, Flatpak-Review, AppStream-Validierung,
   reproduzierbare Builds und dokumentierte Upgrade-/Rollback-Strategie.
 

@@ -1538,6 +1538,30 @@ impl ExchangeService {
         )
     }
 
+    /// Copy one message inside the signed-in mailbox and return the newly
+    /// created Graph resource.  Graph assigns a new immutable message ID to
+    /// the copy; callers must retain that ID if they want a safe undo path.
+    pub fn copy_message_to_folder_sync(
+        &self,
+        message_id: &str,
+        destination_folder_id: &str,
+    ) -> Result<ExchangeMailMessage, ExchangeError> {
+        let message_id = encode_path_segment(message_id)?;
+        let destination_folder_id = validate_graph_value(destination_folder_id)?;
+        let copied: GraphMessage = self.request_json(
+            Method::POST,
+            &format!("me/messages/{message_id}/copy"),
+            &[],
+            Some(serde_json::json!({"destinationId": destination_folder_id})),
+        )?;
+        self.into_public_messages(vec![copied], destination_folder_id)?
+            .into_iter()
+            .next()
+            .ok_or_else(|| {
+                ExchangeError::Decode("Graph lieferte keine kopierte Nachricht zurück".to_string())
+            })
+    }
+
     pub fn delete_message_sync(&self, message_id: &str) -> Result<(), ExchangeError> {
         let message_id = encode_path_segment(message_id)?;
         self.request_empty(
@@ -2426,12 +2450,7 @@ fn validate_datetime(value: &str, label: &str) -> Result<String, ExchangeError> 
 }
 
 fn encode_path_segment(value: &str) -> Result<String, ExchangeError> {
-    let value = value.trim();
-    if value.is_empty() || value.chars().count() > 512 || value.contains(['\r', '\n']) {
-        return Err(ExchangeError::InvalidQuery(
-            "Graph-ID enthält ungültige Zeichen".to_string(),
-        ));
-    }
+    let value = validate_graph_value(value)?;
     let mut encoded = String::with_capacity(value.len());
     for byte in value.as_bytes() {
         if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
@@ -2443,6 +2462,16 @@ fn encode_path_segment(value: &str) -> Result<String, ExchangeError> {
         }
     }
     Ok(encoded)
+}
+
+fn validate_graph_value(value: &str) -> Result<String, ExchangeError> {
+    let value = value.trim();
+    if value.is_empty() || value.chars().count() > 512 || value.contains(['\r', '\n']) {
+        return Err(ExchangeError::InvalidQuery(
+            "Graph-ID enthält ungültige Zeichen".to_string(),
+        ));
+    }
+    Ok(value.to_string())
 }
 
 fn hex_digit(value: u8) -> char {
@@ -3049,6 +3078,40 @@ mod tests {
             service.search_messages_sync(None, None, "  ", 20),
             Err(ExchangeError::InvalidQuery(_))
         ));
+    }
+
+    #[test]
+    fn graph_message_copy_posts_destination_and_returns_new_message_id() {
+        let response = concat!(
+            "HTTP/1.1 201 Created\r\nContent-Type: application/json\r\n",
+            "Connection: close\r\n\r\n",
+            "{\"id\":\"copied-message-id\",\"parentFolderId\":\"archive-id\",\"internetMessageId\":\"<copy@example.org>\",\"subject\":\"Copied\"}"
+        );
+        let (base_url, requests, handle) = mock_server(response);
+        let service = ExchangeService {
+            server_url: base_url,
+            ..ExchangeService::graph("user@example.org", "token")
+        };
+
+        let copied = service
+            .copy_message_to_folder_sync("original/message", "archive-id")
+            .expect("Graph message copy should parse");
+        let request = requests.recv().expect("request should be captured");
+        handle.join().expect("mock server should finish");
+
+        assert!(request.contains("POST /v1.0/me/messages/original%2Fmessage/copy"));
+        assert!(request.contains("\"destinationId\":\"archive-id\""));
+        assert!(
+            request
+                .to_ascii_lowercase()
+                .contains("authorization: bearer token")
+        );
+        assert_eq!(copied.id, "copied-message-id");
+        assert_eq!(copied.folder_id, "archive-id");
+        assert_eq!(
+            copied.internet_message_id.as_deref(),
+            Some("<copy@example.org>")
+        );
     }
 
     #[test]

@@ -19,7 +19,7 @@ use crate::models::folder::FolderObject;
 use crate::models::mail_message::MailMessageObject;
 use crate::services::AppSettings;
 use crate::services::account_config_service::AccountConfigStore;
-use crate::services::camel_mail_service::{self, CamelMailLoad};
+use crate::services::camel_mail_service::{self, CamelFolderSummary, CamelMailLoad};
 use crate::services::crypto_service::{self, CryptoService};
 use crate::services::draft_store_service::{DraftMessage, DraftStoreService};
 use crate::services::ecal_service::{ECalComponentType, ECalService};
@@ -94,16 +94,15 @@ impl MailSortField {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 enum MailLayout {
     #[default]
-    Classic,
     Modern,
+    Classic,
 }
 
 impl MailLayout {
     fn from_setting(value: &str) -> Self {
         match value {
-            "modern" => Self::Modern,
             "classic" => Self::Classic,
-            _ => Self::Classic,
+            _ => Self::Modern,
         }
     }
 
@@ -918,6 +917,197 @@ enum MailPageLoadResult {
     Error(String),
 }
 
+const MAIL_MODEL_CHUNK_SIZE: usize = 32;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PendingMailApplyStage {
+    Camel,
+    Local,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PendingThreadModelStage {
+    CollectMessages,
+    BuildThreads,
+    AppendRoots,
+}
+
+/// State for applying a backend result to GTK models without monopolising the
+/// main context.  EDS/Camel already runs in a worker; this is the second half
+/// of the same boundary: creating GObjects, list-model entries and thread
+/// models must happen on GTK's thread, but it must yield between small chunks.
+struct PendingMailApply {
+    started: Instant,
+    generation: u64,
+    request: MailLoadRequest,
+    replace: bool,
+    previous_selected_id: Option<String>,
+    pending_search: Option<String>,
+    result_kind: &'static str,
+    stage: PendingMailApplyStage,
+    active_messages: Vec<ParsedMail>,
+    local_messages: Option<Vec<ParsedMail>>,
+    combined: bool,
+    local_folders: HashSet<String>,
+    local_counts: HashMap<String, (u32, u32)>,
+    existing_ids: HashSet<String>,
+    appended: usize,
+    camel_folders: Vec<CamelFolderSummary>,
+    camel_status: Option<String>,
+    camel_has_more: bool,
+    camel_warning_visible: bool,
+    camel_is_graph: bool,
+    camel_search_applied: bool,
+    local_reason: Option<String>,
+}
+
+struct PendingMailCompletion {
+    generation: u64,
+    started: Instant,
+    replace: bool,
+    previous_selected_id: Option<String>,
+    is_local: bool,
+    appended: usize,
+    has_visible_local_content: bool,
+    pending_search: Option<String>,
+    result_kind: &'static str,
+}
+
+struct PendingThreadModelApply {
+    generation: u64,
+    store: gio::ListStore,
+    messages: Vec<MailMessageObject>,
+    next_message: usize,
+    thread_order: Vec<String>,
+    grouped_messages: HashMap<String, Vec<MailMessageObject>>,
+    next_thread: usize,
+    roots: Vec<MailMessageObject>,
+    thread_members: HashMap<String, Vec<MailMessageObject>>,
+    thread_children: HashMap<String, gio::ListStore>,
+    threading: bool,
+    stage: PendingThreadModelStage,
+    root_store: Option<gio::ListStore>,
+    root_index: usize,
+    completion: PendingMailCompletion,
+}
+
+impl PendingThreadModelApply {
+    fn from_store(
+        generation: u64,
+        store: gio::ListStore,
+        threading: bool,
+        completion: PendingMailCompletion,
+    ) -> Self {
+        let messages = (0..store.n_items())
+            .filter_map(|index| store.item(index).and_downcast::<MailMessageObject>())
+            .collect::<Vec<_>>();
+        Self {
+            generation,
+            store,
+            messages,
+            next_message: 0,
+            thread_order: Vec::new(),
+            grouped_messages: HashMap::new(),
+            next_thread: 0,
+            roots: Vec::new(),
+            thread_members: HashMap::new(),
+            thread_children: HashMap::new(),
+            threading,
+            stage: PendingThreadModelStage::CollectMessages,
+            root_store: None,
+            root_index: 0,
+            completion,
+        }
+    }
+}
+
+impl PendingMailApply {
+    fn from_camel(
+        request: MailLoadRequest,
+        mut camel: CamelMailLoad,
+        local_messages: Option<Vec<ParsedMail>>,
+        local_folders: HashSet<String>,
+        replace: bool,
+        previous_selected_id: Option<String>,
+        pending_search: Option<String>,
+        generation: u64,
+    ) -> Self {
+        let status = format_camel_status(&camel);
+        let has_more = camel.search_query.is_none()
+            && camel.has_more_for(
+                request.source_uid.as_deref(),
+                request.folder_name.as_deref(),
+                request.offset,
+                request.max_messages_per_folder,
+            );
+        let camel_warning_visible =
+            camel.warning.is_some() || !camel.folders.iter().any(|folder| folder.is_selectable);
+        let messages = std::mem::take(&mut camel.messages);
+        let camel_folders = camel.folders;
+
+        let combined = local_messages.is_some();
+        Self {
+            started: Instant::now(),
+            generation,
+            request,
+            replace,
+            previous_selected_id,
+            pending_search,
+            result_kind: if combined { "combined" } else { "camel" },
+            stage: PendingMailApplyStage::Camel,
+            active_messages: messages,
+            combined,
+            local_messages,
+            local_folders,
+            local_counts: HashMap::new(),
+            existing_ids: HashSet::new(),
+            appended: 0,
+            camel_folders,
+            camel_status: Some(status),
+            camel_has_more: has_more,
+            camel_warning_visible,
+            camel_is_graph: camel.is_graph,
+            camel_search_applied: camel.search_query.is_some(),
+            local_reason: None,
+        }
+    }
+
+    fn from_local(
+        request: MailLoadRequest,
+        reason: String,
+        messages: Vec<ParsedMail>,
+        local_folders: HashSet<String>,
+        replace: bool,
+        previous_selected_id: Option<String>,
+        generation: u64,
+    ) -> Self {
+        Self {
+            started: Instant::now(),
+            generation,
+            request,
+            replace,
+            previous_selected_id,
+            pending_search: None,
+            result_kind: "local",
+            stage: PendingMailApplyStage::Local,
+            active_messages: messages,
+            combined: false,
+            local_messages: None,
+            local_folders,
+            local_counts: HashMap::new(),
+            existing_ids: HashSet::new(),
+            appended: 0,
+            camel_folders: Vec::new(),
+            camel_status: None,
+            camel_has_more: false,
+            camel_warning_visible: false,
+            camel_is_graph: false,
+            camel_search_applied: false,
+            local_reason: Some(reason),
+        }
+    }
+}
+
 fn load_mail_backend(
     request: &MailLoadRequest,
     cancelled: &AtomicBool,
@@ -1124,6 +1314,9 @@ mod imp {
         pub mail_incremental_loading: Cell<bool>,
         pub updating_folder_rows: Cell<bool>,
         pub mail_sync_source: RefCell<Option<glib::SourceId>>,
+        pub mail_startup_source: RefCell<Option<glib::SourceId>>,
+        pub mail_apply_source: RefCell<Option<glib::SourceId>>,
+        pub mail_thread_apply_source: RefCell<Option<glib::SourceId>>,
         pub mail_load_cancellation: RefCell<Option<Arc<AtomicBool>>>,
         pub mail_search_cancellation: RefCell<Option<Arc<AtomicBool>>>,
         pub search_debounce_source: RefCell<Option<glib::SourceId>>,
@@ -1263,6 +1456,15 @@ mod imp {
 
         fn dispose(&self) {
             if let Some(source) = self.mail_sync_source.borrow_mut().take() {
+                source.remove();
+            }
+            if let Some(source) = self.mail_startup_source.borrow_mut().take() {
+                source.remove();
+            }
+            if let Some(source) = self.mail_apply_source.borrow_mut().take() {
+                source.remove();
+            }
+            if let Some(source) = self.mail_thread_apply_source.borrow_mut().take() {
                 source.remove();
             }
             if let Some(cancelled) = self.mail_load_cancellation.borrow().as_ref() {
@@ -2324,32 +2526,48 @@ impl MailPage {
         let Some(message) = self.selected_message() else {
             return Ok(false);
         };
-        if destination_source != "local" {
-            return Err(MailOperationError::Unsupported {
-                operation: crate::services::mail_operations_service::MailOperationKind::Copy,
-                backend: "EDS/Camel-Kopieren (Linux-Abnahme ausstehend)",
-            });
-        }
-        if message.backend_location().is_some() {
-            return Err(MailOperationError::Unsupported {
-                operation: crate::services::mail_operations_service::MailOperationKind::Copy,
-                backend: "EDS/Camel-Nachricht in den lokalen Import",
-            });
-        }
-        if message.id().contains("::copy::") {
-            return Err(MailOperationError::Unsupported {
-                operation: crate::services::mail_operations_service::MailOperationKind::Copy,
-                backend: "lokale Kopie einer Kopie",
-            });
-        }
-        if message.folder_id().eq_ignore_ascii_case(destination_folder) {
-            return Ok(true);
-        }
+        let command = if destination_source == "local" {
+            if message.backend_location().is_some() {
+                return Err(MailOperationError::Unsupported {
+                    operation: crate::services::mail_operations_service::MailOperationKind::Copy,
+                    backend: "Graph-/EDS-Nachricht in den lokalen Import",
+                });
+            }
+            if message.id().contains("::copy::") {
+                return Err(MailOperationError::Unsupported {
+                    operation: crate::services::mail_operations_service::MailOperationKind::Copy,
+                    backend: "lokale Kopie einer Kopie",
+                });
+            }
+            if message.folder_id().eq_ignore_ascii_case(destination_folder) {
+                return Ok(true);
+            }
+            MailCommand::copy_local(message.id(), destination_folder.to_string())
+        } else {
+            let Some(location) = message.backend_location() else {
+                return Err(MailOperationError::Unsupported {
+                    operation: crate::services::mail_operations_service::MailOperationKind::Copy,
+                    backend: "lokaler Import in ein Graph-Konto",
+                });
+            };
+            if location.source_uid != destination_source {
+                return Err(MailOperationError::Unsupported {
+                    operation: crate::services::mail_operations_service::MailOperationKind::Copy,
+                    backend: "anderes Graph-/EDS-Konto",
+                });
+            }
+            if !is_graph_backend_location(Some(&location)) {
+                return Err(MailOperationError::Unsupported {
+                    operation: crate::services::mail_operations_service::MailOperationKind::Copy,
+                    backend: "native EDS/Camel-Kopieren (Linux-Abnahme ausstehend)",
+                });
+            }
+            // A Graph copy intentionally remains allowed in the same folder;
+            // Outlook creates a distinct message resource in that case.
+            MailCommand::copy_remote(message.id(), location, destination_folder.to_string())
+        };
 
-        self.execute_mail_command(MailCommand::copy_local(
-            message.id(),
-            destination_folder.to_string(),
-        ))?;
+        self.execute_mail_command(command)?;
         self.clear_operation_error();
         self.refresh_mail();
         if let Some(state) = self.imp().message_state.borrow().as_ref() {
@@ -2868,19 +3086,37 @@ impl MailPage {
     }
 
     fn copy_folder_destinations(&self) -> Vec<MoveDestination> {
-        self.folder_destinations()
-            .into_iter()
-            .filter(|destination| destination.source_uid == "local")
-            .collect()
+        let messages = self.selected_batch_messages();
+        self.copy_folder_destinations_for_messages(&messages)
+    }
+
+    fn graph_copy_source_for_messages(&self, messages: &[MailMessageObject]) -> Option<String> {
+        let mut source_uid = None;
+        for message in messages {
+            let location = message.backend_location()?;
+            if !is_graph_backend_location(Some(&location)) {
+                return None;
+            }
+            match source_uid.as_deref() {
+                Some(existing) if existing != location.source_uid => return None,
+                None => source_uid = Some(location.source_uid),
+                _ => {}
+            }
+        }
+        source_uid
     }
 
     fn copy_folder_destinations_for_messages(
         &self,
         messages: &[MailMessageObject],
     ) -> Vec<MoveDestination> {
+        let graph_source = self.graph_copy_source_for_messages(messages);
         self.folder_destinations_for_messages(messages)
             .into_iter()
-            .filter(|destination| destination.source_uid == "local")
+            .filter(|destination| {
+                destination.source_uid == "local"
+                    || graph_source.as_deref() == Some(destination.source_uid.as_str())
+            })
             .collect()
     }
 
@@ -2961,39 +3197,96 @@ impl MailPage {
 
     fn copy_batch_to(&self, destination_source: &str, destination_folder: &str) {
         let messages = self.selected_batch_messages();
-        if destination_source != "local"
-            || messages
-                .iter()
-                .any(|message| message.backend_location().is_some())
-        {
-            self.report_operation_error(
-                "Kopieren nicht möglich",
-                &MailOperationError::Unsupported {
-                    operation: crate::services::mail_operations_service::MailOperationKind::Copy,
-                    backend: "EDS/Camel-Kopieren (Linux-Abnahme ausstehend)",
-                },
-            );
-            return;
-        }
-        if messages
+        let has_local = messages
             .iter()
-            .any(|message| message.id().contains("::copy::"))
-        {
+            .any(|message| message.backend_location().is_none());
+        let has_remote = messages
+            .iter()
+            .any(|message| message.backend_location().is_some());
+        if has_local && has_remote {
             self.report_operation_error(
                 "Kopieren nicht möglich",
                 &MailOperationError::Unsupported {
                     operation: crate::services::mail_operations_service::MailOperationKind::Copy,
-                    backend: "lokale Kopie einer Kopie",
+                    backend: "gemischte lokale/Remote-Auswahl",
                 },
             );
             return;
         }
 
-        let commands = messages
-            .iter()
-            .filter(|message| !message.folder_id().eq_ignore_ascii_case(destination_folder))
-            .map(|message| MailCommand::copy_local(message.id(), destination_folder.to_string()))
-            .collect::<Vec<_>>();
+        let commands = if destination_source == "local" {
+            if has_remote {
+                self.report_operation_error(
+                    "Kopieren nicht möglich",
+                    &MailOperationError::Unsupported {
+                        operation:
+                            crate::services::mail_operations_service::MailOperationKind::Copy,
+                        backend: "Graph-/EDS-Nachricht in den lokalen Import",
+                    },
+                );
+                return;
+            }
+            if messages
+                .iter()
+                .any(|message| message.id().contains("::copy::"))
+            {
+                self.report_operation_error(
+                    "Kopieren nicht möglich",
+                    &MailOperationError::Unsupported {
+                        operation:
+                            crate::services::mail_operations_service::MailOperationKind::Copy,
+                        backend: "lokale Kopie einer Kopie",
+                    },
+                );
+                return;
+            }
+            messages
+                .iter()
+                .filter(|message| !message.folder_id().eq_ignore_ascii_case(destination_folder))
+                .map(|message| {
+                    MailCommand::copy_local(message.id(), destination_folder.to_string())
+                })
+                .collect::<Vec<_>>()
+        } else {
+            let Some(source_uid) = self.graph_copy_source_for_messages(&messages) else {
+                self.report_operation_error(
+                    "Kopieren nicht möglich",
+                    &MailOperationError::Unsupported {
+                        operation:
+                            crate::services::mail_operations_service::MailOperationKind::Copy,
+                        backend: if has_remote {
+                            "native EDS/Camel-Kopieren (Linux-Abnahme ausstehend)"
+                        } else {
+                            "lokaler Import in ein Graph-Konto"
+                        },
+                    },
+                );
+                return;
+            };
+            if source_uid != destination_source {
+                self.report_operation_error(
+                    "Kopieren nicht möglich",
+                    &MailOperationError::Unsupported {
+                        operation:
+                            crate::services::mail_operations_service::MailOperationKind::Copy,
+                        backend: "anderes Graph-/EDS-Konto",
+                    },
+                );
+                return;
+            }
+            messages
+                .iter()
+                .filter_map(|message| {
+                    message.backend_location().map(|location| {
+                        MailCommand::copy_remote(
+                            message.id(),
+                            location,
+                            destination_folder.to_string(),
+                        )
+                    })
+                })
+                .collect::<Vec<_>>()
+        };
         if commands.is_empty() {
             self.clear_batch_selection();
             if let Some(state) = self.imp().message_state.borrow().as_ref() {
@@ -3292,6 +3585,30 @@ impl MailPage {
             .factory(&dynamic_factory)
             .css_classes(vec!["navigation-sidebar"])
             .build();
+
+        let folder_click = gtk::GestureClick::builder().button(3).build();
+        let view_weak = dynamic_folder_view.downgrade();
+        folder_click.connect_pressed(move |_, _, x, y| {
+            let Some(view) = view_weak.upgrade() else { return; };
+            let folder_menu = gio::Menu::new();
+            folder_menu.append(Some("Mülleimer leeren"), Some("win.empty-trash"));
+            folder_menu.append(Some("Endgültig löschen (Expunge)"), Some("win.expunge"));
+            folder_menu.append(Some("Ordner aktualisieren"), Some("win.refresh-mail"));
+            let popover = gtk::PopoverMenu::builder()
+                .menu_model(&folder_menu)
+                .has_arrow(false)
+                .pointing_to(&gtk::gdk::Rectangle::new(x as i32, y as i32, 1, 1))
+                .build();
+            popover.set_parent(&view);
+            let popover_weak = popover.downgrade();
+            popover.connect_closed(move |_| {
+                if let Some(popover) = popover_weak.upgrade() {
+                    popover.unparent();
+                }
+            });
+            popover.popup();
+        });
+        dynamic_folder_view.add_controller(folder_click);
 
         self.imp()
             .dynamic_folder_store
@@ -3910,6 +4227,30 @@ impl MailPage {
             );
         });
     }
+    fn localize_folder_name(name: &str) -> String {
+        let clean = name.trim();
+        match clean.to_ascii_lowercase().as_str() {
+            "inbox" | "posteingang" => "Posteingang".to_string(),
+            "drafts" | "entwürfe" | "entwuerfe" => "Entwürfe".to_string(),
+            "sent" | "sent items" | "gesendet" => "Gesendet".to_string(),
+            "trash" | "mülleimer" | "papierkorb" | "deleted items" => "Mülleimer".to_string(),
+            "junk" | "junk email" | "spam" => "Spam".to_string(),
+            "archive" | "archiv" => "Archiv".to_string(),
+            "outbox" | "postausgang" => "Postausgang".to_string(),
+            _ => clean.to_string(),
+        }
+    }
+
+    fn localize_source_name(name: &str) -> String {
+        let clean = name.trim();
+        match clean.to_ascii_lowercase().as_str() {
+            "on this computer" | "local" => "Auf diesem Computer".to_string(),
+            "search folders" | "vfolder" => "Suchordner".to_string(),
+            "news and blogs" | "rss" => "News & Blogs".to_string(),
+            "eds" | "eds?" => "Mail-Konto".to_string(),
+            _ => clean.to_string(),
+        }
+    }
 
     fn rebuild_camel_folder_rows(
         &self,
@@ -4024,10 +4365,12 @@ impl MailPage {
                 .parent_name
                 .as_deref()
                 .map(|name| Self::dynamic_folder_key(&node.source_uid, name));
-            let label = if node.parent_name.is_none() && !node.source_display_name.is_empty() {
-                format!("{} · {}", node.source_display_name, node.display_name)
+            let localized_display = Self::localize_folder_name(&node.display_name);
+            let localized_source = Self::localize_source_name(&node.source_display_name);
+            let label = if node.parent_name.is_none() && !localized_source.is_empty() {
+                format!("{} · {}", localized_source, localized_display)
             } else {
-                node.display_name.clone()
+                localized_display
             };
             let folder = FolderObject::new_backend(
                 &id,
@@ -4077,14 +4420,23 @@ impl MailPage {
     }
 
     fn folder_icon_name(folder_id: &str) -> &'static str {
-        match folder_id {
-            "inbox" => "mail-inbox-symbolic",
-            "sent" => "mail-sent-symbolic",
-            "drafts" => "mail-drafts-symbolic",
-            "trash" => "edit-delete-symbolic",
-            "archive" => "mail-archive-symbolic",
-            "junk" => "dialog-warning-symbolic",
-            _ => "folder-symbolic",
+        let clean = folder_id.trim().to_ascii_lowercase();
+        if clean.contains("inbox") || clean.contains("posteingang") {
+            "mail-inbox-symbolic"
+        } else if clean.contains("sent") || clean.contains("gesendet") {
+            "mail-send-symbolic"
+        } else if clean.contains("draft") || clean.contains("entwurf") || clean.contains("entwürfe") {
+            "document-properties-symbolic"
+        } else if clean.contains("trash") || clean.contains("mülleimer") || clean.contains("papierkorb") || clean.contains("deleted") {
+            "user-trash-symbolic"
+        } else if clean.contains("junk") || clean.contains("spam") {
+            "dialog-warning-symbolic"
+        } else if clean.contains("archive") || clean.contains("archiv") {
+            "box-symbolic"
+        } else if clean.contains("outbox") || clean.contains("postausgang") {
+            "mail-outbox-symbolic"
+        } else {
+            "folder-symbolic"
         }
     }
 
@@ -4876,6 +5228,38 @@ impl MailPage {
             .css_classes(vec!["message-list"])
             .build();
 
+        let msg_click = gtk::GestureClick::builder().button(3).build();
+        let list_view_weak = list_view.downgrade();
+        msg_click.connect_pressed(move |_, _, x, y| {
+            let Some(view) = list_view_weak.upgrade() else { return; };
+            let msg_menu = gio::Menu::new();
+            msg_menu.append(Some("Antworten"), Some("win.reply"));
+            msg_menu.append(Some("Allen antworten"), Some("win.reply-all"));
+            msg_menu.append(Some("Weiterleiten"), Some("win.forward"));
+            msg_menu.append(Some("Als gelesen markieren"), Some("win.mark-read"));
+            msg_menu.append(Some("Als ungelesen markieren"), Some("win.mark-unread"));
+            msg_menu.append(Some("Markierung umschalten"), Some("win.toggle-flag"));
+            msg_menu.append(Some("Wichtigkeitsmarkierung umschalten"), Some("win.toggle-important"));
+            msg_menu.append(Some("Archivieren"), Some("win.archive"));
+            msg_menu.append(Some("Als Spam markieren"), Some("win.mark-junk"));
+            msg_menu.append(Some("Ausgewählte E-Mail exportieren"), Some("win.export"));
+            msg_menu.append(Some("Löschen"), Some("win.delete"));
+            let popover = gtk::PopoverMenu::builder()
+                .menu_model(&msg_menu)
+                .has_arrow(false)
+                .pointing_to(&gtk::gdk::Rectangle::new(x as i32, y as i32, 1, 1))
+                .build();
+            popover.set_parent(&view);
+            let popover_weak = popover.downgrade();
+            popover.connect_closed(move |_| {
+                if let Some(popover) = popover_weak.upgrade() {
+                    popover.unparent();
+                }
+            });
+            popover.popup();
+        });
+        list_view.add_controller(msg_click);
+
         // Search entry container
         let search_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
@@ -5305,7 +5689,7 @@ impl MailPage {
             if destinations.is_empty() {
                 copy_popover_content.append(
                     &gtk::Label::builder()
-                        .label("Keine lokalen Zielordner verfügbar")
+                        .label("Keine verfügbaren Zielordner")
                         .css_classes(vec!["caption", "dim-label"])
                         .build(),
                 );
@@ -5332,9 +5716,7 @@ impl MailPage {
         });
         let copy_button = gtk::MenuButton::builder()
             .label("Kopieren")
-            .tooltip_text(
-                "Ausgewählte lokale Nachrichten in einen weiteren lokalen Ordner kopieren",
-            )
+            .tooltip_text("Ausgewählte Nachrichten in einen weiteren Ordner kopieren")
             .popover(&copy_popover)
             .css_classes(vec!["flat"])
             .build();
@@ -5991,7 +6373,7 @@ impl MailPage {
             if destinations.is_empty() {
                 copy_popover_content.append(
                     &gtk::Label::builder()
-                        .label("Keine lokalen Zielordner verfügbar")
+                        .label("Keine verfügbaren Zielordner")
                         .css_classes(vec!["caption", "dim-label"])
                         .build(),
                 );
@@ -6116,15 +6498,12 @@ impl MailPage {
         attachment_bar: &gtk::Box,
         thread_context: &gtk::ListBox,
     ) {
-        let operations = MailOperationsService::new();
         let filter_for_selection = custom_filter.clone();
         let thread_filter_for_selection = thread_filter.clone();
         let selection_for_async_crypto = selection.clone();
         let store_for_thread_context = store.clone();
         let selection_for_thread_context = selection.clone();
         selection.connect_selected_item_notify(glib::clone!(
-            #[strong]
-            operations,
             #[strong]
             filter_for_selection,
             #[strong]
@@ -6152,28 +6531,76 @@ impl MailPage {
             #[weak]
             thread_context,
             move |sel| {
-                if let Some(item) = sel.selected_item() {
-                    if let Ok(msg) = item.downcast::<MailMessageObject>() {
-                        let was_unread = msg.is_unread();
+                let msg_option = sel.selected_item().and_then(|item| {
+                    item.clone().downcast::<MailMessageObject>().ok().or_else(|| {
+                        item.downcast::<gtk::TreeListRow>()
+                            .ok()
+                            .and_then(|row| row.item())
+                            .and_then(|obj| obj.downcast::<MailMessageObject>().ok())
+                    })
+                });
+                if let Some(msg) = msg_option {
+                    let was_unread = msg.is_unread();
                         let mark_read_on_selection = AppSettings::try_new()
                             .map(|settings| settings.mark_read_on_selection())
                             .unwrap_or(true);
                         if was_unread && mark_read_on_selection {
-                            let result = match msg.backend_location() {
-                                Some(location) => operations.mark_read_for_location(
-                                    &msg.id(),
-                                    &location,
-                                    msg.is_flagged(),
-                                ),
-                                None => operations.mark_read(&msg.id(), msg.is_flagged()),
-                            };
-                            if let Err(error) = result {
-                                tracing::error!(%error, "Could not persist read state");
-                            } else {
-                                msg.set_unread(false);
-                                filter_for_selection.changed(gtk::FilterChange::Different);
-                                thread_filter_for_selection.changed(gtk::FilterChange::Different);
-                            }
+                            // A remote read-state mutation can connect Camel,
+                            // authenticate through EDS/GOA and synchronize a
+                            // folder.  Doing that synchronously from this
+                            // selection signal freezes the GTK main loop
+                            // immediately after the first mail page appears.
+                            // Keep the model unread until the backend confirms
+                            // the mutation, then apply the result on GTK.
+                            let message_id = msg.id();
+                            let backend_location = msg.backend_location();
+                            let is_flagged = msg.is_flagged();
+                            let message_for_read = msg.downgrade();
+                            let selection_for_read = selection_for_async_crypto.clone();
+                            let filter_for_read = filter_for_selection.clone();
+                            let thread_filter_for_read = thread_filter_for_selection.clone();
+                            let message_id_for_worker = message_id.clone();
+                            let (sender, receiver) = async_channel::bounded(1);
+                            std::thread::spawn(move || {
+                                let operations = MailOperationsService::new();
+                                let result = match backend_location.as_ref() {
+                                    Some(location) => operations.mark_read_for_location(
+                                        &message_id_for_worker,
+                                        location,
+                                        is_flagged,
+                                    ),
+                                    None => operations.mark_read(&message_id_for_worker, is_flagged),
+                                };
+                                if let Err(error) = sender.send_blocking(result) {
+                                    tracing::debug!(%error, "Read-state result was dropped");
+                                }
+                            });
+                            glib::spawn_future_local(async move {
+                                let Ok(result) = receiver.recv().await else {
+                                    return;
+                                };
+                                match result {
+                                    Ok(()) => {
+                                        let Some(message) = message_for_read.upgrade() else {
+                                            return;
+                                        };
+                                        let still_selected = selection_for_read
+                                            .selected_item()
+                                            .and_downcast::<MailMessageObject>()
+                                            .is_some_and(|selected| selected.id() == message_id);
+                                        if still_selected && message.is_unread() {
+                                            message.set_unread(false);
+                                            filter_for_read
+                                                .changed(gtk::FilterChange::Different);
+                                            thread_filter_for_read
+                                                .changed(gtk::FilterChange::Different);
+                                        }
+                                    }
+                                    Err(error) => {
+                                        tracing::error!(%error, "Could not persist read state");
+                                    }
+                                }
+                            });
                         }
                         lbl_subject.set_label(&msg.subject());
                         lbl_from.set_label(&format!(
@@ -6285,7 +6712,6 @@ impl MailPage {
                             });
                         }
                         Self::render_message_content(&msg, &mail_viewer, &attachment_bar);
-                    }
                 }
             }
         ));
@@ -6572,13 +6998,34 @@ impl MailPage {
     }
 
     fn load_initial_data(&self, source_store: &gio::ListStore, source_state: &gtk::Label) {
+        let startup_started = Instant::now();
+        tracing::debug!("MailPage initial data setup started");
         let initial_folder = FolderSelection::configured_initial();
         if let Some(selection) = self.imp().folder_selection.borrow().as_ref() {
             selection.replace(initial_folder.clone());
         }
         self.select_folder_row(&initial_folder);
-        self.start_mail_load(MailLoadRequest::initial(), true);
-        self.setup_mail_polling();
+
+        // Let GTK present the already-built shell before the first backend
+        // result can schedule model work. EDS/Camel runs in a worker, but the
+        // resulting GObjects and list-model changes must be applied on the
+        // GTK thread. A short delay prevents a cold Linux EDS session from
+        // making the freshly presented window appear unresponsive.
+        let page = self.downgrade();
+        let startup_source =
+            glib::timeout_add_local_once(StdDuration::from_millis(100), move || {
+                let Some(page) = page.upgrade() else {
+                    return;
+                };
+                page.imp().mail_startup_source.borrow_mut().take();
+                page.start_mail_load(MailLoadRequest::initial(), true);
+                page.setup_mail_polling();
+            });
+        self.imp().mail_startup_source.replace(Some(startup_source));
+        tracing::debug!(
+            elapsed_ms = startup_started.elapsed().as_millis() as u64,
+            "MailPage initial mail load deferred until after first frame"
+        );
 
         let source_store_for_load = source_store.clone();
         let source_selection_for_load = self.imp().source_selection.borrow().clone();
@@ -6591,16 +7038,29 @@ impl MailPage {
             source_store.append(&EdsSourceObject::from_account_profile(profile));
         }
         let has_configured_accounts = !configured_accounts.is_empty();
-        glib::spawn_future_local(async move {
-            let discovery = eds_service::discover_sources(EdsSourceKind::Mail).await;
+        let (discovery_sender, discovery_receiver) = async_channel::bounded(1);
+        std::thread::spawn(move || {
+            let discovery_started = Instant::now();
+            let discovery = eds_service::discover_sources_blocking(EdsSourceKind::Mail);
             tracing::info!(
                 sources = discovery.sources.len(),
                 origin = ?discovery.origin,
+                elapsed_ms = discovery_started.elapsed().as_millis() as u64,
                 "Loaded mail sources"
             );
             if let Some(error) = discovery.error.as_deref() {
                 tracing::warn!(%error, "Live EDS mail source discovery failed");
             }
+            if let Err(error) = discovery_sender.send_blocking(discovery) {
+                tracing::debug!(%error, "Mail source discovery result was dropped");
+            }
+        });
+        glib::spawn_future_local(async move {
+            let Ok(discovery) = discovery_receiver.recv().await else {
+                source_state_for_load.set_label("EDS-Quellenerkennung wurde abgebrochen.");
+                source_state_for_load.set_visible(true);
+                return;
+            };
 
             let has_eds_sources = !discovery.sources.is_empty();
             let has_enabled_source = discovery.sources.iter().any(|source| source.enabled);
@@ -6794,7 +7254,9 @@ impl MailPage {
     }
 
     fn setup_camel_change_monitor(&self) {
+        tracing::debug!("Starting deferred Camel change monitor");
         let Some((cancellation, receiver)) = camel_mail_service::start_change_monitor() else {
+            tracing::debug!("Camel change monitor is unavailable in this build");
             return;
         };
 
@@ -6904,7 +7366,7 @@ impl MailPage {
         let store = self.imp().message_store.borrow().clone();
         if let Some(store) = store.as_ref() {
             Self::remove_message_ids(store, &removed_ids);
-            self.refresh_thread_metadata(store);
+            self.refresh_thread_models_from_metadata(store);
         }
         self.imp()
             .batch_selection
@@ -7082,7 +7544,20 @@ impl MailPage {
         self.start_mail_load(request, false);
     }
 
+    fn cancel_pending_mail_apply(&self) {
+        if let Some(source) = self.imp().mail_apply_source.borrow_mut().take() {
+            source.remove();
+        }
+        if let Some(source) = self.imp().mail_thread_apply_source.borrow_mut().take() {
+            source.remove();
+        }
+    }
+
     fn start_mail_load(&self, request: MailLoadRequest, replace: bool) {
+        if let Some(source) = self.imp().mail_startup_source.borrow_mut().take() {
+            source.remove();
+            self.setup_mail_polling();
+        }
         tracing::debug!(
             source_uid = ?request.source_uid,
             folder_name = ?request.folder_name,
@@ -7107,6 +7582,7 @@ impl MailPage {
             cancelled.store(true, Ordering::Relaxed);
         }
         self.imp().mail_incremental_loading.set(false);
+        self.cancel_pending_mail_apply();
 
         let generation = self.imp().load_generation.get().wrapping_add(1);
         self.imp().load_generation.set(generation);
@@ -7272,6 +7748,7 @@ impl MailPage {
         {
             return;
         }
+        self.cancel_pending_mail_apply();
         let (source_uid, folder_name) = self.graph_search_scope();
         let cancellation = Arc::new(AtomicBool::new(false));
         self.imp()
@@ -7348,21 +7825,19 @@ impl MailPage {
     }
 
     fn apply_mail_load(&self, request: MailLoadRequest, result: MailPageLoadResult, replace: bool) {
-        let started = Instant::now();
-        // `Combined` recursively applies its Camel part.  Let that inner call
-        // schedule a pending Graph search; otherwise the outer call would
-        // schedule the same request a second time.
-        let pending_search = matches!(&result, MailPageLoadResult::Camel(camel)
-            if camel.is_graph && camel.search_query.is_none())
-        .then(|| {
-            self.imp()
-                .search_entry
-                .borrow()
-                .as_ref()
-                .map(|entry| entry.text().trim().to_string())
-        })
-        .flatten()
-        .filter(|query| !query.is_empty());
+        let pending_search = match &result {
+            MailPageLoadResult::Camel(camel) | MailPageLoadResult::Combined { camel, .. }
+                if camel.is_graph && camel.search_query.is_none() =>
+            {
+                self.imp()
+                    .search_entry
+                    .borrow()
+                    .as_ref()
+                    .map(|entry| entry.text().trim().to_string())
+                    .filter(|query| !query.is_empty())
+            }
+            _ => None,
+        };
         let result_kind = match &result {
             MailPageLoadResult::Camel(_) => "camel",
             MailPageLoadResult::Combined { .. } => "combined",
@@ -7378,10 +7853,6 @@ impl MailPage {
         if replace {
             self.clear_batch_selection();
         }
-        self.imp().mail_loading.set(false);
-        if let Some(button) = self.imp().refresh_button.borrow().as_ref() {
-            button.set_sensitive(true);
-        }
 
         match result {
             MailPageLoadResult::Combined {
@@ -7389,16 +7860,16 @@ impl MailPage {
                 local_messages,
                 local_folders,
             } => {
-                let camel_folders = camel.folders.clone();
-                self.apply_mail_load(request.clone(), MailPageLoadResult::Camel(camel), replace);
-                let local_counts = self.append_local_messages(local_messages, local_folders, false);
-                if let Some(folder_list) = self.imp().folder_list.borrow().as_ref() {
-                    self.update_camel_folder_counts(
-                        folder_list,
-                        &camel_folders,
-                        Some(&local_counts),
-                    );
-                }
+                self.begin_pending_mail_apply(PendingMailApply::from_camel(
+                    request,
+                    camel,
+                    Some(local_messages),
+                    local_folders,
+                    replace,
+                    previous_selected_id,
+                    pending_search,
+                    self.imp().load_generation.get(),
+                ));
             }
             MailPageLoadResult::Camel(camel) => {
                 tracing::debug!(
@@ -7406,166 +7877,37 @@ impl MailPage {
                     messages = camel.messages.len(),
                     "Building GTK mail models from backend result"
                 );
-                if replace {
-                    self.imp().local_folder_ids.replace(HashSet::new());
-                }
-                self.imp().graph_backend_active.set(camel.is_graph);
-                self.imp()
-                    .remote_search_applied
-                    .set(camel.search_query.is_some());
-                let status = format_camel_status(&camel);
-                let has_more = camel.search_query.is_none()
-                    && camel.has_more_for(
-                        request.source_uid.as_deref(),
-                        request.folder_name.as_deref(),
-                        request.offset,
-                        request.max_messages_per_folder,
-                    );
-                let folder_list = self.imp().folder_list.borrow().clone();
-                if let Some(folder_list) = folder_list.as_ref() {
-                    if replace {
-                        self.rebuild_camel_folder_rows(folder_list, &camel.folders);
-                    }
-                    self.update_camel_folder_counts(folder_list, &camel.folders, None);
-                }
-
-                let appended = if let Some(store) = self.imp().message_store.borrow().as_ref() {
-                    if replace {
-                        store.remove_all();
-                    }
-                    self.append_unique_messages(store, camel.messages)
-                } else {
-                    0
-                };
-                tracing::debug!(appended, "GTK mail message model populated");
-
-                self.imp().active_request.replace(Some(request.clone()));
-                if let Some(section) = self.imp().folder_section.borrow().as_ref() {
-                    section.set_visible(true);
-                }
-                if let Some(state) = self.imp().source_state.borrow().as_ref() {
-                    if camel.warning.is_some()
-                        || !camel.folders.iter().any(|folder| folder.is_selectable)
-                    {
-                        state.set_label(&status);
-                        state.set_visible(true);
-                    } else {
-                        state.set_visible(false);
-                    }
-                }
-                if let Some(button) = self.imp().load_more_button.borrow().as_ref() {
-                    button.set_visible(has_more);
-                    button.set_sensitive(true);
-                }
-                if let Some(state) = self.imp().message_state.borrow().as_ref() {
-                    state.set_label(&format!(
-                        "{status} · {appended} Nachricht(en) in dieser Seite"
-                    ));
-                }
-
-                if replace {
-                    self.select_message_after_reload(previous_selected_id.as_deref());
-                    let selected_folder = self
-                        .imp()
-                        .folder_selection
-                        .borrow()
-                        .as_ref()
-                        .map(|selection| selection.borrow().clone());
-                    if let Some(selected_folder) = selected_folder {
-                        if selected_folder.is_remote() {
-                            self.select_folder_row(&selected_folder);
-                        }
-                    }
-                }
+                self.begin_pending_mail_apply(PendingMailApply::from_camel(
+                    request,
+                    camel,
+                    None,
+                    HashSet::new(),
+                    replace,
+                    previous_selected_id,
+                    pending_search,
+                    self.imp().load_generation.get(),
+                ));
             }
             MailPageLoadResult::Local {
                 reason,
                 messages,
                 local_folders,
             } => {
-                self.imp().graph_backend_active.set(false);
-                self.imp().remote_search_applied.set(false);
-                let mut visible_local_folders = local_folders;
-                let folder_list = self.imp().folder_list.borrow().clone();
-                if let Some(folder_list) = folder_list.as_ref() {
-                    self.rebuild_camel_folder_rows(folder_list, &[]);
-                }
-                let mut loaded_count = 0;
-                let mut folder_counts = HashMap::new();
-                if let Some(store) = self.imp().message_store.borrow().as_ref() {
-                    if replace {
-                        store.remove_all();
-                    }
-                    let mut objects = Vec::with_capacity(messages.len());
-                    for record in messages {
-                        loaded_count += 1;
-                        let folder_counts_entry = folder_counts
-                            .entry(record.folder_id.clone())
-                            .or_insert((0_u32, 0_u32));
-                        folder_counts_entry.1 += 1;
-                        if record.is_unread {
-                            folder_counts_entry.0 += 1;
-                        }
-                        objects.push(record.into_object().upcast::<glib::Object>());
-                    }
-                    if !objects.is_empty() {
-                        store.splice(store.n_items(), 0, &objects);
-                    }
-                    self.refresh_thread_metadata(store);
-                }
-                visible_local_folders.extend(
-                    folder_counts
-                        .keys()
-                        .filter(|folder_id| folder_id.starts_with("custom:"))
-                        .cloned(),
-                );
-                if let Some(folder_list) = folder_list.as_ref() {
-                    self.rebuild_local_folder_rows(
-                        folder_list,
-                        &folder_counts,
-                        &visible_local_folders,
-                    );
-                }
-                self.imp()
-                    .local_folder_ids
-                    .replace(visible_local_folders.clone());
-                self.imp().active_request.replace(None);
-                if let Some(state) = self.imp().source_state.borrow().as_ref() {
-                    state.set_label(&reason);
-                    state.set_visible(true);
-                }
-                if let Some(button) = self.imp().load_more_button.borrow().as_ref() {
-                    button.set_visible(false);
-                    button.set_sensitive(true);
-                }
-                if let Some(state) = self.imp().message_state.borrow().as_ref() {
-                    state.set_label(&format!(
-                        "{reason} · {loaded_count} lokale Nachricht(en) geladen"
-                    ));
-                }
-                let selected_folder = self
-                    .imp()
-                    .folder_selection
-                    .borrow()
-                    .as_ref()
-                    .map(|selection| selection.borrow().clone())
-                    .filter(|selection| !selection.is_remote())
-                    .unwrap_or_else(FolderSelection::configured_initial);
-                if let Some(selection) = self.imp().folder_selection.borrow().as_ref() {
-                    selection.replace(selected_folder.clone());
-                }
-                self.select_folder_row(&selected_folder);
-                if let Some(filter) = self.imp().message_filter.borrow().as_ref() {
-                    filter.changed(gtk::FilterChange::Different);
-                }
-                if loaded_count > 0 || !visible_local_folders.is_empty() {
-                    if let Some(section) = self.imp().folder_section.borrow().as_ref() {
-                        section.set_visible(true);
-                    }
-                    self.select_message_after_reload(None);
-                }
+                self.begin_pending_mail_apply(PendingMailApply::from_local(
+                    request,
+                    reason,
+                    messages,
+                    local_folders,
+                    replace,
+                    previous_selected_id,
+                    self.imp().load_generation.get(),
+                ));
             }
             MailPageLoadResult::Error(error) => {
+                self.imp().mail_loading.set(false);
+                if let Some(button) = self.imp().refresh_button.borrow().as_ref() {
+                    button.set_sensitive(true);
+                }
                 if let Some(state) = self.imp().source_state.borrow().as_ref() {
                     state.set_label(&format!("EDS/Camel-Laden nicht möglich: {error}"));
                     state.set_visible(true);
@@ -7580,13 +7922,462 @@ impl MailPage {
                 tracing::warn!(%error, "Mail backend load failed");
             }
         }
+    }
 
-        // Opening the long-lived Camel watcher while the initial model is
-        // still settling can make a cold EDS session contend for the same
-        // provider resources.  Defer watcher construction until the first
-        // interactive window slice has been presented.  The weak reference
-        // also makes this safe when the page is closed during startup.
-        if replace
+    fn begin_pending_mail_apply(&self, mut pending: PendingMailApply) {
+        let store = self.imp().message_store.borrow().clone();
+        if let Some(store) = store.as_ref() {
+            if pending.replace {
+                store.remove_all();
+            }
+            for index in 0..store.n_items() {
+                if let Some(message) = store.item(index).and_downcast::<MailMessageObject>() {
+                    pending.existing_ids.insert(message.id());
+                }
+            }
+        }
+
+        self.imp().mail_loading.set(true);
+        if let Some(button) = self.imp().refresh_button.borrow().as_ref() {
+            button.set_sensitive(false);
+        }
+        if let Some(button) = self.imp().load_more_button.borrow().as_ref() {
+            button.set_sensitive(false);
+        }
+
+        if pending.result_kind != "local" {
+            if pending.replace {
+                self.imp().local_folder_ids.replace(HashSet::new());
+            }
+            self.imp().graph_backend_active.set(pending.camel_is_graph);
+            self.imp()
+                .remote_search_applied
+                .set(pending.camel_search_applied);
+            self.imp()
+                .active_request
+                .replace(Some(pending.request.clone()));
+
+            if let Some(folder_list) = self.imp().folder_list.borrow().as_ref() {
+                if pending.replace {
+                    self.rebuild_camel_folder_rows(folder_list, &pending.camel_folders);
+                }
+                self.update_camel_folder_counts(folder_list, &pending.camel_folders, None);
+            }
+            if let Some(section) = self.imp().folder_section.borrow().as_ref() {
+                section.set_visible(true);
+            }
+            if let Some(state) = self.imp().source_state.borrow().as_ref() {
+                if pending.camel_warning_visible {
+                    state.set_label(pending.camel_status.as_deref().unwrap_or_default());
+                    state.set_visible(true);
+                } else {
+                    state.set_visible(false);
+                }
+            }
+            if let Some(button) = self.imp().load_more_button.borrow().as_ref() {
+                button.set_visible(pending.camel_has_more);
+            }
+            if let Some(state) = self.imp().message_state.borrow().as_ref() {
+                state.set_label(&format!(
+                    "{} · Nachrichten werden aufgebaut …",
+                    pending.camel_status.as_deref().unwrap_or("Mailbackend")
+                ));
+            }
+        } else {
+            self.imp().graph_backend_active.set(false);
+            self.imp().remote_search_applied.set(false);
+            if let Some(folder_list) = self.imp().folder_list.borrow().as_ref() {
+                self.rebuild_camel_folder_rows(folder_list, &[]);
+            }
+            if let Some(state) = self.imp().source_state.borrow().as_ref() {
+                state.set_label(pending.local_reason.as_deref().unwrap_or_default());
+                state.set_visible(true);
+            }
+            if let Some(button) = self.imp().load_more_button.borrow().as_ref() {
+                button.set_visible(false);
+            }
+            if let Some(state) = self.imp().message_state.borrow().as_ref() {
+                state.set_label("Lokale Nachrichten werden aufgebaut …");
+            }
+        }
+
+        tracing::debug!(
+            stage = ?pending.stage,
+            messages = pending.active_messages.len(),
+            combined = pending.combined,
+            "Scheduling incremental GTK mail model application"
+        );
+        let state = Rc::new(RefCell::new(pending));
+        let page = self.downgrade();
+        let state_for_source = state.clone();
+        let source = glib::timeout_add_local_full(
+            StdDuration::from_millis(1),
+            glib::Priority::LOW,
+            move || {
+                let Some(page) = page.upgrade() else {
+                    return glib::ControlFlow::Break;
+                };
+                if page.imp().load_generation.get() != state_for_source.borrow().generation {
+                    page.imp().mail_apply_source.borrow_mut().take();
+                    return glib::ControlFlow::Break;
+                }
+
+                let done = {
+                    let mut pending = state_for_source.borrow_mut();
+                    page.process_pending_mail_apply(&mut pending)
+                };
+                if !done {
+                    return glib::ControlFlow::Continue;
+                }
+
+                page.imp().mail_apply_source.borrow_mut().take();
+                let pending = state_for_source.borrow();
+                page.finish_pending_mail_apply(&pending);
+                glib::ControlFlow::Break
+            },
+        );
+        self.imp().mail_apply_source.replace(Some(source));
+    }
+
+    fn process_pending_mail_apply(&self, pending: &mut PendingMailApply) -> bool {
+        if pending.active_messages.is_empty() {
+            if pending.stage == PendingMailApplyStage::Camel {
+                if let Some(local_messages) = pending.local_messages.take() {
+                    pending.stage = PendingMailApplyStage::Local;
+                    pending.active_messages = local_messages;
+                    if let Some(state) = self.imp().message_state.borrow().as_ref() {
+                        state.set_label(&format!(
+                            "{} · Lokale Nachrichten werden aufgebaut …",
+                            pending.camel_status.as_deref().unwrap_or("Mailbackend")
+                        ));
+                    }
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        let chunk_len = pending.active_messages.len().min(MAIL_MODEL_CHUNK_SIZE);
+        let records = pending
+            .active_messages
+            .drain(..chunk_len)
+            .collect::<Vec<_>>();
+        let mut objects = Vec::with_capacity(records.len());
+        for record in records {
+            if pending.stage == PendingMailApplyStage::Local {
+                let counts = pending
+                    .local_counts
+                    .entry(record.folder_id.clone())
+                    .or_insert((0, 0));
+                counts.1 = counts.1.saturating_add(1);
+                if record.is_unread {
+                    counts.0 = counts.0.saturating_add(1);
+                }
+            }
+            if pending.existing_ids.insert(record.id.clone()) {
+                objects.push(record.into_object().upcast::<glib::Object>());
+                pending.appended = pending.appended.saturating_add(1);
+            }
+        }
+        if let Some(store) = self.imp().message_store.borrow().as_ref() {
+            if !objects.is_empty() {
+                store.splice(store.n_items(), 0, &objects);
+            }
+        }
+
+        if let Some(state) = self.imp().message_state.borrow().as_ref() {
+            let prefix = pending
+                .camel_status
+                .as_deref()
+                .or(pending.local_reason.as_deref())
+                .unwrap_or("Nachrichten");
+            state.set_label(&format!(
+                "{prefix} · {} Nachricht(en) aufgebaut …",
+                pending.appended
+            ));
+        }
+        pending.active_messages.is_empty()
+            && !(pending.stage == PendingMailApplyStage::Camel && pending.local_messages.is_some())
+    }
+
+    fn finish_pending_mail_apply(&self, pending: &PendingMailApply) {
+        let is_local = pending.result_kind == "local";
+        let mut visible_local_folders = pending.local_folders.clone();
+        visible_local_folders.extend(
+            pending
+                .local_counts
+                .keys()
+                .filter(|folder_id| folder_id.starts_with("custom:"))
+                .cloned(),
+        );
+
+        if is_local {
+            if let Some(folder_list) = self.imp().folder_list.borrow().as_ref() {
+                self.rebuild_local_folder_rows(
+                    folder_list,
+                    &pending.local_counts,
+                    &visible_local_folders,
+                );
+            }
+            self.imp()
+                .local_folder_ids
+                .replace(visible_local_folders.clone());
+            self.imp().active_request.replace(None);
+            if let Some(state) = self.imp().source_state.borrow().as_ref() {
+                state.set_label(pending.local_reason.as_deref().unwrap_or_default());
+                state.set_visible(true);
+            }
+            if let Some(state) = self.imp().message_state.borrow().as_ref() {
+                state.set_label(&format!(
+                    "{} · {} lokale Nachricht(en) geladen",
+                    pending
+                        .local_reason
+                        .as_deref()
+                        .unwrap_or("Lokaler Speicher"),
+                    pending.appended
+                ));
+            }
+        } else {
+            if pending.combined {
+                if let Some(folder_list) = self.imp().folder_list.borrow().as_ref() {
+                    self.rebuild_local_folder_rows(
+                        folder_list,
+                        &pending.local_counts,
+                        &visible_local_folders,
+                    );
+                    self.update_camel_folder_counts(
+                        folder_list,
+                        &pending.camel_folders,
+                        Some(&pending.local_counts),
+                    );
+                }
+                self.imp()
+                    .local_folder_ids
+                    .replace(visible_local_folders.clone());
+            }
+            if let Some(state) = self.imp().message_state.borrow().as_ref() {
+                state.set_label(&format!(
+                    "{} · {} Nachricht(en) in dieser Seite",
+                    pending.camel_status.as_deref().unwrap_or("Mailbackend"),
+                    pending.appended
+                ));
+            }
+            if let Some(button) = self.imp().load_more_button.borrow().as_ref() {
+                button.set_visible(pending.camel_has_more);
+            }
+        }
+
+        let completion = PendingMailCompletion {
+            generation: pending.generation,
+            started: pending.started,
+            replace: pending.replace,
+            previous_selected_id: pending.previous_selected_id.clone(),
+            is_local,
+            appended: pending.appended,
+            has_visible_local_content: pending.appended > 0 || !visible_local_folders.is_empty(),
+            pending_search: pending.pending_search.clone(),
+            result_kind: pending.result_kind,
+        };
+        if let Some(store) = self.imp().message_store.borrow().as_ref().cloned() {
+            self.begin_pending_thread_models(store, completion);
+        } else {
+            self.finalize_pending_mail_apply(&completion);
+        }
+    }
+
+    fn begin_pending_thread_models(
+        &self,
+        store: gio::ListStore,
+        completion: PendingMailCompletion,
+    ) {
+        let state = Rc::new(RefCell::new(PendingThreadModelApply::from_store(
+            completion.generation,
+            store,
+            self.imp().mail_threading.get(),
+            completion,
+        )));
+        let page = self.downgrade();
+        let state_for_source = state.clone();
+        let source = glib::timeout_add_local_full(
+            StdDuration::from_millis(1),
+            glib::Priority::LOW,
+            move || {
+                let Some(page) = page.upgrade() else {
+                    return glib::ControlFlow::Break;
+                };
+                if page.imp().load_generation.get() != state_for_source.borrow().generation {
+                    page.imp().mail_thread_apply_source.borrow_mut().take();
+                    return glib::ControlFlow::Break;
+                }
+
+                let done = {
+                    let mut state = state_for_source.borrow_mut();
+                    page.process_pending_thread_models(&mut state)
+                };
+                if !done {
+                    return glib::ControlFlow::Continue;
+                }
+
+                page.imp().mail_thread_apply_source.borrow_mut().take();
+                let state = state_for_source.borrow();
+                page.finalize_pending_mail_apply(&state.completion);
+                glib::ControlFlow::Break
+            },
+        );
+        self.imp().mail_thread_apply_source.replace(Some(source));
+    }
+
+    fn process_pending_thread_models(&self, state: &mut PendingThreadModelApply) -> bool {
+        match state.stage {
+            PendingThreadModelStage::CollectMessages => {
+                let end = (state.next_message + MAIL_MODEL_CHUNK_SIZE).min(state.messages.len());
+                if state.threading {
+                    for message in &state.messages[state.next_message..end] {
+                        let thread_id = message.thread_id();
+                        if !state.grouped_messages.contains_key(&thread_id) {
+                            state.thread_order.push(thread_id.clone());
+                        }
+                        state
+                            .grouped_messages
+                            .entry(thread_id)
+                            .or_default()
+                            .push(message.clone());
+                    }
+                } else {
+                    for message in &state.messages[state.next_message..end] {
+                        let message_id = message.id();
+                        message.set_thread_metadata(&message_id, 1, 0);
+                        state
+                            .thread_members
+                            .insert(message_id.clone(), vec![message.clone()]);
+                        state.roots.push(message.clone());
+                    }
+                }
+                state.next_message = end;
+                if state.next_message < state.messages.len() {
+                    return false;
+                }
+                if state.threading {
+                    state.stage = PendingThreadModelStage::BuildThreads;
+                } else {
+                    self.sort_mail_roots(&mut state.roots);
+                    state.stage = PendingThreadModelStage::AppendRoots;
+                }
+                false
+            }
+            PendingThreadModelStage::BuildThreads => {
+                let end = (state.next_thread + MAIL_MODEL_CHUNK_SIZE).min(state.thread_order.len());
+                for thread_id in &state.thread_order[state.next_thread..end] {
+                    let Some(mut members) = state.grouped_messages.remove(thread_id) else {
+                        continue;
+                    };
+                    members.sort_by_key(|message| (message.thread_position(), message.id()));
+                    let Some(root) = members.first().cloned() else {
+                        continue;
+                    };
+                    let member_count = members.len();
+                    for (position, member) in members.iter().enumerate() {
+                        member.set_thread_metadata(thread_id, member_count, position);
+                    }
+                    let children = gio::ListStore::new::<MailMessageObject>();
+                    for child in members.iter().skip(1) {
+                        children.append(child);
+                    }
+                    state.roots.push(root);
+                    state.thread_members.insert(thread_id.clone(), members);
+                    state.thread_children.insert(thread_id.clone(), children);
+                }
+                state.next_thread = end;
+                if state.next_thread < state.thread_order.len() {
+                    return false;
+                }
+                self.sort_mail_roots(&mut state.roots);
+                state.stage = PendingThreadModelStage::AppendRoots;
+                false
+            }
+            PendingThreadModelStage::AppendRoots => {
+                let Some(root_store) = state
+                    .root_store
+                    .clone()
+                    .or_else(|| self.imp().thread_root_store.borrow().clone())
+                else {
+                    return true;
+                };
+                if state.root_store.is_none() {
+                    root_store.remove_all();
+                    if let Some(members_for_model) = self.imp().thread_members.borrow().as_ref() {
+                        members_for_model.replace(state.thread_members.clone());
+                    }
+                    if let Some(children_for_model) = self.imp().thread_children.borrow().as_ref() {
+                        children_for_model.replace(state.thread_children.clone());
+                    }
+                    state.root_store = Some(root_store.clone());
+                }
+                let end = (state.root_index + MAIL_MODEL_CHUNK_SIZE).min(state.roots.len());
+                for root in &state.roots[state.root_index..end] {
+                    root_store.append(root);
+                }
+                state.root_index = end;
+                if state.root_index < state.roots.len() {
+                    return false;
+                }
+                if let Some(filter) = self.imp().thread_filter.borrow().as_ref() {
+                    filter.changed(gtk::FilterChange::Different);
+                }
+                if state.store.n_items() > 0 {
+                    let count = state.store.n_items();
+                    state.store.items_changed(0, count, count);
+                }
+                true
+            }
+        }
+    }
+
+    fn finalize_pending_mail_apply(&self, completion: &PendingMailCompletion) {
+        if let Some(filter) = self.imp().message_filter.borrow().as_ref() {
+            filter.changed(gtk::FilterChange::Different);
+        }
+
+        let selected_folder = self
+            .imp()
+            .folder_selection
+            .borrow()
+            .as_ref()
+            .map(|selection| selection.borrow().clone());
+        if completion.replace {
+            if completion.is_local {
+                let selected_folder = selected_folder
+                    .filter(|selection| !selection.is_remote())
+                    .unwrap_or_else(FolderSelection::configured_initial);
+                if let Some(selection) = self.imp().folder_selection.borrow().as_ref() {
+                    selection.replace(selected_folder.clone());
+                }
+                self.select_folder_row(&selected_folder);
+                if completion.has_visible_local_content {
+                    if let Some(section) = self.imp().folder_section.borrow().as_ref() {
+                        section.set_visible(true);
+                    }
+                }
+                self.select_message_after_reload(None);
+            } else if let Some(selected_folder) = selected_folder {
+                if selected_folder.is_remote() {
+                    self.select_folder_row(&selected_folder);
+                }
+                self.select_message_after_reload(completion.previous_selected_id.as_deref());
+            } else {
+                self.select_message_after_reload(completion.previous_selected_id.as_deref());
+            }
+        }
+
+        self.imp().mail_loading.set(false);
+        if let Some(button) = self.imp().refresh_button.borrow().as_ref() {
+            button.set_sensitive(true);
+        }
+        if let Some(button) = self.imp().load_more_button.borrow().as_ref() {
+            button.set_sensitive(true);
+        }
+
+        if completion.replace
             && !self.imp().graph_backend_active.get()
             && !self.imp().camel_monitor_started.replace(true)
         {
@@ -7602,118 +8393,18 @@ impl MailPage {
         }
 
         self.refresh_search_folder_counts();
-
         if self.imp().mail_change_pending.replace(false) && !self.imp().mail_loading.get() {
             self.refresh_mail();
         }
-        if let Some(pending_search) = pending_search {
-            self.handle_search_changed(&pending_search);
+        if let Some(pending_search) = completion.pending_search.as_deref() {
+            self.handle_search_changed(pending_search);
         }
         tracing::debug!(
-            elapsed_ms = started.elapsed().as_millis() as u64,
-            result = result_kind,
+            elapsed_ms = completion.started.elapsed().as_millis() as u64,
+            result = completion.result_kind,
+            appended = completion.appended,
             "Mail load applied to GTK models"
         );
-    }
-
-    fn append_local_messages(
-        &self,
-        messages: Vec<ParsedMail>,
-        local_folders: HashSet<String>,
-        replace: bool,
-    ) -> HashMap<String, (u32, u32)> {
-        let mut visible_local_folders = local_folders;
-        let mut folder_counts = HashMap::new();
-        let mut loaded_count = 0;
-        if let Some(store) = self.imp().message_store.borrow().as_ref() {
-            if replace {
-                store.remove_all();
-            }
-            for record in messages {
-                loaded_count += 1;
-                let folder_counts_entry = folder_counts
-                    .entry(record.folder_id.clone())
-                    .or_insert((0_u32, 0_u32));
-                folder_counts_entry.1 += 1;
-                if record.is_unread {
-                    folder_counts_entry.0 += 1;
-                }
-                store.append(&record.into_object());
-            }
-            self.refresh_thread_metadata(store);
-        }
-
-        visible_local_folders.extend(
-            folder_counts
-                .keys()
-                .filter(|folder_id| folder_id.starts_with("custom:"))
-                .cloned(),
-        );
-        if let Some(folder_list) = self.imp().folder_list.borrow().as_ref() {
-            self.rebuild_local_folder_rows(folder_list, &folder_counts, &visible_local_folders);
-        }
-        self.imp()
-            .local_folder_ids
-            .replace(visible_local_folders.clone());
-
-        if let Some(state) = self.imp().message_state.borrow().as_ref() {
-            let current = state.label().to_string();
-            let suffix = format!("{loaded_count} lokale Nachricht(en) verfügbar");
-            let label = if current.is_empty() {
-                suffix
-            } else {
-                format!("{current} · {suffix}")
-            };
-            state.set_label(&label);
-        }
-        let selected_folder = self
-            .imp()
-            .folder_selection
-            .borrow()
-            .as_ref()
-            .map(|selection| selection.borrow().clone())
-            .unwrap_or_else(FolderSelection::configured_initial);
-        if !selected_folder.is_remote() {
-            if let Some(selection) = self.imp().folder_selection.borrow().as_ref() {
-                selection.replace(selected_folder.clone());
-            }
-            self.select_folder_row(&selected_folder);
-            if loaded_count > 0 {
-                self.select_message_after_reload(None);
-            }
-        }
-        if loaded_count > 0 || !visible_local_folders.is_empty() {
-            if let Some(section) = self.imp().folder_section.borrow().as_ref() {
-                section.set_visible(true);
-            }
-            if let Some(filter) = self.imp().message_filter.borrow().as_ref() {
-                filter.changed(gtk::FilterChange::Different);
-            }
-        }
-        folder_counts
-    }
-
-    fn append_unique_messages(&self, store: &gio::ListStore, messages: Vec<ParsedMail>) -> usize {
-        let mut existing_ids = std::collections::HashSet::new();
-        for index in 0..store.n_items() {
-            if let Some(message) = store.item(index).and_downcast::<MailMessageObject>() {
-                existing_ids.insert(message.id());
-            }
-        }
-
-        let mut objects = Vec::new();
-        let mut appended = 0;
-        for record in messages {
-            if existing_ids.insert(record.id.clone()) {
-                objects.push(record.into_object().upcast::<glib::Object>());
-                appended += 1;
-            }
-        }
-        if !objects.is_empty() {
-            store.splice(store.n_items(), 0, &objects);
-        }
-        self.refresh_thread_metadata(store);
-        appended
     }
 
     fn remove_message_ids(store: &gio::ListStore, ids: &std::collections::HashSet<String>) {
@@ -7743,7 +8434,73 @@ impl MailPage {
         for message in messages {
             store.append(&message.into_object());
         }
-        self.refresh_thread_metadata(store);
+        self.refresh_thread_models_from_metadata(store);
+    }
+
+    /// Rebuild only the GTK thread models from metadata already assigned by
+    /// the backend workers.  The full `refresh_thread_metadata` path remains
+    /// available for settings changes, where headers may have changed, but a
+    /// normal load must not repeat the O(n) header graph calculation on GTK's
+    /// main thread.
+    fn refresh_thread_models_from_metadata(&self, store: &gio::ListStore) {
+        let messages = (0..store.n_items())
+            .filter_map(|index| store.item(index).and_downcast::<MailMessageObject>())
+            .collect::<Vec<_>>();
+
+        if !self.imp().mail_threading.get() {
+            let mut roots = Vec::with_capacity(messages.len());
+            let mut thread_members = HashMap::<String, Vec<MailMessageObject>>::new();
+            let thread_children = HashMap::<String, gio::ListStore>::new();
+            for message in messages {
+                let message_id = message.id();
+                message.set_thread_metadata(&message_id, 1, 0);
+                thread_members.insert(message_id, vec![message.clone()]);
+                roots.push(message);
+            }
+            self.sort_mail_roots(&mut roots);
+            self.replace_thread_models(store, roots, thread_members, thread_children);
+            return;
+        }
+
+        let mut thread_order = Vec::new();
+        let mut grouped_messages = HashMap::<String, Vec<MailMessageObject>>::new();
+        for message in &messages {
+            let thread_id = message.thread_id();
+            if !grouped_messages.contains_key(&thread_id) {
+                thread_order.push(thread_id.clone());
+            }
+            grouped_messages
+                .entry(thread_id)
+                .or_default()
+                .push(message.clone());
+        }
+
+        let mut roots = Vec::new();
+        let mut thread_members = HashMap::<String, Vec<MailMessageObject>>::new();
+        let mut thread_children = HashMap::<String, gio::ListStore>::new();
+        for thread_id in thread_order {
+            let Some(mut members) = grouped_messages.remove(&thread_id) else {
+                continue;
+            };
+            members.sort_by_key(|message| (message.thread_position(), message.id()));
+            let Some(root) = members.first().cloned() else {
+                continue;
+            };
+            let member_count = members.len();
+            for (position, member) in members.iter().enumerate() {
+                member.set_thread_metadata(&thread_id, member_count, position);
+            }
+
+            let children = gio::ListStore::new::<MailMessageObject>();
+            for child in members.iter().skip(1) {
+                children.append(child);
+            }
+            roots.push(root);
+            thread_members.insert(thread_id.clone(), members);
+            thread_children.insert(thread_id, children);
+        }
+        self.sort_mail_roots(&mut roots);
+        self.replace_thread_models(store, roots, thread_members, thread_children);
     }
 
     fn refresh_thread_metadata(&self, store: &gio::ListStore) {
@@ -8498,7 +9255,7 @@ mod tests {
     fn mail_layout_preserves_modern_and_classic_workflows() {
         assert_eq!(MailLayout::from_setting("modern"), MailLayout::Modern);
         assert_eq!(MailLayout::from_setting("classic"), MailLayout::Classic);
-        assert_eq!(MailLayout::from_setting("unknown"), MailLayout::Classic);
+        assert_eq!(MailLayout::from_setting("unknown"), MailLayout::Modern);
         assert_eq!(
             MailLayout::Modern.orientation(),
             gtk::Orientation::Horizontal

@@ -151,7 +151,11 @@ mod imp {
         }
     }
 
-    impl WidgetImpl for CalendarPage {}
+    impl WidgetImpl for CalendarPage {
+        fn realize(&self) {
+            self.parent_realize();
+        }
+    }
 }
 
 // ─── Public API ─────────────────────────────────────────────────────────────

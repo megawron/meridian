@@ -69,8 +69,6 @@ mod imp {
 
     impl WidgetImpl for EvolutionWindow {
         fn realize(&self) {
-            // Explicitly forward native-surface realization.  This avoids an
-            // empty Rust subclass trampoline on the macOS GTK backend.
             self.parent_realize();
         }
     }
@@ -182,10 +180,16 @@ impl EvolutionWindow {
     }
 
     fn setup_layout(&self) {
+        let setup_started = std::time::Instant::now();
+        tracing::debug!("Main window layout setup started");
         let view_stack = adw::ViewStack::new();
 
         let mail_page = MailPage::new();
         view_stack.add_titled_with_icon(&mail_page, Some("mail"), "Mail", "mail-unread-symbolic");
+        tracing::debug!(
+            elapsed_ms = setup_started.elapsed().as_millis() as u64,
+            "Mail page added to view stack"
+        );
 
         // Construct only the visible mail module at startup.  EDS/ECal/EBook
         // page construction starts native worker activity; eagerly creating
@@ -338,8 +342,42 @@ impl EvolutionWindow {
 
         header_bar.pack_end(&compose_button);
 
+        let statusbar_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(12)
+            .margin_start(12)
+            .margin_end(12)
+            .margin_top(4)
+            .margin_bottom(4)
+            .css_classes(vec!["statusbar"])
+            .build();
+
+        let online_toggle = gtk::Button::builder()
+            .icon_name("user-available-symbolic")
+            .tooltip_text("Online-Status (Online/Offline umschalten)")
+            .css_classes(vec!["flat", "circular"])
+            .build();
+
+        let status_label = gtk::Label::builder()
+            .label("Evolution GTK4  ·  Bereit")
+            .css_classes(vec!["caption", "dim-label"])
+            .halign(gtk::Align::Start)
+            .hexpand(true)
+            .build();
+
+        let status_progress = gtk::ProgressBar::builder()
+            .valign(gtk::Align::Center)
+            .visible(false)
+            .pulse_step(0.1)
+            .build();
+
+        statusbar_box.append(&online_toggle);
+        statusbar_box.append(&status_label);
+        statusbar_box.append(&status_progress);
+
         let toolbar_view = adw::ToolbarView::new();
         toolbar_view.add_top_bar(&header_bar);
+        toolbar_view.add_bottom_bar(&statusbar_box);
         toolbar_view.set_content(Some(&view_stack));
 
         let toast_overlay = &self.imp().toast_overlay;
@@ -369,6 +407,10 @@ impl EvolutionWindow {
 
         self.imp().view_stack.replace(Some(view_stack));
         self.set_content(Some(toast_overlay));
+        tracing::debug!(
+            elapsed_ms = setup_started.elapsed().as_millis() as u64,
+            "Main window layout installed"
+        );
 
         // Let the first frame become interactive before restoring a non-mail
         // module from settings.  Mail remains the fast default; a previously
@@ -396,44 +438,39 @@ impl EvolutionWindow {
     fn build_primary_menu() -> gio::Menu {
         let menu = gio::Menu::new();
 
-        let section1 = gio::Menu::new();
-        section1.append(Some("Neue E-Mail"), Some("app.compose"));
-        section1.append(Some("Lokale Entwürfe"), Some("app.drafts"));
-        section1.append(Some("Globale Suche"), Some("app.global-search"));
-        section1.append(Some("Ausgewählte E-Mail exportieren"), Some("win.export"));
-        section1.append(Some("Mail aktualisieren"), Some("win.refresh-mail"));
-        section1.append(Some("Rückgängig"), Some("win.undo"));
-        section1.append(Some("Wiederholen"), Some("win.redo"));
-        menu.append_section(None, &section1);
+        // ─── 1. Datei (File) ───────────────────────────────────────────────
+        let file_menu = gio::Menu::new();
+        let new_menu = gio::Menu::new();
+        new_menu.append(Some("Neue E-Mail"), Some("app.compose"));
+        new_menu.append(Some("Neuer Kontakt"), Some("win.new-contact"));
+        new_menu.append(Some("Neuer Termin"), Some("win.new-event"));
+        new_menu.append(Some("Neuer Ordner..."), Some("win.new-folder"));
+        file_menu.append_submenu(Some("Neu"), &new_menu);
+        file_menu.append(Some("Lokale Entwürfe"), Some("app.drafts"));
+        file_menu.append(Some("Ausgewählte E-Mail exportieren"), Some("win.export"));
+        menu.append_submenu(Some("Datei"), &file_menu);
 
-        let message_menu = gio::Menu::new();
-        message_menu.append(Some("Antworten"), Some("win.reply"));
-        message_menu.append(Some("Allen antworten"), Some("win.reply-all"));
-        message_menu.append(Some("Weiterleiten"), Some("win.forward"));
-        message_menu.append(
-            Some("Alle sichtbaren Nachrichten auswählen"),
-            Some("win.select-all-mail"),
-        );
-        message_menu.append(Some("Als gelesen markieren"), Some("win.mark-read"));
-        message_menu.append(Some("Als ungelesen markieren"), Some("win.mark-unread"));
-        message_menu.append(Some("Markierung umschalten"), Some("win.toggle-flag"));
-        message_menu.append(
-            Some("Wichtigkeitsmarkierung umschalten"),
-            Some("win.toggle-important"),
-        );
-        message_menu.append(Some("Archivieren"), Some("win.archive"));
-        message_menu.append(Some("Als Spam markieren"), Some("win.mark-junk"));
-        message_menu.append(Some("Als Nicht-Spam markieren"), Some("win.mark-not-junk"));
-        message_menu.append(Some("Löschen"), Some("win.delete"));
-        menu.append_section(Some("Nachricht"), &message_menu);
+        // ─── 2. Bearbeiten (Edit) ──────────────────────────────────────────
+        let edit_menu = gio::Menu::new();
+        edit_menu.append(Some("Rückgängig"), Some("win.undo"));
+        edit_menu.append(Some("Wiederholen"), Some("win.redo"));
+        edit_menu.append(Some("E-Mail suchen"), Some("win.search"));
+        edit_menu.append(Some("Globale Suche"), Some("app.global-search"));
+        edit_menu.append(Some("Filterregeln bearbeiten..."), Some("win.filter-editor"));
+        edit_menu.append(Some("Suchordner verwalten..."), Some("win.search-folder-editor"));
+        edit_menu.append(Some("Einstellungen"), Some("app.preferences"));
+        menu.append_submenu(Some("Bearbeiten"), &edit_menu);
 
-        let section2 = gio::Menu::new();
-        section2.append(Some("Einstellungen"), Some("app.preferences"));
-        section2.append(Some("Tastenkombinationen"), Some("win.show-help-overlay"));
-        section2.append(Some("Über Evolution"), Some("app.about"));
-        menu.append_section(None, &section2);
-
+        // ─── 3. Ansicht (View) ─────────────────────────────────────────────
         let view_menu = gio::Menu::new();
+        let switch_menu = gio::Menu::new();
+        switch_menu.append(Some("Mail"), Some("win.switch-mail"));
+        switch_menu.append(Some("Kalender"), Some("win.switch-calendar"));
+        switch_menu.append(Some("Kontakte"), Some("win.switch-contacts"));
+        switch_menu.append(Some("Aufgaben"), Some("win.switch-tasks"));
+        switch_menu.append(Some("Notizen"), Some("win.switch-memos"));
+        view_menu.append_submenu(Some("Bereich wechseln"), &switch_menu);
+
         view_menu.append(
             Some("Ordner-Seitenleiste ein-/ausblenden"),
             Some("win.toggle-sidebar"),
@@ -492,6 +529,50 @@ impl EvolutionWindow {
         density_menu.append(Some("Geräumig"), Some("win.mail-density-spacious"));
         view_menu.append_submenu(Some("Nachrichtendichte"), &density_menu);
         menu.append_submenu(Some("Ansicht"), &view_menu);
+
+        // ─── 4. Nachricht (Message) ────────────────────────────────────────
+        let message_menu = gio::Menu::new();
+        message_menu.append(Some("Antworten"), Some("win.reply"));
+        message_menu.append(Some("Allen antworten"), Some("win.reply-all"));
+        message_menu.append(Some("Weiterleiten"), Some("win.forward"));
+        message_menu.append(
+            Some("Alle sichtbaren Nachrichten auswählen"),
+            Some("win.select-all-mail"),
+        );
+        message_menu.append(Some("Als gelesen markieren"), Some("win.mark-read"));
+        message_menu.append(Some("Als ungelesen markieren"), Some("win.mark-unread"));
+        message_menu.append(Some("Markierung umschalten"), Some("win.toggle-flag"));
+        message_menu.append(
+            Some("Wichtigkeitsmarkierung umschalten"),
+            Some("win.toggle-important"),
+        );
+        message_menu.append(Some("Archivieren"), Some("win.archive"));
+        message_menu.append(Some("Als Spam markieren"), Some("win.mark-junk"));
+        message_menu.append(Some("Als Nicht-Spam markieren"), Some("win.mark-not-junk"));
+        message_menu.append(Some("Löschen"), Some("win.delete"));
+        menu.append_submenu(Some("Nachricht"), &message_menu);
+
+        // ─── 5. Ordner (Folder) ────────────────────────────────────────────
+        let folder_menu = gio::Menu::new();
+        folder_menu.append(Some("Neuer Ordner..."), Some("win.new-folder"));
+        folder_menu.append(Some("Mülleimer leeren"), Some("win.empty-trash"));
+        folder_menu.append(Some("Endgültig löschen (Expunge)"), Some("win.expunge"));
+        menu.append_submenu(Some("Ordner"), &folder_menu);
+
+        // ─── 6. Extras (Tools) ─────────────────────────────────────────────
+        let tools_menu = gio::Menu::new();
+        tools_menu.append(Some("Senden & Empfangen"), Some("win.refresh-mail"));
+        tools_menu.append(Some("Abwesenheitsnotiz (OOF)..."), Some("win.oof-settings"));
+        tools_menu.append(Some("Filterregeln bearbeiten..."), Some("win.filter-editor"));
+        tools_menu.append(Some("Suchordner verwalten..."), Some("win.search-folder-editor"));
+        tools_menu.append(Some("Kontoeinstellungen..."), Some("win.account-setup"));
+        menu.append_submenu(Some("Extras"), &tools_menu);
+
+        // ─── 7. Hilfe (Help) ───────────────────────────────────────────────
+        let help_menu = gio::Menu::new();
+        help_menu.append(Some("Tastenkombinationen"), Some("win.show-help-overlay"));
+        help_menu.append(Some("Über Evolution"), Some("app.about"));
+        menu.append_submenu(Some("Hilfe"), &help_menu);
 
         menu
     }
@@ -1015,6 +1096,78 @@ impl EvolutionWindow {
             }
         ));
         self.add_action(&action_shortcuts);
+
+        let action_oof = gio::SimpleAction::new("oof-settings", None);
+        action_oof.connect_activate(glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            move |_, _| {
+                let dialog = crate::dialogs::OutOfOfficeDialog::new();
+                dialog.set_transient_for(Some(&win));
+                dialog.present();
+            }
+        ));
+        self.add_action(&action_oof);
+
+        let action_filter = gio::SimpleAction::new("filter-editor", None);
+        action_filter.connect_activate(glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            move |_, _| {
+                let dialog = crate::dialogs::FilterEditorDialog::new();
+                dialog.set_transient_for(Some(&win));
+                dialog.present();
+            }
+        ));
+        self.add_action(&action_filter);
+
+        let action_search_folder = gio::SimpleAction::new("search-folder-editor", None);
+        action_search_folder.connect_activate(glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            move |_, _| {
+                let dialog = crate::dialogs::SearchFolderDialog::new("");
+                dialog.set_transient_for(Some(&win));
+                dialog.present();
+            }
+        ));
+        self.add_action(&action_search_folder);
+
+        let action_account_setup = gio::SimpleAction::new("account-setup", None);
+        action_account_setup.connect_activate(glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            move |_, _| {
+                let dialog = crate::dialogs::AccountSetupDialog::new();
+                dialog.set_transient_for(Some(&win));
+                dialog.present();
+            }
+        ));
+        self.add_action(&action_account_setup);
+
+        let action_new_contact = gio::SimpleAction::new("new-contact", None);
+        action_new_contact.connect_activate(glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            move |_, _| {
+                let dialog = crate::dialogs::ContactDialog::new();
+                dialog.set_transient_for(Some(&win));
+                dialog.present();
+            }
+        ));
+        self.add_action(&action_new_contact);
+
+        let action_new_event = gio::SimpleAction::new("new-event", None);
+        action_new_event.connect_activate(glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            move |_, _| {
+                let dialog = crate::dialogs::EventDialog::new();
+                dialog.set_transient_for(Some(&win));
+                dialog.present();
+            }
+        ));
+        self.add_action(&action_new_event);
 
         let action_search = gio::SimpleAction::new("search", None);
         action_search.connect_activate(glib::clone!(

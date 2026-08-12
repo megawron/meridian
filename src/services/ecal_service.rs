@@ -11,7 +11,7 @@ use super::calendar_store_service::{
     parse_ical_component,
 };
 use super::exchange_service::graph_service_for_configured_account;
-use chrono::{Duration, Utc};
+use chrono::{Duration as ChronoDuration, Utc};
 #[cfg(all(target_os = "linux", eds_ecal_bridge))]
 use std::time::Duration;
 
@@ -666,10 +666,10 @@ pub(crate) fn load_snapshot_prefer_eds() -> CalendarLoadResult {
 
 fn load_snapshot_from_graph() -> Option<CalendarLoadResult> {
     let (source_uid, service) = graph_service_for_configured_account()?;
-    let start = (Utc::now() - Duration::days(365))
+    let start = (Utc::now() - ChronoDuration::days(365))
         .format("%Y-%m-%dT00:00:00Z")
         .to_string();
-    let end = (Utc::now() + Duration::days(730))
+    let end = (Utc::now() + ChronoDuration::days(730))
         .format("%Y-%m-%dT00:00:00Z")
         .to_string();
     let events = service
@@ -897,7 +897,7 @@ fn load_components_native(
         )
     };
 
-    let warning = unsafe { error_string(error) };
+    let warning = error_string(error);
     unsafe {
         if !components.is_null() {
             let entries = std::slice::from_raw_parts(components, count);

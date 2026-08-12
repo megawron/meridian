@@ -355,6 +355,65 @@ impl VCardContact {
         keys
     }
 
+    /// Merge the non-primary properties of duplicate cards into the selected
+    /// primary card while keeping the primary card's identity and raw
+    /// properties intact.  This is deliberately line-oriented: reserializing
+    /// through the compact model would lose provider-specific parameters and
+    /// unknown RFC/X-* fields that Evolution must preserve.
+    pub fn merge_vcards(primary: &str, duplicates: &[&str]) -> Result<String, String> {
+        let mut primary_lines = unfold_vcard_lines(primary);
+        if !is_complete_vcard(&primary_lines) {
+            return Err("Der Primärkontakt enthält keine gültige vCard".to_string());
+        }
+
+        let mut seen = primary_lines
+            .iter()
+            .filter_map(|line| merge_property_signature(line))
+            .collect::<std::collections::HashSet<_>>();
+        let insertion_index = primary_lines
+            .iter()
+            .position(|line| line.eq_ignore_ascii_case("END:VCARD"))
+            .ok_or_else(|| "Primärkontakt enthält kein END:VCARD".to_string())?;
+        let mut additions = Vec::new();
+
+        for (duplicate_index, duplicate) in duplicates.iter().enumerate() {
+            let lines = unfold_vcard_lines(duplicate);
+            if !is_complete_vcard(&lines) {
+                return Err(format!(
+                    "Das Duplikat an Position {} enthält keine gültige vCard",
+                    duplicate_index + 1
+                ));
+            }
+            for line in lines {
+                let property_name = line
+                    .split_once(':')
+                    .map(|(property, _)| {
+                        property
+                            .split(';')
+                            .next()
+                            .unwrap_or(property)
+                            .to_ascii_uppercase()
+                    })
+                    .unwrap_or_default();
+                if matches!(
+                    property_name.as_str(),
+                    "BEGIN" | "END" | "VERSION" | "UID" | "FN" | "N"
+                ) {
+                    continue;
+                }
+                let Some(signature) = merge_property_signature(&line) else {
+                    continue;
+                };
+                if seen.insert(signature) {
+                    additions.push(line);
+                }
+            }
+        }
+
+        primary_lines.splice(insertion_index..insertion_index, additions);
+        Ok(format!("{}\r\n", primary_lines.join("\r\n")))
+    }
+
     /// Parse a single vCard string into a VCardContact struct.
     pub fn parse_vcard_string(vcard: &str) -> Option<Self> {
         if !vcard
@@ -490,6 +549,51 @@ impl VCardContact {
             extensions,
         })
     }
+}
+
+fn unfold_vcard_lines(raw: &str) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    for raw_line in raw.replace("\r\n", "\n").replace('\r', "\n").lines() {
+        if raw_line.starts_with(' ') || raw_line.starts_with('\t') {
+            if let Some(previous) = lines.last_mut() {
+                previous.push_str(raw_line.trim_start());
+            }
+        } else {
+            lines.push(raw_line.trim().to_string());
+        }
+    }
+    lines
+}
+
+fn is_complete_vcard(lines: &[String]) -> bool {
+    lines
+        .iter()
+        .any(|line| line.eq_ignore_ascii_case("BEGIN:VCARD"))
+        && lines
+            .iter()
+            .any(|line| line.eq_ignore_ascii_case("END:VCARD"))
+}
+
+fn merge_property_signature(line: &str) -> Option<String> {
+    let (property, value) = line.split_once(':')?;
+    let property_name = property
+        .split(';')
+        .next()
+        .unwrap_or(property)
+        .to_ascii_lowercase();
+    if matches!(property_name.as_str(), "begin" | "end") {
+        return None;
+    }
+    let normalized_value = match property_name.as_str() {
+        "email" => value.trim().to_ascii_lowercase(),
+        "tel" => value
+            .chars()
+            .filter(|character| character.is_ascii_alphanumeric())
+            .collect::<String>()
+            .to_ascii_lowercase(),
+        _ => value.trim().to_ascii_lowercase(),
+    };
+    Some(format!("{property_name}:{normalized_value}"))
 }
 
 fn parse_name_value(value: &str) -> VCardName {
@@ -728,6 +832,46 @@ mod tests {
             VCardContact::parse_vcard_string("BEGIN:VCARD\r\nFN: Ada   Example \r\nEND:VCARD\r\n")
                 .expect("vCard should parse");
         assert_eq!(name_only.duplicate_keys(), vec!["name:ada example"]);
+    }
+
+    #[test]
+    fn merge_vcards_keeps_primary_identity_and_adds_unique_raw_fields() {
+        let primary = concat!(
+            "BEGIN:VCARD\r\nVERSION:3.0\r\nUID:primary\r\nFN:Ada Lovelace\r\n",
+            "EMAIL;TYPE=WORK:ada@example.test\r\n",
+            "X-EVOLUTION-FILE-AS:Lovelace\\, Ada\r\nEND:VCARD\r\n"
+        );
+        let duplicate = concat!(
+            "BEGIN:VCARD\r\nVERSION:4.0\r\nUID:duplicate\r\nFN:Ada Lovelace\r\n",
+            "EMAIL;TYPE=HOME:ada@example.test\r\n",
+            "EMAIL;TYPE=OTHER:ada.personal@example.test\r\n",
+            "TEL;TYPE=CELL:+49 (0) 123-45\r\n",
+            "X-PROVIDER-CUSTOM;TYPE=work:Value\\;with\\, punctuation\r\n",
+            "END:VCARD\r\n"
+        );
+
+        let merged = VCardContact::merge_vcards(primary, &[duplicate])
+            .expect("duplicate vCard should merge");
+        assert!(merged.contains("UID:primary"));
+        assert!(!merged.contains("UID:duplicate"));
+        assert!(merged.contains("EMAIL;TYPE=OTHER:ada.personal@example.test"));
+        assert!(merged.contains("TEL;TYPE=CELL:+49 (0) 123-45"));
+        assert!(merged.contains("X-PROVIDER-CUSTOM;TYPE=work:Value\\;with\\, punctuation"));
+        assert_eq!(merged.matches("ada@example.test").count(), 1);
+        assert_eq!(merged.matches("END:VCARD").count(), 1);
+
+        let parsed = VCardContact::parse_vcard_string(&merged).expect("merged vCard parses");
+        assert_eq!(parsed.fn_name, "Ada Lovelace");
+        assert_eq!(parsed.emails.len(), 2);
+        assert_eq!(parsed.phones, vec!["+49 (0) 123-45"]);
+    }
+
+    #[test]
+    fn merge_vcards_rejects_malformed_duplicates_instead_of_dropping_them() {
+        let primary = "BEGIN:VCARD\r\nVERSION:3.0\r\nUID:primary\r\nFN:Ada\r\nEND:VCARD\r\n";
+        let error = VCardContact::merge_vcards(primary, &["BEGIN:VCARD\r\nFN:Broken\r\n"])
+            .expect_err("malformed duplicate should be rejected");
+        assert!(error.contains("Duplikat"));
     }
 
     #[test]

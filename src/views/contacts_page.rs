@@ -55,7 +55,11 @@ mod imp {
         }
     }
 
-    impl WidgetImpl for ContactsPage {}
+    impl WidgetImpl for ContactsPage {
+        fn realize(&self) {
+            self.parent_realize();
+        }
+    }
 }
 
 // ─── Public API ─────────────────────────────────────────────────────────────
@@ -494,6 +498,11 @@ impl ContactsPage {
             .margin_bottom(16)
             .build();
 
+        let email_row1 = adw::ActionRow::builder()
+            .title("Keine E-Mail-Adresse")
+            .subtitle("Kein Kontakt ausgewählt")
+            .build();
+
         let email_btn = gtk::Button::builder()
             .icon_name("mail-message-new-symbolic")
             .tooltip_text("E-Mail senden")
@@ -577,6 +586,187 @@ impl ContactsPage {
                     glib::Propagation::Proceed
                 });
                 dialog.present();
+            }
+        ));
+
+        let merge_btn = gtk::Button::builder()
+            .icon_name("object-select-symbolic")
+            .tooltip_text("Dubletten zusammenführen")
+            .css_classes(vec!["circular"])
+            .sensitive(false)
+            .build();
+        set_accessible_label(&merge_btn, "Dubletten des Kontakts zusammenführen");
+
+        let selected_contact_for_merge = Rc::clone(&selected_contact);
+        let stored_contacts_for_merge = Rc::clone(&stored_contacts);
+        let contact_list_for_merge = contact_list.clone();
+        let detail_name_for_merge = detail_name.clone();
+        let detail_avatar_for_merge = detail_avatar.clone();
+        let detail_title_for_merge = detail_title.clone();
+        let detail_extra_for_merge = detail_extra.clone();
+        let email_row_for_merge = email_row1.clone();
+        let category_model_for_merge = category_model.clone();
+        let category_selector_for_merge = category_selector.clone();
+        let selected_category_for_merge = Rc::clone(&selected_category);
+        let merge_btn_for_result = merge_btn.clone();
+        merge_btn.connect_clicked(glib::clone!(
+            #[weak(rename_to = page)]
+            self,
+            move |_| {
+                let Some(primary) = selected_contact_for_merge.borrow().clone() else {
+                    page.show_toast("Kein Kontakt ausgewählt");
+                    return;
+                };
+                if primary.source_uid.is_empty() {
+                    page.show_toast(
+                        "Dieser Kontakt stammt aus einer schreibgeschützten importierten Quelle",
+                    );
+                    return;
+                }
+
+                let duplicates = stored_contacts_for_merge
+                    .borrow()
+                    .iter()
+                    .filter(|candidate| contact_records_are_duplicates(&primary, candidate))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                if duplicates.is_empty() {
+                    page.show_toast("Für diesen Kontakt wurden keine Dubletten gefunden");
+                    merge_btn_for_result.set_sensitive(false);
+                    return;
+                }
+
+                let confirmation_message = format!(
+                    "{} Duplikat(e) werden in „{}“ übernommen. Die Primärkarte bleibt erhalten; die Duplikate werden anschließend dauerhaft aus diesem Adressbuch entfernt.",
+                    duplicates.len(),
+                    primary.contact.fn_name
+                );
+                let primary_for_action = primary.clone();
+                let duplicates_for_action = duplicates.clone();
+                let selected_contact_for_action = Rc::clone(&selected_contact_for_merge);
+                let stored_contacts_for_action = Rc::clone(&stored_contacts_for_merge);
+                let contact_list_for_action = contact_list_for_merge.clone();
+                let detail_avatar_for_action = detail_avatar_for_merge.clone();
+                let detail_name_for_action = detail_name_for_merge.clone();
+                let detail_title_for_action = detail_title_for_merge.clone();
+                let detail_extra_for_action = detail_extra_for_merge.clone();
+                let email_row_for_action = email_row_for_merge.clone();
+                let category_model_for_action = category_model_for_merge.clone();
+                let category_selector_for_action = category_selector_for_merge.clone();
+                let selected_category_for_action = Rc::clone(&selected_category_for_merge);
+                let merge_btn_for_action = merge_btn_for_result.clone();
+                let page_weak_for_action = page.downgrade();
+                crate::dialogs::run_destructive_action(
+                    &detail_name_for_merge,
+                    "Dubletten zusammenführen?",
+                    &confirmation_message,
+                    "Zusammenführen",
+                    move || {
+                        let primary_for_worker = primary_for_action.clone();
+                        let duplicates_for_worker = duplicates_for_action.clone();
+                        let (sender, receiver) = async_channel::bounded(1);
+                        std::thread::spawn(move || {
+                            let result = EBookService::new()
+                                .merge_contacts(&primary_for_worker, &duplicates_for_worker);
+                            if let Err(error) = sender.send_blocking(result) {
+                                tracing::debug!(%error, "Contact merge result was dropped");
+                            }
+                        });
+
+                        let page_weak_for_result = page_weak_for_action.clone();
+                        glib::spawn_future_local(async move {
+                            match receiver.recv().await {
+                                Ok(Ok(result)) => {
+                                    let Some(vcard) = result.vcard else {
+                                        show_toast_for_widget(
+                                            &detail_name_for_action,
+                                            "Zusammenführung ohne bestätigte vCard vom Backend",
+                                        );
+                                        return;
+                                    };
+                                    let Some(contact) =
+                                        VCardContact::parse_vcard_string(&vcard)
+                                    else {
+                                        show_toast_for_widget(
+                                            &detail_name_for_action,
+                                            "Die zusammengeführte vCard konnte nicht gelesen werden",
+                                        );
+                                        return;
+                                    };
+                                    let merged = EBookContactRecord {
+                                        source_uid: primary_for_action.source_uid.clone(),
+                                        source_display_name: primary_for_action
+                                            .source_display_name
+                                            .clone(),
+                                        uid: result.uid,
+                                        vcard,
+                                        contact,
+                                    };
+                                    remove_contact_list_row(
+                                        &contact_list_for_action,
+                                        &primary_for_action.source_uid,
+                                        &primary_for_action.uid,
+                                    );
+                                    for duplicate in &duplicates_for_action {
+                                        remove_contact_list_row(
+                                            &contact_list_for_action,
+                                            &duplicate.source_uid,
+                                            &duplicate.uid,
+                                        );
+                                    }
+                                    {
+                                        let mut contacts = stored_contacts_for_action.borrow_mut();
+                                        contacts.retain(|candidate| {
+                                            candidate.source_uid != primary_for_action.source_uid
+                                                || (candidate.uid != primary_for_action.uid
+                                                    && !duplicates_for_action.iter().any(|duplicate| {
+                                                        duplicate.source_uid == candidate.source_uid
+                                                            && duplicate.uid == candidate.uid
+                                                    }))
+                                        });
+                                        contacts.push(merged.clone());
+                                    }
+                                    append_contact_row(&contact_list_for_action, &merged);
+                                    mark_duplicate_rows(
+                                        &contact_list_for_action,
+                                        &stored_contacts_for_action,
+                                    );
+                                    refresh_contact_category_model(
+                                        &category_model_for_action,
+                                        &category_selector_for_action,
+                                        &stored_contacts_for_action,
+                                        &selected_category_for_action,
+                                    );
+                                    update_contact_detail(
+                                        &merged,
+                                        &detail_avatar_for_action,
+                                        &detail_name_for_action,
+                                        &detail_title_for_action,
+                                        &detail_extra_for_action,
+                                        &email_row_for_action,
+                                    );
+                                    *selected_contact_for_action.borrow_mut() = Some(merged.clone());
+                                    merge_btn_for_action.set_sensitive(contact_has_duplicate(
+                                        &merged,
+                                        &stored_contacts_for_action.borrow(),
+                                    ));
+                                    if let Some(page) = page_weak_for_result.upgrade() {
+                                        page.show_toast(&format!(
+                                            "{} Dublette(n) in „{}“ zusammengeführt",
+                                            duplicates_for_action.len(),
+                                            merged.contact.fn_name
+                                        ));
+                                    }
+                                }
+                                Ok(Err(error)) => show_toast_for_widget(
+                                    &detail_name_for_action,
+                                    &format!("Dubletten konnten nicht zusammengeführt werden: {error}"),
+                                ),
+                                Err(error) => tracing::debug!(%error, "Contact merge channel closed"),
+                            }
+                        });
+                    },
+                );
             }
         ));
 
@@ -747,6 +937,7 @@ impl ContactsPage {
         actions_box.append(&email_btn);
         actions_box.append(&export_btn);
         actions_box.append(&edit_btn);
+        actions_box.append(&merge_btn);
         actions_box.append(&delete_btn);
 
         header_box.append(&actions_box);
@@ -769,10 +960,6 @@ impl ContactsPage {
 
         let email_group = adw::PreferencesGroup::builder().title("E-Mail").build();
 
-        let email_row1 = adw::ActionRow::builder()
-            .title("Keine E-Mail-Adresse")
-            .subtitle("Kein Kontakt ausgewählt")
-            .build();
         let copy_btn1 = gtk::Button::builder()
             .icon_name("edit-copy-symbolic")
             .valign(gtk::Align::Center)
@@ -808,6 +995,7 @@ impl ContactsPage {
 
         // Selection connection
         let selected_contact_for_selection = Rc::clone(&selected_contact);
+        let stored_contacts_for_selection = Rc::clone(&stored_contacts);
         contact_list.connect_row_selected(glib::clone!(
             #[weak]
             detail_avatar,
@@ -819,11 +1007,16 @@ impl ContactsPage {
             detail_extra,
             #[weak]
             email_row1,
+            #[weak]
+            merge_btn,
             #[strong]
             selected_contact_for_selection,
+            #[strong]
+            stored_contacts_for_selection,
             move |_, row| {
                 let Some(row) = row else {
                     *selected_contact_for_selection.borrow_mut() = None;
+                    merge_btn.set_sensitive(false);
                     return;
                 };
                 unsafe {
@@ -863,6 +1056,13 @@ impl ContactsPage {
                         &record.contact.title
                     });
                     detail_extra.set_label(&contact_detail_summary(&record.contact));
+                    merge_btn.set_sensitive(
+                        !record.source_uid.is_empty()
+                            && contact_has_duplicate(
+                                &record,
+                                &stored_contacts_for_selection.borrow(),
+                            ),
+                    );
                     *selected_contact_for_selection.borrow_mut() = Some(record);
                 }
             }
@@ -1223,14 +1423,21 @@ fn mark_duplicate_rows(
 }
 
 fn contact_has_duplicate(contact: &EBookContactRecord, contacts: &[EBookContactRecord]) -> bool {
-    let keys = contact.contact.duplicate_keys();
-    contacts.iter().any(|other| {
-        if other.source_uid == contact.source_uid && other.uid == contact.uid {
-            return false;
-        }
-        let other_keys = other.contact.duplicate_keys();
-        keys.iter().any(|key| other_keys.contains(key))
-    })
+    contacts
+        .iter()
+        .any(|other| contact_records_are_duplicates(contact, other))
+}
+
+fn contact_records_are_duplicates(
+    primary: &EBookContactRecord,
+    candidate: &EBookContactRecord,
+) -> bool {
+    if primary.source_uid != candidate.source_uid || primary.uid == candidate.uid {
+        return false;
+    }
+    let keys = primary.contact.duplicate_keys();
+    let candidate_keys = candidate.contact.duplicate_keys();
+    keys.iter().any(|key| candidate_keys.contains(key))
 }
 
 fn remove_contact_list_row(contact_list: &gtk::ListBox, source_uid: &str, uid: &str) {

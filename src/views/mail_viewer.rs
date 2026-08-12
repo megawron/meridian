@@ -235,30 +235,44 @@ impl MailViewer {
                 .as_ref()
                 .map(AppSettings::render_html)
                 .unwrap_or(true);
-            let body = if render_html {
+            let sanitized = if render_html {
                 sanitize_html(html_content)
             } else {
                 format!("<pre>{}</pre>", escape_html(html_content))
             };
-            if let Some(settings) = webkit6::prelude::WebViewExt::settings(webview) {
+            if let Some(settings) = webkit6::prelude::WebViewExt::settings(&webview) {
                 settings.set_auto_load_images(remote_images_allowed);
             }
-            let dark_mode_css = if AppSettings::try_new()
+            let is_dark_mode = AppSettings::try_new()
                 .as_ref()
                 .map(AppSettings::force_dark_mode)
-                .unwrap_or(true)
-            {
+                .unwrap_or(true);
+            let body_css = if is_dark_mode {
                 r#"
-  @media (prefers-color-scheme: dark) {
-    body {
-      color: #eeeeec;
-      background-color: #1e1e1e;
-    }
-    a { color: #78aeed; }
+  body {
+    font-family: __FONT_FAMILY__;
+    font-size: __FONT_SIZE__px;
+    line-height: 1.6;
+    margin: 16px;
+    padding: 0;
+    color: #eeeeec;
+    background-color: #1e1e1e;
   }
+  a { color: #78aeed; }
 "#
             } else {
-                ""
+                r#"
+  body {
+    font-family: __FONT_FAMILY__;
+    font-size: __FONT_SIZE__px;
+    line-height: 1.6;
+    margin: 16px;
+    padding: 0;
+    color: #2e3436;
+    background-color: #ffffff;
+  }
+  a { color: #1a73e8; }
+"#
             };
             let mail_font_family = AppSettings::try_new()
                 .as_ref()
@@ -268,38 +282,47 @@ impl MailViewer {
                 .as_ref()
                 .map(AppSettings::mail_font_size)
                 .unwrap_or(14);
-            let styled_html = format!(
-                r#"<!DOCTYPE html>
+            let body_css = body_css
+                .replace("__FONT_FAMILY__", &mail_font_family)
+                .replace("__FONT_SIZE__", &mail_font_size.to_string());
+
+            let style_tag = format!(
+                "<style>{} img {{ max-width: 100%; height: auto; }} blockquote {{ border-left: 3px solid #78aeed; margin-left: 0; padding-left: 12px; color: #888888; }}</style>",
+                body_css
+            );
+
+            let is_full_doc = render_html
+                && (sanitized.contains("<html")
+                    || sanitized.contains("<body")
+                    || sanitized.contains("<!DOCTYPE")
+                    || sanitized.contains("<!doctype"));
+
+            let styled_html = if is_full_doc {
+                if let Some(pos) = sanitized.find("</head>") {
+                    let (head, rest) = sanitized.split_at(pos);
+                    format!("{}{}{}", head, style_tag, rest)
+                } else if let Some(pos) = sanitized.find("<body") {
+                    let (head, rest) = sanitized.split_at(pos);
+                    format!("{}{}{}", head, style_tag, rest)
+                } else {
+                    format!("{}{}", style_tag, sanitized)
+                }
+            } else {
+                format!(
+                    r#"<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="script-src 'none';">
-<style>
-  body {{
-    font-family: {};
-    font-size: {}px;
-    line-height: 1.6;
-    margin: 16px;
-    padding: 0;
-    color: #2e3436;
-    background-color: #ffffff;
-  }}
 {}
-  img {{ max-width: 100%; height: auto; }}
-  blockquote {{
-    border-left: 3px solid #78aeed;
-    margin-left: 0;
-    padding-left: 12px;
-    color: #555753;
-  }}
-</style>
 </head>
 <body>
 {}
 </body>
 </html>"#,
-                mail_font_family, mail_font_size, dark_mode_css, body
-            );
+                    style_tag, sanitized
+                )
+            };
 
             webview.load_html(&styled_html, base_uri);
         }
@@ -379,7 +402,7 @@ impl MailViewer {
                     .clone()
                     .downcast::<webkit6::NavigationPolicyDecision>()
                 {
-                    if let Some(action) = nav.navigation_action() {
+                    if let Some(mut action) = nav.navigation_action() {
                         if let Some(req) = action.request() {
                             if let Some(uri) = req.uri() {
                                 if uri != "about:blank" && !uri.starts_with("data:") {

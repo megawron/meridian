@@ -17,7 +17,7 @@
 // bindings (via GIR-generated crates) for low-level mail operations
 // that don't have adequate D-Bus coverage.
 
-use glib::{KeyFile, KeyFileFlags};
+use glib::{KeyFile, KeyFileFlags, MainContext};
 use serde::{Deserialize, Serialize};
 
 use super::eds_source_cache_service::EdsSourceCache;
@@ -496,6 +496,17 @@ pub async fn discover_sources(kind: EdsSourceKind) -> EdsSourceDiscovery {
             }
         }
     }
+}
+
+/// Run source discovery on a caller-owned worker context.
+///
+/// The D-Bus API is asynchronous, but a cold session/provider startup can
+/// still keep an executor future pending for a noticeable amount of time.
+/// UI callers should invoke this from a worker thread and only hand the
+/// resulting plain data back to GTK. A private GLib context keeps the zbus
+/// future alive without borrowing the application's main context.
+pub fn discover_sources_blocking(kind: EdsSourceKind) -> EdsSourceDiscovery {
+    MainContext::new().block_on(discover_sources(kind))
 }
 
 #[cfg(test)]

@@ -75,7 +75,9 @@ mod imp {
                 window.upcast()
             };
 
+            tracing::debug!("Presenting main window after synchronous UI construction");
             window.present();
+            tracing::debug!("Main window presented");
         }
     }
 

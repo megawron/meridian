@@ -182,6 +182,69 @@ impl EBookService {
         self.apply_operation(source_uid, 3, "", Some(contact_uid))
     }
 
+    /// Merge duplicate records into `primary` and then remove the duplicate
+    /// records from the same address-book source.  The app-owned local store
+    /// uses one atomic multi-card rewrite; EDS and Graph expose only separate
+    /// modify/delete operations, so a deletion error is reported explicitly
+    /// as a partial backend operation instead of being hidden.
+    pub(crate) fn merge_contacts(
+        &self,
+        primary: &EBookContactRecord,
+        duplicates: &[EBookContactRecord],
+    ) -> Result<EBookMutationResult, EBookMutationError> {
+        if duplicates.is_empty() {
+            return Err(EBookMutationError::Backend(
+                "Zusammenführung benötigt mindestens ein Duplikat".to_string(),
+            ));
+        }
+        if primary.source_uid.trim().is_empty() {
+            return Err(EBookMutationError::Backend(
+                "Der Kontakt stammt aus einer schreibgeschützten importierten Quelle".to_string(),
+            ));
+        }
+        if duplicates.iter().any(|duplicate| {
+            duplicate.source_uid != primary.source_uid
+                || duplicate.uid == primary.uid
+                || duplicate.uid.trim().is_empty()
+        }) {
+            return Err(EBookMutationError::Backend(
+                "Primärkontakt und Duplikate müssen aus derselben Quelle stammen".to_string(),
+            ));
+        }
+
+        let duplicate_vcards = duplicates
+            .iter()
+            .map(|duplicate| duplicate.vcard.as_str())
+            .collect::<Vec<_>>();
+        let merged_vcard = VCardContact::merge_vcards(&primary.vcard, &duplicate_vcards)
+            .map_err(EBookMutationError::Backend)?;
+
+        if primary.source_uid == "local-addressbook" {
+            let duplicate_uids = duplicates
+                .iter()
+                .map(|duplicate| duplicate.uid.clone())
+                .collect::<Vec<_>>();
+            return ContactStoreService::new()
+                .merge_contacts(&primary.uid, &duplicate_uids, &merged_vcard)
+                .map(|(uid, vcard)| EBookMutationResult {
+                    uid,
+                    vcard: Some(vcard),
+                })
+                .map_err(|error| EBookMutationError::Backend(error.to_string()));
+        }
+
+        let updated = self.modify_contact(&primary.source_uid, &primary.uid, &merged_vcard)?;
+        for duplicate in duplicates {
+            if let Err(error) = self.remove_contact(&duplicate.source_uid, &duplicate.uid) {
+                return Err(EBookMutationError::Backend(format!(
+                    "Kontakt wurde aktualisiert, aber Duplikat {} konnte nicht entfernt werden: {}",
+                    duplicate.uid, error
+                )));
+            }
+        }
+        Ok(updated)
+    }
+
     pub(crate) fn start_change_monitor(
         &self,
     ) -> Option<(
@@ -684,6 +747,37 @@ mod change_tests {
         };
 
         assert!(parse_change_record(&event).is_none());
+    }
+}
+
+#[cfg(test)]
+mod merge_tests {
+    use super::*;
+
+    fn record(source_uid: &str, uid: &str, vcard: &str) -> EBookContactRecord {
+        EBookContactRecord {
+            source_uid: source_uid.to_string(),
+            source_display_name: "Testadressbuch".to_string(),
+            uid: uid.to_string(),
+            vcard: vcard.to_string(),
+            contact: VCardContact::parse_vcard_string(vcard).expect("test vCard should parse"),
+        }
+    }
+
+    #[test]
+    fn merge_rejects_contacts_from_different_sources_before_mutation() {
+        let primary_vcard = "BEGIN:VCARD\r\nVERSION:3.0\r\nUID:primary\r\nFN:Ada\r\nEND:VCARD\r\n";
+        let duplicate_vcard =
+            "BEGIN:VCARD\r\nVERSION:3.0\r\nUID:duplicate\r\nFN:Ada\r\nEND:VCARD\r\n";
+        let result = EBookService::new().merge_contacts(
+            &record("book-a", "primary", primary_vcard),
+            &[record("book-b", "duplicate", duplicate_vcard)],
+        );
+        assert!(matches!(
+            result,
+            Err(EBookMutationError::Backend(message))
+                if message.contains("derselben Quelle")
+        ));
     }
 }
 

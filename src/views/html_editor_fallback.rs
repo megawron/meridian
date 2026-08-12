@@ -46,7 +46,11 @@ mod imp {
         }
     }
 
-    impl WidgetImpl for HtmlEditor {}
+    impl WidgetImpl for HtmlEditor {
+        fn realize(&self) {
+            self.parent_realize();
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

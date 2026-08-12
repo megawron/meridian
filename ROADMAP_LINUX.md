@@ -128,14 +128,42 @@ Die folgenden Marker grenzen die Fehlerklasse ein:
   Der erste Marker beginnt den GTK-Hauptthread-Abschnitt, der zweite beendet
   Ordner- und Nachrichtenmodell-Aufbau. Fehlt nur der zweite Marker, muss die
   Zahl der geladenen Ordner/Nachrichten und der Modellaufbau profiliert werden.
+  Der aktuelle Code fügt Nachrichten jetzt in 32er-Schritten in die
+  GTK4-rs-Modelle ein und baut Threadgruppen sowie Threadzeilen ebenfalls in
+  begrenzten Hauptschleifen-Schritten auf. Währenddessen muss der Statusbereich
+  `Nachrichten werden aufgebaut …` bzw. eine Fortschrittszahl anzeigen und die
+  Oberfläche muss auf Eingabe und Fensterbewegung reagieren. Wenn der zweite
+  Marker trotzdem fehlt, ist der letzte Statusbereich-Text zusammen mit einem
+  Backtrace zu sichern; dann liegt die Blockierung außerhalb dieses
+  inkrementellen Modellpfads (z. B. in einem nativen Provider-Aufruf oder in
+  einem einzelnen, unerwartet großen Ordnerbaum).
 - `Loaded mail sources`: Die EDS-Quellenerkennung ist abgeschlossen. Ein
   angezeigtes Konto belegt allein noch nicht, dass Camel bereits lesbare
   Ordner oder Nachrichten geliefert hat.
+- `Main window presented`, `MailPage initial mail load deferred until after
+  first frame` und `Main window layout installed` müssen vor dem ersten
+  Backend-Laden erscheinen. Die EDS-Quellenerkennung läuft inzwischen in
+  einem eigenen Worker-Kontext; ihr `elapsed_ms`-Wert darf deshalb nicht als
+  Beleg für eine blockierte GTK-Hauptschleife interpretiert werden. Hängt das
+  Fenster trotzdem vor `Mail backend returned from EDS/Camel`, liegt der Fehler
+  im nativen EDS/Camel-Worker oder in dessen Provider-/Credentialpfad.
 - Die portable Reminder-Prüfung liest Kalenderdateien und Reminder-Zustand
   inzwischen in einem Worker; ein Linux-Start-Hänger darf daher nicht mehr
   durch diese Vorprüfung erklärt werden. Bleibt der Prozess trotzdem
   unresponsive, den letzten erreichten Marker sichern und den nativen
   EDS/Camel-Worker separat mit einem Backtrace untersuchen.
+- Eine automatisch ausgewählte ungelesene Nachricht darf den GTK-Hauptthread
+  nicht blockieren: Der Auswahlcallback muss vor `Mail backend returned from
+  EDS/Camel` bzw. dem Modellabschluss weiter Eingaben annehmen können. Die
+  Markierung als gelesen wird im aktuellen Stand in einem Worker ausgeführt;
+  auf Linux zusätzlich mit einem echten Konto prüfen, dass sie nach
+  erfolgreicher Camel-/EDS-Bestätigung persistent erscheint und bei
+  Authentifizierungs-, Netzwerk- oder Konfliktfehlern sichtbar ungelesen bleibt.
+- Keine manuell hinzugefügten `realize`-Overrides mit
+  `parent_realize()` in direkten `gtk::Widget`-Unterklassen zurückbringen:
+  GTK4-rs installiert den C-Trampoline selbst, der Parent-Vfunc ist für diese
+  zusammengesetzten Widgets nicht vorhanden und kann den Prozess beim ersten
+  `present()` mit `panic_cannot_unwind` abbrechen.
 
 Für die Abnahme zusätzlich den genauen Commit, `uname -a`,
 `pkg-config --modversion webkitgtk-6.0 camel-1.2 libedataserver-1.2`,
@@ -248,6 +276,17 @@ Authentifizierungsdaten oder Mailinhalte in das Log übernehmen.
     Berechtigung müssen als nicht ausführbare bzw. konflikthafte Aktion enden.
   - den persistenten Verlauf schließen, neu starten und mit maximal 100
     Einträgen wieder laden.
+- `[ ]` Native EDS/Camel-Kopieren ergänzen und abnehmen:
+  - den Copy-Befehl für eine Nachricht im gleichen und in einem anderen
+    Camel-Ordner ausführen und dabei die serverseitig neu erzeugte UID bzw.
+    die RFC-822-Message-ID für den Verlauf zurückgeben;
+  - Batch-Kopieren, Kopieren in Unterordner, Berechtigungsfehler, Offline-
+    Abbruch und Konflikte prüfen;
+  - Undo muss ausschließlich die neu angelegte Kopie löschen, die Original-
+    nachricht darf nie verändert werden; Redo muss eine neue Kopie mit der
+    dann gültigen UID anlegen;
+  - Neustart mit persistentem Undo-Verlauf sowie echte IMAP/IMAPX-, EWS- und
+    lokale Camel-Provider verifizieren.
 - `[~]` Die GTK4-rs-Seitenleiste stellt die aus CamelFolderInfo geladenen
   EDS-Ordner bereits als aufklappbares `GtkTreeListModel` mit stabilen
   Konto-/Ordner-Schlüsseln dar. Auf Linux müssen noch die reale
@@ -425,6 +464,10 @@ Mit einem Testkonto ohne produktive Empfänger prüfen:
   verfügbar – Exchange-Adressbücher kompilieren und verbinden.
 - `[~]` Kontakt-Create/Modify/Remove und EBookClientView-Signale mit echten
   UID-Konflikten, schreibgeschützten Büchern und parallelen Änderungen testen.
+  Zusätzlich die Dubletten-Zusammenführung mit mehreren E-Mail-/Telefonwerten,
+  unbekannten vCard-Erweiterungen, paralleler EDS-Änderung und einem Fehler
+  zwischen Modify und Remove testen; ein partieller Remote-Fehler muss sichtbar
+  bleiben und darf nicht als atomar oder rückgängig machbar erscheinen.
 - `[ ]` Native EBook-Feldabdeckung prüfen: mehrere Namen, E-Mail-Adressen,
   Telefone, Adressen, Organisation, Kategorien, Notizen, Fotos, Geburtstage,
   strukturierte Zusatzfelder und benutzerdefinierte Felder. Der portable

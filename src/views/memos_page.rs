@@ -71,7 +71,11 @@ mod imp {
         }
     }
 
-    impl WidgetImpl for MemosPage {}
+    impl WidgetImpl for MemosPage {
+        fn realize(&self) {
+            self.parent_realize();
+        }
+    }
 }
 
 glib::wrapper! {

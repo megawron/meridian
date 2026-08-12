@@ -207,6 +207,149 @@ impl ContactStoreService {
         ))
     }
 
+    /// Merge one primary contact and one or more duplicates in a single local
+    /// store transaction.  The caller supplies the already merged vCard so
+    /// this service only has to replace/remove cards and preserve their raw
+    /// provider fields.  All affected files are staged first; if a later
+    /// atomic rename fails, files written earlier in the transaction are
+    /// restored from their original contents.
+    pub fn merge_contacts(
+        &self,
+        primary_uid: &str,
+        duplicate_uids: &[String],
+        merged_vcard: &str,
+    ) -> io::Result<(String, String)> {
+        self.ensure_writable()?;
+        if primary_uid.trim().is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Zusammenführung benötigt eine Primär-UID",
+            ));
+        }
+        if duplicate_uids.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Zusammenführung benötigt mindestens ein Duplikat",
+            ));
+        }
+        if duplicate_uids
+            .iter()
+            .any(|uid| uid.trim().is_empty() || uid == primary_uid)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Primär- und Duplikat-UIDs müssen verschieden und nicht leer sein",
+            ));
+        }
+        let merged_vcard = ensure_vcard_uid(merged_vcard, Some(primary_uid));
+        let merged_uid = vcard_uid(&merged_vcard).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Die zusammengeführte vCard enthält keine UID",
+            )
+        })?;
+        if merged_uid != primary_uid {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Die zusammengeführte vCard hat nicht die Primär-UID",
+            ));
+        }
+
+        let mut files = Vec::new();
+        for path in self.mutable_vcard_files() {
+            let contents = fs::read_to_string(&path)?;
+            files.push(MutableVCardFile {
+                path,
+                cards: split_vcards(&contents),
+                original: contents,
+            });
+        }
+
+        let primary_locations = contact_locations(&files, primary_uid);
+        if primary_locations.len() != 1 {
+            return Err(io::Error::new(
+                if primary_locations.is_empty() {
+                    io::ErrorKind::NotFound
+                } else {
+                    io::ErrorKind::InvalidData
+                },
+                format!("Primärkontakt {primary_uid} wurde nicht genau einmal gefunden"),
+            ));
+        }
+
+        let mut duplicate_locations = Vec::with_capacity(duplicate_uids.len());
+        for uid in duplicate_uids {
+            if duplicate_locations
+                .iter()
+                .any(|(existing_uid, _)| existing_uid == uid)
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("Duplikat-UID mehrfach angegeben: {uid}"),
+                ));
+            }
+            let locations = contact_locations(&files, uid);
+            if locations.len() != 1 {
+                return Err(io::Error::new(
+                    if locations.is_empty() {
+                        io::ErrorKind::NotFound
+                    } else {
+                        io::ErrorKind::InvalidData
+                    },
+                    format!("Duplikat {uid} wurde nicht genau einmal gefunden"),
+                ));
+            }
+            duplicate_locations.push((uid.clone(), locations[0]));
+        }
+
+        let (primary_file_index, primary_card_index) = primary_locations[0];
+        let mut updates = Vec::new();
+        for (file_index, file) in files.iter().enumerate() {
+            let mut cards = file.cards.clone();
+            if file_index == primary_file_index {
+                cards[primary_card_index] = merged_vcard.trim().to_string();
+            }
+
+            let mut remove_indices = duplicate_locations
+                .iter()
+                .filter_map(|(_, (duplicate_file_index, card_index))| {
+                    (*duplicate_file_index == file_index).then_some(*card_index)
+                })
+                .collect::<Vec<_>>();
+            remove_indices.sort_unstable();
+            remove_indices.dedup();
+            for card_index in remove_indices.into_iter().rev() {
+                cards.remove(card_index);
+            }
+
+            let updated = serialize_vcards(&cards);
+            if updated != file.original {
+                updates.push((file.path.clone(), file.original.clone(), updated));
+            }
+        }
+
+        let mut written = Vec::<(PathBuf, String)>::new();
+        for (path, original, updated) in &updates {
+            if let Err(error) = write_atomic(path, updated.as_bytes()) {
+                let rollback_failed = written.iter().any(|(written_path, contents)| {
+                    write_atomic(written_path, contents.as_bytes()).is_err()
+                });
+                let rollback_note = if rollback_failed {
+                    "; Wiederherstellung mindestens einer Datei fehlgeschlagen"
+                } else {
+                    "; vorherige Änderungen wurden wiederhergestellt"
+                };
+                return Err(io::Error::new(
+                    error.kind(),
+                    format!("Kontaktzusammenführung fehlgeschlagen{rollback_note}: {error}"),
+                ));
+            }
+            written.push((path.clone(), original.clone()));
+        }
+
+        Ok((primary_uid.to_string(), merged_vcard))
+    }
+
     fn ensure_writable(&self) -> io::Result<()> {
         if self.writable {
             Ok(())
@@ -228,6 +371,28 @@ impl ContactStoreService {
         paths.sort();
         paths
     }
+}
+
+struct MutableVCardFile {
+    path: PathBuf,
+    original: String,
+    cards: Vec<String>,
+}
+
+fn contact_locations(files: &[MutableVCardFile], uid: &str) -> Vec<(usize, usize)> {
+    files
+        .iter()
+        .enumerate()
+        .flat_map(|(file_index, file)| {
+            file.cards
+                .iter()
+                .enumerate()
+                .filter_map(move |(card_index, card)| {
+                    (local_contact_id(card, &file.path, card_index) == uid)
+                        .then_some((file_index, card_index))
+                })
+        })
+        .collect()
 }
 
 impl Default for ContactStoreService {
@@ -556,6 +721,64 @@ mod tests {
             uid
         );
         assert!(service.load_contacts().is_empty());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn merge_contacts_replaces_primary_and_removes_duplicates_atomically() {
+        let root = temporary_directory("vcard-merge");
+        let path = root.join("people.vcf");
+        fs::write(
+            &path,
+            concat!(
+                "BEGIN:VCARD\r\nVERSION:3.0\r\nUID:primary\r\nFN:Ada Lovelace\r\n",
+                "EMAIL:ada@example.test\r\nEND:VCARD\r\n",
+                "BEGIN:VCARD\r\nVERSION:3.0\r\nUID:duplicate\r\nFN:Ada Lovelace\r\n",
+                "TEL;TYPE=CELL:+49 123\r\nX-PROVIDER:kept\r\nEND:VCARD\r\n"
+            ),
+        )
+        .expect("contact file should be written");
+
+        let service = ContactStoreService::with_writable_contact_dir(&root);
+        let merged = concat!(
+            "BEGIN:VCARD\r\nVERSION:3.0\r\nUID:primary\r\nFN:Ada Lovelace\r\n",
+            "EMAIL:ada@example.test\r\nTEL;TYPE=CELL:+49 123\r\n",
+            "X-PROVIDER:kept\r\nEND:VCARD\r\n"
+        );
+        let result = service
+            .merge_contacts("primary", &["duplicate".to_string()], merged)
+            .expect("contacts should merge");
+
+        assert_eq!(result.0, "primary");
+        assert_eq!(service.load_contacts().len(), 1);
+        assert_eq!(service.load_contacts()[0].id, "primary");
+        let contents = fs::read_to_string(path).expect("merged file should be readable");
+        assert!(contents.contains("TEL;TYPE=CELL:+49 123"));
+        assert!(contents.contains("X-PROVIDER:kept"));
+        assert!(!contents.contains("UID:duplicate"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn merge_contacts_rejects_missing_duplicate_without_changing_store() {
+        let root = temporary_directory("vcard-merge-missing");
+        let path = root.join("people.vcf");
+        let original =
+            "BEGIN:VCARD\r\nVERSION:3.0\r\nUID:primary\r\nFN:Ada Lovelace\r\nEND:VCARD\r\n";
+        fs::write(&path, original).expect("contact file should be written");
+
+        let service = ContactStoreService::with_writable_contact_dir(&root);
+        assert!(
+            service
+                .merge_contacts("primary", &["missing".to_string()], original,)
+                .is_err()
+        );
+        assert_eq!(
+            fs::read_to_string(path).expect("original file should remain"),
+            original
+        );
 
         let _ = fs::remove_dir_all(root);
     }

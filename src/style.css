@@ -111,8 +111,53 @@
   padding: 32px 24px 16px 24px;
 }
 
-/* ── General Polish ────────────────────────────────────────────────────── */
+/* ── General Polish & Compact Mode (1:1 Evolution GTK3 Density) ─────────────── */
 /* Subtle shadow for the sidebar separator */
 splitview > separator {
   background-color: alpha(@borders, 0.5);
 }
+
+/* Compact Row Density for Sidebar and Mail List */
+.message-list row,
+listview.message-list > row,
+listview.mail-list > row,
+columnview.message-table cell {
+  min-height: 26px;
+  padding-top: 2px;
+  padding-bottom: 2px;
+  padding-start: 6px;
+  padding-end: 6px;
+  margin-top: 1px;
+  margin-bottom: 1px;
+}
+
+.navigation-sidebar row,
+listbox.sidebar-list > row,
+listbox > row {
+  min-height: 26px;
+  padding-top: 2px;
+  padding-bottom: 2px;
+  padding-start: 8px;
+  padding-end: 8px;
+  margin-top: 1px;
+  margin-bottom: 1px;
+  border-radius: 4px;
+}
+
+/* Compact text sizes for table list rows */
+.message-list .title,
+.message-list .heading {
+  font-size: 0.88rem;
+  line-height: 1.2;
+}
+
+.message-list .subtitle,
+.message-list .body {
+  font-size: 0.82rem;
+  line-height: 1.15;
+}
+
+.navigation-sidebar label {
+  font-size: 0.9rem;
+}
+

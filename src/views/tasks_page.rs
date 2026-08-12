@@ -78,7 +78,11 @@ mod imp {
         }
     }
 
-    impl WidgetImpl for TasksPage {}
+    impl WidgetImpl for TasksPage {
+        fn realize(&self) {
+            self.parent_realize();
+        }
+    }
 }
 
 glib::wrapper! {

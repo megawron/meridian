@@ -1176,6 +1176,13 @@ pub(crate) enum CamelMailOperation {
         location: MailBackendLocation,
         destination: String,
     },
+    Copy {
+        location: MailBackendLocation,
+        destination: String,
+    },
+    RemoveCopy {
+        location: MailBackendLocation,
+    },
     Archive {
         location: MailBackendLocation,
     },
@@ -1222,6 +1229,12 @@ pub(crate) fn apply_operation(operation: CamelMailOperation) -> Result<(), Strin
                     location,
                     destination,
                 } => (3, location, Some(destination), false, false, false, false),
+                CamelMailOperation::Copy { .. } | CamelMailOperation::RemoveCopy { .. } => {
+                    return Err(
+                        "EDS/Camel-Kopieren ist in diesem Backend noch nicht implementiert"
+                            .to_string(),
+                    );
+                }
                 CamelMailOperation::Archive { location } => {
                     (4, location, None, false, false, false, false)
                 }
@@ -1317,12 +1330,64 @@ pub(crate) fn apply_operation(operation: CamelMailOperation) -> Result<(), Strin
     }
 }
 
+/// Apply an operation that may need to return backend-created identity data.
+/// Graph copies are special because the copied message receives a new ID;
+/// the command stack uses that ID to make undo delete only the copy.
+pub(crate) fn apply_operation_with_result(
+    operation: CamelMailOperation,
+) -> Result<Option<MailBackendLocation>, String> {
+    match operation {
+        CamelMailOperation::Copy {
+            location,
+            destination,
+        } => {
+            let Some(service) =
+                super::exchange_service::graph_service_for_source(&location.source_uid)
+            else {
+                return Err(
+                    "EDS/Camel-Kopieren ist in diesem Backend noch nicht implementiert".to_string(),
+                );
+            };
+            let destination_id = service
+                .resolve_mail_folder_id_sync(&destination)
+                .map_err(|error| error.to_string())?;
+            let copied = service
+                .copy_message_to_folder_sync(&location.message_uid, &destination_id)
+                .map_err(|error| error.to_string())?;
+            Ok(Some(MailBackendLocation {
+                source_uid: location.source_uid,
+                folder_name: destination,
+                message_uid: copied.id,
+                message_id: copied.internet_message_id,
+            }))
+        }
+        CamelMailOperation::RemoveCopy { location } => {
+            let Some(service) =
+                super::exchange_service::graph_service_for_source(&location.source_uid)
+            else {
+                return Err(
+                    "EDS/Camel-Kopieren ist in diesem Backend noch nicht implementiert".to_string(),
+                );
+            };
+            // This location is created by the successful Copy operation above,
+            // so permanent deletion cannot target the original message.
+            service
+                .delete_message_sync(&location.message_uid)
+                .map_err(|error| error.to_string())?;
+            Ok(None)
+        }
+        operation => apply_operation(operation).map(|()| None),
+    }
+}
+
 fn apply_graph_operation(operation: &CamelMailOperation) -> Option<Result<(), String>> {
     use super::exchange_service::graph_service_for_source;
     let location = match operation {
         CamelMailOperation::SetMessageState { location, .. }
         | CamelMailOperation::Delete { location }
         | CamelMailOperation::Move { location, .. }
+        | CamelMailOperation::Copy { location, .. }
+        | CamelMailOperation::RemoveCopy { location }
         | CamelMailOperation::Archive { location }
         | CamelMailOperation::SetJunk { location, .. }
         | CamelMailOperation::SetImportant { location, .. }
@@ -1331,6 +1396,14 @@ fn apply_graph_operation(operation: &CamelMailOperation) -> Option<Result<(), St
         | CamelMailOperation::RestoreArchived { location } => location,
     };
     let service = graph_service_for_source(&location.source_uid)?;
+    if matches!(
+        operation,
+        CamelMailOperation::Copy { .. } | CamelMailOperation::RemoveCopy { .. }
+    ) {
+        return Some(Err(
+            "Graph-Kopieren benötigt den rückgabefähigen Operationspfad".to_string(),
+        ));
+    }
     let result = match operation {
         CamelMailOperation::SetMessageState {
             location,
@@ -1350,6 +1423,9 @@ fn apply_graph_operation(operation: &CamelMailOperation) -> Option<Result<(), St
             location,
             destination,
         } => service.move_message_to_folder_name_sync(&location.message_uid, destination),
+        CamelMailOperation::Copy { .. } | CamelMailOperation::RemoveCopy { .. } => {
+            unreachable!("copy operations return before the Graph mutation match")
+        }
         CamelMailOperation::Archive { location } => {
             service.move_message_to_folder_name_sync(&location.message_uid, "archive")
         }

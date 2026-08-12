@@ -483,6 +483,47 @@ impl MailCommand {
         }
     }
 
+    pub(crate) fn copy_remote(
+        id: impl Into<String>,
+        location: MailBackendLocation,
+        destination: impl Into<String>,
+    ) -> Self {
+        let id = id.into();
+        let destination = destination.into();
+        Self {
+            forward: MailOperation::Copy {
+                id: id.clone(),
+                location: Some(location),
+                destination: destination.clone(),
+            },
+            // The backend-created copy location is filled in immediately
+            // after the forward operation succeeds.
+            inverse: MailOperation::RemoveCopy {
+                id,
+                location: None,
+                destination: destination.clone(),
+            },
+            description: format!("Nachricht nach {destination} kopiert"),
+        }
+    }
+
+    fn update_inverse_from_result(&mut self, result: Option<MailBackendLocation>) {
+        let Some(copy_location) = result else {
+            return;
+        };
+        let MailOperation::Copy {
+            id, destination, ..
+        } = &self.forward
+        else {
+            return;
+        };
+        self.inverse = MailOperation::RemoveCopy {
+            id: id.clone(),
+            location: Some(copy_location),
+            destination: destination.clone(),
+        };
+    }
+
     pub(crate) fn description(&self) -> &str {
         &self.description
     }
@@ -592,9 +633,10 @@ impl MailCommandStack {
     pub(crate) fn execute(
         &mut self,
         operations: &MailOperationsService,
-        command: MailCommand,
+        mut command: MailCommand,
     ) -> Result<(), MailOperationError> {
-        operations.apply(command.forward.clone())?;
+        let result = operations.apply_with_result(command.forward.clone())?;
+        command.update_inverse_from_result(result);
         self.undo.push(command);
         self.redo.clear();
         self.trim_history();
@@ -608,18 +650,24 @@ impl MailCommandStack {
         commands: Vec<MailCommand>,
     ) -> Result<usize, MailOperationError> {
         let mut applied: Vec<MailCommand> = Vec::with_capacity(commands.len());
-        for command in commands {
-            if let Err(error) = operations.apply(command.forward.clone()) {
-                for previous in applied.iter().rev() {
-                    if let Err(rollback_error) = operations.apply(previous.inverse.clone()) {
-                        tracing::error!(
-                            %rollback_error,
-                            "Could not roll back a partially applied mail batch"
-                        );
+        for mut command in commands {
+            let result = match operations.apply_with_result(command.forward.clone()) {
+                Ok(result) => result,
+                Err(error) => {
+                    for previous in applied.iter().rev() {
+                        if let Err(rollback_error) =
+                            operations.apply_with_result(previous.inverse.clone())
+                        {
+                            tracing::error!(
+                                %rollback_error,
+                                "Could not roll back a partially applied mail batch"
+                            );
+                        }
                     }
+                    return Err(error);
                 }
-                return Err(error);
-            }
+            };
+            command.update_inverse_from_result(result);
             applied.push(command);
         }
 
@@ -640,7 +688,7 @@ impl MailCommandStack {
         let Some(command) = self.undo.pop() else {
             return Ok(None);
         };
-        if let Err(error) = operations.apply(command.inverse.clone()) {
+        if let Err(error) = operations.apply_with_result(command.inverse.clone()) {
             self.undo.push(command);
             return Err(error);
         }
@@ -655,13 +703,17 @@ impl MailCommandStack {
         &mut self,
         operations: &MailOperationsService,
     ) -> Result<Option<MailCommand>, MailOperationError> {
-        let Some(command) = self.redo.pop() else {
+        let Some(mut command) = self.redo.pop() else {
             return Ok(None);
         };
-        if let Err(error) = operations.apply(command.forward.clone()) {
-            self.redo.push(command);
-            return Err(error);
-        }
+        let result = match operations.apply_with_result(command.forward.clone()) {
+            Ok(result) => result,
+            Err(error) => {
+                self.redo.push(command);
+                return Err(error);
+            }
+        };
+        command.update_inverse_from_result(result);
         let result = command.clone();
         self.undo.push(command);
         self.trim_history();
@@ -881,6 +933,34 @@ impl MailOperationsService {
         }
     }
 
+    pub(crate) fn apply_with_result(
+        &self,
+        operation: MailOperation,
+    ) -> Result<Option<MailBackendLocation>, MailOperationError> {
+        match operation {
+            MailOperation::Copy {
+                id: _,
+                location: Some(location),
+                destination,
+            } => self.apply_camel_with_result(
+                CamelMailOperation::Copy {
+                    location,
+                    destination,
+                },
+                MailOperationKind::Copy,
+            ),
+            MailOperation::RemoveCopy {
+                id: _,
+                location: Some(location),
+                destination: _,
+            } => self.apply_camel_with_result(
+                CamelMailOperation::RemoveCopy { location },
+                MailOperationKind::Copy,
+            ),
+            operation => self.apply(operation).map(|()| None),
+        }
+    }
+
     pub fn set_message_state(
         &self,
         id: &str,
@@ -1045,7 +1125,15 @@ impl MailOperationsService {
         operation: CamelMailOperation,
         kind: MailOperationKind,
     ) -> Result<(), MailOperationError> {
-        camel_mail_service::apply_operation(operation).map_err(|message| {
+        self.apply_camel_with_result(operation, kind).map(|_| ())
+    }
+
+    fn apply_camel_with_result(
+        &self,
+        operation: CamelMailOperation,
+        kind: MailOperationKind,
+    ) -> Result<Option<MailBackendLocation>, MailOperationError> {
+        camel_mail_service::apply_operation_with_result(operation).map_err(|message| {
             if message
                 .trim_start()
                 .to_ascii_lowercase()
@@ -1550,6 +1638,33 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn remote_copy_command_replaces_inverse_with_backend_created_location() {
+        let source_location = MailBackendLocation {
+            source_uid: "graph-account".to_string(),
+            folder_name: "Inbox".to_string(),
+            message_uid: "original-id".to_string(),
+            message_id: Some("<original@example.org>".to_string()),
+        };
+        let copied_location = MailBackendLocation {
+            source_uid: "graph-account".to_string(),
+            folder_name: "Archive".to_string(),
+            message_uid: "new-copy-id".to_string(),
+            message_id: Some("<copy@example.org>".to_string()),
+        };
+        let mut command = MailCommand::copy_remote("original", source_location, "Archive");
+
+        command.update_inverse_from_result(Some(copied_location.clone()));
+
+        assert!(matches!(
+            command.inverse,
+            MailOperation::RemoveCopy {
+                location: Some(location),
+                ..
+            } if location == copied_location
+        ));
     }
 
     #[test]
