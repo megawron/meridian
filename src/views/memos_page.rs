@@ -138,6 +138,13 @@ impl MemosPage {
         }
     }
 
+    pub(crate) fn select_search_result(&self, source_uid: &str, uid: &str) -> bool {
+        let Some(memo_list) = self.imp().memo_list.borrow().as_ref().cloned() else {
+            return false;
+        };
+        select_memo_row(&memo_list, source_uid, uid)
+    }
+
     /// Rebuild memo rows so category colors and the category filter reflect
     /// the presentation-only category store immediately.
     pub fn refresh_category_presentation(&self) {
@@ -1561,7 +1568,7 @@ fn upsert_memo_row(
     append_memo_row(memo_list, &memo);
 }
 
-fn select_memo_row(memo_list: &gtk::ListBox, source_uid: &str, uid: &str) {
+fn select_memo_row(memo_list: &gtk::ListBox, source_uid: &str, uid: &str) -> bool {
     let mut child = memo_list.first_child();
     while let Some(widget) = child {
         child = widget.next_sibling();
@@ -1577,9 +1584,10 @@ fn select_memo_row(memo_list: &gtk::ListBox, source_uid: &str, uid: &str) {
         };
         if matches {
             memo_list.select_row(Some(&row));
-            return;
+            return true;
         }
     }
+    false
 }
 
 fn append_memo_row(memo_list: &gtk::ListBox, memo: &MemoRecord) {

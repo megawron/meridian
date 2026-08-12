@@ -197,6 +197,55 @@ impl TasksPage {
         }
     }
 
+    pub(crate) fn open_search_result(&self, source_uid: &str, uid: &str) -> bool {
+        let (Some(task_list), Some(task_store), Some(empty_tasks)) = (
+            self.imp().task_list.borrow().as_ref().cloned(),
+            self.imp().task_store.borrow().as_ref().cloned(),
+            self.imp().task_empty_state.borrow().as_ref().cloned(),
+        ) else {
+            return false;
+        };
+        let Some(task) = (0..task_store.n_items())
+            .filter_map(|index| task_store.item(index).and_downcast::<TaskItemObject>())
+            .find(|task| task.source_uid() == source_uid && task.id() == uid)
+        else {
+            return false;
+        };
+        let mut child = task_list.first_child();
+        while let Some(widget) = child {
+            child = widget.next_sibling();
+            let Ok(row) = widget.downcast::<gtk::ListBoxRow>() else {
+                continue;
+            };
+            let Some(task_row) = row
+                .child()
+                .and_then(|child| child.downcast::<adw::ActionRow>().ok())
+            else {
+                continue;
+            };
+            let matches = unsafe {
+                task_row
+                    .data::<String>("task-source-uid")
+                    .is_some_and(|value| value.as_ref() == source_uid)
+                    && task_row
+                        .data::<String>("task-id")
+                        .is_some_and(|value| value.as_ref() == uid)
+            };
+            if matches {
+                task_list.select_row(Some(&row));
+                if source_uid.is_empty() {
+                    self.show_toast(
+                        "Diese Aufgabe stammt aus einer schreibgeschützten importierten Quelle",
+                    );
+                    return true;
+                }
+                self.open_task_dialog(task_store, task_list, empty_tasks, Some(task));
+                return true;
+            }
+        }
+        false
+    }
+
     /// Re-render category names and colored task rows after the presentation-
     /// only category store changed in Preferences.
     pub fn refresh_category_presentation(&self) {
@@ -402,7 +451,7 @@ impl TasksPage {
         let task_store = gio::ListStore::new::<TaskItemObject>();
 
         let task_list = gtk::ListBox::builder()
-            .selection_mode(gtk::SelectionMode::None)
+            .selection_mode(gtk::SelectionMode::Single)
             .margin_start(16)
             .margin_end(16)
             .margin_top(12)
@@ -421,6 +470,51 @@ impl TasksPage {
             .task_empty_state
             .replace(Some(empty_tasks.clone()));
         content_box.append(&empty_tasks);
+
+        let page_weak_for_activation = self.downgrade();
+        let task_store_for_activation = task_store.clone();
+        let task_list_for_activation = task_list.clone();
+        let empty_tasks_for_activation = empty_tasks.clone();
+        task_list.connect_row_activated(move |_, row| {
+            let Some(task_row) = row
+                .child()
+                .and_then(|child| child.downcast::<adw::ActionRow>().ok())
+            else {
+                return;
+            };
+            let read_data = |key: &str| unsafe {
+                task_row
+                    .data::<String>(key)
+                    .map(|value| value.as_ref().clone())
+            };
+            let source_uid = read_data("task-source-uid").unwrap_or_default();
+            let task_uid = read_data("task-id").unwrap_or_default();
+            let Some(task) = (0..task_store_for_activation.n_items())
+                .filter_map(|index| {
+                    task_store_for_activation
+                        .item(index)
+                        .and_downcast::<TaskItemObject>()
+                })
+                .find(|task| task.source_uid() == source_uid && task.id() == task_uid)
+            else {
+                return;
+            };
+            let Some(page) = page_weak_for_activation.upgrade() else {
+                return;
+            };
+            if source_uid.is_empty() {
+                page.show_toast(
+                    "Diese Aufgabe stammt aus einer schreibgeschützten importierten Quelle",
+                );
+                return;
+            }
+            page.open_task_dialog(
+                task_store_for_activation.clone(),
+                task_list_for_activation.clone(),
+                empty_tasks_for_activation.clone(),
+                Some(task),
+            );
+        });
 
         let source_model_for_load = source_model.clone();
         let source_uids_for_load = Rc::clone(&source_uids);
@@ -1911,6 +2005,7 @@ fn append_task_row(
         .subtitle(subtitle.as_str())
         .use_markup(true)
         .build();
+    row.set_activatable(true);
     unsafe {
         row.set_data("task-id", task.id());
         row.set_data("task-source-uid", task.source_uid());
@@ -2198,8 +2293,8 @@ fn append_task_row(
                                 task_store_for_result.remove(index);
                             }
                             if let Some(row) = delete_button_for_result
-                                .ancestor(adw::ActionRow::static_type())
-                                .and_downcast::<adw::ActionRow>()
+                                .ancestor(gtk::ListBoxRow::static_type())
+                                .and_downcast::<gtk::ListBoxRow>()
                             {
                                 task_list_for_result.remove(&row);
                             }
@@ -2236,12 +2331,18 @@ fn remove_task_row(task_list: &gtk::ListBox, source_uid: &str, task_uid: &str) {
         let Ok(row) = widget.downcast::<gtk::ListBoxRow>() else {
             continue;
         };
+        let Some(task_row) = row
+            .child()
+            .and_then(|child| child.downcast::<adw::ActionRow>().ok())
+        else {
+            continue;
+        };
         let matches = unsafe {
-            let row_source_uid = row
+            let row_source_uid = task_row
                 .data::<String>("task-source-uid")
                 .map(|value| value.as_ref().clone())
                 .unwrap_or_default();
-            let row_task_uid = row
+            let row_task_uid = task_row
                 .data::<String>("task-id")
                 .map(|value| value.as_ref().clone())
                 .unwrap_or_default();

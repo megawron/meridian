@@ -1770,6 +1770,23 @@ impl MailPage {
         }
     }
 
+    pub(crate) fn select_search_result(&self, message_id: &str) -> bool {
+        let Some(selection) = self.imp().message_selection.borrow().as_ref().cloned() else {
+            return false;
+        };
+        for index in 0..selection.n_items() {
+            let Some(message) = selection.item(index).and_downcast::<MailMessageObject>() else {
+                continue;
+            };
+            if message.id() == message_id {
+                selection.set_selected(index);
+                self.sync_thread_selection(Some(message_id));
+                return true;
+            }
+        }
+        false
+    }
+
     /// Open a reply composer for the currently selected message.  Keeping the
     /// selection lookup here makes buttons and keyboard actions share exactly
     /// the same message context.

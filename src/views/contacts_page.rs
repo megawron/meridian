@@ -26,6 +26,7 @@ mod imp {
     pub struct ContactsPage {
         pub ebook_monitor_cancel: RefCell<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>>,
         pub new_contact_button: RefCell<Option<gtk::Button>>,
+        pub contact_list: RefCell<Option<gtk::ListBox>>,
         pub search_entry: RefCell<Option<gtk::SearchEntry>>,
     }
 
@@ -98,6 +99,13 @@ impl ContactsPage {
             entry.set_text(query);
             entry.grab_focus();
         }
+    }
+
+    pub(crate) fn select_search_result(&self, source_uid: &str, uid: &str) -> bool {
+        let Some(contact_list) = self.imp().contact_list.borrow().as_ref().cloned() else {
+            return false;
+        };
+        select_contact_row(&contact_list, source_uid, uid)
     }
 
     fn build_ui(&self) {
@@ -260,6 +268,7 @@ impl ContactsPage {
             .selection_mode(gtk::SelectionMode::Single)
             .css_classes(vec!["navigation-sidebar"])
             .build();
+        self.imp().contact_list.replace(Some(contact_list.clone()));
 
         let stored_contacts = Rc::new(RefCell::new(Vec::<EBookContactRecord>::new()));
         let selected_contact = Rc::new(RefCell::new(None::<EBookContactRecord>));
@@ -1311,7 +1320,7 @@ fn refresh_contacts(
     });
 }
 
-fn select_contact_row(contact_list: &gtk::ListBox, source_uid: &str, uid: &str) {
+fn select_contact_row(contact_list: &gtk::ListBox, source_uid: &str, uid: &str) -> bool {
     let mut child = contact_list.first_child();
     while let Some(widget) = child {
         child = widget.next_sibling();
@@ -1327,9 +1336,10 @@ fn select_contact_row(contact_list: &gtk::ListBox, source_uid: &str, uid: &str) 
         };
         if matches {
             contact_list.select_row(Some(&row));
-            return;
+            return true;
         }
     }
+    false
 }
 
 fn set_contact_filter(

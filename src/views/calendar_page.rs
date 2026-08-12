@@ -211,6 +211,22 @@ impl CalendarPage {
         }
     }
 
+    pub(crate) fn open_search_result(&self, source_uid: &str, uid: &str) -> bool {
+        let Some(records) = self.imp().event_records.borrow().as_ref().cloned() else {
+            return false;
+        };
+        let Some(event) = records
+            .borrow()
+            .iter()
+            .find(|event| event.source_uid == source_uid && event.uid == uid)
+            .cloned()
+        else {
+            return false;
+        };
+        open_event_editor_for_widget(self, &event);
+        true
+    }
+
     /// Reload the portable/EDS calendar snapshot after a dialog operation.
     ///
     /// EDS-backed installations normally receive the same change through the
@@ -325,12 +341,14 @@ impl CalendarPage {
                 .hidden_calendar_sources
                 .replace(settings.calendar_hidden_sources().into_iter().collect());
         }
-        let paned = gtk::Paned::new(gtk::Orientation::Horizontal);
-        paned.set_resize_start_child(false);
-        paned.set_shrink_start_child(false);
-        paned.set_resize_end_child(true);
-        paned.set_shrink_end_child(false);
-        paned.set_position(280);
+        // Keep the classic Evolution split on wide windows, while using the
+        // same adaptive navigation contract as the other groupware modules
+        // when the window becomes narrow.
+        let split = adw::NavigationSplitView::builder()
+            .min_sidebar_width(260.0)
+            .max_sidebar_width(380.0)
+            .sidebar_width_fraction(0.24)
+            .build();
 
         // ── Sidebar (Calendar Picker + Task List) ───────────────────────
 
@@ -711,7 +729,11 @@ impl CalendarPage {
             .child(&sidebar_box)
             .vexpand(true)
             .build();
-        paned.set_start_child(Some(&sidebar_scroll));
+        let sidebar_page = adw::NavigationPage::builder()
+            .title("Kalender")
+            .child(&sidebar_scroll)
+            .build();
+        split.set_sidebar(Some(&sidebar_page));
 
         // ── Calendar Content (View Switcher: Day/Week/Month) ────────────
 
@@ -1111,8 +1133,12 @@ impl CalendarPage {
 
         self.refresh_calendar_views();
 
-        paned.set_end_child(Some(&content_box));
-        paned.set_parent(self);
+        let content_page = adw::NavigationPage::builder()
+            .title("Kalender")
+            .child(&content_box)
+            .build();
+        split.set_content(Some(&content_page));
+        split.set_parent(self);
     }
 
     fn select_calendar_view(&self, view: CalendarView) {
@@ -1366,17 +1392,26 @@ impl CalendarPage {
             let Ok(row) = widget.downcast::<gtk::ListBoxRow>() else {
                 continue;
             };
+            let Some(event_row) = row
+                .child()
+                .and_then(|child| child.downcast::<adw::ActionRow>().ok())
+            else {
+                continue;
+            };
             let source_uid = unsafe {
-                row.data::<String>("event-source-uid")
+                event_row
+                    .data::<String>("event-source-uid")
                     .map(|value| value.as_ref().clone())
                     .unwrap_or_default()
             };
             let category_matches = unsafe {
-                row.data::<String>("event-categories")
+                event_row
+                    .data::<String>("event-categories")
                     .is_none_or(|value| self.calendar_category_matches(value.as_ref()))
             };
             let search_matches = unsafe {
-                row.data::<String>("event-search")
+                event_row
+                    .data::<String>("event-search")
                     .is_none_or(|value| self.calendar_search_matches(value.as_ref()))
             };
             let visible =
@@ -2910,6 +2945,7 @@ fn append_event_row(
         .title(title.as_str())
         .subtitle(glib::markup_escape_text(&subtitle_text).as_str())
         .use_markup(true)
+        .activatable(true)
         .build();
     unsafe {
         row.set_data("event-id", event.uid.clone());
@@ -2920,6 +2956,10 @@ fn append_event_row(
         );
         row.set_data("event-search", calendar_event_search_text(&event));
     }
+    let event_for_activation = event.clone();
+    row.connect_activated(move |row| {
+        open_event_editor_for_widget(row, &event_for_activation);
+    });
 
     let edit_button = gtk::Button::builder()
         .icon_name("document-edit-symbolic")
@@ -3025,7 +3065,6 @@ fn append_event_row(
         });
     });
 
-    let row_for_delete = row.clone();
     let event_for_delete = event.clone();
     let event_records_for_delete = Rc::clone(&event_records);
     let event_list_for_delete = event_list.clone();
@@ -3046,7 +3085,6 @@ fn append_event_row(
         let event_for_action = event_for_delete.clone();
         let event_records_for_action = Rc::clone(&event_records_for_delete);
         let event_list_for_action = event_list_for_delete.clone();
-        let row_for_action = row_for_delete.clone();
         let delete_button_for_action = delete_button.clone();
         crate::dialogs::run_destructive_action(
             &delete_button,
@@ -3073,12 +3111,16 @@ fn append_event_row(
 
                 let event_records_for_result = Rc::clone(&event_records_for_action);
                 let event_list_for_result = event_list_for_action.clone();
-                let row_for_result = row_for_action.clone();
                 let delete_button_for_result = delete_button_for_action.clone();
                 glib::spawn_future_local(async move {
                     match receiver.recv().await {
                         Ok(Ok(result)) => {
-                            event_list_for_result.remove(&row_for_result);
+                            if let Some(row) = delete_button_for_result
+                                .ancestor(gtk::ListBoxRow::static_type())
+                                .and_downcast::<gtk::ListBoxRow>()
+                            {
+                                event_list_for_result.remove(&row);
+                            }
                             event_records_for_result.borrow_mut().retain(|event| {
                                 event.source_uid != source_uid_for_result
                                     || event.uid != uid_for_result
@@ -3121,12 +3163,18 @@ fn remove_event_list_row(event_list: &gtk::ListBox, source_uid: &str, uid: &str)
         let Ok(row) = widget.downcast::<gtk::ListBoxRow>() else {
             continue;
         };
+        let Some(event_row) = row
+            .child()
+            .and_then(|child| child.downcast::<adw::ActionRow>().ok())
+        else {
+            continue;
+        };
         let matches = unsafe {
-            let row_source_uid = row
+            let row_source_uid = event_row
                 .data::<String>("event-source-uid")
                 .map(|value| value.as_ref().clone())
                 .unwrap_or_default();
-            let row_uid = row
+            let row_uid = event_row
                 .data::<String>("event-id")
                 .map(|value| value.as_ref().clone())
                 .unwrap_or_default();

@@ -1233,11 +1233,21 @@ nicht als vollständiger Ersatz beworben werden.
    auf denselben Zeitachsen-Karten erhalten.
    Globale lokale Suchtreffer öffnen jetzt anhand ihrer Quell-/UID-Referenz
    gezielt Kalender, Aufgaben, Notizen oder Kontakte und übernehmen den
-   Treffertext in die jeweilige Modulsuche.
+   Treffertext in die jeweilige Modulsuche; sobald der lazy geladene Bestand
+   verfügbar ist, wird die konkrete UID-Zeile ausgewählt und ein Aufgabenfund
+   direkt im bestehenden Editor geöffnet.
    Kontakte und Notizen wechseln bei einer Auswahl im eingeklappten
    `AdwNavigationSplitView` automatisch in die Detailseite; Aufgaben öffnen
    bei Quellen- und Ansichtswechseln ebenfalls den Inhaltsbereich. Wird die
    Auswahl aufgehoben, kehren Kontakte und Notizen wieder zur Liste zurück.
+   Aufgabenzeilen sind zusätzlich direkt aktivierbar und öffnen den bestehenden
+   vollständigen Aufgaben-Editor; der separate Bearbeiten-Button bleibt als
+   sichtbare Alternative erhalten.
+   Die Kalenderseite verwendet für ihre klassische Seitenleiste und den
+   Hauptkalender ebenfalls `AdwNavigationSplitView`: Auf breiten Fenstern
+   bleibt die vertraute linke Kalender-/Aufgabenleiste mit dem Kalender rechts
+   erhalten, auf schmalen Fenstern wird daraus eine adaptive Navigation mit
+   systematischer Rückkehr zur Seitenleiste.
    Kontoerstellung und Kontobearbeitung aus Einstellungen und Hauptmenü
    aktualisieren nach dem Schließen außerdem die laufende Mail-/Quellenansicht,
    ohne einen Neustart zu verlangen.

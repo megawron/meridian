@@ -358,26 +358,71 @@ impl EvolutionWindow {
             view_stack.set_visible_child_name(page_name);
         }
         let window = self.downgrade();
-        glib::idle_add_local_once(move || {
+        let calendar_target = reference_id
+            .split_once(':')
+            .map(|(source_uid, uid)| (source_uid.to_string(), uid.to_string()));
+        let mut attempts = 0u8;
+        let mut query_applied = false;
+        glib::timeout_add_local(std::time::Duration::from_millis(50), move || {
             let Some(window) = window.upgrade() else {
-                return;
+                return glib::ControlFlow::Break;
             };
-            match page_name {
-                "mail" => window.mail_page().map(|page| page.set_search_query(&query)),
-                "calendar" => window
-                    .calendar_page()
-                    .map(|page| page.set_search_query(&query)),
-                "contacts" => window
-                    .contacts_page()
-                    .map(|page| page.set_search_query(&query)),
-                "tasks" => window
-                    .tasks_page()
-                    .map(|page| page.set_search_query(&query)),
-                "memos" => window
-                    .memos_page()
-                    .map(|page| page.set_search_query(&query)),
-                _ => None,
+            if !query_applied {
+                query_applied = match page_name {
+                    "mail" => window.mail_page().is_some_and(|page| {
+                        page.set_search_query(&query);
+                        true
+                    }),
+                    "calendar" => window.calendar_page().is_some_and(|page| {
+                        page.set_search_query(&query);
+                        true
+                    }),
+                    "contacts" => window.contacts_page().is_some_and(|page| {
+                        page.set_search_query(&query);
+                        true
+                    }),
+                    "tasks" => window.tasks_page().is_some_and(|page| {
+                        page.set_search_query(&query);
+                        true
+                    }),
+                    "memos" => window.memos_page().is_some_and(|page| {
+                        page.set_search_query(&query);
+                        true
+                    }),
+                    _ => true,
+                };
+            }
+            let found = match page_name {
+                "mail" => window.mail_page().is_some_and(|page| {
+                    reference_id.is_empty() || page.select_search_result(&reference_id)
+                }),
+                "calendar" => window.calendar_page().is_some_and(|page| {
+                    calendar_target
+                        .as_ref()
+                        .is_none_or(|(source_uid, uid)| page.open_search_result(source_uid, uid))
+                }),
+                "contacts" => window.contacts_page().is_some_and(|page| {
+                    reference_id.is_empty()
+                        || page.select_search_result("local-addressbook", &reference_id)
+                }),
+                "tasks" => window.tasks_page().is_some_and(|page| {
+                    calendar_target
+                        .as_ref()
+                        .is_none_or(|(source_uid, uid)| page.open_search_result(source_uid, uid))
+                }),
+                "memos" => window.memos_page().is_some_and(|page| {
+                    calendar_target
+                        .as_ref()
+                        .is_none_or(|(source_uid, uid)| page.select_search_result(source_uid, uid))
+                }),
+                _ => true,
             };
+            attempts = attempts.saturating_add(1);
+            if found || attempts >= 30 {
+                glib::ControlFlow::Break
+            } else {
+                glib::ControlFlow::Continue
+            }
         });
         self.add_toast(&adw::Toast::new(match page_name {
             "mail" => "Mailbereich geöffnet",
