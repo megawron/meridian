@@ -301,43 +301,6 @@ impl MailViewer {
                 .as_ref()
                 .map(AppSettings::force_dark_mode)
                 .unwrap_or(false);
-            let body_css = if is_dark_mode {
-                r#"
-  html {
-    color-scheme: dark !important;
-    background-color: #1e1e1e !important;
-  }
-  body {
-    font-family: __FONT_FAMILY__;
-    font-size: __FONT_SIZE__px;
-    line-height: 1.6;
-    margin: 16px;
-    min-height: calc(100vh - 32px);
-    padding: 0;
-    color: #eeeeec !important;
-    background-color: #1e1e1e !important;
-  }
-  a { color: #78aeed; }
-"#
-            } else {
-                r#"
-  html {
-    color-scheme: light !important;
-    background-color: #ffffff !important;
-  }
-  body {
-    font-family: __FONT_FAMILY__;
-    font-size: __FONT_SIZE__px;
-    line-height: 1.6;
-    margin: 16px;
-    min-height: calc(100vh - 32px);
-    padding: 0;
-    color: #2e3436 !important;
-    background-color: #ffffff !important;
-  }
-  a { color: #1a73e8; }
-"#
-            };
             let mail_font_family = AppSettings::try_new()
                 .as_ref()
                 .map(AppSettings::mail_font_family)
@@ -346,66 +309,14 @@ impl MailViewer {
                 .as_ref()
                 .map(AppSettings::mail_font_size)
                 .unwrap_or(14);
-            let body_css = body_css
-                .replace("__FONT_FAMILY__", &mail_font_family)
-                .replace("__FONT_SIZE__", &mail_font_size.to_string());
-
-            let style_tag = format!(
-                "<style>{} img {{ max-width: 100%; height: auto; }} body > table, body > div, body > center, body > article, body > main {{ max-width: 100%; }}{} blockquote {{ border-left: 3px solid #78aeed; margin-left: 0; padding-left: 12px; }}</style>",
-                body_css,
-                if remote_images_allowed {
-                    ""
-                } else {
-                    " img[src^=\"http://\"], img[src^=\"https://\"], img[src^=\"//\"] { display: none !important; }"
-                }
+            let styled_html = compose_sanitized_mail_document(
+                &sanitized,
+                render_html,
+                remote_images_allowed,
+                is_dark_mode,
+                &mail_font_family,
+                mail_font_size,
             );
-
-            // WebKit's image preference is the first line of defense.  Keep
-            // the policy in the document as well, so a provider cannot make
-            // remote images appear through a second URL-bearing element or a
-            // cached navigation.  Inline `cid:`/`data:` images remain usable
-            // before the user explicitly allows remote content.
-            let image_sources = if remote_images_allowed {
-                "http: https: data: cid: blob:"
-            } else {
-                "data: cid: blob:"
-            };
-            let security_tag = format!(
-                "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; script-src 'none'; style-src 'unsafe-inline'; img-src {image_sources}; font-src data:; connect-src 'none'; frame-src 'none'; object-src 'none'\">"
-            );
-
-            let is_full_doc = render_html
-                && (sanitized.contains("<html")
-                    || sanitized.contains("<body")
-                    || sanitized.contains("<!DOCTYPE")
-                    || sanitized.contains("<!doctype"));
-
-            let styled_html = if is_full_doc {
-                if let Some(pos) = sanitized.find("</head>") {
-                    let (head, rest) = sanitized.split_at(pos);
-                    format!("{}{}{}{}", head, security_tag, style_tag, rest)
-                } else if let Some(pos) = sanitized.find("<body") {
-                    let (head, rest) = sanitized.split_at(pos);
-                    format!("{}{}{}{}", head, security_tag, style_tag, rest)
-                } else {
-                    format!("{}{}{}", security_tag, style_tag, sanitized)
-                }
-            } else {
-                format!(
-                    r#"<!DOCTYPE html>
-<html>
-<head>
-<meta charset="utf-8">
-{}
-{}
-</head>
-<body>
-{}
-</body>
-</html>"#,
-                    security_tag, style_tag, sanitized
-                )
-            };
 
             webview.load_html(&styled_html, base_uri);
         }
@@ -520,6 +431,115 @@ impl MailViewer {
     }
 }
 
+fn compose_sanitized_mail_document(
+    sanitized: &str,
+    render_html: bool,
+    remote_images_allowed: bool,
+    force_dark_mode: bool,
+    mail_font_family: &str,
+    mail_font_size: u32,
+) -> String {
+    let body_css = if force_dark_mode {
+        r#"
+  html {
+    color-scheme: dark !important;
+    background-color: #1e1e1e !important;
+    color: #eeeeec;
+  }
+  body {
+    font-family: __FONT_FAMILY__;
+    font-size: __FONT_SIZE__px;
+    line-height: 1.6;
+    margin: 16px;
+    min-height: calc(100vh - 32px);
+    padding: 0;
+  }
+"#
+    } else {
+        r#"
+  html {
+    color-scheme: light !important;
+    background-color: #ffffff !important;
+    color: #2e3436;
+  }
+  body {
+    font-family: __FONT_FAMILY__;
+    font-size: __FONT_SIZE__px;
+    line-height: 1.6;
+    margin: 16px;
+    min-height: calc(100vh - 32px);
+    padding: 0;
+  }
+"#
+    };
+    let body_css = body_css
+        .replace("__FONT_FAMILY__", mail_font_family)
+        .replace("__FONT_SIZE__", &mail_font_size.to_string());
+    let style_tag = format!(
+        "<style>{} img {{ max-width: 100%; height: auto; }} body > table, body > div, body > center, body > article, body > main {{ max-width: 100%; }}{}</style>",
+        body_css,
+        if remote_images_allowed {
+            ""
+        } else {
+            " img[src^=\"http://\"], img[src^=\"https://\"], img[src^=\"//\"] { display: none !important; }"
+        }
+    );
+
+    // WebKit's image preference is the first line of defense. Keep the
+    // policy in the document as well, so a provider cannot make remote
+    // images appear through a second URL-bearing element or cached
+    // navigation. Inline `cid:`/`data:` images remain usable before the
+    // user explicitly allows remote content.
+    let image_sources = if remote_images_allowed {
+        "http: https: data: cid: blob:"
+    } else {
+        "data: cid: blob:"
+    };
+    let security_tag = format!(
+        "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; script-src 'none'; style-src 'unsafe-inline'; img-src {image_sources}; font-src data:; connect-src 'none'; frame-src 'none'; object-src 'none'\">"
+    );
+
+    let is_full_doc = render_html
+        && (sanitized.contains("<html")
+            || sanitized.contains("<body")
+            || sanitized.contains("<!DOCTYPE")
+            || sanitized.contains("<!doctype"));
+
+    if is_full_doc {
+        // Put the application baseline before the mail's own <head> rules.
+        // This keeps the configured color scheme and safe typography
+        // available without overriding explicit colors, backgrounds, link
+        // styles, or table layout from the message.
+        if let Some(head_start) = sanitized.find("<head") {
+            if let Some(head_end_offset) = sanitized[head_start..].find('>') {
+                let insertion = head_start + head_end_offset + 1;
+                let (head, rest) = sanitized.split_at(insertion);
+                return format!("{}{}{}{}", head, security_tag, style_tag, rest);
+            }
+        }
+        if let Some(pos) = sanitized.find("<body") {
+            let (head, rest) = sanitized.split_at(pos);
+            return format!("{}{}{}{}", head, security_tag, style_tag, rest);
+        }
+        format!("{}{}{}", security_tag, style_tag, sanitized)
+    } else {
+        format!(
+            r#"<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+{}
+{}
+</head>
+<body>
+{}
+</body>
+</html>"#,
+            security_tag, style_tag, sanitized
+        )
+    }
+}
+
 #[cfg(target_os = "linux")]
 fn escape_html(value: &str) -> String {
     value
@@ -599,7 +619,10 @@ fn contains_remote_image_reference(value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{contains_remote_image_reference, html_to_fallback_text, readable_fallback_text};
+    use super::{
+        compose_sanitized_mail_document, contains_remote_image_reference, html_to_fallback_text,
+        readable_fallback_text,
+    };
 
     #[test]
     fn fallback_text_preserves_mail_content_and_line_breaks() {
@@ -642,6 +665,29 @@ mod tests {
         ));
         assert!(!contains_remote_image_reference(
             r#"<imgdata src="https://cdn.example/not-an-img-tag.png">"#
+        ));
+    }
+
+    #[test]
+    fn mail_baseline_precedes_message_css_without_overriding_mail_colors() {
+        let document = compose_sanitized_mail_document(
+            r#"<html><head><style>body { background-color: #123456; color: #abcdef; }</style></head><body style="background-color:#fedcba"><p>Hallo</p></body></html>"#,
+            true,
+            false,
+            false,
+            "system-ui, sans-serif",
+            14,
+        );
+        let baseline = document
+            .find("color-scheme: light")
+            .expect("the viewer baseline should be present");
+        let message_css = document
+            .find("background-color: #123456")
+            .expect("the message CSS should be retained");
+        assert!(baseline < message_css);
+        assert!(document.contains("style=\"background-color:#fedcba\""));
+        assert!(document.contains(
+            "img[src^=\"http://\"], img[src^=\"https://\"], img[src^=\"//\"] { display: none !important; }"
         ));
     }
 }

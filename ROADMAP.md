@@ -387,7 +387,12 @@ werden.
   nachfolgenden Mailkörper abzuschneiden; damit bleiben typische HTML-Mails
   im Vorschaufenster lesbar. Der explizite Textmodus wandelt HTML ebenfalls in
   bereinigten Klartext um, statt rohe Tags anzuzeigen; bei leerem HTML wird
-  derselbe Klartext-/Vorschau-Fallback verwendet.
+  derselbe Klartext-/Vorschau-Fallback verwendet. Die Viewer-Basisfarben und
+  die konfigurierten Schriftwerte werden vor den sicheren, eingebetteten
+  Mail-CSS-Regeln injiziert; explizite Hintergründe, Farben, Links und
+  Tabellenlayouts der Nachricht werden dadurch nicht mehr flächendeckend
+  überschrieben. Remote-CSS und Ressourcenzugriffe bleiben aus
+  Datenschutzgründen blockiert.
   Die portable Leseeinstellung, ob eine Nachricht beim Auswählen als gelesen
   markiert wird, ist persistent und gilt für lokale sowie native Mailpfade;
   providerabhängige Lesestatus-Synchronisation bleibt Linux/EDS-Abnahme.
