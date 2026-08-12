@@ -41,7 +41,7 @@ pub fn show_shortcuts_dialog<W: IsA<gtk::Window>>(parent: &W) {
         .accelerator("F9")
         .build();
     let s6 = gtk::ShortcutsShortcut::builder()
-        .title("Suche fokussieren")
+        .title("Suche im aktiven Modul fokussieren")
         .accelerator("<Control>f")
         .build();
     let s7 = gtk::ShortcutsShortcut::builder()
@@ -64,7 +64,7 @@ pub fn show_shortcuts_dialog<W: IsA<gtk::Window>>(parent: &W) {
         .build();
 
     let m1 = gtk::ShortcutsShortcut::builder()
-        .title("Neue E-Mail verfassen")
+        .title("Neue Aktion im aktiven Modul")
         .accelerator("<Control>n")
         .build();
     let m2 = gtk::ShortcutsShortcut::builder()

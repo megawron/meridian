@@ -42,6 +42,7 @@ mod imp {
         pub memo_records: RefCell<Option<Rc<RefCell<Vec<MemoRecord>>>>>,
         pub memo_empty_state: RefCell<Option<gtk::Label>>,
         pub new_memo_button: RefCell<Option<gtk::Button>>,
+        pub search_entry: RefCell<Option<gtk::SearchEntry>>,
     }
 
     #[glib::object_subclass]
@@ -118,6 +119,13 @@ impl MemosPage {
     pub fn present_new_memo(&self) {
         if let Some(button) = self.imp().new_memo_button.borrow().as_ref() {
             button.activate();
+        }
+    }
+
+    pub(crate) fn focus_search(&self) {
+        if let Some(entry) = self.imp().search_entry.borrow().as_ref() {
+            entry.grab_focus();
+            entry.select_region(0, -1);
         }
     }
 
@@ -229,6 +237,7 @@ impl MemosPage {
         let search_entry = gtk::SearchEntry::builder()
             .placeholder_text("Notizen durchsuchen…")
             .build();
+        self.imp().search_entry.replace(Some(search_entry.clone()));
         let sort_model = gtk::StringList::new(&["Zuletzt geändert", "Titel", "Quelle"]);
         let sort_selector = gtk::DropDown::new(Some(sort_model), None::<&gtk::Expression>);
         sort_selector.set_tooltip_text(Some("Notizen sortieren"));
@@ -900,6 +909,7 @@ impl MemosPage {
                             Rc::clone(&memo_records_for_result),
                             updated.clone(),
                         );
+                        select_memo_row(&memo_list_for_result, &updated.source_uid, &updated.uid);
                         *selected_memo_for_result.borrow_mut() = Some(updated);
                         memo_title_for_result.set_text(&title);
                         memo_categories_for_result.set_text(&categories);
@@ -1442,6 +1452,7 @@ impl MemosPage {
             let title_for_model = title_entry.text().trim().to_string();
             let description_for_model = description.to_string();
             let source_uid_for_model = source_uid.clone();
+            let source_uid_for_selection = source_uid_for_model.clone();
             let (sender, receiver) = async_channel::bounded(1);
             std::thread::spawn(move || {
                 let result = ECalService::new().create_component(
@@ -1489,6 +1500,7 @@ impl MemosPage {
                             Rc::clone(&memo_records_for_result),
                             memo,
                         );
+                        select_memo_row(&memo_list_for_result, &source_uid_for_selection, &uid);
                         empty_state_for_result.set_visible(false);
                         if let Some(page) = page_weak_for_result.upgrade() {
                             refresh_memo_category_model(&page, &memo_list_for_result);
@@ -1533,6 +1545,27 @@ fn upsert_memo_row(
     }
     memo_records.borrow_mut().push(memo.clone());
     append_memo_row(memo_list, &memo);
+}
+
+fn select_memo_row(memo_list: &gtk::ListBox, source_uid: &str, uid: &str) {
+    let mut child = memo_list.first_child();
+    while let Some(widget) = child {
+        child = widget.next_sibling();
+        let Ok(row) = widget.downcast::<gtk::ListBoxRow>() else {
+            continue;
+        };
+        let matches = unsafe {
+            row.data::<String>("memo-id")
+                .is_some_and(|value| value.as_ref() == uid)
+                && row
+                    .data::<String>("memo-source-uid")
+                    .is_some_and(|value| value.as_ref() == source_uid)
+        };
+        if matches {
+            memo_list.select_row(Some(&row));
+            return;
+        }
+    }
 }
 
 fn append_memo_row(memo_list: &gtk::ListBox, memo: &MemoRecord) {

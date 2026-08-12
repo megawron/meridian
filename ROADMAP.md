@@ -1216,6 +1216,16 @@ nicht als vollständiger Ersatz beworben werden.
    Mail, Kalender, Kontakten, Aufgaben oder Notizen jeweils den passenden
    Erstellungsworkflow; der explizite Menüpunkt „Neue E-Mail“ bleibt davon
    getrennt mailbezogen.
+   Ctrl+F fokussiert die Suchzeile des aktiven Moduls und fällt nur im
+   Mailbereich auf die Mail-Suche zurück; die globale Suche bleibt separat
+   über Ctrl+Shift+F erreichbar.
+   Der Mini-Kalender in der Kalenderseitenleiste ändert bei einer
+   Tagesauswahl nun die aktive Hauptansicht; Vorheriger/Nächster Zeitraum
+   sowie Heute synchronisieren die Auswahl ebenfalls zurück.
+   Neue und bearbeitete Notizen werden nach dem Speichern automatisch wieder
+   in der Notizliste ausgewählt und im Detailbereich angezeigt.
+   Der Termin-Editor übernimmt beim Aufruf aus der Kalenderansicht das aktuell
+   ausgewählte Datum statt immer mit dem heutigen Tag zu beginnen.
    Kontoerstellung und Kontobearbeitung aus Einstellungen und Hauptmenü
    aktualisieren nach dem Schließen außerdem die laufende Mail-/Quellenansicht,
    ohne einen Neustart zu verlangen.

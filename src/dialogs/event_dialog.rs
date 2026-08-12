@@ -11,7 +11,7 @@
 
 use adw::prelude::*;
 use adw::subclass::prelude::*;
-use chrono::{Duration, Local, NaiveDate, NaiveDateTime, Utc};
+use chrono::{Duration, Local, NaiveDate, NaiveDateTime, Timelike, Utc};
 use gtk::{gio, glib};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -33,6 +33,7 @@ mod imp {
         pub edit_component: RefCell<Option<String>>,
         pub edit_uid: RefCell<Option<String>>,
         pub edit_source_uid: RefCell<Option<String>>,
+        pub initial_date: RefCell<Option<String>>,
     }
 
     #[glib::object_subclass]
@@ -51,6 +52,7 @@ mod imp {
                     glib::ParamSpecString::builder("edit-component").build(),
                     glib::ParamSpecString::builder("edit-uid").build(),
                     glib::ParamSpecString::builder("edit-source-uid").build(),
+                    glib::ParamSpecString::builder("initial-date").build(),
                 ]
             })
         }
@@ -64,6 +66,9 @@ mod imp {
                 "edit-source-uid" => {
                     *self.edit_source_uid.borrow_mut() = value.get().expect("string property")
                 }
+                "initial-date" => {
+                    *self.initial_date.borrow_mut() = value.get().expect("string property")
+                }
                 _ => {}
             }
         }
@@ -73,6 +78,7 @@ mod imp {
                 "edit-component" => self.edit_component.borrow().to_value(),
                 "edit-uid" => self.edit_uid.borrow().to_value(),
                 "edit-source-uid" => self.edit_source_uid.borrow().to_value(),
+                "initial-date" => self.initial_date.borrow().to_value(),
                 _ => glib::Value::from_type(pspec.value_type()),
             }
         }
@@ -102,6 +108,16 @@ impl EventDialog {
             .property("modal", true)
             .property("default-width", 560)
             .property("default-height", 520)
+            .build()
+    }
+
+    pub fn new_for_date(date: NaiveDate) -> Self {
+        glib::Object::builder()
+            .property("title", "Neuer Termin")
+            .property("modal", true)
+            .property("default-width", 560)
+            .property("default-height", 520)
+            .property("initial-date", date.format("%Y-%m-%d").to_string())
             .build()
     }
 
@@ -215,7 +231,16 @@ impl EventDialog {
         // Group 2: Time Selection
         let group_time = adw::PreferencesGroup::builder().title("Zeitraum").build();
 
-        let default_start = Local::now();
+        let now = Local::now();
+        let initial_date = self
+            .imp()
+            .initial_date
+            .borrow()
+            .as_deref()
+            .and_then(|value| NaiveDate::parse_from_str(value, "%Y-%m-%d").ok());
+        let default_start = initial_date
+            .and_then(|date| date.and_hms_opt(now.hour(), now.minute(), 0))
+            .unwrap_or_else(|| now.naive_local());
         let default_end = default_start + Duration::hours(1);
         let row_start = adw::EntryRow::builder()
             .title("Beginn (YYYY-MM-DD HH:MM)")

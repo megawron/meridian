@@ -49,6 +49,7 @@ mod imp {
         pub task_store: RefCell<Option<gio::ListStore>>,
         pub task_empty_state: RefCell<Option<gtk::Label>>,
         pub new_task_button: RefCell<Option<gtk::Button>>,
+        pub search_entry: RefCell<Option<gtk::SearchEntry>>,
     }
 
     #[glib::object_subclass]
@@ -180,6 +181,13 @@ impl TasksPage {
         }
     }
 
+    pub(crate) fn focus_search(&self) {
+        if let Some(entry) = self.imp().search_entry.borrow().as_ref() {
+            entry.grab_focus();
+            entry.select_region(0, -1);
+        }
+    }
+
     /// Re-render category names and colored task rows after the presentation-
     /// only category store changed in Preferences.
     pub fn refresh_category_presentation(&self) {
@@ -302,6 +310,7 @@ impl TasksPage {
             .placeholder_text("Aufgaben durchsuchen…")
             .hexpand(true)
             .build();
+        self.imp().search_entry.replace(Some(search_entry.clone()));
 
         let sort_model = gtk::StringList::new(&["Fälligkeit", "Titel", "Priorität"]);
         let sort_selector = gtk::DropDown::new(Some(sort_model), None::<&gtk::Expression>);

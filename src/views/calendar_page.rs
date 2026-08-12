@@ -87,6 +87,9 @@ mod imp {
         pub task_records: RefCell<Option<Rc<RefCell<Vec<TaskRecord>>>>>,
         pub task_list: RefCell<Option<gtk::ListBox>>,
         pub task_state: RefCell<Option<gtk::Label>>,
+        pub mini_calendar: RefCell<Option<gtk::Calendar>>,
+        pub syncing_mini_calendar: Cell<bool>,
+        pub calendar_search_entry: RefCell<Option<gtk::SearchEntry>>,
         pub calendar_search_query: RefCell<String>,
         pub calendar_category_filter: RefCell<Option<String>>,
         pub calendar_category_model: RefCell<Option<gtk::StringList>>,
@@ -117,6 +120,9 @@ mod imp {
                 task_records: RefCell::new(None),
                 task_list: RefCell::new(None),
                 task_state: RefCell::new(None),
+                mini_calendar: RefCell::new(None),
+                syncing_mini_calendar: Cell::new(false),
+                calendar_search_entry: RefCell::new(None),
                 calendar_search_query: RefCell::new(String::new()),
                 calendar_category_filter: RefCell::new(None),
                 calendar_category_model: RefCell::new(None),
@@ -186,6 +192,13 @@ impl CalendarPage {
     pub fn present_new_event(&self) {
         if let Some(button) = self.imp().new_event_button.borrow().as_ref() {
             button.activate();
+        }
+    }
+
+    pub(crate) fn focus_search(&self) {
+        if let Some(entry) = self.imp().calendar_search_entry.borrow().as_ref() {
+            entry.grab_focus();
+            entry.select_region(0, -1);
         }
     }
 
@@ -322,6 +335,27 @@ impl CalendarPage {
             .build();
 
         let mini_calendar = gtk::Calendar::new();
+        self.imp()
+            .mini_calendar
+            .replace(Some(mini_calendar.clone()));
+        let page_for_mini_calendar = self.downgrade();
+        mini_calendar.connect_day_selected(move |calendar| {
+            let Some(page) = page_for_mini_calendar.upgrade() else {
+                return;
+            };
+            if page.imp().syncing_mini_calendar.get() {
+                return;
+            }
+            let date = calendar.date();
+            if let Some(selected_date) = NaiveDate::from_ymd_opt(
+                date.year(),
+                date.month() as u32,
+                date.day_of_month() as u32,
+            ) {
+                *page.imp().current_date.borrow_mut() = selected_date;
+                page.refresh_calendar_views();
+            }
+        });
         sidebar_box.append(&mini_calendar);
 
         let source_header = gtk::Label::builder()
@@ -389,6 +423,9 @@ impl CalendarPage {
             .hexpand(true)
             .width_chars(18)
             .build();
+        self.imp()
+            .calendar_search_entry
+            .replace(Some(calendar_search_entry.clone()));
         let page_weak_for_search = self.downgrade();
         calendar_search_entry.connect_search_changed(move |entry| {
             let Some(page) = page_weak_for_search.upgrade() else {
@@ -745,7 +782,8 @@ impl CalendarPage {
             #[weak(rename_to = page)]
             self,
             move |_| {
-                let dialog = crate::dialogs::EventDialog::new();
+                let dialog =
+                    crate::dialogs::EventDialog::new_for_date(*page.imp().current_date.borrow());
                 let root = page.root();
                 if let Some(win) = root.and_then(|r| r.downcast::<gtk::Window>().ok()) {
                     dialog.set_transient_for(Some(&win));
@@ -1053,6 +1091,7 @@ impl CalendarPage {
             self,
             move |_| {
                 *page.imp().current_date.borrow_mut() = Local::now().date_naive();
+                page.sync_mini_calendar();
                 page.refresh_calendar_views();
             }
         ));
@@ -1185,6 +1224,28 @@ impl CalendarPage {
             CalendarView::Agenda => current + Duration::days(i64::from(direction) * 30),
         };
         *self.imp().current_date.borrow_mut() = next;
+        self.sync_mini_calendar();
+    }
+
+    fn sync_mini_calendar(&self) {
+        let Some(calendar) = self.imp().mini_calendar.borrow().as_ref().cloned() else {
+            return;
+        };
+        let date = *self.imp().current_date.borrow();
+        let Ok(date_time) = glib::DateTime::new(
+            &glib::TimeZone::local(),
+            date.year(),
+            date.month() as i32,
+            date.day() as i32,
+            0,
+            0,
+            0.0,
+        ) else {
+            return;
+        };
+        self.imp().syncing_mini_calendar.set(true);
+        calendar.select_day(&date_time);
+        self.imp().syncing_mini_calendar.set(false);
     }
 
     fn refresh_calendar_views(&self) {

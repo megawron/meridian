@@ -26,6 +26,7 @@ mod imp {
     pub struct ContactsPage {
         pub ebook_monitor_cancel: RefCell<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>>,
         pub new_contact_button: RefCell<Option<gtk::Button>>,
+        pub search_entry: RefCell<Option<gtk::SearchEntry>>,
     }
 
     #[glib::object_subclass]
@@ -83,6 +84,13 @@ impl ContactsPage {
         }
     }
 
+    pub(crate) fn focus_search(&self) {
+        if let Some(entry) = self.imp().search_entry.borrow().as_ref() {
+            entry.grab_focus();
+            entry.select_region(0, -1);
+        }
+    }
+
     fn build_ui(&self) {
         let split = adw::NavigationSplitView::new();
 
@@ -100,6 +108,7 @@ impl ContactsPage {
             .margin_top(8)
             .margin_bottom(8)
             .build();
+        self.imp().search_entry.replace(Some(search_entry.clone()));
         sidebar_box.append(&search_entry);
 
         let book_model = gtk::StringList::new(&["Alle Kontakte"]);

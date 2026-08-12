@@ -339,6 +339,23 @@ impl EvolutionWindow {
         }));
     }
 
+    fn focus_active_search(&self) {
+        let view_name = self
+            .imp()
+            .view_stack
+            .borrow()
+            .as_ref()
+            .and_then(|view_stack| view_stack.visible_child_name())
+            .map(|name| name.to_string());
+        match view_name.as_deref() {
+            Some("calendar") => self.calendar_page().map(|page| page.focus_search()),
+            Some("contacts") => self.contacts_page().map(|page| page.focus_search()),
+            Some("tasks") => self.tasks_page().map(|page| page.focus_search()),
+            Some("memos") => self.memos_page().map(|page| page.focus_search()),
+            _ => self.mail_page().map(|page| page.focus_search()),
+        };
+    }
+
     /// Add a checkable window action backed by a persistent GSettings boolean.
     ///
     /// Evolution's View menu exposes these options as live toggles.  Keeping
@@ -1672,18 +1689,7 @@ impl EvolutionWindow {
         action_search.connect_activate(glib::clone!(
             #[weak(rename_to = window)]
             self,
-            move |_, _| {
-                if let Some(mail_page) = window
-                    .imp()
-                    .view_stack
-                    .borrow()
-                    .as_ref()
-                    .and_then(|stack| stack.child_by_name("mail"))
-                    .and_then(|widget| widget.downcast::<MailPage>().ok())
-                {
-                    mail_page.focus_search();
-                }
-            }
+            move |_, _| window.focus_active_search()
         ));
         self.add_action(&action_search);
 
