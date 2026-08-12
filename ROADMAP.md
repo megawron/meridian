@@ -2,6 +2,13 @@
 
 Vollständige Architektur-Spezifikation, Feature-Mapping und Entwicklungs-Roadmap für einen modernen Mail- & Groupware-Client als GTK4/libadwaita-Frontend für den Evolution Data Server (EDS).
 
+> **Dokumentrolle:** Diese Datei ist die vollständige Produktspezifikation und
+> der belegte Paritätsstatus. LLM-Agenten beginnen konkrete Arbeit in der
+> atomaren [Ausführungsroadmap](ROADMAP_EXECUTION.md). Ausschließlich auf Linux
+> prüfbare Implementierung und Abnahme steht in der
+> [Linux-/EDS-Roadmap](ROADMAP_LINUX.md). Der Produktumfang darf aus keiner
+> dieser Sichten verkleinert werden.
+
 ---
 
 ## 1. Architektur & Tech-Stack
@@ -1249,133 +1256,17 @@ ein kompletter Offline-/Online-/Fehler-/Wiederanlauf-Zyklus ohne Datenverlust
 getestet ist. Bis dahin ist die Anwendung eine technische Vorschau und darf
 nicht als vollständiger Ersatz beworben werden.
 
-### Nächster Entwicklungsblock
+### Operative Entwicklungsreihenfolge
 
-1. Die konfigurierbare Mailansicht weiter an Evolution angleichen:
-   die klassische Drei-Bereiche-Anordnung und Werkzeugleiste sind jetzt der
-   Standard, bleiben aber portabel umschaltbar bzw. ein-/ausblendbar;
-   weitere Menüpfade sowie die noch offenen Mail-Leseeinstellungen werden
-   ergänzt. Die Ansichts-Menüpfade für Sidebar,
-   Vorschaufenster und klassische/moderne Mail-Anordnung sind jetzt vorhanden;
-   der Wechsel wirkt live und die zugehörigen Menüschalter zeigen ihren
-   persistenten Aktivzustand. Neuer Ordner, Papierkorb leeren und Expunge sind
-   als echte GTK4-Aktionspfade vorhanden; der persistente Offline-Modus
-   schaltet den lokalen Mailbestand, die Statusleiste und den Camel-Watcher
-   gemeinsam um. Native Expunge-/Online-Abnahme bleibt Linux-spezifisch.
-   Die primäre Header-Aktion folgt beim Bereichswechsel außerdem dem
-   Evolution-Workflow und öffnet in Kalender, Kontakten, Aufgaben und Notizen
-   jeweils den passenden Erstellungsdialog statt dauerhaft „Neue E-Mail“
-   anzuzeigen.
-   Der Mail-Sidebar-Schalter wird außerhalb des Mailbereichs ausgeblendet;
-   seine Menüaktion ist dort deaktiviert, damit die Kalender-/Kontakt- und
-   Aufgaben-/Notiznavigation nicht durch eine wirkungslose Mailaktion
-   verfälscht wird.
-   Weitere mailbezogene Hauptmenüaktionen werden beim Wechsel in Kalender,
-   Kontakte, Aufgaben oder Notizen ebenfalls deaktiviert, sodass die
-   modulbezogenen Befehle und Einstellungen dem jeweils sichtbaren Bereich
-   entsprechen.
-   Nachrichtenbezogene Aktionen wie Antworten, Weiterleiten, Export und
-   Markierungen folgen zusätzlich live der aktuellen Nachrichtenauswahl und
-   sind ohne Auswahl deaktiviert.
-   Die persistierten Optionen für Nachrichtendichte und klassische/moderne
-   Anordnung erscheinen im Ansichtsmenü nun ebenfalls mit synchronisiertem
-   Aktivzustand.
-   Datei → Neu → Termin und Datei → Neu → Kontakt wechseln bei Bedarf in den
-   jeweiligen Bereich und verwenden dort denselben Seiten-Workflow wie die
-   lokalen Erstellungsbuttons einschließlich anschließender Listenaktualisierung.
-   Neue und bearbeitete Kalendertermine laden nach dem Schließen des Dialogs
-   den gemeinsamen EDS-/Graph-/iCalendar-Snapshot neu, damit Liste, Agenda,
-   Monatsansicht und Aufgaben-Seitenleiste auch ohne natives EDS-Signal sofort
-   den aktuellen Stand zeigen.
-   Ctrl+N folgt nun ebenfalls dem sichtbaren Evolution-Modul und öffnet in
-   Mail, Kalender, Kontakten, Aufgaben oder Notizen jeweils den passenden
-   Erstellungsworkflow; der explizite Menüpunkt „Neue E-Mail“ bleibt davon
-   getrennt mailbezogen.
-   Ctrl+F fokussiert die Suchzeile des aktiven Moduls und fällt nur im
-   Mailbereich auf die Mail-Suche zurück; die globale Suche bleibt separat
-   über Ctrl+Shift+F erreichbar.
-   Der Mini-Kalender in der Kalenderseitenleiste ändert bei einer
-   Tagesauswahl nun die aktive Hauptansicht; Vorheriger/Nächster Zeitraum
-   sowie Heute synchronisieren die Auswahl ebenfalls zurück.
-   Neue und bearbeitete Notizen werden nach dem Speichern automatisch wieder
-   in der Notizliste ausgewählt und im Detailbereich angezeigt.
-   Der Termin-Editor übernimmt beim Aufruf aus der Kalenderansicht das aktuell
-   ausgewählte Datum statt immer mit dem heutigen Tag zu beginnen.
-   Kontakt-Reloads nach Bearbeitung oder Quellenaktualisierung bewahren die
-   aktuell ausgewählte Quell-/UID-Zeile und damit den offenen Detailbereich.
-   Termine in der portablen Arbeitswochen-Zeitachse sind ebenfalls direkt
-   aktivierbar und öffnen den gemeinsamen Termin-Editor; Drag-and-drop bleibt
-   auf denselben Zeitachsen-Karten erhalten.
-   Globale lokale Suchtreffer öffnen jetzt anhand ihrer Quell-/UID-Referenz
-   gezielt Kalender, Aufgaben, Notizen oder Kontakte und übernehmen den
-   Treffertext in die jeweilige Modulsuche; sobald der lazy geladene Bestand
-   verfügbar ist, wird die konkrete UID-Zeile ausgewählt und ein Aufgabenfund
-   direkt im bestehenden Editor geöffnet.
-   Kontakte und Notizen wechseln bei einer Auswahl im eingeklappten
-   `AdwNavigationSplitView` automatisch in die Detailseite; Aufgaben öffnen
-   bei Quellen- und Ansichtswechseln ebenfalls den Inhaltsbereich. Wird die
-   Auswahl aufgehoben, kehren Kontakte und Notizen wieder zur Liste zurück.
-   Aufgabenzeilen sind zusätzlich direkt aktivierbar und öffnen den bestehenden
-   vollständigen Aufgaben-Editor; der separate Bearbeiten-Button bleibt als
-   sichtbare Alternative erhalten.
-   Die Kalenderseite verwendet für ihre klassische Seitenleiste und den
-   Hauptkalender ebenfalls `AdwNavigationSplitView`: Auf breiten Fenstern
-   bleibt die vertraute linke Kalender-/Aufgabenleiste mit dem Kalender rechts
-   erhalten, auf schmalen Fenstern wird daraus eine adaptive Navigation mit
-   systematischer Rückkehr zur Seitenleiste.
-   Kalender-, Aufgaben-, Notiz- und Kontaktzeilen bieten zusätzlich ein
-   kontextsensitives GTK4-Menü für Bearbeiten, Speichern/Statusänderung,
-   Export, Mail an Kontakt, Dubletten und Löschen.
-   Diese Einträge aktivieren dieselben sichtbaren Button- und ECal-Pfade wie
-   die Detailansicht und behalten dadurch Read-only-Prüfung, Bestätigung und
-   anschließende Listenaktualisierung bei.
-   Die Kontaktliste sortiert deterministisch nach Familienname und Vorname,
-   wie Evolution es im Adressbuch erwartet; bei unvollständigen vCards greifen
-   Anzeigename, E-Mail-Adresse, Quelle und UID als stabile Tie-Breaker.
-   Die Mailansicht startet mit kompakter Evolution-Dichte, ohne Avatar- und
-   Vorschautext-Flächen, und behält Absender, Betreff und Datum als die
-   wesentlichen sichtbaren Spalten. Die globale GTK-CSS-Dichte überschreibt
-   den kompakten Zeilenabstand nicht mehr; dadurch bleiben die Standardzeilen
-   tatsächlich einzeilig und platzsparend. Die Nachrichtenzeilen sind
-   standardmäßig einzeilig; Schnellfilter, Sortierung, Spalten-Schalter und die persistente
-   Absender-Spaltenbreite stehen direkt über der Liste bereit. Alle drei
-   Dichteprofile und die einzelnen Sichtbarkeitsschalter bleiben persistent
-   umschaltbar. HTML-Mail verwendet standardmäßig eine helle Vorschau; externe
-   Bilder bleiben bis zur Freigabe blockiert, während `cid:`-/`data:`-Bilder
-   aus der Nachricht weiter dargestellt werden dürfen.
-   In der eingeklappten Navigation führen `Esc` und `Alt+←` aus dem
-   Inhaltsbereich wieder zurück zur jeweiligen Seitenleiste; das Verhalten
-   ist für Kalender, Kontakte, Aufgaben und Notizen einheitlich.
-   Kontoerstellung und Kontobearbeitung aus Einstellungen und Hauptmenü
-   aktualisieren nach dem Schließen außerdem die laufende Mail-/Quellenansicht,
-   ohne einen Neustart zu verlangen.
-   Die persistierte letzte Modulansicht lädt ihr lazy GTK4-Modul bereits beim
-   Start vollständig, sodass Kalender, Kontakte, Aufgaben und Notizen nach
-   einem Neustart nicht auf einer leeren Platzhalterseite stehen bleiben.
-2. Die portable Aufgaben-/Notizen-/Kontaktansicht weiter vervollständigen:
-   verbleibende EDS-vCard-/GAL-Felder, Duplikaterkennung und die noch offenen
-   Evolution-Sonderfelder. Aufgaben-/Memo-Suche, Sortierung, Export und lokale
-   VTODO-/VJOURNAL-Persistenz sind ergänzt; der portable Reminder-Service, die
-   Kalender-Agenda, Arbeitswochen-Zeitachse, Benachrichtigungseinstellung und die strukturierte
-   vCard-Foto-/Detail-Strecke, lokale Empfänger-Autovervollständigung und die
-   bearbeitbaren gespeicherten Suchordner sind ebenfalls vorhanden. Die globale
-   lokale Suche sowie mehrteilige portable Filterbedingungen/-aktionen und die
-   Filterreihenfolge sowie die manuelle lokale Filterausführung sind ebenfalls
-   umgesetzt; serverseitige Such-/Filterpfade bleiben Linux-only.
-3. Das GTK4-rs-Mailmodell mit der echten CamelFolderThread-Strecke,
-   vollständigem Nachladen aller Thread-Mitglieder und providerabhängiger
-   UID-Neuzuordnung nach Transfers gegen Linux-EDS verifizieren; sichtbare
-   Konflikt-/Restore-Fehleranzeigen und die aufklappbare TreeListModel-
-   Grundlage sind vorhanden.
-4. Die portable Migration und Datenqualität vervollständigen: weitere
-   Evolution-.source-Bereiche, verbleibende nicht-geheime Exportformate,
-   lokale Ordner und die portable Alias-/Ordnerzuordnung,
-   vollständige Export-/Restore-Prüfung, Diagnosepaket, Datenlöschung und
-   Upgrade-/Rollback-Verhalten.
-5. Erst danach die native EDS/Camel-Ladestrecke, UID-basierte
-   Signalaktualisierung und den Signal-Watcher auf Linux gegen ein echtes
-   GNOME-/GOA-Konto testen. Die vollständige Checkliste dafür befindet sich in
-   [ROADMAP_LINUX.md](ROADMAP_LINUX.md); dort folgen strukturelle
-   Ordner-/Kontosynchronisation, Netzwerkwechsel, Camel-Transport,
-   EDS-Drafts/Sent, ECal/EBook-Konfliktauflösung und die Offline-/Online-
-   Wiederaufnahme.
+Die frühere, fortlaufend gewachsene Liste „Nächster Entwicklungsblock“ ist in
+atomare, dauerhaft referenzierbare Aufgaben überführt. Die aktuelle Reihenfolge,
+Abhängigkeiten, Plattformgrenzen, Abnahmekriterien und Evidenz stehen in
+[ROADMAP_EXECUTION.md](ROADMAP_EXECUTION.md).
+
+Die Reihenfolge beginnt bewusst mit täglich genutztem Mailbetrieb,
+Main-Thread-Stabilität, MIME-Darstellung, Synchronisation, Composer und
+Recovery. Erst danach folgen Groupware-, Enterprise-, Migrations-,
+Einstellungs- und Release-Vollparität. Diese Priorisierung ändert nicht das
+Abnahmekriterium: Produktivparität ist weiterhin erst erreicht, wenn alle
+Pflichtbereiche dieser Datei und alle erforderlichen Linux-Abnahmen erfüllt
+sind.

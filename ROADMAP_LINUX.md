@@ -2,8 +2,9 @@
 
 Diese Datei enthält ausschließlich Arbeiten, die eine Linux-Umgebung mit
 GTK4, libadwaita und dem originalen Evolution Data Server (EDS) benötigen.
-Sie ergänzt die allgemeine [ROADMAP.md](ROADMAP.md); plattformunabhängige
-Rust-, GTK4-rs- und Service-Arbeiten bleiben dort.
+Sie ergänzt die allgemeine [ROADMAP.md](ROADMAP.md). Die priorisierte,
+atomare Reihenfolge steht in [ROADMAP_EXECUTION.md](ROADMAP_EXECUTION.md);
+plattformunabhängige Rust-, GTK4-rs- und Service-Arbeiten bleiben dort.
 
 Ein Punkt ist erst `[x]`, wenn er auf Linux reproduzierbar gebaut und mit
 einem echten EDS-/GNOME-Konto ausgeführt wurde. Ein bestandener Rust-Test auf
@@ -15,6 +16,69 @@ Status:
 - `[~]` = Adapter oder Testvorbereitung vorhanden, aber Linux-Laufzeitprüfung
   oder ein Teil des Abnahmekriteriums fehlt
 - `[ ]` = noch offen
+
+## LLM-Ausführung und P0-Handoffs
+
+Ein Agent auf macOS darf diese Punkte vorbereiten, aber nicht als bestanden
+markieren. Ein Linux-Agent beginnt mit dem ersten offenen P0-Handoff, dessen
+zugehöriger portabler Punkt vorbereitet ist. Vor jedem Lauf sind Commit,
+Distribution, Bibliotheksversionen und Kontotyp zu protokollieren.
+
+### LINUX-P0-MAIL-001 — Konto, Ordner, Nachricht und WebKit-Reader
+
+- Verknüpft: `P0-MAIL-001` und `P0-SYNC-001` aus
+  `ROADMAP_EXECUTION.md`.
+- Vorbereitung: vollständiger portabler Testlauf grün; ein EDS-Testkonto mit
+  bekannten Plaintext-, HTML-, CID-, Remote-Bild- und Anhangsnachrichten.
+- Ablauf:
+  1. App kalt starten und Reaktionsfähigkeit während Quellen-/Ordnerladen
+     prüfen.
+  2. Konto und verschachtelte Ordner mit Evolution vergleichen.
+  3. Jede bekannte Nachricht öffnen, zwischen ihnen wechseln und Paging sowie
+     Refresh auslösen.
+  4. Remote-Bilder zunächst blockiert und danach explizit freigegeben prüfen.
+  5. Anhänge speichern; zusätzlich Abbruch und nicht beschreibbares Ziel
+     testen.
+- Erwartung: kein leerer Reader, kein ungefragter Remote-Request, korrekte
+  Hintergründe/CSS, stabile Auswahl, keine Duplikate und kein GTK-Hänger.
+- Evidenz: Logmarker, inhaltsneutrale Screenshots, Testkorpus-IDs und Commit.
+
+### LINUX-P0-MAIL-002 — asynchrone Mailmutationen
+
+- Verknüpft: `P0-STAB-001`.
+- Ablauf: Lesen/Ungelesen, Stern, Wichtigkeit, Label, Archiv, Spam,
+  Nicht-Spam, Löschen, Verschieben und Kopieren jeweils einzeln und als Batch
+  gegen ein echtes Konto ausführen; parallel Fenster bewegen, Ordner wechseln
+  und Suche bedienen.
+- Negative Fälle: Netzwerk trennen, Authentifizierung scheitern lassen,
+  Providerkonflikt erzeugen und Vorgang abbrechen.
+- Erwartung: Hauptfenster bleibt bedienbar; Erfolg wird erst nach
+  Backendbestätigung sichtbar; Fehler erzeugen weder Phantomzustand noch
+  falschen Undo-Eintrag; Undo/Redo bleibt server- und UI-konsistent.
+- Evidenz: Zeitstempel/Logs je Operation, Serververgleich und Commit.
+
+### LINUX-P0-COMP-001 — Entwurf, Antwort und Versand
+
+- Verknüpft: `P0-COMP-001`.
+- Ablauf: Neu, Antworten, Allen antworten, Weiterleiten, HTML/Text, Alias,
+  Signatur, Inline- und reguläre Anhänge, Autosave, Wiederöffnen und Versand
+  gegen Drafts-/Sent-Ordner prüfen.
+- Negative Fälle: Offline-Versand, TLS/Auth-Fehler, Abbruch und mehrfaches
+  Aktivieren des Senden-Buttons.
+- Erwartung: kein Doppelversand; Fehlschlag erhält einen vollständigen
+  Entwurf; Erfolg räumt den Entwurf auf und zeigt die Nachricht in Gesendet.
+- Evidenz: Message-IDs statt Mailinhalt, Ordnerstatus, Log und Commit.
+
+### LINUX-P0-RECOVERY-001 — EDS-/Netzwerk-Wiederanlauf
+
+- Verknüpft: `P0-RECOVERY-001`.
+- Ablauf: Offline/Online umschalten, Netzwerk verlieren, EDS-Factories und
+  D-Bus neu starten, Desktop suspendieren und App während eines Loads sauber
+  beenden/neu starten.
+- Erwartung: keine blockierte Oberfläche, keine doppelten Watcher/Zeilen,
+  verständlicher Status, kontrollierter Retry und kein Verlust app-eigener
+  Zustände oder originaler Evolution-Daten.
+- Evidenz: letzte Logmarker vor/nach Unterbrechung, Prozessstatus und Commit.
 
 ## Arbeitsregel für die spätere Linux-Abnahme
 

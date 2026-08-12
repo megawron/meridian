@@ -84,10 +84,37 @@ When the user requests a durable behavior change, record it here or in the relev
   worktree as a behavioral reference. Keep the original EDS/Camel/ECal/EBook
   services authoritative and make portable UI choices persistent where the
   original application exposes them.
+- Prioritize daily mail workflows, responsiveness, data integrity, recovery,
+  and stability before secondary parity work. A visible control is not a
+  feature until its operation, persistence, error path, and tests are wired.
+- `main` is the only writable development branch. Historical detached
+  worktrees may remain as read-only behavior references; do not create or
+  maintain parallel feature branches unless the user explicitly changes this
+  policy.
+
+## Roadmap Workflow
+
+- `ROADMAP.md` is the canonical product scope and evidence-backed status.
+- `ROADMAP_EXECUTION.md` is the atomic, prioritized work queue. Select work
+  from it and split any item that cannot end in one coherent, testable commit.
+- `ROADMAP_LINUX.md` owns work and acceptance that requires Linux, EDS, GOA,
+  providers, WebKitGTK runtime, desktop integration, or packaging.
+- Never mark an umbrella item complete from a narrow test. Update status only
+  when every acceptance criterion has direct evidence.
+- Keep Linux-only handoffs executable: include the commit, setup, exact action,
+  expected result, negative case, and evidence to record.
+- When parallel agents are available, assign disjoint write sets from the
+  execution roadmap. Keep one writer per path, let the main agent own the
+  critical path, and integrate each result separately through review and
+  verification. Agent worktrees are temporary implementation machinery, not
+  additional product branches; `main` remains the only maintained branch.
 
 ## Child DOX Index
 
 - `src/AGENTS.md` owns the Rust application source and indexes its UI, service,
   dialog, and model boundaries.
-- Root-owned files: `README.md`, `LICENSE`, `banner.jpg`, `video-thumbnail.jpg`,
-  and root-level project documentation.
+- `ROADMAP.md` owns complete product scope and verified parity status.
+- `ROADMAP_EXECUTION.md` owns atomic priorities and acceptance criteria.
+- `ROADMAP_LINUX.md` owns Linux-/EDS-only implementation and acceptance.
+- Other root-owned files include `README.md`, `LICENSE`, `banner.jpg`,
+  `video-thumbnail.jpg`, and root-level project documentation.
