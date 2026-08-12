@@ -125,8 +125,8 @@ columnview.message-table cell {
   min-height: 26px;
   padding-top: 2px;
   padding-bottom: 2px;
-  padding-start: 6px;
-  padding-end: 6px;
+  padding-left: 6px;
+  padding-right: 6px;
   margin-top: 1px;
   margin-bottom: 1px;
 }
@@ -137,8 +137,8 @@ listbox > row {
   min-height: 26px;
   padding-top: 2px;
   padding-bottom: 2px;
-  padding-start: 8px;
-  padding-end: 8px;
+  padding-left: 8px;
+  padding-right: 8px;
   margin-top: 1px;
   margin-bottom: 1px;
   border-radius: 4px;
@@ -160,4 +160,3 @@ listbox > row {
 .navigation-sidebar label {
   font-size: 0.9rem;
 }
-

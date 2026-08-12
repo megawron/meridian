@@ -124,6 +124,8 @@ struct BackupSettings {
     default_memo_source: String,
     #[serde(default)]
     auto_load_remote_images: bool,
+    #[serde(default)]
+    offline_mode: bool,
     #[serde(default = "default_force_dark_mode")]
     force_dark_mode: bool,
     #[serde(default = "default_render_html")]
@@ -427,6 +429,7 @@ impl BackupSettings {
             default_task_source: settings.default_task_source_uid(),
             default_memo_source: settings.default_memo_source_uid(),
             auto_load_remote_images: settings.auto_load_remote_images(),
+            offline_mode: settings.offline_mode(),
             force_dark_mode: settings.force_dark_mode(),
             render_html: settings.render_html(),
             composer_html: settings.composer_html(),
@@ -505,6 +508,7 @@ impl BackupSettings {
         settings.set_default_task_source_uid(&self.default_task_source);
         settings.set_default_memo_source_uid(&self.default_memo_source);
         settings.set_auto_load_remote_images(self.auto_load_remote_images);
+        settings.set_offline_mode(self.offline_mode);
         settings.set_force_dark_mode(self.force_dark_mode);
         settings.set_render_html(self.render_html);
         settings.set_composer_html(self.composer_html);

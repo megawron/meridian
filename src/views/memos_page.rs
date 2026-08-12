@@ -41,6 +41,7 @@ mod imp {
         pub memo_list: RefCell<Option<gtk::ListBox>>,
         pub memo_records: RefCell<Option<Rc<RefCell<Vec<MemoRecord>>>>>,
         pub memo_empty_state: RefCell<Option<gtk::Label>>,
+        pub new_memo_button: RefCell<Option<gtk::Button>>,
     }
 
     #[glib::object_subclass]
@@ -72,9 +73,7 @@ mod imp {
     }
 
     impl WidgetImpl for MemosPage {
-        fn realize(&self) {
-            self.parent_realize();
-        }
+        fn realize(&self) {}
     }
 }
 
@@ -113,6 +112,13 @@ impl MemoSort {
 impl MemosPage {
     pub fn new() -> Self {
         glib::Object::builder().build()
+    }
+
+    /// Trigger the page-local memo editor from the shared Evolution toolbar.
+    pub fn present_new_memo(&self) {
+        if let Some(button) = self.imp().new_memo_button.borrow().as_ref() {
+            button.activate();
+        }
     }
 
     /// Rebuild memo rows so category colors and the category filter reflect
@@ -698,6 +704,9 @@ impl MemosPage {
             .css_classes(vec!["suggested-action"])
             .margin_top(8)
             .build();
+        self.imp()
+            .new_memo_button
+            .replace(Some(new_memo_btn.clone()));
         sidebar_box.append(&new_memo_btn);
 
         let sidebar_scroll = gtk::ScrolledWindow::builder()

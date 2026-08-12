@@ -93,6 +93,10 @@
       <default>false</default>
       <summary>Automatically load remote images in HTML emails</summary>
     </key>
+    <key name="offline-mode" type="b">
+      <default>false</default>
+      <summary>Keep mail views in portable offline mode</summary>
+    </key>
     <key name="force-dark-mode" type="b">
       <default>true</default>
       <summary>Inject dark mode CSS into HTML email rendering</summary>

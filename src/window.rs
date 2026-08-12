@@ -23,7 +23,7 @@ use std::rc::Rc;
 
 use crate::application::EvolutionApplication;
 use crate::services::AppSettings;
-use crate::views::{CalendarPage, ContactsPage, MailPage};
+use crate::views::{CalendarPage, ContactsPage, MailPage, MemosPage, TasksPage};
 
 // ─── GObject Subclass ───────────────────────────────────────────────────────
 
@@ -68,9 +68,11 @@ mod imp {
     }
 
     impl WidgetImpl for EvolutionWindow {
-        fn realize(&self) {
-            self.parent_realize();
-        }
+        // This subclass is a composed GTK4 widget.  GTK4 does not expose a
+        // usable parent `realize` vfunc for this widget chain; forwarding to
+        // it can enter the non-unwinding C trampoline and abort the process
+        // while the first window is presented on some backends.
+        fn realize(&self) {}
     }
     impl WindowImpl for EvolutionWindow {
         fn close_request(&self) -> glib::Propagation {
@@ -126,6 +128,64 @@ impl EvolutionWindow {
             })
     }
 
+    fn tasks_page(&self) -> Option<TasksPage> {
+        self.imp()
+            .view_stack
+            .borrow()
+            .as_ref()
+            .and_then(|view_stack| view_stack.child_by_name("tasks"))
+            .and_then(|widget| widget.downcast::<adw::Bin>().ok())
+            .and_then(|bin| bin.child())
+            .and_then(|widget| widget.downcast::<TasksPage>().ok())
+    }
+
+    fn memos_page(&self) -> Option<MemosPage> {
+        self.imp()
+            .view_stack
+            .borrow()
+            .as_ref()
+            .and_then(|view_stack| view_stack.child_by_name("memos"))
+            .and_then(|widget| widget.downcast::<adw::Bin>().ok())
+            .and_then(|bin| bin.child())
+            .and_then(|widget| widget.downcast::<MemosPage>().ok())
+    }
+
+    fn present_new_task(&self) {
+        if let Some(tasks_page) = self.tasks_page() {
+            tasks_page.present_new_task();
+            return;
+        }
+        if let Some(view_stack) = self.imp().view_stack.borrow().as_ref() {
+            view_stack.set_visible_child_name("tasks");
+        }
+        let window = self.downgrade();
+        glib::idle_add_local_once(move || {
+            if let Some(window) = window.upgrade() {
+                if let Some(tasks_page) = window.tasks_page() {
+                    tasks_page.present_new_task();
+                }
+            }
+        });
+    }
+
+    fn present_new_memo(&self) {
+        if let Some(memos_page) = self.memos_page() {
+            memos_page.present_new_memo();
+            return;
+        }
+        if let Some(view_stack) = self.imp().view_stack.borrow().as_ref() {
+            view_stack.set_visible_child_name("memos");
+        }
+        let window = self.downgrade();
+        glib::idle_add_local_once(move || {
+            if let Some(window) = window.upgrade() {
+                if let Some(memos_page) = window.memos_page() {
+                    memos_page.present_new_memo();
+                }
+            }
+        });
+    }
+
     pub(crate) fn refresh_mail_page(&self) {
         if let Some(mail_page) = self.mail_page() {
             mail_page.refresh_mail();
@@ -177,6 +237,138 @@ impl EvolutionWindow {
             "calendar" => "Kalender-/Aufgaben-/Notizbereich geöffnet",
             _ => "Kontaktbereich geöffnet",
         }));
+    }
+
+    /// Add a checkable window action backed by a persistent GSettings boolean.
+    ///
+    /// Evolution's View menu exposes these options as live toggles.  Keeping
+    /// the action state synchronized with GSettings means the check mark also
+    /// follows changes made by preferences, responsive breakpoints, or the
+    /// dedicated toolbar buttons.
+    fn add_boolean_setting_action<Read, Write>(
+        &self,
+        name: &'static str,
+        key: &'static str,
+        read: Read,
+        write: Write,
+    ) -> gio::SimpleAction
+    where
+        Read: Fn(&AppSettings) -> bool + 'static,
+        Write: Fn(&AppSettings, bool) + 'static,
+    {
+        let settings = AppSettings::try_new();
+        let initial = settings.as_ref().map(&read).unwrap_or(false);
+        let action = gio::SimpleAction::new_stateful(name, None, &initial.to_variant());
+        let settings_for_activate = settings.clone();
+        action.connect_activate(move |action, _| {
+            let current = action
+                .state()
+                .and_then(|state| state.get::<bool>())
+                .unwrap_or(false);
+            let next = !current;
+            action.set_state(&next.to_variant());
+            if let Some(settings) = settings_for_activate.as_ref() {
+                write(settings, next);
+            }
+        });
+
+        if let Some(settings) = settings {
+            let action_for_settings = action.clone();
+            settings.connect_changed(Some(key), move |settings, _| {
+                action_for_settings.set_state(&settings.boolean(key).to_variant());
+            });
+        }
+        self.add_action(&action);
+        action
+    }
+
+    fn configure_primary_action(button: &gtk::Button, view_name: &str) {
+        let (icon_name, tooltip, action_name) = match view_name {
+            "calendar" => (
+                "x-office-calendar-symbolic",
+                "Neuen Termin erstellen",
+                "win.new-event",
+            ),
+            "contacts" => (
+                "contact-new-symbolic",
+                "Neuen Kontakt erstellen",
+                "win.new-contact",
+            ),
+            "tasks" => (
+                "task-new-symbolic",
+                "Neue Aufgabe erstellen",
+                "win.new-task",
+            ),
+            "memos" => (
+                "document-new-symbolic",
+                "Neue Notiz erstellen",
+                "win.new-memo",
+            ),
+            _ => (
+                "mail-message-new-symbolic",
+                "Neue E-Mail erstellen (Ctrl+N)",
+                "app.compose",
+            ),
+        };
+        button.set_icon_name(icon_name);
+        button.set_tooltip_text(Some(tooltip));
+        button.set_action_name(Some(action_name));
+        if view_name == "mail" {
+            button.add_css_class("suggested-action");
+        } else {
+            button.remove_css_class("suggested-action");
+        }
+    }
+
+    fn set_mail_actions_enabled(&self, enabled: bool) {
+        const MAIL_ACTIONS: &[&str] = &[
+            "toggle-sidebar",
+            "toggle-preview",
+            "toggle-mail-threading",
+            "toggle-mail-preview-text",
+            "toggle-mail-avatar",
+            "toggle-mail-sender",
+            "toggle-mail-recipient",
+            "toggle-mail-date",
+            "toggle-mail-attachment",
+            "toggle-mail-labels",
+            "mail-density-compact",
+            "mail-density-normal",
+            "mail-density-spacious",
+            "use-classic-mail-layout",
+            "use-modern-mail-layout",
+            "toggle-mail-toolbar",
+            "refresh-mail",
+            "undo",
+            "redo",
+            "reply",
+            "reply-all",
+            "forward",
+            "export",
+            "delete",
+            "mark-unread",
+            "mark-read",
+            "select-all-mail",
+            "toggle-flag",
+            "toggle-important",
+            "archive",
+            "mark-junk",
+            "mark-not-junk",
+            "new-folder",
+            "empty-trash",
+            "expunge",
+            "search",
+            "mail-next",
+            "mail-prev",
+        ];
+        for name in MAIL_ACTIONS {
+            if let Some(action) = self
+                .lookup_action(name)
+                .and_then(|action| action.downcast::<gio::SimpleAction>().ok())
+            {
+                action.set_enabled(enabled);
+            }
+        }
     }
 
     fn setup_layout(&self) {
@@ -295,6 +487,7 @@ impl EvolutionWindow {
             .tooltip_text("Sidebar ein-/ausblenden (F9)")
             .active(sidebar_visible)
             .build();
+        sidebar_button.set_visible(active_view == "mail");
 
         sidebar_button.connect_clicked(glib::clone!(
             #[weak]
@@ -340,6 +533,16 @@ impl EvolutionWindow {
             .css_classes(vec!["suggested-action"])
             .build();
 
+        Self::configure_primary_action(&compose_button, &active_view);
+        let primary_action_for_view = compose_button.clone();
+        let sidebar_button_for_view = sidebar_button.clone();
+        view_stack.connect_visible_child_name_notify(move |stack| {
+            if let Some(view_name) = stack.visible_child_name() {
+                Self::configure_primary_action(&primary_action_for_view, view_name.as_str());
+                sidebar_button_for_view.set_visible(view_name.as_str() == "mail");
+            }
+        });
+
         header_bar.pack_end(&compose_button);
 
         let statusbar_box = gtk::Box::builder()
@@ -370,6 +573,63 @@ impl EvolutionWindow {
             .visible(false)
             .pulse_step(0.1)
             .build();
+
+        if let Some(settings) = AppSettings::try_new() {
+            online_toggle.set_icon_name(if settings.offline_mode() {
+                "network-wireless-offline-symbolic"
+            } else {
+                "user-available-symbolic"
+            });
+            online_toggle.set_tooltip_text(Some(if settings.offline_mode() {
+                "Offline-Modus aktiv; auf Online umschalten"
+            } else {
+                "Online-Modus aktiv; auf Offline umschalten"
+            }));
+            let settings_for_online = settings.clone();
+            let status_label_for_online = status_label.clone();
+            let online_toggle_for_settings = online_toggle.clone();
+            online_toggle.connect_clicked(move |_| {
+                let offline = !settings_for_online.offline_mode();
+                settings_for_online.set_offline_mode(offline);
+                online_toggle_for_settings.set_icon_name(if offline {
+                    "network-wireless-offline-symbolic"
+                } else {
+                    "user-available-symbolic"
+                });
+                online_toggle_for_settings.set_tooltip_text(Some(if offline {
+                    "Offline-Modus aktiv; auf Online umschalten"
+                } else {
+                    "Online-Modus aktiv; auf Offline umschalten"
+                }));
+                status_label_for_online.set_label(if offline {
+                    "Evolution GTK4  ·  Offline"
+                } else {
+                    "Evolution GTK4  ·  Online"
+                });
+            });
+            let online_toggle_for_signal = online_toggle.clone();
+            let status_label_for_signal = status_label.clone();
+            settings.connect_changed(Some("offline-mode"), move |settings, _| {
+                let offline = settings.boolean("offline-mode");
+                online_toggle_for_signal.set_icon_name(if offline {
+                    "network-wireless-offline-symbolic"
+                } else {
+                    "user-available-symbolic"
+                });
+                status_label_for_signal.set_label(if offline {
+                    "Evolution GTK4  ·  Offline"
+                } else {
+                    "Evolution GTK4  ·  Online"
+                });
+            });
+            status_label.set_label(if settings.offline_mode() {
+                "Evolution GTK4  ·  Offline"
+            } else {
+                "Evolution GTK4  ·  Online"
+            });
+        } else {
+            online_toggle.set_sensitive(false);
+        }
 
         statusbar_box.append(&online_toggle);
         statusbar_box.append(&status_label);
@@ -444,6 +704,8 @@ impl EvolutionWindow {
         new_menu.append(Some("Neue E-Mail"), Some("app.compose"));
         new_menu.append(Some("Neuer Kontakt"), Some("win.new-contact"));
         new_menu.append(Some("Neuer Termin"), Some("win.new-event"));
+        new_menu.append(Some("Neue Aufgabe"), Some("win.new-task"));
+        new_menu.append(Some("Neue Notiz"), Some("win.new-memo"));
         new_menu.append(Some("Neuer Ordner..."), Some("win.new-folder"));
         file_menu.append_submenu(Some("Neu"), &new_menu);
         file_menu.append(Some("Lokale Entwürfe"), Some("app.drafts"));
@@ -456,8 +718,14 @@ impl EvolutionWindow {
         edit_menu.append(Some("Wiederholen"), Some("win.redo"));
         edit_menu.append(Some("E-Mail suchen"), Some("win.search"));
         edit_menu.append(Some("Globale Suche"), Some("app.global-search"));
-        edit_menu.append(Some("Filterregeln bearbeiten..."), Some("win.filter-editor"));
-        edit_menu.append(Some("Suchordner verwalten..."), Some("win.search-folder-editor"));
+        edit_menu.append(
+            Some("Filterregeln bearbeiten..."),
+            Some("win.filter-editor"),
+        );
+        edit_menu.append(
+            Some("Suchordner verwalten..."),
+            Some("win.search-folder-editor"),
+        );
         edit_menu.append(Some("Einstellungen"), Some("app.preferences"));
         menu.append_submenu(Some("Bearbeiten"), &edit_menu);
 
@@ -563,8 +831,14 @@ impl EvolutionWindow {
         let tools_menu = gio::Menu::new();
         tools_menu.append(Some("Senden & Empfangen"), Some("win.refresh-mail"));
         tools_menu.append(Some("Abwesenheitsnotiz (OOF)..."), Some("win.oof-settings"));
-        tools_menu.append(Some("Filterregeln bearbeiten..."), Some("win.filter-editor"));
-        tools_menu.append(Some("Suchordner verwalten..."), Some("win.search-folder-editor"));
+        tools_menu.append(
+            Some("Filterregeln bearbeiten..."),
+            Some("win.filter-editor"),
+        );
+        tools_menu.append(
+            Some("Suchordner verwalten..."),
+            Some("win.search-folder-editor"),
+        );
         tools_menu.append(Some("Kontoeinstellungen..."), Some("win.account-setup"));
         menu.append_submenu(Some("Extras"), &tools_menu);
 
@@ -578,99 +852,81 @@ impl EvolutionWindow {
     }
 
     fn setup_actions(&self) {
-        let action_sidebar = gio::SimpleAction::new("toggle-sidebar", None);
-        action_sidebar.connect_activate(glib::clone!(
-            #[weak(rename_to = window)]
-            self,
-            move |_, _| {
-                if let Some(view_stack) = window.imp().view_stack.borrow().as_ref() {
-                    if let Some(mail_page) = view_stack
-                        .child_by_name("mail")
-                        .and_then(|w| w.downcast::<MailPage>().ok())
-                    {
-                        let current = mail_page.outer_paned().position();
-                        let visible = current < 10;
-                        mail_page.set_sidebar_visible(visible);
-                        if let Some(settings) = AppSettings::try_new() {
-                            settings.set_mail_show_sidebar(visible);
-                        }
-                    }
-                }
-            }
-        ));
-        self.add_action(&action_sidebar);
-
-        let action_toggle_preview = gio::SimpleAction::new("toggle-preview", None);
-        action_toggle_preview.connect_activate(move |_, _| {
-            if let Some(settings) = AppSettings::try_new() {
-                settings.set_show_message_preview(!settings.show_message_preview());
-            }
-        });
-        self.add_action(&action_toggle_preview);
-
-        let action_toggle_threading = gio::SimpleAction::new("toggle-mail-threading", None);
-        action_toggle_threading.connect_activate(move |_, _| {
-            if let Some(settings) = AppSettings::try_new() {
-                settings.set_mail_threading(!settings.mail_threading());
-            }
-        });
-        self.add_action(&action_toggle_threading);
-
-        let action_toggle_preview_text = gio::SimpleAction::new("toggle-mail-preview-text", None);
-        action_toggle_preview_text.connect_activate(move |_, _| {
-            if let Some(settings) = AppSettings::try_new() {
-                settings.set_mail_show_preview_text(!settings.mail_show_preview_text());
-            }
-        });
-        self.add_action(&action_toggle_preview_text);
-
-        let action_toggle_avatar = gio::SimpleAction::new("toggle-mail-avatar", None);
-        action_toggle_avatar.connect_activate(move |_, _| {
-            if let Some(settings) = AppSettings::try_new() {
-                settings.set_mail_show_avatar(!settings.mail_show_avatar());
-            }
-        });
-        self.add_action(&action_toggle_avatar);
-
-        let action_toggle_sender = gio::SimpleAction::new("toggle-mail-sender", None);
-        action_toggle_sender.connect_activate(move |_, _| {
-            if let Some(settings) = AppSettings::try_new() {
-                settings.set_mail_show_sender(!settings.mail_show_sender());
-            }
-        });
-        self.add_action(&action_toggle_sender);
-
-        let action_toggle_recipient = gio::SimpleAction::new("toggle-mail-recipient", None);
-        action_toggle_recipient.connect_activate(move |_, _| {
-            if let Some(settings) = AppSettings::try_new() {
-                settings.set_mail_show_recipient(!settings.mail_show_recipient());
-            }
-        });
-        self.add_action(&action_toggle_recipient);
-
-        let action_toggle_date = gio::SimpleAction::new("toggle-mail-date", None);
-        action_toggle_date.connect_activate(move |_, _| {
-            if let Some(settings) = AppSettings::try_new() {
-                settings.set_mail_show_date(!settings.mail_show_date());
-            }
-        });
-        self.add_action(&action_toggle_date);
-
-        let action_toggle_attachment = gio::SimpleAction::new("toggle-mail-attachment", None);
-        action_toggle_attachment.connect_activate(move |_, _| {
-            if let Some(settings) = AppSettings::try_new() {
-                settings.set_mail_show_attachment(!settings.mail_show_attachment());
-            }
-        });
-        self.add_action(&action_toggle_attachment);
-
-        let action_toggle_labels = gio::SimpleAction::new("toggle-mail-labels", None);
-        action_toggle_labels.connect_activate(move |_, _| {
-            if let Some(settings) = AppSettings::try_new() {
-                settings.set_mail_show_labels(!settings.mail_show_labels());
-            }
-        });
-        self.add_action(&action_toggle_labels);
+        let action_sidebar = self.add_boolean_setting_action(
+            "toggle-sidebar",
+            "mail-show-sidebar",
+            AppSettings::mail_show_sidebar,
+            AppSettings::set_mail_show_sidebar,
+        );
+        if let Some(view_stack) = self.imp().view_stack.borrow().as_ref() {
+            let action_sidebar_for_view = action_sidebar.clone();
+            view_stack.connect_visible_child_name_notify(move |stack| {
+                action_sidebar_for_view.set_enabled(
+                    stack
+                        .visible_child_name()
+                        .is_some_and(|view_name| view_name == "mail"),
+                );
+            });
+            action_sidebar.set_enabled(
+                view_stack
+                    .visible_child_name()
+                    .is_some_and(|view_name| view_name == "mail"),
+            );
+        }
+        self.add_boolean_setting_action(
+            "toggle-preview",
+            "show-message-preview",
+            AppSettings::show_message_preview,
+            AppSettings::set_show_message_preview,
+        );
+        self.add_boolean_setting_action(
+            "toggle-mail-threading",
+            "mail-threading",
+            AppSettings::mail_threading,
+            AppSettings::set_mail_threading,
+        );
+        self.add_boolean_setting_action(
+            "toggle-mail-preview-text",
+            "mail-show-preview-text",
+            AppSettings::mail_show_preview_text,
+            AppSettings::set_mail_show_preview_text,
+        );
+        self.add_boolean_setting_action(
+            "toggle-mail-avatar",
+            "mail-show-avatar",
+            AppSettings::mail_show_avatar,
+            AppSettings::set_mail_show_avatar,
+        );
+        self.add_boolean_setting_action(
+            "toggle-mail-sender",
+            "mail-show-sender",
+            AppSettings::mail_show_sender,
+            AppSettings::set_mail_show_sender,
+        );
+        self.add_boolean_setting_action(
+            "toggle-mail-recipient",
+            "mail-show-recipient",
+            AppSettings::mail_show_recipient,
+            AppSettings::set_mail_show_recipient,
+        );
+        self.add_boolean_setting_action(
+            "toggle-mail-date",
+            "mail-show-date",
+            AppSettings::mail_show_date,
+            AppSettings::set_mail_show_date,
+        );
+        self.add_boolean_setting_action(
+            "toggle-mail-attachment",
+            "mail-show-attachment",
+            AppSettings::mail_show_attachment,
+            AppSettings::set_mail_show_attachment,
+        );
+        self.add_boolean_setting_action(
+            "toggle-mail-labels",
+            "mail-show-labels",
+            AppSettings::mail_show_labels,
+            AppSettings::set_mail_show_labels,
+        );
 
         for (action_name, density) in [
             ("mail-density-compact", "compact"),
@@ -701,13 +957,12 @@ impl EvolutionWindow {
             self.add_action(&action);
         }
 
-        let action_toggle_mail_toolbar = gio::SimpleAction::new("toggle-mail-toolbar", None);
-        action_toggle_mail_toolbar.connect_activate(move |_, _| {
-            if let Some(settings) = AppSettings::try_new() {
-                settings.set_mail_show_toolbar(!settings.mail_show_toolbar());
-            }
-        });
-        self.add_action(&action_toggle_mail_toolbar);
+        self.add_boolean_setting_action(
+            "toggle-mail-toolbar",
+            "mail-show-toolbar",
+            AppSettings::mail_show_toolbar,
+            AppSettings::set_mail_show_toolbar,
+        );
 
         let action_refresh_mail = gio::SimpleAction::new("refresh-mail", None);
         action_refresh_mail.connect_activate(glib::clone!(
@@ -1169,6 +1424,79 @@ impl EvolutionWindow {
         ));
         self.add_action(&action_new_event);
 
+        let action_new_task = gio::SimpleAction::new("new-task", None);
+        action_new_task.connect_activate(glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            move |_, _| win.present_new_task()
+        ));
+        self.add_action(&action_new_task);
+
+        let action_new_memo = gio::SimpleAction::new("new-memo", None);
+        action_new_memo.connect_activate(glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            move |_, _| win.present_new_memo()
+        ));
+        self.add_action(&action_new_memo);
+
+        let action_new_folder = gio::SimpleAction::new("new-folder", None);
+        action_new_folder.connect_activate(glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            move |_, _| {
+                if let Some(mail_page) = win.mail_page() {
+                    mail_page.present_new_local_folder_dialog();
+                } else {
+                    win.add_toast(&adw::Toast::new("Mailansicht ist nicht verfügbar"));
+                }
+            }
+        ));
+        self.add_action(&action_new_folder);
+
+        for (action_name, heading, body, success) in [
+            (
+                "empty-trash",
+                "Papierkorb leeren?",
+                "Lokale app-eigene Nachrichten werden aus der sichtbaren Papierkorbansicht entfernt. Native EDS/Camel-Ordner werden erst über den Linux-Expunge-Pfad endgültig geleert.",
+                "Papierkorb geleert",
+            ),
+            (
+                "expunge",
+                "Papierkorb endgültig leeren?",
+                "Der lokale app-eigene Papierkorb wird geleert. Für native EDS/Camel-Ordner ist der Linux-Expunge-Pfad erforderlich.",
+                "Papierkorb endgültig geleert",
+            ),
+        ] {
+            let action = gio::SimpleAction::new(action_name, None);
+            let heading = heading.to_string();
+            let body = body.to_string();
+            let success = success.to_string();
+            action.connect_activate(glib::clone!(
+                #[weak(rename_to = win)]
+                self,
+                move |_, _| {
+                    let win_for_action = win.clone();
+                    let success = success.clone();
+                    crate::dialogs::run_destructive_action(
+                        &win,
+                        &heading,
+                        &body,
+                        "Leeren",
+                        move || {
+                            if let Some(mail_page) = win_for_action.mail_page() {
+                                mail_page.empty_trash_async(&success);
+                            } else {
+                                win_for_action
+                                    .add_toast(&adw::Toast::new("Mailansicht ist nicht verfügbar"));
+                            }
+                        },
+                    );
+                }
+            ));
+            self.add_action(&action);
+        }
+
         let action_search = gio::SimpleAction::new("search", None);
         action_search.connect_activate(glib::clone!(
             #[weak(rename_to = window)]
@@ -1207,6 +1535,24 @@ impl EvolutionWindow {
                 }
             ));
             self.add_action(&action);
+        }
+
+        if let Some(view_stack) = self.imp().view_stack.borrow().as_ref() {
+            let window = self.downgrade();
+            view_stack.connect_visible_child_name_notify(move |stack| {
+                if let Some(window) = window.upgrade() {
+                    window.set_mail_actions_enabled(
+                        stack
+                            .visible_child_name()
+                            .is_some_and(|view_name| view_name == "mail"),
+                    );
+                }
+            });
+            self.set_mail_actions_enabled(
+                view_stack
+                    .visible_child_name()
+                    .is_some_and(|view_name| view_name == "mail"),
+            );
         }
     }
 }

@@ -52,9 +52,7 @@ mod imp {
     }
 
     impl WidgetImpl for HtmlEditor {
-        fn realize(&self) {
-            self.parent_realize();
-        }
+        fn realize(&self) {}
     }
 }
 

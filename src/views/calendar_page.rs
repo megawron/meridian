@@ -152,9 +152,7 @@ mod imp {
     }
 
     impl WidgetImpl for CalendarPage {
-        fn realize(&self) {
-            self.parent_realize();
-        }
+        fn realize(&self) {}
     }
 }
 

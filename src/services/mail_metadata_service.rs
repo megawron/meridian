@@ -178,6 +178,39 @@ impl MailMetadataStore {
         self.save_file(&file)
     }
 
+    /// Mark several messages deleted in one metadata transaction.
+    ///
+    /// Folder-wide operations must not rewrite the Evolution-owned mailbox,
+    /// but they still need to be atomic from the UI's perspective.  Loading
+    /// and saving the sidecar once also avoids turning an empty-trash action
+    /// into one filesystem write per message.
+    pub fn set_deleted_many<I>(&self, ids: I, deleted: bool) -> io::Result<usize>
+    where
+        I: IntoIterator<Item = String>,
+    {
+        let mut ids = ids
+            .into_iter()
+            .filter(|id| !id.trim().is_empty())
+            .collect::<Vec<_>>();
+        ids.sort();
+        ids.dedup();
+
+        let mut file = self.load_file();
+        let mut changed = 0;
+        for id in ids {
+            let changed_id = if deleted {
+                file.deleted.insert(id)
+            } else {
+                file.deleted.remove(&id)
+            };
+            changed += usize::from(changed_id);
+        }
+        if changed > 0 {
+            self.save_file(&file)?;
+        }
+        Ok(changed)
+    }
+
     pub fn set_copy(&self, id: &str, folder_id: &str, copied: bool) -> io::Result<()> {
         let mut file = self.load_file();
         let folder_id = folder_id.trim();
@@ -548,6 +581,40 @@ mod tests {
         );
         assert!(MailMetadataStore::new(&path).load_deleted().is_empty());
         assert!(MailMetadataStore::new(&path).load_copies().is_empty());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn bulk_deleted_state_is_saved_as_one_logical_update() {
+        let root = tempfile_dir("metadata-bulk-delete");
+        let store = MailMetadataStore::new(root.join("state.json"));
+
+        assert_eq!(
+            store
+                .set_deleted_many(
+                    vec![
+                        "message-2".to_string(),
+                        "message-1".to_string(),
+                        "message-1".to_string()
+                    ],
+                    true,
+                )
+                .expect("bulk deletion should save"),
+            2
+        );
+        assert!(store.load_deleted().contains("message-1"));
+        assert!(store.load_deleted().contains("message-2"));
+        assert_eq!(
+            store
+                .set_deleted_many(
+                    vec!["message-1".to_string(), "message-2".to_string()],
+                    false
+                )
+                .expect("bulk restore should save"),
+            2
+        );
+        assert!(store.load_deleted().is_empty());
 
         let _ = fs::remove_dir_all(root);
     }

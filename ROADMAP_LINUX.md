@@ -164,6 +164,19 @@ Die folgenden Marker grenzen die Fehlerklasse ein:
   GTK4-rs installiert den C-Trampoline selbst, der Parent-Vfunc ist für diese
   zusammengesetzten Widgets nicht vorhanden und kann den Prozess beim ersten
   `present()` mit `panic_cannot_unwind` abbrechen.
+- Die Evolution-Menüaktionen „Papierkorb leeren“ und „Expunge“ mit einem
+  echten EDS/Camel-Konto ausführen: alle Nachrichten des gewählten nativen
+  Papierkorbs vollständig laden, die native Camel-Expunge-/Permanent-Delete-
+  Operation ausführen, Fehler oder Konflikte sichtbar melden und danach
+  Ordnerzähler sowie die GTK4-Listen inkrementell aktualisieren. Der portable
+  lokale Pfad ist bereits angebunden; er darf keinen externen Evolution-
+  Mailbestand umschreiben.
+- Den Online-/Offline-Schalter mit einem echten Konto prüfen: Im Offline-Modus
+  dürfen keine neuen Camel-/Graph-Verbindungen oder dauerhaften Watcher
+  gestartet werden, der lokale Bestand muss sichtbar bleiben; beim Umschalten
+  auf Online sollen Quellen, Ordner, Nachrichten und Status ohne Neustart
+  erneut geladen werden und ein Fehler darf nicht als erfolgreicher Sync
+  angezeigt werden.
 
 Für die Abnahme zusätzlich den genauen Commit, `uname -a`,
 `pkg-config --modversion webkitgtk-6.0 camel-1.2 libedataserver-1.2`,

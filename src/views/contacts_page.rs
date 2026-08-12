@@ -56,9 +56,7 @@ mod imp {
     }
 
     impl WidgetImpl for ContactsPage {
-        fn realize(&self) {
-            self.parent_realize();
-        }
+        fn realize(&self) {}
     }
 }
 

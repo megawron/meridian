@@ -373,7 +373,11 @@ werden.
   Nachrichtenlistendichte; das Hauptmenü stellt die klassischen Einzel-
   Nachrichtenpfade für Antworten, Weiterleiten, Markieren, Archivieren,
   Spam und Löschen ebenfalls über dieselben Aktionen bereit. Zusätzliche
-  native Camel-Abnahme bleibt offen.
+  native Camel-Abnahme bleibt offen. Die Evolution-kompatiblen Datei-/Ordner-
+  aktionen routen jetzt auch „Neuer Ordner“, „Papierkorb leeren“ und „Expunge“
+  über die GTK4-rs-Mailseite; lokale app-eigene Papierkörbe werden bestätigt
+  geleert, während native EDS/Camel-Expunge weiterhin sichtbar als Linux-
+  Backendarbeit ausgewiesen wird.
 - [~] Sicherer WebKitGTK-Viewer: JavaScript ist deaktiviert, Navigation wird
   abgefangen und externe Bilder sind standardmäßig blockiert. Unter Linux
   wird der WebKitGTK-Prozess erst beim Öffnen der ersten Nachricht erzeugt,
@@ -1178,7 +1182,23 @@ nicht als vollständiger Ersatz beworben werden.
    weitere Menüpfade sowie die noch offenen Mail-Leseeinstellungen werden
    ergänzt. Die Ansichts-Menüpfade für Sidebar,
    Vorschaufenster und klassische/moderne Mail-Anordnung sind jetzt vorhanden;
-   der Wechsel wirkt live.
+   der Wechsel wirkt live und die zugehörigen Menüschalter zeigen ihren
+   persistenten Aktivzustand. Neuer Ordner, Papierkorb leeren und Expunge sind
+   als echte GTK4-Aktionspfade vorhanden; der persistente Offline-Modus
+   schaltet den lokalen Mailbestand, die Statusleiste und den Camel-Watcher
+   gemeinsam um. Native Expunge-/Online-Abnahme bleibt Linux-spezifisch.
+   Die primäre Header-Aktion folgt beim Bereichswechsel außerdem dem
+   Evolution-Workflow und öffnet in Kalender, Kontakten, Aufgaben und Notizen
+   jeweils den passenden Erstellungsdialog statt dauerhaft „Neue E-Mail“
+   anzuzeigen.
+   Der Mail-Sidebar-Schalter wird außerhalb des Mailbereichs ausgeblendet;
+   seine Menüaktion ist dort deaktiviert, damit die Kalender-/Kontakt- und
+   Aufgaben-/Notiznavigation nicht durch eine wirkungslose Mailaktion
+   verfälscht wird.
+   Weitere mailbezogene Hauptmenüaktionen werden beim Wechsel in Kalender,
+   Kontakte, Aufgaben oder Notizen ebenfalls deaktiviert, sodass die
+   modulbezogenen Befehle und Einstellungen dem jeweils sichtbaren Bereich
+   entsprechen.
 2. Die portable Aufgaben-/Notizen-/Kontaktansicht weiter vervollständigen:
    verbleibende EDS-vCard-/GAL-Felder, Duplikaterkennung und die noch offenen
    Evolution-Sonderfelder. Aufgaben-/Memo-Suche, Sortierung, Export und lokale

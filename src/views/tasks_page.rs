@@ -48,6 +48,7 @@ mod imp {
         pub task_list: RefCell<Option<gtk::ListBox>>,
         pub task_store: RefCell<Option<gio::ListStore>>,
         pub task_empty_state: RefCell<Option<gtk::Label>>,
+        pub new_task_button: RefCell<Option<gtk::Button>>,
     }
 
     #[glib::object_subclass]
@@ -79,9 +80,7 @@ mod imp {
     }
 
     impl WidgetImpl for TasksPage {
-        fn realize(&self) {
-            self.parent_realize();
-        }
+        fn realize(&self) {}
     }
 }
 
@@ -170,6 +169,15 @@ impl TaskSort {
 impl TasksPage {
     pub fn new() -> Self {
         glib::Object::builder().build()
+    }
+
+    /// Trigger the same editor as the page-local “Neue Aufgabe” button.
+    /// The main Evolution toolbar uses this when the Aufgaben module is
+    /// active, so both entry points preserve one creation workflow.
+    pub fn present_new_task(&self) {
+        if let Some(button) = self.imp().new_task_button.borrow().as_ref() {
+            button.activate();
+        }
     }
 
     /// Re-render category names and colored task rows after the presentation-
@@ -357,6 +365,9 @@ impl TasksPage {
             .icon_name("list-add-symbolic")
             .css_classes(vec!["suggested-action"])
             .build();
+        self.imp()
+            .new_task_button
+            .replace(Some(btn_add_task.clone()));
 
         toolbar.append(&search_entry);
         toolbar.append(&sort_selector);

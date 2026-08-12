@@ -15,7 +15,9 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::services::AppSettings;
-use crate::services::account_config_service::{AccountConfigStore, AccountProfile, AccountProtocol};
+use crate::services::account_config_service::{
+    AccountConfigStore, AccountProfile, AccountProtocol,
+};
 use crate::services::backup_service;
 use crate::services::calendar_category_service::{CalendarCategory, CalendarCategoryStore};
 use crate::services::calendar_store_service::CalendarStoreService;
@@ -78,8 +80,10 @@ impl PreferencesDialog {
             .build();
 
         let group_accounts = adw::PreferencesGroup::builder()
-            .title("E-Mail-Konten &amp; Server-Einstellungen")
-            .description("Verwaltete Konten im Evolution Data Server (EDS) und GNOME Online Accounts")
+            .title("E-Mail-Konten & Server-Einstellungen")
+            .description(
+                "Verwaltete Konten im Evolution Data Server (EDS) und GNOME Online Accounts",
+            )
             .build();
 
         let row_add_account = adw::ActionRow::builder()
@@ -312,7 +316,7 @@ impl PreferencesDialog {
 
         // Filter Rules Section
         let group_filters = adw::PreferencesGroup::builder()
-            .title("Mail-Filter &amp; Sortierung")
+            .title("Mail-Filter & Sortierung")
             .description(
                 "Automatische Regeln für eingehende Mails und manuelle Ausführung im lokalen Bestand",
             )
@@ -539,6 +543,29 @@ impl PreferencesDialog {
             .title("Synchronisation")
             .description("Automatische Aktualisierung der EDS/Camel-Mailordner")
             .build();
+        let row_offline_mode = adw::SwitchRow::builder()
+            .title("Offline-Modus")
+            .subtitle(
+                "Verwendet ausschließlich den lokalen Bestand und pausiert EDS/Camel-Synchronisation",
+            )
+            .build();
+        if let Some(settings) = settings.clone() {
+            row_offline_mode.set_active(settings.offline_mode());
+            let dialog_for_offline = self.downgrade();
+            row_offline_mode.connect_active_notify(move |row| {
+                settings.set_offline_mode(row.is_active());
+                if let Some(dialog) = dialog_for_offline.upgrade() {
+                    if let Some(window) = dialog
+                        .root()
+                        .and_downcast::<crate::window::EvolutionWindow>()
+                    {
+                        window.refresh_mail_page();
+                    }
+                }
+            });
+        }
+        group_sync.add(&row_offline_mode);
+
         let row_sync_interval = adw::SpinRow::with_range(0.0, 86_400.0, 5.0);
         row_sync_interval.set_title("Mail-Aktualisierungsintervall");
         row_sync_interval.set_subtitle("Sekunden; 0 deaktiviert die automatische Aktualisierung");
@@ -772,7 +799,7 @@ impl PreferencesDialog {
         page_accounts.add(&group_default_address_book);
 
         let group_backup = adw::PreferencesGroup::builder()
-            .title("Daten &amp; Sicherung")
+            .title("Daten & Sicherung")
             .description(
                 "App-eigene Zustände sichern, diagnostizieren, migrieren oder löschen; das originale EDS-Profil bleibt unberührt",
             )
@@ -1548,7 +1575,7 @@ impl PreferencesDialog {
         page_accounts.add(&group_composer);
 
         let group_reply = adw::PreferencesGroup::builder()
-            .title("Antworten &amp; Weiterleiten")
+            .title("Antworten & Weiterleiten")
             .description("Verhalten für den übernommenen Originaltext")
             .build();
         let row_quote_original = adw::SwitchRow::builder()
@@ -1597,7 +1624,7 @@ impl PreferencesDialog {
             .build();
 
         let group_reading = adw::PreferencesGroup::builder()
-            .title("Leseansicht &amp; Datenschutz")
+            .title("Leseansicht & Datenschutz")
             .build();
 
         let row_remote_images = adw::SwitchRow::builder()
@@ -2221,7 +2248,7 @@ impl PreferencesDialog {
         page_calendar.add(&group_calendar_days);
 
         let group_calendar_time = adw::PreferencesGroup::builder()
-            .title("Arbeitszeit &amp; Erinnerungen")
+            .title("Arbeitszeit & Erinnerungen")
             .description("Zeiten werden als Minuten nach Mitternacht gespeichert; 0 Minuten deaktiviert Erinnerungen")
             .build();
         let row_workday_start = adw::SpinRow::with_range(0.0, 1_439.0, 15.0);
@@ -2429,7 +2456,7 @@ impl PreferencesDialog {
             .build();
 
         let group_crypto = adw::PreferencesGroup::builder()
-            .title("Verschlüsselung &amp; Signaturen")
+            .title("Verschlüsselung & Signaturen")
             .description("OpenPGP und S/MIME Konfiguration (CamelCipherContext)")
             .build();
 

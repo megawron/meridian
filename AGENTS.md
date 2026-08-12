@@ -78,6 +78,13 @@ Default section order:
 
 When the user requests a durable behavior change, record it here or in the relevant child AGENTS.md
 
+- GTK4-rs/libadwaita is the only production frontend. Reproduce the original
+  Evolution application as closely as possible in window structure,
+  navigation, layout, actions, and settings, using the historical GTK3
+  worktree as a behavioral reference. Keep the original EDS/Camel/ECal/EBook
+  services authoritative and make portable UI choices persistent where the
+  original application exposes them.
+
 ## Child DOX Index
 
 - No child AGENTS.md files are needed for the current repository structure.

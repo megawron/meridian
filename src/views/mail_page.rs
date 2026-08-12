@@ -23,7 +23,8 @@ use crate::services::camel_mail_service::{self, CamelFolderSummary, CamelMailLoa
 use crate::services::crypto_service::{self, CryptoService};
 use crate::services::draft_store_service::{DraftMessage, DraftStoreService};
 use crate::services::ecal_service::{ECalComponentType, ECalService};
-use crate::services::eds_service::{self, EdsSourceKind, EdsSourceOrigin};
+use crate::services::eds_service::{self, EdsSourceDiscovery, EdsSourceKind, EdsSourceOrigin};
+use crate::services::eds_source_cache_service::EdsSourceCache;
 use crate::services::inline_content_service::{InlineImage, resolve_cid_images};
 use crate::services::itip_service::{
     ItipInvitation, ItipMethod, ItipReplyStatus, build_reply_component, normalize_attendee_address,
@@ -33,7 +34,9 @@ use crate::services::mail_composer_service::{self, ExportAttachment, ExportMessa
 use crate::services::mail_operations_service::{
     MailCommand, MailCommandStack, MailOperationError, MailOperationsService,
 };
-use crate::services::mail_store_service::{MailBackendLocation, ParsedMail, parse_rfc822_bytes};
+use crate::services::mail_store_service::{
+    MailBackendLocation, MailStoreService, ParsedMail, parse_rfc822_bytes,
+};
 use crate::services::mail_thread_service::{ThreadIdentity, group_messages};
 use crate::services::search_folder_service::SearchFolderService;
 use crate::views::MailViewer;
@@ -782,6 +785,21 @@ fn message_is_junk(message: &MailMessageObject) -> bool {
         || message_folder_matches(message, "junk")
 }
 
+fn message_is_trash(message: &MailMessageObject) -> bool {
+    let folder_id = message.folder_id().to_ascii_lowercase();
+    folder_id == "trash"
+        || folder_id == "deleted"
+        || folder_id.starts_with("trash/")
+        || message_folder_matches(message, "trash")
+        || message.backend_location().is_some_and(|location| {
+            let folder_name = location.folder_name.to_ascii_lowercase();
+            folder_name.contains("trash")
+                || folder_name.contains("deleted")
+                || folder_name.contains("mülleimer")
+                || folder_name.contains("papierkorb")
+        })
+}
+
 fn message_folder_matches(message: &MailMessageObject, query: &str) -> bool {
     let query = query.trim().to_ascii_lowercase();
     if query.is_empty() {
@@ -1112,6 +1130,7 @@ fn load_mail_backend(
     request: &MailLoadRequest,
     cancelled: &AtomicBool,
     progress_sender: Option<&async_channel::Sender<camel_mail_service::CamelSyncProgress>>,
+    offline_mode: bool,
 ) -> MailPageLoadResult {
     let started = Instant::now();
     tracing::debug!(
@@ -1121,6 +1140,14 @@ fn load_mail_backend(
         limit = request.max_messages_per_folder,
         "Mail backend load started"
     );
+    if offline_mode {
+        let store = crate::services::MailStoreService::new();
+        return MailPageLoadResult::Local {
+            reason: "Offline-Modus: lokaler Evolution-Speicher".to_string(),
+            messages: store.load_local_records_cancelable(cancelled),
+            local_folders: store.local_folder_definitions(),
+        };
+    }
     tracing::debug!(
         elapsed_ms = started.elapsed().as_millis() as u64,
         "Starting synchronous EDS/Camel work on mail worker"
@@ -1487,9 +1514,7 @@ mod imp {
     }
 
     impl WidgetImpl for MailPage {
-        fn realize(&self) {
-            self.parent_realize();
-        }
+        fn realize(&self) {}
     }
 }
 
@@ -1595,6 +1620,12 @@ impl MailPage {
             settings.connect_changed(Some("mail-sync-interval"), move |_, _| {
                 if let Some(page) = page_weak_for_sync_interval.upgrade() {
                     page.restart_mail_polling();
+                }
+            });
+            let page_weak_for_offline_mode = self.downgrade();
+            settings.connect_changed(Some("offline-mode"), move |_, _| {
+                if let Some(page) = page_weak_for_offline_mode.upgrade() {
+                    page.refresh_mail();
                 }
             });
             let page_weak_for_layout = self.downgrade();
@@ -2060,6 +2091,94 @@ impl MailPage {
             self.refresh_mail();
             true
         })
+    }
+
+    /// Open the same local-folder editor used by the sidebar's folder button.
+    /// The window action uses this entry point so the Evolution-style File →
+    /// New → Folder action and the sidebar affordance share one behavior.
+    pub(crate) fn present_new_local_folder_dialog(&self) {
+        self.present_local_folder_dialog(None);
+    }
+
+    /// Empty the portable app-owned trash without blocking GTK.  Imported
+    /// source files are never rewritten.  A native EDS/Camel trash still
+    /// needs its backend expunge operation and is reported explicitly instead
+    /// of being silently treated as a local sidecar mutation.
+    pub(crate) fn empty_trash_async(&self, success_label: &str) {
+        let selection = self
+            .imp()
+            .folder_selection
+            .borrow()
+            .as_ref()
+            .map(|selection| selection.borrow().clone())
+            .unwrap_or_default();
+        let active_request = self.imp().active_request.borrow().clone();
+        let has_remote_selection = selection.is_remote()
+            || active_request
+                .as_ref()
+                .is_some_and(|request| request.source_uid.is_some());
+        let has_loaded_remote_trash =
+            self.imp()
+                .message_store
+                .borrow()
+                .as_ref()
+                .is_some_and(|store| {
+                    (0..store.n_items()).any(|index| {
+                        store
+                            .item(index)
+                            .and_downcast::<MailMessageObject>()
+                            .is_some_and(|message| {
+                                message.backend_location().is_some() && message_is_trash(&message)
+                            })
+                    })
+                });
+        if has_remote_selection || has_loaded_remote_trash {
+            self.show_toast(
+                "Native EDS/Camel-Ordner benötigen den Linux-Expunge-Pfad; der lokale Bestand wurde nicht verändert.",
+            );
+            return;
+        }
+
+        let success_label = success_label.to_string();
+        let (sender, receiver) = async_channel::bounded(1);
+        std::thread::spawn(move || {
+            let result = MailStoreService::new()
+                .empty_local_trash()
+                .map_err(MailOperationError::from);
+            let _ = sender.send_blocking(result);
+        });
+
+        let page = self.downgrade();
+        glib::spawn_future_local(async move {
+            let result = receiver.recv().await.unwrap_or_else(|_| {
+                Err(MailOperationError::Backend {
+                    operation: crate::services::mail_operations_service::MailOperationKind::Delete,
+                    message: "Papierkorb-Vorgang wurde abgebrochen".to_string(),
+                })
+            });
+            let Some(page) = page.upgrade() else {
+                return;
+            };
+            match result {
+                Ok(count) => {
+                    page.clear_batch_selection();
+                    if count > 0 {
+                        page.refresh_mail();
+                        if let Some(state) = page.imp().message_state.borrow().as_ref() {
+                            state.set_label(&format!(
+                                "{count} lokale Nachricht(en) aus dem Papierkorb entfernt"
+                            ));
+                        }
+                        page.show_toast(&format!("{success_label}: {count} Nachricht(en)"));
+                    } else {
+                        page.show_toast("Papierkorb ist bereits leer");
+                    }
+                }
+                Err(error) => {
+                    page.show_toast(&format!("Papierkorb konnte nicht geleert werden: {error}"))
+                }
+            }
+        });
     }
 
     pub fn undo(&self) -> Result<bool, MailOperationError> {
@@ -3589,7 +3708,9 @@ impl MailPage {
         let folder_click = gtk::GestureClick::builder().button(3).build();
         let view_weak = dynamic_folder_view.downgrade();
         folder_click.connect_pressed(move |_, _, x, y| {
-            let Some(view) = view_weak.upgrade() else { return; };
+            let Some(view) = view_weak.upgrade() else {
+                return;
+            };
             let folder_menu = gio::Menu::new();
             folder_menu.append(Some("Mülleimer leeren"), Some("win.empty-trash"));
             folder_menu.append(Some("Endgültig löschen (Expunge)"), Some("win.expunge"));
@@ -4425,9 +4546,14 @@ impl MailPage {
             "mail-inbox-symbolic"
         } else if clean.contains("sent") || clean.contains("gesendet") {
             "mail-send-symbolic"
-        } else if clean.contains("draft") || clean.contains("entwurf") || clean.contains("entwürfe") {
+        } else if clean.contains("draft") || clean.contains("entwurf") || clean.contains("entwürfe")
+        {
             "document-properties-symbolic"
-        } else if clean.contains("trash") || clean.contains("mülleimer") || clean.contains("papierkorb") || clean.contains("deleted") {
+        } else if clean.contains("trash")
+            || clean.contains("mülleimer")
+            || clean.contains("papierkorb")
+            || clean.contains("deleted")
+        {
             "user-trash-symbolic"
         } else if clean.contains("junk") || clean.contains("spam") {
             "dialog-warning-symbolic"
@@ -5231,7 +5357,9 @@ impl MailPage {
         let msg_click = gtk::GestureClick::builder().button(3).build();
         let list_view_weak = list_view.downgrade();
         msg_click.connect_pressed(move |_, _, x, y| {
-            let Some(view) = list_view_weak.upgrade() else { return; };
+            let Some(view) = list_view_weak.upgrade() else {
+                return;
+            };
             let msg_menu = gio::Menu::new();
             msg_menu.append(Some("Antworten"), Some("win.reply"));
             msg_menu.append(Some("Allen antworten"), Some("win.reply-all"));
@@ -5239,7 +5367,10 @@ impl MailPage {
             msg_menu.append(Some("Als gelesen markieren"), Some("win.mark-read"));
             msg_menu.append(Some("Als ungelesen markieren"), Some("win.mark-unread"));
             msg_menu.append(Some("Markierung umschalten"), Some("win.toggle-flag"));
-            msg_menu.append(Some("Wichtigkeitsmarkierung umschalten"), Some("win.toggle-important"));
+            msg_menu.append(
+                Some("Wichtigkeitsmarkierung umschalten"),
+                Some("win.toggle-important"),
+            );
             msg_menu.append(Some("Archivieren"), Some("win.archive"));
             msg_menu.append(Some("Als Spam markieren"), Some("win.mark-junk"));
             msg_menu.append(Some("Ausgewählte E-Mail exportieren"), Some("win.export"));
@@ -6532,186 +6663,180 @@ impl MailPage {
             thread_context,
             move |sel| {
                 let msg_option = sel.selected_item().and_then(|item| {
-                    item.clone().downcast::<MailMessageObject>().ok().or_else(|| {
-                        item.downcast::<gtk::TreeListRow>()
-                            .ok()
-                            .and_then(|row| row.item())
-                            .and_then(|obj| obj.downcast::<MailMessageObject>().ok())
-                    })
+                    item.clone()
+                        .downcast::<MailMessageObject>()
+                        .ok()
+                        .or_else(|| {
+                            item.downcast::<gtk::TreeListRow>()
+                                .ok()
+                                .and_then(|row| row.item())
+                                .and_then(|obj| obj.downcast::<MailMessageObject>().ok())
+                        })
                 });
                 if let Some(msg) = msg_option {
                     let was_unread = msg.is_unread();
-                        let mark_read_on_selection = AppSettings::try_new()
-                            .map(|settings| settings.mark_read_on_selection())
-                            .unwrap_or(true);
-                        if was_unread && mark_read_on_selection {
-                            // A remote read-state mutation can connect Camel,
-                            // authenticate through EDS/GOA and synchronize a
-                            // folder.  Doing that synchronously from this
-                            // selection signal freezes the GTK main loop
-                            // immediately after the first mail page appears.
-                            // Keep the model unread until the backend confirms
-                            // the mutation, then apply the result on GTK.
-                            let message_id = msg.id();
-                            let backend_location = msg.backend_location();
-                            let is_flagged = msg.is_flagged();
-                            let message_for_read = msg.downgrade();
-                            let selection_for_read = selection_for_async_crypto.clone();
-                            let filter_for_read = filter_for_selection.clone();
-                            let thread_filter_for_read = thread_filter_for_selection.clone();
-                            let message_id_for_worker = message_id.clone();
-                            let (sender, receiver) = async_channel::bounded(1);
-                            std::thread::spawn(move || {
-                                let operations = MailOperationsService::new();
-                                let result = match backend_location.as_ref() {
-                                    Some(location) => operations.mark_read_for_location(
-                                        &message_id_for_worker,
-                                        location,
-                                        is_flagged,
-                                    ),
-                                    None => operations.mark_read(&message_id_for_worker, is_flagged),
-                                };
-                                if let Err(error) = sender.send_blocking(result) {
-                                    tracing::debug!(%error, "Read-state result was dropped");
-                                }
-                            });
-                            glib::spawn_future_local(async move {
-                                let Ok(result) = receiver.recv().await else {
-                                    return;
-                                };
-                                match result {
-                                    Ok(()) => {
-                                        let Some(message) = message_for_read.upgrade() else {
-                                            return;
-                                        };
-                                        let still_selected = selection_for_read
-                                            .selected_item()
-                                            .and_downcast::<MailMessageObject>()
-                                            .is_some_and(|selected| selected.id() == message_id);
-                                        if still_selected && message.is_unread() {
-                                            message.set_unread(false);
-                                            filter_for_read
-                                                .changed(gtk::FilterChange::Different);
-                                            thread_filter_for_read
-                                                .changed(gtk::FilterChange::Different);
-                                        }
-                                    }
-                                    Err(error) => {
-                                        tracing::error!(%error, "Could not persist read state");
-                                    }
-                                }
-                            });
-                        }
-                        lbl_subject.set_label(&msg.subject());
-                        lbl_from.set_label(&format!(
-                            "{} <{}>",
-                            msg.sender_name(),
-                            msg.sender_email()
-                        ));
-                        lbl_to.set_label(&msg.recipient_to());
-                        let recipient_cc = msg.recipient_cc();
-                        lbl_cc.set_label(if recipient_cc.trim().is_empty() {
-                            "-"
-                        } else {
-                            &recipient_cc
+                    let mark_read_on_selection = AppSettings::try_new()
+                        .map(|settings| settings.mark_read_on_selection())
+                        .unwrap_or(true);
+                    if was_unread && mark_read_on_selection {
+                        // A remote read-state mutation can connect Camel,
+                        // authenticate through EDS/GOA and synchronize a
+                        // folder.  Doing that synchronously from this
+                        // selection signal freezes the GTK main loop
+                        // immediately after the first mail page appears.
+                        // Keep the model unread until the backend confirms
+                        // the mutation, then apply the result on GTK.
+                        let message_id = msg.id();
+                        let backend_location = msg.backend_location();
+                        let is_flagged = msg.is_flagged();
+                        let message_for_read = msg.downgrade();
+                        let selection_for_read = selection_for_async_crypto.clone();
+                        let filter_for_read = filter_for_selection.clone();
+                        let thread_filter_for_read = thread_filter_for_selection.clone();
+                        let message_id_for_worker = message_id.clone();
+                        let (sender, receiver) = async_channel::bounded(1);
+                        std::thread::spawn(move || {
+                            let operations = MailOperationsService::new();
+                            let result = match backend_location.as_ref() {
+                                Some(location) => operations.mark_read_for_location(
+                                    &message_id_for_worker,
+                                    location,
+                                    is_flagged,
+                                ),
+                                None => operations.mark_read(&message_id_for_worker, is_flagged),
+                            };
+                            if let Err(error) = sender.send_blocking(result) {
+                                tracing::debug!(%error, "Read-state result was dropped");
+                            }
                         });
-                        lbl_date.set_label(&format_message_date(&msg.date_str()));
+                        glib::spawn_future_local(async move {
+                            let Ok(result) = receiver.recv().await else {
+                                return;
+                            };
+                            match result {
+                                Ok(()) => {
+                                    let Some(message) = message_for_read.upgrade() else {
+                                        return;
+                                    };
+                                    let still_selected = selection_for_read
+                                        .selected_item()
+                                        .and_downcast::<MailMessageObject>()
+                                        .is_some_and(|selected| selected.id() == message_id);
+                                    if still_selected && message.is_unread() {
+                                        message.set_unread(false);
+                                        filter_for_read.changed(gtk::FilterChange::Different);
+                                        thread_filter_for_read
+                                            .changed(gtk::FilterChange::Different);
+                                    }
+                                }
+                                Err(error) => {
+                                    tracing::error!(%error, "Could not persist read state");
+                                }
+                            }
+                        });
+                    }
+                    lbl_subject.set_label(&msg.subject());
+                    lbl_from.set_label(&format!("{} <{}>", msg.sender_name(), msg.sender_email()));
+                    lbl_to.set_label(&msg.recipient_to());
+                    let recipient_cc = msg.recipient_cc();
+                    lbl_cc.set_label(if recipient_cc.trim().is_empty() {
+                        "-"
+                    } else {
+                        &recipient_cc
+                    });
+                    lbl_date.set_label(&format_message_date(&msg.date_str()));
 
-                        Self::render_thread_context(
-                            &store_for_thread_context,
-                            &selection_for_thread_context,
-                            &msg,
-                            &thread_context,
-                        );
+                    Self::render_thread_context(
+                        &store_for_thread_context,
+                        &selection_for_thread_context,
+                        &msg,
+                        &thread_context,
+                    );
 
-                        let raw_mime = msg.raw_mime();
-                        let crypto_details = raw_mime
-                            .as_deref()
-                            .map(CryptoService::verify_signature)
-                            .unwrap_or_else(|| CryptoService::verify_signature(b""));
-                        lbl_crypto.set_label(&crypto_details.display_text());
-                        if let Some(raw_mime) = raw_mime {
-                            lbl_crypto.set_label("Kryptografie: Prüfung läuft …");
-                            let message_id = msg.id();
-                            let folder_id = msg.folder_id();
-                            let unread = msg.is_unread();
-                            let selection_for_crypto = selection_for_async_crypto.clone();
-                            let label_for_crypto = lbl_crypto.downgrade();
-                            let viewer_for_crypto = mail_viewer.clone();
-                            let attachment_bar_for_crypto = attachment_bar.clone();
-                            let (crypto_sender, crypto_receiver) = async_channel::bounded(1);
-                            let message_id_for_parse = message_id.clone();
-                            let smime_options = AppSettings::try_new()
-                                .map(|settings| settings.smime_options(false, false))
-                                .unwrap_or_default();
-                            std::thread::spawn(move || {
-                                let result = crypto_service::inspect_crypto_mime(
-                                    &raw_mime,
-                                    &smime_options,
-                                )
-                                .map(
-                                    |inspection| {
-                                        let decrypted = inspection
-                                            .decrypted_mime
-                                            .as_deref()
-                                            .and_then(|decrypted_mime| {
-                                                parse_rfc822_bytes(
-                                                    &message_id_for_parse,
-                                                    &folder_id,
-                                                    decrypted_mime,
-                                                    unread,
-                                                )
-                                            });
-                                        (inspection, decrypted)
+                    let raw_mime = msg.raw_mime();
+                    let crypto_details = raw_mime
+                        .as_deref()
+                        .map(CryptoService::verify_signature)
+                        .unwrap_or_else(|| CryptoService::verify_signature(b""));
+                    lbl_crypto.set_label(&crypto_details.display_text());
+                    if let Some(raw_mime) = raw_mime {
+                        lbl_crypto.set_label("Kryptografie: Prüfung läuft …");
+                        let message_id = msg.id();
+                        let folder_id = msg.folder_id();
+                        let unread = msg.is_unread();
+                        let selection_for_crypto = selection_for_async_crypto.clone();
+                        let label_for_crypto = lbl_crypto.downgrade();
+                        let viewer_for_crypto = mail_viewer.clone();
+                        let attachment_bar_for_crypto = attachment_bar.clone();
+                        let (crypto_sender, crypto_receiver) = async_channel::bounded(1);
+                        let message_id_for_parse = message_id.clone();
+                        let smime_options = AppSettings::try_new()
+                            .map(|settings| settings.smime_options(false, false))
+                            .unwrap_or_default();
+                        std::thread::spawn(move || {
+                            let result = crypto_service::inspect_crypto_mime(
+                                &raw_mime,
+                                &smime_options,
+                            )
+                            .map(|inspection| {
+                                let decrypted = inspection.decrypted_mime.as_deref().and_then(
+                                    |decrypted_mime| {
+                                        parse_rfc822_bytes(
+                                            &message_id_for_parse,
+                                            &folder_id,
+                                            decrypted_mime,
+                                            unread,
+                                        )
                                     },
                                 );
-                                if let Err(error) = crypto_sender.send_blocking(result) {
-                                    tracing::debug!(%error, "OpenPGP inspection result was dropped");
-                                }
+                                (inspection, decrypted)
                             });
-                            glib::spawn_future_local(async move {
-                                let Ok(inspection) = crypto_receiver.recv().await else {
-                                    return;
-                                };
-                                let Some(label) = label_for_crypto.upgrade() else {
-                                    return;
-                                };
-                                let Some(current) = selection_for_crypto
-                                    .selected_item()
-                                    .and_downcast::<MailMessageObject>()
-                                else {
-                                    return;
-                                };
-                                if current.id() != message_id {
-                                    return;
-                                }
-                                match inspection {
-                                    Ok((inspection, decrypted)) => {
-                                        let label_text = inspection.details.display_text();
-                                        if let Some(parsed) = decrypted
-                                        {
-                                            current.replace_rendered_content(
-                                                parsed.html_body,
-                                                parsed.preview_snippet,
-                                                parsed.attachments,
-                                            );
-                                            Self::render_message_content(
-                                                &current,
-                                                &viewer_for_crypto,
-                                                &attachment_bar_for_crypto,
-                                            );
-                                        }
-                                        label.set_label(&label_text);
+                            if let Err(error) = crypto_sender.send_blocking(result) {
+                                tracing::debug!(%error, "OpenPGP inspection result was dropped");
+                            }
+                        });
+                        glib::spawn_future_local(async move {
+                            let Ok(inspection) = crypto_receiver.recv().await else {
+                                return;
+                            };
+                            let Some(label) = label_for_crypto.upgrade() else {
+                                return;
+                            };
+                            let Some(current) = selection_for_crypto
+                                .selected_item()
+                                .and_downcast::<MailMessageObject>()
+                            else {
+                                return;
+                            };
+                            if current.id() != message_id {
+                                return;
+                            }
+                            match inspection {
+                                Ok((inspection, decrypted)) => {
+                                    let label_text = inspection.details.display_text();
+                                    if let Some(parsed) = decrypted {
+                                        current.replace_rendered_content(
+                                            parsed.html_body,
+                                            parsed.preview_snippet,
+                                            parsed.attachments,
+                                        );
+                                        Self::render_message_content(
+                                            &current,
+                                            &viewer_for_crypto,
+                                            &attachment_bar_for_crypto,
+                                        );
                                     }
-                                    Err(error) => {
-                                        label.set_label(&format!(
-                                            "OpenPGP-Prüfung fehlgeschlagen: {error}"
-                                        ));
-                                    }
+                                    label.set_label(&label_text);
                                 }
-                            });
-                        }
-                        Self::render_message_content(&msg, &mail_viewer, &attachment_bar);
+                                Err(error) => {
+                                    label.set_label(&format!(
+                                        "OpenPGP-Prüfung fehlgeschlagen: {error}"
+                                    ));
+                                }
+                            }
+                        });
+                    }
+                    Self::render_message_content(&msg, &mail_viewer, &attachment_bar);
                 }
             }
         ));
@@ -7030,6 +7155,9 @@ impl MailPage {
         let source_store_for_load = source_store.clone();
         let source_selection_for_load = self.imp().source_selection.borrow().clone();
         let source_state_for_load = source_state.clone();
+        let offline_mode = AppSettings::try_new()
+            .map(|settings| settings.offline_mode())
+            .unwrap_or(false);
         let configured_accounts = AccountConfigStore::default().load();
         let preferred_account_id = AppSettings::try_new()
             .map(|settings| settings.default_account_id())
@@ -7039,22 +7167,31 @@ impl MailPage {
         }
         let has_configured_accounts = !configured_accounts.is_empty();
         let (discovery_sender, discovery_receiver) = async_channel::bounded(1);
-        std::thread::spawn(move || {
-            let discovery_started = Instant::now();
-            let discovery = eds_service::discover_sources_blocking(EdsSourceKind::Mail);
-            tracing::info!(
-                sources = discovery.sources.len(),
-                origin = ?discovery.origin,
-                elapsed_ms = discovery_started.elapsed().as_millis() as u64,
-                "Loaded mail sources"
-            );
-            if let Some(error) = discovery.error.as_deref() {
-                tracing::warn!(%error, "Live EDS mail source discovery failed");
-            }
-            if let Err(error) = discovery_sender.send_blocking(discovery) {
-                tracing::debug!(%error, "Mail source discovery result was dropped");
-            }
-        });
+        if offline_mode {
+            let discovery = EdsSourceDiscovery {
+                sources: EdsSourceCache::new().load(EdsSourceKind::Mail),
+                origin: EdsSourceOrigin::Cache,
+                error: Some("Offline-Modus aktiviert".to_string()),
+            };
+            let _ = discovery_sender.send_blocking(discovery);
+        } else {
+            std::thread::spawn(move || {
+                let discovery_started = Instant::now();
+                let discovery = eds_service::discover_sources_blocking(EdsSourceKind::Mail);
+                tracing::info!(
+                    sources = discovery.sources.len(),
+                    origin = ?discovery.origin,
+                    elapsed_ms = discovery_started.elapsed().as_millis() as u64,
+                    "Loaded mail sources"
+                );
+                if let Some(error) = discovery.error.as_deref() {
+                    tracing::warn!(%error, "Live EDS mail source discovery failed");
+                }
+                if let Err(error) = discovery_sender.send_blocking(discovery) {
+                    tracing::debug!(%error, "Mail source discovery result was dropped");
+                }
+            });
+        }
         glib::spawn_future_local(async move {
             let Ok(discovery) = discovery_receiver.recv().await else {
                 source_state_for_load.set_label("EDS-Quellenerkennung wurde abgebrochen.");
@@ -7616,6 +7753,9 @@ impl MailPage {
                 &request_for_worker,
                 &cancellation,
                 Some(&progress_sender_for_worker),
+                AppSettings::try_new()
+                    .map(|settings| settings.offline_mode())
+                    .unwrap_or(false),
             );
             tracing::debug!(
                 elapsed_ms = started.elapsed().as_millis() as u64,
@@ -8379,6 +8519,9 @@ impl MailPage {
 
         if completion.replace
             && !self.imp().graph_backend_active.get()
+            && !AppSettings::try_new()
+                .map(|settings| settings.offline_mode())
+                .unwrap_or(false)
             && !self.imp().camel_monitor_started.replace(true)
         {
             let page = self.downgrade();
@@ -9233,6 +9376,70 @@ mod tests {
             MessageFilter::All,
             &FolderSelection::all(),
         ));
+    }
+
+    #[test]
+    fn trash_predicate_matches_builtin_and_provider_deleted_folders() {
+        let local = MailMessageObject::new(
+            "trash-local",
+            "trash",
+            "Alice",
+            "alice@example.test",
+            "me@example.test",
+            "",
+            "",
+            "",
+            "Deleted",
+            None,
+            Vec::new(),
+            Vec::new(),
+            "trash-local",
+            1,
+            0,
+            "Tue, 11 Aug 2026 14:30:00 +0000",
+            "",
+            "",
+            false,
+            false,
+            false,
+            Vec::new(),
+            None,
+            Vec::new(),
+        );
+        assert!(message_is_trash(&local));
+
+        let provider = MailMessageObject::new(
+            "trash-provider",
+            "Deleted Items",
+            "Alice",
+            "alice@example.test",
+            "me@example.test",
+            "",
+            "",
+            "",
+            "Deleted",
+            None,
+            Vec::new(),
+            Vec::new(),
+            "trash-provider",
+            1,
+            0,
+            "Tue, 11 Aug 2026 14:30:00 +0000",
+            "",
+            "",
+            false,
+            false,
+            false,
+            Vec::new(),
+            Some(MailBackendLocation {
+                source_uid: "source-1".to_string(),
+                folder_name: "Deleted Items".to_string(),
+                message_uid: "uid-1".to_string(),
+                message_id: None,
+            }),
+            Vec::new(),
+        );
+        assert!(message_is_trash(&provider));
     }
 
     #[test]

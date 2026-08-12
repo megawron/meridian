@@ -521,6 +521,43 @@ impl MailStoreService {
         self.metadata.remove_local_folder_tree(&folder_id)
     }
 
+    /// Empty every local logical trash entry without modifying Evolution's
+    /// source mailbox.  The source files remain available for the original
+    /// Evolution installation; deletion is represented only in the app-owned
+    /// metadata sidecar, just like the individual local delete command.
+    pub fn empty_local_trash(&self) -> std::io::Result<usize> {
+        let cancelled = AtomicBool::new(false);
+        let overrides = self.metadata.load_folder_overrides();
+        let already_deleted = self.metadata.load_deleted();
+        let copies = self.metadata.load_copies();
+        let messages = self.load_raw_local_records_cancelable(&cancelled);
+        let mut ids = Vec::new();
+
+        for message in messages {
+            let folder_id = overrides
+                .get(&message.id)
+                .map(String::as_str)
+                .unwrap_or(message.folder_id.as_str());
+            if is_local_trash_folder(folder_id) && !already_deleted.contains(&message.id) {
+                ids.push(message.id);
+            }
+        }
+
+        for (message_id, folder_ids) in copies {
+            for folder_id in folder_ids {
+                if !is_local_trash_folder(&folder_id) {
+                    continue;
+                }
+                let copy_id = local_copy_id(&message_id, &folder_id);
+                if !already_deleted.contains(&copy_id) {
+                    ids.push(copy_id);
+                }
+            }
+        }
+
+        self.metadata.set_deleted_many(ids, true)
+    }
+
     /// Read all discoverable local messages in a deterministic order.
     ///
     /// This method is synchronous by design so that it can also be used by
@@ -1221,6 +1258,21 @@ fn local_folder_id(folder: &str) -> String {
         _ if normalized.starts_with("custom:") => normalized.to_string(),
         _ => format!("custom:{normalized}"),
     }
+}
+
+fn is_local_trash_folder(folder_id: &str) -> bool {
+    let normalized = folder_id
+        .trim()
+        .trim_start_matches('.')
+        .to_ascii_lowercase();
+    normalized == "trash"
+        || normalized == "deleted"
+        || normalized.starts_with("trash/")
+        || normalized.starts_with("deleted/")
+        || normalized == "custom:trash"
+        || normalized.starts_with("custom:trash/")
+        || normalized == "custom:deleted"
+        || normalized.starts_with("custom:deleted/")
 }
 
 fn local_copy_id(message_id: &str, folder_id: &str) -> String {
@@ -3121,6 +3173,43 @@ mod tests {
                 .any(|record| record.folder_id == "archive" && record.id.contains("::copy::"))
         );
         assert!(mail_dir.join("message.eml").is_file());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn empty_local_trash_marks_all_source_and_copy_records_without_rewriting_mail() {
+        let root = temporary_directory("empty-local-trash");
+        let mail_dir = root.join("mail");
+        fs::create_dir_all(mail_dir.join("Trash")).expect("trash folder should be created");
+        fs::write(
+            mail_dir.join("Trash/deleted.eml"),
+            "From: Sender <sender@example.org>\nSubject: Deleted\n\nBody\n",
+        )
+        .expect("trash mail should be written");
+        fs::write(
+            mail_dir.join("inbox.eml"),
+            "From: Sender <sender@example.org>\nSubject: Inbox\n\nBody\n",
+        )
+        .expect("inbox mail should be written");
+        let store =
+            MailStoreService::with_mail_dir_and_state_path(&mail_dir, root.join("state.json"));
+        let inbox_id = store
+            .load_local_records()
+            .into_iter()
+            .find(|message| message.folder_id == "inbox")
+            .expect("inbox message should parse")
+            .id;
+        MailMetadataStore::new(store.metadata_path())
+            .set_copy(&inbox_id, "trash", true)
+            .expect("trash copy should persist");
+
+        assert_eq!(store.empty_local_trash().expect("trash should empty"), 2);
+        let deleted = MailMetadataStore::new(store.metadata_path()).load_deleted();
+        assert!(deleted.iter().any(|id| id.contains("deleted.eml")));
+        assert!(deleted.contains(&local_copy_id(&inbox_id, "trash")));
+        assert!(mail_dir.join("Trash/deleted.eml").is_file());
+        assert_eq!(store.load_local_records().len(), 1);
 
         let _ = fs::remove_dir_all(root);
     }

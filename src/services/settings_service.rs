@@ -37,6 +37,16 @@ impl AppSettings {
         self.settings.boolean("auto-load-remote-images")
     }
 
+    /// Keep backend discovery, synchronization, and remote mutations out of
+    /// the current UI session while retaining the local app-owned stores.
+    pub fn offline_mode(&self) -> bool {
+        self.settings.boolean("offline-mode")
+    }
+
+    pub fn set_offline_mode(&self, value: bool) {
+        self.set_boolean("offline-mode", value);
+    }
+
     pub fn window_width(&self) -> i32 {
         self.settings.int("window-width")
     }
@@ -923,6 +933,7 @@ impl AppSettings {
             "auto-load-remote-images" => {
                 self.set_auto_load_remote_images(parse_migrated_bool(key, value)?);
             }
+            "offline-mode" => self.set_offline_mode(parse_migrated_bool(key, value)?),
             "force-dark-mode" => self.set_force_dark_mode(parse_migrated_bool(key, value)?),
             "render-html" => self.set_render_html(parse_migrated_bool(key, value)?),
             "composer-html" => self.set_composer_html(parse_migrated_bool(key, value)?),
@@ -1039,6 +1050,7 @@ impl AppSettings {
             "time-format",
             "calendar-time-zone",
             "auto-load-remote-images",
+            "offline-mode",
             "force-dark-mode",
             "render-html",
             "composer-html",
