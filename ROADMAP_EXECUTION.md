@@ -93,20 +93,21 @@ und erweitert dessen Schreibbereich nur nach dokumentierter Kollisionsprüfung.
 
 | Reihenfolge | Paket | Elternziel | Primärer Schreibbereich | Abhängigkeit | Status | Commit-Abnahme |
 |:---:|:---|:---|:---|:---|:---:|:---|
-| 1 | `P0-STAB-001A` | `P0-STAB-001` | `src/services/mail_operations_service.rs` | keine | READY | Lebenszyklus, Fehler, Konflikt und Abbruch getestet |
-| 2 | `P0-MAIL-001A` | `P0-MAIL-001` | `src/services/mail_store_service.rs` | keine | READY | MIME-Korpus und Parser-Fallbacks grün |
-| 3 | `P0-MAIL-001B` | `P0-MAIL-001` | `src/services/html_sanitizer.rs`, `src/services/inline_content_service.rs` | keine | READY | sichere Layout-CSS und Remote-Policy getestet |
-| 4 | `P0-COMP-001A` | `P0-COMP-001` | `src/services/mail_composer_service.rs` | keine | READY | RFC822-/MIME-Korpus einschließlich Fehlerfällen grün |
-| 5 | `P1-SEARCH-001A` | `P1-SEARCH-001` | `src/services/search_engine.rs` | keine | READY | Suchsyntax und ungültige Eingaben deterministisch getestet |
-| 6 | `P1-CAL-001A` | `P1-CAL-001` | `src/services/recurrence_service.rs` | keine | READY | Recurrence-Ausnahmen und Grenzfälle getestet |
-| 7 | `P1-CONTACT-001A` | `P1-CONTACT-001` | `src/services/vcard_service.rs` | keine | READY | verlustarmer vCard-Roundtrip getestet |
-| 8 | `P0-STAB-001B` | `P0-STAB-001` | `src/views/mail_page.rs` | `P0-STAB-001A` | READY | alle Mailmutationen asynchron verdrahtet; UI bleibt bedienbar |
-| 9 | `P0-MAIL-001C` | `P0-MAIL-001` | `src/views/mail_viewer.rs` | `P0-MAIL-001A`, `P0-MAIL-001B` | READY | Viewer-Fallback, Remote-Freigabe und Anhänge integriert |
-| 10 | `P0-MAIL-002A` | `P0-MAIL-002` | `src/views/mail_page.rs`, `src/style.css` | `P0-STAB-001B` | READY | kompakter Ordnerbaum und klassische Drei-Bereichsansicht |
-| 11 | `P0-MAIL-002B` | `P0-MAIL-002` | `src/views/mail_page.rs`, `src/services/settings_service.rs`, `src/dialogs/preferences_dialog.rs` | `P0-MAIL-002A` | READY | Spalten, Dichte und Layout persistent und live wirksam |
-| 12 | `P0-SYNC-001A` | `P0-SYNC-001` | `src/views/mail_page.rs`, `src/services/camel_mail_service.rs` | `P0-STAB-001B` | READY | generationensicheres Paging/Refresh mit stabiler Auswahl |
-| 13 | `P0-COMP-001B` | `P0-COMP-001` | `src/dialogs/compose_dialog.rs`, `src/services/draft_store_service.rs` | `P0-COMP-001A` | READY | Antwort, Autosave, Retry und Doppelsendeschutz integriert |
-| 14 | `P0-RECOVERY-001A` | `P0-RECOVERY-001` | `src/services/eds_service.rs`, `src/services/eds_source_cache_service.rs` | Pakete 8–13 | READY | Offline/Online, Backoff und Neustart portabel getestet |
+| 1 | `P0-STAB-001A` | `P0-STAB-001` | `src/services/mail_operations_service.rs` | keine | DONE | Lebenszyklus, Fehler, Konflikt und Abbruch getestet |
+| 2 | `P0-MAIL-001A` | `P0-MAIL-001` | `src/services/mail_store_service.rs` | keine | DONE | MIME-Korpus und Parser-Fallbacks grün |
+| 3 | `P0-MAIL-001B` | `P0-MAIL-001` | `src/services/html_sanitizer.rs`, `src/services/inline_content_service.rs` | keine | DONE | sichere Layout-CSS und Remote-Policy getestet |
+| 4 | `P0-COMP-001A` | `P0-COMP-001` | `src/services/mail_composer_service.rs` | keine | DONE | RFC822-/MIME-Korpus einschließlich Fehlerfällen grün |
+| 5 | `P1-SEARCH-001A` | `P1-SEARCH-001` | `src/services/search_engine.rs` | keine | DONE | Suchsyntax und ungültige Eingaben deterministisch getestet |
+| 6 | `P1-CAL-001A` | `P1-CAL-001` | `src/services/recurrence_service.rs` | keine | DONE | Recurrence-Ausnahmen und Grenzfälle getestet |
+| 7 | `P1-CONTACT-001A` | `P1-CONTACT-001` | `src/services/vcard_service.rs` | keine | DONE | verlustarmer vCard-Roundtrip getestet |
+| 8 | `P2-MIGRATION-001A` | `P2-MIGRATION-*` | `src/services/migration_service.rs` | keine | DONE | portable Werte, Warnungen und Geheimnis-Redaktion getestet |
+| 9 | `P0-STAB-001B` | `P0-STAB-001` | `src/views/mail_page.rs` | `P0-STAB-001A` | READY | alle Mailmutationen asynchron verdrahtet; UI bleibt bedienbar |
+| 10 | `P0-MAIL-001C` | `P0-MAIL-001` | `src/views/mail_viewer.rs` | `P0-MAIL-001A`, `P0-MAIL-001B` | READY | Viewer-Fallback, Remote-Freigabe und Anhänge integriert |
+| 11 | `P0-MAIL-002A` | `P0-MAIL-002` | `src/views/mail_page.rs`, `src/style.css` | `P0-STAB-001B` | READY | kompakter Ordnerbaum und klassische Drei-Bereichsansicht |
+| 12 | `P0-MAIL-002B` | `P0-MAIL-002` | `src/views/mail_page.rs`, `src/services/settings_service.rs`, `src/dialogs/preferences_dialog.rs` | `P0-MAIL-002A` | READY | Spalten, Dichte und Layout persistent und live wirksam |
+| 13 | `P0-SYNC-001A` | `P0-SYNC-001` | `src/views/mail_page.rs`, `src/services/camel_mail_service.rs` | `P0-STAB-001B` | READY | generationensicheres Paging/Refresh mit stabiler Auswahl |
+| 14 | `P0-COMP-001B` | `P0-COMP-001` | `src/dialogs/compose_dialog.rs`, `src/services/draft_store_service.rs` | `P0-COMP-001A` | READY | Antwort, Autosave, Retry und Doppelsendeschutz integriert |
+| 15 | `P0-RECOVERY-001A` | `P0-RECOVERY-001` | `src/services/eds_service.rs`, `src/services/eds_source_cache_service.rs` | Pakete 9–14 | READY | Offline/Online, Backoff und Neustart portabel getestet |
 
 ### Parallelisierungsregeln
 
@@ -330,3 +331,31 @@ Verbleibende Abweichungen: keine
 
 Ein Eintrag mit verbleibender Pflichtabweichung darf nicht `DONE` sein; dafür
 wird ein konkreter Folgepunkt angelegt und der Elternpunkt bleibt offen.
+
+### Commit `10b0321` — portable Kernrunde
+
+- `P0-STAB-001A`: 23 Operations-Tests belegen One-shot-Lifecycle,
+  Cancellation, Konflikte, bestätigungsbasiertes Undo und expliziten
+  Batch-Rollback-Fehler. `P0-STAB-001B` bleibt für die GTK-Worker-Verdrahtung
+  offen.
+- `P0-MAIL-001A`: byte-sicherer RFC822-/MIME-Parser, verschachtelte
+  Multiparts, Transfer-Encoding, gebräuchliche Legacy-Charsets, CID/Anhänge
+  und Plaintext-Fallback sind getestet. Linux-Camel-Sonderfälle bleiben offen.
+- `P0-MAIL-001B`: eingebettete Newsletter-/Office-CSS bleibt layouttreu;
+  aktive Inhalte, externe Stylesheets und verschleierte Ressourcen-URLs sind
+  blockiert. Die Viewer-Integration bleibt `P0-MAIL-001C`.
+- `P0-COMP-001A`: RFC822, `multipart/alternative`, verschachteltes
+  `multipart/mixed`, Unicode-Header, Header-Injection und Anhänge sind durch 14
+  Composer-Tests belegt. Dialog-/Draft-/Send-Integration bleibt offen.
+- `P1-SEARCH-001A`: 11 Suchtests belegen Evolution-Feldsyntax, Gruppen,
+  Negation, Quotes, Escapes, Status und Datumsvergleiche sowie sichere
+  Ablehnung nicht unterstützter Syntax.
+- `P1-CAL-001A`: 10 Recurrence-Tests belegen `WKST`, `COUNT`, `UNTIL`,
+  `EXDATE`, Monats-/Jahresgrenzen und Schaltjahre.
+- `P1-CONTACT-001A`: 11 vCard-Tests belegen v3/v4, Folding,
+  Mehrfachfelder, Kategorien, Fotos und unbekannte Felder; EBook-Abnahme bleibt
+  Linux-only.
+- `P2-MIGRATION-001A`: 13 Migrationstests belegen dconf-Werte, sichere
+  Fallbacks, redigierte Warnungen sowie den Ausschluss von Geheimnissen.
+- Gemeinsame Abnahme: `cargo fmt --all -- --check`,
+  `cargo check --workspace --locked` und 359/359 Workspace-Tests bestanden.

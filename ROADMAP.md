@@ -1258,6 +1258,13 @@ nicht als vollständiger Ersatz beworben werden.
 
 ### Operative Entwicklungsreihenfolge
 
+Der portable Kerncommit `10b0321` belegt 359/359 Workspace-Tests für den neuen
+Mailoperations-Lifecycle, MIME-/HTML-Sicherheit, RFC822-Komposition,
+Evolution-Suchsyntax, Recurrence-Grenzfälle, verlustarme vCard-Roundtrips und
+geheimnisfreie Migration. Diese Belege schließen ausschließlich die atomaren
+Service-Pakete; GTK-Worker-/Viewer-Integration und alle realen
+EDS-/Camel-/ECal-/EBook-Abnahmen bleiben offen.
+
 Die frühere, fortlaufend gewachsene Liste „Nächster Entwicklungsblock“ ist in
 atomare, dauerhaft referenzierbare Aufgaben überführt. Die aktuelle Reihenfolge,
 Abhängigkeiten, Plattformgrenzen, Abnahmekriterien und Evidenz stehen in

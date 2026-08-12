@@ -28,6 +28,8 @@ Distribution, Bibliotheksversionen und Kontotyp zu protokollieren.
 
 - Verknüpft: `P0-MAIL-001` und `P0-SYNC-001` aus
   `ROADMAP_EXECUTION.md`.
+- Portable Basis: Commit `10b0321` (MIME-Parser und HTML-Sanitizer); ersetzt
+  nicht die folgende Linux-Abnahme.
 - Vorbereitung: vollständiger portabler Testlauf grün; ein EDS-Testkonto mit
   bekannten Plaintext-, HTML-, CID-, Remote-Bild- und Anhangsnachrichten.
 - Ablauf:
@@ -46,6 +48,8 @@ Distribution, Bibliotheksversionen und Kontotyp zu protokollieren.
 ### LINUX-P0-MAIL-002 — asynchrone Mailmutationen
 
 - Verknüpft: `P0-STAB-001`.
+- Portable Basis: Commit `10b0321` (Lifecycle, Cancellation, Konflikt und
+  Rollback); die GTK-Worker-Verdrahtung muss vor diesem Lauf abgeschlossen sein.
 - Ablauf: Lesen/Ungelesen, Stern, Wichtigkeit, Label, Archiv, Spam,
   Nicht-Spam, Löschen, Verschieben und Kopieren jeweils einzeln und als Batch
   gegen ein echtes Konto ausführen; parallel Fenster bewegen, Ordner wechseln
@@ -60,6 +64,8 @@ Distribution, Bibliotheksversionen und Kontotyp zu protokollieren.
 ### LINUX-P0-COMP-001 — Entwurf, Antwort und Versand
 
 - Verknüpft: `P0-COMP-001`.
+- Portable Basis: Commit `10b0321` (RFC822-/MIME-Komposition und
+  Fehlervalidierung); Transport- und Ordnerwirkung bleiben Linux-only.
 - Ablauf: Neu, Antworten, Allen antworten, Weiterleiten, HTML/Text, Alias,
   Signatur, Inline- und reguläre Anhänge, Autosave, Wiederöffnen und Versand
   gegen Drafts-/Sent-Ordner prüfen.
