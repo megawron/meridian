@@ -131,6 +131,59 @@ pub fn sanitize_html(input: &str) -> String {
     output
 }
 
+/// Return the readable text represented by an HTML mail body.
+///
+/// Sanitizing first removes active content and blocked container bodies, then
+/// the remaining markup is converted to text with line breaks at common block
+/// boundaries.  This is shared by the viewer and search/filter paths so a
+/// search uses the same content the user can actually read.
+pub fn html_to_plain_text(value: &str) -> String {
+    let sanitized = sanitize_html(value);
+    let mut output = String::with_capacity(sanitized.len());
+    let mut in_tag = false;
+    let mut tag = String::new();
+    for character in sanitized.chars() {
+        if in_tag {
+            if character == '>' {
+                let normalized = tag
+                    .trim()
+                    .to_ascii_lowercase()
+                    .trim_end_matches('/')
+                    .trim()
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or_default()
+                    .to_string();
+                if matches!(
+                    normalized.as_str(),
+                    "br" | "/p" | "/div" | "/li" | "/blockquote" | "/h1" | "/h2" | "/h3"
+                ) {
+                    if !output.ends_with('\n') {
+                        output.push('\n');
+                    }
+                }
+                in_tag = false;
+                tag.clear();
+            } else {
+                tag.push(character);
+            }
+        } else if character == '<' {
+            in_tag = true;
+            tag.clear();
+        } else {
+            output.push(character);
+        }
+    }
+    output
+        .replace("&nbsp;", " ")
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .trim()
+        .to_string()
+}
+
 fn find_tag_end(input: &str, start: usize) -> Option<usize> {
     let bytes = input.as_bytes();
     let mut quote = None;
@@ -434,5 +487,13 @@ mod tests {
         assert!(sanitized.contains("<p>Nachrichteninhalt</p>"));
         assert!(!sanitized.contains("meta"));
         assert!(!sanitized.contains("stylesheet"));
+    }
+
+    #[test]
+    fn plain_text_search_follows_visible_html_boundaries() {
+        assert_eq!(
+            html_to_plain_text("<p>Quarterly</p><p>report<br>ready</p>"),
+            "Quarterly\nreport\nready"
+        );
     }
 }

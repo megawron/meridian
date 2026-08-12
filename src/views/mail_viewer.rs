@@ -20,6 +20,8 @@ use std::cell::RefCell;
 use webkit6::prelude::*;
 
 use crate::services::AppSettings;
+use crate::services::html_sanitizer::html_to_plain_text;
+#[cfg(target_os = "linux")]
 use crate::services::html_sanitizer::sanitize_html;
 use crate::services::mail_metadata_service::RemoteContentStore;
 
@@ -38,6 +40,7 @@ mod imp {
         pub current_message_id: RefCell<Option<String>>,
         pub current_html: RefCell<Option<String>>,
         pub current_base_uri: RefCell<Option<String>>,
+        pub current_fallback_text: RefCell<Option<String>>,
         pub settings: RefCell<Option<AppSettings>>,
     }
 
@@ -235,6 +238,9 @@ impl MailViewer {
         self.imp()
             .current_base_uri
             .replace(base_uri.map(str::to_string));
+        self.imp()
+            .current_fallback_text
+            .replace(fallback_text.map(str::to_string));
         let global_remote_images = AppSettings::try_new()
             .as_ref()
             .map(AppSettings::auto_load_remote_images)
@@ -254,14 +260,19 @@ impl MailViewer {
             let sanitized_body = if render_html {
                 sanitize_html(html_content)
             } else {
-                format!("<pre>{}</pre>", escape_html(html_content))
+                let plain_text = html_to_fallback_text(html_content);
+                let plain_text = if plain_text.is_empty() {
+                    readable_fallback_text(fallback_text)
+                } else {
+                    plain_text
+                };
+                format!("<pre>{}</pre>", escape_html(&plain_text))
             };
             let sanitized = if render_html && html_to_fallback_text(&sanitized_body).is_empty() {
-                let fallback = fallback_text
-                    .map(str::trim)
-                    .filter(|text| !text.is_empty())
-                    .unwrap_or("(Die Nachricht enthält keinen darstellbaren Inhalt.)");
-                format!("<pre>{}</pre>", escape_html(fallback))
+                format!(
+                    "<pre>{}</pre>",
+                    escape_html(&readable_fallback_text(fallback_text))
+                )
             } else {
                 sanitized_body
             };
@@ -362,15 +373,9 @@ impl MailViewer {
         #[cfg(not(target_os = "linux"))]
         if let Some(view) = self.imp().fallback_view.borrow().as_ref() {
             let text = html_to_fallback_text(html_content);
-            let text = if text.is_empty() {
-                fallback_text
-                    .map(str::trim)
-                    .filter(|text| !text.is_empty())
-                    .unwrap_or("(Die Nachricht enthält keinen darstellbaren Inhalt.)")
-                    .to_string()
-            } else {
-                text
-            };
+            let text = (!text.is_empty())
+                .then_some(text)
+                .unwrap_or_else(|| readable_fallback_text(fallback_text));
             view.buffer().set_text(&text);
         }
     }
@@ -381,7 +386,13 @@ impl MailViewer {
         };
         let message_id = self.imp().current_message_id.borrow().clone();
         let base_uri = self.imp().current_base_uri.borrow().clone();
-        self.load_html_for_message(message_id.as_deref(), &html, base_uri.as_deref());
+        let fallback_text = self.imp().current_fallback_text.borrow().clone();
+        self.load_html_for_message_with_fallback(
+            message_id.as_deref(),
+            &html,
+            base_uri.as_deref(),
+            fallback_text.as_deref(),
+        );
     }
 
     /// Allow remote image loading for the current email.
@@ -481,55 +492,20 @@ fn escape_html(value: &str) -> String {
 }
 
 fn html_to_fallback_text(value: &str) -> String {
-    let sanitized = sanitize_html(value);
-    let mut output = String::with_capacity(sanitized.len());
-    let mut in_tag = false;
-    let mut tag = String::new();
-    for character in sanitized.chars() {
-        if in_tag {
-            if character == '>' {
-                let normalized = tag
-                    .trim()
-                    .to_ascii_lowercase()
-                    .trim_end_matches('/')
-                    .trim()
-                    .split_whitespace()
-                    .next()
-                    .unwrap_or_default()
-                    .to_string();
-                if matches!(
-                    normalized.as_str(),
-                    "br" | "/p" | "/div" | "/li" | "/blockquote" | "/h1" | "/h2" | "/h3"
-                ) {
-                    if !output.ends_with('\n') {
-                        output.push('\n');
-                    }
-                }
-                in_tag = false;
-                tag.clear();
-            } else {
-                tag.push(character);
-            }
-        } else if character == '<' {
-            in_tag = true;
-            tag.clear();
-        } else {
-            output.push(character);
-        }
-    }
-    output
-        .replace("&nbsp;", " ")
-        .replace("&amp;", "&")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .trim()
+    html_to_plain_text(value)
+}
+
+fn readable_fallback_text(value: Option<&str>) -> String {
+    value
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .unwrap_or("(Die Nachricht enthält keinen darstellbaren Inhalt.)")
         .to_string()
 }
 
 #[cfg(test)]
 mod tests {
-    use super::html_to_fallback_text;
+    use super::{html_to_fallback_text, readable_fallback_text};
 
     #[test]
     fn fallback_text_preserves_mail_content_and_line_breaks() {
@@ -544,6 +520,18 @@ mod tests {
         assert!(
             html_to_fallback_text("<style>body{display:none}</style><meta charset=utf-8>")
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn fallback_text_is_stable_when_settings_reload_the_reader() {
+        assert_eq!(
+            readable_fallback_text(Some("  Vorschau aus dem Nachrichtentext  ")),
+            "Vorschau aus dem Nachrichtentext"
+        );
+        assert_eq!(
+            readable_fallback_text(Some("   ")),
+            "(Die Nachricht enthält keinen darstellbaren Inhalt.)"
         );
     }
 }

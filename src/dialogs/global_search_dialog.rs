@@ -9,7 +9,10 @@
 use adw::prelude::*;
 use adw::subclass::prelude::*;
 use gtk::glib;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 use crate::services::search_engine::{GlobalSearchEngine, SearchDomain, SearchResultItem};
 
@@ -21,6 +24,9 @@ mod imp {
         pub list: RefCell<Option<gtk::ListBox>>,
         pub status: RefCell<Option<gtk::Label>>,
         pub domain: RefCell<SearchDomain>,
+        pub query_generation: Cell<u64>,
+        pub query_cancellation: RefCell<Option<Arc<AtomicBool>>>,
+        pub debounce_source: RefCell<Option<glib::SourceId>>,
     }
 
     #[glib::object_subclass]
@@ -34,6 +40,15 @@ mod imp {
         fn constructed(&self) {
             self.parent_constructed();
             self.obj().build_ui();
+        }
+
+        fn dispose(&self) {
+            if let Some(source) = self.debounce_source.borrow_mut().take() {
+                source.remove();
+            }
+            if let Some(cancellation) = self.query_cancellation.borrow_mut().take() {
+                cancellation.store(true, Ordering::Relaxed);
+            }
         }
     }
 
@@ -150,6 +165,14 @@ impl GlobalSearchDialog {
         let Some(list) = self.imp().list.borrow().as_ref().cloned() else {
             return;
         };
+        if let Some(source) = self.imp().debounce_source.borrow_mut().take() {
+            source.remove();
+        }
+        if let Some(cancellation) = self.imp().query_cancellation.borrow_mut().take() {
+            cancellation.store(true, Ordering::Relaxed);
+        }
+        let generation = self.imp().query_generation.get().wrapping_add(1);
+        self.imp().query_generation.set(generation);
         while let Some(child) = list.first_child() {
             list.remove(&child);
         }
@@ -163,7 +186,61 @@ impl GlobalSearchDialog {
         }
 
         let domain = *self.imp().domain.borrow();
-        let results = GlobalSearchEngine::query(domain, query);
+        self.set_status("Lokale Datenbestände werden durchsucht …");
+        let query = query.to_string();
+        let dialog = self.downgrade();
+        let debounce = glib::timeout_add_local_once(Duration::from_millis(120), move || {
+            let Some(dialog) = dialog.upgrade() else {
+                return;
+            };
+            dialog.imp().debounce_source.borrow_mut().take();
+            dialog.start_query(query, domain, generation);
+        });
+        self.imp().debounce_source.replace(Some(debounce));
+    }
+
+    fn start_query(&self, query: String, domain: SearchDomain, generation: u64) {
+        if generation != self.imp().query_generation.get() {
+            return;
+        }
+
+        let cancellation = Arc::new(AtomicBool::new(false));
+        self.imp()
+            .query_cancellation
+            .replace(Some(cancellation.clone()));
+        let (sender, receiver) = async_channel::bounded(1);
+        let query_for_worker = query.clone();
+        std::thread::spawn(move || {
+            if cancellation.load(Ordering::Relaxed) {
+                return;
+            }
+            let results =
+                GlobalSearchEngine::query_cancelable(domain, &query_for_worker, &cancellation);
+            if let Err(error) = sender.send_blocking(results) {
+                tracing::debug!(%error, "Global search result was dropped");
+            }
+        });
+
+        let dialog = self.downgrade();
+        glib::spawn_future_local(async move {
+            let Ok(results) = receiver.recv().await else {
+                return;
+            };
+            let Some(dialog) = dialog.upgrade() else {
+                return;
+            };
+            if dialog.imp().query_generation.get() != generation {
+                return;
+            }
+            dialog.imp().query_cancellation.borrow_mut().take();
+            dialog.show_results(&query, results);
+        });
+    }
+
+    fn show_results(&self, query: &str, results: Vec<SearchResultItem>) {
+        let Some(list) = self.imp().list.borrow().as_ref().cloned() else {
+            return;
+        };
         if results.is_empty() {
             self.set_status(&format!("Keine lokalen Treffer für „{query}“."));
             return;

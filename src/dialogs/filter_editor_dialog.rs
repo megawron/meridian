@@ -152,7 +152,7 @@ fn filter_action_index(action: &FilterAction) -> u32 {
     }
 }
 
-fn condition_from_editor(editor: &ConditionEditor) -> Option<FilterCondition> {
+fn condition_from_editor(editor: &ConditionEditor) -> Result<FilterCondition, String> {
     let value = editor.value.text().trim().to_string();
     let field = match editor.field.selected() {
         1 => FilterField::Sender,
@@ -171,9 +171,9 @@ fn condition_from_editor(editor: &ConditionEditor) -> Option<FilterCondition> {
     };
     let operator = filter_operator_from_index(editor.operator.selected());
     if value.is_empty() && !operator.allows_empty_value(field) {
-        return None;
+        return Err("Diese Bedingung benötigt einen Suchwert".to_string());
     }
-    Some(FilterCondition {
+    Ok(FilterCondition {
         field,
         value,
         operator,
@@ -664,21 +664,38 @@ impl FilterEditorDialog {
                     }
                     return;
                 }
-                let conditions = condition_editors
+                let conditions = match condition_editors
                     .borrow()
                     .iter()
-                    .filter_map(condition_from_editor)
-                    .collect::<Vec<_>>();
-                if conditions.is_empty() {
-                    if let Some(parent) = dialog.transient_for() {
-                        if let Ok(window) = parent.downcast::<crate::window::EvolutionWindow>() {
-                            window.add_toast(&adw::Toast::new(
-                                "Bitte mindestens eine Filterbedingung mit Suchwert eingeben",
-                            ));
+                    .enumerate()
+                    .map(|(index, editor)| {
+                        condition_from_editor(editor)
+                            .map_err(|error| format!("Bedingung {}: {error}", index + 1))
+                    })
+                    .collect::<Result<Vec<_>, _>>()
+                {
+                    Ok(conditions) if !conditions.is_empty() => conditions,
+                    Ok(_) => {
+                        if let Some(parent) = dialog.transient_for() {
+                            if let Ok(window) = parent.downcast::<crate::window::EvolutionWindow>()
+                            {
+                                window.add_toast(&adw::Toast::new(
+                                    "Bitte mindestens eine Filterbedingung anlegen",
+                                ));
+                            }
                         }
+                        return;
                     }
-                    return;
-                }
+                    Err(error) => {
+                        if let Some(parent) = dialog.transient_for() {
+                            if let Ok(window) = parent.downcast::<crate::window::EvolutionWindow>()
+                            {
+                                window.add_toast(&adw::Toast::new(&error));
+                            }
+                        }
+                        return;
+                    }
+                };
 
                 let actions = match action_editors
                     .borrow()

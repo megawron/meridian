@@ -120,7 +120,8 @@ impl SearchFolderDialog {
         let name = adw::EntryRow::builder().title("Name").build();
         name.set_tooltip_text(Some("z. B. Rechnungen"));
         if let Some(search_id) = self.imp().search_id.borrow().as_deref() {
-            if let Some(search) = SearchFolderService::load_saved()
+            if let Some(search) = SearchFolderService::default()
+                .load_saved()
                 .into_iter()
                 .find(|search| search.id == search_id)
             {
@@ -148,7 +149,7 @@ impl SearchFolderDialog {
                     dialog.show_toast("Name und Suchabfrage sind erforderlich");
                     return;
                 }
-                match SearchFolderService::save_saved(SavedSearch {
+                match SearchFolderService::default().save_saved(SavedSearch {
                     id: dialog
                         .imp()
                         .search_id

@@ -25,6 +25,7 @@ use crate::services::draft_store_service::{DraftMessage, DraftStoreService};
 use crate::services::ecal_service::{ECalComponentType, ECalService};
 use crate::services::eds_service::{self, EdsSourceDiscovery, EdsSourceKind, EdsSourceOrigin};
 use crate::services::eds_source_cache_service::EdsSourceCache;
+use crate::services::html_sanitizer::html_to_plain_text;
 use crate::services::inline_content_service::{InlineImage, resolve_cid_images};
 use crate::services::itip_service::{
     ItipInvitation, ItipMethod, ItipReplyStatus, build_reply_component, normalize_attendee_address,
@@ -570,7 +571,7 @@ fn message_matches_filter(
     let recipient_cc = message.recipient_cc().to_lowercase();
     let recipient_bcc = message.recipient_bcc().to_lowercase();
     let preview = message.preview_snippet().to_lowercase();
-    let body = message.html_body().to_lowercase();
+    let body = html_to_plain_text(&message.html_body()).to_lowercase();
     let label_values = message.labels();
     let labels = label_values
         .iter()
@@ -759,7 +760,9 @@ fn message_search_field_matches(
             .contains(&value),
         MessageSearchField::Subject => message.subject().to_ascii_lowercase().contains(&value),
         MessageSearchField::Body => {
-            message.html_body().to_ascii_lowercase().contains(&value)
+            html_to_plain_text(&message.html_body())
+                .to_ascii_lowercase()
+                .contains(&value)
                 || message
                     .preview_snippet()
                     .to_ascii_lowercase()
@@ -3971,7 +3974,7 @@ impl MailPage {
                 &folder.query_expression(),
             ));
         }
-        for search in SearchFolderService::load_saved() {
+        for search in SearchFolderService::default().load_saved() {
             let row = Self::create_search_folder_row(
                 &format!("saved-search:{}", search.id),
                 "edit-find-symbolic",
@@ -4023,7 +4026,8 @@ impl MailPage {
                     "Gespeicherten Suchordner löschen?",
                     "Die lokale Suchdefinition wird dauerhaft entfernt.",
                     "Löschen",
-                    move || match SearchFolderService::delete_saved(&search_id_for_action) {
+                    move || match SearchFolderService::default().delete_saved(&search_id_for_action)
+                    {
                         Ok(true) => {
                             if let Some(row) = row_for_action.upgrade() {
                                 search_list_for_action.remove(&row);

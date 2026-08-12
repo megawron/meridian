@@ -3,6 +3,9 @@
 // search_engine — Unified cross-component search engine (Mail, Contacts, Calendar).
 
 use chrono::{DateTime, Local, NaiveDate, NaiveDateTime};
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use crate::services::html_sanitizer::html_to_plain_text;
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,6 +58,18 @@ impl GlobalSearchEngine {
     /// Native EDS/Camel live search is a separate Linux integration step, but
     /// the portable application already has a useful cross-component search.
     pub fn query(domain: SearchDomain, query_str: &str) -> Vec<SearchResultItem> {
+        let cancellation = AtomicBool::new(false);
+        Self::query_cancelable(domain, query_str, &cancellation)
+    }
+
+    /// Query local stores while allowing a UI worker to abandon an obsolete
+    /// scan.  The cancellation flag is checked between stores and during the
+    /// potentially large local-mail load; no GTK objects are created here.
+    pub fn query_cancelable(
+        domain: SearchDomain,
+        query_str: &str,
+        cancellation: &AtomicBool,
+    ) -> Vec<SearchResultItem> {
         if query_str.trim().is_empty() {
             return Vec::new();
         }
@@ -62,9 +77,12 @@ impl GlobalSearchEngine {
         let mut documents = Vec::new();
 
         if matches!(domain, SearchDomain::Mail | SearchDomain::All) {
+            if cancellation.load(Ordering::Relaxed) {
+                return Vec::new();
+            }
             documents.extend(
                 crate::services::mail_store_service::MailStoreService::new()
-                    .load_local_records()
+                    .load_local_records_cancelable(cancellation)
                     .into_iter()
                     .map(|message| {
                         let snippet = local_mail_search_text(&message);
@@ -89,6 +107,9 @@ impl GlobalSearchEngine {
         }
 
         if matches!(domain, SearchDomain::Calendar | SearchDomain::All) {
+            if cancellation.load(Ordering::Relaxed) {
+                return Vec::new();
+            }
             let snapshot = crate::services::calendar_store_service::CalendarStoreService::new()
                 .load_snapshot();
             documents.extend(snapshot.events.into_iter().map(|event| {
@@ -148,6 +169,9 @@ impl GlobalSearchEngine {
         }
 
         if matches!(domain, SearchDomain::Contacts | SearchDomain::All) {
+            if cancellation.load(Ordering::Relaxed) {
+                return Vec::new();
+            }
             documents.extend(
                 crate::services::contact_store_service::ContactStoreService::new()
                     .load_contacts()
@@ -167,6 +191,10 @@ impl GlobalSearchEngine {
                         )
                     }),
             );
+        }
+
+        if cancellation.load(Ordering::Relaxed) {
+            return Vec::new();
         }
 
         Self::query_search_documents(domain, query_str, &documents)
@@ -507,7 +535,7 @@ fn local_mail_search_text(message: &crate::services::mail_store_service::ParsedM
         message.reply_to,
         message.folder_name,
         message.preview_snippet,
-        message.html_body,
+        html_to_plain_text(&message.html_body),
         message.labels.join(" "),
         format!("{} {}", attachment_names, state_terms),
     )
@@ -532,7 +560,11 @@ fn local_mail_search_index(message: &crate::services::mail_store_service::Parsed
         prefixed_search_terms("subject", &message.subject),
         prefixed_search_terms(
             "body",
-            &format!("{} {}", message.preview_snippet, message.html_body),
+            &format!(
+                "{} {}",
+                message.preview_snippet,
+                html_to_plain_text(&message.html_body)
+            ),
         ),
         prefixed_search_terms("label", &message.labels.join(" ")),
         prefixed_search_terms("filename", &attachment_names),
@@ -552,7 +584,11 @@ fn local_mail_search_index(message: &crate::services::mail_store_service::Parsed
         message.folder_name,
         message.folder_id,
         message.subject,
-        format!("{} {}", message.preview_snippet, message.html_body),
+        format!(
+            "{} {}",
+            message.preview_snippet,
+            html_to_plain_text(&message.html_body)
+        ),
         message.labels.join(" "),
         attachment_names,
         state_terms,

@@ -24,9 +24,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::models::mail_message::{AttachmentInfo, MailMessageObject};
 use crate::services::crypto_service::{CryptoProtocol, CryptoService};
+use crate::services::html_sanitizer::html_to_plain_text;
 use crate::services::mail_filter_service::{
-    FilterAction, FilterMessageContext, FilterOperator, FilterScope, MailFilterRule,
-    MailFilterStore,
+    FilterAction, FilterMessageContext, FilterScope, MailFilterRule, MailFilterStore,
 };
 use crate::services::mail_metadata_service::{MailMessageState, MailMetadataStore};
 use crate::services::mail_thread_service::{
@@ -975,7 +975,11 @@ struct FilterEffects {
 }
 
 fn message_matches_rule(rule: &MailFilterRule, message: &ParsedMail) -> bool {
-    let body = format!("{} {}", message.preview_snippet, message.html_body);
+    let body = format!(
+        "{} {}",
+        message.preview_snippet,
+        html_to_plain_text(&message.html_body)
+    );
     let sender = format!("{} <{}>", message.sender_name, message.sender_email);
     let recipient = format!(
         "{} {} {}",
@@ -2288,7 +2292,7 @@ fn format_size(size: usize) -> String {
 mod tests {
     use super::*;
     use crate::services::mail_filter_service::{
-        FilterAction, FilterCondition, FilterField, FilterScope,
+        FilterAction, FilterCondition, FilterField, FilterOperator, FilterScope,
     };
 
     #[test]

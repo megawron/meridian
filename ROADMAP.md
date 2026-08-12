@@ -385,7 +385,9 @@ werden.
   der HTML-Renderer bleibt dabei der produktive Linux-Pfad. Der portable
   Sanitizer entfernt blockierte Void-Tags wie `meta` und `link`, ohne den
   nachfolgenden Mailkörper abzuschneiden; damit bleiben typische HTML-Mails
-  im Vorschaufenster lesbar.
+  im Vorschaufenster lesbar. Der explizite Textmodus wandelt HTML ebenfalls in
+  bereinigten Klartext um, statt rohe Tags anzuzeigen; bei leerem HTML wird
+  derselbe Klartext-/Vorschau-Fallback verwendet.
   Die portable Leseeinstellung, ob eine Nachricht beim Auswählen als gelesen
   markiert wird, ist persistent und gilt für lokale sowie native Mailpfade;
   providerabhängige Lesestatus-Synchronisation bleibt Linux/EDS-Abnahme.
@@ -1050,7 +1052,9 @@ werden.
   app-eigene Filterdateien werden mit dem bisherigen „enthält“-Standard
   weitergelesen; Evolution-XML-Importe übernehmen bekannte Vergleichsnamen
   und melden unbekannte Operatoren transparent als verlustarm auf „enthält“
-  zurück.
+  zurück. Neue und bearbeitete Regeln werden vor dem Persistieren auf Namen,
+  Bedingungen und erforderliche Aktionsziele geprüft; leere Editorzeilen
+  werden nicht mehr stillschweigend verworfen.
 - [ ] Camel-Filterdriver mit persistenten Regeln, Reihenfolge, Bedingungen,
   vollständigen Aktionen, Testlauf und Fehlerprotokoll.
 - [~] Die lokale Suchsprache unterstützt Feld-, Label-, Status-, Ordner-, Datums-,
@@ -1059,10 +1063,19 @@ werden.
   Datumswerte werden zusätzlich als ISO-Kompakt-, RFC-3339-/RFC-822- und
   relative Werte (`today`/`yesterday`/`7d`) erkannt;
   portable Suchordner können gespeichert, bearbeitet,
-  beim Start geladen und aus der Sidebar entfernt werden. Eine globale GTK4-rs-Suche
+  beim Start geladen und aus der Sidebar entfernt werden; ihre app-eigene
+  JSON-Persistenz validiert neue Definitionen und ist für Save/Update/Delete
+  separat testbar. Eine globale GTK4-rs-Suche
   durchsucht zusätzlich den lokalen Mail-, Kalender-, Aufgaben-, Notizen- und
   Kontaktbestand über einen gemeinsamen Service und kann den Suchbereich auf
-  Alle, Mail, Kalender/Aufgaben/Notizen oder Kontakte einschränken. Der
+  Alle, Mail, Kalender/Aufgaben/Notizen oder Kontakte einschränken. Der lokale
+  Bestandsscan läuft debounced und abbrechbar in einem Worker, sodass die Suche
+  den GTK-Hauptloop nicht blockiert; beim Schließen des Suchfensters werden
+  Debounce-Quelle und laufender Scan ebenfalls abgebrochen. Der
+  lokale Mail-Suchindex und die portablen Filterregeln verwenden für
+  `body`/Nachrichtentext denselben bereinigten Klartext wie die Vorschau;
+  Suchbegriffe werden dadurch auch über HTML-Tags und Zeilenumbrüche hinweg
+  am sichtbaren Nachrichteninhalt gefunden. Der
   portable Graph-Mailpfad übersetzt kompatible positive Suchbestandteile in
   Outlook-KQL und integriert die paginierten Treffer in dieselbe Mailansicht;
   negative, status-, label-, ordner- und datumsabhängige Teile bleiben lokale
@@ -1076,7 +1089,10 @@ werden.
   Empfänger, Betreff, Ordner, Labels und Dateinamen aus und unterstützt die
   Datumsprädikate `on:`, `after:`/`newer:` und `before:`/`older:` einschließlich
   negativer Formen für Mail, Kalender, Aufgaben und Notizen; die serverseitige
-  Camel-Syntax bleibt davon getrennt.
+  Camel-Syntax bleibt davon getrennt. Der beim Öffnen gewählte Klartext-/Vorschau-
+  Fallback bleibt außerdem bei einem anschließenden Neuladen durch HTML-/Theme-
+  oder Schrifteinstellungen erhalten, damit eine Nachricht nicht wieder als
+  leere Fläche endet.
 - [~] Exchange/Microsoft 365: Der portable Graph-Pfad deckt Mail, Ordner,
   MIME-Versand/Entwürfe, Zustände/Labels/Kopieren, Kalender-CRUD mit grundlegenden
   Serien, Kontakte-CRUD, GAL und OOF ab; EWS-Kompatibilität bleibt nur soweit

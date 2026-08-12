@@ -153,6 +153,54 @@ pub struct FilterMessageContext<'a> {
 }
 
 impl MailFilterRule {
+    /// Validate a rule before it is persisted or handed to a backend.
+    ///
+    /// The legacy `condition`/`action` fields remain the effective values for
+    /// older JSON files, so validation deliberately goes through the same
+    /// compatibility accessors used by matching and execution.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.id.trim().is_empty() {
+            return Err("Die Filterregel benötigt eine ID".to_string());
+        }
+        if self.name.trim().is_empty() {
+            return Err("Die Filterregel benötigt einen Namen".to_string());
+        }
+
+        let conditions = self.effective_conditions();
+        if conditions.is_empty() {
+            return Err("Die Filterregel benötigt mindestens eine Bedingung".to_string());
+        }
+        for (index, condition) in conditions.into_iter().enumerate() {
+            if condition.value.trim().is_empty()
+                && !condition.operator.allows_empty_value(condition.field)
+            {
+                return Err(format!("Bedingung {} benötigt einen Suchwert", index + 1));
+            }
+        }
+
+        let actions = self.effective_actions();
+        if actions.is_empty() {
+            return Err("Die Filterregel benötigt mindestens eine Aktion".to_string());
+        }
+        for (index, action) in actions.into_iter().enumerate() {
+            let target = match action {
+                FilterAction::MoveToFolder(target)
+                | FilterAction::CopyToFolder(target)
+                | FilterAction::SetLabel(target)
+                | FilterAction::ClearLabel(target) => Some(target),
+                _ => None,
+            };
+            if target.is_some_and(|target| target.trim().is_empty()) {
+                return Err(format!(
+                    "Aktion {} benötigt einen Zielordner oder ein Label",
+                    index + 1
+                ));
+            }
+        }
+
+        Ok(())
+    }
+
     pub fn effective_conditions(&self) -> Vec<&FilterCondition> {
         if self.conditions.is_empty() {
             vec![&self.condition]
@@ -457,6 +505,8 @@ impl MailFilterStore {
     }
 
     pub fn upsert(&self, rule: MailFilterRule) -> io::Result<()> {
+        rule.validate()
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
         let mut rules = self.load();
         if let Some(existing) = rules.iter_mut().find(|existing| existing.id == rule.id) {
             *existing = rule;
@@ -695,6 +745,43 @@ mod tests {
 
         let junk = test_rule(FilterField::Junk, "ja");
         assert!(junk.matches_with_context("", "", "", "", "", &[], context));
+    }
+
+    #[test]
+    fn invalid_rules_are_rejected_before_persistence() {
+        let root = temporary_directory("filter-validation");
+        let store = MailFilterStore::new(root.join("filters.json"));
+
+        let mut missing_name = test_rule(FilterField::Subject, "invoice");
+        missing_name.name.clear();
+        let error = store
+            .upsert(missing_name)
+            .expect_err("a rule without a name must be rejected");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert!(store.load().is_empty());
+
+        let mut missing_condition_value = test_rule(FilterField::Subject, "");
+        let error = store
+            .upsert(missing_condition_value.clone())
+            .expect_err("a non-existence condition without a value must be rejected");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+
+        missing_condition_value.condition.operator = FilterOperator::Exists;
+        missing_condition_value.condition.value.clear();
+        store
+            .upsert(missing_condition_value)
+            .expect("an existence condition may omit its value");
+        assert_eq!(store.load().len(), 1);
+
+        let mut missing_action_target = test_rule(FilterField::Subject, "invoice");
+        missing_action_target.action = FilterAction::MoveToFolder(String::new());
+        let error = store
+            .upsert(missing_action_target)
+            .expect_err("a move action without a target must be rejected");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert_eq!(store.load().len(), 1);
+
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
