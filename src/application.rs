@@ -366,7 +366,6 @@ impl EvolutionApplication {
     /// Set up keyboard accelerators for actions.
     fn setup_accels(&self) {
         self.set_accels_for_action("app.quit", &["<Ctrl>Q"]);
-        self.set_accels_for_action("app.compose", &["<Ctrl>N"]);
         self.set_accels_for_action("app.drafts", &["<Ctrl><Shift>D"]);
         self.set_accels_for_action("app.global-search", &["<Ctrl><Shift>F"]);
         self.set_accels_for_action("app.preferences", &["<Ctrl>comma"]);
@@ -376,6 +375,7 @@ impl EvolutionApplication {
         self.set_accels_for_action("win.undo", &["<Ctrl>Z"]);
         self.set_accels_for_action("win.redo", &["<Ctrl><Shift>Z", "<Ctrl>Y"]);
         self.set_accels_for_action("win.toggle-sidebar", &["F9"]);
+        self.set_accels_for_action("win.new", &["<Ctrl>N"]);
 
         // Module switching: Ctrl+1…5
         self.set_accels_for_action("win.switch-mail", &["<Ctrl>1"]);

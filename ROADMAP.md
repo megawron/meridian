@@ -1208,9 +1208,20 @@ nicht als vollständiger Ersatz beworben werden.
    Datei → Neu → Termin und Datei → Neu → Kontakt wechseln bei Bedarf in den
    jeweiligen Bereich und verwenden dort denselben Seiten-Workflow wie die
    lokalen Erstellungsbuttons einschließlich anschließender Listenaktualisierung.
+   Neue und bearbeitete Kalendertermine laden nach dem Schließen des Dialogs
+   den gemeinsamen EDS-/Graph-/iCalendar-Snapshot neu, damit Liste, Agenda,
+   Monatsansicht und Aufgaben-Seitenleiste auch ohne natives EDS-Signal sofort
+   den aktuellen Stand zeigen.
+   Ctrl+N folgt nun ebenfalls dem sichtbaren Evolution-Modul und öffnet in
+   Mail, Kalender, Kontakten, Aufgaben oder Notizen jeweils den passenden
+   Erstellungsworkflow; der explizite Menüpunkt „Neue E-Mail“ bleibt davon
+   getrennt mailbezogen.
    Kontoerstellung und Kontobearbeitung aus Einstellungen und Hauptmenü
    aktualisieren nach dem Schließen außerdem die laufende Mail-/Quellenansicht,
    ohne einen Neustart zu verlangen.
+   Die persistierte letzte Modulansicht lädt ihr lazy GTK4-Modul bereits beim
+   Start vollständig, sodass Kalender, Kontakte, Aufgaben und Notizen nach
+   einem Neustart nicht auf einer leeren Platzhalterseite stehen bleiben.
 2. Die portable Aufgaben-/Notizen-/Kontaktansicht weiter vervollständigen:
    verbleibende EDS-vCard-/GAL-Felder, Duplikaterkennung und die noch offenen
    Evolution-Sonderfelder. Aufgaben-/Memo-Suche, Sortierung, Export und lokale

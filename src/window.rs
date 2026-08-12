@@ -150,6 +150,12 @@ impl EvolutionWindow {
             .and_then(|widget| widget.downcast::<CalendarPage>().ok())
     }
 
+    pub(crate) fn refresh_calendar_page(&self) {
+        if let Some(calendar_page) = self.calendar_page() {
+            calendar_page.reload_calendar_data();
+        }
+    }
+
     fn contacts_page(&self) -> Option<ContactsPage> {
         self.imp()
             .view_stack
@@ -255,6 +261,29 @@ impl EvolutionWindow {
                 }
             }
         });
+    }
+
+    fn present_new_mail(&self) {
+        let dialog = crate::dialogs::ComposeDialog::new();
+        dialog.set_transient_for(Some(self));
+        dialog.present();
+    }
+
+    fn present_contextual_new(&self) {
+        let view_name = self
+            .imp()
+            .view_stack
+            .borrow()
+            .as_ref()
+            .and_then(|view_stack| view_stack.visible_child_name())
+            .map(|name| name.to_string());
+        match view_name.as_deref() {
+            Some("calendar") => self.present_new_event(),
+            Some("contacts") => self.present_new_contact(),
+            Some("tasks") => self.present_new_task(),
+            Some("memos") => self.present_new_memo(),
+            _ => self.present_new_mail(),
+        }
     }
 
     pub(crate) fn refresh_mail_page(&self) {
@@ -398,28 +427,28 @@ impl EvolutionWindow {
         let (icon_name, tooltip, action_name) = match view_name {
             "calendar" => (
                 "x-office-calendar-symbolic",
-                "Neuen Termin erstellen",
-                "win.new-event",
+                "Neuen Termin erstellen (Ctrl+N)",
+                "win.new",
             ),
             "contacts" => (
                 "contact-new-symbolic",
-                "Neuen Kontakt erstellen",
-                "win.new-contact",
+                "Neuen Kontakt erstellen (Ctrl+N)",
+                "win.new",
             ),
             "tasks" => (
                 "task-new-symbolic",
-                "Neue Aufgabe erstellen",
-                "win.new-task",
+                "Neue Aufgabe erstellen (Ctrl+N)",
+                "win.new",
             ),
             "memos" => (
                 "document-new-symbolic",
-                "Neue Notiz erstellen",
-                "win.new-memo",
+                "Neue Notiz erstellen (Ctrl+N)",
+                "win.new",
             ),
             _ => (
                 "mail-message-new-symbolic",
                 "Neue E-Mail erstellen (Ctrl+N)",
-                "app.compose",
+                "win.new",
             ),
         };
         button.set_icon_name(icon_name);
@@ -609,6 +638,11 @@ impl EvolutionWindow {
             })
             .unwrap_or_else(|| "mail".to_string());
         view_stack.set_visible_child_name(&active_view);
+        // The visible-child notification is connected below, so it does not
+        // fire for the initial persisted view.  Load that module explicitly
+        // to make a restored Calendar/Contacts/Tasks/Memos session usable
+        // immediately instead of leaving its placeholder visible.
+        ensure_module_loaded(&active_view);
 
         if let Some(settings) = AppSettings::try_new() {
             let ensure_module_loaded_for_signal = Rc::clone(&ensure_module_loaded);
@@ -995,6 +1029,14 @@ impl EvolutionWindow {
     }
 
     fn setup_actions(&self) {
+        let action_new = gio::SimpleAction::new("new", None);
+        action_new.connect_activate(glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            move |_, _| win.present_contextual_new()
+        ));
+        self.add_action(&action_new);
+
         let action_sidebar = self.add_boolean_setting_action(
             "toggle-sidebar",
             "mail-show-sidebar",

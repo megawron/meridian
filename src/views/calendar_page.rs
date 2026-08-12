@@ -83,6 +83,7 @@ mod imp {
         pub agenda_view: RefCell<Option<gtk::Box>>,
         pub event_records: RefCell<Option<Rc<RefCell<Vec<CalendarEventRecord>>>>>,
         pub event_list: RefCell<Option<gtk::ListBox>>,
+        pub calendar_data_state: RefCell<Option<gtk::Label>>,
         pub task_records: RefCell<Option<Rc<RefCell<Vec<TaskRecord>>>>>,
         pub task_list: RefCell<Option<gtk::ListBox>>,
         pub task_state: RefCell<Option<gtk::Label>>,
@@ -112,6 +113,7 @@ mod imp {
                 agenda_view: RefCell::new(None),
                 event_records: RefCell::new(None),
                 event_list: RefCell::new(None),
+                calendar_data_state: RefCell::new(None),
                 task_records: RefCell::new(None),
                 task_list: RefCell::new(None),
                 task_state: RefCell::new(None),
@@ -185,6 +187,94 @@ impl CalendarPage {
         if let Some(button) = self.imp().new_event_button.borrow().as_ref() {
             button.activate();
         }
+    }
+
+    /// Reload the portable/EDS calendar snapshot after a dialog operation.
+    ///
+    /// EDS-backed installations normally receive the same change through the
+    /// native monitor.  The explicit reload is still required for the
+    /// portable local store and also makes the UI deterministic when a
+    /// backend emits its signal late or not at all.
+    pub(crate) fn reload_calendar_data(&self) {
+        let page = self.downgrade();
+        let (sender, receiver) = async_channel::bounded(1);
+        std::thread::spawn(move || {
+            let result = load_snapshot_prefer_eds();
+            if let Err(error) = sender.send_blocking(result) {
+                tracing::debug!(%error, "Calendar reload result was dropped");
+            }
+        });
+        glib::spawn_future_local(async move {
+            match receiver.recv().await {
+                Ok(result) => {
+                    if let Some(page) = page.upgrade() {
+                        page.apply_calendar_load_result(result);
+                    }
+                }
+                Err(error) => tracing::debug!(%error, "Calendar reload channel closed"),
+            }
+        });
+    }
+
+    fn apply_calendar_load_result(
+        &self,
+        result: crate::services::ecal_service::CalendarLoadResult,
+    ) {
+        let Some(event_list) = self.imp().event_list.borrow().as_ref().cloned() else {
+            return;
+        };
+        let Some(event_records) = self.imp().event_records.borrow().as_ref().cloned() else {
+            return;
+        };
+        let Some(task_records) = self.imp().task_records.borrow().as_ref().cloned() else {
+            return;
+        };
+
+        if let Some(warning) = result.warning {
+            tracing::warn!(%warning, "Calendar data loaded with a backend warning");
+        }
+
+        event_records.borrow_mut().clear();
+        while let Some(child) = event_list.first_child() {
+            event_list.remove(&child);
+        }
+        task_records.replace(result.snapshot.tasks);
+
+        let count = result.snapshot.events.len();
+        let state_label = self.imp().calendar_data_state.borrow().as_ref().cloned();
+        if count == 0 {
+            event_list.set_visible(false);
+            if let Some(state_label) = state_label {
+                match result.origin {
+                    CalendarDataOrigin::Eds => {
+                        state_label.set_label("Keine VEVENT-Daten aus EDS gefunden")
+                    }
+                    CalendarDataOrigin::Graph => {
+                        state_label.set_label("Keine VEVENT-Daten aus Microsoft Graph gefunden")
+                    }
+                    CalendarDataOrigin::Local => {
+                        state_label.set_label("Keine lokalen VEVENT-Daten gefunden")
+                    }
+                }
+            }
+        } else {
+            event_list.set_visible(true);
+            if let Some(state_label) = state_label {
+                let origin = match result.origin {
+                    CalendarDataOrigin::Eds => "EDS",
+                    CalendarDataOrigin::Graph => "Microsoft Graph",
+                    CalendarDataOrigin::Local => "lokalem iCalendar",
+                };
+                state_label.set_label(&format!("{count} Termin(e) aus {origin} geladen."));
+            }
+            for event in result.snapshot.events {
+                upsert_event_row(&event_list, Rc::clone(&event_records), event);
+            }
+        }
+
+        self.refresh_task_sidebar();
+        self.refresh_calendar_views();
+        self.refresh_event_list_visibility();
     }
 
     fn month_name(month: u32) -> &'static str {
@@ -264,6 +354,9 @@ impl CalendarPage {
             .halign(gtk::Align::Start)
             .build();
         sidebar_box.append(&local_item_state);
+        self.imp()
+            .calendar_data_state
+            .replace(Some(local_item_state.clone()));
 
         let event_list = gtk::ListBox::builder()
             .selection_mode(gtk::SelectionMode::None)
@@ -326,10 +419,6 @@ impl CalendarPage {
             page.refresh_event_list_visibility();
         });
 
-        let local_item_state_for_load = local_item_state.clone();
-        let event_list_for_load = event_list.clone();
-        let event_records_for_load = Rc::clone(&event_records);
-        let task_records_for_load = Rc::clone(&task_records);
         let page_for_load = self.downgrade();
         let (local_sender, local_receiver) = async_channel::bounded(1);
         std::thread::spawn(move || {
@@ -341,48 +430,8 @@ impl CalendarPage {
         glib::spawn_future_local(async move {
             match local_receiver.recv().await {
                 Ok(result) => {
-                    let count = result.snapshot.events.len();
-                    task_records_for_load.replace(result.snapshot.tasks.clone());
-                    if let Some(warning) = result.warning {
-                        tracing::warn!(%warning, "Calendar data loaded with a backend warning");
-                    }
-                    if count == 0 {
-                        event_list_for_load.set_visible(false);
-                        match result.origin {
-                            CalendarDataOrigin::Eds => {
-                                local_item_state_for_load
-                                    .set_label("Keine VEVENT-Daten aus EDS gefunden");
-                            }
-                            CalendarDataOrigin::Graph => {
-                                local_item_state_for_load
-                                    .set_label("Keine VEVENT-Daten aus Microsoft Graph gefunden");
-                            }
-                            CalendarDataOrigin::Local => {
-                                local_item_state_for_load
-                                    .set_label("Keine lokalen VEVENT-Daten gefunden");
-                            }
-                        }
-                    } else {
-                        event_list_for_load.set_visible(true);
-                        let origin = match result.origin {
-                            CalendarDataOrigin::Eds => "EDS",
-                            CalendarDataOrigin::Graph => "Microsoft Graph",
-                            CalendarDataOrigin::Local => "lokalem iCalendar",
-                        };
-                        local_item_state_for_load
-                            .set_label(&format!("{count} Termin(e) aus {origin} geladen."));
-                        for event in result.snapshot.events {
-                            upsert_event_row(
-                                &event_list_for_load,
-                                Rc::clone(&event_records_for_load),
-                                event,
-                            );
-                        }
-                    }
                     if let Some(page) = page_for_load.upgrade() {
-                        page.refresh_task_sidebar();
-                        page.refresh_calendar_views();
-                        page.refresh_event_list_visibility();
+                        page.apply_calendar_load_result(result);
                     }
                 }
                 Err(error) => tracing::debug!(%error, "Calendar snapshot unavailable"),
@@ -701,6 +750,13 @@ impl CalendarPage {
                 if let Some(win) = root.and_then(|r| r.downcast::<gtk::Window>().ok()) {
                     dialog.set_transient_for(Some(&win));
                 }
+                let page_for_refresh = page.downgrade();
+                dialog.connect_close_request(move |_| {
+                    if let Some(page) = page_for_refresh.upgrade() {
+                        page.reload_calendar_data();
+                    }
+                    glib::Propagation::Proceed
+                });
                 dialog.present();
             }
         ));
@@ -2513,8 +2569,21 @@ fn open_event_editor_for_widget<W: IsA<gtk::Widget>>(widget: &W, event: &Calenda
     }
     let dialog = crate::dialogs::EventDialog::new_for_edit(event);
     if let Some(root) = widget.root() {
+        let evolution_window = root
+            .clone()
+            .downcast::<crate::window::EvolutionWindow>()
+            .ok();
         if let Ok(window) = root.downcast::<gtk::Window>() {
             dialog.set_transient_for(Some(&window));
+        }
+        if let Some(window) = evolution_window {
+            let window = window.downgrade();
+            dialog.connect_close_request(move |_| {
+                if let Some(window) = window.upgrade() {
+                    window.refresh_calendar_page();
+                }
+                glib::Propagation::Proceed
+            });
         }
     }
     dialog.present();
@@ -2808,8 +2877,21 @@ fn append_event_row(
         }
         let dialog = crate::dialogs::EventDialog::new_for_edit(&event_for_edit);
         if let Some(root) = edit_button.root() {
+            let evolution_window = root
+                .clone()
+                .downcast::<crate::window::EvolutionWindow>()
+                .ok();
             if let Ok(window) = root.downcast::<gtk::Window>() {
                 dialog.set_transient_for(Some(&window));
+            }
+            if let Some(window) = evolution_window {
+                let window = window.downgrade();
+                dialog.connect_close_request(move |_| {
+                    if let Some(window) = window.upgrade() {
+                        window.refresh_calendar_page();
+                    }
+                    glib::Propagation::Proceed
+                });
             }
         }
         dialog.present();
@@ -2924,6 +3006,12 @@ fn append_event_row(
                                 &delete_button_for_result,
                                 &format!("Termin gelöscht ({})", result.uid),
                             );
+                            if let Some(window) = delete_button_for_result
+                                .root()
+                                .and_downcast::<crate::window::EvolutionWindow>()
+                            {
+                                window.refresh_calendar_page();
+                            }
                         }
                         Ok(Err(error)) => {
                             delete_button_for_result.set_sensitive(true);
