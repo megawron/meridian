@@ -22,6 +22,8 @@ settings persistence.
 - Mail mutations expose a one-shot lifecycle and cooperative cancellation.
   Record undo/redo only after confirmed backend success, serialize conflicting
   work for the same message, and surface failed batch rollback explicitly.
+  Worker results return completed commands to the owning UI thread; worker
+  threads never mutate UI-owned history directly.
 - MIME, vCard, settings, filter, and profile import paths preserve unknown safe
   data where possible. Unsupported values become redacted warnings; credentials
   and secret material must never enter app-owned stores, reports, or logs.

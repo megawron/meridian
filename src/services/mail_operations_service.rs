@@ -669,7 +669,7 @@ impl MailCommand {
         &self.description
     }
 
-    fn operation_kind(&self) -> MailOperationKind {
+    pub(crate) fn operation_kind(&self) -> MailOperationKind {
         self.forward.kind()
     }
 
@@ -1010,16 +1010,47 @@ impl CompletedMailOperation {
         self.cancellation_requested
     }
 
-    /// Commit history only after a worker reported confirmed backend success.
+    /// Commit in-memory history only after a worker reported confirmed backend
+    /// success.  The owning UI schedules the resulting snapshot for
+    /// persistence off the GTK main thread.
     pub(crate) fn commit(self, history: &mut MailCommandStack) {
-        history.record_applied(self.command);
+        history.record_applied_without_persist(self.command);
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct CompletedMailBatch {
+    commands: Vec<MailCommand>,
+}
+
+impl CompletedMailBatch {
+    pub(crate) fn len(&self) -> usize {
+        self.commands.len()
+    }
+
+    /// Commit a fully confirmed batch to in-memory undo history on the owning
+    /// thread.  The owning UI schedules persistence separately.
+    pub(crate) fn commit(self, history: &mut MailCommandStack) -> usize {
+        history.record_applied_batch_without_persist(self.commands)
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct CompletedMailHistoryAction {
+    history: MailCommandStack,
+    command: Option<MailCommand>,
+}
+
+impl CompletedMailHistoryAction {
+    pub(crate) fn into_parts(self) -> (MailCommandStack, Option<MailCommand>) {
+        (self.history, self.command)
     }
 }
 
 const COMMAND_HISTORY_VERSION: u32 = 1;
 const COMMAND_HISTORY_LIMIT: usize = 100;
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub(crate) struct MailCommandStack {
     undo: Vec<MailCommand>,
     redo: Vec<MailCommand>,
@@ -1028,11 +1059,21 @@ pub(crate) struct MailCommandStack {
 }
 
 impl MailCommandStack {
+    pub(crate) fn empty_persistent() -> Self {
+        Self {
+            path: Some(Self::persistent_path()),
+            ..Self::default()
+        }
+    }
+
     pub(crate) fn persistent() -> Self {
-        let path = std::env::var_os("EVOLUTION_GTK4_MAIL_UNDO_FILE")
+        Self::load_from(Self::persistent_path())
+    }
+
+    fn persistent_path() -> PathBuf {
+        std::env::var_os("EVOLUTION_GTK4_MAIL_UNDO_FILE")
             .map(PathBuf::from)
-            .unwrap_or_else(|| crate::services::app_data_dir().join("mail-undo.json"));
-        Self::load_from(path)
+            .unwrap_or_else(|| crate::services::app_data_dir().join("mail-undo.json"))
     }
 
     fn load_from(path: PathBuf) -> Self {
@@ -1106,6 +1147,10 @@ impl MailCommandStack {
         }
     }
 
+    pub(crate) fn persist_snapshot(&self) {
+        self.persist();
+    }
+
     fn trim_history(&mut self) {
         if self.undo.len() > COMMAND_HISTORY_LIMIT {
             let excess = self.undo.len() - COMMAND_HISTORY_LIMIT;
@@ -1118,10 +1163,32 @@ impl MailCommandStack {
     }
 
     fn record_applied(&mut self, command: MailCommand) {
+        self.record_applied_without_persist(command);
+        self.persist();
+    }
+
+    fn record_applied_without_persist(&mut self, command: MailCommand) {
         self.undo.push(command);
         self.redo.clear();
         self.trim_history();
-        self.persist();
+    }
+
+    fn record_applied_batch(&mut self, commands: Vec<MailCommand>) -> usize {
+        let applied_count = self.record_applied_batch_without_persist(commands);
+        if applied_count > 0 {
+            self.persist();
+        }
+        applied_count
+    }
+
+    fn record_applied_batch_without_persist(&mut self, commands: Vec<MailCommand>) -> usize {
+        let applied_count = commands.len();
+        if applied_count > 0 {
+            self.undo.extend(commands);
+            self.redo.clear();
+            self.trim_history();
+        }
+        applied_count
     }
 
     fn apply_command_with_cancellation(
@@ -1237,8 +1304,26 @@ impl MailCommandStack {
         commands: Vec<MailCommand>,
         context: &MailOperationContext,
     ) -> Result<usize, MailOperationError> {
+        let completed = Self::execute_batch_for_worker(operations, commands, context)?;
+        let applied_count = completed.commit(self);
+        if applied_count > 0 {
+            self.persist();
+        }
+        Ok(applied_count)
+    }
+
+    /// Execute and roll back a batch without touching UI-owned history. This
+    /// is the worker-thread half of a batch operation; the caller commits the
+    /// returned value on the owning thread only after confirmed success.
+    pub(crate) fn execute_batch_for_worker(
+        operations: &MailOperationsService,
+        commands: Vec<MailCommand>,
+        context: &MailOperationContext,
+    ) -> Result<CompletedMailBatch, MailOperationError> {
         let Some(first) = commands.first() else {
-            return Ok(0);
+            return Ok(CompletedMailBatch {
+                commands: Vec::new(),
+            });
         };
         let operation = first.operation_kind();
         context.run(operation, |context| {
@@ -1265,14 +1350,7 @@ impl MailCommandStack {
                 applied.push(command);
             }
 
-            let applied_count = applied.len();
-            if applied_count > 0 {
-                self.undo.extend(applied);
-                self.redo.clear();
-                self.trim_history();
-                self.persist();
-            }
-            Ok(applied_count)
+            Ok(CompletedMailBatch { commands: applied })
         })
     }
 
@@ -1285,6 +1363,31 @@ impl MailCommandStack {
         };
         let context = MailOperationContext::new();
         self.undo_with_context(operations, &context, command.operation_kind())
+    }
+
+    fn undo_running(
+        &mut self,
+        operations: &MailOperationsService,
+        cancellation: &MailOperationCancellation,
+        operation: MailOperationKind,
+        persist: bool,
+    ) -> Result<Option<MailCommand>, MailOperationError> {
+        cancellation.check(operation)?;
+        let command = self
+            .undo
+            .pop()
+            .expect("undo entry was checked before starting");
+        if let Err(error) = operations.apply_with_result(command.inverse.clone()) {
+            self.undo.push(command);
+            return Err(error);
+        }
+        let result = command.clone();
+        self.redo.push(command);
+        self.trim_history();
+        if persist {
+            self.persist();
+        }
+        Ok(Some(result))
     }
 
     pub(crate) fn undo_with_cancellation(
@@ -1306,20 +1409,7 @@ impl MailCommandStack {
         operation: MailOperationKind,
     ) -> Result<Option<MailCommand>, MailOperationError> {
         context.run(operation, |context| {
-            context.cancellation.check(operation)?;
-            let command = self
-                .undo
-                .pop()
-                .expect("undo entry was checked before starting");
-            if let Err(error) = operations.apply_with_result(command.inverse.clone()) {
-                self.undo.push(command);
-                return Err(error);
-            }
-            let result = command.clone();
-            self.redo.push(command);
-            self.trim_history();
-            self.persist();
-            Ok(Some(result))
+            self.undo_running(operations, &context.cancellation, operation, true)
         })
     }
 
@@ -1332,6 +1422,35 @@ impl MailCommandStack {
         };
         let context = MailOperationContext::new();
         self.redo_with_context(operations, &context, command.operation_kind())
+    }
+
+    fn redo_running(
+        &mut self,
+        operations: &MailOperationsService,
+        cancellation: &MailOperationCancellation,
+        operation: MailOperationKind,
+        persist: bool,
+    ) -> Result<Option<MailCommand>, MailOperationError> {
+        cancellation.check(operation)?;
+        let mut command = self
+            .redo
+            .pop()
+            .expect("redo entry was checked before starting");
+        let result = match operations.apply_with_result(command.forward.clone()) {
+            Ok(result) => result,
+            Err(error) => {
+                self.redo.push(command);
+                return Err(error);
+            }
+        };
+        command.update_inverse_from_result(result);
+        let result = command.clone();
+        self.undo.push(command);
+        self.trim_history();
+        if persist {
+            self.persist();
+        }
+        Ok(Some(result))
     }
 
     pub(crate) fn redo_with_cancellation(
@@ -1353,24 +1472,24 @@ impl MailCommandStack {
         operation: MailOperationKind,
     ) -> Result<Option<MailCommand>, MailOperationError> {
         context.run(operation, |context| {
-            context.cancellation.check(operation)?;
-            let mut command = self
-                .redo
-                .pop()
-                .expect("redo entry was checked before starting");
-            let result = match operations.apply_with_result(command.forward.clone()) {
-                Ok(result) => result,
-                Err(error) => {
-                    self.redo.push(command);
-                    return Err(error);
-                }
+            self.redo_running(operations, &context.cancellation, operation, true)
+        })
+    }
+
+    pub(crate) fn execute_history_action_for_worker(
+        mut history: MailCommandStack,
+        operations: &MailOperationsService,
+        undo: bool,
+        operation: MailOperationKind,
+        context: &MailOperationContext,
+    ) -> Result<CompletedMailHistoryAction, MailOperationError> {
+        context.run(operation, |context| {
+            let command = if undo {
+                history.undo_running(operations, &context.cancellation, operation, false)?
+            } else {
+                history.redo_running(operations, &context.cancellation, operation, false)?
             };
-            command.update_inverse_from_result(result);
-            let result = command.clone();
-            self.undo.push(command);
-            self.trim_history();
-            self.persist();
-            Ok(Some(result))
+            Ok(CompletedMailHistoryAction { history, command })
         })
     }
 
@@ -1380,6 +1499,14 @@ impl MailCommandStack {
 
     pub(crate) fn can_redo(&self) -> bool {
         !self.redo.is_empty()
+    }
+
+    pub(crate) fn undo_operation_kind(&self) -> Option<MailOperationKind> {
+        self.undo.last().map(MailCommand::operation_kind)
+    }
+
+    pub(crate) fn redo_operation_kind(&self) -> Option<MailOperationKind> {
+        self.redo.last().map(MailCommand::operation_kind)
     }
 }
 
@@ -2327,6 +2454,47 @@ mod tests {
                 is_important: false,
             })
         );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn worker_batch_defers_history_until_ui_commit() {
+        let root = temporary_directory("operations-worker-batch-history");
+        let mail_dir = root.join("mail");
+        fs::create_dir_all(&mail_dir).expect("mail directory should be created");
+        fs::write(
+            mail_dir.join("message.eml"),
+            "From: Sender <sender@example.org>\nSubject: Test\n\nBody\n",
+        )
+        .expect("mail should be written");
+        let store =
+            MailStoreService::with_mail_dir_and_state_path(&mail_dir, root.join("state.json"));
+        let message_id = store
+            .load_local_records()
+            .first()
+            .expect("message should parse")
+            .id
+            .clone();
+        let operations = MailOperationsService::with_store(store);
+        let context = MailOperationContext::new();
+        let mut history = MailCommandStack::default();
+
+        let completed = MailCommandStack::execute_batch_for_worker(
+            &operations,
+            vec![MailCommand::set_message_state(
+                message_id, None, true, false, false, true,
+            )],
+            &context,
+        )
+        .expect("worker batch should succeed");
+
+        assert_eq!(completed.len(), 1);
+        assert!(!history.can_undo());
+        assert!(!history.can_redo());
+        assert_eq!(completed.commit(&mut history), 1);
+        assert!(history.can_undo());
+        assert!(!history.can_redo());
 
         let _ = fs::remove_dir_all(root);
     }

@@ -169,6 +169,94 @@ impl TaskSort {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TaskQuickEditValues {
+    due: String,
+    priority: u8,
+    status: &'static str,
+    percent: u8,
+    categories: String,
+}
+
+fn task_priority_value(raw: &str) -> u8 {
+    raw.trim().parse::<u8>().unwrap_or(0).min(9)
+}
+
+fn task_is_completed(task: &TaskItemObject) -> bool {
+    task.is_completed() || task_status_value(&task.component()) == "COMPLETED"
+}
+
+fn task_quick_edit_values(task: &TaskItemObject) -> TaskQuickEditValues {
+    let component = task.component();
+    TaskQuickEditValues {
+        due: task.due_date(),
+        priority: task_priority_value(&task.priority()),
+        status: task_status_value(&component),
+        percent: parse_task_percent(&component),
+        categories: ical_property(&component, "CATEGORIES").unwrap_or_default(),
+    }
+}
+
+fn update_task_quick_fields(
+    task: &TaskItemObject,
+    due: &str,
+    priority: u8,
+    categories: &str,
+    status: &str,
+    percent: u8,
+) -> Result<String, String> {
+    let component = task.component();
+    update_task_component(
+        &component,
+        &task.title(),
+        due,
+        &ical_property(&component, "RRULE").unwrap_or_default(),
+        &ical_properties(&component, "RDATE").join(","),
+        &ical_properties(&component, "EXDATE").join(","),
+        priority,
+        categories,
+        parse_ical_alarm_minutes(&component).unwrap_or_default(),
+        &ical_property(&component, "DESCRIPTION").unwrap_or_default(),
+        &ical_properties(&component, "ATTACH").join("\n"),
+        status,
+        percent,
+    )
+}
+
+fn normalize_task_query(query: &str) -> String {
+    query
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+
+fn task_search_haystack(task: &TaskItemObject) -> String {
+    let component = task.component();
+    let categories = ical_properties(&component, "CATEGORIES").join(" ");
+    let description = ical_property(&component, "DESCRIPTION").unwrap_or_default();
+    format!(
+        "{} {} {} {} {} {} {}",
+        task.title(),
+        task.due_date(),
+        task.priority(),
+        task_status_label(&component),
+        categories,
+        description,
+        component,
+    )
+    .to_lowercase()
+}
+
+fn task_query_matches(task: &TaskItemObject, query: &str) -> bool {
+    let query = normalize_task_query(query);
+    if query.is_empty() {
+        return true;
+    }
+    let haystack = task_search_haystack(task);
+    query.split_whitespace().all(|term| haystack.contains(term))
+}
+
 impl TasksPage {
     pub fn new() -> Self {
         glib::Object::builder().build()
@@ -460,7 +548,7 @@ impl TasksPage {
             .build();
 
         let empty_tasks = gtk::Label::builder()
-            .label("Keine Aufgaben geladen")
+            .label("Aufgaben werden geladen…")
             .css_classes(vec!["dim-label"])
             .margin_top(24)
             .build();
@@ -532,11 +620,7 @@ impl TasksPage {
             let mut names = vec!["Alle Aufgabenlisten".to_string()];
             let mut uids = Vec::new();
             for source in sources {
-                names.push(if source.backend_name.trim().is_empty() {
-                    source.display_name
-                } else {
-                    format!("{} · {}", source.display_name, source.backend_name)
-                });
+                names.push(source.display_name);
                 uids.push(source.uid);
             }
             if let Some(initial_source_filter) = initial_source_filter.as_deref()
@@ -938,7 +1022,11 @@ impl TasksPage {
                         }
                     }
                 }
-                Err(error) => tracing::debug!(%error, "Task snapshot unavailable"),
+                Err(error) => {
+                    empty_tasks_for_load.set_label("Aufgaben konnten nicht geladen werden");
+                    empty_tasks_for_load.set_visible(true);
+                    tracing::debug!(%error, "Task snapshot unavailable");
+                }
             }
         });
 
@@ -1312,13 +1400,7 @@ impl TasksPage {
                 .collect();
             let mut names: Vec<String> = active_sources
                 .iter()
-                .map(|source| {
-                    if source.backend_name.is_empty() {
-                        source.display_name.clone()
-                    } else {
-                        format!("{} · {}", source.display_name, source.backend_name)
-                    }
-                })
+                .map(|source| source.display_name.clone())
                 .collect();
             let mut uids = source_uids_for_load.borrow_mut();
             uids.clear();
@@ -1585,7 +1667,7 @@ fn render_task_rows(
     let source_filter = page.imp().task_source_filter.borrow().clone();
     let category_filter = page.imp().task_category_filter.borrow().clone();
     let sort = page.imp().task_sort.get();
-    let query = page.imp().task_query.borrow().trim().to_lowercase();
+    let query = normalize_task_query(page.imp().task_query.borrow().as_str());
     let mut visible = 0;
     let mut tasks = Vec::new();
     for index in 0..task_store.n_items() {
@@ -1688,7 +1770,7 @@ fn compare_tasks(
     sort: TaskSort,
     descending: bool,
 ) -> std::cmp::Ordering {
-    let completed_order = left.is_completed().cmp(&right.is_completed());
+    let completed_order = task_is_completed(left).cmp(&task_is_completed(right));
     let ordering = match sort {
         TaskSort::DueDate => compare_optional_dates(
             task_next_due_date(left, Local::now().date_naive()),
@@ -1698,11 +1780,9 @@ fn compare_tasks(
             .title()
             .to_lowercase()
             .cmp(&right.title().to_lowercase()),
-        TaskSort::Priority => left
-            .priority()
-            .parse::<u8>()
-            .unwrap_or(0)
-            .cmp(&right.priority().parse::<u8>().unwrap_or(0)),
+        TaskSort::Priority => {
+            task_priority_value(&left.priority()).cmp(&task_priority_value(&right.priority()))
+        }
     };
     let ordering = if descending {
         ordering.reverse()
@@ -1775,33 +1855,17 @@ fn task_matches_filter_with_source_and_category(
         TaskFilter::Today => {
             task_next_due_date(task, Local::now().date_naive()) == Some(Local::now().date_naive())
         }
-        TaskFilter::Important => task
-            .priority()
-            .parse::<u8>()
-            .is_ok_and(|priority| priority > 0),
+        TaskFilter::Important => task_priority_value(&task.priority()) > 0,
         TaskFilter::Overdue => {
             task_next_due_date(task, Local::now().date_naive())
                 .is_some_and(|due| due < Local::now().date_naive())
-                && !task.is_completed()
+                && !task_is_completed(task)
         }
         TaskFilter::InProgress => task_status_value(&task.component()) == "IN-PROCESS",
         TaskFilter::Cancelled => task_status_value(&task.component()) == "CANCELLED",
-        TaskFilter::Completed => {
-            task.is_completed() || task_status_value(&task.component()) == "COMPLETED"
-        }
+        TaskFilter::Completed => task_is_completed(task),
     };
-    if !matches_filter || query.is_empty() {
-        return matches_filter;
-    }
-    let haystack = format!(
-        "{} {} {} {}",
-        task.title(),
-        task.due_date(),
-        task.priority(),
-        task.component()
-    )
-    .to_lowercase();
-    haystack.contains(query)
+    matches_filter && task_query_matches(task, query)
 }
 
 fn task_due_date(value: &str) -> Option<NaiveDate> {
@@ -2034,13 +2098,14 @@ fn append_task_row(
         row.add_prefix(&category_dot);
     }
 
+    let completed = task_is_completed(task);
     let check = gtk::CheckButton::builder()
-        .active(task.is_completed())
+        .active(completed)
         .valign(gtk::Align::Center)
         .build();
     set_accessible_label(
         &check,
-        &if task.is_completed() {
+        &if completed {
             format!("Aufgabe als offen markieren: {}", task.title())
         } else {
             format!("Aufgabe als erledigt markieren: {}", task.title())
@@ -2112,8 +2177,17 @@ fn append_task_row(
         let task_store_for_result = task_store_for_check.clone();
         let empty_tasks_for_result = empty_tasks_for_check.clone();
         glib::spawn_future_local(async move {
-            let Ok(result) = receiver.recv().await else {
-                return;
+            let result = match receiver.recv().await {
+                Ok(result) => result,
+                Err(error) => {
+                    button_for_result.set_sensitive(true);
+                    tracing::debug!(%error, "Task status mutation channel closed");
+                    show_toast_for_widget(
+                        &button_for_result,
+                        "Aufgabenstatus konnte nicht aktualisiert werden",
+                    );
+                    return;
+                }
             };
             match result {
                 Ok(result) => {
@@ -2142,6 +2216,27 @@ fn append_task_row(
         });
     });
     row.add_prefix(&check);
+
+    let quick_edit_button = gtk::Button::builder()
+        .icon_name("view-more-symbolic")
+        .tooltip_text("Status, Priorität, Fälligkeit und Kategorien schnell bearbeiten")
+        .css_classes(vec!["flat"])
+        .valign(gtk::Align::Center)
+        .sensitive(!task.source_uid().is_empty())
+        .build();
+    set_accessible_label(
+        &quick_edit_button,
+        "Status, Priorität, Fälligkeit und Kategorien schnell bearbeiten",
+    );
+    row.add_suffix(&quick_edit_button);
+    connect_task_quick_editor(
+        page,
+        &quick_edit_button,
+        task_store,
+        task_list,
+        empty_tasks,
+        task,
+    );
 
     let edit_button = gtk::Button::builder()
         .icon_name("document-edit-symbolic")
@@ -2244,6 +2339,7 @@ fn append_task_row(
     let empty_tasks_for_delete = empty_tasks.clone();
     let delete_button_for_context = delete_button.clone();
     let delete_button_for_signal = delete_button.clone();
+    let page_weak_for_delete = page.downgrade();
     delete_button_for_signal.connect_clicked(move |_| {
         let source_uid = task_for_delete.source_uid();
         if source_uid.is_empty() {
@@ -2263,6 +2359,7 @@ fn append_task_row(
         let task_list_for_action = task_list_for_delete.clone();
         let empty_tasks_for_action = empty_tasks_for_delete.clone();
         let delete_button_for_action = delete_button.clone();
+        let page_weak_for_action = page_weak_for_delete.clone();
         crate::dialogs::run_destructive_action(
             &delete_button,
             "Aufgabe löschen?",
@@ -2289,6 +2386,7 @@ fn append_task_row(
                 let task_list_for_result = task_list_for_action.clone();
                 let empty_tasks_for_result = empty_tasks_for_action.clone();
                 let delete_button_for_result = delete_button_for_action.clone();
+                let page_weak_for_result = page_weak_for_action.clone();
                 glib::spawn_future_local(async move {
                     match receiver.recv().await {
                         Ok(Ok(result)) => {
@@ -2310,14 +2408,21 @@ fn append_task_row(
                             if let Some(index) = store_index {
                                 task_store_for_result.remove(index);
                             }
-                            if let Some(row) = delete_button_for_result
+                            if let Some(page) = page_weak_for_result.upgrade() {
+                                render_task_rows(
+                                    &page,
+                                    &task_list_for_result,
+                                    &task_store_for_result,
+                                    &empty_tasks_for_result,
+                                );
+                            } else if let Some(row) = delete_button_for_result
                                 .ancestor(gtk::ListBoxRow::static_type())
                                 .and_downcast::<gtk::ListBoxRow>()
                             {
                                 task_list_for_result.remove(&row);
+                                empty_tasks_for_result
+                                    .set_visible(task_store_for_result.n_items() == 0);
                             }
-                            empty_tasks_for_result
-                                .set_visible(task_store_for_result.n_items() == 0);
                             show_toast_for_widget(
                                 &delete_button_for_result,
                                 &format!("Aufgabe gelöscht ({uid})"),
@@ -2386,7 +2491,7 @@ fn append_task_row(
         });
         menu_box.append(&edit);
 
-        let toggle = gtk::Button::with_label(if task_for_context.is_completed() {
+        let toggle = gtk::Button::with_label(if task_is_completed(&task_for_context) {
             "Als offen markieren"
         } else {
             "Als erledigt markieren"
@@ -2478,6 +2583,234 @@ fn show_toast_for_widget<W: IsA<gtk::Widget>>(widget: &W, message: &str) {
         }
     }
     tracing::warn!(%message, "Task UI result");
+}
+
+fn connect_task_quick_editor(
+    page: &TasksPage,
+    button: &gtk::Button,
+    task_store: &gio::ListStore,
+    task_list: &gtk::ListBox,
+    empty_tasks: &gtk::Label,
+    task: &TaskItemObject,
+) {
+    let values = task_quick_edit_values(task);
+    let popover = gtk::Popover::builder()
+        .has_arrow(true)
+        .autohide(true)
+        .build();
+    let content = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(8)
+        .margin_start(12)
+        .margin_end(12)
+        .margin_top(10)
+        .margin_bottom(10)
+        .width_request(320)
+        .build();
+    let heading = gtk::Label::builder()
+        .label("Aufgabe schnell bearbeiten")
+        .halign(gtk::Align::Start)
+        .css_classes(vec!["heading"])
+        .build();
+    content.append(&heading);
+
+    let status_model = gtk::StringList::new(&[
+        "Nicht begonnen",
+        "In Bearbeitung",
+        "Erledigt",
+        "Abgebrochen",
+    ]);
+    let status_selector = gtk::DropDown::new(Some(status_model), None::<&gtk::Expression>);
+    status_selector.set_selected(task_status_index(&task.component()));
+    let status_row = adw::ActionRow::builder().title("Status").build();
+    status_row.add_suffix(&status_selector);
+    content.append(&status_row);
+
+    let priority_spin = gtk::SpinButton::with_range(0.0, 9.0, 1.0);
+    priority_spin.set_numeric(true);
+    priority_spin.set_value(values.priority as f64);
+    let priority_row = adw::ActionRow::builder()
+        .title("Priorität (0 = normal)")
+        .build();
+    priority_row.add_suffix(&priority_spin);
+    content.append(&priority_row);
+
+    let due_entry = gtk::Entry::builder()
+        .text(&values.due)
+        .placeholder_text("YYYY-MM-DD")
+        .width_chars(10)
+        .build();
+    let due_row = adw::ActionRow::builder().title("Fällig am").build();
+    due_row.add_suffix(&due_entry);
+    content.append(&due_row);
+
+    let categories_entry = gtk::Entry::builder()
+        .text(&values.categories)
+        .placeholder_text("z. B. Arbeit, Privat")
+        .width_chars(18)
+        .build();
+    let categories_row = adw::ActionRow::builder().title("Kategorien").build();
+    categories_row.add_suffix(&categories_entry);
+    content.append(&categories_row);
+
+    let buttons = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(6)
+        .halign(gtk::Align::End)
+        .margin_top(4)
+        .build();
+    let cancel_button = gtk::Button::with_label("Abbrechen");
+    cancel_button.add_css_class("flat");
+    let save_button = gtk::Button::with_label("Speichern");
+    save_button.add_css_class("suggested-action");
+    buttons.append(&cancel_button);
+    buttons.append(&save_button);
+    content.append(&buttons);
+    popover.set_child(Some(&content));
+    popover.set_parent(button);
+
+    let popover_weak = popover.downgrade();
+    let popover_for_button = popover_weak.clone();
+    button.connect_clicked(move |_| {
+        if let Some(popover) = popover_for_button.upgrade() {
+            popover.popup();
+        }
+    });
+    let popover_for_cancel = popover_weak.clone();
+    cancel_button.connect_clicked(move |_| {
+        if let Some(popover) = popover_for_cancel.upgrade() {
+            popover.popdown();
+        }
+    });
+
+    let page_weak = page.downgrade();
+    let task_store_for_save = task_store.clone();
+    let task_list_for_save = task_list.clone();
+    let empty_tasks_for_save = empty_tasks.clone();
+    let task_for_save = task.clone();
+    let popover_for_save = popover_weak;
+    save_button.connect_clicked(move |save_button| {
+        let status = task_status_from_index(status_selector.selected());
+        let percent = match status {
+            "COMPLETED" => 100,
+            "NEEDS-ACTION" => 0,
+            _ => values.percent,
+        };
+        let priority = priority_spin.value().round().clamp(0.0, 9.0) as u8;
+        let due = due_entry.text().trim().to_string();
+        let categories = categories_entry.text().to_string();
+        let component = match update_task_quick_fields(
+            &task_for_save,
+            &due,
+            priority,
+            &categories,
+            status,
+            percent,
+        ) {
+            Ok(component) => component,
+            Err(error) => {
+                show_toast_for_widget(save_button, &error);
+                return;
+            }
+        };
+        let component_for_result = component.clone();
+        let source_uid = task_for_save.source_uid();
+        let task_uid = task_for_save.id();
+        let title = task_for_save.title();
+        let priority_for_model = if priority == 0 {
+            "normal".to_string()
+        } else {
+            priority.to_string()
+        };
+        let completed = status == "COMPLETED";
+        let (sender, receiver) = async_channel::bounded(1);
+        save_button.set_sensitive(false);
+        std::thread::spawn(move || {
+            let result = ECalService::new().modify_component(
+                &source_uid,
+                ECalComponentType::Task,
+                &task_uid,
+                &component,
+            );
+            if let Err(error) = sender.send_blocking(result) {
+                tracing::debug!(%error, "Task quick edit result was dropped");
+            }
+        });
+
+        let save_button_for_result = save_button.clone();
+        let popover_for_result = popover_for_save.clone();
+        let page_weak_for_result = page_weak.clone();
+        let source_uid_for_result = task_for_save.source_uid();
+        let task_uid_for_result = task_for_save.id();
+        let task_store_for_result = task_store_for_save.clone();
+        let task_list_for_result = task_list_for_save.clone();
+        let empty_tasks_for_result = empty_tasks_for_save.clone();
+        glib::spawn_future_local(async move {
+            match receiver.recv().await {
+                Ok(Ok(result)) => {
+                    let component = result.component.unwrap_or(component_for_result);
+                    let uid = result.uid;
+                    let mut updated = false;
+                    for index in 0..task_store_for_result.n_items() {
+                        let Some(existing) = task_store_for_result
+                            .item(index)
+                            .and_downcast::<TaskItemObject>()
+                        else {
+                            continue;
+                        };
+                        if existing.id() == task_uid_for_result
+                            && existing.source_uid() == source_uid_for_result
+                        {
+                            existing.set_title(title.clone());
+                            existing.set_due_date(due.clone());
+                            existing.set_priority(priority_for_model.clone());
+                            existing.set_completed(completed);
+                            existing.set_component(component.clone());
+                            updated = true;
+                            break;
+                        }
+                    }
+                    if !updated {
+                        task_store_for_result.append(&TaskItemObject::new(
+                            &source_uid_for_result,
+                            &task_uid_for_result,
+                            &title,
+                            &due,
+                            &priority_for_model,
+                            completed,
+                            &component,
+                        ));
+                    }
+                    if let Some(page) = page_weak_for_result.upgrade() {
+                        render_task_rows(
+                            &page,
+                            &task_list_for_result,
+                            &task_store_for_result,
+                            &empty_tasks_for_result,
+                        );
+                        page.show_toast(&format!("Aufgabe aktualisiert ({uid})"));
+                    }
+                    if let Some(popover) = popover_for_result.upgrade() {
+                        popover.popdown();
+                    }
+                }
+                Ok(Err(error)) => {
+                    show_toast_for_widget(
+                        &save_button_for_result,
+                        &format!("Aufgabe konnte nicht aktualisiert werden: {error}"),
+                    );
+                }
+                Err(error) => {
+                    tracing::debug!(%error, "Task quick edit channel closed");
+                    show_toast_for_widget(
+                        &save_button_for_result,
+                        "Aufgabenänderung konnte nicht abgeschlossen werden",
+                    );
+                }
+            }
+            save_button_for_result.set_sensitive(true);
+        });
+    });
 }
 
 fn build_task_component(
@@ -3122,6 +3455,77 @@ mod tests {
 
         task.set_completed(true);
         assert!(task_matches_filter(&task, TaskFilter::Completed, "bill"));
+    }
+
+    #[test]
+    fn quick_edit_values_cover_daily_task_fields_and_preserve_other_data() {
+        let task = TaskItemObject::new(
+            "local-calendar",
+            "task-quick-edit",
+            "Prepare report",
+            "2026-08-11",
+            "2",
+            false,
+            concat!(
+                "BEGIN:VTODO\r\nUID:task-quick-edit\r\n",
+                "SUMMARY:Prepare report\r\nDUE;VALUE=DATE:20260811\r\n",
+                "STATUS:IN-PROCESS\r\nPERCENT-COMPLETE:45\r\nPRIORITY:2\r\n",
+                "CATEGORIES:Work,Finance\r\nRRULE:FREQ=WEEKLY;COUNT=4\r\n",
+                "ATTACH;VALUE=URI:https://files.example.test/report.pdf\r\n",
+                "DESCRIPTION:Keep this description\r\n",
+                "BEGIN:VALARM\r\nACTION:DISPLAY\r\nTRIGGER:-PT30M\r\n",
+                "END:VALARM\r\nEND:VTODO\r\n"
+            ),
+        );
+
+        let values = task_quick_edit_values(&task);
+        assert_eq!(values.due, "2026-08-11");
+        assert_eq!(values.priority, 2);
+        assert_eq!(values.status, "IN-PROCESS");
+        assert_eq!(values.percent, 45);
+        assert_eq!(values.categories, "Work,Finance");
+
+        let updated = update_task_quick_fields(
+            &task,
+            "2026-08-20",
+            3,
+            "Work,Personal",
+            "COMPLETED",
+            values.percent,
+        )
+        .expect("quick edit should produce a valid VTODO");
+        assert!(updated.contains("DUE;VALUE=DATE:20260820\r\n"));
+        assert!(updated.contains("PRIORITY:3\r\n"));
+        assert!(updated.contains("CATEGORIES:Work,Personal\r\n"));
+        assert!(updated.contains("STATUS:COMPLETED\r\n"));
+        assert!(updated.contains("PERCENT-COMPLETE:100\r\n"));
+        assert!(updated.contains("RRULE:FREQ=WEEKLY;COUNT=4\r\n"));
+        assert!(updated.contains("TRIGGER:-PT30M\r\n"));
+        assert!(updated.contains("DESCRIPTION:Keep this description\r\n"));
+        assert!(updated.contains("ATTACH;VALUE=URI:https://files.example.test/report.pdf\r\n"));
+    }
+
+    #[test]
+    fn task_search_matches_all_terms_and_visible_status_metadata() {
+        let task = TaskItemObject::new(
+            "local-calendar",
+            "task-search",
+            "Prepare quarterly report",
+            "2026-08-20",
+            "2",
+            false,
+            concat!(
+                "BEGIN:VTODO\r\nSTATUS:IN-PROCESS\r\n",
+                "CATEGORIES:Work,Finance\r\n",
+                "DESCRIPTION:Send the figures to accounting\r\nEND:VTODO\r\n"
+            ),
+        );
+
+        assert!(task_query_matches(&task, "  quarterly   finance "));
+        assert!(task_query_matches(&task, "in bearbeitung"));
+        assert!(task_query_matches(&task, "accounting"));
+        assert!(!task_query_matches(&task, "quarterly personal"));
+        assert_eq!(normalize_task_query("  Work\tFinance  "), "work finance");
     }
 
     #[test]

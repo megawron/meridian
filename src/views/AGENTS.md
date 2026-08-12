@@ -24,6 +24,13 @@ accessibility helpers, and view-local GTK state.
   to match the application theme.
 - Use services for data access; do not embed EDS/Camel/ECal/EBook lifecycle or
   GTK types in service code.
+- Run every potentially blocking service mutation off the GTK main thread.
+  Keep the visible model and undo/redo history unchanged until the backend
+  confirms success; on error, conflict, cancellation, or worker loss, reload
+  the authoritative state and leave no optimistic phantom result behind.
+- Mail HTML always passes through the shared sanitizer and document-composition
+  path. Remote resources are denied per message by default; CID/data content,
+  base URIs, fallback text, loading, and errors must remain explicit.
 - Keep loading and empty/error states explicit. Never leave a permanent
   spinner when a module has finished loading or failed.
 - Live settings changes must update the already visible page, not only the

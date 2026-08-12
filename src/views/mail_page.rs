@@ -10,8 +10,8 @@ use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::rc::Rc;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration as StdDuration, Instant};
 
 use crate::models::eds_source::EdsSourceObject;
@@ -33,7 +33,8 @@ use crate::services::itip_service::{
 };
 use crate::services::mail_composer_service::{self, ExportAttachment, ExportMessage};
 use crate::services::mail_operations_service::{
-    MailCommand, MailCommandStack, MailOperationError, MailOperationsService,
+    MailCommand, MailCommandStack, MailOperationCancellation, MailOperationContext,
+    MailOperationCoordinator, MailOperationError, MailOperationsService,
 };
 use crate::services::mail_store_service::{
     MailBackendLocation, MailStoreService, ParsedMail, parse_rfc822_bytes,
@@ -1403,6 +1404,14 @@ mod imp {
         pub mail_change_cancellation: RefCell<Option<Arc<AtomicBool>>>,
         pub camel_monitor_started: Cell<bool>,
         pub(crate) mail_commands: RefCell<MailCommandStack>,
+        pub mail_history_load_cancellation: RefCell<Option<Arc<AtomicBool>>>,
+        pub mail_history_generation: Cell<u64>,
+        pub mail_history_persist_sequence: Cell<u64>,
+        pub mail_history_persisted_sequence: Arc<Mutex<u64>>,
+        pub(crate) mail_operation_coordinator: MailOperationCoordinator,
+        pub(crate) mail_operation_cancellations: RefCell<HashMap<u64, MailOperationCancellation>>,
+        pub mail_operations_active: Cell<usize>,
+        pub mail_batch_running: Cell<bool>,
         pub preview_settings: RefCell<Option<AppSettings>>,
         pub classic_toolbar: RefCell<Option<gtk::Box>>,
         pub mail_column_header: RefCell<Option<gtk::Box>>,
@@ -1432,7 +1441,8 @@ mod imp {
             self.parent_constructed();
             let started = Instant::now();
             tracing::debug!("MailPage construction started");
-            self.mail_commands.replace(MailCommandStack::persistent());
+            self.mail_commands
+                .replace(MailCommandStack::empty_persistent());
             let preview_position = if let Some(settings) = AppSettings::try_new() {
                 self.mail_sort_field
                     .set(MailSortField::from_setting(&settings.mail_sort_field()));
@@ -1526,6 +1536,7 @@ mod imp {
 
             obj.assemble_layout(sidebar, message_container, detail_view);
             obj.bind_preview_setting();
+            obj.load_mail_history_async();
             obj.load_initial_data(&source_store, &source_state);
             tracing::debug!(
                 elapsed_ms = started.elapsed().as_millis() as u64,
@@ -1561,6 +1572,13 @@ mod imp {
             if let Some(cancelled) = self.mail_change_cancellation.borrow().as_ref() {
                 cancelled.store(true, Ordering::Relaxed);
             }
+            if let Some(cancelled) = self.mail_history_load_cancellation.borrow().as_ref() {
+                cancelled.store(true, Ordering::Relaxed);
+            }
+            for cancellation in self.mail_operation_cancellations.borrow().values() {
+                cancellation.cancel();
+            }
+            self.mail_operation_cancellations.borrow_mut().clear();
             self.outer_paned.unparent();
         }
     }
@@ -2279,10 +2297,7 @@ impl MailPage {
             }
             None => self.execute_mail_command(MailCommand::delete_local(message.id())),
         };
-        result.map(|()| {
-            self.refresh_mail();
-            true
-        })
+        result.map(|()| true)
     }
 
     /// Open the same local-folder editor used by the sidebar's folder button.
@@ -2373,28 +2388,86 @@ impl MailPage {
         });
     }
 
+    fn load_mail_history_async(&self) {
+        let generation = self.imp().mail_history_generation.get();
+        let cancellation = Arc::new(AtomicBool::new(false));
+        self.imp()
+            .mail_history_load_cancellation
+            .replace(Some(cancellation.clone()));
+
+        let (sender, receiver) = async_channel::bounded(1);
+        let worker_cancellation = cancellation.clone();
+        std::thread::spawn(move || {
+            let history = MailCommandStack::persistent();
+            if !worker_cancellation.load(Ordering::Relaxed) {
+                let _ = sender.send_blocking(history);
+            }
+        });
+
+        let page = self.downgrade();
+        glib::spawn_future_local(async move {
+            let history = receiver.recv().await.ok();
+            let Some(page) = page.upgrade() else {
+                return;
+            };
+            let is_current = page
+                .imp()
+                .mail_history_load_cancellation
+                .borrow()
+                .as_ref()
+                .is_some_and(|current| Arc::ptr_eq(current, &cancellation));
+            if !is_current {
+                return;
+            }
+            page.imp()
+                .mail_history_load_cancellation
+                .borrow_mut()
+                .take();
+
+            if let Some(history) = history
+                && !cancellation.load(Ordering::Relaxed)
+                && page.imp().mail_history_generation.get() == generation
+            {
+                page.imp().mail_commands.replace(history);
+            }
+        });
+    }
+
+    fn persist_mail_history_async(&self) {
+        let sequence = self
+            .imp()
+            .mail_history_persist_sequence
+            .get()
+            .saturating_add(1);
+        self.imp().mail_history_persist_sequence.set(sequence);
+        let snapshot = self.imp().mail_commands.borrow().clone();
+        let persisted_sequence = Arc::clone(&self.imp().mail_history_persisted_sequence);
+        std::thread::spawn(move || {
+            let mut last_persisted = persisted_sequence
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if sequence <= *last_persisted {
+                return;
+            }
+            snapshot.persist_snapshot();
+            *last_persisted = sequence;
+        });
+    }
+
     pub fn undo(&self) -> Result<bool, MailOperationError> {
-        let operations = MailOperationsService::new();
-        let command = self.imp().mail_commands.borrow_mut().undo(&operations)?;
-        if let Some(command) = command {
-            tracing::info!(operation = command.description(), "Mail command undone");
-            self.refresh_mail();
-            Ok(true)
-        } else {
-            Ok(false)
-        }
+        let Some(operation) = self.imp().mail_commands.borrow().undo_operation_kind() else {
+            return Ok(false);
+        };
+        self.execute_history_action(true, operation)?;
+        Ok(true)
     }
 
     pub fn redo(&self) -> Result<bool, MailOperationError> {
-        let operations = MailOperationsService::new();
-        let command = self.imp().mail_commands.borrow_mut().redo(&operations)?;
-        if let Some(command) = command {
-            tracing::info!(operation = command.description(), "Mail command redone");
-            self.refresh_mail();
-            Ok(true)
-        } else {
-            Ok(false)
-        }
+        let Some(operation) = self.imp().mail_commands.borrow().redo_operation_kind() else {
+            return Ok(false);
+        };
+        self.execute_history_action(false, operation)?;
+        Ok(true)
     }
 
     pub fn mark_selected_unread(&self) -> Result<bool, MailOperationError> {
@@ -2419,13 +2492,6 @@ impl MailPage {
             message.is_flagged(),
         );
         self.execute_mail_command(command)?;
-        message.set_unread(true);
-        if let Some(filter) = self.imp().message_filter.borrow().as_ref() {
-            filter.changed(gtk::FilterChange::Different);
-        }
-        if let Some(filter) = self.imp().thread_filter.borrow().as_ref() {
-            filter.changed(gtk::FilterChange::Different);
-        }
         Ok(true)
     }
 
@@ -2442,13 +2508,6 @@ impl MailPage {
             message.is_flagged(),
         );
         self.execute_mail_command(command)?;
-        message.set_unread(false);
-        if let Some(filter) = self.imp().message_filter.borrow().as_ref() {
-            filter.changed(gtk::FilterChange::Different);
-        }
-        if let Some(filter) = self.imp().thread_filter.borrow().as_ref() {
-            filter.changed(gtk::FilterChange::Different);
-        }
         Ok(true)
     }
 
@@ -2466,10 +2525,6 @@ impl MailPage {
             next_flagged,
         );
         self.execute_mail_command(command)?;
-        message.set_flagged(next_flagged);
-        if let Some(filter) = self.imp().message_filter.borrow().as_ref() {
-            filter.changed(gtk::FilterChange::Different);
-        }
         Ok(true)
     }
 
@@ -2510,13 +2565,6 @@ impl MailPage {
                 )
             });
         self.execute_mail_command(command)?;
-        message.set_important(next_important);
-        if let Some(filter) = self.imp().message_filter.borrow().as_ref() {
-            filter.changed(gtk::FilterChange::Different);
-        }
-        if let Some(filter) = self.imp().thread_filter.borrow().as_ref() {
-            filter.changed(gtk::FilterChange::Different);
-        }
         Ok(true)
     }
 
@@ -2550,8 +2598,6 @@ impl MailPage {
             })
             .unwrap_or_else(|| MailCommand::set_label_local(message.id(), label, before, labeled));
         self.execute_mail_command(command)?;
-        message.set_label(label, labeled);
-        self.refresh_mail();
         Ok(true)
     }
 
@@ -2600,17 +2646,8 @@ impl MailPage {
             .collect::<Vec<_>>();
         let count = commands.len();
         if count > 0 {
-            let operations = MailOperationsService::new();
-            self.imp()
-                .mail_commands
-                .borrow_mut()
-                .execute_batch(&operations, commands)?;
-            for message in messages {
-                message.set_label(label, labeled);
-            }
-            self.refresh_mail();
+            self.execute_mail_batch(commands, "Labels ändern")?;
         }
-        self.clear_batch_selection();
         Ok(count)
     }
 
@@ -2748,7 +2785,6 @@ impl MailPage {
             .map(|location| MailCommand::archive(message.id(), location))
             .unwrap_or_else(|| MailCommand::archive_local(message.id(), message.folder_id()));
         self.execute_mail_command(command)?;
-        self.refresh_mail();
         Ok(true)
     }
 
@@ -2763,7 +2799,6 @@ impl MailPage {
             })
             .unwrap_or_else(|| MailCommand::set_junk_local(message.id(), message.folder_id()));
         self.execute_mail_command(command)?;
-        self.refresh_mail();
         Ok(true)
     }
 
@@ -2779,7 +2814,6 @@ impl MailPage {
             .map(|location| MailCommand::set_junk(message.id(), location, true, false))
             .unwrap_or_else(|| MailCommand::clear_junk_local(message.id()));
         self.execute_mail_command(command)?;
-        self.refresh_mail();
         Ok(true)
     }
 
@@ -2821,11 +2855,6 @@ impl MailPage {
         };
 
         self.execute_mail_command(command)?;
-        self.clear_operation_error();
-        self.refresh_mail();
-        if let Some(state) = self.imp().message_state.borrow().as_ref() {
-            state.set_label("Nachricht verschoben");
-        }
         Ok(true)
     }
 
@@ -2879,20 +2908,271 @@ impl MailPage {
         };
 
         self.execute_mail_command(command)?;
-        self.clear_operation_error();
-        self.refresh_mail();
-        if let Some(state) = self.imp().message_state.borrow().as_ref() {
-            state.set_label("Nachricht kopiert");
-        }
         Ok(true)
     }
 
     fn execute_mail_command(&self, command: MailCommand) -> Result<(), MailOperationError> {
-        let operations = MailOperationsService::new();
+        if self.imp().mail_batch_running.get() {
+            return Err(MailOperationError::Busy {
+                operation: command.operation_kind(),
+                message: "laufender Mehrfachauswahl".to_string(),
+            });
+        }
+        let description = command.description().to_string();
+        let prepared = self.imp().mail_operation_coordinator.prepare(command)?;
+        let context = prepared.context();
+        let operation_id = context.id().get();
         self.imp()
-            .mail_commands
+            .mail_operation_cancellations
             .borrow_mut()
-            .execute(&operations, command)
+            .insert(operation_id, prepared.cancellation());
+        self.imp()
+            .mail_operations_active
+            .set(self.imp().mail_operations_active.get().saturating_add(1));
+
+        self.clear_operation_error();
+        if let Some(state) = self.imp().message_state.borrow().as_ref() {
+            state.set_label(&format!("{description} …"));
+        }
+
+        let (sender, receiver) = async_channel::bounded(1);
+        std::thread::spawn(move || {
+            let operations = MailOperationsService::new();
+            let result = prepared.run(&operations);
+            let _ = sender.send_blocking(result);
+        });
+
+        let page = self.downgrade();
+        glib::spawn_future_local(async move {
+            let result = receiver.recv().await;
+            let Some(page) = page.upgrade() else {
+                return;
+            };
+            page.imp()
+                .mail_operation_cancellations
+                .borrow_mut()
+                .remove(&operation_id);
+            page.imp()
+                .mail_operations_active
+                .set(page.imp().mail_operations_active.get().saturating_sub(1));
+
+            match result {
+                Ok(Ok(completed)) => {
+                    let cancellation_requested = completed.cancellation_requested();
+                    completed.commit(&mut page.imp().mail_commands.borrow_mut());
+                    page.imp()
+                        .mail_history_generation
+                        .set(page.imp().mail_history_generation.get().saturating_add(1));
+                    page.persist_mail_history_async();
+                    page.clear_operation_error();
+                    page.refresh_mail();
+                    if let Some(state) = page.imp().message_state.borrow().as_ref() {
+                        let status = if cancellation_requested {
+                            "Vorgang wurde bereits serverseitig abgeschlossen".to_string()
+                        } else {
+                            format!("{description} abgeschlossen")
+                        };
+                        state.set_label(&status);
+                    }
+                }
+                Ok(Err(error)) => {
+                    page.report_operation_error(&description, &error);
+                    page.show_toast(&format!("{description} nicht möglich: {error}"));
+                    // Existing callers may still apply a short-lived local UI
+                    // preview. Reloading here reconciles it after any failure.
+                    page.refresh_mail();
+                }
+                Err(_) => {
+                    let error = MailOperationError::Io(std::io::Error::other(
+                        "Mail-Worker wurde unerwartet beendet",
+                    ));
+                    page.report_operation_error(&description, &error);
+                    page.show_toast(&format!("{description} nicht möglich: {error}"));
+                    page.refresh_mail();
+                }
+            }
+        });
+        Ok(())
+    }
+
+    fn execute_mail_batch(
+        &self,
+        commands: Vec<MailCommand>,
+        description: &str,
+    ) -> Result<usize, MailOperationError> {
+        let Some(first) = commands.first() else {
+            return Ok(0);
+        };
+        let operation = first.operation_kind();
+        if self.imp().mail_batch_running.get() || self.imp().mail_operations_active.get() > 0 {
+            return Err(MailOperationError::Busy {
+                operation,
+                message: "anderer Mailaktion".to_string(),
+            });
+        }
+
+        let count = commands.len();
+        let context = MailOperationContext::new();
+        let operation_id = context.id().get();
+        self.imp().mail_batch_running.set(true);
+        self.imp()
+            .mail_operation_cancellations
+            .borrow_mut()
+            .insert(operation_id, context.cancellation());
+        self.clear_operation_error();
+        if let Some(state) = self.imp().message_state.borrow().as_ref() {
+            state.set_label(&format!("{description} …"));
+        }
+
+        let (sender, receiver) = async_channel::bounded(1);
+        std::thread::spawn(move || {
+            let operations = MailOperationsService::new();
+            let result =
+                MailCommandStack::execute_batch_for_worker(&operations, commands, &context);
+            let _ = sender.send_blocking(result);
+        });
+
+        let page = self.downgrade();
+        let description = description.to_string();
+        glib::spawn_future_local(async move {
+            let result = receiver.recv().await;
+            let Some(page) = page.upgrade() else {
+                return;
+            };
+            page.imp().mail_batch_running.set(false);
+            page.imp()
+                .mail_operation_cancellations
+                .borrow_mut()
+                .remove(&operation_id);
+
+            match result {
+                Ok(Ok(completed)) => {
+                    let applied = completed.len();
+                    completed.commit(&mut page.imp().mail_commands.borrow_mut());
+                    page.imp()
+                        .mail_history_generation
+                        .set(page.imp().mail_history_generation.get().saturating_add(1));
+                    page.persist_mail_history_async();
+                    page.clear_operation_error();
+                    page.clear_batch_selection();
+                    page.refresh_mail();
+                    if let Some(state) = page.imp().message_state.borrow().as_ref() {
+                        state.set_label(&format!("{description}: {applied} abgeschlossen"));
+                    }
+                }
+                Ok(Err(error)) => {
+                    page.report_operation_error(&description, &error);
+                    page.show_toast(&format!("{description} nicht möglich: {error}"));
+                    page.refresh_mail();
+                }
+                Err(_) => {
+                    let error = MailOperationError::Io(std::io::Error::other(
+                        "Mail-Batch-Worker wurde unerwartet beendet",
+                    ));
+                    page.report_operation_error(&description, &error);
+                    page.show_toast(&format!("{description} nicht möglich: {error}"));
+                    page.refresh_mail();
+                }
+            }
+        });
+        Ok(count)
+    }
+
+    fn execute_history_action(
+        &self,
+        undo: bool,
+        operation: crate::services::mail_operations_service::MailOperationKind,
+    ) -> Result<(), MailOperationError> {
+        if self.imp().mail_batch_running.get() || self.imp().mail_operations_active.get() > 0 {
+            return Err(MailOperationError::Busy {
+                operation,
+                message: "anderer Mailaktion".to_string(),
+            });
+        }
+
+        let description = if undo { "Rückgängig" } else { "Wiederholen" };
+        let history = self.imp().mail_commands.borrow().clone();
+        let context = MailOperationContext::new();
+        let operation_id = context.id().get();
+        self.imp().mail_batch_running.set(true);
+        self.imp()
+            .mail_operation_cancellations
+            .borrow_mut()
+            .insert(operation_id, context.cancellation());
+        self.clear_operation_error();
+        if let Some(state) = self.imp().message_state.borrow().as_ref() {
+            state.set_label(&format!("{description} …"));
+        }
+
+        let (sender, receiver) = async_channel::bounded(1);
+        std::thread::spawn(move || {
+            let operations = MailOperationsService::new();
+            let result = MailCommandStack::execute_history_action_for_worker(
+                history,
+                &operations,
+                undo,
+                operation,
+                &context,
+            )
+            .map(|completed| {
+                let (history, command) = completed.into_parts();
+                history.persist_snapshot();
+                (history, command)
+            });
+            let _ = sender.send_blocking(result);
+        });
+
+        let page = self.downgrade();
+        glib::spawn_future_local(async move {
+            let result = receiver.recv().await;
+            let Some(page) = page.upgrade() else {
+                return;
+            };
+            page.imp().mail_batch_running.set(false);
+            page.imp()
+                .mail_operation_cancellations
+                .borrow_mut()
+                .remove(&operation_id);
+
+            match result {
+                Ok(Ok((history, Some(command)))) => {
+                    page.imp().mail_commands.replace(history);
+                    page.imp()
+                        .mail_history_generation
+                        .set(page.imp().mail_history_generation.get().saturating_add(1));
+                    tracing::info!(
+                        operation = command.description(),
+                        undo,
+                        "Mail history action confirmed"
+                    );
+                    page.clear_operation_error();
+                    page.refresh_mail();
+                    if let Some(state) = page.imp().message_state.borrow().as_ref() {
+                        state.set_label(&format!("{description} abgeschlossen"));
+                    }
+                }
+                Ok(Ok((history, None))) => {
+                    page.imp().mail_commands.replace(history);
+                    if let Some(state) = page.imp().message_state.borrow().as_ref() {
+                        state.set_label(&format!("Nichts zum {description}"));
+                    }
+                }
+                Ok(Err(error)) => {
+                    page.report_operation_error(description, &error);
+                    page.show_toast(&format!("{description} nicht möglich: {error}"));
+                    page.refresh_mail();
+                }
+                Err(_) => {
+                    let error = MailOperationError::Io(std::io::Error::other(
+                        "Mail-Historien-Worker wurde unerwartet beendet",
+                    ));
+                    page.report_operation_error(description, &error);
+                    page.show_toast(&format!("{description} nicht möglich: {error}"));
+                    page.refresh_mail();
+                }
+            }
+        });
+        Ok(())
     }
 
     fn selected_batch_messages(&self) -> Vec<MailMessageObject> {
@@ -3005,21 +3285,7 @@ impl MailPage {
             .collect::<Vec<_>>();
         let count = commands.len();
         if count > 0 {
-            let operations = MailOperationsService::new();
-            self.imp()
-                .mail_commands
-                .borrow_mut()
-                .execute_batch(&operations, commands)?;
-            for message in messages {
-                message.set_unread(false);
-            }
-            if let Some(filter) = self.imp().message_filter.borrow().as_ref() {
-                filter.changed(gtk::FilterChange::Different);
-            }
-        }
-        self.clear_batch_selection();
-        if let Some(state) = self.imp().message_state.borrow().as_ref() {
-            state.set_label(&format!("{count} Nachricht(en) als gelesen markiert"));
+            self.execute_mail_batch(commands, "Als gelesen markieren")?;
         }
         Ok(())
     }
@@ -3043,21 +3309,7 @@ impl MailPage {
             .collect::<Vec<_>>();
         let count = commands.len();
         if count > 0 {
-            let operations = MailOperationsService::new();
-            self.imp()
-                .mail_commands
-                .borrow_mut()
-                .execute_batch(&operations, commands)?;
-            for message in messages {
-                message.set_unread(true);
-            }
-            if let Some(filter) = self.imp().message_filter.borrow().as_ref() {
-                filter.changed(gtk::FilterChange::Different);
-            }
-        }
-        self.clear_batch_selection();
-        if let Some(state) = self.imp().message_state.borrow().as_ref() {
-            state.set_label(&format!("{count} Nachricht(en) als ungelesen markiert"));
+            self.execute_mail_batch(commands, "Als ungelesen markieren")?;
         }
         Ok(())
     }
@@ -3082,28 +3334,7 @@ impl MailPage {
             .collect::<Vec<_>>();
         let count = commands.len();
         if count > 0 {
-            let operations = MailOperationsService::new();
-            self.imp()
-                .mail_commands
-                .borrow_mut()
-                .execute_batch(&operations, commands)?;
-            for message in messages {
-                message.set_flagged(next_flagged);
-            }
-            if let Some(filter) = self.imp().message_filter.borrow().as_ref() {
-                filter.changed(gtk::FilterChange::Different);
-            }
-        }
-        self.clear_batch_selection();
-        if let Some(state) = self.imp().message_state.borrow().as_ref() {
-            state.set_label(&format!(
-                "{count} Nachricht(en) {}",
-                if next_flagged {
-                    "markiert"
-                } else {
-                    "Markierung entfernt"
-                }
-            ));
+            self.execute_mail_batch(commands, "Markierung ändern")?;
         }
         Ok(())
     }
@@ -3149,31 +3380,7 @@ impl MailPage {
             .collect::<Vec<_>>();
         let count = commands.len();
         if count > 0 {
-            let operations = MailOperationsService::new();
-            self.imp()
-                .mail_commands
-                .borrow_mut()
-                .execute_batch(&operations, commands)?;
-            for message in messages {
-                message.set_important(next_important);
-            }
-            if let Some(filter) = self.imp().message_filter.borrow().as_ref() {
-                filter.changed(gtk::FilterChange::Different);
-            }
-            if let Some(filter) = self.imp().thread_filter.borrow().as_ref() {
-                filter.changed(gtk::FilterChange::Different);
-            }
-        }
-        self.clear_batch_selection();
-        if let Some(state) = self.imp().message_state.borrow().as_ref() {
-            state.set_label(&format!(
-                "{count} Nachricht(en) {}",
-                if next_important {
-                    "als wichtig markiert"
-                } else {
-                    "nicht mehr wichtig markiert"
-                }
-            ));
+            self.execute_mail_batch(commands, "Wichtigkeit ändern")?;
         }
         Ok(())
     }
@@ -3192,26 +3399,13 @@ impl MailPage {
                     })
             })
             .collect::<Vec<_>>();
-        let operations = MailOperationsService::new();
-        let archived = self
-            .imp()
-            .mail_commands
-            .borrow_mut()
-            .execute_batch(&operations, commands)?;
-        self.clear_batch_selection();
-        if archived > 0 {
-            self.refresh_mail();
-        }
-        if let Some(state) = self.imp().message_state.borrow().as_ref() {
-            state.set_label(&format!("{archived} Nachricht(en) archiviert"));
-        }
+        self.execute_mail_batch(commands, "Nachrichten archivieren")?;
         Ok(())
     }
 
     fn mark_batch_junk(&self) -> Result<(), MailOperationError> {
         self.clear_operation_error();
         let messages = self.selected_batch_messages();
-        let operations = MailOperationsService::new();
         let commands = messages
             .iter()
             .map(|message| match message.backend_location() {
@@ -3221,18 +3415,7 @@ impl MailPage {
                 None => MailCommand::set_junk_local(message.id(), message.folder_id()),
             })
             .collect::<Vec<_>>();
-        let marked = self
-            .imp()
-            .mail_commands
-            .borrow_mut()
-            .execute_batch(&operations, commands)?;
-        self.clear_batch_selection();
-        if marked > 0 {
-            self.refresh_mail();
-        }
-        if let Some(state) = self.imp().message_state.borrow().as_ref() {
-            state.set_label(&format!("{marked} Nachricht(en) als Spam markiert"));
-        }
+        self.execute_mail_batch(commands, "Als Spam markieren")?;
         Ok(())
     }
 
@@ -3243,7 +3426,6 @@ impl MailPage {
             .into_iter()
             .filter(message_is_junk)
             .collect::<Vec<_>>();
-        let operations = MailOperationsService::new();
         let commands = messages
             .iter()
             .map(|message| {
@@ -3253,20 +3435,7 @@ impl MailPage {
                     .unwrap_or_else(|| MailCommand::clear_junk_local(message.id()))
             })
             .collect::<Vec<_>>();
-        let cleared = self
-            .imp()
-            .mail_commands
-            .borrow_mut()
-            .execute_batch(&operations, commands)?;
-        self.clear_batch_selection();
-        if cleared > 0 {
-            self.refresh_mail();
-        }
-        if let Some(state) = self.imp().message_state.borrow().as_ref() {
-            state.set_label(&format!(
-                "Bei {cleared} Nachricht(en) Spam-Markierung entfernt"
-            ));
-        }
+        self.execute_mail_batch(commands, "Spam-Markierung entfernen")?;
         Ok(())
     }
 
@@ -3282,19 +3451,7 @@ impl MailPage {
                     .unwrap_or_else(|| MailCommand::delete_local(message.id()))
             })
             .collect::<Vec<_>>();
-        let operations = MailOperationsService::new();
-        let deleted = self
-            .imp()
-            .mail_commands
-            .borrow_mut()
-            .execute_batch(&operations, commands)?;
-        self.clear_batch_selection();
-        if deleted > 0 {
-            self.refresh_mail();
-        }
-        if let Some(state) = self.imp().message_state.borrow().as_ref() {
-            state.set_label(&format!("{deleted} Nachricht(en) gelöscht"));
-        }
+        self.execute_mail_batch(commands, "Nachrichten löschen")?;
         Ok(())
     }
 
@@ -3473,21 +3630,9 @@ impl MailPage {
             return;
         }
 
-        let operations = MailOperationsService::new();
-        let result = self
-            .imp()
-            .mail_commands
-            .borrow_mut()
-            .execute_batch(&operations, commands);
+        let result = self.execute_mail_batch(commands, "Nachrichten verschieben");
         match result {
-            Ok(count) => {
-                self.clear_operation_error();
-                self.clear_batch_selection();
-                self.refresh_mail();
-                if let Some(state) = self.imp().message_state.borrow().as_ref() {
-                    state.set_label(&format!("{count} Nachricht(en) verschoben"));
-                }
-            }
+            Ok(_) => {}
             Err(error) => {
                 self.report_operation_error("Verschieben nicht möglich", &error);
             }
@@ -3594,21 +3739,9 @@ impl MailPage {
             return;
         }
 
-        let operations = MailOperationsService::new();
-        let result = self
-            .imp()
-            .mail_commands
-            .borrow_mut()
-            .execute_batch(&operations, commands);
+        let result = self.execute_mail_batch(commands, "Nachrichten kopieren");
         match result {
-            Ok(count) => {
-                self.clear_operation_error();
-                self.clear_batch_selection();
-                self.refresh_mail();
-                if let Some(state) = self.imp().message_state.borrow().as_ref() {
-                    state.set_label(&format!("{count} Nachricht(en) kopiert"));
-                }
-            }
+            Ok(_) => {}
             Err(error) => {
                 self.report_operation_error("Kopieren nicht möglich", &error);
             }
@@ -5320,8 +5453,6 @@ impl MailPage {
         let factory = gtk::SignalListItemFactory::new();
 
         let page_for_row_actions = self.downgrade();
-        let filter_for_row_actions = custom_filter.clone();
-        let thread_filter_for_row_actions = thread_filter.clone();
         factory.connect_setup(move |_, list_item| {
             let list_item = list_item
                 .downcast_ref::<gtk::ListItem>()
@@ -5401,9 +5532,7 @@ impl MailPage {
 
             let list_item_for_star = list_item.downgrade();
             let page_for_star = page_for_row_actions.clone();
-            let filter_for_star = filter_for_row_actions.clone();
-            let thread_filter_for_star = thread_filter_for_row_actions.clone();
-            btn_star.connect_clicked(move |button| {
+            btn_star.connect_clicked(move |_| {
                 let Some(list_item) = list_item_for_star.upgrade() else {
                     return;
                 };
@@ -5435,31 +5564,12 @@ impl MailPage {
                     });
                 if let Err(error) = result {
                     tracing::error!(%error, "Could not persist message flag");
-                    return;
                 }
-                message.set_flagged(next_flagged);
-                filter_for_star.changed(gtk::FilterChange::Different);
-                thread_filter_for_star.changed(gtk::FilterChange::Different);
-                button.set_icon_name(if next_flagged {
-                    "starred-symbolic"
-                } else {
-                    "non-starred-symbolic"
-                });
-                set_accessible_label(
-                    button,
-                    if next_flagged {
-                        "Markierung entfernen"
-                    } else {
-                        "Nachricht markieren"
-                    },
-                );
             });
 
             let list_item_for_important = list_item.downgrade();
             let page_for_important = page_for_row_actions.clone();
-            let filter_for_important = filter_for_row_actions.clone();
-            let thread_filter_for_important = thread_filter_for_row_actions.clone();
-            btn_important.connect_clicked(move |button| {
+            btn_important.connect_clicked(move |_| {
                 let Some(list_item) = list_item_for_important.upgrade() else {
                     return;
                 };
@@ -5504,24 +5614,7 @@ impl MailPage {
                 };
                 if let Err(error) = result {
                     page.show_toast(&format!("Wichtig-Markierung nicht möglich: {error}"));
-                    return;
                 }
-                message.set_important(!current);
-                filter_for_important.changed(gtk::FilterChange::Different);
-                thread_filter_for_important.changed(gtk::FilterChange::Different);
-                button.set_icon_name(if !current {
-                    "emblem-important-symbolic"
-                } else {
-                    "emblem-important"
-                });
-                set_accessible_label(
-                    button,
-                    if !current {
-                        "Wichtigkeitsmarkierung entfernen"
-                    } else {
-                        "Nachricht als wichtig markieren"
-                    },
-                );
             });
 
             let attachment = gtk::Image::from_icon_name("mail-attachment-symbolic");
@@ -7238,8 +7331,8 @@ impl MailPage {
         &self,
         selection: &gtk::SingleSelection,
         store: &gio::ListStore,
-        custom_filter: &gtk::CustomFilter,
-        thread_filter: &gtk::CustomFilter,
+        _custom_filter: &gtk::CustomFilter,
+        _thread_filter: &gtk::CustomFilter,
         mail_viewer: &MailViewer,
         lbl_subject: &gtk::Label,
         lbl_from: &gtk::Label,
@@ -7250,16 +7343,15 @@ impl MailPage {
         attachment_bar: &gtk::Box,
         thread_context: &gtk::ScrolledWindow,
     ) {
-        let filter_for_selection = custom_filter.clone();
-        let thread_filter_for_selection = thread_filter.clone();
         let selection_for_async_crypto = selection.clone();
         let store_for_thread_context = store.clone();
         let selection_for_thread_context = selection.clone();
+        let page_for_read = self.downgrade();
         selection.connect_selected_item_notify(glib::clone!(
             #[strong]
-            filter_for_selection,
-            #[strong]
             selection_for_async_crypto,
+            #[strong]
+            page_for_read,
             #[weak]
             mail_viewer,
             #[weak]
@@ -7300,61 +7392,19 @@ impl MailPage {
                         .map(|settings| settings.mark_read_on_selection())
                         .unwrap_or(true);
                     if was_unread && mark_read_on_selection {
-                        // A remote read-state mutation can connect Camel,
-                        // authenticate through EDS/GOA and synchronize a
-                        // folder.  Doing that synchronously from this
-                        // selection signal freezes the GTK main loop
-                        // immediately after the first mail page appears.
-                        // Keep the model unread until the backend confirms
-                        // the mutation, then apply the result on GTK.
-                        let message_id = msg.id();
-                        let backend_location = msg.backend_location();
-                        let is_flagged = msg.is_flagged();
-                        let message_for_read = msg.downgrade();
-                        let selection_for_read = selection_for_async_crypto.clone();
-                        let filter_for_read = filter_for_selection.clone();
-                        let thread_filter_for_read = thread_filter_for_selection.clone();
-                        let message_id_for_worker = message_id.clone();
-                        let (sender, receiver) = async_channel::bounded(1);
-                        std::thread::spawn(move || {
-                            let operations = MailOperationsService::new();
-                            let result = match backend_location.as_ref() {
-                                Some(location) => operations.mark_read_for_location(
-                                    &message_id_for_worker,
-                                    location,
-                                    is_flagged,
-                                ),
-                                None => operations.mark_read(&message_id_for_worker, is_flagged),
-                            };
-                            if let Err(error) = sender.send_blocking(result) {
-                                tracing::debug!(%error, "Read-state result was dropped");
+                        let command = MailCommand::set_message_state(
+                            msg.id(),
+                            msg.backend_location(),
+                            msg.is_unread(),
+                            msg.is_flagged(),
+                            false,
+                            msg.is_flagged(),
+                        );
+                        if let Some(page) = page_for_read.upgrade() {
+                            if let Err(error) = page.execute_mail_command(command) {
+                                tracing::error!(%error, "Could not queue read-state mutation");
                             }
-                        });
-                        glib::spawn_future_local(async move {
-                            let Ok(result) = receiver.recv().await else {
-                                return;
-                            };
-                            match result {
-                                Ok(()) => {
-                                    let Some(message) = message_for_read.upgrade() else {
-                                        return;
-                                    };
-                                    let still_selected = selection_for_read
-                                        .selected_item()
-                                        .and_downcast::<MailMessageObject>()
-                                        .is_some_and(|selected| selected.id() == message_id);
-                                    if still_selected && message.is_unread() {
-                                        message.set_unread(false);
-                                        filter_for_read.changed(gtk::FilterChange::Different);
-                                        thread_filter_for_read
-                                            .changed(gtk::FilterChange::Different);
-                                    }
-                                }
-                                Err(error) => {
-                                    tracing::error!(%error, "Could not persist read state");
-                                }
-                            }
-                        });
+                        }
                     }
                     lbl_subject.set_label(&msg.subject());
                     lbl_from.set_label(&format!("{} <{}>", msg.sender_name(), msg.sender_email()));
@@ -8534,6 +8584,15 @@ impl MailPage {
         {
             return;
         }
+        if let Some(cancelled) = self.imp().mail_load_cancellation.borrow().as_ref() {
+            cancelled.store(true, Ordering::Relaxed);
+        }
+        if let Some(cancelled) = self.imp().mail_incremental_cancellation.borrow().as_ref() {
+            cancelled.store(true, Ordering::Relaxed);
+        }
+        self.imp().mail_incremental_loading.set(false);
+        let load_generation = self.imp().load_generation.get().wrapping_add(1);
+        self.imp().load_generation.set(load_generation);
         self.cancel_pending_mail_apply();
         let (source_uid, folder_name) = self.graph_search_scope();
         let cancellation = Arc::new(AtomicBool::new(false));
@@ -8579,7 +8638,9 @@ impl MailPage {
             let Some(page) = page.upgrade() else {
                 return;
             };
-            if page.imp().search_generation.get() != generation {
+            if page.imp().search_generation.get() != generation
+                || page.imp().load_generation.get() != load_generation
+            {
                 return;
             }
             page.imp().mail_search_cancellation.borrow_mut().take();

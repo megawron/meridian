@@ -14,8 +14,12 @@ use adw::prelude::*;
 use adw::subclass::prelude::*;
 use chrono::Utc;
 use gtk::glib;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::path::Path;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 
 use crate::services::AppSettings;
 use crate::services::account_config_service::{AccountConfigStore, AccountProfile};
@@ -45,12 +49,48 @@ struct ComposeIdentity {
     reply_to: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ComposeOperation {
+    Idle,
+    SavingDraft,
+    Sending,
+}
+
+#[derive(Debug)]
+struct SendCompletion {
+    sent_message_saved: bool,
+    local_draft_deleted: bool,
+    cleanup_error: Option<String>,
+}
+
+impl Default for ComposeOperation {
+    fn default() -> Self {
+        Self::Idle
+    }
+}
+
+#[derive(Debug)]
+enum SendWorkerEvent {
+    DraftSaved,
+    TransportStarted,
+    Cancelled,
+    Finished(Result<SendCompletion, String>),
+}
+
+#[derive(Debug)]
+enum DraftWorkerEvent {
+    DraftSaved,
+    Cancelled,
+    Finished(Result<bool, String>),
+}
+
 mod imp {
     use super::*;
 
     #[derive(Debug, Default)]
     pub struct ComposeDialog {
         pub draft_id: RefCell<String>,
+        pub local_draft_persisted: Cell<bool>,
         pub entry_to: RefCell<Option<gtk::Entry>>,
         pub entry_cc: RefCell<Option<gtk::Entry>>,
         pub entry_bcc: RefCell<Option<gtk::Entry>>,
@@ -63,13 +103,27 @@ mod imp {
         pub calendar_method: RefCell<Option<String>>,
         pub calendar_component: RefCell<Option<String>>,
         pub html_editor: RefCell<Option<crate::views::HtmlEditor>>,
+        pub plain_text_button: RefCell<Option<gtk::ToggleButton>>,
         pub pgp_sign_button: RefCell<Option<gtk::ToggleButton>>,
         pub pgp_encrypt_button: RefCell<Option<gtk::ToggleButton>>,
         pub pgp_key_override: RefCell<Option<String>>,
         pub(crate) smime_options_override: RefCell<Option<SmimeOptions>>,
         pub attachments: RefCell<Vec<DraftAttachment>>,
         pub attachment_list: RefCell<Option<gtk::ListBox>>,
+        pub compose_controls: RefCell<Vec<gtk::Widget>>,
         pub autosave_source: RefCell<Option<glib::SourceId>>,
+        pub autosave_in_progress: Cell<bool>,
+        pub autosave_error_shown: Cell<bool>,
+        pub(super) operation: Cell<ComposeOperation>,
+        pub operation_id: Cell<u64>,
+        pub operation_cancel: RefCell<Option<Arc<AtomicBool>>>,
+        pub transport_started: Cell<bool>,
+        pub send_button: RefCell<Option<gtk::Button>>,
+        pub save_draft_button: RefCell<Option<gtk::Button>>,
+        pub cancel_operation_button: RefCell<Option<gtk::Button>>,
+        pub operation_row: RefCell<Option<gtk::Box>>,
+        pub operation_spinner: RefCell<Option<gtk::Spinner>>,
+        pub operation_status: RefCell<Option<gtk::Label>>,
         pub settings: RefCell<Option<AppSettings>>,
     }
 
@@ -89,6 +143,9 @@ mod imp {
         fn dispose(&self) {
             if let Some(source) = self.autosave_source.borrow_mut().take() {
                 source.remove();
+            }
+            if let Some(cancel) = self.operation_cancel.borrow_mut().take() {
+                cancel.store(true, Ordering::Release);
             }
         }
     }
@@ -218,6 +275,7 @@ impl ComposeDialog {
     pub fn from_draft(draft: &DraftMessage) -> Self {
         let dialog = Self::new();
         *dialog.imp().draft_id.borrow_mut() = draft.id.clone();
+        dialog.imp().local_draft_persisted.set(true);
         *dialog.imp().requested_source_uid.borrow_mut() =
             (!draft.source_uid.is_empty()).then(|| draft.source_uid.clone());
         *dialog.imp().requested_from.borrow_mut() =
@@ -229,6 +287,9 @@ impl ComposeDialog {
         }
         if let Some(button) = dialog.imp().pgp_encrypt_button.borrow().as_ref() {
             button.set_active(draft.pgp_encrypt);
+        }
+        if let Some(button) = dialog.imp().plain_text_button.borrow().as_ref() {
+            button.set_active(draft.plain_text);
         }
         dialog
             .imp()
@@ -384,6 +445,42 @@ impl ComposeDialog {
             .spacing(0)
             .build();
 
+        let operation_row = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(8)
+            .margin_start(16)
+            .margin_end(16)
+            .margin_top(6)
+            .margin_bottom(6)
+            .css_classes(vec!["compact-status"])
+            .visible(false)
+            .build();
+        let operation_spinner = gtk::Spinner::new();
+        operation_spinner.set_visible(false);
+        let operation_status = gtk::Label::builder()
+            .xalign(0.0)
+            .hexpand(true)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .css_classes(vec!["dim-label"])
+            .build();
+        let cancel_operation_button = gtk::Button::builder()
+            .label("Abbrechen")
+            .tooltip_text("Vorgang vor dem Transport abbrechen")
+            .css_classes(vec!["flat"])
+            .visible(false)
+            .build();
+        operation_row.append(&operation_spinner);
+        operation_row.append(&operation_status);
+        operation_row.append(&cancel_operation_button);
+        content_box.append(&operation_row);
+
+        let dialog_weak_for_cancel = self.downgrade();
+        cancel_operation_button.connect_clicked(move |_| {
+            if let Some(dialog) = dialog_weak_for_cancel.upgrade() {
+                dialog.request_operation_cancel();
+            }
+        });
+
         let form_grid = gtk::Grid::builder()
             .row_spacing(8)
             .column_spacing(12)
@@ -518,11 +615,46 @@ impl ComposeDialog {
             .replace(Some(entry_subject.clone()));
         self.imp().combo_from.replace(Some(combo_from.clone()));
         self.imp().html_editor.replace(Some(html_editor.clone()));
+        self.imp()
+            .plain_text_button
+            .replace(Some(btn_plain_text.clone()));
         self.imp().pgp_sign_button.replace(Some(btn_sign.clone()));
         self.imp()
             .pgp_encrypt_button
             .replace(Some(btn_encrypt.clone()));
+        let attachment_list_widget = attachment_list.clone().upcast();
         self.imp().attachment_list.replace(Some(attachment_list));
+        self.imp().compose_controls.replace(vec![
+            btn_attach.clone().upcast(),
+            btn_insert_template.clone().upcast(),
+            btn_save_template.clone().upcast(),
+            btn_save_snippet.clone().upcast(),
+            attachment_list_widget,
+            directory_button_to.clone().upcast(),
+            directory_button_cc.clone().upcast(),
+            directory_button_bcc.clone().upcast(),
+            entry_to.clone().upcast(),
+            entry_cc.clone().upcast(),
+            entry_bcc.clone().upcast(),
+            entry_subject.clone().upcast(),
+            combo_from.clone().upcast(),
+            html_editor.clone().upcast(),
+            btn_plain_text.clone().upcast(),
+            btn_sign.clone().upcast(),
+            btn_encrypt.clone().upcast(),
+        ]);
+        self.imp().send_button.replace(Some(btn_send.clone()));
+        self.imp()
+            .save_draft_button
+            .replace(Some(btn_save_draft.clone()));
+        self.imp()
+            .cancel_operation_button
+            .replace(Some(cancel_operation_button));
+        self.imp().operation_row.replace(Some(operation_row));
+        self.imp()
+            .operation_spinner
+            .replace(Some(operation_spinner));
+        self.imp().operation_status.replace(Some(operation_status));
 
         if let Some(settings) = AppSettings::try_new() {
             self.imp().settings.replace(Some(settings.clone()));
@@ -954,7 +1086,6 @@ impl ComposeDialog {
         }
 
         let dialog_weak_for_send = self.downgrade();
-        let send_button_weak = btn_send.downgrade();
         let html_editor_for_send = html_editor.clone();
         let entry_to_for_send = entry_to.clone();
         let entry_cc_for_send = entry_cc.clone();
@@ -965,102 +1096,224 @@ impl ComposeDialog {
             let Some(dialog) = dialog_weak_for_send.upgrade() else {
                 return;
             };
+            if dialog.imp().autosave_in_progress.get() {
+                dialog.show_toast("Automatisches Speichern läuft noch; der Versand startet danach");
+                return;
+            }
+            let Some((operation_id, cancel)) =
+                dialog.begin_operation(ComposeOperation::Sending)
+            else {
+                return;
+            };
+            dialog.set_operation_status(operation_id, "Nachricht wird gelesen…", true);
+
             let identity = dialog.selected_identity(combo_from_for_send.selected());
             let (pgp_sign, pgp_encrypt) = dialog.pgp_flags_for_message();
-            let outgoing = OutgoingMessage {
-                source_uid: identity.source_uid,
-                from: identity.from,
-                reply_to: identity.reply_to,
-                request_read_receipt: AppSettings::try_new()
-                    .map(|settings| settings.request_read_receipt())
-                    .unwrap_or(false),
-                to: entry_to_for_send.text().to_string(),
-                cc: entry_cc_for_send.text().to_string(),
-                bcc: entry_bcc_for_send.text().to_string(),
-                subject: entry_subject_for_send.text().to_string(),
-                html_body: String::new(),
-                plain_text: false,
-                attachments: dialog.imp().attachments.borrow().clone(),
-                calendar_method: dialog.imp().calendar_method.borrow().clone(),
-                calendar_component: dialog.imp().calendar_component.borrow().clone(),
-                pgp_sign,
-                pgp_encrypt,
-                pgp_key: dialog.pgp_key_for_message(),
-                smime_options: dialog.smime_options_for_message(),
-            };
+            let request_read_receipt = AppSettings::try_new()
+                .map(|settings| settings.request_read_receipt())
+                .unwrap_or(false);
+            let to = entry_to_for_send.text().to_string();
+            let cc = entry_cc_for_send.text().to_string();
+            let bcc = entry_bcc_for_send.text().to_string();
+            let subject = entry_subject_for_send.text().to_string();
+            let attachments = dialog.imp().attachments.borrow().clone();
+            let calendar_method = dialog.imp().calendar_method.borrow().clone();
+            let calendar_component = dialog.imp().calendar_component.borrow().clone();
+            let pgp_key = dialog.pgp_key_for_message();
+            let smime_options = dialog.smime_options_for_message();
+            let draft_id = dialog.imp().draft_id.borrow().clone();
             let dialog_weak = dialog.downgrade();
-            let send_button_weak_for_result = send_button_weak.clone();
-            if let Some(button) = send_button_weak.upgrade() {
-                button.set_sensitive(false);
-            }
+            let cancel_for_worker = Arc::clone(&cancel);
 
             html_editor_for_send.read_content(move |result| {
+                let Some(dialog) = dialog_weak.upgrade() else {
+                    return;
+                };
+                if !dialog.is_current_operation(operation_id) {
+                    return;
+                }
                 let content = match result {
                     Ok(content) => content,
                     Err(error) => {
-                        if let Some(button) = send_button_weak_for_result.upgrade() {
-                            button.set_sensitive(true);
-                        }
-                        if let Some(dialog) = dialog_weak.upgrade() {
-                            dialog.show_toast(&format!(
-                                "Nachricht konnte nicht gelesen werden: {error}"
-                            ));
-                        }
+                        dialog.finish_operation(operation_id);
+                        dialog.show_toast(&format!(
+                            "Nachricht konnte nicht gelesen werden; Entwurf bleibt geöffnet: {error}"
+                        ));
                         return;
                     }
                 };
+                if cancel.load(Ordering::Acquire) {
+                    dialog.finish_operation(operation_id);
+                    dialog.show_toast("Versand abgebrochen; der Entwurf bleibt erhalten");
+                    return;
+                }
 
-                let mut outgoing = outgoing;
-                outgoing.html_body = content.body;
-                outgoing.plain_text = content.plain_text;
-                let raw_message = match mail_composer_service::build_rfc822(&outgoing) {
-                    Ok(raw_message) => raw_message,
-                    Err(error) => {
-                        if let Some(button) = send_button_weak_for_result.upgrade() {
-                            button.set_sensitive(true);
-                        }
-                        if let Some(dialog) = dialog_weak.upgrade() {
-                            dialog.show_toast(&error);
-                        }
-                        return;
-                    }
+                let draft = DraftMessage {
+                    id: draft_id,
+                    from: identity.from.clone(),
+                    source_uid: identity.source_uid.clone(),
+                    to: to.clone(),
+                    cc: cc.clone(),
+                    bcc: bcc.clone(),
+                    subject: subject.clone(),
+                    html_body: content.body.clone(),
+                    plain_text: content.plain_text,
+                    updated_at: Utc::now().to_rfc3339(),
+                    attachments: attachments.clone(),
+                    calendar_method: calendar_method.clone(),
+                    calendar_component: calendar_component.clone(),
+                    pgp_sign,
+                    pgp_encrypt,
+                    pgp_key: pgp_key.clone(),
+                    smime_options: smime_options.clone(),
                 };
+                let outgoing = OutgoingMessage {
+                    source_uid: identity.source_uid,
+                    from: identity.from,
+                    reply_to: identity.reply_to,
+                    request_read_receipt,
+                    to,
+                    cc,
+                    bcc,
+                    subject,
+                    html_body: content.body,
+                    plain_text: content.plain_text,
+                    attachments,
+                    calendar_method,
+                    calendar_component,
+                    pgp_sign,
+                    pgp_encrypt,
+                    pgp_key,
+                    smime_options,
+                };
+                dialog.set_operation_status(
+                    operation_id,
+                    "Entwurf wird gesichert und Nachricht wird vorbereitet…",
+                    true,
+                );
 
-                let source_uid = outgoing.source_uid;
-                let (sender, receiver) = async_channel::bounded(1);
+                let (sender, receiver) = async_channel::bounded(4);
                 std::thread::spawn(move || {
-                    let result = camel_mail_service::send_message(&source_uid, &raw_message);
-                    if let Err(error) = sender.send_blocking(result) {
-                        tracing::debug!(%error, "Composer send result was dropped");
-                    }
-                });
-
-                glib::spawn_future_local(async move {
-                    let result = receiver.recv().await;
-                    let Some(dialog) = dialog_weak.upgrade() else {
+                    let store = DraftStoreService::default();
+                    let Some(_send_claim) = store.try_claim_send(&draft.id) else {
+                        let _ = sender.send_blocking(SendWorkerEvent::Finished(Err(
+                            "Dieser Entwurf wird bereits in einem anderen Fenster gesendet"
+                                .to_string(),
+                        )));
                         return;
                     };
-                    if let Some(button) = send_button_weak_for_result.upgrade() {
-                        button.set_sensitive(true);
+                    if let Err(error) = store.save(draft.clone()) {
+                        let _ = sender.send_blocking(SendWorkerEvent::Finished(Err(format!(
+                            "Entwurf konnte vor dem Versand nicht gesichert werden: {error}"
+                        ))));
+                        return;
                     }
-                    match result {
-                        Ok(Ok(sent_message_saved)) => {
-                            let message = if sent_message_saved {
-                                "E-Mail gesendet; Kopie in Gesendet gespeichert"
-                            } else {
-                                "E-Mail gesendet"
-                            };
-                            dialog.delete_local_draft();
-                            dialog.show_toast(message);
-                            dialog.close();
-                        }
-                        Ok(Err(error)) => {
-                            dialog.show_toast(&format!(
-                                "E-Mail konnte nicht gesendet werden: {error}"
-                            ));
-                        }
+                    let _ = sender.send_blocking(SendWorkerEvent::DraftSaved);
+                    if cancel_for_worker.load(Ordering::Acquire) {
+                        let _ = sender.send_blocking(SendWorkerEvent::Cancelled);
+                        return;
+                    }
+                    let raw_message = match mail_composer_service::build_rfc822(&outgoing) {
+                        Ok(raw_message) => raw_message,
                         Err(error) => {
-                            dialog.show_toast(&format!("Versand abgebrochen: {error}"));
+                            let _ = sender.send_blocking(SendWorkerEvent::Finished(Err(error)));
+                            return;
+                        }
+                    };
+                    // Atomically close the cancellation window. If the UI won
+                    // the race, no transport starts; once this swap succeeds,
+                    // cancellation is honestly reported as no longer possible.
+                    if cancel_for_worker.swap(true, Ordering::AcqRel) {
+                        let _ = sender.send_blocking(SendWorkerEvent::Cancelled);
+                        return;
+                    }
+                    let _ = sender.send_blocking(SendWorkerEvent::TransportStarted);
+                    let result = camel_mail_service::send_message(
+                        &outgoing.source_uid,
+                        &raw_message,
+                    )
+                    .map(|sent_message_saved| {
+                        let cleanup = store.delete_if_matches(&draft);
+                        SendCompletion {
+                            sent_message_saved,
+                            local_draft_deleted: matches!(cleanup, Ok(true)),
+                            cleanup_error: cleanup.err().map(|error| error.to_string()),
+                        }
+                    });
+                    let _ = sender.send_blocking(SendWorkerEvent::Finished(result));
+                });
+
+                let dialog_weak_for_result = dialog.downgrade();
+                glib::spawn_future_local(async move {
+                    loop {
+                        let event = match receiver.recv().await {
+                            Ok(event) => event,
+                            Err(error) => {
+                                let Some(dialog) = dialog_weak_for_result.upgrade() else {
+                                    return;
+                                };
+                                if dialog.is_current_operation(operation_id) {
+                                    dialog.finish_operation(operation_id);
+                                    dialog.show_toast(&format!(
+                                        "Versand abgebrochen; Entwurf bleibt erhalten: {error}"
+                                    ));
+                                }
+                                return;
+                            }
+                        };
+                        let Some(dialog) = dialog_weak_for_result.upgrade() else {
+                            return;
+                        };
+                        if !dialog.is_current_operation(operation_id) {
+                            return;
+                        }
+                        match event {
+                            SendWorkerEvent::DraftSaved => {
+                                dialog.imp().local_draft_persisted.set(true);
+                            }
+                            SendWorkerEvent::TransportStarted => {
+                                dialog.mark_transport_started(operation_id);
+                            }
+                            SendWorkerEvent::Cancelled => {
+                                dialog.finish_operation(operation_id);
+                                dialog.show_toast(
+                                    "Versand abgebrochen; der Entwurf bleibt erhalten",
+                                );
+                                return;
+                            }
+                            SendWorkerEvent::Finished(result) => {
+                                dialog.finish_operation(operation_id);
+                                match result {
+                                    Ok(completion) => {
+                                        if completion.local_draft_deleted {
+                                            dialog.imp().local_draft_persisted.set(false);
+                                        }
+                                        let mut message = if completion.sent_message_saved {
+                                            "E-Mail gesendet; Kopie in Gesendet gespeichert"
+                                        } else {
+                                            "E-Mail gesendet"
+                                        }
+                                        .to_string();
+                                        if let Some(error) = completion.cleanup_error {
+                                            message.push_str(&format!(
+                                                "; Recovery-Entwurf blieb erhalten: {error}"
+                                            ));
+                                        } else if !completion.local_draft_deleted {
+                                            message.push_str(
+                                                "; ein neuerer Recovery-Entwurf wurde erhalten",
+                                            );
+                                        }
+                                        dialog.show_toast(&message);
+                                        dialog.close();
+                                    }
+                                    Err(error) => {
+                                        dialog.show_toast(&format!(
+                                            "E-Mail konnte nicht gesendet werden; Entwurf bleibt erhalten: {error}"
+                                        ));
+                                    }
+                                }
+                                return;
+                            }
                         }
                     }
                 });
@@ -1158,7 +1411,6 @@ impl ComposeDialog {
             }
         });
 
-        let native_adapter_available = camel_mail_service::native_adapter_available();
         btn_save_draft.connect_clicked(glib::clone!(
             #[weak(rename_to = dialog)]
             self,
@@ -1179,6 +1431,18 @@ impl ComposeDialog {
             #[strong]
             btn_encrypt,
             move |_| {
+                if dialog.imp().autosave_in_progress.get() {
+                    dialog.show_toast(
+                        "Automatisches Speichern läuft noch; bitte danach erneut speichern",
+                    );
+                    return;
+                }
+                let Some((operation_id, cancel)) =
+                    dialog.begin_operation(ComposeOperation::SavingDraft)
+                else {
+                    return;
+                };
+                dialog.set_operation_status(operation_id, "Entwurf wird gelesen…", true);
                 let to = entry_to.text().to_string();
                 let cc = entry_cc.text().to_string();
                 let bcc = entry_bcc.text().to_string();
@@ -1189,8 +1453,8 @@ impl ComposeDialog {
                 } else {
                     identity.from.clone()
                 };
-                let reply_to = identity.reply_to;
-                let source_uid = identity.source_uid;
+                let reply_to = identity.reply_to.clone();
+                let source_uid = identity.source_uid.clone();
                 let attachments = dialog.imp().attachments.borrow().clone();
                 let calendar_method = dialog.imp().calendar_method.borrow().clone();
                 let calendar_component = dialog.imp().calendar_component.borrow().clone();
@@ -1199,122 +1463,181 @@ impl ComposeDialog {
                 let pgp_key = dialog.pgp_key_for_message();
                 let smime_options = dialog.smime_options_for_message();
                 let draft_id = dialog.imp().draft_id.borrow().clone();
-                let updated_at = Utc::now().to_rfc3339();
                 let dialog_weak = dialog.downgrade();
+                let cancel_for_worker = Arc::clone(&cancel);
 
-                html_editor.read_content(move |result| match result {
-                    Ok(content) => {
-                        let crate::views::EditorContent { body, plain_text } = content;
-                        if native_adapter_available
-                            || graph_service_for_source(&source_uid).is_some()
-                        {
-                            let outgoing = OutgoingMessage {
-                                source_uid: source_uid.clone(),
-                                from: from.clone(),
-                                reply_to: reply_to.clone(),
-                                request_read_receipt: false,
-                                to,
-                                cc,
-                                bcc,
-                                subject,
-                                html_body: body,
-                                plain_text,
-                                attachments,
-                                calendar_method,
-                                calendar_component,
-                                // EDS drafts stay editable; the OpenPGP
-                                // choice is persisted only in app-owned
-                                // draft metadata until the final send.
-                                pgp_sign: false,
-                                pgp_encrypt: false,
-                                pgp_key: String::new(),
-                                smime_options: None,
-                            };
-                            let raw_message = match mail_composer_service::build_rfc822(&outgoing) {
-                                Ok(raw_message) => raw_message,
+                html_editor.read_content(move |result| {
+                    let Some(dialog) = dialog_weak.upgrade() else {
+                        return;
+                    };
+                    if !dialog.is_current_operation(operation_id) {
+                        return;
+                    }
+                    let content = match result {
+                        Ok(content) => content,
+                        Err(error) => {
+                            dialog.finish_operation(operation_id);
+                            dialog.show_toast(&format!(
+                                "Entwurf konnte nicht gelesen werden; Inhalt bleibt geöffnet: {error}"
+                            ));
+                            return;
+                        }
+                    };
+                    if cancel.load(Ordering::Acquire) {
+                        dialog.finish_operation(operation_id);
+                        dialog.show_toast("Entwurfsspeicherung abgebrochen; Inhalt bleibt geöffnet");
+                        return;
+                    }
+
+                    let draft = DraftMessage {
+                        id: draft_id,
+                        from: from.clone(),
+                        source_uid: source_uid.clone(),
+                        to: to.clone(),
+                        cc: cc.clone(),
+                        bcc: bcc.clone(),
+                        subject: subject.clone(),
+                        html_body: content.body.clone(),
+                        plain_text: content.plain_text,
+                        updated_at: Utc::now().to_rfc3339(),
+                        attachments: attachments.clone(),
+                        calendar_method: calendar_method.clone(),
+                        calendar_component: calendar_component.clone(),
+                        pgp_sign,
+                        pgp_encrypt,
+                        pgp_key: pgp_key.clone(),
+                        smime_options: smime_options.clone(),
+                    };
+                    let outgoing = OutgoingMessage {
+                        source_uid: source_uid.clone(),
+                        from,
+                        reply_to,
+                        request_read_receipt: false,
+                        to,
+                        cc,
+                        bcc,
+                        subject,
+                        html_body: content.body,
+                        plain_text: content.plain_text,
+                        attachments,
+                        calendar_method,
+                        calendar_component,
+                        // Security choices remain editable metadata in a
+                        // draft.  They are applied only when the message is
+                        // finally sent.
+                        pgp_sign: false,
+                        pgp_encrypt: false,
+                        pgp_key: String::new(),
+                        smime_options: None,
+                    };
+                    dialog.set_operation_status(
+                        operation_id,
+                        "Entwurf wird lokal gesichert…",
+                        true,
+                    );
+
+                    let (sender, receiver) = async_channel::bounded(4);
+                    std::thread::spawn(move || {
+                        let store = DraftStoreService::default();
+                        if let Err(error) = store.save(draft) {
+                            let _ = sender.send_blocking(DraftWorkerEvent::Finished(Err(
+                                format!("Lokaler Entwurf konnte nicht gespeichert werden: {error}"),
+                            )));
+                            return;
+                        }
+                        let _ = sender.send_blocking(DraftWorkerEvent::DraftSaved);
+                        if cancel_for_worker.load(Ordering::Acquire) {
+                            let _ = sender.send_blocking(DraftWorkerEvent::Cancelled);
+                            return;
+                        }
+                        let synchronized = camel_mail_service::native_adapter_available()
+                            || graph_service_for_source(&outgoing.source_uid).is_some();
+                        if !synchronized {
+                            let _ = sender.send_blocking(DraftWorkerEvent::Finished(Ok(false)));
+                            return;
+                        }
+                        let raw_message = match mail_composer_service::build_rfc822(&outgoing) {
+                            Ok(raw_message) => raw_message,
+                            Err(error) => {
+                                let _ = sender.send_blocking(DraftWorkerEvent::Finished(Err(
+                                    format!(
+                                        "Lokaler Entwurf gespeichert; synchronisierte Version konnte nicht erstellt werden: {error}"
+                                    ),
+                                )));
+                                return;
+                            }
+                        };
+                        if cancel_for_worker.load(Ordering::Acquire) {
+                            let _ = sender.send_blocking(DraftWorkerEvent::Cancelled);
+                            return;
+                        }
+                        let result = camel_mail_service::save_message(
+                            &outgoing.source_uid,
+                            &raw_message,
+                            camel_mail_service::CamelSaveFolder::Drafts,
+                        )
+                        .map(|()| true)
+                        .map_err(|error| {
+                            format!(
+                                "Lokaler Entwurf gespeichert; synchronisierte Speicherung fehlgeschlagen: {error}"
+                            )
+                        });
+                        let _ = sender.send_blocking(DraftWorkerEvent::Finished(result));
+                    });
+
+                    let dialog_weak_for_result = dialog.downgrade();
+                    glib::spawn_future_local(async move {
+                        loop {
+                            let event = match receiver.recv().await {
+                                Ok(event) => event,
                                 Err(error) => {
-                                    if let Some(dialog) = dialog_weak.upgrade() {
-                                        dialog.show_toast(&error);
-                                    }
-                                    return;
-                                }
-                            };
-                            let source_uid = outgoing.source_uid;
-                            let (sender, receiver) = async_channel::bounded(1);
-                            std::thread::spawn(move || {
-                                let result = camel_mail_service::save_message(
-                                    &source_uid,
-                                    &raw_message,
-                                    camel_mail_service::CamelSaveFolder::Drafts,
-                                );
-                                if let Err(error) = sender.send_blocking(result) {
-                                    tracing::debug!(%error, "Draft save result was dropped");
-                                }
-                            });
-                            glib::spawn_future_local(async move {
-                                let result = receiver.recv().await;
-                                let Some(dialog) = dialog_weak.upgrade() else {
-                                    return;
-                                };
-                                match result {
-                                    Ok(Ok(())) => {
-                                        tracing::info!("Draft saved to synchronized drafts folder");
-                                        dialog.show_toast("Entwurf im synchronisierten Ordner gespeichert");
-                                    }
-                                    Ok(Err(error)) => dialog.show_toast(&format!(
-                                        "Entwurf konnte nicht im synchronisierten Ordner gespeichert werden: {error}"
-                                    )),
-                                    Err(error) => dialog.show_toast(&format!(
-                                        "Entwurfsspeicherung abgebrochen: {error}"
-                                    )),
-                                }
-                            });
-                        } else {
-                            let draft = DraftMessage {
-                                id: draft_id,
-                                from,
-                                source_uid,
-                                to,
-                                cc,
-                                bcc,
-                                subject,
-                                html_body: body,
-                                plain_text,
-                                updated_at,
-                                attachments,
-                                calendar_method,
-                                calendar_component,
-                                pgp_sign,
-                                pgp_encrypt,
-                                pgp_key,
-                                smime_options,
-                            };
-                            match DraftStoreService::default().save(draft) {
-                                Ok(()) => {
-                                    tracing::info!("Draft saved to application-owned draft store");
-                                    if let Some(dialog) = dialog_weak.upgrade() {
-                                        dialog.show_toast("Entwurf lokal gespeichert");
-                                    }
-                                }
-                                Err(error) => {
-                                    tracing::error!(%error, "Could not save draft");
-                                    if let Some(dialog) = dialog_weak.upgrade() {
+                                    let Some(dialog) = dialog_weak_for_result.upgrade() else {
+                                        return;
+                                    };
+                                    if dialog.is_current_operation(operation_id) {
+                                        dialog.finish_operation(operation_id);
                                         dialog.show_toast(&format!(
-                                            "Entwurf konnte nicht gespeichert werden: {error}"
+                                            "Entwurfsspeicherung abgebrochen; Inhalt bleibt geöffnet: {error}"
                                         ));
                                     }
+                                    return;
+                                }
+                            };
+                            let Some(dialog) = dialog_weak_for_result.upgrade() else {
+                                return;
+                            };
+                            if !dialog.is_current_operation(operation_id) {
+                                return;
+                            }
+                            match event {
+                                DraftWorkerEvent::DraftSaved => {
+                                    dialog.imp().local_draft_persisted.set(true);
+                                }
+                                DraftWorkerEvent::Cancelled => {
+                                    dialog.finish_operation(operation_id);
+                                    dialog.show_toast(
+                                        "Entwurfsspeicherung abgebrochen; Inhalt bleibt geöffnet",
+                                    );
+                                    return;
+                                }
+                                DraftWorkerEvent::Finished(result) => {
+                                    dialog.finish_operation(operation_id);
+                                    match result {
+                                        Ok(true) => dialog.show_toast(
+                                            "Entwurf lokal und im synchronisierten Ordner gespeichert",
+                                        ),
+                                        Ok(false) => {
+                                            dialog.show_toast("Entwurf lokal gespeichert")
+                                        }
+                                        Err(error) => dialog.show_toast(&format!(
+                                            "{error}; Inhalt bleibt geöffnet"
+                                        )),
+                                    }
+                                    return;
                                 }
                             }
                         }
-                    }
-                    Err(error) => {
-                        tracing::error!(%error, "Could not read HTML editor contents");
-                        if let Some(dialog) = dialog_weak.upgrade() {
-                            dialog.show_toast(&format!(
-                                "Entwurf konnte nicht gelesen werden: {error}"
-                            ));
-                        }
-                    }
+                    });
                 });
             }
         ));
@@ -1339,12 +1662,6 @@ impl ComposeDialog {
         if let Some(source) = self.imp().autosave_source.borrow_mut().take() {
             source.remove();
         }
-        // Native EDS/Camel draft persistence is deliberately a separate
-        // Linux acceptance item.  The portable fallback owns local autosave
-        // until that backend is verified on the target machine.
-        if camel_mail_service::native_adapter_available() {
-            return;
-        }
         let interval = AppSettings::try_new()
             .map(|settings| settings.draft_autosave_interval_seconds())
             .unwrap_or(30);
@@ -1364,25 +1681,38 @@ impl ComposeDialog {
     }
 
     fn autosave_local_draft(&self) {
-        if camel_mail_service::native_adapter_available() {
+        // Keep a local recovery copy even when Camel/Graph is configured.  It
+        // is not a replacement for the authoritative synchronized Drafts
+        // folder; it protects the open composer while transport or EDS is
+        // unavailable.
+        if self.imp().operation.get() != ComposeOperation::Idle
+            || self.imp().autosave_in_progress.get()
+        {
             return;
         }
+        self.imp().autosave_in_progress.set(true);
         let Some(entry_to) = self.imp().entry_to.borrow().as_ref().cloned() else {
+            self.imp().autosave_in_progress.set(false);
             return;
         };
         let Some(entry_cc) = self.imp().entry_cc.borrow().as_ref().cloned() else {
+            self.imp().autosave_in_progress.set(false);
             return;
         };
         let Some(entry_bcc) = self.imp().entry_bcc.borrow().as_ref().cloned() else {
+            self.imp().autosave_in_progress.set(false);
             return;
         };
         let Some(entry_subject) = self.imp().entry_subject.borrow().as_ref().cloned() else {
+            self.imp().autosave_in_progress.set(false);
             return;
         };
         let Some(combo_from) = self.imp().combo_from.borrow().as_ref().cloned() else {
+            self.imp().autosave_in_progress.set(false);
             return;
         };
         let Some(html_editor) = self.imp().html_editor.borrow().as_ref().cloned() else {
+            self.imp().autosave_in_progress.set(false);
             return;
         };
 
@@ -1415,22 +1745,27 @@ impl ComposeDialog {
             .is_some_and(|button| button.is_active());
         let pgp_key = self.pgp_key_for_message();
         let smime_options = self.smime_options_for_message();
-        if to.trim().is_empty()
-            && cc.trim().is_empty()
-            && bcc.trim().is_empty()
-            && subject.trim().is_empty()
-            && attachments.is_empty()
-        {
-            return;
-        }
-
         let dialog = self.downgrade();
         html_editor.read_content(move |result| {
-            let Ok(content) = result else {
+            let Some(dialog) = dialog.upgrade() else {
                 return;
             };
-            let Some(_dialog) = dialog.upgrade() else {
+            if dialog.imp().operation.get() != ComposeOperation::Idle {
+                dialog.imp().autosave_in_progress.set(false);
                 return;
+            }
+            let content = match result {
+                Ok(content) => content,
+                Err(error) => {
+                    dialog.imp().autosave_in_progress.set(false);
+                    if !dialog.imp().autosave_error_shown.get() {
+                        dialog.imp().autosave_error_shown.set(true);
+                        dialog.show_toast(&format!(
+                            "Automatisches Speichern konnte den Entwurf nicht lesen: {error}"
+                        ));
+                    }
+                    return;
+                }
             };
             let draft = DraftMessage {
                 id: draft_id,
@@ -1451,29 +1786,167 @@ impl ComposeDialog {
                 pgp_key,
                 smime_options,
             };
-            if let Err(error) = DraftStoreService::default().save(draft) {
-                tracing::warn!(%error, "Could not autosave local draft");
-            } else {
-                tracing::debug!("Local draft autosaved");
+            if !draft_has_user_content(&draft)
+                && !dialog.imp().local_draft_persisted.get()
+            {
+                dialog.imp().autosave_in_progress.set(false);
+                return;
             }
+
+            let (sender, receiver) = async_channel::bounded(1);
+            std::thread::spawn(move || {
+                let result = DraftStoreService::default().save(draft);
+                let _ = sender.send_blocking(result);
+            });
+            let dialog_weak = dialog.downgrade();
+            glib::spawn_future_local(async move {
+                let result = receiver.recv().await;
+                let Some(dialog) = dialog_weak.upgrade() else {
+                    return;
+                };
+                dialog.imp().autosave_in_progress.set(false);
+                match result {
+                    Ok(Ok(())) => {
+                        dialog.imp().local_draft_persisted.set(true);
+                        dialog.imp().autosave_error_shown.set(false);
+                        tracing::debug!("Local draft autosaved");
+                    }
+                    Ok(Err(error)) => {
+                        if !dialog.imp().autosave_error_shown.get() {
+                            dialog.imp().autosave_error_shown.set(true);
+                            tracing::warn!(%error, "Could not autosave local draft");
+                            dialog.show_toast(&format!(
+                                "Automatisches Speichern fehlgeschlagen; der Entwurf bleibt geöffnet: {error}"
+                            ));
+                        }
+                    }
+                    Err(error) => {
+                        tracing::debug!(%error, "Autosave result was dropped");
+                    }
+                }
+            });
         });
     }
 
-    fn delete_local_draft(&self) {
-        if camel_mail_service::native_adapter_available() {
+    fn begin_operation(&self, operation: ComposeOperation) -> Option<(u64, Arc<AtomicBool>)> {
+        let imp = self.imp();
+        if !compose_operation_can_start(imp.operation.get()) {
+            return None;
+        }
+        let operation_id = imp.operation_id.get().wrapping_add(1).max(1);
+        let cancel = Arc::new(AtomicBool::new(false));
+        imp.operation_id.set(operation_id);
+        imp.operation.set(operation);
+        imp.transport_started.set(false);
+        imp.operation_cancel.replace(Some(Arc::clone(&cancel)));
+        if let Some(button) = imp.send_button.borrow().as_ref() {
+            button.set_sensitive(false);
+        }
+        if let Some(button) = imp.save_draft_button.borrow().as_ref() {
+            button.set_sensitive(false);
+        }
+        for control in imp.compose_controls.borrow().iter() {
+            control.set_sensitive(false);
+        }
+        if let Some(row) = imp.operation_row.borrow().as_ref() {
+            row.set_visible(true);
+        }
+        if let Some(spinner) = imp.operation_spinner.borrow().as_ref() {
+            spinner.set_visible(true);
+            spinner.start();
+        }
+        if let Some(button) = imp.cancel_operation_button.borrow().as_ref() {
+            button.set_visible(true);
+            button.set_sensitive(true);
+        }
+        Some((operation_id, cancel))
+    }
+
+    fn is_current_operation(&self, operation_id: u64) -> bool {
+        self.imp().operation_id.get() == operation_id
+            && self.imp().operation.get() != ComposeOperation::Idle
+    }
+
+    fn set_operation_status(&self, operation_id: u64, status: &str, cancelable: bool) {
+        if !self.is_current_operation(operation_id) {
             return;
         }
-        let draft_id = self.imp().draft_id.borrow().clone();
-        if draft_id.is_empty() {
+        let imp = self.imp();
+        if let Some(row) = imp.operation_row.borrow().as_ref() {
+            row.set_visible(true);
+        }
+        if let Some(label) = imp.operation_status.borrow().as_ref() {
+            label.set_text(status);
+        }
+        if let Some(button) = imp.cancel_operation_button.borrow().as_ref() {
+            button.set_visible(cancelable);
+            button.set_sensitive(cancelable);
+        }
+    }
+
+    fn mark_transport_started(&self, operation_id: u64) {
+        if !self.is_current_operation(operation_id) {
             return;
         }
-        match DraftStoreService::default().delete(&draft_id) {
-            Ok(true) => tracing::debug!(%draft_id, "Local draft removed after send"),
-            Ok(false) => {}
-            Err(error) => {
-                tracing::warn!(%error, %draft_id, "Could not remove local draft after send")
-            }
+        self.imp().transport_started.set(true);
+        self.set_operation_status(
+            operation_id,
+            "Übertragung läuft; ein Abbruch ist jetzt nicht mehr möglich…",
+            false,
+        );
+    }
+
+    fn request_operation_cancel(&self) {
+        let imp = self.imp();
+        if imp.operation.get() == ComposeOperation::Idle {
+            return;
         }
+        if imp.transport_started.get() {
+            self.show_toast(
+                "Der Transport läuft bereits; ein Abbruch ist technisch nicht mehr möglich",
+            );
+            return;
+        }
+        if let Some(cancel) = imp.operation_cancel.borrow().as_ref() {
+            cancel.store(true, Ordering::Release);
+        }
+        if let Some(button) = imp.cancel_operation_button.borrow().as_ref() {
+            button.set_sensitive(false);
+        }
+        if let Some(label) = imp.operation_status.borrow().as_ref() {
+            label.set_text("Abbruch wird verarbeitet…");
+        }
+    }
+
+    fn finish_operation(&self, operation_id: u64) -> bool {
+        if !self.is_current_operation(operation_id) {
+            return false;
+        }
+        let imp = self.imp();
+        imp.operation.set(ComposeOperation::Idle);
+        imp.transport_started.set(false);
+        imp.operation_cancel.borrow_mut().take();
+        if let Some(button) = imp.send_button.borrow().as_ref() {
+            button.set_sensitive(true);
+        }
+        if let Some(button) = imp.save_draft_button.borrow().as_ref() {
+            button.set_sensitive(true);
+        }
+        for control in imp.compose_controls.borrow().iter() {
+            control.set_sensitive(true);
+        }
+        if let Some(button) = imp.cancel_operation_button.borrow().as_ref() {
+            button.set_visible(false);
+            button.set_sensitive(true);
+        }
+        if let Some(spinner) = imp.operation_spinner.borrow().as_ref() {
+            spinner.stop();
+            spinner.set_visible(false);
+        }
+        if let Some(row) = imp.operation_row.borrow().as_ref() {
+            row.set_visible(false);
+        }
+        true
     }
 
     fn selected_identity(&self, selected: u32) -> ComposeIdentity {
@@ -2383,9 +2856,61 @@ fn format_size(size: u64) -> String {
     format!("{:.1} GiB", size as f64 / (1024.0 * 1024.0 * 1024.0))
 }
 
+fn draft_has_user_content(draft: &DraftMessage) -> bool {
+    draft.from.trim().chars().next().is_some()
+        || draft.source_uid.trim().chars().next().is_some()
+        || draft.to.trim().chars().next().is_some()
+        || draft.cc.trim().chars().next().is_some()
+        || draft.bcc.trim().chars().next().is_some()
+        || draft.subject.trim().chars().next().is_some()
+        || draft.html_body.trim().chars().next().is_some()
+        || !draft.attachments.is_empty()
+        || draft.calendar_method.is_some()
+        || draft.calendar_component.is_some()
+}
+
+fn compose_operation_can_start(operation: ComposeOperation) -> bool {
+    operation == ComposeOperation::Idle
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_one_compose_operation_can_start_at_a_time() {
+        assert!(compose_operation_can_start(ComposeOperation::Idle));
+        assert!(!compose_operation_can_start(ComposeOperation::SavingDraft));
+        assert!(!compose_operation_can_start(ComposeOperation::Sending));
+    }
+
+    #[test]
+    fn empty_new_draft_is_not_autosaved_but_existing_content_is() {
+        let draft = DraftMessage {
+            id: "draft-test".to_string(),
+            from: String::new(),
+            source_uid: String::new(),
+            to: String::new(),
+            cc: String::new(),
+            bcc: String::new(),
+            subject: String::new(),
+            html_body: String::new(),
+            plain_text: false,
+            updated_at: String::new(),
+            attachments: Vec::new(),
+            calendar_method: None,
+            calendar_component: None,
+            pgp_sign: false,
+            pgp_encrypt: false,
+            pgp_key: String::new(),
+            smime_options: None,
+        };
+        assert!(!draft_has_user_content(&draft));
+
+        let mut with_subject = draft;
+        with_subject.subject = "Recovery".to_string();
+        assert!(draft_has_user_content(&with_subject));
+    }
 
     #[test]
     fn reply_and_forward_subjects_do_not_duplicate_prefixes() {

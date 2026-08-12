@@ -17,19 +17,18 @@ use crate::services::calendar_store_service::{
     update_ical_property,
 };
 use crate::services::ecal_service::{
-    CalendarDataOrigin, ECalChangeKind, ECalComponentType, ECalRecord, ECalService, ECalSyncEvent,
-    load_snapshot_prefer_eds, parse_change_record,
+    CalendarDataOrigin, ECalChangeKind, ECalComponentType, ECalMutationResult, ECalRecord,
+    ECalService, ECalSyncEvent, load_snapshot_prefer_eds, parse_change_record,
 };
 use crate::services::eds_service;
 use crate::services::ical_time_service::{
     property_local_date, property_local_dates, property_local_datetime, property_local_display,
 };
 #[cfg(test)]
+use crate::services::recurrence_service::recurrence_matches_without_count;
 use crate::services::recurrence_service::{
-    RecurrenceByDay, parse_extended_weekday_token, recurrence_matches_without_count,
-};
-use crate::services::recurrence_service::{
-    parse_recurrence_rule, recurrence_occurs_on as recurrence_rule_occurs_on,
+    RecurrenceByDay, parse_extended_weekday_token, parse_recurrence_rule,
+    recurrence_occurs_on as recurrence_rule_occurs_on,
 };
 use crate::services::settings_service::AppSettings;
 use crate::views::accessibility::set_accessible_label;
@@ -1865,22 +1864,6 @@ impl CalendarPage {
             )
     }
 
-    fn visible_event_records(&self) -> Vec<CalendarEventRecord> {
-        self.imp()
-            .event_records
-            .borrow()
-            .as_ref()
-            .map(|records| {
-                records
-                    .borrow()
-                    .iter()
-                    .filter(|event| self.event_is_visible(event))
-                    .cloned()
-                    .collect()
-            })
-            .unwrap_or_default()
-    }
-
     fn refresh_month_grid(&self) {
         let Some(grid) = self.imp().month_grid.borrow().as_ref().cloned() else {
             return;
@@ -1906,8 +1889,6 @@ impl CalendarPage {
             .map(|settings| settings.calendar_show_week_numbers())
             .unwrap_or(false);
         let column_offset = if show_week_numbers { 1 } else { 0 };
-        let events = self.visible_event_records();
-
         while let Some(child) = grid.first_child() {
             grid.remove(&child);
         }
@@ -1964,10 +1945,7 @@ impl CalendarPage {
             }
             cell_box.append(&day_label);
 
-            let day_events = events
-                .iter()
-                .filter(|event| event_occurs_on(event, date))
-                .collect::<Vec<_>>();
+            let day_events = self.events_for_date(date);
             for event in day_events.iter().take(3) {
                 let event_label = gtk::Label::builder()
                     .ellipsize(gtk::pango::EllipsizeMode::End)
@@ -1982,7 +1960,7 @@ impl CalendarPage {
                     .child(&event_label)
                     .build();
                 set_accessible_label(&event_button, &format!("Termin öffnen: {}", event.summary));
-                let event_for_click = (*event).clone();
+                let event_for_click = event.clone();
                 event_button.connect_clicked(move |button| {
                     open_event_editor_for_widget(button, &event_for_click);
                 });
@@ -2021,11 +1999,8 @@ impl CalendarPage {
         if delta_days == 0 {
             return;
         }
-        if event.source_uid.trim().is_empty() {
-            show_toast_for_widget(
-                self,
-                "Dieser Termin stammt aus einer schreibgeschützten importierten Quelle",
-            );
+        if let Some(error) = event_mutation_error(&event) {
+            show_toast_for_widget(self, error);
             return;
         }
         let updated_component = match shift_event_component(&event.component, delta_days) {
@@ -2060,10 +2035,13 @@ impl CalendarPage {
             };
             match result {
                 Ok(result) => {
-                    let component = result.component.unwrap_or_else(|| {
-                        shift_event_component(&event.component, delta_days)
-                            .unwrap_or_else(|_| event.component.clone())
-                    });
+                    let component = match validated_event_mutation_component(&event, &result) {
+                        Ok(component) => component,
+                        Err(error) => {
+                            show_toast_for_widget(&page, &error);
+                            return;
+                        }
+                    };
                     let mut updated_event = event.clone();
                     updated_event.component = component.clone();
                     updated_event.start =
@@ -2076,8 +2054,11 @@ impl CalendarPage {
                     if let Some(records) = records {
                         let mut records = records.borrow_mut();
                         if let Some(existing) = records.iter_mut().find(|existing| {
-                            existing.source_uid == updated_event.source_uid
-                                && existing.uid == updated_event.uid
+                            same_event_identity(
+                                existing,
+                                &updated_event.source_uid,
+                                &updated_event.uid,
+                            )
                         }) {
                             *existing = updated_event;
                         }
@@ -2184,7 +2165,7 @@ fn shift_event_component(raw: &str, delta_days: i64) -> Result<String, String> {
     for property_name in ["RDATE", "EXDATE"] {
         updated = shift_ical_date_list_property(&updated, property_name, delta_days)?;
     }
-    updated = shift_rrule_until(&updated, delta_days)?;
+    updated = shift_rrule(&updated, delta_days)?;
     Ok(updated)
 }
 
@@ -2193,29 +2174,72 @@ fn shift_ical_date_list_property(
     property_name: &str,
     delta_days: i64,
 ) -> Result<String, String> {
-    let Some(property_prefix) = ical_property_prefix(raw, property_name) else {
+    let target = property_name.to_ascii_uppercase();
+    let mut lines = Vec::new();
+    let mut component_depth = 0usize;
+    let mut replaced = false;
+
+    for line in unfold_ical_lines(raw) {
+        let Some((property, value)) = line.split_once(':') else {
+            lines.push(line);
+            continue;
+        };
+        let name = property
+            .split(';')
+            .next()
+            .unwrap_or(property)
+            .to_ascii_uppercase();
+        if name == target && component_depth <= 1 {
+            let shifted_values = value
+                .split(',')
+                .map(|value| {
+                    shift_ical_datetime_value(value, delta_days).ok_or_else(|| {
+                        format!("{property_name} konnte beim Verschieben nicht ausgewertet werden")
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            // Keep every line's own TZID/VALUE parameters. Combining lines
+            // under the first prefix would silently change a mixed-zone
+            // EXDATE/RDATE set.
+            lines.push(format!("{property}:{}", shifted_values.join(",")));
+            replaced = true;
+        } else {
+            lines.push(line);
+        }
+
+        if name == "BEGIN" {
+            component_depth = component_depth.saturating_add(1);
+        } else if name == "END" {
+            component_depth = component_depth.saturating_sub(1);
+        }
+    }
+
+    if !replaced {
         return Ok(raw.to_string());
-    };
-    let shifted_values = ical_properties(raw, property_name)
-        .iter()
-        .flat_map(|value| value.split(','))
-        .map(|value| {
-            shift_ical_datetime_value(value, delta_days).ok_or_else(|| {
-                format!("{property_name} konnte beim Verschieben nicht ausgewertet werden")
-            })
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(update_ical_property(
-        raw,
-        &property_prefix,
-        Some(&shifted_values.join(",")),
-    ))
+    }
+    Ok(format!("{}\r\n", lines.join("\r\n")))
 }
 
-fn shift_rrule_until(raw: &str, delta_days: i64) -> Result<String, String> {
+fn shift_rrule(raw: &str, delta_days: i64) -> Result<String, String> {
     let Some(rule) = ical_property(raw, "RRULE") else {
         return Ok(raw.to_string());
     };
+    let parsed_rule = parse_recurrence_rule(&rule).ok_or_else(|| {
+        "Die Wiederholungsregel ist ungültig und wurde nicht verschoben".to_string()
+    })?;
+
+    // A date shift is exact for daily rules and weekly rules. Weekly BYDAY
+    // values must move with DTSTART; leaving them untouched would create a
+    // different series. More complex monthly/yearly filters cannot be
+    // translated losslessly by a simple drag, so report that fact instead of
+    // writing a plausible-looking but wrong recurrence.
+    if !matches!(parsed_rule.frequency.as_str(), "DAILY" | "WEEKLY") {
+        return Err(
+            "Diese Wiederholung kann nicht sicher per Ziehen verschoben werden; bitte den Termin bearbeiten"
+                .to_string(),
+        );
+    }
+
     let mut changed = false;
     let shifted_rule = rule
         .split(';')
@@ -2223,13 +2247,37 @@ fn shift_rrule_until(raw: &str, delta_days: i64) -> Result<String, String> {
             let Some((key, value)) = part.split_once('=') else {
                 return Ok(part.to_string());
             };
-            if !key.eq_ignore_ascii_case("UNTIL") {
-                return Ok(part.to_string());
+            if key.eq_ignore_ascii_case("UNTIL") {
+                let shifted = shift_ical_datetime_value(value, delta_days).ok_or_else(|| {
+                    "RRULE-UNTIL konnte beim Verschieben nicht ausgewertet werden".to_string()
+                })?;
+                changed = true;
+                return Ok(format!("{key}={shifted}"));
             }
-            let shifted = shift_ical_datetime_value(value, delta_days)
-                .ok_or_else(|| "RRULE-UNTIL konnte beim Verschieben nicht ausgewertet werden")?;
-            changed = true;
-            Ok(format!("{key}={shifted}"))
+            if key.eq_ignore_ascii_case("BYDAY") {
+                let shifted_days = value
+                    .split(',')
+                    .map(|token| {
+                        let by_day = parse_extended_weekday_token(token).ok_or_else(|| {
+                            "RRULE-BYDAY konnte beim Verschieben nicht ausgewertet werden"
+                                .to_string()
+                        })?;
+                        Ok(format_shifted_recurrence_day(by_day, delta_days))
+                    })
+                    .collect::<Result<Vec<_>, String>>()?;
+                changed = true;
+                return Ok(format!("{key}={}", shifted_days.join(",")));
+            }
+            if matches!(
+                key.to_ascii_uppercase().as_str(),
+                "BYMONTHDAY" | "BYMONTH" | "BYSETPOS"
+            ) {
+                return Err(
+                    "Diese Wiederholung enthält Filter, die beim Ziehen nicht sicher verschoben werden können"
+                        .to_string(),
+                );
+            }
+            Ok(part.to_string())
         })
         .collect::<Result<Vec<_>, String>>()?
         .join(";");
@@ -2242,6 +2290,33 @@ fn shift_rrule_until(raw: &str, delta_days: i64) -> Result<String, String> {
         &property_prefix,
         Some(&shifted_rule),
     ))
+}
+
+fn format_shifted_recurrence_day(by_day: RecurrenceByDay, delta_days: i64) -> String {
+    let weekday_index =
+        (i64::from(by_day.weekday.num_days_from_monday()) + delta_days).rem_euclid(7);
+    let weekday = match weekday_index {
+        0 => Weekday::Mon,
+        1 => Weekday::Tue,
+        2 => Weekday::Wed,
+        3 => Weekday::Thu,
+        4 => Weekday::Fri,
+        5 => Weekday::Sat,
+        _ => Weekday::Sun,
+    };
+    let token = match weekday {
+        Weekday::Mon => "MO",
+        Weekday::Tue => "TU",
+        Weekday::Wed => "WE",
+        Weekday::Thu => "TH",
+        Weekday::Fri => "FR",
+        Weekday::Sat => "SA",
+        Weekday::Sun => "SU",
+    };
+    by_day
+        .ordinal
+        .map(|ordinal| format!("{ordinal}{token}"))
+        .unwrap_or_else(|| token.to_string())
 }
 
 fn ical_property_prefix(raw: &str, target: &str) -> Option<String> {
@@ -2268,6 +2343,9 @@ fn shift_ical_datetime_value(value: &str, delta_days: i64) -> Option<String> {
         );
     }
     if value.len() < 15 || value.as_bytes().get(8) != Some(&b'T') {
+        return None;
+    }
+    if !value.is_char_boundary(15) {
         return None;
     }
     let datetime = NaiveDateTime::parse_from_str(&value[..15], "%Y%m%dT%H%M%S").ok()?;
@@ -2696,11 +2774,8 @@ fn calendar_event_row(event: &CalendarEventRecord) -> adw::ActionRow {
 }
 
 fn open_event_editor_for_widget<W: IsA<gtk::Widget>>(widget: &W, event: &CalendarEventRecord) {
-    if event.source_uid.trim().is_empty() || event.component.trim().is_empty() {
-        show_toast_for_widget(
-            widget,
-            "Dieser Termin stammt aus einer schreibgeschützten importierten Quelle",
-        );
+    if let Some(error) = event_mutation_error(event) {
+        show_toast_for_widget(widget, error);
         return;
     }
     let dialog = crate::dialogs::EventDialog::new_for_edit(event);
@@ -2776,85 +2851,148 @@ fn event_start_date(event: &CalendarEventRecord) -> Option<NaiveDate> {
         .or_else(|| NaiveDate::parse_from_str(event.start.get(..10)?, "%Y-%m-%d").ok())
 }
 
-fn event_end_date(event: &CalendarEventRecord) -> Option<NaiveDate> {
-    property_local_date(&event.component, "DTEND", event.all_day)
-        .or_else(|| NaiveDate::parse_from_str(event.end.get(..10)?, "%Y-%m-%d").ok())
+fn event_start_datetime(event: &CalendarEventRecord) -> Option<NaiveDateTime> {
+    property_local_datetime(&event.component, "DTSTART", event.all_day)
+        .or_else(|| displayed_event_datetime(&event.start))
 }
 
-fn event_start_datetime(event: &CalendarEventRecord) -> Option<NaiveDateTime> {
-    property_local_datetime(&event.component, "DTSTART", event.all_day).or_else(|| {
-        let date = event_start_date(event)?;
-        if let Some(value) = event.start.get(..16) {
-            if let Ok(datetime) = NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M") {
-                return Some(datetime);
-            }
+fn event_end_datetime(event: &CalendarEventRecord) -> Option<NaiveDateTime> {
+    property_local_datetime(&event.component, "DTEND", event.all_day)
+        .or_else(|| displayed_event_datetime(&event.end))
+}
+
+fn displayed_event_datetime(value: &str) -> Option<NaiveDateTime> {
+    if let Some(value) = value.get(..16) {
+        if let Ok(datetime) = NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M") {
+            return Some(datetime);
         }
-        date.and_hms_opt(0, 0, 0)
-    })
+    }
+    NaiveDate::parse_from_str(value.get(..10)?, "%Y-%m-%d")
+        .ok()?
+        .and_hms_opt(0, 0, 0)
+}
+
+fn event_display_span(event: &CalendarEventRecord) -> Option<(NaiveDate, NaiveDate)> {
+    let start = event_start_date(event)?;
+    if event.all_day {
+        let end = property_local_date(&event.component, "DTEND", true)
+            .or_else(|| NaiveDate::parse_from_str(event.end.get(..10)?, "%Y-%m-%d").ok())
+            .filter(|end| *end > start)
+            .and_then(|end| end.pred_opt())
+            .unwrap_or(start);
+        return Some((start, end.max(start)));
+    }
+
+    let start_datetime = event_start_datetime(event)?;
+    let end_datetime = event_end_datetime(event).unwrap_or(start_datetime);
+    if end_datetime <= start_datetime {
+        return Some((start_datetime.date(), start_datetime.date()));
+    }
+
+    // DTEND is exclusive for an event interval.  An event ending exactly at
+    // midnight therefore does not occupy the following calendar day.
+    let end_date = if end_datetime.time().hour() == 0
+        && end_datetime.time().minute() == 0
+        && end_datetime.time().second() == 0
+        && end_datetime.time().nanosecond() == 0
+    {
+        end_datetime
+            .date()
+            .pred_opt()
+            .unwrap_or(end_datetime.date())
+    } else {
+        end_datetime.date()
+    };
+    Some((start_datetime.date(), end_date.max(start_datetime.date())))
 }
 
 fn event_occurs_on(event: &CalendarEventRecord, date: NaiveDate) -> bool {
-    let Some(start) = event_start_date(event) else {
-        return false;
-    };
-    let mut end = event_end_date(event).unwrap_or(start);
-    if event.all_day && end > start {
-        end -= Duration::days(1);
-    }
-    if end < start {
-        end = start;
-    }
-    if has_exdate(event, date) {
-        return false;
-    }
-    if has_rdate(event, date) {
-        return true;
-    }
-    if (start..=end).contains(&date) {
-        // EXDATE identifies an occurrence start.  Keep the complete
-        // multi-day span hidden when that start is excluded.
-        return !has_exdate(event, start);
-    }
-
-    let span_days = (end - start).num_days().max(0);
-    (0..=span_days).any(|offset| {
-        let occurrence_start = date - Duration::days(offset);
-        occurrence_start > end && recurrence_occurs_on(event, start, occurrence_start)
-    })
-}
-
-fn recurrence_occurs_on(
-    event: &CalendarEventRecord,
-    initial_start: NaiveDate,
-    date: NaiveDate,
-) -> bool {
-    if date < initial_start || event.component.trim().is_empty() {
-        return false;
-    }
-    let Some(rule) = ical_property(&event.component, "RRULE") else {
-        return false;
-    };
-
-    let Some(rule) = parse_recurrence_rule(&rule) else {
+    let Some((start, end)) = event_display_span(event) else {
         return false;
     };
     let excluded_dates = exdate_values(event);
+    let rdate_values = property_local_dates(&event.component, "RDATE");
+    let recurrence_rule =
+        ical_property(&event.component, "RRULE").and_then(|raw| parse_recurrence_rule(&raw));
+    let span_days = (end - start).num_days().max(0);
+    (0..=span_days).any(|offset| {
+        event_occurrence_start_is_on(
+            date - Duration::days(offset),
+            start,
+            &excluded_dates,
+            &rdate_values,
+            recurrence_rule.as_ref(),
+        )
+    })
+}
+
+fn event_occurrence_start_is_on(
+    date: NaiveDate,
+    initial_start: NaiveDate,
+    excluded_dates: &[NaiveDate],
+    rdate_values: &[NaiveDate],
+    recurrence_rule: Option<&crate::services::recurrence_service::RecurrenceRule>,
+) -> bool {
     if excluded_dates.contains(&date) {
         return false;
     }
-    recurrence_rule_occurs_on(&rule, initial_start, date, &excluded_dates)
+    if date == initial_start || rdate_values.contains(&date) {
+        return true;
+    }
+    recurrence_rule
+        .is_some_and(|rule| recurrence_rule_occurs_on(rule, initial_start, date, excluded_dates))
 }
 
-fn has_exdate(event: &CalendarEventRecord, date: NaiveDate) -> bool {
-    exdate_values(event).contains(&date)
+fn same_event_identity(event: &CalendarEventRecord, source_uid: &str, uid: &str) -> bool {
+    event.source_uid == source_uid && event.uid == uid
+}
+
+fn event_mutation_error(event: &CalendarEventRecord) -> Option<&'static str> {
+    if event.source_uid.trim().is_empty() {
+        return Some("Dieser Termin stammt aus einer schreibgeschützten importierten Quelle");
+    }
+    if event.uid.trim().is_empty() {
+        return Some("Dieser Termin besitzt keine stabile UID und kann nicht geändert werden");
+    }
+    if event.component.trim().is_empty() {
+        return Some("Für diesen Termin sind keine iCalendar-Daten verfügbar");
+    }
+    match ical_property(&event.component, "UID") {
+        Some(uid) if uid == event.uid => None,
+        Some(_) => Some("Die Termin-UID und die iCalendar-UID stimmen nicht überein"),
+        None => Some("Die iCalendar-Komponente besitzt keine stabile UID"),
+    }
+}
+
+fn validated_event_mutation_component(
+    event: &CalendarEventRecord,
+    result: &ECalMutationResult,
+) -> Result<String, String> {
+    if result.uid != event.uid {
+        return Err(
+            "ECal lieferte eine andere Termin-UID zurück; die Ansicht wurde nicht geändert"
+                .to_string(),
+        );
+    }
+    let component = result
+        .component
+        .clone()
+        .filter(|component| !component.trim().is_empty())
+        .ok_or_else(|| {
+            "ECal bestätigte die Änderung ohne iCalendar-Komponente; die Ansicht wurde nicht geändert"
+                .to_string()
+        })?;
+    if ical_property(&component, "UID").as_deref() != Some(event.uid.as_str()) {
+        return Err(
+            "ECal lieferte eine iCalendar-Komponente mit anderer UID zurück; die Ansicht wurde nicht geändert"
+                .to_string(),
+        );
+    }
+    Ok(component)
 }
 
 fn exdate_values(event: &CalendarEventRecord) -> Vec<NaiveDate> {
     property_local_dates(&event.component, "EXDATE")
-}
-
-fn has_rdate(event: &CalendarEventRecord, date: NaiveDate) -> bool {
-    property_local_dates(&event.component, "RDATE").contains(&date)
 }
 
 fn ical_property(raw: &str, target: &str) -> Option<String> {
@@ -2867,21 +3005,6 @@ fn ical_property(raw: &str, target: &str) -> Option<String> {
             .to_ascii_uppercase();
         (name == target.to_ascii_uppercase()).then(|| unescape_ical_text(value))
     })
-}
-
-fn ical_properties(raw: &str, target: &str) -> Vec<String> {
-    unfold_ical_lines(raw)
-        .into_iter()
-        .filter_map(|line| {
-            let (property, value) = line.split_once(':')?;
-            let name = property
-                .split(';')
-                .next()
-                .unwrap_or(property)
-                .to_ascii_uppercase();
-            (name == target.to_ascii_uppercase()).then(|| unescape_ical_text(value))
-        })
-        .collect()
 }
 
 fn unfold_ical_lines(raw: &str) -> Vec<String> {
@@ -2915,7 +3038,7 @@ fn upsert_event_row(
     let existing_index = event_records
         .borrow()
         .iter()
-        .position(|existing| existing.source_uid == event.source_uid && existing.uid == event.uid);
+        .position(|existing| same_event_identity(existing, &event.source_uid, &event.uid));
     if let Some(index) = existing_index {
         event_records.borrow_mut().remove(index);
         remove_event_list_row(event_list, &event.source_uid, &event.uid);
@@ -2933,7 +3056,7 @@ fn remove_event_row(
     let Some(index) = event_records
         .borrow()
         .iter()
-        .position(|event| event.source_uid == source_uid && event.uid == uid)
+        .position(|event| same_event_identity(event, source_uid, uid))
     else {
         return;
     };
@@ -3010,11 +3133,8 @@ fn append_event_row(
     let edit_button_for_context = edit_button.clone();
     let edit_button_for_signal = edit_button.clone();
     edit_button_for_signal.connect_clicked(move |_| {
-        if event_for_edit.source_uid.is_empty() {
-            show_toast_for_widget(
-                &edit_button,
-                "Dieser Termin stammt aus einer schreibgeschützten importierten Quelle",
-            );
+        if let Some(error) = event_mutation_error(&event_for_edit) {
+            show_toast_for_widget(&edit_button, error);
             return;
         }
         let dialog = crate::dialogs::EventDialog::new_for_edit(&event_for_edit);
@@ -3093,11 +3213,8 @@ fn append_event_row(
     let delete_button_for_context = delete_button.clone();
     let delete_button_for_signal = delete_button.clone();
     delete_button_for_signal.connect_clicked(move |_| {
-        if event_for_delete.source_uid.is_empty() {
-            show_toast_for_widget(
-                &delete_button,
-                "Dieser Termin stammt aus einer schreibgeschützten importierten Quelle",
-            );
+        if let Some(error) = event_mutation_error(&event_for_delete) {
+            show_toast_for_widget(&delete_button, error);
             return;
         }
         let confirmation_message = if event_for_delete.source_uid == "local-calendar" {
@@ -3137,16 +3254,19 @@ fn append_event_row(
                 let delete_button_for_result = delete_button_for_action.clone();
                 glib::spawn_future_local(async move {
                     match receiver.recv().await {
-                        Ok(Ok(result)) => {
+                        Ok(Ok(result)) if result.uid == uid_for_result => {
                             if let Some(row) = delete_button_for_result
                                 .ancestor(gtk::ListBoxRow::static_type())
                                 .and_downcast::<gtk::ListBoxRow>()
                             {
                                 event_list_for_result.remove(&row);
                             }
-                            event_records_for_result.borrow_mut().retain(|event| {
-                                event.source_uid != source_uid_for_result
-                                    || event.uid != uid_for_result
+            event_records_for_result.borrow_mut().retain(|event| {
+                                !same_event_identity(
+                                    event,
+                                    &source_uid_for_result,
+                                    &uid_for_result,
+                                )
                             });
                             show_toast_for_widget(
                                 &delete_button_for_result,
@@ -3158,6 +3278,16 @@ fn append_event_row(
                             {
                                 window.refresh_calendar_page();
                             }
+                        }
+                        Ok(Ok(result)) => {
+                            delete_button_for_result.set_sensitive(true);
+                            show_toast_for_widget(
+                                &delete_button_for_result,
+                                &format!(
+                                    "ECal bestätigte eine andere Termin-UID ({}); nichts wurde entfernt",
+                                    result.uid
+                                ),
+                            );
                         }
                         Ok(Err(error)) => {
                             delete_button_for_result.set_sensitive(true);
@@ -3414,6 +3544,79 @@ mod tests {
     }
 
     #[test]
+    fn timed_event_ending_at_midnight_does_not_occupy_the_next_day() {
+        let mut event = event_with_start("2026-08-10 23:00");
+        event.end = "2026-08-11 00:00".to_string();
+
+        assert!(event_occurs_on(
+            &event,
+            NaiveDate::from_ymd_opt(2026, 8, 10).unwrap()
+        ));
+        assert!(!event_occurs_on(
+            &event,
+            NaiveDate::from_ymd_opt(2026, 8, 11).unwrap()
+        ));
+    }
+
+    #[test]
+    fn rdate_occurrences_keep_the_event_span_and_exdate_removes_the_span() {
+        let mut event = event_with_start("2026-08-03");
+        event.all_day = true;
+        event.end = "2026-08-05".to_string();
+        event.component = concat!(
+            "BEGIN:VEVENT\r\nUID:event-rdate-span\r\n",
+            "DTSTART;VALUE=DATE:20260803\r\n",
+            "DTEND;VALUE=DATE:20260805\r\n",
+            "RDATE;VALUE=DATE:20260812\r\n",
+            "END:VEVENT\r\n"
+        )
+        .to_string();
+
+        assert!(event_occurs_on(
+            &event,
+            NaiveDate::from_ymd_opt(2026, 8, 13).unwrap()
+        ));
+        assert!(!event_occurs_on(
+            &event,
+            NaiveDate::from_ymd_opt(2026, 8, 14).unwrap()
+        ));
+
+        event.component = event
+            .component
+            .replace("RDATE;VALUE=DATE:20260812", "EXDATE;VALUE=DATE:20260812");
+        assert!(!event_occurs_on(
+            &event,
+            NaiveDate::from_ymd_opt(2026, 8, 12).unwrap()
+        ));
+        assert!(!event_occurs_on(
+            &event,
+            NaiveDate::from_ymd_opt(2026, 8, 13).unwrap()
+        ));
+    }
+
+    #[test]
+    fn malformed_recurrence_does_not_create_occurrences_beyond_dtstart() {
+        let mut event = event_with_start("2026-08-03");
+        event.all_day = true;
+        event.component = concat!(
+            "BEGIN:VEVENT\r\nUID:event-invalid-rule\r\n",
+            "DTSTART;VALUE=DATE:20260803\r\n",
+            "RRULE:FREQ=DAILY;COUNT=invalid\r\n",
+            "END:VEVENT\r\n"
+        )
+        .to_string();
+
+        assert!(event_occurs_on(
+            &event,
+            NaiveDate::from_ymd_opt(2026, 8, 3).unwrap()
+        ));
+        assert!(!event_occurs_on(
+            &event,
+            NaiveDate::from_ymd_opt(2026, 8, 4).unwrap()
+        ));
+    }
+
+    #[test]
     fn recurrence_rules_cover_weekdays_count_until_and_exdate() {
         let mut event = event_with_start("2026-08-03");
         event.all_day = true;
@@ -3587,6 +3790,11 @@ mod tests {
     }
 
     #[test]
+    fn shifting_malformed_non_ascii_datetime_is_rejected_without_panicking() {
+        assert_eq!(shift_ical_datetime_value("20260810T12000ä0", 1), None);
+    }
+
+    #[test]
     fn moving_all_day_event_shifts_date_values() {
         let raw = concat!(
             "BEGIN:VEVENT\r\nUID:event-1\r\n",
@@ -3615,5 +3823,91 @@ mod tests {
         assert!(shifted.contains("RRULE:FREQ=WEEKLY;UNTIL=20260903T120000Z"));
         assert!(shifted.contains("RDATE:20260819T120000Z,20260826T120000Z"));
         assert!(shifted.contains("EXDATE:20260902T120000Z"));
+    }
+
+    #[test]
+    fn moving_weekly_byday_event_shifts_the_weekdays_with_the_series() {
+        let raw = concat!(
+            "BEGIN:VEVENT\r\n",
+            "UID:event-weekly-byday\r\n",
+            "DTSTART;VALUE=DATE:20260803\r\n",
+            "DTEND;VALUE=DATE:20260804\r\n",
+            "RRULE:FREQ=WEEKLY;BYDAY=MO,WE;COUNT=4\r\n",
+            "END:VEVENT\r\n"
+        );
+        let shifted = shift_event_component(raw, 2).expect("weekly series should move");
+        assert!(shifted.contains("DTSTART;VALUE=DATE:20260805"));
+        assert!(shifted.contains("DTEND;VALUE=DATE:20260806"));
+        assert!(shifted.contains("RRULE:FREQ=WEEKLY;BYDAY=WE,FR;COUNT=4"));
+    }
+
+    #[test]
+    fn moving_complex_monthly_recurrence_reports_lossless_translation_limit() {
+        let raw = concat!(
+            "BEGIN:VEVENT\r\nUID:event-monthly\r\n",
+            "DTSTART;VALUE=DATE:20260803\r\n",
+            "DTEND;VALUE=DATE:20260804\r\n",
+            "RRULE:FREQ=MONTHLY;BYDAY=1MO;COUNT=3\r\n",
+            "END:VEVENT\r\n"
+        );
+        let error =
+            shift_event_component(raw, 1).expect_err("complex series must not be corrupted");
+        assert!(error.contains("nicht sicher"));
+    }
+
+    #[test]
+    fn shifting_date_lists_preserves_each_timezone_parameter() {
+        let raw = concat!(
+            "BEGIN:VEVENT\r\nUID:event-zones\r\n",
+            "DTSTART;TZID=Europe/Berlin:20260810T120000\r\n",
+            "DTEND;TZID=Europe/Berlin:20260810T130000\r\n",
+            "RDATE;TZID=Europe/Berlin:20260817T120000\r\n",
+            "RDATE;TZID=America/New_York:20260824T120000\r\n",
+            "END:VEVENT\r\n"
+        );
+        let shifted = shift_event_component(raw, 1).expect("mixed-zone list should move");
+        assert!(shifted.contains("RDATE;TZID=Europe/Berlin:20260818T120000"));
+        assert!(shifted.contains("RDATE;TZID=America/New_York:20260825T120000"));
+    }
+
+    #[test]
+    fn mutation_validation_requires_the_original_source_and_uid() {
+        let event = CalendarEventRecord {
+            uid: "event-1".to_string(),
+            source_uid: "source-1".to_string(),
+            source_display_name: "Kalender".to_string(),
+            component: "BEGIN:VEVENT\r\nUID:event-1\r\nEND:VEVENT\r\n".to_string(),
+            summary: "Termin".to_string(),
+            start: "2026-08-10".to_string(),
+            end: "2026-08-11".to_string(),
+            location: String::new(),
+            description: String::new(),
+            all_day: true,
+        };
+        let valid = ECalMutationResult {
+            uid: "event-1".to_string(),
+            component: Some(event.component.clone()),
+        };
+        assert_eq!(event_mutation_error(&event), None);
+        assert_eq!(
+            validated_event_mutation_component(&event, &valid),
+            Ok(event.component.clone())
+        );
+
+        let wrong_uid = ECalMutationResult {
+            uid: "event-2".to_string(),
+            component: Some(event.component.clone()),
+        };
+        assert!(validated_event_mutation_component(&event, &wrong_uid).is_err());
+
+        let wrong_component = ECalMutationResult {
+            uid: "event-1".to_string(),
+            component: Some("BEGIN:VEVENT\r\nUID:event-2\r\nEND:VEVENT\r\n".to_string()),
+        };
+        assert!(validated_event_mutation_component(&event, &wrong_component).is_err());
+
+        let mut imported = event.clone();
+        imported.source_uid.clear();
+        assert!(event_mutation_error(&imported).is_some());
     }
 }

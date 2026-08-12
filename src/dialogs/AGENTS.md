@@ -18,6 +18,10 @@ and updates to the service/settings APIs.
   backend conflicts or read-only limitations.
 - Settings editors must persist values through `AppSettings` and update open
   views through change notifications where the setting is live.
+- Composer autosave, MIME assembly, transport, and remote draft cleanup run
+  outside the GTK main thread. Preserve a complete recovery draft before send,
+  reject duplicate send starts, and remove the draft only after confirmed
+  transport success; cancellation and failure keep the editor recoverable.
 
 ## Verification
 
