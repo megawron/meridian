@@ -68,11 +68,9 @@ mod imp {
     }
 
     impl WidgetImpl for EvolutionWindow {
-        // This subclass is a composed GTK4 widget.  GTK4 does not expose a
-        // usable parent `realize` vfunc for this widget chain; forwarding to
-        // it can enter the non-unwinding C trampoline and abort the process
-        // while the first window is presented on some backends.
-        fn realize(&self) {}
+        fn realize(&self) {
+            self.parent_realize();
+        }
     }
     impl WindowImpl for EvolutionWindow {
         fn close_request(&self) -> glib::Propagation {
@@ -322,20 +320,71 @@ impl EvolutionWindow {
         }
     }
 
-    pub(crate) fn show_search_domain(&self, domain: crate::services::search_engine::SearchDomain) {
+    pub(crate) fn show_search_result(
+        &self,
+        domain: crate::services::search_engine::SearchDomain,
+        reference_id: String,
+        query: String,
+    ) {
         let page_name = match domain {
             crate::services::search_engine::SearchDomain::Mail => "mail",
-            crate::services::search_engine::SearchDomain::Calendar => "calendar",
+            crate::services::search_engine::SearchDomain::Calendar => {
+                let target = reference_id.split_once(':');
+                let target = target.map(|(source_uid, uid)| (source_uid, uid));
+                let snapshot = crate::services::calendar_store_service::CalendarStoreService::new()
+                    .load_snapshot();
+                if target.is_some_and(|(source_uid, uid)| {
+                    snapshot
+                        .tasks
+                        .iter()
+                        .any(|task| task.source_uid == source_uid && task.uid == uid)
+                }) {
+                    "tasks"
+                } else if target.is_some_and(|(source_uid, uid)| {
+                    snapshot
+                        .memos
+                        .iter()
+                        .any(|memo| memo.source_uid == source_uid && memo.uid == uid)
+                }) {
+                    "memos"
+                } else {
+                    "calendar"
+                }
+            }
             crate::services::search_engine::SearchDomain::Contacts => "contacts",
             crate::services::search_engine::SearchDomain::All => return,
         };
         if let Some(view_stack) = self.imp().view_stack.borrow().as_ref() {
             view_stack.set_visible_child_name(page_name);
         }
+        let window = self.downgrade();
+        glib::idle_add_local_once(move || {
+            let Some(window) = window.upgrade() else {
+                return;
+            };
+            match page_name {
+                "mail" => window.mail_page().map(|page| page.set_search_query(&query)),
+                "calendar" => window
+                    .calendar_page()
+                    .map(|page| page.set_search_query(&query)),
+                "contacts" => window
+                    .contacts_page()
+                    .map(|page| page.set_search_query(&query)),
+                "tasks" => window
+                    .tasks_page()
+                    .map(|page| page.set_search_query(&query)),
+                "memos" => window
+                    .memos_page()
+                    .map(|page| page.set_search_query(&query)),
+                _ => None,
+            };
+        });
         self.add_toast(&adw::Toast::new(match page_name {
             "mail" => "Mailbereich geöffnet",
-            "calendar" => "Kalender-/Aufgaben-/Notizbereich geöffnet",
-            _ => "Kontaktbereich geöffnet",
+            "calendar" => "Kalenderbereich geöffnet und Treffer gesucht",
+            "tasks" => "Aufgabenbereich geöffnet und Treffer gesucht",
+            "memos" => "Notizbereich geöffnet und Treffer gesucht",
+            _ => "Kontaktbereich geöffnet und Treffer gesucht",
         }));
     }
 

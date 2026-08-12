@@ -58,7 +58,9 @@ mod imp {
     }
 
     impl WidgetImpl for ContactsPage {
-        fn realize(&self) {}
+        fn realize(&self) {
+            self.parent_realize();
+        }
     }
 }
 
@@ -88,6 +90,13 @@ impl ContactsPage {
         if let Some(entry) = self.imp().search_entry.borrow().as_ref() {
             entry.grab_focus();
             entry.select_region(0, -1);
+        }
+    }
+
+    pub(crate) fn set_search_query(&self, query: &str) {
+        if let Some(entry) = self.imp().search_entry.borrow().as_ref() {
+            entry.set_text(query);
+            entry.grab_focus();
         }
     }
 
@@ -1014,6 +1023,7 @@ impl ContactsPage {
         detail_box.append(&info_scroll);
 
         // Selection connection
+        let split_for_selection = split.clone();
         let selected_contact_for_selection = Rc::clone(&selected_contact);
         let stored_contacts_for_selection = Rc::clone(&stored_contacts);
         contact_list.connect_row_selected(glib::clone!(
@@ -1032,11 +1042,14 @@ impl ContactsPage {
             #[strong]
             selected_contact_for_selection,
             #[strong]
+            split_for_selection,
+            #[strong]
             stored_contacts_for_selection,
             move |_, row| {
                 let Some(row) = row else {
                     *selected_contact_for_selection.borrow_mut() = None;
                     merge_btn.set_sensitive(false);
+                    split_for_selection.set_show_content(false);
                     return;
                 };
                 unsafe {
@@ -1084,6 +1097,7 @@ impl ContactsPage {
                             ),
                     );
                     *selected_contact_for_selection.borrow_mut() = Some(record);
+                    split_for_selection.set_show_content(true);
                 }
             }
         ));
@@ -1219,6 +1233,10 @@ fn refresh_contacts(
     category_selector: gtk::DropDown,
     selected_category: Rc<RefCell<String>>,
 ) {
+    let selected_identity = selected_contact
+        .borrow()
+        .as_ref()
+        .map(|contact| (contact.source_uid.clone(), contact.uid.clone()));
     while let Some(row) = contact_list.row_at_index(0) {
         contact_list.remove(&row);
     }
@@ -1276,6 +1294,9 @@ fn refresh_contacts(
                     &stored_contacts,
                     &selected_category,
                 );
+                if let Some((source_uid, uid)) = selected_identity.as_ref() {
+                    select_contact_row(&contact_list, source_uid, uid);
+                }
             }
             Err(error) => {
                 empty_state.set_label(&format!("Kontakte konnten nicht geladen werden: {error}"));
@@ -1288,6 +1309,27 @@ fn refresh_contacts(
             }
         }
     });
+}
+
+fn select_contact_row(contact_list: &gtk::ListBox, source_uid: &str, uid: &str) {
+    let mut child = contact_list.first_child();
+    while let Some(widget) = child {
+        child = widget.next_sibling();
+        let Ok(row) = widget.downcast::<gtk::ListBoxRow>() else {
+            continue;
+        };
+        let matches = unsafe {
+            row.data::<String>("contact-source-uid")
+                .is_some_and(|value| value.as_ref() == source_uid)
+                && row
+                    .data::<String>("contact-id")
+                    .is_some_and(|value| value.as_ref() == uid)
+        };
+        if matches {
+            contact_list.select_row(Some(&row));
+            return;
+        }
+    }
 }
 
 fn set_contact_filter(

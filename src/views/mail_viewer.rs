@@ -66,7 +66,9 @@ mod imp {
     }
 
     impl WidgetImpl for MailViewer {
-        fn realize(&self) {}
+        fn realize(&self) {
+            self.parent_realize();
+        }
     }
 }
 

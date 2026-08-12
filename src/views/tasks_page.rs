@@ -81,7 +81,9 @@ mod imp {
     }
 
     impl WidgetImpl for TasksPage {
-        fn realize(&self) {}
+        fn realize(&self) {
+            self.parent_realize();
+        }
     }
 }
 
@@ -185,6 +187,13 @@ impl TasksPage {
         if let Some(entry) = self.imp().search_entry.borrow().as_ref() {
             entry.grab_focus();
             entry.select_region(0, -1);
+        }
+    }
+
+    pub(crate) fn set_search_query(&self, query: &str) {
+        if let Some(entry) = self.imp().search_entry.borrow().as_ref() {
+            entry.set_text(query);
+            entry.grab_focus();
         }
     }
 
@@ -352,9 +361,11 @@ impl TasksPage {
             gtk::DropDown::new(Some(source_model.clone()), None::<&gtk::Expression>);
         source_selector.set_tooltip_text(Some("Aufgabenliste auswählen"));
         let source_selector_for_sidebar = source_selector.clone();
+        let split_for_source_sidebar = split.clone();
         task_source_list.connect_row_selected(move |_, row| {
             if let Some(row) = row {
                 source_selector_for_sidebar.set_selected(row.index() as u32);
+                split_for_source_sidebar.set_show_content(true);
             }
         });
         let initial_source_filter = self.imp().task_source_filter.borrow().clone();
@@ -577,6 +588,7 @@ impl TasksPage {
         let task_store_for_category = task_store.clone();
         let empty_tasks_for_category = empty_tasks.clone();
         let category_model_for_selector = category_model.clone();
+        let split_for_category_selection = split.clone();
         category_selector.connect_selected_notify(move |selector| {
             let Some(page) = page_weak_for_category.upgrade() else {
                 return;
@@ -595,12 +607,14 @@ impl TasksPage {
                 &task_store_for_category,
                 &empty_tasks_for_category,
             );
+            split_for_category_selection.set_show_content(true);
         });
 
         let page_weak_for_categories = self.downgrade();
         let task_list_for_categories = task_list.clone();
         let task_store_for_categories = task_store.clone();
         let empty_tasks_for_categories = empty_tasks.clone();
+        let split_for_category_sidebar = split.clone();
         cat_list.connect_row_selected(move |_, row| {
             let Some(row) = row else {
                 return;
@@ -627,6 +641,7 @@ impl TasksPage {
                 &task_store_for_categories,
                 &empty_tasks_for_categories,
             );
+            split_for_category_sidebar.set_show_content(true);
         });
         let initial_filter_index = match self.imp().task_filter.get() {
             TaskFilter::All => 0,

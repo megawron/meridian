@@ -207,6 +207,8 @@ impl GlobalSearchDialog {
             .build();
         if result.domain != SearchDomain::All {
             let domain = result.domain;
+            let reference_id = result.reference_id.clone();
+            let result_title = result.title.clone();
             row.connect_activated(glib::clone!(
                 #[weak(rename_to = dialog)]
                 self,
@@ -216,7 +218,7 @@ impl GlobalSearchDialog {
                     }) else {
                         return;
                     };
-                    parent.show_search_domain(domain);
+                    parent.show_search_result(domain, reference_id.clone(), result_title.clone());
                     dialog.close();
                 }
             ));

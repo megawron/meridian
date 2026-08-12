@@ -1514,7 +1514,9 @@ mod imp {
     }
 
     impl WidgetImpl for MailPage {
-        fn realize(&self) {}
+        fn realize(&self) {
+            self.parent_realize();
+        }
     }
 }
 
@@ -1757,6 +1759,13 @@ impl MailPage {
 
     pub fn focus_search(&self) {
         if let Some(search_entry) = self.imp().search_entry.borrow().as_ref() {
+            search_entry.grab_focus();
+        }
+    }
+
+    pub(crate) fn set_search_query(&self, query: &str) {
+        if let Some(search_entry) = self.imp().search_entry.borrow().as_ref() {
+            search_entry.set_text(query);
             search_entry.grab_focus();
         }
     }

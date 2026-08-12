@@ -162,7 +162,9 @@ mod imp {
     }
 
     impl WidgetImpl for CalendarPage {
-        fn realize(&self) {}
+        fn realize(&self) {
+            self.parent_realize();
+        }
     }
 }
 
@@ -199,6 +201,13 @@ impl CalendarPage {
         if let Some(entry) = self.imp().calendar_search_entry.borrow().as_ref() {
             entry.grab_focus();
             entry.select_region(0, -1);
+        }
+    }
+
+    pub(crate) fn set_search_query(&self, query: &str) {
+        if let Some(entry) = self.imp().calendar_search_entry.borrow().as_ref() {
+            entry.set_text(query);
+            entry.grab_focus();
         }
     }
 
@@ -1648,6 +1657,12 @@ impl CalendarPage {
                 } else {
                     event.summary.as_str()
                 };
+                let event_button = gtk::Button::builder()
+                    .halign(gtk::Align::Fill)
+                    .valign(gtk::Align::Start)
+                    .hexpand(true)
+                    .css_classes(vec!["flat", "card"])
+                    .build();
                 let event_label = gtk::Label::builder()
                     .halign(gtk::Align::Fill)
                     .valign(gtk::Align::Start)
@@ -1657,14 +1672,19 @@ impl CalendarPage {
                     .margin_end(4)
                     .margin_top(3)
                     .margin_bottom(3)
-                    .css_classes(vec!["card"])
                     .build();
                 event_label.set_markup(&calendar_event_markup(
                     &event.component,
                     &format!("{} · {}", event_time_text(&event), title),
                 ));
-                install_event_drag_source(&event_label, &event, *day);
-                cells[day_index][slot as usize].append(&event_label);
+                event_button.set_child(Some(&event_label));
+                set_accessible_label(&event_button, &format!("Termin öffnen: {title}"));
+                let event_for_click = event.clone();
+                event_button.connect_clicked(move |button| {
+                    open_event_editor_for_widget(button, &event_for_click);
+                });
+                install_event_drag_source(&event_button, &event, *day);
+                cells[day_index][slot as usize].append(&event_button);
             }
         }
 

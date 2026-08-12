@@ -74,7 +74,9 @@ mod imp {
     }
 
     impl WidgetImpl for MemosPage {
-        fn realize(&self) {}
+        fn realize(&self) {
+            self.parent_realize();
+        }
     }
 }
 
@@ -126,6 +128,13 @@ impl MemosPage {
         if let Some(entry) = self.imp().search_entry.borrow().as_ref() {
             entry.grab_focus();
             entry.select_region(0, -1);
+        }
+    }
+
+    pub(crate) fn set_search_query(&self, query: &str) {
+        if let Some(entry) = self.imp().search_entry.borrow().as_ref() {
+            entry.set_text(query);
+            entry.grab_focus();
         }
     }
 
@@ -1076,6 +1085,7 @@ impl MemosPage {
 
         let memo_records_for_selection = Rc::clone(&memo_records);
         let selected_memo_for_selection = Rc::clone(&selected_memo);
+        let split_for_selection = split.clone();
         memo_list.connect_row_selected(glib::clone!(
             #[weak]
             memo_title,
@@ -1087,9 +1097,12 @@ impl MemosPage {
             memo_text,
             #[strong]
             selected_memo_for_selection,
+            #[strong]
+            split_for_selection,
             move |_, row| {
                 let Some(row) = row else {
                     *selected_memo_for_selection.borrow_mut() = None;
+                    split_for_selection.set_show_content(false);
                     return;
                 };
                 let (source_uid, uid) = unsafe {
@@ -1116,6 +1129,7 @@ impl MemosPage {
                 memo_categories.set_text(&component_categories(&memo.component));
                 memo_meta.set_label(&format!("VJOURNAL · {}", memo.updated));
                 memo_text.buffer().set_text(&memo.description);
+                split_for_selection.set_show_content(true);
             }
         ));
 

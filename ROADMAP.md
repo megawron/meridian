@@ -1226,6 +1226,18 @@ nicht als vollständiger Ersatz beworben werden.
    in der Notizliste ausgewählt und im Detailbereich angezeigt.
    Der Termin-Editor übernimmt beim Aufruf aus der Kalenderansicht das aktuell
    ausgewählte Datum statt immer mit dem heutigen Tag zu beginnen.
+   Kontakt-Reloads nach Bearbeitung oder Quellenaktualisierung bewahren die
+   aktuell ausgewählte Quell-/UID-Zeile und damit den offenen Detailbereich.
+   Termine in der portablen Arbeitswochen-Zeitachse sind ebenfalls direkt
+   aktivierbar und öffnen den gemeinsamen Termin-Editor; Drag-and-drop bleibt
+   auf denselben Zeitachsen-Karten erhalten.
+   Globale lokale Suchtreffer öffnen jetzt anhand ihrer Quell-/UID-Referenz
+   gezielt Kalender, Aufgaben, Notizen oder Kontakte und übernehmen den
+   Treffertext in die jeweilige Modulsuche.
+   Kontakte und Notizen wechseln bei einer Auswahl im eingeklappten
+   `AdwNavigationSplitView` automatisch in die Detailseite; Aufgaben öffnen
+   bei Quellen- und Ansichtswechseln ebenfalls den Inhaltsbereich. Wird die
+   Auswahl aufgehoben, kehren Kontakte und Notizen wieder zur Liste zurück.
    Kontoerstellung und Kontobearbeitung aus Einstellungen und Hauptmenü
    aktualisieren nach dem Schließen außerdem die laufende Mail-/Quellenansicht,
    ohne einen Neustart zu verlangen.
