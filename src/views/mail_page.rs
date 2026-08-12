@@ -169,17 +169,19 @@ impl FolderSelection {
     }
 
     fn is_remote(&self) -> bool {
-        self.source_uid.is_some() && self.folder_name.is_some()
+        self.source_uid.is_some()
     }
 
     fn matches(&self, message: &MailMessageObject) -> bool {
-        if let (Some(source_uid), Some(folder_name)) =
-            (self.source_uid.as_deref(), self.folder_name.as_deref())
-        {
+        if let Some(source_uid) = self.source_uid.as_deref() {
             return message
                 .backend_location()
                 .map(|location| {
-                    location.source_uid == source_uid && location.folder_name == folder_name
+                    location.source_uid == source_uid
+                        && self
+                            .folder_name
+                            .as_deref()
+                            .is_none_or(|folder_name| location.folder_name == folder_name)
                 })
                 .unwrap_or(false);
         }
@@ -1187,7 +1189,7 @@ fn load_mail_backend(
             ) {
                 Ok(graph) => MailPageLoadResult::Camel(graph),
                 Err(graph_error) => MailPageLoadResult::Error(format!(
-                    "EDS/Camel nicht verfügbar ({error}); Graph ebenfalls nicht verfügbar ({graph_error})"
+                    "Mailkonto-Synchronisation nicht verfügbar ({error}); Online-Suche ebenfalls nicht verfügbar ({graph_error})"
                 )),
             },
         };
@@ -1224,7 +1226,7 @@ fn load_mail_backend(
             }
             let store = crate::services::MailStoreService::new();
             MailPageLoadResult::Local {
-                reason: "Keine aktiven EDS-Mailkonten; lokaler Evolution-Speicher".to_string(),
+                reason: "Keine aktiven Mailkonten; lokaler Evolution-Speicher".to_string(),
                 messages: store.load_local_records_cancelable(cancelled),
                 local_folders: store.local_folder_definitions(),
             }
@@ -1241,7 +1243,9 @@ fn load_mail_backend(
             }
             let store = crate::services::MailStoreService::new();
             MailPageLoadResult::Local {
-                reason: format!("EDS/Camel nicht verfügbar ({error}); lokaler Evolution-Speicher"),
+                reason: format!(
+                    "Mailkonto-Synchronisation nicht verfügbar ({error}); lokaler Evolution-Speicher"
+                ),
                 messages: store.load_local_records_cancelable(cancelled),
                 local_folders: store.local_folder_definitions(),
             }
@@ -1255,7 +1259,7 @@ fn format_camel_status(camel: &CamelMailLoad) -> String {
     } else if camel.is_graph {
         "Microsoft Graph"
     } else {
-        "EDS/Camel"
+        "Mailkonto"
     };
     let account_label = if camel.configured_sources == 1 {
         "Konto"
@@ -1339,7 +1343,6 @@ mod imp {
         pub batch_action_bar: RefCell<Option<gtk::Box>>,
         pub batch_action_label: RefCell<Option<gtk::Label>>,
         pub(crate) batch_selection: RefCell<HashSet<String>>,
-        pub(crate) batch_binding: Cell<bool>,
         pub(super) active_request: RefCell<Option<MailLoadRequest>>,
         pub load_generation: Cell<u64>,
         pub mail_loading: Cell<bool>,
@@ -2265,7 +2268,7 @@ impl MailPage {
                 });
         if has_remote_selection || has_loaded_remote_trash {
             self.show_toast(
-                "Native EDS/Camel-Ordner benötigen den Linux-Expunge-Pfad; der lokale Bestand wurde nicht verändert.",
+                "Dieser Kontoordner benötigt zum endgültigen Leeren den Linux-Expunge-Pfad; der lokale Bestand wurde nicht verändert.",
             );
             return;
         }
@@ -2427,7 +2430,7 @@ impl MailPage {
                 } else {
                     crate::services::mail_operations_service::MailOperationKind::MarkImportant
                 },
-                backend: "EDS/Camel-Wichtig-Flag (Linux-Abnahme ausstehend)",
+                backend: "Wichtigkeitsmarkierung dieses Kontos (Linux-Abnahme ausstehend)",
             });
         }
         let next_important = !message.is_important();
@@ -2474,7 +2477,7 @@ impl MailPage {
         {
             return Err(MailOperationError::Unsupported {
                 operation: crate::services::mail_operations_service::MailOperationKind::SetLabel,
-                backend: "EDS/Camel-Multi-Label-Backend",
+                backend: "Mehrfach-Labels dieses Kontos",
             });
         }
 
@@ -2511,7 +2514,7 @@ impl MailPage {
         }) {
             return Err(MailOperationError::Unsupported {
                 operation: crate::services::mail_operations_service::MailOperationKind::SetLabel,
-                backend: "EDS/Camel-Multi-Label-Backend",
+                backend: "Mehrfach-Labels dieses Kontos",
             });
         }
 
@@ -2735,7 +2738,7 @@ impl MailPage {
             if message.backend_location().is_some() {
                 return Err(MailOperationError::Unsupported {
                     operation: crate::services::mail_operations_service::MailOperationKind::Move,
-                    backend: "EDS/Camel-Nachricht in den lokalen Import",
+                    backend: "Nachricht aus einem Konto in den lokalen Import",
                 });
             }
             MailCommand::move_local(
@@ -2747,13 +2750,13 @@ impl MailPage {
             let Some(location) = message.backend_location() else {
                 return Err(MailOperationError::Unsupported {
                     operation: crate::services::mail_operations_service::MailOperationKind::Move,
-                    backend: "lokaler Import in ein EDS/Camel-Konto",
+                    backend: "lokaler Import in ein Konto",
                 });
             };
             if location.source_uid != destination_source {
                 return Err(MailOperationError::Unsupported {
                     operation: crate::services::mail_operations_service::MailOperationKind::Move,
-                    backend: "anderes EDS/Camel-Konto",
+                    backend: "anderes Konto",
                 });
             }
             MailCommand::move_to(message.id(), location, destination_folder.to_string())
@@ -2780,7 +2783,7 @@ impl MailPage {
             if message.backend_location().is_some() {
                 return Err(MailOperationError::Unsupported {
                     operation: crate::services::mail_operations_service::MailOperationKind::Copy,
-                    backend: "Graph-/EDS-Nachricht in den lokalen Import",
+                    backend: "Online-Nachricht in den lokalen Import",
                 });
             }
             if message.id().contains("::copy::") {
@@ -2803,13 +2806,13 @@ impl MailPage {
             if location.source_uid != destination_source {
                 return Err(MailOperationError::Unsupported {
                     operation: crate::services::mail_operations_service::MailOperationKind::Copy,
-                    backend: "anderes Graph-/EDS-Konto",
+                    backend: "anderes Online-Konto",
                 });
             }
             if !is_graph_backend_location(Some(&location)) {
                 return Err(MailOperationError::Unsupported {
                     operation: crate::services::mail_operations_service::MailOperationKind::Copy,
-                    backend: "native EDS/Camel-Kopieren (Linux-Abnahme ausstehend)",
+                    backend: "Kopieren für dieses Konto (Linux-Abnahme ausstehend)",
                 });
             }
             // A Graph copy intentionally remains allowed in the same folder;
@@ -2832,18 +2835,6 @@ impl MailPage {
             .mail_commands
             .borrow_mut()
             .execute(&operations, command)
-    }
-
-    fn set_batch_message_selected(&self, id: &str, selected: bool) {
-        if selected {
-            self.imp()
-                .batch_selection
-                .borrow_mut()
-                .insert(id.to_string());
-        } else {
-            self.imp().batch_selection.borrow_mut().remove(id);
-        }
-        self.update_batch_action_bar();
     }
 
     fn selected_batch_messages(&self) -> Vec<MailMessageObject> {
@@ -3071,7 +3062,7 @@ impl MailPage {
             return Err(MailOperationError::Unsupported {
                 operation:
                     crate::services::mail_operations_service::MailOperationKind::MarkImportant,
-                backend: "EDS/Camel-Wichtig-Flag (Linux-Abnahme ausstehend)",
+                backend: "Wichtigkeitsmarkierung dieses Kontos (Linux-Abnahme ausstehend)",
             });
         }
         let next_important = messages.iter().any(|message| !message.is_important());
@@ -3383,7 +3374,7 @@ impl MailPage {
                 "Verschieben nicht möglich",
                 &MailOperationError::Unsupported {
                     operation: crate::services::mail_operations_service::MailOperationKind::Move,
-                    backend: "gemischte lokale/EDS-Auswahl",
+                    backend: "gemischte lokale/Konto-Auswahl",
                 },
             );
             return;
@@ -3418,7 +3409,7 @@ impl MailPage {
                 "Verschieben nicht möglich",
                 &MailOperationError::Unsupported {
                     operation: crate::services::mail_operations_service::MailOperationKind::Move,
-                    backend: "kein gemeinsames EDS-Konto",
+                    backend: "kein gemeinsames Konto",
                 },
             );
             return;
@@ -3471,7 +3462,7 @@ impl MailPage {
                     &MailOperationError::Unsupported {
                         operation:
                             crate::services::mail_operations_service::MailOperationKind::Copy,
-                        backend: "Graph-/EDS-Nachricht in den lokalen Import",
+                        backend: "Online-Nachricht in den lokalen Import",
                     },
                 );
                 return;
@@ -3505,7 +3496,7 @@ impl MailPage {
                         operation:
                             crate::services::mail_operations_service::MailOperationKind::Copy,
                         backend: if has_remote {
-                            "native EDS/Camel-Kopieren (Linux-Abnahme ausstehend)"
+                            "Kopieren für dieses Konto (Linux-Abnahme ausstehend)"
                         } else {
                             "lokaler Import in ein Graph-Konto"
                         },
@@ -3519,7 +3510,7 @@ impl MailPage {
                     &MailOperationError::Unsupported {
                         operation:
                             crate::services::mail_operations_service::MailOperationKind::Copy,
-                        backend: "anderes Graph-/EDS-Konto",
+                        backend: "anderes Online-Konto",
                     },
                 );
                 return;
@@ -3592,10 +3583,11 @@ impl MailPage {
             let row = gtk::Box::builder()
                 .orientation(gtk::Orientation::Horizontal)
                 .spacing(4)
-                .margin_start(6)
-                .margin_end(6)
-                .margin_top(2)
-                .margin_bottom(2)
+                .margin_start(4)
+                .margin_end(4)
+                .margin_top(0)
+                .margin_bottom(0)
+                .css_classes(vec!["mail-sidebar-row"])
                 .build();
 
             let icon = gtk::Image::from_icon_name("mail-account-symbolic");
@@ -3624,16 +3616,16 @@ impl MailPage {
                 .expect("Expected source row");
 
             if let Some(title) = row.last_child().and_downcast::<gtk::Label>() {
-                title.set_label(&source.display_name());
+                let display_name = Self::localize_source_name(&source.display_name());
+                title.set_label(&display_name);
                 title.set_tooltip_text(Some(&format!(
-                    "{} · {} · {}",
-                    source.backend_name(),
+                    "{} · {}",
+                    display_name,
                     if source.enabled() {
                         "aktiv"
                     } else {
-                        "deaktiviert / Backend ausstehend"
-                    },
-                    source.origin()
+                        "Konto nicht verfügbar"
+                    }
                 )));
             }
             row.set_sensitive(source.enabled());
@@ -3643,6 +3635,7 @@ impl MailPage {
             .model(&source_selection)
             .factory(&source_factory)
             .css_classes(vec!["navigation-sidebar"])
+            .visible(false)
             .build();
 
         let page_for_source = self.downgrade();
@@ -3689,15 +3682,7 @@ impl MailPage {
         let folder_list = gtk::ListBox::new();
         folder_list.set_selection_mode(gtk::SelectionMode::Single);
         folder_list.add_css_class("navigation-sidebar");
-
-        let account_header = gtk::Label::builder()
-            .label("Konten")
-            .css_classes(vec!["caption", "dim-label"])
-            .halign(gtk::Align::Start)
-            .margin_start(8)
-            .margin_top(5)
-            .margin_bottom(2)
-            .build();
+        folder_list.set_margin_start(8);
 
         let folders = [
             ("all", "mail-symbolic", "Alle Nachrichten", ""),
@@ -3741,10 +3726,11 @@ impl MailPage {
             let row = gtk::Box::builder()
                 .orientation(gtk::Orientation::Horizontal)
                 .spacing(4)
-                .margin_start(6)
-                .margin_end(6)
-                .margin_top(1)
-                .margin_bottom(1)
+                .margin_start(4)
+                .margin_end(4)
+                .margin_top(0)
+                .margin_bottom(0)
+                .css_classes(vec!["mail-sidebar-row"])
                 .build();
             let icon = gtk::Image::new();
             icon.add_css_class("dim-label");
@@ -3818,6 +3804,7 @@ impl MailPage {
             .factory(&dynamic_factory)
             .css_classes(vec!["navigation-sidebar"])
             .build();
+        dynamic_folder_view.set_margin_start(8);
 
         let folder_click = gtk::GestureClick::builder().button(3).build();
         let view_weak = dynamic_folder_view.downgrade();
@@ -3875,14 +3862,16 @@ impl MailPage {
             if !folder.selectable() {
                 return;
             }
-            let (Some(source_uid), Some(folder_name)) = (folder.source_uid(), folder.folder_name())
-            else {
+            let Some(source_uid) = folder.source_uid() else {
                 return;
             };
+            let folder_name = folder
+                .folder_name()
+                .filter(|folder_name| !folder_name.trim().is_empty());
             let folder_selection = FolderSelection {
                 folder_id: folder.id(),
                 source_uid: Some(source_uid.clone()),
-                folder_name: Some(folder_name.clone()),
+                folder_name: folder_name.clone(),
             };
             if let Some(current) = page.imp().folder_selection.borrow().as_ref() {
                 current.replace(folder_selection);
@@ -3890,7 +3879,7 @@ impl MailPage {
             page.start_mail_load(
                 MailLoadRequest {
                     source_uid: Some(source_uid),
-                    folder_name: Some(folder_name),
+                    folder_name,
                     offset: 0,
                     max_messages_per_folder: camel_mail_service::default_page_limit(),
                 },
@@ -3903,25 +3892,26 @@ impl MailPage {
             .css_classes(vec!["caption", "dim-label"])
             .halign(gtk::Align::Start)
             .margin_start(8)
-            .margin_top(8)
+            .margin_top(3)
             .margin_bottom(2)
             .build();
 
         let search_list = gtk::ListBox::new();
         search_list.set_selection_mode(gtk::SelectionMode::Single);
         search_list.add_css_class("navigation-sidebar");
+        search_list.set_margin_start(8);
         Self::populate_search_folders(&search_list);
 
         let local_folder_toolbar = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(4)
-            .margin_start(8)
-            .margin_end(6)
-            .margin_top(8)
-            .margin_bottom(2)
+            .margin_start(4)
+            .margin_end(4)
+            .margin_top(3)
+            .margin_bottom(1)
             .build();
         let local_folder_header = gtk::Label::builder()
-            .label("Lokale Ordner")
+            .label("Standardordner")
             .css_classes(vec!["caption", "dim-label"])
             .halign(gtk::Align::Start)
             .hexpand(true)
@@ -3949,11 +3939,11 @@ impl MailPage {
         folder_section.append(&local_folder_toolbar);
         folder_section.append(&folder_list);
         let dynamic_header = gtk::Label::builder()
-            .label("EDS-Ordner")
+            .label("Postfächer")
             .css_classes(vec!["caption", "dim-label"])
             .halign(gtk::Align::Start)
             .margin_start(8)
-            .margin_top(8)
+            .margin_top(3)
             .margin_bottom(2)
             .build();
         folder_section.append(&dynamic_header);
@@ -3964,12 +3954,13 @@ impl MailPage {
         let sidebar_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .spacing(0)
+            .css_classes(vec!["mail-sidebar"])
             .build();
 
-        sidebar_box.append(&account_header);
         let source_state = gtk::Label::builder()
-            .label("EDS-Konten werden geladen …")
+            .label("Konten werden geladen …")
             .css_classes(vec!["dim-label"])
+            .visible(false)
             .halign(gtk::Align::Start)
             .wrap(true)
             .wrap_mode(gtk::pango::WrapMode::WordChar)
@@ -3986,7 +3977,7 @@ impl MailPage {
             .hscrollbar_policy(gtk::PolicyType::Never)
             .vscrollbar_policy(gtk::PolicyType::Automatic)
             .child(&sidebar_box)
-            .width_request(220)
+            .width_request(200)
             .build();
 
         let page = adw::NavigationPage::builder()
@@ -4122,10 +4113,11 @@ impl MailPage {
         let hbox = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(4)
-            .margin_start(6)
-            .margin_end(6)
-            .margin_top(1)
-            .margin_bottom(1)
+            .margin_start(4)
+            .margin_end(4)
+            .margin_top(0)
+            .margin_bottom(0)
+            .css_classes(vec!["mail-sidebar-row"])
             .build();
 
         let icon = gtk::Image::from_icon_name(icon_name);
@@ -4479,11 +4471,18 @@ impl MailPage {
 
     fn localize_source_name(name: &str) -> String {
         let clean = name.trim();
-        match clean.to_ascii_lowercase().as_str() {
+        let normalized = clean.to_ascii_lowercase();
+        if normalized.contains("eds")
+            || normalized.contains("camel")
+            || normalized.contains("gnome online")
+            || normalized == "goa"
+        {
+            return "Mailkonto".to_string();
+        }
+        match normalized.as_str() {
             "on this computer" | "local" => "Auf diesem Computer".to_string(),
             "search folders" | "vfolder" => "Suchordner".to_string(),
             "news and blogs" | "rss" => "News & Blogs".to_string(),
-            "eds" | "eds?" => "Mail-Konto".to_string(),
             _ => clean.to_string(),
         }
     }
@@ -4592,22 +4591,57 @@ impl MailPage {
                 .then_with(|| left.folder_name.cmp(&right.folder_name))
         });
 
-        let mut roots = Vec::new();
+        let mut source_roots = HashMap::<String, FolderObject>::new();
+        let mut source_counts = HashMap::<String, (u32, u32)>::new();
+        for folder in folders {
+            let source_root_id = Self::dynamic_folder_key(&folder.source_uid, "");
+            source_roots
+                .entry(folder.source_uid.clone())
+                .or_insert_with(|| {
+                    let source_name = Self::localize_source_name(&folder.source_display_name);
+                    FolderObject::new_backend(
+                        &source_root_id,
+                        if source_name.is_empty() {
+                            "Mailkonto"
+                        } else {
+                            &source_name
+                        },
+                        "mail-account-symbolic",
+                        0,
+                        0,
+                        &folder.source_uid,
+                        "",
+                        None,
+                        true,
+                    )
+                });
+            let counts = source_counts.entry(folder.source_uid.clone()).or_default();
+            counts.0 = counts.0.saturating_add(folder.unread_count);
+            counts.1 = counts.1.saturating_add(folder.total_count);
+        }
+
+        let mut roots = source_roots.values().cloned().collect::<Vec<_>>();
+        roots.sort_by_key(FolderObject::name);
+        for root in &roots {
+            if let Some((unread, total)) = source_counts.get(&root.source_uid().unwrap_or_default())
+            {
+                root.set_counts(*unread, *total);
+            }
+        }
         let mut child_stores = HashMap::<String, gio::ListStore>::new();
         let mut folder_index = HashMap::<String, FolderObject>::new();
+        for root in &roots {
+            folder_index.insert(root.id(), root.clone());
+        }
         for node in nodes {
             let id = Self::dynamic_folder_key(&node.source_uid, &node.folder_name);
             let parent_id = node
                 .parent_name
                 .as_deref()
-                .map(|name| Self::dynamic_folder_key(&node.source_uid, name));
+                .map(|name| Self::dynamic_folder_key(&node.source_uid, name))
+                .unwrap_or_else(|| Self::dynamic_folder_key(&node.source_uid, ""));
             let localized_display = Self::localize_folder_name(&node.display_name);
-            let localized_source = Self::localize_source_name(&node.source_display_name);
-            let label = if node.parent_name.is_none() && !localized_source.is_empty() {
-                format!("{} · {}", localized_source, localized_display)
-            } else {
-                localized_display
-            };
+            let label = localized_display;
             let folder = FolderObject::new_backend(
                 &id,
                 &label,
@@ -4616,17 +4650,13 @@ impl MailPage {
                 node.total_count,
                 &node.source_uid,
                 &node.folder_name,
-                parent_id.as_deref(),
+                Some(parent_id.as_str()),
                 node.selectable,
             );
-            if let Some(parent_id) = parent_id {
-                child_stores
-                    .entry(parent_id)
-                    .or_insert_with(|| gio::ListStore::new::<FolderObject>())
-                    .append(&folder);
-            } else {
-                roots.push(folder.clone());
-            }
+            child_stores
+                .entry(parent_id)
+                .or_insert_with(|| gio::ListStore::new::<FolderObject>())
+                .append(&folder);
             folder_index.insert(id, folder);
         }
 
@@ -4741,7 +4771,9 @@ impl MailPage {
                     let current = FolderSelection {
                         folder_id: folder.id(),
                         source_uid: folder.source_uid(),
-                        folder_name: folder.folder_name(),
+                        folder_name: folder
+                            .folder_name()
+                            .filter(|folder_name| !folder_name.trim().is_empty()),
                     };
                     if current == *selection {
                         dynamic_selection.set_selected(index);
@@ -4911,18 +4943,18 @@ impl MailPage {
                 date.set_label(&self.mail_header_sort_label("Datum", MailSortField::Date));
             }
         }
-        if let Some(attachment) = Self::mail_header_child(&header, 4) {
+        if let Some(subject) = Self::mail_header_child(&header, 4).and_downcast::<gtk::Label>() {
+            subject.set_label(&self.mail_header_sort_label("Betreff", MailSortField::Subject));
+        }
+        if let Some(preview) = Self::mail_header_child(&header, 5) {
+            preview.set_visible(show_preview);
+        }
+        if let Some(attachment) = Self::mail_header_child(&header, 6) {
             attachment.set_visible(show_attachment);
             if let Some(attachment) = attachment.downcast_ref::<gtk::Label>() {
                 attachment
                     .set_label(&self.mail_header_sort_label("Anl.", MailSortField::Attachments));
             }
-        }
-        if let Some(subject) = Self::mail_header_child(&header, 7).and_downcast::<gtk::Label>() {
-            subject.set_label(&self.mail_header_sort_label("Betreff", MailSortField::Subject));
-        }
-        if let Some(preview) = Self::mail_header_child(&header, 8) {
-            preview.set_visible(show_preview);
         }
     }
 
@@ -4943,7 +4975,7 @@ impl MailPage {
             .css_classes(vec!["mail-column-header"])
             .build();
 
-        let selection_spacer = gtk::Box::builder().width_request(20).build();
+        let selection_spacer = gtk::Box::builder().width_request(0).visible(false).build();
         let avatar_spacer = gtk::Box::builder().width_request(24).build();
 
         let sender_column = gtk::Box::builder()
@@ -5001,11 +5033,11 @@ impl MailPage {
         header.append(&avatar_spacer);
         header.append(&sender_column);
         header.append(&date);
+        header.append(&subject);
+        header.append(&preview);
         header.append(&attachment);
         header.append(&star);
         header.append(&important);
-        header.append(&subject);
-        header.append(&preview);
 
         let sender_sort_gesture = gtk::GestureClick::new();
         sender_sort_gesture.set_button(1);
@@ -5229,7 +5261,9 @@ impl MailPage {
 
         let factory = gtk::SignalListItemFactory::new();
 
-        let page_for_batch = self.downgrade();
+        let page_for_row_actions = self.downgrade();
+        let filter_for_row_actions = custom_filter.clone();
+        let thread_filter_for_row_actions = thread_filter.clone();
         factory.connect_setup(move |_, list_item| {
             let list_item = list_item
                 .downcast_ref::<gtk::ListItem>()
@@ -5242,39 +5276,15 @@ impl MailPage {
                 .margin_end(4)
                 .margin_top(0)
                 .margin_bottom(0)
+                .hexpand(true)
                 .css_classes(vec!["message-line"])
                 .build();
 
             let header_box = gtk::Box::builder()
                 .orientation(gtk::Orientation::Horizontal)
                 .spacing(4)
+                .hexpand(true)
                 .build();
-
-            let batch_check = gtk::CheckButton::builder()
-                .valign(gtk::Align::Center)
-                .tooltip_text("Nachricht für eine Mehrfachaktion auswählen")
-                .build();
-            set_accessible_label(&batch_check, "Nachricht für eine Mehrfachaktion auswählen");
-            let list_item_for_batch = list_item.downgrade();
-            let page_for_batch = page_for_batch.clone();
-            batch_check.connect_toggled(move |check| {
-                let Some(page) = page_for_batch.upgrade() else {
-                    return;
-                };
-                if page.imp().batch_binding.get() {
-                    return;
-                }
-                let Some(list_item) = list_item_for_batch.upgrade() else {
-                    return;
-                };
-                let Some(row) = list_item.item().and_downcast::<gtk::TreeListRow>() else {
-                    return;
-                };
-                let Some(message) = row.item().and_downcast::<MailMessageObject>() else {
-                    return;
-                };
-                page.set_batch_message_selected(&message.id(), check.is_active());
-            });
 
             let avatar = adw::Avatar::builder().size(24).show_initials(true).build();
 
@@ -5331,20 +5341,140 @@ impl MailPage {
                 .build();
             set_accessible_label(&btn_important, "Nachricht als wichtig markieren");
 
+            let list_item_for_star = list_item.downgrade();
+            let page_for_star = page_for_row_actions.clone();
+            let filter_for_star = filter_for_row_actions.clone();
+            let thread_filter_for_star = thread_filter_for_row_actions.clone();
+            btn_star.connect_clicked(move |button| {
+                let Some(list_item) = list_item_for_star.upgrade() else {
+                    return;
+                };
+                let Some(tree_row) = list_item.item().and_downcast::<gtk::TreeListRow>() else {
+                    return;
+                };
+                let Some(message) = tree_row.item().and_downcast::<MailMessageObject>() else {
+                    return;
+                };
+                let current = message.is_flagged();
+                let next_flagged = !current;
+                let command = MailCommand::set_message_state(
+                    message.id(),
+                    message.backend_location(),
+                    message.is_unread(),
+                    current,
+                    message.is_unread(),
+                    next_flagged,
+                );
+                let result = page_for_star
+                    .upgrade()
+                    .map(|page| page.execute_mail_command(command))
+                    .unwrap_or_else(|| {
+                        Err(MailOperationError::Backend {
+                            operation:
+                                crate::services::mail_operations_service::MailOperationKind::SetMessageState,
+                            message: "Mailansicht ist nicht mehr verfügbar".to_string(),
+                        })
+                    });
+                if let Err(error) = result {
+                    tracing::error!(%error, "Could not persist message flag");
+                    return;
+                }
+                message.set_flagged(next_flagged);
+                filter_for_star.changed(gtk::FilterChange::Different);
+                thread_filter_for_star.changed(gtk::FilterChange::Different);
+                button.set_icon_name(if next_flagged {
+                    "starred-symbolic"
+                } else {
+                    "non-starred-symbolic"
+                });
+                set_accessible_label(
+                    button,
+                    if next_flagged {
+                        "Markierung entfernen"
+                    } else {
+                        "Nachricht markieren"
+                    },
+                );
+            });
+
+            let list_item_for_important = list_item.downgrade();
+            let page_for_important = page_for_row_actions.clone();
+            let filter_for_important = filter_for_row_actions.clone();
+            let thread_filter_for_important = thread_filter_for_row_actions.clone();
+            btn_important.connect_clicked(move |button| {
+                let Some(list_item) = list_item_for_important.upgrade() else {
+                    return;
+                };
+                let Some(tree_row) = list_item.item().and_downcast::<gtk::TreeListRow>() else {
+                    return;
+                };
+                let Some(message) = tree_row.item().and_downcast::<MailMessageObject>() else {
+                    return;
+                };
+                let current = message.is_important();
+                let Some(page) = page_for_important.upgrade() else {
+                    return;
+                };
+                let result = if message
+                    .backend_location()
+                    .as_ref()
+                    .is_some_and(|location| !is_graph_backend_location(Some(location)))
+                {
+                    Err(MailOperationError::Unsupported {
+                        operation: if current {
+                            crate::services::mail_operations_service::MailOperationKind::MarkNotImportant
+                        } else {
+                            crate::services::mail_operations_service::MailOperationKind::MarkImportant
+                        },
+                        backend: "Wichtigkeitsmarkierung dieses Kontos (Linux-Abnahme ausstehend)",
+                    })
+                } else {
+                    let command = message
+                        .backend_location()
+                        .map(|location| {
+                            MailCommand::set_important(
+                                message.id(),
+                                location,
+                                current,
+                                !current,
+                            )
+                        })
+                        .unwrap_or_else(|| {
+                            MailCommand::set_important_local(message.id(), current, !current)
+                        });
+                    page.execute_mail_command(command)
+                };
+                if let Err(error) = result {
+                    page.show_toast(&format!("Wichtig-Markierung nicht möglich: {error}"));
+                    return;
+                }
+                message.set_important(!current);
+                filter_for_important.changed(gtk::FilterChange::Different);
+                thread_filter_for_important.changed(gtk::FilterChange::Different);
+                button.set_icon_name(if !current {
+                    "emblem-important-symbolic"
+                } else {
+                    "emblem-important"
+                });
+                set_accessible_label(
+                    button,
+                    if !current {
+                        "Wichtigkeitsmarkierung entfernen"
+                    } else {
+                        "Nachricht als wichtig markieren"
+                    },
+                );
+            });
+
             let attachment = gtk::Image::from_icon_name("mail-attachment-symbolic");
             attachment.set_tooltip_text(Some("Anhänge"));
             attachment.set_valign(gtk::Align::Center);
 
             sender_box.append(&sender);
             sender_box.append(&recipient);
-            header_box.append(&batch_check);
             header_box.append(&avatar);
             header_box.append(&sender_box);
             header_box.append(&date);
-            header_box.append(&attachment);
-            header_box.append(&btn_star);
-            header_box.append(&btn_important);
-
             let subject = gtk::Label::builder()
                 .css_classes(vec!["body"])
                 .halign(gtk::Align::Start)
@@ -5363,26 +5493,31 @@ impl MailPage {
                 .max_width_chars(60)
                 .build();
 
+            // Keep the mail row truly single-line: the flexible subject is
+            // followed by the compact indicators/actions at the far right.
+            header_box.append(&subject);
+            header_box.append(&preview);
+            header_box.append(&attachment);
+            header_box.append(&btn_star);
+            header_box.append(&btn_important);
             vbox.append(&header_box);
-            vbox.append(&subject);
-            vbox.append(&preview);
 
             let separator = gtk::Separator::new(gtk::Orientation::Horizontal);
-            separator.set_margin_top(4);
+            separator.set_margin_top(0);
 
             let outer = gtk::Box::builder()
                 .orientation(gtk::Orientation::Vertical)
+                .hexpand(true)
                 .build();
             outer.append(&vbox);
             outer.append(&separator);
 
             let expander = gtk::TreeExpander::new();
+            expander.set_hexpand(true);
             expander.set_child(Some(&outer));
             list_item.set_child(Some(&expander));
         });
 
-        let filter_for_bind = custom_filter.clone();
-        let thread_filter_for_bind = thread_filter.clone();
         let page_for_bind = self.downgrade();
         factory.connect_bind(move |_, list_item| {
             let list_item = list_item
@@ -5412,7 +5547,11 @@ impl MailPage {
             ));
             list_item.set_accessible_description(&format!(
                 "{}{}{}",
-                if msg.is_unread() { "Ungelesen. " } else { "Gelesen. " },
+                if msg.is_unread() {
+                    "Ungelesen. "
+                } else {
+                    "Gelesen. "
+                },
                 if msg.is_flagged() { "Markiert. " } else { "" },
                 if msg.attachments().is_empty() {
                     "Keine Anhänge."
@@ -5479,34 +5618,13 @@ impl MailPage {
                 .and_downcast::<gtk::Box>()
                 .expect("Expected header Box");
 
-            if let Some(page) = page_for_bind.upgrade() {
-                if let Some(batch_check) = header_box
-                    .first_child()
-                    .and_downcast::<gtk::CheckButton>()
-                {
-                    page.imp().batch_binding.set(true);
-                    batch_check.set_active(
-                        page.imp()
-                            .batch_selection
-                            .borrow()
-                            .contains(&msg.id()),
-                    );
-                    page.imp().batch_binding.set(false);
-                }
-            }
-
-            if let Some(avatar) = header_box
-                .first_child()
-                .and_then(|child| child.next_sibling())
-                .and_downcast::<adw::Avatar>()
-            {
+            if let Some(avatar) = header_box.first_child().and_downcast::<adw::Avatar>() {
                 avatar.set_visible(show_avatar);
                 avatar.set_text(Some(&msg.sender_name()));
             }
 
             if let Some(sender_box) = header_box
                 .first_child()
-                .and_then(|w| w.next_sibling())
                 .and_then(|w| w.next_sibling())
                 .and_downcast::<gtk::Box>()
             {
@@ -5547,32 +5665,20 @@ impl MailPage {
                 .first_child()
                 .and_then(|w| w.next_sibling())
                 .and_then(|w| w.next_sibling())
-                .and_then(|w| w.next_sibling())
                 .and_downcast::<gtk::Label>()
             {
                 date.set_visible(show_date);
                 date.set_label(&format_message_date(&msg.date_str()));
             }
 
-            if let Some(attachment) = header_box
-                .first_child()
-                .and_then(|child| child.next_sibling())
-                .and_then(|child| child.next_sibling())
-                .and_then(|child| child.next_sibling())
-                .and_then(|child| child.next_sibling())
-                .and_downcast::<gtk::Image>()
+            if let Some(attachment) =
+                Self::mail_header_child(&header_box, 5).and_downcast::<gtk::Image>()
             {
                 attachment.set_visible(show_attachment && !msg.attachments().is_empty());
             }
 
-            if let Some(btn_star) = header_box
-                .first_child()
-                .and_then(|child| child.next_sibling())
-                .and_then(|child| child.next_sibling())
-                .and_then(|child| child.next_sibling())
-                .and_then(|child| child.next_sibling())
-                .and_then(|child| child.next_sibling())
-                .and_downcast::<gtk::Button>()
+            if let Some(btn_star) =
+                Self::mail_header_child(&header_box, 6).and_downcast::<gtk::Button>()
             {
                 if msg.is_flagged() {
                     btn_star.set_icon_name("starred-symbolic");
@@ -5581,47 +5687,11 @@ impl MailPage {
                     btn_star.set_icon_name("non-starred-symbolic");
                     set_accessible_label(&btn_star, "Nachricht markieren");
                 }
-                let msg_clone = msg.clone();
-                let filter_for_star = filter_for_bind.clone();
-                let thread_filter_for_star = thread_filter_for_bind.clone();
-                let page_for_star = page_for_bind.clone();
-                btn_star.connect_clicked(move |btn| {
-                    let current = msg_clone.is_flagged();
-                    let next_flagged = !current;
-                    let command = MailCommand::set_message_state(
-                        msg_clone.id(),
-                        msg_clone.backend_location(),
-                        msg_clone.is_unread(),
-                        current,
-                        msg_clone.is_unread(),
-                        next_flagged,
-                    );
-                    let result = page_for_star
-                        .upgrade()
-                        .map(|page| page.execute_mail_command(command))
-                        .unwrap_or_else(|| {
-                            Err(MailOperationError::Backend {
-                                operation:
-                                    crate::services::mail_operations_service::MailOperationKind::SetMessageState,
-                                message: "Mailansicht ist nicht mehr verfügbar".to_string(),
-                            })
-                        });
-                    if let Err(error) = result {
-                        tracing::error!(%error, "Could not persist message flag");
-                        return;
-                    }
-                    msg_clone.set_flagged(next_flagged);
-                    filter_for_star.changed(gtk::FilterChange::Different);
-                    thread_filter_for_star.changed(gtk::FilterChange::Different);
-                    if next_flagged {
-                        btn.set_icon_name("starred-symbolic");
-                    } else {
-                        btn.set_icon_name("non-starred-symbolic");
-                    }
-                });
             }
 
-            if let Some(btn_important) = header_box.last_child().and_downcast::<gtk::Button>() {
+            if let Some(btn_important) =
+                Self::mail_header_child(&header_box, 7).and_downcast::<gtk::Button>()
+            {
                 btn_important.set_icon_name(if msg.is_important() {
                     "emblem-important-symbolic"
                 } else {
@@ -5635,67 +5705,10 @@ impl MailPage {
                         "Nachricht als wichtig markieren"
                     },
                 );
-                let msg_clone = msg.clone();
-                let filter_for_important = filter_for_bind.clone();
-                let thread_filter_for_important = thread_filter_for_bind.clone();
-                let page_for_important = page_for_bind.clone();
-                btn_important.connect_clicked(move |btn| {
-                    let current = msg_clone.is_important();
-                    let Some(page) = page_for_important.upgrade() else {
-                        return;
-                    };
-                    let result = if msg_clone
-                        .backend_location()
-                        .as_ref()
-                        .is_some_and(|location| !is_graph_backend_location(Some(location)))
-                    {
-                        Err(MailOperationError::Unsupported {
-                            operation: if current {
-                                crate::services::mail_operations_service::MailOperationKind::MarkNotImportant
-                            } else {
-                                crate::services::mail_operations_service::MailOperationKind::MarkImportant
-                            },
-                            backend: "EDS/Camel-Wichtig-Flag (Linux-Abnahme ausstehend)",
-                        })
-                    } else {
-                        let command = msg_clone
-                            .backend_location()
-                            .map(|location| {
-                                MailCommand::set_important(
-                                    msg_clone.id(),
-                                    location,
-                                    current,
-                                    !current,
-                                )
-                            })
-                            .unwrap_or_else(|| {
-                                MailCommand::set_important_local(
-                                    msg_clone.id(),
-                                    current,
-                                    !current,
-                                )
-                            });
-                        page.execute_mail_command(command)
-                    };
-                    if let Err(error) = result {
-                        page.show_toast(&format!("Wichtig-Markierung nicht möglich: {error}"));
-                        return;
-                    }
-                    msg_clone.set_important(!current);
-                    filter_for_important.changed(gtk::FilterChange::Different);
-                    thread_filter_for_important.changed(gtk::FilterChange::Different);
-                    btn.set_icon_name(if !current {
-                        "emblem-important-symbolic"
-                    } else {
-                        "emblem-important"
-                    });
-                });
             }
 
-            if let Some(subject) = vbox
-                .first_child()
-                .and_then(|w| w.next_sibling())
-                .and_downcast::<gtk::Label>()
+            if let Some(subject) =
+                Self::mail_header_child(&header_box, 3).and_downcast::<gtk::Label>()
             {
                 let mut subject_text = if tree_row.depth() == 0 && msg.thread_size() > 1 {
                     format!("{}  ·  {} Nachrichten", msg.subject(), msg.thread_size())
@@ -5709,9 +5722,20 @@ impl MailPage {
                 subject.set_label(&subject_text);
             }
 
-            if let Some(preview) = vbox.last_child().and_downcast::<gtk::Label>() {
+            if let Some(preview) =
+                Self::mail_header_child(&header_box, 4).and_downcast::<gtk::Label>()
+            {
                 preview.set_visible(show_preview_text);
                 preview.set_label(&msg.preview_snippet());
+            }
+
+            if let Some(page) = page_for_bind.upgrade() {
+                let is_batch_selected = page.imp().batch_selection.borrow().contains(&msg.id());
+                if is_batch_selected {
+                    outer.add_css_class("batch-selected");
+                } else {
+                    outer.remove_css_class("batch-selected");
+                }
             }
         });
 
@@ -5796,6 +5820,7 @@ impl MailPage {
         let message_filter_for_quick_filter = Rc::clone(&message_filter);
         let filter_for_quick_filter = custom_filter.clone();
         let thread_filter_for_quick_filter = thread_filter.clone();
+        let page_for_quick_filter = self.downgrade();
         quick_filter.connect_selected_notify(move |selector| {
             let filter = match selector.selected() {
                 1 => MessageFilter::Unread,
@@ -5807,6 +5832,18 @@ impl MailPage {
             message_filter_for_quick_filter.set(filter);
             filter_for_quick_filter.changed(gtk::FilterChange::Different);
             thread_filter_for_quick_filter.changed(gtk::FilterChange::Different);
+            if let Some(page) = page_for_quick_filter.upgrade() {
+                // A filtered-out selection otherwise leaves the reader on a
+                // message that is no longer visible, which makes the
+                // dropdown appear inert. Wait one main-loop turn for the
+                // filter model to apply, then select the first visible result.
+                let page = page.downgrade();
+                glib::idle_add_local_once(move || {
+                    if let Some(page) = page.upgrade() {
+                        page.select_message_after_reload(None);
+                    }
+                });
+            }
         });
         self.imp().quick_filter.replace(Some(quick_filter.clone()));
 
@@ -5920,9 +5957,11 @@ impl MailPage {
             if let Some(settings) = AppSettings::try_new() {
                 settings.set_mail_sort_field(field.setting_value());
             }
+            let previous_id = page.selected_message_id();
             if let Some(store) = page.imp().message_store.borrow().as_ref().cloned() {
                 page.refresh_thread_metadata(&store);
             }
+            page.select_message_after_reload(previous_id.as_deref());
             page.refresh_mail_column_header();
         });
 
@@ -5938,9 +5977,11 @@ impl MailPage {
                 settings.set_mail_sort_descending(descending);
             }
             set_direction_button(&direction_button_for_signal, descending);
+            let previous_id = page.selected_message_id();
             if let Some(store) = page.imp().message_store.borrow().as_ref().cloned() {
                 page.refresh_thread_metadata(&store);
             }
+            page.select_message_after_reload(previous_id.as_deref());
             page.refresh_mail_column_header();
         });
 
@@ -6320,7 +6361,7 @@ impl MailPage {
         });
         let move_button = gtk::MenuButton::builder()
             .label("Verschieben")
-            .tooltip_text("Ausgewählte Nachrichten in einen EDS- oder lokalen Ordner verschieben")
+            .tooltip_text("Ausgewählte Nachrichten in einen Konto- oder lokalen Ordner verschieben")
             .popover(&move_popover)
             .css_classes(vec!["flat"])
             .build();
@@ -6618,7 +6659,7 @@ impl MailPage {
         gtk::Label,
         gtk::Label,
         gtk::Box,
-        gtk::ListBox,
+        gtk::ScrolledWindow,
     ) {
         let detail_view = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
@@ -7110,13 +7151,24 @@ impl MailPage {
 
         let header_separator = gtk::Separator::new(gtk::Orientation::Horizontal);
 
-        let thread_context = gtk::ListBox::builder()
+        let thread_list = gtk::ListBox::builder()
             .selection_mode(gtk::SelectionMode::None)
             .css_classes(vec!["thread-context"])
-            .margin_start(12)
-            .margin_end(12)
-            .margin_top(8)
-            .margin_bottom(8)
+            .build();
+        let thread_context = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .propagate_natural_height(false)
+            .min_content_height(0)
+            .max_content_height(58)
+            .height_request(58)
+            .vexpand(false)
+            .valign(gtk::Align::Start)
+            .child(&thread_list)
+            .margin_start(8)
+            .margin_end(8)
+            .margin_top(1)
+            .margin_bottom(1)
             .visible(false)
             .build();
 
@@ -7174,7 +7226,7 @@ impl MailPage {
         lbl_date: &gtk::Label,
         lbl_crypto: &gtk::Label,
         attachment_bar: &gtk::Box,
-        thread_context: &gtk::ListBox,
+        thread_context: &gtk::ScrolledWindow,
     ) {
         let filter_for_selection = custom_filter.clone();
         let thread_filter_for_selection = thread_filter.clone();
@@ -7522,10 +7574,14 @@ impl MailPage {
         store: &gio::ListStore,
         selection: &gtk::SingleSelection,
         selected: &MailMessageObject,
-        thread_context: &gtk::ListBox,
+        thread_context: &gtk::ScrolledWindow,
     ) {
-        while let Some(child) = thread_context.first_child() {
-            thread_context.remove(&child);
+        let Some(thread_list) = thread_context.child().and_downcast::<gtk::ListBox>() else {
+            thread_context.set_visible(false);
+            return;
+        };
+        while let Some(child) = thread_list.first_child() {
+            thread_list.remove(&child);
         }
 
         let thread_id = selected.thread_id();
@@ -7549,27 +7605,40 @@ impl MailPage {
             .label(&format!("Konversation · {} Nachrichten", messages.len()))
             .css_classes(vec!["caption", "dim-label"])
             .halign(gtk::Align::Start)
-            .margin_start(8)
-            .margin_bottom(4)
+            .margin_start(4)
+            .margin_bottom(2)
             .build();
         let header_row = gtk::ListBoxRow::builder()
             .child(&header)
             .activatable(false)
             .build();
-        thread_context.append(&header_row);
+        thread_list.append(&header_row);
 
         let message_count = messages.len();
-        for message in &messages {
+        const MAX_VISIBLE_THREAD_MESSAGES: usize = 2;
+        let selected_index = messages
+            .iter()
+            .position(|message| message.id() == selected.id())
+            .unwrap_or(0);
+        let mut visible_indices = if selected_index == 0 {
+            (0..messages.len().min(MAX_VISIBLE_THREAD_MESSAGES)).collect::<Vec<_>>()
+        } else {
+            vec![0, selected_index]
+        };
+        visible_indices.sort_unstable();
+        visible_indices.dedup();
+        for index in &visible_indices {
+            let message = &messages[*index];
             let label = gtk::Label::builder()
                 .label(&format!(
-                    "{} · {}\n{}",
+                    "{} · {} · {}",
                     message.sender_name(),
                     format_message_date(&message.date_str()),
                     message.subject()
                 ))
                 .halign(gtk::Align::Start)
                 .ellipsize(pango::EllipsizeMode::End)
-                .lines(2)
+                .lines(1)
                 .xalign(0.0)
                 .hexpand(true)
                 .build();
@@ -7600,7 +7669,17 @@ impl MailPage {
                 });
             }
             let row = gtk::ListBoxRow::builder().child(&button).build();
-            thread_context.append(&row);
+            thread_list.append(&row);
+        }
+        if visible_indices.len() < messages.len() {
+            let remaining = messages.len() - visible_indices.len();
+            let more = gtk::Label::builder()
+                .label(&format!("… {remaining} weitere Nachrichten"))
+                .css_classes(vec!["caption", "dim-label"])
+                .halign(gtk::Align::Start)
+                .margin_start(4)
+                .build();
+            thread_list.append(&gtk::ListBoxRow::builder().child(&more).build());
         }
         thread_context.set_visible(message_count > 1);
     }
@@ -7747,7 +7826,7 @@ impl MailPage {
         }
         glib::spawn_future_local(async move {
             let Ok(discovery) = discovery_receiver.recv().await else {
-                source_state_for_load.set_label("EDS-Quellenerkennung wurde abgebrochen.");
+                source_state_for_load.set_label("Kontenerkennung wurde abgebrochen.");
                 source_state_for_load.set_visible(true);
                 return;
             };
@@ -7755,9 +7834,9 @@ impl MailPage {
             let has_eds_sources = !discovery.sources.is_empty();
             let has_enabled_source = discovery.sources.iter().any(|source| source.enabled);
             let source_origin = match discovery.origin {
-                EdsSourceOrigin::Live => "EDS/GOA",
+                EdsSourceOrigin::Live => "Konten",
                 EdsSourceOrigin::Cache => "Offline-Cache",
-                EdsSourceOrigin::Empty => "EDS nicht verfügbar",
+                EdsSourceOrigin::Empty => "Keine Konten verfügbar",
             };
             for source in &discovery.sources {
                 tracing::debug!("  Source: {} ({})", source.display_name, source.uid);
@@ -7797,24 +7876,26 @@ impl MailPage {
 
             if discovery.origin == EdsSourceOrigin::Cache {
                 source_state_for_load.set_label(&format!(
-                    "{} Die Konten stammen aus dem Offline-Cache; Ordner und Nachrichten werden nur bei erreichbarem EDS/Camel geladen.",
+                    "{} Die Konten stammen aus dem Offline-Cache; Ordner und Nachrichten werden bei bestehender Verbindung geladen.",
                     discovery.status_text()
                 ));
                 source_state_for_load.set_visible(true);
             } else if !has_eds_sources && has_configured_accounts {
-                source_state_for_load.set_label("Gespeicherte Kontoprofile vorhanden; EDS/Camel-Synchronisation ist noch nicht verbunden.");
+                source_state_for_load.set_label("Gespeicherte Kontoprofile vorhanden; die Synchronisation ist noch nicht verbunden.");
             } else if !has_eds_sources {
-                source_state_for_load.set_label("Keine EDS-/GOA-Mailkonten gefunden. Das Konto-Setup ist noch nicht mit EDS verbunden.");
+                source_state_for_load
+                    .set_label("Keine Mailkonten gefunden. Richte zuerst ein Konto ein.");
             } else if !has_enabled_source {
                 source_state_for_load.set_label(if has_configured_accounts {
-                    "Alle gefundenen EDS-/GOA-Mailkonten sind deaktiviert; gespeicherte Kontoprofile warten auf die Backend-Anbindung."
+                    "Alle gefundenen Mailkonten sind deaktiviert."
                 } else {
-                    "Alle gefundenen EDS-/GOA-Mailkonten sind deaktiviert."
+                    "Alle Mailkonten sind deaktiviert."
                 });
             } else {
-                source_state_for_load
-                    .set_label("EDS-Mailkonto erkannt; Ordner und Nachrichten werden geladen …");
-                source_state_for_load.set_visible(true);
+                // Once a live account is available the account row is the
+                // useful status indicator; keep the sidebar free of backend
+                // terminology and reclaim the extra status line.
+                source_state_for_load.set_visible(false);
             }
         });
     }
@@ -7970,7 +8051,7 @@ impl MailPage {
                 if status.failed_sources > 0 && !self.imp().mail_loading.get() {
                     if let Some(state) = self.imp().message_state.borrow().as_ref() {
                         state.set_label(&format!(
-                            "EDS/Camel-Signalmonitor aktiv · {}/{} Konten verfügbar{}",
+                            "Kontosynchronisation aktiv · {}/{} Konten verfügbar{}",
                             status.successful_sources,
                             status.configured_sources,
                             status
@@ -8000,7 +8081,7 @@ impl MailPage {
                         .map(|old_name| format!(" von {old_name}"))
                         .unwrap_or_default();
                     state.set_label(&format!(
-                        "EDS/Camel: Ordner {} in {} wurde {}{} (＋{} / −{} / ~{} / neu {}) · Aktualisierung …",
+                        "Ordner {} in {} wurde {}{} (＋{} / −{} / ~{} / neu {}) · Aktualisierung …",
                         change.folder_name,
                         change.source_uid,
                         kind,
@@ -8017,9 +8098,7 @@ impl MailPage {
                 tracing::warn!(%error, "Native Camel change monitor stopped");
                 if !self.imp().mail_loading.get() {
                     if let Some(state) = self.imp().message_state.borrow().as_ref() {
-                        state.set_label(&format!(
-                            "EDS/Camel-Signalmonitor nicht verfügbar: {error}"
-                        ));
+                        state.set_label(&format!("Kontosynchronisation nicht verfügbar: {error}"));
                     }
                 }
             }
@@ -8069,10 +8148,7 @@ impl MailPage {
                 filter.changed(gtk::FilterChange::Different);
             }
             if let Some(state) = self.imp().message_state.borrow().as_ref() {
-                state.set_label(&format!(
-                    "EDS/Camel: Änderungen in {} inkrementell übernommen",
-                    change.folder_name
-                ));
+                state.set_label(&format!("Änderungen in {} übernommen", change.folder_name));
             }
             return;
         }
@@ -8085,7 +8161,7 @@ impl MailPage {
         self.imp().mail_incremental_loading.set(true);
         if let Some(state) = self.imp().message_state.borrow().as_ref() {
             state.set_label(&format!(
-                "EDS/Camel: {} Nachrichten in {} werden inkrementell aktualisiert …",
+                "{} Nachrichten in {} werden aktualisiert …",
                 message_uids.len(),
                 change.folder_name
             ));
@@ -8111,7 +8187,7 @@ impl MailPage {
         let page = self.downgrade();
         glib::spawn_future_local(async move {
             let result = receiver.recv().await.unwrap_or_else(|_| {
-                Err("Inkrementelles Camel-Laden wurde abgebrochen".to_string())
+                Err("Inkrementelle Kontosynchronisation wurde abgebrochen".to_string())
             });
             let Some(page) = page.upgrade() else {
                 return;
@@ -8133,18 +8209,13 @@ impl MailPage {
                     }
                     page.select_message_after_reload(previous_selected_id.as_deref());
                     if let Some(state) = page.imp().message_state.borrow().as_ref() {
-                        state.set_label(&format!(
-                            "EDS/Camel: Änderungen in {} inkrementell übernommen",
-                            folder_name
-                        ));
+                        state.set_label(&format!("Änderungen in {} übernommen", folder_name));
                     }
                 }
                 Err(error) => {
                     tracing::warn!(%error, "Incremental Camel update failed");
                     if let Some(state) = page.imp().message_state.borrow().as_ref() {
-                        state.set_label(&format!(
-                            "EDS/Camel-Inkrementalsynchronisation fehlgeschlagen: {error}"
-                        ));
+                        state.set_label(&format!("Synchronisation fehlgeschlagen: {error}"));
                     }
                 }
             }
@@ -8164,7 +8235,7 @@ impl MailPage {
             .source_display_name
             .as_deref()
             .or(progress.source_uid.as_deref())
-            .unwrap_or("EDS-Konto");
+            .unwrap_or("Mailkonto");
         let account_progress = if progress.configured_sources > 0 {
             format!(
                 " ({}/{} Konten, {} erfolgreich, {} Fehler, {} Ordner, {} Nachrichten)",
@@ -8180,29 +8251,29 @@ impl MailPage {
         };
         let label = match progress.phase {
             camel_mail_service::CamelSyncPhase::Discovering => {
-                "EDS/Camel: Mailkonten werden gesucht …".to_string()
+                "Konten werden gesucht …".to_string()
             }
             camel_mail_service::CamelSyncPhase::Connecting => {
-                format!("EDS/Camel: Verbinde mit {account}{account_progress} …")
+                format!("Verbinde mit {account}{account_progress} …")
             }
             camel_mail_service::CamelSyncPhase::LoadingFolders => {
-                format!("EDS/Camel: Lade Ordner von {account}{account_progress} …")
+                format!("Lade Ordner von {account}{account_progress} …")
             }
             camel_mail_service::CamelSyncPhase::LoadingMessages => format!(
-                "EDS/Camel: Lade {} von {account}{account_progress} …",
+                "Lade {} von {account}{account_progress} …",
                 progress.folder_name.as_deref().unwrap_or("Nachrichten")
             ),
             camel_mail_service::CamelSyncPhase::SourceComplete => {
-                format!("EDS/Camel: {account} synchronisiert{account_progress}")
+                format!("{account} synchronisiert{account_progress}")
             }
             camel_mail_service::CamelSyncPhase::Complete => {
-                format!("EDS/Camel: Synchronisation abgeschlossen{account_progress}")
+                format!("Synchronisation abgeschlossen{account_progress}")
             }
             camel_mail_service::CamelSyncPhase::Failed => {
-                format!("EDS/Camel: Synchronisation fehlgeschlagen{account_progress}")
+                format!("Synchronisation fehlgeschlagen{account_progress}")
             }
             camel_mail_service::CamelSyncPhase::Retrying => format!(
-                "EDS/Camel: vorübergehender Fehler · neuer Versuch {}/{} …",
+                "Vorübergehender Fehler · neuer Versuch {}/{} …",
                 progress.attempt, progress.max_attempts
             ),
         };
@@ -8602,7 +8673,7 @@ impl MailPage {
                     button.set_sensitive(true);
                 }
                 if let Some(state) = self.imp().source_state.borrow().as_ref() {
-                    state.set_label(&format!("EDS/Camel-Laden nicht möglich: {error}"));
+                    state.set_label(&format!("Kontosynchronisation nicht möglich: {error}"));
                     state.set_visible(true);
                 }
                 if let Some(button) = self.imp().load_more_button.borrow().as_ref() {
@@ -8610,7 +8681,7 @@ impl MailPage {
                     button.set_sensitive(true);
                 }
                 if let Some(state) = self.imp().message_state.borrow().as_ref() {
-                    state.set_label(&format!("EDS/Camel-Laden nicht möglich: {error}"));
+                    state.set_label(&format!("Kontosynchronisation nicht möglich: {error}"));
                 }
                 tracing::warn!(%error, "Mail backend load failed");
             }
@@ -9478,10 +9549,20 @@ impl MailPage {
 
         if let Some(index) = self.imp().dynamic_folder_index.borrow().as_ref().cloned() {
             let index = index.borrow();
+            let mut source_counts = HashMap::<String, (u32, u32)>::new();
             for folder in folders {
                 let id = Self::dynamic_folder_key(&folder.source_uid, &folder.folder_name);
                 if let Some(object) = index.get(&id) {
                     object.set_counts(folder.unread_count, folder.total_count);
+                }
+                let counts = source_counts.entry(folder.source_uid.clone()).or_default();
+                counts.0 = counts.0.saturating_add(folder.unread_count);
+                counts.1 = counts.1.saturating_add(folder.total_count);
+            }
+            for (source_uid, (unread, total)) in source_counts {
+                let root_id = Self::dynamic_folder_key(&source_uid, "");
+                if let Some(root) = index.get(&root_id) {
+                    root.set_counts(unread, total);
                 }
             }
         }
@@ -9617,7 +9698,7 @@ fn append_itip_invitation(attachment_bar: &gtk::Box, invitation: ItipInvitation)
         }
     } else {
         let status = gtk::Label::builder()
-            .label("EDS-Antwort erforderlich")
+            .label("Kontosynchronisation erforderlich")
             .css_classes(vec!["dim-label", "caption"])
             .valign(gtk::Align::Center)
             .build();
@@ -10067,6 +10148,29 @@ mod tests {
         assert_eq!(
             FolderSelection::from_folder_id("provider-specific").folder_id,
             "inbox"
+        );
+    }
+
+    #[test]
+    fn folder_selection_can_target_an_entire_mail_account() {
+        let selection = FolderSelection {
+            folder_id: "account:source-1".to_string(),
+            source_uid: Some("source-1".to_string()),
+            folder_name: None,
+        };
+
+        assert!(selection.is_remote());
+        assert_eq!(selection.source_uid.as_deref(), Some("source-1"));
+        assert!(selection.folder_name.is_none());
+    }
+
+    #[test]
+    fn visible_source_labels_never_expose_backend_implementation_names() {
+        assert_eq!(MailPage::localize_source_name("EDS"), "Mailkonto");
+        assert_eq!(MailPage::localize_source_name("Camel"), "Mailkonto");
+        assert_eq!(
+            MailPage::localize_source_name("alice@example.test"),
+            "alice@example.test"
         );
     }
 

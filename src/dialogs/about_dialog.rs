@@ -14,7 +14,7 @@ pub fn show_about_dialog<W: IsA<gtk::Widget>>(parent: &W) {
         .license_type(gtk::License::Gpl30Only)
         .website("https://gitlab.gnome.org/GNOME/evolution-gtk4")
         .issue_url("https://gitlab.gnome.org/GNOME/evolution-gtk4/-/issues")
-        .comments("Technische Vorschau für einen künftigen vollständigen Evolution-Ersatz — GTK4, Libadwaita, WebKitGTK 6.0 und Evolution Data Server (EDS).")
+        .comments("Technische Vorschau für einen künftigen vollständigen Evolution-Ersatz — GTK4 und Libadwaita.")
         .artists(vec!["megawron"])
         .developers(vec!["megawron"])
         .translator_credits("megawron")

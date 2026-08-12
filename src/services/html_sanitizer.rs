@@ -105,6 +105,28 @@ pub fn sanitize_html(input: &str) -> String {
             continue;
         };
 
+        // Mail clients commonly keep layout rules in a <style> block. Keep
+        // only a dependency-free, non-resource-loading subset so tables,
+        // spacing and typography remain readable without allowing CSS to
+        // fetch resources or execute browser-specific behavior.
+        if tag_name == "style" {
+            if !closing {
+                if let Some((css, after_block)) = find_style_block_end(input, end + 1) {
+                    if let Some(css) = sanitize_css(css) {
+                        output.push_str("<style>");
+                        output.push_str(&css);
+                        output.push_str("</style>");
+                    }
+                    cursor = after_block;
+                } else {
+                    cursor = input.len();
+                }
+            } else {
+                cursor = end + 1;
+            }
+            continue;
+        }
+
         if BLOCKED_TAGS.contains(&tag_name.as_str()) {
             // Void HTML tags such as <meta>, <link>, <base> and <embed> do
             // not have a closing tag. Treating them like container tags
@@ -131,6 +153,42 @@ pub fn sanitize_html(input: &str) -> String {
     output
 }
 
+/// Remove externally hosted image elements from already sanitized mail HTML.
+///
+/// WebKit's image preference and the document CSP remain active in the
+/// viewer, but removing remote elements here makes the privacy decision
+/// deterministic across WebKit versions and avoids cached images appearing
+/// before the user explicitly allows remote content. Inline `cid:` and
+/// `data:` images are intentionally retained.
+pub fn block_remote_images(input: &str) -> String {
+    let mut output = String::with_capacity(input.len());
+    let mut cursor = 0;
+
+    while cursor < input.len() {
+        let Some(relative_start) = input[cursor..].find('<') else {
+            output.push_str(&input[cursor..]);
+            break;
+        };
+        let start = cursor + relative_start;
+        output.push_str(&input[cursor..start]);
+
+        let Some(end) = find_tag_end(input, start) else {
+            output.push_str(&input[start..]);
+            break;
+        };
+        let raw_tag = &input[start..=end];
+        let is_remote_image = tag_name(raw_tag)
+            .is_some_and(|(closing, tag)| !closing && tag == "img")
+            && image_source(raw_tag).is_some_and(|source| is_remote_image_uri(&source));
+        if !is_remote_image {
+            output.push_str(raw_tag);
+        }
+        cursor = end + 1;
+    }
+
+    output
+}
+
 /// Return the readable text represented by an HTML mail body.
 ///
 /// Sanitizing first removes active content and blocked container bodies, then
@@ -138,7 +196,7 @@ pub fn sanitize_html(input: &str) -> String {
 /// boundaries.  This is shared by the viewer and search/filter paths so a
 /// search uses the same content the user can actually read.
 pub fn html_to_plain_text(value: &str) -> String {
-    let sanitized = sanitize_html(value);
+    let sanitized = strip_style_blocks(&sanitize_html(value));
     let mut output = String::with_capacity(sanitized.len());
     let mut in_tag = false;
     let mut tag = String::new();
@@ -174,14 +232,108 @@ pub fn html_to_plain_text(value: &str) -> String {
             output.push(character);
         }
     }
+    decode_html_entities(output.trim())
+}
+
+fn strip_style_blocks(input: &str) -> String {
+    let lower = input.to_ascii_lowercase();
+    let mut output = String::with_capacity(input.len());
+    let mut cursor = 0;
+
+    while let Some(relative_start) = lower[cursor..].find("<style") {
+        let start = cursor + relative_start;
+        let is_style_tag = lower
+            .get(start + 6..)
+            .and_then(|rest| rest.chars().next())
+            .is_none_or(|character| character.is_ascii_whitespace() || character == '>');
+        if !is_style_tag {
+            let after_name = start + 6;
+            output.push_str(&input[cursor..after_name]);
+            cursor = after_name;
+            continue;
+        }
+
+        output.push_str(&input[cursor..start]);
+        let Some(open_end) = find_tag_end(input, start) else {
+            break;
+        };
+        let Some(relative_close) = lower[open_end + 1..].find("</style") else {
+            break;
+        };
+        let close_start = open_end + 1 + relative_close;
+        let Some(close_end) = find_tag_end(input, close_start) else {
+            break;
+        };
+        cursor = close_end + 1;
+    }
+
+    output.push_str(&input[cursor..]);
     output
-        .replace("&nbsp;", " ")
-        .replace("&amp;", "&")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .trim()
-        .to_string()
+}
+
+fn decode_html_entities(value: &str) -> String {
+    let mut result = String::with_capacity(value.len());
+    let mut cursor = 0;
+    while cursor < value.len() {
+        let Some(relative_start) = value[cursor..].find('&') else {
+            result.push_str(&value[cursor..]);
+            break;
+        };
+        let start = cursor + relative_start;
+        result.push_str(&value[cursor..start]);
+        let Some(relative_end) = value[start + 1..].find(';') else {
+            result.push_str(&value[start..]);
+            break;
+        };
+        let end = start + 1 + relative_end;
+        let entity = &value[start + 1..end];
+        if let Some(decoded) = decode_html_entity(entity) {
+            result.push(decoded);
+            cursor = end + 1;
+        } else {
+            result.push_str(&value[start..=end]);
+            cursor = end + 1;
+        }
+    }
+    result.trim().to_string()
+}
+
+fn decode_html_entity(entity: &str) -> Option<char> {
+    if let Some(hex) = entity
+        .strip_prefix("#x")
+        .or_else(|| entity.strip_prefix("#X"))
+    {
+        return u32::from_str_radix(hex, 16).ok().and_then(char::from_u32);
+    }
+    if let Some(decimal) = entity.strip_prefix('#') {
+        return decimal.parse::<u32>().ok().and_then(char::from_u32);
+    }
+    match entity {
+        "nbsp" => Some(' '),
+        "amp" => Some('&'),
+        "lt" => Some('<'),
+        "gt" => Some('>'),
+        "quot" => Some('"'),
+        "apos" => Some('\''),
+        "auml" => Some('ä'),
+        "ouml" => Some('ö'),
+        "uuml" => Some('ü'),
+        "Auml" => Some('Ä'),
+        "Ouml" => Some('Ö'),
+        "Uuml" => Some('Ü'),
+        "szlig" => Some('ß'),
+        "eacute" => Some('é'),
+        "egrave" => Some('è'),
+        "aring" => Some('å'),
+        "copy" => Some('©'),
+        "reg" => Some('®'),
+        "ndash" => Some('–'),
+        "mdash" => Some('—'),
+        "hellip" => Some('…'),
+        "laquo" => Some('«'),
+        "raquo" => Some('»'),
+        _ => None,
+    }
 }
 
 fn find_tag_end(input: &str, start: usize) -> Option<usize> {
@@ -301,6 +453,12 @@ fn sanitize_tag(raw_tag: &str, closing: bool, tag_name: &str) -> Option<String> 
             }
         }
 
+        if attribute_name == "style" {
+            if let Some(value) = value.as_deref().and_then(sanitize_css) {
+                attributes.push(format!(" style=\"{}\"", escape_attribute(&value)));
+            }
+            continue;
+        }
         if is_blocked_attribute(&attribute_name) {
             continue;
         }
@@ -325,6 +483,146 @@ fn sanitize_tag(raw_tag: &str, closing: bool, tag_name: &str) -> Option<String> 
         ">"
     };
     Some(format!("<{tag_name}{}{tag_suffix}", attributes.concat()))
+}
+
+fn find_style_block_end(input: &str, start: usize) -> Option<(&str, usize)> {
+    let lower = input[start..].to_ascii_lowercase();
+    let relative_close = lower.find("</style")?;
+    let close_start = start + relative_close;
+    let close_end = find_tag_end(input, close_start)?;
+    Some((&input[start..close_start], close_end + 1))
+}
+
+fn sanitize_css(value: &str) -> Option<String> {
+    // Tracking comments in mail stylesheets sometimes contain URL-like
+    // examples. Remove comments before checking declarations so one harmless
+    // comment cannot cause the adjacent, useful layout rule to disappear.
+    let without_comments = strip_css_comments(value);
+    let trimmed = without_comments.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let blocked_tokens = [
+        "url(",
+        "@import",
+        "@font-face",
+        "@namespace",
+        "expression(",
+        "javascript:",
+        "vbscript:",
+        "behavior:",
+        "-moz-binding",
+        "-webkit-binding",
+    ];
+
+    // Keep safe rules even when a mail contains one unrelated tracking rule.
+    // This is intentionally a small rule splitter, not a CSS parser: the
+    // surrounding document sanitizer already removes active HTML, while the
+    // token check prevents resource loads and browser-specific execution.
+    let safe = trimmed
+        .split_inclusive('}')
+        .filter(|part| {
+            let lower = part.to_ascii_lowercase();
+            !blocked_tokens.iter().any(|token| lower.contains(token))
+        })
+        .collect::<String>();
+    if safe.trim().is_empty() {
+        return None;
+    }
+    Some(safe)
+}
+
+fn strip_css_comments(value: &str) -> String {
+    let mut output = String::with_capacity(value.len());
+    let mut cursor = 0;
+    while cursor < value.len() {
+        let Some(relative_start) = value[cursor..].find("/*") else {
+            output.push_str(&value[cursor..]);
+            break;
+        };
+        let start = cursor + relative_start;
+        output.push_str(&value[cursor..start]);
+        let Some(relative_end) = value[start + 2..].find("*/") else {
+            break;
+        };
+        cursor = start + 2 + relative_end + 2;
+    }
+    output
+}
+
+fn image_source(raw_tag: &str) -> Option<String> {
+    let content = raw_tag.strip_prefix('<')?.strip_suffix('>')?.trim();
+    let name_end = content
+        .char_indices()
+        .find(|(_, character)| !character.is_ascii_alphanumeric())
+        .map(|(index, _)| index)
+        .unwrap_or(content.len());
+    let bytes = content.as_bytes();
+    let mut cursor = name_end;
+
+    while cursor < content.len() {
+        while cursor < content.len()
+            && (bytes[cursor].is_ascii_whitespace() || bytes[cursor] == b'/')
+        {
+            cursor += 1;
+        }
+        if cursor >= content.len() {
+            break;
+        }
+        let attribute_start = cursor;
+        while cursor < content.len()
+            && !bytes[cursor].is_ascii_whitespace()
+            && bytes[cursor] != b'='
+            && bytes[cursor] != b'/'
+        {
+            cursor += 1;
+        }
+        let attribute_name = content[attribute_start..cursor].to_ascii_lowercase();
+        while cursor < content.len() && bytes[cursor].is_ascii_whitespace() {
+            cursor += 1;
+        }
+        if cursor >= content.len() || bytes[cursor] != b'=' {
+            continue;
+        }
+        cursor += 1;
+        while cursor < content.len() && bytes[cursor].is_ascii_whitespace() {
+            cursor += 1;
+        }
+        let value = if cursor < content.len() && (bytes[cursor] == b'\'' || bytes[cursor] == b'"') {
+            let quote = bytes[cursor];
+            cursor += 1;
+            let value_start = cursor;
+            while cursor < content.len() && bytes[cursor] != quote {
+                cursor += 1;
+            }
+            let value = content[value_start..cursor].to_string();
+            if cursor < content.len() {
+                cursor += 1;
+            }
+            value
+        } else {
+            let value_start = cursor;
+            while cursor < content.len()
+                && !bytes[cursor].is_ascii_whitespace()
+                && bytes[cursor] != b'/'
+            {
+                cursor += 1;
+            }
+            content[value_start..cursor].to_string()
+        };
+        if attribute_name == "src" {
+            return Some(value);
+        }
+    }
+
+    None
+}
+
+fn is_remote_image_uri(value: &str) -> bool {
+    let normalized = normalize_uri_prefix(value);
+    normalized.starts_with("http://")
+        || normalized.starts_with("https://")
+        || normalized.starts_with("//")
 }
 
 fn is_blocked_attribute(attribute_name: &str) -> bool {
@@ -472,6 +770,37 @@ mod tests {
     }
 
     #[test]
+    fn blocks_remote_images_but_keeps_inline_images() {
+        let sanitized = sanitize_html(
+            r#"<p><img src="https://cdn.example/remote.png"><img src="cid:logo@example.org"><img src="data:image/png;base64,AAAA"></p>"#,
+        );
+        let blocked = block_remote_images(&sanitized);
+        assert!(!blocked.contains("https://cdn.example/remote.png"));
+        assert!(blocked.contains("cid:logo@example.org"));
+        assert!(blocked.contains("data:image/png;base64,AAAA"));
+    }
+
+    #[test]
+    fn preserves_safe_mail_css_but_drops_resource_loading_css() {
+        let sanitized = sanitize_html(
+            r#"<style>.mail { color: #333; table-layout: fixed; } .unsafe { background: url(https://tracker.example/pixel); }</style><p class="mail" style="font-weight: bold">Hallo</p>"#,
+        );
+        assert!(sanitized.contains("<style>.mail { color: #333; table-layout: fixed; }"));
+        assert!(!sanitized.contains("url("));
+        assert!(sanitized.contains("style=\"font-weight: bold\""));
+    }
+
+    #[test]
+    fn css_comments_do_not_hide_following_safe_rules() {
+        let sanitized = sanitize_html(
+            r#"<style>/* tracking example: url(https://tracker.example/pixel) */ .mail { color: #333; }</style><p class="mail">Hallo</p>"#,
+        );
+
+        assert!(sanitized.contains(".mail { color: #333; }"));
+        assert!(!sanitized.contains("tracker.example"));
+    }
+
+    #[test]
     fn keeps_plain_text_and_handles_unclosed_tags_without_panicking() {
         assert_eq!(sanitize_html("plain text"), "plain text");
         let sanitized = sanitize_html("<p>Text ohne Ende <script>secret");
@@ -494,6 +823,22 @@ mod tests {
         assert_eq!(
             html_to_plain_text("<p>Quarterly</p><p>report<br>ready</p>"),
             "Quarterly\nreport\nready"
+        );
+    }
+
+    #[test]
+    fn plain_text_omits_preserved_mail_css() {
+        assert_eq!(
+            html_to_plain_text("<style>.mail { color: red; }</style><p class=\"mail\">Hallo</p>"),
+            "Hallo"
+        );
+    }
+
+    #[test]
+    fn plain_text_decodes_named_and_numeric_html_entities() {
+        assert_eq!(
+            html_to_plain_text("<p>M&uuml;ller &amp; Team &#169; &#x1F4C1; &mdash; fertig</p>"),
+            "Müller & Team © 📁 — fertig"
         );
     }
 }

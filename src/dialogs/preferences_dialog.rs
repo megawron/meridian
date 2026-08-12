@@ -97,14 +97,12 @@ impl PreferencesDialog {
 
         let group_accounts = adw::PreferencesGroup::builder()
             .title("E-Mail-Konten & Server-Einstellungen")
-            .description(
-                "Verwaltete Konten im Evolution Data Server (EDS) und GNOME Online Accounts",
-            )
+            .description("Verwaltete Konten und Online-Dienste")
             .build();
 
         let row_add_account = adw::ActionRow::builder()
             .title("Neues Konto hinzufügen…")
-            .subtitle("IMAP, POP3, Exchange (EWS) oder GOA einrichten")
+            .subtitle("IMAP, POP3, Exchange (EWS) oder ein Onlinekonto einrichten")
             .activatable(true)
             .build();
         let icon_add = gtk::Image::from_icon_name("list-add-symbolic");
@@ -145,7 +143,7 @@ impl PreferencesDialog {
         let eds_sources = EdsSourceCache::new().load(EdsSourceKind::Mail);
         if eds_sources.is_empty() {
             let no_accounts = adw::ActionRow::builder()
-                .title("Keine aktiven EDS-Konten gefunden")
+                .title("Keine aktiven Konten gefunden")
                 .subtitle("Verwenden Sie „Neues Konto hinzufügen…“, um ein Konto einzurichten")
                 .build();
             let icon_no_accounts = gtk::Image::from_icon_name("dialog-information-symbolic");
@@ -155,7 +153,7 @@ impl PreferencesDialog {
             for source in eds_sources {
                 let row = adw::ActionRow::builder()
                     .title(&source.display_name)
-                    .subtitle(&format!("EDS Mail  ·  {}", source.backend_name))
+                    .subtitle("Mailkonto")
                     .activatable(true)
                     .build();
                 let icon_mail = gtk::Image::from_icon_name("mail-read-symbolic");
@@ -209,7 +207,7 @@ impl PreferencesDialog {
         let group_profiles = adw::PreferencesGroup::builder()
             .title("Lokale Kontoprofile")
             .description(
-                "Nicht-geheime Profile für die spätere EDS/Camel-Aktivierung; Passwörter werden nicht gespeichert",
+                "Nicht-geheime Profile für die spätere Kontosynchronisation; Passwörter werden nicht gespeichert",
             )
             .build();
         let profiles = AccountConfigStore::default().load();
@@ -293,7 +291,7 @@ impl PreferencesDialog {
                     crate::dialogs::run_destructive_action(
                         &dialog,
                         "Lokales Kontoprofil entfernen?",
-                        "Nur das app-eigene, geheimnisfreie Profil wird entfernt. EDS, Camel und der Secret Service bleiben unverändert.",
+                        "Nur das app-eigene, geheimnisfreie Profil wird entfernt. Konten und sichere Zugangsdaten bleiben unverändert.",
                         "Entfernen",
                         move || match AccountConfigStore::default().delete(&profile_id) {
                             Ok(true) => {
@@ -542,12 +540,12 @@ impl PreferencesDialog {
 
         let group_sync = adw::PreferencesGroup::builder()
             .title("Synchronisation")
-            .description("Automatische Aktualisierung der EDS/Camel-Mailordner")
+            .description("Automatische Aktualisierung der Mailordner")
             .build();
         let row_offline_mode = adw::SwitchRow::builder()
             .title("Offline-Modus")
             .subtitle(
-                "Verwendet ausschließlich den lokalen Bestand und pausiert EDS/Camel-Synchronisation",
+                "Verwendet ausschließlich den lokalen Bestand und pausiert die Kontosynchronisation",
             )
             .build();
         if let Some(settings) = settings.clone() {
@@ -582,9 +580,7 @@ impl PreferencesDialog {
 
         let row_draft_autosave = adw::SpinRow::with_range(0.0, 3_600.0, 5.0);
         row_draft_autosave.set_title("Entwürfe automatisch speichern");
-        row_draft_autosave.set_subtitle(
-            "Sekunden; 0 deaktiviert das lokale Autosave (auf Linux übernimmt später EDS/Camel)",
-        );
+        row_draft_autosave.set_subtitle("Sekunden; 0 deaktiviert das lokale Autosave");
         row_draft_autosave.set_digits(0);
         row_draft_autosave.set_snap_to_ticks(true);
         if let Some(settings) = settings.clone() {
@@ -789,7 +785,7 @@ impl PreferencesDialog {
             .build();
         group_default_address_book.add(&source_preference_row(
             "Standardadressbuch",
-            "EDS-Adressbücher und lokales Adressbuch",
+            "Synchronisierte und lokale Adressbücher",
             EdsSourceKind::AddressBook,
             "local-addressbook",
             "Lokales Adressbuch",
@@ -802,7 +798,7 @@ impl PreferencesDialog {
         let group_backup = adw::PreferencesGroup::builder()
             .title("Daten & Sicherung")
             .description(
-                "App-eigene Zustände sichern, diagnostizieren, migrieren oder löschen; das originale EDS-Profil bleibt unberührt",
+                "App-eigene Zustände sichern, diagnostizieren, migrieren oder löschen; externe Profile bleiben unberührt",
             )
             .build();
         let row_backup = adw::ActionRow::builder()
@@ -929,7 +925,7 @@ impl PreferencesDialog {
                         let confirmation = adw::AlertDialog::new(
                             Some("App-Daten wiederherstellen?"),
                             Some(&format!(
-                                "{} Datei(en), {}; {}; vorhandene app-eigene Dateien aus dieser Sicherung werden ersetzt. Das originale EDS-Profil bleibt unverändert.",
+                                "{} Datei(en), {}; {}; vorhandene app-eigene Dateien aus dieser Sicherung werden ersetzt. Externe Profile bleiben unverändert.",
                                 inspection.files,
                                 settings_status,
                                 checksum_status
@@ -1055,7 +1051,7 @@ impl PreferencesDialog {
             move |_| {
                 let confirmation = adw::AlertDialog::new(
                     Some("App-eigene Daten löschen?"),
-                    Some("Kontenprofile, Entwürfe, lokale ICS-/vCard-Daten und app-eigene Einstellungen werden entfernt. Das originale EDS-Profil, der Secret Service und ausgewählte externe Ordner bleiben unverändert."),
+                    Some("Kontenprofile, Entwürfe, lokale ICS-/vCard-Daten und app-eigene Einstellungen werden entfernt. Externe Profile, sichere Zugangsdaten und ausgewählte externe Ordner bleiben unverändert."),
                 );
                 confirmation.add_responses(&[
                     ("cancel", "Abbrechen"),
@@ -1643,7 +1639,7 @@ impl PreferencesDialog {
 
         let row_html_rendering = adw::SwitchRow::builder()
             .title("HTML-Nachrichten rendern")
-            .subtitle("Deaktivieren für reine Textanzeige (WebKitGTK Sandboxed)")
+            .subtitle("Deaktivieren für reine Textanzeige")
             .active(true)
             .build();
         if let Some(settings) = settings.clone() {
@@ -2458,7 +2454,7 @@ impl PreferencesDialog {
 
         let group_crypto = adw::PreferencesGroup::builder()
             .title("Verschlüsselung & Signaturen")
-            .description("OpenPGP und S/MIME Konfiguration (CamelCipherContext)")
+            .description("OpenPGP- und S/MIME-Konfiguration")
             .build();
 
         let crypto_protocol_model =

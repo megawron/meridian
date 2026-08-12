@@ -70,6 +70,7 @@ mod imp {
         pub attachments: RefCell<Vec<DraftAttachment>>,
         pub attachment_list: RefCell<Option<gtk::ListBox>>,
         pub autosave_source: RefCell<Option<glib::SourceId>>,
+        pub settings: RefCell<Option<AppSettings>>,
     }
 
     #[glib::object_subclass]
@@ -398,7 +399,7 @@ impl ComposeDialog {
             .css_classes(vec!["dim-label"])
             .halign(gtk::Align::End)
             .build();
-        let source_model = gtk::StringList::new(&["EDS-Absender werden geladen…"]);
+        let source_model = gtk::StringList::new(&["Absender werden geladen…"]);
         let combo_from = gtk::DropDown::new(Some(source_model.clone()), None::<&gtk::Expression>);
         combo_from.set_hexpand(true);
 
@@ -522,6 +523,16 @@ impl ComposeDialog {
             .pgp_encrypt_button
             .replace(Some(btn_encrypt.clone()));
         self.imp().attachment_list.replace(Some(attachment_list));
+
+        if let Some(settings) = AppSettings::try_new() {
+            self.imp().settings.replace(Some(settings.clone()));
+            let dialog_weak_for_autosave = self.downgrade();
+            settings.connect_changed(Some("draft-autosave-interval"), move |_, _| {
+                if let Some(dialog) = dialog_weak_for_autosave.upgrade() {
+                    dialog.start_local_autosave();
+                }
+            });
+        }
 
         let dialog_for_default_account = self.downgrade();
         let settings_for_default_account = AppSettings::try_new();
@@ -1139,9 +1150,9 @@ impl ComposeDialog {
             }
             if names.is_empty() {
                 let message = if discovery.origin == EdsSourceOrigin::Empty {
-                    "EDS-Mailkonten sind nicht erreichbar"
+                    "Mailkonten sind nicht erreichbar"
                 } else {
-                    "Kein aktives EDS-Mailkonto verfügbar"
+                    "Kein aktives Mailkonto verfügbar"
                 };
                 source_model_for_load.splice(0, source_model_for_load.n_items(), &[message]);
             }
@@ -1247,11 +1258,11 @@ impl ComposeDialog {
                                 };
                                 match result {
                                     Ok(Ok(())) => {
-                                        tracing::info!("Draft saved to EDS Drafts folder");
-                                        dialog.show_toast("Entwurf in EDS gespeichert");
+                                        tracing::info!("Draft saved to synchronized drafts folder");
+                                        dialog.show_toast("Entwurf im synchronisierten Ordner gespeichert");
                                     }
                                     Ok(Err(error)) => dialog.show_toast(&format!(
-                                        "Entwurf konnte nicht in EDS gespeichert werden: {error}"
+                                        "Entwurf konnte nicht im synchronisierten Ordner gespeichert werden: {error}"
                                     )),
                                     Err(error) => dialog.show_toast(&format!(
                                         "Entwurfsspeicherung abgebrochen: {error}"
@@ -1325,6 +1336,9 @@ impl ComposeDialog {
     }
 
     fn start_local_autosave(&self) {
+        if let Some(source) = self.imp().autosave_source.borrow_mut().take() {
+            source.remove();
+        }
         // Native EDS/Camel draft persistence is deliberately a separate
         // Linux acceptance item.  The portable fallback owns local autosave
         // until that backend is verified on the target machine.

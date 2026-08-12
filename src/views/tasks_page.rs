@@ -915,7 +915,7 @@ impl TasksPage {
                     }
                     if result.snapshot.tasks.is_empty() {
                         empty_tasks_for_load.set_label(match result.origin {
-                            CalendarDataOrigin::Eds => "Keine Aufgaben aus EDS geladen",
+                            CalendarDataOrigin::Eds => "Keine synchronisierten Aufgaben geladen",
                             CalendarDataOrigin::Graph => {
                                 "Keine Aufgaben aus Microsoft Graph geladen"
                             }
@@ -1079,7 +1079,7 @@ impl TasksPage {
             .margin_bottom(20)
             .build();
 
-        let source_model = gtk::StringList::new(&["EDS-Aufgabenlisten werden geladen…"]);
+        let source_model = gtk::StringList::new(&["Aufgabenlisten werden geladen…"]);
         let source_uids = Rc::new(RefCell::new(Vec::<String>::new()));
         let source_row = adw::ComboRow::builder()
             .title("Aufgabenliste")
@@ -1339,9 +1339,9 @@ impl TasksPage {
             }
             if names.is_empty() {
                 names.push(if discovery.error.is_some() {
-                    "EDS-Aufgabenlisten sind nicht erreichbar".to_string()
+                    "Aufgabenlisten sind nicht erreichbar".to_string()
                 } else {
-                    "Keine aktive EDS-Aufgabenliste verfügbar".to_string()
+                    "Keine aktive Aufgabenliste verfügbar".to_string()
                 });
             }
             let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
@@ -1371,7 +1371,7 @@ impl TasksPage {
             } else {
                 let selected = source_row.selected() as usize;
                 let Some(source_uid) = source_uids_for_save.borrow().get(selected).cloned() else {
-                    show_toast_for_widget(&dialog, "Keine aktive EDS-Aufgabenliste ist ausgewählt");
+                    show_toast_for_widget(&dialog, "Keine aktive Aufgabenliste ist ausgewählt");
                     return;
                 };
                 source_uid
@@ -1379,7 +1379,7 @@ impl TasksPage {
             if source_uid.is_empty() {
                 show_toast_for_widget(
                     &dialog,
-                    "Lokale Aufgaben können ohne aktive EDS-Aufgabenliste nicht geändert werden",
+                    "Lokale Aufgaben können ohne aktive Aufgabenliste nicht geändert werden",
                 );
                 return;
             };
@@ -2256,7 +2256,7 @@ fn append_task_row(
         let confirmation_message = if source_uid == "local-calendar" {
             "Die Aufgabe wird dauerhaft aus der lokalen Aufgabenliste entfernt."
         } else {
-            "Die Aufgabe wird dauerhaft aus der EDS-Aufgabenliste entfernt."
+            "Die Aufgabe wird dauerhaft aus der synchronisierten Aufgabenliste entfernt."
         };
         let task_for_action = task_for_delete.clone();
         let task_store_for_action = task_store_for_delete.clone();

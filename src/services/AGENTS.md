@@ -24,6 +24,8 @@ settings persistence.
 
 - Keep native Linux adapters isolated behind small, tested interfaces.
 - Keep all portable behavior deterministic and covered by unit tests.
+- Preserve safe embedded mail layout CSS while removing active/resource-loading
+  declarations; external stylesheets and remote content remain policy-gated.
 
 ## Verification
 

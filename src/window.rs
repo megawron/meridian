@@ -1746,13 +1746,13 @@ impl EvolutionWindow {
             (
                 "empty-trash",
                 "Papierkorb leeren?",
-                "Lokale app-eigene Nachrichten werden aus der sichtbaren Papierkorbansicht entfernt. Native EDS/Camel-Ordner werden erst über den Linux-Expunge-Pfad endgültig geleert.",
+                "Lokale app-eigene Nachrichten werden aus der sichtbaren Papierkorbansicht entfernt. Synchronisierte Ordner werden erst über den Linux-Pfad endgültig geleert.",
                 "Papierkorb geleert",
             ),
             (
                 "expunge",
                 "Papierkorb endgültig leeren?",
-                "Der lokale app-eigene Papierkorb wird geleert. Für native EDS/Camel-Ordner ist der Linux-Expunge-Pfad erforderlich.",
+                "Der lokale app-eigene Papierkorb wird geleert. Für synchronisierte Ordner ist der Linux-Pfad erforderlich.",
                 "Papierkorb endgültig geleert",
             ),
         ] {

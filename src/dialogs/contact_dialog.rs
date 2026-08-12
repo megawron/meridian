@@ -189,7 +189,7 @@ impl ContactDialog {
         let row_title = adw::EntryRow::builder().title("Position / Titel").build();
         group_general.add(&row_title);
 
-        let source_model = gtk::StringList::new(&["EDS-Adressbücher werden geladen…"]);
+        let source_model = gtk::StringList::new(&["Adressbücher werden geladen…"]);
         let source_uids = Rc::new(RefCell::new(Vec::<String>::new()));
         let source_row = adw::ComboRow::builder()
             .title("Adressbuch")
@@ -514,8 +514,8 @@ impl ContactDialog {
                 names.push(
                     discovery
                         .error
-                        .map(|error| format!("EDS-Adressbücher sind nicht erreichbar: {error}"))
-                        .unwrap_or_else(|| "Kein aktives EDS-Adressbuch verfügbar".to_string()),
+                        .map(|error| format!("Adressbücher sind nicht erreichbar: {error}"))
+                        .unwrap_or_else(|| "Kein aktives Adressbuch verfügbar".to_string()),
                 );
             }
             let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
@@ -540,7 +540,7 @@ impl ContactDialog {
             };
             let selected = source_row.selected() as usize;
             let Some(source_uid) = source_uids_for_save.borrow().get(selected).cloned() else {
-                dialog.show_toast("Kein aktives EDS-Adressbuch ist ausgewählt");
+                dialog.show_toast("Kein aktives Adressbuch ist ausgewählt");
                 return;
             };
             let extended_fields = ContactVCardFields {

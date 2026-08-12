@@ -15,14 +15,14 @@ use adw::subclass::prelude::*;
 #[cfg(target_os = "linux")]
 use gtk::gio;
 use gtk::glib;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 #[cfg(target_os = "linux")]
 use webkit6::prelude::*;
 
 use crate::services::AppSettings;
 use crate::services::html_sanitizer::html_to_plain_text;
 #[cfg(target_os = "linux")]
-use crate::services::html_sanitizer::sanitize_html;
+use crate::services::html_sanitizer::{block_remote_images, sanitize_html};
 use crate::services::mail_metadata_service::RemoteContentStore;
 
 mod imp {
@@ -41,6 +41,7 @@ mod imp {
         pub current_html: RefCell<Option<String>>,
         pub current_base_uri: RefCell<Option<String>>,
         pub current_fallback_text: RefCell<Option<String>>,
+        pub remote_images_allowed_for_current: Cell<bool>,
         pub settings: RefCell<Option<AppSettings>>,
     }
 
@@ -143,6 +144,7 @@ impl MailViewer {
                 .editable(false)
                 .cursor_visible(false)
                 .wrap_mode(gtk::WrapMode::WordChar)
+                .css_classes(vec!["mail-plain-view"])
                 .top_margin(16)
                 .bottom_margin(16)
                 .left_margin(16)
@@ -224,6 +226,10 @@ impl MailViewer {
         base_uri: Option<&str>,
         fallback_text: Option<&str>,
     ) {
+        let message_changed = self.imp().current_message_id.borrow().as_deref() != message_id;
+        if message_changed {
+            self.imp().remote_images_allowed_for_current.set(false);
+        }
         self.imp()
             .current_message_id
             .replace(message_id.map(str::to_string));
@@ -243,7 +249,9 @@ impl MailViewer {
         let per_message_remote_images = message_id
             .map(|message_id| RemoteContentStore::default().is_allowed(message_id))
             .unwrap_or(false);
-        let remote_images_allowed = global_remote_images || per_message_remote_images;
+        let remote_images_allowed = global_remote_images
+            || per_message_remote_images
+            || self.imp().remote_images_allowed_for_current.get();
         let render_html = AppSettings::try_new()
             .as_ref()
             .map(AppSettings::render_html)
@@ -256,7 +264,12 @@ impl MailViewer {
         #[cfg(target_os = "linux")]
         if let Some(webview) = self.ensure_webkit() {
             let sanitized_body = if render_html {
-                sanitize_html(html_content)
+                let sanitized = sanitize_html(html_content);
+                if remote_images_allowed {
+                    sanitized
+                } else {
+                    block_remote_images(&sanitized)
+                }
             } else {
                 let plain_text = html_to_fallback_text(html_content);
                 let plain_text = if plain_text.is_empty() {
@@ -291,8 +304,8 @@ impl MailViewer {
             let body_css = if is_dark_mode {
                 r#"
   html {
-    color-scheme: dark;
-    background-color: #1e1e1e;
+    color-scheme: dark !important;
+    background-color: #1e1e1e !important;
   }
   body {
     font-family: __FONT_FAMILY__;
@@ -301,16 +314,16 @@ impl MailViewer {
     margin: 16px;
     min-height: calc(100vh - 32px);
     padding: 0;
-    color: #eeeeec;
-    background-color: #1e1e1e;
+    color: #eeeeec !important;
+    background-color: #1e1e1e !important;
   }
   a { color: #78aeed; }
 "#
             } else {
                 r#"
   html {
-    color-scheme: light;
-    background-color: #ffffff;
+    color-scheme: light !important;
+    background-color: #ffffff !important;
   }
   body {
     font-family: __FONT_FAMILY__;
@@ -319,8 +332,8 @@ impl MailViewer {
     margin: 16px;
     min-height: calc(100vh - 32px);
     padding: 0;
-    color: #2e3436;
-    background-color: #ffffff;
+    color: #2e3436 !important;
+    background-color: #ffffff !important;
   }
   a { color: #1a73e8; }
 "#
@@ -338,7 +351,7 @@ impl MailViewer {
                 .replace("__FONT_SIZE__", &mail_font_size.to_string());
 
             let style_tag = format!(
-                "<style>{} img {{ max-width: 100%; height: auto; }}{} blockquote {{ border-left: 3px solid #78aeed; margin-left: 0; padding-left: 12px; color: #888888; }}</style>",
+                "<style>{} body > table, body > div, body > center, body > article, body > main {{ background-color: transparent !important; color: inherit !important; }} img {{ max-width: 100%; height: auto; }}{} blockquote {{ border-left: 3px solid #78aeed; margin-left: 0; padding-left: 12px; color: #888888; }}</style>",
                 body_css,
                 if remote_images_allowed {
                     ""
@@ -429,14 +442,12 @@ impl MailViewer {
                 tracing::warn!(%error, %message_id, "Could not persist remote content approval");
             }
         }
+        self.imp().remote_images_allowed_for_current.set(true);
         self.imp().banner.set_revealed(false);
-        #[cfg(target_os = "linux")]
-        if let Some(webview) = self.imp().webview.borrow().as_ref() {
-            if let Some(settings) = webkit6::prelude::WebViewExt::settings(webview) {
-                settings.set_auto_load_images(true);
-                webview.reload();
-            }
-        }
+        // Re-run the rendering path from the retained original HTML.  A
+        // WebKit reload alone cannot restore remote <img> tags that were
+        // deliberately removed from the privacy-first document.
+        self.reload_current();
     }
 
     #[cfg(target_os = "linux")]

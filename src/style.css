@@ -32,6 +32,16 @@
  * layout.  Keep actions compact so the subject column receives the space. */
 .message-list .message-line {
   min-height: 22px;
+  padding-top: 0;
+  padding-bottom: 0;
+}
+
+.message-list .message-line:hover {
+  background-color: alpha(@window_fg_color, 0.045);
+}
+
+.message-list .batch-selected {
+  background-color: alpha(@accent_bg_color, 0.09);
 }
 
 .message-list button,
@@ -72,6 +82,25 @@
   background-color: @accent_bg_color;
 }
 
+/* Thread context is useful, but it must never push the actual message body
+ * out of view.  The surrounding ScrolledWindow supplies the hard 58px cap. */
+.thread-context row {
+  min-height: 18px;
+  padding: 0;
+  margin: 0;
+}
+
+.thread-context button {
+  min-height: 18px;
+  padding: 0 3px;
+  margin: 0;
+}
+
+.mail-plain-view {
+  color: #2e3436;
+  background-color: #ffffff;
+}
+
 /* ── Calendar Event Chips ──────────────────────────────────────────────── */
 .event-chip-blue {
   background-color: alpha(@blue_3, 0.2);
@@ -109,6 +138,33 @@
 .navigation-sidebar row {
   border-radius: 8px;
   margin: 0 3px;
+}
+
+.mail-sidebar {
+  padding: 0;
+}
+
+.mail-sidebar .mail-sidebar-row {
+  min-height: 19px;
+  padding: 0;
+  margin: 0 1px;
+}
+
+.mail-sidebar .mail-sidebar-row image {
+  min-width: 16px;
+  min-height: 16px;
+}
+
+.mail-sidebar .navigation-sidebar row,
+.mail-sidebar listview row {
+  min-height: 19px;
+}
+
+.mail-sidebar .badge {
+  min-width: 15px;
+  min-height: 15px;
+  padding: 0 4px;
+  font-size: 0.68rem;
 }
 
 /* ── Mail Detail View ──────────────────────────────────────────────────── */
@@ -166,13 +222,13 @@ splitview > separator {
 listview.message-list > row,
 listview.mail-list > row,
 columnview.message-table cell {
-  min-height: 26px;
-  padding-top: 2px;
-  padding-bottom: 2px;
+  min-height: 22px;
+  padding-top: 0;
+  padding-bottom: 0;
   padding-left: 6px;
   padding-right: 6px;
-  margin-top: 1px;
-  margin-bottom: 1px;
+  margin-top: 0;
+  margin-bottom: 0;
 }
 
 .navigation-sidebar row,

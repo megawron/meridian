@@ -285,7 +285,7 @@ impl CalendarPage {
             if let Some(state_label) = state_label {
                 match result.origin {
                     CalendarDataOrigin::Eds => {
-                        state_label.set_label("Keine VEVENT-Daten aus EDS gefunden")
+                        state_label.set_label("Keine synchronisierten Termine gefunden")
                     }
                     CalendarDataOrigin::Graph => {
                         state_label.set_label("Keine VEVENT-Daten aus Microsoft Graph gefunden")
@@ -299,7 +299,7 @@ impl CalendarPage {
             event_list.set_visible(true);
             if let Some(state_label) = state_label {
                 let origin = match result.origin {
-                    CalendarDataOrigin::Eds => "EDS",
+                    CalendarDataOrigin::Eds => "synchronisiertem Kalender",
                     CalendarDataOrigin::Graph => "Microsoft Graph",
                     CalendarDataOrigin::Local => "lokalem iCalendar",
                 };
@@ -401,7 +401,7 @@ impl CalendarPage {
         sidebar_box.append(&source_list);
 
         let calendar_state = gtk::Label::builder()
-            .label("Kalender werden nach der ECal-Anbindung angezeigt")
+            .label("Kalender werden nach der Synchronisation angezeigt")
             .css_classes(vec!["dim-label"])
             .wrap(true)
             .halign(gtk::Align::Start)
@@ -568,7 +568,7 @@ impl CalendarPage {
                     event_list_for_monitor.set_visible(count > 0);
                     if count > 0 {
                         local_item_state_for_monitor
-                            .set_label(&format!("{count} Termin(e) aus EDS synchronisiert."));
+                            .set_label(&format!("{count} Termin(e) synchronisiert."));
                     }
                     if let Some(page) = page_for_monitor.upgrade() {
                         page.refresh_task_sidebar();
@@ -692,7 +692,7 @@ impl CalendarPage {
             if displayed_sources == 0 {
                 let status = discovery
                     .error
-                    .map(|error| format!("EDS-Kalender sind nicht erreichbar: {error}"))
+                    .map(|error| format!("Kalender sind nicht erreichbar: {error}"))
                     .unwrap_or_else(|| "Keine Kalenderquellen verfügbar".to_string());
                 calendar_state_for_load.set_label(&status);
             } else {
@@ -1257,9 +1257,9 @@ impl CalendarPage {
             } else if visible_count == 0 {
                 "Keine sichtbaren Aufgaben".to_string()
             } else if visible_count == 1 {
-                "1 Aufgabe aus EDS/lokal geladen".to_string()
+                "1 Aufgabe aus synchronisiertem/lokalem Bestand geladen".to_string()
             } else {
-                format!("{visible_count} Aufgaben aus EDS/lokal geladen")
+                format!("{visible_count} Aufgaben aus synchronisiertem/lokalem Bestand geladen")
             };
             state.set_label(&label);
         }
@@ -3100,7 +3100,7 @@ fn append_event_row(
         let confirmation_message = if event_for_delete.source_uid == "local-calendar" {
             "Der Termin wird dauerhaft aus dem lokalen Kalender entfernt."
         } else {
-            "Der Termin wird dauerhaft aus dem EDS-Kalender entfernt."
+            "Der Termin wird dauerhaft aus dem synchronisierten Kalender entfernt."
         };
         let event_for_action = event_for_delete.clone();
         let event_records_for_action = Rc::clone(&event_records_for_delete);

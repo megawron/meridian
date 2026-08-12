@@ -171,7 +171,7 @@ impl EventDialog {
         // Group 1: General Details
         let group_details = adw::PreferencesGroup::builder().title("Details").build();
 
-        let calendar_model = gtk::StringList::new(&["EDS-Kalender werden geladen…"]);
+        let calendar_model = gtk::StringList::new(&["Kalender werden geladen…"]);
         let calendar_source_uids = Rc::new(RefCell::new(Vec::<String>::new()));
         let row_calendar = adw::ComboRow::builder()
             .title("Kalender")
@@ -256,7 +256,7 @@ impl EventDialog {
 
         let group_recurrence = adw::PreferencesGroup::builder()
             .title("Wiederholung & Teilnehmer")
-            .description("RFC5545-Werte werden unverändert an ECal/Camel weitergegeben")
+            .description("RFC5545-Werte werden unverändert an den Kalenderdienst weitergegeben")
             .build();
         let row_recurrence = adw::EntryRow::builder()
             .title("Wiederholung (RRULE)")
@@ -503,9 +503,9 @@ impl EventDialog {
             }
             if names.is_empty() {
                 names.push(if discovery.error.is_some() {
-                    "EDS-Kalender sind nicht erreichbar".to_string()
+                    "Kalender sind nicht erreichbar".to_string()
                 } else {
-                    "Kein aktiver EDS-Kalender verfügbar".to_string()
+                    "Kein aktiver Kalender verfügbar".to_string()
                 });
             }
             let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
@@ -539,7 +539,7 @@ impl EventDialog {
                     .get(selected)
                     .cloned()
                 else {
-                    dialog.show_toast("Kein aktiver EDS-Kalender ist ausgewählt");
+                    dialog.show_toast("Kein aktiver Kalender ist ausgewählt");
                     return;
                 };
                 source_uid

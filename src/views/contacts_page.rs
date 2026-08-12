@@ -181,7 +181,7 @@ impl ContactsPage {
         sidebar_box.append(&duplicate_filter_row);
 
         let empty_state = gtk::Label::builder()
-            .label("Noch kein Adressbuch aus EDS geladen")
+            .label("Noch kein synchronisiertes Adressbuch geladen")
             .css_classes(vec!["dim-label"])
             .wrap(true)
             .margin_start(12)
@@ -257,9 +257,7 @@ impl ContactsPage {
             if let Some(row) = book_source_list_for_load.row_at_index(selected_index as i32) {
                 book_source_list_for_load.select_row(Some(&row));
             }
-            empty_state_for_load.set_label(&format!(
-                "{status}; Kontakte werden nach dem EBook-Stream geladen."
-            ));
+            empty_state_for_load.set_label(&format!("{status}; Kontakte werden geladen."));
         });
 
         sidebar_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
@@ -527,7 +525,7 @@ impl ContactsPage {
             .build();
 
         let detail_title = gtk::Label::builder()
-            .label("Adressbuchdaten werden nach der EDS-Anbindung angezeigt")
+            .label("Adressbuchdaten werden nach der Synchronisation angezeigt")
             .css_classes(vec!["dim-label"])
             .wrap(true)
             .build();
@@ -903,7 +901,7 @@ impl ContactsPage {
                 let confirmation_message = if contact.source_uid == "local-addressbook" {
                     "Der Kontakt wird dauerhaft aus dem lokalen Adressbuch entfernt."
                 } else {
-                    "Der Kontakt wird dauerhaft aus dem EDS-Adressbuch entfernt."
+                    "Der Kontakt wird dauerhaft aus dem synchronisierten Adressbuch entfernt."
                 };
                 let contact_for_action = contact.clone();
                 let selected_contact_for_action = Rc::clone(&selected_contact_for_delete);
@@ -963,7 +961,7 @@ impl ContactsPage {
                                     detail_avatar_for_result.set_text(Some(""));
                                     detail_name_for_result.set_label("Kein Kontakt ausgewählt");
                                     detail_title_for_result.set_label(
-                                        "Adressbuchdaten werden nach der EDS-Anbindung angezeigt",
+                                        "Adressbuchdaten werden nach der Synchronisation angezeigt",
                                     );
                                     detail_extra_for_result
                                         .set_label("Keine weiteren Kontaktdaten");
@@ -1274,7 +1272,7 @@ impl ContactsPage {
                                     detail_avatar_for_monitor.set_text(Some(""));
                                     detail_name_for_monitor.set_label("Kein Kontakt ausgewählt");
                                     detail_title_for_monitor.set_label(
-                                        "Adressbuchdaten werden nach der EDS-Anbindung angezeigt",
+                                        "Adressbuchdaten werden nach der Synchronisation angezeigt",
                                     );
                                     detail_extra_for_monitor
                                         .set_label("Keine weiteren Kontaktdaten");
@@ -1383,7 +1381,7 @@ fn refresh_contacts(
     }
     stored_contacts.borrow_mut().clear();
     *selected_contact.borrow_mut() = None;
-    empty_state.set_label("Kontakte werden aus EDS geladen…");
+    empty_state.set_label("Kontakte werden geladen…");
     empty_state.set_visible(true);
 
     let (sender, receiver) = async_channel::bounded(1);
@@ -1401,7 +1399,7 @@ fn refresh_contacts(
                 }
                 if result.contacts.is_empty() {
                     empty_state.set_label(match result.origin {
-                        EBookDataOrigin::Eds => "Keine Kontakte aus EDS geladen",
+                        EBookDataOrigin::Eds => "Keine synchronisierten Kontakte geladen",
                         EBookDataOrigin::Graph => "Keine Kontakte aus Microsoft Graph geladen",
                         EBookDataOrigin::Local => "Keine lokalen vCards geladen",
                     });
@@ -1414,7 +1412,7 @@ fn refresh_contacts(
                     return;
                 }
                 let origin = match result.origin {
-                    EBookDataOrigin::Eds => "EDS",
+                    EBookDataOrigin::Eds => "synchronisiertem Adressbuch",
                     EBookDataOrigin::Graph => "Microsoft Graph",
                     EBookDataOrigin::Local => "lokalen vCards",
                 };

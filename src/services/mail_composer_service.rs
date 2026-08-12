@@ -56,7 +56,7 @@ pub(crate) struct ExportAttachment {
 
 pub(crate) fn build_rfc822(message: &OutgoingMessage) -> Result<Vec<u8>, String> {
     if message.source_uid.trim().is_empty() {
-        return Err("Kein EDS-Mailkonto ausgewählt".to_string());
+        return Err("Kein Mailkonto ausgewählt".to_string());
     }
 
     let recipients = [

@@ -132,7 +132,7 @@ impl AvailabilityDialog {
         );
         content.append(
             &gtk::Label::builder()
-                .label("Lokale/app-eigene Kalenderdaten; die native EDS-Free/Busy-Abfrage wird unter Linux ergänzt.")
+                .label("Lokale/app-eigene Kalenderdaten; die Verfügbarkeitsabfrage wird unter Linux ergänzt.")
                 .css_classes(vec!["dim-label"])
                 .halign(gtk::Align::Start)
                 .wrap(true)

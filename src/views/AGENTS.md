@@ -13,6 +13,11 @@ accessibility helpers, and view-local GTK state.
 
 - Reproduce Evolution's navigation, layout, compact row density, keyboard
   behavior, context menus, and configurable classic/modern mail arrangement.
+- Keep mail-account roots and their folder trees in the compact sidebar; backend
+  implementation names must not appear in visible navigation or status labels.
+- Keep message rows single-line with selection-independent actions aligned at
+  the trailing edge, and cap conversation context so it cannot displace the
+  message body.
 - Use services for data access; do not embed EDS/Camel/ECal/EBook lifecycle or
   GTK types in service code.
 - Keep loading and empty/error states explicit. Never leave a permanent

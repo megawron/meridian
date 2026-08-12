@@ -39,7 +39,7 @@ pub(crate) enum ECalServiceError {
 impl std::fmt::Display for ECalServiceError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Unsupported => write!(formatter, "native ECal bridge is unavailable"),
+            Self::Unsupported => write!(formatter, "Der Kalenderdienst ist nicht verfügbar"),
             Self::Backend(message) => write!(formatter, "{message}"),
         }
     }
@@ -65,8 +65,8 @@ pub(crate) enum ECalMutationError {
 impl std::fmt::Display for ECalMutationError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Unsupported => write!(formatter, "native ECal bridge is unavailable"),
-            Self::Conflict(message) => write!(formatter, "ECal conflict: {message}"),
+            Self::Unsupported => write!(formatter, "Der Kalenderdienst ist nicht verfügbar"),
+            Self::Conflict(message) => write!(formatter, "Kalenderkonflikt: {message}"),
             Self::Backend(message) => write!(formatter, "{message}"),
         }
     }

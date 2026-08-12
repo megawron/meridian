@@ -41,7 +41,7 @@ pub(crate) enum EBookServiceError {
 impl std::fmt::Display for EBookServiceError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Unsupported => write!(formatter, "native EBook bridge is unavailable"),
+            Self::Unsupported => write!(formatter, "Der Adressbuchdienst ist nicht verfügbar"),
             Self::Backend(message) => write!(formatter, "{message}"),
         }
     }
@@ -59,8 +59,8 @@ pub(crate) enum EBookMutationError {
 impl std::fmt::Display for EBookMutationError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Unsupported => write!(formatter, "native EBook bridge is unavailable"),
-            Self::Conflict(message) => write!(formatter, "EBook conflict: {message}"),
+            Self::Unsupported => write!(formatter, "Der Adressbuchdienst ist nicht verfügbar"),
+            Self::Conflict(message) => write!(formatter, "Adressbuchkonflikt: {message}"),
             Self::Backend(message) => write!(formatter, "{message}"),
         }
     }

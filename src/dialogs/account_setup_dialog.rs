@@ -134,7 +134,7 @@ impl AccountSetupDialog {
             .model(&gtk::StringList::new(&[
                 "IMAP & SMTP (Standard)",
                 "Microsoft Exchange (EWS / M365)",
-                "GNOME Online Accounts (GOA)",
+                "GNOME-Onlinekonto",
                 "POP3 (Lokale E-Mails)",
             ]))
             .build();
@@ -234,7 +234,7 @@ impl AccountSetupDialog {
         let group_folders = adw::PreferencesGroup::builder()
             .title("Ordnerzuordnung")
             .description(
-                "Nicht-geheime Evolution-Ordnernamen; die native EDS/Camel-Anwendung wird auf Linux geprüft",
+                "Nicht-geheime Ordnernamen; die native Kontoanbindung wird auf Linux geprüft",
             )
             .build();
         let row_inbox_folder = adw::EntryRow::builder().title("Posteingang").build();
@@ -285,7 +285,7 @@ impl AccountSetupDialog {
         let row_password = adw::PasswordEntryRow::builder().title("Passwort").build();
         row_password.set_text("");
         row_password.set_tooltip_text(Some(
-            "Wird erst bei einer EDS/Camel-Anbindung an den Secret Service übergeben; nicht lokal gespeichert",
+            "Wird nur bei einer sicheren Kontoanbindung verwendet und nicht lokal gespeichert",
         ));
         group_cred.add(&row_password);
 
@@ -319,7 +319,7 @@ impl AccountSetupDialog {
                 } else if is_pop3 {
                     "Posteingangsserver (POP3)"
                 } else if is_goa {
-                    "Posteingangsserver (über GOA verwaltet)"
+                    "Posteingangsserver (über das Onlinekonto verwaltet)"
                 } else {
                     "Posteingangsserver (IMAP)"
                 });
@@ -344,9 +344,9 @@ impl AccountSetupDialog {
                 row_password.set_sensitive(!is_goa);
                 if is_goa {
                     row_username.set_tooltip_text(Some(
-                        "GOA verwaltet Benutzername und Zugangsdaten über GNOME Online Accounts",
+                        "Das Onlinekonto verwaltet Benutzername und Zugangsdaten",
                     ));
-                    row_auth_method.set_text("GOA / OAuth2");
+                    row_auth_method.set_text("Onlinekonto / OAuth2");
                 } else {
                     row_username.set_tooltip_text(None);
                 }
@@ -410,9 +410,8 @@ impl AccountSetupDialog {
                     tracing::warn!("Cannot save an account profile without an email address");
                     if let Some(parent) = dialog.transient_for() {
                         if let Ok(window) = parent.downcast::<crate::window::EvolutionWindow>() {
-                            window.add_toast(&adw::Toast::new(
-                                "Bitte eine E-Mail-Adresse eingeben",
-                            ));
+                            window
+                                .add_toast(&adw::Toast::new("Bitte eine E-Mail-Adresse eingeben"));
                         }
                     }
                     return;
@@ -426,11 +425,7 @@ impl AccountSetupDialog {
                 };
                 let display_name = {
                     let name = row_fullname.text().trim().to_string();
-                    if name.is_empty() {
-                        email.clone()
-                    } else {
-                        name
-                    }
+                    if name.is_empty() { email.clone() } else { name }
                 };
                 let tls_mode = match row_security.selected() {
                     1 => "starttls",
@@ -496,13 +491,12 @@ impl AccountSetupDialog {
                                 settings.set_default_account_id(&profile_id);
                             }
                         }
-                        tracing::info!(
-                            "Account profile saved; EDS/Camel activation is still pending"
-                        );
+                        tracing::info!("Account profile saved; account synchronization is pending");
                         if let Some(parent) = dialog.transient_for() {
-                            if let Ok(window) = parent.downcast::<crate::window::EvolutionWindow>() {
+                            if let Ok(window) = parent.downcast::<crate::window::EvolutionWindow>()
+                            {
                                 window.add_toast(&adw::Toast::new(
-                                    "Kontoprofil gespeichert; EDS/Camel-Synchronisation steht noch aus",
+                                    "Kontoprofil gespeichert; Kontosynchronisation steht noch aus",
                                 ));
                             }
                         }
@@ -511,7 +505,8 @@ impl AccountSetupDialog {
                     Err(error) => {
                         tracing::error!(%error, "Could not persist account profile");
                         if let Some(parent) = dialog.transient_for() {
-                            if let Ok(window) = parent.downcast::<crate::window::EvolutionWindow>() {
+                            if let Ok(window) = parent.downcast::<crate::window::EvolutionWindow>()
+                            {
                                 window.add_toast(&adw::Toast::new(&format!(
                                     "Kontoprofil konnte nicht gespeichert werden: {error}"
                                 )));

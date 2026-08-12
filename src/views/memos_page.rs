@@ -188,7 +188,7 @@ impl MemosPage {
         });
         empty_state.set_label(
             if query.is_empty() && source_filter.is_none() && category_filter.is_none() {
-                "Keine Notizen aus EDS geladen"
+                "Keine synchronisierten Notizen geladen"
             } else {
                 "Keine passenden Notizen"
             },
@@ -385,7 +385,7 @@ impl MemosPage {
         let selected_memo = Rc::new(RefCell::new(None::<MemoRecord>));
 
         let empty_state = gtk::Label::builder()
-            .label("Keine Notizen aus EDS geladen")
+            .label("Keine synchronisierten Notizen geladen")
             .css_classes(vec!["dim-label"])
             .wrap(true)
             .margin_start(12)
@@ -434,7 +434,7 @@ impl MemosPage {
                 );
                 empty_state_for_search.set_label(
                     if query.is_empty() && source_filter.is_none() && category_filter.is_none() {
-                        "Keine Notizen aus EDS geladen"
+                        "Keine synchronisierten Notizen geladen"
                     } else {
                         "Keine passenden Notizen"
                     },
@@ -495,7 +495,7 @@ impl MemosPage {
             );
             empty_state_for_source.set_label(
                 if query.is_empty() && source_filter.is_none() && category_filter.is_none() {
-                    "Keine Notizen aus EDS geladen"
+                    "Keine synchronisierten Notizen geladen"
                 } else {
                     "Keine passenden Notizen"
                 },
@@ -540,7 +540,7 @@ impl MemosPage {
             );
             empty_state_for_category.set_label(
                 if query.is_empty() && source_filter.is_none() && category.is_none() {
-                    "Keine Notizen aus EDS geladen"
+                    "Keine synchronisierten Notizen geladen"
                 } else {
                     "Keine passenden Notizen"
                 },
@@ -714,7 +714,7 @@ impl MemosPage {
                     });
                 empty_state_for_source_settings.set_label(
                     if query.is_empty() && source_filter.is_none() && category_filter.is_none() {
-                        "Keine Notizen aus EDS geladen"
+                        "Keine synchronisierten Notizen geladen"
                     } else {
                         "Keine passenden Notizen"
                     },
@@ -763,7 +763,7 @@ impl MemosPage {
             .build();
 
         let memo_meta = gtk::Label::builder()
-            .label("Notizen werden nach der ECal-Anbindung geladen")
+            .label("Notizen werden nach der Synchronisation geladen")
             .css_classes(vec!["dim-label"])
             .halign(gtk::Align::Start)
             .build();
@@ -1019,7 +1019,7 @@ impl MemosPage {
             let confirmation_message = if memo.source_uid == "local-calendar" {
                 "Die Notiz wird dauerhaft aus der lokalen Notizliste entfernt."
             } else {
-                "Die Notiz wird dauerhaft aus der EDS-Notizliste entfernt."
+                "Die Notiz wird dauerhaft aus der synchronisierten Notizliste entfernt."
             };
             let memo_for_action = memo.clone();
             let selected_memo_for_action = Rc::clone(&selected_memo_for_delete);
@@ -1238,7 +1238,7 @@ impl MemosPage {
                     }
                     if result.snapshot.memos.is_empty() {
                         empty_state_for_load.set_label(match result.origin {
-                            CalendarDataOrigin::Eds => "Keine VJOURNAL-Daten aus EDS gefunden",
+                            CalendarDataOrigin::Eds => "Keine synchronisierten Notizen gefunden",
                             CalendarDataOrigin::Graph => {
                                 "Keine VJOURNAL-Daten aus Microsoft Graph gefunden"
                             }
@@ -1247,7 +1247,7 @@ impl MemosPage {
                     } else {
                         empty_state_for_load.set_visible(false);
                         let origin = match result.origin {
-                            CalendarDataOrigin::Eds => "EDS",
+                            CalendarDataOrigin::Eds => "synchronisiertem Notizbestand",
                             CalendarDataOrigin::Graph => "Microsoft Graph",
                             CalendarDataOrigin::Local => "lokalem iCalendar",
                         };
@@ -1424,7 +1424,7 @@ impl MemosPage {
             .margin_bottom(20)
             .build();
 
-        let source_model = gtk::StringList::new(&["EDS-Notizlisten werden geladen…"]);
+        let source_model = gtk::StringList::new(&["Notizlisten werden geladen…"]);
         let source_uids = Rc::new(RefCell::new(Vec::<String>::new()));
         let source_row = adw::ComboRow::builder()
             .title("Notizliste")
@@ -1520,9 +1520,9 @@ impl MemosPage {
             }
             if names.is_empty() {
                 names.push(if discovery.error.is_some() {
-                    "EDS-Notizlisten sind nicht erreichbar".to_string()
+                    "Notizlisten sind nicht erreichbar".to_string()
                 } else {
-                    "Keine aktive EDS-Notizliste verfügbar".to_string()
+                    "Keine aktive Notizliste verfügbar".to_string()
                 });
             }
             let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
@@ -1545,7 +1545,7 @@ impl MemosPage {
             };
             let selected = source_row.selected() as usize;
             let Some(source_uid) = source_uids_for_save.borrow().get(selected).cloned() else {
-                show_toast_for_widget(&dialog, "Keine aktive EDS-Notizliste ist ausgewählt");
+                show_toast_for_widget(&dialog, "Keine aktive Notizliste ist ausgewählt");
                 return;
             };
             let description = description_view.buffer().text(
@@ -1600,7 +1600,7 @@ impl MemosPage {
                         let source_display_name = if source_uid_for_model == "local-calendar" {
                             "Lokale Notizliste".to_string()
                         } else {
-                            "EDS".to_string()
+                            "synchronisiertem Notizbestand".to_string()
                         };
                         let memo = MemoRecord {
                             uid: uid.clone(),

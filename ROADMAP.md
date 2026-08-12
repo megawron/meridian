@@ -518,10 +518,34 @@ werden.
   bekannte eingebettete `cid:`-/`data:`-Rasterbilder weiterhin sichtbar.
   Der Datenschutz-Banner erscheint nur, wenn der konkrete Nachrichtentext
   tatsächlich externe Bildquellen enthält, nicht bei reinen Inline-Bildern
-  oder textbasierten Nachrichten.
+  oder textbasierten Nachrichten. Der gemeinsame Klartextpfad für Vorschau,
+  Suche und Fallback decodiert zusätzlich benannte sowie dezimale/hexadezimale
+  HTML-Entities, damit internationale Mailtexte nicht als Entity-Namen
+  erscheinen.
   Eine providerunabhängige
   Datumsnormalisierung und serverseitige Sortierung bleiben Teil der
-  Linux/Camel-Strecke.
+  Linux/Camel-Strecke. Die Zeilen bleiben dabei tatsächlich einzeilig:
+  Betreff und Vorschautext nutzen den flexiblen Mittelbereich, Anhangs-,
+  Markierungs- und Wichtigkeitssymbole sitzen kompakt am rechten Rand und
+  die nicht benötigten Auswahlkästchen werden nicht mehr angezeigt. Die
+  Konversationsspur im Reader ist als scrollbar begrenzter Kurzbereich
+  ausgeführt. Mail-CSS wird über einen restriktiven, ressourcenfreien
+  Sanitizer übernommen; externe Bild-Elemente werden vor der WebKit-
+  Darstellung entfernt und erst nach ausdrücklicher Freigabe aus dem
+  gespeicherten Originalinhalt erneut sanitisiert und geladen. Die Freigabe
+  gilt nur für die aktuelle Nachricht, wird beim Nachrichtenwechsel
+  zurückgesetzt und kann für Nachrichten persistent gespeichert werden.
+  Konten-, Kalender-, Adressbuch-, Aufgaben- und Ordnerstatus bleiben in der
+  sichtbaren Oberfläche technisch neutral beschriftet; die Konten-/Ordnerleiste
+  zeigt Konten als aufklappbare Wurzeln mit ihren Standard- und Unterordnern in
+  kompakter Dichte. Die separate Kontenliste bleibt für die Auswahl- und
+  Ladekoordination intern, erzeugt aber keine doppelte sichtbare Navigation.
+  Die Nachrichtenzeilen enthalten keine permanenten Auswahlkästchen mehr;
+  sichtbare Einzelaktionen bleiben am rechten Rand und Mehrfachaktionen sind
+  weiterhin über Auswahlbefehle und `Ctrl+A` erreichbar.
+  Wiederverwendete GTK-Listenzeilen binden Markierungs- und Wichtigkeitsaktionen
+  nur einmal an die Zeile und lesen beim Klick den aktuell gebundenen Datensatz,
+  damit bei großen Ordnern keine veralteten Mehrfach-Callbacks entstehen.
 - [~] Die Evolution-kompatible Mail-Werkzeugleiste ist standardmäßig sichtbar,
   sitzt über dem gesamten Mailbereich (Nachrichtenliste und Vorschau) und kann
   portabel ein- und ausgeblendet werden. Ihre vertrauten Aktionen
@@ -695,7 +719,9 @@ werden.
   übernommen, und ein wiedergeöffneter Entwurf stellt die passende Alias-
   Identität wieder her. Lokale
   Entwurfsverwaltung und konfigurierbares lokales Autosave sind ebenfalls
-  angeschlossen. Eine lokale Klartext-Standardsignatur wird über GSettings
+  angeschlossen; Änderungen am Autosave-Intervall ersetzen den laufenden
+  Timer auch in einem bereits geöffneten Composer. Eine lokale
+  Klartext-Standardsignatur wird über GSettings
   verwaltet und in neue, beantwortete und weitergeleitete Nachrichten
   eingefügt. PGP-Signieren/Verschlüsseln und die native
   EDS-Draft-Lebenszyklusprüfung bleiben offen. Das Zitat-Ein/Aus und
@@ -1293,8 +1319,10 @@ nicht als vollständiger Ersatz beworben werden.
    Anzeigename, E-Mail-Adresse, Quelle und UID als stabile Tie-Breaker.
    Die Mailansicht startet mit kompakter Evolution-Dichte, ohne Avatar- und
    Vorschautext-Flächen, und behält Absender, Betreff und Datum als die
-   wesentlichen sichtbaren Spalten. Die Nachrichtenzeilen sind standardmäßig
-   einzeilig; Schnellfilter, Sortierung, Spalten-Schalter und die persistente
+   wesentlichen sichtbaren Spalten. Die globale GTK-CSS-Dichte überschreibt
+   den kompakten Zeilenabstand nicht mehr; dadurch bleiben die Standardzeilen
+   tatsächlich einzeilig und platzsparend. Die Nachrichtenzeilen sind
+   standardmäßig einzeilig; Schnellfilter, Sortierung, Spalten-Schalter und die persistente
    Absender-Spaltenbreite stehen direkt über der Liste bereit. Alle drei
    Dichteprofile und die einzelnen Sichtbarkeitsschalter bleiben persistent
    umschaltbar. HTML-Mail verwendet standardmäßig eine helle Vorschau; externe

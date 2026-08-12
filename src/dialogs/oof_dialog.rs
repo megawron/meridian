@@ -89,7 +89,7 @@ impl OutOfOfficeDialog {
             .label(if graph_service.is_some() {
                 "Microsoft Graph: Serverstatus wird geladen …"
             } else {
-                "Lokale Konfiguration; die native EDS-Serverstrecke bleibt zuständig"
+                "Lokale Konfiguration; die Serveranbindung bleibt zuständig"
             })
             .css_classes(vec!["caption", "dim-label"])
             .halign(gtk::Align::Start)
@@ -107,7 +107,7 @@ impl OutOfOfficeDialog {
             .subtitle(if graph_service.is_some() {
                 "Serverstatus wird über Microsoft Graph synchronisiert"
             } else {
-                "Konfiguration wird persistent gespeichert; Serveraktivierung erfolgt über EDS"
+                "Konfiguration wird persistent gespeichert; Serveraktivierung erfolgt über das Konto"
             })
             .active(false)
             .build();
@@ -236,7 +236,7 @@ impl OutOfOfficeDialog {
                     let Some(service) = graph_service_for_save.clone() else {
                         show_dialog_toast(
                             &dialog_for_save,
-                            "Abwesenheitsnotiz lokal gespeichert; die Serveraktivierung erfolgt über EDS",
+                            "Abwesenheitsnotiz lokal gespeichert; die Serveraktivierung erfolgt über das Konto",
                         );
                         dialog_for_save.close();
                         return;

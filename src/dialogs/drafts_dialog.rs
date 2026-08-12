@@ -146,7 +146,7 @@ impl DraftsDialog {
         }
 
         self.set_status(&format!(
-            "{} lokale{} Entwurf{} — EDS/Camel-Entwürfe werden auf Linux separat verwaltet.",
+            "{} lokale{} Entwurf{} — synchronisierte Entwürfe werden auf Linux separat verwaltet.",
             drafts.len(),
             if drafts.len() == 1 { "n" } else { "e" },
             if drafts.len() == 1 { "" } else { "e" },

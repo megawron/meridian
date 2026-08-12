@@ -157,7 +157,7 @@ impl GlobalSearchDialog {
         search_entry.grab_focus();
         self.set_status(
             "Portable Suche über lokale Mail-, Kalender-, Aufgaben-, Notizen- und Kontaktdaten. \
-             Serverseitige EDS/Camel-Suche wird auf Linux separat aktiviert.",
+             Serverseitige Kontosuche wird auf Linux separat aktiviert.",
         );
     }
 
@@ -247,7 +247,7 @@ impl GlobalSearchDialog {
         }
 
         self.set_status(&format!(
-            "{} lokale Treffer für „{query}“ — EDS/Camel-Livesuche bleibt Linux-only.",
+            "{} lokale Treffer für „{query}“ — die Kontosuche bleibt auf Linux separat.",
             results.len()
         ));
         for result in results {

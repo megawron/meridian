@@ -59,16 +59,18 @@ pub struct EdsSourceDiscovery {
 impl EdsSourceDiscovery {
     pub fn status_text(&self) -> String {
         match (self.origin, self.sources.len(), self.error.as_deref()) {
-            (EdsSourceOrigin::Live, 0, _) => "Keine EDS-Quelle gefunden".to_string(),
-            (EdsSourceOrigin::Live, count, _) => format!("{count} EDS-Quelle(n)"),
+            (EdsSourceOrigin::Live, 0, _) => "Keine Kontoquelle gefunden".to_string(),
+            (EdsSourceOrigin::Live, count, _) => format!("{count} Kontoquelle(n)"),
             (EdsSourceOrigin::Cache, count, Some(error)) => format!(
-                "{count} zwischengespeicherte EDS-Quelle(n); Live-Verbindung fehlgeschlagen: {error}"
+                "{count} zwischengespeicherte Kontoquelle(n); Live-Verbindung fehlgeschlagen: {error}"
             ),
             (EdsSourceOrigin::Cache, count, None) => {
-                format!("{count} zwischengespeicherte EDS-Quelle(n)")
+                format!("{count} zwischengespeicherte Kontoquelle(n)")
             }
-            (EdsSourceOrigin::Empty, _, Some(error)) => format!("EDS nicht erreichbar: {error}"),
-            (EdsSourceOrigin::Empty, _, None) => "Keine EDS-Quelle verfügbar".to_string(),
+            (EdsSourceOrigin::Empty, _, Some(error)) => {
+                format!("Kontoquellen nicht erreichbar: {error}")
+            }
+            (EdsSourceOrigin::Empty, _, None) => "Keine Kontoquelle verfügbar".to_string(),
         }
     }
 }
@@ -132,7 +134,7 @@ impl std::fmt::Display for EdsServiceError {
         match self {
             EdsServiceError::DBus(e) => write!(f, "D-Bus error: {}", e),
             EdsServiceError::DBusFdo(e) => write!(f, "D-Bus FDO error: {}", e),
-            EdsServiceError::RegistryUnavailable => write!(f, "EDS source registry not available"),
+            EdsServiceError::RegistryUnavailable => write!(f, "Kontoquellen sind nicht verfügbar"),
             EdsServiceError::OperationFailed(msg) => write!(f, "Operation failed: {}", msg),
         }
     }
@@ -528,7 +530,7 @@ mod tests {
     #[test]
     fn test_error_display() {
         let err = EdsServiceError::RegistryUnavailable;
-        assert_eq!(err.to_string(), "EDS source registry not available");
+        assert_eq!(err.to_string(), "Kontoquellen sind nicht verfügbar");
     }
 
     #[test]
