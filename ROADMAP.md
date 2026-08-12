@@ -528,8 +528,10 @@ werden.
   Betreff und Vorschautext nutzen den flexiblen Mittelbereich, Anhangs-,
   Markierungs- und Wichtigkeitssymbole sitzen kompakt am rechten Rand und
   die nicht benötigten Auswahlkästchen werden nicht mehr angezeigt. Die
-  Konversationsspur im Reader ist als scrollbar begrenzter Kurzbereich
-  ausgeführt. Mail-CSS wird über einen restriktiven, ressourcenfreien
+  Konversationsspur im Reader ist als scrollbar begrenzter Kurzbereich mit
+  einer sichtbaren Zeile ausgeführt; die Detailkopfzeile lässt dem eigentlichen
+  Nachrichteninhalt entsprechend mehr Raum. Mail-CSS wird über einen
+  restriktiven, ressourcenfreien
   Sanitizer übernommen; externe Bild-Elemente werden vor der WebKit-
   Darstellung entfernt und erst nach ausdrücklicher Freigabe aus dem
   gespeicherten Originalinhalt erneut sanitisiert und geladen. Die Freigabe
@@ -1212,7 +1214,7 @@ angewendet und migrierbar ist.
 |:---|:---|:---:|
 | Allgemein | Sprache, Zeitzone, Datums-/Zeitformat, Startansicht, Fenstergröße/-position, Maximierung, Benachrichtigungen, Bestätigungsdialoge | `[~]` |
 | Mail lesen | Vorschaufenster, klassische oder moderne Mail-Anordnung, Threading, Sortierung, Gruppierung, Zitierstil, Schriftarten, Listendichte, HTML/Text, externe Bilder, Tracking, Markieren als gelesen (inkl. persistentem Verhalten beim Auswählen) | `[~]` |
-| Mail empfangen | Konten, Aktivierung, Abrufintervall, IMAP-Ordner, Offline-Modus, Synchronisationsumfang, Junk/Spam, Quoten, Empfangsbenachrichtigung | `[ ]` |
+| Mail empfangen | Konten, Aktivierung, Abrufintervall, IMAP-Ordner, Offline-Modus, Synchronisationsumfang, Junk/Spam, Quoten, Empfangsbenachrichtigung | `[~]` |
 | Mail senden | SMTP/Transport, Authentifizierung, TLS, Port, Absender, Antwortadresse, Bcc, DSN/Lesebestätigung, Signatur, Autosave, gesendeter Ordner | `[~]` |
 | Composer | HTML/Text, Formatvorlage, Schrift, Rechtschreibung, Wörterbücher, Zitate, Inline-Anhänge, Vorlagen, Snippets, Entwürfe, Undo/Redo | `[~]` |
 | Konten & Identitäten | mehrere Identitäten, Alias-Adressen, Signaturen, Standardkonto, Ordnerzuordnung, Passwort/Secret-Service, OAuth2 | `[~]` |
@@ -1224,6 +1226,14 @@ angewendet und migrierbar ist.
 | Filter & Suche | Filterregeln, Reihenfolge, Bedingungen/Aktionen, gespeicherte Suchen, Suchordner, Volltext/Server-Suche | `[~]` |
 | Oberfläche | Theme, Dark Mode, Dichte, Icons, Sidebar, View-Switcher, Shortcuts, Accessibility, Statusleisten | `[~]` |
 | Migration | Evolution-Import, Export, Backup, Profilwechsel, Datenpfade, Upgrade-/Rollback-Verhalten | `[~]` |
+
+Der portable Mail-Empfang unterstützt inzwischen neben Konto-/Ordnerauswahl,
+Abrufintervall und Offline-Modus auch einen persistenten Seitenumfang von
+25–1000 Nachrichten je Remote-Ordner. Der Wert wird für Kontoauswahl,
+Ordnerauswahl, Graph-Suche und „Mehr laden“ gemeinsam verwendet und bei einer
+Änderung live angewendet. Lokale Mailbestände werden weiterhin vollständig
+angezeigt. Native IMAP/POP3-Empfang, Server-Junk/Spam, Quoten und
+Desktop-Empfangsbenachrichtigungen bleiben bis zur Linux-Abnahme offen.
 
 ### Abnahmekriterium für den produktiven Ersatz
 

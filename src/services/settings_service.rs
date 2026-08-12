@@ -23,6 +23,13 @@ fn normalized_mail_sort_field(value: &str) -> &str {
     }
 }
 
+const MIN_MAIL_SYNC_MESSAGE_LIMIT: i32 = 25;
+const MAX_MAIL_SYNC_MESSAGE_LIMIT: i32 = 1_000;
+
+fn clamp_mail_sync_message_limit(value: i32) -> i32 {
+    value.clamp(MIN_MAIL_SYNC_MESSAGE_LIMIT, MAX_MAIL_SYNC_MESSAGE_LIMIT)
+}
+
 impl AppSettings {
     /// Open the application schema if it is available in the current process.
     pub fn try_new() -> Option<Self> {
@@ -639,6 +646,22 @@ impl AppSettings {
         self.set_int("mail-sync-interval", value.min(86_400) as i32);
     }
 
+    /// Number of messages fetched for each remote folder page.
+    ///
+    /// The value is deliberately bounded: a too-small page makes normal mail
+    /// work needlessly click-heavy, while an unbounded page can make a large
+    /// mailbox monopolize the worker and GTK model application.
+    pub fn mail_sync_message_limit(&self) -> u32 {
+        clamp_mail_sync_message_limit(self.settings.int("mail-sync-message-limit")) as u32
+    }
+
+    pub fn set_mail_sync_message_limit(&self, value: u32) {
+        self.set_int(
+            "mail-sync-message-limit",
+            clamp_mail_sync_message_limit(value.min(i32::MAX as u32) as i32),
+        );
+    }
+
     pub fn draft_autosave_interval_seconds(&self) -> u32 {
         self.settings.int("draft-autosave-interval").clamp(0, 3_600) as u32
     }
@@ -1014,6 +1037,9 @@ impl AppSettings {
             "mail-sync-interval" => {
                 self.set_mail_sync_interval_seconds(parse_migrated_u32(key, value)?);
             }
+            "mail-sync-message-limit" => {
+                self.set_mail_sync_message_limit(parse_migrated_u32(key, value)?);
+            }
             "draft-autosave-interval" => {
                 self.set_draft_autosave_interval_seconds(parse_migrated_u32(key, value)?);
             }
@@ -1105,6 +1131,7 @@ impl AppSettings {
             "smime-recipient-certificates",
             "smime-ca-file",
             "mail-sync-interval",
+            "mail-sync-message-limit",
             "draft-autosave-interval",
             "append-signature",
             "signature-text",
@@ -1227,7 +1254,8 @@ fn sanitize_calendar_workdays(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        normalized_mail_sort_field, sanitize_calendar_workdays, sanitize_spellcheck_languages,
+        clamp_mail_sync_message_limit, normalized_mail_sort_field, sanitize_calendar_workdays,
+        sanitize_spellcheck_languages,
     };
 
     #[test]
@@ -1255,5 +1283,12 @@ mod tests {
     fn mail_sort_field_accepts_important_and_rejects_unknown_values() {
         assert_eq!(normalized_mail_sort_field("important"), "important");
         assert_eq!(normalized_mail_sort_field("unknown"), "date");
+    }
+
+    #[test]
+    fn mail_sync_message_limit_is_bounded_for_safe_page_sizes() {
+        assert_eq!(clamp_mail_sync_message_limit(0), 25);
+        assert_eq!(clamp_mail_sync_message_limit(100), 100);
+        assert_eq!(clamp_mail_sync_message_limit(10_000), 1_000);
     }
 }

@@ -929,6 +929,7 @@ fn is_supported_migration_key(key: &str) -> bool {
             | "smime-recipient-certificates"
             | "smime-ca-file"
             | "mail-sync-interval"
+            | "mail-sync-message-limit"
             | "draft-autosave-interval"
             | "append-signature"
             | "signature-text"

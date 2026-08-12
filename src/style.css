@@ -96,6 +96,53 @@
   margin: 0;
 }
 
+.mail-detail-header {
+  background-color: alpha(@window_fg_color, 0.018);
+}
+
+.mail-detail-header grid label {
+  font-size: 0.78rem;
+  line-height: 1;
+}
+
+.mail-detail-actions button,
+.mail-detail-actions menubutton {
+  min-width: 22px;
+  min-height: 22px;
+  padding: 1px 3px;
+}
+
+.mail-detail-actions spacer {
+  min-width: 4px;
+}
+
+.mail-search-bar {
+  min-height: 28px;
+}
+
+.mail-search-bar dropdown {
+  min-width: 96px;
+  min-height: 24px;
+}
+
+.mail-search-bar button,
+.mail-search-bar menubutton {
+  min-width: 24px;
+  min-height: 24px;
+  padding: 1px 4px;
+}
+
+.thread-context {
+  min-height: 0;
+  background-color: alpha(@window_fg_color, 0.025);
+}
+
+.thread-context label,
+.thread-context .thread-message {
+  font-size: 0.72rem;
+  line-height: 1;
+}
+
 .mail-plain-view {
   color: #2e3436;
   background-color: #ffffff;

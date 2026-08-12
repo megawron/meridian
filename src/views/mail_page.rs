@@ -52,6 +52,28 @@ enum MessageFilter {
     HasAttachments,
 }
 
+impl MessageFilter {
+    fn from_selector_index(index: u32) -> Self {
+        match index {
+            1 => Self::Unread,
+            2 => Self::Flagged,
+            3 => Self::Important,
+            4 => Self::HasAttachments,
+            _ => Self::All,
+        }
+    }
+
+    fn selector_index(self) -> u32 {
+        match self {
+            Self::All => 0,
+            Self::Unread => 1,
+            Self::Flagged => 2,
+            Self::Important => 3,
+            Self::HasAttachments => 4,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 enum MailSortField {
     #[default]
@@ -92,6 +114,18 @@ impl MailSortField {
             Self::Flagged => "flagged",
             Self::Important => "important",
             Self::Attachments => "attachments",
+        }
+    }
+
+    fn selector_index(self) -> u32 {
+        match self {
+            Self::Date => 0,
+            Self::Subject => 1,
+            Self::Sender => 2,
+            Self::Unread => 3,
+            Self::Flagged => 4,
+            Self::Important => 5,
+            Self::Attachments => 6,
         }
     }
 }
@@ -912,13 +946,19 @@ struct MailLoadRequest {
     max_messages_per_folder: i32,
 }
 
+fn configured_mail_page_limit() -> i32 {
+    AppSettings::try_new()
+        .map(|settings| settings.mail_sync_message_limit() as i32)
+        .unwrap_or_else(camel_mail_service::default_page_limit)
+}
+
 impl MailLoadRequest {
     fn initial() -> Self {
         Self {
             source_uid: None,
             folder_name: None,
             offset: 0,
-            max_messages_per_folder: camel_mail_service::default_page_limit(),
+            max_messages_per_folder: configured_mail_page_limit(),
         }
     }
 
@@ -1638,6 +1678,12 @@ impl MailPage {
                     page.restart_mail_polling();
                 }
             });
+            let page_weak_for_sync_limit = self.downgrade();
+            settings.connect_changed(Some("mail-sync-message-limit"), move |_, _| {
+                if let Some(page) = page_weak_for_sync_limit.upgrade() {
+                    page.refresh_mail();
+                }
+            });
             let page_weak_for_offline_mode = self.downgrade();
             settings.connect_changed(Some("offline-mode"), move |_, _| {
                 if let Some(page) = page_weak_for_offline_mode.upgrade() {
@@ -1757,14 +1803,18 @@ impl MailPage {
     }
 
     fn mail_sort_selector_index(field: MailSortField) -> u32 {
-        match field {
-            MailSortField::Date => 0,
-            MailSortField::Subject => 1,
-            MailSortField::Sender => 2,
-            MailSortField::Unread => 3,
-            MailSortField::Flagged => 4,
-            MailSortField::Important => 5,
-            MailSortField::Attachments => 6,
+        field.selector_index()
+    }
+
+    fn mail_sort_field_from_selector_index(index: u32) -> MailSortField {
+        match index {
+            1 => MailSortField::Subject,
+            2 => MailSortField::Sender,
+            3 => MailSortField::Unread,
+            4 => MailSortField::Flagged,
+            5 => MailSortField::Important,
+            6 => MailSortField::Attachments,
+            _ => MailSortField::Date,
         }
     }
 
@@ -3668,7 +3718,7 @@ impl MailPage {
                             source_uid: Some(source.uid()),
                             folder_name: None,
                             offset: 0,
-                            max_messages_per_folder: camel_mail_service::default_page_limit(),
+                            max_messages_per_folder: configured_mail_page_limit(),
                         },
                         true,
                     );
@@ -3881,7 +3931,7 @@ impl MailPage {
                     source_uid: Some(source_uid),
                     folder_name,
                     offset: 0,
-                    max_messages_per_folder: camel_mail_service::default_page_limit(),
+                    max_messages_per_folder: configured_mail_page_limit(),
                 },
                 true,
             );
@@ -5329,7 +5379,7 @@ impl MailPage {
                 .icon_name("non-starred-symbolic")
                 .css_classes(vec!["flat", "circular"])
                 .valign(gtk::Align::Center)
-                .tooltip_text("Markieren / Sternchhen setzen")
+                .tooltip_text("Markieren / Sternchen setzen")
                 .build();
             set_accessible_label(&btn_star, "Nachricht markieren");
 
@@ -5794,6 +5844,7 @@ impl MailPage {
         // Search entry container
         let search_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
+            .css_classes(vec!["mail-search-bar"])
             .margin_start(8)
             .margin_end(8)
             .margin_top(8)
@@ -5810,25 +5861,14 @@ impl MailPage {
             gtk::StringList::new(&["Alle", "Ungelesen", "Markiert", "Wichtig", "Mit Anhang"]);
         let quick_filter = gtk::DropDown::new(Some(quick_filter_model), None::<&gtk::Expression>);
         quick_filter.set_tooltip_text(Some("Nachrichtenfilter"));
-        quick_filter.set_selected(match message_filter.get() {
-            MessageFilter::Unread => 1,
-            MessageFilter::Flagged => 2,
-            MessageFilter::Important => 3,
-            MessageFilter::HasAttachments => 4,
-            MessageFilter::All => 0,
-        });
+        set_accessible_label(&quick_filter, "Nachrichtenfilter");
+        quick_filter.set_selected(message_filter.get().selector_index());
         let message_filter_for_quick_filter = Rc::clone(&message_filter);
         let filter_for_quick_filter = custom_filter.clone();
         let thread_filter_for_quick_filter = thread_filter.clone();
         let page_for_quick_filter = self.downgrade();
         quick_filter.connect_selected_notify(move |selector| {
-            let filter = match selector.selected() {
-                1 => MessageFilter::Unread,
-                2 => MessageFilter::Flagged,
-                3 => MessageFilter::Important,
-                4 => MessageFilter::HasAttachments,
-                _ => MessageFilter::All,
-            };
+            let filter = MessageFilter::from_selector_index(selector.selected());
             message_filter_for_quick_filter.set(filter);
             filter_for_quick_filter.changed(gtk::FilterChange::Different);
             thread_filter_for_quick_filter.changed(gtk::FilterChange::Different);
@@ -5905,15 +5945,10 @@ impl MailPage {
         ]);
         let sort_selector = gtk::DropDown::new(Some(sort_model), None::<&gtk::Expression>);
         sort_selector.set_tooltip_text(Some("Mails sortieren"));
-        sort_selector.set_selected(match self.imp().mail_sort_field.get() {
-            MailSortField::Subject => 1,
-            MailSortField::Sender => 2,
-            MailSortField::Unread => 3,
-            MailSortField::Flagged => 4,
-            MailSortField::Important => 5,
-            MailSortField::Attachments => 6,
-            MailSortField::Date => 0,
-        });
+        set_accessible_label(&sort_selector, "Nachrichten sortieren");
+        sort_selector.set_selected(Self::mail_sort_selector_index(
+            self.imp().mail_sort_field.get(),
+        ));
         self.imp()
             .mail_sort_selector
             .replace(Some(sort_selector.clone()));
@@ -5944,15 +5979,7 @@ impl MailPage {
             let Some(page) = page_for_sort.upgrade() else {
                 return;
             };
-            let field = match selector.selected() {
-                1 => MailSortField::Subject,
-                2 => MailSortField::Sender,
-                3 => MailSortField::Unread,
-                4 => MailSortField::Flagged,
-                5 => MailSortField::Important,
-                6 => MailSortField::Attachments,
-                _ => MailSortField::Date,
-            };
+            let field = MailPage::mail_sort_field_from_selector_index(selector.selected());
             page.imp().mail_sort_field.set(field);
             if let Some(settings) = AppSettings::try_new() {
                 settings.set_mail_sort_field(field.setting_value());
@@ -5961,8 +5988,13 @@ impl MailPage {
             if let Some(store) = page.imp().message_store.borrow().as_ref().cloned() {
                 page.refresh_thread_metadata(&store);
             }
-            page.select_message_after_reload(previous_id.as_deref());
             page.refresh_mail_column_header();
+            let page = page.downgrade();
+            glib::idle_add_local_once(move || {
+                if let Some(page) = page.upgrade() {
+                    page.select_message_after_reload(previous_id.as_deref());
+                }
+            });
         });
 
         let page_for_direction = self.downgrade();
@@ -5981,8 +6013,13 @@ impl MailPage {
             if let Some(store) = page.imp().message_store.borrow().as_ref().cloned() {
                 page.refresh_thread_metadata(&store);
             }
-            page.select_message_after_reload(previous_id.as_deref());
             page.refresh_mail_column_header();
+            let page = page.downgrade();
+            glib::idle_add_local_once(move || {
+                if let Some(page) = page.upgrade() {
+                    page.select_message_after_reload(previous_id.as_deref());
+                }
+            });
         });
 
         let columns_popover_box = gtk::Box::builder()
@@ -6540,7 +6577,7 @@ impl MailPage {
                             source_uid: selection.source_uid.clone(),
                             folder_name: selection.folder_name.clone(),
                             offset: 0,
-                            max_messages_per_folder: camel_mail_service::default_page_limit(),
+                            max_messages_per_folder: configured_mail_page_limit(),
                         },
                         true,
                     );
@@ -6578,13 +6615,7 @@ impl MailPage {
             };
             message_filter.set(filter);
             if let Some(page) = page_for_search.upgrade() {
-                let selected = match filter {
-                    MessageFilter::Unread => 1,
-                    MessageFilter::Flagged => 2,
-                    MessageFilter::Important => 3,
-                    MessageFilter::HasAttachments => 4,
-                    MessageFilter::All => 0,
-                };
+                let selected = filter.selector_index();
                 if let Some(quick_filter) = page.imp().quick_filter.borrow().as_ref() {
                     quick_filter.set_selected(selected);
                 }
@@ -6663,32 +6694,34 @@ impl MailPage {
     ) {
         let detail_view = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
+            .css_classes(vec!["mail-detail"])
             .spacing(0)
             .build();
 
         let header_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
-            .spacing(8)
-            .margin_start(16)
-            .margin_end(16)
-            .margin_top(16)
-            .margin_bottom(12)
+            .css_classes(vec!["mail-detail-header"])
+            .spacing(4)
+            .margin_start(10)
+            .margin_end(10)
+            .margin_top(8)
+            .margin_bottom(6)
             .build();
 
         let lbl_subject = gtk::Label::builder()
             .label("E-Mail auswählen")
-            .css_classes(vec!["title-2"])
+            .css_classes(vec!["title-3"])
             .halign(gtk::Align::Start)
             .wrap(true)
             .wrap_mode(gtk::pango::WrapMode::WordChar)
             .ellipsize(gtk::pango::EllipsizeMode::End)
-            .lines(4)
+            .lines(2)
             .build();
 
         let meta_grid = gtk::Grid::builder()
-            .row_spacing(4)
-            .column_spacing(12)
-            .margin_top(8)
+            .row_spacing(1)
+            .column_spacing(8)
+            .margin_top(2)
             .build();
 
         let from_label = gtk::Label::builder()
@@ -6703,7 +6736,7 @@ impl MailPage {
             .wrap(true)
             .wrap_mode(gtk::pango::WrapMode::WordChar)
             .ellipsize(gtk::pango::EllipsizeMode::End)
-            .lines(3)
+            .lines(1)
             .build();
 
         let to_label = gtk::Label::builder()
@@ -6718,7 +6751,7 @@ impl MailPage {
             .wrap(true)
             .wrap_mode(gtk::pango::WrapMode::WordChar)
             .ellipsize(gtk::pango::EllipsizeMode::End)
-            .lines(3)
+            .lines(1)
             .build();
 
         let cc_label = gtk::Label::builder()
@@ -6733,7 +6766,7 @@ impl MailPage {
             .wrap(true)
             .wrap_mode(gtk::pango::WrapMode::WordChar)
             .ellipsize(gtk::pango::EllipsizeMode::End)
-            .lines(3)
+            .lines(1)
             .build();
 
         let date_label = gtk::Label::builder()
@@ -6779,8 +6812,9 @@ impl MailPage {
 
         let action_bar = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
-            .spacing(8)
-            .margin_top(12)
+            .css_classes(vec!["mail-detail-actions"])
+            .spacing(2)
+            .margin_top(4)
             .build();
 
         let reply_btn = gtk::Button::builder()
@@ -7160,8 +7194,8 @@ impl MailPage {
             .vscrollbar_policy(gtk::PolicyType::Automatic)
             .propagate_natural_height(false)
             .min_content_height(0)
-            .max_content_height(58)
-            .height_request(58)
+            .max_content_height(36)
+            .height_request(36)
             .vexpand(false)
             .valign(gtk::Align::Start)
             .child(&thread_list)
@@ -7615,7 +7649,7 @@ impl MailPage {
         thread_list.append(&header_row);
 
         let message_count = messages.len();
-        const MAX_VISIBLE_THREAD_MESSAGES: usize = 2;
+        const MAX_VISIBLE_THREAD_MESSAGES: usize = 1;
         let selected_index = messages
             .iter()
             .position(|message| message.id() == selected.id())
@@ -8534,7 +8568,7 @@ impl MailPage {
             source_uid: source_uid.clone(),
             folder_name: folder_name.clone(),
             offset: 0,
-            max_messages_per_folder: camel_mail_service::default_page_limit(),
+            max_messages_per_folder: configured_mail_page_limit(),
         };
         let search_limit = request.max_messages_per_folder;
         let (sender, receiver) = async_channel::bounded(1);
@@ -9915,6 +9949,33 @@ mod tests {
             MailSortField::from_setting("starred"),
             MailSortField::Flagged
         );
+    }
+
+    #[test]
+    fn mail_list_dropdown_indices_roundtrip_to_their_actions() {
+        for (filter, index) in [
+            (MessageFilter::All, 0),
+            (MessageFilter::Unread, 1),
+            (MessageFilter::Flagged, 2),
+            (MessageFilter::Important, 3),
+            (MessageFilter::HasAttachments, 4),
+        ] {
+            assert_eq!(MessageFilter::from_selector_index(index), filter);
+            assert_eq!(filter.selector_index(), index);
+        }
+
+        for (field, index) in [
+            (MailSortField::Date, 0),
+            (MailSortField::Subject, 1),
+            (MailSortField::Sender, 2),
+            (MailSortField::Unread, 3),
+            (MailSortField::Flagged, 4),
+            (MailSortField::Important, 5),
+            (MailSortField::Attachments, 6),
+        ] {
+            assert_eq!(MailPage::mail_sort_field_from_selector_index(index), field);
+            assert_eq!(MailPage::mail_sort_selector_index(field), index);
+        }
     }
 
     #[test]

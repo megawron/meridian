@@ -578,6 +578,21 @@ impl PreferencesDialog {
         }
         group_sync.add(&row_sync_interval);
 
+        let row_sync_message_limit = adw::SpinRow::with_range(25.0, 1_000.0, 25.0);
+        row_sync_message_limit.set_title("Nachrichten pro Ordner laden");
+        row_sync_message_limit.set_subtitle(
+            "Nachrichten je Abrufseite; weitere Nachrichten können mit „Mehr laden“ abgerufen werden",
+        );
+        row_sync_message_limit.set_digits(0);
+        row_sync_message_limit.set_snap_to_ticks(true);
+        if let Some(settings) = settings.clone() {
+            row_sync_message_limit.set_value(settings.mail_sync_message_limit() as f64);
+            row_sync_message_limit.connect_value_notify(move |row| {
+                settings.set_mail_sync_message_limit(row.value().round() as u32);
+            });
+        }
+        group_sync.add(&row_sync_message_limit);
+
         let row_draft_autosave = adw::SpinRow::with_range(0.0, 3_600.0, 5.0);
         row_draft_autosave.set_title("Entwürfe automatisch speichern");
         row_draft_autosave.set_subtitle("Sekunden; 0 deaktiviert das lokale Autosave");

@@ -18,6 +18,10 @@ accessibility helpers, and view-local GTK state.
 - Keep message rows single-line with selection-independent actions aligned at
   the trailing edge, and cap conversation context so it cannot displace the
   message body.
+- Keep the selected message body visually primary: the detail header and
+  conversation context stay compact, while safe inline mail CSS and intended
+  message backgrounds remain intact. Do not flatten provider formatting merely
+  to match the application theme.
 - Use services for data access; do not embed EDS/Camel/ECal/EBook lifecycle or
   GTK types in service code.
 - Keep loading and empty/error states explicit. Never leave a permanent

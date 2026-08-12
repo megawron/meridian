@@ -351,7 +351,7 @@ impl MailViewer {
                 .replace("__FONT_SIZE__", &mail_font_size.to_string());
 
             let style_tag = format!(
-                "<style>{} body > table, body > div, body > center, body > article, body > main {{ background-color: transparent !important; color: inherit !important; }} img {{ max-width: 100%; height: auto; }}{} blockquote {{ border-left: 3px solid #78aeed; margin-left: 0; padding-left: 12px; color: #888888; }}</style>",
+                "<style>{} img {{ max-width: 100%; height: auto; }} body > table, body > div, body > center, body > article, body > main {{ max-width: 100%; }}{} blockquote {{ border-left: 3px solid #78aeed; margin-left: 0; padding-left: 12px; }}</style>",
                 body_css,
                 if remote_images_allowed {
                     ""
