@@ -115,7 +115,12 @@ impl ExchangeMailMessage {
         let body_html = if self.body_html.trim().is_empty() {
             format!("<pre>{}</pre>", escape_html(self.body_text.trim()))
         } else {
-            crate::services::html_sanitizer::sanitize_html(&self.body_html)
+            let sanitized = crate::services::html_sanitizer::sanitize_html(&self.body_html);
+            if strip_html(&sanitized).trim().is_empty() && !self.body_text.trim().is_empty() {
+                format!("<pre>{}</pre>", escape_html(self.body_text.trim()))
+            } else {
+                sanitized
+            }
         };
         let preview = if self.body_preview.trim().is_empty() {
             self.body_text.trim().to_string()

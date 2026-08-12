@@ -1958,7 +1958,7 @@ impl PreferencesDialog {
         let row_mail_show_avatar = adw::SwitchRow::builder()
             .title("Absender-Avatare anzeigen")
             .subtitle("Zeigt Initialen bzw. Bilder links neben dem Absender")
-            .active(true)
+            .active(false)
             .build();
         if let Some(settings) = settings.clone() {
             row_mail_show_avatar.set_active(settings.mail_show_avatar());
@@ -2023,7 +2023,7 @@ impl PreferencesDialog {
         let row_mail_show_preview_text = adw::SwitchRow::builder()
             .title("Vorschautext anzeigen")
             .subtitle("Zeigt den kurzen Nachrichtenauszug unter dem Betreff")
-            .active(true)
+            .active(false)
             .build();
         if let Some(settings) = settings.clone() {
             row_mail_show_preview_text.set_active(settings.mail_show_preview_text());

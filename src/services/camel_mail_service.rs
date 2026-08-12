@@ -242,6 +242,52 @@ fn folder_matches_name(actual: &str, wanted: &str) -> bool {
         )
 }
 
+/// Camel folder flags are not reliable for every provider.  In particular,
+/// some IMAP/Exchange stores expose every folder as `all` even though the
+/// folder's full name is still available.  Keep the Evolution-compatible
+/// built-in folder selection usable by deriving the stable UI id from that
+/// name as a fallback.
+fn normalized_camel_folder_id(folder_id: &str, folder_name: &str) -> String {
+    let explicit = folder_id.trim().to_ascii_lowercase();
+    let explicit_id = match explicit.as_str() {
+        "inbox" => Some("inbox"),
+        "sent" | "sent-mail" | "sent items" => Some("sent"),
+        "draft" | "drafts" => Some("drafts"),
+        "trash" | "deleted" | "deleted items" => Some("trash"),
+        "junk" | "spam" | "junk email" => Some("junk"),
+        "archive" => Some("archive"),
+        "all" | "" => None,
+        _ => return folder_id.trim().to_string(),
+    };
+    if let Some(explicit_id) = explicit_id {
+        return explicit_id.to_string();
+    }
+
+    let name = folder_name.trim().to_ascii_lowercase();
+    let leaf = name
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(name.as_str())
+        .trim();
+    match leaf {
+        "inbox" | "posteingang" => "inbox",
+        "sent" | "sent items" | "sent mail" | "sent-mail" | "gesendet" | "gesendete elemente" => {
+            "sent"
+        }
+        "draft" | "drafts" | "entwurf" | "entwürfe" => "drafts",
+        "trash"
+        | "deleted"
+        | "deleted items"
+        | "papierkorb"
+        | "gelöscht"
+        | "gelöschte elemente" => "trash",
+        "junk" | "junk email" | "spam" | "junk-e-mail" => "junk",
+        "archive" | "archiv" => "archive",
+        _ => "all",
+    }
+    .to_string()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CamelSyncPhase {
     Discovering,
@@ -806,11 +852,12 @@ fn load_messages_native(
     if !folders.is_null() {
         let folders_slice = unsafe { slice::from_raw_parts(folders, folder_count) };
         for folder in folders_slice {
+            let folder_name = c_string(folder.folder_name);
             folder_summaries.push(CamelFolderSummary {
                 source_uid: c_string(folder.source_uid),
                 source_display_name: c_string(folder.source_display_name),
-                folder_name: c_string(folder.folder_name),
-                folder_id: c_string(folder.folder_id),
+                folder_id: normalized_camel_folder_id(&c_string(folder.folder_id), &folder_name),
+                folder_name,
                 display_name: c_string(folder.display_name),
                 unread_count: folder.unread_count,
                 total_count: folder.total_count,
@@ -857,18 +904,14 @@ fn parse_native_messages(
 
         let source_uid = c_string(record.source_uid);
         let folder_name = c_string(record.folder_name);
-        let folder_id = c_string(record.folder_id);
+        let folder_id = normalized_camel_folder_id(&c_string(record.folder_id), &folder_name);
         let message_uid = c_string(record.message_uid);
         let raw = unsafe { slice::from_raw_parts(record.raw_message, record.raw_message_len) };
         let id = format!("eds:{source_uid}:{folder_name}:{message_uid}");
 
         if let Some(mut parsed) = crate::services::mail_store_service::parse_rfc822_bytes(
             &id,
-            if folder_id.is_empty() {
-                "all"
-            } else {
-                &folder_id
-            },
+            &folder_id,
             raw,
             record.is_unread != 0,
         ) {
@@ -1159,6 +1202,18 @@ mod tests {
             Some(CamelSyncPhase::Retrying)
         );
         assert_eq!(CamelSyncPhase::from_native(99), None);
+    }
+
+    #[test]
+    fn camel_folder_ids_fall_back_to_provider_folder_names() {
+        assert_eq!(normalized_camel_folder_id("all", "INBOX"), "inbox");
+        assert_eq!(
+            normalized_camel_folder_id("all", "[Gmail]/Sent Mail"),
+            "sent"
+        );
+        assert_eq!(normalized_camel_folder_id("all", "Posteingang"), "inbox");
+        assert_eq!(normalized_camel_folder_id("junk", "Spam"), "junk");
+        assert_eq!(normalized_camel_folder_id("all", "Projects/2026"), "all");
     }
 }
 

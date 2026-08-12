@@ -210,6 +210,22 @@ impl MailViewer {
         html_content: &str,
         base_uri: Option<&str>,
     ) {
+        self.load_html_for_message_with_fallback(message_id, html_content, base_uri, None);
+    }
+
+    /// Load a message body and keep a readable fallback for malformed or
+    /// entirely blocked HTML.  Real-world mail can contain an incomplete
+    /// `<style>`/`<head>` section or a provider can return only a short body
+    /// preview.  In both cases a blank reader is worse than showing the
+    /// available text, so the fallback is deliberately rendered as escaped
+    /// plain text.
+    pub fn load_html_for_message_with_fallback(
+        &self,
+        message_id: Option<&str>,
+        html_content: &str,
+        base_uri: Option<&str>,
+        fallback_text: Option<&str>,
+    ) {
         self.imp()
             .current_message_id
             .replace(message_id.map(str::to_string));
@@ -235,11 +251,27 @@ impl MailViewer {
                 .as_ref()
                 .map(AppSettings::render_html)
                 .unwrap_or(true);
-            let sanitized = if render_html {
+            let sanitized_body = if render_html {
                 sanitize_html(html_content)
             } else {
                 format!("<pre>{}</pre>", escape_html(html_content))
             };
+            let sanitized = if render_html && html_to_fallback_text(&sanitized_body).is_empty() {
+                let fallback = fallback_text
+                    .map(str::trim)
+                    .filter(|text| !text.is_empty())
+                    .unwrap_or("(Die Nachricht enthält keinen darstellbaren Inhalt.)");
+                format!("<pre>{}</pre>", escape_html(fallback))
+            } else {
+                sanitized_body
+            };
+            tracing::debug!(
+                message_id = ?message_id,
+                html_bytes = html_content.len(),
+                sanitized_bytes = sanitized.len(),
+                render_html,
+                "Rendering selected mail content"
+            );
             if let Some(settings) = webkit6::prelude::WebViewExt::settings(&webview) {
                 settings.set_auto_load_images(remote_images_allowed);
             }
@@ -330,6 +362,15 @@ impl MailViewer {
         #[cfg(not(target_os = "linux"))]
         if let Some(view) = self.imp().fallback_view.borrow().as_ref() {
             let text = html_to_fallback_text(html_content);
+            let text = if text.is_empty() {
+                fallback_text
+                    .map(str::trim)
+                    .filter(|text| !text.is_empty())
+                    .unwrap_or("(Die Nachricht enthält keinen darstellbaren Inhalt.)")
+                    .to_string()
+            } else {
+                text
+            };
             view.buffer().set_text(&text);
         }
     }
@@ -439,7 +480,6 @@ fn escape_html(value: &str) -> String {
         .replace('"', "&quot;")
 }
 
-#[cfg(not(target_os = "linux"))]
 fn html_to_fallback_text(value: &str) -> String {
     let sanitized = sanitize_html(value);
     let mut output = String::with_capacity(sanitized.len());
@@ -448,7 +488,15 @@ fn html_to_fallback_text(value: &str) -> String {
     for character in sanitized.chars() {
         if in_tag {
             if character == '>' {
-                let normalized = tag.trim().to_ascii_lowercase();
+                let normalized = tag
+                    .trim()
+                    .to_ascii_lowercase()
+                    .trim_end_matches('/')
+                    .trim()
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or_default()
+                    .to_string();
                 if matches!(
                     normalized.as_str(),
                     "br" | "/p" | "/div" | "/li" | "/blockquote" | "/h1" | "/h2" | "/h3"
@@ -477,6 +525,27 @@ fn html_to_fallback_text(value: &str) -> String {
         .replace("&quot;", "\"")
         .trim()
         .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::html_to_fallback_text;
+
+    #[test]
+    fn fallback_text_preserves_mail_content_and_line_breaks() {
+        assert_eq!(
+            html_to_fallback_text("<div>Hello<br>world</div><p>Next</p>"),
+            "Hello\nworld\nNext"
+        );
+    }
+
+    #[test]
+    fn blocked_only_markup_has_no_visible_fallback_text() {
+        assert!(
+            html_to_fallback_text("<style>body{display:none}</style><meta charset=utf-8>")
+                .is_empty()
+        );
+    }
 }
 
 impl Default for MailViewer {

@@ -10,6 +10,10 @@ fn main() {
     println!("cargo:rustc-check-cfg=cfg(eds_ecal_bridge)");
     println!("cargo:rustc-check-cfg=cfg(eds_ebook_bridge)");
 
+    let manifest_dir = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap());
+    let out_dir = PathBuf::from(env::var_os("OUT_DIR").unwrap());
+    prepare_settings_schema(&manifest_dir, &out_dir);
+
     if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("linux") {
         return;
     }
@@ -41,9 +45,7 @@ fn main() {
         .probe("libebook-contacts-1.2")
         .expect("libebook-contacts-1.2 development files are required on Linux; install evolution-data-server-devel");
 
-    let manifest_dir = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap());
     let bridge = manifest_dir.join("../native/eds_camel_bridge.c");
-    let out_dir = PathBuf::from(env::var_os("OUT_DIR").unwrap());
     let object = out_dir.join("eds_camel_bridge.o");
     let archive = out_dir.join("libevolution_eds_camel_bridge.a");
     let compiler = env::var_os("CC").unwrap_or_else(|| "cc".into());
@@ -226,6 +228,34 @@ fn main() {
     println!("cargo:rustc-cfg=eds_camel_bridge");
     println!("cargo:rustc-cfg=eds_ecal_bridge");
     println!("cargo:rustc-cfg=eds_ebook_bridge");
+}
+
+/// Make `cargo run` behave like the installed Meson build for developers.
+/// Meson installs `gschemas.compiled`, but a direct Cargo build otherwise has
+/// no way to find the repository's XML schema.  When GLib is available, keep a
+/// compiled copy in Cargo's OUT_DIR and let AppSettings use it as a fallback.
+/// Production installs still use the normal system schema search path.
+fn prepare_settings_schema(manifest_dir: &PathBuf, out_dir: &PathBuf) {
+    let source = manifest_dir.join("../data/org.gnome.Evolution4.gschema.xml");
+    let schema_dir = out_dir.join("schemas");
+    if !source.is_file() || fs::create_dir_all(&schema_dir).is_err() {
+        return;
+    }
+    let target = schema_dir.join("org.gnome.Evolution4.gschema.xml");
+    if fs::copy(&source, &target).is_err() {
+        return;
+    }
+
+    let status = Command::new("glib-compile-schemas")
+        .arg(&schema_dir)
+        .status();
+    if status.is_ok_and(|status| status.success()) {
+        println!(
+            "cargo:rustc-env=EVOLUTION_GTK4_SCHEMA_DIR={}",
+            schema_dir.display()
+        );
+    }
+    println!("cargo:rerun-if-changed={}", source.display());
 }
 
 fn emit_link_metadata(library: &pkg_config::Library) {

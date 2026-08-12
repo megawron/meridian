@@ -382,7 +382,10 @@ werden.
   abgefangen und externe Bilder sind standardmäßig blockiert. Unter Linux
   wird der WebKitGTK-Prozess erst beim Öffnen der ersten Nachricht erzeugt,
   damit ein kalter EDS-Start nicht mit der ersten GTK-Oberfläche konkurriert;
-  der HTML-Renderer bleibt dabei der produktive Linux-Pfad.
+  der HTML-Renderer bleibt dabei der produktive Linux-Pfad. Der portable
+  Sanitizer entfernt blockierte Void-Tags wie `meta` und `link`, ohne den
+  nachfolgenden Mailkörper abzuschneiden; damit bleiben typische HTML-Mails
+  im Vorschaufenster lesbar.
   Die portable Leseeinstellung, ob eine Nachricht beim Auswählen als gelesen
   markiert wird, ist persistent und gilt für lokale sowie native Mailpfade;
   providerabhängige Lesestatus-Synchronisation bleibt Linux/EDS-Abnahme.
@@ -470,7 +473,10 @@ werden.
   Prädikate sowie Status-, Label-, Ordner- und Datumsfeinheiten bleiben als
   lokaler Nachfilter erhalten. Native Camel-Suche, CamelVee-Suchordner und
   native EDS/Camel-Kopien und providerabhängige Live-Zähler bleiben
-  Linux-/Backend-Abnahme.
+  Linux-/Backend-Abnahme. Der Nachrichtentext wird vor der Darstellung
+  sicher bereinigt; wenn defektes oder vollständig blockiertes HTML keinen
+  sichtbaren Inhalt ergibt, zeigt der GTK4-rs-Viewer den verfügbaren
+  Klartext-/Vorschau-Auszug statt einer leeren weißen Fläche.
 - [~] Der Startordner der Mailansicht ist als portable Einstellung mit
   Posteingang, Alle Nachrichten, Gesendet, Entwürfe, Papierkorb, Archiv und
   Spam konfigurierbar und wird in Backup/Restore sowie beim lokalen Fallback
@@ -630,7 +636,9 @@ werden.
   blendet protokollabhängige Server-, Ordner- und Zugangsfelder jetzt für
   Exchange bzw. GOA nachvollziehbar aus oder ein.
 - [~] Sichtbare Lese-/Datenschutz-/PGP-Optionen werden über GSettings
-  persistiert, sofern das Schema installiert ist; Vorschaufenster,
+  persistent gespeichert; direkte Cargo-Entwicklungsstarts verwenden eine
+  automatisch kompilierte Schema-Kopie, falls noch keine Meson-Installation
+  vorhanden ist. Vorschaufenster,
   Markieren-beim-Auswählen, HTML/Text, externe Bilder, Schriftfamilie/-größe,
   Dark-Mode und Bestätigungsdialoge werden auch auf laufenden Ansichten
   berücksichtigt. Der geöffnete MailViewer speichert den aktuellen Inhalt
@@ -1248,6 +1256,22 @@ nicht als vollständiger Ersatz beworben werden.
    bleibt die vertraute linke Kalender-/Aufgabenleiste mit dem Kalender rechts
    erhalten, auf schmalen Fenstern wird daraus eine adaptive Navigation mit
    systematischer Rückkehr zur Seitenleiste.
+   Kalender-, Aufgaben-, Notiz- und Kontaktzeilen bieten zusätzlich ein
+   kontextsensitives GTK4-Menü für Bearbeiten, Speichern/Statusänderung,
+   Export, Mail an Kontakt, Dubletten und Löschen.
+   Diese Einträge aktivieren dieselben sichtbaren Button- und ECal-Pfade wie
+   die Detailansicht und behalten dadurch Read-only-Prüfung, Bestätigung und
+   anschließende Listenaktualisierung bei.
+   Die Kontaktliste sortiert deterministisch nach Familienname und Vorname,
+   wie Evolution es im Adressbuch erwartet; bei unvollständigen vCards greifen
+   Anzeigename, E-Mail-Adresse, Quelle und UID als stabile Tie-Breaker.
+   Die Mailansicht startet mit kompakter Evolution-Dichte, ohne Avatar- und
+   Vorschautext-Flächen, und behält Absender, Betreff und Datum als die
+   wesentlichen sichtbaren Spalten. Alle drei Dichteprofile und die einzelnen
+   Sichtbarkeitsschalter bleiben persistent umschaltbar.
+   In der eingeklappten Navigation führen `Esc` und `Alt+←` aus dem
+   Inhaltsbereich wieder zurück zur jeweiligen Seitenleiste; das Verhalten
+   ist für Kalender, Kontakte, Aufgaben und Notizen einheitlich.
    Kontoerstellung und Kontobearbeitung aus Einstellungen und Hauptmenü
    aktualisieren nach dem Schließen außerdem die laufende Mail-/Quellenansicht,
    ohne einen Neustart zu verlangen.

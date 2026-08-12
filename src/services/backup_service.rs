@@ -333,11 +333,11 @@ fn default_mail_default_folder() -> String {
 }
 
 fn default_mail_row_density() -> String {
-    "comfortable".to_string()
+    "compact".to_string()
 }
 
 fn default_mail_show_avatar() -> bool {
-    true
+    false
 }
 
 fn default_mail_show_sender() -> bool {
@@ -357,7 +357,7 @@ fn default_mail_show_attachment() -> bool {
 }
 
 fn default_mail_show_preview_text() -> bool {
-    true
+    false
 }
 
 fn default_mail_show_labels() -> bool {
@@ -1253,13 +1253,13 @@ mod tests {
         assert_eq!(settings.mail_sidebar_position, 220);
         assert_eq!(settings.mail_modern_preview_position, 420);
         assert_eq!(settings.mail_classic_preview_position, 360);
-        assert_eq!(settings.mail_row_density, "comfortable");
-        assert!(settings.mail_show_avatar);
+        assert_eq!(settings.mail_row_density, "compact");
+        assert!(!settings.mail_show_avatar);
         assert!(settings.mail_show_sender);
         assert!(!settings.mail_show_recipient);
         assert!(settings.mail_show_date);
         assert!(settings.mail_show_attachment);
-        assert!(settings.mail_show_preview_text);
+        assert!(!settings.mail_show_preview_text);
         assert!(settings.mail_show_labels);
         assert!(!settings.calendar_show_week_numbers);
         assert!(settings.calendar_hidden_sources.is_empty());

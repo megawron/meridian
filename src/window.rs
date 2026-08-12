@@ -755,15 +755,21 @@ impl EvolutionWindow {
         // immediately instead of leaving its placeholder visible.
         ensure_module_loaded(&active_view);
 
-        if let Some(settings) = AppSettings::try_new() {
-            let ensure_module_loaded_for_signal = Rc::clone(&ensure_module_loaded);
-            view_stack.connect_visible_child_name_notify(move |stack| {
-                if let Some(view_name) = stack.visible_child_name() {
-                    ensure_module_loaded_for_signal(view_name.as_str());
+        // Module construction must not depend on GSettings being installed.
+        // A direct `cargo run` has historically shown the permanent placeholder
+        // for contacts/tasks/memos because the persistence layer is optional in
+        // development builds.  Keep persistence optional, but always replace
+        // the placeholder when the user navigates to a module.
+        let ensure_module_loaded_for_signal = Rc::clone(&ensure_module_loaded);
+        let settings_for_view = AppSettings::try_new();
+        view_stack.connect_visible_child_name_notify(move |stack| {
+            if let Some(view_name) = stack.visible_child_name() {
+                ensure_module_loaded_for_signal(view_name.as_str());
+                if let Some(settings) = settings_for_view.as_ref() {
                     settings.set_active_view(view_name.as_str());
                 }
-            });
-        }
+            }
+        });
 
         let header_bar = adw::HeaderBar::new();
 

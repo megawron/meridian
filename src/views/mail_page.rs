@@ -551,9 +551,9 @@ fn format_message_date(value: &str) -> String {
 
 fn mail_row_density_metrics(value: &str) -> (i32, i32) {
     match value {
-        "compact" => (2, 4),
+        "compact" => (0, 1),
         "spacious" => (7, 14),
-        _ => (4, 8),
+        _ => (3, 6),
     }
 }
 
@@ -4919,16 +4919,16 @@ impl MailPage {
 
             let vbox = gtk::Box::builder()
                 .orientation(gtk::Orientation::Vertical)
-                .spacing(4)
-                .margin_start(12)
-                .margin_end(12)
-                .margin_top(8)
-                .margin_bottom(8)
+                .spacing(2)
+                .margin_start(6)
+                .margin_end(6)
+                .margin_top(2)
+                .margin_bottom(2)
                 .build();
 
             let header_box = gtk::Box::builder()
                 .orientation(gtk::Orientation::Horizontal)
-                .spacing(8)
+                .spacing(4)
                 .build();
 
             let batch_check = gtk::CheckButton::builder()
@@ -4957,11 +4957,11 @@ impl MailPage {
                 page.set_batch_message_selected(&message.id(), check.is_active());
             });
 
-            let avatar = adw::Avatar::builder().size(32).show_initials(true).build();
+            let avatar = adw::Avatar::builder().size(24).show_initials(true).build();
 
             let sender_box = gtk::Box::builder()
                 .orientation(gtk::Orientation::Vertical)
-                .spacing(2)
+                .spacing(0)
                 .hexpand(true)
                 .build();
 
@@ -5111,7 +5111,7 @@ impl MailPage {
 
             let density = AppSettings::try_new()
                 .map(|settings| settings.mail_row_density())
-                .unwrap_or_else(|| "comfortable".to_string());
+                .unwrap_or_else(|| "compact".to_string());
             let (row_spacing, row_margin) = mail_row_density_metrics(&density);
             vbox.set_spacing(row_spacing);
             vbox.set_margin_top(row_margin);
@@ -5121,7 +5121,7 @@ impl MailPage {
             let show_avatar = settings
                 .as_ref()
                 .map(AppSettings::mail_show_avatar)
-                .unwrap_or(true);
+                .unwrap_or(false);
             let show_sender = settings
                 .as_ref()
                 .map(AppSettings::mail_show_sender)
@@ -5141,7 +5141,7 @@ impl MailPage {
             let show_preview_text = settings
                 .as_ref()
                 .map(AppSettings::mail_show_preview_text)
-                .unwrap_or(true);
+                .unwrap_or(false);
             let show_labels = settings
                 .as_ref()
                 .map(AppSettings::mail_show_labels)
@@ -6927,7 +6927,13 @@ impl MailPage {
             })
             .collect::<Vec<_>>();
         let rendered_html = resolve_cid_images(&message.html_body(), &inline_images);
-        mail_viewer.load_html_for_message(Some(&message.id()), &rendered_html, None);
+        let preview = message.preview_snippet();
+        mail_viewer.load_html_for_message_with_fallback(
+            Some(&message.id()),
+            &rendered_html,
+            None,
+            Some(&preview),
+        );
         if attachments.is_empty() {
             attachment_bar.set_visible(false);
         } else {
@@ -8585,10 +8591,42 @@ impl MailPage {
         if let Some(pending_search) = completion.pending_search.as_deref() {
             self.handle_search_changed(pending_search);
         }
+        let stored_messages = self
+            .imp()
+            .message_store
+            .borrow()
+            .as_ref()
+            .map(gtk::prelude::ListModelExt::n_items)
+            .unwrap_or(0);
+        let visible_messages = self
+            .imp()
+            .message_selection
+            .borrow()
+            .as_ref()
+            .map(|selection| selection.n_items())
+            .unwrap_or(0);
+        let visible_threads = self
+            .imp()
+            .thread_selection
+            .borrow()
+            .as_ref()
+            .map(|selection| selection.n_items())
+            .unwrap_or(0);
+        let selected_folder = self
+            .imp()
+            .folder_selection
+            .borrow()
+            .as_ref()
+            .map(|selection| selection.borrow().folder_id.clone())
+            .unwrap_or_else(|| "all".to_string());
         tracing::debug!(
             elapsed_ms = completion.started.elapsed().as_millis() as u64,
             result = completion.result_kind,
             appended = completion.appended,
+            stored_messages,
+            visible_messages,
+            visible_threads,
+            selected_folder = %selected_folder,
             "Mail load applied to GTK models"
         );
     }
@@ -9496,9 +9534,9 @@ mod tests {
 
     #[test]
     fn mail_row_density_has_conservative_fallbacks() {
-        assert_eq!(mail_row_density_metrics("compact"), (2, 4));
+        assert_eq!(mail_row_density_metrics("compact"), (0, 1));
         assert_eq!(mail_row_density_metrics("spacious"), (7, 14));
-        assert_eq!(mail_row_density_metrics("unknown"), (4, 8));
+        assert_eq!(mail_row_density_metrics("unknown"), (3, 6));
     }
 
     #[test]

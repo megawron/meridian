@@ -1138,6 +1138,23 @@ impl CalendarPage {
             .child(&content_box)
             .build();
         split.set_content(Some(&content_page));
+        let split_for_navigation = split.clone();
+        let key_controller = gtk::EventControllerKey::new();
+        key_controller.connect_key_pressed(move |_, key, _, modifiers| {
+            let is_back = key == gtk::gdk::Key::Escape
+                || (key == gtk::gdk::Key::Left
+                    && modifiers.contains(gtk::gdk::ModifierType::ALT_MASK));
+            if is_back
+                && split_for_navigation.is_collapsed()
+                && split_for_navigation.shows_content()
+            {
+                split_for_navigation.set_show_content(false);
+                glib::Propagation::Stop
+            } else {
+                glib::Propagation::Proceed
+            }
+        });
+        split.add_controller(key_controller);
         split.set_parent(self);
     }
 
@@ -2987,6 +3004,7 @@ fn append_event_row(
     row.add_suffix(&delete_button);
 
     let event_for_edit = event.clone();
+    let edit_button_for_context = edit_button.clone();
     let edit_button_for_signal = edit_button.clone();
     edit_button_for_signal.connect_clicked(move |_| {
         if event_for_edit.source_uid.is_empty() {
@@ -3019,6 +3037,7 @@ fn append_event_row(
     });
 
     let event_for_export = event.clone();
+    let export_button_for_context = export_button.clone();
     let export_button_for_signal = export_button.clone();
     export_button_for_signal.connect_clicked(move |_| {
         if event_for_export.component.trim().is_empty() {
@@ -3068,6 +3087,7 @@ fn append_event_row(
     let event_for_delete = event.clone();
     let event_records_for_delete = Rc::clone(&event_records);
     let event_list_for_delete = event_list.clone();
+    let delete_button_for_context = delete_button.clone();
     let delete_button_for_signal = delete_button.clone();
     delete_button_for_signal.connect_clicked(move |_| {
         if event_for_delete.source_uid.is_empty() {
@@ -3152,6 +3172,75 @@ fn append_event_row(
             },
         );
     });
+
+    // Keep the familiar Evolution event context menu available in addition
+    // to the compact row buttons.  The menu activates those same buttons so
+    // read-only handling, export, confirmation, and refresh semantics stay
+    // identical for both interaction paths.
+    let context_click = gtk::GestureClick::builder().button(3).build();
+    let row_weak_for_context = row.downgrade();
+    context_click.connect_pressed(move |_, _, x, y| {
+        let Some(row_for_context) = row_weak_for_context.upgrade() else {
+            return;
+        };
+        let popover = gtk::Popover::builder()
+            .has_arrow(false)
+            .pointing_to(&gtk::gdk::Rectangle::new(x as i32, y as i32, 1, 1))
+            .build();
+        let menu_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(2)
+            .margin_start(6)
+            .margin_end(6)
+            .margin_top(6)
+            .margin_bottom(6)
+            .build();
+
+        let edit = gtk::Button::with_label("Termin bearbeiten");
+        edit.set_halign(gtk::Align::Fill);
+        edit.add_css_class("flat");
+        let popover_for_edit = popover.clone();
+        let edit_button_for_menu = edit_button_for_context.clone();
+        edit.connect_clicked(move |_| {
+            popover_for_edit.popdown();
+            edit_button_for_menu.activate();
+        });
+        menu_box.append(&edit);
+
+        let export = gtk::Button::with_label("Als iCalendar exportieren");
+        export.set_halign(gtk::Align::Fill);
+        export.add_css_class("flat");
+        let popover_for_export = popover.clone();
+        let export_button_for_menu = export_button_for_context.clone();
+        export.connect_clicked(move |_| {
+            popover_for_export.popdown();
+            export_button_for_menu.activate();
+        });
+        menu_box.append(&export);
+
+        let delete = gtk::Button::with_label("Termin löschen");
+        delete.set_halign(gtk::Align::Fill);
+        delete.add_css_class("flat");
+        delete.add_css_class("destructive-action");
+        let popover_for_delete = popover.clone();
+        let delete_button_for_menu = delete_button_for_context.clone();
+        delete.connect_clicked(move |_| {
+            popover_for_delete.popdown();
+            delete_button_for_menu.activate();
+        });
+        menu_box.append(&delete);
+
+        popover.set_child(Some(&menu_box));
+        popover.set_parent(&row_for_context);
+        let popover_weak = popover.downgrade();
+        popover.connect_closed(move |_| {
+            if let Some(popover) = popover_weak.upgrade() {
+                popover.unparent();
+            }
+        });
+        popover.popup();
+    });
+    row.add_controller(context_click);
 
     event_list.append(&row);
 }

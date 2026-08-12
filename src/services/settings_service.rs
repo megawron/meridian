@@ -26,8 +26,20 @@ fn normalized_mail_sort_field(value: &str) -> &str {
 impl AppSettings {
     /// Open the application schema if it is available in the current process.
     pub fn try_new() -> Option<Self> {
-        let source = gio::SettingsSchemaSource::default()?;
-        let schema = source.lookup(crate::APP_ID, true)?;
+        let installed_source = gio::SettingsSchemaSource::default();
+        let schema = installed_source
+            .as_ref()
+            .and_then(|source| source.lookup(crate::APP_ID, true))
+            .or_else(|| {
+                let directory = option_env!("EVOLUTION_GTK4_SCHEMA_DIR")?;
+                let source = gio::SettingsSchemaSource::from_directory(
+                    directory,
+                    installed_source.as_ref(),
+                    true,
+                )
+                .ok()?;
+                source.lookup(crate::APP_ID, true)
+            })?;
         Some(Self {
             settings: gio::Settings::new_full(&schema, None::<&gio::SettingsBackend>, None),
         })
@@ -480,15 +492,15 @@ impl AppSettings {
     pub fn mail_row_density(&self) -> String {
         let value = self.settings.string("mail-row-density").to_string();
         match value.as_str() {
-            "compact" | "spacious" => value,
-            _ => "comfortable".to_string(),
+            "comfortable" | "spacious" => value,
+            _ => "compact".to_string(),
         }
     }
 
     pub fn set_mail_row_density(&self, value: &str) {
         let value = match value {
-            "compact" | "spacious" => value,
-            _ => "comfortable",
+            "compact" | "comfortable" | "spacious" => value,
+            _ => "compact",
         };
         if let Err(error) = self.settings.set_string("mail-row-density", value) {
             tracing::warn!(%error, "Could not persist mail row density");

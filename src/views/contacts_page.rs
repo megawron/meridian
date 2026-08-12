@@ -268,6 +268,21 @@ impl ContactsPage {
             .selection_mode(gtk::SelectionMode::Single)
             .css_classes(vec!["navigation-sidebar"])
             .build();
+        contact_list.set_sort_func(|left, right| unsafe {
+            let value = |row: &gtk::ListBoxRow, key: &str| {
+                row.data::<String>(key)
+                    .map(|value| value.as_ref().clone())
+                    .unwrap_or_default()
+            };
+            value(left, "contact-sort-key")
+                .cmp(&value(right, "contact-sort-key"))
+                .then_with(|| value(left, "contact-email").cmp(&value(right, "contact-email")))
+                .then_with(|| {
+                    value(left, "contact-source-uid").cmp(&value(right, "contact-source-uid"))
+                })
+                .then_with(|| value(left, "contact-id").cmp(&value(right, "contact-id")))
+                .into()
+        });
         self.imp().contact_list.replace(Some(contact_list.clone()));
 
         let stored_contacts = Rc::new(RefCell::new(Vec::<EBookContactRecord>::new()));
@@ -972,6 +987,106 @@ impl ContactsPage {
             }
         ));
 
+        // Match Evolution's contact-row context menu with the actions already
+        // exposed in the detail header.  Selecting the row first also makes
+        // the menu useful when the split view is collapsed on a narrow window.
+        let email_btn_for_context = email_btn.clone();
+        let edit_btn_for_context = edit_btn.clone();
+        let export_btn_for_context = export_btn.clone();
+        let merge_btn_for_context = merge_btn.clone();
+        let delete_btn_for_context = delete_btn.clone();
+        let context_click = gtk::GestureClick::builder().button(3).build();
+        let contact_list_weak_for_context = contact_list.downgrade();
+        context_click.connect_pressed(move |_, _, x, y| {
+            let Some(contact_list_for_context) = contact_list_weak_for_context.upgrade() else {
+                return;
+            };
+            let Some(row) = contact_list_for_context.row_at_y(y as i32) else {
+                return;
+            };
+            contact_list_for_context.select_row(Some(&row));
+
+            let popover = gtk::Popover::builder()
+                .has_arrow(false)
+                .pointing_to(&gtk::gdk::Rectangle::new(x as i32, y as i32, 1, 1))
+                .build();
+            let menu_box = gtk::Box::builder()
+                .orientation(gtk::Orientation::Vertical)
+                .spacing(2)
+                .margin_start(6)
+                .margin_end(6)
+                .margin_top(6)
+                .margin_bottom(6)
+                .build();
+
+            let email = gtk::Button::with_label("E-Mail senden");
+            email.set_halign(gtk::Align::Fill);
+            email.add_css_class("flat");
+            let popover_for_email = popover.clone();
+            let email_button_for_menu = email_btn_for_context.clone();
+            email.connect_clicked(move |_| {
+                popover_for_email.popdown();
+                email_button_for_menu.activate();
+            });
+            menu_box.append(&email);
+
+            let edit = gtk::Button::with_label("Kontakt bearbeiten");
+            edit.set_halign(gtk::Align::Fill);
+            edit.add_css_class("flat");
+            let popover_for_edit = popover.clone();
+            let edit_button_for_menu = edit_btn_for_context.clone();
+            edit.connect_clicked(move |_| {
+                popover_for_edit.popdown();
+                edit_button_for_menu.activate();
+            });
+            menu_box.append(&edit);
+
+            let export = gtk::Button::with_label("Als vCard exportieren");
+            export.set_halign(gtk::Align::Fill);
+            export.add_css_class("flat");
+            let popover_for_export = popover.clone();
+            let export_button_for_menu = export_btn_for_context.clone();
+            export.connect_clicked(move |_| {
+                popover_for_export.popdown();
+                export_button_for_menu.activate();
+            });
+            menu_box.append(&export);
+
+            let merge = gtk::Button::with_label("Dubletten zusammenführen");
+            merge.set_halign(gtk::Align::Fill);
+            merge.add_css_class("flat");
+            let popover_for_merge = popover.clone();
+            let merge_button_for_menu = merge_btn_for_context.clone();
+            merge.connect_clicked(move |_| {
+                popover_for_merge.popdown();
+                merge_button_for_menu.activate();
+            });
+            menu_box.append(&merge);
+
+            let delete = gtk::Button::with_label("Kontakt löschen");
+            delete.set_halign(gtk::Align::Fill);
+            delete.add_css_class("flat");
+            delete.add_css_class("destructive-action");
+            let popover_for_delete = popover.clone();
+            let delete_button_for_menu = delete_btn_for_context.clone();
+            delete.connect_clicked(move |_| {
+                popover_for_delete.popdown();
+                delete_button_for_menu.activate();
+            });
+            menu_box.append(&delete);
+
+            popover.set_child(Some(&menu_box));
+            popover.set_parent(&contact_list_for_context);
+            let popover_weak = popover.downgrade();
+            popover.connect_closed(move |_| {
+                if let Some(popover) = popover_weak.upgrade() {
+                    popover.unparent();
+                }
+            });
+            popover.popup();
+        });
+        contact_list.add_controller(context_click);
+
         actions_box.append(&email_btn);
         actions_box.append(&export_btn);
         actions_box.append(&edit_btn);
@@ -1219,6 +1334,23 @@ impl ContactsPage {
         split.set_content(Some(&content_page));
         split.set_min_sidebar_width(280.0);
         split.set_max_sidebar_width(400.0);
+        let split_for_navigation = split.clone();
+        let key_controller = gtk::EventControllerKey::new();
+        key_controller.connect_key_pressed(move |_, key, _, modifiers| {
+            let is_back = key == gtk::gdk::Key::Escape
+                || (key == gtk::gdk::Key::Left
+                    && modifiers.contains(gtk::gdk::ModifierType::ALT_MASK));
+            if is_back
+                && split_for_navigation.is_collapsed()
+                && split_for_navigation.shows_content()
+            {
+                split_for_navigation.set_show_content(false);
+                glib::Propagation::Stop
+            } else {
+                glib::Propagation::Proceed
+            }
+        });
+        split.add_controller(key_controller);
         split.set_parent(self);
     }
 
@@ -1585,6 +1717,7 @@ fn append_contact_row(contact_list: &gtk::ListBox, record: &EBookContactRecord) 
     unsafe {
         let search_text = format!("{} {}", contact.searchable_text(), record.vcard).to_lowercase();
         row.set_data("contact-name", contact.fn_name.clone());
+        row.set_data("contact-sort-key", contact_sort_key(contact));
         row.set_data("contact-email", contact.email.clone());
         row.set_data("contact-title", contact.title.clone());
         row.set_data("contact-search", search_text);
@@ -1644,6 +1777,19 @@ fn append_contact_row(contact_list: &gtk::ListBox, record: &EBookContactRecord) 
     row_box.append(&info_box);
     row.set_child(Some(&row_box));
     contact_list.append(&row);
+}
+
+fn contact_sort_key(contact: &VCardContact) -> String {
+    let family = contact.name.family.trim();
+    let given = contact.name.given.trim();
+    let name = if family.is_empty() {
+        contact.fn_name.trim().to_string()
+    } else if given.is_empty() {
+        family.to_string()
+    } else {
+        format!("{family} {given}")
+    };
+    name.to_lowercase()
 }
 
 fn set_avatar_photo(
@@ -1736,12 +1882,29 @@ impl Default for ContactsPage {
 
 #[cfg(test)]
 mod tests {
-    use super::contact_category_matches;
+    use super::{contact_category_matches, contact_sort_key};
+    use crate::services::vcard_service::VCardContact;
 
     #[test]
     fn contact_category_filter_is_case_insensitive() {
         assert!(contact_category_matches("Arbeit\u{1f}Familie", "arbeit"));
         assert!(contact_category_matches("Arbeit\u{1f}Familie", "FAMILIE"));
         assert!(!contact_category_matches("Arbeit\u{1f}Familie", "Privat"));
+    }
+
+    #[test]
+    fn contact_sort_key_prefers_family_and_given_name() {
+        let mut contact = VCardContact::new("Ada Lovelace", "ada@example.test", "", "");
+        contact.name.family = "Lovelace".to_string();
+        contact.name.given = "Ada".to_string();
+
+        assert_eq!(contact_sort_key(&contact), "lovelace ada");
+    }
+
+    #[test]
+    fn contact_sort_key_falls_back_to_display_name() {
+        let contact = VCardContact::new("Grace Hopper", "grace@example.test", "", "");
+
+        assert_eq!(contact_sort_key(&contact), "grace hopper");
     }
 }

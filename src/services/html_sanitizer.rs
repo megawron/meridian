@@ -106,7 +106,15 @@ pub fn sanitize_html(input: &str) -> String {
         };
 
         if BLOCKED_TAGS.contains(&tag_name.as_str()) {
-            if !closing {
+            // Void HTML tags such as <meta>, <link>, <base> and <embed> do
+            // not have a closing tag. Treating them like container tags
+            // would skip the rest of an otherwise valid mail document when
+            // find_block_end cannot find </tag>.
+            let is_container = matches!(
+                tag_name.as_str(),
+                "applet" | "form" | "iframe" | "object" | "script" | "style" | "svg"
+            );
+            if !closing && is_container {
                 cursor = find_block_end(input, end + 1, &tag_name).unwrap_or(input.len());
             } else {
                 cursor = end + 1;
@@ -416,5 +424,15 @@ mod tests {
         let sanitized = sanitize_html("<p>Text ohne Ende <script>secret");
         assert!(sanitized.contains("<p>Text ohne Ende "));
         assert!(!sanitized.contains("secret"));
+    }
+
+    #[test]
+    fn does_not_drop_mail_body_after_void_blocked_tags() {
+        let sanitized = sanitize_html(
+            r#"<html><head><meta charset="utf-8"><link rel="stylesheet" href="https://evil.example/mail.css"></head><body><p>Nachrichteninhalt</p></body></html>"#,
+        );
+        assert!(sanitized.contains("<p>Nachrichteninhalt</p>"));
+        assert!(!sanitized.contains("meta"));
+        assert!(!sanitized.contains("stylesheet"));
     }
 }

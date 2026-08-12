@@ -165,11 +165,11 @@
       <summary>Message preview divider in classic mail layout</summary>
     </key>
     <key name="mail-row-density" type="s">
-      <default>'comfortable'</default>
+      <default>'compact'</default>
       <summary>Mail list density (compact, comfortable, or spacious)</summary>
     </key>
     <key name="mail-show-avatar" type="b">
-      <default>true</default>
+      <default>false</default>
       <summary>Show sender avatars in the mail list</summary>
     </key>
     <key name="mail-show-sender" type="b">
@@ -189,7 +189,7 @@
       <summary>Show an attachment indicator in the mail list</summary>
     </key>
     <key name="mail-show-preview-text" type="b">
-      <default>true</default>
+      <default>false</default>
       <summary>Show message preview text in the mail list</summary>
     </key>
     <key name="mail-show-labels" type="b">

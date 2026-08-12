@@ -87,5 +87,7 @@ When the user requests a durable behavior change, record it here or in the relev
 
 ## Child DOX Index
 
-- No child AGENTS.md files are needed for the current repository structure.
-- Root-owned files: `README.md`, `LICENSE`, `banner.jpg`, `video-thumbnail.jpg`, and root-level project documentation.
+- `src/AGENTS.md` owns the Rust application source and indexes its UI, service,
+  dialog, and model boundaries.
+- Root-owned files: `README.md`, `LICENSE`, `banner.jpg`, `video-thumbnail.jpg`,
+  and root-level project documentation.

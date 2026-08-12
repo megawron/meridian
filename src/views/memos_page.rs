@@ -823,6 +823,9 @@ impl MemosPage {
             );
         });
 
+        let save_memo_btn_for_context = save_memo_btn.clone();
+        let export_memo_btn_for_context = export_memo_btn.clone();
+        let delete_memo_btn_for_context = delete_memo_btn.clone();
         let selected_memo_for_save = Rc::clone(&selected_memo);
         let memo_records_for_save = Rc::clone(&memo_records);
         let page_weak_for_save = self.downgrade();
@@ -1090,6 +1093,81 @@ impl MemosPage {
             );
         });
 
+        // The original Evolution memo view exposes row actions through a
+        // context menu as well as the detail toolbar.  Select the row under
+        // the pointer first, then route the menu actions through the existing
+        // save/export/delete buttons so all validation and ECal mutation code
+        // remains centralized.
+        let context_click = gtk::GestureClick::builder().button(3).build();
+        let memo_list_weak_for_context = memo_list.downgrade();
+        context_click.connect_pressed(move |_, _, x, y| {
+            let Some(memo_list_for_context) = memo_list_weak_for_context.upgrade() else {
+                return;
+            };
+            let Some(row) = memo_list_for_context.row_at_y(y as i32) else {
+                return;
+            };
+            memo_list_for_context.select_row(Some(&row));
+
+            let popover = gtk::Popover::builder()
+                .has_arrow(false)
+                .pointing_to(&gtk::gdk::Rectangle::new(x as i32, y as i32, 1, 1))
+                .build();
+            let menu_box = gtk::Box::builder()
+                .orientation(gtk::Orientation::Vertical)
+                .spacing(2)
+                .margin_start(6)
+                .margin_end(6)
+                .margin_top(6)
+                .margin_bottom(6)
+                .build();
+
+            let save = gtk::Button::with_label("Notiz speichern");
+            save.set_halign(gtk::Align::Fill);
+            save.add_css_class("flat");
+            let popover_for_save = popover.clone();
+            let save_button_for_menu = save_memo_btn_for_context.clone();
+            save.connect_clicked(move |_| {
+                popover_for_save.popdown();
+                save_button_for_menu.activate();
+            });
+            menu_box.append(&save);
+
+            let export = gtk::Button::with_label("Als iCalendar exportieren");
+            export.set_halign(gtk::Align::Fill);
+            export.add_css_class("flat");
+            let popover_for_export = popover.clone();
+            let export_button_for_menu = export_memo_btn_for_context.clone();
+            export.connect_clicked(move |_| {
+                popover_for_export.popdown();
+                export_button_for_menu.activate();
+            });
+            menu_box.append(&export);
+
+            let delete = gtk::Button::with_label("Notiz löschen");
+            delete.set_halign(gtk::Align::Fill);
+            delete.add_css_class("flat");
+            delete.add_css_class("destructive-action");
+            let popover_for_delete = popover.clone();
+            let delete_button_for_menu = delete_memo_btn_for_context.clone();
+            delete.connect_clicked(move |_| {
+                popover_for_delete.popdown();
+                delete_button_for_menu.activate();
+            });
+            menu_box.append(&delete);
+
+            popover.set_child(Some(&menu_box));
+            popover.set_parent(&memo_list_for_context);
+            let popover_weak = popover.downgrade();
+            popover.connect_closed(move |_| {
+                if let Some(popover) = popover_weak.upgrade() {
+                    popover.unparent();
+                }
+            });
+            popover.popup();
+        });
+        memo_list.add_controller(context_click);
+
         let memo_records_for_selection = Rc::clone(&memo_records);
         let selected_memo_for_selection = Rc::clone(&selected_memo);
         let split_for_selection = split.clone();
@@ -1290,6 +1368,23 @@ impl MemosPage {
         split.set_content(Some(&content_page));
         split.set_min_sidebar_width(260.0);
         split.set_max_sidebar_width(360.0);
+        let split_for_navigation = split.clone();
+        let key_controller = gtk::EventControllerKey::new();
+        key_controller.connect_key_pressed(move |_, key, _, modifiers| {
+            let is_back = key == gtk::gdk::Key::Escape
+                || (key == gtk::gdk::Key::Left
+                    && modifiers.contains(gtk::gdk::ModifierType::ALT_MASK));
+            if is_back
+                && split_for_navigation.is_collapsed()
+                && split_for_navigation.shows_content()
+            {
+                split_for_navigation.set_show_content(false);
+                glib::Propagation::Stop
+            } else {
+                glib::Propagation::Proceed
+            }
+        });
+        split.add_controller(key_controller);
         split.set_parent(self);
     }
 
