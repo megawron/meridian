@@ -9,6 +9,7 @@ use super::draft_store_service::DraftAttachment;
 
 use chrono::Utc;
 use std::fs;
+use std::path::Path;
 
 #[derive(Debug, Clone)]
 pub(crate) struct OutgoingMessage {
@@ -83,23 +84,7 @@ pub(crate) fn build_rfc822(message: &OutgoingMessage) -> Result<Vec<u8>, String>
         );
     }
 
-    let attachments = message
-        .attachments
-        .iter()
-        .map(|attachment| {
-            let content = fs::read(&attachment.path).map_err(|error| {
-                format!(
-                    "Anhang konnte nicht gelesen werden ({}): {error}",
-                    attachment.filename
-                )
-            })?;
-            Ok(ExportAttachment {
-                filename: attachment.filename.clone(),
-                mime_type: attachment.mime_type.clone(),
-                content,
-            })
-        })
-        .collect::<Result<Vec<_>, String>>()?;
+    let attachments = load_attachments(&message.attachments)?;
 
     let raw = build_rfc822_parts(
         &message.from,
@@ -164,9 +149,15 @@ pub(crate) fn build_export_rfc822(message: &ExportMessage) -> Result<Vec<u8>, St
     validate_header_value("Datum", &message.date)?;
     if let Some(message_id) = &message.message_id {
         validate_header_value("Message-ID", message_id)?;
+        if !message_id.trim().is_empty() {
+            validate_message_id("Message-ID", message_id)?;
+        }
     }
     for value in message.in_reply_to.iter().chain(message.references.iter()) {
         validate_header_value("Thread-Header", value)?;
+        if !value.trim().is_empty() {
+            validate_message_id("Thread-Header", value)?;
+        }
     }
 
     build_rfc822_parts(
@@ -207,6 +198,25 @@ fn build_rfc822_parts(
     calendar_method: Option<&str>,
     calendar_component: Option<&str>,
 ) -> Result<Vec<u8>, String> {
+    validate_header_value("Datum", date)?;
+    validate_header_value("Message-ID", message_id.unwrap_or_default())?;
+    validate_header_values("In-Reply-To", in_reply_to)?;
+    validate_header_values("References", references)?;
+    validate_header_value("Von", from)?;
+    validate_header_value("Reply-To", reply_to)?;
+    validate_header_value("Empfänger", to)?;
+    validate_header_value("Cc", cc)?;
+    validate_header_value("Bcc", bcc)?;
+    validate_header_value("Betreff", subject)?;
+    if let Some(method) = calendar_method {
+        validate_calendar_method(method)?;
+    }
+    if calendar_component.is_some() != calendar_method.is_some() {
+        return Err(
+            "iTIP-Methode und iCalendar-Komponente müssen gemeinsam gesetzt werden".to_string(),
+        );
+    }
+
     let date_value = if date.trim().is_empty() {
         Utc::now().to_rfc2822()
     } else {
@@ -214,7 +224,8 @@ fn build_rfc822_parts(
     };
     let message_id_value = message_id
         .filter(|value| !value.trim().is_empty())
-        .map(format_message_id)
+        .map(|value| format_message_id("Message-ID", value))
+        .transpose()?
         .unwrap_or_else(|| format!("<{}@evolution-gtk4.local>", uuid::Uuid::new_v4().simple()));
 
     let mut raw = String::new();
@@ -225,103 +236,286 @@ fn build_rfc822_parts(
     raw.push_str("\r\n");
     if !from.trim().is_empty() {
         raw.push_str("From: ");
-        raw.push_str(from.trim());
+        raw.push_str(&encode_address_header(from));
         raw.push_str("\r\n");
     }
     if !reply_to.trim().is_empty() {
         raw.push_str("Reply-To: ");
-        raw.push_str(reply_to.trim());
+        raw.push_str(&encode_address_header(reply_to));
         raw.push_str("\r\n");
     }
     if request_read_receipt && !from.trim().is_empty() {
         raw.push_str("Disposition-Notification-To: ");
-        raw.push_str(from.trim());
+        raw.push_str(&encode_address_header(from));
         raw.push_str("\r\n");
     }
     append_recipient_header(&mut raw, "To", to);
     append_recipient_header(&mut raw, "Cc", cc);
     append_recipient_header(&mut raw, "Bcc", bcc);
+    let in_reply_to = format_message_id_list("In-Reply-To", in_reply_to)?;
     if !in_reply_to.is_empty() {
         raw.push_str("In-Reply-To: ");
-        raw.push_str(&format_message_id_list(in_reply_to));
+        raw.push_str(&in_reply_to);
         raw.push_str("\r\n");
     }
+    let references = format_message_id_list("References", references)?;
     if !references.is_empty() {
         raw.push_str("References: ");
-        raw.push_str(&format_message_id_list(references));
+        raw.push_str(&references);
         raw.push_str("\r\n");
     }
     raw.push_str("Subject: ");
     raw.push_str(&encode_header_value(subject));
     raw.push_str("\r\nMIME-Version: 1.0\r\n");
 
-    let body = if plain_text {
-        normalize_body(&html_to_plain_text(html_body))
-    } else {
+    for attachment in attachments {
+        validate_export_attachment(attachment)?;
+    }
+
+    let plain_body = if plain_text {
         normalize_body(html_body)
-    };
-    let body_content_type = if plain_text {
-        "text/plain; charset=UTF-8"
     } else {
-        "text/html; charset=UTF-8"
+        normalize_body(&html_to_plain_text(html_body))
     };
-    if attachments.is_empty() && calendar_component.is_none() {
-        raw.push_str("Content-Type: ");
-        raw.push_str(body_content_type);
-        raw.push_str("\r\n");
-        raw.push_str("Content-Transfer-Encoding: 8bit\r\n\r\n");
-        raw.push_str(&body);
-        ensure_crlf(&mut raw);
-    } else {
-        let boundary = format!("=_EvolutionGTK4_{}", uuid::Uuid::new_v4().simple());
-        let multipart_kind = if calendar_component.is_some() && attachments.is_empty() {
-            "alternative"
+    let html_body = (!plain_text).then(|| normalize_body(html_body));
+    let has_alternative = html_body.is_some() || calendar_component.is_some();
+
+    if attachments.is_empty() {
+        if has_alternative {
+            let boundary = new_boundary();
+            append_multipart_header(&mut raw, "alternative", &boundary);
+            append_text_part(
+                &mut raw,
+                &boundary,
+                "text/plain; charset=UTF-8",
+                &plain_body,
+            );
+            if let Some(html_body) = html_body.as_deref() {
+                append_text_part(&mut raw, &boundary, "text/html; charset=UTF-8", html_body);
+            }
+            if let (Some(method), Some(component)) = (calendar_method, calendar_component) {
+                append_calendar_part(&mut raw, &boundary, method, component)?;
+            }
+            close_multipart(&mut raw, &boundary);
         } else {
-            "mixed"
-        };
-        raw.push_str("Content-Type: multipart/");
-        raw.push_str(multipart_kind);
-        raw.push_str("; boundary=\"");
-        raw.push_str(&boundary);
-        raw.push_str("\"\r\n\r\n");
-        raw.push_str("--");
-        raw.push_str(&boundary);
-        raw.push_str("\r\nContent-Type: ");
-        raw.push_str(body_content_type);
-        raw.push_str("\r\n");
-        raw.push_str("Content-Transfer-Encoding: 8bit\r\n\r\n");
-        raw.push_str(&body);
-        ensure_crlf(&mut raw);
-
-        if let (Some(method), Some(component)) = (calendar_method, calendar_component) {
-            append_calendar_part(&mut raw, &boundary, method, component)?;
+            append_leaf_part(&mut raw, "text/plain; charset=UTF-8", &plain_body);
         }
-
-        for attachment in attachments {
-            let filename = quoted_parameter(&attachment.filename, "Dateiname")?;
-            let mime_type = if attachment.mime_type.trim().is_empty() {
-                "application/octet-stream"
-            } else {
-                attachment.mime_type.trim()
-            };
-            validate_header_value("MIME-Typ", mime_type)?;
+    } else {
+        let mixed_boundary = new_boundary();
+        append_multipart_header(&mut raw, "mixed", &mixed_boundary);
+        if has_alternative {
+            let alternative_boundary = new_boundary();
             raw.push_str("--");
-            raw.push_str(&boundary);
-            raw.push_str("\r\nContent-Type: ");
-            raw.push_str(mime_type);
-            raw.push_str("; name=\"");
-            raw.push_str(&filename);
-            raw.push_str("\"\r\nContent-Transfer-Encoding: base64\r\n");
-            raw.push_str("Content-Disposition: attachment; filename=\"");
-            raw.push_str(&filename);
+            raw.push_str(&mixed_boundary);
+            raw.push_str("\r\nContent-Type: multipart/alternative; boundary=\"");
+            raw.push_str(&alternative_boundary);
             raw.push_str("\"\r\n\r\n");
-            raw.push_str(&base64_with_crlf(&attachment.content));
+            append_text_part(
+                &mut raw,
+                &alternative_boundary,
+                "text/plain; charset=UTF-8",
+                &plain_body,
+            );
+            if let Some(html_body) = html_body.as_deref() {
+                append_text_part(
+                    &mut raw,
+                    &alternative_boundary,
+                    "text/html; charset=UTF-8",
+                    html_body,
+                );
+            }
+            if let (Some(method), Some(component)) = (calendar_method, calendar_component) {
+                append_calendar_part(&mut raw, &alternative_boundary, method, component)?;
+            }
+            close_multipart(&mut raw, &alternative_boundary);
+        } else {
+            append_text_part(
+                &mut raw,
+                &mixed_boundary,
+                "text/plain; charset=UTF-8",
+                &plain_body,
+            );
         }
-        raw.push_str("--");
-        raw.push_str(&boundary);
-        raw.push_str("--\r\n");
+        for attachment in attachments {
+            append_attachment_part(&mut raw, &mixed_boundary, attachment)?;
+        }
+        close_multipart(&mut raw, &mixed_boundary);
     }
     Ok(raw.into_bytes())
+}
+
+fn load_attachments(attachments: &[DraftAttachment]) -> Result<Vec<ExportAttachment>, String> {
+    attachments
+        .iter()
+        .map(|attachment| {
+            validate_attachment_filename(&attachment.filename)?;
+            validate_mime_type(&attachment.mime_type)?;
+
+            if attachment.path.trim().is_empty() {
+                return Err(format!(
+                    "Anhang konnte nicht gelesen werden ({}): Pfad ist leer",
+                    attachment.filename
+                ));
+            }
+            let path = Path::new(&attachment.path);
+            let metadata = fs::metadata(path).map_err(|error| {
+                format!(
+                    "Anhang konnte nicht gelesen werden ({}): {error}",
+                    attachment.filename
+                )
+            })?;
+            if !metadata.is_file() {
+                return Err(format!(
+                    "Anhang ist keine reguläre Datei: {}",
+                    attachment.filename
+                ));
+            }
+            let content = fs::read(path).map_err(|error| {
+                format!(
+                    "Anhang konnte nicht gelesen werden ({}): {error}",
+                    attachment.filename
+                )
+            })?;
+            Ok(ExportAttachment {
+                filename: attachment.filename.clone(),
+                mime_type: attachment.mime_type.clone(),
+                content,
+            })
+        })
+        .collect()
+}
+
+fn validate_export_attachment(attachment: &ExportAttachment) -> Result<(), String> {
+    validate_attachment_filename(&attachment.filename)?;
+    validate_mime_type(&attachment.mime_type)?;
+    Ok(())
+}
+
+fn validate_attachment_filename(value: &str) -> Result<(), String> {
+    validate_header_value("Dateiname", value)?;
+    let filename = value.trim();
+    if filename.is_empty() {
+        return Err("Anhang benötigt einen Dateinamen".to_string());
+    }
+    if filename.chars().any(char::is_control) {
+        return Err("Dateiname des Anhangs enthält Steuerzeichen".to_string());
+    }
+    if filename == "."
+        || filename == ".."
+        || filename
+            .chars()
+            .any(|character| character == '/' || character == '\\')
+    {
+        return Err("Dateiname des Anhangs enthält einen ungültigen Pfad".to_string());
+    }
+    Ok(())
+}
+
+fn validate_mime_type(value: &str) -> Result<String, String> {
+    let mime_type = value.trim();
+    if mime_type.is_empty() {
+        return Ok("application/octet-stream".to_string());
+    }
+    let mut components = mime_type.split('/');
+    let type_name = components.next().unwrap_or_default();
+    let subtype = components.next().unwrap_or_default();
+    if components.next().is_some() || !is_mime_token(type_name) || !is_mime_token(subtype) {
+        return Err(format!("Ungültiger MIME-Typ des Anhangs: {mime_type}"));
+    }
+    Ok(mime_type.to_ascii_lowercase())
+}
+
+fn is_mime_token(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&byte))
+}
+
+fn new_boundary() -> String {
+    format!("=_EvolutionGTK4_{}", uuid::Uuid::new_v4().simple())
+}
+
+fn append_multipart_header(raw: &mut String, kind: &str, boundary: &str) {
+    raw.push_str("Content-Type: multipart/");
+    raw.push_str(kind);
+    raw.push_str("; boundary=\"");
+    raw.push_str(boundary);
+    raw.push_str("\"\r\n\r\n");
+}
+
+fn append_leaf_part(raw: &mut String, content_type: &str, body: &str) {
+    raw.push_str("Content-Type: ");
+    raw.push_str(content_type);
+    raw.push_str("\r\nContent-Transfer-Encoding: 8bit\r\n\r\n");
+    raw.push_str(body);
+    ensure_crlf(raw);
+}
+
+fn append_text_part(raw: &mut String, boundary: &str, content_type: &str, body: &str) {
+    raw.push_str("--");
+    raw.push_str(boundary);
+    raw.push_str("\r\n");
+    append_leaf_part(raw, content_type, body);
+}
+
+fn close_multipart(raw: &mut String, boundary: &str) {
+    raw.push_str("--");
+    raw.push_str(boundary);
+    raw.push_str("--\r\n");
+}
+
+fn append_attachment_part(
+    raw: &mut String,
+    boundary: &str,
+    attachment: &ExportAttachment,
+) -> Result<(), String> {
+    let mime_type = validate_mime_type(&attachment.mime_type)?;
+    validate_attachment_filename(&attachment.filename)?;
+
+    raw.push_str("--");
+    raw.push_str(boundary);
+    raw.push_str("\r\nContent-Type: ");
+    raw.push_str(&mime_type);
+    append_mime_parameter(raw, "name", &attachment.filename)?;
+    raw.push_str("\r\nContent-Transfer-Encoding: base64\r\n");
+    raw.push_str("Content-Disposition: attachment");
+    append_mime_parameter(raw, "filename", &attachment.filename)?;
+    raw.push_str("\r\n\r\n");
+    raw.push_str(&base64_with_crlf(&attachment.content));
+    ensure_crlf(raw);
+    Ok(())
+}
+
+fn append_mime_parameter(raw: &mut String, name: &str, value: &str) -> Result<(), String> {
+    validate_attachment_filename(value)?;
+    let value = value.trim();
+    raw.push_str("; ");
+    raw.push_str(name);
+    if value.is_ascii() {
+        raw.push_str("=\"");
+        raw.push_str(&value.replace('\\', "\\\\").replace('"', "\\\""));
+        raw.push('"');
+    } else {
+        raw.push_str("*=utf-8''");
+        raw.push_str(&percent_encode_parameter(value.as_bytes()));
+    }
+    Ok(())
+}
+
+fn percent_encode_parameter(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut encoded = String::with_capacity(bytes.len());
+    for &byte in bytes {
+        if byte.is_ascii_alphanumeric() || b"!#$&+-.^_`|~".contains(&byte) {
+            encoded.push(byte as char);
+        } else {
+            encoded.push('%');
+            encoded.push(HEX[(byte >> 4) as usize] as char);
+            encoded.push(HEX[(byte & 0x0f) as usize] as char);
+        }
+    }
+    encoded
 }
 
 fn append_calendar_part(
@@ -330,8 +524,8 @@ fn append_calendar_part(
     method: &str,
     component: &str,
 ) -> Result<(), String> {
-    validate_header_value("iTIP-Methode", method)?;
-    if method.trim().is_empty() || component.trim().is_empty() {
+    validate_calendar_method(method)?;
+    if component.trim().is_empty() {
         return Err("Die iTIP-MIME-Komponente darf nicht leer sein".to_string());
     }
     raw.push_str("--");
@@ -340,7 +534,7 @@ fn append_calendar_part(
     raw.push_str(method.trim());
     raw.push_str("; charset=UTF-8\r\nContent-Disposition: inline\r\n");
     raw.push_str("Content-Transfer-Encoding: 8bit\r\n\r\n");
-    raw.push_str(component.trim_end());
+    raw.push_str(normalize_body(component).trim_end_matches("\r\n"));
     ensure_crlf(raw);
     Ok(())
 }
@@ -354,25 +548,28 @@ fn append_recipient_header(raw: &mut String, name: &str, value: &str) {
     raw.push_str(": ");
     // Evolution accepts semicolon-separated recipient lists in its fields;
     // RFC822 uses commas, so normalize only the separator at this boundary.
-    raw.push_str(&value.replace(';', ","));
+    let normalized = value.replace(';', ",");
+    raw.push_str(&encode_address_header(&normalized));
     raw.push_str("\r\n");
 }
 
-fn format_message_id(value: &str) -> String {
+fn format_message_id(name: &str, value: &str) -> Result<String, String> {
+    validate_message_id(name, value)?;
     let value = value.trim();
     if value.starts_with('<') && value.ends_with('>') {
-        value.to_string()
+        Ok(value.to_string())
     } else {
-        format!("<{value}>")
+        Ok(format!("<{value}>"))
     }
 }
 
-fn format_message_id_list(values: &[String]) -> String {
+fn format_message_id_list(name: &str, values: &[String]) -> Result<String, String> {
     values
         .iter()
-        .map(|value| format_message_id(value))
-        .collect::<Vec<_>>()
-        .join(" ")
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| format_message_id(name, value))
+        .collect::<Result<Vec<_>, _>>()
+        .map(|values| values.join(" "))
 }
 
 fn validate_header_value(name: &str, value: &str) -> Result<(), String> {
@@ -391,6 +588,49 @@ fn validate_header_value(name: &str, value: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn validate_header_values(name: &str, values: &[String]) -> Result<(), String> {
+    for value in values {
+        if !value.trim().is_empty() {
+            validate_message_id(name, value)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_message_id(name: &str, value: &str) -> Result<(), String> {
+    validate_header_value(name, value)?;
+    let value = value.trim();
+    if value.is_empty() {
+        return Err(format!("{name} darf nicht leer sein"));
+    }
+
+    let wrapped = value.starts_with('<') || value.ends_with('>');
+    let inner = if value.starts_with('<') && value.ends_with('>') {
+        &value[1..value.len() - 1]
+    } else if wrapped {
+        return Err(format!("{name} hat ungültige spitze Klammern"));
+    } else {
+        value
+    };
+    if inner.is_empty()
+        || inner
+            .chars()
+            .any(|character| character.is_whitespace() || character == '<' || character == '>')
+    {
+        return Err(format!("{name} hat ein ungültiges Format"));
+    }
+    Ok(())
+}
+
+fn validate_calendar_method(value: &str) -> Result<(), String> {
+    validate_header_value("iTIP-Methode", value)?;
+    let method = value.trim();
+    if !is_mime_token(method) {
+        return Err("Ungültige iTIP-Methode".to_string());
+    }
+    Ok(())
+}
+
 fn encode_header_value(value: &str) -> String {
     if value.is_ascii() {
         return value.to_string();
@@ -399,9 +639,70 @@ fn encode_header_value(value: &str) -> String {
     format!("=?UTF-8?B?{}?=", base64(value.as_bytes()))
 }
 
-fn quoted_parameter(value: &str, name: &str) -> Result<String, String> {
-    validate_header_value(name, value)?;
-    Ok(value.replace('\\', "\\\\").replace('"', "\\\""))
+fn encode_address_header(value: &str) -> String {
+    let mut output = String::with_capacity(value.len());
+    let mut phrase = String::new();
+    let mut address = String::new();
+    let mut in_address = false;
+
+    for character in value.trim().chars() {
+        if in_address {
+            if character == '>' {
+                output.push_str(&address);
+                output.push('>');
+                address.clear();
+                in_address = false;
+            } else {
+                address.push(character);
+            }
+        } else if character == '<' {
+            output.push_str(&encode_address_phrase(&phrase));
+            phrase.clear();
+            output.push('<');
+            in_address = true;
+        } else {
+            phrase.push(character);
+        }
+    }
+
+    if in_address {
+        output.push('<');
+        output.push_str(&address);
+    } else {
+        output.push_str(&encode_address_phrase(&phrase));
+    }
+    output
+}
+
+fn encode_address_phrase(value: &str) -> String {
+    let mut output = String::with_capacity(value.len());
+    let mut token = String::new();
+    let mut quoted = false;
+
+    for character in value.chars() {
+        if character == '"' {
+            quoted = !quoted;
+            token.push(character);
+        } else if character.is_whitespace() && !quoted {
+            append_encoded_phrase_token(&mut output, &token);
+            token.clear();
+            output.push(character);
+        } else {
+            token.push(character);
+        }
+    }
+    append_encoded_phrase_token(&mut output, &token);
+    output
+}
+
+fn append_encoded_phrase_token(output: &mut String, token: &str) {
+    if token.is_empty() || token.is_ascii() || token.contains('@') {
+        output.push_str(token);
+    } else if token.starts_with('"') && token.ends_with('"') && token.len() >= 2 {
+        output.push_str(&encode_header_value(&token[1..token.len() - 1]));
+    } else {
+        output.push_str(&encode_header_value(token));
+    }
 }
 
 fn normalize_body(value: &str) -> String {
@@ -415,71 +716,7 @@ fn normalize_body(value: &str) -> String {
 /// The editor has a native plain-text mode, but drafts and service callers can
 /// still contain HTML, so this remains the final MIME-layer invariant.
 fn html_to_plain_text(value: &str) -> String {
-    let mut output = String::with_capacity(value.len());
-    let mut in_tag = false;
-    let mut tag = String::new();
-
-    for character in value.chars() {
-        if in_tag {
-            if character == '>' {
-                let normalized = tag.trim().to_ascii_lowercase();
-                if normalized == "br"
-                    || normalized == "br/"
-                    || normalized.starts_with("br ")
-                    || normalized == "/p"
-                    || normalized == "/div"
-                    || normalized == "/li"
-                    || normalized == "/blockquote"
-                    || normalized == "/h1"
-                    || normalized == "/h2"
-                    || normalized == "/h3"
-                    || normalized == "/h4"
-                    || normalized == "/h5"
-                    || normalized == "/h6"
-                {
-                    push_newline(&mut output);
-                }
-                in_tag = false;
-                tag.clear();
-            } else {
-                tag.push(character);
-            }
-            continue;
-        }
-
-        if character == '<' {
-            in_tag = true;
-            tag.clear();
-        } else {
-            output.push(character);
-        }
-    }
-
-    decode_basic_entities(&output)
-        .lines()
-        .map(str::trim_end)
-        .collect::<Vec<_>>()
-        .join("\n")
-        .trim()
-        .to_string()
-}
-
-fn push_newline(output: &mut String) {
-    if !output.ends_with('\n') {
-        output.push('\n');
-    }
-}
-
-fn decode_basic_entities(value: &str) -> String {
-    value
-        .replace("&nbsp;", " ")
-        .replace("&#160;", " ")
-        .replace("&amp;", "&")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&#39;", "'")
-        .replace("&apos;", "'")
+    crate::services::html_sanitizer::html_to_plain_text(value)
 }
 
 fn ensure_crlf(value: &mut String) {
@@ -551,8 +788,11 @@ mod tests {
         assert!(text.contains("Disposition-Notification-To: Person <person@example.org>\r\n"));
         assert!(text.contains("To: person@example.org\r\n"));
         assert!(text.contains("Subject: =?UTF-8?B?R3LDvMOfZQ==?=\r\n"));
+        assert!(text.contains("Content-Type: multipart/alternative; boundary=\""));
+        assert!(text.contains("Content-Type: text/plain; charset=UTF-8\r\n"));
         assert!(text.contains("Content-Type: text/html; charset=UTF-8\r\n"));
-        assert!(text.ends_with("<p>Hello</p>\r\n"));
+        assert!(text.contains("<p>Hello</p>\r\n"));
+        assert!(text.ends_with("--\r\n"));
     }
 
     #[test]
@@ -586,6 +826,7 @@ mod tests {
         let text = String::from_utf8(raw).expect("message should be UTF-8");
         assert!(text.contains("To: one@example.org, two@example.org\r\n"));
         assert!(text.contains("Content-Type: multipart/mixed; boundary=\""));
+        assert!(text.contains("Content-Type: multipart/alternative; boundary=\""));
         assert!(text.contains("Content-Disposition: attachment; filename=\"hello.txt\""));
         assert!(text.contains("aGVsbG8=\r\n"));
         assert!(text.ends_with("--\r\n"));
@@ -619,6 +860,7 @@ mod tests {
         assert!(text.contains("Message-ID: <message@example.org>\r\n"));
         assert!(text.contains("In-Reply-To: <parent@example.org>\r\n"));
         assert!(text.contains("References: <root@example.org>\r\n"));
+        assert!(text.contains("Content-Type: multipart/alternative; boundary=\""));
         assert!(text.contains("Content-Disposition: attachment; filename=\"note.txt\""));
         assert!(text.contains("bm90ZQ==\r\n"));
     }
@@ -669,7 +911,7 @@ mod tests {
             cc: String::new(),
             bcc: String::new(),
             subject: "Plain".to_string(),
-            html_body: "<p>Hello &amp; goodbye</p><p>Second line</p>".to_string(),
+            html_body: "Hello & goodbye\r\nSecond line".to_string(),
             plain_text: true,
             attachments: Vec::new(),
             calendar_method: None,
@@ -684,6 +926,43 @@ mod tests {
         assert!(text.contains("Content-Type: text/plain; charset=UTF-8\r\n"));
         assert!(!text.contains("Content-Type: text/html; charset=UTF-8\r\n"));
         assert!(text.ends_with("Hello & goodbye\r\nSecond line\r\n"));
+    }
+
+    #[test]
+    fn rich_text_gets_a_readable_plaintext_fallback() {
+        let raw = build_rfc822(&OutgoingMessage {
+            source_uid: "account-1".to_string(),
+            from: String::new(),
+            reply_to: String::new(),
+            request_read_receipt: false,
+            to: "person@example.org".to_string(),
+            cc: String::new(),
+            bcc: String::new(),
+            subject: "Rich".to_string(),
+            html_body:
+                "<style>body { display: none }</style><p>Hello &amp; team</p><p>Second<br>line</p>"
+                    .to_string(),
+            plain_text: false,
+            attachments: Vec::new(),
+            calendar_method: None,
+            calendar_component: None,
+            pgp_sign: false,
+            pgp_encrypt: false,
+            pgp_key: String::new(),
+            smime_options: None,
+        })
+        .expect("rich message should build");
+        let text = String::from_utf8(raw).expect("message should be UTF-8");
+        assert!(text.contains("Hello & team\r\nSecond\r\nline\r\n"));
+        assert!(text.contains("Content-Type: text/html; charset=UTF-8\r\n"));
+        let plain_part = text
+            .split("Content-Type: text/plain; charset=UTF-8\r\n")
+            .nth(1)
+            .expect("plain alternative should be present")
+            .split("\r\n--")
+            .next()
+            .expect("plain alternative should have a body");
+        assert!(!plain_part.contains("display: none"));
     }
 
     #[test]
@@ -727,6 +1006,141 @@ mod tests {
             html_to_plain_text("<blockquote>Hi<br>there</blockquote><ul><li>A</li><li>B</li></ul>"),
             "Hi\nthere\nA\nB"
         );
+        assert_eq!(
+            normalize_body("one\ntwo\rthree\r\nfour"),
+            "one\r\ntwo\r\nthree\r\nfour"
+        );
+    }
+
+    #[test]
+    fn encodes_unicode_display_names_without_corrupting_addresses() {
+        let raw = build_rfc822(&OutgoingMessage {
+            source_uid: "account-1".to_string(),
+            from: "Jürgen Müller <juergen@example.org>".to_string(),
+            reply_to: String::new(),
+            request_read_receipt: false,
+            to: "Zoë <zoe@example.org>".to_string(),
+            cc: String::new(),
+            bcc: String::new(),
+            subject: "Grüße".to_string(),
+            html_body: "Hallo".to_string(),
+            plain_text: true,
+            attachments: Vec::new(),
+            calendar_method: None,
+            calendar_component: None,
+            pgp_sign: false,
+            pgp_encrypt: false,
+            pgp_key: String::new(),
+            smime_options: None,
+        })
+        .expect("unicode address message should build");
+        let text = String::from_utf8(raw).expect("message should be UTF-8");
+        assert!(text.contains(
+            "From: =?UTF-8?B?SsO8cmdlbg==?= =?UTF-8?B?TcO8bGxlcg==?= <juergen@example.org>\r\n"
+        ));
+        assert!(text.contains("To: =?UTF-8?B?Wm/Dqw==?= <zoe@example.org>\r\n"));
+        assert!(!text.contains("From: Jürgen Müller"));
+    }
+
+    #[test]
+    fn rejects_invalid_message_id_and_calendar_parameter_values() {
+        let export = ExportMessage {
+            from: String::new(),
+            reply_to: String::new(),
+            to: "person@example.org".to_string(),
+            cc: String::new(),
+            bcc: String::new(),
+            subject: "Subject".to_string(),
+            date: "Mon, 01 Jan 2024 12:00:00 +0000".to_string(),
+            message_id: Some("message@example.org\r\nX-Injected: yes".to_string()),
+            in_reply_to: Vec::new(),
+            references: Vec::new(),
+            html_body: "Body".to_string(),
+            attachments: Vec::new(),
+        };
+        assert!(
+            build_export_rfc822(&export)
+                .expect_err("message-id injection should be rejected")
+                .contains("Zeilenumbrüche")
+        );
+
+        let outgoing = OutgoingMessage {
+            source_uid: "account-1".to_string(),
+            from: String::new(),
+            reply_to: String::new(),
+            request_read_receipt: false,
+            to: "person@example.org".to_string(),
+            cc: String::new(),
+            bcc: String::new(),
+            subject: "Subject".to_string(),
+            html_body: "Body".to_string(),
+            plain_text: true,
+            attachments: Vec::new(),
+            calendar_method: Some("REPLY;X-Injected".to_string()),
+            calendar_component: Some("BEGIN:VCALENDAR\r\nEND:VCALENDAR".to_string()),
+            pgp_sign: false,
+            pgp_encrypt: false,
+            pgp_key: String::new(),
+            smime_options: None,
+        };
+        assert!(
+            build_rfc822(&outgoing)
+                .expect_err("invalid iTIP parameter should be rejected")
+                .contains("iTIP")
+        );
+    }
+
+    #[test]
+    fn validates_attachment_names_and_mime_types() {
+        let path = temporary_file("unicode-attachment", b"payload");
+        let mut message = outgoing_with_attachments(vec![DraftAttachment {
+            path: path.to_string_lossy().into_owned(),
+            filename: "Résumé 2026.pdf".to_string(),
+            mime_type: "application/pdf".to_string(),
+            size: 7,
+        }]);
+        let raw = build_rfc822(&message).expect("unicode attachment should build");
+        let text = String::from_utf8(raw).expect("message should be UTF-8");
+        assert!(text.contains("name*=utf-8''R%C3%A9sum%C3%A9%202026.pdf"));
+        assert!(text.contains("filename*=utf-8''R%C3%A9sum%C3%A9%202026.pdf"));
+
+        message.attachments[0].filename = "../secret.txt".to_string();
+        assert!(
+            build_rfc822(&message)
+                .expect_err("path-like attachment names should be rejected")
+                .contains("ungültigen Pfad")
+        );
+
+        message.attachments[0].filename = "valid.txt".to_string();
+        message.attachments[0].mime_type = "text/plain; charset=UTF-8".to_string();
+        assert!(
+            build_rfc822(&message)
+                .expect_err("MIME parameters must not be injected")
+                .contains("MIME-Typ")
+        );
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn rejects_directories_as_attachments() {
+        let path = std::env::temp_dir().join(format!(
+            "evolution-gtk4-attachment-directory-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir(&path).expect("temporary attachment directory should be created");
+        let message = outgoing_with_attachments(vec![DraftAttachment {
+            path: path.to_string_lossy().into_owned(),
+            filename: "directory".to_string(),
+            mime_type: "application/octet-stream".to_string(),
+            size: 0,
+        }]);
+        assert!(
+            build_rfc822(&message)
+                .expect_err("directories must not be sent as attachments")
+                .contains("keine reguläre Datei")
+        );
+        let _ = fs::remove_dir(path);
     }
 
     #[test]
@@ -790,5 +1204,27 @@ mod tests {
         ));
         fs::write(&path, contents).expect("temporary attachment should be written");
         path
+    }
+
+    fn outgoing_with_attachments(attachments: Vec<DraftAttachment>) -> OutgoingMessage {
+        OutgoingMessage {
+            source_uid: "account-1".to_string(),
+            from: String::new(),
+            reply_to: String::new(),
+            request_read_receipt: false,
+            to: "person@example.org".to_string(),
+            cc: String::new(),
+            bcc: String::new(),
+            subject: "Attachment".to_string(),
+            html_body: "<p>Body</p>".to_string(),
+            plain_text: false,
+            attachments,
+            calendar_method: None,
+            calendar_component: None,
+            pgp_sign: false,
+            pgp_encrypt: false,
+            pgp_key: String::new(),
+            smime_options: None,
+        }
     }
 }

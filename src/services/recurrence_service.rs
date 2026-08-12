@@ -16,6 +16,7 @@ pub(crate) struct RecurrenceRule {
     pub(crate) interval: i64,
     pub(crate) count: Option<usize>,
     pub(crate) until: Option<NaiveDate>,
+    pub(crate) week_start: Weekday,
     pub(crate) by_days: Vec<RecurrenceByDay>,
     pub(crate) by_month_days: Vec<i32>,
     pub(crate) by_months: Vec<u32>,
@@ -27,6 +28,9 @@ pub(crate) fn parse_recurrence_rule(raw: &str) -> Option<RecurrenceRule> {
     let mut interval = 1_i64;
     let mut count = None;
     let mut until = None;
+    let mut invalid_count = false;
+    let mut invalid_until = false;
+    let mut week_start = Weekday::Mon;
     let mut by_days = Vec::new();
     let mut by_month_days = Vec::new();
     let mut by_months = Vec::new();
@@ -51,9 +55,18 @@ pub(crate) fn parse_recurrence_rule(raw: &str) -> Option<RecurrenceRule> {
                     .trim()
                     .parse::<usize>()
                     .ok()
-                    .filter(|value| *value > 0)
+                    .filter(|value| *value > 0);
+                invalid_count |= count.is_none();
             }
-            "UNTIL" => until = parse_ical_date(value),
+            "UNTIL" => {
+                until = parse_ical_date(value);
+                invalid_until |= until.is_none();
+            }
+            "WKST" => {
+                if let Some(value) = parse_weekday_token(value) {
+                    week_start = value;
+                }
+            }
             "BYDAY" => by_days.extend(value.split(',').filter_map(parse_extended_weekday_token)),
             "BYMONTHDAY" => by_month_days.extend(value.split(',').filter_map(|value| {
                 let day = value.trim().parse::<i32>().ok()?;
@@ -71,11 +84,16 @@ pub(crate) fn parse_recurrence_rule(raw: &str) -> Option<RecurrenceRule> {
         }
     }
 
+    if invalid_count || invalid_until {
+        return None;
+    }
+
     Some(RecurrenceRule {
         frequency: frequency?,
         interval,
         count,
         until,
+        week_start,
         by_days,
         by_month_days,
         by_months,
@@ -96,7 +114,7 @@ pub(crate) fn recurrence_matches_without_count(
         return true;
     }
 
-    let (period_start, period_end) = recurrence_period_bounds(&rule.frequency, date);
+    let (period_start, period_end) = recurrence_period_bounds(rule, date);
     let candidates = (0..=(period_end - period_start).num_days())
         .map(|offset| period_start + Duration::days(offset))
         .filter(|candidate| recurrence_candidate_matches(rule, initial_start, *candidate))
@@ -197,7 +215,8 @@ fn recurrence_candidate_matches(
     let period_matches = match rule.frequency.as_str() {
         "DAILY" => (date - initial_start).num_days() % rule.interval == 0,
         "WEEKLY" => {
-            let weeks = (week_start(date) - week_start(initial_start))
+            let initial_week = week_start(initial_start, rule.week_start);
+            let weeks = (week_start(date, rule.week_start) - initial_week)
                 .num_days()
                 .div_euclid(7);
             weeks >= 0 && weeks % rule.interval == 0
@@ -257,11 +276,11 @@ fn recurrence_candidate_matches(
     }
 }
 
-fn recurrence_period_bounds(frequency: &str, date: NaiveDate) -> (NaiveDate, NaiveDate) {
-    match frequency {
+fn recurrence_period_bounds(rule: &RecurrenceRule, date: NaiveDate) -> (NaiveDate, NaiveDate) {
+    match rule.frequency.as_str() {
         "DAILY" => (date, date),
         "WEEKLY" => {
-            let start = week_start(date);
+            let start = week_start(date, rule.week_start);
             (start, start + Duration::days(6))
         }
         "MONTHLY" => {
@@ -282,8 +301,10 @@ fn recurrence_period_bounds(frequency: &str, date: NaiveDate) -> (NaiveDate, Nai
     }
 }
 
-fn week_start(date: NaiveDate) -> NaiveDate {
-    date - Duration::days(i64::from(date.weekday().num_days_from_monday()))
+fn week_start(date: NaiveDate, first_weekday: Weekday) -> NaiveDate {
+    let current = i64::from(date.weekday().num_days_from_monday());
+    let first = i64::from(first_weekday.num_days_from_monday());
+    date - Duration::days((current - first).rem_euclid(7))
 }
 
 fn month_distance(start: NaiveDate, date: NaiveDate) -> i64 {
@@ -356,16 +377,7 @@ pub(crate) fn parse_extended_weekday_token(value: &str) -> Option<RecurrenceByDa
     if value.len() < 2 {
         return None;
     }
-    let weekday = match value.get(value.len() - 2..)? {
-        "MO" => Weekday::Mon,
-        "TU" => Weekday::Tue,
-        "WE" => Weekday::Wed,
-        "TH" => Weekday::Thu,
-        "FR" => Weekday::Fri,
-        "SA" => Weekday::Sat,
-        "SU" => Weekday::Sun,
-        _ => return None,
-    };
+    let weekday = parse_weekday_token(value.get(value.len() - 2..)?)?;
     let prefix = value.get(..value.len() - 2).unwrap_or_default();
     let ordinal = if prefix.is_empty() {
         None
@@ -376,12 +388,25 @@ pub(crate) fn parse_extended_weekday_token(value: &str) -> Option<RecurrenceByDa
     Some(RecurrenceByDay { weekday, ordinal })
 }
 
+fn parse_weekday_token(value: &str) -> Option<Weekday> {
+    match value.trim().to_ascii_uppercase().as_str() {
+        "MO" => Some(Weekday::Mon),
+        "TU" => Some(Weekday::Tue),
+        "WE" => Some(Weekday::Wed),
+        "TH" => Some(Weekday::Thu),
+        "FR" => Some(Weekday::Fri),
+        "SA" => Some(Weekday::Sat),
+        "SU" => Some(Weekday::Sun),
+        _ => None,
+    }
+}
+
 pub(crate) fn parse_ical_date(value: &str) -> Option<NaiveDate> {
     let value = value.trim();
     if value.len() < 8 {
         return None;
     }
-    NaiveDate::parse_from_str(&value[..8], "%Y%m%d").ok()
+    NaiveDate::parse_from_str(value.get(..8)?, "%Y%m%d").ok()
 }
 
 #[cfg(test)]
@@ -439,5 +464,131 @@ mod tests {
             next_recurrence_date(&rule, start, date("2026-08-13"), &[]),
             None
         );
+    }
+
+    #[test]
+    fn weekly_interval_honors_rrule_week_start() {
+        let monday_rule = parse_recurrence_rule("FREQ=WEEKLY;INTERVAL=2;BYDAY=MO;WKST=MO").unwrap();
+        let sunday_rule = parse_recurrence_rule("FREQ=WEEKLY;INTERVAL=2;BYDAY=MO;WKST=SU").unwrap();
+        let start = date("2026-08-09");
+
+        assert_eq!(monday_rule.week_start, Weekday::Mon);
+        assert_eq!(sunday_rule.week_start, Weekday::Sun);
+        assert!(!recurrence_occurs_on(
+            &monday_rule,
+            start,
+            date("2026-08-10"),
+            &[]
+        ));
+        assert!(recurrence_occurs_on(
+            &sunday_rule,
+            start,
+            date("2026-08-10"),
+            &[]
+        ));
+        assert!(recurrence_occurs_on(
+            &monday_rule,
+            start,
+            date("2026-08-17"),
+            &[]
+        ));
+        assert!(!recurrence_occurs_on(
+            &sunday_rule,
+            start,
+            date("2026-08-17"),
+            &[]
+        ));
+    }
+
+    #[test]
+    fn weekly_set_position_uses_rrule_week_start() {
+        let monday_rule =
+            parse_recurrence_rule("FREQ=WEEKLY;BYDAY=SU,MO;BYSETPOS=1;WKST=MO").unwrap();
+        let sunday_rule =
+            parse_recurrence_rule("FREQ=WEEKLY;BYDAY=SU,MO;BYSETPOS=1;WKST=SU").unwrap();
+        let start = date("2026-08-02");
+
+        assert!(recurrence_matches_without_count(
+            &monday_rule,
+            start,
+            date("2026-08-03")
+        ));
+        assert!(!recurrence_matches_without_count(
+            &monday_rule,
+            start,
+            date("2026-08-09")
+        ));
+        assert!(!recurrence_matches_without_count(
+            &sunday_rule,
+            start,
+            date("2026-08-03")
+        ));
+        assert!(recurrence_matches_without_count(
+            &sunday_rule,
+            start,
+            date("2026-08-09")
+        ));
+    }
+
+    #[test]
+    fn monthly_count_skips_months_without_the_start_day() {
+        let rule = parse_recurrence_rule("FREQ=MONTHLY;COUNT=4").unwrap();
+        let start = date("2026-01-31");
+
+        assert!(recurrence_occurs_on(&rule, start, date("2026-01-31"), &[]));
+        assert!(!recurrence_occurs_on(&rule, start, date("2026-02-28"), &[]));
+        assert!(recurrence_occurs_on(&rule, start, date("2026-03-31"), &[]));
+        assert!(!recurrence_occurs_on(&rule, start, date("2026-04-30"), &[]));
+        assert!(recurrence_occurs_on(&rule, start, date("2026-05-31"), &[]));
+        assert_eq!(
+            next_recurrence_date(&rule, start, date("2026-02-01"), &[]),
+            Some(date("2026-03-31"))
+        );
+    }
+
+    #[test]
+    fn yearly_count_skips_non_leap_years_for_february_29() {
+        let rule = parse_recurrence_rule("FREQ=YEARLY;BYMONTH=2;BYMONTHDAY=29;COUNT=3").unwrap();
+        let start = date("2024-02-29");
+
+        assert!(recurrence_occurs_on(&rule, start, date("2024-02-29"), &[]));
+        assert!(!recurrence_occurs_on(&rule, start, date("2025-02-28"), &[]));
+        assert!(recurrence_occurs_on(&rule, start, date("2028-02-29"), &[]));
+        assert!(recurrence_occurs_on(&rule, start, date("2032-02-29"), &[]));
+        assert_eq!(
+            next_recurrence_date(&rule, start, date("2025-01-01"), &[]),
+            Some(date("2028-02-29"))
+        );
+    }
+
+    #[test]
+    fn until_date_time_is_inclusive_at_date_precision() {
+        let rule = parse_recurrence_rule("FREQ=DAILY;UNTIL=20260803T235959Z").unwrap();
+        let start = date("2026-08-01");
+
+        assert_eq!(rule.until, Some(date("2026-08-03")));
+        assert!(recurrence_occurs_on(&rule, start, date("2026-08-03"), &[]));
+        assert!(!recurrence_occurs_on(&rule, start, date("2026-08-04"), &[]));
+        assert_eq!(
+            next_recurrence_date(&rule, start, date("2026-08-04"), &[]),
+            None
+        );
+    }
+
+    #[test]
+    fn parse_ical_date_accepts_date_time_values_without_panicking() {
+        assert_eq!(
+            parse_ical_date("20260803T235959Z"),
+            Some(date("2026-08-03"))
+        );
+        assert_eq!(parse_ical_date("1234567ä"), None);
+    }
+
+    #[test]
+    fn invalid_count_and_until_do_not_create_unbounded_rules() {
+        assert!(parse_recurrence_rule("FREQ=DAILY;COUNT=0").is_none());
+        assert!(parse_recurrence_rule("FREQ=DAILY;COUNT=-1").is_none());
+        assert!(parse_recurrence_rule("FREQ=DAILY;UNTIL=not-a-date").is_none());
+        assert!(parse_recurrence_rule("FREQ=DAILY").is_some());
     }
 }

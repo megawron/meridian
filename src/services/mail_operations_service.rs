@@ -9,6 +9,10 @@ use std::fmt;
 use std::fs;
 use std::io;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+
+use std::collections::HashSet;
 
 use serde::{Deserialize, Serialize};
 
@@ -47,6 +51,88 @@ impl fmt::Display for MailOperationKind {
     }
 }
 
+static NEXT_OPERATION_ID: AtomicU64 = AtomicU64::new(1);
+
+/// Stable correlation ID for one logical mutation.
+///
+/// A GTK caller can retain this value while a worker is running and discard a
+/// late result which belongs to an older selection or view generation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct MailOperationId(u64);
+
+impl MailOperationId {
+    fn next() -> Self {
+        Self(NEXT_OPERATION_ID.fetch_add(1, Ordering::Relaxed))
+    }
+
+    pub(crate) fn get(self) -> u64 {
+        self.0
+    }
+}
+
+impl fmt::Display for MailOperationId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
+/// Framework-neutral lifecycle of one mutation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum MailOperationStatus {
+    Queued = 0,
+    Running = 1,
+    RollingBack = 2,
+    Succeeded = 3,
+    Failed = 4,
+    Conflict = 5,
+    Cancelled = 6,
+    RollbackFailed = 7,
+}
+
+impl MailOperationStatus {
+    fn from_atomic(value: u8) -> Self {
+        match value {
+            0 => Self::Queued,
+            1 => Self::Running,
+            2 => Self::RollingBack,
+            3 => Self::Succeeded,
+            4 => Self::Failed,
+            5 => Self::Conflict,
+            6 => Self::Cancelled,
+            7 => Self::RollbackFailed,
+            _ => Self::Failed,
+        }
+    }
+
+    pub(crate) fn is_terminal(self) -> bool {
+        matches!(
+            self,
+            Self::Succeeded
+                | Self::Failed
+                | Self::Conflict
+                | Self::Cancelled
+                | Self::RollbackFailed
+        )
+    }
+}
+
+impl fmt::Display for MailOperationStatus {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let label = match self {
+            Self::Queued => "wartend",
+            Self::Running => "läuft",
+            Self::RollingBack => "wird zurückgerollt",
+            Self::Succeeded => "erfolgreich",
+            Self::Failed => "fehlgeschlagen",
+            Self::Conflict => "Konflikt",
+            Self::Cancelled => "abgebrochen",
+            Self::RollbackFailed => "Rückabwicklung fehlgeschlagen",
+        };
+        formatter.write_str(label)
+    }
+}
+
 #[derive(Debug)]
 pub enum MailOperationError {
     Io(io::Error),
@@ -61,6 +147,21 @@ pub enum MailOperationError {
     Unsupported {
         operation: MailOperationKind,
         backend: &'static str,
+    },
+    Busy {
+        operation: MailOperationKind,
+        message: String,
+    },
+    Cancelled {
+        operation: MailOperationKind,
+    },
+    Lifecycle {
+        operation: MailOperationKind,
+        status: MailOperationStatus,
+    },
+    RollbackFailed {
+        operation: MailOperationKind,
+        message: String,
     },
 }
 
@@ -78,6 +179,23 @@ impl fmt::Display for MailOperationError {
                 formatter,
                 "{operation} ist mit dem Backend {backend} noch nicht verfügbar"
             ),
+            Self::Busy { operation, message } => {
+                write!(
+                    formatter,
+                    "{operation} für {message} wird bereits ausgeführt"
+                )
+            }
+            Self::Cancelled { operation } => {
+                write!(formatter, "{operation} wurde abgebrochen")
+            }
+            Self::Lifecycle { operation, status } => write!(
+                formatter,
+                "{operation} kann im Status {status} nicht erneut gestartet werden"
+            ),
+            Self::RollbackFailed { operation, message } => write!(
+                formatter,
+                "{operation} ist fehlgeschlagen und konnte nicht vollständig zurückgerollt werden: {message}"
+            ),
         }
     }
 }
@@ -87,6 +205,29 @@ impl std::error::Error for MailOperationError {}
 impl From<io::Error> for MailOperationError {
     fn from(error: io::Error) -> Self {
         Self::Io(error)
+    }
+}
+
+impl MailOperationError {
+    fn status(&self) -> MailOperationStatus {
+        match self {
+            Self::Conflict { .. } => MailOperationStatus::Conflict,
+            Self::Cancelled { .. } => MailOperationStatus::Cancelled,
+            Self::RollbackFailed { .. } => MailOperationStatus::RollbackFailed,
+            Self::Io(_)
+            | Self::Backend { .. }
+            | Self::Unsupported { .. }
+            | Self::Busy { .. }
+            | Self::Lifecycle { .. } => MailOperationStatus::Failed,
+        }
+    }
+
+    pub(crate) fn is_cancelled(&self) -> bool {
+        matches!(self, Self::Cancelled { .. })
+    }
+
+    pub(crate) fn is_conflict(&self) -> bool {
+        matches!(self, Self::Conflict { .. })
     }
 }
 
@@ -527,6 +668,352 @@ impl MailCommand {
     pub(crate) fn description(&self) -> &str {
         &self.description
     }
+
+    fn operation_kind(&self) -> MailOperationKind {
+        self.forward.kind()
+    }
+
+    fn operation_key(&self) -> MailOperationKey {
+        self.forward.operation_key()
+    }
+}
+
+impl MailOperation {
+    fn kind(&self) -> MailOperationKind {
+        match self {
+            Self::SetMessageState { .. } => MailOperationKind::SetMessageState,
+            Self::Delete { .. } | Self::RestoreDeleted { .. } => MailOperationKind::Delete,
+            Self::Move { .. } => MailOperationKind::Move,
+            Self::Copy { .. } | Self::RemoveCopy { .. } => MailOperationKind::Copy,
+            Self::Archive { .. } | Self::RestoreArchived { .. } => MailOperationKind::Archive,
+            Self::SetJunk { is_junk: true, .. } => MailOperationKind::MarkJunk,
+            Self::SetJunk { is_junk: false, .. } => MailOperationKind::MarkNotJunk,
+            Self::SetImportant {
+                is_important: true, ..
+            } => MailOperationKind::MarkImportant,
+            Self::SetImportant {
+                is_important: false,
+                ..
+            } => MailOperationKind::MarkNotImportant,
+            Self::SetLabel { .. } => MailOperationKind::SetLabel,
+        }
+    }
+
+    fn operation_key(&self) -> MailOperationKey {
+        let (id, location) = match self {
+            Self::SetMessageState { id, location, .. }
+            | Self::Delete { id, location }
+            | Self::Move { id, location, .. }
+            | Self::Copy { id, location, .. }
+            | Self::RemoveCopy { id, location, .. }
+            | Self::Archive { id, location }
+            | Self::SetJunk { id, location, .. }
+            | Self::SetImportant { id, location, .. }
+            | Self::SetLabel { id, location, .. }
+            | Self::RestoreDeleted { id, location }
+            | Self::RestoreArchived { id, location } => (id, location),
+        };
+        let identity = location.as_ref().map_or_else(
+            || format!("local:{id}"),
+            |location| {
+                location
+                    .message_id
+                    .as_deref()
+                    .filter(|message_id| !message_id.trim().is_empty())
+                    .map(|message_id| {
+                        format!("remote:{}:message-id:{message_id}", location.source_uid)
+                    })
+                    .unwrap_or_else(|| {
+                        format!(
+                            "remote:{}:{}:{}",
+                            location.source_uid, location.folder_name, location.message_uid
+                        )
+                    })
+            },
+        );
+        MailOperationKey { identity }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct MailOperationKey {
+    identity: String,
+}
+
+/// Coordinates worker-owned mail mutations without depending on GTK. A
+/// message can have at most one mutation in flight, which prevents stale
+/// read/flag/move results from racing each other. The ticket is intentionally
+/// movable to a worker thread while its cancellation handle stays with the UI.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct MailOperationCoordinator {
+    in_flight: Arc<Mutex<HashSet<MailOperationKey>>>,
+}
+
+impl MailOperationCoordinator {
+    pub(crate) fn prepare(
+        &self,
+        command: MailCommand,
+    ) -> Result<PreparedMailOperation, MailOperationError> {
+        let key = command.operation_key();
+        let mut in_flight = self
+            .in_flight
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !in_flight.insert(key.clone()) {
+            return Err(MailOperationError::Busy {
+                operation: command.operation_kind(),
+                message: key.identity,
+            });
+        }
+        drop(in_flight);
+
+        Ok(PreparedMailOperation {
+            command: Some(command),
+            key,
+            in_flight: Arc::clone(&self.in_flight),
+            context: MailOperationContext::new(),
+        })
+    }
+
+    #[cfg(test)]
+    fn active_count(&self) -> usize {
+        self.in_flight
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .len()
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct MailOperationCancellation {
+    requested: Arc<AtomicBool>,
+}
+
+impl MailOperationCancellation {
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    pub(crate) fn cancel(&self) {
+        self.requested.store(true, Ordering::Release);
+    }
+
+    pub(crate) fn is_cancelled(&self) -> bool {
+        self.requested.load(Ordering::Acquire)
+    }
+
+    fn check(&self, operation: MailOperationKind) -> Result<(), MailOperationError> {
+        if self.is_cancelled() {
+            Err(MailOperationError::Cancelled { operation })
+        } else {
+            Ok(())
+        }
+    }
+}
+
+/// One-shot lifecycle and cancellation handle for a mail mutation.
+///
+/// Cloning the context only clones the observation/cancellation handle; the
+/// operation itself still has to be executed exactly once. Reusing a terminal
+/// context returns a lifecycle error instead of issuing a duplicate action.
+#[derive(Debug, Clone)]
+pub(crate) struct MailOperationContext {
+    id: MailOperationId,
+    cancellation: MailOperationCancellation,
+    status: Arc<AtomicU8>,
+}
+
+impl MailOperationContext {
+    pub(crate) fn new() -> Self {
+        Self::with_cancellation(MailOperationCancellation::new())
+    }
+
+    fn with_cancellation(cancellation: MailOperationCancellation) -> Self {
+        Self {
+            id: MailOperationId::next(),
+            cancellation,
+            status: Arc::new(AtomicU8::new(MailOperationStatus::Queued as u8)),
+        }
+    }
+
+    pub(crate) fn id(&self) -> MailOperationId {
+        self.id
+    }
+
+    pub(crate) fn cancellation(&self) -> MailOperationCancellation {
+        self.cancellation.clone()
+    }
+
+    pub(crate) fn status(&self) -> MailOperationStatus {
+        MailOperationStatus::from_atomic(self.status.load(Ordering::Acquire))
+    }
+
+    pub(crate) fn is_cancelled(&self) -> bool {
+        self.cancellation.is_cancelled()
+    }
+
+    /// Request cancellation while the operation is still useful to cancel.
+    /// Returns `false` after a terminal result has been published.
+    pub(crate) fn cancel(&self) -> bool {
+        loop {
+            let status = self.status();
+            if status.is_terminal() {
+                return false;
+            }
+            self.cancellation.cancel();
+            if status == MailOperationStatus::Queued {
+                if self
+                    .status
+                    .compare_exchange(
+                        MailOperationStatus::Queued as u8,
+                        MailOperationStatus::Cancelled as u8,
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                    )
+                    .is_err()
+                {
+                    continue;
+                }
+            }
+            return true;
+        }
+    }
+
+    fn begin(&self, operation: MailOperationKind) -> Result<(), MailOperationError> {
+        if self.cancellation.is_cancelled() {
+            self.status
+                .compare_exchange(
+                    MailOperationStatus::Queued as u8,
+                    MailOperationStatus::Cancelled as u8,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                )
+                .ok();
+            return Err(MailOperationError::Cancelled { operation });
+        }
+
+        match self.status.compare_exchange(
+            MailOperationStatus::Queued as u8,
+            MailOperationStatus::Running as u8,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => Ok(()),
+            Err(value) => Err(MailOperationError::Lifecycle {
+                operation,
+                status: MailOperationStatus::from_atomic(value),
+            }),
+        }
+    }
+
+    fn mark_rolling_back(&self) {
+        self.status
+            .store(MailOperationStatus::RollingBack as u8, Ordering::Release);
+    }
+
+    fn finish<T>(&self, result: &Result<T, MailOperationError>) {
+        let status = result
+            .as_ref()
+            .map(|_| MailOperationStatus::Succeeded)
+            .unwrap_or_else(|error| error.status());
+        self.status.store(status as u8, Ordering::Release);
+    }
+
+    pub(crate) fn run<T, F>(
+        &self,
+        operation: MailOperationKind,
+        work: F,
+    ) -> Result<T, MailOperationError>
+    where
+        F: FnOnce(&MailOperationContext) -> Result<T, MailOperationError>,
+    {
+        self.begin(operation)?;
+        let result = work(self);
+        self.finish(&result);
+        result
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct PreparedMailOperation {
+    command: Option<MailCommand>,
+    key: MailOperationKey,
+    in_flight: Arc<Mutex<HashSet<MailOperationKey>>>,
+    context: MailOperationContext,
+}
+
+impl PreparedMailOperation {
+    pub(crate) fn cancellation(&self) -> MailOperationCancellation {
+        self.context.cancellation()
+    }
+
+    pub(crate) fn context(&self) -> MailOperationContext {
+        self.context.clone()
+    }
+
+    /// Run this prepared operation from a worker. Cancellation requested
+    /// before backend work starts prevents the mutation. Once the backend has
+    /// started, a successful result remains successful even if cancellation
+    /// was requested meanwhile, so the caller can reconcile visible state
+    /// instead of creating a phantom failure.
+    pub(crate) fn run(
+        self,
+        operations: &MailOperationsService,
+    ) -> Result<CompletedMailOperation, MailOperationError> {
+        self.run_with(|operation| operations.apply_with_result(operation))
+    }
+
+    fn run_with<F>(mut self, apply: F) -> Result<CompletedMailOperation, MailOperationError>
+    where
+        F: FnOnce(MailOperation) -> Result<Option<MailBackendLocation>, MailOperationError>,
+    {
+        let mut command = self
+            .command
+            .take()
+            .expect("a prepared mail operation can only run once");
+        let operation = command.operation_kind();
+        let result = self.context.run(operation, |context| {
+            context.cancellation().check(operation)?;
+            apply(command.forward.clone())
+        })?;
+        command.update_inverse_from_result(result);
+        Ok(CompletedMailOperation {
+            command,
+            cancellation_requested: self.context.is_cancelled(),
+        })
+    }
+}
+
+impl Drop for PreparedMailOperation {
+    fn drop(&mut self) {
+        if self.context.status() == MailOperationStatus::Queued {
+            self.context.cancellation.cancel();
+            self.context
+                .status
+                .store(MailOperationStatus::Cancelled as u8, Ordering::Release);
+        }
+        self.in_flight
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&self.key);
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct CompletedMailOperation {
+    command: MailCommand,
+    cancellation_requested: bool,
+}
+
+impl CompletedMailOperation {
+    pub(crate) fn cancellation_requested(&self) -> bool {
+        self.cancellation_requested
+    }
+
+    /// Commit history only after a worker reported confirmed backend success.
+    pub(crate) fn commit(self, history: &mut MailCommandStack) {
+        history.record_applied(self.command);
+    }
 }
 
 const COMMAND_HISTORY_VERSION: u32 = 1;
@@ -630,18 +1117,93 @@ impl MailCommandStack {
         }
     }
 
-    pub(crate) fn execute(
-        &mut self,
-        operations: &MailOperationsService,
-        mut command: MailCommand,
-    ) -> Result<(), MailOperationError> {
-        let result = operations.apply_with_result(command.forward.clone())?;
-        command.update_inverse_from_result(result);
+    fn record_applied(&mut self, command: MailCommand) {
         self.undo.push(command);
         self.redo.clear();
         self.trim_history();
         self.persist();
-        Ok(())
+    }
+
+    fn apply_command_with_cancellation(
+        operations: &MailOperationsService,
+        mut command: MailCommand,
+        cancellation: &MailOperationCancellation,
+    ) -> Result<MailCommand, MailOperationError> {
+        let operation = command.operation_kind();
+        cancellation.check(operation)?;
+        let result = operations.apply_with_result(command.forward.clone())?;
+        command.update_inverse_from_result(result);
+        Ok(command)
+    }
+
+    fn rollback_applied(
+        operations: &MailOperationsService,
+        applied: &[MailCommand],
+        context: &MailOperationContext,
+        operation: MailOperationKind,
+        original: &MailOperationError,
+    ) -> Result<(), MailOperationError> {
+        if applied.is_empty() {
+            return Ok(());
+        }
+
+        // Rollback is a data-integrity action and deliberately ignores the
+        // cancellation flag. Stopping halfway through rollback would leave a
+        // batch in a less predictable state than the original failure.
+        context.mark_rolling_back();
+        let mut rollback_errors = Vec::new();
+        for previous in applied.iter().rev() {
+            if let Err(error) = operations.apply_with_result(previous.inverse.clone()) {
+                tracing::error!(%error, "Could not roll back a partially applied mail batch");
+                rollback_errors.push(error.to_string());
+            }
+        }
+
+        if rollback_errors.is_empty() {
+            Ok(())
+        } else {
+            Err(MailOperationError::RollbackFailed {
+                operation,
+                message: format!(
+                    "Ursprünglicher Fehler: {original}; Rückabwicklung: {}",
+                    rollback_errors.join("; ")
+                ),
+            })
+        }
+    }
+
+    pub(crate) fn execute(
+        &mut self,
+        operations: &MailOperationsService,
+        command: MailCommand,
+    ) -> Result<(), MailOperationError> {
+        let context = MailOperationContext::new();
+        self.execute_with_context(operations, command, &context)
+    }
+
+    pub(crate) fn execute_with_cancellation(
+        &mut self,
+        operations: &MailOperationsService,
+        command: MailCommand,
+        cancellation: &MailOperationCancellation,
+    ) -> Result<(), MailOperationError> {
+        let context = MailOperationContext::with_cancellation(cancellation.clone());
+        self.execute_with_context(operations, command, &context)
+    }
+
+    pub(crate) fn execute_with_context(
+        &mut self,
+        operations: &MailOperationsService,
+        command: MailCommand,
+        context: &MailOperationContext,
+    ) -> Result<(), MailOperationError> {
+        let operation = command.operation_kind();
+        context.run(operation, |context| {
+            let command =
+                Self::apply_command_with_cancellation(operations, command, &context.cancellation)?;
+            self.record_applied(command);
+            Ok(())
+        })
     }
 
     pub(crate) fn execute_batch(
@@ -649,76 +1211,167 @@ impl MailCommandStack {
         operations: &MailOperationsService,
         commands: Vec<MailCommand>,
     ) -> Result<usize, MailOperationError> {
-        let mut applied: Vec<MailCommand> = Vec::with_capacity(commands.len());
-        for mut command in commands {
-            let result = match operations.apply_with_result(command.forward.clone()) {
-                Ok(result) => result,
-                Err(error) => {
-                    for previous in applied.iter().rev() {
-                        if let Err(rollback_error) =
-                            operations.apply_with_result(previous.inverse.clone())
-                        {
-                            tracing::error!(
-                                %rollback_error,
-                                "Could not roll back a partially applied mail batch"
-                            );
-                        }
-                    }
-                    return Err(error);
-                }
-            };
-            command.update_inverse_from_result(result);
-            applied.push(command);
+        if commands.is_empty() {
+            return Ok(0);
         }
+        let context = MailOperationContext::new();
+        self.execute_batch_with_context(operations, commands, &context)
+    }
 
-        let applied_count = applied.len();
-        if applied_count > 0 {
-            self.undo.extend(applied);
-            self.redo.clear();
-            self.trim_history();
-            self.persist();
+    pub(crate) fn execute_batch_with_cancellation(
+        &mut self,
+        operations: &MailOperationsService,
+        commands: Vec<MailCommand>,
+        cancellation: &MailOperationCancellation,
+    ) -> Result<usize, MailOperationError> {
+        if commands.is_empty() {
+            return Ok(0);
         }
-        Ok(applied_count)
+        let context = MailOperationContext::with_cancellation(cancellation.clone());
+        self.execute_batch_with_context(operations, commands, &context)
+    }
+
+    pub(crate) fn execute_batch_with_context(
+        &mut self,
+        operations: &MailOperationsService,
+        commands: Vec<MailCommand>,
+        context: &MailOperationContext,
+    ) -> Result<usize, MailOperationError> {
+        let Some(first) = commands.first() else {
+            return Ok(0);
+        };
+        let operation = first.operation_kind();
+        context.run(operation, |context| {
+            let mut applied: Vec<MailCommand> = Vec::with_capacity(commands.len());
+            for command in commands {
+                let command = match Self::apply_command_with_cancellation(
+                    operations,
+                    command,
+                    &context.cancellation,
+                ) {
+                    Ok(command) => command,
+                    Err(error) => {
+                        if applied.is_empty() {
+                            return Err(error);
+                        }
+                        return match Self::rollback_applied(
+                            operations, &applied, context, operation, &error,
+                        ) {
+                            Ok(()) => Err(error),
+                            Err(rollback_error) => Err(rollback_error),
+                        };
+                    }
+                };
+                applied.push(command);
+            }
+
+            let applied_count = applied.len();
+            if applied_count > 0 {
+                self.undo.extend(applied);
+                self.redo.clear();
+                self.trim_history();
+                self.persist();
+            }
+            Ok(applied_count)
+        })
     }
 
     pub(crate) fn undo(
         &mut self,
         operations: &MailOperationsService,
     ) -> Result<Option<MailCommand>, MailOperationError> {
-        let Some(command) = self.undo.pop() else {
+        let Some(command) = self.undo.last() else {
             return Ok(None);
         };
-        if let Err(error) = operations.apply_with_result(command.inverse.clone()) {
-            self.undo.push(command);
-            return Err(error);
-        }
-        let result = command.clone();
-        self.redo.push(command);
-        self.trim_history();
-        self.persist();
-        Ok(Some(result))
+        let context = MailOperationContext::new();
+        self.undo_with_context(operations, &context, command.operation_kind())
+    }
+
+    pub(crate) fn undo_with_cancellation(
+        &mut self,
+        operations: &MailOperationsService,
+        cancellation: &MailOperationCancellation,
+    ) -> Result<Option<MailCommand>, MailOperationError> {
+        let Some(command) = self.undo.last() else {
+            return Ok(None);
+        };
+        let context = MailOperationContext::with_cancellation(cancellation.clone());
+        self.undo_with_context(operations, &context, command.operation_kind())
+    }
+
+    pub(crate) fn undo_with_context(
+        &mut self,
+        operations: &MailOperationsService,
+        context: &MailOperationContext,
+        operation: MailOperationKind,
+    ) -> Result<Option<MailCommand>, MailOperationError> {
+        context.run(operation, |context| {
+            context.cancellation.check(operation)?;
+            let command = self
+                .undo
+                .pop()
+                .expect("undo entry was checked before starting");
+            if let Err(error) = operations.apply_with_result(command.inverse.clone()) {
+                self.undo.push(command);
+                return Err(error);
+            }
+            let result = command.clone();
+            self.redo.push(command);
+            self.trim_history();
+            self.persist();
+            Ok(Some(result))
+        })
     }
 
     pub(crate) fn redo(
         &mut self,
         operations: &MailOperationsService,
     ) -> Result<Option<MailCommand>, MailOperationError> {
-        let Some(mut command) = self.redo.pop() else {
+        let Some(command) = self.redo.last() else {
             return Ok(None);
         };
-        let result = match operations.apply_with_result(command.forward.clone()) {
-            Ok(result) => result,
-            Err(error) => {
-                self.redo.push(command);
-                return Err(error);
-            }
+        let context = MailOperationContext::new();
+        self.redo_with_context(operations, &context, command.operation_kind())
+    }
+
+    pub(crate) fn redo_with_cancellation(
+        &mut self,
+        operations: &MailOperationsService,
+        cancellation: &MailOperationCancellation,
+    ) -> Result<Option<MailCommand>, MailOperationError> {
+        let Some(command) = self.redo.last() else {
+            return Ok(None);
         };
-        command.update_inverse_from_result(result);
-        let result = command.clone();
-        self.undo.push(command);
-        self.trim_history();
-        self.persist();
-        Ok(Some(result))
+        let context = MailOperationContext::with_cancellation(cancellation.clone());
+        self.redo_with_context(operations, &context, command.operation_kind())
+    }
+
+    pub(crate) fn redo_with_context(
+        &mut self,
+        operations: &MailOperationsService,
+        context: &MailOperationContext,
+        operation: MailOperationKind,
+    ) -> Result<Option<MailCommand>, MailOperationError> {
+        context.run(operation, |context| {
+            context.cancellation.check(operation)?;
+            let mut command = self
+                .redo
+                .pop()
+                .expect("redo entry was checked before starting");
+            let result = match operations.apply_with_result(command.forward.clone()) {
+                Ok(result) => result,
+                Err(error) => {
+                    self.redo.push(command);
+                    return Err(error);
+                }
+            };
+            command.update_inverse_from_result(result);
+            let result = command.clone();
+            self.undo.push(command);
+            self.trim_history();
+            self.persist();
+            Ok(Some(result))
+        })
     }
 
     pub(crate) fn can_undo(&self) -> bool {
@@ -933,6 +1586,30 @@ impl MailOperationsService {
         }
     }
 
+    /// Apply a mutation after a cooperative cancellation check. The check is
+    /// intentionally only before the backend call; once the backend starts,
+    /// its confirmed result must be reported honestly to the caller.
+    pub(crate) fn apply_with_cancellation(
+        &self,
+        operation: MailOperation,
+        cancellation: &MailOperationCancellation,
+    ) -> Result<(), MailOperationError> {
+        let kind = operation.kind();
+        cancellation.check(kind)?;
+        self.apply(operation)
+    }
+
+    pub(crate) fn apply_with_context(
+        &self,
+        operation: MailOperation,
+        context: &MailOperationContext,
+    ) -> Result<(), MailOperationError> {
+        let kind = operation.kind();
+        context.run(kind, |context| {
+            self.apply_with_cancellation(operation, &context.cancellation)
+        })
+    }
+
     pub(crate) fn apply_with_result(
         &self,
         operation: MailOperation,
@@ -959,6 +1636,27 @@ impl MailOperationsService {
             ),
             operation => self.apply(operation).map(|()| None),
         }
+    }
+
+    pub(crate) fn apply_with_result_and_cancellation(
+        &self,
+        operation: MailOperation,
+        cancellation: &MailOperationCancellation,
+    ) -> Result<Option<MailBackendLocation>, MailOperationError> {
+        let kind = operation.kind();
+        cancellation.check(kind)?;
+        self.apply_with_result(operation)
+    }
+
+    pub(crate) fn apply_with_result_and_context(
+        &self,
+        operation: MailOperation,
+        context: &MailOperationContext,
+    ) -> Result<Option<MailBackendLocation>, MailOperationError> {
+        let kind = operation.kind();
+        context.run(kind, |context| {
+            self.apply_with_result_and_cancellation(operation, &context.cancellation)
+        })
     }
 
     pub fn set_message_state(
@@ -1600,6 +2298,7 @@ mod tests {
             .clone();
         let operations = MailOperationsService::with_store(store.clone());
         let mut history = MailCommandStack::default();
+        let context = MailOperationContext::new();
         let location = MailBackendLocation {
             source_uid: "source".to_string(),
             folder_name: "INBOX".to_string(),
@@ -1607,24 +2306,16 @@ mod tests {
             message_id: None,
         };
 
-        assert!(
-            history
-                .execute_batch(
-                    &operations,
-                    vec![
-                        MailCommand::set_message_state(
-                            message_id.clone(),
-                            None,
-                            true,
-                            false,
-                            false,
-                            true,
-                        ),
-                        MailCommand::move_to("remote", location, "Archive"),
-                    ],
-                )
-                .is_err()
+        let result = history.execute_batch_with_context(
+            &operations,
+            vec![
+                MailCommand::set_message_state(message_id.clone(), None, true, false, false, true),
+                MailCommand::move_to("remote", location, "Archive"),
+            ],
+            &context,
         );
+        assert!(result.is_err());
+        assert_eq!(context.status(), MailOperationStatus::Failed);
         assert!(!history.can_undo());
         assert_eq!(
             MailMetadataStore::new(store.metadata_path())
@@ -1715,6 +2406,339 @@ mod tests {
                 location: Some(saved_location)
             } if id == "archive-message" && saved_location == &location
         ));
+    }
+
+    #[test]
+    fn operation_context_publishes_lifecycle_and_rejects_reuse() {
+        let context = MailOperationContext::new();
+        assert!(context.id().get() > 0);
+        assert_eq!(context.status(), MailOperationStatus::Queued);
+
+        let result: Result<(), MailOperationError> =
+            context.run(MailOperationKind::SetLabel, |running| {
+                assert_eq!(running.status(), MailOperationStatus::Running);
+                Ok(())
+            });
+        assert!(result.is_ok());
+        assert_eq!(context.status(), MailOperationStatus::Succeeded);
+        assert!(!context.cancel());
+
+        let reused = context.run(MailOperationKind::SetLabel, |_| Ok(()));
+        assert!(matches!(
+            reused,
+            Err(MailOperationError::Lifecycle {
+                operation: MailOperationKind::SetLabel,
+                status: MailOperationStatus::Succeeded,
+            })
+        ));
+        assert_eq!(context.status(), MailOperationStatus::Succeeded);
+    }
+
+    #[test]
+    fn operation_context_distinguishes_conflict_and_cancellation() {
+        let conflict_context = MailOperationContext::new();
+        let conflict: Result<(), MailOperationError> =
+            conflict_context.run(MailOperationKind::Delete, |_| {
+                Err(MailOperationError::Conflict {
+                    operation: MailOperationKind::Delete,
+                    message: "server state changed".to_string(),
+                })
+            });
+        assert!(matches!(
+            conflict,
+            Err(ref error) if error.is_conflict()
+        ));
+        assert_eq!(conflict_context.status(), MailOperationStatus::Conflict);
+
+        let cancelled_context = MailOperationContext::new();
+        assert!(cancelled_context.cancel());
+        assert_eq!(cancelled_context.status(), MailOperationStatus::Cancelled);
+        let mut backend_called = false;
+        let cancelled: Result<(), MailOperationError> =
+            cancelled_context.run(MailOperationKind::Delete, |_| {
+                backend_called = true;
+                Ok(())
+            });
+        assert!(matches!(
+            cancelled,
+            Err(ref error) if error.is_cancelled()
+        ));
+        assert!(!backend_called);
+        assert_eq!(cancelled_context.status(), MailOperationStatus::Cancelled);
+    }
+
+    #[test]
+    fn cancelled_command_does_not_change_state_or_history() {
+        let root = temporary_directory("operations-cancelled-command");
+        let mail_dir = root.join("mail");
+        fs::create_dir_all(&mail_dir).expect("mail directory should be created");
+        fs::write(
+            mail_dir.join("message.eml"),
+            "From: Sender <sender@example.org>\nSubject: Test\n\nBody\n",
+        )
+        .expect("mail should be written");
+        let store =
+            MailStoreService::with_mail_dir_and_state_path(&mail_dir, root.join("state.json"));
+        let message_id = store
+            .load_local_records()
+            .first()
+            .expect("message should parse")
+            .id
+            .clone();
+        let operations = MailOperationsService::with_store(store.clone());
+        let context = MailOperationContext::new();
+        assert!(context.cancel());
+        let mut history = MailCommandStack::default();
+
+        let result = history.execute_with_context(
+            &operations,
+            MailCommand::set_message_state(message_id.clone(), None, true, false, false, true),
+            &context,
+        );
+
+        assert!(matches!(
+            result,
+            Err(ref error) if error.is_cancelled()
+        ));
+        assert_eq!(context.status(), MailOperationStatus::Cancelled);
+        assert!(!history.can_undo());
+        assert_eq!(
+            MailMetadataStore::new(store.metadata_path())
+                .load()
+                .get(&message_id),
+            None
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn coordinator_serializes_mutations_for_the_same_message() {
+        let coordinator = MailOperationCoordinator::default();
+        let first = coordinator
+            .prepare(MailCommand::set_message_state(
+                "message-1",
+                None,
+                true,
+                false,
+                false,
+                false,
+            ))
+            .expect("the first mutation should be prepared");
+
+        let duplicate =
+            coordinator.prepare(MailCommand::set_important_local("message-1", false, true));
+        assert!(matches!(
+            duplicate,
+            Err(MailOperationError::Busy {
+                operation: MailOperationKind::MarkImportant,
+                ..
+            })
+        ));
+        assert_eq!(coordinator.active_count(), 1);
+
+        drop(first);
+        assert_eq!(coordinator.active_count(), 0);
+        assert!(
+            coordinator
+                .prepare(MailCommand::set_important_local("message-1", false, true,))
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn coordinator_allows_independent_messages_in_parallel() {
+        let coordinator = MailOperationCoordinator::default();
+        let first = coordinator
+            .prepare(MailCommand::delete_local("message-1"))
+            .expect("first message should be prepared");
+        let second = coordinator
+            .prepare(MailCommand::delete_local("message-2"))
+            .expect("second message should be prepared independently");
+
+        assert_eq!(coordinator.active_count(), 2);
+        drop((first, second));
+        assert_eq!(coordinator.active_count(), 0);
+    }
+
+    #[test]
+    fn coordinator_uses_stable_remote_message_id_across_folder_uid_changes() {
+        let coordinator = MailOperationCoordinator::default();
+        let first_location = MailBackendLocation {
+            source_uid: "source".to_string(),
+            folder_name: "INBOX".to_string(),
+            message_uid: "uid-before-move".to_string(),
+            message_id: Some("<message@example.org>".to_string()),
+        };
+        let second_location = MailBackendLocation {
+            source_uid: "source".to_string(),
+            folder_name: "Archive".to_string(),
+            message_uid: "uid-after-move".to_string(),
+            message_id: Some("<message@example.org>".to_string()),
+        };
+        let first = coordinator
+            .prepare(MailCommand::set_message_state(
+                "message",
+                Some(first_location),
+                true,
+                false,
+                false,
+                true,
+            ))
+            .expect("first remote mutation should be prepared");
+
+        let duplicate = coordinator.prepare(MailCommand::set_message_state(
+            "message",
+            Some(second_location),
+            false,
+            true,
+            false,
+            false,
+        ));
+        assert!(matches!(
+            duplicate,
+            Err(MailOperationError::Busy {
+                operation: MailOperationKind::SetMessageState,
+                ..
+            })
+        ));
+        drop(first);
+        assert_eq!(coordinator.active_count(), 0);
+    }
+
+    #[test]
+    fn cancellation_before_worker_start_skips_the_backend_and_releases_the_key() {
+        let coordinator = MailOperationCoordinator::default();
+        let prepared = coordinator
+            .prepare(MailCommand::delete_local("message-1"))
+            .expect("operation should be prepared");
+        let cancellation = prepared.cancellation();
+        cancellation.cancel();
+        let mut backend_called = false;
+
+        let result = prepared.run_with(|_| {
+            backend_called = true;
+            Ok(None)
+        });
+
+        assert!(matches!(
+            result,
+            Err(MailOperationError::Cancelled {
+                operation: MailOperationKind::Delete
+            })
+        ));
+        assert!(!backend_called);
+        assert_eq!(coordinator.active_count(), 0);
+    }
+
+    #[test]
+    fn confirmed_success_is_committed_only_after_worker_completion() {
+        let coordinator = MailOperationCoordinator::default();
+        let prepared = coordinator
+            .prepare(MailCommand::set_message_state(
+                "message-1",
+                None,
+                true,
+                false,
+                false,
+                true,
+            ))
+            .expect("operation should be prepared");
+        let cancellation = prepared.cancellation();
+        let mut history = MailCommandStack::default();
+
+        let completed = prepared
+            .run_with(|_| {
+                // Once backend work has started, cancellation cannot safely
+                // turn a confirmed mutation into a visible failure.
+                cancellation.cancel();
+                Ok(None)
+            })
+            .expect("confirmed backend success should remain successful");
+
+        assert!(completed.cancellation_requested());
+        assert!(!history.can_undo());
+        assert_eq!(coordinator.active_count(), 0);
+        completed.commit(&mut history);
+        assert!(history.can_undo());
+        assert!(!history.can_redo());
+    }
+
+    #[test]
+    fn conflict_releases_the_key_without_creating_history() {
+        let coordinator = MailOperationCoordinator::default();
+        let prepared = coordinator
+            .prepare(MailCommand::delete_local("message-1"))
+            .expect("operation should be prepared");
+        let context = prepared.context();
+        let history = MailCommandStack::default();
+
+        let result = prepared.run_with(|_| {
+            Err(MailOperationError::Conflict {
+                operation: MailOperationKind::Delete,
+                message: "server state changed".to_string(),
+            })
+        });
+
+        assert!(matches!(result, Err(MailOperationError::Conflict { .. })));
+        assert_eq!(context.status(), MailOperationStatus::Conflict);
+        assert_eq!(coordinator.active_count(), 0);
+        assert!(!history.can_undo());
+        assert!(!history.can_redo());
+    }
+
+    #[test]
+    fn failed_batch_reports_when_rollback_itself_fails() {
+        let root = temporary_directory("operations-rollback-failed");
+        let mail_dir = root.join("mail");
+        fs::create_dir_all(&mail_dir).expect("mail directory should be created");
+        let store =
+            MailStoreService::with_mail_dir_and_state_path(&mail_dir, root.join("state.json"));
+        let operations = MailOperationsService::with_store(store.clone());
+        let location = MailBackendLocation {
+            source_uid: "source".to_string(),
+            folder_name: "INBOX".to_string(),
+            message_uid: "uid".to_string(),
+            message_id: None,
+        };
+        let first = MailCommand {
+            forward: MailOperation::SetMessageState {
+                id: "message".to_string(),
+                location: None,
+                is_unread: false,
+                is_flagged: true,
+            },
+            inverse: MailOperation::Move {
+                id: "message".to_string(),
+                location: Some(location.clone()),
+                destination: "Archive".to_string(),
+            },
+            description: "test command".to_string(),
+        };
+        let second = MailCommand::move_to("remote", location, "Archive");
+        let context = MailOperationContext::new();
+        let mut history = MailCommandStack::default();
+
+        let result = history.execute_batch_with_context(&operations, vec![first, second], &context);
+
+        assert!(matches!(
+            result,
+            Err(MailOperationError::RollbackFailed {
+                operation: MailOperationKind::SetMessageState,
+                ..
+            })
+        ));
+        assert_eq!(context.status(), MailOperationStatus::RollbackFailed);
+        assert!(!history.can_undo());
+        assert_eq!(
+            MailMetadataStore::new(store.metadata_path())
+                .load()
+                .get("message")
+                .map(|state| (state.is_unread, state.is_flagged)),
+            Some((false, true))
+        );
+
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

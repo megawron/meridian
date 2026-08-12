@@ -19,6 +19,12 @@ settings persistence.
 - Do not depend on GTK widgets or libadwaita types.
 - Expose cancellation, warnings, conflicts, and backend-unavailable states so
   views can present honest status instead of hanging.
+- Mail mutations expose a one-shot lifecycle and cooperative cancellation.
+  Record undo/redo only after confirmed backend success, serialize conflicting
+  work for the same message, and surface failed batch rollback explicitly.
+- MIME, vCard, settings, filter, and profile import paths preserve unknown safe
+  data where possible. Unsupported values become redacted warnings; credentials
+  and secret material must never enter app-owned stores, reports, or logs.
 
 ## Work Guidance
 

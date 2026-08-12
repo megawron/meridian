@@ -1621,13 +1621,9 @@ pub(crate) fn parse_rfc822_bytes(
     raw: &[u8],
     unread: bool,
 ) -> Option<ParsedMail> {
-    let raw_text = String::from_utf8_lossy(raw);
-    let normalized = raw_text.replace("\r\n", "\n").replace('\r', "\n");
-    let (header_text, body) = normalized
-        .split_once("\n\n")
-        .map(|(headers, body)| (headers, body))
-        .unwrap_or((normalized.as_str(), ""));
-    let headers = parse_headers(header_text);
+    let (header_bytes, body) = split_mime_headers_and_body(raw);
+    let header_text = String::from_utf8_lossy(header_bytes);
+    let headers = parse_headers(&header_text);
 
     if headers.is_empty() && body.is_empty() {
         return None;
@@ -1674,21 +1670,16 @@ pub(crate) fn parse_rfc822_bytes(
         .map(|value| extract_message_ids(value))
         .unwrap_or_default();
 
-    let mut html_body = String::new();
-    let mut plain_body = String::new();
-    let mut attachments = Vec::new();
-    extract_mime_content(
-        &headers,
-        body,
-        &mut html_body,
-        &mut plain_body,
-        &mut attachments,
-    );
+    let mut extracted = MimeExtraction::default();
+    extract_mime_content(&headers, body, &mut extracted);
 
-    let body_html = if !html_body.trim().is_empty() {
+    let plain_body = extracted.plain_body.unwrap_or_default();
+    let body_html = if let Some(html_body) = extracted.html_body {
         html_body
     } else if !plain_body.trim().is_empty() {
         format!("<pre>{}</pre>", escape_html(plain_body.trim()))
+    } else if let Some(html_fallback) = extracted.html_fallback {
+        html_fallback
     } else {
         "<p>(Keine Nachricht)</p>".to_string()
     };
@@ -1731,7 +1722,7 @@ pub(crate) fn parse_rfc822_bytes(
         is_flagged: false,
         is_important: false,
         labels: Vec::new(),
-        attachments,
+        attachments: extracted.attachments,
     })
 }
 
@@ -1807,12 +1798,112 @@ fn parse_address(value: &str) -> (String, String) {
     (email.clone(), email)
 }
 
+#[derive(Debug, Default)]
+struct MimeExtraction {
+    /// The first usable HTML representation, independent of the order in
+    /// which a multipart/alternative entity lists its children.
+    html_body: Option<String>,
+    /// Retain a non-empty but non-renderable HTML part as a last resort when
+    /// the message has no readable plaintext representation.
+    html_fallback: Option<String>,
+    /// The first readable plaintext representation, used for previews and as
+    /// the safe display fallback when HTML is empty or malformed.
+    plain_body: Option<String>,
+    attachments: Vec<AttachmentInfo>,
+}
+
+fn split_mime_headers_and_body(raw: &[u8]) -> (&[u8], &[u8]) {
+    for separator in [b"\r\n\r\n".as_slice(), b"\n\n", b"\r\r"] {
+        if let Some(index) = raw
+            .windows(separator.len())
+            .position(|candidate| candidate == separator)
+        {
+            return (&raw[..index], &raw[index + separator.len()..]);
+        }
+    }
+
+    // A malformed child without a blank line is still more useful as a
+    // text/plain body than as a header block that silently disappears.
+    let header_text = String::from_utf8_lossy(raw);
+    if parse_headers(&header_text).is_empty() {
+        (&[], raw)
+    } else {
+        (raw, &[])
+    }
+}
+
+fn split_multipart_parts<'a>(body: &'a [u8], boundary: &str) -> Vec<&'a [u8]> {
+    let marker = format!("--{boundary}");
+    let marker = marker.as_bytes();
+    let mut parts = Vec::new();
+    let mut part_start = None;
+    let mut cursor = 0;
+
+    while cursor < body.len() {
+        let (line_end, next_line) = mime_line_bounds(body, cursor);
+        if let Some(is_closing) = multipart_delimiter(&body[cursor..line_end], marker) {
+            if let Some(start) = part_start.take() {
+                parts.push(trim_mime_line_ending(&body[start..cursor]));
+            }
+            if is_closing {
+                return parts;
+            }
+            part_start = Some(next_line);
+        }
+
+        if next_line == cursor {
+            break;
+        }
+        cursor = next_line;
+    }
+
+    // Accept a truncated multipart without a closing delimiter.  This is
+    // common enough in recovered mailboxes that dropping the final readable
+    // part would be surprising.
+    if let Some(start) = part_start {
+        parts.push(trim_mime_line_ending(&body[start..]));
+    }
+    parts
+}
+
+fn mime_line_bounds(input: &[u8], start: usize) -> (usize, usize) {
+    let mut line_end = start;
+    while line_end < input.len() && !matches!(input[line_end], b'\r' | b'\n') {
+        line_end += 1;
+    }
+
+    let next_line = match input.get(line_end) {
+        Some(b'\r') if input.get(line_end + 1) == Some(&b'\n') => line_end + 2,
+        Some(b'\r' | b'\n') => line_end + 1,
+        _ => line_end,
+    };
+    (line_end, next_line)
+}
+
+fn multipart_delimiter(line: &[u8], marker: &[u8]) -> Option<bool> {
+    let remainder = line.strip_prefix(marker)?;
+    let (is_closing, remainder) = remainder
+        .strip_prefix(b"--")
+        .map_or((false, remainder), |remainder| (true, remainder));
+    remainder
+        .iter()
+        .all(|byte| byte.is_ascii_whitespace())
+        .then_some(is_closing)
+}
+
+fn trim_mime_line_ending(mut value: &[u8]) -> &[u8] {
+    if value.ends_with(b"\r\n") {
+        value = &value[..value.len() - 2];
+    } else if value.ends_with(b"\r") || value.ends_with(b"\n") {
+        value = &value[..value.len() - 1];
+    }
+    value
+}
+
 fn extract_mime_content(
     headers: &HashMap<String, String>,
-    body: &str,
-    html_body: &mut String,
-    plain_body: &mut String,
-    attachments: &mut Vec<AttachmentInfo>,
+    body: &[u8],
+    extracted: &mut MimeExtraction,
 ) {
     let content_type = headers
         .get("content-type")
@@ -1827,21 +1918,11 @@ fn extract_mime_content(
 
     if media_type.starts_with("multipart/") {
         if let Some(boundary) = mime_parameter(content_type, "boundary") {
-            let marker = format!("--{boundary}");
-            for part in body.split(&marker).skip(1) {
-                if part.trim_start().starts_with("--") {
-                    break;
-                }
-                let part =
-                    part.trim_start_matches(|character| character == '\n' || character == '\r');
-                let part =
-                    part.trim_end_matches(|character| character == '\n' || character == '\r');
-                let normalized = part.replace("\r\n", "\n").replace('\r', "\n");
-                let (part_headers, part_body) = normalized
-                    .split_once("\n\n")
-                    .map(|(headers, body)| (parse_headers(headers), body))
-                    .unwrap_or_else(|| (HashMap::new(), ""));
-                extract_mime_content(&part_headers, part_body, html_body, plain_body, attachments);
+            for part in split_multipart_parts(body, &boundary) {
+                let (part_header_bytes, part_body) = split_mime_headers_and_body(part);
+                let part_header_text = String::from_utf8_lossy(part_header_bytes);
+                let part_headers = parse_headers(&part_header_text);
+                extract_mime_content(&part_headers, part_body, extracted);
             }
         }
         return;
@@ -1864,10 +1945,10 @@ fn extract_mime_content(
     let filename =
         mime_parameter(disposition, "filename").or_else(|| mime_parameter(content_type, "name"));
 
-    if let Some(filename) = filename.filter(|_| {
-        disposition.to_ascii_lowercase().contains("attachment") || !media_type.starts_with("text/")
-    }) {
-        attachments.push(AttachmentInfo {
+    let is_explicit_attachment = disposition.to_ascii_lowercase().contains("attachment");
+    if is_explicit_attachment || (!media_type.starts_with("text/") && filename.is_some()) {
+        let filename = filename.unwrap_or_else(|| "attachment".to_string());
+        extracted.attachments.push(AttachmentInfo {
             filename: decode_mime_header(&filename),
             size_formatted: format_size(decoded.len()),
             mime_type: media_type,
@@ -1879,21 +1960,19 @@ fn extract_mime_content(
 
     match media_type.as_str() {
         "text/html" => {
-            if html_body.trim().is_empty() {
-                *html_body =
-                    decode_mime_bytes(&decoded, mime_parameter(content_type, "charset").as_deref());
-            }
+            let html =
+                decode_mime_bytes(&decoded, mime_parameter(content_type, "charset").as_deref());
+            extracted.record_html(html);
         }
         "text/plain" | "" => {
-            if plain_body.trim().is_empty() {
-                *plain_body =
-                    decode_mime_bytes(&decoded, mime_parameter(content_type, "charset").as_deref());
-            }
+            let plain =
+                decode_mime_bytes(&decoded, mime_parameter(content_type, "charset").as_deref());
+            extracted.record_plain(plain);
         }
         _ => {
             // A non-text part without a filename is still useful to expose as
             // an attachment, but use a stable fallback name for the UI.
-            attachments.push(AttachmentInfo {
+            extracted.attachments.push(AttachmentInfo {
                 filename: "attachment".to_string(),
                 size_formatted: format_size(decoded.len()),
                 mime_type: media_type,
@@ -1902,6 +1981,49 @@ fn extract_mime_content(
             });
         }
     }
+}
+
+impl MimeExtraction {
+    fn record_html(&mut self, value: String) {
+        let value = normalize_mime_text(value);
+        if value.trim().is_empty() {
+            return;
+        }
+
+        if is_usable_html(&value) {
+            if self.html_body.is_none() {
+                self.html_body = Some(value);
+            }
+        } else if self.html_fallback.is_none() {
+            self.html_fallback = Some(value);
+        }
+    }
+
+    fn record_plain(&mut self, value: String) {
+        let value = normalize_mime_text(value);
+        if !value.trim().is_empty() && self.plain_body.is_none() {
+            self.plain_body = Some(value);
+        }
+    }
+}
+
+fn normalize_mime_text(value: String) -> String {
+    value
+        .trim_start_matches('\u{feff}')
+        .replace("\r\n", "\n")
+        .replace('\r', "\n")
+}
+
+fn is_usable_html(value: &str) -> bool {
+    let readable = html_to_plain_text(value);
+    if !readable.trim().is_empty() {
+        return true;
+    }
+
+    let lower = value.to_ascii_lowercase();
+    ["<img", "<br", "<hr", "<table", "<video", "<audio"]
+        .iter()
+        .any(|marker| lower.contains(marker))
 }
 
 fn mime_parameter(value: &str, parameter: &str) -> Option<String> {
@@ -2053,26 +2175,30 @@ fn normalize_content_id(value: &str) -> Option<String> {
     (!value.is_empty()).then(|| value.to_string())
 }
 
-fn decode_transfer_encoding(body: &str, encoding: &str) -> Vec<u8> {
+fn decode_transfer_encoding(body: &[u8], encoding: &str) -> Vec<u8> {
     match encoding.trim().to_ascii_lowercase().as_str() {
-        "base64" => decode_base64(body).unwrap_or_else(|| body.as_bytes().to_vec()),
+        "base64" => decode_base64(body).unwrap_or_else(|| body.to_vec()),
         "quoted-printable" => decode_quoted_printable(body),
-        _ => body.as_bytes().to_vec(),
+        _ => body.to_vec(),
     }
 }
 
-fn decode_base64(input: &str) -> Option<Vec<u8>> {
+fn decode_base64(input: &[u8]) -> Option<Vec<u8>> {
     let mut output = Vec::new();
     let mut buffer = 0u32;
     let mut bits = 0u8;
-    let mut saw_data = false;
+    let mut saw_padding = false;
 
-    for byte in input.bytes() {
+    for &byte in input {
         if byte.is_ascii_whitespace() {
             continue;
         }
         if byte == b'=' {
-            break;
+            saw_padding = true;
+            continue;
+        }
+        if saw_padding {
+            return None;
         }
         let value = match byte {
             b'A'..=b'Z' => byte - b'A',
@@ -2082,7 +2208,6 @@ fn decode_base64(input: &str) -> Option<Vec<u8>> {
             b'/' => 63,
             _ => return None,
         } as u32;
-        saw_data = true;
         buffer = (buffer << 6) | value;
         bits += 6;
         while bits >= 8 {
@@ -2091,22 +2216,24 @@ fn decode_base64(input: &str) -> Option<Vec<u8>> {
         }
     }
 
-    saw_data.then_some(output)
+    Some(output)
 }
 
-fn decode_quoted_printable(input: &str) -> Vec<u8> {
-    let bytes = input.as_bytes();
+fn decode_quoted_printable(bytes: &[u8]) -> Vec<u8> {
     let mut output = Vec::with_capacity(bytes.len());
     let mut index = 0;
 
     while index < bytes.len() {
         if bytes[index] == b'=' {
-            if index + 2 < bytes.len() && bytes[index + 1] == b'\n' {
+            if index + 1 < bytes.len() && bytes[index + 1] == b'\r' {
                 index += 2;
+                if bytes.get(index) == Some(&b'\n') {
+                    index += 1;
+                }
                 continue;
             }
-            if index + 3 < bytes.len() && bytes[index + 1] == b'\r' && bytes[index + 2] == b'\n' {
-                index += 3;
+            if index + 1 < bytes.len() && bytes[index + 1] == b'\n' {
+                index += 2;
                 continue;
             }
             if index + 2 < bytes.len() {
@@ -2155,11 +2282,12 @@ fn decode_mime_header(value: &str) -> String {
 
         let decoded = match (encoding, payload) {
             (Some(encoding), Some(payload)) if encoding.eq_ignore_ascii_case("b") => {
-                decode_base64(payload).map(|bytes| decode_mime_bytes(&bytes, charset))
+                decode_base64(payload.as_bytes()).map(|bytes| decode_mime_bytes(&bytes, charset))
             }
             (Some(encoding), Some(payload)) if encoding.eq_ignore_ascii_case("q") => {
+                let payload = payload.replace('_', " ");
                 Some(decode_mime_bytes(
-                    &decode_quoted_printable(&payload.replace('_', " ")),
+                    &decode_quoted_printable(payload.as_bytes()),
                     charset,
                 ))
             }
@@ -2184,10 +2312,17 @@ fn decode_mime_bytes(bytes: &[u8], charset: Option<&str>) -> String {
         .trim()
         .trim_matches('"')
         .to_ascii_lowercase();
-    match charset.as_str() {
-        "iso-8859-1" | "iso8859-1" | "latin1" | "latin-1" => {
-            bytes.iter().map(|byte| char::from(*byte)).collect()
-        }
+    let decoded = match charset.as_str() {
+        "utf-8" | "utf8" | "unicode-1-1-utf-8" => String::from_utf8_lossy(bytes).into_owned(),
+        "utf-16" | "utf16" => decode_utf16_bytes(bytes, false),
+        "utf-16le" | "utf16le" => decode_utf16_bytes(bytes, true),
+        "utf-16be" | "utf16be" => decode_utf16_bytes(bytes, false),
+        "iso-8859-1" | "iso8859-1" | "iso_8859-1" | "latin1" | "latin-1" | "l1" | "cp819"
+        | "ibm819" => bytes.iter().map(|byte| char::from(*byte)).collect(),
+        "iso-8859-15" | "iso8859-15" | "latin9" | "latin-9" => bytes
+            .iter()
+            .map(|byte| decode_iso_8859_15_byte(*byte))
+            .collect(),
         "windows-1252" | "cp1252" => bytes
             .iter()
             .map(|byte| decode_windows_1252_byte(*byte))
@@ -2203,6 +2338,40 @@ fn decode_mime_bytes(bytes: &[u8], charset: Option<&str>) -> String {
             })
             .collect(),
         _ => String::from_utf8_lossy(bytes).into_owned(),
+    };
+    normalize_mime_text(decoded)
+}
+
+fn decode_utf16_bytes(bytes: &[u8], little_endian: bool) -> String {
+    let (little_endian, bytes) = match bytes {
+        [0xff, 0xfe, rest @ ..] => (true, rest),
+        [0xfe, 0xff, rest @ ..] => (false, rest),
+        _ => (little_endian, bytes),
+    };
+    let units = bytes
+        .chunks_exact(2)
+        .map(|pair| {
+            if little_endian {
+                u16::from_le_bytes([pair[0], pair[1]])
+            } else {
+                u16::from_be_bytes([pair[0], pair[1]])
+            }
+        })
+        .collect::<Vec<_>>();
+    String::from_utf16_lossy(&units)
+}
+
+fn decode_iso_8859_15_byte(byte: u8) -> char {
+    match byte {
+        0xa4 => '\u{20ac}',
+        0xa6 => '\u{0160}',
+        0xa8 => '\u{0161}',
+        0xb4 => '\u{017d}',
+        0xb8 => '\u{017e}',
+        0xbc => '\u{0152}',
+        0xbd => '\u{0153}',
+        0xbe => '\u{0178}',
+        _ => char::from(byte),
     }
 }
 
@@ -2346,6 +2515,127 @@ mod tests {
             decode_mime_bytes(&[b'G', b'r', 0xfc, b's', b'e'], Some("iso-8859-1")),
             "Grüse"
         );
+    }
+
+    #[test]
+    fn prefers_usable_html_over_plaintext_in_multipart_alternative() {
+        let raw = concat!(
+            "From: Sender <sender@example.invalid>\n",
+            "Subject: Alternative example\n",
+            "Content-Type: multipart/alternative; boundary=alternative42\n",
+            "\n",
+            "--alternative42\n",
+            "Content-Type: text/plain; charset=utf-8\n",
+            "Content-Transfer-Encoding: quoted-printable\n",
+            "\n",
+            "Fallback text line 1=0Aline 2\n",
+            "--alternative42\n",
+            "Content-Type: text/html; charset=utf-8\n",
+            "Content-Transfer-Encoding: base64\n",
+            "\n",
+            "PHA+SFRNTCBwcmVmZXJyZWQ8L3A+\n",
+            "--alternative42--\n"
+        );
+
+        let message = parse_rfc822("alternative", "inbox", raw, false)
+            .expect("alternative message should parse");
+        assert_eq!(message.html_body, "<p>HTML preferred</p>");
+        assert_eq!(message.preview_snippet, "Fallback text line 1 line 2");
+    }
+
+    #[test]
+    fn falls_back_to_readable_plaintext_for_empty_or_broken_html() {
+        let raw = concat!(
+            "From: Sender <sender@example.invalid>\n",
+            "Subject: Plaintext fallback\n",
+            "Content-Type: multipart/alternative; boundary=fallback42\n",
+            "\n",
+            "--fallback42\n",
+            "Content-Type: text/html; charset=utf-8\n",
+            "\n",
+            "<!-- broken HTML without a closing comment\n",
+            "--fallback42\n",
+            "Content-Type: text/plain; charset=iso-8859-1\n",
+            "Content-Transfer-Encoding: quoted-printable\n",
+            "\n",
+            "Zeile 1=0D=0AZeile 2: Caf=E9\n",
+            "--fallback42--\n"
+        );
+
+        let message =
+            parse_rfc822("fallback", "inbox", raw, false).expect("fallback message should parse");
+        assert_eq!(message.html_body, "<pre>Zeile 1\nZeile 2: Café</pre>");
+        assert_eq!(message.preview_snippet, "Zeile 1 Zeile 2: Café");
+    }
+
+    #[test]
+    fn keeps_eight_bit_body_bytes_until_charset_decoding() {
+        let mut raw = b"From: Sender <sender@example.invalid>\n\
+            Subject: Eight bit body\n\
+            Content-Type: text/plain; charset=iso-8859-1\n\
+            Content-Transfer-Encoding: 8bit\n\
+            \n\
+            Caf"
+        .to_vec();
+        raw.push(0xe9);
+        raw.extend_from_slice(b"\n");
+
+        let message = parse_rfc822_bytes("eight-bit", "inbox", &raw, false)
+            .expect("eight-bit message should parse");
+        assert_eq!(message.html_body, "<pre>Café</pre>");
+    }
+
+    #[test]
+    fn parses_nested_multiparts_and_preserves_inline_and_regular_attachments() {
+        let raw = concat!(
+            "From: Sender <sender@example.invalid>\n",
+            "Subject: Nested multipart example\n",
+            "Content-Type: multipart/mixed; boundary=outer42\n",
+            "\n",
+            "--outer42\n",
+            "Content-Type: multipart/related; boundary=related42\n",
+            "\n",
+            "--related42\n",
+            "Content-Type: multipart/alternative; boundary=alternative42\n",
+            "\n",
+            "--alternative42\n",
+            "Content-Type: text/plain; charset=utf-8\n",
+            "\n",
+            "Plain fallback\n",
+            "--alternative42\n",
+            "Content-Type: text/html; charset=windows-1252\n",
+            "Content-Transfer-Encoding: quoted-printable\n",
+            "\n",
+            "<p>Price: =80</p>\n",
+            "--alternative42--\n",
+            "--related42\n",
+            "Content-Type: image/png\n",
+            "Content-ID: <inline42@example.invalid>\n",
+            "Content-Disposition: inline\n",
+            "Content-Transfer-Encoding: base64\n",
+            "\n",
+            "UE5H\n",
+            "--related42--\n",
+            "--outer42\n",
+            "Content-Type: application/octet-stream\n",
+            "Content-Disposition: attachment; filename=payload.bin\n",
+            "Content-Transfer-Encoding: base64\n",
+            "\n",
+            "AQID\n",
+            "--outer42--\n"
+        );
+
+        let message = parse_rfc822("nested", "inbox", raw, false)
+            .expect("nested multipart message should parse");
+        assert_eq!(message.html_body, "<p>Price: €</p>");
+        assert_eq!(message.attachments.len(), 2);
+        assert_eq!(
+            message.attachments[0].content_id.as_deref(),
+            Some("inline42@example.invalid")
+        );
+        assert_eq!(message.attachments[0].content, b"PNG");
+        assert_eq!(message.attachments[1].filename, "payload.bin");
+        assert_eq!(message.attachments[1].content, vec![1, 2, 3]);
     }
 
     #[test]

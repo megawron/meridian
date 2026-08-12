@@ -77,6 +77,7 @@ pub struct LocalDataMigrationReport {
 struct SourceKeyFile {
     groups: BTreeMap<String, BTreeMap<String, String>>,
     ignored_secret_keys: Vec<String>,
+    warnings: Vec<String>,
 }
 
 impl SourceKeyFile {
@@ -339,23 +340,47 @@ fn import_evolution_sources_inner(
     let mut cached_address_book_sources = Vec::new();
     for path in paths {
         report.discovered_sources += 1;
-        let result = fs::read_to_string(&path)
-            .map_err(|error| format!("Datei konnte nicht gelesen werden: {error}"))
-            .and_then(|raw| parse_source(&raw).map_err(|error| error.to_string()))
-            .and_then(|source| {
-                report.ignored_secret_fields += source.ignored_secret_keys.len();
-                for (kind, eds_source) in eds_sources_from_keyfile(&path, &source) {
-                    match kind {
-                        EdsSourceKind::Mail => cached_mail_sources.push(eds_source),
-                        EdsSourceKind::Calendar => cached_calendar_sources.push(eds_source),
-                        EdsSourceKind::AddressBook => cached_address_book_sources.push(eds_source),
-                    }
-                }
-                profile_from_source(&path, &source)
-            });
+        let raw = match fs::read_to_string(&path) {
+            Ok(raw) => raw,
+            Err(error) => {
+                report.skipped_sources += 1;
+                report.warnings.push(format!(
+                    "{}: Datei konnte nicht gelesen werden: {error}",
+                    path.display()
+                ));
+                continue;
+            }
+        };
+        let source = match parse_source(&raw) {
+            Ok(source) => source,
+            Err(error) => {
+                report.skipped_sources += 1;
+                report.warnings.push(format!("{}: {error}", path.display()));
+                continue;
+            }
+        };
+        report.ignored_secret_fields += source.ignored_secret_keys.len();
+        report.warnings.extend(
+            source
+                .warnings
+                .iter()
+                .map(|warning| format!("{}: {warning}", path.display())),
+        );
+        for (kind, eds_source) in eds_sources_from_keyfile(&path, &source) {
+            match kind {
+                EdsSourceKind::Mail => cached_mail_sources.push(eds_source),
+                EdsSourceKind::Calendar => cached_calendar_sources.push(eds_source),
+                EdsSourceKind::AddressBook => cached_address_book_sources.push(eds_source),
+            }
+        }
 
-        match result {
-            Ok(profile) => {
+        match profile_from_source_with_warnings(&path, &source) {
+            Ok((profile, warnings)) => {
+                report.warnings.extend(
+                    warnings
+                        .into_iter()
+                        .map(|warning| format!("{}: {warning}", path.display())),
+                );
                 store.upsert(profile).map_err(|error| {
                     io::Error::new(
                         error.kind(),
@@ -794,7 +819,24 @@ fn parse_evolution_settings(raw: &str, path: &Path) -> ParsedEvolutionSettings {
             continue;
         }
         let Some((canonical_key, value)) = canonical_setting(&group, &key, raw_value) else {
+            result.warnings.push(format!(
+                "{}: unbekannte oder nicht unterstützte Einstellung „{}“ wurde nicht übernommen",
+                path.display(),
+                safe_warning_key(&key)
+            ));
             continue;
+        };
+        let value = match normalize_imported_setting_value(&canonical_key, &value) {
+            Ok(value) => value,
+            Err(reason) => {
+                result.warnings.push(format!(
+                    "{}: Wert für Einstellung „{}“ ist {} und wurde nicht übernommen",
+                    path.display(),
+                    safe_warning_key(&canonical_key),
+                    reason
+                ));
+                continue;
+            }
         };
         result.settings.push(ImportedSetting {
             key: canonical_key,
@@ -834,11 +876,18 @@ fn canonical_setting(group: &str, key: &str, raw_value: &str) -> Option<(String,
         "use-12-hour-format" | "use-12-hour-clock" => "time-format",
         "show-toolbar" if group.contains("mail") => "mail-show-toolbar",
         "show-sidebar" if group.contains("mail") => "mail-show-sidebar",
+        "show-from" | "show-sender" if group.contains("mail") => "mail-show-sender",
+        "show-to" | "show-recipient" if group.contains("mail") => "mail-show-recipient",
+        "show-date" if group.contains("mail") => "mail-show-date",
+        "show-attachment" | "show-attachments" if group.contains("mail") => "mail-show-attachment",
+        "show-labels" | "show-tags" if group.contains("mail") => "mail-show-labels",
+        "show-preview-text" if group.contains("mail") => "mail-show-preview-text",
         "layout" if group.contains("mail") => "mail-layout",
         "threading" | "thread-list" if group.contains("mail") => "mail-threading",
         "default-folder" if group.contains("mail") => "mail-default-folder",
         "sort-field" if group.contains("mail") => "mail-sort-field",
         "sort-descending" if group.contains("mail") => "mail-sort-descending",
+        "offline-mode" => "offline-mode",
         value if is_supported_migration_key(value) => value,
         _ => return None,
     };
@@ -919,7 +968,6 @@ fn is_supported_migration_key(key: &str) -> bool {
             | "mail-show-attachment"
             | "mail-show-preview-text"
             | "mail-show-labels"
-            | "mail-sender-column-width"
             | "color-scheme"
             | "sign-new-messages"
             | "default-pgp-key"
@@ -945,7 +993,248 @@ fn is_supported_migration_key(key: &str) -> bool {
             | "memo-sort-field"
             | "memo-source-filter"
             | "memo-sort-descending"
+            | "offline-mode"
     )
+}
+
+fn normalize_imported_setting_value(key: &str, value: &str) -> Result<String, &'static str> {
+    let value = value.trim();
+    if is_boolean_migration_key(key) {
+        return parse_setting_bool(value)
+            .map(|value| value.to_string())
+            .ok_or("kein gültiger boolescher Wert");
+    }
+
+    match key {
+        "window-width" => normalize_i32_setting(value, 360, i32::MAX),
+        "window-height" => normalize_i32_setting(value, 480, i32::MAX),
+        "mail-sidebar-position" => normalize_i32_setting(value, 0, 2_000),
+        "mail-modern-preview-position" | "mail-classic-preview-position" => {
+            normalize_i32_setting(value, 120, 4_096)
+        }
+        "mail-font-size" => normalize_u32_setting(value, 8, 48),
+        "calendar-workday-start" | "calendar-workday-end" => normalize_u32_setting(value, 0, 1_439),
+        "calendar-default-reminder" => normalize_u32_setting(value, 0, 10_080),
+        "mail-sync-interval" => normalize_u32_setting(value, 0, 86_400),
+        "mail-sync-message-limit" => normalize_u32_setting(value, 25, 1_000),
+        "draft-autosave-interval" => normalize_u32_setting(value, 0, 3_600),
+        "active-view" => match value.to_ascii_lowercase().as_str() {
+            "mail" | "calendar" | "contacts" | "addressbook" | "tasks" | "memos" => {
+                Ok(if value.eq_ignore_ascii_case("addressbook") {
+                    "contacts".to_string()
+                } else {
+                    value.to_ascii_lowercase()
+                })
+            }
+            _ => Err("kein unterstützter Bereich"),
+        },
+        "calendar-view" => match value.to_ascii_lowercase().as_str() {
+            "day" | "week" | "workweek" | "work-week" | "month" | "agenda" => {
+                Ok(if value.eq_ignore_ascii_case("work-week") {
+                    "workweek".to_string()
+                } else {
+                    value.to_ascii_lowercase()
+                })
+            }
+            _ => Err("keine unterstützte Kalenderansicht"),
+        },
+        "calendar-week-start" => match value.to_ascii_lowercase().as_str() {
+            "0" | "monday" | "mon" => Ok("monday".to_string()),
+            "1" | "sunday" | "sun" => Ok("sunday".to_string()),
+            _ => Err("kein unterstützter Wochenbeginn"),
+        },
+        "calendar-workdays" => normalize_workdays_setting(value),
+        "date-format" => match value.to_ascii_lowercase().as_str() {
+            "german" | "de" | "de-de" => Ok("german".to_string()),
+            "iso" | "yyyy-mm-dd" => Ok("iso".to_string()),
+            "us" | "american" | "en-us" => Ok("us".to_string()),
+            _ => Err("kein unterstütztes Datumsformat"),
+        },
+        "time-format" => match value.to_ascii_lowercase().as_str() {
+            "12h" | "12-hour" | "12-hour-clock" => Ok("12h".to_string()),
+            "24h" | "24-hour" | "24-hour-clock" => Ok("24h".to_string()),
+            _ => Err("kein unterstütztes Zeitformat"),
+        },
+        "mail-default-folder" => match value.to_ascii_lowercase().as_str() {
+            "all" | "inbox" | "sent" | "drafts" | "trash" | "archive" => {
+                Ok(value.to_ascii_lowercase())
+            }
+            "spam" | "junk" => Ok("spam".to_string()),
+            _ => Err("kein unterstützter Standardordner"),
+        },
+        "mail-layout" => match value.to_ascii_lowercase().as_str() {
+            "classic" | "modern" => Ok(value.to_ascii_lowercase()),
+            _ => Err("kein unterstütztes Mail-Layout"),
+        },
+        "mail-row-density" => match value.to_ascii_lowercase().as_str() {
+            "compact" | "comfortable" | "spacious" => Ok(value.to_ascii_lowercase()),
+            _ => Err("keine unterstützte Mail-Dichte"),
+        },
+        "mail-sort-field" => match value.to_ascii_lowercase().as_str() {
+            "subject" => Ok("subject".to_string()),
+            "sender" | "from" => Ok("sender".to_string()),
+            "date" | "received" | "date-received" => Ok("date".to_string()),
+            "unread" => Ok("unread".to_string()),
+            "flagged" | "starred" => Ok("flagged".to_string()),
+            "important" => Ok("important".to_string()),
+            "attachment" | "attachments" => Ok("attachments".to_string()),
+            _ => Err("kein unterstütztes Mail-Sortierfeld"),
+        },
+        "color-scheme" => match value.to_ascii_lowercase().as_str() {
+            "system" | "light" | "dark" => Ok(value.to_ascii_lowercase()),
+            _ => Err("kein unterstütztes Farbschema"),
+        },
+        "crypto-protocol" => match value.to_ascii_lowercase().as_str() {
+            "openpgp" | "pgp" => Ok("openpgp".to_string()),
+            "smime" | "s/mime" => Ok("smime".to_string()),
+            _ => Err("kein unterstütztes Kryptoprotokoll"),
+        },
+        "quote-style" => match value.to_ascii_lowercase().as_str() {
+            "prefix" | "blockquote" => Ok(value.to_ascii_lowercase()),
+            _ => Err("kein unterstützter Zitierstil"),
+        },
+        "task-filter" => match value.to_ascii_lowercase().as_str() {
+            "all" | "today" | "important" | "overdue" | "in-progress" | "cancelled"
+            | "completed" => Ok(value.to_ascii_lowercase()),
+            _ => Err("kein unterstützter Aufgabenfilter"),
+        },
+        "task-sort-field" => match value.to_ascii_lowercase().as_str() {
+            "due" | "title" | "priority" => Ok(value.to_ascii_lowercase()),
+            _ => Err("kein unterstütztes Aufgaben-Sortierfeld"),
+        },
+        "memo-sort-field" => match value.to_ascii_lowercase().as_str() {
+            "updated" | "title" | "source" => Ok(value.to_ascii_lowercase()),
+            _ => Err("kein unterstütztes Memo-Sortierfeld"),
+        },
+        "mail-font-family" => {
+            if value.is_empty()
+                || value.len() > 120
+                || value.chars().any(|character| {
+                    !(character.is_ascii_alphanumeric() || " ,-_'\"".contains(character))
+                })
+            {
+                Err("keine portable Schriftfamilie")
+            } else {
+                Ok(value.to_string())
+            }
+        }
+        "spellcheck-languages" => {
+            if value
+                .split(',')
+                .filter(|language| !language.trim().is_empty())
+                .all(|language| {
+                    let language = language.trim();
+                    language.len() <= 35
+                        && language
+                            .chars()
+                            .all(|character| character.is_ascii_alphanumeric() || character == '-')
+                })
+            {
+                Ok(value.to_string())
+            } else {
+                Err("keine portable Sprachliste")
+            }
+        }
+        _ => Ok(value.to_string()),
+    }
+}
+
+fn is_boolean_migration_key(key: &str) -> bool {
+    matches!(
+        key,
+        "is-maximized"
+            | "notifications-enabled"
+            | "confirm-destructive-actions"
+            | "calendar-show-week-numbers"
+            | "auto-load-remote-images"
+            | "offline-mode"
+            | "force-dark-mode"
+            | "render-html"
+            | "composer-html"
+            | "request-read-receipt"
+            | "mark-read-on-selection"
+            | "show-message-preview"
+            | "mail-show-toolbar"
+            | "mail-show-sidebar"
+            | "mail-show-avatar"
+            | "mail-show-sender"
+            | "mail-show-recipient"
+            | "mail-show-date"
+            | "mail-show-attachment"
+            | "mail-show-preview-text"
+            | "mail-show-labels"
+            | "sign-new-messages"
+            | "append-signature"
+            | "quote-original"
+            | "mail-sort-descending"
+            | "mail-threading"
+            | "task-sort-descending"
+            | "memo-sort-descending"
+    )
+}
+
+fn normalize_i32_setting(value: &str, minimum: i32, maximum: i32) -> Result<String, &'static str> {
+    let value = value.parse::<i32>().map_err(|_| "keine gültige Ganzzahl")?;
+    if value < minimum || value > maximum {
+        return Err("außerhalb des portablen Wertebereichs");
+    }
+    Ok(value.to_string())
+}
+
+fn normalize_u32_setting(value: &str, minimum: u32, maximum: u32) -> Result<String, &'static str> {
+    let value = value
+        .parse::<u32>()
+        .map_err(|_| "keine gültige positive Ganzzahl")?;
+    if value < minimum || value > maximum {
+        return Err("außerhalb des portablen Wertebereichs");
+    }
+    Ok(value.to_string())
+}
+
+fn normalize_workdays_setting(value: &str) -> Result<String, &'static str> {
+    const DAYS: [&str; 7] = [
+        "monday",
+        "tuesday",
+        "wednesday",
+        "thursday",
+        "friday",
+        "saturday",
+        "sunday",
+    ];
+    let mut normalized = Vec::new();
+    for candidate in value
+        .split(|character: char| character == ',' || character.is_ascii_whitespace())
+        .filter(|candidate| !candidate.trim().is_empty())
+    {
+        let candidate = candidate.to_ascii_lowercase();
+        let candidate = match candidate.as_str() {
+            "mon" => "monday".to_string(),
+            "tue" | "tues" => "tuesday".to_string(),
+            "wed" => "wednesday".to_string(),
+            "thu" | "thur" | "thurs" => "thursday".to_string(),
+            "fri" => "friday".to_string(),
+            "sat" => "saturday".to_string(),
+            "sun" => "sunday".to_string(),
+            value if DAYS.contains(&value) => value.to_string(),
+            _ => return Err("enthält einen unbekannten Arbeitstag"),
+        };
+        if !normalized.contains(&candidate) {
+            normalized.push(candidate);
+        }
+    }
+    Ok(normalized.join(","))
+}
+
+fn safe_warning_key(value: &str) -> String {
+    if value.len() <= 80
+        && value.chars().all(|character| {
+            character.is_ascii_alphanumeric() || character == '-' || character == '_'
+        })
+    {
+        value.to_string()
+    } else {
+        "nicht-öffentlicher Schlüssel".to_string()
+    }
 }
 
 fn is_secret_setting_key(key: &str) -> bool {
@@ -967,13 +1256,16 @@ fn is_secret_setting_key(key: &str) -> bool {
 
 fn decode_setting_value(raw_value: &str) -> String {
     let mut value = raw_value.trim();
-    if let Some((prefix, rest)) = value.split_once(' ')
-        && matches!(
+    if let Some((prefix, rest)) = value.split_once(' ') {
+        if matches!(prefix, "@as" | "as") {
+            return decode_gvariant_string_list(rest.trim());
+        }
+        if matches!(
             prefix,
-            "@s" | "@b" | "@i" | "@u" | "string" | "boolean" | "int32" | "uint32"
-        )
-    {
-        value = rest.trim();
+            "@s" | "@b" | "@i" | "@u" | "@d" | "string" | "boolean" | "int32" | "uint32"
+        ) {
+            value = rest.trim();
+        }
     }
     if value.len() >= 2
         && ((value.starts_with('\'') && value.ends_with('\''))
@@ -986,26 +1278,96 @@ fn decode_setting_value(raw_value: &str) -> String {
 
 fn unescape_setting_value(value: &str) -> String {
     let mut output = String::with_capacity(value.len());
-    let mut escaped = false;
-    for character in value.chars() {
-        if escaped {
-            output.push(match character {
-                'n' => '\n',
-                'r' => '\r',
-                't' => '\t',
-                other => other,
-            });
-            escaped = false;
-        } else if character == '\\' {
-            escaped = true;
-        } else {
+    let mut characters = value.chars().peekable();
+    while let Some(character) = characters.next() {
+        if character != '\\' {
             output.push(character);
+            continue;
+        }
+        let Some(escaped) = characters.next() else {
+            output.push('\\');
+            break;
+        };
+        match escaped {
+            'n' => output.push('\n'),
+            'r' => output.push('\r'),
+            't' => output.push('\t'),
+            's' => output.push(' '),
+            'x' => {
+                let first = characters.next();
+                let second = characters.next();
+                match (first, second) {
+                    (Some(first), Some(second)) => {
+                        let mut hex = String::with_capacity(2);
+                        hex.push(first);
+                        hex.push(second);
+                        if let Ok(byte) = u8::from_str_radix(&hex, 16) {
+                            output.push(byte as char);
+                        } else {
+                            output.push('\\');
+                            output.push('x');
+                            output.push(first);
+                            output.push(second);
+                        }
+                    }
+                    (first, second) => {
+                        output.push('\\');
+                        output.push('x');
+                        if let Some(first) = first {
+                            output.push(first);
+                        }
+                        if let Some(second) = second {
+                            output.push(second);
+                        }
+                    }
+                }
+            }
+            other => {
+                // Unknown escapes are retained instead of being silently
+                // transformed.  This keeps imported portable settings
+                // loss-aware and avoids making an invalid value look valid.
+                output.push('\\');
+                output.push(other);
+            }
         }
     }
-    if escaped {
-        output.push('\\');
-    }
     output
+}
+
+fn decode_gvariant_string_list(value: &str) -> String {
+    let value = value.trim();
+    if value == "[]" {
+        return String::new();
+    }
+    let body = value
+        .strip_prefix('[')
+        .and_then(|value| value.strip_suffix(']'))
+        .unwrap_or(value);
+    let mut result = Vec::new();
+    let mut characters = body.chars().peekable();
+    while let Some(character) = characters.next() {
+        if character != '\'' && character != '"' {
+            continue;
+        }
+        let quote = character;
+        let mut raw_item = String::new();
+        let mut escaped = false;
+        while let Some(character) = characters.next() {
+            if escaped {
+                raw_item.push('\\');
+                raw_item.push(character);
+                escaped = false;
+            } else if character == '\\' {
+                escaped = true;
+            } else if character == quote {
+                break;
+            } else {
+                raw_item.push(character);
+            }
+        }
+        result.push(unescape_setting_value(&raw_item));
+    }
+    result.join(",")
 }
 
 fn parse_setting_bool(value: &str) -> Option<bool> {
@@ -1406,80 +1768,234 @@ fn parse_evolution_filters(raw: &str, path: &Path) -> Result<Vec<MailFilterRule>
 fn unsupported_filter_warnings(raw: &str, path: &Path) -> Vec<String> {
     let mut warnings = Vec::new();
     for (index, (opening_tag, body)) in extract_xml_blocks(raw, "rule").into_iter().enumerate() {
-        let rule_name = attribute_value(&opening_tag, "name")
-            .filter(|name| !name.trim().is_empty())
-            .unwrap_or_else(|| format!("Regel {}", index + 1));
-        for (part_tag, _) in extract_xml_blocks(&body, "part") {
+        let rule_name =
+            filter_warning_label(attribute_value(&opening_tag, "name").as_deref(), index + 1);
+        if let Some(enabled) = attribute_value(&opening_tag, "enabled")
+            && parse_setting_bool(&enabled).is_none()
+        {
+            warnings.push(format!(
+                "{}: Aktivierungswert in „{}“ ist nicht unterstützt und wird als aktiviert behandelt",
+                path.display(),
+                rule_name
+            ));
+        }
+        if let Some(scope) = attribute_value(&opening_tag, "source")
+            .or_else(|| attribute_value(&opening_tag, "scope"))
+            && filter_scope_from_evolution_name(&scope).is_none()
+        {
+            warnings.push(format!(
+                "{}: Filterbereich „{}“ in „{}“ wird als Eingang verarbeitet",
+                path.display(),
+                safe_warning_key(&scope),
+                rule_name
+            ));
+        }
+        if let Some(match_type) = attribute_value(&opening_tag, "match")
+            .or_else(|| attribute_value(&opening_tag, "match-type"))
+            && !matches!(match_type.to_ascii_lowercase().as_str(), "all" | "any")
+        {
+            warnings.push(format!(
+                "{}: Verknüpfung „{}“ in „{}“ wird als UND verarbeitet",
+                path.display(),
+                safe_warning_key(&match_type),
+                rule_name
+            ));
+        }
+
+        let mut portable_condition = false;
+        for (part_index, (part_tag, part_body)) in
+            extract_xml_blocks(&body, "part").into_iter().enumerate()
+        {
             let name = attribute_value(&part_tag, "name").unwrap_or_default();
-            if !name.trim().is_empty() && filter_field_from_evolution_name(&name).is_none() {
+            let Some(field) = filter_field_from_evolution_name(&name) else {
+                if name.trim().is_empty() {
+                    warnings.push(format!(
+                        "{}: Bedingung {} in „{}“ besitzt kein unterstütztes Feld",
+                        path.display(),
+                        part_index + 1,
+                        rule_name
+                    ));
+                } else {
+                    warnings.push(format!(
+                        "{}: Bedingung „{}“ in „{}“ wird portabel nicht ausgewertet",
+                        path.display(),
+                        safe_warning_key(&name),
+                        rule_name
+                    ));
+                }
+                continue;
+            };
+
+            let Some((value_tag, value_body)) =
+                extract_xml_blocks(&part_body, "value").into_iter().next()
+            else {
                 warnings.push(format!(
-                    "{}: Bedingung „{}“ in „{}“ wird portabel nicht ausgewertet",
+                    "{}: Wert für Bedingung „{}“ in „{}“ fehlt und wird nicht importiert",
                     path.display(),
-                    name,
+                    safe_warning_key(&name),
+                    rule_name
+                ));
+                continue;
+            };
+
+            let mut condition_imported = true;
+            if let Some(value_type) = attribute_value(&value_tag, "type")
+                && !is_supported_filter_value_type(&value_type)
+            {
+                warnings.push(format!(
+                    "{}: Werttyp „{}“ für Bedingung „{}“ in „{}“ wird portabel als Text verarbeitet",
+                    path.display(),
+                    safe_warning_key(&value_type),
+                    safe_warning_key(&name),
                     rule_name
                 ));
             }
-        }
-        for (part_tag, part_body) in extract_xml_blocks(&body, "part") {
-            if filter_field_from_evolution_name(
-                &attribute_value(&part_tag, "name").unwrap_or_default(),
-            )
-            .is_none()
-            {
-                continue;
-            }
-            let Some((value_tag, _)) = extract_xml_blocks(&part_body, "value").into_iter().next()
-            else {
-                continue;
-            };
             let operator_name = attribute_value(&value_tag, "name").unwrap_or_default();
-            if !operator_name.trim().is_empty()
-                && filter_operator_from_evolution_name(&operator_name).is_none()
-            {
+            if operator_name.trim().is_empty() {
+                warnings.push(format!(
+                    "{}: Vergleich für Bedingung „{}“ in „{}“ fehlt und wird als „enthält“ importiert",
+                    path.display(),
+                    safe_warning_key(&name),
+                    rule_name
+                ));
+            } else if filter_operator_from_evolution_name(&operator_name).is_none() {
                 warnings.push(format!(
                     "{}: Vergleich „{}“ in „{}“ wird portabel als „enthält“ importiert",
                     path.display(),
-                    operator_name,
+                    safe_warning_key(&operator_name),
                     rule_name
                 ));
             }
+            let operator = filter_operator_from_evolution_name(&operator_name).unwrap_or_default();
+            let value = decode_xml_entities(strip_xml_tags(&value_body).trim());
+            if value.trim().is_empty() && !operator.allows_empty_value(field) {
+                condition_imported = false;
+                warnings.push(format!(
+                    "{}: Leerer Wert für Bedingung „{}“ in „{}“ wird nicht importiert",
+                    path.display(),
+                    safe_warning_key(&name),
+                    rule_name
+                ));
+            }
+            portable_condition |= condition_imported;
         }
-        for (action_tag, _) in extract_xml_blocks(&body, "action") {
+
+        let mut portable_action = false;
+        for (action_index, (action_tag, action_body)) in
+            extract_xml_blocks(&body, "action").into_iter().enumerate()
+        {
             let name = attribute_value(&action_tag, "name").unwrap_or_default();
-            let recognition_target = if matches!(
-                name.to_ascii_lowercase().as_str(),
-                "move"
-                    | "move-to"
-                    | "move-to-folder"
-                    | "fileinto"
-                    | "copy"
-                    | "copy-to"
-                    | "copy-to-folder"
-                    | "set-label"
-                    | "label"
-                    | "add-label"
-                    | "tag"
-                    | "clear-label"
-                    | "remove-label"
-                    | "remove-tag"
-            ) {
-                "placeholder".to_string()
+            let target = extract_xml_blocks(&action_body, "value")
+                .into_iter()
+                .next()
+                .map(|(_, body)| decode_xml_entities(strip_xml_tags(&body).trim()))
+                .unwrap_or_default();
+            if name.trim().is_empty() {
+                warnings.push(format!(
+                    "{}: Aktion {} in „{}“ besitzt keinen unterstützten Namen",
+                    path.display(),
+                    action_index + 1,
+                    rule_name
+                ));
+                continue;
+            }
+            if filter_action_requires_target(&name) && target.trim().is_empty() {
+                warnings.push(format!(
+                    "{}: Aktion „{}“ in „{}“ besitzt kein Ziel und wird nicht importiert",
+                    path.display(),
+                    safe_warning_key(&name),
+                    rule_name
+                ));
+                continue;
+            }
+            let recognition_target = if filter_action_requires_target(&name) {
+                "portable-target".to_string()
             } else {
                 String::new()
             };
-            if !name.trim().is_empty()
-                && filter_action_from_evolution_name(&name, recognition_target).is_none()
-            {
+            if filter_action_from_evolution_name(&name, recognition_target).is_none() {
                 warnings.push(format!(
                     "{}: Aktion „{}“ in „{}“ wird portabel nicht ausgeführt",
                     path.display(),
-                    name,
+                    safe_warning_key(&name),
                     rule_name
                 ));
+            } else {
+                portable_action = true;
             }
+        }
+        if !portable_condition {
+            warnings.push(format!(
+                "{}: Regel „{}“ besitzt keine importierbare Bedingung",
+                path.display(),
+                rule_name
+            ));
+        }
+        if !portable_action {
+            warnings.push(format!(
+                "{}: Regel „{}“ besitzt keine importierbare Aktion",
+                path.display(),
+                rule_name
+            ));
         }
     }
     warnings
+}
+
+fn filter_warning_label(name: Option<&str>, index: usize) -> String {
+    let name = name
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "Regel");
+    let label = name.replace(['\r', '\n'], " ");
+    let label = if label.chars().count() > 80 {
+        let mut shortened = label.chars().take(80).collect::<String>();
+        shortened.push('…');
+        shortened
+    } else {
+        label
+    };
+    if label == "Regel" {
+        format!("Regel {index}")
+    } else {
+        label
+    }
+}
+
+fn filter_scope_from_evolution_name(name: &str) -> Option<FilterScope> {
+    match name.trim().to_ascii_lowercase().as_str() {
+        "incoming" | "inbox" => Some(FilterScope::Incoming),
+        "outgoing" | "outbox" | "sent" => Some(FilterScope::Outgoing),
+        "manual" | "addressbook" => Some(FilterScope::Manual),
+        _ => None,
+    }
+}
+
+fn filter_action_requires_target(name: &str) -> bool {
+    matches!(
+        name.trim().to_ascii_lowercase().as_str(),
+        "move"
+            | "move-to"
+            | "move-to-folder"
+            | "fileinto"
+            | "copy"
+            | "copy-to"
+            | "copy-to-folder"
+            | "set-label"
+            | "label"
+            | "add-label"
+            | "tag"
+            | "clear-label"
+            | "remove-label"
+            | "remove-tag"
+    )
+}
+
+fn is_supported_filter_value_type(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "" | "string" | "boolean" | "bool" | "date" | "datetime" | "folder" | "integer"
+    )
 }
 
 fn filter_field_from_evolution_name(name: &str) -> Option<FilterField> {
@@ -1680,7 +2196,8 @@ fn parse_source(raw: &str) -> Result<SourceKeyFile, &'static str> {
     let mut source = SourceKeyFile::default();
     let mut current_group = None::<String>;
 
-    for line in raw.lines() {
+    for (line_index, line) in raw.lines().enumerate() {
+        let line_number = line_index + 1;
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') || line.starts_with(';') {
             continue;
@@ -1699,9 +2216,15 @@ fn parse_source(raw: &str) -> Result<SourceKeyFile, &'static str> {
         }
 
         let Some(group) = current_group.as_ref() else {
+            source.warnings.push(format!(
+                "Zeile {line_number}: Eintrag außerhalb einer Keyfile-Gruppe wurde ignoriert"
+            ));
             continue;
         };
         let Some((key, value)) = line.split_once('=') else {
+            source.warnings.push(format!(
+                "Zeile {line_number}: nicht unterstützter Keyfile-Eintrag wurde ignoriert"
+            ));
             continue;
         };
         let key = key.trim();
@@ -1711,6 +2234,12 @@ fn parse_source(raw: &str) -> Result<SourceKeyFile, &'static str> {
         if is_secret_key(key) {
             source.ignored_secret_keys.push(key.to_string());
             continue;
+        }
+        if !is_supported_source_key(group, key) {
+            source.warnings.push(format!(
+                "Zeile {line_number}: unbekanntes oder nicht unterstütztes Feld „{}“ wurde nicht übernommen",
+                safe_warning_key(key)
+            ));
         }
         source
             .groups
@@ -1729,15 +2258,114 @@ fn is_secret_key(key: &str) -> bool {
     let key = key.to_ascii_lowercase();
     [
         "password",
+        "passwd",
         "passphrase",
         "secret",
         "token",
         "credential",
         "privatekey",
         "private-key",
+        "oauth",
+        "keyring",
+        "authdata",
+        "auth-data",
     ]
     .iter()
     .any(|marker| key.contains(marker))
+}
+
+fn is_supported_source_key(group: &str, key: &str) -> bool {
+    let group = group.to_ascii_lowercase();
+    let key = key.to_ascii_lowercase().replace('_', "-");
+    let common = matches!(
+        key.as_str(),
+        "uid"
+            | "id"
+            | "displayname"
+            | "display-name"
+            | "name"
+            | "label"
+            | "enabled"
+            | "active"
+            | "backendname"
+            | "backend"
+            | "backendtype"
+            | "type"
+            | "host"
+            | "server"
+            | "hostname"
+            | "servername"
+            | "port"
+            | "portnumber"
+            | "user"
+            | "username"
+            | "login"
+            | "method"
+            | "authentication"
+            | "authmethod"
+            | "mechanism"
+            | "tls"
+            | "encryption"
+            | "securitymethod"
+            | "usessl"
+            | "imapport"
+            | "smtpport"
+            | "parent"
+            | "address"
+            | "email"
+            | "emailaddress"
+            | "replyto"
+            | "reply-to"
+            | "replyaddress"
+            | "organization"
+            | "organisation"
+            | "aliases"
+            | "alias"
+            | "emailaliases"
+            | "emailalias"
+            | "inboxfolder"
+            | "inbox"
+            | "inboxpath"
+            | "draftsfolder"
+            | "drafts"
+            | "draftfolder"
+            | "sentfolder"
+            | "sent"
+            | "sentfolderpath"
+            | "archivefolder"
+            | "archive"
+            | "archivefolderpath"
+            | "trashfolder"
+            | "trash"
+            | "junkfolder"
+            | "junk"
+            | "spamfolder"
+            | "spam"
+    );
+    if common {
+        return true;
+    }
+    matches!(
+        group.as_str(),
+        "data source"
+            | "source"
+            | "mail account"
+            | "mail identity"
+            | "identity"
+            | "authentication"
+            | "mail submission"
+            | "submission"
+            | "smtp"
+            | "transport"
+            | "camel smtp"
+            | "imap"
+            | "camel"
+            | "security"
+            | "collection"
+            | "calendar"
+            | "address book"
+            | "backend"
+    ) && matches!(key.as_str(), "readonly" | "writable" | "removable" | "icon")
 }
 
 fn unescape_keyfile_value(value: &str) -> String {
@@ -1767,6 +2395,14 @@ fn unescape_keyfile_value(value: &str) -> String {
 }
 
 fn profile_from_source(path: &Path, source: &SourceKeyFile) -> Result<AccountProfile, String> {
+    profile_from_source_with_warnings(path, source).map(|(profile, _)| profile)
+}
+
+fn profile_from_source_with_warnings(
+    path: &Path,
+    source: &SourceKeyFile,
+) -> Result<(AccountProfile, Vec<String>), String> {
+    let mut warnings = Vec::new();
     let email = first_value(
         source,
         &["Mail Identity", "Mail Account", "Identity", "Data Source"],
@@ -1808,6 +2444,12 @@ fn profile_from_source(path: &Path, source: &SourceKeyFile) -> Result<AccountPro
     )
     .unwrap_or_default();
     let protocol = protocol_from_backend(&backend);
+    if !backend.trim().is_empty() && !is_known_mail_backend(&backend) {
+        warnings.push(
+            "nicht unterstütztes Mail-Backend wurde als portables IMAP/SMTP-Konto übernommen"
+                .to_string(),
+        );
+    }
     let imap_host = first_value(
         source,
         &["Mail Account", "Authentication", "IMAP", "Camel"],
@@ -1826,7 +2468,7 @@ fn profile_from_source(path: &Path, source: &SourceKeyFile) -> Result<AccountPro
         &["Host", "Server", "Hostname", "ServerName"],
     )
     .unwrap_or_default();
-    let tls_mode = first_value(
+    let tls_value = first_value(
         source,
         &[
             "Security",
@@ -1836,23 +2478,32 @@ fn profile_from_source(path: &Path, source: &SourceKeyFile) -> Result<AccountPro
             "Authentication",
         ],
         &["Method", "TLS", "Encryption", "SecurityMethod", "UseSSL"],
-    )
-    .map(|value| tls_mode_from_value(&value))
-    .unwrap_or_else(|| "tls".to_string());
+    );
+    let (tls_mode, tls_value_supported) = tls_mode_with_status(tls_value.as_deref());
+    if tls_value.is_some() && !tls_value_supported {
+        warnings.push(
+            "nicht unterstützte Mail-Verschlüsselungsart wurde als TLS-Fallback übernommen"
+                .to_string(),
+        );
+    }
     let username = first_value(
         source,
         &["Authentication", "Mail Account", "IMAP", "Camel"],
         &["User", "Username", "Login", "UserName"],
     )
     .unwrap_or_default();
-    let imap_port = first_value(
+    let imap_port_value = first_value(
         source,
         &["Mail Account", "Authentication", "IMAP", "Camel"],
         &["Port", "PortNumber", "IMAPPort"],
-    )
-    .and_then(|value| value.parse::<u16>().ok())
-    .unwrap_or_else(|| if tls_mode == "starttls" { 143 } else { 993 });
-    let smtp_port = first_value(
+    );
+    let imap_port = parse_source_port(
+        imap_port_value.as_deref(),
+        if tls_mode == "starttls" { 143 } else { 993 },
+        "IMAP",
+        &mut warnings,
+    );
+    let smtp_port_value = first_value(
         source,
         &[
             "Mail Submission",
@@ -1862,9 +2513,13 @@ fn profile_from_source(path: &Path, source: &SourceKeyFile) -> Result<AccountPro
             "Camel SMTP",
         ],
         &["Port", "PortNumber", "SMTPPort"],
-    )
-    .and_then(|value| value.parse::<u16>().ok())
-    .unwrap_or_else(|| if tls_mode == "starttls" { 587 } else { 465 });
+    );
+    let smtp_port = parse_source_port(
+        smtp_port_value.as_deref(),
+        if tls_mode == "starttls" { 587 } else { 465 },
+        "SMTP",
+        &mut warnings,
+    );
     let auth_method = first_value(
         source,
         &["Authentication", "Mail Account", "SMTP", "Transport"],
@@ -1917,33 +2572,105 @@ fn profile_from_source(path: &Path, source: &SourceKeyFile) -> Result<AccountPro
     let archive_folder = folder_value(&["ArchiveFolder", "Archive", "ArchiveFolderPath"]);
     let trash_folder = folder_value(&["TrashFolder", "Trash", "TrashFolderPath"]);
     let junk_folder = folder_value(&["JunkFolder", "Junk", "SpamFolder", "Spam"]);
-    let enabled = first_value(source, &["Data Source", "Source"], &["Enabled", "Active"])
-        .map(|value| parse_bool(&value))
-        .unwrap_or(true);
+    let enabled = match first_value(source, &["Data Source", "Source"], &["Enabled", "Active"]) {
+        None => true,
+        Some(value) => match parse_setting_bool(&value) {
+            Some(enabled) => enabled,
+            None => {
+                warnings
+                    .push("ungültiger Aktivierungswert wurde als aktiviert übernommen".to_string());
+                true
+            }
+        },
+    };
 
-    Ok(AccountProfile {
-        id: format!("evolution-source:{uid}"),
-        display_name,
-        email,
-        protocol,
-        imap_host,
-        smtp_host,
-        tls_mode,
-        username,
-        imap_port,
-        smtp_port,
-        auth_method,
-        reply_to,
-        organization,
-        aliases,
-        inbox_folder,
-        drafts_folder,
-        sent_folder,
-        archive_folder,
-        trash_folder,
-        junk_folder,
-        enabled,
-    })
+    Ok((
+        AccountProfile {
+            id: format!("evolution-source:{uid}"),
+            display_name,
+            email,
+            protocol,
+            imap_host,
+            smtp_host,
+            tls_mode,
+            username,
+            imap_port,
+            smtp_port,
+            auth_method,
+            reply_to,
+            organization,
+            aliases,
+            inbox_folder,
+            drafts_folder,
+            sent_folder,
+            archive_folder,
+            trash_folder,
+            junk_folder,
+            enabled,
+        },
+        warnings,
+    ))
+}
+
+fn is_known_mail_backend(value: &str) -> bool {
+    let value = value.trim().to_ascii_lowercase();
+    [
+        "imapx",
+        "imap",
+        "imap4",
+        "pop",
+        "pop3",
+        "exchange",
+        "ews",
+        "eas",
+        "goa",
+        "online-account",
+        "onlineaccount",
+    ]
+    .iter()
+    .any(|backend| value == *backend || value.contains(backend))
+}
+
+fn tls_mode_with_status(value: Option<&str>) -> (String, bool) {
+    let Some(value) = value else {
+        return ("tls".to_string(), true);
+    };
+    let normalized = value.trim().to_ascii_lowercase();
+    let mode = tls_mode_from_value(value);
+    let supported = matches!(
+        normalized.as_str(),
+        "starttls"
+            | "start-tls"
+            | "tls"
+            | "ssl"
+            | "ssl-on-alternate-port"
+            | "true"
+            | "false"
+            | "none"
+            | "no encryption"
+            | "unencrypted"
+    );
+    (mode, supported)
+}
+
+fn parse_source_port(
+    value: Option<&str>,
+    fallback: u16,
+    label: &str,
+    warnings: &mut Vec<String>,
+) -> u16 {
+    let Some(value) = value else {
+        return fallback;
+    };
+    match value.trim().parse::<u16>() {
+        Ok(port) if port > 0 => port,
+        _ => {
+            warnings.push(format!(
+                "ungültiger {label}-Port wurde durch den portablen Standard ersetzt"
+            ));
+            fallback
+        }
+    }
 }
 
 fn first_value(source: &SourceKeyFile, groups: &[&str], keys: &[&str]) -> Option<String> {
@@ -2023,7 +2750,19 @@ unknown-setting='ignored'
             Path::new("evolution-settings.ini"),
         );
         assert_eq!(parsed.ignored_secret_fields, 2);
-        assert!(parsed.warnings.is_empty());
+        assert!(
+            parsed
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("unknown-setting"))
+        );
+        assert!(
+            !parsed
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("ignored")
+                    || warning.contains("must-not-be-retained"))
+        );
         assert!(parsed.settings.contains(&ImportedSetting {
             key: "mail-layout".to_string(),
             value: "classic".to_string(),
@@ -2045,6 +2784,58 @@ unknown-setting='ignored'
                 .settings
                 .iter()
                 .any(|setting| setting.key == "password")
+        );
+    }
+
+    #[test]
+    fn normalizes_portable_setting_types_and_reports_invalid_values() {
+        let parsed = parse_evolution_settings(
+            r#"
+[/org/gnome/evolution/mail]
+show-from=@b true
+mail-sort-field='received'
+mail-layout='classic'
+mail-sync-message-limit=@i 100
+window-width=@i 40
+mail-threading='not-a-bool'
+calendar-hidden-sources=@as ['calendar-work', 'calendar-home']
+"#,
+            Path::new("dconf.dump"),
+        );
+
+        assert!(parsed.settings.contains(&ImportedSetting {
+            key: "mail-show-sender".to_string(),
+            value: "true".to_string(),
+        }));
+        assert!(parsed.settings.contains(&ImportedSetting {
+            key: "mail-sort-field".to_string(),
+            value: "date".to_string(),
+        }));
+        assert!(parsed.settings.contains(&ImportedSetting {
+            key: "mail-sync-message-limit".to_string(),
+            value: "100".to_string(),
+        }));
+        assert!(parsed.settings.contains(&ImportedSetting {
+            key: "calendar-hidden-sources".to_string(),
+            value: "calendar-work,calendar-home".to_string(),
+        }));
+        assert!(
+            !parsed
+                .settings
+                .iter()
+                .any(|setting| setting.key == "window-width" || setting.key == "mail-threading")
+        );
+        assert!(
+            parsed
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("window-width"))
+        );
+        assert!(
+            parsed
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("mail-threading"))
         );
     }
 
@@ -2123,6 +2914,62 @@ JunkFolder=Junk
         assert_eq!(profile.trash_folder, "Trash");
         assert_eq!(profile.junk_folder, "Junk");
         assert!(profile.enabled);
+    }
+
+    #[test]
+    fn reports_account_fallbacks_without_exposing_source_values() {
+        let source = parse_source(
+            r#"
+[Data Source]
+UID=mail-source-unsupported
+Enabled=maybe
+
+[Mail Identity]
+Address=person@example.org
+
+[Mail Account]
+BackendName=unsupported-backend
+
+[Authentication]
+Host=imap.example.org
+Port=not-a-port
+
+[Security]
+Method=unknown-encryption
+Password=must-not-be-retained
+"#,
+        )
+        .expect("source should parse");
+        let (profile, warnings) =
+            profile_from_source_with_warnings(Path::new("mail-source-unsupported.source"), &source)
+                .expect("account identity should remain importable");
+
+        assert_eq!(profile.protocol, AccountProtocol::ImapSmtp);
+        assert_eq!(profile.imap_port, 993);
+        assert_eq!(profile.smtp_port, 465);
+        assert!(warnings.iter().any(|warning| warning.contains("Backend")));
+        assert!(warnings.iter().any(|warning| warning.contains("IMAP-Port")));
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.contains("Verschlüsselungsart"))
+        );
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.contains("Aktivierungswert"))
+        );
+        assert!(
+            !warnings
+                .iter()
+                .any(|warning| warning.contains("must-not-be-retained"))
+        );
+        assert!(
+            !source
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("must-not-be-retained"))
+        );
     }
 
     #[test]

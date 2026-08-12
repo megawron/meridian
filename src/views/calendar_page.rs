@@ -24,9 +24,12 @@ use crate::services::eds_service;
 use crate::services::ical_time_service::{
     property_local_date, property_local_dates, property_local_datetime, property_local_display,
 };
+#[cfg(test)]
 use crate::services::recurrence_service::{
-    RecurrenceByDay, parse_extended_weekday_token, parse_recurrence_rule,
-    recurrence_matches_without_count, recurrence_occurs_on as recurrence_rule_occurs_on,
+    RecurrenceByDay, parse_extended_weekday_token, recurrence_matches_without_count,
+};
+use crate::services::recurrence_service::{
+    parse_recurrence_rule, recurrence_occurs_on as recurrence_rule_occurs_on,
 };
 use crate::services::settings_service::AppSettings;
 use crate::views::accessibility::set_accessible_label;

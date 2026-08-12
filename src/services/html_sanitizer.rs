@@ -66,7 +66,19 @@ const ALLOWED_TAGS: &[&str] = &[
 ];
 
 const BLOCKED_TAGS: &[&str] = &[
-    "applet", "base", "embed", "form", "iframe", "link", "meta", "object", "script", "style", "svg",
+    "applet", "audio", "base", "canvas", "embed", "form", "iframe", "link", "math", "meta",
+    "object", "portal", "script", "source", "style", "svg", "template", "track", "video",
+];
+
+const ALLOWED_CSS_AT_RULES: &[&str] = &[
+    "container",
+    "keyframes",
+    "layer",
+    "media",
+    "page",
+    "supports",
+    "-moz-keyframes",
+    "-webkit-keyframes",
 ];
 
 /// Sanitize untrusted mail HTML while preserving common formatting tags.
@@ -112,7 +124,7 @@ pub fn sanitize_html(input: &str) -> String {
         if tag_name == "style" {
             if !closing {
                 if let Some((css, after_block)) = find_style_block_end(input, end + 1) {
-                    if let Some(css) = sanitize_css(css) {
+                    if let Some(css) = sanitize_stylesheet(css) {
                         output.push_str("<style>");
                         output.push_str(&css);
                         output.push_str("</style>");
@@ -134,7 +146,21 @@ pub fn sanitize_html(input: &str) -> String {
             // find_block_end cannot find </tag>.
             let is_container = matches!(
                 tag_name.as_str(),
-                "applet" | "form" | "iframe" | "object" | "script" | "style" | "svg"
+                "applet"
+                    | "audio"
+                    | "canvas"
+                    | "form"
+                    | "iframe"
+                    | "math"
+                    | "object"
+                    | "portal"
+                    | "script"
+                    | "source"
+                    | "style"
+                    | "svg"
+                    | "template"
+                    | "track"
+                    | "video"
             );
             if !closing && is_container {
                 cursor = find_block_end(input, end + 1, &tag_name).unwrap_or(input.len());
@@ -255,16 +281,14 @@ fn strip_style_blocks(input: &str) -> String {
 
         output.push_str(&input[cursor..start]);
         let Some(open_end) = find_tag_end(input, start) else {
+            cursor = input.len();
             break;
         };
-        let Some(relative_close) = lower[open_end + 1..].find("</style") else {
+        let Some((_, after_block)) = find_style_block_end(input, open_end + 1) else {
+            cursor = input.len();
             break;
         };
-        let close_start = open_end + 1 + relative_close;
-        let Some(close_end) = find_tag_end(input, close_start) else {
-            break;
-        };
-        cursor = close_end + 1;
+        cursor = after_block;
     }
 
     output.push_str(&input[cursor..]);
@@ -355,9 +379,21 @@ fn find_tag_end(input: &str, start: usize) -> Option<usize> {
 fn find_block_end(input: &str, start: usize, tag_name: &str) -> Option<usize> {
     let lower = input[start..].to_ascii_lowercase();
     let closing = format!("</{tag_name}");
-    let relative = lower.find(&closing)?;
-    let absolute = start + relative;
-    find_tag_end(input, absolute).map(|end| end + 1)
+    let mut cursor = 0;
+    while let Some(relative) = lower[cursor..].find(&closing) {
+        let relative = cursor + relative;
+        let after_name = relative + closing.len();
+        let is_boundary = lower
+            .as_bytes()
+            .get(after_name)
+            .is_none_or(|byte| byte.is_ascii_whitespace() || *byte == b'>');
+        if is_boundary {
+            let absolute = start + relative;
+            return find_tag_end(input, absolute).map(|end| end + 1);
+        }
+        cursor = after_name;
+    }
+    None
 }
 
 fn tag_name(raw_tag: &str) -> Option<(bool, String)> {
@@ -380,6 +416,12 @@ fn tag_name(raw_tag: &str) -> Option<(bool, String)> {
     Some((closing, content[..name_end].to_ascii_lowercase()))
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct ParsedAttribute {
+    name: String,
+    value: Option<String>,
+}
+
 fn sanitize_tag(raw_tag: &str, closing: bool, tag_name: &str) -> Option<String> {
     if !ALLOWED_TAGS.contains(&tag_name) {
         return None;
@@ -388,6 +430,48 @@ fn sanitize_tag(raw_tag: &str, closing: bool, tag_name: &str) -> Option<String> 
         return Some(format!("</{tag_name}>"));
     }
 
+    let (parsed_attributes, self_closing) = parse_attributes(raw_tag)?;
+    let mut attributes = Vec::new();
+    for attribute in parsed_attributes {
+        let attribute_name = attribute.name;
+        let value = attribute.value;
+
+        if attribute_name == "style" {
+            if let Some(value) = value.as_deref().and_then(sanitize_css) {
+                attributes.push(format!(" style=\"{}\"", escape_attribute(&value)));
+            }
+            continue;
+        }
+        if is_blocked_attribute(&attribute_name) {
+            continue;
+        }
+        if let Some(value) = value.as_deref() {
+            if attribute_name == "rel" {
+                let safe_rel = sanitize_link_relations(value);
+                if safe_rel.is_empty() {
+                    continue;
+                }
+                attributes.push(format!(" rel=\"{}\"", escape_attribute(&safe_rel)));
+                continue;
+            }
+            if is_uri_attribute(&attribute_name) && !is_safe_uri(value, tag_name, &attribute_name) {
+                continue;
+            }
+            attributes.push(format!(" {attribute_name}=\"{}\"", escape_attribute(value)));
+        } else {
+            attributes.push(format!(" {attribute_name}"));
+        }
+    }
+
+    let tag_suffix = if self_closing || matches!(tag_name, "br" | "hr" | "img" | "col") {
+        "/>"
+    } else {
+        ">"
+    };
+    Some(format!("<{tag_name}{}{tag_suffix}", attributes.concat()))
+}
+
+fn parse_attributes(raw_tag: &str) -> Option<(Vec<ParsedAttribute>, bool)> {
     let content = raw_tag.strip_prefix('<')?.strip_suffix('>')?.trim();
     let name_end = content
         .char_indices()
@@ -407,6 +491,7 @@ fn sanitize_tag(raw_tag: &str, closing: bool, tag_name: &str) -> Option<String> 
         if cursor >= content.len() {
             break;
         }
+
         let attribute_start = cursor;
         while cursor < content.len()
             && !bytes[cursor].is_ascii_whitespace()
@@ -419,6 +504,7 @@ fn sanitize_tag(raw_tag: &str, closing: bool, tag_name: &str) -> Option<String> 
             cursor += 1;
             continue;
         }
+
         let attribute_name = content[attribute_start..cursor].to_ascii_lowercase();
         while cursor < content.len() && bytes[cursor].is_ascii_whitespace() {
             cursor += 1;
@@ -430,6 +516,7 @@ fn sanitize_tag(raw_tag: &str, closing: bool, tag_name: &str) -> Option<String> 
             while cursor < content.len() && bytes[cursor].is_ascii_whitespace() {
                 cursor += 1;
             }
+
             if cursor < content.len() && (bytes[cursor] == b'\'' || bytes[cursor] == b'"') {
                 let quote = bytes[cursor];
                 cursor += 1;
@@ -442,94 +529,569 @@ fn sanitize_tag(raw_tag: &str, closing: bool, tag_name: &str) -> Option<String> 
                     cursor += 1;
                 }
             } else {
+                // A slash is valid inside an unquoted HTML attribute value.
+                // Stopping at it turns `https://...` into `https:` and can
+                // also make the trailing path look like another attribute.
                 let value_start = cursor;
-                while cursor < content.len()
-                    && !bytes[cursor].is_ascii_whitespace()
-                    && bytes[cursor] != b'/'
-                {
+                while cursor < content.len() && !is_unquoted_attribute_end(bytes[cursor]) {
                     cursor += 1;
                 }
                 value = Some(content[value_start..cursor].to_string());
             }
         }
 
-        if attribute_name == "style" {
-            if let Some(value) = value.as_deref().and_then(sanitize_css) {
-                attributes.push(format!(" style=\"{}\"", escape_attribute(&value)));
-            }
-            continue;
-        }
-        if is_blocked_attribute(&attribute_name) {
-            continue;
-        }
-        if let Some(value) = value.as_deref() {
-            if is_uri_attribute(&attribute_name) && !is_safe_uri(value, tag_name, &attribute_name) {
-                continue;
-            }
-            attributes.push(format!(
-                " {}=\"{}\"",
-                attribute_name,
-                escape_attribute(value)
-            ));
-        } else {
-            attributes.push(format!(" {attribute_name}"));
-        }
+        attributes.push(ParsedAttribute {
+            name: attribute_name,
+            value,
+        });
     }
 
-    let self_closing = content.trim_end().ends_with('/');
-    let tag_suffix = if self_closing || matches!(tag_name, "br" | "hr" | "img" | "col") {
-        "/>"
-    } else {
-        ">"
-    };
-    Some(format!("<{tag_name}{}{tag_suffix}", attributes.concat()))
+    Some((attributes, content.trim_end().ends_with('/')))
+}
+
+fn is_unquoted_attribute_end(byte: u8) -> bool {
+    byte.is_ascii_whitespace() || matches!(byte, b'"' | b'\'' | b'=' | b'<' | b'`')
 }
 
 fn find_style_block_end(input: &str, start: usize) -> Option<(&str, usize)> {
     let lower = input[start..].to_ascii_lowercase();
-    let relative_close = lower.find("</style")?;
-    let close_start = start + relative_close;
-    let close_end = find_tag_end(input, close_start)?;
-    Some((&input[start..close_start], close_end + 1))
+    let mut cursor = 0;
+    while let Some(relative_close) = lower[cursor..].find("</style") {
+        let relative_close = cursor + relative_close;
+        let after_name = relative_close + "</style".len();
+        let is_boundary = lower
+            .as_bytes()
+            .get(after_name)
+            .is_none_or(|byte| byte.is_ascii_whitespace() || *byte == b'>');
+        if is_boundary {
+            let close_start = start + relative_close;
+            let close_end = find_tag_end(input, close_start)?;
+            return Some((&input[start..close_start], close_end + 1));
+        }
+        cursor = after_name;
+    }
+    None
 }
 
 fn sanitize_css(value: &str) -> Option<String> {
-    // Tracking comments in mail stylesheets sometimes contain URL-like
-    // examples. Remove comments before checking declarations so one harmless
-    // comment cannot cause the adjacent, useful layout rule to disappear.
-    let without_comments = strip_css_comments(value);
-    let trimmed = without_comments.trim();
+    let trimmed = strip_css_comments(value);
+    let trimmed = trimmed.trim();
     if trimmed.is_empty() {
         return None;
     }
-    let blocked_tokens = [
-        "url(",
-        "@import",
-        "@font-face",
-        "@namespace",
-        "expression(",
-        "javascript:",
-        "vbscript:",
-        "behavior:",
-        "-moz-binding",
-        "-webkit-binding",
-    ];
 
-    // Keep safe rules even when a mail contains one unrelated tracking rule.
-    // This is intentionally a small rule splitter, not a CSS parser: the
-    // surrounding document sanitizer already removes active HTML, while the
-    // token check prevents resource loads and browser-specific execution.
-    let safe = trimmed
-        .split_inclusive('}')
-        .filter(|part| {
-            let lower = part.to_ascii_lowercase();
-            !blocked_tokens.iter().any(|token| lower.contains(token))
-        })
-        .collect::<String>();
-    if safe.trim().is_empty() {
+    if trimmed.starts_with('@') || has_top_level_css_brace(trimmed) {
+        sanitize_stylesheet(trimmed)
+    } else {
+        sanitize_inline_css(trimmed)
+    }
+}
+
+fn sanitize_stylesheet(value: &str) -> Option<String> {
+    let without_comments = strip_css_comments(value);
+    let sanitized = sanitize_css_rules(&without_comments);
+    (!sanitized.trim().is_empty()).then_some(sanitized)
+}
+
+fn sanitize_inline_css(value: &str) -> Option<String> {
+    let without_comments = strip_css_comments(value);
+    let declarations = sanitize_css_declarations(&without_comments)?;
+    let declarations = declarations.trim().trim_end_matches(';').trim();
+    (!declarations.is_empty()).then_some(declarations.to_string())
+}
+
+fn sanitize_css_rules(value: &str) -> String {
+    let mut output = String::new();
+    let mut cursor = 0;
+
+    while cursor < value.len() {
+        while cursor < value.len() && value.as_bytes()[cursor].is_ascii_whitespace() {
+            cursor += 1;
+        }
+        if cursor >= value.len() || value.as_bytes()[cursor] == b'}' {
+            break;
+        }
+
+        let Some((delimiter, delimiter_position)) = find_css_delimiter(value, cursor) else {
+            break;
+        };
+        let prelude = value[cursor..delimiter_position].trim();
+        if prelude.is_empty() {
+            cursor = delimiter_position + 1;
+            continue;
+        }
+
+        match delimiter {
+            b';' => {
+                // Standalone at-rules such as @import and @charset are
+                // intentionally discarded. They cannot contribute layout,
+                // and some of them load a remote resource.
+                cursor = delimiter_position + 1;
+            }
+            b'{' => {
+                let Some(close) = find_matching_css_brace(value, delimiter_position) else {
+                    break;
+                };
+                if let Some(rule) =
+                    sanitize_css_block(prelude, &value[delimiter_position + 1..close])
+                {
+                    output.push_str(&rule);
+                }
+                cursor = close + 1;
+            }
+            b'}' => break,
+            _ => break,
+        }
+    }
+
+    output
+}
+
+fn sanitize_css_block(prelude: &str, body: &str) -> Option<String> {
+    if css_contains_blocked_construct(prelude) {
         return None;
     }
-    Some(safe)
+
+    if prelude.starts_with('@') {
+        let at_rule = css_at_rule_name(prelude)?;
+        if !ALLOWED_CSS_AT_RULES.contains(&at_rule.as_str()) {
+            return None;
+        }
+
+        let sanitized_body = if at_rule == "page" {
+            sanitize_css_declarations(body)?
+        } else {
+            let rules = sanitize_css_rules(body);
+            if rules.trim().is_empty() {
+                return None;
+            }
+            rules
+        };
+        return Some(format!(
+            "{} {{ {} }}",
+            prelude.trim(),
+            sanitized_body.trim()
+        ));
+    }
+
+    let declarations = sanitize_css_declarations(body)?;
+    Some(format!("{} {{ {} }}", prelude.trim(), declarations.trim()))
+}
+
+fn sanitize_css_declarations(value: &str) -> Option<String> {
+    let mut output = String::new();
+    let mut start = 0;
+
+    for end in css_declaration_boundaries(value) {
+        let declaration = value[start..end].trim();
+        start = end + 1;
+        let Some((property, property_value)) = split_css_declaration(declaration) else {
+            continue;
+        };
+        let property = property.trim();
+        let property_value = property_value.trim();
+        if !is_safe_css_property(property)
+            || property_value.is_empty()
+            || css_contains_blocked_construct(property_value)
+        {
+            continue;
+        }
+        output.push_str(property);
+        output.push_str(": ");
+        output.push_str(property_value);
+        output.push_str("; ");
+    }
+
+    let declaration = value[start..].trim();
+    if let Some((property, property_value)) = split_css_declaration(declaration) {
+        let property = property.trim();
+        let property_value = property_value.trim();
+        if is_safe_css_property(property)
+            && !property_value.is_empty()
+            && !css_contains_blocked_construct(property_value)
+        {
+            output.push_str(property);
+            output.push_str(": ");
+            output.push_str(property_value);
+            output.push_str("; ");
+        }
+    }
+
+    (!output.trim().is_empty()).then_some(output)
+}
+
+fn css_declaration_boundaries(value: &str) -> Vec<usize> {
+    let bytes = value.as_bytes();
+    let mut boundaries = Vec::new();
+    let mut cursor = 0;
+    let mut quote = None;
+    let mut parentheses = 0usize;
+    let mut brackets = 0usize;
+
+    while cursor < bytes.len() {
+        let byte = bytes[cursor];
+        if let Some(expected) = quote {
+            if byte == b'\\' {
+                cursor = css_escape_end(value, cursor);
+                continue;
+            }
+            if byte == expected {
+                quote = None;
+            }
+            cursor += 1;
+            continue;
+        }
+        if byte == b'\\' {
+            cursor = css_escape_end(value, cursor);
+            continue;
+        }
+        match byte {
+            b'\'' | b'"' => quote = Some(byte),
+            b'(' => parentheses = parentheses.saturating_add(1),
+            b')' => parentheses = parentheses.saturating_sub(1),
+            b'[' => brackets = brackets.saturating_add(1),
+            b']' => brackets = brackets.saturating_sub(1),
+            b';' if parentheses == 0 && brackets == 0 => boundaries.push(cursor),
+            _ => {}
+        }
+        cursor += 1;
+    }
+    boundaries
+}
+
+fn split_css_declaration(value: &str) -> Option<(&str, &str)> {
+    let bytes = value.as_bytes();
+    let mut cursor = 0;
+    let mut quote = None;
+    let mut parentheses = 0usize;
+    let mut brackets = 0usize;
+
+    while cursor < bytes.len() {
+        let byte = bytes[cursor];
+        if let Some(expected) = quote {
+            if byte == b'\\' {
+                cursor = css_escape_end(value, cursor);
+                continue;
+            }
+            if byte == expected {
+                quote = None;
+            }
+            cursor += 1;
+            continue;
+        }
+        if byte == b'\\' {
+            cursor = css_escape_end(value, cursor);
+            continue;
+        }
+        match byte {
+            b'\'' | b'"' => quote = Some(byte),
+            b'(' => parentheses = parentheses.saturating_add(1),
+            b')' => parentheses = parentheses.saturating_sub(1),
+            b'[' => brackets = brackets.saturating_add(1),
+            b']' => brackets = brackets.saturating_sub(1),
+            b':' if parentheses == 0 && brackets == 0 => {
+                return Some((&value[..cursor], &value[cursor + 1..]));
+            }
+            _ => {}
+        }
+        cursor += 1;
+    }
+    None
+}
+
+fn is_safe_css_property(property: &str) -> bool {
+    let property = property.trim();
+    if property.is_empty() || property.contains(char::is_whitespace) {
+        return false;
+    }
+    let normalized = normalize_css_for_policy(property);
+    if normalized.is_empty()
+        || normalized.contains('{')
+        || normalized.contains('}')
+        || normalized.contains(';')
+    {
+        return false;
+    }
+    ![
+        "behavior",
+        "-moz-binding",
+        "-webkit-binding",
+        "-ms-behavior",
+        "-o-link",
+        "-moz-link",
+        "-webkit-link",
+    ]
+    .iter()
+    .any(|blocked| normalized == *blocked)
+}
+
+fn has_top_level_css_brace(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    let mut cursor = 0;
+    let mut quote = None;
+    let mut parentheses = 0usize;
+    while cursor < bytes.len() {
+        let byte = bytes[cursor];
+        if let Some(expected) = quote {
+            if byte == b'\\' {
+                cursor = css_escape_end(value, cursor);
+                continue;
+            }
+            if byte == expected {
+                quote = None;
+            }
+            cursor += 1;
+            continue;
+        }
+        if byte == b'\\' {
+            cursor = css_escape_end(value, cursor);
+            continue;
+        }
+        match byte {
+            b'\'' | b'"' => quote = Some(byte),
+            b'(' => parentheses = parentheses.saturating_add(1),
+            b')' => parentheses = parentheses.saturating_sub(1),
+            b'{' if parentheses == 0 => return true,
+            _ => {}
+        }
+        cursor += 1;
+    }
+    false
+}
+
+fn find_css_delimiter(value: &str, start: usize) -> Option<(u8, usize)> {
+    let bytes = value.as_bytes();
+    let mut cursor = start;
+    let mut quote = None;
+    let mut parentheses = 0usize;
+    let mut brackets = 0usize;
+
+    while cursor < bytes.len() {
+        let byte = bytes[cursor];
+        if let Some(expected) = quote {
+            if byte == b'\\' {
+                cursor = css_escape_end(value, cursor);
+                continue;
+            }
+            if byte == expected {
+                quote = None;
+            }
+            cursor += 1;
+            continue;
+        }
+        if byte == b'\\' {
+            cursor = css_escape_end(value, cursor);
+            continue;
+        }
+        match byte {
+            b'\'' | b'"' => quote = Some(byte),
+            b'(' => parentheses = parentheses.saturating_add(1),
+            b')' => parentheses = parentheses.saturating_sub(1),
+            b'[' => brackets = brackets.saturating_add(1),
+            b']' => brackets = brackets.saturating_sub(1),
+            b'{' | b'}' | b';' if parentheses == 0 && brackets == 0 => {
+                return Some((byte, cursor));
+            }
+            _ => {}
+        }
+        cursor += 1;
+    }
+    None
+}
+
+fn find_matching_css_brace(value: &str, opening: usize) -> Option<usize> {
+    let bytes = value.as_bytes();
+    let mut cursor = opening + 1;
+    let mut depth = 1usize;
+    let mut quote = None;
+
+    while cursor < bytes.len() {
+        let byte = bytes[cursor];
+        if let Some(expected) = quote {
+            if byte == b'\\' {
+                cursor = css_escape_end(value, cursor);
+                continue;
+            }
+            if byte == expected {
+                quote = None;
+            }
+            cursor += 1;
+            continue;
+        }
+        if byte == b'\\' {
+            cursor = css_escape_end(value, cursor);
+            continue;
+        }
+        match byte {
+            b'\'' | b'"' => quote = Some(byte),
+            b'{' => depth = depth.saturating_add(1),
+            b'}' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return Some(cursor);
+                }
+            }
+            _ => {}
+        }
+        cursor += 1;
+    }
+    None
+}
+
+fn css_at_rule_name(prelude: &str) -> Option<String> {
+    let mut cursor = 1;
+    let mut name = String::new();
+    while cursor < prelude.len() {
+        let byte = prelude.as_bytes()[cursor];
+        if byte == b'\\' {
+            let (decoded, next) = decode_css_escape(prelude, cursor);
+            if !is_css_identifier_character(decoded) {
+                break;
+            }
+            name.push(decoded.to_ascii_lowercase());
+            cursor = next;
+            continue;
+        }
+        let character = byte as char;
+        if !is_css_identifier_character(character) {
+            break;
+        }
+        name.push(character.to_ascii_lowercase());
+        cursor += 1;
+    }
+    (!name.is_empty()).then_some(name)
+}
+
+fn css_contains_blocked_construct(value: &str) -> bool {
+    let normalized = normalize_css_for_policy(value);
+    [
+        "@font-face",
+        "@import",
+        "@namespace",
+        "behavior:",
+        "-moz-binding",
+        "-ms-behavior",
+        "-o-link",
+        "-moz-link",
+        "-webkit-binding",
+        "-webkit-link",
+        "javascript:",
+        "vbscript:",
+        "progid:",
+    ]
+    .iter()
+    .any(|token| normalized.contains(token))
+        || [
+            "url",
+            "expression",
+            "image-set",
+            "-webkit-image-set",
+            "cross-fade",
+            "paint",
+        ]
+        .iter()
+        .any(|function| css_function_present(&normalized, function))
+}
+
+fn css_function_present(value: &str, function: &str) -> bool {
+    for (position, _) in value.match_indices(function) {
+        let bytes = value.as_bytes();
+        let before_is_identifier = position > 0 && is_css_identifier_byte(bytes[position - 1]);
+        if before_is_identifier {
+            continue;
+        }
+        let mut cursor = position + function.len();
+        while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
+            cursor += 1;
+        }
+        if bytes.get(cursor) == Some(&b'(') {
+            return true;
+        }
+    }
+    false
+}
+
+fn normalize_css_for_policy(value: &str) -> String {
+    let mut normalized = String::with_capacity(value.len());
+    let mut cursor = 0;
+    let bytes = value.as_bytes();
+    let mut quote = None;
+
+    while cursor < bytes.len() {
+        let byte = bytes[cursor];
+        if let Some(expected) = quote {
+            if byte == b'\\' {
+                cursor = css_escape_end(value, cursor);
+                continue;
+            }
+            if byte == expected {
+                quote = None;
+            }
+            cursor += 1;
+            continue;
+        }
+        if byte == b'\'' || byte == b'"' {
+            quote = Some(byte);
+            normalized.push(' ');
+            cursor += 1;
+            continue;
+        }
+        if byte == b'\\' {
+            let (decoded, next) = decode_css_escape(value, cursor);
+            normalized.push(decoded.to_ascii_lowercase());
+            cursor = next;
+            continue;
+        }
+        let character = value[cursor..].chars().next().unwrap_or_default();
+        normalized.push(character.to_ascii_lowercase());
+        cursor += character.len_utf8();
+    }
+
+    normalized
+}
+
+fn is_css_identifier_character(character: char) -> bool {
+    character.is_ascii_alphanumeric() || matches!(character, '-' | '_')
+}
+
+fn is_css_identifier_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_') || byte >= 0x80
+}
+
+fn css_escape_end(value: &str, start: usize) -> usize {
+    decode_css_escape(value, start).1
+}
+
+fn decode_css_escape(value: &str, start: usize) -> (char, usize) {
+    let bytes = value.as_bytes();
+    if bytes.get(start) != Some(&b'\\') {
+        return (value[start..].chars().next().unwrap_or_default(), start + 1);
+    }
+    let Some(next) = bytes.get(start + 1).copied() else {
+        return ('\\', start + 1);
+    };
+    if next.is_ascii_hexdigit() {
+        let mut cursor = start + 1;
+        let mut digits = 0;
+        while cursor < bytes.len() && digits < 6 && bytes[cursor].is_ascii_hexdigit() {
+            cursor += 1;
+            digits += 1;
+        }
+        let hex = &value[start + 1..cursor];
+        let decoded = u32::from_str_radix(hex, 16)
+            .ok()
+            .and_then(char::from_u32)
+            .unwrap_or('\u{fffd}');
+        if bytes
+            .get(cursor)
+            .is_some_and(|byte| byte.is_ascii_whitespace())
+        {
+            cursor += 1;
+        }
+        return (decoded, cursor);
+    }
+    let character = value[start + 1..].chars().next().unwrap_or('\\');
+    (character, start + 1 + character.len_utf8())
 }
 
 fn strip_css_comments(value: &str) -> String {
@@ -551,86 +1113,70 @@ fn strip_css_comments(value: &str) -> String {
 }
 
 fn image_source(raw_tag: &str) -> Option<String> {
-    let content = raw_tag.strip_prefix('<')?.strip_suffix('>')?.trim();
-    let name_end = content
-        .char_indices()
-        .find(|(_, character)| !character.is_ascii_alphanumeric())
-        .map(|(index, _)| index)
-        .unwrap_or(content.len());
-    let bytes = content.as_bytes();
-    let mut cursor = name_end;
-
-    while cursor < content.len() {
-        while cursor < content.len()
-            && (bytes[cursor].is_ascii_whitespace() || bytes[cursor] == b'/')
-        {
-            cursor += 1;
-        }
-        if cursor >= content.len() {
-            break;
-        }
-        let attribute_start = cursor;
-        while cursor < content.len()
-            && !bytes[cursor].is_ascii_whitespace()
-            && bytes[cursor] != b'='
-            && bytes[cursor] != b'/'
-        {
-            cursor += 1;
-        }
-        let attribute_name = content[attribute_start..cursor].to_ascii_lowercase();
-        while cursor < content.len() && bytes[cursor].is_ascii_whitespace() {
-            cursor += 1;
-        }
-        if cursor >= content.len() || bytes[cursor] != b'=' {
-            continue;
-        }
-        cursor += 1;
-        while cursor < content.len() && bytes[cursor].is_ascii_whitespace() {
-            cursor += 1;
-        }
-        let value = if cursor < content.len() && (bytes[cursor] == b'\'' || bytes[cursor] == b'"') {
-            let quote = bytes[cursor];
-            cursor += 1;
-            let value_start = cursor;
-            while cursor < content.len() && bytes[cursor] != quote {
-                cursor += 1;
-            }
-            let value = content[value_start..cursor].to_string();
-            if cursor < content.len() {
-                cursor += 1;
-            }
-            value
-        } else {
-            let value_start = cursor;
-            while cursor < content.len()
-                && !bytes[cursor].is_ascii_whitespace()
-                && bytes[cursor] != b'/'
-            {
-                cursor += 1;
-            }
-            content[value_start..cursor].to_string()
-        };
-        if attribute_name == "src" {
-            return Some(value);
-        }
-    }
-
-    None
+    parse_attributes(raw_tag)?
+        .0
+        .into_iter()
+        .find(|attribute| attribute.name == "src")
+        .and_then(|attribute| attribute.value)
 }
 
 fn is_remote_image_uri(value: &str) -> bool {
     let normalized = normalize_uri_prefix(value);
-    normalized.starts_with("http://")
-        || normalized.starts_with("https://")
-        || normalized.starts_with("//")
+    let percent_decoded = percent_decode_uri_prefix(&normalized);
+    [normalized.as_str(), percent_decoded.as_str()]
+        .iter()
+        .any(|uri| {
+            uri.starts_with("http://") || uri.starts_with("https://") || uri.starts_with("//")
+        })
 }
 
 fn is_blocked_attribute(attribute_name: &str) -> bool {
     attribute_name.starts_with("on")
         || matches!(
             attribute_name,
-            "style" | "srcdoc" | "srcset" | "background" | "formaction" | "ping" | "integrity"
+            "action"
+                | "archive"
+                | "background"
+                | "classid"
+                | "codebase"
+                | "data"
+                | "dynsrc"
+                | "formaction"
+                | "imagesrcset"
+                | "integrity"
+                | "lowsrc"
+                | "manifest"
+                | "ping"
+                | "poster"
+                | "srcdoc"
+                | "srcset"
+                | "style"
+                | "usemap"
+                | "xml:base"
         )
+}
+
+fn sanitize_link_relations(value: &str) -> String {
+    const BLOCKED_RELATIONS: &[&str] = &[
+        "dns-prefetch",
+        "import",
+        "modulepreload",
+        "preconnect",
+        "prefetch",
+        "prerender",
+        "preload",
+        "stylesheet",
+    ];
+
+    value
+        .split_ascii_whitespace()
+        .filter(|relation| {
+            !BLOCKED_RELATIONS
+                .iter()
+                .any(|blocked| relation.eq_ignore_ascii_case(blocked.trim()))
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn is_uri_attribute(attribute_name: &str) -> bool {
@@ -638,17 +1184,36 @@ fn is_uri_attribute(attribute_name: &str) -> bool {
 }
 
 fn is_safe_uri(value: &str, tag_name: &str, attribute_name: &str) -> bool {
+    let is_allowed_target = match attribute_name {
+        "href" => tag_name == "a",
+        "src" | "xlink:href" => tag_name == "img",
+        // Forms are blocked as containers, so keeping an action URI would
+        // only create an unnecessary future bypass if another form-like tag
+        // is ever admitted.
+        "action" => false,
+        _ => false,
+    };
+    if !is_allowed_target {
+        return false;
+    }
+
     let value = value.trim();
     let lower = normalize_uri_prefix(value);
-    if lower.starts_with("javascript:")
-        || lower.starts_with("vbscript:")
-        || lower.starts_with("file:")
-        || (lower.starts_with("data:") && !is_allowed_data_image(&lower, tag_name, attribute_name))
+    let percent_decoded = percent_decode_uri_prefix(&lower);
+    if [lower.as_str(), percent_decoded.as_str()]
+        .iter()
+        .any(|uri| {
+            uri.starts_with("javascript:")
+                || uri.starts_with("vbscript:")
+                || uri.starts_with("file:")
+                || uri.starts_with("data:text/html")
+                || uri.starts_with("data:image/svg")
+        })
     {
         return false;
     }
     if lower.starts_with("data:") {
-        return true;
+        return is_allowed_data_image(&lower, tag_name, attribute_name);
     }
 
     let Some((scheme, _)) = lower.split_once(':') else {
@@ -670,16 +1235,14 @@ fn is_allowed_data_image(value: &str, tag_name: &str, attribute_name: &str) -> b
     if tag_name != "img" || !matches!(attribute_name, "src" | "xlink:href") {
         return false;
     }
-    [
-        "data:image/bmp",
-        "data:image/gif",
-        "data:image/jpeg",
-        "data:image/png",
-        "data:image/webp",
-        "data:image/x-icon",
-    ]
-    .iter()
-    .any(|prefix| value.starts_with(prefix))
+    let Some(image_data) = value.strip_prefix("data:image/") else {
+        return false;
+    };
+    let mime_end = image_data.find([';', ',']).unwrap_or(image_data.len());
+    matches!(
+        &image_data[..mime_end],
+        "avif" | "apng" | "bmp" | "gif" | "jpeg" | "png" | "webp" | "x-icon" | "vnd.microsoft.icon"
+    )
 }
 
 fn normalize_uri_prefix(value: &str) -> String {
@@ -695,19 +1258,50 @@ fn normalize_uri_prefix(value: &str) -> String {
             if let Some(relative_end) = value[cursor..].find(';') {
                 let entity_end = cursor + relative_end + 1;
                 if let Some(decoded) = decode_uri_entity(&value[cursor + 1..entity_end - 1]) {
-                    normalized.push(decoded.to_ascii_lowercase());
+                    if !decoded.is_ascii_whitespace() && !decoded.is_control() {
+                        normalized.push(decoded.to_ascii_lowercase());
+                    }
                     cursor = entity_end;
                     continue;
                 }
             }
         }
-        normalized.push(character.to_ascii_lowercase());
+        let lowered = character.to_ascii_lowercase();
+        if normalized.len() + lowered.len_utf8() > 128 {
+            break;
+        }
+        normalized.push(lowered);
         cursor += character.len_utf8();
     }
-    if normalized.len() > 128 {
-        normalized.truncate(128);
-    }
     normalized
+}
+
+fn percent_decode_uri_prefix(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut decoded = String::with_capacity(value.len());
+    let mut cursor = 0;
+    while cursor < bytes.len() && decoded.len() < 128 {
+        if bytes[cursor] == b'%' && cursor + 2 < bytes.len() {
+            let high = (bytes[cursor + 1] as char).to_digit(16);
+            let low = (bytes[cursor + 2] as char).to_digit(16);
+            if let (Some(high), Some(low)) = (high, low) {
+                if let Some(character) = char::from_u32(high * 16 + low) {
+                    if !character.is_ascii_whitespace() && !character.is_control() {
+                        decoded.push(character.to_ascii_lowercase());
+                    }
+                    cursor += 3;
+                    continue;
+                }
+            }
+        }
+        let character = value[cursor..].chars().next().unwrap_or_default();
+        if decoded.len() + character.len_utf8() > 128 {
+            break;
+        }
+        decoded.push(character.to_ascii_lowercase());
+        cursor += character.len_utf8();
+    }
+    decoded
 }
 
 fn decode_uri_entity(entity: &str) -> Option<char> {
@@ -840,5 +1434,104 @@ mod tests {
             html_to_plain_text("<p>M&uuml;ller &amp; Team &#169; &#x1F4C1; &mdash; fertig</p>"),
             "Müller & Team © 📁 — fertig"
         );
+    }
+
+    #[test]
+    fn preserves_newsletter_and_office_layout_css_while_filtering_resources() {
+        let sanitized = sanitize_html(
+            r##"<style>
+                @media screen and (max-width: 600px) {
+                    .wrapper { width: 100% !important; background-color: #ffffff; }
+                    .hero { color: #ffffff; font-family: Arial, sans-serif; background: #1f4e79; background-image: url('https://tracker.example/pixel'); }
+                }
+                .mso-table { mso-table-lspace: 0pt; mso-table-rspace: 0pt; border-collapse: collapse; }
+                @import url(https://tracker.example/mail.css);
+                @font-face { font-family: Tracking; src: url(https://tracker.example/font.woff2); }
+            </style>
+            <table class="wrapper mso-table" bgcolor="#ffffff"><tr><td style="color:#1f4e79; background-color: #ffffff; font-size: 16px; background-image: url(https://tracker.example/pixel)">Hallo</td></tr></table>"##,
+        );
+
+        assert!(sanitized.contains("@media screen and (max-width: 600px)"));
+        assert!(sanitized.contains("width: 100% !important;"));
+        assert!(sanitized.contains("background-color: #ffffff;"));
+        assert!(sanitized.contains("font-family: Arial, sans-serif;"));
+        assert!(sanitized.contains("mso-table-lspace: 0pt;"));
+        assert!(sanitized.contains("border-collapse: collapse;"));
+        assert!(sanitized.contains("bgcolor=\"#ffffff\""));
+        assert!(sanitized.contains("color: #1f4e79"));
+        assert!(!sanitized.contains("tracker.example"));
+        assert!(!sanitized.contains("@import"));
+        assert!(!sanitized.contains("@font-face"));
+        assert!(!sanitized.contains("url("));
+    }
+
+    #[test]
+    fn filters_only_unsafe_inline_declarations() {
+        let sanitized = sanitize_html(
+            r#"<p style="color: #222; background: #fff; font-size: 15px; line-height: 1.5; background-image: url(https://tracker.example/pixel);">Nachricht</p>"#,
+        );
+
+        assert!(sanitized.contains("color: #222"));
+        assert!(sanitized.contains("background: #fff"));
+        assert!(sanitized.contains("font-size: 15px"));
+        assert!(sanitized.contains("line-height: 1.5"));
+        assert!(!sanitized.contains("background-image"));
+        assert!(!sanitized.contains("tracker.example"));
+    }
+
+    #[test]
+    fn blocks_obfuscated_css_resource_and_execution_functions() {
+        let sanitized = sanitize_html(
+            r#"<style>
+                .escaped { background: u\72l(https://tracker.example/pixel); color: red; }
+                .spaced { background-image: url (https://tracker.example/pixel); font-weight: bold; }
+                .expression { color: expression(alert(1)); font-style: italic; }
+            </style>"#,
+        );
+
+        assert!(sanitized.contains("color: red;"));
+        assert!(sanitized.contains("font-weight: bold;"));
+        assert!(sanitized.contains("font-style: italic;"));
+        assert!(!sanitized.contains("tracker.example"));
+        assert!(!sanitized.contains("url"));
+        assert!(!sanitized.contains("expression("));
+    }
+
+    #[test]
+    fn parses_unquoted_image_urls_before_applying_remote_image_policy() {
+        let sanitized = sanitize_html(
+            r#"<table bgcolor=#ffffff><tr><td><img SRC=https://cdn.example/assets/pixel.png><img src=https%3A%2F%2Fcdn.example/encoded.png><img src=cid:logo@example.org></td></tr></table>"#,
+        );
+        let blocked = block_remote_images(&sanitized);
+
+        assert!(sanitized.contains("src=\"https://cdn.example/assets/pixel.png\""));
+        assert!(sanitized.contains("bgcolor=\"#ffffff\""));
+        assert!(!blocked.contains("cdn.example"));
+        assert!(blocked.contains("src=\"cid:logo@example.org\""));
+    }
+
+    #[test]
+    fn rejects_entity_and_percent_obfuscated_dangerous_uris() {
+        let sanitized = sanitize_html(
+            r#"<a href="java&#x09;script:alert(1)">control</a><a href="jav&#x73;cript:alert(1)">entity</a><a href="javascript%3Aalert(1)">percent</a><a href="https://example.org">safe</a>"#,
+        );
+
+        assert_eq!(sanitized.matches("href=").count(), 1);
+        assert!(sanitized.contains("href=\"https://example.org\""));
+        assert!(!sanitized.contains("javascript"));
+    }
+
+    #[test]
+    fn removes_remote_resource_hint_attributes_but_keeps_safe_link_relations() {
+        let sanitized = sanitize_html(
+            r#"<a rel="prefetch stylesheet noopener" href="https://example.org">Link</a><img lowsrc="https://tracker.example/old.gif" imagesrcset="https://tracker.example/retina.png"><p>Inhalt</p>"#,
+        );
+
+        assert!(sanitized.contains("rel=\"noopener\""));
+        assert!(sanitized.contains("href=\"https://example.org\""));
+        assert!(!sanitized.contains("prefetch"));
+        assert!(!sanitized.contains("stylesheet"));
+        assert!(!sanitized.contains("lowsrc"));
+        assert!(!sanitized.contains("imagesrcset"));
     }
 }
