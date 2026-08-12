@@ -509,6 +509,16 @@ werden.
   überschrieben. Absender, Empfänger, Avatare, Datum, Anhangssymbol,
   Vorschautext und app-eigene Labels der Mail-Zeile lassen sich ebenfalls
   einzeln ein-/ausblenden und werden live sowie in Backup/Restore angewendet.
+  Eine kompakte Evolution-Kopfzeile benennt die sichtbaren Spalten und bietet
+  am Absenderfeld einen ziehbaren Breiten-Griff; die Breite bleibt mit dem
+  Spaltenmenü persistent. Betreff, Absender, Datum und Anhänge sind in der
+  Kopfzeile direkt anklickbare Sortierfelder und zeigen Richtungspfeile.
+  Der helle Mail-Reader färbt `html` und `body`
+  konsistent, blendet blockierte externe Bild-Platzhalter aus und lässt
+  bekannte eingebettete `cid:`-/`data:`-Rasterbilder weiterhin sichtbar.
+  Der Datenschutz-Banner erscheint nur, wenn der konkrete Nachrichtentext
+  tatsächlich externe Bildquellen enthält, nicht bei reinen Inline-Bildern
+  oder textbasierten Nachrichten.
   Eine providerunabhängige
   Datumsnormalisierung und serverseitige Sortierung bleiben Teil der
   Linux/Camel-Strecke.
@@ -1283,8 +1293,13 @@ nicht als vollständiger Ersatz beworben werden.
    Anzeigename, E-Mail-Adresse, Quelle und UID als stabile Tie-Breaker.
    Die Mailansicht startet mit kompakter Evolution-Dichte, ohne Avatar- und
    Vorschautext-Flächen, und behält Absender, Betreff und Datum als die
-   wesentlichen sichtbaren Spalten. Alle drei Dichteprofile und die einzelnen
-   Sichtbarkeitsschalter bleiben persistent umschaltbar.
+   wesentlichen sichtbaren Spalten. Die Nachrichtenzeilen sind standardmäßig
+   einzeilig; Schnellfilter, Sortierung, Spalten-Schalter und die persistente
+   Absender-Spaltenbreite stehen direkt über der Liste bereit. Alle drei
+   Dichteprofile und die einzelnen Sichtbarkeitsschalter bleiben persistent
+   umschaltbar. HTML-Mail verwendet standardmäßig eine helle Vorschau; externe
+   Bilder bleiben bis zur Freigabe blockiert, während `cid:`-/`data:`-Bilder
+   aus der Nachricht weiter dargestellt werden dürfen.
    In der eingeklappten Navigation führen `Esc` und `Alt+←` aus dem
    Inhaltsbereich wieder zurück zur jeweiligen Seitenleiste; das Verhalten
    ist für Kalender, Kontakte, Aufgaben und Notizen einheitlich.

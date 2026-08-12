@@ -802,6 +802,14 @@ impl AppSettings {
         self.set_boolean("mail-show-labels", value);
     }
 
+    pub fn mail_sender_column_width(&self) -> i32 {
+        self.settings.int("mail-sender-column-width").clamp(80, 360)
+    }
+
+    pub fn set_mail_sender_column_width(&self, value: i32) {
+        self.set_int("mail-sender-column-width", value.clamp(80, 360));
+    }
+
     pub fn task_filter(&self) -> String {
         let value = self.settings.string("task-filter").to_string();
         match value.as_str() {
@@ -1087,6 +1095,7 @@ impl AppSettings {
             "mail-show-attachment",
             "mail-show-preview-text",
             "mail-show-labels",
+            "mail-sender-column-width",
             "color-scheme",
             "sign-new-messages",
             "default-pgp-key",

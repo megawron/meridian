@@ -28,6 +28,50 @@
   font-weight: 700;
 }
 
+/* Evolution's default mail table is deliberately a dense, single-line
+ * layout.  Keep actions compact so the subject column receives the space. */
+.message-list .message-line {
+  min-height: 22px;
+}
+
+.message-list button,
+.message-list checkbutton {
+  min-width: 20px;
+  min-height: 20px;
+  padding: 0;
+  margin: 0;
+}
+
+.message-list .heading,
+.message-list .body {
+  font-size: 0.84rem;
+  line-height: 1;
+}
+
+.message-list .caption {
+  font-size: 0.75rem;
+  line-height: 1;
+}
+
+.message-list .unread-heading {
+  font-weight: 700;
+}
+
+.mail-column-header {
+  min-height: 22px;
+  border-bottom: 1px solid alpha(@borders, 0.75);
+  background-color: alpha(@window_fg_color, 0.035);
+}
+
+.mail-column-resize-handle {
+  min-width: 8px;
+  background-color: alpha(@borders, 0.35);
+}
+
+.mail-column-resize-handle:hover {
+  background-color: @accent_bg_color;
+}
+
 /* ── Calendar Event Chips ──────────────────────────────────────────────── */
 .event-chip-blue {
   background-color: alpha(@blue_3, 0.2);
@@ -64,7 +108,7 @@
 /* ── Folder Sidebar ────────────────────────────────────────────────────── */
 .navigation-sidebar row {
   border-radius: 8px;
-  margin: 2px 6px;
+  margin: 0 3px;
 }
 
 /* ── Mail Detail View ──────────────────────────────────────────────────── */
@@ -134,14 +178,20 @@ columnview.message-table cell {
 .navigation-sidebar row,
 listbox.sidebar-list > row,
 listbox > row {
-  min-height: 26px;
-  padding-top: 2px;
-  padding-bottom: 2px;
-  padding-left: 8px;
-  padding-right: 8px;
-  margin-top: 1px;
-  margin-bottom: 1px;
+  min-height: 22px;
+  padding-top: 0;
+  padding-bottom: 0;
+  padding-left: 4px;
+  padding-right: 4px;
+  margin-top: 0;
+  margin-bottom: 0;
   border-radius: 4px;
+}
+
+.navigation-sidebar button {
+  min-width: 20px;
+  min-height: 20px;
+  padding: 0;
 }
 
 /* Compact text sizes for table list rows */
@@ -158,5 +208,5 @@ listbox > row {
 }
 
 .navigation-sidebar label {
-  font-size: 0.9rem;
+  font-size: 0.82rem;
 }

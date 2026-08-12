@@ -8,7 +8,7 @@
 // - Remote images blocked by default with interactive Privacy Banner
 // - CSP security policy enforcement (`script-src 'none'`)
 // - Navigation blocked (external links dispatched to system xdg-open)
-// - Dark mode CSS auto-injection matching AdwStyleManager
+// - Optional dark mode CSS injection (light mail is the default)
 
 use adw::prelude::*;
 use adw::subclass::prelude::*;
@@ -94,14 +94,9 @@ impl MailViewer {
 
         // ── 1. Privacy Banner for Remote Images ────────────────────────────
         let banner = adw::Banner::builder()
-            .title("Externe Bilder wurden aus Datenschutzgründen blockiert")
+            .title("Externe Bilder blockiert – eingebettete Bilder bleiben sichtbar")
             .button_label("Bilder laden")
-            .revealed(
-                !AppSettings::try_new()
-                    .as_ref()
-                    .map(AppSettings::auto_load_remote_images)
-                    .unwrap_or(false),
-            )
+            .revealed(false)
             .build();
 
         banner.connect_button_clicked(glib::clone!(
@@ -249,14 +244,17 @@ impl MailViewer {
             .map(|message_id| RemoteContentStore::default().is_allowed(message_id))
             .unwrap_or(false);
         let remote_images_allowed = global_remote_images || per_message_remote_images;
-        self.imp().banner.set_revealed(!remote_images_allowed);
+        let render_html = AppSettings::try_new()
+            .as_ref()
+            .map(AppSettings::render_html)
+            .unwrap_or(true);
+        let has_remote_images = render_html && contains_remote_image_reference(html_content);
+        self.imp()
+            .banner
+            .set_revealed(has_remote_images && !remote_images_allowed);
 
         #[cfg(target_os = "linux")]
         if let Some(webview) = self.ensure_webkit() {
-            let render_html = AppSettings::try_new()
-                .as_ref()
-                .map(AppSettings::render_html)
-                .unwrap_or(true);
             let sanitized_body = if render_html {
                 sanitize_html(html_content)
             } else {
@@ -289,14 +287,19 @@ impl MailViewer {
             let is_dark_mode = AppSettings::try_new()
                 .as_ref()
                 .map(AppSettings::force_dark_mode)
-                .unwrap_or(true);
+                .unwrap_or(false);
             let body_css = if is_dark_mode {
                 r#"
+  html {
+    color-scheme: dark;
+    background-color: #1e1e1e;
+  }
   body {
     font-family: __FONT_FAMILY__;
     font-size: __FONT_SIZE__px;
     line-height: 1.6;
     margin: 16px;
+    min-height: calc(100vh - 32px);
     padding: 0;
     color: #eeeeec;
     background-color: #1e1e1e;
@@ -305,11 +308,16 @@ impl MailViewer {
 "#
             } else {
                 r#"
+  html {
+    color-scheme: light;
+    background-color: #ffffff;
+  }
   body {
     font-family: __FONT_FAMILY__;
     font-size: __FONT_SIZE__px;
     line-height: 1.6;
     margin: 16px;
+    min-height: calc(100vh - 32px);
     padding: 0;
     color: #2e3436;
     background-color: #ffffff;
@@ -330,8 +338,27 @@ impl MailViewer {
                 .replace("__FONT_SIZE__", &mail_font_size.to_string());
 
             let style_tag = format!(
-                "<style>{} img {{ max-width: 100%; height: auto; }} blockquote {{ border-left: 3px solid #78aeed; margin-left: 0; padding-left: 12px; color: #888888; }}</style>",
-                body_css
+                "<style>{} img {{ max-width: 100%; height: auto; }}{} blockquote {{ border-left: 3px solid #78aeed; margin-left: 0; padding-left: 12px; color: #888888; }}</style>",
+                body_css,
+                if remote_images_allowed {
+                    ""
+                } else {
+                    " img[src^=\"http://\"], img[src^=\"https://\"], img[src^=\"//\"] { display: none !important; }"
+                }
+            );
+
+            // WebKit's image preference is the first line of defense.  Keep
+            // the policy in the document as well, so a provider cannot make
+            // remote images appear through a second URL-bearing element or a
+            // cached navigation.  Inline `cid:`/`data:` images remain usable
+            // before the user explicitly allows remote content.
+            let image_sources = if remote_images_allowed {
+                "http: https: data: cid: blob:"
+            } else {
+                "data: cid: blob:"
+            };
+            let security_tag = format!(
+                "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; script-src 'none'; style-src 'unsafe-inline'; img-src {image_sources}; font-src data:; connect-src 'none'; frame-src 'none'; object-src 'none'\">"
             );
 
             let is_full_doc = render_html
@@ -343,12 +370,12 @@ impl MailViewer {
             let styled_html = if is_full_doc {
                 if let Some(pos) = sanitized.find("</head>") {
                     let (head, rest) = sanitized.split_at(pos);
-                    format!("{}{}{}", head, style_tag, rest)
+                    format!("{}{}{}{}", head, security_tag, style_tag, rest)
                 } else if let Some(pos) = sanitized.find("<body") {
                     let (head, rest) = sanitized.split_at(pos);
-                    format!("{}{}{}", head, style_tag, rest)
+                    format!("{}{}{}{}", head, security_tag, style_tag, rest)
                 } else {
-                    format!("{}{}", style_tag, sanitized)
+                    format!("{}{}{}", security_tag, style_tag, sanitized)
                 }
             } else {
                 format!(
@@ -356,14 +383,14 @@ impl MailViewer {
 <html>
 <head>
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="script-src 'none';">
+{}
 {}
 </head>
 <body>
 {}
 </body>
 </html>"#,
-                    style_tag, sanitized
+                    security_tag, style_tag, sanitized
                 )
             };
 
@@ -503,9 +530,65 @@ fn readable_fallback_text(value: Option<&str>) -> String {
         .to_string()
 }
 
+/// Return whether a mail body contains an external image source that is
+/// subject to the remote-content decision.  Inline `cid:` and `data:` images
+/// intentionally do not trigger the privacy banner.
+fn contains_remote_image_reference(value: &str) -> bool {
+    let lower = value.to_ascii_lowercase();
+    let mut cursor = 0;
+    while let Some(relative_start) = lower[cursor..].find("<img") {
+        let start = cursor + relative_start;
+        let after_name = start + 4;
+        if lower
+            .get(after_name..)
+            .and_then(|rest| rest.chars().next())
+            .is_some_and(|character| character.is_ascii_alphanumeric())
+        {
+            cursor = after_name;
+            continue;
+        }
+        let end = lower[after_name..]
+            .find('>')
+            .map(|offset| after_name + offset)
+            .unwrap_or(lower.len());
+        let tag = &lower[after_name..end];
+        let mut tag_cursor = 0;
+        while let Some(relative_src) = tag[tag_cursor..].find("src") {
+            let src_start = tag_cursor + relative_src;
+            let before_is_name = src_start == 0
+                || !tag[..src_start]
+                    .chars()
+                    .next_back()
+                    .is_some_and(|character| character.is_ascii_alphanumeric());
+            let after_src = src_start + 3;
+            let after_is_name = tag
+                .get(after_src..)
+                .and_then(|rest| rest.chars().next())
+                .is_none_or(|character| !character.is_ascii_alphanumeric());
+            if before_is_name && after_is_name {
+                let rest = tag[after_src..].trim_start();
+                if let Some(rest) = rest.strip_prefix('=') {
+                    let rest = rest.trim_start_matches(|character: char| {
+                        character == '"' || character == '\'' || character.is_ascii_whitespace()
+                    });
+                    if rest.starts_with("http://")
+                        || rest.starts_with("https://")
+                        || rest.starts_with("//")
+                    {
+                        return true;
+                    }
+                }
+            }
+            tag_cursor = after_src;
+        }
+        cursor = end.saturating_add(1);
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{html_to_fallback_text, readable_fallback_text};
+    use super::{contains_remote_image_reference, html_to_fallback_text, readable_fallback_text};
 
     #[test]
     fn fallback_text_preserves_mail_content_and_line_breaks() {
@@ -533,6 +616,22 @@ mod tests {
             readable_fallback_text(Some("   ")),
             "(Die Nachricht enthält keinen darstellbaren Inhalt.)"
         );
+    }
+
+    #[test]
+    fn remote_image_banner_only_matches_external_image_sources() {
+        assert!(contains_remote_image_reference(
+            r#"<p><img src="https://cdn.example/image.png"></p>"#
+        ));
+        assert!(contains_remote_image_reference(
+            r#"<img src='//cdn.example/image.png'>"#
+        ));
+        assert!(!contains_remote_image_reference(
+            r#"<img src="cid:logo@example.org"><img src="data:image/png;base64,AAAA">"#
+        ));
+        assert!(!contains_remote_image_reference(
+            r#"<imgdata src="https://cdn.example/not-an-img-tag.png">"#
+        ));
     }
 }
 

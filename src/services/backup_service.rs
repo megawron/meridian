@@ -174,6 +174,8 @@ struct BackupSettings {
     mail_show_preview_text: bool,
     #[serde(default = "default_mail_show_labels")]
     mail_show_labels: bool,
+    #[serde(default = "default_mail_sender_column_width")]
+    mail_sender_column_width: i32,
     #[serde(default = "default_color_scheme")]
     color_scheme: String,
     #[serde(default)]
@@ -269,7 +271,7 @@ fn default_active_view() -> String {
 }
 
 fn default_force_dark_mode() -> bool {
-    true
+    false
 }
 
 fn default_render_html() -> bool {
@@ -364,6 +366,10 @@ fn default_mail_show_labels() -> bool {
     true
 }
 
+fn default_mail_sender_column_width() -> i32 {
+    180
+}
+
 fn default_mail_layout() -> String {
     "classic".to_string()
 }
@@ -454,6 +460,7 @@ impl BackupSettings {
             mail_show_attachment: settings.mail_show_attachment(),
             mail_show_preview_text: settings.mail_show_preview_text(),
             mail_show_labels: settings.mail_show_labels(),
+            mail_sender_column_width: settings.mail_sender_column_width(),
             color_scheme: settings.color_scheme(),
             sign_new_messages: settings.sign_new_messages(),
             default_pgp_key: settings.default_pgp_key(),
@@ -533,6 +540,7 @@ impl BackupSettings {
         settings.set_mail_show_attachment(self.mail_show_attachment);
         settings.set_mail_show_preview_text(self.mail_show_preview_text);
         settings.set_mail_show_labels(self.mail_show_labels);
+        settings.set_mail_sender_column_width(self.mail_sender_column_width);
         settings.set_color_scheme(&self.color_scheme);
         settings.set_sign_new_messages(self.sign_new_messages);
         settings.set_default_pgp_key(&self.default_pgp_key);
@@ -1282,7 +1290,7 @@ mod tests {
         assert!(!settings.is_maximized);
         assert_eq!(settings.active_view, "mail");
         assert!(!settings.auto_load_remote_images);
-        assert!(settings.force_dark_mode);
+        assert!(!settings.force_dark_mode);
         assert!(settings.render_html);
         assert!(settings.composer_html);
         assert!(!settings.request_read_receipt);

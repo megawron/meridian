@@ -98,8 +98,8 @@
       <summary>Keep mail views in portable offline mode</summary>
     </key>
     <key name="force-dark-mode" type="b">
-      <default>true</default>
-      <summary>Inject dark mode CSS into HTML email rendering</summary>
+      <default>false</default>
+      <summary>Force dark colors in HTML email rendering</summary>
     </key>
     <key name="render-html" type="b">
       <default>true</default>
@@ -195,6 +195,11 @@
     <key name="mail-show-labels" type="b">
       <default>true</default>
       <summary>Show app-owned labels in the mail list</summary>
+    </key>
+    <key name="mail-sender-column-width" type="i">
+      <default>180</default>
+      <range min="80" max="360"/>
+      <summary>Width of the sender column in the mail list</summary>
     </key>
     <key name="color-scheme" type="s">
       <default>'system'</default>

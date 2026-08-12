@@ -919,6 +919,7 @@ fn is_supported_migration_key(key: &str) -> bool {
             | "mail-show-attachment"
             | "mail-show-preview-text"
             | "mail-show-labels"
+            | "mail-sender-column-width"
             | "color-scheme"
             | "sign-new-messages"
             | "default-pgp-key"

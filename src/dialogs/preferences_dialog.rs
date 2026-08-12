@@ -1825,7 +1825,7 @@ impl PreferencesDialog {
         let row_dark_mail = adw::SwitchRow::builder()
             .title("Dark-Mode für E-Mails erzwingen")
             .subtitle("Passt den Inhalt von HTML-Mails an das dunkle System-Design an")
-            .active(true)
+            .active(false)
             .build();
         if let Some(settings) = settings.clone() {
             row_dark_mail.set_active(settings.force_dark_mode());

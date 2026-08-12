@@ -49,6 +49,7 @@ enum MessageFilter {
     Unread,
     Flagged,
     Important,
+    HasAttachments,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -727,6 +728,7 @@ fn message_matches_filter(
         MessageFilter::Unread => message.is_unread(),
         MessageFilter::Flagged => message.is_flagged(),
         MessageFilter::Important => message.is_important(),
+        MessageFilter::HasAttachments => !message.attachments().is_empty(),
     };
 
     (query.is_empty()
@@ -1330,6 +1332,7 @@ mod imp {
         pub folder_section: RefCell<Option<gtk::Box>>,
         pub source_state: RefCell<Option<gtk::Label>>,
         pub search_list: RefCell<Option<gtk::ListBox>>,
+        pub quick_filter: RefCell<Option<gtk::DropDown>>,
         pub message_state: RefCell<Option<gtk::Label>>,
         pub refresh_button: RefCell<Option<gtk::Button>>,
         pub load_more_button: RefCell<Option<gtk::Button>>,
@@ -1359,12 +1362,15 @@ mod imp {
         pub(crate) mail_commands: RefCell<MailCommandStack>,
         pub preview_settings: RefCell<Option<AppSettings>>,
         pub classic_toolbar: RefCell<Option<gtk::Box>>,
+        pub mail_column_header: RefCell<Option<gtk::Box>>,
         pub search_entry: RefCell<Option<gtk::SearchEntry>>,
         pub(super) search_query: RefCell<Option<Rc<RefCell<MessageSearchQuery>>>>,
         pub(super) mail_sort_field: Cell<MailSortField>,
         pub mail_sort_descending: Cell<bool>,
         pub mail_threading: Cell<bool>,
         pub(super) mail_layout: Cell<MailLayout>,
+        pub mail_sort_selector: RefCell<Option<gtk::DropDown>>,
+        pub mail_sort_direction_button: RefCell<Option<gtk::Button>>,
     }
 
     #[glib::object_subclass]
@@ -1595,10 +1601,12 @@ impl MailPage {
                 "mail-show-attachment",
                 "mail-show-preview-text",
                 "mail-show-labels",
+                "mail-sender-column-width",
             ] {
                 let page_weak_for_columns = self.downgrade();
                 settings.connect_changed(Some(key), move |_, _| {
                     if let Some(page) = page_weak_for_columns.upgrade() {
+                        page.refresh_mail_column_header();
                         page.refresh_mail();
                     }
                 });
@@ -1745,6 +1753,81 @@ impl MailPage {
         }
     }
 
+    fn mail_sort_selector_index(field: MailSortField) -> u32 {
+        match field {
+            MailSortField::Date => 0,
+            MailSortField::Subject => 1,
+            MailSortField::Sender => 2,
+            MailSortField::Unread => 3,
+            MailSortField::Flagged => 4,
+            MailSortField::Important => 5,
+            MailSortField::Attachments => 6,
+        }
+    }
+
+    fn set_mail_sort_direction_button(button: &gtk::Button, descending: bool) {
+        button.set_icon_name(if descending {
+            "view-sort-descending-symbolic"
+        } else {
+            "view-sort-ascending-symbolic"
+        });
+        let label = if descending {
+            "Sortierung absteigend; Sortierrichtung umschalten"
+        } else {
+            "Sortierung aufsteigend; Sortierrichtung umschalten"
+        };
+        button.set_tooltip_text(Some(label));
+        set_accessible_label(button, label);
+    }
+
+    fn refresh_mail_sort_controls(&self) {
+        let field = self.imp().mail_sort_field.get();
+        if let Some(selector) = self.imp().mail_sort_selector.borrow().as_ref() {
+            selector.set_selected(Self::mail_sort_selector_index(field));
+        }
+        if let Some(button) = self.imp().mail_sort_direction_button.borrow().as_ref() {
+            Self::set_mail_sort_direction_button(button, self.imp().mail_sort_descending.get());
+        }
+    }
+
+    fn mail_header_sort_label(&self, label: &str, field: MailSortField) -> String {
+        if self.imp().mail_sort_field.get() != field {
+            return label.to_string();
+        }
+        let direction = if self.imp().mail_sort_descending.get() {
+            "↓"
+        } else {
+            "↑"
+        };
+        format!("{label} {direction}")
+    }
+
+    fn set_mail_sort_from_header(&self, field: MailSortField) {
+        let descending = if self.imp().mail_sort_field.get() == field {
+            !self.imp().mail_sort_descending.get()
+        } else {
+            matches!(
+                field,
+                MailSortField::Date
+                    | MailSortField::Unread
+                    | MailSortField::Flagged
+                    | MailSortField::Important
+                    | MailSortField::Attachments
+            )
+        };
+        self.imp().mail_sort_field.set(field);
+        self.imp().mail_sort_descending.set(descending);
+        if let Some(settings) = AppSettings::try_new() {
+            settings.set_mail_sort_field(field.setting_value());
+            settings.set_mail_sort_descending(descending);
+        }
+        self.refresh_mail_sort_controls();
+        self.refresh_mail_column_header();
+        if let Some(store) = self.imp().message_store.borrow().as_ref().cloned() {
+            self.refresh_thread_metadata(&store);
+        }
+    }
+
     fn reload_sort_preferences(&self) {
         if let Some(settings) = AppSettings::try_new() {
             self.imp()
@@ -1755,6 +1838,8 @@ impl MailPage {
                 .set(settings.mail_sort_descending());
             self.imp().mail_threading.set(settings.mail_threading());
         }
+        self.refresh_mail_sort_controls();
+        self.refresh_mail_column_header();
         if let Some(store) = self.imp().message_store.borrow().as_ref().cloned() {
             self.refresh_thread_metadata(&store);
         }
@@ -3506,35 +3591,22 @@ impl MailPage {
 
             let row = gtk::Box::builder()
                 .orientation(gtk::Orientation::Horizontal)
-                .spacing(8)
-                .margin_start(8)
-                .margin_end(8)
-                .margin_top(6)
-                .margin_bottom(6)
+                .spacing(4)
+                .margin_start(6)
+                .margin_end(6)
+                .margin_top(2)
+                .margin_bottom(2)
                 .build();
 
             let icon = gtk::Image::from_icon_name("mail-account-symbolic");
             icon.add_css_class("dim-label");
-
-            let details = gtk::Box::builder()
-                .orientation(gtk::Orientation::Vertical)
-                .spacing(2)
-                .hexpand(true)
-                .build();
             let title = gtk::Label::builder()
                 .halign(gtk::Align::Start)
+                .hexpand(true)
                 .ellipsize(pango::EllipsizeMode::End)
                 .build();
-            let subtitle = gtk::Label::builder()
-                .halign(gtk::Align::Start)
-                .ellipsize(pango::EllipsizeMode::End)
-                .css_classes(vec!["caption", "dim-label"])
-                .build();
-
-            details.append(&title);
-            details.append(&subtitle);
             row.append(&icon);
-            row.append(&details);
+            row.append(&title);
             list_item.set_child(Some(&row));
         });
 
@@ -3551,22 +3623,18 @@ impl MailPage {
                 .and_downcast::<gtk::Box>()
                 .expect("Expected source row");
 
-            if let Some(details) = row.last_child().and_downcast::<gtk::Box>() {
-                if let Some(title) = details.first_child().and_downcast::<gtk::Label>() {
-                    title.set_label(&source.display_name());
-                }
-                if let Some(subtitle) = details.last_child().and_downcast::<gtk::Label>() {
-                    subtitle.set_label(&format!(
-                        "{} · {} · {}",
-                        source.backend_name(),
-                        if source.enabled() {
-                            "aktiv"
-                        } else {
-                            "deaktiviert / Backend ausstehend"
-                        },
-                        source.origin()
-                    ));
-                }
+            if let Some(title) = row.last_child().and_downcast::<gtk::Label>() {
+                title.set_label(&source.display_name());
+                title.set_tooltip_text(Some(&format!(
+                    "{} · {} · {}",
+                    source.backend_name(),
+                    if source.enabled() {
+                        "aktiv"
+                    } else {
+                        "deaktiviert / Backend ausstehend"
+                    },
+                    source.origin()
+                )));
             }
             row.set_sensitive(source.enabled());
         });
@@ -3623,12 +3691,12 @@ impl MailPage {
         folder_list.add_css_class("navigation-sidebar");
 
         let account_header = gtk::Label::builder()
-            .label("Konten (EDS)")
-            .css_classes(vec!["title-4"])
+            .label("Konten")
+            .css_classes(vec!["caption", "dim-label"])
             .halign(gtk::Align::Start)
-            .margin_start(12)
-            .margin_top(8)
-            .margin_bottom(4)
+            .margin_start(8)
+            .margin_top(5)
+            .margin_bottom(2)
             .build();
 
         let folders = [
@@ -3672,11 +3740,11 @@ impl MailPage {
             let expander = gtk::TreeExpander::new();
             let row = gtk::Box::builder()
                 .orientation(gtk::Orientation::Horizontal)
-                .spacing(8)
-                .margin_start(8)
-                .margin_end(8)
-                .margin_top(5)
-                .margin_bottom(5)
+                .spacing(4)
+                .margin_start(6)
+                .margin_end(6)
+                .margin_top(1)
+                .margin_bottom(1)
                 .build();
             let icon = gtk::Image::new();
             icon.add_css_class("dim-label");
@@ -3832,11 +3900,11 @@ impl MailPage {
 
         let search_header = gtk::Label::builder()
             .label("Suchordner")
-            .css_classes(vec!["title-4"])
+            .css_classes(vec!["caption", "dim-label"])
             .halign(gtk::Align::Start)
-            .margin_start(12)
-            .margin_top(16)
-            .margin_bottom(4)
+            .margin_start(8)
+            .margin_top(8)
+            .margin_bottom(2)
             .build();
 
         let search_list = gtk::ListBox::new();
@@ -3846,15 +3914,15 @@ impl MailPage {
 
         let local_folder_toolbar = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
-            .spacing(6)
-            .margin_start(12)
-            .margin_end(8)
-            .margin_top(16)
-            .margin_bottom(4)
+            .spacing(4)
+            .margin_start(8)
+            .margin_end(6)
+            .margin_top(8)
+            .margin_bottom(2)
             .build();
         let local_folder_header = gtk::Label::builder()
             .label("Lokale Ordner")
-            .css_classes(vec!["title-4"])
+            .css_classes(vec!["caption", "dim-label"])
             .halign(gtk::Align::Start)
             .hexpand(true)
             .build();
@@ -3882,11 +3950,11 @@ impl MailPage {
         folder_section.append(&folder_list);
         let dynamic_header = gtk::Label::builder()
             .label("EDS-Ordner")
-            .css_classes(vec!["title-4"])
+            .css_classes(vec!["caption", "dim-label"])
             .halign(gtk::Align::Start)
-            .margin_start(12)
-            .margin_top(16)
-            .margin_bottom(4)
+            .margin_start(8)
+            .margin_top(8)
+            .margin_bottom(2)
             .build();
         folder_section.append(&dynamic_header);
         folder_section.append(&dynamic_folder_view);
@@ -3908,7 +3976,7 @@ impl MailPage {
             .ellipsize(gtk::pango::EllipsizeMode::End)
             .margin_start(12)
             .margin_end(12)
-            .margin_bottom(8)
+            .margin_bottom(4)
             .build();
         sidebar_box.append(&source_state);
         sidebar_box.append(&source_view);
@@ -3918,7 +3986,7 @@ impl MailPage {
             .hscrollbar_policy(gtk::PolicyType::Never)
             .vscrollbar_policy(gtk::PolicyType::Automatic)
             .child(&sidebar_box)
-            .width_request(260)
+            .width_request(220)
             .build();
 
         let page = adw::NavigationPage::builder()
@@ -4053,11 +4121,11 @@ impl MailPage {
     ) -> gtk::ListBoxRow {
         let hbox = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
-            .spacing(8)
-            .margin_start(8)
-            .margin_end(8)
-            .margin_top(6)
-            .margin_bottom(6)
+            .spacing(4)
+            .margin_start(6)
+            .margin_end(6)
+            .margin_top(1)
+            .margin_bottom(1)
             .build();
 
         let icon = gtk::Image::from_icon_name(icon_name);
@@ -4779,6 +4847,252 @@ impl MailPage {
 
     // ── Private: Build Message List with GListStore & Search Filter ───────
 
+    fn mail_header_child(header: &gtk::Box, index: usize) -> Option<gtk::Widget> {
+        let mut child = header.first_child();
+        for _ in 0..index {
+            child = child.and_then(|child| child.next_sibling());
+        }
+        child
+    }
+
+    fn refresh_mail_column_header(&self) {
+        let Some(header) = self.imp().mail_column_header.borrow().as_ref().cloned() else {
+            return;
+        };
+        let settings = AppSettings::try_new();
+        let show_avatar = settings
+            .as_ref()
+            .map(AppSettings::mail_show_avatar)
+            .unwrap_or(false);
+        let show_sender = settings
+            .as_ref()
+            .map(AppSettings::mail_show_sender)
+            .unwrap_or(true);
+        let show_recipient = settings
+            .as_ref()
+            .map(AppSettings::mail_show_recipient)
+            .unwrap_or(false);
+        let show_date = settings
+            .as_ref()
+            .map(AppSettings::mail_show_date)
+            .unwrap_or(true);
+        let show_attachment = settings
+            .as_ref()
+            .map(AppSettings::mail_show_attachment)
+            .unwrap_or(true);
+        let show_preview = settings
+            .as_ref()
+            .map(AppSettings::mail_show_preview_text)
+            .unwrap_or(false);
+        let sender_width = settings
+            .as_ref()
+            .map(AppSettings::mail_sender_column_width)
+            .unwrap_or(180);
+
+        if let Some(avatar) = Self::mail_header_child(&header, 1) {
+            avatar.set_visible(show_avatar);
+        }
+        if let Some(sender_column) = Self::mail_header_child(&header, 2) {
+            sender_column.set_visible(show_sender || show_recipient);
+            sender_column.set_width_request(sender_width);
+            if let Some(sender_label) = sender_column.first_child().and_downcast::<gtk::Label>() {
+                let label = match (show_sender, show_recipient) {
+                    (true, true) => "Von / An",
+                    (true, false) => "Von",
+                    (false, true) => "An",
+                    (false, false) => "Von",
+                };
+                sender_label.set_label(&self.mail_header_sort_label(label, MailSortField::Sender));
+            }
+        }
+        if let Some(date) = Self::mail_header_child(&header, 3) {
+            date.set_visible(show_date);
+            if let Some(date) = date.downcast_ref::<gtk::Label>() {
+                date.set_label(&self.mail_header_sort_label("Datum", MailSortField::Date));
+            }
+        }
+        if let Some(attachment) = Self::mail_header_child(&header, 4) {
+            attachment.set_visible(show_attachment);
+            if let Some(attachment) = attachment.downcast_ref::<gtk::Label>() {
+                attachment
+                    .set_label(&self.mail_header_sort_label("Anl.", MailSortField::Attachments));
+            }
+        }
+        if let Some(subject) = Self::mail_header_child(&header, 7).and_downcast::<gtk::Label>() {
+            subject.set_label(&self.mail_header_sort_label("Betreff", MailSortField::Subject));
+        }
+        if let Some(preview) = Self::mail_header_child(&header, 8) {
+            preview.set_visible(show_preview);
+        }
+    }
+
+    fn build_mail_column_header(&self) -> gtk::Box {
+        let settings = AppSettings::try_new();
+        let sender_width = settings
+            .as_ref()
+            .map(AppSettings::mail_sender_column_width)
+            .unwrap_or(180);
+
+        let header = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(4)
+            .margin_start(4)
+            .margin_end(4)
+            .margin_top(2)
+            .margin_bottom(2)
+            .css_classes(vec!["mail-column-header"])
+            .build();
+
+        let selection_spacer = gtk::Box::builder().width_request(20).build();
+        let avatar_spacer = gtk::Box::builder().width_request(24).build();
+
+        let sender_column = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(2)
+            .width_request(sender_width)
+            .build();
+        let sender_label = gtk::Label::builder()
+            .label("Von")
+            .halign(gtk::Align::Start)
+            .hexpand(true)
+            .ellipsize(pango::EllipsizeMode::End)
+            .css_classes(vec!["caption", "dim-label"])
+            .build();
+        let resize_handle = gtk::Box::builder()
+            .width_request(8)
+            .hexpand(false)
+            .css_classes(vec!["mail-column-resize-handle"])
+            .build();
+        set_accessible_label(&resize_handle, "Absender-Spaltenbreite ändern");
+        sender_column.append(&sender_label);
+        sender_column.append(&resize_handle);
+
+        let date = gtk::Label::builder()
+            .label("Datum")
+            .width_request(82)
+            .halign(gtk::Align::End)
+            .ellipsize(pango::EllipsizeMode::End)
+            .css_classes(vec!["caption", "dim-label"])
+            .build();
+        let attachment = gtk::Label::builder()
+            .label("Anl.")
+            .width_request(20)
+            .halign(gtk::Align::Center)
+            .css_classes(vec!["caption", "dim-label"])
+            .build();
+        let star = gtk::Box::builder().width_request(20).build();
+        let important = gtk::Box::builder().width_request(20).build();
+        let subject = gtk::Label::builder()
+            .label("Betreff")
+            .halign(gtk::Align::Start)
+            .hexpand(true)
+            .ellipsize(pango::EllipsizeMode::End)
+            .css_classes(vec!["caption", "dim-label"])
+            .build();
+        let preview = gtk::Label::builder()
+            .label("Vorschau")
+            .width_request(160)
+            .halign(gtk::Align::Start)
+            .ellipsize(pango::EllipsizeMode::End)
+            .css_classes(vec!["caption", "dim-label"])
+            .build();
+
+        header.append(&selection_spacer);
+        header.append(&avatar_spacer);
+        header.append(&sender_column);
+        header.append(&date);
+        header.append(&attachment);
+        header.append(&star);
+        header.append(&important);
+        header.append(&subject);
+        header.append(&preview);
+
+        let sender_sort_gesture = gtk::GestureClick::new();
+        sender_sort_gesture.set_button(1);
+        let page_for_sender_sort = self.downgrade();
+        sender_sort_gesture.connect_pressed(move |_, _, _, _| {
+            if let Some(page) = page_for_sender_sort.upgrade() {
+                page.set_mail_sort_from_header(MailSortField::Sender);
+            }
+        });
+        sender_label.set_tooltip_text(Some("Nach Absender sortieren"));
+        sender_label.add_controller(sender_sort_gesture);
+
+        let date_sort_gesture = gtk::GestureClick::new();
+        date_sort_gesture.set_button(1);
+        let page_for_date_sort = self.downgrade();
+        date_sort_gesture.connect_pressed(move |_, _, _, _| {
+            if let Some(page) = page_for_date_sort.upgrade() {
+                page.set_mail_sort_from_header(MailSortField::Date);
+            }
+        });
+        date.set_tooltip_text(Some("Nach Datum sortieren"));
+        date.add_controller(date_sort_gesture);
+
+        let attachment_sort_gesture = gtk::GestureClick::new();
+        attachment_sort_gesture.set_button(1);
+        let page_for_attachment_sort = self.downgrade();
+        attachment_sort_gesture.connect_pressed(move |_, _, _, _| {
+            if let Some(page) = page_for_attachment_sort.upgrade() {
+                page.set_mail_sort_from_header(MailSortField::Attachments);
+            }
+        });
+        attachment.set_tooltip_text(Some("Nach Anhängen sortieren"));
+        attachment.add_controller(attachment_sort_gesture);
+
+        let subject_sort_gesture = gtk::GestureClick::new();
+        subject_sort_gesture.set_button(1);
+        let page_for_subject_sort = self.downgrade();
+        subject_sort_gesture.connect_pressed(move |_, _, _, _| {
+            if let Some(page) = page_for_subject_sort.upgrade() {
+                page.set_mail_sort_from_header(MailSortField::Subject);
+            }
+        });
+        subject.set_tooltip_text(Some("Nach Betreff sortieren"));
+        subject.add_controller(subject_sort_gesture);
+
+        let width_at_start = Rc::new(Cell::new(sender_width));
+        let current_width = Rc::new(Cell::new(sender_width));
+        let gesture = gtk::GestureDrag::new();
+        gesture.set_button(1);
+        let sender_column_for_begin = sender_column.clone();
+        let width_at_start_for_begin = Rc::clone(&width_at_start);
+        let current_width_for_begin = Rc::clone(&current_width);
+        gesture.connect_drag_begin(move |_, _, _| {
+            let width = sender_column_for_begin.width_request().clamp(80, 360);
+            width_at_start_for_begin.set(width);
+            current_width_for_begin.set(width);
+        });
+        let sender_column_for_update = sender_column.clone();
+        let width_at_start_for_update = Rc::clone(&width_at_start);
+        let current_width_for_update = Rc::clone(&current_width);
+        gesture.connect_drag_update(move |_, offset_x, _| {
+            let width = (width_at_start_for_update.get() as f64 + offset_x)
+                .round()
+                .clamp(80.0, 360.0) as i32;
+            current_width_for_update.set(width);
+            sender_column_for_update.set_width_request(width);
+        });
+        let page_for_resize = self.downgrade();
+        let settings_for_resize = settings.clone();
+        let current_width_for_end = Rc::clone(&current_width);
+        gesture.connect_drag_end(move |_, _, _| {
+            let width = current_width_for_end.get().clamp(80, 360);
+            if let Some(settings) = settings_for_resize.as_ref() {
+                settings.set_mail_sender_column_width(width);
+            }
+            if let Some(page) = page_for_resize.upgrade() {
+                page.refresh_mail_column_header();
+                page.refresh_mail();
+            }
+        });
+        resize_handle.add_controller(gesture);
+
+        self.imp().mail_column_header.replace(Some(header.clone()));
+        self.refresh_mail_column_header();
+        header
+    }
+
     fn build_message_list(
         &self,
     ) -> (
@@ -4922,12 +5236,13 @@ impl MailPage {
                 .expect("Expected ListItem");
 
             let vbox = gtk::Box::builder()
-                .orientation(gtk::Orientation::Vertical)
-                .spacing(2)
-                .margin_start(6)
-                .margin_end(6)
-                .margin_top(2)
-                .margin_bottom(2)
+                .orientation(gtk::Orientation::Horizontal)
+                .spacing(4)
+                .margin_start(4)
+                .margin_end(4)
+                .margin_top(0)
+                .margin_bottom(0)
+                .css_classes(vec!["message-line"])
                 .build();
 
             let header_box = gtk::Box::builder()
@@ -4964,9 +5279,14 @@ impl MailPage {
             let avatar = adw::Avatar::builder().size(24).show_initials(true).build();
 
             let sender_box = gtk::Box::builder()
-                .orientation(gtk::Orientation::Vertical)
-                .spacing(0)
-                .hexpand(true)
+                .orientation(gtk::Orientation::Horizontal)
+                .spacing(4)
+                .width_request(
+                    AppSettings::try_new()
+                        .map(|settings| settings.mail_sender_column_width())
+                        .unwrap_or(180),
+                )
+                .hexpand(false)
                 .build();
 
             let sender = gtk::Label::builder()
@@ -4990,6 +5310,9 @@ impl MailPage {
             let date = gtk::Label::builder()
                 .css_classes(vec!["caption", "dim-label"])
                 .halign(gtk::Align::End)
+                .width_request(82)
+                .ellipsize(pango::EllipsizeMode::End)
+                .lines(1)
                 .build();
 
             let btn_star = gtk::Button::builder()
@@ -5034,7 +5357,7 @@ impl MailPage {
             let preview = gtk::Label::builder()
                 .css_classes(vec!["caption", "dim-label"])
                 .halign(gtk::Align::Start)
-                .hexpand(true)
+                .width_request(160)
                 .ellipsize(pango::EllipsizeMode::End)
                 .lines(1)
                 .max_width_chars(60)
@@ -5187,14 +5510,20 @@ impl MailPage {
                 .and_then(|w| w.next_sibling())
                 .and_downcast::<gtk::Box>()
             {
+                sender_box.set_width_request(
+                    settings
+                        .as_ref()
+                        .map(AppSettings::mail_sender_column_width)
+                        .unwrap_or(180),
+                );
                 sender_box.set_visible(show_sender || show_recipient);
                 if let Some(sender) = sender_box.first_child().and_downcast::<gtk::Label>() {
                     sender.set_visible(show_sender);
                     sender.set_label(&msg.sender_name());
                     if msg.is_unread() {
-                        sender.add_css_class("title-4");
+                        sender.add_css_class("unread-heading");
                     } else {
-                        sender.remove_css_class("title-4");
+                        sender.remove_css_class("unread-heading");
                     }
                 }
                 if let Some(recipient) = sender_box
@@ -5453,6 +5782,34 @@ impl MailPage {
             .hexpand(true)
             .build();
 
+        let quick_filter_model =
+            gtk::StringList::new(&["Alle", "Ungelesen", "Markiert", "Wichtig", "Mit Anhang"]);
+        let quick_filter = gtk::DropDown::new(Some(quick_filter_model), None::<&gtk::Expression>);
+        quick_filter.set_tooltip_text(Some("Nachrichtenfilter"));
+        quick_filter.set_selected(match message_filter.get() {
+            MessageFilter::Unread => 1,
+            MessageFilter::Flagged => 2,
+            MessageFilter::Important => 3,
+            MessageFilter::HasAttachments => 4,
+            MessageFilter::All => 0,
+        });
+        let message_filter_for_quick_filter = Rc::clone(&message_filter);
+        let filter_for_quick_filter = custom_filter.clone();
+        let thread_filter_for_quick_filter = thread_filter.clone();
+        quick_filter.connect_selected_notify(move |selector| {
+            let filter = match selector.selected() {
+                1 => MessageFilter::Unread,
+                2 => MessageFilter::Flagged,
+                3 => MessageFilter::Important,
+                4 => MessageFilter::HasAttachments,
+                _ => MessageFilter::All,
+            };
+            message_filter_for_quick_filter.set(filter);
+            filter_for_quick_filter.changed(gtk::FilterChange::Different);
+            thread_filter_for_quick_filter.changed(gtk::FilterChange::Different);
+        });
+        self.imp().quick_filter.replace(Some(quick_filter.clone()));
+
         let save_search_button = gtk::Button::builder()
             .icon_name("document-save-symbolic")
             .tooltip_text("Aktuelle Suche als Suchordner speichern")
@@ -5520,6 +5877,9 @@ impl MailPage {
             MailSortField::Attachments => 6,
             MailSortField::Date => 0,
         });
+        self.imp()
+            .mail_sort_selector
+            .replace(Some(sort_selector.clone()));
         let direction_button = gtk::Button::builder()
             .css_classes(vec!["flat", "circular"])
             .build();
@@ -5538,6 +5898,9 @@ impl MailPage {
             set_accessible_label(button, label);
         };
         set_direction_button(&direction_button, self.imp().mail_sort_descending.get());
+        self.imp()
+            .mail_sort_direction_button
+            .replace(Some(direction_button.clone()));
 
         let page_for_sort = self.downgrade();
         sort_selector.connect_selected_notify(move |selector| {
@@ -5560,6 +5923,7 @@ impl MailPage {
             if let Some(store) = page.imp().message_store.borrow().as_ref().cloned() {
                 page.refresh_thread_metadata(&store);
             }
+            page.refresh_mail_column_header();
         });
 
         let page_for_direction = self.downgrade();
@@ -5577,11 +5941,128 @@ impl MailPage {
             if let Some(store) = page.imp().message_store.borrow().as_ref().cloned() {
                 page.refresh_thread_metadata(&store);
             }
+            page.refresh_mail_column_header();
         });
 
+        let columns_popover_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(2)
+            .margin_start(10)
+            .margin_end(10)
+            .margin_top(8)
+            .margin_bottom(8)
+            .width_request(230)
+            .build();
+        columns_popover_box.append(
+            &gtk::Label::builder()
+                .label("Sichtbare Spalten")
+                .halign(gtk::Align::Start)
+                .css_classes(vec!["heading"])
+                .margin_bottom(4)
+                .build(),
+        );
+        let column_settings = [
+            ("mail-show-avatar", "Avatare"),
+            ("mail-show-sender", "Absender"),
+            ("mail-show-recipient", "Empfänger"),
+            ("mail-show-date", "Datum"),
+            ("mail-show-attachment", "Anhänge"),
+            ("mail-show-preview-text", "Vorschautext"),
+            ("mail-show-labels", "Labels"),
+        ];
+        if let Some(settings) = AppSettings::try_new() {
+            for (key, label) in column_settings {
+                let active = match key {
+                    "mail-show-avatar" => settings.mail_show_avatar(),
+                    "mail-show-sender" => settings.mail_show_sender(),
+                    "mail-show-recipient" => settings.mail_show_recipient(),
+                    "mail-show-date" => settings.mail_show_date(),
+                    "mail-show-attachment" => settings.mail_show_attachment(),
+                    "mail-show-preview-text" => settings.mail_show_preview_text(),
+                    "mail-show-labels" => settings.mail_show_labels(),
+                    _ => false,
+                };
+                let check = gtk::CheckButton::builder()
+                    .label(label)
+                    .active(active)
+                    .build();
+                let settings_for_check = settings.clone();
+                check.connect_toggled(move |check| match key {
+                    "mail-show-avatar" => {
+                        settings_for_check.set_mail_show_avatar(check.is_active())
+                    }
+                    "mail-show-sender" => {
+                        settings_for_check.set_mail_show_sender(check.is_active())
+                    }
+                    "mail-show-recipient" => {
+                        settings_for_check.set_mail_show_recipient(check.is_active())
+                    }
+                    "mail-show-date" => settings_for_check.set_mail_show_date(check.is_active()),
+                    "mail-show-attachment" => {
+                        settings_for_check.set_mail_show_attachment(check.is_active())
+                    }
+                    "mail-show-preview-text" => {
+                        settings_for_check.set_mail_show_preview_text(check.is_active())
+                    }
+                    "mail-show-labels" => {
+                        settings_for_check.set_mail_show_labels(check.is_active())
+                    }
+                    _ => {}
+                });
+                columns_popover_box.append(&check);
+            }
+
+            columns_popover_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+            columns_popover_box.append(
+                &gtk::Label::builder()
+                    .label("Absenderbreite")
+                    .halign(gtk::Align::Start)
+                    .css_classes(vec!["caption", "dim-label"])
+                    .margin_top(4)
+                    .build(),
+            );
+            let width_adjustment = gtk::Adjustment::new(
+                settings.mail_sender_column_width() as f64,
+                80.0,
+                360.0,
+                10.0,
+                40.0,
+                0.0,
+            );
+            let width_scale =
+                gtk::Scale::new(gtk::Orientation::Horizontal, Some(&width_adjustment));
+            width_scale.set_digits(0);
+            width_scale.set_draw_value(true);
+            width_scale.set_hexpand(true);
+            let settings_for_width = settings.clone();
+            width_scale.connect_value_changed(move |scale| {
+                settings_for_width.set_mail_sender_column_width(scale.value() as i32);
+            });
+            columns_popover_box.append(&width_scale);
+        } else {
+            columns_popover_box.append(
+                &gtk::Label::builder()
+                    .label("Einstellungen sind in diesem Entwicklungsmodus nicht verfügbar.")
+                    .wrap(true)
+                    .css_classes(vec!["caption", "dim-label"])
+                    .build(),
+            );
+        }
+        let columns_popover = gtk::Popover::builder().child(&columns_popover_box).build();
+        let columns_button = gtk::MenuButton::builder()
+            .label("Spalten")
+            .icon_name("view-column-symbolic")
+            .tooltip_text("Sichtbare Mailspalten und Absenderbreite")
+            .popover(&columns_popover)
+            .css_classes(vec!["flat"])
+            .build();
+        set_accessible_label(&columns_button, "Mailspalten konfigurieren");
+
         search_box.append(&search_entry);
+        search_box.append(&quick_filter);
         search_box.append(&sort_selector);
         search_box.append(&direction_button);
+        search_box.append(&columns_button);
         search_box.append(&save_search_button);
         self.imp().search_entry.replace(Some(search_entry.clone()));
 
@@ -5929,6 +6410,8 @@ impl MailPage {
         list_container.append(&batch_action_bar);
         list_container.append(&search_box);
         list_container.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+        let column_header = self.build_mail_column_header();
+        list_container.append(&column_header);
 
         let list_scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
@@ -5993,6 +6476,11 @@ impl MailPage {
             folder_selection_for_rows.replace(selection.clone());
             message_filter_for_rows.set(MessageFilter::All);
             query_for_folder.replace(MessageSearchQuery::default());
+            if let Some(page) = page_for_rows.upgrade() {
+                if let Some(quick_filter) = page.imp().quick_filter.borrow().as_ref() {
+                    quick_filter.set_selected(0);
+                }
+            }
             if row.is_some() {
                 search_list_for_rows.unselect_all();
                 if let Some(page) = page_for_rows.upgrade() {
@@ -6048,6 +6536,18 @@ impl MailPage {
                 _ => MessageFilter::All,
             };
             message_filter.set(filter);
+            if let Some(page) = page_for_search.upgrade() {
+                let selected = match filter {
+                    MessageFilter::Unread => 1,
+                    MessageFilter::Flagged => 2,
+                    MessageFilter::Important => 3,
+                    MessageFilter::HasAttachments => 4,
+                    MessageFilter::All => 0,
+                };
+                if let Some(quick_filter) = page.imp().quick_filter.borrow().as_ref() {
+                    quick_filter.set_selected(selected);
+                }
+            }
             if row.is_some() {
                 let saved_query = unsafe {
                     row.and_then(|row| {
