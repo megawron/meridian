@@ -101,13 +101,16 @@ und erweitert dessen Schreibbereich nur nach dokumentierter Kollisionsprüfung.
 | 6 | `P1-CAL-001A` | `P1-CAL-001` | `src/services/recurrence_service.rs` | keine | DONE | Recurrence-Ausnahmen und Grenzfälle getestet |
 | 7 | `P1-CONTACT-001A` | `P1-CONTACT-001` | `src/services/vcard_service.rs` | keine | DONE | verlustarmer vCard-Roundtrip getestet |
 | 8 | `P2-MIGRATION-001A` | `P2-MIGRATION-*` | `src/services/migration_service.rs` | keine | DONE | portable Werte, Warnungen und Geheimnis-Redaktion getestet |
-| 9 | `P0-STAB-001B` | `P0-STAB-001` | `src/views/mail_page.rs` | `P0-STAB-001A` | READY | alle Mailmutationen asynchron verdrahtet; UI bleibt bedienbar |
-| 10 | `P0-MAIL-001C` | `P0-MAIL-001` | `src/views/mail_viewer.rs` | `P0-MAIL-001A`, `P0-MAIL-001B` | READY | Viewer-Fallback, Remote-Freigabe und Anhänge integriert |
+| 9 | `P0-STAB-001B` | `P0-STAB-001` | `src/views/mail_page.rs` | `P0-STAB-001A` | DONE | Einzel/Batch/Undo/Redo asynchron, abbrechbar und bestätigungsbasiert |
+| 10 | `P0-MAIL-001C` | `P0-MAIL-001` | `src/views/mail_viewer.rs` | `P0-MAIL-001A`, `P0-MAIL-001B` | DONE | Viewer-Fallback und nachrichtenbezogene Remote-Freigabe integriert |
 | 11 | `P0-MAIL-002A` | `P0-MAIL-002` | `src/views/mail_page.rs`, `src/style.css` | `P0-STAB-001B` | READY | kompakter Ordnerbaum und klassische Drei-Bereichsansicht |
 | 12 | `P0-MAIL-002B` | `P0-MAIL-002` | `src/views/mail_page.rs`, `src/services/settings_service.rs`, `src/dialogs/preferences_dialog.rs` | `P0-MAIL-002A` | READY | Spalten, Dichte und Layout persistent und live wirksam |
 | 13 | `P0-SYNC-001A` | `P0-SYNC-001` | `src/views/mail_page.rs`, `src/services/camel_mail_service.rs` | `P0-STAB-001B` | READY | generationensicheres Paging/Refresh mit stabiler Auswahl |
-| 14 | `P0-COMP-001B` | `P0-COMP-001` | `src/dialogs/compose_dialog.rs`, `src/services/draft_store_service.rs` | `P0-COMP-001A` | READY | Antwort, Autosave, Retry und Doppelsendeschutz integriert |
+| 14 | `P0-COMP-001B` | `P0-COMP-001` | `src/dialogs/compose_dialog.rs`, `src/services/draft_store_service.rs` | `P0-COMP-001A` | DONE | Autosave, Recovery, pro-Draft-Sendelock und revisionssicheres Cleanup integriert |
 | 15 | `P0-RECOVERY-001A` | `P0-RECOVERY-001` | `src/services/eds_service.rs`, `src/services/eds_source_cache_service.rs` | Pakete 9–14 | READY | Offline/Online, Backoff und Neustart portabel getestet |
+| 16 | `P1-CAL-001B` | `P1-CAL-001` | `src/views/calendar_page.rs` | `P1-CAL-001A` | DONE | Ansichten verwenden gemeinsame Recurrence-/Zeitzonenregeln |
+| 17 | `P1-CONTACT-001B` | `P1-CONTACT-001` | `src/views/contacts_page.rs` | `P1-CONTACT-001A` | DONE | kompakter quellenstabiler Kontaktworkflow und Dublettenpfad |
+| 18 | `P1-TASK-001A` | `P1-TASK-001` | `src/views/tasks_page.rs` | keine | DONE | Quick-Edit, Filter, Suche, Sortierung und Fehlerzustände integriert |
 
 ### Parallelisierungsregeln
 
@@ -127,7 +130,7 @@ und erweitert dessen Schreibbereich nur nach dokumentierter Kollisionsprüfung.
 
 ### P0-STAB-001 — Mailmutationen vom GTK-Hauptthread trennen
 
-- Status: `READY`
+- Status: `BLOCKED_LINUX`
 - Quelle: `ROADMAP.md`, Phase 1 „Mailaktionen“ und Phase 7 „Performance“
 - Problem: Manuell ausgelöste Backendaktionen verwenden teilweise noch einen
   synchronen Command-Pfad aus GTK-Callbacks. Authentifizierung, Netzwerk oder
@@ -150,11 +153,14 @@ und erweitert dessen Schreibbereich nur nach dokumentierter Kollisionsprüfung.
   - View-nahe Tests belegen Aktionssperre und Zustandsübernahme.
   - `cargo check --workspace --locked` und vollständige Testsuite bestehen.
 - Linux-Handoff: `LINUX-P0-MAIL-002` in `ROADMAP_LINUX.md`.
-- Evidenz: noch offen.
+- Evidenz: Commit `d6e7dcc`; Einzel-, Batch-, automatische Gelesen-Markierung
+  sowie Undo/Redo laufen über Worker und Cancellation-Kontexte. Persistente
+  Historie wird außerhalb des GTK-Hauptthreads geladen/geschrieben; Modell und
+  History ändern sich erst nach Backendbestätigung. 387/387 Tests bestanden.
 
 ### P0-MAIL-001 — MIME-, HTML- und Anhangsdarstellung produktionsfest machen
 
-- Status: `READY`
+- Status: `BLOCKED_LINUX`
 - Quelle: `ROADMAP.md`, Phase 1 „Sicherer WebKitGTK-Viewer“ und „Anhänge“
 - Lieferumfang:
   - Ein versioniertes, inhaltsneutrales Testkorpus für `multipart/alternative`,
@@ -172,7 +178,9 @@ und erweitert dessen Schreibbereich nur nach dokumentierter Kollisionsprüfung.
   - Ein Linux-WebKitGTK-Smoke-Test rendert dieselben Fälle ohne leere Fläche,
     ungefragte Remote-Bilder oder falschen Vollflächenhintergrund.
 - Linux-Handoff: `LINUX-P0-MAIL-001` in `ROADMAP_LINUX.md`.
-- Evidenz: Teilbelege existieren; Punkt bleibt bis zum Korpus und Linux-Smoke offen.
+- Evidenz: Commit `d6e7dcc`; zentraler Sanitizer-/Dokumentpfad, explizite
+  Loading-/Fehler-/Klartextzustände, CID/Data-Ausnahme und nachrichtenbezogene
+  Remote-Freigabe sind portabel getestet. Linux-WebKitGTK-Smoke bleibt offen.
 
 ### P0-MAIL-002 — klassischen Evolution-Mailworkflow vervollständigen
 
@@ -217,7 +225,7 @@ und erweitert dessen Schreibbereich nur nach dokumentierter Kollisionsprüfung.
 
 ### P0-COMP-001 — Antworten, Entwürfe und Versand belastbar machen
 
-- Status: `READY`
+- Status: `BLOCKED_LINUX`
 - Quelle: `ROADMAP.md`, Phase 2
 - Lieferumfang:
   - Neu, Antworten, Allen antworten und Weiterleiten übernehmen Identität,
@@ -232,7 +240,11 @@ und erweitert dessen Schreibbereich nur nach dokumentierter Kollisionsprüfung.
   - RFC822-/MIME-Tests einschließlich internationaler Header und Anhänge.
   - Fehler-, Abbruch-, Retry-, Draft-Recovery- und Doppelsende-Tests.
 - Linux-Handoff: `LINUX-P0-COMP-001`.
-- Evidenz: Teilbelege für MIME, Autosave, Graph und Camel-Transport existieren.
+- Evidenz: Commit `d6e7dcc`; Autosave bleibt bis zum Dateiergebnis serialisiert,
+  beschädigte Stores werden nicht überschrieben, gleiche Drafts können nicht
+  gleichzeitig aus zwei Fenstern gesendet werden und Cleanup löscht im Worker
+  nur die bestätigte Revision. Provider-Idempotenz nach unklarem Transportende
+  und Drafts-/Sent-Wirkung bleiben Linux-only.
 
 ### P0-RECOVERY-001 — Offline/Online, Abbruch und Wiederanlauf absichern
 
@@ -262,7 +274,9 @@ und erweitert dessen Schreibbereich nur nach dokumentierter Kollisionsprüfung.
   Einladungsantworten bleiben quellen- und zeitzonenkonsistent.
 - Abnahme: portable Kalender-/Recurrence-Tests plus Linux-ECal-Handoff aus
   Abschnitt 6 von `ROADMAP_LINUX.md`.
-- Evidenz: Teilimplementierung vorhanden.
+- Evidenz: `P1-CAL-001A/B` in Commit `d6e7dcc` beziehungsweise `10b0321`:
+  gemeinsame RRULE/RDATE/EXDATE-/Mehrtag-/DTEND-Auswertung und 25 gezielte
+  Kalender-View-Tests; Teilnehmer-/Einladungs- und Linux-ECal-Abnahme offen.
 
 ### P1-CONTACT-001 — Kontakte und Empfänger
 
@@ -272,7 +286,9 @@ und erweitert dessen Schreibbereich nur nach dokumentierter Kollisionsprüfung.
   verwenden denselben ausgewählten Kontaktbestand.
 - Abnahme: Parser-/Store-/Mutationstests plus Linux-EBook/GAL-Handoff aus
   Abschnitt 7 von `ROADMAP_LINUX.md`.
-- Evidenz: Teilimplementierung vorhanden.
+- Evidenz: `P1-CONTACT-001A/B` in Commit `d6e7dcc` beziehungsweise `10b0321`:
+  kompakte quellenneutrale Liste/Detailansicht, Mehrwortsuche, Kategorien und
+  sicher begrenzter Dublettenpfad; Linux-EBook/GAL-Abnahme offen.
 
 ### P1-TASK-001 — Aufgaben, Memos und Erinnerungen
 
@@ -281,7 +297,9 @@ und erweitert dessen Schreibbereich nur nach dokumentierter Kollisionsprüfung.
   Sortierung, Suche, Alarme, Snooze und Neustartverhalten entsprechen dem
   Kalender-/Quellenmodell.
 - Abnahme: portable Store-/Reminder-Tests plus Linux-ECal-Handoff.
-- Evidenz: Teilimplementierung vorhanden.
+- Evidenz: `P1-TASK-001A` in Commit `d6e7dcc`: Status, Priorität, Fälligkeit
+  und Kategorien sind kompakt editierbar; Suche/Filter/Sortierung werden nach
+  Mutationen aktualisiert. Memo-/Alarm- und Linux-ECal-Parität bleibt offen.
 
 ### P1-SEARCH-001 — Suche, Suchordner und Filter
 
@@ -359,3 +377,18 @@ wird ein konkreter Folgepunkt angelegt und der Elternpunkt bleibt offen.
   Fallbacks, redigierte Warnungen sowie den Ausschluss von Geheimnissen.
 - Gemeinsame Abnahme: `cargo fmt --all -- --check`,
   `cargo check --workspace --locked` und 359/359 Workspace-Tests bestanden.
+
+### Commit `d6e7dcc` — tägliche GTK4-Workflows
+
+- `P0-STAB-001B`: Mail-Einzel-/Batchaktionen, Auto-Read sowie Undo/Redo laufen
+  außerhalb GTK, sind lifecycle-abbrechbar und übernehmen Modell/History erst
+  nach bestätigtem Erfolg. Graph-Suche invalidiert ältere Normal-Loads.
+- `P0-MAIL-001C`: ein zentral komponiertes, sanitisiertes Maildokument mit
+  Klartext-Fallback, expliziten Zuständen und Remote-Freigabe pro Nachricht.
+- `P0-COMP-001B`: Worker-basierte MIME-/Transportstrecke, serialisiertes
+  Autosave, fail-closed Draft-Store, Doppelsendeschutz und revisionssicheres
+  Cleanup; serverseitige Ambiguität bleibt im Linux-Handoff.
+- `P1-CAL-001B`, `P1-CONTACT-001B`, `P1-TASK-001A`: gemeinsame
+  Kalenderauswertung und kompakte tägliche Kontakt-/Aufgabenworkflows.
+- Gemeinsame Abnahme: `cargo fmt --all -- --check`, `git diff --check`,
+  `cargo check --workspace --locked` und 387/387 Workspace-Tests bestanden.

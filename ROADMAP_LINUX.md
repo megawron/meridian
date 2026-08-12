@@ -28,8 +28,9 @@ Distribution, Bibliotheksversionen und Kontotyp zu protokollieren.
 
 - Verknüpft: `P0-MAIL-001` und `P0-SYNC-001` aus
   `ROADMAP_EXECUTION.md`.
-- Portable Basis: Commit `10b0321` (MIME-Parser und HTML-Sanitizer); ersetzt
-  nicht die folgende Linux-Abnahme.
+- Portable Basis: Commits `10b0321` (MIME-Parser/HTML-Sanitizer) und `d6e7dcc`
+  (Viewer-Komposition, Fallbackzustände und Remote-Freigabe); ersetzen nicht
+  die folgende Linux-Abnahme.
 - Vorbereitung: vollständiger portabler Testlauf grün; ein EDS-Testkonto mit
   bekannten Plaintext-, HTML-, CID-, Remote-Bild- und Anhangsnachrichten.
 - Ablauf:
@@ -48,8 +49,9 @@ Distribution, Bibliotheksversionen und Kontotyp zu protokollieren.
 ### LINUX-P0-MAIL-002 — asynchrone Mailmutationen
 
 - Verknüpft: `P0-STAB-001`.
-- Portable Basis: Commit `10b0321` (Lifecycle, Cancellation, Konflikt und
-  Rollback); die GTK-Worker-Verdrahtung muss vor diesem Lauf abgeschlossen sein.
+- Portable Basis: Commits `10b0321` (Lifecycle, Cancellation, Konflikt und
+  Rollback) und `d6e7dcc` (GTK-Worker für Einzel/Batch/Auto-Read/Undo/Redo,
+  bestätigungsbasierte History und generationensichere Graph-Suche).
 - Ablauf: Lesen/Ungelesen, Stern, Wichtigkeit, Label, Archiv, Spam,
   Nicht-Spam, Löschen, Verschieben und Kopieren jeweils einzeln und als Batch
   gegen ein echtes Konto ausführen; parallel Fenster bewegen, Ordner wechseln
@@ -64,8 +66,9 @@ Distribution, Bibliotheksversionen und Kontotyp zu protokollieren.
 ### LINUX-P0-COMP-001 — Entwurf, Antwort und Versand
 
 - Verknüpft: `P0-COMP-001`.
-- Portable Basis: Commit `10b0321` (RFC822-/MIME-Komposition und
-  Fehlervalidierung); Transport- und Ordnerwirkung bleiben Linux-only.
+- Portable Basis: Commits `10b0321` (RFC822-/MIME-Komposition) und `d6e7dcc`
+  (Autosave-Serialisierung, Recovery, pro-Draft-Sendelock und revisionssicheres
+  Worker-Cleanup); Transport- und Ordnerwirkung bleiben Linux-only.
 - Ablauf: Neu, Antworten, Allen antworten, Weiterleiten, HTML/Text, Alias,
   Signatur, Inline- und reguläre Anhänge, Autosave, Wiederöffnen und Versand
   gegen Drafts-/Sent-Ordner prüfen.
@@ -497,6 +500,11 @@ Mit einem Testkonto ohne produktive Empfänger prüfen:
 
 ## 6. ECal: Kalender, Aufgaben und Memos
 
+- Portable Basis: Commit `d6e7dcc` vereinheitlicht Kalenderansichten über
+  RRULE/RDATE/EXDATE, Mehrtagstermine, exklusive DTEND-Grenzen und validierte
+  Zeitzonen/Quellen; Aufgaben bieten kompaktes Quick-Edit für Status,
+  Priorität, Fälligkeit und Kategorien. Native ECal-Wirkung bleibt offen.
+
 - `[~]` Native ECal-Brücke auf Linux gegen echte Kalender-, Aufgaben- und
   Memo-Quellen kompilieren und verbinden.
 - `[~]` Create/Modify/Remove mit EDS-UIDs testen. Parallel geänderte
@@ -542,6 +550,10 @@ Mit einem Testkonto ohne produktive Empfänger prüfen:
   doppelter EDS-Signale und sicherem Zurückziehen zugestellter Notifications.
 
 ## 7. EBook: Kontakte, GAL und Adressbücher
+
+- Portable Basis: Commit `d6e7dcc` liefert kompakte quellenneutrale
+  Liste/Detailansicht, Mehrwortsuche, Kategorien und eine begrenzte
+  Dublettenerkennung; echte EBook-/GAL-Identität und Mutationen bleiben offen.
 
 - `[~]` Native EBook-Brücke auf Linux gegen lokale, LDAP-, GOA- und – soweit
   verfügbar – Exchange-Adressbücher kompilieren und verbinden.

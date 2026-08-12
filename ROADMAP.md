@@ -9,6 +9,13 @@ Vollständige Architektur-Spezifikation, Feature-Mapping und Entwicklungs-Roadma
 > [Linux-/EDS-Roadmap](ROADMAP_LINUX.md). Der Produktumfang darf aus keiner
 > dieser Sichten verkleinert werden.
 
+> **Belegter Zwischenstand `d6e7dcc`:** Die tägliche portable GTK4-Strecke für
+> sicheren Mail-Viewer, asynchrone Mailmutationen einschließlich Undo/Redo,
+> Composer-Recovery/Doppelsendeschutz sowie kompakte Kalender-, Kontakt- und
+> Aufgabenansichten ist mit 387/387 Tests und Workspace-Build verifiziert.
+> Echte WebKitGTK-, EDS/Camel/ECal/EBook-, Provider- und Desktop-Abnahme bleibt
+> ausdrücklich in `ROADMAP_LINUX.md` offen; dies ist keine Vollparitätsangabe.
+
 ---
 
 ## 1. Architektur & Tech-Stack
