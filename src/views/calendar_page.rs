@@ -340,6 +340,10 @@ impl CalendarPage {
                                 local_item_state_for_load
                                     .set_label("Keine VEVENT-Daten aus EDS gefunden");
                             }
+                            CalendarDataOrigin::Graph => {
+                                local_item_state_for_load
+                                    .set_label("Keine VEVENT-Daten aus Microsoft Graph gefunden");
+                            }
                             CalendarDataOrigin::Local => {
                                 local_item_state_for_load
                                     .set_label("Keine lokalen VEVENT-Daten gefunden");
@@ -349,6 +353,7 @@ impl CalendarPage {
                         event_list_for_load.set_visible(true);
                         let origin = match result.origin {
                             CalendarDataOrigin::Eds => "EDS",
+                            CalendarDataOrigin::Graph => "Microsoft Graph",
                             CalendarDataOrigin::Local => "lokalem iCalendar",
                         };
                         local_item_state_for_load

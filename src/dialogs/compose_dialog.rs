@@ -24,6 +24,7 @@ use crate::services::contact_store_service::ContactStoreService;
 use crate::services::crypto_service::SmimeOptions;
 use crate::services::draft_store_service::{DraftAttachment, DraftMessage, DraftStoreService};
 use crate::services::eds_service::{self, EdsSourceKind, EdsSourceOrigin};
+use crate::services::exchange_service::{GalContact, graph_service_for_source};
 use crate::services::html_sanitizer::sanitize_html;
 use crate::services::mail_composer_service::{self, OutgoingMessage};
 use crate::services::signature_store_service::SignatureStore;
@@ -434,6 +435,10 @@ impl ComposeDialog {
             .hexpand(true)
             .build();
 
+        let directory_button_to = recipient_directory_button();
+        let directory_button_cc = recipient_directory_button();
+        let directory_button_bcc = recipient_directory_button();
+
         // Subject
         let lbl_subject = gtk::Label::builder()
             .label("Betreff:")
@@ -448,11 +453,29 @@ impl ComposeDialog {
         form_grid.attach(&lbl_from, 0, 0, 1, 1);
         form_grid.attach(&combo_from, 1, 0, 1, 1);
         form_grid.attach(&lbl_to, 0, 1, 1, 1);
-        form_grid.attach(&entry_to, 1, 1, 1, 1);
+        form_grid.attach(
+            &recipient_field(&entry_to, &directory_button_to),
+            1,
+            1,
+            1,
+            1,
+        );
         form_grid.attach(&lbl_cc, 0, 2, 1, 1);
-        form_grid.attach(&entry_cc, 1, 2, 1, 1);
+        form_grid.attach(
+            &recipient_field(&entry_cc, &directory_button_cc),
+            1,
+            2,
+            1,
+            1,
+        );
         form_grid.attach(&lbl_bcc, 0, 3, 1, 1);
-        form_grid.attach(&entry_bcc, 1, 3, 1, 1);
+        form_grid.attach(
+            &recipient_field(&entry_bcc, &directory_button_bcc),
+            1,
+            3,
+            1,
+            1,
+        );
         form_grid.attach(&lbl_subject, 0, 4, 1, 1);
         form_grid.attach(&entry_subject, 1, 4, 1, 1);
 
@@ -519,6 +542,25 @@ impl ComposeDialog {
                 }
             }
         });
+
+        setup_directory_recipient_search(
+            &entry_to,
+            &directory_button_to,
+            self.downgrade(),
+            combo_from.clone(),
+        );
+        setup_directory_recipient_search(
+            &entry_cc,
+            &directory_button_cc,
+            self.downgrade(),
+            combo_from.clone(),
+        );
+        setup_directory_recipient_search(
+            &entry_bcc,
+            &directory_button_bcc,
+            self.downgrade(),
+            combo_from.clone(),
+        );
 
         let dialog_weak_for_templates = self.downgrade();
         let entry_subject_for_templates = entry_subject.clone();
@@ -1152,7 +1194,9 @@ impl ComposeDialog {
                 html_editor.read_content(move |result| match result {
                     Ok(content) => {
                         let crate::views::EditorContent { body, plain_text } = content;
-                        if native_adapter_available {
+                        if native_adapter_available
+                            || graph_service_for_source(&source_uid).is_some()
+                        {
                             let outgoing = OutgoingMessage {
                                 source_uid: source_uid.clone(),
                                 from: from.clone(),
@@ -1941,6 +1985,257 @@ fn setup_local_recipient_completion(
     });
 }
 
+fn recipient_directory_button() -> gtk::Button {
+    gtk::Button::builder()
+        .icon_name("system-search-symbolic")
+        .tooltip_text("Im Exchange-Verzeichnis suchen")
+        .css_classes(vec!["flat"])
+        .build()
+}
+
+fn recipient_field(entry: &gtk::Entry, directory_button: &gtk::Button) -> gtk::Box {
+    let field = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(4)
+        .hexpand(true)
+        .build();
+    field.append(entry);
+    field.append(directory_button);
+    field
+}
+
+fn setup_directory_recipient_search(
+    entry: &gtk::Entry,
+    button: &gtk::Button,
+    dialog_weak: glib::WeakRef<ComposeDialog>,
+    combo_from: gtk::DropDown,
+) {
+    let popover = gtk::Popover::new();
+    popover.set_autohide(true);
+    popover.set_position(gtk::PositionType::Bottom);
+    popover.set_parent(button);
+
+    let container = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(6)
+        .margin_start(8)
+        .margin_end(8)
+        .margin_top(8)
+        .margin_bottom(8)
+        .width_request(420)
+        .build();
+    let status = gtk::Label::builder()
+        .xalign(0.0)
+        .wrap(true)
+        .css_classes(vec!["dim-label"])
+        .build();
+    let list = gtk::ListBox::builder()
+        .selection_mode(gtk::SelectionMode::Single)
+        .css_classes(vec!["boxed-list"])
+        .build();
+    let results_scroll = gtk::ScrolledWindow::builder()
+        .height_request(360)
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .vscrollbar_policy(gtk::PolicyType::Automatic)
+        .child(&list)
+        .build();
+    container.append(&status);
+    container.append(&results_scroll);
+    popover.set_child(Some(&container));
+
+    let visible_addresses = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+    let entry_for_activation = entry.downgrade();
+    let popover_for_activation = popover.clone();
+    let visible_addresses_for_activation = std::rc::Rc::clone(&visible_addresses);
+    list.connect_row_activated(move |_list, row| {
+        let Some(address) = visible_addresses_for_activation
+            .borrow()
+            .get(row.index().max(0) as usize)
+            .cloned()
+        else {
+            return;
+        };
+        let Some(entry) = entry_for_activation.upgrade() else {
+            return;
+        };
+        entry.set_text(&replace_current_recipient(&entry.text(), &address));
+        entry.set_position(-1);
+        popover_for_activation.popdown();
+    });
+
+    let dialog_weak_for_click = dialog_weak.clone();
+    let combo_from_for_click = combo_from.clone();
+    let entry_for_click = entry.clone();
+    let list_for_click = list.clone();
+    let status_for_click = status.clone();
+    let popover_for_click = popover.clone();
+    let visible_addresses_for_result = std::rc::Rc::clone(&visible_addresses);
+    button.connect_clicked(move |button| {
+        let query = current_recipient_fragment(&entry_for_click.text()).to_string();
+        if query.chars().count() < 2 {
+            status_for_click.set_text("Mindestens zwei Zeichen für die Verzeichnissuche eingeben.");
+            clear_recipient_directory_results(&list_for_click, &visible_addresses_for_result);
+            popover_for_click.popup();
+            return;
+        }
+
+        let Some(dialog) = dialog_weak_for_click.upgrade() else {
+            return;
+        };
+        let source_uid = dialog
+            .selected_identity(combo_from_for_click.selected())
+            .source_uid;
+        if source_uid.trim().is_empty() {
+            status_for_click.set_text("Kein Konto für die Verzeichnissuche ausgewählt.");
+            clear_recipient_directory_results(&list_for_click, &visible_addresses_for_result);
+            popover_for_click.popup();
+            return;
+        }
+
+        clear_recipient_directory_results(&list_for_click, &visible_addresses_for_result);
+        status_for_click.set_text("Exchange-Verzeichnis wird durchsucht…");
+        button.set_sensitive(false);
+        popover_for_click.popup();
+
+        let (sender, receiver) = async_channel::bounded(1);
+        let query_for_worker = query.clone();
+        std::thread::spawn(move || {
+            let result = graph_service_for_source(&source_uid)
+                .ok_or_else(|| {
+                    "Für dieses Konto ist kein portabler Exchange-Verzeichniszugriff verfügbar."
+                        .to_string()
+                })
+                .and_then(|service| {
+                    service
+                        .search_gal_sync(&query_for_worker)
+                        .map_err(|error| error.to_string())
+                })
+                .map(|contacts| {
+                    let mut suggestions = contacts
+                        .into_iter()
+                        .map(gal_contact_to_recipient_suggestion)
+                        .filter(|suggestion| !suggestion.address.is_empty())
+                        .collect::<Vec<_>>();
+                    suggestions.sort_by_key(|suggestion| suggestion.address.to_ascii_lowercase());
+                    suggestions
+                        .dedup_by(|left, right| left.address.eq_ignore_ascii_case(&right.address));
+                    suggestions
+                });
+            if let Err(error) = sender.send_blocking(result) {
+                tracing::debug!(%error, "Directory search result was dropped");
+            }
+        });
+
+        let list_for_result = list_for_click.clone();
+        let status_for_result = status_for_click.clone();
+        let popover_for_result = popover_for_click.clone();
+        let button_for_result = button.clone();
+        let visible_addresses_for_future = std::rc::Rc::clone(&visible_addresses_for_result);
+        glib::spawn_future_local(async move {
+            let result = receiver.recv().await;
+            button_for_result.set_sensitive(true);
+            match result {
+                Ok(Ok(suggestions)) if suggestions.is_empty() => {
+                    status_for_result.set_text("Keine passenden Verzeichniseinträge gefunden.");
+                    clear_recipient_directory_results(
+                        &list_for_result,
+                        &visible_addresses_for_future,
+                    );
+                    popover_for_result.popup();
+                }
+                Ok(Ok(suggestions)) => {
+                    visible_addresses_for_future.replace(
+                        suggestions
+                            .iter()
+                            .map(|suggestion| suggestion.address.clone())
+                            .collect(),
+                    );
+                    for suggestion in &suggestions {
+                        let row = gtk::ListBoxRow::new();
+                        let label = gtk::Label::builder()
+                            .label(&recipient_suggestion_label(suggestion))
+                            .xalign(0.0)
+                            .wrap(true)
+                            .margin_start(8)
+                            .margin_end(8)
+                            .margin_top(6)
+                            .margin_bottom(6)
+                            .build();
+                        row.set_child(Some(&label));
+                        list_for_result.append(&row);
+                    }
+                    status_for_result.set_text(&format!(
+                        "{} Verzeichniseinträge gefunden",
+                        suggestions.len()
+                    ));
+                    popover_for_result.popup();
+                }
+                Ok(Err(error)) => {
+                    tracing::debug!(%error, "Exchange directory search failed");
+                    status_for_result
+                        .set_text(&format!("Verzeichnissuche nicht verfügbar: {error}"));
+                    clear_recipient_directory_results(
+                        &list_for_result,
+                        &visible_addresses_for_future,
+                    );
+                    popover_for_result.popup();
+                }
+                Err(error) => {
+                    tracing::debug!(%error, "Exchange directory search channel closed");
+                    status_for_result.set_text("Verzeichnissuche wurde abgebrochen.");
+                    clear_recipient_directory_results(
+                        &list_for_result,
+                        &visible_addresses_for_future,
+                    );
+                    popover_for_result.popup();
+                }
+            }
+        });
+    });
+}
+
+fn clear_recipient_directory_results(
+    list: &gtk::ListBox,
+    visible_addresses: &std::rc::Rc<std::cell::RefCell<Vec<String>>>,
+) {
+    while let Some(child) = list.first_child() {
+        list.remove(&child);
+    }
+    visible_addresses.borrow_mut().clear();
+}
+
+fn gal_contact_to_recipient_suggestion(contact: GalContact) -> RecipientSuggestion {
+    let display = contact.display_name.trim();
+    let details = [
+        contact.job_title.trim(),
+        contact.department.trim(),
+        contact.office_location.trim(),
+    ]
+    .into_iter()
+    .filter(|value| !value.is_empty())
+    .collect::<Vec<_>>()
+    .join(" · ");
+    let display = if display.is_empty() {
+        details
+    } else if details.is_empty() {
+        display.to_string()
+    } else {
+        format!("{display} · {details}")
+    };
+    RecipientSuggestion {
+        display,
+        address: contact.email_address.trim().to_string(),
+    }
+}
+
+fn recipient_suggestion_label(suggestion: &RecipientSuggestion) -> String {
+    if suggestion.display.is_empty() {
+        suggestion.address.clone()
+    } else {
+        format!("{} <{}>", suggestion.display, suggestion.address)
+    }
+}
+
 fn current_recipient_fragment(value: &str) -> &str {
     value
         .rsplit(|character| character == ',' || character == ';')
@@ -2118,6 +2413,22 @@ mod tests {
         assert_eq!(
             replace_current_recipient("mar", "maria@example.org"),
             "maria@example.org, "
+        );
+    }
+
+    #[test]
+    fn gal_contacts_keep_directory_context_in_recipient_suggestions() {
+        let suggestion = gal_contact_to_recipient_suggestion(GalContact {
+            display_name: "Ada Example".to_string(),
+            email_address: "ada@example.org".to_string(),
+            job_title: "Engineering Lead".to_string(),
+            department: "Platform".to_string(),
+            office_location: "Berlin".to_string(),
+        });
+        assert_eq!(suggestion.address, "ada@example.org");
+        assert_eq!(
+            recipient_suggestion_label(&suggestion),
+            "Ada Example · Engineering Lead · Platform · Berlin <ada@example.org>"
         );
     }
 

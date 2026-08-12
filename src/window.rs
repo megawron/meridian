@@ -67,7 +67,13 @@ mod imp {
         }
     }
 
-    impl WidgetImpl for EvolutionWindow {}
+    impl WidgetImpl for EvolutionWindow {
+        fn realize(&self) {
+            // Explicitly forward native-surface realization.  This avoids an
+            // empty Rust subclass trampoline on the macOS GTK backend.
+            self.parent_realize();
+        }
+    }
     impl WindowImpl for EvolutionWindow {
         fn close_request(&self) -> glib::Propagation {
             let window = self.obj();

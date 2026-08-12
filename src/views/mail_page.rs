@@ -12,7 +12,7 @@ use std::fs;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Instant;
+use std::time::{Duration as StdDuration, Instant};
 
 use crate::models::eds_source::EdsSourceObject;
 use crate::models::folder::FolderObject;
@@ -33,7 +33,7 @@ use crate::services::mail_composer_service::{self, ExportAttachment, ExportMessa
 use crate::services::mail_operations_service::{
     MailCommand, MailCommandStack, MailOperationError, MailOperationsService,
 };
-use crate::services::mail_store_service::{ParsedMail, parse_rfc822_bytes};
+use crate::services::mail_store_service::{MailBackendLocation, ParsedMail, parse_rfc822_bytes};
 use crate::services::mail_thread_service::{ThreadIdentity, group_messages};
 use crate::services::search_folder_service::SearchFolderService;
 use crate::views::MailViewer;
@@ -57,6 +57,12 @@ enum MailSortField {
     Flagged,
     Important,
     Attachments,
+}
+
+fn is_graph_backend_location(location: Option<&MailBackendLocation>) -> bool {
+    location.is_some_and(|location| {
+        crate::services::exchange_service::graph_service_for_source(&location.source_uid).is_some()
+    })
 }
 
 impl MailSortField {
@@ -373,6 +379,53 @@ impl MessageSearchQuery {
             _ => self.push_text(&format!("is:{value}"), negated),
         }
     }
+}
+
+/// Translate only the positive parts of the Evolution-style query that have
+/// an equivalent in Outlook/Graph KQL.  The complete parsed query still runs
+/// through `message_matches_filter` locally, which preserves negative terms,
+/// labels, dates, flags and folder predicates whose semantics are not the
+/// same on every Graph mailbox.
+fn graph_search_expression(query: &MessageSearchQuery) -> Option<String> {
+    let mut clauses = Vec::new();
+
+    for term in &query.text_terms {
+        // A free-text token containing `:` could be interpreted as an
+        // unsupported KQL property by Graph.  Keep it in the local filter
+        // instead of turning a valid local search into a remote 400 response.
+        if !term.contains(':') {
+            if let Some(value) = escape_graph_search_value(term) {
+                clauses.push(format!("\"{value}\""));
+            }
+        }
+    }
+    for (field, value) in [
+        ("from", query.from.as_deref()),
+        ("recipients", query.to.as_deref()),
+        ("cc", query.cc.as_deref()),
+        ("bcc", query.bcc.as_deref()),
+        ("subject", query.subject.as_deref()),
+        ("body", query.body.as_deref()),
+        ("attachment", query.filename.as_deref()),
+    ] {
+        let Some(value) = value.and_then(escape_graph_search_value) else {
+            continue;
+        };
+        clauses.push(format!("\"{field}:{value}\""));
+    }
+    if let Some(has_attachment) = query.has_attachment {
+        clauses.push(format!("\"hasAttachments:{has_attachment}\""));
+    }
+
+    (!clauses.is_empty()).then(|| clauses.join(" AND "))
+}
+
+fn escape_graph_search_value(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty() || value.chars().count() > 128 || value.contains(['\r', '\n']) {
+        return None;
+    }
+    Some(value.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
 fn split_search_negation(token: &str) -> (bool, &str) {
@@ -878,6 +931,10 @@ fn load_mail_backend(
         limit = request.max_messages_per_folder,
         "Mail backend load started"
     );
+    tracing::debug!(
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        "Starting synchronous EDS/Camel work on mail worker"
+    );
     let camel_result = camel_mail_service::load_messages_page_with_progress_and_cancellation(
         request.source_uid.as_deref(),
         request.folder_name.as_deref(),
@@ -899,7 +956,18 @@ fn load_mail_backend(
     if request.is_remote_or_paged() {
         return match camel_result {
             Ok(camel) => MailPageLoadResult::Camel(camel),
-            Err(error) => MailPageLoadResult::Error(error),
+            Err(error) => match camel_mail_service::load_messages_graph(
+                request.source_uid.as_deref(),
+                request.folder_name.as_deref(),
+                request.offset,
+                request.max_messages_per_folder,
+                cancelled,
+            ) {
+                Ok(graph) => MailPageLoadResult::Camel(graph),
+                Err(graph_error) => MailPageLoadResult::Error(format!(
+                    "EDS/Camel nicht verfügbar ({error}); Graph ebenfalls nicht verfügbar ({graph_error})"
+                )),
+            },
         };
     }
 
@@ -923,6 +991,15 @@ fn load_mail_backend(
             }
         }
         Ok(_) => {
+            if let Ok(graph) = camel_mail_service::load_messages_graph(
+                request.source_uid.as_deref(),
+                request.folder_name.as_deref(),
+                request.offset,
+                request.max_messages_per_folder,
+                cancelled,
+            ) {
+                return MailPageLoadResult::Camel(graph);
+            }
             let store = crate::services::MailStoreService::new();
             MailPageLoadResult::Local {
                 reason: "Keine aktiven EDS-Mailkonten; lokaler Evolution-Speicher".to_string(),
@@ -931,6 +1008,15 @@ fn load_mail_backend(
             }
         }
         Err(error) => {
+            if let Ok(graph) = camel_mail_service::load_messages_graph(
+                request.source_uid.as_deref(),
+                request.folder_name.as_deref(),
+                request.offset,
+                request.max_messages_per_folder,
+                cancelled,
+            ) {
+                return MailPageLoadResult::Camel(graph);
+            }
             let store = crate::services::MailStoreService::new();
             MailPageLoadResult::Local {
                 reason: format!("EDS/Camel nicht verfügbar ({error}); lokaler Evolution-Speicher"),
@@ -942,6 +1028,13 @@ fn load_mail_backend(
 }
 
 fn format_camel_status(camel: &CamelMailLoad) -> String {
+    let backend_label = if camel.search_query.is_some() {
+        "Graph-Suche"
+    } else if camel.is_graph {
+        "Microsoft Graph"
+    } else {
+        "EDS/Camel"
+    };
     let account_label = if camel.configured_sources == 1 {
         "Konto"
     } else {
@@ -980,7 +1073,7 @@ fn format_camel_status(camel: &CamelMailLoad) -> String {
     .unwrap_or_default();
 
     format!(
-        "EDS/Camel: {sync_status}, {} {message_label} geladen{warning}{folder_warning}",
+        "{backend_label}: {sync_status}, {} {message_label} geladen{warning}{folder_warning}",
         camel.messages.len(),
     )
 }
@@ -1032,6 +1125,11 @@ mod imp {
         pub updating_folder_rows: Cell<bool>,
         pub mail_sync_source: RefCell<Option<glib::SourceId>>,
         pub mail_load_cancellation: RefCell<Option<Arc<AtomicBool>>>,
+        pub mail_search_cancellation: RefCell<Option<Arc<AtomicBool>>>,
+        pub search_debounce_source: RefCell<Option<glib::SourceId>>,
+        pub search_generation: Cell<u64>,
+        pub graph_backend_active: Cell<bool>,
+        pub remote_search_applied: Cell<bool>,
         pub mail_incremental_cancellation: RefCell<Option<Arc<AtomicBool>>>,
         pub mail_change_cancellation: RefCell<Option<Arc<AtomicBool>>>,
         pub camel_monitor_started: Cell<bool>,
@@ -1170,6 +1268,12 @@ mod imp {
             if let Some(cancelled) = self.mail_load_cancellation.borrow().as_ref() {
                 cancelled.store(true, Ordering::Relaxed);
             }
+            if let Some(cancelled) = self.mail_search_cancellation.borrow().as_ref() {
+                cancelled.store(true, Ordering::Relaxed);
+            }
+            if let Some(source) = self.search_debounce_source.borrow_mut().take() {
+                source.remove();
+            }
             if let Some(cancelled) = self.mail_incremental_cancellation.borrow().as_ref() {
                 cancelled.store(true, Ordering::Relaxed);
             }
@@ -1180,7 +1284,11 @@ mod imp {
         }
     }
 
-    impl WidgetImpl for MailPage {}
+    impl WidgetImpl for MailPage {
+        fn realize(&self) {
+            self.parent_realize();
+        }
+    }
 }
 
 // ─── Public API ─────────────────────────────────────────────────────────────
@@ -1856,7 +1964,11 @@ impl MailPage {
         let Some(message) = self.selected_message() else {
             return Ok(false);
         };
-        if message.backend_location().is_some() {
+        if message
+            .backend_location()
+            .as_ref()
+            .is_some_and(|location| !is_graph_backend_location(Some(location)))
+        {
             return Err(MailOperationError::Unsupported {
                 operation: if message.is_important() {
                     crate::services::mail_operations_service::MailOperationKind::MarkNotImportant
@@ -1867,11 +1979,24 @@ impl MailPage {
             });
         }
         let next_important = !message.is_important();
-        self.execute_mail_command(MailCommand::set_important_local(
-            message.id(),
-            message.is_important(),
-            next_important,
-        ))?;
+        let command = message
+            .backend_location()
+            .map(|location| {
+                MailCommand::set_important(
+                    message.id(),
+                    location,
+                    message.is_important(),
+                    next_important,
+                )
+            })
+            .unwrap_or_else(|| {
+                MailCommand::set_important_local(
+                    message.id(),
+                    message.is_important(),
+                    next_important,
+                )
+            });
+        self.execute_mail_command(command)?;
         message.set_important(next_important);
         if let Some(filter) = self.imp().message_filter.borrow().as_ref() {
             filter.changed(gtk::FilterChange::Different);
@@ -1890,7 +2015,11 @@ impl MailPage {
         let Some(message) = self.selected_message() else {
             return Ok(false);
         };
-        if message.backend_location().is_some() {
+        if message
+            .backend_location()
+            .as_ref()
+            .is_some_and(|location| !is_graph_backend_location(Some(location)))
+        {
             return Err(MailOperationError::Unsupported {
                 operation: crate::services::mail_operations_service::MailOperationKind::SetLabel,
                 backend: "EDS/Camel-Multi-Label-Backend",
@@ -1901,12 +2030,13 @@ impl MailPage {
         if before == labeled {
             return Ok(true);
         }
-        self.execute_mail_command(MailCommand::set_label_local(
-            message.id(),
-            label,
-            before,
-            labeled,
-        ))?;
+        let command = message
+            .backend_location()
+            .map(|location| {
+                MailCommand::set_label_for_location(message.id(), location, label, before, labeled)
+            })
+            .unwrap_or_else(|| MailCommand::set_label_local(message.id(), label, before, labeled));
+        self.execute_mail_command(command)?;
         message.set_label(label, labeled);
         self.refresh_mail();
         Ok(true)
@@ -1921,10 +2051,12 @@ impl MailPage {
         if messages.is_empty() {
             return Ok(0);
         }
-        if messages
-            .iter()
-            .any(|message| message.backend_location().is_some())
-        {
+        if messages.iter().any(|message| {
+            message
+                .backend_location()
+                .as_ref()
+                .is_some_and(|location| !is_graph_backend_location(Some(location)))
+        }) {
             return Err(MailOperationError::Unsupported {
                 operation: crate::services::mail_operations_service::MailOperationKind::SetLabel,
                 backend: "EDS/Camel-Multi-Label-Backend",
@@ -1935,8 +2067,22 @@ impl MailPage {
             .iter()
             .filter_map(|message| {
                 let before = message.has_label(label);
-                (before != labeled)
-                    .then(|| MailCommand::set_label_local(message.id(), label, before, labeled))
+                (before != labeled).then(|| {
+                    message
+                        .backend_location()
+                        .map(|location| {
+                            MailCommand::set_label_for_location(
+                                message.id(),
+                                location,
+                                label,
+                                before,
+                                labeled,
+                            )
+                        })
+                        .unwrap_or_else(|| {
+                            MailCommand::set_label_local(message.id(), label, before, labeled)
+                        })
+                })
             })
             .collect::<Vec<_>>();
         let count = commands.len();
@@ -2448,10 +2594,12 @@ impl MailPage {
     fn toggle_batch_important(&self) -> Result<(), MailOperationError> {
         self.clear_operation_error();
         let messages = self.selected_batch_messages();
-        if messages
-            .iter()
-            .any(|message| message.backend_location().is_some())
-        {
+        if messages.iter().any(|message| {
+            message
+                .backend_location()
+                .as_ref()
+                .is_some_and(|location| !is_graph_backend_location(Some(location)))
+        }) {
             return Err(MailOperationError::Unsupported {
                 operation:
                     crate::services::mail_operations_service::MailOperationKind::MarkImportant,
@@ -2463,11 +2611,23 @@ impl MailPage {
             .iter()
             .filter(|message| message.is_important() != next_important)
             .map(|message| {
-                MailCommand::set_important_local(
-                    message.id(),
-                    message.is_important(),
-                    next_important,
-                )
+                message
+                    .backend_location()
+                    .map(|location| {
+                        MailCommand::set_important(
+                            message.id(),
+                            location,
+                            message.is_important(),
+                            next_important,
+                        )
+                    })
+                    .unwrap_or_else(|| {
+                        MailCommand::set_important_local(
+                            message.id(),
+                            message.is_important(),
+                            next_important,
+                        )
+                    })
             })
             .collect::<Vec<_>>();
         let count = commands.len();
@@ -4630,7 +4790,11 @@ impl MailPage {
                     let Some(page) = page_for_important.upgrade() else {
                         return;
                     };
-                    let result = if msg_clone.backend_location().is_some() {
+                    let result = if msg_clone
+                        .backend_location()
+                        .as_ref()
+                        .is_some_and(|location| !is_graph_backend_location(Some(location)))
+                    {
                         Err(MailOperationError::Unsupported {
                             operation: if current {
                                 crate::services::mail_operations_service::MailOperationKind::MarkNotImportant
@@ -4640,11 +4804,24 @@ impl MailPage {
                             backend: "EDS/Camel-Wichtig-Flag (Linux-Abnahme ausstehend)",
                         })
                     } else {
-                        page.execute_mail_command(MailCommand::set_important_local(
-                            msg_clone.id(),
-                            current,
-                            !current,
-                        ))
+                        let command = msg_clone
+                            .backend_location()
+                            .map(|location| {
+                                MailCommand::set_important(
+                                    msg_clone.id(),
+                                    location,
+                                    current,
+                                    !current,
+                                )
+                            })
+                            .unwrap_or_else(|| {
+                                MailCommand::set_important_local(
+                                    msg_clone.id(),
+                                    current,
+                                    !current,
+                                )
+                            });
+                        page.execute_mail_command(command)
                     };
                     if let Err(error) = result {
                         page.show_toast(&format!("Wichtig-Markierung nicht möglich: {error}"));
@@ -4751,10 +4928,14 @@ impl MailPage {
         let query_for_search = Rc::clone(&query);
         let filter_for_search = custom_filter.clone();
         let thread_filter_for_search = thread_filter.clone();
+        let page_for_search = self.downgrade();
         search_entry.connect_search_changed(move |entry| {
             *query_for_search.borrow_mut() = MessageSearchQuery::parse(entry.text().as_str());
             filter_for_search.changed(gtk::FilterChange::Different);
             thread_filter_for_search.changed(gtk::FilterChange::Different);
+            if let Some(page) = page_for_search.upgrade() {
+                page.handle_search_changed(entry.text().as_str());
+            }
         });
 
         let sort_model = gtk::StringList::new(&[
@@ -6909,6 +7090,16 @@ impl MailPage {
             replace,
             "Scheduling mail load"
         );
+        if let Some(cancelled) = self.imp().mail_search_cancellation.borrow_mut().take() {
+            cancelled.store(true, Ordering::Relaxed);
+        }
+        if let Some(source) = self.imp().search_debounce_source.borrow_mut().take() {
+            source.remove();
+        }
+        self.imp()
+            .search_generation
+            .set(self.imp().search_generation.get().wrapping_add(1));
+        self.imp().remote_search_applied.set(false);
         if let Some(cancelled) = self.imp().mail_load_cancellation.borrow().as_ref() {
             cancelled.store(true, Ordering::Relaxed);
         }
@@ -6987,8 +7178,191 @@ impl MailPage {
         });
     }
 
+    fn handle_search_changed(&self, input: &str) {
+        if let Some(cancelled) = self.imp().mail_search_cancellation.borrow_mut().take() {
+            cancelled.store(true, Ordering::Relaxed);
+        }
+        if let Some(source) = self.imp().search_debounce_source.borrow_mut().take() {
+            source.remove();
+        }
+        let generation = self.imp().search_generation.get().wrapping_add(1);
+        self.imp().search_generation.set(generation);
+
+        let input = input.trim().to_string();
+        if input.is_empty() {
+            if self.imp().remote_search_applied.replace(false) {
+                let mut request = self
+                    .imp()
+                    .active_request
+                    .borrow()
+                    .clone()
+                    .unwrap_or_else(MailLoadRequest::initial);
+                request.offset = 0;
+                self.start_mail_load(request, true);
+            }
+            return;
+        }
+
+        if !self.imp().graph_backend_active.get() {
+            return;
+        }
+        let query = MessageSearchQuery::parse(&input);
+        let Some(graph_query) = graph_search_expression(&query) else {
+            // State-only, label-only and date-only predicates remain fully
+            // local.  If a previous remote search was displayed, restore the
+            // normal Graph page first so the local predicate sees the normal
+            // mailbox window rather than an old remote result set.
+            if self.imp().remote_search_applied.replace(false) {
+                let mut request = self
+                    .imp()
+                    .active_request
+                    .borrow()
+                    .clone()
+                    .unwrap_or_else(MailLoadRequest::initial);
+                request.offset = 0;
+                self.start_mail_load(request, true);
+            }
+            return;
+        };
+
+        let page = self.downgrade();
+        let source = glib::timeout_add_local_once(StdDuration::from_millis(250), move || {
+            let Some(page) = page.upgrade() else {
+                return;
+            };
+            page.imp().search_debounce_source.borrow_mut().take();
+            page.start_graph_search(input, graph_query, generation);
+        });
+        self.imp().search_debounce_source.replace(Some(source));
+    }
+
+    fn graph_search_scope(&self) -> (Option<String>, Option<String>) {
+        let selection = self
+            .imp()
+            .folder_selection
+            .borrow()
+            .as_ref()
+            .map(|selection| selection.borrow().clone())
+            .unwrap_or_default();
+        let active_request = self.imp().active_request.borrow().clone();
+        let source_uid = selection.source_uid.clone().or_else(|| {
+            active_request
+                .as_ref()
+                .and_then(|request| request.source_uid.clone())
+        });
+        let folder_name = if selection.is_remote() {
+            selection.folder_name.clone()
+        } else {
+            match selection.folder_id.as_str() {
+                "inbox" => Some("Inbox".to_string()),
+                "sent" => Some("Sent Items".to_string()),
+                "drafts" => Some("Drafts".to_string()),
+                "trash" => Some("Deleted Items".to_string()),
+                "spam" => Some("Junk Email".to_string()),
+                "archive" => Some("Archive".to_string()),
+                _ => None,
+            }
+        };
+        (source_uid, folder_name)
+    }
+
+    fn start_graph_search(&self, input: String, graph_query: String, generation: u64) {
+        if generation != self.imp().search_generation.get()
+            || !self.imp().graph_backend_active.get()
+        {
+            return;
+        }
+        let (source_uid, folder_name) = self.graph_search_scope();
+        let cancellation = Arc::new(AtomicBool::new(false));
+        self.imp()
+            .mail_search_cancellation
+            .replace(Some(cancellation.clone()));
+        self.imp().mail_loading.set(true);
+        if let Some(button) = self.imp().refresh_button.borrow().as_ref() {
+            button.set_sensitive(false);
+        }
+        if let Some(button) = self.imp().load_more_button.borrow().as_ref() {
+            button.set_visible(false);
+            button.set_sensitive(false);
+        }
+        if let Some(state) = self.imp().message_state.borrow().as_ref() {
+            state.set_label("Graph-Suche läuft …");
+        }
+
+        let request = MailLoadRequest {
+            source_uid: source_uid.clone(),
+            folder_name: folder_name.clone(),
+            offset: 0,
+            max_messages_per_folder: camel_mail_service::default_page_limit(),
+        };
+        let search_limit = request.max_messages_per_folder;
+        let (sender, receiver) = async_channel::bounded(1);
+        std::thread::spawn(move || {
+            let result = camel_mail_service::search_messages_graph(
+                source_uid.as_deref(),
+                folder_name.as_deref(),
+                &graph_query,
+                search_limit,
+                &cancellation,
+            );
+            if let Err(error) = sender.send_blocking(result) {
+                tracing::debug!(%error, "Graph search result was dropped before delivery");
+            }
+        });
+
+        let page = self.downgrade();
+        glib::spawn_future_local(async move {
+            let result = receiver.recv().await;
+            let Some(page) = page.upgrade() else {
+                return;
+            };
+            if page.imp().search_generation.get() != generation {
+                return;
+            }
+            page.imp().mail_search_cancellation.borrow_mut().take();
+            page.imp().mail_loading.set(false);
+            if let Some(button) = page.imp().refresh_button.borrow().as_ref() {
+                button.set_sensitive(true);
+            }
+            match result {
+                Ok(Ok(load)) => {
+                    page.apply_mail_load(request, MailPageLoadResult::Camel(load), true);
+                }
+                Ok(Err(error)) => {
+                    page.imp().remote_search_applied.set(false);
+                    if let Some(button) = page.imp().load_more_button.borrow().as_ref() {
+                        button.set_sensitive(true);
+                    }
+                    if let Some(state) = page.imp().message_state.borrow().as_ref() {
+                        state.set_label(&format!("Graph-Suche nicht möglich: {error}"));
+                    }
+                    tracing::warn!(%error, query = %input, "Graph mail search failed");
+                }
+                Err(_) => {
+                    if let Some(state) = page.imp().message_state.borrow().as_ref() {
+                        state.set_label("Graph-Suche wurde abgebrochen.");
+                    }
+                }
+            }
+        });
+    }
+
     fn apply_mail_load(&self, request: MailLoadRequest, result: MailPageLoadResult, replace: bool) {
         let started = Instant::now();
+        // `Combined` recursively applies its Camel part.  Let that inner call
+        // schedule a pending Graph search; otherwise the outer call would
+        // schedule the same request a second time.
+        let pending_search = matches!(&result, MailPageLoadResult::Camel(camel)
+            if camel.is_graph && camel.search_query.is_none())
+        .then(|| {
+            self.imp()
+                .search_entry
+                .borrow()
+                .as_ref()
+                .map(|entry| entry.text().trim().to_string())
+        })
+        .flatten()
+        .filter(|query| !query.is_empty());
         let result_kind = match &result {
             MailPageLoadResult::Camel(_) => "camel",
             MailPageLoadResult::Combined { .. } => "combined",
@@ -7027,16 +7401,26 @@ impl MailPage {
                 }
             }
             MailPageLoadResult::Camel(camel) => {
+                tracing::debug!(
+                    folders = camel.folders.len(),
+                    messages = camel.messages.len(),
+                    "Building GTK mail models from backend result"
+                );
                 if replace {
                     self.imp().local_folder_ids.replace(HashSet::new());
                 }
+                self.imp().graph_backend_active.set(camel.is_graph);
+                self.imp()
+                    .remote_search_applied
+                    .set(camel.search_query.is_some());
                 let status = format_camel_status(&camel);
-                let has_more = camel.has_more_for(
-                    request.source_uid.as_deref(),
-                    request.folder_name.as_deref(),
-                    request.offset,
-                    request.max_messages_per_folder,
-                );
+                let has_more = camel.search_query.is_none()
+                    && camel.has_more_for(
+                        request.source_uid.as_deref(),
+                        request.folder_name.as_deref(),
+                        request.offset,
+                        request.max_messages_per_folder,
+                    );
                 let folder_list = self.imp().folder_list.borrow().clone();
                 if let Some(folder_list) = folder_list.as_ref() {
                     if replace {
@@ -7053,6 +7437,7 @@ impl MailPage {
                 } else {
                     0
                 };
+                tracing::debug!(appended, "GTK mail message model populated");
 
                 self.imp().active_request.replace(Some(request.clone()));
                 if let Some(section) = self.imp().folder_section.borrow().as_ref() {
@@ -7098,6 +7483,8 @@ impl MailPage {
                 messages,
                 local_folders,
             } => {
+                self.imp().graph_backend_active.set(false);
+                self.imp().remote_search_applied.set(false);
                 let mut visible_local_folders = local_folders;
                 let folder_list = self.imp().folder_list.borrow().clone();
                 if let Some(folder_list) = folder_list.as_ref() {
@@ -7194,18 +7581,33 @@ impl MailPage {
             }
         }
 
-        // Opening the long-lived Camel watcher concurrently with the initial
-        // full account/folder load can make a cold EDS session contend for the
-        // same provider resources.  Start it only after the first result has
-        // reached the GTK model and the window is interactive.
-        if replace && !self.imp().camel_monitor_started.replace(true) {
-            self.setup_camel_change_monitor();
+        // Opening the long-lived Camel watcher while the initial model is
+        // still settling can make a cold EDS session contend for the same
+        // provider resources.  Defer watcher construction until the first
+        // interactive window slice has been presented.  The weak reference
+        // also makes this safe when the page is closed during startup.
+        if replace
+            && !self.imp().graph_backend_active.get()
+            && !self.imp().camel_monitor_started.replace(true)
+        {
+            let page = self.downgrade();
+            glib::timeout_add_local_once(StdDuration::from_millis(1_500), move || {
+                let Some(page) = page.upgrade() else {
+                    return;
+                };
+                if !page.imp().graph_backend_active.get() {
+                    page.setup_camel_change_monitor();
+                }
+            });
         }
 
         self.refresh_search_folder_counts();
 
         if self.imp().mail_change_pending.replace(false) && !self.imp().mail_loading.get() {
             self.refresh_mail();
+        }
+        if let Some(pending_search) = pending_search {
+            self.handle_search_changed(&pending_search);
         }
         tracing::debug!(
             elapsed_ms = started.elapsed().as_millis() as u64,
@@ -7878,6 +8280,8 @@ mod tests {
             successful_sources: 0,
             failed_sources: 1,
             warning: Some("OAuth-Anmeldung fehlgeschlagen".to_string()),
+            is_graph: false,
+            search_query: None,
         });
 
         assert!(status.contains("1 Konto nicht synchronisiert"));
@@ -7893,6 +8297,8 @@ mod tests {
             successful_sources: 1,
             failed_sources: 0,
             warning: None,
+            is_graph: false,
+            search_query: None,
         });
 
         assert!(status.contains("1 Konto synchronisiert"));
@@ -8008,6 +8414,28 @@ mod tests {
         let date_query = MessageSearchQuery::parse("on:2026-08-11T14:30:00Z");
         assert_eq!(date_query.date_after, NaiveDate::from_ymd_opt(2026, 8, 11));
         assert_eq!(date_query.date_before, NaiveDate::from_ymd_opt(2026, 8, 12));
+    }
+
+    #[test]
+    fn graph_search_expression_keeps_only_positive_graph_predicates() {
+        let query = MessageSearchQuery::parse(
+            "from:alice@example.test subject:Roadmap has:attachment is:unread -spam label:team after:2026-01-01",
+        );
+        let expression = graph_search_expression(&query).expect("Graph terms should be present");
+
+        assert!(expression.contains("\"from:alice@example.test\""));
+        assert!(expression.contains("\"subject:roadmap\""));
+        assert!(expression.contains("\"hasAttachments:true\""));
+        assert!(!expression.contains("spam"));
+        assert!(!expression.contains("team"));
+        assert!(!expression.contains("2026-01-01"));
+    }
+
+    #[test]
+    fn graph_search_expression_is_empty_for_local_only_predicates() {
+        let query = MessageSearchQuery::parse("is:unread label:important after:today");
+
+        assert_eq!(graph_search_expression(&query), None);
     }
 
     #[test]

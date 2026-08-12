@@ -23,11 +23,13 @@ use crate::{APP_ID, RESOURCE_PATH};
 
 mod imp {
     use super::*;
+    use std::cell::Cell;
     use std::cell::RefCell;
 
     #[derive(Debug, Default)]
     pub struct EvolutionApplication {
         pub reminder_source: RefCell<Option<glib::SourceId>>,
+        pub reminder_check_in_progress: Cell<bool>,
     }
 
     #[glib::object_subclass]
@@ -279,43 +281,84 @@ impl EvolutionApplication {
         if AppSettings::try_new().is_some_and(|settings| !settings.notifications_enabled()) {
             return;
         }
-        let now = chrono::Utc::now().timestamp();
-        let snapshot = CalendarStoreService::new().load_snapshot();
-        let candidates = reminder_service::candidates_from_snapshot(&snapshot, now);
-        let Ok(mut store) = ReminderStore::new() else {
-            tracing::debug!("Portable reminder state is unavailable");
+        if self.imp().reminder_check_in_progress.replace(true) {
             return;
-        };
-        for candidate in store.due_reminders(&candidates, now) {
-            let notification = gio::Notification::new(&candidate.title);
-            let body = match candidate.kind {
-                ReminderKind::Event => "Kalendertermin ist fällig",
-                ReminderKind::Task => "Aufgabe ist fällig",
-            };
-            notification.set_body(Some(body));
-            let target = candidate.key.to_variant();
-            notification.add_button_with_target_value(
-                "10 Minuten snoozen",
-                "app.snooze-reminder-10m",
-                Some(&target),
-            );
-            notification.add_button_with_target_value(
-                "1 Stunde snoozen",
-                "app.snooze-reminder-1h",
-                Some(&target),
-            );
-            notification.add_button_with_target_value(
-                "Erledigt",
-                "app.dismiss-reminder",
-                Some(&target),
-            );
-            notification.set_default_action_and_target_value("app.dismiss-reminder", Some(&target));
-            let notification_id = reminder_notification_id(&candidate.key);
-            self.send_notification(Some(&notification_id), &notification);
-            if let Err(error) = store.mark_delivered(&candidate.key) {
-                tracing::warn!(%error, "Could not persist delivered reminder");
-            }
         }
+        let now = chrono::Utc::now().timestamp();
+        let (sender, receiver) = async_channel::bounded(1);
+        std::thread::spawn(move || {
+            // Calendar files and reminder state can be large and are not part
+            // of the first GTK frame.  Keep all filesystem/parsing work off
+            // the main context; only the final desktop notifications return
+            // to GTK below.
+            let snapshot = CalendarStoreService::new().load_snapshot();
+            let candidates = reminder_service::candidates_from_snapshot(&snapshot, now);
+            let Ok(mut store) = ReminderStore::new() else {
+                tracing::debug!("Portable reminder state is unavailable");
+                let _ = sender.send_blocking(Vec::new());
+                return;
+            };
+            let due = store.due_reminders(&candidates, now);
+            // Delivery is marked only after the GTK notification has been
+            // handed to the desktop, so a failed startup cannot silently
+            // consume a reminder.
+            drop(store);
+            if let Err(error) = sender.send_blocking(due) {
+                tracing::debug!(%error, "Reminder result was dropped before delivery");
+            }
+        });
+
+        let app = self.downgrade();
+        glib::spawn_future_local(async move {
+            let due = receiver.recv().await.unwrap_or_default();
+            let Some(app) = app.upgrade() else {
+                return;
+            };
+            app.imp().reminder_check_in_progress.set(false);
+            let mut delivered_keys = Vec::with_capacity(due.len());
+            for candidate in due {
+                let notification = gio::Notification::new(&candidate.title);
+                let body = match candidate.kind {
+                    ReminderKind::Event => "Kalendertermin ist fällig",
+                    ReminderKind::Task => "Aufgabe ist fällig",
+                };
+                notification.set_body(Some(body));
+                let target = candidate.key.to_variant();
+                notification.add_button_with_target_value(
+                    "10 Minuten snoozen",
+                    "app.snooze-reminder-10m",
+                    Some(&target),
+                );
+                notification.add_button_with_target_value(
+                    "1 Stunde snoozen",
+                    "app.snooze-reminder-1h",
+                    Some(&target),
+                );
+                notification.add_button_with_target_value(
+                    "Erledigt",
+                    "app.dismiss-reminder",
+                    Some(&target),
+                );
+                notification
+                    .set_default_action_and_target_value("app.dismiss-reminder", Some(&target));
+                let notification_id = reminder_notification_id(&candidate.key);
+                app.send_notification(Some(&notification_id), &notification);
+                delivered_keys.push(candidate.key);
+            }
+            if !delivered_keys.is_empty() {
+                std::thread::spawn(move || {
+                    let Ok(mut store) = ReminderStore::new() else {
+                        tracing::debug!("Portable reminder state is unavailable after delivery");
+                        return;
+                    };
+                    for key in delivered_keys {
+                        if let Err(error) = store.mark_delivered(&key) {
+                            tracing::warn!(%error, "Could not persist delivered reminder");
+                        }
+                    }
+                });
+            }
+        });
     }
 
     /// Set up keyboard accelerators for actions.

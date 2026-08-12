@@ -1117,12 +1117,16 @@ impl MemosPage {
                     if result.snapshot.memos.is_empty() {
                         empty_state_for_load.set_label(match result.origin {
                             CalendarDataOrigin::Eds => "Keine VJOURNAL-Daten aus EDS gefunden",
+                            CalendarDataOrigin::Graph => {
+                                "Keine VJOURNAL-Daten aus Microsoft Graph gefunden"
+                            }
                             CalendarDataOrigin::Local => "Keine lokalen VJOURNAL-Daten gefunden",
                         });
                     } else {
                         empty_state_for_load.set_visible(false);
                         let origin = match result.origin {
                             CalendarDataOrigin::Eds => "EDS",
+                            CalendarDataOrigin::Graph => "Microsoft Graph",
                             CalendarDataOrigin::Local => "lokalem iCalendar",
                         };
                         memo_meta_for_load.set_label(&format!(

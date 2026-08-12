@@ -375,7 +375,10 @@ werden.
   Spam und Löschen ebenfalls über dieselben Aktionen bereit. Zusätzliche
   native Camel-Abnahme bleibt offen.
 - [~] Sicherer WebKitGTK-Viewer: JavaScript ist deaktiviert, Navigation wird
-  abgefangen und externe Bilder sind standardmäßig blockiert.
+  abgefangen und externe Bilder sind standardmäßig blockiert. Unter Linux
+  wird der WebKitGTK-Prozess erst beim Öffnen der ersten Nachricht erzeugt,
+  damit ein kalter EDS-Start nicht mit der ersten GTK-Oberfläche konkurriert;
+  der HTML-Renderer bleibt dabei der produktive Linux-Pfad.
   Die portable Leseeinstellung, ob eine Nachricht beim Auswählen als gelesen
   markiert wird, ist persistent und gilt für lokale sowie native Mailpfade;
   providerabhängige Lesestatus-Synchronisation bleibt Linux/EDS-Abnahme.
@@ -453,8 +456,13 @@ werden.
   Die Ziele werden aus der dynamischen EDS-Ordnerliste
   angeboten und für lokale Nachrichten aus der app-eigenen Ordnerhierarchie
   ergänzt; alle sichtbaren Treffer können per Menü oder `Ctrl+A` für diese
-  Batch-Aktionen ausgewählt werden. Serverseitige
-  Suchordner und die übrigen Remote-Aktionen in der Oberfläche fehlen.
+  Batch-Aktionen ausgewählt werden. Für Microsoft Graph ist die
+  serverseitige Mail-Suche für positive Volltext-, Absender-, Empfänger-,
+  Betreff-, Text-, Anhangs- und Anhangsstatus-Prädikate asynchron, debounced,
+  abbrechbar und paginiert an denselben Mail-/Threadpfad angebunden; negative
+  Prädikate sowie Status-, Label-, Ordner- und Datumsfeinheiten bleiben als
+  lokaler Nachfilter erhalten. Native Camel-Suche, CamelVee-Suchordner und
+  providerabhängige Remote-Kopier-/Live-Zähler bleiben Linux-/Backend-Abnahme.
 - [~] Der Startordner der Mailansicht ist als portable Einstellung mit
   Posteingang, Alle Nachrichten, Gesendet, Entwürfe, Papierkorb, Archiv und
   Spam konfigurierbar und wird in Backup/Restore sowie beim lokalen Fallback
@@ -578,8 +586,11 @@ werden.
   beliebig viele gespeicherte lokale Suchdefinitionen können angelegt,
   bearbeitet und gelöscht werden. Die vorhandene lokale Suchsprache wird
   ausgewertet; Suchordner zeigen Treffer-/Ungelesen-Zähler für den geladenen
-  Nachrichtenbestand. Serverseitige Suche, CamelVeeStore/CamelVeeFolder und
-  providerübergreifende Live-Zähler bleiben Linux-/Backend-Arbeit.
+  Nachrichtenbestand. Der portable Graph-Pfad führt kompatible positive
+  Suchbestandteile bereits über Outlook-KQL auf dem Server aus und wendet die
+  übrigen Prädikate lokal nach; serverseitige gespeicherte Suchordner,
+  CamelVeeStore/CamelVeeFolder und providerübergreifende Live-Zähler bleiben
+  Linux-/Backend-Arbeit.
 
 #### Phase 2 — Konten, Empfang und Mailversand
 
@@ -617,8 +628,18 @@ werden.
   noch. Die gespeicherte Standardkonto-ID wird beim Mailstart jetzt auch auf
   die passende live entdeckte oder cachefähige EDS-Quelle angewendet; noch
   nicht aktivierte lokale Profile bleiben dabei bewusst nicht auswählbar.
-- [ ] IMAP/IMAPX, POP3, lokale Ordner, SMTP und Exchange/Microsoft-365 mit
-  OAuth2, TLS, Passwort-/Secret-Service und Offline-Fehlerzuständen.
+- [~] IMAP/IMAPX, POP3, lokale Ordner, SMTP und Exchange/Microsoft-365 mit
+  OAuth2, TLS, Passwort-/Secret-Service und Offline-Fehlerzuständen. Der
+  portable Microsoft-Graph-Client ist für typisierte Fehler, geheimnisfreie
+  Token-Injektion, GAL-Suche, OOF, Ordnerhierarchie/Pagination, Mail-Lesen
+  einschließlich Graph-Anhängen, MIME-Versand/Entwürfe, Zustände/Labels/
+  Verschieben, Kalenderansicht mit CRUD und Grundserien sowie Kontakte mit
+  CRUD implementiert und in die bestehenden Mail-, ECal- und EBook-Verträge
+  überführt. Die GTK4-rs-UI fällt bei einem passenden Exchange-Profil auf
+  diesen Pfad zurück. Interaktive OAuth2-/EDS-/GOA-Tokenbeschaffung, Delta-
+  Synchronisation, vollständige Graph-Anhangstypen, komplexe Zeitzonen/
+  Serien-/Meeting-Semantik sowie IMAP/POP3/SMTP bleiben offen und müssen auf
+  Linux mit einem echten Konto abgenommen werden.
 - [~] GTK4-rs-Composer zeigt aktive EDS-Mailkonten, persistiert To/Cc/Bcc,
   Anhänge sowie HTML- und Nur-Text-Entwürfe, kann Entwürfe wieder aufnehmen und erzeugt
   Reply-/Forward-Vorbelegungen. Reply-All nutzt jetzt Reply-To, To und Cc,
@@ -642,6 +663,10 @@ werden.
   Composer kann app-eigene HTML-/Betreff-Vorlagen sowie Textbausteine mit
   optionalem Kürzel speichern, an der Cursorposition einfügen und löschen;
   beide Speicher sind versioniert und in Backup/Restore enthalten.
+  To/Cc/Bcc bieten zusätzlich eine getrennte, asynchrone portable
+  Exchange-GAL-Verzeichnissuche mit Treffer-Popover, Pagination, Timeout und
+  sichtbarer Fehlerbehandlung; lokale vCard-Treffer und serverseitige
+  Verzeichnistreffer bleiben dabei getrennte Quellen.
   Der Composer bietet portabel Fett/Kursiv/Unterstrichen, Aufzählungen,
   Nummernlisten, Blockzitate sowie Undo/Redo; der Nur-Text-Modus wird als
   `text/plain` ausgegeben und die Standardwahl wird über GSettings gespeichert.
@@ -898,8 +923,13 @@ werden.
   Adressbuchfilter kann EDS-Quellen bzw. das lokale Adressbuch auswählen und
   Dubletten anhand normalisierter E-Mail-/Telefonwerte anzeigen. Die
   Adressbuchauswahl ist als persistente Standardquelle in den Einstellungen
-  verfügbar; GAL/LDAP/Exchange-Suche und serverseitige Kontaktsuche fehlen
-  noch.
+  verfügbar. Die portable Exchange-GAL-Suche ist über einen eigenen
+  asynchronen Verzeichnis-Button an To/Cc/Bcc angebunden, verwendet weiterhin
+  die lokale vCard-Autovervollständigung getrennt davon, setzt Treffer in den
+  aktuellen Empfänger-Token ein und verarbeitet Graph-Pagination, Timeouts,
+  fehlende Berechtigungen und Offlinefehler ohne den GTK-Thread zu blockieren.
+  Native EBook-GAL/LDAP-Felder, echte EDS-/GOA-Credentials und die Linux-
+  Abnahme gegen reale Verzeichnisdienste bleiben offen.
 
 #### Phase 5 — Sicherheit und Datenschutz
 
@@ -946,8 +976,11 @@ werden.
 - [~] Filter-, Abwesenheits-, Suchordner- und Exchange-Dialoge existieren als
   UI/Service-Strecken; die nicht-geheime Abwesenheitskonfiguration (Status,
   Zeitraum sowie interne/externe Nachricht) wird portabel versioniert im
-  app-eigenen Store gespeichert und in Backup/Restore aufgenommen. Die native
-  Serveraktivierung bleibt EDS/Camel- und Linux-spezifisch. Filterregeln werden
+  app-eigenen Store gespeichert und in Backup/Restore aufgenommen. Der
+  Microsoft-Graph-Pfad für GAL und OOF nutzt keine gespeicherten Geheimnisse,
+  aktualisiert den Dialog asynchron und meldet Serverfehler getrennt vom
+  lokalen Speichern. Die interaktive OAuth2-/EDS-/GOA-Anmeldung und die native
+  Serverabnahme bleiben EDS/Camel- und Linux-spezifisch. Filterregeln werden
   versioniert persistent gespeichert,
   können bearbeitet, aktiviert, geordnet und entfernt werden und unterstützte
   lokale Eingangsaktionen werden ausgewertet. Der GTK4-rs-Filtereditor kann
@@ -992,8 +1025,12 @@ werden.
   beim Start geladen und aus der Sidebar entfernt werden. Eine globale GTK4-rs-Suche
   durchsucht zusätzlich den lokalen Mail-, Kalender-, Aufgaben-, Notizen- und
   Kontaktbestand über einen gemeinsamen Service und kann den Suchbereich auf
-  Alle, Mail, Kalender/Aufgaben/Notizen oder Kontakte einschränken. Server-/Camel-Suche und
-  Suchordner mit serverseitiger Live-Aktualisierung fehlen noch. Lokale
+  Alle, Mail, Kalender/Aufgaben/Notizen oder Kontakte einschränken. Der
+  portable Graph-Mailpfad übersetzt kompatible positive Suchbestandteile in
+  Outlook-KQL und integriert die paginierten Treffer in dieselbe Mailansicht;
+  negative, status-, label-, ordner- und datumsabhängige Teile bleiben lokale
+  Nachfilter. Native Server-/Camel-Suche, CamelVee-Suchordner und
+  serverseitige Live-Aktualisierung gespeicherter Suchen bleiben offen. Lokale
   Mailtreffer berücksichtigen dabei auch Empfänger, Ordner, Labels,
   Ungelesen-, Stern-, Wichtigkeits-, Junk- und Anhangsstatus, Negationsprädikate,
   Dateinamen, Nachrichtentext und vollständige Kalender-/Aufgaben-/Notizdaten;
@@ -1003,8 +1040,12 @@ werden.
   Datumsprädikate `on:`, `after:`/`newer:` und `before:`/`older:` einschließlich
   negativer Formen für Mail, Kalender, Aufgaben und Notizen; die serverseitige
   Camel-Syntax bleibt davon getrennt.
-- [ ] Exchange/Microsoft 365: Graph/OAuth2, Mail/Kalender/Kontakte/GAL/OOF,
-  EWS-Kompatibilität nur soweit technisch notwendig.
+- [~] Exchange/Microsoft 365: Der portable Graph-Pfad deckt Mail, Ordner,
+  MIME-Versand/Entwürfe, Zustände/Labels, Kalender-CRUD mit grundlegenden
+  Serien, Kontakte-CRUD, GAL und OOF ab; EWS-Kompatibilität bleibt nur soweit
+  technisch notwendig. Interaktive OAuth2-/EDS-/GOA-Anmeldung, Delta-/Offline-
+  Synchronisation, komplexe Serien-/Zeitzonen-/Meeting-Fälle und die reale
+  Linux-Abnahme bleiben offen.
 
 #### Phase 7 — Release- und Produktqualität
 

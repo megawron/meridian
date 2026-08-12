@@ -4,15 +4,14 @@
 // Camel owns the actual mail store.  The adapter deliberately returns plain
 // Rust records so all GTK work remains on the main thread.
 
-use super::mail_store_service::{MailBackendLocation, ParsedMail};
+use super::exchange_service::graph_service_for_configured_account;
+use super::mail_store_service::{MailBackendLocation, ParsedMail, assign_thread_metadata};
 
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
-#[cfg(eds_camel_bridge)]
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 #[cfg(eds_camel_bridge)]
-use super::mail_store_service::{MailStoreService, assign_thread_metadata, parse_rfc822};
+use super::mail_store_service::{MailStoreService, parse_rfc822};
 
 #[derive(Debug, Clone)]
 pub(crate) struct CamelFolderSummary {
@@ -34,6 +33,213 @@ pub(crate) struct CamelMailLoad {
     pub(crate) successful_sources: usize,
     pub(crate) failed_sources: usize,
     pub(crate) warning: Option<String>,
+    pub(crate) is_graph: bool,
+    pub(crate) search_query: Option<String>,
+}
+
+/// Portable Exchange fallback.  It deliberately returns the same plain
+/// records as the native Camel adapter, so the mail page, threading, search,
+/// flags and folder UI do not need a second remote-only model.  The initial
+/// aggregate request loads a bounded page from each folder; a later folder
+/// selection narrows the request to one folder.
+pub(crate) fn load_messages_graph(
+    source_uid: Option<&str>,
+    folder_name: Option<&str>,
+    offset: usize,
+    max_messages_per_folder: i32,
+    cancelled: &AtomicBool,
+) -> Result<CamelMailLoad, String> {
+    let Some((configured_source_uid, service)) = graph_service_for_configured_account() else {
+        return Err("Kein aktiviertes Exchange-Profil mit Graph-Zugriff verfügbar".to_string());
+    };
+    if let Some(source_uid) = source_uid {
+        if source_uid != configured_source_uid {
+            return Err("Das angeforderte Konto ist kein Graph-Exchange-Konto".to_string());
+        }
+    }
+    if cancelled.load(Ordering::Relaxed) {
+        return Err("Graph-Mail-Laden wurde abgebrochen".to_string());
+    }
+    let page_size = max_messages_per_folder.max(1) as usize;
+    let graph_folders = service
+        .list_mail_folders_sync()
+        .map_err(|error| error.to_string())?;
+    let folders = graph_folders
+        .iter()
+        .map(|folder| CamelFolderSummary {
+            source_uid: configured_source_uid.clone(),
+            source_display_name: service.username.clone(),
+            folder_name: folder.display_name.clone(),
+            folder_id: folder.id.clone(),
+            display_name: folder.display_name.clone(),
+            unread_count: folder.unread_item_count as u32,
+            total_count: folder.total_item_count as u32,
+            is_selectable: true,
+        })
+        .collect::<Vec<_>>();
+
+    let selected = graph_folders
+        .iter()
+        .filter(|folder| {
+            folder_name
+                .map(|name| folder_matches_name(&folder.display_name, name))
+                .unwrap_or_else(|| is_initial_graph_folder(&folder.display_name))
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    if folder_name.is_some() && selected.is_empty() {
+        return Err("Der angeforderte Graph-Mailordner wurde nicht gefunden".to_string());
+    }
+
+    let mut messages = Vec::new();
+    let mut failed_folders = Vec::new();
+    for folder in selected {
+        if cancelled.load(Ordering::Relaxed) {
+            return Err("Graph-Mail-Laden wurde abgebrochen".to_string());
+        }
+        let page = service
+            .list_messages_sync(&folder.id, page_size.saturating_add(offset))
+            .map(|page| {
+                page.into_iter()
+                    .skip(offset)
+                    .take(page_size)
+                    .map(|message| {
+                        message.into_parsed_mail(&configured_source_uid, &folder.display_name)
+                    })
+                    .collect::<Vec<_>>()
+            });
+        match page {
+            Ok(mut page) => messages.append(&mut page),
+            Err(error) => failed_folders.push(format!("{}: {error}", folder.display_name)),
+        }
+    }
+    if messages.is_empty() && !failed_folders.is_empty() {
+        return Err(format!(
+            "Graph-Mailordner konnten nicht geladen werden: {}",
+            failed_folders.join("; ")
+        ));
+    }
+    crate::services::mail_store_service::MailStoreService::new()
+        .apply_backend_filters(&mut messages);
+    assign_thread_metadata(&mut messages);
+    Ok(CamelMailLoad {
+        messages,
+        folders,
+        configured_sources: 1,
+        successful_sources: usize::from(failed_folders.is_empty()),
+        failed_sources: usize::from(!failed_folders.is_empty()),
+        warning: (!failed_folders.is_empty()).then(|| failed_folders.join("; ")),
+        is_graph: true,
+        search_query: None,
+    })
+}
+
+/// Run a portable Graph mailbox search and convert the results into the same
+/// records used by Camel.  Folder discovery stays in this worker so the GTK
+/// thread never has to resolve a provider folder ID or perform HTTP I/O.
+pub(crate) fn search_messages_graph(
+    source_uid: Option<&str>,
+    folder_name: Option<&str>,
+    query: &str,
+    max_items: i32,
+    cancelled: &AtomicBool,
+) -> Result<CamelMailLoad, String> {
+    let Some((configured_source_uid, service)) = graph_service_for_configured_account() else {
+        return Err("Kein aktiviertes Exchange-Profil mit Graph-Zugriff verfügbar".to_string());
+    };
+    if let Some(source_uid) = source_uid {
+        if source_uid != configured_source_uid {
+            return Err("Das angeforderte Konto ist kein Graph-Exchange-Konto".to_string());
+        }
+    }
+    if cancelled.load(Ordering::Relaxed) {
+        return Err("Graph-Mail-Suche wurde abgebrochen".to_string());
+    }
+
+    let graph_folders = service
+        .list_mail_folders_sync()
+        .map_err(|error| error.to_string())?;
+    let selected_folder = folder_name.and_then(|wanted| {
+        graph_folders
+            .iter()
+            .find(|folder| folder_matches_name(&folder.display_name, wanted))
+    });
+    if folder_name.is_some() && selected_folder.is_none() {
+        return Err("Der angeforderte Graph-Mailordner wurde nicht gefunden".to_string());
+    }
+    let messages = service
+        .search_messages_sync(
+            selected_folder.map(|folder| folder.id.as_str()),
+            folder_name,
+            query,
+            max_items.max(1) as usize,
+        )
+        .map_err(|error| error.to_string())?;
+    if cancelled.load(Ordering::Relaxed) {
+        return Err("Graph-Mail-Suche wurde abgebrochen".to_string());
+    }
+    let mut messages = messages
+        .into_iter()
+        .map(|message| {
+            let display_folder = folder_name
+                .map(str::to_string)
+                .or_else(|| {
+                    graph_folders
+                        .iter()
+                        .find(|folder| folder.id == message.folder_id)
+                        .map(|folder| folder.display_name.clone())
+                })
+                .unwrap_or_else(|| "Alle Nachrichten".to_string());
+            message.into_parsed_mail(&configured_source_uid, &display_folder)
+        })
+        .collect::<Vec<_>>();
+    crate::services::mail_store_service::MailStoreService::new()
+        .apply_backend_filters(&mut messages);
+    assign_thread_metadata(&mut messages);
+    let folders = graph_folders
+        .iter()
+        .map(|folder| CamelFolderSummary {
+            source_uid: configured_source_uid.clone(),
+            source_display_name: service.username.clone(),
+            folder_name: folder.display_name.clone(),
+            folder_id: folder.id.clone(),
+            display_name: folder.display_name.clone(),
+            unread_count: folder.unread_item_count as u32,
+            total_count: folder.total_item_count as u32,
+            is_selectable: true,
+        })
+        .collect::<Vec<_>>();
+    Ok(CamelMailLoad {
+        messages,
+        folders,
+        configured_sources: 1,
+        successful_sources: 1,
+        failed_sources: 0,
+        warning: None,
+        is_graph: true,
+        search_query: Some(query.to_string()),
+    })
+}
+
+fn is_initial_graph_folder(name: &str) -> bool {
+    matches!(
+        name.trim().to_ascii_lowercase().as_str(),
+        "inbox" | "sent items" | "drafts" | "deleted items" | "junk email" | "archive"
+    )
+}
+
+fn folder_matches_name(actual: &str, wanted: &str) -> bool {
+    actual.eq_ignore_ascii_case(wanted)
+        || matches!(
+            (
+                actual.to_ascii_lowercase().as_str(),
+                wanted.trim().to_ascii_lowercase().as_str()
+            ),
+            ("sent items", "sent" | "sent-mail")
+                | ("drafts", "draft")
+                | ("deleted items", "trash" | "deleted")
+                | ("junk email", "junk" | "spam")
+        )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -626,6 +832,8 @@ fn load_messages_native(
         successful_sources,
         failed_sources,
         warning,
+        is_graph: false,
+        search_query: None,
     })
 }
 
@@ -930,6 +1138,8 @@ mod tests {
             successful_sources: 2,
             failed_sources: 0,
             warning: None,
+            is_graph: false,
+            search_query: None,
         };
 
         assert!(load.has_more_for(Some("account-a"), Some("INBOX"), 0, 10));
@@ -977,6 +1187,11 @@ pub(crate) enum CamelMailOperation {
         location: MailBackendLocation,
         is_important: bool,
     },
+    SetLabel {
+        location: MailBackendLocation,
+        label: String,
+        labeled: bool,
+    },
     RestoreDeleted {
         location: MailBackendLocation,
     },
@@ -986,6 +1201,9 @@ pub(crate) enum CamelMailOperation {
 }
 
 pub(crate) fn apply_operation(operation: CamelMailOperation) -> Result<(), String> {
+    if let Some(result) = apply_graph_operation(&operation) {
+        return result;
+    }
     #[cfg(eds_camel_bridge)]
     {
         use std::ffi::{CStr, CString, c_char};
@@ -1014,6 +1232,12 @@ pub(crate) fn apply_operation(operation: CamelMailOperation) -> Result<(), Strin
                     location,
                     is_important,
                 } => (6, location, None, false, false, false, is_important),
+                CamelMailOperation::SetLabel { .. } => {
+                    return Err(
+                        "EDS/Camel-Kategorien werden in diesem Backend noch nicht unterstützt"
+                            .to_string(),
+                    );
+                }
                 CamelMailOperation::RestoreDeleted { location } => {
                     (7, location, None, false, false, false, false)
                 }
@@ -1093,11 +1317,71 @@ pub(crate) fn apply_operation(operation: CamelMailOperation) -> Result<(), Strin
     }
 }
 
+fn apply_graph_operation(operation: &CamelMailOperation) -> Option<Result<(), String>> {
+    use super::exchange_service::graph_service_for_source;
+    let location = match operation {
+        CamelMailOperation::SetMessageState { location, .. }
+        | CamelMailOperation::Delete { location }
+        | CamelMailOperation::Move { location, .. }
+        | CamelMailOperation::Archive { location }
+        | CamelMailOperation::SetJunk { location, .. }
+        | CamelMailOperation::SetImportant { location, .. }
+        | CamelMailOperation::SetLabel { location, .. }
+        | CamelMailOperation::RestoreDeleted { location }
+        | CamelMailOperation::RestoreArchived { location } => location,
+    };
+    let service = graph_service_for_source(&location.source_uid)?;
+    let result = match operation {
+        CamelMailOperation::SetMessageState {
+            location,
+            is_unread,
+            is_flagged,
+        } => service.set_message_state_sync(&location.message_uid, !is_unread, *is_flagged, None),
+        CamelMailOperation::SetImportant {
+            location,
+            is_important,
+        } => service.set_message_importance_sync(&location.message_uid, *is_important),
+        CamelMailOperation::SetLabel {
+            location,
+            label,
+            labeled,
+        } => service.set_message_label_sync(&location.message_uid, label, *labeled),
+        CamelMailOperation::Move {
+            location,
+            destination,
+        } => service.move_message_to_folder_name_sync(&location.message_uid, destination),
+        CamelMailOperation::Archive { location } => {
+            service.move_message_to_folder_name_sync(&location.message_uid, "archive")
+        }
+        CamelMailOperation::SetJunk { location, is_junk } => {
+            service.set_message_junk_sync(&location.message_uid, &location.folder_name, *is_junk)
+        }
+        CamelMailOperation::Delete { location } => {
+            // Evolution's normal delete action moves a message to the
+            // Deleted Items folder so undo/restore remains possible.  A
+            // permanent Graph DELETE is intentionally not used here.
+            service.move_message_to_folder_name_sync(&location.message_uid, "trash")
+        }
+        CamelMailOperation::RestoreDeleted { location } => {
+            service.move_message_to_folder_name_sync(&location.message_uid, &location.folder_name)
+        }
+        CamelMailOperation::RestoreArchived { location } => {
+            service.move_message_to_folder_name_sync(&location.message_uid, &location.folder_name)
+        }
+    };
+    Some(result.map_err(|error| error.to_string()))
+}
+
 /// Send one complete RFC822 message through the transport configured for an
 /// EDS mail-account source.  The operation is intentionally synchronous here;
 /// callers run it on a worker thread so Camel can authenticate and perform
 /// network I/O without blocking GTK's main context.
 pub(crate) fn send_message(source_uid: &str, raw_message: &[u8]) -> Result<bool, String> {
+    if let Some(service) = super::exchange_service::graph_service_for_source(source_uid) {
+        return service
+            .send_raw_message_sync(raw_message, false)
+            .map_err(|error| error.to_string());
+    }
     #[cfg(eds_camel_bridge)]
     {
         use std::ffi::{CStr, CString, c_char};
@@ -1150,46 +1434,54 @@ pub(crate) fn save_message(
     raw_message: &[u8],
     folder: CamelSaveFolder,
 ) -> Result<(), String> {
-    #[cfg(eds_camel_bridge)]
-    {
-        use std::ffi::{CStr, CString, c_char};
+    if let Some(service) = super::exchange_service::graph_service_for_source(source_uid) {
+        let save_as_draft = matches!(folder, CamelSaveFolder::Drafts);
+        service
+            .send_raw_message_sync(raw_message, save_as_draft)
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    } else {
+        #[cfg(eds_camel_bridge)]
+        {
+            use std::ffi::{CStr, CString, c_char};
 
-        let source_uid = CString::new(source_uid)
-            .map_err(|_| "EDS source UID enthält ein ungültiges NUL-Byte".to_string())?;
-        if raw_message.is_empty() {
-            return Err("Die RFC822-Nachricht ist leer".to_string());
+            let source_uid = CString::new(source_uid)
+                .map_err(|_| "EDS source UID enthält ein ungültiges NUL-Byte".to_string())?;
+            if raw_message.is_empty() {
+                return Err("Die RFC822-Nachricht ist leer".to_string());
+            }
+            let folder = match folder {
+                CamelSaveFolder::Drafts => 1,
+                CamelSaveFolder::Sent => 2,
+            };
+            let mut error_message: *mut c_char = std::ptr::null_mut();
+            let result = unsafe {
+                ffi::evolution_eds_camel_save_message(
+                    source_uid.as_ptr(),
+                    raw_message.as_ptr(),
+                    raw_message.len(),
+                    folder,
+                    &mut error_message,
+                )
+            };
+            let error = (!error_message.is_null()).then(|| unsafe {
+                let message = CStr::from_ptr(error_message).to_string_lossy().into_owned();
+                ffi::evolution_eds_camel_free_error(error_message);
+                message
+            });
+
+            if result == 1 {
+                Ok(())
+            } else {
+                Err(error.unwrap_or_else(|| "EDS-Draft-Speicherung fehlgeschlagen".to_string()))
+            }
         }
-        let folder = match folder {
-            CamelSaveFolder::Drafts => 1,
-            CamelSaveFolder::Sent => 2,
-        };
-        let mut error_message: *mut c_char = std::ptr::null_mut();
-        let result = unsafe {
-            ffi::evolution_eds_camel_save_message(
-                source_uid.as_ptr(),
-                raw_message.as_ptr(),
-                raw_message.len(),
-                folder,
-                &mut error_message,
-            )
-        };
-        let error = (!error_message.is_null()).then(|| unsafe {
-            let message = CStr::from_ptr(error_message).to_string_lossy().into_owned();
-            ffi::evolution_eds_camel_free_error(error_message);
-            message
-        });
 
-        if result == 1 {
-            Ok(())
-        } else {
-            Err(error.unwrap_or_else(|| "EDS-Draft-Speicherung fehlgeschlagen".to_string()))
+        #[cfg(not(eds_camel_bridge))]
+        {
+            let _ = (source_uid, raw_message, folder);
+            Err("native EDS/Camel adapter is not available in this build".to_string())
         }
-    }
-
-    #[cfg(not(eds_camel_bridge))]
-    {
-        let _ = (source_uid, raw_message, folder);
-        Err("native EDS/Camel adapter is not available in this build".to_string())
     }
 }
 

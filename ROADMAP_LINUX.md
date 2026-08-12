@@ -117,7 +117,10 @@ RUST_LOG=evolution_gtk4=debug ./target/debug/evolution-gtk4 2>&1 | tee evolution
 
 Die folgenden Marker grenzen die Fehlerklasse ein:
 
-- `WebKitGTK context and view created`: Der Linux-HTML-Renderer ist initialisiert.
+- `Deferred WebKitGTK context and view created`: Der Linux-HTML-Renderer ist
+  initialisiert. Der Renderer wird absichtlich erst beim Öffnen einer
+  Nachricht erzeugt; sein Fehlen direkt nach dem Programmstart ist daher kein
+  Fehler.
 - `Mail backend returned from EDS/Camel`: Der native Worker ist aus dem
   Camel-Aufruf zurückgekehrt; ein Fehlen dieses Markers deutet auf EDS/Camel,
   Provider-Authentifizierung oder einen nativen Deadlock hin.
@@ -128,6 +131,11 @@ Die folgenden Marker grenzen die Fehlerklasse ein:
 - `Loaded mail sources`: Die EDS-Quellenerkennung ist abgeschlossen. Ein
   angezeigtes Konto belegt allein noch nicht, dass Camel bereits lesbare
   Ordner oder Nachrichten geliefert hat.
+- Die portable Reminder-Prüfung liest Kalenderdateien und Reminder-Zustand
+  inzwischen in einem Worker; ein Linux-Start-Hänger darf daher nicht mehr
+  durch diese Vorprüfung erklärt werden. Bleibt der Prozess trotzdem
+  unresponsive, den letzten erreichten Marker sichern und den nativen
+  EDS/Camel-Worker separat mit einem Backtrace untersuchen.
 
 Für die Abnahme zusätzlich den genauen Commit, `uname -a`,
 `pkg-config --modversion webkitgtk-6.0 camel-1.2 libedataserver-1.2`,
@@ -249,11 +257,14 @@ Authentifizierungsdaten oder Mailinhalte in das Log übernehmen.
 - `[ ]` CamelFolderThread bzw. eine gleichwertige servernahe Threadstrecke
   gegen echte RFC-822-Referenzen prüfen. Große Threads, fehlende Referenzen,
   Betreffänderungen und mehrere Konten müssen korrekt gruppiert werden.
-- `[ ]` Serverseitige Suche und virtuelle Suchordner implementieren und auf
-  IMAP/IMAPX gegen echte Ordner, Flags, Paging und Live-Updates testen; die
-  native Suchsyntax muss die portable Feld-/Status-/Datumssemantik inklusive
-  negativer Prädikate und gespeicherter Suchordner ohne Bedeutungsänderung
-  übernehmen.
+- `[~]` Native serverseitige Suche und virtuelle Suchordner gegen Camel/IMAPX
+  implementieren und auf echte Ordner, Flags, Paging und Live-Updates testen.
+  Der portable Microsoft-Graph-Pfad für kompatible positive Volltext-/Feld-
+  prädikate ist bereits in `ROADMAP.md` abgedeckt, ersetzt aber nicht diese
+  EDS/Camel-Abnahme. Für den nativen Pfad müssen Camel-Suchsyntax,
+  Status-/Datumssemantik, negative Prädikate, CamelVeeStore/CamelVeeFolder,
+  gespeicherte Suchordner, UID-Neuzuordnung und Abbruch bei Offline-Fehlern
+  ohne Bedeutungsänderung umgesetzt und gegen IMAP/IMAPX verifiziert werden.
 - `[ ]` CamelFilterDriver gegen die importierten Regeln abgleichen und den
   manuellen „Jetzt ausführen“-Pfad für echte Camel-Ordner implementieren:
   Reihenfolge, UND/ODER-Bedingungen, Text-, Header-, Label-, Datums- („vor“/
@@ -273,14 +284,24 @@ Authentifizierungsdaten oder Mailinhalte in das Log übernehmen.
 
 ### Exchange-/Serverkontofunktionen
 
-- `[ ]` Abwesenheitsnotiz/Auto-Responder gegen ein echtes Exchange-/Microsoft-
-  365-Konto abnehmen: aktuellen Status laden, Aktivierung/Deaktivierung,
-  Start-/Endzeitraum sowie interne und externe Antworttexte speichern und nach
-  einem Neustart wieder laden. Graph/OAuth2 ist für Exchange Online der
-  bevorzugte Pfad; EWS darf nur für kompatible Legacy-Server verwendet werden.
+- `[~]` Den portablen Graph-Pfad mit einem echten aktivierten Exchange-/Microsoft-
+  365-Konto abnehmen: Ordnerbaum und Pagination, Mailtexte und Anhänge,
+  MIME-Versand/Entwürfe, gelesen/ungelesen, Stern, Important, Kategorien,
+  Verschieben/Papierkorb, Kalender-CRUD mit Serien, Kontakte-CRUD, GAL und
+  OOF. Prüfen, dass der Linux-EDS-/GOA-Credentialpfad nicht versehentlich von
+  der Token-Injektion umgangen wird und dass Fehler, Timeout, Ablauf und
+  fehlende Berechtigungen sichtbar bleiben.
+- `[~]` Abwesenheitsnotiz/Auto-Responder gegen ein echtes Exchange-/Microsoft-
+  365-Konto abnehmen: Der portable Graph-Client kann Status, Aktivierung/
+  Deaktivierung, Start-/Endzeitraum sowie interne und externe Antworttexte
+  bereits typisiert lesen und schreiben; offen bleibt die Linux-Abnahme mit
+  dem echten EDS-/GOA-Credentialpfad. Dabei müssen diese Werte gespeichert
+  und nach einem Neustart wieder geladen werden. Graph/OAuth2 ist für
+  Exchange Online der bevorzugte Pfad; EWS darf nur für kompatible
+  Legacy-Server verwendet werden.
   Token-Ablauf, fehlende Berechtigung, Offlinezustand, ungültige Zeiträume und
   serverseitige Richtlinien müssen als sichtbare Fehler erscheinen; der
-  aktuelle gtk4-rs-Platzhalter darf dabei keinen erfolgreichen Speichervorgang
+  die portable Graph-/EDS-Strecke darf dabei keinen erfolgreichen Speichervorgang
   vortäuschen.
 - `[ ]` GAL-/LDAP-/Exchange-Suche mit dem Composer testen: Timeout,
   Pagination, Dubletten, Offlinefehler, Datenschutzgrenzen und die Trennung
@@ -411,8 +432,12 @@ Mit einem Testkonto ohne produktive Empfänger prüfen:
   ab; auf Linux müssen deren Verlustfreiheit, EDS-Medientypen, URI-Fotos,
   große/gefaltete PHOTO-Werte und GAL-/LDAP-Erweiterungen gegen echte Quellen
   verifiziert werden.
-- `[ ]` Composer-Autocomplete und GAL/LDAP-Suche mit Timeout, Pagination,
-  Offlinefehlern und Datenschutzgrenzen testen.
+- `[~]` Die portable Composer-Verzeichnissuche ist mit eigenem asynchronem
+  Exchange-GAL-Button, Timeout, Pagination, Dublettenfilter und sichtbaren
+  Offline-/Berechtigungsfehlern implementiert. Auf Linux bleibt die reale
+  EDS-/GOA-/LDAP-Abnahme offen: Composer-Autocomplete und GAL/LDAP-Suche mit
+  einem echten Verzeichnis, Datenschutzgrenzen und dem nativen Credentialpfad
+  testen.
 
 ## 8. Sicherheit und Linux-Integration
 

@@ -4,6 +4,7 @@
 // used only as an explicit fallback when the native Linux bridge is absent.
 
 use super::contact_store_service::ContactStoreService;
+use super::exchange_service::graph_service_for_configured_account;
 use super::vcard_service::VCardContact;
 #[cfg(all(target_os = "linux", eds_ebook_bridge))]
 use std::time::Duration;
@@ -27,6 +28,7 @@ pub(crate) struct EBookLoadResult {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum EBookDataOrigin {
     Eds,
+    Graph,
     Local,
 }
 
@@ -145,6 +147,9 @@ impl EBookService {
         if source_uid == "local-addressbook" {
             return self.apply_local_operation(1, vcard, None);
         }
+        if let Some(result) = self.apply_graph_operation(source_uid, 1, vcard, None) {
+            return result;
+        }
         self.apply_operation(source_uid, 1, vcard, None)
     }
 
@@ -157,6 +162,9 @@ impl EBookService {
         if source_uid == "local-addressbook" {
             return self.apply_local_operation(2, vcard, Some(contact_uid));
         }
+        if let Some(result) = self.apply_graph_operation(source_uid, 2, vcard, Some(contact_uid)) {
+            return result;
+        }
         self.apply_operation(source_uid, 2, vcard, Some(contact_uid))
     }
 
@@ -167,6 +175,9 @@ impl EBookService {
     ) -> Result<EBookMutationResult, EBookMutationError> {
         if source_uid == "local-addressbook" {
             return self.apply_local_operation(3, "", Some(contact_uid));
+        }
+        if let Some(result) = self.apply_graph_operation(source_uid, 3, "", Some(contact_uid)) {
+            return result;
         }
         self.apply_operation(source_uid, 3, "", Some(contact_uid))
     }
@@ -246,6 +257,77 @@ impl EBookService {
                 vcard: if operation == 3 { None } else { Some(vcard) },
             })
             .map_err(|error| EBookMutationError::Backend(error.to_string()))
+    }
+
+    fn apply_graph_operation(
+        &self,
+        source_uid: &str,
+        operation: i32,
+        vcard: &str,
+        contact_uid: Option<&str>,
+    ) -> Option<Result<EBookMutationResult, EBookMutationError>> {
+        let service =
+            graph_service_for_configured_account().and_then(|(configured_uid, service)| {
+                (configured_uid == source_uid).then_some(service)
+            })?;
+        let contact = || {
+            VCardContact::parse_vcard_string(vcard).ok_or_else(|| {
+                EBookMutationError::Backend("Die vCard ist ungültig oder ohne FN-Feld".to_string())
+            })
+        };
+        let result = match operation {
+            1 => contact().and_then(|parsed| {
+                service
+                    .create_contact_sync(&super::exchange_service::ExchangeContact::from_vcard(
+                        "", &parsed,
+                    ))
+                    .map_err(|error| EBookMutationError::Backend(error.to_string()))
+                    .map(|created| EBookMutationResult {
+                        uid: created.id.clone(),
+                        vcard: Some(created.to_vcard()),
+                    })
+            }),
+            2 => {
+                let uid = contact_uid.unwrap_or_default();
+                if uid.trim().is_empty() {
+                    Err(EBookMutationError::Backend(
+                        "Zum Ändern eines Graph-Kontakts fehlt die UID".to_string(),
+                    ))
+                } else {
+                    contact().and_then(|parsed| {
+                        service
+                            .update_contact_sync(
+                                &super::exchange_service::ExchangeContact::from_vcard(uid, &parsed),
+                            )
+                            .map_err(|error| EBookMutationError::Backend(error.to_string()))
+                            .map(|updated| EBookMutationResult {
+                                uid: updated.id.clone(),
+                                vcard: Some(updated.to_vcard()),
+                            })
+                    })
+                }
+            }
+            3 => {
+                let uid = contact_uid.unwrap_or_default();
+                if uid.trim().is_empty() {
+                    Err(EBookMutationError::Backend(
+                        "Zum Löschen eines Graph-Kontakts fehlt die UID".to_string(),
+                    ))
+                } else {
+                    service
+                        .delete_contact_sync(uid)
+                        .map(|()| EBookMutationResult {
+                            uid: uid.to_string(),
+                            vcard: None,
+                        })
+                        .map_err(|error| EBookMutationError::Backend(error.to_string()))
+                }
+            }
+            _ => Err(EBookMutationError::Backend(
+                "Unbekannte Graph-EBook-Operation".to_string(),
+            )),
+        };
+        Some(result)
     }
 
     #[cfg(all(target_os = "linux", eds_ebook_bridge))]
@@ -464,6 +546,11 @@ pub(crate) fn load_contacts_prefer_eds() -> EBookLoadResult {
                     }
                 }));
             }
+            if contacts.is_empty() {
+                if let Some(graph) = load_contacts_from_graph() {
+                    return graph;
+                }
+            }
             EBookLoadResult {
                 contacts,
                 origin: EBookDataOrigin::Eds,
@@ -471,6 +558,9 @@ pub(crate) fn load_contacts_prefer_eds() -> EBookLoadResult {
             }
         }
         Err(error) => {
+            if let Some(graph) = load_contacts_from_graph() {
+                return graph;
+            }
             let local_service = ContactStoreService::new();
             let local_source_uid = if local_service.is_writable() {
                 "local-addressbook"
@@ -500,6 +590,49 @@ pub(crate) fn load_contacts_prefer_eds() -> EBookLoadResult {
             }
         }
     }
+}
+
+fn load_contacts_from_graph() -> Option<EBookLoadResult> {
+    let (source_uid, service) = graph_service_for_configured_account()?;
+    let contacts = service.list_contacts_sync("", 5_000).ok()?;
+    let source_display_name = if service.username.trim().is_empty() {
+        "Microsoft 365 Kontakte".to_string()
+    } else {
+        format!("Microsoft 365 ({})", service.username)
+    };
+    let mut records = contacts
+        .into_iter()
+        .map(|contact| {
+            let uid = contact.id.clone();
+            let vcard = contact.to_vcard();
+            let parsed = VCardContact::parse_vcard_string(&vcard)
+                .unwrap_or_else(|| VCardContact::new(&contact.display_name, "", "", ""));
+            EBookContactRecord {
+                source_uid: source_uid.clone(),
+                source_display_name: source_display_name.clone(),
+                uid,
+                vcard,
+                contact: parsed,
+            }
+        })
+        .collect::<Vec<_>>();
+    let local_service = ContactStoreService::new();
+    if local_service.is_writable() {
+        records.extend(local_service.load_contacts().into_iter().map(|record| {
+            EBookContactRecord {
+                source_uid: "local-addressbook".to_string(),
+                source_display_name: "Lokales Adressbuch".to_string(),
+                uid: record.id,
+                vcard: record.vcard,
+                contact: record.contact,
+            }
+        }));
+    }
+    Some(EBookLoadResult {
+        contacts: records,
+        origin: EBookDataOrigin::Graph,
+        warning: None,
+    })
 }
 
 #[cfg(all(test, not(all(target_os = "linux", eds_ebook_bridge))))]

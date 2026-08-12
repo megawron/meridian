@@ -10,7 +10,11 @@
 use adw::prelude::*;
 use adw::subclass::prelude::*;
 use gtk::glib;
+use std::thread;
 
+use crate::services::AppSettings;
+use crate::services::account_config_service::{AccountConfigStore, AccountProtocol};
+use crate::services::exchange_service::ExchangeService;
 use crate::services::out_of_office_service::{OutOfOfficeSettings, OutOfOfficeStore};
 
 mod imp {
@@ -80,6 +84,19 @@ impl OutOfOfficeDialog {
             .margin_bottom(20)
             .build();
 
+        let graph_service = graph_service_for_configured_account();
+        let backend_state = gtk::Label::builder()
+            .label(if graph_service.is_some() {
+                "Microsoft Graph: Serverstatus wird geladen …"
+            } else {
+                "Lokale Konfiguration; die native EDS-Serverstrecke bleibt zuständig"
+            })
+            .css_classes(vec!["caption", "dim-label"])
+            .halign(gtk::Align::Start)
+            .wrap(true)
+            .build();
+        content_box.append(&backend_state);
+
         // Status Group
         let group_status = adw::PreferencesGroup::builder()
             .title("Status & Zeitfenster")
@@ -87,7 +104,11 @@ impl OutOfOfficeDialog {
 
         let row_enabled = adw::SwitchRow::builder()
             .title("Abwesenheitsnotiz aktivieren")
-            .subtitle("Konfiguration wird persistent gespeichert; Serveraktivierung folgt über EDS")
+            .subtitle(if graph_service.is_some() {
+                "Serverstatus wird über Microsoft Graph synchronisiert"
+            } else {
+                "Konfiguration wird persistent gespeichert; Serveraktivierung erfolgt über EDS"
+            })
             .active(false)
             .build();
         group_status.add(&row_enabled);
@@ -163,6 +184,20 @@ impl OutOfOfficeDialog {
             row_end_for_schedule.set_sensitive(row.is_active());
         });
 
+        if let Some(service) = graph_service.clone() {
+            load_graph_settings(
+                self,
+                service,
+                &row_enabled,
+                &row_schedule,
+                &row_start,
+                &row_end,
+                &text_internal.buffer(),
+                &text_external.buffer(),
+                &backend_state,
+            );
+        }
+
         let dialog_for_save = self.clone();
         let row_enabled_for_save = row_enabled.clone();
         let row_schedule_for_save = row_schedule.clone();
@@ -170,6 +205,9 @@ impl OutOfOfficeDialog {
         let row_end_for_save = row_end.clone();
         let internal_buffer_for_save = text_internal.buffer();
         let external_buffer_for_save = text_external.buffer();
+        let graph_service_for_save = graph_service.clone();
+        let save_button_for_save = btn_save.clone();
+        let backend_state_for_save = backend_state.clone();
         btn_save.connect_clicked(move |_| {
             let internal_message = internal_buffer_for_save.text(
                 &internal_buffer_for_save.start_iter(),
@@ -195,11 +233,62 @@ impl OutOfOfficeDialog {
             }
             match OutOfOfficeStore::default().save(&settings) {
                 Ok(()) => {
-                    show_dialog_toast(
-                        &dialog_for_save,
-                        "Abwesenheitsnotiz lokal gespeichert; EDS-Serveraktivierung bleibt ausstehend",
-                    );
-                    dialog_for_save.close();
+                    let Some(service) = graph_service_for_save.clone() else {
+                        show_dialog_toast(
+                            &dialog_for_save,
+                            "Abwesenheitsnotiz lokal gespeichert; die Serveraktivierung erfolgt über EDS",
+                        );
+                        dialog_for_save.close();
+                        return;
+                    };
+
+                    save_button_for_save.set_sensitive(false);
+                    backend_state_for_save.set_label("Microsoft Graph: Serverstatus wird gespeichert …");
+                    let settings_for_server = settings.clone();
+                    let dialog_weak = dialog_for_save.downgrade();
+                    let save_button = save_button_for_save.clone();
+                    let backend_state = backend_state_for_save.clone();
+                    let (sender, receiver) = async_channel::bounded(1);
+                    thread::spawn(move || {
+                        let result = service.set_out_of_office_sync(&settings_for_server);
+                        let _ = sender.send_blocking(result);
+                    });
+                    glib::spawn_future_local(async move {
+                        let result = receiver.recv().await;
+                        let Some(dialog) = dialog_weak.upgrade() else {
+                            return;
+                        };
+                        save_button.set_sensitive(true);
+                        match result {
+                            Ok(Ok(server_settings)) => {
+                                if let Err(error) = OutOfOfficeStore::default().save(&server_settings)
+                                {
+                                    tracing::warn!(%error, "Could not persist Graph OOF response");
+                                }
+                                show_dialog_toast(
+                                    &dialog,
+                                    "Abwesenheitsnotiz lokal und auf dem Exchange-Server gespeichert",
+                                );
+                                dialog.close();
+                            }
+                            Ok(Err(error)) => {
+                                backend_state.set_label("Microsoft Graph: Server konnte nicht aktualisiert werden");
+                                show_dialog_toast(
+                                    &dialog,
+                                    &format!(
+                                        "Lokal gespeichert, Serveraktualisierung fehlgeschlagen: {error}"
+                                    ),
+                                );
+                            }
+                            Err(error) => {
+                                backend_state.set_label("Microsoft Graph: Server konnte nicht aktualisiert werden");
+                                show_dialog_toast(
+                                    &dialog,
+                                    &format!("Serveraktualisierung abgebrochen: {error}"),
+                                );
+                            }
+                        }
+                    });
                 }
                 Err(error) => show_dialog_toast(
                     &dialog_for_save,
@@ -212,6 +301,80 @@ impl OutOfOfficeDialog {
         toolbar_view.set_content(Some(&content_scroll));
         self.set_content(Some(&toolbar_view));
     }
+}
+
+fn graph_service_for_configured_account() -> Option<ExchangeService> {
+    let accounts = AccountConfigStore::default().load();
+    let preferred_id = AppSettings::try_new()
+        .map(|settings| settings.default_account_id())
+        .filter(|id| !id.trim().is_empty());
+    let is_exchange = |profile: &&crate::services::account_config_service::AccountProfile| {
+        profile.enabled && profile.protocol == AccountProtocol::Exchange
+    };
+    let profile = preferred_id
+        .as_deref()
+        .and_then(|id| {
+            accounts
+                .iter()
+                .find(|profile| is_exchange(profile) && profile.id == id)
+        })
+        .or_else(|| accounts.iter().find(is_exchange))?;
+    ExchangeService::from_environment(&profile.email)
+}
+
+fn load_graph_settings(
+    dialog: &OutOfOfficeDialog,
+    service: ExchangeService,
+    row_enabled: &adw::SwitchRow,
+    row_schedule: &adw::SwitchRow,
+    row_start: &adw::EntryRow,
+    row_end: &adw::EntryRow,
+    internal_buffer: &gtk::TextBuffer,
+    external_buffer: &gtk::TextBuffer,
+    backend_state: &gtk::Label,
+) {
+    let dialog_weak = dialog.downgrade();
+    let row_enabled = row_enabled.clone();
+    let row_schedule = row_schedule.clone();
+    let row_start = row_start.clone();
+    let row_end = row_end.clone();
+    let internal_buffer = internal_buffer.clone();
+    let external_buffer = external_buffer.clone();
+    let backend_state = backend_state.clone();
+    let (sender, receiver) = async_channel::bounded(1);
+    thread::spawn(move || {
+        let result = service.get_out_of_office_sync();
+        let _ = sender.send_blocking(result);
+    });
+    glib::spawn_future_local(async move {
+        let result = receiver.recv().await;
+        let Some(_dialog) = dialog_weak.upgrade() else {
+            return;
+        };
+        match result {
+            Ok(Ok(settings)) => {
+                row_enabled.set_active(settings.enabled);
+                row_schedule.set_active(settings.use_schedule);
+                row_start.set_text(&settings.start_date);
+                row_end.set_text(&settings.end_date);
+                internal_buffer.set_text(&settings.internal_message);
+                external_buffer.set_text(&settings.external_message);
+                backend_state.set_label("Microsoft Graph: Serverstatus geladen");
+            }
+            Ok(Err(error)) => {
+                backend_state.set_label(
+                    "Microsoft Graph: Serverstatus nicht verfügbar; lokale Werte bleiben erhalten",
+                );
+                tracing::warn!(%error, "Could not load Graph out-of-office settings");
+            }
+            Err(error) => {
+                backend_state.set_label(
+                    "Microsoft Graph: Serverstatus nicht verfügbar; lokale Werte bleiben erhalten",
+                );
+                tracing::warn!(%error, "Graph out-of-office load was cancelled");
+            }
+        }
+    });
 }
 
 fn show_dialog_toast(dialog: &OutOfOfficeDialog, message: &str) {

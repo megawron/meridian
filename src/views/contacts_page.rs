@@ -1023,6 +1023,7 @@ fn refresh_contacts(
                 if result.contacts.is_empty() {
                     empty_state.set_label(match result.origin {
                         EBookDataOrigin::Eds => "Keine Kontakte aus EDS geladen",
+                        EBookDataOrigin::Graph => "Keine Kontakte aus Microsoft Graph geladen",
                         EBookDataOrigin::Local => "Keine lokalen vCards geladen",
                     });
                     refresh_contact_category_model(
@@ -1035,6 +1036,7 @@ fn refresh_contacts(
                 }
                 let origin = match result.origin {
                     EBookDataOrigin::Eds => "EDS",
+                    EBookDataOrigin::Graph => "Microsoft Graph",
                     EBookDataOrigin::Local => "lokalen vCards",
                 };
                 empty_state.set_label(&format!(

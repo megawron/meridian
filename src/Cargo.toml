@@ -27,6 +27,7 @@ serde_json.workspace = true
 once_cell.workspace = true
 chrono.workspace = true
 uuid.workspace = true
+reqwest.workspace = true
 
 [build-dependencies]
 pkg-config = "0.3"

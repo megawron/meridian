@@ -10,12 +10,15 @@ use super::calendar_store_service::{
     CalendarEventRecord, CalendarSnapshot, CalendarStoreService, MemoRecord, TaskRecord,
     parse_ical_component,
 };
+use super::exchange_service::graph_service_for_configured_account;
+use chrono::{Duration, Utc};
 #[cfg(all(target_os = "linux", eds_ecal_bridge))]
 use std::time::Duration;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CalendarDataOrigin {
     Eds,
+    Graph,
     Local,
 }
 
@@ -173,6 +176,11 @@ impl ECalService {
         if source_uid == "local-calendar" {
             return self.apply_local_operation(component_type, 1, component, None);
         }
+        if let Some(result) =
+            self.apply_graph_operation(source_uid, component_type, 1, component, None)
+        {
+            return result;
+        }
         self.apply_operation(source_uid, component_type, 1, component, None)
     }
 
@@ -185,6 +193,15 @@ impl ECalService {
     ) -> Result<ECalMutationResult, ECalMutationError> {
         if source_uid == "local-calendar" {
             return self.apply_local_operation(component_type, 2, component, Some(component_uid));
+        }
+        if let Some(result) = self.apply_graph_operation(
+            source_uid,
+            component_type,
+            2,
+            component,
+            Some(component_uid),
+        ) {
+            return result;
         }
         self.apply_operation(
             source_uid,
@@ -203,6 +220,11 @@ impl ECalService {
     ) -> Result<ECalMutationResult, ECalMutationError> {
         if source_uid == "local-calendar" {
             return self.apply_local_operation(component_type, 3, "", Some(component_uid));
+        }
+        if let Some(result) =
+            self.apply_graph_operation(source_uid, component_type, 3, "", Some(component_uid))
+        {
+            return result;
         }
         self.apply_operation(source_uid, component_type, 3, "", Some(component_uid))
     }
@@ -287,6 +309,101 @@ impl ECalService {
                 },
             })
             .map_err(|error| ECalMutationError::Backend(error.to_string()))
+    }
+
+    fn apply_graph_operation(
+        &self,
+        source_uid: &str,
+        component_type: ECalComponentType,
+        operation: i32,
+        component: &str,
+        component_uid: Option<&str>,
+    ) -> Option<Result<ECalMutationResult, ECalMutationError>> {
+        let service =
+            graph_service_for_configured_account().and_then(|(configured_uid, service)| {
+                (configured_uid == source_uid).then_some(service)
+            })?;
+        if component_type != ECalComponentType::Event {
+            return Some(Err(ECalMutationError::Unsupported));
+        }
+
+        let source_display_name = if service.username.trim().is_empty() {
+            "Microsoft 365 Kalender"
+        } else {
+            "Microsoft 365"
+        };
+        let parse_event = |raw: &str| {
+            let mut snapshot = CalendarSnapshot::default();
+            parse_ical_component(raw, source_uid, source_display_name, &mut snapshot);
+            snapshot.events.into_iter().next().ok_or_else(|| {
+                ECalMutationError::Backend(
+                    "Die iCalendar-Komponente enthält kein gültiges VEVENT".to_string(),
+                )
+            })
+        };
+
+        let result = match operation {
+            1 => parse_event(component).and_then(|event| {
+                service
+                    .create_calendar_event_sync(&event)
+                    .map_err(|error| ECalMutationError::Backend(error.to_string()))?
+                    .into_calendar_event(source_uid, source_display_name)
+                    .map(|record| ECalMutationResult {
+                        uid: record.uid.clone(),
+                        component: Some(record.component),
+                    })
+                    .ok_or_else(|| {
+                        ECalMutationError::Backend(
+                            "Graph lieferte kein verwendbares Kalenderereignis zurück".to_string(),
+                        )
+                    })
+            }),
+            2 => {
+                let uid = component_uid.unwrap_or_default();
+                if uid.trim().is_empty() {
+                    Err(ECalMutationError::Backend(
+                        "Zum Ändern eines Graph-Kalenderereignisses fehlt die UID".to_string(),
+                    ))
+                } else {
+                    parse_event(component).and_then(|event| {
+                        service
+                            .update_calendar_event_sync(uid, &event)
+                            .map_err(|error| ECalMutationError::Backend(error.to_string()))?
+                            .into_calendar_event(source_uid, source_display_name)
+                            .map(|record| ECalMutationResult {
+                                uid: record.uid.clone(),
+                                component: Some(record.component),
+                            })
+                            .ok_or_else(|| {
+                                ECalMutationError::Backend(
+                                    "Graph lieferte kein verwendbares Kalenderereignis zurück"
+                                        .to_string(),
+                                )
+                            })
+                    })
+                }
+            }
+            3 => {
+                let uid = component_uid.unwrap_or_default();
+                if uid.trim().is_empty() {
+                    Err(ECalMutationError::Backend(
+                        "Zum Löschen eines Graph-Kalenderereignisses fehlt die UID".to_string(),
+                    ))
+                } else {
+                    service
+                        .delete_calendar_event_sync(uid)
+                        .map(|()| ECalMutationResult {
+                            uid: uid.to_string(),
+                            component: None,
+                        })
+                        .map_err(|error| ECalMutationError::Backend(error.to_string()))
+                }
+            }
+            _ => Err(ECalMutationError::Backend(
+                "Unbekannte Graph-ECal-Operation".to_string(),
+            )),
+        };
+        Some(result)
     }
 
     #[cfg(all(target_os = "linux", eds_ecal_bridge))]
@@ -520,6 +637,12 @@ pub(crate) fn load_snapshot_prefer_eds() -> CalendarLoadResult {
                 #[cfg(all(target_os = "linux", eds_ecal_bridge))]
                 sort_snapshot(&mut snapshot);
             }
+            if snapshot.events.is_empty() && snapshot.tasks.is_empty() && snapshot.memos.is_empty()
+            {
+                if let Some(graph) = load_snapshot_from_graph() {
+                    return graph;
+                }
+            }
             CalendarLoadResult {
                 snapshot,
                 origin: CalendarDataOrigin::Eds,
@@ -527,6 +650,9 @@ pub(crate) fn load_snapshot_prefer_eds() -> CalendarLoadResult {
             }
         }
         Err(error) => {
+            if let Some(graph) = load_snapshot_from_graph() {
+                return graph;
+            }
             let snapshot =
                 super::calendar_store_service::CalendarStoreService::new().load_snapshot();
             CalendarLoadResult {
@@ -536,6 +662,43 @@ pub(crate) fn load_snapshot_prefer_eds() -> CalendarLoadResult {
             }
         }
     }
+}
+
+fn load_snapshot_from_graph() -> Option<CalendarLoadResult> {
+    let (source_uid, service) = graph_service_for_configured_account()?;
+    let start = (Utc::now() - Duration::days(365))
+        .format("%Y-%m-%dT00:00:00Z")
+        .to_string();
+    let end = (Utc::now() + Duration::days(730))
+        .format("%Y-%m-%dT00:00:00Z")
+        .to_string();
+    let events = service
+        .list_calendar_view_sync(&start, &end, 5_000)
+        .map_err(|error| error.to_string())
+        .ok()?;
+    let source_display_name = if service.username.trim().is_empty() {
+        "Microsoft 365 Kalender".to_string()
+    } else {
+        format!("Microsoft 365 ({})", service.username)
+    };
+    let mut snapshot = CalendarSnapshot::default();
+    snapshot.events = events
+        .iter()
+        .filter_map(|event| event.into_calendar_event(&source_uid, &source_display_name))
+        .collect();
+    let local_service = CalendarStoreService::new();
+    if local_service.is_writable() {
+        let local = local_service.load_snapshot();
+        snapshot.events.extend(local.events);
+        snapshot.tasks.extend(local.tasks);
+        snapshot.memos.extend(local.memos);
+    }
+    super::calendar_store_service::sort_snapshot(&mut snapshot);
+    Some(CalendarLoadResult {
+        snapshot,
+        origin: CalendarDataOrigin::Graph,
+        warning: None,
+    })
 }
 
 #[cfg(all(test, not(all(target_os = "linux", eds_ecal_bridge))))]

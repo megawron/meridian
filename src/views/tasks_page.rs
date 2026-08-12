@@ -783,6 +783,9 @@ impl TasksPage {
                     if result.snapshot.tasks.is_empty() {
                         empty_tasks_for_load.set_label(match result.origin {
                             CalendarDataOrigin::Eds => "Keine Aufgaben aus EDS geladen",
+                            CalendarDataOrigin::Graph => {
+                                "Keine Aufgaben aus Microsoft Graph geladen"
+                            }
                             CalendarDataOrigin::Local => "Keine lokalen Aufgaben geladen",
                         });
                         empty_tasks_for_load.set_visible(true);

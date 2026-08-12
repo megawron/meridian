@@ -30,7 +30,9 @@ mod imp {
     pub struct MailViewer {
         pub banner: adw::Banner,
         #[cfg(target_os = "linux")]
-        pub webview: Option<webkit6::WebView>,
+        pub webview: RefCell<Option<webkit6::WebView>>,
+        #[cfg(target_os = "linux")]
+        pub renderer_stack: RefCell<Option<gtk::Stack>>,
         #[cfg(not(target_os = "linux"))]
         pub fallback_view: RefCell<Option<gtk::TextView>>,
         pub current_message_id: RefCell<Option<String>>,
@@ -63,7 +65,11 @@ mod imp {
         }
     }
 
-    impl WidgetImpl for MailViewer {}
+    impl WidgetImpl for MailViewer {
+        fn realize(&self) {
+            self.parent_realize();
+        }
+    }
 }
 
 glib::wrapper! {
@@ -111,69 +117,26 @@ impl MailViewer {
             // WebKitGTK is the production renderer on Linux.  It is kept
             // behind the target gate because WebKitGTK 6.0 is not shipped by
             // macOS package managers; the macOS fallback below still allows
-            // the GTK/libadwaita shell to be exercised locally.
-            tracing::debug!("Creating WebKitGTK context and view");
-            let web_context = webkit6::WebContext::new();
-            let settings = webkit6::Settings::new();
-            settings.set_enable_javascript(false);
-            settings.set_auto_load_images(
-                AppSettings::try_new()
-                    .as_ref()
-                    .map(AppSettings::auto_load_remote_images)
-                    .unwrap_or(false),
-            );
-            settings.set_enable_developer_extras(false);
-
-            let webview = webkit6::WebView::builder()
-                .web_context(&web_context)
-                .settings(&settings)
+            // the GTK/libadwaita shell to be exercised locally.  Creating a
+            // WebKit process is deliberately deferred until a message really
+            // needs HTML rendering, so a cold EDS start does not compete with
+            // the first GTK frame.
+            let placeholder = adw::StatusPage::builder()
+                .title("Keine Nachricht ausgewählt")
+                .description("Der HTML-Renderer wird beim Öffnen einer Nachricht geladen.")
+                .icon_name("mail-read-symbolic")
                 .hexpand(true)
                 .vexpand(true)
                 .build();
-
-            let webview_scroll = gtk::ScrolledWindow::builder()
-                .hscrollbar_policy(gtk::PolicyType::Automatic)
-                .vscrollbar_policy(gtk::PolicyType::Automatic)
-                .child(&webview)
+            let renderer_stack = gtk::Stack::builder()
                 .hexpand(true)
                 .vexpand(true)
+                .transition_type(gtk::StackTransitionType::Crossfade)
                 .build();
-
-            // Block external navigation links in WebView, handle via the
-            // desktop's default browser.
-            webview.connect_decide_policy(|_, decision, decision_type| {
-                if decision_type == webkit6::PolicyDecisionType::NavigationAction {
-                    if let Ok(nav) = decision
-                        .clone()
-                        .downcast::<webkit6::NavigationPolicyDecision>()
-                    {
-                        if let Some(mut action) = nav.navigation_action() {
-                            if let Some(req) = action.request() {
-                                if let Some(uri) = req.uri() {
-                                    if uri != "about:blank" && !uri.starts_with("data:") {
-                                        tracing::info!("Opening external link in browser: {}", uri);
-                                        let _ = gio::AppInfo::launch_default_for_uri(
-                                            &uri,
-                                            None::<&gio::AppLaunchContext>,
-                                        );
-                                        decision.ignore();
-                                        return true;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                false
-            });
-
-            box_container.append(&webview_scroll);
-            unsafe {
-                let imp = self.imp();
-                let mut_imp = imp as *const imp::MailViewer as *mut imp::MailViewer;
-                (*mut_imp).webview = Some(webview);
-            }
-            tracing::debug!("WebKitGTK context and view created");
+            renderer_stack.add_named(&placeholder, Some("placeholder"));
+            renderer_stack.set_visible_child_name("placeholder");
+            box_container.append(&renderer_stack);
+            self.imp().renderer_stack.replace(Some(renderer_stack));
         }
 
         #[cfg(not(target_os = "linux"))]
@@ -267,7 +230,7 @@ impl MailViewer {
         self.imp().banner.set_revealed(!remote_images_allowed);
 
         #[cfg(target_os = "linux")]
-        if let Some(ref webview) = self.imp().webview {
+        if let Some(webview) = self.ensure_webkit() {
             let render_html = AppSettings::try_new()
                 .as_ref()
                 .map(AppSettings::render_html)
@@ -366,12 +329,81 @@ impl MailViewer {
         }
         self.imp().banner.set_revealed(false);
         #[cfg(target_os = "linux")]
-        if let Some(ref webview) = self.imp().webview {
+        if let Some(webview) = self.imp().webview.borrow().as_ref() {
             if let Some(settings) = webkit6::prelude::WebViewExt::settings(webview) {
                 settings.set_auto_load_images(true);
                 webview.reload();
             }
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn ensure_webkit(&self) -> Option<webkit6::WebView> {
+        if let Some(webview) = self.imp().webview.borrow().as_ref() {
+            return Some(webview.clone());
+        }
+
+        let stack = self.imp().renderer_stack.borrow().clone()?;
+        tracing::debug!("Creating deferred WebKitGTK context and view");
+        let web_context = webkit6::WebContext::new();
+        let settings = webkit6::Settings::new();
+        settings.set_enable_javascript(false);
+        settings.set_auto_load_images(
+            AppSettings::try_new()
+                .as_ref()
+                .map(AppSettings::auto_load_remote_images)
+                .unwrap_or(false),
+        );
+        settings.set_enable_developer_extras(false);
+
+        let webview = webkit6::WebView::builder()
+            .web_context(&web_context)
+            .settings(&settings)
+            .hexpand(true)
+            .vexpand(true)
+            .build();
+
+        let webview_scroll = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Automatic)
+            .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .child(&webview)
+            .hexpand(true)
+            .vexpand(true)
+            .build();
+
+        // Block external navigation links in WebView, handle via the
+        // desktop's default browser.
+        webview.connect_decide_policy(|_, decision, decision_type| {
+            if decision_type == webkit6::PolicyDecisionType::NavigationAction {
+                if let Ok(nav) = decision
+                    .clone()
+                    .downcast::<webkit6::NavigationPolicyDecision>()
+                {
+                    if let Some(action) = nav.navigation_action() {
+                        if let Some(req) = action.request() {
+                            if let Some(uri) = req.uri() {
+                                if uri != "about:blank" && !uri.starts_with("data:") {
+                                    tracing::info!("Opening external link in browser: {}", uri);
+                                    let _ = gio::AppInfo::launch_default_for_uri(
+                                        &uri,
+                                        None::<&gio::AppLaunchContext>,
+                                    );
+                                    decision.ignore();
+                                    return true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            false
+        });
+
+        stack.add_named(&webview_scroll, Some("webkit"));
+        stack.set_visible_child_name("webkit");
+        self.imp().webview.replace(Some(webview.clone()));
+        tracing::debug!("Deferred WebKitGTK context and view created");
+        Some(webview)
     }
 }
 

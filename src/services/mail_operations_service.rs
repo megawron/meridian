@@ -353,6 +353,36 @@ impl MailCommand {
         }
     }
 
+    pub(crate) fn set_label_for_location(
+        id: impl Into<String>,
+        location: MailBackendLocation,
+        label: impl Into<String>,
+        before: bool,
+        after: bool,
+    ) -> Self {
+        let id = id.into();
+        let label = label.into().trim().to_string();
+        Self {
+            forward: MailOperation::SetLabel {
+                id: id.clone(),
+                location: Some(location.clone()),
+                label: label.clone(),
+                labeled: after,
+            },
+            inverse: MailOperation::SetLabel {
+                id,
+                location: Some(location),
+                label,
+                labeled: before,
+            },
+            description: if after {
+                "Label gesetzt".to_string()
+            } else {
+                "Label entfernt".to_string()
+            },
+        }
+    }
+
     pub(crate) fn delete(id: impl Into<String>, location: MailBackendLocation) -> Self {
         let id = id.into();
         Self {
@@ -812,10 +842,14 @@ impl MailOperationsService {
                 label,
                 labeled,
             } => match location {
-                Some(_) => Err(Self::unsupported_backend(
+                Some(location) => self.apply_camel(
+                    CamelMailOperation::SetLabel {
+                        location,
+                        label,
+                        labeled,
+                    },
                     MailOperationKind::SetLabel,
-                    "EDS/Camel-Multi-Label-Backend",
-                )),
+                ),
                 None => self
                     .store
                     .metadata_store()

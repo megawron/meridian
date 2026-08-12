@@ -789,7 +789,6 @@ impl MailStoreService {
     /// already authoritative in Camel/EDS.  Remote messages must not be
     /// overwritten by a stale client sidecar after a successful Camel
     /// mutation.
-    #[cfg(eds_camel_bridge)]
     pub(crate) fn apply_backend_filters(&self, messages: &mut [ParsedMail]) {
         let filter_rules = MailFilterStore::default().load();
 
