@@ -139,6 +139,77 @@ impl EvolutionWindow {
             .and_then(|widget| widget.downcast::<TasksPage>().ok())
     }
 
+    fn calendar_page(&self) -> Option<CalendarPage> {
+        self.imp()
+            .view_stack
+            .borrow()
+            .as_ref()
+            .and_then(|view_stack| view_stack.child_by_name("calendar"))
+            .and_then(|widget| widget.downcast::<adw::Bin>().ok())
+            .and_then(|bin| bin.child())
+            .and_then(|widget| widget.downcast::<CalendarPage>().ok())
+    }
+
+    fn contacts_page(&self) -> Option<ContactsPage> {
+        self.imp()
+            .view_stack
+            .borrow()
+            .as_ref()
+            .and_then(|view_stack| view_stack.child_by_name("contacts"))
+            .and_then(|widget| widget.downcast::<adw::Bin>().ok())
+            .and_then(|bin| bin.child())
+            .and_then(|widget| widget.downcast::<ContactsPage>().ok())
+    }
+
+    fn present_new_event(&self) {
+        if let Some(calendar_page) = self.calendar_page() {
+            calendar_page.present_new_event();
+            return;
+        }
+        if let Some(view_stack) = self.imp().view_stack.borrow().as_ref() {
+            view_stack.set_visible_child_name("calendar");
+        }
+        let window = self.downgrade();
+        glib::idle_add_local_once(move || {
+            if let Some(window) = window.upgrade() {
+                if let Some(calendar_page) = window.calendar_page() {
+                    calendar_page.present_new_event();
+                }
+            }
+        });
+    }
+
+    fn present_new_contact(&self) {
+        if let Some(contacts_page) = self.contacts_page() {
+            contacts_page.present_new_contact();
+            return;
+        }
+        if let Some(view_stack) = self.imp().view_stack.borrow().as_ref() {
+            view_stack.set_visible_child_name("contacts");
+        }
+        let window = self.downgrade();
+        glib::idle_add_local_once(move || {
+            if let Some(window) = window.upgrade() {
+                if let Some(contacts_page) = window.contacts_page() {
+                    contacts_page.present_new_contact();
+                }
+            }
+        });
+    }
+
+    fn present_account_setup(&self) {
+        let dialog = crate::dialogs::AccountSetupDialog::new();
+        dialog.set_transient_for(Some(self));
+        let window = self.downgrade();
+        dialog.connect_close_request(move |_| {
+            if let Some(window) = window.upgrade() {
+                window.refresh_mail_page();
+            }
+            glib::Propagation::Proceed
+        });
+        dialog.present();
+    }
+
     fn memos_page(&self) -> Option<MemosPage> {
         self.imp()
             .view_stack
@@ -282,6 +353,47 @@ impl EvolutionWindow {
         action
     }
 
+    /// Add a mutually exclusive-looking menu action for a persistent string
+    /// setting.  Evolution presents mail density and layout as selected menu
+    /// choices; boolean action state lets Gio render the current choice while
+    /// keeping the existing action names and menu structure.
+    fn add_string_setting_action<Read, Write>(
+        &self,
+        name: &'static str,
+        key: &'static str,
+        value: &'static str,
+        read: Read,
+        write: Write,
+    ) -> gio::SimpleAction
+    where
+        Read: Fn(&AppSettings) -> String + 'static,
+        Write: Fn(&AppSettings, &str) + 'static,
+    {
+        let settings = AppSettings::try_new();
+        let initial = settings
+            .as_ref()
+            .is_some_and(|settings| read(settings) == value);
+        let action = gio::SimpleAction::new_stateful(name, None, &initial.to_variant());
+        let value_for_activate = value.to_string();
+        let settings_for_activate = settings.clone();
+        action.connect_activate(move |action, _| {
+            if let Some(settings) = settings_for_activate.as_ref() {
+                write(settings, &value_for_activate);
+            }
+            action.set_state(&true.to_variant());
+        });
+
+        if let Some(settings) = settings {
+            let action_for_settings = action.clone();
+            settings.connect_changed(Some(key), move |settings, _| {
+                action_for_settings
+                    .set_state(&(settings.string(key).as_str() == value).to_variant());
+            });
+        }
+        self.add_action(&action);
+        action
+    }
+
     fn configure_primary_action(button: &gtk::Button, view_name: &str) {
         let (icon_name, tooltip, action_name) = match view_name {
             "calendar" => (
@@ -362,6 +474,37 @@ impl EvolutionWindow {
             "mail-prev",
         ];
         for name in MAIL_ACTIONS {
+            if let Some(action) = self
+                .lookup_action(name)
+                .and_then(|action| action.downcast::<gio::SimpleAction>().ok())
+            {
+                action.set_enabled(enabled);
+            }
+        }
+        self.set_message_actions_enabled(
+            enabled
+                && self
+                    .mail_page()
+                    .is_some_and(|mail_page| mail_page.has_selected_message()),
+        );
+    }
+
+    fn set_message_actions_enabled(&self, enabled: bool) {
+        const MESSAGE_ACTIONS: &[&str] = &[
+            "reply",
+            "reply-all",
+            "forward",
+            "export",
+            "delete",
+            "mark-unread",
+            "mark-read",
+            "toggle-flag",
+            "toggle-important",
+            "archive",
+            "mark-junk",
+            "mark-not-junk",
+        ];
+        for name in MESSAGE_ACTIONS {
             if let Some(action) = self
                 .lookup_action(name)
                 .and_then(|action| action.downcast::<gio::SimpleAction>().ok())
@@ -933,28 +1076,26 @@ impl EvolutionWindow {
             ("mail-density-normal", "comfortable"),
             ("mail-density-spacious", "spacious"),
         ] {
-            let action = gio::SimpleAction::new(action_name, None);
-            let density = density.to_string();
-            action.connect_activate(move |_, _| {
-                if let Some(settings) = AppSettings::try_new() {
-                    settings.set_mail_row_density(&density);
-                }
-            });
-            self.add_action(&action);
+            self.add_string_setting_action(
+                action_name,
+                "mail-row-density",
+                density,
+                AppSettings::mail_row_density,
+                AppSettings::set_mail_row_density,
+            );
         }
 
         for (action_name, layout) in [
             ("use-classic-mail-layout", "classic"),
             ("use-modern-mail-layout", "modern"),
         ] {
-            let action = gio::SimpleAction::new(action_name, None);
-            let layout = layout.to_string();
-            action.connect_activate(move |_, _| {
-                if let Some(settings) = AppSettings::try_new() {
-                    settings.set_mail_layout(&layout);
-                }
-            });
-            self.add_action(&action);
+            self.add_string_setting_action(
+                action_name,
+                "mail-layout",
+                layout,
+                AppSettings::mail_layout,
+                AppSettings::set_mail_layout,
+            );
         }
 
         self.add_boolean_setting_action(
@@ -1392,11 +1533,7 @@ impl EvolutionWindow {
         action_account_setup.connect_activate(glib::clone!(
             #[weak(rename_to = win)]
             self,
-            move |_, _| {
-                let dialog = crate::dialogs::AccountSetupDialog::new();
-                dialog.set_transient_for(Some(&win));
-                dialog.present();
-            }
+            move |_, _| win.present_account_setup()
         ));
         self.add_action(&action_account_setup);
 
@@ -1404,11 +1541,7 @@ impl EvolutionWindow {
         action_new_contact.connect_activate(glib::clone!(
             #[weak(rename_to = win)]
             self,
-            move |_, _| {
-                let dialog = crate::dialogs::ContactDialog::new();
-                dialog.set_transient_for(Some(&win));
-                dialog.present();
-            }
+            move |_, _| win.present_new_contact()
         ));
         self.add_action(&action_new_contact);
 
@@ -1416,11 +1549,7 @@ impl EvolutionWindow {
         action_new_event.connect_activate(glib::clone!(
             #[weak(rename_to = win)]
             self,
-            move |_, _| {
-                let dialog = crate::dialogs::EventDialog::new();
-                dialog.set_transient_for(Some(&win));
-                dialog.present();
-            }
+            move |_, _| win.present_new_event()
         ));
         self.add_action(&action_new_event);
 
@@ -1553,6 +1682,22 @@ impl EvolutionWindow {
                     .visible_child_name()
                     .is_some_and(|view_name| view_name == "mail"),
             );
+        }
+
+        if let Some(mail_page) = self.mail_page() {
+            let window = self.downgrade();
+            mail_page.connect_selected_message_notify(move |has_selection| {
+                if let Some(window) = window.upgrade() {
+                    let is_mail_view = window
+                        .imp()
+                        .view_stack
+                        .borrow()
+                        .as_ref()
+                        .and_then(|view_stack| view_stack.visible_child_name())
+                        .is_some_and(|view_name| view_name == "mail");
+                    window.set_message_actions_enabled(is_mail_view && has_selection);
+                }
+            });
         }
     }
 }

@@ -73,6 +73,7 @@ mod imp {
         pub settings: RefCell<Option<AppSettings>>,
         pub calendar_stack: RefCell<Option<adw::ViewStack>>,
         pub calendar_view_buttons: RefCell<Option<Vec<gtk::ToggleButton>>>,
+        pub new_event_button: RefCell<Option<gtk::Button>>,
         pub syncing_calendar_view: Cell<bool>,
         pub month_grid: RefCell<Option<gtk::Grid>>,
         pub month_date_label: RefCell<Option<gtk::Label>>,
@@ -101,6 +102,7 @@ mod imp {
                 settings: RefCell::new(None),
                 calendar_stack: RefCell::new(None),
                 calendar_view_buttons: RefCell::new(None),
+                new_event_button: RefCell::new(None),
                 syncing_calendar_view: Cell::new(false),
                 month_grid: RefCell::new(None),
                 month_date_label: RefCell::new(None),
@@ -174,6 +176,15 @@ impl CalendarPage {
     pub fn refresh_category_presentation(&self) {
         self.refresh_calendar_views();
         self.refresh_event_list_visibility();
+    }
+
+    /// Trigger the same event editor as the calendar toolbar.  The main
+    /// Evolution window uses this entry point so File → New, the contextual
+    /// header action, and the calendar page share one refresh workflow.
+    pub fn present_new_event(&self) {
+        if let Some(button) = self.imp().new_event_button.borrow().as_ref() {
+            button.activate();
+        }
     }
 
     fn month_name(month: u32) -> &'static str {
@@ -693,6 +704,9 @@ impl CalendarPage {
                 dialog.present();
             }
         ));
+        self.imp()
+            .new_event_button
+            .replace(Some(btn_add_event.clone()));
 
         // View mode toggle
         let view_toggle = gtk::Box::builder()

@@ -2036,6 +2036,23 @@ impl MailPage {
         self.selected_message().is_some()
     }
 
+    /// Notify a caller whenever the primary mail selection becomes usable for
+    /// message actions.  The window uses this to mirror Evolution's action
+    /// sensitivity in both the main menu and the message context menu.
+    pub(crate) fn connect_selected_message_notify<F>(&self, callback: F)
+    where
+        F: Fn(bool) + 'static,
+    {
+        let Some(selection) = self.imp().message_selection.borrow().as_ref().cloned() else {
+            callback(false);
+            return;
+        };
+        callback(selection.selected_item().is_some());
+        selection.connect_selected_item_notify(move |selection| {
+            callback(selection.selected_item().is_some());
+        });
+    }
+
     fn present_composer(&self, dialog: crate::dialogs::ComposeDialog) -> bool {
         let Some(root) = self.root().and_downcast::<gtk::Window>() else {
             tracing::warn!("Cannot open composer without a parent window");

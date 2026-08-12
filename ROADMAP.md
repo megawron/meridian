@@ -1199,6 +1199,18 @@ nicht als vollständiger Ersatz beworben werden.
    Kontakte, Aufgaben oder Notizen ebenfalls deaktiviert, sodass die
    modulbezogenen Befehle und Einstellungen dem jeweils sichtbaren Bereich
    entsprechen.
+   Nachrichtenbezogene Aktionen wie Antworten, Weiterleiten, Export und
+   Markierungen folgen zusätzlich live der aktuellen Nachrichtenauswahl und
+   sind ohne Auswahl deaktiviert.
+   Die persistierten Optionen für Nachrichtendichte und klassische/moderne
+   Anordnung erscheinen im Ansichtsmenü nun ebenfalls mit synchronisiertem
+   Aktivzustand.
+   Datei → Neu → Termin und Datei → Neu → Kontakt wechseln bei Bedarf in den
+   jeweiligen Bereich und verwenden dort denselben Seiten-Workflow wie die
+   lokalen Erstellungsbuttons einschließlich anschließender Listenaktualisierung.
+   Kontoerstellung und Kontobearbeitung aus Einstellungen und Hauptmenü
+   aktualisieren nach dem Schließen außerdem die laufende Mail-/Quellenansicht,
+   ohne einen Neustart zu verlangen.
 2. Die portable Aufgaben-/Notizen-/Kontaktansicht weiter vervollständigen:
    verbleibende EDS-vCard-/GAL-Felder, Duplikaterkennung und die noch offenen
    Evolution-Sonderfelder. Aufgaben-/Memo-Suche, Sortierung, Export und lokale

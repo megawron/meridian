@@ -70,6 +70,22 @@ impl PreferencesDialog {
         glib::Object::builder().build()
     }
 
+    fn present_account_dialog(&self, dialog: crate::dialogs::AccountSetupDialog) {
+        if let Some(window) = self.root().and_downcast::<gtk::Window>() {
+            dialog.set_transient_for(Some(&window));
+        }
+        let page = self.downgrade();
+        dialog.connect_close_request(move |_| {
+            if let Some(page) = page.upgrade() {
+                if let Some(window) = page.root().and_downcast::<crate::window::EvolutionWindow>() {
+                    window.refresh_mail_page();
+                }
+            }
+            glib::Propagation::Proceed
+        });
+        dialog.present();
+    }
+
     fn build_ui(&self) {
         let settings = AppSettings::try_new();
 
@@ -98,12 +114,7 @@ impl PreferencesDialog {
             #[weak(rename_to = page)]
             self,
             move |_| {
-                let dialog = crate::dialogs::AccountSetupDialog::new();
-                let root = page.root();
-                if let Some(win) = root.and_then(|r| r.downcast::<gtk::Window>().ok()) {
-                    dialog.set_transient_for(Some(&win));
-                }
-                dialog.present();
+                page.present_account_dialog(crate::dialogs::AccountSetupDialog::new());
             }
         ));
         group_accounts.add(&row_add_account);
@@ -182,15 +193,11 @@ impl PreferencesDialog {
                         junk_folder: String::new(),
                         enabled: true,
                     };
-                    let dialog = crate::dialogs::AccountSetupDialog::new_for_edit(&dummy_profile);
                     if let Some(pref_dialog) = dialog_weak_for_edit.upgrade() {
-                        if let Some(root) = pref_dialog.root() {
-                            if let Ok(win) = root.downcast::<gtk::Window>() {
-                                dialog.set_transient_for(Some(&win));
-                            }
-                        }
+                        pref_dialog.present_account_dialog(
+                            crate::dialogs::AccountSetupDialog::new_for_edit(&dummy_profile),
+                        );
                     }
-                    dialog.present();
                 });
                 row.add_suffix(&edit_btn);
                 group_accounts.add(&row);
@@ -226,15 +233,9 @@ impl PreferencesDialog {
                     #[weak(rename_to = page)]
                     self,
                     move |_| {
-                        let dialog =
-                            crate::dialogs::AccountSetupDialog::new_for_edit(&profile_for_edit);
-                        let root = page.root();
-                        if let Some(window) =
-                            root.and_then(|root| root.downcast::<gtk::Window>().ok())
-                        {
-                            dialog.set_transient_for(Some(&window));
-                        }
-                        dialog.present();
+                        page.present_account_dialog(
+                            crate::dialogs::AccountSetupDialog::new_for_edit(&profile_for_edit),
+                        );
                     }
                 ));
                 let enabled = gtk::Switch::builder()

@@ -25,6 +25,7 @@ mod imp {
     #[derive(Debug, Default)]
     pub struct ContactsPage {
         pub ebook_monitor_cancel: RefCell<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>>,
+        pub new_contact_button: RefCell<Option<gtk::Button>>,
     }
 
     #[glib::object_subclass]
@@ -71,6 +72,15 @@ glib::wrapper! {
 impl ContactsPage {
     pub fn new() -> Self {
         glib::Object::builder().build()
+    }
+
+    /// Trigger the same contact editor as the page-local toolbar button.  The
+    /// main Evolution window uses this to keep menu, header, and page actions
+    /// on one persistent list-refresh path.
+    pub fn present_new_contact(&self) {
+        if let Some(button) = self.imp().new_contact_button.borrow().as_ref() {
+            button.activate();
+        }
     }
 
     fn build_ui(&self) {
@@ -432,6 +442,9 @@ impl ContactsPage {
                 dialog.present();
             }
         ));
+        self.imp()
+            .new_contact_button
+            .replace(Some(new_contact_btn.clone()));
 
         new_contact_bar.append(&new_contact_btn);
         sidebar_box.append(&new_contact_bar);
