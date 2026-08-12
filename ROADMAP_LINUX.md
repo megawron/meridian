@@ -105,6 +105,35 @@ und zuletzt die EDS-/D-Bus-Logs sichern. Keine persönlichen Mailinhalte,
 Passwörter, OAuth-Tokens oder vollständigen RFC822-Daten in das Repository
 oder in CI-Artefakte übernehmen.
 
+### Startdiagnose bei „Programm reagiert nicht“
+
+Für den von manchen Linux-Systemen beobachteten Hänger kurz nach dem Start
+zuerst den vorhandenen Diagnosepfad verwenden, bevor weitere Änderungen am
+UI vorgenommen werden:
+
+```bash
+RUST_LOG=evolution_gtk4=debug ./target/debug/evolution-gtk4 2>&1 | tee evolution-start.log
+```
+
+Die folgenden Marker grenzen die Fehlerklasse ein:
+
+- `WebKitGTK context and view created`: Der Linux-HTML-Renderer ist initialisiert.
+- `Mail backend returned from EDS/Camel`: Der native Worker ist aus dem
+  Camel-Aufruf zurückgekehrt; ein Fehlen dieses Markers deutet auf EDS/Camel,
+  Provider-Authentifizierung oder einen nativen Deadlock hin.
+- `Applying mail load to GTK models` und `Mail load applied to GTK models`:
+  Der erste Marker beginnt den GTK-Hauptthread-Abschnitt, der zweite beendet
+  Ordner- und Nachrichtenmodell-Aufbau. Fehlt nur der zweite Marker, muss die
+  Zahl der geladenen Ordner/Nachrichten und der Modellaufbau profiliert werden.
+- `Loaded mail sources`: Die EDS-Quellenerkennung ist abgeschlossen. Ein
+  angezeigtes Konto belegt allein noch nicht, dass Camel bereits lesbare
+  Ordner oder Nachrichten geliefert hat.
+
+Für die Abnahme zusätzlich den genauen Commit, `uname -a`,
+`pkg-config --modversion webkitgtk-6.0 camel-1.2 libedataserver-1.2`,
+die EDS-/Camel-Logs sowie den letzten erreichten Marker notieren. Keine
+Authentifizierungsdaten oder Mailinhalte in das Log übernehmen.
+
 ## 2. EDS-/D-Bus-/Anmeldeumgebung
 
 - `[~]` EDS-Source-Registry über D-Bus auf einem laufenden GNOME-Desktop
@@ -390,8 +419,16 @@ Mit einem Testkonto ohne produktive Empfänger prüfen:
 - `[ ]` GnuPG/CamelCipherContext für OpenPGP erkennen, prüfen, signieren,
   verschlüsseln und entschlüsseln; Schlüsselwahl, Trust, fehlende Schlüssel,
   abgelaufene/revozierte Schlüssel und Passphrase-Dialoge testen.
-- `[ ]` S/MIME mit Zertifikatsspeicher, Trust Chain, Ablauf/Widerruf,
-  Signaturprüfung und Verschlüsselung testen.
+  *(Der portable GnuPG-/PGP-MIME-Versand sowie die asynchrone Prüfung und
+  Entschlüsselung im lokalen MIME-Pfad sind vorbereitet; offen bleibt die
+  Abnahme mit GPG-Agent/Pinentry, echten EDS/Camel-Nachrichten und nativer
+  CamelCipherContext-Strecke.)*
+- `[~]` Den portablen OpenSSL/CMS-S/MIME-Pfad gegen echte Linux-Zertifikate
+  abnehmen: Signieren/Verschlüsseln im Composer sowie Verifizieren und
+  Entschlüsseln eingehender MIME-Nachrichten sind implementiert; offen sind
+  native CamelSMIMEContext-/EDS-Einbindung, Distribution-Zertifikatsspeicher,
+  vollständige Trust Chain, Ablauf/Widerruf, PKCS#12-/Token-/Passphrase-Flows
+  und die Fehlerfälle fehlender Zwischenzertifikate oder Empfängerzertifikate.
 - `[ ]` Remote-Content- und Tracking-Schutz gegen echte HTML-Mails prüfen:
   Bilder, Redirects, JavaScript, externe Links sowie die portable Auflösung
   bekannter `cid:`-Rasteranhänge; prüfen, dass unbekannte IDs, SVG/aktive
@@ -617,6 +654,9 @@ die native Abnahme.
   müssen neu über GOA/Secret Service autorisiert werden. Import, Neustart,
   Rollback und ein zweiter Import dürfen keine EDS-Quelle, lokale Daten oder
   app-eigene Zustände unkontrolliert überschreiben.
+  *(Der portable Import explizit exportierter nicht-geheimer INI-/GSettings- /
+  DConf-Werte ist bereits implementiert; offen bleibt der Linux-Test gegen
+  die echte DConf-Datenbank, native EDS-Registrierung und Secret Service.)*
 - `[ ]` Originalgetreue Arbeitsabläufe gegen Evolution vergleichen:
   gleiche klassische Mailanordnung, Ordner-/Suchordner-Navigation,
   Kontextmenüs, Einzel-/Batch-Aktionen, Drag-and-drop, Reply/Forward,
@@ -633,10 +673,15 @@ die native Abnahme.
   Drafts, atomare Sidecar-/GSettings-Schreibvorgänge, sichere Logredaktion,
   Diagnosepaket ohne Geheimnisse und Wiederherstellung nach beschädigter
   lokaler Zustandsdatei.
-- `[ ]` Vollständige Linux-Performanceabnahme durchführen: große Ordner und
+- `[~]` Vollständige Linux-Performanceabnahme durchführen: große Ordner und
   Threads, viele ECal-/EBook-Objekte, große Anhänge, parallele Quellen,
   wiederholtes Öffnen/Schließen von Modulen, Speicherwachstum, Main-Thread-
   Blockierung, Worker-Abbruch und Laufzeit nach EDS-/D-Bus-Neustarts.
+  *(Teilweise erledigt: UI-Main-Thread-Blockierungen durch Batching/Splice,
+  GTK4-Layout-Oszillationen und die gleichzeitige Initialisierung versteckter
+  EDS-Module beim Start reduziert; der Camel-Dauer-Watcher startet erst nach
+  dem ersten Mail-Ladeergebnis. Speicherwachstum bei sehr großen Konten und
+  die echte Linux-Laufzeitabnahme bleiben offen.)*
 - `[ ]` Release- und Upgradepfade auf einer frischen Linux-VM abnehmen:
   Flatpak und native Installation, fehlende optionale Provider, Sandbox-
   Portale, EDS-/GOA-/Secret-Service-Kommunikation, AppStream/Desktop-Datei,

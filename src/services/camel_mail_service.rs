@@ -652,17 +652,16 @@ fn parse_native_messages(
         let folder_id = c_string(record.folder_id);
         let message_uid = c_string(record.message_uid);
         let raw = unsafe { slice::from_raw_parts(record.raw_message, record.raw_message_len) };
-        let raw = String::from_utf8_lossy(raw);
         let id = format!("eds:{source_uid}:{folder_name}:{message_uid}");
 
-        if let Some(mut parsed) = parse_rfc822(
+        if let Some(mut parsed) = crate::services::mail_store_service::parse_rfc822_bytes(
             &id,
             if folder_id.is_empty() {
                 "all"
             } else {
                 &folder_id
             },
-            &raw,
+            raw,
             record.is_unread != 0,
         ) {
             parsed.is_flagged = record.is_flagged != 0;

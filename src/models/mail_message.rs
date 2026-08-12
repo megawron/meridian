@@ -50,6 +50,9 @@ mod imp {
         pub is_important: RefCell<bool>,
         pub labels: RefCell<Vec<String>>,
         pub(crate) backend_location: RefCell<Option<MailBackendLocation>>,
+        /// Original RFC822 bytes for cryptographic inspection.  The parser
+        /// only retains this for messages with a detected crypto envelope.
+        pub(crate) raw_mime: RefCell<Option<Vec<u8>>>,
         pub attachments: RefCell<Vec<AttachmentInfo>>,
     }
 
@@ -202,6 +205,17 @@ impl MailMessageObject {
         self.imp().html_body.borrow().clone()
     }
 
+    pub(crate) fn replace_rendered_content(
+        &self,
+        html_body: String,
+        preview_snippet: String,
+        attachments: Vec<AttachmentInfo>,
+    ) {
+        *self.imp().html_body.borrow_mut() = html_body;
+        *self.imp().preview_snippet.borrow_mut() = preview_snippet;
+        *self.imp().attachments.borrow_mut() = attachments;
+    }
+
     pub fn is_unread(&self) -> bool {
         *self.imp().is_unread.borrow()
     }
@@ -253,6 +267,14 @@ impl MailMessageObject {
 
     pub(crate) fn backend_location(&self) -> Option<MailBackendLocation> {
         self.imp().backend_location.borrow().clone()
+    }
+
+    pub(crate) fn set_raw_mime(&self, raw: Option<Vec<u8>>) {
+        *self.imp().raw_mime.borrow_mut() = raw;
+    }
+
+    pub(crate) fn raw_mime(&self) -> Option<Vec<u8>> {
+        self.imp().raw_mime.borrow().clone()
     }
 
     pub fn attachments(&self) -> Vec<AttachmentInfo> {

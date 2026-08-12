@@ -672,17 +672,21 @@ mod tests {
         };
         let candidates = event_reminder_candidates(&event, 1_786_437_600);
         assert_eq!(candidates.len(), 2);
+        let event_start =
+            property_local_timestamp("DTSTART", "20260811T100000Z", DEFAULT_ALL_DAY_HOUR).unwrap();
         assert_eq!(
             candidates[0].due_at,
-            local_timestamp(
-                NaiveDate::from_ymd_opt(2026, 8, 11)
-                    .unwrap()
-                    .and_hms_opt(9, 45, 0)
-                    .unwrap()
+            event_start - chrono::Duration::minutes(15).num_seconds()
+        );
+        assert_eq!(
+            candidates[1].due_at,
+            property_local_timestamp(
+                "TRIGGER;VALUE=DATE-TIME",
+                "20260811T120000Z",
+                DEFAULT_ALL_DAY_HOUR,
             )
             .unwrap()
         );
-        assert_eq!(candidates[1].due_at, 1_786_449_600);
     }
 
     #[test]

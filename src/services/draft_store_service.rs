@@ -8,6 +8,8 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use super::crypto_service::SmimeOptions;
+
 const CURRENT_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -34,6 +36,15 @@ pub struct DraftMessage {
     pub calendar_method: Option<String>,
     #[serde(default)]
     pub calendar_component: Option<String>,
+    /// OpenPGP choices are stored as draft metadata, never as credentials.
+    #[serde(default)]
+    pub pgp_sign: bool,
+    #[serde(default)]
+    pub pgp_encrypt: bool,
+    #[serde(default)]
+    pub pgp_key: String,
+    #[serde(default)]
+    pub(crate) smime_options: Option<SmimeOptions>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -165,6 +176,17 @@ mod tests {
             attachments: Vec::new(),
             calendar_method: None,
             calendar_component: None,
+            pgp_sign: true,
+            pgp_encrypt: true,
+            pgp_key: "AABBCCDDEEFF0011".to_string(),
+            smime_options: Some(SmimeOptions {
+                sign: true,
+                encrypt: false,
+                signer_certificate: "/tmp/signer.pem".to_string(),
+                private_key: "/tmp/signer.key".to_string(),
+                recipient_certificates: Vec::new(),
+                ca_file: "/tmp/ca.pem".to_string(),
+            }),
         };
 
         store.save(draft.clone()).expect("draft should persist");
@@ -196,6 +218,10 @@ mod tests {
                     attachments: Vec::new(),
                     calendar_method: None,
                     calendar_component: None,
+                    pgp_sign: false,
+                    pgp_encrypt: false,
+                    pgp_key: String::new(),
+                    smime_options: None,
                 })
                 .expect("draft should persist");
         }
@@ -233,6 +259,10 @@ mod tests {
             calendar_component: Some(
                 "BEGIN:VCALENDAR\r\nMETHOD:REPLY\r\nEND:VCALENDAR\r\n".to_string(),
             ),
+            pgp_sign: false,
+            pgp_encrypt: false,
+            pgp_key: String::new(),
+            smime_options: None,
         };
 
         store

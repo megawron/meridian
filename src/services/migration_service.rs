@@ -46,8 +46,19 @@ pub struct MigrationReport {
     pub discovered_mail_files: usize,
     pub imported_mail_files: usize,
     pub imported_mail_folders: usize,
+    pub discovered_settings_files: usize,
+    pub imported_settings: usize,
+    /// Normalized non-secret settings waiting to be applied by the GTK main
+    /// thread after the profile scan finishes.
+    pub settings: Vec<ImportedSetting>,
     pub signature_text: Option<String>,
     pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImportedSetting {
+    pub key: String,
+    pub value: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -392,6 +403,45 @@ fn import_evolution_sources_inner(
         );
     }
 
+    let mut settings_paths = Vec::new();
+    collect_evolution_settings_files(root, &mut settings_paths)?;
+    settings_paths.sort();
+    settings_paths.dedup();
+    report.discovered_settings_files = settings_paths.len();
+    let mut imported_settings = BTreeMap::<String, String>::new();
+    for path in settings_paths {
+        let raw = match fs::read_to_string(&path) {
+            Ok(raw) => raw,
+            Err(error) => {
+                report.warnings.push(format!(
+                    "{}: Einstellungsdatei konnte nicht gelesen werden: {error}",
+                    path.display()
+                ));
+                continue;
+            }
+        };
+        let parsed = parse_evolution_settings(&raw, &path);
+        report.ignored_secret_fields += parsed.ignored_secret_fields;
+        report.warnings.extend(parsed.warnings);
+        for setting in parsed.settings {
+            if imported_settings
+                .insert(setting.key.clone(), setting.value)
+                .is_some()
+            {
+                report.warnings.push(format!(
+                    "{}: doppelter Einstellungswert für „{}“ wurde durch den späteren Eintrag ersetzt",
+                    path.display(),
+                    setting.key
+                ));
+            }
+        }
+    }
+    report.settings = imported_settings
+        .into_iter()
+        .map(|(key, value)| ImportedSetting { key, value })
+        .collect();
+    report.imported_settings = report.settings.len();
+
     let mut filter_paths = Vec::new();
     collect_named_files(root, "filters.xml", &mut filter_paths)?;
     filter_paths.sort();
@@ -658,6 +708,309 @@ fn save_imported_sources(
                 EdsSourceKind::AddressBook => "Adressbuch",
             }
         ));
+    }
+}
+
+#[derive(Debug, Default)]
+struct ParsedEvolutionSettings {
+    settings: Vec<ImportedSetting>,
+    ignored_secret_fields: usize,
+    warnings: Vec<String>,
+}
+
+/// Find an explicitly exported Evolution settings file without treating
+/// arbitrary profile data as configuration.  Evolution's GSettings values
+/// normally live in dconf rather than beside the `.source` files, so the
+/// importer accepts the common `dconf dump`/INI export names as well.
+fn collect_evolution_settings_files(root: &Path, result: &mut Vec<PathBuf>) -> io::Result<()> {
+    let metadata = fs::symlink_metadata(root)?;
+    if !metadata.is_dir() {
+        return Ok(());
+    }
+    for entry in fs::read_dir(root)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        if file_type.is_symlink() {
+            continue;
+        }
+        let path = entry.path();
+        if file_type.is_dir() {
+            collect_evolution_settings_files(&path, result)?;
+            continue;
+        }
+        if !file_type.is_file() {
+            continue;
+        }
+        let name = path
+            .file_name()
+            .map(|name| name.to_string_lossy().to_ascii_lowercase())
+            .unwrap_or_default();
+        let extension = path
+            .extension()
+            .map(|extension| extension.to_string_lossy().to_ascii_lowercase())
+            .unwrap_or_default();
+        let known_name = matches!(
+            name.as_str(),
+            "settings.ini"
+                | "evolution-settings.ini"
+                | "evolution-settings.conf"
+                | "gsettings.ini"
+                | "gsettings.dump"
+                | "dconf.dump"
+                | "evolution.dconf"
+                | "evolution.gsettings"
+        );
+        let named_export = name.starts_with("evolution")
+            && matches!(extension.as_str(), "ini" | "conf" | "dconf" | "dump");
+        if known_name || named_export {
+            result.push(path);
+        }
+    }
+    Ok(())
+}
+
+fn parse_evolution_settings(raw: &str, path: &Path) -> ParsedEvolutionSettings {
+    let mut result = ParsedEvolutionSettings::default();
+    let mut group = String::new();
+    for raw_line in raw.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() || line.starts_with('#') || line.starts_with(';') {
+            continue;
+        }
+        if line.starts_with('[') && line.ends_with(']') {
+            group = line[1..line.len() - 1].trim().to_string();
+            continue;
+        }
+        let Some((raw_key, raw_value)) = line.split_once('=').or_else(|| line.split_once(':'))
+        else {
+            continue;
+        };
+        let key = normalize_setting_key(raw_key);
+        if key.is_empty() {
+            continue;
+        }
+        if is_secret_setting_key(&key) {
+            result.ignored_secret_fields += 1;
+            continue;
+        }
+        let Some((canonical_key, value)) = canonical_setting(&group, &key, raw_value) else {
+            continue;
+        };
+        result.settings.push(ImportedSetting {
+            key: canonical_key,
+            value,
+        });
+    }
+    if result.settings.is_empty() && !raw.trim().is_empty() {
+        result.warnings.push(format!(
+            "{}: keine unterstützten nicht-geheimen Evolution-Einstellungen gefunden",
+            path.display()
+        ));
+    }
+    result
+}
+
+fn normalize_setting_key(value: &str) -> String {
+    value
+        .trim()
+        .trim_matches(['"', '\''])
+        .rsplit('/')
+        .next()
+        .unwrap_or_default()
+        .replace('_', "-")
+        .to_ascii_lowercase()
+}
+
+fn canonical_setting(group: &str, key: &str, raw_value: &str) -> Option<(String, String)> {
+    let group = group.to_ascii_lowercase();
+    let canonical = match key {
+        "show-preview" | "message-preview" | "show-message-preview" => "show-message-preview",
+        "show-week-numbers" => "calendar-show-week-numbers",
+        "week-start" | "first-weekday" => "calendar-week-start",
+        "default-calendar" => "default-calendar-source",
+        "default-address-book" => "default-address-book-source",
+        "default-task-list" => "default-task-source",
+        "default-memo-list" => "default-memo-source",
+        "use-12-hour-format" | "use-12-hour-clock" => "time-format",
+        "show-toolbar" if group.contains("mail") => "mail-show-toolbar",
+        "show-sidebar" if group.contains("mail") => "mail-show-sidebar",
+        "layout" if group.contains("mail") => "mail-layout",
+        "threading" | "thread-list" if group.contains("mail") => "mail-threading",
+        "default-folder" if group.contains("mail") => "mail-default-folder",
+        "sort-field" if group.contains("mail") => "mail-sort-field",
+        "sort-descending" if group.contains("mail") => "mail-sort-descending",
+        value if is_supported_migration_key(value) => value,
+        _ => return None,
+    };
+    let mut value = decode_setting_value(raw_value);
+    if key == "use-12-hour-format" {
+        return parse_setting_bool(&value).map(|enabled| {
+            (
+                "time-format".to_string(),
+                if enabled { "12h" } else { "24h" }.to_string(),
+            )
+        });
+    }
+    if key == "use-12-hour-clock" {
+        return parse_setting_bool(&value).map(|enabled| {
+            (
+                "time-format".to_string(),
+                if enabled { "12h" } else { "24h" }.to_string(),
+            )
+        });
+    }
+    if canonical == "calendar-week-start" {
+        value = match value.to_ascii_lowercase().as_str() {
+            "0" | "monday" | "mon" => "monday".to_string(),
+            "1" | "sunday" | "sun" => "sunday".to_string(),
+            _ => value,
+        };
+    }
+    Some((canonical.to_string(), value))
+}
+
+fn is_supported_migration_key(key: &str) -> bool {
+    matches!(
+        key,
+        "window-width"
+            | "window-height"
+            | "is-maximized"
+            | "active-view"
+            | "default-account"
+            | "default-calendar-source"
+            | "default-task-source"
+            | "default-memo-source"
+            | "default-address-book-source"
+            | "calendar-view"
+            | "calendar-week-start"
+            | "calendar-workdays"
+            | "calendar-workday-start"
+            | "calendar-workday-end"
+            | "calendar-default-reminder"
+            | "notifications-enabled"
+            | "confirm-destructive-actions"
+            | "calendar-show-week-numbers"
+            | "calendar-hidden-sources"
+            | "date-format"
+            | "time-format"
+            | "calendar-time-zone"
+            | "auto-load-remote-images"
+            | "force-dark-mode"
+            | "render-html"
+            | "composer-html"
+            | "request-read-receipt"
+            | "spellcheck-languages"
+            | "mail-font-family"
+            | "mail-font-size"
+            | "mark-read-on-selection"
+            | "show-message-preview"
+            | "mail-default-folder"
+            | "mail-layout"
+            | "mail-show-toolbar"
+            | "mail-show-sidebar"
+            | "mail-sidebar-position"
+            | "mail-modern-preview-position"
+            | "mail-classic-preview-position"
+            | "mail-row-density"
+            | "mail-show-avatar"
+            | "mail-show-sender"
+            | "mail-show-recipient"
+            | "mail-show-date"
+            | "mail-show-attachment"
+            | "mail-show-preview-text"
+            | "mail-show-labels"
+            | "color-scheme"
+            | "sign-new-messages"
+            | "default-pgp-key"
+            | "crypto-protocol"
+            | "smime-signer-certificate"
+            | "smime-private-key"
+            | "smime-recipient-certificates"
+            | "smime-ca-file"
+            | "mail-sync-interval"
+            | "draft-autosave-interval"
+            | "append-signature"
+            | "signature-text"
+            | "quote-original"
+            | "quote-style"
+            | "mail-sort-field"
+            | "mail-sort-descending"
+            | "mail-threading"
+            | "task-filter"
+            | "task-source-filter"
+            | "task-sort-field"
+            | "task-sort-descending"
+            | "memo-sort-field"
+            | "memo-source-filter"
+            | "memo-sort-descending"
+    )
+}
+
+fn is_secret_setting_key(key: &str) -> bool {
+    [
+        "password",
+        "passwd",
+        "token",
+        "secret",
+        "credential",
+        "passphrase",
+        "private-key",
+        "privatekey",
+        "oauth",
+        "keyring",
+    ]
+    .iter()
+    .any(|secret| key.contains(secret))
+}
+
+fn decode_setting_value(raw_value: &str) -> String {
+    let mut value = raw_value.trim();
+    if let Some((prefix, rest)) = value.split_once(' ')
+        && matches!(
+            prefix,
+            "@s" | "@b" | "@i" | "@u" | "string" | "boolean" | "int32" | "uint32"
+        )
+    {
+        value = rest.trim();
+    }
+    if value.len() >= 2
+        && ((value.starts_with('\'') && value.ends_with('\''))
+            || (value.starts_with('"') && value.ends_with('"')))
+    {
+        return unescape_setting_value(&value[1..value.len() - 1]);
+    }
+    value.to_string()
+}
+
+fn unescape_setting_value(value: &str) -> String {
+    let mut output = String::with_capacity(value.len());
+    let mut escaped = false;
+    for character in value.chars() {
+        if escaped {
+            output.push(match character {
+                'n' => '\n',
+                'r' => '\r',
+                't' => '\t',
+                other => other,
+            });
+            escaped = false;
+        } else if character == '\\' {
+            escaped = true;
+        } else {
+            output.push(character);
+        }
+    }
+    if escaped {
+        output.push('\\');
+    }
+    output
+}
+
+fn parse_setting_bool(value: &str) -> Option<bool> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "true" | "yes" | "on" | "1" => Some(true),
+        "false" | "no" | "off" | "0" => Some(false),
+        _ => None,
     }
 }
 
@@ -1648,6 +2001,52 @@ mod tests {
     use super::*;
 
     #[test]
+    fn parses_exported_settings_without_retaining_secrets() {
+        let parsed = parse_evolution_settings(
+            r#"
+[org/gnome/evolution/mail]
+mail-layout='classic'
+show-preview=true
+threading=false
+
+[org/gnome/evolution/calendar]
+use-12-hour-format=true
+show-week-numbers=true
+
+[org/gnome/evolution/account]
+password='must-not-be-retained'
+oauth2-access-token='must-not-be-retained'
+unknown-setting='ignored'
+"#,
+            Path::new("evolution-settings.ini"),
+        );
+        assert_eq!(parsed.ignored_secret_fields, 2);
+        assert!(parsed.warnings.is_empty());
+        assert!(parsed.settings.contains(&ImportedSetting {
+            key: "mail-layout".to_string(),
+            value: "classic".to_string(),
+        }));
+        assert!(parsed.settings.contains(&ImportedSetting {
+            key: "show-message-preview".to_string(),
+            value: "true".to_string(),
+        }));
+        assert!(parsed.settings.contains(&ImportedSetting {
+            key: "mail-threading".to_string(),
+            value: "false".to_string(),
+        }));
+        assert!(parsed.settings.contains(&ImportedSetting {
+            key: "time-format".to_string(),
+            value: "12h".to_string(),
+        }));
+        assert!(
+            !parsed
+                .settings
+                .iter()
+                .any(|setting| setting.key == "password")
+        );
+    }
+
+    #[test]
     fn parses_mail_source_without_retaining_secret_keys() {
         let source = parse_source(
             r#"
@@ -1789,6 +2188,39 @@ JunkFolder=Junk
         assert_eq!(store.load().len(), 1);
         assert_eq!(store.load()[0].id, "evolution-source:mail-1");
         assert_eq!(report.warnings.len(), 1);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn includes_non_secret_settings_from_an_explicit_profile_export() {
+        let root = temporary_directory("migration-settings");
+        let profile_root = root.join("profile");
+        fs::create_dir_all(&profile_root).expect("profile directory should be created");
+        fs::write(
+            profile_root.join("evolution-settings.ini"),
+            "[org/gnome/evolution/mail]\nmail-layout='classic'\nshow-preview=true\npassword='ignored'\n",
+        )
+        .expect("settings export should be written");
+
+        let store = AccountConfigStore::new(root.join("accounts.json"));
+        let report = import_evolution_sources(&profile_root, &store)
+            .expect("settings export should be read");
+        assert_eq!(report.discovered_settings_files, 1);
+        assert_eq!(report.imported_settings, 2);
+        assert_eq!(report.ignored_secret_fields, 1);
+        assert!(
+            report
+                .settings
+                .iter()
+                .any(|setting| setting.key == "mail-layout" && setting.value == "classic")
+        );
+        assert!(
+            report
+                .settings
+                .iter()
+                .any(|setting| setting.key == "show-message-preview" && setting.value == "true")
+        );
 
         let _ = fs::remove_dir_all(root);
     }

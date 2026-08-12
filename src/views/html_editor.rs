@@ -350,7 +350,15 @@ impl HtmlEditor {
         });
         web_view.load_html(&initial_html, None);
 
-        vbox.append(&web_view);
+        let web_view_scroll = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Automatic)
+            .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .child(&web_view)
+            .hexpand(true)
+            .vexpand(true)
+            .build();
+
+        vbox.append(&web_view_scroll);
         vbox.set_parent(self);
 
         // Toolbar action wiring

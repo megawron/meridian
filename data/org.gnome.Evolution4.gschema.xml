@@ -204,6 +204,26 @@
       <default>''</default>
       <summary>Default OpenPGP key fingerprint</summary>
     </key>
+    <key name="crypto-protocol" type="s">
+      <default>'openpgp'</default>
+      <summary>Default message security protocol (openpgp or smime)</summary>
+    </key>
+    <key name="smime-signer-certificate" type="s">
+      <default>''</default>
+      <summary>Default S/MIME signer certificate path</summary>
+    </key>
+    <key name="smime-private-key" type="s">
+      <default>''</default>
+      <summary>Default S/MIME private key path</summary>
+    </key>
+    <key name="smime-recipient-certificates" type="s">
+      <default>''</default>
+      <summary>S/MIME recipient certificate paths separated by newlines</summary>
+    </key>
+    <key name="smime-ca-file" type="s">
+      <default>''</default>
+      <summary>Optional S/MIME trust store certificate bundle path</summary>
+    </key>
     <key name="mail-sync-interval" type="i">
       <default>30</default>
       <summary>Mail synchronization interval in seconds (0 disables automatic synchronization)</summary>

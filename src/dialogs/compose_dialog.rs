@@ -21,6 +21,7 @@ use crate::services::AppSettings;
 use crate::services::account_config_service::{AccountConfigStore, AccountProfile};
 use crate::services::camel_mail_service;
 use crate::services::contact_store_service::ContactStoreService;
+use crate::services::crypto_service::SmimeOptions;
 use crate::services::draft_store_service::{DraftAttachment, DraftMessage, DraftStoreService};
 use crate::services::eds_service::{self, EdsSourceKind, EdsSourceOrigin};
 use crate::services::html_sanitizer::sanitize_html;
@@ -61,6 +62,10 @@ mod imp {
         pub calendar_method: RefCell<Option<String>>,
         pub calendar_component: RefCell<Option<String>>,
         pub html_editor: RefCell<Option<crate::views::HtmlEditor>>,
+        pub pgp_sign_button: RefCell<Option<gtk::ToggleButton>>,
+        pub pgp_encrypt_button: RefCell<Option<gtk::ToggleButton>>,
+        pub pgp_key_override: RefCell<Option<String>>,
+        pub(crate) smime_options_override: RefCell<Option<SmimeOptions>>,
         pub attachments: RefCell<Vec<DraftAttachment>>,
         pub attachment_list: RefCell<Option<gtk::ListBox>>,
         pub autosave_source: RefCell<Option<glib::SourceId>>,
@@ -217,6 +222,20 @@ impl ComposeDialog {
             (!draft.from.trim().is_empty()).then(|| draft.from.clone());
         *dialog.imp().calendar_method.borrow_mut() = draft.calendar_method.clone();
         *dialog.imp().calendar_component.borrow_mut() = draft.calendar_component.clone();
+        if let Some(button) = dialog.imp().pgp_sign_button.borrow().as_ref() {
+            button.set_active(draft.pgp_sign);
+        }
+        if let Some(button) = dialog.imp().pgp_encrypt_button.borrow().as_ref() {
+            button.set_active(draft.pgp_encrypt);
+        }
+        dialog
+            .imp()
+            .pgp_key_override
+            .replace(Some(draft.pgp_key.clone()));
+        dialog
+            .imp()
+            .smime_options_override
+            .replace(draft.smime_options.clone());
         if let Some(entry) = dialog.imp().entry_to.borrow().as_ref() {
             entry.set_text(&draft.to);
         }
@@ -331,7 +350,7 @@ impl ComposeDialog {
             .unwrap_or(false);
         let btn_sign = gtk::ToggleButton::builder()
             .icon_name("security-high-symbolic")
-            .tooltip_text("PGP signieren (Linux-EDS/GnuPG erforderlich)")
+            .tooltip_text("Nachricht signieren (OpenPGP oder S/MIME)")
             .active(sign_by_default)
             .css_classes(vec!["flat"])
             .build();
@@ -339,7 +358,7 @@ impl ComposeDialog {
 
         let btn_encrypt = gtk::ToggleButton::builder()
             .icon_name("changes-prevent-symbolic")
-            .tooltip_text("PGP verschlüsseln (Linux-EDS/GnuPG erforderlich)")
+            .tooltip_text("Nachricht verschlüsseln (OpenPGP oder S/MIME)")
             .css_classes(vec!["flat"])
             .build();
         header_bar.pack_start(&btn_encrypt);
@@ -475,6 +494,10 @@ impl ComposeDialog {
             .replace(Some(entry_subject.clone()));
         self.imp().combo_from.replace(Some(combo_from.clone()));
         self.imp().html_editor.replace(Some(html_editor.clone()));
+        self.imp().pgp_sign_button.replace(Some(btn_sign.clone()));
+        self.imp()
+            .pgp_encrypt_button
+            .replace(Some(btn_encrypt.clone()));
         self.imp().attachment_list.replace(Some(attachment_list));
 
         let dialog_for_default_account = self.downgrade();
@@ -890,6 +913,7 @@ impl ComposeDialog {
                 return;
             };
             let identity = dialog.selected_identity(combo_from_for_send.selected());
+            let (pgp_sign, pgp_encrypt) = dialog.pgp_flags_for_message();
             let outgoing = OutgoingMessage {
                 source_uid: identity.source_uid,
                 from: identity.from,
@@ -906,6 +930,10 @@ impl ComposeDialog {
                 attachments: dialog.imp().attachments.borrow().clone(),
                 calendar_method: dialog.imp().calendar_method.borrow().clone(),
                 calendar_component: dialog.imp().calendar_component.borrow().clone(),
+                pgp_sign,
+                pgp_encrypt,
+                pgp_key: dialog.pgp_key_for_message(),
+                smime_options: dialog.smime_options_for_message(),
             };
             let dialog_weak = dialog.downgrade();
             let send_button_weak_for_result = send_button_weak.clone();
@@ -1093,6 +1121,10 @@ impl ComposeDialog {
             combo_from,
             #[strong]
             html_editor,
+            #[strong]
+            btn_sign,
+            #[strong]
+            btn_encrypt,
             move |_| {
                 let to = entry_to.text().to_string();
                 let cc = entry_cc.text().to_string();
@@ -1109,6 +1141,10 @@ impl ComposeDialog {
                 let attachments = dialog.imp().attachments.borrow().clone();
                 let calendar_method = dialog.imp().calendar_method.borrow().clone();
                 let calendar_component = dialog.imp().calendar_component.borrow().clone();
+                let pgp_sign = btn_sign.is_active();
+                let pgp_encrypt = btn_encrypt.is_active();
+                let pgp_key = dialog.pgp_key_for_message();
+                let smime_options = dialog.smime_options_for_message();
                 let draft_id = dialog.imp().draft_id.borrow().clone();
                 let updated_at = Utc::now().to_rfc3339();
                 let dialog_weak = dialog.downgrade();
@@ -1131,6 +1167,13 @@ impl ComposeDialog {
                                 attachments,
                                 calendar_method,
                                 calendar_component,
+                                // EDS drafts stay editable; the OpenPGP
+                                // choice is persisted only in app-owned
+                                // draft metadata until the final send.
+                                pgp_sign: false,
+                                pgp_encrypt: false,
+                                pgp_key: String::new(),
+                                smime_options: None,
                             };
                             let raw_message = match mail_composer_service::build_rfc822(&outgoing) {
                                 Ok(raw_message) => raw_message,
@@ -1186,6 +1229,10 @@ impl ComposeDialog {
                                 attachments,
                                 calendar_method,
                                 calendar_component,
+                                pgp_sign,
+                                pgp_encrypt,
+                                pgp_key,
+                                smime_options,
                             };
                             match DraftStoreService::default().save(draft) {
                                 Ok(()) => {
@@ -1296,6 +1343,20 @@ impl ComposeDialog {
         let attachments = self.imp().attachments.borrow().clone();
         let calendar_method = self.imp().calendar_method.borrow().clone();
         let calendar_component = self.imp().calendar_component.borrow().clone();
+        let pgp_sign = self
+            .imp()
+            .pgp_sign_button
+            .borrow()
+            .as_ref()
+            .is_some_and(|button| button.is_active());
+        let pgp_encrypt = self
+            .imp()
+            .pgp_encrypt_button
+            .borrow()
+            .as_ref()
+            .is_some_and(|button| button.is_active());
+        let pgp_key = self.pgp_key_for_message();
+        let smime_options = self.smime_options_for_message();
         if to.trim().is_empty()
             && cc.trim().is_empty()
             && bcc.trim().is_empty()
@@ -1327,6 +1388,10 @@ impl ComposeDialog {
                 attachments,
                 calendar_method,
                 calendar_component,
+                pgp_sign,
+                pgp_encrypt,
+                pgp_key,
+                smime_options,
             };
             if let Err(error) = DraftStoreService::default().save(draft) {
                 tracing::warn!(%error, "Could not autosave local draft");
@@ -1360,6 +1425,62 @@ impl ComposeDialog {
             .get(selected as usize)
             .cloned()
             .unwrap_or_default()
+    }
+
+    fn pgp_key_for_message(&self) -> String {
+        self.imp()
+            .pgp_key_override
+            .borrow()
+            .clone()
+            .unwrap_or_else(|| {
+                AppSettings::try_new()
+                    .map(|settings| settings.default_pgp_key())
+                    .unwrap_or_default()
+            })
+    }
+
+    fn security_toggle_state(&self) -> (bool, bool) {
+        let sign = self
+            .imp()
+            .pgp_sign_button
+            .borrow()
+            .as_ref()
+            .is_some_and(|button| button.is_active());
+        let encrypt = self
+            .imp()
+            .pgp_encrypt_button
+            .borrow()
+            .as_ref()
+            .is_some_and(|button| button.is_active());
+        (sign, encrypt)
+    }
+
+    fn pgp_flags_for_message(&self) -> (bool, bool) {
+        let (sign, encrypt) = self.security_toggle_state();
+        let smime = AppSettings::try_new()
+            .map(|settings| settings.crypto_protocol() == "smime")
+            .unwrap_or(false);
+        if smime {
+            (false, false)
+        } else {
+            (sign, encrypt)
+        }
+    }
+
+    fn smime_options_for_message(&self) -> Option<SmimeOptions> {
+        let settings = AppSettings::try_new()?;
+        if settings.crypto_protocol() != "smime" {
+            return None;
+        }
+        let (sign, encrypt) = self.security_toggle_state();
+        if let Some(override_options) = self.imp().smime_options_override.borrow().as_ref() {
+            return Some(SmimeOptions {
+                sign,
+                encrypt,
+                ..override_options.clone()
+            });
+        }
+        Some(settings.smime_options(sign, encrypt))
     }
 
     fn show_toast(&self, message: &str) {

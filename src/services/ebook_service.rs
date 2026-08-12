@@ -660,7 +660,9 @@ fn load_contacts_native() -> Result<(Vec<EBookContactRecord>, Option<String>), E
                 continue;
             };
             let Some(parsed) = VCardContact::parse_vcard_string(&vcard) else {
-                tracing::warn!("Ignoring an EDS contact with an invalid vCard");
+                let uid = borrowed_c_string(contact.contact_uid).unwrap_or_default();
+                let source_uid = borrowed_c_string(contact.source_uid).unwrap_or_default();
+                tracing::debug!(%uid, %source_uid, "Ignoring an EDS contact with an invalid vCard");
                 continue;
             };
             contacts.push(EBookContactRecord {

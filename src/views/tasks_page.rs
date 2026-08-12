@@ -428,7 +428,8 @@ impl TasksPage {
                 task_source_list_for_load.remove(&child);
             }
             for (index, name) in names.iter().enumerate() {
-                let row = adw::ActionRow::builder().title(name).build();
+                let escaped = glib::markup_escape_text(name);
+                let row = adw::ActionRow::builder().title(escaped.as_str()).build();
                 let image = gtk::Image::from_icon_name(if index == 0 {
                     "view-list-symbolic"
                 } else {
@@ -1632,7 +1633,9 @@ fn task_matches_filter_with_source_and_category(
         }
         TaskFilter::InProgress => task_status_value(&task.component()) == "IN-PROCESS",
         TaskFilter::Cancelled => task_status_value(&task.component()) == "CANCELLED",
-        TaskFilter::Completed => task_status_value(&task.component()) == "COMPLETED",
+        TaskFilter::Completed => {
+            task.is_completed() || task_status_value(&task.component()) == "COMPLETED"
+        }
     };
     if !matches_filter || query.is_empty() {
         return matches_filter;
@@ -1856,13 +1859,15 @@ fn append_task_row(
         (None, Some(next)) => format!("Nächste Fälligkeit: {}", next.format("%Y-%m-%d")),
         _ => format!("Fällig: {due}"),
     };
+    let subtitle = glib::markup_escape_text(&format!(
+        "{due_text} · Priorität: {} · {}",
+        task.priority(),
+        task_status_label(&task.component())
+    ));
     let row = adw::ActionRow::builder()
         .title(title.as_str())
-        .subtitle(&format!(
-            "{due_text} · Priorität: {} · {}",
-            task.priority(),
-            task_status_label(&task.component())
-        ))
+        .subtitle(subtitle.as_str())
+        .use_markup(true)
         .build();
     unsafe {
         row.set_data("task-id", task.id());

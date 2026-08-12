@@ -533,6 +533,83 @@ impl AppSettings {
         }
     }
 
+    pub fn crypto_protocol(&self) -> String {
+        match self.settings.string("crypto-protocol").as_str() {
+            "smime" => "smime".to_string(),
+            _ => "openpgp".to_string(),
+        }
+    }
+
+    pub fn set_crypto_protocol(&self, value: &str) {
+        let value = if value.eq_ignore_ascii_case("smime") {
+            "smime"
+        } else {
+            "openpgp"
+        };
+        if let Err(error) = self.settings.set_string("crypto-protocol", value) {
+            tracing::warn!(%error, "Could not persist crypto protocol");
+        }
+    }
+
+    pub fn smime_signer_certificate(&self) -> String {
+        self.settings.string("smime-signer-certificate").to_string()
+    }
+
+    pub fn set_smime_signer_certificate(&self, value: &str) {
+        self.set_string("smime-signer-certificate", value.trim());
+    }
+
+    pub fn smime_private_key(&self) -> String {
+        self.settings.string("smime-private-key").to_string()
+    }
+
+    pub fn set_smime_private_key(&self, value: &str) {
+        self.set_string("smime-private-key", value.trim());
+    }
+
+    pub fn smime_recipient_certificates(&self) -> Vec<String> {
+        self.settings
+            .string("smime-recipient-certificates")
+            .split('\n')
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .collect()
+    }
+
+    pub fn set_smime_recipient_certificates(&self, values: &[String]) {
+        let value = values
+            .iter()
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n");
+        self.set_string("smime-recipient-certificates", &value);
+    }
+
+    pub fn smime_ca_file(&self) -> String {
+        self.settings.string("smime-ca-file").to_string()
+    }
+
+    pub fn set_smime_ca_file(&self, value: &str) {
+        self.set_string("smime-ca-file", value.trim());
+    }
+
+    pub(crate) fn smime_options(
+        &self,
+        sign: bool,
+        encrypt: bool,
+    ) -> crate::services::crypto_service::SmimeOptions {
+        crate::services::crypto_service::SmimeOptions {
+            sign,
+            encrypt,
+            signer_certificate: self.smime_signer_certificate(),
+            private_key: self.smime_private_key(),
+            recipient_certificates: self.smime_recipient_certificates(),
+            ca_file: self.smime_ca_file(),
+        }
+    }
+
     pub fn mail_sync_interval_seconds(&self) -> u32 {
         self.settings.int("mail-sync-interval").clamp(0, 86_400) as u32
     }
@@ -794,6 +871,147 @@ impl AppSettings {
         self.set_boolean("memo-sort-descending", value);
     }
 
+    /// Apply one already-normalized, non-secret setting from an explicit
+    /// profile migration.  The migration parser only exposes keys from the
+    /// installed schema; keeping the final type conversion here makes sure
+    /// imported values use exactly the same validation and normalization as
+    /// the Preferences dialog.
+    pub fn apply_migrated_setting(&self, key: &str, value: &str) -> Result<(), String> {
+        let value = value.trim();
+        match key {
+            "window-width" => self.set_window_width(parse_migrated_i32(key, value)?),
+            "window-height" => self.set_window_height(parse_migrated_i32(key, value)?),
+            "is-maximized" => self.set_is_maximized(parse_migrated_bool(key, value)?),
+            "active-view" => self.set_active_view(value),
+            "default-account" => self.set_default_account_id(value),
+            "default-calendar-source" => self.set_default_calendar_source_uid(value),
+            "default-task-source" => self.set_default_task_source_uid(value),
+            "default-memo-source" => self.set_default_memo_source_uid(value),
+            "default-address-book-source" => self.set_default_address_book_source_uid(value),
+            "calendar-view" => self.set_calendar_view(value),
+            "calendar-week-start" => self.set_calendar_week_start(value),
+            "calendar-workdays" => self.set_calendar_workdays(value),
+            "calendar-workday-start" => {
+                self.set_calendar_workday_start_minutes(parse_migrated_u32(key, value)?);
+            }
+            "calendar-workday-end" => {
+                self.set_calendar_workday_end_minutes(parse_migrated_u32(key, value)?);
+            }
+            "calendar-default-reminder" => {
+                self.set_calendar_default_reminder_minutes(parse_migrated_u32(key, value)?);
+            }
+            "notifications-enabled" => {
+                self.set_notifications_enabled(parse_migrated_bool(key, value)?);
+            }
+            "confirm-destructive-actions" => {
+                self.set_confirm_destructive_actions(parse_migrated_bool(key, value)?);
+            }
+            "calendar-show-week-numbers" => {
+                self.set_calendar_show_week_numbers(parse_migrated_bool(key, value)?);
+            }
+            "calendar-hidden-sources" => {
+                let source_uids = value
+                    .split([',', ';'])
+                    .map(str::trim)
+                    .filter(|source_uid| !source_uid.is_empty())
+                    .map(ToOwned::to_owned)
+                    .collect::<Vec<_>>();
+                self.set_calendar_hidden_sources(&source_uids);
+            }
+            "date-format" => self.set_date_format(value),
+            "time-format" => self.set_time_format(value),
+            "calendar-time-zone" => self.set_calendar_time_zone(value),
+            "auto-load-remote-images" => {
+                self.set_auto_load_remote_images(parse_migrated_bool(key, value)?);
+            }
+            "force-dark-mode" => self.set_force_dark_mode(parse_migrated_bool(key, value)?),
+            "render-html" => self.set_render_html(parse_migrated_bool(key, value)?),
+            "composer-html" => self.set_composer_html(parse_migrated_bool(key, value)?),
+            "request-read-receipt" => {
+                self.set_request_read_receipt(parse_migrated_bool(key, value)?);
+            }
+            "spellcheck-languages" => self.set_spellcheck_languages(value),
+            "mail-font-family" => self.set_mail_font_family(value),
+            "mail-font-size" => self.set_mail_font_size(parse_migrated_u32(key, value)?),
+            "mark-read-on-selection" => {
+                self.set_mark_read_on_selection(parse_migrated_bool(key, value)?);
+            }
+            "show-message-preview" => {
+                self.set_show_message_preview(parse_migrated_bool(key, value)?);
+            }
+            "mail-default-folder" => self.set_mail_default_folder(value),
+            "mail-layout" => self.set_mail_layout(value),
+            "mail-show-toolbar" => self.set_mail_show_toolbar(parse_migrated_bool(key, value)?),
+            "mail-show-sidebar" => self.set_mail_show_sidebar(parse_migrated_bool(key, value)?),
+            "mail-sidebar-position" => {
+                self.set_mail_sidebar_position(parse_migrated_i32(key, value)?);
+            }
+            "mail-modern-preview-position" => {
+                self.set_mail_preview_position("modern", parse_migrated_i32(key, value)?);
+            }
+            "mail-classic-preview-position" => {
+                self.set_mail_preview_position("classic", parse_migrated_i32(key, value)?);
+            }
+            "mail-row-density" => self.set_mail_row_density(value),
+            "mail-show-avatar" => self.set_mail_show_avatar(parse_migrated_bool(key, value)?),
+            "mail-show-sender" => self.set_mail_show_sender(parse_migrated_bool(key, value)?),
+            "mail-show-recipient" => {
+                self.set_mail_show_recipient(parse_migrated_bool(key, value)?);
+            }
+            "mail-show-date" => self.set_mail_show_date(parse_migrated_bool(key, value)?),
+            "mail-show-attachment" => {
+                self.set_mail_show_attachment(parse_migrated_bool(key, value)?);
+            }
+            "mail-show-preview-text" => {
+                self.set_mail_show_preview_text(parse_migrated_bool(key, value)?);
+            }
+            "mail-show-labels" => self.set_mail_show_labels(parse_migrated_bool(key, value)?),
+            "color-scheme" => self.set_color_scheme(value),
+            "sign-new-messages" => self.set_sign_new_messages(parse_migrated_bool(key, value)?),
+            "default-pgp-key" => self.set_default_pgp_key(value),
+            "crypto-protocol" => self.set_crypto_protocol(value),
+            "smime-signer-certificate" => self.set_smime_signer_certificate(value),
+            "smime-private-key" => self.set_smime_private_key(value),
+            "smime-recipient-certificates" => self.set_smime_recipient_certificates(
+                &value
+                    .split('\n')
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string)
+                    .collect::<Vec<_>>(),
+            ),
+            "smime-ca-file" => self.set_smime_ca_file(value),
+            "mail-sync-interval" => {
+                self.set_mail_sync_interval_seconds(parse_migrated_u32(key, value)?);
+            }
+            "draft-autosave-interval" => {
+                self.set_draft_autosave_interval_seconds(parse_migrated_u32(key, value)?);
+            }
+            "append-signature" => self.set_append_signature(parse_migrated_bool(key, value)?),
+            "signature-text" => self.set_signature_text(value),
+            "quote-original" => self.set_quote_original(parse_migrated_bool(key, value)?),
+            "quote-style" => self.set_quote_style(value),
+            "mail-sort-field" => self.set_mail_sort_field(value),
+            "mail-sort-descending" => {
+                self.set_mail_sort_descending(parse_migrated_bool(key, value)?);
+            }
+            "mail-threading" => self.set_mail_threading(parse_migrated_bool(key, value)?),
+            "task-filter" => self.set_task_filter(value),
+            "task-source-filter" => self.set_task_source_filter(value),
+            "task-sort-field" => self.set_task_sort_field(value),
+            "task-sort-descending" => {
+                self.set_task_sort_descending(parse_migrated_bool(key, value)?);
+            }
+            "memo-sort-field" => self.set_memo_sort_field(value),
+            "memo-source-filter" => self.set_memo_source_filter(value),
+            "memo-sort-descending" => {
+                self.set_memo_sort_descending(parse_migrated_bool(key, value)?);
+            }
+            _ => return Err(format!("unbekannter Migrationsschlüssel „{key}“")),
+        }
+        Ok(())
+    }
+
     /// Reset every application-owned key to its schema default.
     ///
     /// This is used by the explicit app-data deletion action.  EDS, Camel,
@@ -849,6 +1067,11 @@ impl AppSettings {
             "color-scheme",
             "sign-new-messages",
             "default-pgp-key",
+            "crypto-protocol",
+            "smime-signer-certificate",
+            "smime-private-key",
+            "smime-recipient-certificates",
+            "smime-ca-file",
             "mail-sync-interval",
             "draft-autosave-interval",
             "append-signature",
@@ -884,6 +1107,34 @@ impl AppSettings {
             tracing::warn!(key, %error, "Could not persist application setting");
         }
     }
+
+    fn set_string(&self, key: &str, value: &str) {
+        if let Err(error) = self.settings.set_string(key, value) {
+            tracing::warn!(key, %error, "Could not persist application setting");
+        }
+    }
+}
+
+fn parse_migrated_bool(key: &str, value: &str) -> Result<bool, String> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "true" | "yes" | "on" | "1" => Ok(true),
+        "false" | "no" | "off" | "0" => Ok(false),
+        _ => Err(format!("ungültiger boolescher Wert für „{key}“")),
+    }
+}
+
+fn parse_migrated_i32(key: &str, value: &str) -> Result<i32, String> {
+    value
+        .trim()
+        .parse::<i32>()
+        .map_err(|_| format!("ungültiger Ganzzahlwert für „{key}“"))
+}
+
+fn parse_migrated_u32(key: &str, value: &str) -> Result<u32, String> {
+    value
+        .trim()
+        .parse::<u32>()
+        .map_err(|_| format!("ungültiger positiver Ganzzahlwert für „{key}“"))
 }
 
 fn sanitize_font_family(value: &str) -> String {

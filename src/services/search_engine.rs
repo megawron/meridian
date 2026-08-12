@@ -521,8 +521,28 @@ fn local_mail_search_index(message: &crate::services::mail_store_service::Parsed
         .collect::<Vec<_>>()
         .join(" ");
     let state_terms = local_mail_state_terms(message);
+    let field_terms = [
+        prefixed_search_terms("from", &message.sender_email),
+        prefixed_search_terms("to", &message.recipient_to),
+        prefixed_search_terms("cc", &message.recipient_cc),
+        prefixed_search_terms("bcc", &message.recipient_bcc),
+        prefixed_search_terms("reply-to", &message.reply_to),
+        prefixed_search_terms("folder", &message.folder_name),
+        prefixed_search_terms("in", &message.folder_id),
+        prefixed_search_terms("subject", &message.subject),
+        prefixed_search_terms(
+            "body",
+            &format!("{} {}", message.preview_snippet, message.html_body),
+        ),
+        prefixed_search_terms("label", &message.labels.join(" ")),
+        prefixed_search_terms("filename", &attachment_names),
+    ]
+    .into_iter()
+    .filter(|terms| !terms.is_empty())
+    .collect::<Vec<_>>()
+    .join(" ");
     format!(
-        "from:{} {} to:{} cc:{} bcc:{} reply-to:{} folder:{} in:{} subject:{} body:{} label:{} filename:{} {}",
+        "from:{} {} to:{} cc:{} bcc:{} reply-to:{} folder:{} in:{} subject:{} body:{} label:{} filename:{} {} {}",
         message.sender_email,
         message.sender_name,
         message.recipient_to,
@@ -536,7 +556,16 @@ fn local_mail_search_index(message: &crate::services::mail_store_service::Parsed
         message.labels.join(" "),
         attachment_names,
         state_terms,
+        field_terms,
     )
+}
+
+fn prefixed_search_terms(prefix: &str, value: &str) -> String {
+    value
+        .split_whitespace()
+        .map(|part| format!("{prefix}:{part}"))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn local_mail_state_terms(message: &crate::services::mail_store_service::ParsedMail) -> String {
@@ -714,6 +743,7 @@ mod tests {
             date_str: "2026-08-10".to_string(),
             preview_snippet: "The project is ready".to_string(),
             html_body: "<p>The project is ready</p>".to_string(),
+            raw_mime: None,
             is_unread: true,
             is_flagged: false,
             is_important: false,

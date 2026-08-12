@@ -486,9 +486,11 @@ impl CalendarPage {
                         }
                     )
                 };
+                let escaped_subtitle = glib::markup_escape_text(&subtitle);
                 let row = adw::ActionRow::builder()
                     .title(escaped_title.as_str())
-                    .subtitle(&subtitle)
+                    .subtitle(escaped_subtitle.as_str())
+                    .use_markup(true)
                     .build();
                 let check = gtk::CheckButton::builder()
                     .active(source.enabled && !hidden_sources.contains(&source_uid))
@@ -2455,12 +2457,16 @@ fn calendar_event_row(event: &CalendarEventRecord) -> adw::ActionRow {
         details.push(event.source_display_name.trim().to_string());
     }
     let row = adw::ActionRow::builder()
-        .title(if event.summary.trim().is_empty() {
-            "(Ohne Titel)"
-        } else {
-            event.summary.as_str()
-        })
-        .subtitle(&details.join(" · "))
+        .title(
+            glib::markup_escape_text(if event.summary.trim().is_empty() {
+                "(Ohne Titel)"
+            } else {
+                event.summary.as_str()
+            })
+            .as_str(),
+        )
+        .subtitle(glib::markup_escape_text(&details.join(" · ")).as_str())
+        .use_markup(true)
         .activatable(true)
         .build();
     if let Some(color) = category_color_for_component(&event.component) {
@@ -2720,17 +2726,19 @@ fn append_event_row(
         format!(" · {}", event.source_display_name)
     };
     let title = glib::markup_escape_text(&event.summary);
+    let subtitle_text = format!(
+        "{}{}",
+        if event.end.is_empty() {
+            event.start.clone()
+        } else {
+            format!("{}–{}", event.start, event.end)
+        },
+        source
+    );
     let row = adw::ActionRow::builder()
         .title(title.as_str())
-        .subtitle(&format!(
-            "{}{}",
-            if event.end.is_empty() {
-                event.start.clone()
-            } else {
-                format!("{}–{}", event.start, event.end)
-            },
-            source
-        ))
+        .subtitle(glib::markup_escape_text(&subtitle_text).as_str())
+        .use_markup(true)
         .build();
     unsafe {
         row.set_data("event-id", event.uid.clone());

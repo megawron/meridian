@@ -17,7 +17,6 @@ adw.workspace = true
 glib.workspace = true
 gio.workspace = true
 gdk.workspace = true
-webkit6.workspace = true
 pango.workspace = true
 zbus.workspace = true
 async-channel.workspace = true
@@ -31,6 +30,9 @@ uuid.workspace = true
 
 [build-dependencies]
 pkg-config = "0.3"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+webkit6.workspace = true
 
 [features]
 default = []

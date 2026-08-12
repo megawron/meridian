@@ -557,7 +557,8 @@ impl MemosPage {
                 memo_source_list_for_load.remove(&child);
             }
             for (index, name) in names.iter().enumerate() {
-                let row = adw::ActionRow::builder().title(name).build();
+                let escaped = glib::markup_escape_text(name);
+                let row = adw::ActionRow::builder().title(escaped.as_str()).build();
                 let image = gtk::Image::from_icon_name(if index == 0 {
                     "view-list-symbolic"
                 } else {
@@ -1529,9 +1530,11 @@ fn append_memo_row(memo_list: &gtk::ListBox, memo: &MemoRecord) {
         row.set_data("memo-sort-source", memo.source_display_name.to_lowercase());
     }
     let title = glib::markup_escape_text(&memo.summary);
+    let subtitle = glib::markup_escape_text(&memo.updated);
     let action_row = adw::ActionRow::builder()
         .title(title.as_str())
-        .subtitle(&memo.updated)
+        .subtitle(subtitle.as_str())
+        .use_markup(true)
         .build();
     if let Some(color) = CalendarCategoryStore::default().color_for_component(&memo.component) {
         let category_dot = gtk::Label::new(None);

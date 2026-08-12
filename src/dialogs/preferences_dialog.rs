@@ -11,6 +11,7 @@
 use adw::prelude::*;
 use adw::subclass::prelude::*;
 use gtk::{gio, glib};
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::services::AppSettings;
@@ -19,6 +20,7 @@ use crate::services::backup_service;
 use crate::services::calendar_category_service::{CalendarCategory, CalendarCategoryStore};
 use crate::services::calendar_store_service::CalendarStoreService;
 use crate::services::contact_store_service::ContactStoreService;
+use crate::services::crypto_service::{self, OpenPgpKey};
 use crate::services::eds_service::{self, EdsSourceKind};
 use crate::services::eds_source_cache_service::EdsSourceCache;
 use crate::services::mail_filter_service::{
@@ -1081,10 +1083,48 @@ impl PreferencesDialog {
                             };
                             match result {
                                 Ok(report) => {
-                                    if let Some(signature) = report.signature_text.as_deref() {
-                                        if let Some(settings) = AppSettings::try_new() {
-                                            settings.set_signature_text(signature);
-                                            settings.set_append_signature(true);
+                                    let imported_setting_keys = report
+                                        .settings
+                                        .iter()
+                                        .map(|setting| setting.key.as_str())
+                                        .collect::<std::collections::HashSet<_>>();
+                                    if let Some(settings) = AppSettings::try_new() {
+                                        for setting in &report.settings {
+                                            if let Err(error) = settings
+                                                .apply_migrated_setting(&setting.key, &setting.value)
+                                            {
+                                                tracing::warn!(
+                                                    key = %setting.key,
+                                                    %error,
+                                                    "Evolution-Einstellung konnte nicht übernommen werden"
+                                                );
+                                            }
+                                        }
+                                        // Local profile files were copied into app-owned stores;
+                                        // never point the running application back at the original
+                                        // Evolution profile after migration.
+                                        settings.set_local_mail_directory(
+                                            &crate::services::app_data_dir()
+                                                .join("mail")
+                                                .to_string_lossy(),
+                                        );
+                                        settings.set_local_calendar_directory(
+                                            &crate::services::app_data_dir()
+                                                .join("ical")
+                                                .to_string_lossy(),
+                                        );
+                                        settings.set_local_contact_directory(
+                                            &crate::services::app_data_dir()
+                                                .join("vcards")
+                                                .to_string_lossy(),
+                                        );
+                                        if !imported_setting_keys.contains("signature-text") {
+                                            if let Some(signature) = report.signature_text.as_deref() {
+                                                settings.set_signature_text(signature);
+                                                if !imported_setting_keys.contains("append-signature") {
+                                                    settings.set_append_signature(true);
+                                                }
+                                            }
                                         }
                                     }
                                     for warning in &report.warnings {
@@ -1104,7 +1144,7 @@ impl PreferencesDialog {
                                         )
                                     };
                                     dialog.show_toast(&format!(
-                                        "{} Profilquelle(n) gefunden: {} Konto/Konten, {} Mail-, {} Kalender- und {} Adressbuchquelle(n) zwischengespeichert, {} Filterregel(n), {} Signatur(en), {} Maildatei(en), {} lokale Mailordner, {} iCalendar-Datei(en) und {} vCard-Datei(en) übernommen, {} übersprungen{}{}",
+                                        "{} Profilquelle(n) gefunden: {} Konto/Konten, {} Mail-, {} Kalender- und {} Adressbuchquelle(n) zwischengespeichert, {} Filterregel(n), {} Signatur(en), {} Einstellungswert(e) aus {} Datei(en), {} Maildatei(en), {} lokale Mailordner, {} iCalendar-Datei(en) und {} vCard-Datei(en) übernommen, {} übersprungen{}{}",
                                         report.discovered_sources,
                                         report.imported_accounts,
                                         report.cached_mail_sources,
@@ -1112,6 +1152,8 @@ impl PreferencesDialog {
                                         report.cached_address_book_sources,
                                         report.imported_filters,
                                         report.imported_signatures,
+                                        report.imported_settings,
+                                        report.discovered_settings_files,
                                         report.imported_mail_files,
                                         report.imported_mail_folders,
                                         report.imported_calendar_files,
@@ -2329,29 +2371,50 @@ impl PreferencesDialog {
             .description("OpenPGP und S/MIME Konfiguration (CamelCipherContext)")
             .build();
 
+        let crypto_protocol_model =
+            gtk::StringList::new(&["OpenPGP (GnuPG)", "S/MIME (OpenSSL/CMS)"]);
+        let row_crypto_protocol = adw::ComboRow::builder()
+            .title("Standardprotokoll")
+            .subtitle("Wird für neue Nachrichten und die Prüfung eingehender Nachrichten verwendet")
+            .model(&crypto_protocol_model)
+            .build();
+        if let Some(settings) = settings.clone() {
+            row_crypto_protocol.set_selected(u32::from(settings.crypto_protocol() == "smime"));
+            row_crypto_protocol.connect_selected_notify(move |row| {
+                settings.set_crypto_protocol(if row.selected() == 1 {
+                    "smime"
+                } else {
+                    "openpgp"
+                });
+            });
+        }
+        group_crypto.add(&row_crypto_protocol);
+
         let row_pgp_encrypt = adw::SwitchRow::builder()
-            .title("Neue Mails standardmäßig PGP-signieren")
-            .subtitle("Verwendet GnuPG Schlüsselbund")
-            .active(true)
+            .title("Neue Mails standardmäßig signieren")
+            .subtitle("Verwendet das ausgewählte OpenPGP- oder S/MIME-Protokoll")
+            .active(false)
             .build();
         group_crypto.add(&row_pgp_encrypt);
 
+        let pgp_key_model =
+            gtk::StringList::new(&["Automatisch anhand der Absenderadresse wählen"]);
+        let pgp_keys = Rc::new(RefCell::new(Vec::<OpenPgpKey>::new()));
         let row_pgp_key = adw::ComboRow::builder()
             .title("Standard PGP-Schlüssel")
-            .model(&gtk::StringList::new(&[
-                "Kein lokaler PGP-Schlüssel verfügbar",
-                "Automatisch anhand der Absenderadresse wählen",
-            ]))
+            .model(&pgp_key_model)
             .build();
         if let Some(settings) = settings.clone() {
-            row_pgp_key.set_selected(if settings.default_pgp_key().is_empty() {
-                1
-            } else {
-                0
-            });
+            row_pgp_key.set_selected(0);
+            let pgp_keys_for_selection = Rc::clone(&pgp_keys);
             row_pgp_key.connect_selected_notify(move |row| {
-                if row.selected() == 1 {
+                if row.selected() == 0 {
                     settings.set_default_pgp_key("");
+                } else if let Some(key) = pgp_keys_for_selection
+                    .borrow()
+                    .get(row.selected() as usize - 1)
+                {
+                    settings.set_default_pgp_key(&key.fingerprint);
                 }
             });
         }
@@ -2362,6 +2425,95 @@ impl PreferencesDialog {
             });
         }
         group_crypto.add(&row_pgp_key);
+
+        let row_smime_signer = smime_file_row(
+            "S/MIME-Signaturzertifikat",
+            "PEM- oder DER-Zertifikat für ausgehende Signaturen",
+            settings
+                .as_ref()
+                .map(|settings| settings.smime_signer_certificate())
+                .unwrap_or_default(),
+            settings.clone(),
+            AppSettings::set_smime_signer_certificate,
+        );
+        group_crypto.add(&row_smime_signer);
+
+        let row_smime_private_key = smime_file_row(
+            "S/MIME-Privatschlüssel",
+            "Pfad zur privaten Schlüsseldatei; der Schlüssel selbst wird nicht kopiert",
+            settings
+                .as_ref()
+                .map(|settings| settings.smime_private_key())
+                .unwrap_or_default(),
+            settings.clone(),
+            AppSettings::set_smime_private_key,
+        );
+        group_crypto.add(&row_smime_private_key);
+
+        let row_smime_recipients = smime_files_row(
+            "S/MIME-Empfängerzertifikate",
+            "Zertifikate für Verschlüsselung; mehrere Dateien können ausgewählt werden",
+            settings
+                .as_ref()
+                .map(|settings| settings.smime_recipient_certificates())
+                .unwrap_or_default(),
+            settings.clone(),
+            |settings, values| settings.set_smime_recipient_certificates(values),
+        );
+        group_crypto.add(&row_smime_recipients);
+
+        let row_smime_ca = smime_file_row(
+            "S/MIME-Vertrauensspeicher (optional)",
+            "CA-Bundle für die Vertrauensprüfung; ohne Angabe wird nur die Signaturmathematik geprüft",
+            settings
+                .as_ref()
+                .map(|settings| settings.smime_ca_file())
+                .unwrap_or_default(),
+            settings.clone(),
+            AppSettings::set_smime_ca_file,
+        );
+        group_crypto.add(&row_smime_ca);
+
+        // GnuPG's machine-readable listing is loaded off the GTK main thread;
+        // signing remains unavailable until the user has an actual key in the
+        // local keyring, instead of pretending that a placeholder is usable.
+        let pgp_keys_for_load = Rc::clone(&pgp_keys);
+        let pgp_key_model_for_load = pgp_key_model.clone();
+        let row_pgp_key_for_load = row_pgp_key.downgrade();
+        let settings_for_key_load = settings.clone();
+        let (key_sender, key_receiver) = async_channel::bounded(1);
+        std::thread::spawn(move || {
+            let result = crypto_service::list_openpgp_keys();
+            if let Err(error) = key_sender.send_blocking(result) {
+                tracing::debug!(%error, "OpenPGP key list result was dropped");
+            }
+        });
+        glib::spawn_future_local(async move {
+            let Ok(Ok(keys)) = key_receiver.recv().await else {
+                return;
+            };
+            let selected_fingerprint = settings_for_key_load
+                .as_ref()
+                .map(|settings| settings.default_pgp_key());
+            for key in keys {
+                let label = if key.identity.trim().is_empty() {
+                    key.fingerprint.clone()
+                } else {
+                    format!("{} · {}", key.identity, key.fingerprint)
+                };
+                pgp_key_model_for_load.append(&label);
+                pgp_keys_for_load.borrow_mut().push(key);
+            }
+            if let Some(row) = row_pgp_key_for_load.upgrade()
+                && let Some(fingerprint) = selected_fingerprint
+                && let Some(index) = pgp_keys_for_load
+                    .borrow()
+                    .iter()
+                    .position(|key| key.fingerprint.eq_ignore_ascii_case(&fingerprint))
+            {
+                row.set_selected(index as u32 + 1);
+            }
+        });
 
         page_security.add(&group_crypto);
 
@@ -2381,6 +2533,164 @@ impl PreferencesDialog {
         }
         tracing::warn!(%message, "Preferences dialog result");
     }
+}
+
+fn smime_file_row(
+    title: &str,
+    subtitle: &str,
+    initial: String,
+    settings: Option<AppSettings>,
+    set_value: fn(&AppSettings, &str),
+) -> adw::ActionRow {
+    let row = adw::ActionRow::builder()
+        .title(title)
+        .subtitle(subtitle)
+        .build();
+    let path_label = gtk::Label::builder()
+        .label(if initial.trim().is_empty() {
+            "Nicht festgelegt"
+        } else {
+            initial.as_str()
+        })
+        .hexpand(true)
+        .halign(gtk::Align::End)
+        .ellipsize(gtk::pango::EllipsizeMode::Middle)
+        .max_width_chars(36)
+        .build();
+    row.add_suffix(&path_label);
+
+    let clear_button = gtk::Button::builder()
+        .icon_name("user-trash-symbolic")
+        .tooltip_text("Pfad entfernen")
+        .css_classes(vec!["flat"])
+        .valign(gtk::Align::Center)
+        .build();
+    row.add_suffix(&clear_button);
+    let choose_button = gtk::Button::builder()
+        .label("Auswählen…")
+        .css_classes(vec!["flat"])
+        .valign(gtk::Align::Center)
+        .build();
+    row.add_suffix(&choose_button);
+
+    let settings_for_clear = settings.clone();
+    let path_label_for_clear = path_label.clone();
+    clear_button.connect_clicked(move |_| {
+        if let Some(settings) = settings_for_clear.as_ref() {
+            set_value(settings, "");
+        }
+        path_label_for_clear.set_label("Nicht festgelegt");
+    });
+
+    let settings_for_choose = settings;
+    let path_label_for_choose = path_label.clone();
+    choose_button.connect_clicked(move |button| {
+        let Some(root) = button.root().and_downcast::<gtk::Window>() else {
+            return;
+        };
+        let file_dialog = gtk::FileDialog::builder()
+            .title("S/MIME-Datei auswählen")
+            .modal(true)
+            .build();
+        let settings_for_result = settings_for_choose.clone();
+        let path_label_for_result = path_label_for_choose.clone();
+        file_dialog.open(Some(&root), None::<&gio::Cancellable>, move |result| {
+            let Ok(file) = result else {
+                return;
+            };
+            let Some(path) = file.path() else {
+                return;
+            };
+            let value = path.to_string_lossy().into_owned();
+            if let Some(settings) = settings_for_result.as_ref() {
+                set_value(settings, &value);
+            }
+            path_label_for_result.set_label(&value);
+        });
+    });
+
+    row
+}
+
+fn smime_files_row(
+    title: &str,
+    subtitle: &str,
+    initial: Vec<String>,
+    settings: Option<AppSettings>,
+    set_values: fn(&AppSettings, &[String]),
+) -> adw::ActionRow {
+    let row = adw::ActionRow::builder()
+        .title(title)
+        .subtitle(subtitle)
+        .build();
+    let initial_text = initial.join("\n");
+    let path_label = gtk::Label::builder()
+        .label(if initial_text.trim().is_empty() {
+            "Nicht festgelegt"
+        } else {
+            initial_text.as_str()
+        })
+        .hexpand(true)
+        .halign(gtk::Align::End)
+        .ellipsize(gtk::pango::EllipsizeMode::Middle)
+        .max_width_chars(36)
+        .build();
+    row.add_suffix(&path_label);
+
+    let clear_button = gtk::Button::builder()
+        .icon_name("user-trash-symbolic")
+        .tooltip_text("Zertifikatspfade entfernen")
+        .css_classes(vec!["flat"])
+        .valign(gtk::Align::Center)
+        .build();
+    row.add_suffix(&clear_button);
+    let choose_button = gtk::Button::builder()
+        .label("Auswählen…")
+        .css_classes(vec!["flat"])
+        .valign(gtk::Align::Center)
+        .build();
+    row.add_suffix(&choose_button);
+
+    let settings_for_clear = settings.clone();
+    let path_label_for_clear = path_label.clone();
+    clear_button.connect_clicked(move |_| {
+        if let Some(settings) = settings_for_clear.as_ref() {
+            set_values(settings, &[]);
+        }
+        path_label_for_clear.set_label("Nicht festgelegt");
+    });
+
+    let settings_for_choose = settings;
+    let path_label_for_choose = path_label.clone();
+    choose_button.connect_clicked(move |button| {
+        let Some(root) = button.root().and_downcast::<gtk::Window>() else {
+            return;
+        };
+        let file_dialog = gtk::FileDialog::builder()
+            .title("S/MIME-Empfängerzertifikate auswählen")
+            .modal(true)
+            .build();
+        let settings_for_result = settings_for_choose.clone();
+        let path_label_for_result = path_label_for_choose.clone();
+        file_dialog.open_multiple(Some(&root), None::<&gio::Cancellable>, move |result| {
+            let Ok(model) = result else {
+                return;
+            };
+            let paths = selected_file_paths(&model)
+                .into_iter()
+                .map(|path| path.to_string_lossy().into_owned())
+                .collect::<Vec<_>>();
+            if paths.is_empty() {
+                return;
+            }
+            if let Some(settings) = settings_for_result.as_ref() {
+                set_values(settings, &paths);
+            }
+            path_label_for_result.set_label(&paths.join("\n"));
+        });
+    });
+
+    row
 }
 
 fn source_preference_row(

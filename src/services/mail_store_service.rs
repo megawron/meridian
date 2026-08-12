@@ -23,6 +23,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use serde::{Deserialize, Serialize};
 
 use crate::models::mail_message::{AttachmentInfo, MailMessageObject};
+use crate::services::crypto_service::{CryptoProtocol, CryptoService};
 use crate::services::mail_filter_service::{
     FilterAction, FilterMessageContext, FilterOperator, FilterScope, MailFilterRule,
     MailFilterStore,
@@ -81,6 +82,7 @@ pub struct ParsedMail {
     pub date_str: String,
     pub preview_snippet: String,
     pub html_body: String,
+    pub(crate) raw_mime: Option<Vec<u8>>,
     pub is_unread: bool,
     pub is_flagged: bool,
     pub is_important: bool,
@@ -109,6 +111,7 @@ impl ParsedMail {
             date_str,
             preview_snippet,
             html_body,
+            raw_mime,
             is_unread,
             is_flagged,
             is_important,
@@ -118,7 +121,7 @@ impl ParsedMail {
             ..
         } = self;
 
-        MailMessageObject::new(
+        let object = MailMessageObject::new(
             &id,
             &folder_id,
             &sender_name,
@@ -143,7 +146,9 @@ impl ParsedMail {
             labels,
             backend_location,
             attachments,
-        )
+        );
+        object.set_raw_mime(raw_mime);
+        object
     }
 }
 
@@ -724,7 +729,7 @@ impl MailStoreService {
             } else if looks_like_rfc822(&text, &path) {
                 let id = message_id(&path, 0);
                 let folder_id = folder_id_for_path_with_root(&path, Some(&self.mail_dir));
-                if let Some(message) = parse_rfc822(&id, &folder_id, &text, unread) {
+                if let Some(message) = parse_rfc822_bytes(&id, &folder_id, &raw, unread) {
                     messages.push(message);
                 }
             }
@@ -827,7 +832,15 @@ impl MailStoreService {
 }
 
 fn normalize_custom_folder_id(name: &str) -> std::io::Result<String> {
-    let folder_id = local_folder_id(name);
+    let normalized = name.trim().trim_start_matches('.');
+    let folder_id = if normalized
+        .get(.."custom:".len())
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("custom:"))
+    {
+        local_folder_id(normalized)
+    } else {
+        format!("custom:{normalized}")
+    };
     let Some(folder_name) = folder_id.strip_prefix("custom:") else {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
@@ -1544,7 +1557,17 @@ pub(crate) fn parse_rfc822(
     raw: &str,
     unread: bool,
 ) -> Option<ParsedMail> {
-    let normalized = raw.replace("\r\n", "\n").replace('\r', "\n");
+    parse_rfc822_bytes(id, folder_id, raw.as_bytes(), unread)
+}
+
+pub(crate) fn parse_rfc822_bytes(
+    id: &str,
+    folder_id: &str,
+    raw: &[u8],
+    unread: bool,
+) -> Option<ParsedMail> {
+    let raw_text = String::from_utf8_lossy(raw);
+    let normalized = raw_text.replace("\r\n", "\n").replace('\r', "\n");
     let (header_text, body) = normalized
         .split_once("\n\n")
         .map(|(headers, body)| (headers, body))
@@ -1621,6 +1644,12 @@ pub(crate) fn parse_rfc822(
         body_html.as_str()
     });
 
+    let raw_mime = (!matches!(
+        CryptoService::verify_signature(raw).protocol,
+        CryptoProtocol::None
+    ))
+    .then(|| raw.to_vec());
+
     Some(ParsedMail {
         id: id.to_string(),
         folder_id: folder_id.to_string(),
@@ -1642,6 +1671,7 @@ pub(crate) fn parse_rfc822(
         date_str: date,
         preview_snippet: preview,
         html_body: body_html,
+        raw_mime,
         is_unread: unread,
         is_flagged: false,
         is_important: false,
@@ -2234,6 +2264,23 @@ mod tests {
         assert_eq!(message.folder_id, "inbox");
         assert!(message.html_body.contains("Hallo Welt"));
         assert!(message.is_unread);
+    }
+
+    #[test]
+    fn retains_original_bytes_only_for_crypto_messages() {
+        let signed = b"Content-Type: multipart/signed; protocol=\"application/pgp-signature\"; boundary=\"b\"\r\n\r\n--b--\r\n";
+        let message = parse_rfc822_bytes("signed", "inbox", signed, false)
+            .expect("signed message should parse");
+        assert_eq!(message.raw_mime.as_deref(), Some(signed.as_slice()));
+
+        let ordinary = parse_rfc822_bytes(
+            "ordinary",
+            "inbox",
+            b"Content-Type: text/plain\r\n\r\nHello\r\n",
+            false,
+        )
+        .expect("ordinary message should parse");
+        assert!(ordinary.raw_mime.is_none());
     }
 
     #[test]

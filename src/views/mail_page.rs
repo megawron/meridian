@@ -12,6 +12,7 @@ use std::fs;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Instant;
 
 use crate::models::eds_source::EdsSourceObject;
 use crate::models::folder::FolderObject;
@@ -19,7 +20,7 @@ use crate::models::mail_message::MailMessageObject;
 use crate::services::AppSettings;
 use crate::services::account_config_service::AccountConfigStore;
 use crate::services::camel_mail_service::{self, CamelMailLoad};
-use crate::services::crypto_service::CryptoService;
+use crate::services::crypto_service::{self, CryptoService};
 use crate::services::draft_store_service::{DraftMessage, DraftStoreService};
 use crate::services::ecal_service::{ECalComponentType, ECalService};
 use crate::services::eds_service::{self, EdsSourceKind, EdsSourceOrigin};
@@ -32,7 +33,7 @@ use crate::services::mail_composer_service::{self, ExportAttachment, ExportMessa
 use crate::services::mail_operations_service::{
     MailCommand, MailCommandStack, MailOperationError, MailOperationsService,
 };
-use crate::services::mail_store_service::ParsedMail;
+use crate::services::mail_store_service::{ParsedMail, parse_rfc822_bytes};
 use crate::services::mail_thread_service::{ThreadIdentity, group_messages};
 use crate::services::search_folder_service::SearchFolderService;
 use crate::views::MailViewer;
@@ -869,6 +870,14 @@ fn load_mail_backend(
     cancelled: &AtomicBool,
     progress_sender: Option<&async_channel::Sender<camel_mail_service::CamelSyncProgress>>,
 ) -> MailPageLoadResult {
+    let started = Instant::now();
+    tracing::debug!(
+        source_uid = ?request.source_uid,
+        folder_name = ?request.folder_name,
+        offset = request.offset,
+        limit = request.max_messages_per_folder,
+        "Mail backend load started"
+    );
     let camel_result = camel_mail_service::load_messages_page_with_progress_and_cancellation(
         request.source_uid.as_deref(),
         request.folder_name.as_deref(),
@@ -876,6 +885,11 @@ fn load_mail_backend(
         request.max_messages_per_folder,
         Some(cancelled),
         progress_sender,
+    );
+    tracing::debug!(
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        result = if camel_result.is_ok() { "ok" } else { "error" },
+        "Mail backend returned from EDS/Camel"
     );
 
     if cancelled.load(Ordering::Relaxed) {
@@ -1020,6 +1034,7 @@ mod imp {
         pub mail_load_cancellation: RefCell<Option<Arc<AtomicBool>>>,
         pub mail_incremental_cancellation: RefCell<Option<Arc<AtomicBool>>>,
         pub mail_change_cancellation: RefCell<Option<Arc<AtomicBool>>>,
+        pub camel_monitor_started: Cell<bool>,
         pub(crate) mail_commands: RefCell<MailCommandStack>,
         pub preview_settings: RefCell<Option<AppSettings>>,
         pub classic_toolbar: RefCell<Option<gtk::Box>>,
@@ -1045,6 +1060,8 @@ mod imp {
     impl ObjectImpl for MailPage {
         fn constructed(&self) {
             self.parent_constructed();
+            let started = Instant::now();
+            tracing::debug!("MailPage construction started");
             self.mail_commands.replace(MailCommandStack::persistent());
             let preview_position = if let Some(settings) = AppSettings::try_new() {
                 self.mail_sort_field
@@ -1140,6 +1157,10 @@ mod imp {
             obj.assemble_layout(sidebar, message_container, detail_view);
             obj.bind_preview_setting();
             obj.load_initial_data(&source_store, &source_state);
+            tracing::debug!(
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                "MailPage construction finished"
+            );
         }
 
         fn dispose(&self) {
@@ -3239,6 +3260,8 @@ impl MailPage {
             .css_classes(vec!["dim-label"])
             .halign(gtk::Align::Start)
             .wrap(true)
+            .wrap_mode(gtk::pango::WrapMode::WordChar)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
             .margin_start(12)
             .margin_end(12)
             .margin_bottom(8)
@@ -3733,6 +3756,11 @@ impl MailPage {
         folder_list: &gtk::ListBox,
         folders: &[camel_mail_service::CamelFolderSummary],
     ) {
+        let started = Instant::now();
+        tracing::debug!(
+            folder_count = folders.len(),
+            "Rebuilding EDS/Camel folder rows"
+        );
         let was_updating = self.imp().updating_folder_rows.replace(true);
         let mut dynamic_rows = Vec::new();
         for index in 0..folder_list.observe_children().n_items() {
@@ -3870,6 +3898,11 @@ impl MailPage {
             root_store.append(&root);
         }
         self.imp().updating_folder_rows.set(was_updating);
+        tracing::debug!(
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            folder_count = folders.len(),
+            "EDS/Camel folder rows rebuilt"
+        );
     }
 
     fn dynamic_folder_key(source_uid: &str, folder_name: &str) -> String {
@@ -4254,13 +4287,19 @@ impl MailPage {
             let sender = gtk::Label::builder()
                 .css_classes(vec!["heading"])
                 .halign(gtk::Align::Start)
+                .hexpand(true)
                 .ellipsize(pango::EllipsizeMode::End)
+                .lines(1)
+                .width_chars(1)
                 .build();
 
             let recipient = gtk::Label::builder()
                 .css_classes(vec!["caption", "dim-label"])
                 .halign(gtk::Align::Start)
+                .hexpand(true)
                 .ellipsize(pango::EllipsizeMode::End)
+                .lines(1)
+                .width_chars(1)
                 .build();
 
             let date = gtk::Label::builder()
@@ -4301,13 +4340,18 @@ impl MailPage {
             let subject = gtk::Label::builder()
                 .css_classes(vec!["body"])
                 .halign(gtk::Align::Start)
+                .hexpand(true)
                 .ellipsize(pango::EllipsizeMode::End)
+                .lines(1)
+                .width_chars(1)
                 .build();
 
             let preview = gtk::Label::builder()
                 .css_classes(vec!["caption", "dim-label"])
                 .halign(gtk::Align::Start)
+                .hexpand(true)
                 .ellipsize(pango::EllipsizeMode::End)
+                .lines(1)
                 .max_width_chars(60)
                 .build();
 
@@ -4819,6 +4863,8 @@ impl MailPage {
             .margin_top(6)
             .margin_bottom(6)
             .wrap(true)
+            .wrap_mode(gtk::pango::WrapMode::WordChar)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
             .build();
 
         let refresh_button = gtk::Button::builder()
@@ -5145,7 +5191,7 @@ impl MailPage {
 
         let list_scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
-            .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .vscrollbar_policy(gtk::PolicyType::Always)
             .child(&list_view)
             .vexpand(true)
             .width_request(340)
@@ -5352,6 +5398,9 @@ impl MailPage {
             .css_classes(vec!["title-2"])
             .halign(gtk::Align::Start)
             .wrap(true)
+            .wrap_mode(gtk::pango::WrapMode::WordChar)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .lines(4)
             .build();
 
         let meta_grid = gtk::Grid::builder()
@@ -5369,6 +5418,10 @@ impl MailPage {
             .label("-")
             .halign(gtk::Align::Start)
             .selectable(true)
+            .wrap(true)
+            .wrap_mode(gtk::pango::WrapMode::WordChar)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .lines(3)
             .build();
 
         let to_label = gtk::Label::builder()
@@ -5380,6 +5433,10 @@ impl MailPage {
             .label("-")
             .halign(gtk::Align::Start)
             .selectable(true)
+            .wrap(true)
+            .wrap_mode(gtk::pango::WrapMode::WordChar)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .lines(3)
             .build();
 
         let cc_label = gtk::Label::builder()
@@ -5391,6 +5448,10 @@ impl MailPage {
             .label("-")
             .halign(gtk::Align::Start)
             .selectable(true)
+            .wrap(true)
+            .wrap_mode(gtk::pango::WrapMode::WordChar)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .lines(3)
             .build();
 
         let date_label = gtk::Label::builder()
@@ -5877,6 +5938,7 @@ impl MailPage {
         let operations = MailOperationsService::new();
         let filter_for_selection = custom_filter.clone();
         let thread_filter_for_selection = thread_filter.clone();
+        let selection_for_async_crypto = selection.clone();
         let store_for_thread_context = store.clone();
         let selection_for_thread_context = selection.clone();
         selection.connect_selected_item_notify(glib::clone!(
@@ -5884,6 +5946,8 @@ impl MailPage {
             operations,
             #[strong]
             filter_for_selection,
+            #[strong]
+            selection_for_async_crypto,
             #[weak]
             mail_viewer,
             #[weak]
@@ -5952,128 +6016,94 @@ impl MailPage {
                             &thread_context,
                         );
 
-                        while let Some(child) = attachment_bar.first_child() {
-                            attachment_bar.remove(&child);
-                        }
-
-                        let attachments = msg.attachments();
-                        let mut crypto_probe = msg.html_body().into_bytes();
-                        for attachment in &attachments {
-                            crypto_probe.extend_from_slice(b"\n");
-                            crypto_probe.extend_from_slice(attachment.mime_type.as_bytes());
-                            crypto_probe.extend_from_slice(b"\n");
-                            crypto_probe.extend_from_slice(&attachment.content);
-                        }
-                        let crypto_details = CryptoService::verify_signature(&crypto_probe);
+                        let raw_mime = msg.raw_mime();
+                        let crypto_details = raw_mime
+                            .as_deref()
+                            .map(CryptoService::verify_signature)
+                            .unwrap_or_else(|| CryptoService::verify_signature(b""));
                         lbl_crypto.set_label(&crypto_details.display_text());
-                        for attachment in &attachments {
-                            let looks_like_calendar =
-                                attachment.mime_type.split(';').next().is_some_and(|mime| {
-                                    mime.trim().eq_ignore_ascii_case("text/calendar")
-                                }) || attachment.filename.to_ascii_lowercase().ends_with(".ics");
-                            if looks_like_calendar {
-                                if let Some(invitation) =
-                                    parse_invitation(&String::from_utf8_lossy(&attachment.content))
-                                {
-                                    append_itip_invitation(&attachment_bar, invitation);
+                        if let Some(raw_mime) = raw_mime {
+                            lbl_crypto.set_label("Kryptografie: Prüfung läuft …");
+                            let message_id = msg.id();
+                            let folder_id = msg.folder_id();
+                            let unread = msg.is_unread();
+                            let selection_for_crypto = selection_for_async_crypto.clone();
+                            let label_for_crypto = lbl_crypto.downgrade();
+                            let viewer_for_crypto = mail_viewer.clone();
+                            let attachment_bar_for_crypto = attachment_bar.clone();
+                            let (crypto_sender, crypto_receiver) = async_channel::bounded(1);
+                            let message_id_for_parse = message_id.clone();
+                            let smime_options = AppSettings::try_new()
+                                .map(|settings| settings.smime_options(false, false))
+                                .unwrap_or_default();
+                            std::thread::spawn(move || {
+                                let result = crypto_service::inspect_crypto_mime(
+                                    &raw_mime,
+                                    &smime_options,
+                                )
+                                .map(
+                                    |inspection| {
+                                        let decrypted = inspection
+                                            .decrypted_mime
+                                            .as_deref()
+                                            .and_then(|decrypted_mime| {
+                                                parse_rfc822_bytes(
+                                                    &message_id_for_parse,
+                                                    &folder_id,
+                                                    decrypted_mime,
+                                                    unread,
+                                                )
+                                            });
+                                        (inspection, decrypted)
+                                    },
+                                );
+                                if let Err(error) = crypto_sender.send_blocking(result) {
+                                    tracing::debug!(%error, "OpenPGP inspection result was dropped");
                                 }
-                            }
+                            });
+                            glib::spawn_future_local(async move {
+                                let Ok(inspection) = crypto_receiver.recv().await else {
+                                    return;
+                                };
+                                let Some(label) = label_for_crypto.upgrade() else {
+                                    return;
+                                };
+                                let Some(current) = selection_for_crypto
+                                    .selected_item()
+                                    .and_downcast::<MailMessageObject>()
+                                else {
+                                    return;
+                                };
+                                if current.id() != message_id {
+                                    return;
+                                }
+                                match inspection {
+                                    Ok((inspection, decrypted)) => {
+                                        let label_text = inspection.details.display_text();
+                                        if let Some(parsed) = decrypted
+                                        {
+                                            current.replace_rendered_content(
+                                                parsed.html_body,
+                                                parsed.preview_snippet,
+                                                parsed.attachments,
+                                            );
+                                            Self::render_message_content(
+                                                &current,
+                                                &viewer_for_crypto,
+                                                &attachment_bar_for_crypto,
+                                            );
+                                        }
+                                        label.set_label(&label_text);
+                                    }
+                                    Err(error) => {
+                                        label.set_label(&format!(
+                                            "OpenPGP-Prüfung fehlgeschlagen: {error}"
+                                        ));
+                                    }
+                                }
+                            });
                         }
-                        let inline_images = attachments
-                            .iter()
-                            .filter_map(|attachment| {
-                                attachment.content_id.as_ref().map(|content_id| {
-                                    InlineImage::new(
-                                        content_id.clone(),
-                                        attachment.mime_type.clone(),
-                                        attachment.content.clone(),
-                                    )
-                                })
-                            })
-                            .collect::<Vec<_>>();
-                        let rendered_html = resolve_cid_images(&msg.html_body(), &inline_images);
-                        mail_viewer.load_html_for_message(Some(&msg.id()), &rendered_html, None);
-                        if attachments.is_empty() {
-                            attachment_bar.set_visible(false);
-                        } else {
-                            attachment_bar.set_visible(true);
-                            for att in attachments {
-                                let chip = gtk::Box::builder()
-                                    .orientation(gtk::Orientation::Horizontal)
-                                    .spacing(6)
-                                    .css_classes(vec!["card", "attachment-chip"])
-                                    .margin_top(4)
-                                    .margin_bottom(4)
-                                    .build();
-
-                                let icon = gtk::Image::from_icon_name("mail-attachment-symbolic");
-                                let text = gtk::Label::builder()
-                                    .label(&format!("{} ({})", att.filename, att.size_formatted))
-                                    .css_classes(vec!["caption"])
-                                    .build();
-
-                                let btn_save = gtk::Button::builder()
-                                    .icon_name("document-save-symbolic")
-                                    .tooltip_text("Anhang speichern unter…")
-                                    .css_classes(vec!["flat", "circular"])
-                                    .valign(gtk::Align::Center)
-                                    .build();
-                                let filename = att.filename.clone();
-                                let content = att.content.clone();
-                                let parent = attachment_bar.root().and_downcast::<gtk::Window>();
-                                btn_save.connect_clicked(move |_| {
-                                    let Some(parent) = parent.as_ref() else {
-                                        tracing::warn!(
-                                            "Cannot save attachment without a parent window"
-                                        );
-                                        return;
-                                    };
-
-                                    let file_dialog = gtk::FileDialog::builder()
-                                        .title("Anhang speichern")
-                                        .modal(true)
-                                        .initial_name(&filename)
-                                        .build();
-                                    let filename = filename.clone();
-                                    let content = content.clone();
-                                    file_dialog.save(
-                                        Some(parent),
-                                        None::<&gio::Cancellable>,
-                                        move |result| match result {
-                                            Ok(file) => {
-                                                let Some(path) = file.path() else {
-                                                    tracing::warn!(
-                                                        "Cannot save attachment to a non-local URI"
-                                                    );
-                                                    return;
-                                                };
-                                                if let Err(error) = fs::write(&path, &content) {
-                                                    tracing::error!(
-                                                        path = %path.display(),
-                                                        %error,
-                                                        "Could not save attachment"
-                                                    );
-                                                } else {
-                                                    tracing::info!(
-                                                        path = %path.display(),
-                                                        filename = %filename,
-                                                        "Attachment saved"
-                                                    );
-                                                }
-                                            }
-                                            Err(error) => {
-                                                tracing::debug!(%error, "Attachment save cancelled")
-                                            }
-                                        },
-                                    );
-                                });
-
-                                chip.append(&icon);
-                                chip.append(&text);
-                                chip.append(&btn_save);
-                                attachment_bar.append(&chip);
-                            }
-                        }
+                        Self::render_message_content(&msg, &mail_viewer, &attachment_bar);
                     }
                 }
             }
@@ -6081,6 +6111,125 @@ impl MailPage {
 
         if store.n_items() > 0 {
             selection.set_selected(0);
+        }
+    }
+
+    fn render_message_content(
+        message: &MailMessageObject,
+        mail_viewer: &MailViewer,
+        attachment_bar: &gtk::Box,
+    ) {
+        while let Some(child) = attachment_bar.first_child() {
+            attachment_bar.remove(&child);
+        }
+
+        let attachments = message.attachments();
+        for attachment in &attachments {
+            let looks_like_calendar = attachment
+                .mime_type
+                .split(';')
+                .next()
+                .is_some_and(|mime| mime.trim().eq_ignore_ascii_case("text/calendar"))
+                || attachment.filename.to_ascii_lowercase().ends_with(".ics");
+            if looks_like_calendar
+                && let Some(invitation) =
+                    parse_invitation(&String::from_utf8_lossy(&attachment.content))
+            {
+                append_itip_invitation(attachment_bar, invitation);
+            }
+        }
+
+        let inline_images = attachments
+            .iter()
+            .filter_map(|attachment| {
+                attachment.content_id.as_ref().map(|content_id| {
+                    InlineImage::new(
+                        content_id.clone(),
+                        attachment.mime_type.clone(),
+                        attachment.content.clone(),
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+        let rendered_html = resolve_cid_images(&message.html_body(), &inline_images);
+        mail_viewer.load_html_for_message(Some(&message.id()), &rendered_html, None);
+        if attachments.is_empty() {
+            attachment_bar.set_visible(false);
+        } else {
+            attachment_bar.set_visible(true);
+            for attachment in attachments {
+                let chip = gtk::Box::builder()
+                    .orientation(gtk::Orientation::Horizontal)
+                    .spacing(6)
+                    .css_classes(vec!["card", "attachment-chip"])
+                    .margin_top(4)
+                    .margin_bottom(4)
+                    .build();
+
+                let icon = gtk::Image::from_icon_name("mail-attachment-symbolic");
+                let text = gtk::Label::builder()
+                    .label(&format!(
+                        "{} ({})",
+                        attachment.filename, attachment.size_formatted
+                    ))
+                    .css_classes(vec!["caption"])
+                    .build();
+
+                let btn_save = gtk::Button::builder()
+                    .icon_name("document-save-symbolic")
+                    .tooltip_text("Anhang speichern unter…")
+                    .css_classes(vec!["flat", "circular"])
+                    .valign(gtk::Align::Center)
+                    .build();
+                let filename = attachment.filename.clone();
+                let content = attachment.content.clone();
+                let parent = attachment_bar.root().and_downcast::<gtk::Window>();
+                btn_save.connect_clicked(move |_| {
+                    let Some(parent) = parent.as_ref() else {
+                        tracing::warn!("Cannot save attachment without a parent window");
+                        return;
+                    };
+
+                    let file_dialog = gtk::FileDialog::builder()
+                        .title("Anhang speichern")
+                        .modal(true)
+                        .initial_name(&filename)
+                        .build();
+                    let filename = filename.clone();
+                    let content = content.clone();
+                    file_dialog.save(Some(parent), None::<&gio::Cancellable>, move |result| {
+                        match result {
+                            Ok(file) => {
+                                let Some(path) = file.path() else {
+                                    tracing::warn!("Cannot save attachment to a non-local URI");
+                                    return;
+                                };
+                                if let Err(error) = fs::write(&path, &content) {
+                                    tracing::error!(
+                                        path = %path.display(),
+                                        %error,
+                                        "Could not save attachment"
+                                    );
+                                } else {
+                                    tracing::info!(
+                                        path = %path.display(),
+                                        filename = %filename,
+                                        "Attachment saved"
+                                    );
+                                }
+                            }
+                            Err(error) => {
+                                tracing::debug!(%error, "Attachment save cancelled")
+                            }
+                        }
+                    });
+                });
+
+                chip.append(&icon);
+                chip.append(&text);
+                chip.append(&btn_save);
+                attachment_bar.append(&chip);
+            }
         }
     }
 
@@ -6249,7 +6398,6 @@ impl MailPage {
         self.select_folder_row(&initial_folder);
         self.start_mail_load(MailLoadRequest::initial(), true);
         self.setup_mail_polling();
-        self.setup_camel_change_monitor();
 
         let source_store_for_load = source_store.clone();
         let source_selection_for_load = self.imp().source_selection.borrow().clone();
@@ -6754,6 +6902,13 @@ impl MailPage {
     }
 
     fn start_mail_load(&self, request: MailLoadRequest, replace: bool) {
+        tracing::debug!(
+            source_uid = ?request.source_uid,
+            folder_name = ?request.folder_name,
+            offset = request.offset,
+            replace,
+            "Scheduling mail load"
+        );
         if let Some(cancelled) = self.imp().mail_load_cancellation.borrow().as_ref() {
             cancelled.store(true, Ordering::Relaxed);
         }
@@ -6789,10 +6944,15 @@ impl MailPage {
         let request_for_worker = request.clone();
         let progress_sender_for_worker = progress_sender.clone();
         std::thread::spawn(move || {
+            let started = Instant::now();
             let result = load_mail_backend(
                 &request_for_worker,
                 &cancellation,
                 Some(&progress_sender_for_worker),
+            );
+            tracing::debug!(
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                "Mail load worker completed"
             );
             drop(progress_sender_for_worker);
             if let Err(error) = sender.send_blocking(result) {
@@ -6828,6 +6988,18 @@ impl MailPage {
     }
 
     fn apply_mail_load(&self, request: MailLoadRequest, result: MailPageLoadResult, replace: bool) {
+        let started = Instant::now();
+        let result_kind = match &result {
+            MailPageLoadResult::Camel(_) => "camel",
+            MailPageLoadResult::Combined { .. } => "combined",
+            MailPageLoadResult::Local { .. } => "local",
+            MailPageLoadResult::Error(_) => "error",
+        };
+        tracing::debug!(
+            result = result_kind,
+            replace,
+            "Applying mail load to GTK models"
+        );
         let previous_selected_id = replace.then(|| self.selected_message_id()).flatten();
         if replace {
             self.clear_batch_selection();
@@ -6937,6 +7109,7 @@ impl MailPage {
                     if replace {
                         store.remove_all();
                     }
+                    let mut objects = Vec::with_capacity(messages.len());
                     for record in messages {
                         loaded_count += 1;
                         let folder_counts_entry = folder_counts
@@ -6946,7 +7119,10 @@ impl MailPage {
                         if record.is_unread {
                             folder_counts_entry.0 += 1;
                         }
-                        store.append(&record.into_object());
+                        objects.push(record.into_object().upcast::<glib::Object>());
+                    }
+                    if !objects.is_empty() {
+                        store.splice(store.n_items(), 0, &objects);
                     }
                     self.refresh_thread_metadata(store);
                 }
@@ -7018,11 +7194,24 @@ impl MailPage {
             }
         }
 
+        // Opening the long-lived Camel watcher concurrently with the initial
+        // full account/folder load can make a cold EDS session contend for the
+        // same provider resources.  Start it only after the first result has
+        // reached the GTK model and the window is interactive.
+        if replace && !self.imp().camel_monitor_started.replace(true) {
+            self.setup_camel_change_monitor();
+        }
+
         self.refresh_search_folder_counts();
 
         if self.imp().mail_change_pending.replace(false) && !self.imp().mail_loading.get() {
             self.refresh_mail();
         }
+        tracing::debug!(
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            result = result_kind,
+            "Mail load applied to GTK models"
+        );
     }
 
     fn append_local_messages(
@@ -7110,12 +7299,16 @@ impl MailPage {
             }
         }
 
+        let mut objects = Vec::new();
         let mut appended = 0;
         for record in messages {
             if existing_ids.insert(record.id.clone()) {
-                store.append(&record.into_object());
+                objects.push(record.into_object().upcast::<glib::Object>());
                 appended += 1;
             }
+        }
+        if !objects.is_empty() {
+            store.splice(store.n_items(), 0, &objects);
         }
         self.refresh_thread_metadata(store);
         appended
@@ -7651,6 +7844,10 @@ fn save_itip_reply_draft(
         attachments: Vec::new(),
         calendar_method: Some("REPLY".to_string()),
         calendar_component: Some(component),
+        pgp_sign: false,
+        pgp_encrypt: false,
+        pgp_key: String::new(),
+        smime_options: None,
     };
     DraftStoreService::default()
         .save(draft)

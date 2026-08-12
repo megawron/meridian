@@ -178,6 +178,16 @@ struct BackupSettings {
     sign_new_messages: bool,
     #[serde(default)]
     default_pgp_key: String,
+    #[serde(default = "default_crypto_protocol")]
+    crypto_protocol: String,
+    #[serde(default)]
+    smime_signer_certificate: String,
+    #[serde(default)]
+    smime_private_key: String,
+    #[serde(default)]
+    smime_recipient_certificates: String,
+    #[serde(default)]
+    smime_ca_file: String,
     #[serde(default = "default_mail_sync_interval")]
     mail_sync_interval: u32,
     #[serde(default = "default_draft_autosave_interval")]
@@ -270,6 +280,10 @@ fn default_color_scheme() -> String {
 
 fn default_mail_sync_interval() -> u32 {
     30
+}
+
+fn default_crypto_protocol() -> String {
+    "openpgp".to_string()
 }
 
 fn default_draft_autosave_interval() -> u32 {
@@ -440,6 +454,11 @@ impl BackupSettings {
             color_scheme: settings.color_scheme(),
             sign_new_messages: settings.sign_new_messages(),
             default_pgp_key: settings.default_pgp_key(),
+            crypto_protocol: settings.crypto_protocol(),
+            smime_signer_certificate: settings.smime_signer_certificate(),
+            smime_private_key: settings.smime_private_key(),
+            smime_recipient_certificates: settings.smime_recipient_certificates().join("\n"),
+            smime_ca_file: settings.smime_ca_file(),
             mail_sync_interval: settings.mail_sync_interval_seconds(),
             draft_autosave_interval: settings.draft_autosave_interval_seconds(),
             append_signature: settings.append_signature(),
@@ -513,6 +532,19 @@ impl BackupSettings {
         settings.set_color_scheme(&self.color_scheme);
         settings.set_sign_new_messages(self.sign_new_messages);
         settings.set_default_pgp_key(&self.default_pgp_key);
+        settings.set_crypto_protocol(&self.crypto_protocol);
+        settings.set_smime_signer_certificate(&self.smime_signer_certificate);
+        settings.set_smime_private_key(&self.smime_private_key);
+        settings.set_smime_recipient_certificates(
+            &self
+                .smime_recipient_certificates
+                .split('\n')
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+                .collect::<Vec<_>>(),
+        );
+        settings.set_smime_ca_file(&self.smime_ca_file);
         settings.set_mail_sync_interval_seconds(self.mail_sync_interval);
         settings.set_draft_autosave_interval_seconds(self.draft_autosave_interval);
         settings.set_append_signature(self.append_signature);

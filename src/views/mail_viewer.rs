@@ -12,8 +12,11 @@
 
 use adw::prelude::*;
 use adw::subclass::prelude::*;
-use gtk::{gio, glib};
+#[cfg(target_os = "linux")]
+use gtk::gio;
+use gtk::glib;
 use std::cell::RefCell;
+#[cfg(target_os = "linux")]
 use webkit6::prelude::*;
 
 use crate::services::AppSettings;
@@ -26,7 +29,10 @@ mod imp {
     #[derive(Debug, Default)]
     pub struct MailViewer {
         pub banner: adw::Banner,
+        #[cfg(target_os = "linux")]
         pub webview: Option<webkit6::WebView>,
+        #[cfg(not(target_os = "linux"))]
+        pub fallback_view: RefCell<Option<gtk::TextView>>,
         pub current_message_id: RefCell<Option<String>>,
         pub current_html: RefCell<Option<String>>,
         pub current_base_uri: RefCell<Option<String>>,
@@ -72,6 +78,7 @@ impl MailViewer {
     }
 
     fn build_ui(&self) {
+        tracing::debug!("MailViewer construction started");
         let box_container = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .build();
@@ -99,25 +106,102 @@ impl MailViewer {
 
         box_container.append(&banner);
 
-        // ── 2. WebKitGTK 6.0 WebView ───────────────────────────────────────
-        let web_context = webkit6::WebContext::new();
+        #[cfg(target_os = "linux")]
+        {
+            // WebKitGTK is the production renderer on Linux.  It is kept
+            // behind the target gate because WebKitGTK 6.0 is not shipped by
+            // macOS package managers; the macOS fallback below still allows
+            // the GTK/libadwaita shell to be exercised locally.
+            tracing::debug!("Creating WebKitGTK context and view");
+            let web_context = webkit6::WebContext::new();
+            let settings = webkit6::Settings::new();
+            settings.set_enable_javascript(false);
+            settings.set_auto_load_images(
+                AppSettings::try_new()
+                    .as_ref()
+                    .map(AppSettings::auto_load_remote_images)
+                    .unwrap_or(false),
+            );
+            settings.set_enable_developer_extras(false);
 
-        let settings = webkit6::Settings::new();
-        settings.set_enable_javascript(false);
-        settings.set_auto_load_images(
-            AppSettings::try_new()
-                .as_ref()
-                .map(AppSettings::auto_load_remote_images)
-                .unwrap_or(false),
-        );
-        settings.set_enable_developer_extras(false);
+            let webview = webkit6::WebView::builder()
+                .web_context(&web_context)
+                .settings(&settings)
+                .hexpand(true)
+                .vexpand(true)
+                .build();
 
-        let webview = webkit6::WebView::builder()
-            .web_context(&web_context)
-            .settings(&settings)
-            .hexpand(true)
-            .vexpand(true)
-            .build();
+            let webview_scroll = gtk::ScrolledWindow::builder()
+                .hscrollbar_policy(gtk::PolicyType::Automatic)
+                .vscrollbar_policy(gtk::PolicyType::Automatic)
+                .child(&webview)
+                .hexpand(true)
+                .vexpand(true)
+                .build();
+
+            // Block external navigation links in WebView, handle via the
+            // desktop's default browser.
+            webview.connect_decide_policy(|_, decision, decision_type| {
+                if decision_type == webkit6::PolicyDecisionType::NavigationAction {
+                    if let Ok(nav) = decision
+                        .clone()
+                        .downcast::<webkit6::NavigationPolicyDecision>()
+                    {
+                        if let Some(mut action) = nav.navigation_action() {
+                            if let Some(req) = action.request() {
+                                if let Some(uri) = req.uri() {
+                                    if uri != "about:blank" && !uri.starts_with("data:") {
+                                        tracing::info!("Opening external link in browser: {}", uri);
+                                        let _ = gio::AppInfo::launch_default_for_uri(
+                                            &uri,
+                                            None::<&gio::AppLaunchContext>,
+                                        );
+                                        decision.ignore();
+                                        return true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                false
+            });
+
+            box_container.append(&webview_scroll);
+            unsafe {
+                let imp = self.imp();
+                let mut_imp = imp as *const imp::MailViewer as *mut imp::MailViewer;
+                (*mut_imp).webview = Some(webview);
+            }
+            tracing::debug!("WebKitGTK context and view created");
+        }
+
+        #[cfg(not(target_os = "linux"))]
+        {
+            let fallback_view = gtk::TextView::builder()
+                .editable(false)
+                .cursor_visible(false)
+                .wrap_mode(gtk::WrapMode::WordChar)
+                .top_margin(16)
+                .bottom_margin(16)
+                .left_margin(16)
+                .right_margin(16)
+                .hexpand(true)
+                .vexpand(true)
+                .build();
+            fallback_view
+                .buffer()
+                .set_text("macOS-Entwicklungsmodus: Nachrichtentext wird als Klartext angezeigt.");
+            let fallback_scroll = gtk::ScrolledWindow::builder()
+                .hscrollbar_policy(gtk::PolicyType::Automatic)
+                .vscrollbar_policy(gtk::PolicyType::Automatic)
+                .child(&fallback_view)
+                .hexpand(true)
+                .vexpand(true)
+                .build();
+            box_container.append(&fallback_scroll);
+            self.imp().fallback_view.replace(Some(fallback_view));
+        }
 
         if let Some(settings) = AppSettings::try_new() {
             for key in [
@@ -137,44 +221,17 @@ impl MailViewer {
             self.imp().settings.replace(Some(settings));
         }
 
-        // Block external navigation links in WebView, handle via xdg-open
-        webview.connect_decide_policy(|_, decision, decision_type| {
-            if decision_type == webkit6::PolicyDecisionType::NavigationAction {
-                if let Ok(nav) = decision
-                    .clone()
-                    .downcast::<webkit6::NavigationPolicyDecision>()
-                {
-                    if let Some(mut action) = nav.navigation_action() {
-                        if let Some(req) = action.request() {
-                            if let Some(uri) = req.uri() {
-                                if uri != "about:blank" && !uri.starts_with("data:") {
-                                    tracing::info!("Opening external link in browser: {}", uri);
-                                    let _ = gio::AppInfo::launch_default_for_uri(
-                                        &uri,
-                                        None::<&gio::AppLaunchContext>,
-                                    );
-                                    decision.ignore();
-                                    return true;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            false
-        });
-
-        box_container.append(&webview);
         box_container.set_parent(self);
 
-        // Retain webview reference
+        // Retain the banner reference.  The target-specific render widget is
+        // stored above in its respective interior-mutable field.
         unsafe {
             let imp = self.imp();
             let mut_imp = imp as *const imp::MailViewer as *mut imp::MailViewer;
-            (*mut_imp).webview = Some(webview);
             let mut_banner = &mut (*mut_imp).banner;
             *mut_banner = banner;
         }
+        tracing::debug!("MailViewer construction finished");
     }
 
     /// Load HTML content into the WebKitGTK WebView.
@@ -209,6 +266,7 @@ impl MailViewer {
         let remote_images_allowed = global_remote_images || per_message_remote_images;
         self.imp().banner.set_revealed(!remote_images_allowed);
 
+        #[cfg(target_os = "linux")]
         if let Some(ref webview) = self.imp().webview {
             let render_html = AppSettings::try_new()
                 .as_ref()
@@ -282,6 +340,12 @@ impl MailViewer {
 
             webview.load_html(&styled_html, base_uri);
         }
+
+        #[cfg(not(target_os = "linux"))]
+        if let Some(view) = self.imp().fallback_view.borrow().as_ref() {
+            let text = html_to_fallback_text(html_content);
+            view.buffer().set_text(&text);
+        }
     }
 
     fn reload_current(&self) {
@@ -301,6 +365,7 @@ impl MailViewer {
             }
         }
         self.imp().banner.set_revealed(false);
+        #[cfg(target_os = "linux")]
         if let Some(ref webview) = self.imp().webview {
             if let Some(settings) = webkit6::prelude::WebViewExt::settings(webview) {
                 settings.set_auto_load_images(true);
@@ -310,12 +375,53 @@ impl MailViewer {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn escape_html(value: &str) -> String {
     value
         .replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
+}
+
+#[cfg(not(target_os = "linux"))]
+fn html_to_fallback_text(value: &str) -> String {
+    let sanitized = sanitize_html(value);
+    let mut output = String::with_capacity(sanitized.len());
+    let mut in_tag = false;
+    let mut tag = String::new();
+    for character in sanitized.chars() {
+        if in_tag {
+            if character == '>' {
+                let normalized = tag.trim().to_ascii_lowercase();
+                if matches!(
+                    normalized.as_str(),
+                    "br" | "/p" | "/div" | "/li" | "/blockquote" | "/h1" | "/h2" | "/h3"
+                ) {
+                    if !output.ends_with('\n') {
+                        output.push('\n');
+                    }
+                }
+                in_tag = false;
+                tag.clear();
+            } else {
+                tag.push(character);
+            }
+        } else if character == '<' {
+            in_tag = true;
+            tag.clear();
+        } else {
+            output.push(character);
+        }
+    }
+    output
+        .replace("&nbsp;", " ")
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .trim()
+        .to_string()
 }
 
 impl Default for MailViewer {

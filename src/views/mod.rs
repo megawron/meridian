@@ -5,6 +5,10 @@
 pub(crate) mod accessibility;
 mod calendar_page;
 mod contacts_page;
+#[cfg(target_os = "linux")]
+mod html_editor;
+#[cfg(not(target_os = "linux"))]
+#[path = "html_editor_fallback.rs"]
 mod html_editor;
 mod mail_page;
 mod mail_viewer;

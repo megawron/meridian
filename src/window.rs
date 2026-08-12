@@ -19,6 +19,7 @@
 use adw::prelude::*;
 use adw::subclass::prelude::*;
 use gtk::{gio, glib};
+use std::rc::Rc;
 
 use crate::application::EvolutionApplication;
 use crate::services::AppSettings;
@@ -133,18 +134,24 @@ impl EvolutionWindow {
         };
         if let Some(calendar_page) = view_stack
             .child_by_name("calendar")
+            .and_then(|widget| widget.downcast::<adw::Bin>().ok())
+            .and_then(|bin| bin.child())
             .and_then(|widget| widget.downcast::<CalendarPage>().ok())
         {
             calendar_page.refresh_category_presentation();
         }
         if let Some(tasks_page) = view_stack
             .child_by_name("tasks")
+            .and_then(|widget| widget.downcast::<adw::Bin>().ok())
+            .and_then(|bin| bin.child())
             .and_then(|widget| widget.downcast::<crate::views::TasksPage>().ok())
         {
             tasks_page.refresh_category_presentation();
         }
         if let Some(memos_page) = view_stack
             .child_by_name("memos")
+            .and_then(|widget| widget.downcast::<adw::Bin>().ok())
+            .and_then(|bin| bin.child())
             .and_then(|widget| widget.downcast::<crate::views::MemosPage>().ok())
         {
             memos_page.refresh_category_presentation();
@@ -174,43 +181,95 @@ impl EvolutionWindow {
         let mail_page = MailPage::new();
         view_stack.add_titled_with_icon(&mail_page, Some("mail"), "Mail", "mail-unread-symbolic");
 
-        let calendar_page = CalendarPage::new();
+        // Construct only the visible mail module at startup.  EDS/ECal/EBook
+        // page construction starts native worker activity; eagerly creating
+        // every hidden module can overwhelm a cold Linux EDS session before
+        // the first frame has settled.
+        let calendar_bin = Self::lazy_module_bin("Kalender");
         view_stack.add_titled_with_icon(
-            &calendar_page,
+            &calendar_bin,
             Some("calendar"),
             "Kalender",
             "x-office-calendar-symbolic",
         );
 
-        let contacts_page = ContactsPage::new();
+        let contacts_bin = Self::lazy_module_bin("Kontakte");
         view_stack.add_titled_with_icon(
-            &contacts_page,
+            &contacts_bin,
             Some("contacts"),
             "Kontakte",
             "contact-new-symbolic",
         );
 
-        let tasks_page = crate::views::TasksPage::new();
+        let tasks_bin = Self::lazy_module_bin("Aufgaben");
         view_stack.add_titled_with_icon(
-            &tasks_page,
+            &tasks_bin,
             Some("tasks"),
             "Aufgaben",
             "tasks-due-symbolic",
         );
 
-        let memos_page = crate::views::MemosPage::new();
-        view_stack.add_titled_with_icon(&memos_page, Some("memos"), "Notizen", "note-symbolic");
+        let memos_bin = Self::lazy_module_bin("Notizen");
+        view_stack.add_titled_with_icon(&memos_bin, Some("memos"), "Notizen", "note-symbolic");
+
+        let ensure_module_loaded: Rc<dyn Fn(&str)> = {
+            let calendar_bin = calendar_bin.clone();
+            let contacts_bin = contacts_bin.clone();
+            let tasks_bin = tasks_bin.clone();
+            let memos_bin = memos_bin.clone();
+            Rc::new(move |name| match name {
+                "calendar"
+                    if calendar_bin
+                        .child()
+                        .map(|child| child.is::<adw::StatusPage>())
+                        .unwrap_or(true) =>
+                {
+                    calendar_bin.set_child(Some(&CalendarPage::new()));
+                }
+                "contacts"
+                    if contacts_bin
+                        .child()
+                        .map(|child| child.is::<adw::StatusPage>())
+                        .unwrap_or(true) =>
+                {
+                    contacts_bin.set_child(Some(&ContactsPage::new()));
+                }
+                "tasks"
+                    if tasks_bin
+                        .child()
+                        .map(|child| child.is::<adw::StatusPage>())
+                        .unwrap_or(true) =>
+                {
+                    tasks_bin.set_child(Some(&crate::views::TasksPage::new()));
+                }
+                "memos"
+                    if memos_bin
+                        .child()
+                        .map(|child| child.is::<adw::StatusPage>())
+                        .unwrap_or(true) =>
+                {
+                    memos_bin.set_child(Some(&crate::views::MemosPage::new()));
+                }
+                _ => {}
+            })
+        };
+
+        let active_view = AppSettings::try_new()
+            .map(|settings| settings.active_view())
+            .filter(|view| {
+                matches!(
+                    view.as_str(),
+                    "mail" | "calendar" | "contacts" | "tasks" | "memos"
+                )
+            })
+            .unwrap_or_else(|| "mail".to_string());
+        view_stack.set_visible_child_name(&active_view);
 
         if let Some(settings) = AppSettings::try_new() {
-            let active_view = settings.active_view();
-            if matches!(
-                active_view.as_str(),
-                "mail" | "calendar" | "contacts" | "tasks" | "memos"
-            ) {
-                view_stack.set_visible_child_name(&active_view);
-            }
+            let ensure_module_loaded_for_signal = Rc::clone(&ensure_module_loaded);
             view_stack.connect_visible_child_name_notify(move |stack| {
                 if let Some(view_name) = stack.visible_child_name() {
+                    ensure_module_loaded_for_signal(view_name.as_str());
                     settings.set_active_view(view_name.as_str());
                 }
             });
@@ -278,21 +337,25 @@ impl EvolutionWindow {
         toolbar_view.set_content(Some(&view_stack));
 
         let toast_overlay = &self.imp().toast_overlay;
+        toast_overlay.set_hexpand(true);
+        toast_overlay.set_vexpand(true);
         toast_overlay.set_child(Some(&toolbar_view));
 
         // Responsive Breakpoints
         let bp_narrow =
             adw::Breakpoint::new(adw::BreakpointCondition::parse("max-width: 860sp").unwrap());
-        if let Some(preview) = mail_page.preview_widget() {
-            bp_narrow.add_setter(&preview, "visible", Some(&false.to_value()));
-        }
+        // FIXME: Hiding the preview widget causes layout oscillation if its minimum width
+        // forces the window size to cross the breakpoint threshold continuously.
+        // if let Some(preview) = mail_page.preview_widget() {
+        //     bp_narrow.add_setter(&preview, "visible", Some(&false.to_value()));
+        // }
 
         let bp_mobile =
             adw::Breakpoint::new(adw::BreakpointCondition::parse("max-width: 560sp").unwrap());
         bp_mobile.add_setter(mail_page.outer_paned(), "position", Some(&0_i32.to_value()));
-        if let Some(preview) = mail_page.preview_widget() {
-            bp_mobile.add_setter(&preview, "visible", Some(&false.to_value()));
-        }
+        // if let Some(preview) = mail_page.preview_widget() {
+        //     bp_mobile.add_setter(&preview, "visible", Some(&false.to_value()));
+        // }
         bp_mobile.add_setter(&sidebar_button, "active", Some(&false.to_value()));
 
         self.add_breakpoint(bp_narrow);
@@ -300,6 +363,28 @@ impl EvolutionWindow {
 
         self.imp().view_stack.replace(Some(view_stack));
         self.set_content(Some(toast_overlay));
+
+        // Let the first frame become interactive before restoring a non-mail
+        // module from settings.  Mail remains the fast default; a previously
+        // selected calendar/contacts/tasks/memos view is initialized on the
+        // next main-loop turn instead of inside window construction.
+        if active_view != "mail" {
+            let ensure_module_loaded_for_initial = Rc::clone(&ensure_module_loaded);
+            glib::idle_add_local_once(move || {
+                ensure_module_loaded_for_initial(&active_view);
+            });
+        }
+    }
+
+    fn lazy_module_bin(title: &str) -> adw::Bin {
+        let status = adw::StatusPage::builder()
+            .title(title)
+            .description("Dieser Bereich wird beim ersten Öffnen geladen.")
+            .icon_name("view-refresh-symbolic")
+            .vexpand(true)
+            .hexpand(true)
+            .build();
+        adw::Bin::builder().child(&status).build()
     }
 
     fn build_primary_menu() -> gio::Menu {

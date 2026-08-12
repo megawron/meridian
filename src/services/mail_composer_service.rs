@@ -4,6 +4,7 @@
 // credentials and transport selection remain in EDS/Camel; this service only
 // turns the GTK composer state into a complete message that Camel can send.
 
+use super::crypto_service::SmimeOptions;
 use super::draft_store_service::DraftAttachment;
 
 use chrono::Utc;
@@ -24,6 +25,10 @@ pub(crate) struct OutgoingMessage {
     pub(crate) attachments: Vec<DraftAttachment>,
     pub(crate) calendar_method: Option<String>,
     pub(crate) calendar_component: Option<String>,
+    pub(crate) pgp_sign: bool,
+    pub(crate) pgp_encrypt: bool,
+    pub(crate) pgp_key: String,
+    pub(crate) smime_options: Option<SmimeOptions>,
 }
 
 #[derive(Debug, Clone)]
@@ -96,7 +101,7 @@ pub(crate) fn build_rfc822(message: &OutgoingMessage) -> Result<Vec<u8>, String>
         })
         .collect::<Result<Vec<_>, String>>()?;
 
-    build_rfc822_parts(
+    let raw = build_rfc822_parts(
         &message.from,
         &message.reply_to,
         message.request_read_receipt,
@@ -113,6 +118,39 @@ pub(crate) fn build_rfc822(message: &OutgoingMessage) -> Result<Vec<u8>, String>
         &attachments,
         message.calendar_method.as_deref(),
         message.calendar_component.as_deref(),
+    )?;
+    if !message.pgp_sign && !message.pgp_encrypt {
+        if let Some(options) = message.smime_options.as_ref()
+            && (options.sign || options.encrypt)
+        {
+            return crate::services::crypto_service::protect_smime_rfc822(&raw, options);
+        }
+        return Ok(raw);
+    }
+    if message
+        .smime_options
+        .as_ref()
+        .is_some_and(|options| options.sign || options.encrypt)
+    {
+        return Err("OpenPGP und S/MIME können nicht gleichzeitig aktiviert werden".to_string());
+    }
+    let recipients = [message.to.clone(), message.cc.clone(), message.bcc.clone()];
+    let signing_key = if message.pgp_sign && message.pgp_key.trim().is_empty() {
+        crate::services::crypto_service::normalize_recipient_addresses(&[message.from.clone()])?
+            .into_iter()
+            .next()
+            .unwrap_or_default()
+    } else {
+        message.pgp_key.clone()
+    };
+    crate::services::crypto_service::protect_rfc822(
+        &raw,
+        &crate::services::crypto_service::OpenPgpOptions {
+            sign: message.pgp_sign,
+            encrypt: message.pgp_encrypt,
+            signing_key,
+            recipients: recipients.to_vec(),
+        },
     )
 }
 
@@ -501,6 +539,10 @@ mod tests {
             attachments: Vec::new(),
             calendar_method: None,
             calendar_component: None,
+            pgp_sign: false,
+            pgp_encrypt: false,
+            pgp_key: String::new(),
+            smime_options: None,
         })
         .expect("message should build");
         let text = String::from_utf8(raw).expect("message should be UTF-8");
@@ -535,6 +577,10 @@ mod tests {
             }],
             calendar_method: None,
             calendar_component: None,
+            pgp_sign: false,
+            pgp_encrypt: false,
+            pgp_key: String::new(),
+            smime_options: None,
         })
         .expect("multipart message should build");
         let text = String::from_utf8(raw).expect("message should be UTF-8");
@@ -593,6 +639,10 @@ mod tests {
             attachments: Vec::new(),
             calendar_method: None,
             calendar_component: None,
+            pgp_sign: false,
+            pgp_encrypt: false,
+            pgp_key: String::new(),
+            smime_options: None,
         };
         assert!(
             build_rfc822(&message)
@@ -624,6 +674,10 @@ mod tests {
             attachments: Vec::new(),
             calendar_method: None,
             calendar_component: None,
+            pgp_sign: false,
+            pgp_encrypt: false,
+            pgp_key: String::new(),
+            smime_options: None,
         })
         .expect("plain message should build");
         let text = String::from_utf8(raw).expect("message should be UTF-8");
@@ -654,6 +708,10 @@ mod tests {
             attachments: Vec::new(),
             calendar_method: Some("REPLY".to_string()),
             calendar_component: Some(component.to_string()),
+            pgp_sign: false,
+            pgp_encrypt: false,
+            pgp_key: String::new(),
+            smime_options: None,
         })
         .expect("iTIP response should build");
         let text = String::from_utf8(raw).expect("message should be UTF-8");
@@ -669,6 +727,59 @@ mod tests {
             html_to_plain_text("<blockquote>Hi<br>there</blockquote><ul><li>A</li><li>B</li></ul>"),
             "Hi\nthere\nA\nB"
         );
+    }
+
+    #[test]
+    fn openpgp_signing_requires_an_explicit_key() {
+        let error = build_rfc822(&OutgoingMessage {
+            source_uid: "account-1".to_string(),
+            from: String::new(),
+            reply_to: String::new(),
+            request_read_receipt: false,
+            to: "person@example.org".to_string(),
+            cc: String::new(),
+            bcc: String::new(),
+            subject: "Signed".to_string(),
+            html_body: "Hello".to_string(),
+            plain_text: true,
+            attachments: Vec::new(),
+            calendar_method: None,
+            calendar_component: None,
+            pgp_sign: true,
+            pgp_encrypt: false,
+            pgp_key: String::new(),
+            smime_options: None,
+        })
+        .expect_err("signing without a key must fail before invoking GnuPG");
+        assert!(error.contains("kein passender Schlüssel"));
+    }
+
+    #[test]
+    fn smime_signing_requires_certificate_and_key() {
+        let error = build_rfc822(&OutgoingMessage {
+            source_uid: "account-1".to_string(),
+            from: String::new(),
+            reply_to: String::new(),
+            request_read_receipt: false,
+            to: "person@example.org".to_string(),
+            cc: String::new(),
+            bcc: String::new(),
+            subject: "Signed".to_string(),
+            html_body: "Hello".to_string(),
+            plain_text: true,
+            attachments: Vec::new(),
+            calendar_method: None,
+            calendar_component: None,
+            pgp_sign: false,
+            pgp_encrypt: false,
+            pgp_key: String::new(),
+            smime_options: Some(SmimeOptions {
+                sign: true,
+                ..SmimeOptions::default()
+            }),
+        })
+        .expect_err("S/MIME signing without a certificate must fail before OpenSSL");
+        assert!(error.contains("Zertifikat oder privater Schlüssel fehlt"));
     }
 
     fn temporary_file(label: &str, contents: &[u8]) -> PathBuf {

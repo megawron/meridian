@@ -198,7 +198,11 @@ impl ContactsPage {
                 book_source_list_for_load.remove(&child);
             }
             for (index, name) in names.iter().enumerate() {
-                let row = adw::ActionRow::builder().title(name).build();
+                let escaped = glib::markup_escape_text(name);
+                let row = adw::ActionRow::builder()
+                    .title(escaped.as_str())
+                    .use_markup(true)
+                    .build();
                 let image = gtk::Image::from_icon_name(if index == 0 {
                     "view-list-symbolic"
                 } else {
@@ -366,6 +370,7 @@ impl ContactsPage {
 
         let list_scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
+            .vscrollbar_policy(gtk::PolicyType::Always)
             .child(&contact_list)
             .vexpand(true)
             .build();
@@ -1036,9 +1041,13 @@ fn refresh_contacts(
                     "{} Kontakt(e) aus {origin} geladen.",
                     result.contacts.len()
                 ));
+                let mut stored_ref = stored_contacts.borrow_mut();
                 for record in result.contacts {
-                    upsert_contact_row(&contact_list, Rc::clone(&stored_contacts), record);
+                    append_contact_row(&contact_list, &record);
+                    stored_ref.push(record);
                 }
+                drop(stored_ref);
+                mark_duplicate_rows(&contact_list, &stored_contacts);
                 refresh_contact_category_model(
                     &category_model,
                     &category_selector,
@@ -1325,11 +1334,15 @@ fn append_contact_row(contact_list: &gtk::ListBox, record: &EBookContactRecord) 
         .orientation(gtk::Orientation::Vertical)
         .spacing(2)
         .valign(gtk::Align::Center)
+        .hexpand(true)
         .build();
     let name = gtk::Label::builder()
         .label(&contact.fn_name)
         .halign(gtk::Align::Start)
+        .hexpand(true)
         .ellipsize(gtk::pango::EllipsizeMode::End)
+        .lines(1)
+        .width_chars(1)
         .build();
     let email_text = contact_email_text(contact);
     let email = gtk::Label::builder()
@@ -1339,8 +1352,11 @@ fn append_contact_row(contact_list: &gtk::ListBox, record: &EBookContactRecord) 
             email_text.as_str()
         })
         .halign(gtk::Align::Start)
+        .hexpand(true)
         .css_classes(vec!["dim-label"])
         .ellipsize(gtk::pango::EllipsizeMode::End)
+        .lines(1)
+        .width_chars(1)
         .build();
     info_box.append(&name);
     info_box.append(&email);

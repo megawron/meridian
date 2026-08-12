@@ -512,8 +512,12 @@ werden.
   Der sichtbare Quellenstatus bleibt bis zum tatsächlichen Backend- oder
   lokalen Fallback-Ergebnis erhalten und unterscheidet jetzt auch ein
   erkanntes Konto ohne lesbare Mailordner von einem erfolgreichen Laden.
-  Eine vollständige inkrementelle Ordner-/Kontosynchronisation und eine
-  einheitliche Retry-/Netzwerkstrategie für alle EDS-Domänen fehlen noch.
+  Der Camel-Änderungsmonitor startet erst nach dem ersten sichtbaren
+  Ladeergebnis, damit ein kalter EDS-Start nicht gleichzeitig Voll-Load und
+  Dauer-Watcher initialisieren muss; nicht sichtbare EDS-Module werden beim
+  ersten Öffnen lazy erzeugt. Eine vollständige inkrementelle
+  Ordner-/Kontosynchronisation und eine einheitliche Retry-/Netzwerkstrategie
+  für alle EDS-Domänen fehlen noch.
 - [~] Native Linux-Camel-Brücke öffnet die aktivierten EDS-Mailquellen über
   `e_source_camel_configure_service()`, verwendet EDS-/GOA-Credentials und
   lädt Ordnerzusammenfassungen sowie begrenzte RFC-822-Nachrichten in
@@ -905,10 +909,28 @@ werden.
   bekannte MIME-CID-Rasterbilder werden ausschließlich aus dem bereits
   geladenen Nachrichtenspeicher und mit Größenlimit eingebettet; WebKit
   blockiert externe Bilder standardmäßig.
-- [ ] OpenPGP über GnuPG/Camel: Erkennen, Prüfen, Signieren, Verschlüsseln,
-  Entschlüsseln, Schlüsselwahl, Vertrauensstatus und Fehlermeldungen.
-- [ ] S/MIME mit Zertifikatskette, Trust Store, Ablauf-/Widerrufsprüfung und
-  Zertifikatsauswahl.
+- [~] OpenPGP über GnuPG/MIME: Der Composer bindet die Signatur- und
+  Verschlüsselungsschalter jetzt tatsächlich in den Versand ein; eine
+  portable GnuPG-Schicht erzeugt `multipart/signed` und
+  `multipart/encrypted`, verwendet keine Shell-Aufrufe und meldet fehlende
+  Schlüssel bzw. GnuPG-Fehler sichtbar. Fingerprint-/UID-Schlüssel werden
+  aus dem maschinenlesbaren GnuPG-Schlüsselbund geladen und können als
+  Standardschlüssel gewählt werden; lokale Entwürfe bewahren die Auswahl.
+  Erkannte OpenPGP-RFC822-Daten bleiben für eine asynchrone GnuPG-Prüfung
+  erhalten; `multipart/signed` wird tatsächlich verifiziert und
+  `multipart/encrypted` bei verfügbarem Schlüssel entschlüsselt und im Viewer
+  gerendert. Trust-/Widerrufsstatus, Passphrase-/Smartcard-Dialoge sowie die
+  native Camel-/EDS-Anwendung und Linux-Laufzeitabnahme bleiben offen.
+- [~] Portable S/MIME/CMS über OpenSSL ist als echter MIME-Pfad vorhanden:
+  ausgehende Nachrichten können signiert und/oder verschlüsselt werden,
+  eingehende `multipart/signed`- und `application/pkcs7-mime`-Nachrichten
+  werden asynchron geprüft bzw. entschlüsselt. Zertifikat, privater Schlüssel,
+  Empfängerzertifikate und optionaler CA-Bundle sind in den Einstellungen,
+  Backups und lokalen Entwürfen verdrahtet; Fehler bei fehlenden Dateien oder
+  Empfängerzertifikaten werden vor dem Versand gemeldet. Offen bleiben die
+  native CamelSMIMEContext-Anwendung, Secret-Service/Keychain-Integration,
+  Trust-/Widerrufs- und Ablaufdetails, PKCS#12/Token-/Passphrase-Flows sowie
+  die Linux-Abnahme gegen echte Zertifikatsspeicher.
 - [~] Remote-Content-Entscheidung pro Nachricht/Konto, Tracking-Schutz,
   sichere CID-Anhänge, Secret-Service und sichere Logs. Die portable
   Sanitizing-Strecke, sichere CID-Auflösung für bekannte Rasterbilder und per
@@ -916,7 +938,7 @@ werden.
   klassifiziert OpenPGP-/S/MIME-MIME-Hüllen und zeigt signierte oder
   verschlüsselte Nachrichten ausdrücklich als erkannt, aber ohne
   Verifikation/Entschlüsselung an; kontobezogene Freigabeverwaltung,
-  Secret-Service, echte GnuPG-/S/MIME-Operationen und Linux-/EDS-/Flatpak-
+  Secret-Service, native Camel-/EDS-Kryptografie und Linux-/EDS-/Flatpak-
   Abnahme fehlen noch.
 
 #### Phase 6 — Regeln, Suche und Enterprise
@@ -1001,9 +1023,11 @@ werden.
   iCalendar- und vCard-Dateien werden beim ausdrücklich gestarteten
   Profilimport zusätzlich nicht überschreibend in die app-eigenen Stores
   kopiert; lokale Maildir-/mbox-Ordnerpfade werden dabei erhalten und
-  benutzerdefinierte Ordner registriert. Vollständige nicht-geheime
-  Einstellungen, native Camel-Ordnerstrukturen und die EDS-Registrierung
-  fehlen noch. Nicht
+  benutzerdefinierte Ordner registriert. Explizit exportierte nicht-geheime
+  Evolution-Einstellungen aus INI-/GSettings-/DConf-Dateien werden jetzt
+  typisiert übernommen; geheime Werte und alte lokale Quellpfade bleiben
+  ausgeschlossen. Die native GSettings-Live-Synchronisation, vollständige
+  native Camel-Ordnerstrukturen und die EDS-Registrierung fehlen noch. Nicht
   unterstützte Filterbedingungen/-aktionen werden beim Import jetzt als
   nachvollziehbare Warnung im Bericht und Log ausgewiesen, statt still
   verloren zu gehen; bewusst verworfene geheime `.source`-Felder werden nur
@@ -1036,7 +1060,8 @@ werden.
   Termin-, Aufgaben- und Kontaktaktionen Accessible-Labels, einschließlich
   dynamischer Sortier- und Statusaktionen. Lokalisierung, IME, RTL, HiDPI,
   vollständige AT-SPI-Prüfung und ein GNOME-HIG-Review fehlen noch.
-- [ ] Performance-Ziele für große Ordner, Speicher-/Thread-Leaks,
+- [~] Performance-Ziele für große Ordner, Speicher-/Thread-Leaks,
+  Startup-Konkurrenz und
   Crash-Recovery und Telemetrie-freie Fehlerdiagnose.
 - [ ] Signierte Release-Artefakte, Flatpak-Review, AppStream-Validierung,
   reproduzierbare Builds und dokumentierte Upgrade-/Rollback-Strategie.
@@ -1101,7 +1126,7 @@ nicht als vollständiger Ersatz beworben werden.
    Konflikt-/Restore-Fehleranzeigen und die aufklappbare TreeListModel-
    Grundlage sind vorhanden.
 4. Die portable Migration und Datenqualität vervollständigen: weitere
-   Evolution-.source-Bereiche, vollständige nicht-geheime Einstellungen und
+   Evolution-.source-Bereiche, verbleibende nicht-geheime Exportformate,
    lokale Ordner und die portable Alias-/Ordnerzuordnung,
    vollständige Export-/Restore-Prüfung, Diagnosepaket, Datenlöschung und
    Upgrade-/Rollback-Verhalten.
