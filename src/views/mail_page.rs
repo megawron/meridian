@@ -1875,10 +1875,7 @@ impl MailPage {
             settings.set_mail_sort_descending(descending);
         }
         self.refresh_mail_sort_controls();
-        self.refresh_mail_column_header();
-        if let Some(store) = self.imp().message_store.borrow().as_ref().cloned() {
-            self.refresh_thread_metadata(&store);
-        }
+        self.resort_mail_preserving_selection();
     }
 
     fn reload_sort_preferences(&self) {
@@ -1892,10 +1889,21 @@ impl MailPage {
             self.imp().mail_threading.set(settings.mail_threading());
         }
         self.refresh_mail_sort_controls();
-        self.refresh_mail_column_header();
+        self.resort_mail_preserving_selection();
+    }
+
+    fn resort_mail_preserving_selection(&self) {
+        let previous_id = self.selected_message_id();
         if let Some(store) = self.imp().message_store.borrow().as_ref().cloned() {
             self.refresh_thread_metadata(&store);
         }
+        self.refresh_mail_column_header();
+        let page = self.downgrade();
+        glib::idle_add_local_once(move || {
+            if let Some(page) = page.upgrade() {
+                page.select_message_after_reload(previous_id.as_deref());
+            }
+        });
     }
 
     pub fn focus_search(&self) {
@@ -5984,17 +5992,7 @@ impl MailPage {
             if let Some(settings) = AppSettings::try_new() {
                 settings.set_mail_sort_field(field.setting_value());
             }
-            let previous_id = page.selected_message_id();
-            if let Some(store) = page.imp().message_store.borrow().as_ref().cloned() {
-                page.refresh_thread_metadata(&store);
-            }
-            page.refresh_mail_column_header();
-            let page = page.downgrade();
-            glib::idle_add_local_once(move || {
-                if let Some(page) = page.upgrade() {
-                    page.select_message_after_reload(previous_id.as_deref());
-                }
-            });
+            page.resort_mail_preserving_selection();
         });
 
         let page_for_direction = self.downgrade();
@@ -6009,17 +6007,7 @@ impl MailPage {
                 settings.set_mail_sort_descending(descending);
             }
             set_direction_button(&direction_button_for_signal, descending);
-            let previous_id = page.selected_message_id();
-            if let Some(store) = page.imp().message_store.borrow().as_ref().cloned() {
-                page.refresh_thread_metadata(&store);
-            }
-            page.refresh_mail_column_header();
-            let page = page.downgrade();
-            glib::idle_add_local_once(move || {
-                if let Some(page) = page.upgrade() {
-                    page.select_message_after_reload(previous_id.as_deref());
-                }
-            });
+            page.resort_mail_preserving_selection();
         });
 
         let columns_popover_box = gtk::Box::builder()
