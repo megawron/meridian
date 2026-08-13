@@ -80,17 +80,19 @@ When the user requests a durable behavior change, record it here or in the relev
 
 - GTK4-rs/libadwaita is the only production frontend. Reproduce the original
   Evolution application as closely as possible in window structure,
-  navigation, layout, actions, and settings, using the historical GTK3
-  worktree as a behavioral reference. Keep the original EDS/Camel/ECal/EBook
-  services authoritative and make portable UI choices persistent where the
-  original application exposes them.
+  navigation, layout, actions, and settings. Use the clean upstream checkout
+  at `/Users/martin/Documents/Projects/evolution-gtk4/evolution-upstream-reference`
+  as the read-only authority for original action names, menus, shortcuts,
+  settings and behavior; never edit or commit in that reference clone while
+  implementing this project. Keep the original EDS/Camel/ECal/EBook services
+  authoritative and make portable UI choices persistent where the original
+  application exposes them.
 - Prioritize daily mail workflows, responsiveness, data integrity, recovery,
   and stability before secondary parity work. A visible control is not a
   feature until its operation, persistence, error path, and tests are wired.
-- `main` is the only writable development branch. Historical detached
-  worktrees may remain as read-only behavior references; do not create or
-  maintain parallel feature branches unless the user explicitly changes this
-  policy.
+- `main` is the only writable development branch. The separate upstream clone
+  is read-only reference material; do not create or maintain parallel product
+  feature branches unless the user explicitly changes this policy.
 
 ## Roadmap Workflow
 

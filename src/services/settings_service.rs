@@ -421,6 +421,14 @@ impl AppSettings {
         self.set_boolean("mail-show-security-details", value);
     }
 
+    pub fn mail_show_all_headers(&self) -> bool {
+        self.settings.boolean("mail-show-all-headers")
+    }
+
+    pub fn set_mail_show_all_headers(&self, value: bool) {
+        self.set_boolean("mail-show-all-headers", value);
+    }
+
     /// Select the folder shown when the mail view is opened.
     pub fn mail_default_folder(&self) -> String {
         match self.settings.string("mail-default-folder").as_str() {
@@ -1003,6 +1011,9 @@ impl AppSettings {
             "mail-show-security-details" => {
                 self.set_mail_show_security_details(parse_migrated_bool(key, value)?);
             }
+            "mail-show-all-headers" => {
+                self.set_mail_show_all_headers(parse_migrated_bool(key, value)?);
+            }
             "mail-default-folder" => self.set_mail_default_folder(value),
             "mail-layout" => self.set_mail_layout(value),
             "mail-show-toolbar" => self.set_mail_show_toolbar(parse_migrated_bool(key, value)?),
@@ -1118,6 +1129,7 @@ impl AppSettings {
             "mark-read-on-selection",
             "show-message-preview",
             "mail-show-security-details",
+            "mail-show-all-headers",
             "mail-default-folder",
             "mail-layout",
             "mail-show-toolbar",
@@ -1335,6 +1347,7 @@ mod tests {
         let settings = settings_with_backend(&backend);
 
         assert!(!settings.mail_show_security_details());
+        assert!(!settings.mail_show_all_headers());
         assert_eq!(settings.mail_font_size(), 16);
     }
 
@@ -1343,21 +1356,26 @@ mod tests {
         let backend = gio::memory_settings_backend_new();
         let settings = settings_with_backend(&backend);
         settings.set_mail_show_security_details(true);
+        settings.set_mail_show_all_headers(true);
         settings.set_mail_font_size(23);
 
         let reloaded = settings_with_backend(&backend);
         assert!(reloaded.mail_show_security_details());
+        assert!(reloaded.mail_show_all_headers());
         assert_eq!(reloaded.mail_font_size(), 23);
 
         reloaded.set_mail_show_security_details(false);
+        reloaded.set_mail_show_all_headers(false);
         reloaded.set_mail_font_size(11);
         let updated = settings_with_backend(&backend);
         assert!(!updated.mail_show_security_details());
+        assert!(!updated.mail_show_all_headers());
         assert_eq!(updated.mail_font_size(), 11);
 
         updated.reset_to_defaults();
         let reset = settings_with_backend(&backend);
         assert!(!reset.mail_show_security_details());
+        assert!(!reset.mail_show_all_headers());
         assert_eq!(reset.mail_font_size(), 16);
     }
 }

@@ -7,7 +7,7 @@
 // and only for small raster image types.  The resulting data URI is passed
 // through the HTML sanitizer before it reaches WebKit.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 const MAX_INLINE_IMAGE_BYTES: usize = 10 * 1024 * 1024;
@@ -37,11 +37,18 @@ impl InlineImage {
 /// data.  Unknown IDs and references outside a tag are left untouched so the
 /// normal sanitizer can remove or display them according to its own policy.
 pub fn resolve_cid_images(input: &str, images: &[InlineImage]) -> String {
+    if input.is_empty() || images.is_empty() {
+        return input.to_string();
+    }
+    let referenced_content_ids = referenced_content_ids(input);
+    if referenced_content_ids.is_empty() {
+        return input.to_string();
+    }
     let image_map = images
         .iter()
         .filter_map(|image| {
             let content_id = normalize_content_id(&image.content_id);
-            if content_id.is_empty() {
+            if content_id.is_empty() || !referenced_content_ids.contains(&content_id) {
                 return None;
             }
             let mime_type = normalized_image_mime_type(&image.mime_type)?;
@@ -52,7 +59,7 @@ pub fn resolve_cid_images(input: &str, images: &[InlineImage]) -> String {
         })
         .collect::<HashMap<_, _>>();
 
-    if image_map.is_empty() || input.is_empty() {
+    if image_map.is_empty() {
         return input.to_string();
     }
 
@@ -80,6 +87,27 @@ pub fn resolve_cid_images(input: &str, images: &[InlineImage]) -> String {
         cursor = end;
     }
     output
+}
+
+fn referenced_content_ids(input: &str) -> HashSet<String> {
+    let mut content_ids = HashSet::new();
+    let mut cursor = 0;
+    while cursor < input.len() {
+        let Some(start) = find_cid_scheme(input, cursor) else {
+            break;
+        };
+        let Some(end) = cid_reference_end(input, start + 4) else {
+            break;
+        };
+        if is_uri_attribute_context(input, start) {
+            let content_id = normalize_content_id(&input[start + 4..end]);
+            if !content_id.is_empty() {
+                content_ids.insert(content_id);
+            }
+        }
+        cursor = end;
+    }
+    content_ids
 }
 
 fn find_cid_scheme(input: &str, from: usize) -> Option<usize> {
@@ -238,6 +266,21 @@ mod tests {
         let resolved = resolve_cid_images(r#"<img src='CID:<logo@example.test>'>"#, &[image]);
 
         assert!(resolved.contains("data:image/jpeg;base64,/w=="));
+    }
+
+    #[test]
+    fn encodes_only_inline_images_referenced_by_uri_attributes() {
+        let images = [
+            InlineImage::new("used", "image/png", b"used".to_vec()),
+            InlineImage::new("unused", "image/png", b"unused-payload".to_vec()),
+        ];
+        let html = r#"<img src="cid:used"><p>cid:unused</p>"#;
+
+        let resolved = resolve_cid_images(html, &images);
+
+        assert!(resolved.contains("data:image/png;base64,dXNlZA=="));
+        assert!(!resolved.contains("dW51c2VkLXBheWxvYWQ="));
+        assert!(resolved.contains("<p>cid:unused</p>"));
     }
 
     #[test]

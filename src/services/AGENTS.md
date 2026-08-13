@@ -47,6 +47,12 @@ settings persistence.
 
 - Keep native Linux adapters isolated behind small, tested interfaces.
 - Keep all portable behavior deterministic and covered by unit tests.
+- Exact message-source adapters return raw bytes without UTF-8 conversion and
+  honor the caller's cancellation flag. Do not retain every full MIME body in
+  list records solely for source/header display.
+- Header-display parsing preserves original order, repeated and unknown fields,
+  unfolds continuations for display, and decodes RFC2047 values without turning
+  the all-header mode into a raw source view.
 - Preserve safe embedded mail layout CSS while removing active/resource-loading
   declarations; external stylesheets and remote content remain policy-gated.
 - Provide a conversion path for already-sanitized HTML so viewer preparation

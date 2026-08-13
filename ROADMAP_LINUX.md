@@ -44,6 +44,16 @@ Distribution, Bibliotheksversionen und Kontotyp zu protokollieren.
   4. Remote-Bilder zunächst blockiert und danach explizit freigegeben prüfen.
   5. Anhänge speichern; zusätzlich Abbruch und nicht beschreibbares Ziel
      testen.
+  6. Für eine Camel- und eine Graph-Nachricht `Ctrl+U` sowie den View- und
+     Kontextmenüpfad öffnen. Die Quelle byteweise mit einer unabhängig
+     gespeicherten `.eml` vergleichen; Offline-/fehlende-Nachricht-Fehler
+     müssen eine klar gekennzeichnete Rekonstruktion zeigen und dürfen GTK
+     nicht blockieren.
+  7. „Alle Nachrichtenkopfzeilen anzeigen“ aktivieren, zwischen Nachrichten
+     wechseln, die Ansicht deaktivieren und nach einem Neustart erneut prüfen.
+     Originale Faltungen/Mehrfachheader müssen erhalten bleiben; die maximal
+     200 Pixel hohe formatierte Kopfzeilenfläche darf den Reader nicht
+     verdrängen und darf nicht wie die rohe Quellansicht aussehen.
 - Erwartung: kein leerer Reader, kein ungefragter Remote-Request, korrekte
   Hintergründe/CSS, stabile Auswahl, keine Duplikate und kein GTK-Hänger.
 - Zusätzlich prüfen: Bei schnellem A→B→C-Umschalten mit großen CID-Anlagen darf
@@ -120,8 +130,13 @@ Distribution, Bibliotheksversionen und Kontotyp zu protokollieren.
      und die Zeile erneut prüfen. Eine echte OpenPGP-/S/MIME-Testmail muss ihre
      Prüfung, Warnung oder ihren Fehler sichtbar machen; der Status darf durch
      die optionale Routineeinstellung nicht unterdrückt werden.
+  8. In einer HTML- und einer Klartextmail `Ctrl+Shift+F` verwenden, Unicode-
+     Text mit Groß-/Kleinschreibung suchen, Vorheriger/Nächster und Wrap-around
+     prüfen und die Leiste mit Escape schließen. Während einer laufenden Suche
+     schnell die Nachricht wechseln; weder Highlight noch Trefferzähler der
+     alten Nachricht dürfen im neuen Reader erscheinen.
 - Abnahmekriterien:
-  - Alle sieben Ablaufschritte sind mit Commit, Distribution, Versionsdaten,
+  - Alle acht Ablaufschritte sind mit Commit, Distribution, Versionsdaten,
     Logmarker, anonymisierten Screenshots und Korpus-IDs dokumentiert.
   - Die schnelle Umschaltserie bleibt interaktiv und zeigt niemals ein
     Ergebnis einer nicht mehr ausgewählten Nachricht.

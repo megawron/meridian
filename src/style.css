@@ -35,7 +35,7 @@
  * layout.  Keep the row compact through spacing, not undersized text. */
 .message-list .message-line {
   min-height: 22px;
-  padding: 0 4px;
+  padding: 0 2px;
   margin: 0;
 }
 
@@ -63,12 +63,12 @@
 
 .message-list .body,
 .message-list .subtitle {
-  font-size: 0.96rem;
+  font-size: 1rem;
   line-height: 1.05;
 }
 
 .message-list .caption {
-  font-size: 0.9rem;
+  font-size: 1rem;
   line-height: 1.05;
 }
 
@@ -123,7 +123,7 @@
 }
 
 .mail-detail-header grid label {
-  font-size: 0.96rem;
+  font-size: 1rem;
   line-height: 1.1;
 }
 
@@ -241,7 +241,7 @@
 }
 
 .mail-sidebar .mail-sidebar-row label {
-  font-size: 0.96rem;
+  font-size: 1rem;
   line-height: 1.1;
 }
 
@@ -253,8 +253,8 @@
 .mail-sidebar .navigation-sidebar row,
 .mail-sidebar listview row {
   min-height: 22px;
-  padding: 0 2px;
-  margin: 0 1px;
+  padding: 0 1px;
+  margin: 0;
   border-radius: 4px;
 }
 
@@ -265,7 +265,7 @@
 }
 
 .mail-sidebar .caption {
-  font-size: 0.9rem;
+  font-size: 1rem;
   line-height: 1.1;
 }
 

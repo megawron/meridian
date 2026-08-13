@@ -562,7 +562,12 @@ impl EvolutionWindow {
                 "win.new",
             ),
         };
-        button.set_icon_name(icon_name);
+        let icon_theme = gtk::IconTheme::for_display(&button.display());
+        button.set_icon_name(if icon_theme.has_icon(icon_name) {
+            icon_name
+        } else {
+            "document-new-symbolic"
+        });
         button.set_tooltip_text(Some(tooltip));
         button.set_action_name(Some(action_name));
         if view_name == "mail" {
@@ -576,6 +581,7 @@ impl EvolutionWindow {
         const MAIL_ACTIONS: &[&str] = &[
             "toggle-sidebar",
             "toggle-preview",
+            "toggle-all-headers",
             "toggle-mail-threading",
             "toggle-mail-preview-text",
             "toggle-mail-avatar",
@@ -597,12 +603,17 @@ impl EvolutionWindow {
             "reply-all",
             "forward",
             "export",
+            "view-message-source",
+            "find-in-message",
             "delete",
             "mark-unread",
             "mark-read",
             "select-all-mail",
             "toggle-flag",
             "toggle-important",
+            "edit-labels",
+            "move-message",
+            "copy-message",
             "archive",
             "mark-junk",
             "mark-not-junk",
@@ -635,11 +646,16 @@ impl EvolutionWindow {
             "reply-all",
             "forward",
             "export",
+            "view-message-source",
+            "find-in-message",
             "delete",
             "mark-unread",
             "mark-read",
             "toggle-flag",
             "toggle-important",
+            "edit-labels",
+            "move-message",
+            "copy-message",
             "archive",
             "mark-junk",
             "mark-not-junk",
@@ -1011,6 +1027,10 @@ impl EvolutionWindow {
         edit_menu.append(Some("Rückgängig"), Some("win.undo"));
         edit_menu.append(Some("Wiederholen"), Some("win.redo"));
         edit_menu.append(Some("E-Mail suchen"), Some("win.search"));
+        edit_menu.append(
+            Some("In angezeigter Nachricht suchen…"),
+            Some("win.find-in-message"),
+        );
         edit_menu.append(Some("Globale Suche"), Some("app.global-search"));
         edit_menu.append(
             Some("Filterregeln bearbeiten..."),
@@ -1040,6 +1060,14 @@ impl EvolutionWindow {
         view_menu.append(
             Some("Vorschaufenster ein-/ausblenden"),
             Some("win.toggle-preview"),
+        );
+        view_menu.append(
+            Some("Alle Nachrichtenkopfzeilen anzeigen"),
+            Some("win.toggle-all-headers"),
+        );
+        view_menu.append(
+            Some("Nachrichtenquelle anzeigen"),
+            Some("win.view-message-source"),
         );
         view_menu.append(
             Some("Klassische Evolution-Mail-Anordnung"),
@@ -1097,6 +1125,7 @@ impl EvolutionWindow {
         message_menu.append(Some("Antworten"), Some("win.reply"));
         message_menu.append(Some("Allen antworten"), Some("win.reply-all"));
         message_menu.append(Some("Weiterleiten"), Some("win.forward"));
+        message_menu.append(Some("Als EML speichern..."), Some("win.export"));
         message_menu.append(
             Some("Alle sichtbaren Nachrichten auswählen"),
             Some("win.select-all-mail"),
@@ -1109,6 +1138,8 @@ impl EvolutionWindow {
             Some("win.toggle-important"),
         );
         message_menu.append(Some("Labels bearbeiten..."), Some("win.edit-labels"));
+        message_menu.append(Some("In Ordner verschieben..."), Some("win.move-message"));
+        message_menu.append(Some("In Ordner kopieren..."), Some("win.copy-message"));
         message_menu.append(Some("Archivieren"), Some("win.archive"));
         message_menu.append(Some("Als Spam markieren"), Some("win.mark-junk"));
         message_menu.append(Some("Als Nicht-Spam markieren"), Some("win.mark-not-junk"));
@@ -1181,6 +1212,12 @@ impl EvolutionWindow {
             "show-message-preview",
             AppSettings::show_message_preview,
             AppSettings::set_show_message_preview,
+        );
+        self.add_boolean_setting_action(
+            "toggle-all-headers",
+            "mail-show-all-headers",
+            AppSettings::mail_show_all_headers,
+            AppSettings::set_mail_show_all_headers,
         );
         self.add_boolean_setting_action(
             "toggle-mail-threading",
@@ -1425,6 +1462,21 @@ impl EvolutionWindow {
         ));
         self.add_action(&action_export);
 
+        let action_message_source = gio::SimpleAction::new("view-message-source", None);
+        action_message_source.connect_activate(glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            move |_, _| {
+                let shown = win
+                    .mail_page()
+                    .is_some_and(|mail_page| mail_page.present_message_source());
+                if !shown {
+                    win.add_toast(&adw::Toast::new("Keine Nachricht ausgewählt"));
+                }
+            }
+        ));
+        self.add_action(&action_message_source);
+
         let action_delete = gio::SimpleAction::new("delete", None);
         action_delete.connect_activate(glib::clone!(
             #[weak(rename_to = win)]
@@ -1590,6 +1642,22 @@ impl EvolutionWindow {
             }
         ));
         self.add_action(&action_edit_labels);
+
+        for (action_name, copy) in [("move-message", false), ("copy-message", true)] {
+            let action = gio::SimpleAction::new(action_name, None);
+            action.connect_activate(glib::clone!(
+                #[weak(rename_to = win)]
+                self,
+                move |_, _| {
+                    if let Some(mail_page) = win.mail_page() {
+                        mail_page.present_folder_destination_dialog(copy);
+                    } else {
+                        win.add_toast(&adw::Toast::new("Mailansicht ist nicht verfügbar"));
+                    }
+                }
+            ));
+            self.add_action(&action);
+        }
 
         let action_archive = gio::SimpleAction::new("archive", None);
         action_archive.connect_activate(glib::clone!(
@@ -1807,6 +1875,23 @@ impl EvolutionWindow {
             move |_, _| window.focus_active_search()
         ));
         self.add_action(&action_search);
+
+        let action_find_in_message = gio::SimpleAction::new("find-in-message", None);
+        action_find_in_message.connect_activate(glib::clone!(
+            #[weak(rename_to = window)]
+            self,
+            move |_, _| {
+                let opened = window
+                    .mail_page()
+                    .is_some_and(|mail_page| mail_page.find_in_displayed_message());
+                if !opened {
+                    window.add_toast(&adw::Toast::new(
+                        "Für die Suche muss eine Nachricht im Vorschaufenster angezeigt sein",
+                    ));
+                }
+            }
+        ));
+        self.add_action(&action_find_in_message);
 
         for (action_name, offset) in [("mail-next", 1), ("mail-prev", -1)] {
             let action = gio::SimpleAction::new(action_name, None);

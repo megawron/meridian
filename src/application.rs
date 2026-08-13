@@ -391,9 +391,14 @@ impl EvolutionApplication {
         self.set_accels_for_action("win.reply-all", &["<Ctrl><Shift>R"]);
         self.set_accels_for_action("win.forward", &["<Ctrl>L"]);
         self.set_accels_for_action("win.export", &["<Ctrl><Shift>S"]);
+        self.set_accels_for_action("win.view-message-source", &["<Ctrl>U"]);
+        self.set_accels_for_action("win.find-in-message", &["<Ctrl><Shift>F"]);
         self.set_accels_for_action("win.delete", &["Delete"]);
-        self.set_accels_for_action("win.mark-unread", &["<Ctrl>U"]);
+        self.set_accels_for_action("win.mark-read", &["<Ctrl>K"]);
+        self.set_accels_for_action("win.mark-unread", &["<Ctrl><Shift>K"]);
         self.set_accels_for_action("win.toggle-important", &["<Ctrl>I"]);
+        self.set_accels_for_action("win.move-message", &["<Ctrl><Shift>V"]);
+        self.set_accels_for_action("win.copy-message", &["<Ctrl><Shift>C"]);
         self.set_accels_for_action("win.select-all-mail", &["<Ctrl>A"]);
 
         tracing::debug!("Keyboard accelerators registered");

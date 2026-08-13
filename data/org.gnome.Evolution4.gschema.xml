@@ -137,6 +137,10 @@
       <default>false</default>
       <summary>Show routine mail security status and details</summary>
     </key>
+    <key name="mail-show-all-headers" type="b">
+      <default>false</default>
+      <summary>Show the complete RFC822 header block in the mail preview</summary>
+    </key>
     <key name="mail-default-folder" type="s">
       <default>'inbox'</default>
       <summary>Mail folder selected when the application starts</summary>

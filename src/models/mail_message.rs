@@ -52,8 +52,12 @@ mod imp {
         pub is_important: RefCell<bool>,
         pub labels: RefCell<Vec<String>>,
         pub(crate) backend_location: RefCell<Option<MailBackendLocation>>,
+        /// Original RFC822 header block. Keeping headers independently avoids
+        /// retaining every potentially large MIME body only for the optional
+        /// "all headers" view.
+        pub(crate) raw_headers: RefCell<Option<Arc<[u8]>>>,
         /// Original RFC822 bytes for cryptographic inspection.  The parser
-        /// only retains this for messages with a detected crypto envelope.
+        /// retains this only for messages with a detected crypto envelope.
         pub(crate) raw_mime: RefCell<Option<Arc<[u8]>>>,
         pub attachments: RefCell<Vec<AttachmentInfo>>,
     }
@@ -316,6 +320,14 @@ impl MailMessageObject {
 
     pub(crate) fn set_raw_mime(&self, raw: Option<Vec<u8>>) {
         *self.imp().raw_mime.borrow_mut() = raw.map(Into::into);
+    }
+
+    pub(crate) fn set_raw_headers(&self, raw: Option<Vec<u8>>) {
+        *self.imp().raw_headers.borrow_mut() = raw.map(Into::into);
+    }
+
+    pub(crate) fn raw_headers(&self) -> Option<Arc<[u8]>> {
+        self.imp().raw_headers.borrow().clone()
     }
 
     pub(crate) fn raw_mime(&self) -> Option<Arc<[u8]>> {

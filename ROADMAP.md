@@ -560,6 +560,13 @@ werden.
   Suche und Fallback decodiert zusätzlich benannte sowie dezimale/hexadezimale
   HTML-Entities, damit internationale Mailtexte nicht als Entity-Namen
   erscheinen.
+  Die Evolution-Aktion „In angezeigter Nachricht suchen“ öffnet über
+  `Ctrl+Shift+F` eine kompakte Reader-Suchleiste mit Vorherigem/Nächstem,
+  Wrap-around, Trefferstatus und Escape. WebKitGTK nutzt den nativen
+  FindController; der portable Klartextfallback markiert Unicode-taugliche
+  Zeichenbereiche. Nachrichten-, Quell- und Rendergeneration verwerfen stale
+  Suchzustände beim Auswahlwechsel; die WebKit-Laufzeitabnahme bleibt Linux-
+  spezifisch.
   Eine providerunabhängige
   Datumsnormalisierung und serverseitige Sortierung bleiben Teil der
   Linux/Camel-Strecke. Die Zeilen bleiben dabei tatsächlich einzeilig:
@@ -733,7 +740,18 @@ jeweilige negative Fehlerpfad mit direkter Evidenz vorliegen.
   kein Konto-/Root-Icon, dezente textartige Unread-Zähler, lesbare kompakte
   Schrift und geprüfte Laufzeit-Fallbacks für optionale Theme-Icons. Die Routine-
   Sicherheitszeile bleibt standardmäßig verborgen; die eigentliche
-  OpenPGP-/S/MIME-Prüfung wird nur bei erkannter Hülle angestoßen. Offene
+  OpenPGP-/S/MIME-Prüfung wird nur bei erkannter Hülle angestoßen.
+  Die originale Nachrichtenquelle ist über Ansicht/Kontext und `Ctrl+U`
+  erreichbar; Camel und Graph laden RFC822 im Worker, nicht exakt auflösbare
+  portable Datensätze sind ausdrücklich als Rekonstruktion markiert. Eine
+  persistente Vollkopfzeilenansicht hält originale Headerbytes getrennt vom
+  großen MIME-Body; rein strukturierte Providerzeilen laden den exakten
+  Headerblock nur bei sichtbarer Ansicht in einem abbrechbaren,
+  generationensicheren Worker nach. Die Vollansicht erweitert den normalen
+  Nachrichtenkopf als geordnete, formatierte Name-/Wert-Zeilen und ist keine
+  zweite Rohquellenansicht. Offen bleiben der konfigurierbare normale
+  `show-headers`-Satz, ein sofort sichtbares/wiederverwendbares Quellfenster
+  mit Lade-/Fehlerzustand sowie die reale Linux-Abnahme.
   Belege: Der portable Helper-/Workspace-Test ist grün; offen bleiben
   Linux-Referenzvergleich, Icon-Theme und sichtbare Dichte.
 - `[~]` `P0-MAIL-002B` — lesbare Schrift- und Anzeigepräferenzen: 16-Pixel-
@@ -751,7 +769,7 @@ cargo check --workspace --locked
 cargo test --workspace --locked --no-fail-fast --quiet
 ```
 
-Diese Gates sind für den aktuellen Arbeitsstand grün (396/396 Tests).
+Diese Gates sind für den aktuellen Arbeitsstand grün (432/432 Tests).
 WebKitGTK-Runtime, echte EDS/Camel-Flags, Icon-Theme, sichtbare Dichte, rasches
 Umschalten und bestätigte Counter-Aktualisierung bleiben in
 `ROADMAP_LINUX.md` offen und dürfen hier nicht vorweggenommen werden.

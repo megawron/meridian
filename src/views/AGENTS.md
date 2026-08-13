@@ -20,11 +20,19 @@ accessibility helpers, and view-local GTK state.
   message body.
 - A secondary click on a mail row must select that exact row before opening
   its context menu. The menu and the main Message menu must expose the same
-  daily state actions, including labels and both junk directions.
+  daily state actions, including labels and both junk directions. Core actions
+  such as move and copy must remain reachable from menus, shortcuts, and the
+  classic toolbar even when the preview pane is hidden.
 - Keep the selected message body visually primary: the detail header and
   conversation context stay compact, while safe inline mail CSS and intended
   message backgrounds remain intact. Do not flatten provider formatting merely
   to match the application theme.
+- Keep Evolution's message-source workflow on `Ctrl+U` and available from the
+  View and row-context menus even when preview is hidden. Fetch original RFC822
+  bytes outside GTK; visibly label any reconstruction. The persistent all-header
+  mode extends the normal reader with bounded formatted name/value rows in
+  original order; raw monospace content belongs only in the source window. It
+  must not build message bodies or encode attachments on selection.
 - Prepare HTML mail bodies and their composed document off the GTK main loop.
   Every result must carry a render generation/request identity; stale results
   are discarded before they can replace the WebKit document or fallback text,
@@ -52,6 +60,10 @@ accessibility helpers, and view-local GTK state.
   base URIs, fallback text, loading, and errors must remain explicit.
 - Keep loading and empty/error states explicit. Never leave a permanent
   spinner when a module has finished loading or failed.
+- Find-in-message uses Evolution's `Ctrl+Shift+F` path and an in-reader bar.
+  WebKit uses its FindController; plaintext fallback offsets are Unicode
+  character offsets. Selection, source and render generations invalidate stale
+  matches, highlights and asynchronous result signals.
 - Treat the currently requested account/folder as authoritative immediately,
   even before its worker returns. Every load, search, paging result and
   incremental model build must be generation-gated; stale results cannot

@@ -167,6 +167,7 @@ impl ExchangeMailMessage {
             },
             preview_snippet: preview,
             html_body: body_html,
+            raw_headers: None,
             raw_mime: None,
             is_unread: !self.is_read,
             is_flagged: self.is_flagged,
@@ -1090,11 +1091,12 @@ struct GraphHttpRequest {
     url: Url,
     params: Vec<(String, String)>,
     body: Option<GraphHttpBody>,
+    accept: &'static str,
 }
 
 struct GraphHttpResponse {
     status: StatusCode,
-    text: String,
+    body: Vec<u8>,
 }
 
 #[derive(Clone)]
@@ -1287,6 +1289,39 @@ impl ExchangeService {
             max_items,
         )?;
         self.into_public_messages(messages, folder_id)
+    }
+
+    /// Download the exact RFC822/MIME representation exposed by Microsoft
+    /// Graph's `$value` endpoint.
+    pub(crate) fn message_mime_sync(&self, message_id: &str) -> Result<Vec<u8>, ExchangeError> {
+        let message_id = encode_path_segment(message_id)?;
+        let token = self
+            .access_token
+            .as_deref()
+            .filter(|token| !token.is_empty())
+            .ok_or(ExchangeError::MissingAccessToken)?;
+        let response = self.request_payload(
+            token,
+            GraphHttpRequest {
+                method: Method::GET,
+                url: self.endpoint(&format!("me/messages/{message_id}/$value"))?,
+                params: Vec::new(),
+                body: None,
+                accept: "message/rfc822",
+            },
+        )?;
+        if !response.status.is_success() {
+            return Err(parse_http_error(
+                response.status,
+                &String::from_utf8_lossy(&response.body),
+            ));
+        }
+        if response.body.is_empty() {
+            return Err(ExchangeError::Decode(
+                "Microsoft Graph lieferte eine leere Nachrichtenquelle".to_string(),
+            ));
+        }
+        Ok(response.body)
     }
 
     /// Load exactly one Graph collection page and return the validated opaque
@@ -1849,12 +1884,16 @@ impl ExchangeService {
                 url,
                 params: params.to_vec(),
                 body: body.map(GraphHttpBody::Json),
+                accept: "application/json",
             },
         )?;
         if !response.status.is_success() {
-            return Err(parse_http_error(response.status, &response.text));
+            return Err(parse_http_error(
+                response.status,
+                &String::from_utf8_lossy(&response.body),
+            ));
         }
-        serde_json::from_str(&response.text)
+        serde_json::from_slice(&response.body)
             .map_err(|error| ExchangeError::Decode(error.to_string()))
     }
 
@@ -1878,10 +1917,14 @@ impl ExchangeService {
                 url,
                 params: params.to_vec(),
                 body: body.map(GraphHttpBody::Json),
+                accept: "application/json",
             },
         )?;
         if !response.status.is_success() {
-            return Err(parse_http_error(response.status, &response.text));
+            return Err(parse_http_error(
+                response.status,
+                &String::from_utf8_lossy(&response.body),
+            ));
         }
         Ok(())
     }
@@ -1910,10 +1953,14 @@ impl ExchangeService {
                 url,
                 params: Vec::new(),
                 body: Some(GraphHttpBody::Raw(body.to_vec())),
+                accept: "application/json",
             },
         )?;
         if !response.status.is_success() {
-            return Err(parse_http_error(response.status, &response.text));
+            return Err(parse_http_error(
+                response.status,
+                &String::from_utf8_lossy(&response.body),
+            ));
         }
         Ok(())
     }
@@ -2104,11 +2151,12 @@ fn run_graph_http_request(
                 url,
                 params,
                 body,
+                accept,
             } = request;
             let mut builder = client
                 .request(method, url)
                 .bearer_auth(token)
-                .header(reqwest::header::ACCEPT, "application/json")
+                .header(reqwest::header::ACCEPT, accept)
                 .query(&params);
             if let Some(body) = body {
                 builder = match body {
@@ -2125,11 +2173,12 @@ fn run_graph_http_request(
                 .await
                 .map_err(|error| ExchangeError::Transport(sanitize_transport_error(error)))?;
             let status = response.status();
-            let text = response
-                .text()
+            let body = response
+                .bytes()
                 .await
-                .map_err(|error| ExchangeError::Transport(sanitize_transport_error(error)))?;
-            Ok(GraphHttpResponse { status, text })
+                .map_err(|error| ExchangeError::Transport(sanitize_transport_error(error)))?
+                .to_vec();
+            Ok(GraphHttpResponse { status, body })
         };
 
         tokio::select! {
@@ -3122,6 +3171,35 @@ mod tests {
             .map(|(_, body)| body)
             .expect("request should contain a body separator");
         assert_eq!(body, base64_encode(raw));
+    }
+
+    #[test]
+    fn graph_message_source_uses_the_rfc822_value_endpoint() {
+        let raw = "From: sender@example.org\r\nSubject: Original\r\n\r\nBody";
+        let response = concat!(
+            "HTTP/1.1 200 OK\r\nContent-Type: message/rfc822\r\n",
+            "Connection: close\r\n\r\n",
+            "From: sender@example.org\r\nSubject: Original\r\n\r\nBody"
+        );
+        let (base_url, requests, handle) = mock_server(response);
+        let service = ExchangeService {
+            server_url: base_url,
+            ..ExchangeService::graph("user@example.org", "token")
+        };
+
+        let source = service
+            .message_mime_sync("message/id")
+            .expect("Graph should return the original MIME source");
+        let request = requests.recv().expect("request should be captured");
+        handle.join().expect("mock server should finish");
+
+        assert_eq!(source, raw.as_bytes());
+        assert!(request.contains("GET /v1.0/me/messages/message%2Fid/$value"));
+        assert!(
+            request
+                .to_ascii_lowercase()
+                .contains("accept: message/rfc822")
+        );
     }
 
     #[test]

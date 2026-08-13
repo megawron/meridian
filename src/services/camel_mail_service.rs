@@ -1197,6 +1197,105 @@ pub(crate) fn load_messages_for_uids(
     }
 }
 
+/// Load the exact RFC822 payload for one backend message without retaining a
+/// duplicate raw body in every GTK row. This is used by Evolution's
+/// "Message Source" workflow and intentionally runs in a worker.
+pub(crate) fn load_raw_message(
+    location: &MailBackendLocation,
+    cancelled: &Arc<AtomicBool>,
+) -> Result<Vec<u8>, String> {
+    if let Some(service) = super::exchange_service::graph_service_for_source(&location.source_uid) {
+        cancellation_error(cancelled, "Graph-Nachrichtenquelle laden")?;
+        let service = service.with_cancellation_flag(cancelled.clone());
+        let source = service
+            .message_mime_sync(&location.message_uid)
+            .map_err(|error| error.to_string())?;
+        cancellation_error(cancelled, "Graph-Nachrichtenquelle laden")?;
+        return Ok(source);
+    }
+
+    #[cfg(eds_camel_bridge)]
+    {
+        return load_raw_message_native(location, cancelled);
+    }
+
+    #[cfg(not(eds_camel_bridge))]
+    {
+        let _ = (location, cancelled);
+        Err("native EDS/Camel adapter is not available in this build".to_string())
+    }
+}
+
+#[cfg(eds_camel_bridge)]
+fn load_raw_message_native(
+    location: &MailBackendLocation,
+    cancelled: &AtomicBool,
+) -> Result<Vec<u8>, String> {
+    use std::ffi::{CStr, CString, c_char, c_void};
+
+    unsafe extern "C" fn cancellation_callback(user_data: *mut c_void) -> i32 {
+        if user_data.is_null() {
+            return 0;
+        }
+        let cancelled = unsafe { &*(user_data as *const AtomicBool) };
+        cancelled.load(Ordering::Relaxed) as i32
+    }
+
+    cancellation_error(cancelled, "Nachrichtenquelle laden")?;
+    let source_uid = CString::new(location.source_uid.as_str())
+        .map_err(|_| "EDS source UID contains an invalid NUL byte".to_string())?;
+    let folder_name = CString::new(location.folder_name.as_str())
+        .map_err(|_| "EDS folder name contains an invalid NUL byte".to_string())?;
+    let message_uid = CString::new(location.message_uid.as_str())
+        .map_err(|_| "EDS message UID contains an invalid NUL byte".to_string())?;
+    let message_uids = [message_uid.as_ptr()];
+    let mut records = std::ptr::null_mut();
+    let mut record_count = 0usize;
+    let mut error_message: *mut c_char = std::ptr::null_mut();
+    let success = unsafe {
+        ffi::evolution_eds_camel_load_messages_by_uid(
+            source_uid.as_ptr(),
+            folder_name.as_ptr(),
+            message_uids.as_ptr(),
+            message_uids.len(),
+            &mut records,
+            &mut record_count,
+            &mut error_message,
+            Some(cancellation_callback as ffi::EvolutionEdsCamelCancellationCallback),
+            cancelled as *const AtomicBool as *mut c_void,
+        ) != 0
+    };
+    let warning = (!error_message.is_null()).then(|| unsafe {
+        let message = CStr::from_ptr(error_message).to_string_lossy().into_owned();
+        ffi::evolution_eds_camel_free_error(error_message);
+        message
+    });
+    if !success {
+        if !records.is_null() {
+            unsafe { ffi::evolution_eds_camel_free_messages(records, record_count) };
+        }
+        return Err(warning.unwrap_or_else(|| {
+            "Die originale EDS/Camel-Nachrichtenquelle konnte nicht geladen werden".to_string()
+        }));
+    }
+
+    let raw = if records.is_null() || record_count == 0 {
+        None
+    } else {
+        let records = unsafe { std::slice::from_raw_parts(records, record_count) };
+        records.iter().find_map(|record| {
+            (!record.raw_message.is_null() && record.raw_message_len > 0).then(|| unsafe {
+                std::slice::from_raw_parts(record.raw_message, record.raw_message_len).to_vec()
+            })
+        })
+    };
+    if !records.is_null() {
+        unsafe { ffi::evolution_eds_camel_free_messages(records, record_count) };
+    }
+    cancellation_error(cancelled, "Nachrichtenquelle laden")?;
+    raw.ok_or_else(|| "EDS/Camel lieferte keine originale Nachrichtenquelle".to_string())
+}
+
 #[cfg(eds_camel_bridge)]
 fn load_messages_for_uids_native(
     source_uid: &str,
@@ -1505,6 +1604,7 @@ mod tests {
             date_str: String::new(),
             preview_snippet: String::new(),
             html_body: String::new(),
+            raw_headers: None,
             raw_mime: None,
             is_unread: false,
             is_flagged: false,

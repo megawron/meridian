@@ -30,6 +30,8 @@ use crate::services::inline_content_service::{InlineImage, resolve_cid_images};
 use crate::services::mail_metadata_service::RemoteContentStore;
 
 const MAX_CACHED_DERIVED_BYTES: usize = 4 * 1024 * 1024;
+#[cfg(target_os = "linux")]
+const MAX_FIND_MATCH_COUNT: u32 = 10_000;
 const RENDER_LOADING_TEXT: &str = "Nachricht wird vorbereitet …";
 
 mod imp {
@@ -50,6 +52,10 @@ mod imp {
         pub current_inline_images: RefCell<Vec<InlineImage>>,
         pub current_base_uri: RefCell<Option<String>>,
         pub current_fallback_text: RefCell<Option<String>>,
+        pub(super) displayed_plaintext: RefCell<Option<DisplayedPlaintext>>,
+        pub(super) fallback_search_tag: RefCell<Option<gtk::TextTag>>,
+        pub(super) message_search: RefCell<Option<ActiveMessageSearch>>,
+        pub(super) search_generation: Cell<u64>,
         pub remote_images_allowed_for_current: Cell<bool>,
         pub source_generation: Cell<u64>,
         pub render_generation: Cell<u64>,
@@ -62,6 +68,10 @@ mod imp {
         pub active_webview_generation: Cell<u64>,
         #[cfg(target_os = "linux")]
         pub active_webview_uri: RefCell<Option<String>>,
+        #[cfg(target_os = "linux")]
+        pub(super) find_controller: RefCell<Option<webkit6::FindController>>,
+        #[cfg(target_os = "linux")]
+        pub(super) webview_ready: Cell<bool>,
         pub settings: RefCell<Option<AppSettings>>,
         pub remote_content_store: RefCell<Option<RemoteContentStore>>,
         pub remote_content_allowed: RefCell<HashSet<String>>,
@@ -390,6 +400,10 @@ impl MailViewer {
         if self.imp().last_render_key.borrow().as_ref() == Some(&render_key) {
             return;
         }
+        // A render request replaces the document that a view-local search
+        // may refer to. Clear both the search highlight and its captured
+        // message/render identity before the new worker result can arrive.
+        self.invalidate_message_search_context();
         self.imp().last_render_key.replace(Some(render_key.clone()));
         let generation = advance_generation(self.imp().render_generation.get());
         self.imp().render_generation.set(generation);
@@ -519,6 +533,7 @@ impl MailViewer {
             return;
         }
 
+        self.finish_displayed_message_search();
         self.imp().render_cache.replace(cache_mail_render(
             key.source_generation,
             &key,
@@ -529,6 +544,14 @@ impl MailViewer {
             .banner
             .set_revealed(render_plan.has_remote_images && !key.remote_images_allowed);
         self.set_fallback_text(&render_plan.visible_text);
+        self.imp()
+            .displayed_plaintext
+            .replace(Some(DisplayedPlaintext {
+                source_generation: key.source_generation,
+                render_generation: generation,
+                message_id: self.imp().current_message_id.borrow().clone(),
+                text: render_plan.visible_text.clone(),
+            }));
         tracing::debug!(
             html_bytes = self
                 .imp()
@@ -622,6 +645,389 @@ impl MailViewer {
         self.reload_current();
     }
 
+    /// Start a search limited to the message currently owned by this viewer.
+    ///
+    /// Linux/WebKit builds delegate highlighting and navigation to the
+    /// document's `WebKitFindController`. Builds without WebKit, and a
+    /// WebKit document which is not ready or has failed, use the rendered
+    /// plain-text representation and select the active match in the fallback
+    /// `TextView`. The returned generation lets the future window-level
+    /// search UI discard a result that it no longer owns.
+    pub(crate) fn search_displayed_message(&self, query: &str) -> MessageSearchResult {
+        let generation = self.begin_message_search();
+        if query.trim().is_empty() {
+            return self.replace_empty_search_result(generation, query);
+        }
+
+        #[cfg(target_os = "linux")]
+        if let Some(result) = self.search_displayed_message_webkit(query, generation) {
+            return result;
+        }
+
+        self.search_displayed_message_plaintext(query, generation)
+    }
+
+    /// Move to the next match in the active displayed-message search.
+    pub(crate) fn search_displayed_message_next(&self) -> MessageSearchResult {
+        self.advance_displayed_message_search(MessageSearchDirection::Next)
+    }
+
+    /// Move to the previous match in the active displayed-message search.
+    pub(crate) fn search_displayed_message_previous(&self) -> MessageSearchResult {
+        self.advance_displayed_message_search(MessageSearchDirection::Previous)
+    }
+
+    pub(crate) fn displayed_message_search_result(&self) -> Option<MessageSearchResult> {
+        self.imp()
+            .message_search
+            .borrow()
+            .as_ref()
+            .map(|search| search.result.clone())
+    }
+
+    /// Stop highlighting/searching without changing the displayed message.
+    pub(crate) fn finish_displayed_message_search(&self) {
+        #[cfg(target_os = "linux")]
+        if let Some(controller) = self.imp().find_controller.borrow().as_ref() {
+            controller.search_finish();
+        }
+        self.clear_fallback_search_highlight();
+        self.imp().message_search.take();
+        self.imp()
+            .search_generation
+            .set(advance_generation(self.imp().search_generation.get()));
+    }
+
+    fn begin_message_search(&self) -> u64 {
+        self.finish_displayed_message_search();
+        let generation = advance_generation(self.imp().search_generation.get());
+        self.imp().search_generation.set(generation);
+        generation
+    }
+
+    fn invalidate_message_search_context(&self) {
+        self.finish_displayed_message_search();
+        self.imp().displayed_plaintext.take();
+    }
+
+    fn replace_empty_search_result(&self, generation: u64, query: &str) -> MessageSearchResult {
+        let result = MessageSearchResult {
+            generation,
+            backend: None,
+            status: MessageSearchStatus::EmptyQuery,
+            query: query.to_string(),
+            match_count: 0,
+            current_match: None,
+        };
+        self.imp().message_search.replace(Some(ActiveMessageSearch {
+            source_generation: self.imp().source_generation.get(),
+            render_generation: self.imp().render_generation.get(),
+            message_id: self.imp().current_message_id.borrow().clone(),
+            fallback_matches: Vec::new(),
+            result: result.clone(),
+        }));
+        result
+    }
+
+    fn search_displayed_message_plaintext(
+        &self,
+        query: &str,
+        generation: u64,
+    ) -> MessageSearchResult {
+        let Some(displayed) = self.current_displayed_plaintext() else {
+            let result = MessageSearchResult {
+                generation,
+                backend: None,
+                status: MessageSearchStatus::NoDisplayedMessage,
+                query: query.to_string(),
+                match_count: 0,
+                current_match: None,
+            };
+            self.imp().message_search.replace(Some(ActiveMessageSearch {
+                source_generation: self.imp().source_generation.get(),
+                render_generation: self.imp().render_generation.get(),
+                message_id: self.imp().current_message_id.borrow().clone(),
+                fallback_matches: Vec::new(),
+                result: result.clone(),
+            }));
+            return result;
+        };
+
+        let matches = plaintext_search_matches(&displayed.text, query);
+        let result = MessageSearchResult {
+            generation,
+            backend: Some(MessageSearchBackend::PlaintextFallback),
+            status: if matches.is_empty() {
+                MessageSearchStatus::NotFound
+            } else {
+                MessageSearchStatus::Found
+            },
+            query: query.to_string(),
+            match_count: matches.len(),
+            current_match: (!matches.is_empty()).then_some(1),
+        };
+        self.imp().message_search.replace(Some(ActiveMessageSearch {
+            source_generation: displayed.source_generation,
+            render_generation: displayed.render_generation,
+            message_id: displayed.message_id,
+            fallback_matches: matches.clone(),
+            result: result.clone(),
+        }));
+        if !matches.is_empty() {
+            self.apply_fallback_search_matches(&matches, 0);
+        }
+        result
+    }
+
+    fn current_displayed_plaintext(&self) -> Option<DisplayedPlaintext> {
+        let displayed = self.imp().displayed_plaintext.borrow().as_ref()?.clone();
+        let current_message_id = self.imp().current_message_id.borrow().clone();
+        message_search_context_is_current(
+            self.imp().source_generation.get(),
+            self.imp().render_generation.get(),
+            current_message_id.as_deref(),
+            displayed.source_generation,
+            displayed.render_generation,
+            displayed.message_id.as_deref(),
+        )
+        .then_some(displayed)
+    }
+
+    fn advance_displayed_message_search(
+        &self,
+        direction: MessageSearchDirection,
+    ) -> MessageSearchResult {
+        let Some(mut search) = self.imp().message_search.take() else {
+            return self.search_displayed_message("");
+        };
+        let current_message_id = self.imp().current_message_id.borrow().clone();
+        if !message_search_context_is_current(
+            self.imp().source_generation.get(),
+            self.imp().render_generation.get(),
+            current_message_id.as_deref(),
+            search.source_generation,
+            search.render_generation,
+            search.message_id.as_deref(),
+        ) {
+            self.clear_fallback_search_highlight();
+            return self.search_displayed_message("");
+        }
+
+        if search.result.status != MessageSearchStatus::Found {
+            let result = search.result.clone();
+            self.imp().message_search.replace(Some(search));
+            return result;
+        }
+
+        let Some(current_match) = search.result.current_match else {
+            let result = search.result.clone();
+            self.imp().message_search.replace(Some(search));
+            return result;
+        };
+        let match_count = search.result.match_count;
+        if match_count == 0 {
+            let result = search.result.clone();
+            self.imp().message_search.replace(Some(search));
+            return result;
+        }
+
+        let next_match = match direction {
+            MessageSearchDirection::Next => current_match % match_count + 1,
+            MessageSearchDirection::Previous => {
+                if current_match == 1 {
+                    match_count
+                } else {
+                    current_match - 1
+                }
+            }
+        };
+
+        match search.result.backend {
+            Some(MessageSearchBackend::PlaintextFallback) => {
+                self.apply_fallback_search_matches(&search.fallback_matches, next_match - 1);
+                search.result.current_match = Some(next_match);
+            }
+            #[cfg(target_os = "linux")]
+            Some(MessageSearchBackend::WebKit) => {
+                if !self.webkit_search_is_ready() {
+                    let query = search.result.query.clone();
+                    return self.search_displayed_message(&query);
+                }
+                if let Some(controller) = self.imp().find_controller.borrow().as_ref() {
+                    match direction {
+                        MessageSearchDirection::Next => controller.search_next(),
+                        MessageSearchDirection::Previous => controller.search_previous(),
+                    }
+                    search.result.current_match = Some(next_match);
+                } else {
+                    let query = search.result.query.clone();
+                    return self.search_displayed_message(&query);
+                }
+            }
+            #[cfg(not(target_os = "linux"))]
+            Some(MessageSearchBackend::WebKit) => {}
+            None => {}
+        }
+
+        let result = search.result.clone();
+        self.imp().message_search.replace(Some(search));
+        result
+    }
+
+    fn clear_fallback_search_highlight(&self) {
+        let fallback_view = self.imp().fallback_view.borrow();
+        let Some(view) = fallback_view.as_ref() else {
+            return;
+        };
+        let buffer = view.buffer();
+        if let Some(tag) = self.imp().fallback_search_tag.borrow().as_ref() {
+            let start = buffer.start_iter();
+            let end = buffer.end_iter();
+            buffer.remove_tag(tag, &start, &end);
+        }
+        let end = buffer.end_iter();
+        buffer.select_range(&end, &end);
+    }
+
+    fn apply_fallback_search_matches(&self, matches: &[TextSearchMatch], active: usize) {
+        let fallback_view = self.imp().fallback_view.borrow();
+        let Some(view) = fallback_view.as_ref() else {
+            return;
+        };
+        let buffer = view.buffer();
+        let Some(tag) = self.fallback_search_tag(&buffer) else {
+            return;
+        };
+
+        let start = buffer.start_iter();
+        let end = buffer.end_iter();
+        buffer.remove_tag(&tag, &start, &end);
+        for matched in matches {
+            let start = buffer.iter_at_offset(gtk_text_offset(matched.start));
+            let end = buffer.iter_at_offset(gtk_text_offset(matched.end));
+            buffer.apply_tag(&tag, &start, &end);
+        }
+        if let Some(matched) = matches.get(active) {
+            let start = buffer.iter_at_offset(gtk_text_offset(matched.start));
+            let end = buffer.iter_at_offset(gtk_text_offset(matched.end));
+            buffer.select_range(&start, &end);
+            let mut scroll = start.clone();
+            view.scroll_to_iter(&mut scroll, 0.1, false, 0.0, 0.5);
+        }
+    }
+
+    fn fallback_search_tag(&self, buffer: &gtk::TextBuffer) -> Option<gtk::TextTag> {
+        if let Some(tag) = self.imp().fallback_search_tag.borrow().as_ref() {
+            return Some(tag.clone());
+        }
+        let tag = gtk::TextTag::builder()
+            .name("evolution-mail-search-match")
+            .background("yellow")
+            .foreground("black")
+            .build();
+        if !buffer.tag_table().add(&tag) {
+            return None;
+        }
+        self.imp().fallback_search_tag.replace(Some(tag.clone()));
+        Some(tag)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn search_displayed_message_webkit(
+        &self,
+        query: &str,
+        generation: u64,
+    ) -> Option<MessageSearchResult> {
+        if self.current_displayed_plaintext().is_none() || !self.webkit_search_is_ready() {
+            return None;
+        }
+        let controller = self.imp().find_controller.borrow().clone()?;
+        let result = MessageSearchResult {
+            generation,
+            backend: Some(MessageSearchBackend::WebKit),
+            status: MessageSearchStatus::Pending,
+            query: query.to_string(),
+            match_count: 0,
+            current_match: None,
+        };
+        let displayed = self.current_displayed_plaintext()?;
+        self.imp().message_search.replace(Some(ActiveMessageSearch {
+            source_generation: displayed.source_generation,
+            render_generation: displayed.render_generation,
+            message_id: displayed.message_id,
+            fallback_matches: Vec::new(),
+            result: result.clone(),
+        }));
+        controller.search_finish();
+        let options =
+            (webkit6::FindOptions::CASE_INSENSITIVE | webkit6::FindOptions::WRAP_AROUND).bits();
+        controller.search(query, options, MAX_FIND_MATCH_COUNT);
+        Some(result)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn webkit_search_is_ready(&self) -> bool {
+        let Some(webview) = self.imp().webview.borrow().clone() else {
+            return false;
+        };
+        self.imp().webview_ready.get() && self.is_current_webview_load(&webview)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn webkit_search_event_is_current(&self, controller: &webkit6::FindController) -> bool {
+        let Some(search) = self.imp().message_search.borrow().as_ref() else {
+            return false;
+        };
+        let current_message_id = self.imp().current_message_id.borrow().clone();
+        if search.result.backend != Some(MessageSearchBackend::WebKit)
+            || !message_search_context_is_current(
+                self.imp().source_generation.get(),
+                self.imp().render_generation.get(),
+                current_message_id.as_deref(),
+                search.source_generation,
+                search.render_generation,
+                search.message_id.as_deref(),
+            )
+            || search.result.query != controller.search_text().as_deref().unwrap_or_default()
+        {
+            return false;
+        }
+        self.webkit_search_is_ready()
+    }
+
+    #[cfg(target_os = "linux")]
+    fn handle_webkit_found_text(&self, controller: &webkit6::FindController, count: u32) {
+        if !self.webkit_search_event_is_current(controller) {
+            return;
+        }
+        let mut search = self.imp().message_search.borrow_mut();
+        let Some(search) = search.as_mut() else {
+            return;
+        };
+        let count = count as usize;
+        search.result.match_count = count;
+        search.result.status = if count == 0 {
+            MessageSearchStatus::NotFound
+        } else {
+            MessageSearchStatus::Found
+        };
+        search.result.current_match = (count > 0).then_some(1);
+    }
+
+    #[cfg(target_os = "linux")]
+    fn handle_webkit_failed_to_find_text(&self, controller: &webkit6::FindController) {
+        if !self.webkit_search_event_is_current(controller) {
+            return;
+        }
+        let mut search = self.imp().message_search.borrow_mut();
+        let Some(search) = search.as_mut() else {
+            return;
+        };
+        search.result.status = MessageSearchStatus::NotFound;
+        search.result.match_count = 0;
+        search.result.current_match = None;
+    }
+
     fn set_fallback_text(&self, text: &str) {
         if let Some(view) = self.imp().fallback_view.borrow().as_ref() {
             view.buffer().set_text(text);
@@ -670,9 +1076,13 @@ impl MailViewer {
             }
             match event {
                 webkit6::LoadEvent::Started | webkit6::LoadEvent::Redirected => {
+                    viewer.imp().webview_ready.set(false);
                     viewer.show_renderer_loading();
                 }
-                webkit6::LoadEvent::Finished => viewer.show_renderer_ready(),
+                webkit6::LoadEvent::Finished => {
+                    viewer.imp().webview_ready.set(true);
+                    viewer.show_renderer_ready();
+                }
                 _ => {}
             }
         });
@@ -682,6 +1092,8 @@ impl MailViewer {
             tracing::warn!(uri = %redact_renderer_uri(failing_uri), %error, "Mail viewer failed to load document");
             if let Some(viewer) = viewer_weak.upgrade() {
                 if viewer.is_current_webview_load(webview) {
+                    viewer.imp().webview_ready.set(false);
+                    viewer.finish_displayed_message_search();
                     viewer.show_renderer_error();
                 }
             }
@@ -718,6 +1130,23 @@ impl MailViewer {
             }
             false
         });
+
+        if let Some(find_controller) = webview.find_controller() {
+            let viewer_weak = self.downgrade();
+            find_controller.connect_found_text(move |controller, count| {
+                if let Some(viewer) = viewer_weak.upgrade() {
+                    viewer.handle_webkit_found_text(controller, count);
+                }
+            });
+
+            let viewer_weak = self.downgrade();
+            find_controller.connect_failed_to_find_text(move |controller| {
+                if let Some(viewer) = viewer_weak.upgrade() {
+                    viewer.handle_webkit_failed_to_find_text(controller);
+                }
+            });
+            self.imp().find_controller.replace(Some(find_controller));
+        }
 
         stack.add_named(&webview_scroll, Some("webkit"));
         stack.set_visible_child_name("loading");
@@ -759,6 +1188,7 @@ impl MailViewer {
 
     #[cfg(target_os = "linux")]
     fn show_renderer_error(&self) {
+        self.imp().webview_ready.set(false);
         self.imp().last_render_key.take();
         if let Some(label) = self.imp().renderer_error_label.borrow().as_ref() {
             label.set_visible(true);
@@ -767,6 +1197,64 @@ impl MailViewer {
             stack.set_visible_child_name("error");
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MessageSearchDirection {
+    Next,
+    Previous,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MessageSearchBackend {
+    WebKit,
+    PlaintextFallback,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MessageSearchStatus {
+    EmptyQuery,
+    NoDisplayedMessage,
+    Pending,
+    Found,
+    NotFound,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct MessageSearchResult {
+    pub(crate) generation: u64,
+    pub(crate) backend: Option<MessageSearchBackend>,
+    pub(crate) status: MessageSearchStatus,
+    pub(crate) query: String,
+    /// For WebKit this is zero while the asynchronous FindController result
+    /// is pending. Fallback searches know the count immediately.
+    pub(crate) match_count: usize,
+    /// Match numbers are one-based to map directly to a future "1 of N"
+    /// indicator. WebKit fills this after its found-text signal.
+    pub(crate) current_match: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DisplayedPlaintext {
+    source_generation: u64,
+    render_generation: u64,
+    message_id: Option<String>,
+    text: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TextSearchMatch {
+    start: usize,
+    end: usize,
+}
+
+#[derive(Debug, Clone)]
+struct ActiveMessageSearch {
+    source_generation: u64,
+    render_generation: u64,
+    message_id: Option<String>,
+    fallback_matches: Vec<TextSearchMatch>,
+    result: MessageSearchResult,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -910,6 +1398,66 @@ fn inline_image_sources_match(left: &[InlineImage], right: &[InlineImage]) -> bo
 
 fn advance_generation(current: u64) -> u64 {
     current.wrapping_add(1).max(1)
+}
+
+fn message_search_context_is_current(
+    current_source_generation: u64,
+    current_render_generation: u64,
+    current_message_id: Option<&str>,
+    search_source_generation: u64,
+    search_render_generation: u64,
+    search_message_id: Option<&str>,
+) -> bool {
+    current_source_generation == search_source_generation
+        && current_render_generation == search_render_generation
+        && current_message_id == search_message_id
+}
+
+fn plaintext_search_matches(text: &str, query: &str) -> Vec<TextSearchMatch> {
+    let folded_query: Vec<char> = query
+        .chars()
+        .flat_map(|character| character.to_lowercase())
+        .collect();
+    if folded_query.is_empty() {
+        return Vec::new();
+    }
+
+    let mut folded_text = Vec::new();
+    let mut original_character = 0;
+    for character in text.chars() {
+        let original_range = (original_character, original_character + 1);
+        folded_text.extend(
+            character
+                .to_lowercase()
+                .map(|folded| (folded, original_range)),
+        );
+        original_character += 1;
+    }
+
+    let mut matches = Vec::new();
+    let mut cursor = 0;
+    while cursor + folded_query.len() <= folded_text.len() {
+        let end = cursor + folded_query.len();
+        if folded_text[cursor..end]
+            .iter()
+            .map(|(character, _)| *character)
+            .eq(folded_query.iter().copied())
+        {
+            matches.push(TextSearchMatch {
+                start: folded_text[cursor].1.0,
+                end: folded_text[end - 1].1.1,
+            });
+            // Match WebKit's normal non-overlapping find behavior.
+            cursor = end;
+        } else {
+            cursor += 1;
+        }
+    }
+    matches
+}
+
+fn gtk_text_offset(offset: usize) -> i32 {
+    offset.min(i32::MAX as usize) as i32
 }
 
 fn render_decision(cache: Option<&CachedMailRender>, key: &RenderRequestKey) -> RenderDecision {
@@ -1450,9 +1998,10 @@ mod tests {
         CachedMailRender, RenderDecision, RenderJob, RenderRequestKey, RenderWork,
         advance_generation, cache_mail_render, compose_sanitized_mail_document,
         contains_remote_image_reference, effective_mail_base_uri, execute_render_job,
-        html_to_fallback_text, inline_image_sources_match, prepare_mail_body,
-        readable_fallback_text, render_decision, render_result_is_current, safe_css_font_family,
-        safe_mail_font_size, webview_load_is_current,
+        html_to_fallback_text, inline_image_sources_match, message_search_context_is_current,
+        plaintext_search_matches, prepare_mail_body, readable_fallback_text, render_decision,
+        render_result_is_current, safe_css_font_family, safe_mail_font_size,
+        webview_load_is_current,
     };
     use crate::services::inline_content_service::InlineImage;
     use std::sync::Arc;
@@ -1495,6 +2044,78 @@ mod tests {
             readable_fallback_text(Some("   ")),
             "(Die Nachricht enthält keinen darstellbaren Inhalt.)"
         );
+    }
+
+    #[test]
+    fn plaintext_message_search_is_case_insensitive_and_uses_character_offsets() {
+        let matches = plaintext_search_matches("Hallo hallo HALLO", "hAlLo");
+        assert_eq!(
+            matches,
+            vec![
+                super::TextSearchMatch { start: 0, end: 5 },
+                super::TextSearchMatch { start: 6, end: 11 },
+                super::TextSearchMatch { start: 12, end: 17 },
+            ]
+        );
+    }
+
+    #[test]
+    fn plaintext_message_search_handles_unicode_without_byte_offsets() {
+        let matches = plaintext_search_matches("Ärger ärger", "ÄRGER");
+        assert_eq!(
+            matches,
+            vec![
+                super::TextSearchMatch { start: 0, end: 5 },
+                super::TextSearchMatch { start: 6, end: 11 },
+            ]
+        );
+    }
+
+    #[test]
+    fn plaintext_message_search_is_non_overlapping() {
+        assert_eq!(
+            plaintext_search_matches("aaaa", "aa"),
+            vec![
+                super::TextSearchMatch { start: 0, end: 2 },
+                super::TextSearchMatch { start: 2, end: 4 },
+            ]
+        );
+    }
+
+    #[test]
+    fn stale_message_search_context_is_rejected_after_selection_or_render_change() {
+        assert!(message_search_context_is_current(
+            4,
+            9,
+            Some("message-a"),
+            4,
+            9,
+            Some("message-a"),
+        ));
+        assert!(!message_search_context_is_current(
+            5,
+            9,
+            Some("message-a"),
+            4,
+            9,
+            Some("message-a"),
+        ));
+        assert!(!message_search_context_is_current(
+            4,
+            10,
+            Some("message-a"),
+            4,
+            9,
+            Some("message-a"),
+        ));
+        assert!(!message_search_context_is_current(
+            4,
+            9,
+            Some("message-b"),
+            4,
+            9,
+            Some("message-a"),
+        ));
     }
 
     #[test]

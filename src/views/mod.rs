@@ -20,5 +20,6 @@ pub use contacts_page::ContactsPage;
 pub use html_editor::{EditorContent, HtmlEditor};
 pub use mail_page::MailPage;
 pub use mail_viewer::MailViewer;
+pub(crate) use mail_viewer::{MessageSearchResult, MessageSearchStatus};
 pub use memos_page::MemosPage;
 pub use tasks_page::TasksPage;

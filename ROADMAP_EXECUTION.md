@@ -32,8 +32,10 @@ Vor jeder Implementierung:
 4. Einen Punkt vor dem Codieren weiter aufteilen, wenn er nicht in einem
    zusammenhängenden, kompilierbaren Commit mit eindeutigem Fehlerpfad und
    Tests abgeschlossen werden kann.
-5. Die historische GTK3-Version ausschließlich als Referenz für sichtbares
-   Verhalten, Menüstruktur, Tastaturbedienung, Dichte und Arbeitsabläufe lesen.
+5. Den sauberen offiziellen Evolution-Clone unter
+   `/Users/martin/Documents/Projects/evolution-gtk4/evolution-upstream-reference`
+   ausschließlich als Referenz für sichtbares Verhalten, Menüstruktur,
+   Tastaturbedienung, Dichte und Arbeitsabläufe lesen; dort niemals schreiben.
    EDS/Camel/ECal/EBook bleiben die autoritativen Daten-Backends.
 
 Während der Implementierung:
@@ -109,6 +111,8 @@ und erweitert dessen Schreibbereich nur nach dokumentierter Kollisionsprüfung.
 | 10 | `P0-MAIL-001C` | `P0-MAIL-001` | `src/views/mail_viewer.rs` | `P0-MAIL-001A`, `P0-MAIL-001B` | DONE | Viewer-Fallback und nachrichtenbezogene Remote-Freigabe integriert |
 | 11 | `P0-MAIL-001D` | `P0-MAIL-001` | `src/views/mail_viewer.rs`, `src/views/mail_page.rs`, `src/models/mail_message.rs`, `src/services/inline_content_service.rs` | `P0-MAIL-001A`, `P0-MAIL-001B` | BLOCKED_LINUX | Latest-Wins-Worker, CID/Anlagen ohne GTK-Kopie, Cache-/Stale-Gates grün; WebKitGTK-Churn-Abnahme offen |
 | 12 | `P0-MAIL-002A` | `P0-MAIL-002` | `src/views/mail_page.rs`, `src/style.css` | `P0-STAB-001B` | IN PROGRESS | kompakter Evolution-Ordnerbaum ohne Kontoicon, lesbare Tabellenschrift, Icon-Fallbacks und dezente Unread-Zähler |
+| 12a | `P0-MAIL-002A-SOURCE` | `P0-MAIL-002A` | `src/views/mail_page.rs`, `src/window.rs`, `src/application.rs`, `src/services/{camel_mail_service,exchange_service}.rs` | `P0-MAIL-002A` | IN PROGRESS | `Ctrl+U`/Menüs und exakter Worker-Abruf vorhanden; sofortiges wiederverwendbares Lade-/Fehlerfenster und stale Abbruch fehlen |
+| 12b | `P0-MAIL-002A-HEADERS` | `P0-MAIL-002A` | `src/views/mail_page.rs`, `src/models/mail_message.rs`, `src/services/{camel_mail_service,mail_store_service,settings_service}.rs`, `data/org.gnome.Evolution4.gschema.xml` | `P0-MAIL-002A-SOURCE` | IN PROGRESS | vollständige Felder formatiert, geordnet und lazy exakt; konfigurierbarer normaler `show-headers`-Satz und Linux-Abnahme fehlen |
 | 13 | `P0-MAIL-002B` | `P0-MAIL-002` | `src/views/mail_page.rs`, `src/services/settings_service.rs`, `src/dialogs/preferences_dialog.rs`, `data/org.gnome.Evolution4.gschema.xml` | `P0-MAIL-002A` | BLOCKED_LINUX | Defaults/Roundtrip/Reset und Live-Bindings portabel grün; sichtbare Linux-Abnahme offen |
 | 14 | `P0-SYNC-001A` | `P0-SYNC-001` | `src/views/mail_page.rs`, `src/services/camel_mail_service.rs`, `src/services/exchange_service.rs`, `src/models/mail_message.rs` | `P0-STAB-001B` | BLOCKED_LINUX | Portable Paging-, Watcher-, Auswahl-, Sortier- und echter Graph-Abbruchvertrag grün; Camel-Abnahme offen |
 | 15 | `P0-COMP-001B` | `P0-COMP-001` | `src/dialogs/compose_dialog.rs`, `src/services/draft_store_service.rs` | `P0-COMP-001A` | DONE | Autosave, Recovery, pro-Draft-Sendelock und revisionssicheres Cleanup integriert |
@@ -116,6 +120,7 @@ und erweitert dessen Schreibbereich nur nach dokumentierter Kollisionsprüfung.
 | 17 | `P1-CAL-001B` | `P1-CAL-001` | `src/views/calendar_page.rs` | `P1-CAL-001A` | DONE | Ansichten verwenden gemeinsame Recurrence-/Zeitzonenregeln |
 | 18 | `P1-CONTACT-001B` | `P1-CONTACT-001` | `src/views/contacts_page.rs` | `P1-CONTACT-001A` | DONE | kompakter quellenstabiler Kontaktworkflow und Dublettenpfad |
 | 19 | `P1-TASK-001A` | `P1-TASK-001` | `src/views/tasks_page.rs` | keine | DONE | Quick-Edit, Filter, Suche, Sortierung und Fehlerzustände integriert |
+| 20 | `P1-MAIL-FIND` | `P0-MAIL-002A` | `src/views/{mail_page,mail_viewer}.rs`, `src/window.rs`, `src/application.rs` | `P0-MAIL-001C` | BLOCKED_LINUX | Evolution-Menü/Shortcut, kompakte Suchleiste, Unicode-Fallback, WebKit-FindController, Wrap und stale Generationsgates portabel grün; WebKit-Laufzeitabnahme offen |
 
 ### Parallelisierungsregeln
 
@@ -228,8 +233,11 @@ und erweitert dessen Schreibbereich nur nach dokumentierter Kollisionsprüfung.
   Parser-Test allein darf ihn weder auf `DONE` noch auf Vollparität setzen.
 - Evidenz: Pure Tests decken Latest-Wins/Stale, CID-Auflösung, Payload-
   Identität, exakte WebView-URI, Rendercache und Body-Cache-Invalidierung ab.
+  Die CID-Auflösung kodiert nur noch tatsächlich in URI-Attributen
+  referenzierte Inline-Bilder und überspringt unreferenzierte Payloads vor der
+  Base64-Arbeit.
   Format, Schema, normaler und erzwungener `eds_camel_bridge`-Check sowie
-  412/412 Workspace-Tests sind grün; offen bleibt `LINUX-P0-MAIL-003`.
+  423/423 Workspace-Tests sind grün; offen bleibt `LINUX-P0-MAIL-003`.
 
 ### P0-MAIL-002 — klassischen Evolution-Mailworkflow vervollständigen
 
@@ -238,7 +246,8 @@ und erweitert dessen Schreibbereich nur nach dokumentierter Kollisionsprüfung.
 - Quelle: `ROADMAP.md`, Phase 1 „Adaptives Layout“, „Mail-Liste“ und
   „Werkzeugleiste“
 - Lieferumfang:
-  - GTK3-Referenzinventar für Hauptmenüs, Werkzeugleisten, Ordnerbaum,
+  - Referenzinventar in `docs/MAIL_UI_PARITY_INVENTORY.md` für Hauptmenüs,
+    Werkzeugleisten, Ordnerbaum,
     Spaltenkopf, Kontextmenüs, Tastaturwege und Detailkopf.
   - Klassische Ansicht als kompakter Standard: Konten/Ordner links,
     einzeilige Nachrichtenliste oben, Vorschau unten.
@@ -254,6 +263,11 @@ und erweitert dessen Schreibbereich nur nach dokumentierter Kollisionsprüfung.
     Nach bestätigtem Lesen/Ungelesen- oder Ordner-Refresh wird der Wert reaktiv
     neu berechnet; bei Fehler, Konflikt oder Abbruch bleibt der vorherige
     bestätigte Wert erhalten.
+  - `Ctrl+U`, Ansicht- und Kontextmenü öffnen die Nachrichtenquelle unabhängig
+    vom Vorschaufenster. Camel und Graph laden die originale RFC822-Quelle in
+    einem Worker; ein nicht exakt auflösbarer portabler Datensatz wird sichtbar
+    als Rekonstruktion gekennzeichnet. Die persistente Vollkopfzeilenansicht
+    behält nur den ursprünglichen Headerblock statt jeden großen MIME-Body.
   - Der Routine-Sicherheitsstatus ist standardmäßig unsichtbar. Der UI-Pfad
     startet die Crypto-Prüfung nur nach einem begrenzten Hinweis auf eine
     OpenPGP-/S/MIME-Hülle; gültige, warnende und fehlgeschlagene Prüfungen
@@ -275,12 +289,33 @@ und erweitert dessen Schreibbereich nur nach dokumentierter Kollisionsprüfung.
     `cargo test --workspace --locked --no-fail-fast --quiet` bestehen.
   - Linux-Referenzvergleich für Icons, Dichte und bestätigte Counter besteht;
     siehe `LINUX-P0-MAIL-003`.
-- Evidenz: Die portablen Gates einschließlich 422 Workspace-Tests bestehen.
+- Evidenz: Die portablen Gates einschließlich 432 Workspace-Tests bestehen.
   Der zeilengebundene Sekundärklick selektiert vor
   dem Öffnen des Kontextmenüs exakt seine Nachricht; Label-, Spam- und
   Nicht-Spam-Aktionen sind dort und im Nachricht-Hauptmenü erreichbar.
-  Vollständiges Referenzinventar, Icon-/Dichte-Vergleich und reale
-  Counter-Abnahme fehlen; deshalb bleibt der Punkt `IN PROGRESS`.
+  Verschieben und Kopieren sind zusätzlich im Kontextmenü, im
+  Nachricht-Hauptmenü, in der klassischen Werkzeugleiste und per Tastatur
+  erreichbar und funktionieren damit unabhängig von der Vorschaufenster-
+  Sichtbarkeit. Dasselbe gilt nun für den EML-Export; auswahlabhängige
+  Label-, Verschieben- und Kopieren-Aktionen werden ohne ausgewählte Nachricht
+  korrekt deaktiviert. Mailtabelle, Detailkopf und Ordnerbaum verwenden eine
+  gemeinsame lesbare 16-Pixel-Basis, während die kompakte Dichte ausschließlich
+  über reduzierte Abstände erreicht wird. Nachrichtenquelle und vollständige
+  Kopfzeilen sind in den originalen View-/Tastaturwegen eingebunden; der exakte
+  Graph-`$value`- und Camel-Abruf läuft außerhalb GTK, während der Header-Fallback
+  weder Mailbody noch Anhänge auf dem GTK-Pfad aufbaut. Strukturierte
+  Providerzeilen laden ihren exakten Headerblock nur bei eingeblendeter Ansicht;
+  Auswahlwechsel, Ausblenden und Dispose brechen alte Abrufe ab, und stale
+  Ergebnisse können weder Auswahl noch Kopfzeilen überschreiben.
+  „In angezeigter Nachricht suchen“ ist im Bearbeiten-Menü und über
+  `Ctrl+Shift+F` erreichbar. Die kompakte Reader-Suchleiste bietet
+  Vorwärts-/Rückwärtsnavigation, Trefferstatus, Wrap-around und Escape;
+  WebKit verwendet seinen FindController, der portable Fallback arbeitet
+  Unicode-zeichengenau. Nachrichten-, Quell- und Rendergeneration verhindern
+  Highlights oder Ergebnisse einer vorherigen Auswahl.
+  Das ausführbare Referenzinventar liegt in
+  `docs/MAIL_UI_PARITY_INVENTORY.md`; Icon-/Dichte-Vergleich und reale
+  Counter-Abnahme fehlen weiterhin, deshalb bleibt der Punkt `IN PROGRESS`.
 
 ### P0-MAIL-002B — Mailpräferenzen persistent und live wirksam machen
 

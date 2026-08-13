@@ -82,6 +82,7 @@ pub struct ParsedMail {
     pub date_str: String,
     pub preview_snippet: String,
     pub html_body: String,
+    pub(crate) raw_headers: Option<Vec<u8>>,
     pub(crate) raw_mime: Option<Vec<u8>>,
     pub is_unread: bool,
     pub is_flagged: bool,
@@ -111,6 +112,7 @@ impl ParsedMail {
             date_str,
             preview_snippet,
             html_body,
+            raw_headers,
             raw_mime,
             is_unread,
             is_flagged,
@@ -147,6 +149,7 @@ impl ParsedMail {
             backend_location,
             attachments,
         );
+        object.set_raw_headers(raw_headers);
         object.set_raw_mime(raw_mime);
         object
     }
@@ -1717,6 +1720,7 @@ pub(crate) fn parse_rfc822_bytes(
         date_str: date,
         preview_snippet: preview,
         html_body: body_html,
+        raw_headers: (!header_bytes.is_empty()).then(|| header_bytes.to_vec()),
         raw_mime,
         is_unread: unread,
         is_flagged: false,
@@ -1724,6 +1728,46 @@ pub(crate) fn parse_rfc822_bytes(
         labels: Vec::new(),
         attachments: extracted.attachments,
     })
+}
+
+/// Parse the original RFC822 header block for Evolution's formatted
+/// "All Message Headers" view. Order and repeated field names are preserved;
+/// folded values are unfolded only for display and RFC2047 words are decoded.
+pub(crate) fn parse_rfc822_header_fields(header_bytes: &[u8]) -> Vec<(String, String)> {
+    let normalized = String::from_utf8_lossy(header_bytes)
+        .replace("\r\n", "\n")
+        .replace('\r', "\n");
+    let mut fields = Vec::new();
+    let mut current: Option<(String, String)> = None;
+
+    for line in normalized.lines() {
+        if line.starts_with([' ', '\t']) {
+            if let Some((_, value)) = current.as_mut() {
+                let continuation = line.trim();
+                if !continuation.is_empty() {
+                    if !value.is_empty() {
+                        value.push(' ');
+                    }
+                    value.push_str(continuation);
+                }
+            }
+            continue;
+        }
+        if let Some((name, value)) = current.take() {
+            fields.push((name, decode_mime_header(value.trim())));
+        }
+        let Some((name, value)) = line.split_once(':') else {
+            continue;
+        };
+        let name = name.trim();
+        if !name.is_empty() {
+            current = Some((name.to_string(), value.trim().to_string()));
+        }
+    }
+    if let Some((name, value)) = current {
+        fields.push((name, decode_mime_header(value.trim())));
+    }
+    fields
 }
 
 pub(crate) fn assign_thread_metadata(messages: &mut [ParsedMail]) {
@@ -2486,6 +2530,15 @@ mod tests {
         assert_eq!(message.reply_to, "Support <support@example.org>");
         assert_eq!(message.subject, "Status Update");
         assert_eq!(message.folder_id, "inbox");
+        assert_eq!(
+            message.raw_headers.as_deref(),
+            Some(
+                raw.split_once("\r\n\r\n")
+                    .expect("header separator")
+                    .0
+                    .as_bytes()
+            )
+        );
         assert!(message.html_body.contains("Hallo Welt"));
         assert!(message.is_unread);
     }
@@ -2505,6 +2558,27 @@ mod tests {
         )
         .expect("ordinary message should parse");
         assert!(ordinary.raw_mime.is_none());
+        assert_eq!(
+            ordinary.raw_headers.as_deref(),
+            Some(b"Content-Type: text/plain".as_slice())
+        );
+    }
+
+    #[test]
+    fn formatted_header_fields_preserve_order_repeats_and_folded_values() {
+        let fields = parse_rfc822_header_fields(
+            b"Received: first\r\nReceived: second\r\nSubject: =?UTF-8?Q?Gr=C3=BC=C3=9Fe?=\r\n\tfrom Evolution\r\nX-Unknown: kept",
+        );
+
+        assert_eq!(
+            fields,
+            vec![
+                ("Received".to_string(), "first".to_string()),
+                ("Received".to_string(), "second".to_string()),
+                ("Subject".to_string(), "Grüße from Evolution".to_string()),
+                ("X-Unknown".to_string(), "kept".to_string()),
+            ]
+        );
     }
 
     #[test]
