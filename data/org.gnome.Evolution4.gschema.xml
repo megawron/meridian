@@ -141,6 +141,11 @@
       <default>false</default>
       <summary>Show the complete RFC822 header block in the mail preview</summary>
     </key>
+    <key name="mail-normal-headers" type="a(sb)">
+      <default>[('From', true), ('Reply-To', true), ('To', true), ('Cc', true), ('Bcc', true), ('Subject', true), ('Date', true), ('Newsgroups', true), ('Face', true), ('x-evolution-mailer', false)]</default>
+      <summary>Ordered normal message headers and their visibility</summary>
+      <description>Each entry contains a header field name and whether it is shown in the normal message header view. Disabled entries remain available in Preferences.</description>
+    </key>
     <key name="mail-default-folder" type="s">
       <default>'inbox'</default>
       <summary>Mail folder selected when the application starts</summary>
@@ -152,6 +157,10 @@
     <key name="mail-show-toolbar" type="b">
       <default>true</default>
       <summary>Show the classic Evolution mail toolbar</summary>
+    </key>
+    <key name="mail-show-statusbar" type="b">
+      <default>true</default>
+      <summary>Show mail and connection status information at the bottom</summary>
     </key>
     <key name="mail-show-sidebar" type="b">
       <default>true</default>
@@ -212,6 +221,10 @@
     <key name="color-scheme" type="s">
       <default>'system'</default>
       <summary>Application color scheme (system, light, or dark)</summary>
+    </key>
+    <key name="switcher-location" type="s">
+      <default>'top'</default>
+      <summary>Location of module switcher buttons (top in header bar or bottom-left in sidebar)</summary>
     </key>
     <key name="sign-new-messages" type="b">
       <default>false</default>

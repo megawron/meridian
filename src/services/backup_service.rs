@@ -144,6 +144,14 @@ struct BackupSettings {
     mark_read_on_selection: bool,
     #[serde(default = "default_show_message_preview")]
     show_message_preview: bool,
+    #[serde(default)]
+    mail_show_security_details: bool,
+    #[serde(default)]
+    mail_show_all_headers: bool,
+    #[serde(default = "default_mail_normal_headers")]
+    mail_normal_headers: Vec<(String, bool)>,
+    #[serde(default = "default_mail_show_statusbar")]
+    mail_show_statusbar: bool,
     #[serde(default = "default_mail_default_folder")]
     mail_default_folder: String,
     #[serde(default = "default_mail_layout")]
@@ -330,6 +338,28 @@ fn default_show_message_preview() -> bool {
     true
 }
 
+fn default_mail_normal_headers() -> Vec<(String, bool)> {
+    [
+        ("From", true),
+        ("Reply-To", true),
+        ("To", true),
+        ("Cc", true),
+        ("Bcc", true),
+        ("Subject", true),
+        ("Date", true),
+        ("Newsgroups", true),
+        ("Face", true),
+        ("x-evolution-mailer", false),
+    ]
+    .into_iter()
+    .map(|(name, visible)| (name.to_string(), visible))
+    .collect()
+}
+
+fn default_mail_show_statusbar() -> bool {
+    true
+}
+
 fn default_mail_default_folder() -> String {
     "inbox".to_string()
 }
@@ -445,6 +475,10 @@ impl BackupSettings {
             mail_font_size: settings.mail_font_size(),
             mark_read_on_selection: settings.mark_read_on_selection(),
             show_message_preview: settings.show_message_preview(),
+            mail_show_security_details: settings.mail_show_security_details(),
+            mail_show_all_headers: settings.mail_show_all_headers(),
+            mail_normal_headers: settings.mail_normal_headers(),
+            mail_show_statusbar: settings.mail_show_statusbar(),
             mail_default_folder: settings.mail_default_folder(),
             mail_layout: settings.mail_layout(),
             mail_show_toolbar: settings.mail_show_toolbar(),
@@ -525,6 +559,10 @@ impl BackupSettings {
         settings.set_mail_font_size(self.mail_font_size);
         settings.set_mark_read_on_selection(self.mark_read_on_selection);
         settings.set_show_message_preview(self.show_message_preview);
+        settings.set_mail_show_security_details(self.mail_show_security_details);
+        settings.set_mail_show_all_headers(self.mail_show_all_headers);
+        settings.set_mail_normal_headers(&self.mail_normal_headers);
+        settings.set_mail_show_statusbar(self.mail_show_statusbar);
         settings.set_mail_default_folder(&self.mail_default_folder);
         settings.set_mail_layout(&self.mail_layout);
         settings.set_mail_show_toolbar(self.mail_show_toolbar);
@@ -1252,6 +1290,10 @@ mod tests {
         assert!(settings.notifications_enabled);
         assert!(settings.mark_read_on_selection);
         assert!(settings.show_message_preview);
+        assert!(!settings.mail_show_security_details);
+        assert!(!settings.mail_show_all_headers);
+        assert_eq!(settings.mail_normal_headers, default_mail_normal_headers());
+        assert!(settings.mail_show_statusbar);
         assert_eq!(settings.mail_font_size, 16);
         assert_eq!(settings.mail_default_folder, "inbox");
         assert!(settings.spellcheck_languages.is_empty());

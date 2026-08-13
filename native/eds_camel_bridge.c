@@ -28,8 +28,20 @@
 #undef __LIBEDATASERVER_H_INSIDE__
 
 #include <string.h>
+#include <time.h>
 
 #define DEFAULT_MESSAGES_PER_FOLDER 100
+
+#define EVOLUTION_FOLLOW_UP_TAG "follow-up"
+#define EVOLUTION_COMPLETED_ON_TAG "completed-on"
+#define EVOLUTION_DUE_BY_TAG "due-by"
+#define EVOLUTION_FOLLOW_UP_DEFAULT "Follow-up"
+
+enum {
+    EVOLUTION_FOLLOW_UP_NONE = 0,
+    EVOLUTION_FOLLOW_UP_ACTIVE = 1,
+    EVOLUTION_FOLLOW_UP_COMPLETED = 2,
+};
 
 #ifndef EDS_BRIDGE_HAS_DUP_UIDS
 #define EDS_BRIDGE_HAS_DUP_UIDS 1
@@ -417,6 +429,22 @@ load_cancelled (LoadContext *context)
     return FALSE;
 }
 
+static gboolean
+cancellation_requested (EvolutionEdsCamelCancellationCallback callback,
+                        void *user_data)
+{
+    return callback && callback (user_data);
+}
+
+static gboolean
+set_cancelled_error (GError **error)
+{
+    g_set_error_literal (
+        error, G_IO_ERROR, G_IO_ERROR_CANCELLED,
+        "EDS/Camel-Änderung wurde abgebrochen");
+    return FALSE;
+}
+
 static gpointer
 cancellation_monitor_thread (gpointer user_data)
 {
@@ -608,6 +636,39 @@ append_folder (LoadContext *context,
         (folder_info->flags & CAMEL_FOLDER_NOSELECT) == 0;
 }
 
+static gchar *
+dup_nonempty_user_tag (CamelMessageInfo *message_info,
+                       const gchar *tag_name)
+{
+    const gchar *value;
+
+    if (!message_info || !tag_name)
+        return NULL;
+
+    value = camel_message_info_get_user_tag (message_info, tag_name);
+    return value && *value ? g_strdup (value) : NULL;
+}
+
+static void
+read_follow_up_tags (CamelMessageInfo *message_info,
+                     EvolutionEdsCamelMessage *record)
+{
+    record->follow_up = dup_nonempty_user_tag (
+        message_info, EVOLUTION_FOLLOW_UP_TAG);
+    record->completed_on = dup_nonempty_user_tag (
+        message_info, EVOLUTION_COMPLETED_ON_TAG);
+    record->due_by = dup_nonempty_user_tag (
+        message_info, EVOLUTION_DUE_BY_TAG);
+
+    if (!record->follow_up) {
+        record->follow_up_status = EVOLUTION_FOLLOW_UP_NONE;
+    } else if (record->completed_on) {
+        record->follow_up_status = EVOLUTION_FOLLOW_UP_COMPLETED;
+    } else {
+        record->follow_up_status = EVOLUTION_FOLLOW_UP_ACTIVE;
+    }
+}
+
 static gboolean
 append_message (LoadContext *context,
                 const gchar *source_uid,
@@ -654,12 +715,17 @@ append_message (LoadContext *context,
     record->raw_message_len = data_size;
     record->is_unread = 1;
     record->is_flagged = 0;
+    record->follow_up_status = EVOLUTION_FOLLOW_UP_NONE;
+    record->follow_up = NULL;
+    record->completed_on = NULL;
+    record->due_by = NULL;
 
     if (message_info) {
         guint32 flags = camel_message_info_get_flags (message_info);
 
         record->is_unread = (flags & CAMEL_MESSAGE_SEEN) == 0;
         record->is_flagged = (flags & CAMEL_MESSAGE_FLAGGED) != 0;
+        read_follow_up_tags (message_info, record);
     }
 
     context->messages_loaded++;
@@ -1424,6 +1490,9 @@ evolution_eds_camel_free_messages (EvolutionEdsCamelMessage *messages,
         g_free (messages[ii].folder_id);
         g_free (messages[ii].message_uid);
         g_free (messages[ii].raw_message);
+        g_free (messages[ii].follow_up);
+        g_free (messages[ii].completed_on);
+        g_free (messages[ii].due_by);
     }
 
     g_free (messages);
@@ -2209,6 +2278,178 @@ verify_message_flags (CamelFolder *folder,
 }
 
 static gboolean
+verify_message_follow_up (CamelFolder *folder,
+                          const gchar *message_uid,
+                          gint expected_status,
+                          const gchar *expected_follow_up,
+                          const gchar *expected_completed_on,
+                          const gchar *expected_due_by,
+                          GError **error)
+{
+    CamelMessageInfo *message_info;
+    const gchar *follow_up;
+    const gchar *completed_on;
+    const gchar *due_by;
+    gint actual_status;
+
+    message_info = camel_folder_get_message_info (folder, message_uid);
+    if (!message_info) {
+        set_conflict_error (
+            error, "Die Nachricht wurde während der Follow-up-Änderung entfernt");
+        return FALSE;
+    }
+
+    follow_up = camel_message_info_get_user_tag (
+        message_info, EVOLUTION_FOLLOW_UP_TAG);
+    completed_on = camel_message_info_get_user_tag (
+        message_info, EVOLUTION_COMPLETED_ON_TAG);
+    due_by = camel_message_info_get_user_tag (
+        message_info, EVOLUTION_DUE_BY_TAG);
+    actual_status = follow_up && *follow_up
+        ? (completed_on && *completed_on
+            ? EVOLUTION_FOLLOW_UP_COMPLETED
+            : EVOLUTION_FOLLOW_UP_ACTIVE)
+        : EVOLUTION_FOLLOW_UP_NONE;
+
+    if (actual_status != expected_status ||
+        g_strcmp0 (follow_up && *follow_up ? follow_up : NULL,
+                   expected_follow_up) != 0 ||
+        g_strcmp0 (completed_on && *completed_on ? completed_on : NULL,
+                   expected_completed_on) != 0 ||
+        g_strcmp0 (due_by && *due_by ? due_by : NULL,
+                   expected_due_by) != 0) {
+        set_conflict_error (
+            error, "Der Serverzustand der Follow-up-Tags hat sich gleichzeitig geändert");
+        g_object_unref (message_info);
+        return FALSE;
+    }
+
+    g_object_unref (message_info);
+    return TRUE;
+}
+
+static gboolean
+synchronize_message_follow_up (CamelFolder *folder,
+                               const gchar *message_uid,
+                               gint follow_up_status,
+                               const gchar *follow_up_override,
+                               const gchar *due_by_override,
+                               GCancellable *cancellable,
+                               EvolutionEdsCamelCancellationCallback cancellation_callback,
+                               void *cancellation_user_data,
+                               GError **error)
+{
+    CamelMessageInfo *message_info = NULL;
+    const gchar *existing_follow_up;
+    const gchar *existing_due_by;
+    gchar *follow_up_value = NULL;
+    gchar *due_by_value = NULL;
+    gchar *completed_on_value = NULL;
+    gboolean success = FALSE;
+
+    if (cancellation_requested (
+            cancellation_callback, cancellation_user_data))
+        return set_cancelled_error (error);
+
+    message_info = camel_folder_get_message_info (folder, message_uid);
+    if (!message_info) {
+        set_conflict_error (
+            error, "Die Nachricht existiert im Quellordner nicht mehr");
+        return FALSE;
+    }
+
+    existing_follow_up = camel_message_info_get_user_tag (
+        message_info, EVOLUTION_FOLLOW_UP_TAG);
+    existing_due_by = camel_message_info_get_user_tag (
+        message_info, EVOLUTION_DUE_BY_TAG);
+
+    switch (follow_up_status) {
+    case EVOLUTION_FOLLOW_UP_NONE:
+        break;
+    case EVOLUTION_FOLLOW_UP_ACTIVE:
+        follow_up_value = g_strdup (follow_up_override && *follow_up_override
+            ? follow_up_override
+            : (existing_follow_up && *existing_follow_up
+                ? existing_follow_up
+                : EVOLUTION_FOLLOW_UP_DEFAULT));
+        due_by_value = g_strdup (due_by_override
+            ? (*due_by_override ? due_by_override : NULL)
+            : (existing_due_by && *existing_due_by ? existing_due_by : NULL));
+        break;
+    case EVOLUTION_FOLLOW_UP_COMPLETED:
+        follow_up_value = g_strdup (follow_up_override && *follow_up_override
+            ? follow_up_override
+            : (existing_follow_up && *existing_follow_up
+                ? existing_follow_up
+                : EVOLUTION_FOLLOW_UP_DEFAULT));
+        completed_on_value = camel_header_format_date (time (NULL), 0);
+        due_by_value = g_strdup (due_by_override
+            ? (*due_by_override ? due_by_override : NULL)
+            : (existing_due_by && *existing_due_by ? existing_due_by : NULL));
+        break;
+    default:
+        g_set_error_literal (
+            error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
+            "Unbekannter Evolution-Follow-up-Status");
+        g_object_unref (message_info);
+        return FALSE;
+    }
+
+    if (cancellation_requested (
+            cancellation_callback, cancellation_user_data)) {
+        g_object_unref (message_info);
+        g_free (follow_up_value);
+        g_free (due_by_value);
+        g_free (completed_on_value);
+        return set_cancelled_error (error);
+    }
+
+    camel_message_info_freeze_notifications (message_info);
+    if (follow_up_status == EVOLUTION_FOLLOW_UP_NONE) {
+        camel_message_info_set_user_tag (
+            message_info, EVOLUTION_FOLLOW_UP_TAG, NULL);
+        camel_message_info_set_user_tag (
+            message_info, EVOLUTION_DUE_BY_TAG, NULL);
+        camel_message_info_set_user_tag (
+            message_info, EVOLUTION_COMPLETED_ON_TAG, NULL);
+    } else {
+        camel_message_info_set_user_tag (
+            message_info, EVOLUTION_FOLLOW_UP_TAG, follow_up_value);
+        camel_message_info_set_user_tag (
+            message_info, EVOLUTION_DUE_BY_TAG, due_by_value);
+        camel_message_info_set_user_tag (
+            message_info, EVOLUTION_COMPLETED_ON_TAG, completed_on_value);
+    }
+    camel_message_info_thaw_notifications (message_info);
+    g_object_unref (message_info);
+
+    if (cancellation_requested (
+            cancellation_callback, cancellation_user_data)) {
+        set_cancelled_error (error);
+        goto finish;
+    }
+
+    success = camel_folder_synchronize_message_sync (
+        folder, message_uid, cancellable, error);
+    if (success)
+        success = verify_message_follow_up (
+            folder, message_uid, follow_up_status,
+            follow_up_status == EVOLUTION_FOLLOW_UP_NONE
+                ? NULL : follow_up_value,
+            follow_up_status == EVOLUTION_FOLLOW_UP_COMPLETED
+                ? completed_on_value : NULL,
+            follow_up_status == EVOLUTION_FOLLOW_UP_NONE
+                ? NULL : due_by_value,
+            error);
+
+finish:
+    g_free (follow_up_value);
+    g_free (due_by_value);
+    g_free (completed_on_value);
+    return success;
+}
+
+static gboolean
 verify_message_moved (CamelFolder *source,
                       const gchar *message_uid,
                       GError **error)
@@ -2225,7 +2466,9 @@ verify_message_moved (CamelFolder *source,
 int
 evolution_eds_camel_apply_operation (
     const EvolutionEdsCamelOperation *operation,
-    char **out_error)
+    char **out_error,
+    EvolutionEdsCamelCancellationCallback cancellation_callback,
+    void *cancellation_user_data)
 {
     ESourceRegistry *registry = NULL;
     EdsCamelSession *session = NULL;
@@ -2237,6 +2480,7 @@ evolution_eds_camel_apply_operation (
     CamelFolder *trash = NULL;
     CamelFolderInfo *folder_info = NULL;
     GCancellable *cancellable = NULL;
+    CancellationMonitor *cancellation_monitor = NULL;
     GError *error = NULL;
     const gchar *destination_name = NULL;
     const gchar *message_uid;
@@ -2254,6 +2498,12 @@ evolution_eds_camel_apply_operation (
         if (out_error)
             *out_error = g_strdup (
                 "EDS/Camel operation is missing a source, folder or message UID");
+        return 0;
+    }
+
+    if (cancellation_requested (cancellation_callback, cancellation_user_data)) {
+        if (out_error)
+            *out_error = g_strdup ("EDS/Camel-Änderung wurde abgebrochen");
         return 0;
     }
 
@@ -2281,6 +2531,8 @@ evolution_eds_camel_apply_operation (
 
     session = eds_camel_session_new (registry);
     cancellable = g_cancellable_new ();
+    cancellation_monitor = cancellation_monitor_start (
+        cancellable, cancellation_callback, cancellation_user_data);
     store = open_store_for_source (session, source, cancellable, &error);
     if (!store)
         goto finish;
@@ -2352,6 +2604,12 @@ evolution_eds_camel_apply_operation (
                 CAMEL_MESSAGE_FLAGGED,
                 operation->is_important ? CAMEL_MESSAGE_FLAGGED : 0,
                 &error);
+        break;
+    case EVOLUTION_EDS_CAMEL_SET_FOLLOW_UP:
+        success = synchronize_message_follow_up (
+            folder, message_uid, operation->follow_up_status,
+            NULL, operation->due_by, cancellable,
+            cancellation_callback, cancellation_user_data, &error);
         break;
     case EVOLUTION_EDS_CAMEL_MOVE_MESSAGE:
     case EVOLUTION_EDS_CAMEL_ARCHIVE_MESSAGE:
@@ -2523,6 +2781,9 @@ evolution_eds_camel_apply_operation (
     }
 
 finish:
+    if (!success && cancellation_requested (
+            cancellation_callback, cancellation_user_data) && !error)
+        set_cancelled_error (&error);
     conflict = conflict || (error && error->message &&
         g_str_has_prefix (error->message, "conflict:"));
     if (!success && out_error && error)
@@ -2535,6 +2796,7 @@ finish:
     g_clear_object (&destination);
     g_clear_object (&folder);
     g_clear_object (&store);
+    cancellation_monitor_free (cancellation_monitor);
     g_clear_object (&cancellable);
     g_clear_object (&session);
     g_clear_object (&source);

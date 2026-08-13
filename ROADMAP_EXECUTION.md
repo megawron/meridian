@@ -111,8 +111,8 @@ und erweitert dessen Schreibbereich nur nach dokumentierter Kollisionsprüfung.
 | 10 | `P0-MAIL-001C` | `P0-MAIL-001` | `src/views/mail_viewer.rs` | `P0-MAIL-001A`, `P0-MAIL-001B` | DONE | Viewer-Fallback und nachrichtenbezogene Remote-Freigabe integriert |
 | 11 | `P0-MAIL-001D` | `P0-MAIL-001` | `src/views/mail_viewer.rs`, `src/views/mail_page.rs`, `src/models/mail_message.rs`, `src/services/inline_content_service.rs` | `P0-MAIL-001A`, `P0-MAIL-001B` | BLOCKED_LINUX | Latest-Wins-Worker, CID/Anlagen ohne GTK-Kopie, Cache-/Stale-Gates grün; WebKitGTK-Churn-Abnahme offen |
 | 12 | `P0-MAIL-002A` | `P0-MAIL-002` | `src/views/mail_page.rs`, `src/style.css` | `P0-STAB-001B` | IN PROGRESS | kompakter Evolution-Ordnerbaum ohne Kontoicon, lesbare Tabellenschrift, Icon-Fallbacks und dezente Unread-Zähler |
-| 12a | `P0-MAIL-002A-SOURCE` | `P0-MAIL-002A` | `src/views/mail_page.rs`, `src/window.rs`, `src/application.rs`, `src/services/{camel_mail_service,exchange_service}.rs` | `P0-MAIL-002A` | IN PROGRESS | `Ctrl+U`/Menüs und exakter Worker-Abruf vorhanden; sofortiges wiederverwendbares Lade-/Fehlerfenster und stale Abbruch fehlen |
-| 12b | `P0-MAIL-002A-HEADERS` | `P0-MAIL-002A` | `src/views/mail_page.rs`, `src/models/mail_message.rs`, `src/services/{camel_mail_service,mail_store_service,settings_service}.rs`, `data/org.gnome.Evolution4.gschema.xml` | `P0-MAIL-002A-SOURCE` | IN PROGRESS | vollständige Felder formatiert, geordnet und lazy exakt; konfigurierbarer normaler `show-headers`-Satz und Linux-Abnahme fehlen |
+| 12a | `P0-MAIL-002A-SOURCE` | `P0-MAIL-002A` | `src/views/mail_page.rs`, `src/window.rs`, `src/application.rs`, `src/services/{camel_mail_service,exchange_service}.rs` | `P0-MAIL-002A` | BLOCKED_LINUX | `Ctrl+U`/Menüs, exakter Worker-Abruf, sofortiges wiederverwendbares Lade-/Fehlerfenster sowie Abbruch- und Request-Identitätsgates portabel grün; Byte-/Fenster-Laufzeitabnahme offen |
+| 12b | `P0-MAIL-002A-HEADERS` | `P0-MAIL-002A` | `src/views/mail_page.rs`, `src/dialogs/preferences_dialog.rs`, `src/services/{camel_mail_service,exchange_service,mail_store_service,settings_service,backup_service,migration_service,vcard_service}.rs`, `data/org.gnome.Evolution4.gschema.xml` | `P0-MAIL-002A-SOURCE` | BLOCKED_LINUX | vollständige und normale Kopfzeilenansicht, Evolution-`show-headers`-Editor, `Face`-Bild, Graph-Headerübernahme, Persistenz/Migration/Backup und portable Gates grün; Provider-/Dichte-Abnahme offen |
 | 13 | `P0-MAIL-002B` | `P0-MAIL-002` | `src/views/mail_page.rs`, `src/services/settings_service.rs`, `src/dialogs/preferences_dialog.rs`, `data/org.gnome.Evolution4.gschema.xml` | `P0-MAIL-002A` | BLOCKED_LINUX | Defaults/Roundtrip/Reset und Live-Bindings portabel grün; sichtbare Linux-Abnahme offen |
 | 14 | `P0-SYNC-001A` | `P0-SYNC-001` | `src/views/mail_page.rs`, `src/services/camel_mail_service.rs`, `src/services/exchange_service.rs`, `src/models/mail_message.rs` | `P0-STAB-001B` | BLOCKED_LINUX | Portable Paging-, Watcher-, Auswahl-, Sortier- und echter Graph-Abbruchvertrag grün; Camel-Abnahme offen |
 | 15 | `P0-COMP-001B` | `P0-COMP-001` | `src/dialogs/compose_dialog.rs`, `src/services/draft_store_service.rs` | `P0-COMP-001A` | DONE | Autosave, Recovery, pro-Draft-Sendelock und revisionssicheres Cleanup integriert |
@@ -256,8 +256,19 @@ und erweitert dessen Schreibbereich nur nach dokumentierter Kollisionsprüfung.
   - Moderne Ansicht bleibt eine optionale Einstellung und verwendet dieselben
     Daten-, Auswahl- und Aktionspfade.
   - Im Tabellenlauf stehen Anhangs-, Markierungs- und Wichtigkeitsindikatoren
-    links vor Absender/Betreff; permanente Auswahlkästchen entfallen, und ein
-    Expander erscheint nur bei einem echten Mehrfach-Thread.
+    links vor Absender/Betreff; permanente Auswahlkästchen entfallen. Kopf und
+    Zeile verwenden dieselben festen Zellbreiten, der aktive Sortierpfeil sitzt
+    im anklickbaren Spaltenkopf, die erste sichtbare Zeile beginnt grau und
+    echte Mehrfach-Threads verwenden eine ausgerichtete Zählzelle statt eines
+    zusätzlichen Dropdown-Pfeils.
+  - Die klassische Werkzeugleiste beginnt über der linken Ordnerleiste und
+    spannt den gesamten Mailbereich. Der Reader behält nur seine kompakten
+    Antwortaktionen oberhalb des Betreffs; Routinezustände stehen unten und
+    folgen einer persistenten Live-Einstellung.
+  - Die Nachverfolgung bleibt vom normalen Stern getrennt und wechselt
+    backendbestätigt `None -> FollowUp -> Completed -> None`; der zweite Klick
+    zeigt einen grünen Erledigt-Haken. Graph, Camel und lokale Importe bilden
+    dieselben drei Zustände providerneutral ab.
   - Konto-Wurzeln bleiben ohne dekoratives Icon, die Ordnerindentation bleibt
     flach, und Badges zeigen ausschließlich nicht-null ungelesene Nachrichten.
     Nach bestätigtem Lesen/Ungelesen- oder Ordner-Refresh wird der Wert reaktiv
@@ -266,8 +277,11 @@ und erweitert dessen Schreibbereich nur nach dokumentierter Kollisionsprüfung.
   - `Ctrl+U`, Ansicht- und Kontextmenü öffnen die Nachrichtenquelle unabhängig
     vom Vorschaufenster. Camel und Graph laden die originale RFC822-Quelle in
     einem Worker; ein nicht exakt auflösbarer portabler Datensatz wird sichtbar
-    als Rekonstruktion gekennzeichnet. Die persistente Vollkopfzeilenansicht
-    behält nur den ursprünglichen Headerblock statt jeden großen MIME-Body.
+    als Rekonstruktion gekennzeichnet. Pro Nachricht erscheint sofort genau ein
+    wiederverwendbares Fenster mit Lade-, Quell- und Fehlerzustand; Schließen
+    bricht den Abruf ab, und dessen Identität sperrt verspätete Ergebnisse auch
+    nach erneutem Öffnen. Die persistente Vollkopfzeilenansicht behält nur den
+    ursprünglichen Headerblock statt jeden großen MIME-Body.
   - Der Routine-Sicherheitsstatus ist standardmäßig unsichtbar. Der UI-Pfad
     startet die Crypto-Prüfung nur nach einem begrenzten Hinweis auf eine
     OpenPGP-/S/MIME-Hülle; gültige, warnende und fehlgeschlagene Prüfungen
@@ -282,14 +296,14 @@ und erweitert dessen Schreibbereich nur nach dokumentierter Kollisionsprüfung.
   - Bei typischer Desktop-Höhe sind in kompakter Dichte ungefähr 40
     einzeilige Nachrichten sichtbar.
   - Helper-/Layout-Tests belegen Zeilenstatus, Thread-Expander, flache
-    Ordnerindentation, Crypto-Preflight, Routinezeilen-Sichtbarkeit und
-    Unread-only-Badges.
+    Ordnerindentation, feste Zellreihenfolge, erste Zebra-Zeile,
+    Crypto-Preflight, Routinezeilen-Sichtbarkeit und Unread-only-Badges.
   - `git diff --check`, `cargo fmt --all -- --check`,
     `cargo check --workspace --locked` und
     `cargo test --workspace --locked --no-fail-fast --quiet` bestehen.
   - Linux-Referenzvergleich für Icons, Dichte und bestätigte Counter besteht;
     siehe `LINUX-P0-MAIL-003`.
-- Evidenz: Die portablen Gates einschließlich 432 Workspace-Tests bestehen.
+- Evidenz: Die portablen Gates einschließlich 450 Workspace-Tests bestehen.
   Der zeilengebundene Sekundärklick selektiert vor
   dem Öffnen des Kontextmenüs exakt seine Nachricht; Label-, Spam- und
   Nicht-Spam-Aktionen sind dort und im Nachricht-Hauptmenü erreichbar.
@@ -306,7 +320,16 @@ und erweitert dessen Schreibbereich nur nach dokumentierter Kollisionsprüfung.
   weder Mailbody noch Anhänge auf dem GTK-Pfad aufbaut. Strukturierte
   Providerzeilen laden ihren exakten Headerblock nur bei eingeblendeter Ansicht;
   Auswahlwechsel, Ausblenden und Dispose brechen alte Abrufe ab, und stale
-  Ergebnisse können weder Auswahl noch Kopfzeilen überschreiben.
+  Ergebnisse können weder Auswahl noch Kopfzeilen überschreiben. Das separate
+  Quellfenster wird unmittelbar im Ladezustand präsentiert und pro Nachricht
+  wiederverwendet; Fensterabbruch und Request-Identität verhindern, dass ein
+  alter Abruf ein neu geöffnetes Fenster derselben Nachricht überschreibt.
+  Der normale Reader verwendet Evolutions geordnete `show-headers`-Defaultliste
+  und reagiert live auf Aktivieren, Deaktivieren, Hinzufügen, Entfernen,
+  Verschieben und Zurücksetzen im Einstellungseditor. Werte werden als `a(sb)`
+  gespeichert, validiert, migriert und gesichert. Graph-Datensätze übernehmen
+  `internetMessageHeaders` bereits beim Listenabruf; benutzerdefinierte und
+  wiederholte Felder stehen dadurch ohne zweiten Vollquellenabruf bereit.
   „In angezeigter Nachricht suchen“ ist im Bearbeiten-Menü und über
   `Ctrl+Shift+F` erreichbar. Die kompakte Reader-Suchleiste bietet
   Vorwärts-/Rückwärtsnavigation, Trefferstatus, Wrap-around und Escape;
@@ -331,6 +354,9 @@ und erweitert dessen Schreibbereich nur nach dokumentierter Kollisionsprüfung.
   - `mail-show-security-details` ist standardmäßig `false`; `true` zeigt die
     routinehafte Statuszeile optional, ohne echte Krypto-Warnungen oder
     Prüfungsfehler auszublenden.
+  - `mail-show-statusbar` steuert die unteren Routine-Statusbereiche und den
+    globalen Status live und persistent; deaktiviert bleiben Fehler weiterhin
+    über Toasts/Dialoge erreichbar.
   - Änderungen an Schrift, Sicherheitsdetails, Spalten, Dichte und Layout
     aktualisieren die bereits geöffnete Mailansicht und überleben einen
     Neustart/Backup-Roundtrip.
@@ -345,7 +371,8 @@ und erweitert dessen Schreibbereich nur nach dokumentierter Kollisionsprüfung.
 - Statusregel: Ein erfolgreicher GSettings-Roundtrip ohne sichtbare Live-
   Wirkung und Linux-Referenzvergleich ist kein `DONE`-Beleg.
 - Evidenz: Schema-Prüfung, Default-/Roundtrip-/Reset-Tests, sofortige
-  Sicherheitszeilen-Bindung, Workspace-Check und 396/396 Tests sind grün;
+  Sicherheitszeilen-Bindung, Headereditor, Backup-/Migrationspfad,
+  Workspace-Check und 450/450 Tests sind grün;
   die sichtbare Linux-Abnahme in `LINUX-P0-MAIL-003` bleibt offen.
 
 ### P0-SYNC-001 — Mail-Laden, Paging und Aktualisierung stabilisieren
@@ -490,13 +517,17 @@ und erweitert dessen Schreibbereich nur nach dokumentierter Kollisionsprüfung.
 
 ### P1-SEARCH-001 — Suche, Suchordner und Filter
 
-- Status: `READY`
+- Status: `BLOCKED_LINUX`
 - Ziel: lokale und native Suche liefern ehrlich gekennzeichnete Ergebnisse;
   Suchordner und Filterregeln sind persistent, geordnet, testbar und melden
   nicht unterstützte Provideroperationen ohne Datenverlust.
 - Abnahme: Operator-, Persistenz-, Ausführungs-, Fehler- und Live-Update-Tests;
   native CamelVee-/CamelFilterDriver-Abnahme auf Linux.
-- Evidenz: portable Teilimplementierung vorhanden.
+- Evidenz: Manuelle Filterausführung (`Ctrl+Y` / `Message -> Apply Filters`)
+  sowie Mehrfachregel-Filterlauf (`run_all_active_filters`) und vFolder-
+  Verwaltung in der Ordnerleiste portabel integriert. 449/449 Workspace-Tests
+  und `cargo fmt` bestanden; native CamelVee/FilterDriver-Laufzeitabnahme auf
+  Linux bleibt `LINUX-P1-SEARCH-001`.
 
 ## 7. P2/P3 — Vollparität nach stabilen Kernabläufen
 

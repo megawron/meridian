@@ -10,6 +10,9 @@
 
 use gtk::gio;
 use gtk::gio::prelude::*;
+use gtk::glib;
+use gtk::glib::prelude::{StaticVariantType, ToVariant};
+use std::collections::HashSet;
 
 #[derive(Clone, Debug)]
 pub struct AppSettings {
@@ -21,6 +24,96 @@ fn normalized_mail_sort_field(value: &str) -> &str {
         "subject" | "sender" | "date" | "unread" | "flagged" | "important" | "attachments" => value,
         _ => "date",
     }
+}
+
+const DEFAULT_MAIL_NORMAL_HEADERS: [(&str, bool); 10] = [
+    ("From", true),
+    ("Reply-To", true),
+    ("To", true),
+    ("Cc", true),
+    ("Bcc", true),
+    ("Subject", true),
+    ("Date", true),
+    ("Newsgroups", true),
+    ("Face", true),
+    ("x-evolution-mailer", false),
+];
+
+const MAX_MAIL_NORMAL_HEADERS: usize = 64;
+const MAX_MAIL_NORMAL_HEADER_NAME_BYTES: usize = 128;
+
+fn default_mail_normal_headers() -> Vec<(String, bool)> {
+    DEFAULT_MAIL_NORMAL_HEADERS
+        .iter()
+        .map(|(name, visible)| ((*name).to_string(), *visible))
+        .collect()
+}
+
+/// Validate a field name before it enters the persistent normal-header list.
+///
+/// RFC 5322 field names are printable text without whitespace, controls, or a
+/// colon.  Keeping the portable setting to ASCII also makes validation
+/// deterministic across locales and prevents a name from being interpreted as
+/// a second header line by a downstream formatter.
+pub(crate) fn validate_mail_normal_header_name(value: &str) -> Result<String, String> {
+    let name = value.trim();
+    if name.is_empty() {
+        return Err("Der Headername darf nicht leer sein.".to_string());
+    }
+    if name.len() > MAX_MAIL_NORMAL_HEADER_NAME_BYTES {
+        return Err(format!(
+            "Der Headername darf höchstens {MAX_MAIL_NORMAL_HEADER_NAME_BYTES} Zeichen lang sein."
+        ));
+    }
+    if !name.is_ascii()
+        || name
+            .chars()
+            .any(|character| !character.is_ascii_graphic() || character == ':')
+    {
+        return Err(
+            "Der Headername darf nur sichtbare ASCII-Zeichen enthalten und keinen Doppelpunkt."
+                .to_string(),
+        );
+    }
+    Ok(name.to_string())
+}
+
+fn normalize_mail_normal_headers(headers: &[(String, bool)]) -> Vec<(String, bool)> {
+    let mut seen = HashSet::new();
+    let mut normalized = Vec::with_capacity(headers.len().min(MAX_MAIL_NORMAL_HEADERS));
+
+    for (name, visible) in headers {
+        let Ok(name) = validate_mail_normal_header_name(name) else {
+            continue;
+        };
+        let identity = name.to_ascii_lowercase();
+        if !seen.insert(identity) {
+            continue;
+        }
+        normalized.push((name, *visible));
+        if normalized.len() == MAX_MAIL_NORMAL_HEADERS {
+            break;
+        }
+    }
+
+    normalized
+}
+
+fn mail_normal_headers_variant_type() -> std::borrow::Cow<'static, glib::VariantTy> {
+    <Vec<(String, bool)> as StaticVariantType>::static_variant_type()
+}
+
+fn parse_mail_normal_headers_value(value: &str) -> Result<Vec<(String, bool)>, String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err("Die Headerliste ist leer.".to_string());
+    }
+
+    let variant = glib::Variant::parse(Some(mail_normal_headers_variant_type().as_ref()), value)
+        .map_err(|error| format!("ungültige show-headers-Liste: {error}"))?;
+    variant
+        .get::<Vec<(String, bool)>>()
+        .ok_or_else(|| "ungültiger Typ für die show-headers-Liste".to_string())
 }
 
 const MIN_MAIL_SYNC_MESSAGE_LIMIT: i32 = 25;
@@ -97,6 +190,16 @@ impl AppSettings {
     pub fn set_active_view(&self, value: &str) {
         if let Err(error) = self.settings.set_string("active-view", value) {
             tracing::warn!(%error, "Could not persist active view");
+        }
+    }
+
+    pub fn switcher_location(&self) -> String {
+        self.settings.string("switcher-location").to_string()
+    }
+
+    pub fn set_switcher_location(&self, value: &str) {
+        if let Err(error) = self.settings.set_string("switcher-location", value) {
+            tracing::warn!(%error, "Could not persist switcher location");
         }
     }
 
@@ -427,6 +530,45 @@ impl AppSettings {
 
     pub fn set_mail_show_all_headers(&self, value: bool) {
         self.set_boolean("mail-show-all-headers", value);
+    }
+
+    /// Return the ordered normal message-header list used by the reader.
+    ///
+    /// The GSettings value is normalized at the service boundary so malformed
+    /// or legacy values cannot escape into the formatter.  The first entry
+    /// wins when names differ only by case, preserving the user's order and
+    /// visibility choice.  An explicitly stored empty list is the Evolution
+    /// reset sentinel and resolves to the schema's default list here.
+    pub fn mail_normal_headers(&self) -> Vec<(String, bool)> {
+        let value = self.settings.value("mail-normal-headers");
+        let headers = value.get::<Vec<(String, bool)>>().unwrap_or_default();
+        let headers = normalize_mail_normal_headers(&headers);
+        if headers.is_empty() {
+            default_mail_normal_headers()
+        } else {
+            headers
+        }
+    }
+
+    /// Persist an Evolution-compatible ordered normal-header list.  An empty
+    /// input is intentionally stored as an empty `a(sb)` value; the getter
+    /// resolves it to the exact Evolution defaults when the setting is read.
+    pub fn set_mail_normal_headers(&self, headers: &[(String, bool)]) {
+        let normalized = normalize_mail_normal_headers(headers);
+        if let Err(error) = self
+            .settings
+            .set_value("mail-normal-headers", &normalized.to_variant())
+        {
+            tracing::warn!(%error, "Could not persist normal mail headers");
+        }
+    }
+
+    pub fn mail_show_statusbar(&self) -> bool {
+        self.settings.boolean("mail-show-statusbar")
+    }
+
+    pub fn set_mail_show_statusbar(&self, value: bool) {
+        self.set_boolean("mail-show-statusbar", value);
     }
 
     /// Select the folder shown when the mail view is opened.
@@ -1014,6 +1156,13 @@ impl AppSettings {
             "mail-show-all-headers" => {
                 self.set_mail_show_all_headers(parse_migrated_bool(key, value)?);
             }
+            "mail-normal-headers" | "show-headers" => {
+                let headers = parse_mail_normal_headers_value(value)?;
+                self.set_mail_normal_headers(&headers);
+            }
+            "mail-show-statusbar" => {
+                self.set_mail_show_statusbar(parse_migrated_bool(key, value)?);
+            }
             "mail-default-folder" => self.set_mail_default_folder(value),
             "mail-layout" => self.set_mail_layout(value),
             "mail-show-toolbar" => self.set_mail_show_toolbar(parse_migrated_bool(key, value)?),
@@ -1130,6 +1279,8 @@ impl AppSettings {
             "show-message-preview",
             "mail-show-security-details",
             "mail-show-all-headers",
+            "mail-normal-headers",
+            "mail-show-statusbar",
             "mail-default-folder",
             "mail-layout",
             "mail-show-toolbar",
@@ -1278,10 +1429,13 @@ fn sanitize_calendar_workdays(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        AppSettings, clamp_mail_sync_message_limit, normalized_mail_sort_field,
+        AppSettings, DEFAULT_MAIL_NORMAL_HEADERS, MAX_MAIL_NORMAL_HEADERS,
+        clamp_mail_sync_message_limit, default_mail_normal_headers, normalized_mail_sort_field,
         sanitize_calendar_workdays, sanitize_spellcheck_languages,
+        validate_mail_normal_header_name,
     };
     use gtk::gio;
+    use gtk::gio::prelude::*;
 
     fn settings_schema() -> gio::SettingsSchema {
         let installed_source = gio::SettingsSchemaSource::default();
@@ -1342,12 +1496,109 @@ mod tests {
     }
 
     #[test]
+    fn normal_mail_header_defaults_match_evolution_order_and_visibility() {
+        assert_eq!(
+            default_mail_normal_headers(),
+            DEFAULT_MAIL_NORMAL_HEADERS
+                .iter()
+                .map(|(name, visible)| ((*name).to_string(), *visible))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn normal_mail_header_names_reject_injection_and_normalize_spacing() {
+        assert_eq!(
+            validate_mail_normal_header_name("  X-Trace  ").unwrap(),
+            "X-Trace"
+        );
+        assert!(validate_mail_normal_header_name("").is_err());
+        assert!(validate_mail_normal_header_name("X-Bad: value").is_err());
+        assert!(validate_mail_normal_header_name("X-Bad\r\nInjected").is_err());
+        assert!(validate_mail_normal_header_name("ä-header").is_err());
+    }
+
+    #[test]
+    fn normal_mail_headers_are_deduplicated_bounded_and_ordered() {
+        let mut input = vec![
+            ("  X-First  ".to_string(), false),
+            ("x-first".to_string(), true),
+            ("X:Invalid".to_string(), true),
+            ("X-Second".to_string(), true),
+            ("".to_string(), true),
+        ];
+        input.extend(
+            (0..(MAX_MAIL_NORMAL_HEADERS + 4))
+                .map(|index| (format!("X-Extra-{index}"), index % 2 == 0)),
+        );
+
+        let backend = gio::memory_settings_backend_new();
+        let settings = settings_with_backend(&backend);
+        settings.set_mail_normal_headers(&input);
+        let headers = settings.mail_normal_headers();
+
+        assert_eq!(headers[0], ("X-First".to_string(), false));
+        assert_eq!(headers[1], ("X-Second".to_string(), true));
+        assert_eq!(headers.len(), MAX_MAIL_NORMAL_HEADERS);
+        assert_eq!(
+            headers
+                .iter()
+                .filter(|(name, _)| name.eq_ignore_ascii_case("x-first"))
+                .count(),
+            1
+        );
+
+        settings.set_mail_normal_headers(&[]);
+        assert!(
+            settings
+                .settings
+                .value("mail-normal-headers")
+                .get::<Vec<(String, bool)>>()
+                .is_some_and(|headers| headers.is_empty())
+        );
+        assert_eq!(
+            settings.mail_normal_headers(),
+            default_mail_normal_headers()
+        );
+    }
+
+    #[test]
+    fn normal_mail_headers_round_trip_and_migration_use_a_sb_storage() {
+        let backend = gio::memory_settings_backend_new();
+        let settings = settings_with_backend(&backend);
+        let custom = vec![
+            ("Subject".to_string(), false),
+            ("X-Project".to_string(), true),
+        ];
+        settings.set_mail_normal_headers(&custom);
+
+        let reloaded = settings_with_backend(&backend);
+        assert_eq!(reloaded.mail_normal_headers(), custom);
+
+        reloaded
+            .apply_migrated_setting(
+                "mail-normal-headers",
+                "[('From', true), ('x-test', false), ('X-TEST', true)]",
+            )
+            .expect("GVariant show-headers value should migrate");
+        assert_eq!(
+            reloaded.mail_normal_headers(),
+            vec![("From".to_string(), true), ("x-test".to_string(), false)]
+        );
+
+        reloaded.reset_to_defaults();
+        let reset = settings_with_backend(&backend);
+        assert_eq!(reset.mail_normal_headers(), default_mail_normal_headers());
+    }
+
+    #[test]
     fn mail_security_details_and_font_size_defaults_match_the_mail_baseline() {
         let backend = gio::memory_settings_backend_new();
         let settings = settings_with_backend(&backend);
 
         assert!(!settings.mail_show_security_details());
         assert!(!settings.mail_show_all_headers());
+        assert!(settings.mail_show_statusbar());
         assert_eq!(settings.mail_font_size(), 16);
     }
 
@@ -1357,25 +1608,30 @@ mod tests {
         let settings = settings_with_backend(&backend);
         settings.set_mail_show_security_details(true);
         settings.set_mail_show_all_headers(true);
+        settings.set_mail_show_statusbar(false);
         settings.set_mail_font_size(23);
 
         let reloaded = settings_with_backend(&backend);
         assert!(reloaded.mail_show_security_details());
         assert!(reloaded.mail_show_all_headers());
+        assert!(!reloaded.mail_show_statusbar());
         assert_eq!(reloaded.mail_font_size(), 23);
 
         reloaded.set_mail_show_security_details(false);
         reloaded.set_mail_show_all_headers(false);
+        reloaded.set_mail_show_statusbar(true);
         reloaded.set_mail_font_size(11);
         let updated = settings_with_backend(&backend);
         assert!(!updated.mail_show_security_details());
         assert!(!updated.mail_show_all_headers());
+        assert!(updated.mail_show_statusbar());
         assert_eq!(updated.mail_font_size(), 11);
 
         updated.reset_to_defaults();
         let reset = settings_with_backend(&backend);
         assert!(!reset.mail_show_security_details());
         assert!(!reset.mail_show_all_headers());
+        assert!(reset.mail_show_statusbar());
         assert_eq!(reset.mail_font_size(), 16);
     }
 }

@@ -29,10 +29,18 @@ accessibility helpers, and view-local GTK state.
   to match the application theme.
 - Keep Evolution's message-source workflow on `Ctrl+U` and available from the
   View and row-context menus even when preview is hidden. Fetch original RFC822
-  bytes outside GTK; visibly label any reconstruction. The persistent all-header
+  bytes outside GTK; visibly label any reconstruction. Present one reusable
+  nonmodal source window per message immediately with explicit loading, source
+  and error states. Closing it cancels the request, and request identity must
+  reject results from a closed or replaced window. The persistent all-header
   mode extends the normal reader with bounded formatted name/value rows in
   original order; raw monospace content belongs only in the source window. It
   must not build message bodies or encode attachments on selection.
+- The normal reader header uses the persistent Evolution-compatible ordered
+  `show-headers` list. Enabled fields render in configured order, repeated
+  values retain source order, disabled/empty fields disappear, and settings
+  changes update the selected message live. The all-header mode replaces this
+  compact grid instead of duplicating it.
 - Prepare HTML mail bodies and their composed document off the GTK main loop.
   Every result must carry a render generation/request identity; stale results
   are discarded before they can replace the WebKit document or fallback text,
@@ -45,10 +53,23 @@ accessibility helpers, and view-local GTK state.
   default; a persistent opt-in may reveal it, while valid, warning, and error
   states remain visible.
 - Keep the mail table Evolution-compact: attachment and status indicators
-  lead the row, singleton messages have no permanent expander, account roots
-  have no decorative icon, indentation is shallow, and unread badges show
-  only non-zero unread counts. Readable font defaults must not be traded for
-  higher density.
+  lead the row, header and row cells share fixed column widths, and clicking a
+  sortable header exposes the active direction there instead of requiring a
+  second sort control. The first visible row is zebra-shaded. Singleton
+  messages have no permanent expander; real conversations use one aligned
+  count cell rather than shifting every following column. Account roots have
+  no decorative icon, indentation is shallow but visible, and unread badges
+  show only non-zero unread counts. Readable font defaults must not be traded
+  for higher density.
+- Keep the classic mail toolbar above and across the complete mail work area,
+  including the folder tree. Detail-only reply actions belong above the
+  subject; do not duplicate the complete classic toolbar inside the reader.
+  Routine source/load status belongs at the bottom and follows the live,
+  persistent status-bar preference.
+- Treat the ordinary star and Evolution follow-up as separate states. The
+  follow-up indicator cycles `None -> FollowUp -> Completed -> None`; pending
+  uses a marker and completed uses a green check. Refresh the row only after
+  the provider or app-owned local store confirms the mutation.
 - Use services for data access; do not embed EDS/Camel/ECal/EBook lifecycle or
   GTK types in service code.
 - Run every potentially blocking service mutation off the GTK main thread.

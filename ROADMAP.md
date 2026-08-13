@@ -549,8 +549,10 @@ werden.
   einzeln ein-/ausblenden und werden live sowie in Backup/Restore angewendet.
   Eine kompakte Evolution-Kopfzeile benennt die sichtbaren Spalten und bietet
   am Absenderfeld einen ziehbaren Breiten-Griff; die Breite bleibt mit dem
-  Spaltenmenü persistent. Betreff, Absender, Datum und Anhänge sind in der
-  Kopfzeile direkt anklickbare Sortierfelder und zeigen Richtungspfeile.
+  Spaltenmenü persistent. Kopf und Datensätze verwenden dieselben festen
+  Zellbreiten. Betreff, Absender, Datum und Anhänge sind in der Kopfzeile
+  direkt anklickbare Sortierfelder und zeigen Richtungspfeile; die erste
+  sichtbare Datenzeile ist grau, danach alterniert die Hinterlegung.
   Der helle Mail-Reader färbt `html` und `body`
   konsistent, blendet blockierte externe Bild-Platzhalter aus und lässt
   bekannte eingebettete `cid:`-/`data:`-Rasterbilder weiterhin sichtbar.
@@ -576,7 +578,10 @@ werden.
   Auswahlkästchen werden nicht mehr angezeigt. Die
   Konversationsspur im Reader ist als scrollbar begrenzter Kurzbereich mit
   einer sichtbaren Zeile ausgeführt; die Detailkopfzeile lässt dem eigentlichen
-  Nachrichteninhalt entsprechend mehr Raum. Mail-CSS wird über einen
+  Nachrichteninhalt entsprechend mehr Raum. Echte Konversationen verwenden in
+  der Liste eine ausgerichtete Zählzelle statt eines permanenten
+  Dropdown-Pfeils, sodass alle nachfolgenden Symbole spaltentreu bleiben.
+  Mail-CSS wird über einen
   restriktiven, ressourcenfreien
   Sanitizer übernommen; externe Bild-Elemente werden vor der WebKit-
   Darstellung entfernt und erst nach ausdrücklicher Freigabe aus dem
@@ -602,11 +607,19 @@ werden.
   sichtbaren Abweichungen vom historischen GTK3-Verhalten bleiben bis zur
   Linux-Abnahme als `[~]` dokumentiert.
 - [~] Die Evolution-kompatible Mail-Werkzeugleiste ist standardmäßig sichtbar,
-  sitzt über dem gesamten Mailbereich (Nachrichtenliste und Vorschau) und kann
+  sitzt über dem gesamten Mailbereich einschließlich Ordnerleiste,
+  Nachrichtenliste und Vorschau und kann
   portabel ein- und ausgeblendet werden. Ihre vertrauten Aktionen
   verwenden dieselben zentralen
   Menü-, Detail- und Command-/Undo-Pfade; zusätzliche providerabhängige
   Camel-Aktionen bleiben bis zur Linux-Abnahme offen.
+- [~] Die Nachrichten-Nachverfolgung ist als eigener dreistufiger Zustand
+  getrennt vom normalen Stern modelliert: erster Klick setzt den Marker,
+  zweiter Klick schließt mit grünem Haken ab, dritter Klick entfernt ihn.
+  Lokale Importe speichern den Zustand im app-eigenen Sidecar, Graph verwendet
+  `message.flag.flagStatus`, und Camel verwendet Evolutions `follow-up`-/
+  `completed-on`-/`due-by`-User-Tags. Fälligkeitstermin-Dialog sowie reale
+  Camel-/Graph-Roundtrip-Abnahme bleiben offen.
 - [~] Anhang „Speichern unter“ ist für lokal gelesene MIME-Anhänge angebunden;
   ausgewählte Nachrichten können zusätzlich als vollständige EML/RFC822-Datei
   mit Thread-Headern und MIME-Anhängen exportiert werden. Lokale MIME-
@@ -736,7 +749,9 @@ jeweilige negative Fehlerpfad mit direkter Evidenz vorliegen.
   Klartextcache. Offen bleibt das Linux-Umschalten großer HTML-Nachrichten.
 - `[~]` `P0-MAIL-002A` — klassische, kompakte Mail-Liste und Sidebar: Spalten-
   und Statusindikatoren links, einzeilige Nachrichtenzellen ohne permanente
-  Checkboxen, Expander nur bei echten Threads, flache Ordnerindentation,
+  Checkboxen, feste gemeinsame Kopf-/Zeilenbreiten, Sortierpfeile direkt im
+  anklickbaren Kopf, Zebra-Hinterlegung ab der ersten Zeile und eine kompakte
+  Konversations-Zählzelle nur bei echten Threads, flache Ordnerindentation,
   kein Konto-/Root-Icon, dezente textartige Unread-Zähler, lesbare kompakte
   Schrift und geprüfte Laufzeit-Fallbacks für optionale Theme-Icons. Die Routine-
   Sicherheitszeile bleibt standardmäßig verborgen; die eigentliche
@@ -749,9 +764,19 @@ jeweilige negative Fehlerpfad mit direkter Evidenz vorliegen.
   Headerblock nur bei sichtbarer Ansicht in einem abbrechbaren,
   generationensicheren Worker nach. Die Vollansicht erweitert den normalen
   Nachrichtenkopf als geordnete, formatierte Name-/Wert-Zeilen und ist keine
-  zweite Rohquellenansicht. Offen bleiben der konfigurierbare normale
-  `show-headers`-Satz, ein sofort sichtbares/wiederverwendbares Quellfenster
-  mit Lade-/Fehlerzustand sowie die reale Linux-Abnahme.
+  zweite Rohquellenansicht. Das Quellfenster erscheint sofort mit Lade-, Quell-
+  und Fehlerzustand, wird pro Nachricht wiederverwendet und verwirft über
+  Abbruch plus Request-Identität Ergebnisse geschlossener oder ersetzter
+  Fenster. Die klassische Werkzeugleiste spannt den gesamten Mailbereich;
+  Detailaktionen sitzen oberhalb des Betreffs und Routinezustände unten hinter
+  einer persistenten Live-Einstellung. Der normale Nachrichtenkopf folgt nun
+  Evolutions geordneter `show-headers`-Liste; Sichtbarkeit, benutzerdefinierte
+  Felder, Reihenfolge und Reset sind persistent und live editierbar. Graph
+  übernimmt Internetkopfzeilen beim Listenabruf, und Backup sowie Migration
+  bewahren die Konfiguration; ein gültiger `Face`-Header erscheint als
+  kompaktes Absenderbild statt als Base64-Text. Die dreistufige Nachverfolgung
+  ist in Modell, lokaler Persistenz, Graph und Camel angebunden. Offen bleiben
+  der Fälligkeitseditor sowie die reale Linux-Abnahme.
   Belege: Der portable Helper-/Workspace-Test ist grün; offen bleiben
   Linux-Referenzvergleich, Icon-Theme und sichtbare Dichte.
 - `[~]` `P0-MAIL-002B` — lesbare Schrift- und Anzeigepräferenzen: 16-Pixel-
@@ -769,7 +794,7 @@ cargo check --workspace --locked
 cargo test --workspace --locked --no-fail-fast --quiet
 ```
 
-Diese Gates sind für den aktuellen Arbeitsstand grün (432/432 Tests).
+Diese Gates sind für den aktuellen Arbeitsstand grün (450/450 Tests).
 WebKitGTK-Runtime, echte EDS/Camel-Flags, Icon-Theme, sichtbare Dichte, rasches
 Umschalten und bestätigte Counter-Aktualisierung bleiben in
 `ROADMAP_LINUX.md` offen und dürfen hier nicht vorweggenommen werden.

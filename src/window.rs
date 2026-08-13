@@ -35,6 +35,7 @@ mod imp {
     pub struct EvolutionWindow {
         pub view_stack: RefCell<Option<adw::ViewStack>>,
         pub toast_overlay: adw::ToastOverlay,
+        pub status_label: RefCell<Option<gtk::Label>>,
     }
 
     #[glib::object_subclass]
@@ -287,6 +288,24 @@ impl EvolutionWindow {
     pub(crate) fn refresh_mail_page(&self) {
         if let Some(mail_page) = self.mail_page() {
             mail_page.refresh_mail();
+        }
+    }
+
+    pub(crate) fn update_mail_status(&self, status_text: &str) {
+        if let Some(label) = self.imp().status_label.borrow().as_ref() {
+            let status_text = status_text.trim();
+            if status_text.is_empty() {
+                let offline = AppSettings::try_new()
+                    .map(|s| s.offline_mode())
+                    .unwrap_or(false);
+                label.set_label(if offline {
+                    "Evolution GTK4  ·  Offline"
+                } else {
+                    "Evolution GTK4  ·  Bereit"
+                });
+            } else {
+                label.set_label(&format!("Evolution GTK4  ·  {status_text}"));
+            }
         }
     }
 
@@ -596,6 +615,7 @@ impl EvolutionWindow {
             "use-classic-mail-layout",
             "use-modern-mail-layout",
             "toggle-mail-toolbar",
+            "toggle-mail-statusbar",
             "refresh-mail",
             "undo",
             "redo",
@@ -821,8 +841,19 @@ impl EvolutionWindow {
 
         let view_switcher = adw::ViewSwitcher::builder()
             .stack(&view_stack)
-            .policy(adw::ViewSwitcherPolicy::Wide)
+            .policy(adw::ViewSwitcherPolicy::Narrow)
             .build();
+
+        if let Some(settings) = AppSettings::try_new() {
+            let view_switcher_for_setting = view_switcher.clone();
+            view_switcher_for_setting.set_visible(settings.switcher_location() != "bottom-left");
+            settings.connect_changed(Some("switcher-location"), move |_, _| {
+                let show_top = AppSettings::try_new()
+                    .map(|s| s.switcher_location() != "bottom-left")
+                    .unwrap_or(true);
+                view_switcher_for_setting.set_visible(show_top);
+            });
+        }
 
         header_bar.set_title_widget(Some(&view_switcher));
 
@@ -885,6 +916,7 @@ impl EvolutionWindow {
             .build();
 
         if let Some(settings) = AppSettings::try_new() {
+            statusbar_box.set_visible(settings.mail_show_statusbar());
             online_toggle.set_icon_name(if settings.offline_mode() {
                 "network-wireless-offline-symbolic"
             } else {
@@ -931,6 +963,10 @@ impl EvolutionWindow {
                 } else {
                     "Evolution GTK4  ·  Online"
                 });
+            });
+            let statusbar_for_setting = statusbar_box.clone();
+            settings.connect_changed(Some("mail-show-statusbar"), move |settings, _| {
+                statusbar_for_setting.set_visible(settings.boolean("mail-show-statusbar"));
             });
             status_label.set_label(if settings.offline_mode() {
                 "Evolution GTK4  ·  Offline"
@@ -1080,6 +1116,10 @@ impl EvolutionWindow {
         view_menu.append(
             Some("Klassische Mail-Werkzeugleiste ein-/ausblenden"),
             Some("win.toggle-mail-toolbar"),
+        );
+        view_menu.append(
+            Some("Statusinformationen unten ein-/ausblenden"),
+            Some("win.toggle-mail-statusbar"),
         );
         view_menu.append(
             Some("Unterhaltungen gruppieren/auflösen"),
@@ -1300,6 +1340,12 @@ impl EvolutionWindow {
             "mail-show-toolbar",
             AppSettings::mail_show_toolbar,
             AppSettings::set_mail_show_toolbar,
+        );
+        self.add_boolean_setting_action(
+            "toggle-mail-statusbar",
+            "mail-show-statusbar",
+            AppSettings::mail_show_statusbar,
+            AppSettings::set_mail_show_statusbar,
         );
 
         let action_refresh_mail = gio::SimpleAction::new("refresh-mail", None);
@@ -1758,6 +1804,18 @@ impl EvolutionWindow {
             }
         ));
         self.add_action(&action_filter);
+
+        let action_apply_filters = gio::SimpleAction::new("apply-filters", None);
+        action_apply_filters.connect_activate(glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            move |_, _| {
+                if let Some(mail_page) = win.mail_page() {
+                    mail_page.apply_filters();
+                }
+            }
+        ));
+        self.add_action(&action_apply_filters);
 
         let action_search_folder = gio::SimpleAction::new("search-folder-editor", None);
         action_search_folder.connect_activate(glib::clone!(

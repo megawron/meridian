@@ -17,6 +17,7 @@ use std::collections::HashSet;
 use serde::{Deserialize, Serialize};
 
 use super::camel_mail_service::{self, CamelMailOperation};
+use super::mail_metadata_service::MailFollowUpState;
 use super::mail_store_service::{MailBackendLocation, MailStoreService};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31,6 +32,7 @@ pub enum MailOperationKind {
     MarkImportant,
     MarkNotImportant,
     SetLabel,
+    SetFollowUp,
 }
 
 impl fmt::Display for MailOperationKind {
@@ -46,6 +48,7 @@ impl fmt::Display for MailOperationKind {
             Self::MarkImportant => "Als wichtig markieren",
             Self::MarkNotImportant => "Wichtig-Markierung entfernen",
             Self::SetLabel => "Label ändern",
+            Self::SetFollowUp => "Nachverfolgung",
         };
         formatter.write_str(label)
     }
@@ -279,6 +282,11 @@ pub(crate) enum MailOperation {
         label: String,
         labeled: bool,
     },
+    SetFollowUp {
+        id: String,
+        location: Option<MailBackendLocation>,
+        state: MailFollowUpState,
+    },
     RestoreDeleted {
         id: String,
         location: Option<MailBackendLocation>,
@@ -323,6 +331,33 @@ impl MailCommand {
                 is_flagged: before_flagged,
             },
             description: "Lesestatus/Markierung".to_string(),
+        }
+    }
+
+    pub(crate) fn set_follow_up(
+        id: impl Into<String>,
+        location: Option<MailBackendLocation>,
+        before: MailFollowUpState,
+        after: MailFollowUpState,
+    ) -> Self {
+        let id = id.into();
+        Self {
+            forward: MailOperation::SetFollowUp {
+                id: id.clone(),
+                location: location.clone(),
+                state: after,
+            },
+            inverse: MailOperation::SetFollowUp {
+                id,
+                location,
+                state: before,
+            },
+            description: match after {
+                MailFollowUpState::None => "Nachverfolgung entfernen",
+                MailFollowUpState::FollowUp => "Zur Nachverfolgung markieren",
+                MailFollowUpState::Completed => "Nachverfolgung abschließen",
+            }
+            .to_string(),
         }
     }
 
@@ -696,6 +731,7 @@ impl MailOperation {
                 ..
             } => MailOperationKind::MarkNotImportant,
             Self::SetLabel { .. } => MailOperationKind::SetLabel,
+            Self::SetFollowUp { .. } => MailOperationKind::SetFollowUp,
         }
     }
 
@@ -710,6 +746,7 @@ impl MailOperation {
             | Self::SetJunk { id, location, .. }
             | Self::SetImportant { id, location, .. }
             | Self::SetLabel { id, location, .. }
+            | Self::SetFollowUp { id, location, .. }
             | Self::RestoreDeleted { id, location }
             | Self::RestoreArchived { id, location } => (id, location),
         };
@@ -808,6 +845,10 @@ impl MailOperationCancellation {
         } else {
             Ok(())
         }
+    }
+
+    fn requested_handle(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.requested)
     }
 }
 
@@ -960,7 +1001,10 @@ impl PreparedMailOperation {
         self,
         operations: &MailOperationsService,
     ) -> Result<CompletedMailOperation, MailOperationError> {
-        self.run_with(|operation| operations.apply_with_result(operation))
+        let cancellation = self.context.cancellation();
+        self.run_with(|operation| {
+            operations.apply_with_result_and_cancellation(operation, &cancellation)
+        })
     }
 
     fn run_with<F>(mut self, apply: F) -> Result<CompletedMailOperation, MailOperationError>
@@ -1558,6 +1602,21 @@ impl MailOperationsService {
                     .persist_message_state(&id, is_unread, is_flagged)
                     .map_err(Into::into),
             },
+            MailOperation::SetFollowUp {
+                id,
+                location,
+                state,
+            } => match location {
+                Some(location) => camel_mail_service::set_follow_up_state(location, state, None)
+                    .map_err(|message| MailOperationError::Backend {
+                        operation: MailOperationKind::SetFollowUp,
+                        message,
+                    }),
+                None => self
+                    .store
+                    .persist_follow_up_state(&id, state)
+                    .map_err(Into::into),
+            },
             MailOperation::Delete { id, location } => match location {
                 Some(location) => self.apply_camel(
                     CamelMailOperation::Delete { location },
@@ -1772,6 +1831,31 @@ impl MailOperationsService {
     ) -> Result<Option<MailBackendLocation>, MailOperationError> {
         let kind = operation.kind();
         cancellation.check(kind)?;
+        if let MailOperation::SetFollowUp {
+            id,
+            location,
+            state,
+        } = operation
+        {
+            return match location {
+                Some(location) => camel_mail_service::apply_follow_up_state_with_cancellation(
+                    location,
+                    state,
+                    None,
+                    cancellation.requested_handle(),
+                )
+                .map(|()| None)
+                .map_err(|message| MailOperationError::Backend {
+                    operation: MailOperationKind::SetFollowUp,
+                    message,
+                }),
+                None => self
+                    .store
+                    .persist_follow_up_state(&id, state)
+                    .map(|()| None)
+                    .map_err(Into::into),
+            };
+        }
         self.apply_with_result(operation)
     }
 

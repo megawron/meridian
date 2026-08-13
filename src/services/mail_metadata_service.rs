@@ -13,7 +13,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-const CURRENT_VERSION: u32 = 6;
+const CURRENT_VERSION: u32 = 7;
 const MIN_SUPPORTED_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -22,6 +22,30 @@ pub struct MailMessageState {
     pub is_flagged: bool,
     #[serde(default)]
     pub is_important: bool,
+}
+
+/// The user-visible follow-up state used by Evolution and Outlook.
+///
+/// This deliberately remains separate from the ordinary starred/flagged bit:
+/// Evolution exposes both columns and stores follow-up through the
+/// `follow-up`/`completed-on` user tags.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum MailFollowUpState {
+    #[default]
+    None,
+    FollowUp,
+    Completed,
+}
+
+impl MailFollowUpState {
+    pub fn next(self) -> Self {
+        match self {
+            Self::None => Self::FollowUp,
+            Self::FollowUp => Self::Completed,
+            Self::Completed => Self::None,
+        }
+    }
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -37,6 +61,8 @@ struct StateFile {
     copies: HashMap<String, HashSet<String>>,
     #[serde(default)]
     labels: HashMap<String, HashSet<String>>,
+    #[serde(default)]
+    follow_up: HashMap<String, MailFollowUpState>,
     #[serde(default)]
     local_folders: HashSet<String>,
 }
@@ -73,6 +99,10 @@ impl MailMetadataStore {
 
     pub fn load_labels(&self) -> HashMap<String, HashSet<String>> {
         self.load_file().labels
+    }
+
+    pub fn load_follow_up(&self) -> HashMap<String, MailFollowUpState> {
+        self.load_file().follow_up
     }
 
     pub fn load_local_folders(&self) -> HashSet<String> {
@@ -256,6 +286,21 @@ impl MailMetadataStore {
         self.save_file(&file)
     }
 
+    pub fn set_follow_up(&self, id: &str, state: MailFollowUpState) -> io::Result<()> {
+        let id = id.trim();
+        if id.is_empty() {
+            return Ok(());
+        }
+
+        let mut file = self.load_file();
+        if state == MailFollowUpState::None {
+            file.follow_up.remove(id);
+        } else {
+            file.follow_up.insert(id.to_string(), state);
+        }
+        self.save_file(&file)
+    }
+
     pub fn update(&self, id: &str, state: MailMessageState) -> io::Result<()> {
         let mut file = self.load_file();
         file.messages.insert(id.to_string(), state);
@@ -306,6 +351,7 @@ impl MailMetadataStore {
             deleted: file.deleted.clone(),
             copies: file.copies.clone(),
             labels: file.labels.clone(),
+            follow_up: file.follow_up.clone(),
             local_folders: file.local_folders.clone(),
         };
         let encoded = serde_json::to_vec_pretty(&file)
@@ -664,6 +710,58 @@ mod tests {
             .expect("label should be removable");
         assert!(MailMetadataStore::new(path).load_labels().is_empty());
 
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn follow_up_state_roundtrips_independently_and_cycles() {
+        let root = tempfile_dir("metadata-follow-up");
+        let path = root.join("state.json");
+        let store = MailMetadataStore::new(&path);
+
+        let pending = MailFollowUpState::None.next();
+        assert_eq!(pending, MailFollowUpState::FollowUp);
+        store
+            .set_follow_up("message-1", pending)
+            .expect("follow-up state should save");
+        assert_eq!(
+            MailMetadataStore::new(&path)
+                .load_follow_up()
+                .get("message-1"),
+            Some(&MailFollowUpState::FollowUp)
+        );
+
+        let completed = pending.next();
+        assert_eq!(completed, MailFollowUpState::Completed);
+        store
+            .set_follow_up("message-1", completed)
+            .expect("completed state should save");
+        assert_eq!(
+            MailMetadataStore::new(&path)
+                .load_follow_up()
+                .get("message-1"),
+            Some(&MailFollowUpState::Completed)
+        );
+
+        store
+            .set_follow_up("message-1", completed.next())
+            .expect("follow-up state should clear");
+        assert!(MailMetadataStore::new(&path).load_follow_up().is_empty());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn legacy_state_defaults_to_no_follow_up() {
+        let root = tempfile_dir("metadata-follow-up-legacy");
+        let path = root.join("state.json");
+        fs::write(
+            &path,
+            br#"{"version":6,"messages":{"message-1":{"is_unread":true,"is_flagged":false}}}"#,
+        )
+        .expect("legacy state should write");
+
+        assert!(MailMetadataStore::new(&path).load_follow_up().is_empty());
         let _ = fs::remove_dir_all(root);
     }
 

@@ -39,6 +39,13 @@ settings persistence.
   work for the same message, and surface failed batch rollback explicitly.
   Worker results return completed commands to the owning UI thread; worker
   threads never mutate UI-owned history directly.
+- Model the ordinary flagged/starred bit separately from Evolution follow-up.
+  Follow-up has exactly `None`, `FollowUp`, and `Completed`: Camel maps it to
+  the `follow-up`, `completed-on`, and optional `due-by` user tags; Graph maps
+  it to `message.flag.flagStatus` values `notFlagged`, `flagged`, and
+  `complete`. Local/import records persist the same enum in the app sidecar.
+  Provider state remains authoritative and all transitions use the normal
+  cancellable, backend-confirmed command path.
 - MIME, vCard, settings, filter, and profile import paths preserve unknown safe
   data where possible. Unsupported values become redacted warnings; credentials
   and secret material must never enter app-owned stores, reports, or logs.
@@ -53,6 +60,12 @@ settings persistence.
 - Header-display parsing preserves original order, repeated and unknown fields,
   unfolds continuations for display, and decodes RFC2047 values without turning
   the all-header mode into a raw source view.
+- Store Evolution's normal `show-headers` contract as an ordered `a(sb)` list.
+  Header names are validated, matched case-insensitively and retained by
+  backup/restore and Evolution-settings migration. Graph list requests select
+  and retain `internetMessageHeaders` so normal custom headers do not require a
+  second provider fetch; reject injected field names and line breaks before
+  constructing the reusable header block.
 - Preserve safe embedded mail layout CSS while removing active/resource-loading
   declarations; external stylesheets and remote content remain policy-gated.
 - Provide a conversion path for already-sanitized HTML so viewer preparation

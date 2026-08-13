@@ -43,6 +43,16 @@
   background-color: alpha(@window_fg_color, 0.045);
 }
 
+/* Evolution's table alternates rows.  The first visible row starts shaded so
+ * dense one-line records remain easy to track across all real columns. */
+.message-list .mail-row-even {
+  background-color: alpha(@window_fg_color, 0.055);
+}
+
+.message-list row:selected .mail-row-even {
+  background-color: alpha(@accent_bg_color, 0.13);
+}
+
 .message-list .batch-selected {
   background-color: alpha(@accent_bg_color, 0.09);
 }
@@ -53,6 +63,23 @@
   min-height: 20px;
   padding: 0;
   margin: 0;
+}
+
+.message-list .mail-thread-count {
+  min-width: 32px;
+  padding: 0 2px;
+  border-radius: 3px;
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: @accent_color;
+}
+
+.message-list .mail-follow-up.follow-up-pending {
+  color: @accent_color;
+}
+
+.message-list .mail-follow-up.follow-up-completed {
+  color: @success_color;
 }
 
 .message-list .heading,
@@ -94,6 +121,11 @@
   line-height: 1.05;
 }
 
+.mail-column-header label:hover {
+  color: @accent_color;
+  background-color: alpha(@accent_bg_color, 0.08);
+}
+
 .mail-column-resize-handle {
   min-width: 8px;
   min-height: 14px;
@@ -127,6 +159,19 @@
   line-height: 1.1;
 }
 
+.mail-normal-headers {
+  padding: 0 2px;
+}
+
+.mail-normal-headers .mail-normal-header-value {
+  min-height: 18px;
+}
+
+.mail-normal-headers .mail-normal-header-value.title-4 {
+  font-size: 1.08rem;
+  font-weight: 700;
+}
+
 /* Security is an inline status in Evolution, rather than a large banner. */
 .mail-detail-header .badge {
   min-width: 0;
@@ -144,6 +189,13 @@
   min-width: 24px;
   min-height: 24px;
   padding: 0 3px;
+}
+
+.mail-pane-status {
+  min-height: 24px;
+  padding: 0 4px;
+  border-top: 1px solid alpha(@borders, 0.55);
+  background-color: alpha(@window_fg_color, 0.025);
 }
 
 .mail-detail-actions spacer {

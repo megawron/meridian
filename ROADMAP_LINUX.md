@@ -48,12 +48,23 @@ Distribution, Bibliotheksversionen und Kontotyp zu protokollieren.
      Kontextmenüpfad öffnen. Die Quelle byteweise mit einer unabhängig
      gespeicherten `.eml` vergleichen; Offline-/fehlende-Nachricht-Fehler
      müssen eine klar gekennzeichnete Rekonstruktion zeigen und dürfen GTK
-     nicht blockieren.
+     nicht blockieren. Dieselbe Nachricht zweimal öffnen: Das vorhandene Fenster
+     muss fokussiert statt dupliziert werden. Einen langsamen Abruf schließen
+     und dieselbe Nachricht sofort erneut öffnen; das alte Ergebnis darf weder
+     erscheinen noch den neuen Lade-/Fehlerzustand ersetzen.
   7. „Alle Nachrichtenkopfzeilen anzeigen“ aktivieren, zwischen Nachrichten
      wechseln, die Ansicht deaktivieren und nach einem Neustart erneut prüfen.
      Originale Faltungen/Mehrfachheader müssen erhalten bleiben; die maximal
      200 Pixel hohe formatierte Kopfzeilenfläche darf den Reader nicht
      verdrängen und darf nicht wie die rohe Quellansicht aussehen.
+  8. Unter Einstellungen die normale Kopfzeilenliste mit einer eigenen
+     `X-Project`-Zeile ergänzen, ein Standardfeld deaktivieren, zwei Felder
+     verschieben und die App neu starten. Reihenfolge und Sichtbarkeit müssen
+     im offenen Reader sofort und nach Neustart identisch sein. Danach Backup
+     erstellen, Defaults zurücksetzen und wiederherstellen. Gegen je eine
+     Camel- und Graph-Nachricht Werte und Reihenfolge einschließlich zweier
+     gleichnamiger Header vergleichen; `Face` muss wie in Evolution visuell
+     behandelt werden und darf nicht als lange Base64-Zeile erscheinen.
 - Erwartung: kein leerer Reader, kein ungefragter Remote-Request, korrekte
   Hintergründe/CSS, stabile Auswahl, keine Duplikate und kein GTK-Hänger.
 - Zusätzlich prüfen: Bei schnellem A→B→C-Umschalten mit großen CID-Anlagen darf
@@ -110,12 +121,18 @@ Distribution, Bibliotheksversionen und Kontotyp zu protokollieren.
      ein späteres Ergebnis einer vorherigen Nachricht verworfen bleibt.
   4. Mit `GTK_ICON_THEME=Adwaita` erneut starten und alle sichtbaren
      Mailzeilen, Spaltenköpfe, Sidebar-Wurzeln, Ordner und Detailaktionen
-     prüfen. Anhangs-, Markierungs- und Wichtigkeitssymbole stehen links vor
-     Absender/Betreff; fehlende Symbolnamen müssen einen sichtbaren Fallback
-     haben und dürfen keine leeren Flächen oder Text-Fehlglyphen erzeugen.
+     prüfen. Anhangs-, Nachverfolgungs-, Markierungs- und Wichtigkeitssymbole
+     stehen links vor Absender/Betreff und bleiben exakt unter ihren
+     Spaltenköpfen. Die erste Zeile ist grau, danach wechseln die Zeilenfarben.
+     Klicks auf Absender, Betreff und Datum sortieren und zeigen den Pfeil im
+     jeweiligen Kopf; der Breiten-Griff verschiebt Kopf und Daten gemeinsam.
+     Fehlende Symbolnamen müssen einen sichtbaren Fallback haben und dürfen
+     keine leeren Flächen oder Text-Fehlglyphen erzeugen.
   5. Sidebar prüfen: Konto-Wurzel ohne dekoratives Konto-Icon, flache
-     Ordnerindentation, kein Expander bei einer einzelnen Nachricht und keine
-     sichtbaren Backendbegriffe. Ein Unread-Badge erscheint nur bei einem
+     aber erkennbare Ordnerindentation, keine zweite generische lokale
+     Ordnergruppe bei einem reinen EDS-Konto, kein Expander bei einer einzelnen
+     Nachricht und nur eine ausgerichtete Zählzelle bei echten Konversationen.
+     Es erscheinen keine sichtbaren Backendbegriffe. Ein Unread-Badge erscheint nur bei einem
      positiven Ungelesenwert; bei `0` verschwindet es und zeigt nicht den
      Gesamtbestand als Ersatz an.
   6. Eine Nachricht als gelesen und wieder ungelesen markieren, jeweils den
@@ -135,8 +152,21 @@ Distribution, Bibliotheksversionen und Kontotyp zu protokollieren.
      prüfen und die Leiste mit Escape schließen. Während einer laufenden Suche
      schnell die Nachricht wechseln; weder Highlight noch Trefferzähler der
      alten Nachricht dürfen im neuen Reader erscheinen.
+  9. Werkzeugleiste und Status testen: Die klassische Aktionsleiste beginnt
+     ganz links oberhalb der Ordnerleiste und reicht über den Mailbereich; im
+     Reader stehen die kompakten Antwortaktionen oberhalb des Betreffs. Die
+     Statusleisten-Einstellung muss sämtliche Routinezustände live unten ein-
+     und ausblenden und nach Neustart erhalten bleiben.
+  10. Eine Camel-Nachricht dreimal über die Nachverfolgungsspalte anklicken:
+      nach dem ersten Klick müssen `follow-up` und der sichtbare Marker gesetzt
+      sein, nach dem zweiten `completed-on` und der grüne Haken, nach dem
+      dritten müssen Follow-up/Completed-Tags entfernt sein. Nach jedem Klick
+      Refresh, Ordnerwechsel und Neustart prüfen; parallel denselben Ablauf bei
+      einem Graph-Konto gegen `flagStatus` = `flagged`, `complete`,
+      `notFlagged` abnehmen. Abbruch/Serverfehler dürfen UI und Undo-Historie
+      nicht vorzeitig ändern.
 - Abnahmekriterien:
-  - Alle acht Ablaufschritte sind mit Commit, Distribution, Versionsdaten,
+  - Alle zehn Ablaufschritte sind mit Commit, Distribution, Versionsdaten,
     Logmarker, anonymisierten Screenshots und Korpus-IDs dokumentiert.
   - Die schnelle Umschaltserie bleibt interaktiv und zeigt niemals ein
     Ergebnis einer nicht mehr ausgewählten Nachricht.

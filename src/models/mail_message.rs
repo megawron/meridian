@@ -7,6 +7,7 @@ use gtk::glib;
 use gtk::subclass::prelude::*;
 use std::sync::Arc;
 
+use crate::services::mail_metadata_service::MailFollowUpState;
 use crate::services::mail_store_service::MailBackendLocation;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -50,6 +51,7 @@ mod imp {
         pub is_unread: RefCell<bool>,
         pub is_flagged: RefCell<bool>,
         pub is_important: RefCell<bool>,
+        pub follow_up_state: RefCell<MailFollowUpState>,
         pub labels: RefCell<Vec<String>>,
         pub(crate) backend_location: RefCell<Option<MailBackendLocation>>,
         /// Original RFC822 header block. Keeping headers independently avoids
@@ -100,6 +102,7 @@ impl MailMessageObject {
         is_unread: bool,
         is_flagged: bool,
         is_important: bool,
+        follow_up_state: MailFollowUpState,
         labels: Vec<String>,
         backend_location: Option<MailBackendLocation>,
         attachments: Vec<AttachmentInfo>,
@@ -127,6 +130,7 @@ impl MailMessageObject {
         *imp.is_unread.borrow_mut() = is_unread;
         *imp.is_flagged.borrow_mut() = is_flagged;
         *imp.is_important.borrow_mut() = is_important;
+        *imp.follow_up_state.borrow_mut() = follow_up_state;
         *imp.labels.borrow_mut() = labels;
         *imp.backend_location.borrow_mut() = backend_location;
         *imp.attachments.borrow_mut() = attachments;
@@ -259,6 +263,14 @@ impl MailMessageObject {
         *self.imp().is_important.borrow_mut() = important;
     }
 
+    pub fn follow_up_state(&self) -> MailFollowUpState {
+        *self.imp().follow_up_state.borrow()
+    }
+
+    pub fn set_follow_up_state(&self, state: MailFollowUpState) {
+        *self.imp().follow_up_state.borrow_mut() = state;
+    }
+
     pub fn labels(&self) -> Vec<String> {
         self.imp().labels.borrow().clone()
     }
@@ -367,7 +379,7 @@ fn update_label_values(labels: &mut Vec<String>, label: &str, labeled: bool) -> 
 
 #[cfg(test)]
 mod tests {
-    use super::{MailBackendLocation, MailMessageObject, update_label_values};
+    use super::{MailBackendLocation, MailFollowUpState, MailMessageObject, update_label_values};
 
     #[test]
     fn label_updates_are_case_insensitive_and_idempotent() {
@@ -406,6 +418,7 @@ mod tests {
             false,
             false,
             false,
+            MailFollowUpState::None,
             Vec::new(),
             Some(MailBackendLocation {
                 source_uid: "account-a".to_string(),

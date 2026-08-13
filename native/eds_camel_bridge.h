@@ -19,6 +19,12 @@ typedef struct {
     size_t raw_message_len;
     int is_unread;
     int is_flagged;
+    /* Evolution's follow-up state is stored as Camel user tags, not as a
+     * provider-specific message flag.  0=None, 1=FollowUp, 2=Completed. */
+    int follow_up_status;
+    char *follow_up;
+    char *completed_on;
+    char *due_by;
 } EvolutionEdsCamelMessage;
 
 typedef struct {
@@ -41,6 +47,7 @@ typedef enum {
     EVOLUTION_EDS_CAMEL_SET_IMPORTANT = 6,
     EVOLUTION_EDS_CAMEL_RESTORE_DELETED = 7,
     EVOLUTION_EDS_CAMEL_RESTORE_ARCHIVED = 8,
+    EVOLUTION_EDS_CAMEL_SET_FOLLOW_UP = 9,
 } EvolutionEdsCamelOperationKind;
 
 typedef struct {
@@ -54,6 +61,8 @@ typedef struct {
     int is_flagged;
     int is_junk;
     int is_important;
+    int follow_up_status;
+    const char *due_by;
 } EvolutionEdsCamelOperation;
 
 typedef enum {
@@ -169,7 +178,9 @@ void evolution_eds_camel_free_folders(
 
 int evolution_eds_camel_apply_operation(
     const EvolutionEdsCamelOperation *operation,
-    char **out_error);
+    char **out_error,
+    EvolutionEdsCamelCancellationCallback cancellation_callback,
+    void *cancellation_user_data);
 
 /* Send a complete RFC822 message through the EDS-configured transport linked
  * to the selected mail-account source.  Returns 1 on success and 0 on an

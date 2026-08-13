@@ -975,7 +975,8 @@ impl MailViewer {
 
     #[cfg(target_os = "linux")]
     fn webkit_search_event_is_current(&self, controller: &webkit6::FindController) -> bool {
-        let Some(search) = self.imp().message_search.borrow().as_ref() else {
+        let binding = self.imp().message_search.borrow();
+        let Some(search) = binding.as_ref() else {
             return false;
         };
         let current_message_id = self.imp().current_message_id.borrow().clone();

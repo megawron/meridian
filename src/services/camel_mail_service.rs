@@ -5,6 +5,7 @@
 // Rust records so all GTK work remains on the main thread.
 
 use super::exchange_service::graph_service_for_configured_account;
+use super::mail_metadata_service::MailFollowUpState;
 use super::mail_store_service::{MailBackendLocation, ParsedMail, assign_thread_metadata};
 
 use std::collections::{HashMap, HashSet};
@@ -12,7 +13,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 #[cfg(eds_camel_bridge)]
-use super::mail_store_service::{MailStoreService, parse_rfc822};
+use super::mail_store_service::MailStoreService;
 
 const DEFAULT_MAIL_PAGE_SIZE: usize = 100;
 const MAX_MAIL_PAGE_SIZE: usize = 1_000;
@@ -646,6 +647,10 @@ mod ffi {
         pub(super) raw_message_len: usize,
         pub(super) is_unread: i32,
         pub(super) is_flagged: i32,
+        pub(super) follow_up_status: i32,
+        pub(super) follow_up: *mut c_char,
+        pub(super) completed_on: *mut c_char,
+        pub(super) due_by: *mut c_char,
     }
 
     #[repr(C)]
@@ -672,6 +677,8 @@ mod ffi {
         pub(super) is_flagged: i32,
         pub(super) is_junk: i32,
         pub(super) is_important: i32,
+        pub(super) follow_up_status: i32,
+        pub(super) due_by: *const c_char,
     }
 
     #[repr(C)]
@@ -761,6 +768,8 @@ mod ffi {
         pub(super) fn evolution_eds_camel_apply_operation(
             operation: *const EvolutionEdsCamelOperation,
             out_error: *mut *mut c_char,
+            cancellation_callback: Option<EvolutionEdsCamelCancellationCallback>,
+            cancellation_user_data: *mut c_void,
         ) -> i32;
 
         pub(super) fn evolution_eds_camel_send_message(
@@ -1119,6 +1128,27 @@ fn load_messages_native(
     })
 }
 
+#[cfg(any(eds_camel_bridge, test))]
+fn follow_up_state_from_native(
+    native_status: i32,
+    has_follow_up_tag: bool,
+    has_completed_on_tag: bool,
+) -> MailFollowUpState {
+    let derived = if !has_follow_up_tag {
+        MailFollowUpState::None
+    } else if has_completed_on_tag {
+        MailFollowUpState::Completed
+    } else {
+        MailFollowUpState::FollowUp
+    };
+    match (native_status, derived) {
+        (0, MailFollowUpState::None) => MailFollowUpState::None,
+        (1, MailFollowUpState::FollowUp) => MailFollowUpState::FollowUp,
+        (2, MailFollowUpState::Completed) => MailFollowUpState::Completed,
+        _ => derived,
+    }
+}
+
 #[cfg(eds_camel_bridge)]
 fn parse_native_messages(
     records: *const ffi::EvolutionEdsCamelMessage,
@@ -1156,6 +1186,11 @@ fn parse_native_messages(
         ) {
             parsed.is_flagged = record.is_flagged != 0;
             parsed.folder_name = folder_name;
+            parsed.follow_up_state = follow_up_state_from_native(
+                record.follow_up_status,
+                c_string_option(record.follow_up).is_some(),
+                c_string_option(record.completed_on).is_some(),
+            );
             let location = MailBackendLocation {
                 source_uid,
                 folder_name: parsed.folder_name.clone(),
@@ -1609,6 +1644,7 @@ mod tests {
             is_unread: false,
             is_flagged: false,
             is_important: false,
+            follow_up_state: MailFollowUpState::None,
             labels: Vec::new(),
             attachments: Vec::new(),
         }
@@ -1813,6 +1849,43 @@ mod tests {
     }
 
     #[test]
+    fn native_follow_up_tags_map_to_the_shared_three_state_model() {
+        assert_eq!(
+            follow_up_state_from_native(0, false, false),
+            MailFollowUpState::None
+        );
+        assert_eq!(
+            follow_up_state_from_native(1, true, false),
+            MailFollowUpState::FollowUp
+        );
+        assert_eq!(
+            follow_up_state_from_native(2, true, true),
+            MailFollowUpState::Completed
+        );
+
+        // A malformed native status must not manufacture a completed state
+        // without the exact Evolution tags that define it.
+        assert_eq!(
+            follow_up_state_from_native(99, false, true),
+            MailFollowUpState::None
+        );
+        assert_eq!(
+            follow_up_state_from_native(2, false, false),
+            MailFollowUpState::None
+        );
+        assert_eq!(
+            follow_up_state_from_native(99, true, false),
+            MailFollowUpState::FollowUp
+        );
+        assert_eq!(MailFollowUpState::None.next(), MailFollowUpState::FollowUp);
+        assert_eq!(
+            MailFollowUpState::FollowUp.next(),
+            MailFollowUpState::Completed
+        );
+        assert_eq!(MailFollowUpState::Completed.next(), MailFollowUpState::None);
+    }
+
+    #[test]
     fn camel_folder_ids_fall_back_to_provider_folder_names() {
         assert_eq!(normalized_camel_folder_id("all", "INBOX"), "inbox");
         assert_eq!(
@@ -1831,6 +1904,12 @@ pub(crate) enum CamelMailOperation {
         location: MailBackendLocation,
         is_unread: bool,
         is_flagged: bool,
+    },
+    SetFollowUp {
+        location: MailBackendLocation,
+        status: MailFollowUpState,
+        /// `None` preserves an existing `due-by` tag; `Some("")` clears it.
+        due_by: Option<String>,
     },
     Delete {
         location: MailBackendLocation,
@@ -1871,56 +1950,119 @@ pub(crate) enum CamelMailOperation {
 }
 
 pub(crate) fn apply_operation(operation: CamelMailOperation) -> Result<(), String> {
+    apply_operation_with_cancellation(operation, None)
+}
+
+fn apply_operation_with_cancellation(
+    operation: CamelMailOperation,
+    cancelled: Option<&AtomicBool>,
+) -> Result<(), String> {
+    if let Some(cancelled) = cancelled {
+        cancellation_error(cancelled, "EDS/Camel-Änderung")?;
+    }
     if let Some(result) = apply_graph_operation(&operation) {
         return result;
     }
     #[cfg(eds_camel_bridge)]
     {
-        use std::ffi::{CStr, CString, c_char};
+        use std::ffi::{CStr, CString, c_char, c_void};
 
-        let (kind, location, destination, is_unread, is_flagged, is_junk, is_important) =
-            match operation {
-                CamelMailOperation::SetMessageState {
-                    location,
-                    is_unread,
-                    is_flagged,
-                } => (1, location, None, is_unread, is_flagged, false, false),
-                CamelMailOperation::Delete { location } => {
-                    (2, location, None, false, false, false, false)
-                }
-                CamelMailOperation::Move {
-                    location,
-                    destination,
-                } => (3, location, Some(destination), false, false, false, false),
-                CamelMailOperation::Copy { .. } | CamelMailOperation::RemoveCopy { .. } => {
-                    return Err(
-                        "EDS/Camel-Kopieren ist in diesem Backend noch nicht implementiert"
-                            .to_string(),
-                    );
-                }
-                CamelMailOperation::Archive { location } => {
-                    (4, location, None, false, false, false, false)
-                }
-                CamelMailOperation::SetJunk { location, is_junk } => {
-                    (5, location, None, false, false, is_junk, false)
-                }
-                CamelMailOperation::SetImportant {
-                    location,
-                    is_important,
-                } => (6, location, None, false, false, false, is_important),
-                CamelMailOperation::SetLabel { .. } => {
-                    return Err(
-                        "EDS/Camel-Kategorien werden in diesem Backend noch nicht unterstützt"
-                            .to_string(),
-                    );
-                }
-                CamelMailOperation::RestoreDeleted { location } => {
-                    (7, location, None, false, false, false, false)
-                }
-                CamelMailOperation::RestoreArchived { location } => {
-                    (8, location, None, false, false, false, false)
-                }
-            };
+        unsafe extern "C" fn cancellation_callback(user_data: *mut c_void) -> i32 {
+            if user_data.is_null() {
+                return 0;
+            }
+            let cancelled = unsafe { &*(user_data as *const AtomicBool) };
+            cancelled.load(Ordering::Relaxed) as i32
+        }
+
+        let (
+            kind,
+            location,
+            destination,
+            is_unread,
+            is_flagged,
+            is_junk,
+            is_important,
+            follow_up_status,
+            due_by,
+        ) = match operation {
+            CamelMailOperation::SetMessageState {
+                location,
+                is_unread,
+                is_flagged,
+            } => (
+                1, location, None, is_unread, is_flagged, false, false, 0, None,
+            ),
+            CamelMailOperation::SetFollowUp {
+                location,
+                status,
+                due_by,
+            } => (
+                9,
+                location,
+                None,
+                false,
+                false,
+                false,
+                false,
+                status as i32,
+                due_by,
+            ),
+            CamelMailOperation::Delete { location } => {
+                (2, location, None, false, false, false, false, 0, None)
+            }
+            CamelMailOperation::Move {
+                location,
+                destination,
+            } => (
+                3,
+                location,
+                Some(destination),
+                false,
+                false,
+                false,
+                false,
+                0,
+                None,
+            ),
+            CamelMailOperation::Copy { .. } | CamelMailOperation::RemoveCopy { .. } => {
+                return Err(
+                    "EDS/Camel-Kopieren ist in diesem Backend noch nicht implementiert".to_string(),
+                );
+            }
+            CamelMailOperation::Archive { location } => {
+                (4, location, None, false, false, false, false, 0, None)
+            }
+            CamelMailOperation::SetJunk { location, is_junk } => {
+                (5, location, None, false, false, is_junk, false, 0, None)
+            }
+            CamelMailOperation::SetImportant {
+                location,
+                is_important,
+            } => (
+                6,
+                location,
+                None,
+                false,
+                false,
+                false,
+                is_important,
+                0,
+                None,
+            ),
+            CamelMailOperation::SetLabel { .. } => {
+                return Err(
+                    "EDS/Camel-Kategorien werden in diesem Backend noch nicht unterstützt"
+                        .to_string(),
+                );
+            }
+            CamelMailOperation::RestoreDeleted { location } => {
+                (7, location, None, false, false, false, false, 0, None)
+            }
+            CamelMailOperation::RestoreArchived { location } => {
+                (8, location, None, false, false, false, false, 0, None)
+            }
+        };
 
         let source_uid = CString::new(location.source_uid)
             .map_err(|_| "EDS source UID contains an invalid NUL byte".to_string())?;
@@ -1943,6 +2085,13 @@ pub(crate) fn apply_operation(operation: CamelMailOperation) -> Result<(), Strin
         let message_id_ptr = message_id
             .as_ref()
             .map_or(std::ptr::null(), |value| value.as_ptr());
+        let due_by = due_by
+            .map(CString::new)
+            .transpose()
+            .map_err(|_| "EDS due-by tag contains an invalid NUL byte".to_string())?;
+        let due_by_ptr = due_by
+            .as_ref()
+            .map_or(std::ptr::null(), |value| value.as_ptr());
         let mut error_message: *mut c_char = std::ptr::null_mut();
         let ffi_operation = ffi::EvolutionEdsCamelOperation {
             kind,
@@ -1955,10 +2104,24 @@ pub(crate) fn apply_operation(operation: CamelMailOperation) -> Result<(), Strin
             is_flagged: is_flagged as i32,
             is_junk: is_junk as i32,
             is_important: is_important as i32,
+            follow_up_status,
+            due_by: due_by_ptr,
         };
 
-        let result =
-            unsafe { ffi::evolution_eds_camel_apply_operation(&ffi_operation, &mut error_message) };
+        let cancellation_user_data = cancelled.map_or(std::ptr::null_mut(), |cancelled| {
+            cancelled as *const AtomicBool as *mut c_void
+        });
+        let cancellation_callback =
+            cancelled.map(|_| cancellation_callback as ffi::EvolutionEdsCamelCancellationCallback);
+
+        let result = unsafe {
+            ffi::evolution_eds_camel_apply_operation(
+                &ffi_operation,
+                &mut error_message,
+                cancellation_callback,
+                cancellation_user_data,
+            )
+        };
         let error = (!error_message.is_null()).then(|| unsafe {
             let message = CStr::from_ptr(error_message).to_string_lossy().into_owned();
             ffi::evolution_eds_camel_free_error(error_message);
@@ -1988,9 +2151,53 @@ pub(crate) fn apply_operation(operation: CamelMailOperation) -> Result<(), Strin
 
     #[cfg(not(eds_camel_bridge))]
     {
-        let _ = operation;
+        let _ = (operation, cancelled);
         Err("native EDS/Camel adapter is not available in this build".to_string())
     }
+}
+
+/// Set Evolution's three-state follow-up status for one folder-scoped Camel
+/// message.  The native bridge writes `follow-up`, `completed-on`, and the
+/// optional `due-by` user tags and observes `cancelled` while synchronizing.
+pub(crate) fn set_follow_up_state(
+    location: MailBackendLocation,
+    state: MailFollowUpState,
+    due_by: Option<String>,
+) -> Result<(), String> {
+    apply_follow_up_state_with_cancellation_inner(location, state, due_by, None)
+}
+
+/// Cancellable variant used by worker-owned mutation flows.  The native
+/// operation observes this flag while Camel synchronizes the folder+UID.
+pub(crate) fn apply_follow_up_state_with_cancellation(
+    location: MailBackendLocation,
+    state: MailFollowUpState,
+    due_by: Option<String>,
+    cancelled: Arc<AtomicBool>,
+) -> Result<(), String> {
+    if let Some(service) = super::exchange_service::graph_service_for_source(&location.source_uid) {
+        return service
+            .with_cancellation_flag(cancelled)
+            .set_message_follow_up_state_sync(&location.message_uid, state)
+            .map_err(|error| error.to_string());
+    }
+    apply_follow_up_state_with_cancellation_inner(location, state, due_by, Some(cancelled.as_ref()))
+}
+
+fn apply_follow_up_state_with_cancellation_inner(
+    location: MailBackendLocation,
+    state: MailFollowUpState,
+    due_by: Option<String>,
+    cancelled: Option<&AtomicBool>,
+) -> Result<(), String> {
+    apply_operation_with_cancellation(
+        CamelMailOperation::SetFollowUp {
+            location,
+            status: state,
+            due_by,
+        },
+        cancelled,
+    )
 }
 
 /// Apply an operation that may need to return backend-created identity data.
@@ -2047,6 +2254,7 @@ fn apply_graph_operation(operation: &CamelMailOperation) -> Option<Result<(), St
     use super::exchange_service::graph_service_for_source;
     let location = match operation {
         CamelMailOperation::SetMessageState { location, .. }
+        | CamelMailOperation::SetFollowUp { location, .. }
         | CamelMailOperation::Delete { location }
         | CamelMailOperation::Move { location, .. }
         | CamelMailOperation::Copy { location, .. }
@@ -2068,11 +2276,14 @@ fn apply_graph_operation(operation: &CamelMailOperation) -> Option<Result<(), St
         ));
     }
     let result = match operation {
+        CamelMailOperation::SetFollowUp {
+            location, status, ..
+        } => service.set_message_follow_up_state_sync(&location.message_uid, *status),
         CamelMailOperation::SetMessageState {
             location,
             is_unread,
-            is_flagged,
-        } => service.set_message_state_sync(&location.message_uid, !is_unread, *is_flagged, None),
+            is_flagged: _,
+        } => service.set_message_read_state_sync(&location.message_uid, !is_unread),
         CamelMailOperation::SetImportant {
             location,
             is_important,
@@ -2237,6 +2448,12 @@ fn c_string(pointer: *const std::ffi::c_char) -> String {
     unsafe { std::ffi::CStr::from_ptr(pointer) }
         .to_string_lossy()
         .into_owned()
+}
+
+#[cfg(eds_camel_bridge)]
+fn c_string_option(pointer: *const std::ffi::c_char) -> Option<String> {
+    let value = c_string(pointer);
+    (!value.is_empty()).then_some(value)
 }
 
 #[cfg(eds_camel_bridge)]

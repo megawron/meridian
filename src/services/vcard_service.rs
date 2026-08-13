@@ -1048,7 +1048,7 @@ fn normalize_photo_media_type(value: &str) -> String {
     }
 }
 
-fn decode_base64(value: &str) -> Option<Vec<u8>> {
+pub(crate) fn decode_base64(value: &str) -> Option<Vec<u8>> {
     let mut compact = value
         .chars()
         .filter(|character| !character.is_ascii_whitespace())

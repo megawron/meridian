@@ -867,6 +867,7 @@ fn canonical_setting(group: &str, key: &str, raw_value: &str) -> Option<(String,
     let group = group.to_ascii_lowercase();
     let canonical = match key {
         "show-preview" | "message-preview" | "show-message-preview" => "show-message-preview",
+        "show-headers" => "mail-normal-headers",
         "show-week-numbers" => "calendar-show-week-numbers",
         "week-start" | "first-weekday" => "calendar-week-start",
         "default-calendar" => "default-calendar-source",
@@ -953,6 +954,7 @@ fn is_supported_migration_key(key: &str) -> bool {
             | "mail-font-size"
             | "mark-read-on-selection"
             | "show-message-preview"
+            | "mail-normal-headers"
             | "mail-default-folder"
             | "mail-layout"
             | "mail-show-toolbar"
@@ -2737,6 +2739,7 @@ mod tests {
 mail-layout='classic'
 show-preview=true
 threading=false
+show-headers=[('From', true), ('X-Project', false)]
 
 [org/gnome/evolution/calendar]
 use-12-hour-format=true
@@ -2774,6 +2777,10 @@ unknown-setting='ignored'
         assert!(parsed.settings.contains(&ImportedSetting {
             key: "mail-threading".to_string(),
             value: "false".to_string(),
+        }));
+        assert!(parsed.settings.contains(&ImportedSetting {
+            key: "mail-normal-headers".to_string(),
+            value: "[('From', true), ('X-Project', false)]".to_string(),
         }));
         assert!(parsed.settings.contains(&ImportedSetting {
             key: "time-format".to_string(),

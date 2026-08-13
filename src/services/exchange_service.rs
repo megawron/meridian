@@ -17,7 +17,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
+use super::mail_metadata_service::MailFollowUpState;
 use super::out_of_office_service::OutOfOfficeSettings;
+
+pub use super::mail_metadata_service::MailFollowUpState as ExchangeMailFollowUpState;
 
 const GRAPH_DEFAULT_URL: &str = "https://graph.microsoft.com/v1.0";
 const GRAPH_USER_AGENT: &str = "EvolutionGTK4/0.1";
@@ -67,6 +70,26 @@ pub struct ExchangeMailFolder {
     pub unread_item_count: usize,
 }
 
+fn follow_up_state_from_graph_flag_status(status: &str) -> MailFollowUpState {
+    if status.eq_ignore_ascii_case("flagged") {
+        MailFollowUpState::FollowUp
+    } else if status.eq_ignore_ascii_case("complete") {
+        MailFollowUpState::Completed
+    } else {
+        // Graph currently documents notFlagged, flagged and complete. Treat
+        // an omitted or future status conservatively as no active follow-up.
+        MailFollowUpState::None
+    }
+}
+
+const fn graph_flag_status_for_follow_up_state(state: MailFollowUpState) -> &'static str {
+    match state {
+        MailFollowUpState::None => "notFlagged",
+        MailFollowUpState::FollowUp => "flagged",
+        MailFollowUpState::Completed => "complete",
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExchangeMailMessage {
     pub id: String,
@@ -87,8 +110,12 @@ pub struct ExchangeMailMessage {
     pub has_attachments: bool,
     pub is_read: bool,
     pub is_flagged: bool,
+    #[serde(default)]
+    pub follow_up_state: MailFollowUpState,
     pub is_important: bool,
     pub categories: Vec<String>,
+    #[serde(default)]
+    pub internet_message_headers: Vec<(String, String)>,
     pub attachments: Vec<ExchangeMailAttachment>,
 }
 
@@ -111,6 +138,7 @@ impl ExchangeMailMessage {
         source_uid: &str,
         folder_name: &str,
     ) -> crate::services::mail_store_service::ParsedMail {
+        let raw_headers = graph_header_block(&self.internet_message_headers);
         let sender = if self.sender.address.trim().is_empty() {
             self.from.clone()
         } else {
@@ -167,11 +195,12 @@ impl ExchangeMailMessage {
             },
             preview_snippet: preview,
             html_body: body_html,
-            raw_headers: None,
+            raw_headers,
             raw_mime: None,
             is_unread: !self.is_read,
             is_flagged: self.is_flagged,
             is_important: self.is_important,
+            follow_up_state: self.follow_up_state,
             labels: self.categories,
             attachments: self
                 .attachments
@@ -194,6 +223,26 @@ impl ExchangeMailMessage {
                 .collect(),
         }
     }
+}
+
+fn graph_header_block(headers: &[(String, String)]) -> Option<Vec<u8>> {
+    let mut encoded = Vec::new();
+    for (name, value) in headers {
+        let name = name.trim();
+        if name.is_empty()
+            || !name
+                .bytes()
+                .all(|byte| byte.is_ascii_graphic() && byte != b':')
+        {
+            continue;
+        }
+        let value = value.replace(['\r', '\n'], " ");
+        encoded.extend_from_slice(name.as_bytes());
+        encoded.extend_from_slice(b": ");
+        encoded.extend_from_slice(value.trim().as_bytes());
+        encoded.extend_from_slice(b"\r\n");
+    }
+    (!encoded.is_empty()).then_some(encoded)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1277,7 +1326,7 @@ impl ExchangeService {
         let params = vec![
             (
                 "$select".to_string(),
-                "id,parentFolderId,internetMessageId,subject,sender,from,toRecipients,ccRecipients,bccRecipients,replyTo,receivedDateTime,sentDateTime,body,bodyPreview,hasAttachments,isRead,flag,importance,categories"
+                "id,parentFolderId,internetMessageId,subject,sender,from,toRecipients,ccRecipients,bccRecipients,replyTo,receivedDateTime,sentDateTime,body,bodyPreview,hasAttachments,isRead,flag,importance,categories,internetMessageHeaders"
                     .to_string(),
             ),
             ("$orderby".to_string(), "receivedDateTime desc".to_string()),
@@ -1338,7 +1387,7 @@ impl ExchangeService {
         let params = vec![
             (
                 "$select".to_string(),
-                "id,parentFolderId,internetMessageId,subject,sender,from,toRecipients,ccRecipients,bccRecipients,replyTo,receivedDateTime,sentDateTime,body,bodyPreview,hasAttachments,isRead,flag,importance,categories"
+                "id,parentFolderId,internetMessageId,subject,sender,from,toRecipients,ccRecipients,bccRecipients,replyTo,receivedDateTime,sentDateTime,body,bodyPreview,hasAttachments,isRead,flag,importance,categories,internetMessageHeaders"
                     .to_string(),
             ),
             ("$orderby".to_string(), "receivedDateTime desc".to_string()),
@@ -1391,7 +1440,7 @@ impl ExchangeService {
         let params = vec![
             (
                 "$select".to_string(),
-                "id,parentFolderId,internetMessageId,subject,sender,from,toRecipients,ccRecipients,bccRecipients,replyTo,receivedDateTime,sentDateTime,body,bodyPreview,hasAttachments,isRead,flag,importance,categories"
+                "id,parentFolderId,internetMessageId,subject,sender,from,toRecipients,ccRecipients,bccRecipients,replyTo,receivedDateTime,sentDateTime,body,bodyPreview,hasAttachments,isRead,flag,importance,categories,internetMessageHeaders"
                     .to_string(),
             ),
             ("$search".to_string(), search),
@@ -1565,6 +1614,46 @@ impl ExchangeService {
             &format!("me/messages/{message_id}"),
             &[],
             Some(payload),
+        )
+    }
+
+    /// Update only the read bit without changing Outlook's independent
+    /// follow-up flag. Graph has no Evolution-style `CAMEL_MESSAGE_FLAGGED`
+    /// star, so read/unread actions must not accidentally clear `message.flag`.
+    pub fn set_message_read_state_sync(
+        &self,
+        message_id: &str,
+        is_read: bool,
+    ) -> Result<(), ExchangeError> {
+        let message_id = encode_path_segment(message_id)?;
+        self.request_empty(
+            Method::PATCH,
+            &format!("me/messages/{message_id}"),
+            &[],
+            Some(serde_json::json!({"isRead": is_read})),
+        )
+    }
+
+    /// Set the complete Microsoft Graph follow-up state for one message.
+    ///
+    /// Graph represents this state as `message.flag.flagStatus` and requires
+    /// a PATCH to the message resource.  The request deliberately goes
+    /// through the shared empty-response transport so token validation,
+    /// cancellation and structured Graph errors have exactly the same
+    /// behavior as the other message mutations.
+    pub fn set_message_follow_up_state_sync(
+        &self,
+        message_id: &str,
+        state: ExchangeMailFollowUpState,
+    ) -> Result<(), ExchangeError> {
+        let message_id = encode_path_segment(message_id)?;
+        self.request_empty(
+            Method::PATCH,
+            &format!("me/messages/{message_id}"),
+            &[],
+            Some(serde_json::json!({
+                "flag": {"flagStatus": graph_flag_status_for_follow_up_state(state)}
+            })),
         )
     }
 
@@ -2318,6 +2407,12 @@ struct GraphFollowupFlag {
     flag_status: String,
 }
 
+impl GraphFollowupFlag {
+    fn into_public_state(self) -> ExchangeMailFollowUpState {
+        follow_up_state_from_graph_flag_status(&self.flag_status)
+    }
+}
+
 #[derive(Debug, Deserialize, Default)]
 struct GraphMessage {
     #[serde(default)]
@@ -2358,11 +2453,22 @@ struct GraphMessage {
     importance: String,
     #[serde(default)]
     categories: Vec<String>,
+    #[serde(rename = "internetMessageHeaders", default)]
+    internet_message_headers: Vec<GraphInternetMessageHeader>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct GraphInternetMessageHeader {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    value: String,
 }
 
 impl GraphMessage {
     fn into_public(self, folder_id: String) -> ExchangeMailMessage {
         let (body_html, body_text) = self.body.into_parts();
+        let follow_up_state = self.flag.into_public_state();
         ExchangeMailMessage {
             id: self.id,
             folder_id: self.parent_folder_id.unwrap_or(folder_id),
@@ -2397,9 +2503,17 @@ impl GraphMessage {
             body_text,
             has_attachments: self.has_attachments,
             is_read: self.is_read,
-            is_flagged: self.flag.flag_status.eq_ignore_ascii_case("flagged"),
+            // Graph's message.flag is Outlook follow-up, not Evolution's
+            // separate starred/flagged bit. Keep the two UI columns distinct.
+            is_flagged: false,
+            follow_up_state,
             is_important: self.importance.eq_ignore_ascii_case("high"),
             categories: self.categories,
+            internet_message_headers: self
+                .internet_message_headers
+                .into_iter()
+                .map(|header| (header.name, header.value))
+                .collect(),
             attachments: Vec::new(),
         }
     }
@@ -3018,6 +3132,13 @@ mod tests {
             service.search_gal_sync("person"),
             Err(ExchangeError::MissingAccessToken)
         );
+        assert_eq!(
+            service.set_message_follow_up_state_sync(
+                "message-id",
+                ExchangeMailFollowUpState::FollowUp,
+            ),
+            Err(ExchangeError::MissingAccessToken)
+        );
         let mut service = service;
         service.set_access_token("secret-token");
         let debug = format!("{service:?}");
@@ -3063,6 +3184,205 @@ mod tests {
             "cancellation took too long: {:?}",
             cancellation_started.elapsed()
         );
+    }
+
+    #[test]
+    fn graph_mail_follow_up_flags_map_all_three_graph_states() {
+        let response = concat!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n",
+            "Connection: close\r\n\r\n",
+            "{\"value\":[",
+            "{\"id\":\"none\",\"flag\":{\"flagStatus\":\"notFlagged\"}},",
+            "{\"id\":\"follow-up\",\"flag\":{\"flagStatus\":\"flagged\"}},",
+            "{\"id\":\"completed\",\"flag\":{\"flagStatus\":\"complete\"}}]}",
+        );
+        let (base_url, requests, handle) = mock_server(response);
+        let service = ExchangeService {
+            server_url: base_url,
+            ..ExchangeService::graph("user@example.org", "token")
+        };
+
+        let messages = service
+            .list_messages_sync("folder-id", 20)
+            .expect("Graph message flags should parse");
+        let request = requests.recv().expect("request should be captured");
+        handle.join().expect("mock server should finish");
+
+        assert!(request.contains("GET /v1.0/me/mailFolders/folder-id/messages?"));
+        assert!(request.contains("flag"));
+        assert_eq!(
+            messages
+                .iter()
+                .map(|message| message.follow_up_state)
+                .collect::<Vec<_>>(),
+            vec![
+                ExchangeMailFollowUpState::None,
+                ExchangeMailFollowUpState::FollowUp,
+                ExchangeMailFollowUpState::Completed,
+            ]
+        );
+        assert!(!messages[0].is_flagged);
+        assert!(!messages[1].is_flagged);
+        assert!(!messages[2].is_flagged);
+    }
+
+    #[test]
+    fn graph_message_headers_form_a_safe_reusable_rfc822_block() {
+        let block = graph_header_block(&[
+            ("Subject".to_string(), "Roadmap".to_string()),
+            ("X-Custom".to_string(), "line one\r\nline two".to_string()),
+            ("Bad:Name".to_string(), "ignored".to_string()),
+        ])
+        .expect("valid Graph headers should encode");
+
+        assert_eq!(
+            String::from_utf8(block).expect("headers should remain UTF-8"),
+            "Subject: Roadmap\r\nX-Custom: line one  line two\r\n"
+        );
+    }
+
+    #[test]
+    fn graph_selected_headers_reach_the_shared_mail_record() {
+        let message: GraphMessage = serde_json::from_value(serde_json::json!({
+            "id": "message-id",
+            "subject": "Roadmap",
+            "internetMessageHeaders": [
+                {"name": "Subject", "value": "Roadmap"},
+                {"name": "X-Project", "value": "Evolution GTK4"}
+            ]
+        }))
+        .expect("Graph message shape should parse");
+        let parsed = message
+            .into_public("folder-id".to_string())
+            .into_parsed_mail("source-id", "Inbox");
+
+        assert_eq!(
+            parsed.raw_headers.as_deref(),
+            Some(b"Subject: Roadmap\r\nX-Project: Evolution GTK4\r\n".as_slice())
+        );
+    }
+
+    #[test]
+    fn graph_follow_up_patch_sends_payload_and_accepts_success() {
+        let response = "HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n";
+        let (base_url, requests, handle) = mock_server(response);
+        let service = ExchangeService {
+            server_url: base_url,
+            ..ExchangeService::graph("user@example.org", "token")
+        };
+
+        service
+            .set_message_follow_up_state_sync("message/id", ExchangeMailFollowUpState::Completed)
+            .expect("Graph follow-up PATCH should succeed");
+        let request = requests.recv().expect("request should be captured");
+        handle.join().expect("mock server should finish");
+
+        assert!(request.contains("PATCH /v1.0/me/messages/message%2Fid HTTP"));
+        assert!(
+            request
+                .to_ascii_lowercase()
+                .contains("authorization: bearer token")
+        );
+        let body = request
+            .split_once("\r\n\r\n")
+            .map(|(_, body)| body)
+            .expect("request should contain a body separator");
+        let body: serde_json::Value =
+            serde_json::from_str(body).expect("follow-up PATCH body should be JSON");
+        assert_eq!(
+            body,
+            serde_json::json!({"flag": {"flagStatus": "complete"}})
+        );
+    }
+
+    #[test]
+    fn graph_read_patch_does_not_overwrite_follow_up() {
+        let response = "HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n";
+        let (base_url, requests, handle) = mock_server(response);
+        let service = ExchangeService {
+            server_url: base_url,
+            ..ExchangeService::graph("user@example.org", "token")
+        };
+
+        service
+            .set_message_read_state_sync("message-id", true)
+            .expect("Graph read PATCH should succeed");
+        let request = requests.recv().expect("request should be captured");
+        handle.join().expect("mock server should finish");
+        let body = request
+            .split_once("\r\n\r\n")
+            .map(|(_, body)| body)
+            .expect("request should contain a body separator");
+        let body: serde_json::Value =
+            serde_json::from_str(body).expect("read PATCH body should be JSON");
+
+        assert_eq!(body, serde_json::json!({"isRead": true}));
+        assert!(body.get("flag").is_none());
+    }
+
+    #[test]
+    fn graph_follow_up_patch_preserves_structured_graph_errors() {
+        let response = concat!(
+            "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\n",
+            "Connection: close\r\n\r\n",
+            "{\"error\":{\"code\":\"ErrorInvalidFlag\",\"message\":\"invalid status\"}}"
+        );
+        let (base_url, requests, handle) = mock_server(response);
+        let service = ExchangeService {
+            server_url: base_url,
+            ..ExchangeService::graph("user@example.org", "token")
+        };
+
+        let error = service
+            .set_message_follow_up_state_sync("message-id", ExchangeMailFollowUpState::FollowUp)
+            .expect_err("Graph follow-up PATCH should surface an HTTP error");
+        requests.recv().expect("request should be captured");
+        handle.join().expect("mock server should finish");
+
+        assert_eq!(
+            error,
+            ExchangeError::Http {
+                status: 400,
+                code: Some("ErrorInvalidFlag".to_string()),
+                message: "invalid status".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn graph_follow_up_patch_honors_in_flight_cancellation() {
+        let (base_url, request_seen, release_server, server_handle) = slow_mock_server();
+        let requested = Arc::new(AtomicBool::new(false));
+        let service = ExchangeService {
+            server_url: base_url,
+            ..ExchangeService::graph("user@example.org", "token")
+        }
+        .with_cancellation_flag(Arc::clone(&requested));
+        let (result_sender, result_receiver) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            let result = service.set_message_follow_up_state_sync(
+                "message-id",
+                ExchangeMailFollowUpState::FollowUp,
+            );
+            result_sender
+                .send(result)
+                .expect("request result should be observed");
+        });
+
+        request_seen
+            .recv_timeout(Duration::from_secs(1))
+            .expect("slow server should observe the PATCH request");
+        requested.store(true, Ordering::Release);
+        let result = result_receiver
+            .recv_timeout(Duration::from_secs(1))
+            .expect("cancellation should finish promptly");
+        release_server
+            .send(())
+            .expect("slow server should be released");
+        worker.join().expect("Graph worker should finish");
+        server_handle.join().expect("slow server should finish");
+
+        assert_eq!(result, Err(ExchangeError::Cancelled));
     }
 
     #[test]
@@ -3317,13 +3637,18 @@ mod tests {
             .next()
             .expect("one Graph message expected");
         assert!(request.contains("GET /v1.0/me/mailFolders/folder-id/messages?"));
+        assert!(request.contains("internetMessageHeaders"));
         assert_eq!(parsed.folder_id, "folder-id");
         let parsed_mail = parsed.into_parsed_mail("account-id", "Inbox");
         assert_eq!(parsed_mail.sender_email, "ada@example.org");
         assert!(parsed_mail.html_body.contains("<p>Safe</p>"));
         assert!(!parsed_mail.html_body.contains("script"));
         assert!(parsed_mail.is_unread);
-        assert!(parsed_mail.is_flagged);
+        assert!(!parsed_mail.is_flagged);
+        assert_eq!(
+            parsed_mail.follow_up_state,
+            ExchangeMailFollowUpState::FollowUp
+        );
         assert!(parsed_mail.is_important);
 
         let contact = ExchangeContact {

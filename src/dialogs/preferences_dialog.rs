@@ -30,6 +30,7 @@ use crate::services::mail_filter_service::{
 };
 use crate::services::mail_store_service::MailStoreService;
 use crate::services::migration_service;
+use crate::services::settings_service::validate_mail_normal_header_name;
 use crate::services::signature_store_service::SignatureStore;
 
 mod imp {
@@ -48,8 +49,8 @@ mod imp {
     impl ObjectImpl for PreferencesDialog {
         fn constructed(&self) {
             self.parent_constructed();
-            self.obj().set_content_width(880);
-            self.obj().set_content_height(620);
+            self.obj().set_content_width(960);
+            self.obj().set_content_height(680);
             self.obj().build_ui();
         }
     }
@@ -89,10 +90,50 @@ impl PreferencesDialog {
     fn build_ui(&self) {
         let settings = AppSettings::try_new();
 
-        // ── 1. Page: Konten & Mail ──────────────────────────────────────────
+        // ── 9 Sidebar Pages matching Original Evolution ───────────────────────
         let page_accounts = adw::PreferencesPage::builder()
-            .title("Konten")
+            .title("Mail Accounts")
             .icon_name("avatar-default-symbolic")
+            .build();
+
+        let page_contacts = adw::PreferencesPage::builder()
+            .title("Contacts")
+            .icon_name("contact-new-symbolic")
+            .build();
+
+        let page_mail = adw::PreferencesPage::builder()
+            .title("Mail Preferences")
+            .icon_name("mail-unread-symbolic")
+            .build();
+
+        let page_composer = adw::PreferencesPage::builder()
+            .title("Composer Preferences")
+            .icon_name("document-edit-symbolic")
+            .build();
+
+        let page_network = adw::PreferencesPage::builder()
+            .title("Network Preferences")
+            .icon_name("network-wired-symbolic")
+            .build();
+
+        let page_calendar = adw::PreferencesPage::builder()
+            .title("Calendar and Tasks")
+            .icon_name("x-office-calendar-symbolic")
+            .build();
+
+        let page_certificates = adw::PreferencesPage::builder()
+            .title("Certificates")
+            .icon_name("security-high-symbolic")
+            .build();
+
+        let page_appearance = adw::PreferencesPage::builder()
+            .title("Appearance")
+            .icon_name("display-brightness-symbolic")
+            .build();
+
+        let page_backup = adw::PreferencesPage::builder()
+            .title("Import & Backup")
+            .icon_name("drive-harddisk-symbolic")
             .build();
 
         let group_accounts = adw::PreferencesGroup::builder()
@@ -536,7 +577,7 @@ impl PreferencesDialog {
             });
             group_filters.add(&row);
         }
-        page_accounts.add(&group_filters);
+        page_mail.add(&group_filters);
 
         let group_sync = adw::PreferencesGroup::builder()
             .title("Synchronisation")
@@ -618,7 +659,7 @@ impl PreferencesDialog {
             |settings, path| settings.set_local_mail_directory(path),
         );
         group_sync.add(&row_local_mail);
-        page_accounts.add(&group_sync);
+        page_network.add(&group_sync);
 
         let group_local_sources = adw::PreferencesGroup::builder()
             .title("Lokale Importquellen")
@@ -792,7 +833,7 @@ impl PreferencesDialog {
             }
         ));
         group_local_sources.add(&row_import_contacts);
-        page_accounts.add(&group_local_sources);
+        page_contacts.add(&group_local_sources);
 
         let group_default_address_book = adw::PreferencesGroup::builder()
             .title("Standardadressbuch")
@@ -808,7 +849,7 @@ impl PreferencesDialog {
             AppSettings::default_address_book_source_uid,
             AppSettings::set_default_address_book_source_uid,
         ));
-        page_accounts.add(&group_default_address_book);
+        page_contacts.add(&group_default_address_book);
 
         let group_backup = adw::PreferencesGroup::builder()
             .title("Daten & Sicherung")
@@ -1427,7 +1468,7 @@ impl PreferencesDialog {
             }
         ));
         group_backup.add(&row_import_mail);
-        page_accounts.add(&group_backup);
+        page_backup.add(&group_backup);
 
         let group_composer = adw::PreferencesGroup::builder()
             .title("Composer")
@@ -1583,8 +1624,31 @@ impl PreferencesDialog {
             group_composer.add(&signature_row);
         }
 
-        group_composer.add(&signature_view);
-        page_accounts.add(&group_composer);
+        page_composer.add(&group_composer);
+
+        let group_signature_editor = adw::PreferencesGroup::builder()
+            .title("Signaturtext & Inhalt")
+            .description("Der Inhalt der Signatur, der beim Erstellen neuer E-Mails automatisch eingefügt wird")
+            .build();
+
+        let signature_frame = gtk::Frame::builder()
+            .css_classes(vec!["card"])
+            .margin_top(4)
+            .margin_bottom(4)
+            .build();
+
+        let signature_scroll = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .min_content_height(120)
+            .max_content_height(220)
+            .propagate_natural_height(true)
+            .child(&signature_view)
+            .build();
+
+        signature_frame.set_child(Some(&signature_scroll));
+        group_signature_editor.add(&signature_frame);
+        page_composer.add(&group_signature_editor);
 
         let group_reply = adw::PreferencesGroup::builder()
             .title("Antworten & Weiterleiten")
@@ -1627,13 +1691,43 @@ impl PreferencesDialog {
             });
         }
         group_reply.add(&row_quote_style);
-        page_accounts.add(&group_reply);
+        page_composer.add(&group_reply);
 
         // ── 2. Page: Erscheinungsbild & Leseansicht ─────────────────────────
         let page_appearance = adw::PreferencesPage::builder()
             .title("Erscheinungsbild")
             .icon_name("display-brightness-symbolic")
             .build();
+
+        let group_navigation = adw::PreferencesGroup::builder()
+            .title("Navigation & Modul-Schaltflächen")
+            .description(
+                "Positionierung der Schaltflächen für Mail, Kalender, Kontakte, Aufgaben und Memos",
+            )
+            .build();
+        let row_switcher_location = adw::ComboRow::builder()
+            .title("Position der Modul-Schaltflächen")
+            .model(&gtk::StringList::new(&[
+                "Oben in der Kopfleiste (Libadwaita)",
+                "Unten links in der Seitenleiste (Klassisches Evolution)",
+            ]))
+            .build();
+        if let Some(settings) = settings.clone() {
+            row_switcher_location.set_selected(if settings.switcher_location() == "bottom-left" {
+                1
+            } else {
+                0
+            });
+            row_switcher_location.connect_selected_notify(move |row| {
+                settings.set_switcher_location(if row.selected() == 1 {
+                    "bottom-left"
+                } else {
+                    "top"
+                });
+            });
+        }
+        group_navigation.add(&row_switcher_location);
+        page_appearance.add(&group_navigation);
 
         let group_reading = adw::PreferencesGroup::builder()
             .title("Leseansicht & Datenschutz")
@@ -1808,6 +1902,21 @@ impl PreferencesDialog {
         }
         group_reading.add(&row_mail_toolbar);
 
+        let row_mail_statusbar = adw::SwitchRow::builder()
+            .title("Statusinformationen unten anzeigen")
+            .subtitle(
+                "Zeigt Konto-, Lade- und Verbindungsstatus ausschließlich am unteren Fensterrand",
+            )
+            .active(true)
+            .build();
+        if let Some(settings) = settings.clone() {
+            row_mail_statusbar.set_active(settings.mail_show_statusbar());
+            row_mail_statusbar.connect_active_notify(move |row| {
+                settings.set_mail_show_statusbar(row.is_active());
+            });
+        }
+        group_reading.add(&row_mail_statusbar);
+
         let row_mail_sidebar = adw::SwitchRow::builder()
             .title("Ordner-Seitenleiste anzeigen")
             .subtitle(
@@ -1876,7 +1985,7 @@ impl PreferencesDialog {
         }
         group_reading.add(&row_confirm_destructive);
 
-        page_appearance.add(&group_reading);
+        page_mail.add(&group_reading);
 
         let group_theme = adw::PreferencesGroup::builder()
             .title("Farbschema")
@@ -1975,7 +2084,7 @@ impl PreferencesDialog {
             });
         }
         group_mail_list.add(&row_mail_threading);
-        page_appearance.add(&group_mail_list);
+        page_mail.add(&group_mail_list);
 
         let group_mail_columns = adw::PreferencesGroup::builder()
             .title("Mail-Zeile")
@@ -2071,7 +2180,17 @@ impl PreferencesDialog {
             });
         }
         group_mail_columns.add(&row_mail_show_labels);
-        page_appearance.add(&group_mail_columns);
+        page_mail.add(&group_mail_columns);
+
+        let group_mail_normal_headers = adw::PreferencesGroup::builder()
+            .title("Normale Nachrichtenkopfzeilen")
+            .description(
+                "Bestimmt die Reihenfolge und Sichtbarkeit der Kopfzeilen in der normalen Leseansicht. Deaktivierte Felder bleiben hier verfügbar.",
+            )
+            .build();
+        let normal_headers_editor = build_mail_normal_headers_editor(settings.clone());
+        group_mail_normal_headers.add(&normal_headers_editor);
+        page_mail.add(&group_mail_normal_headers);
 
         // ── 3. Page: Kalender & Aufgaben ────────────────────────────────────
         let page_calendar = adw::PreferencesPage::builder()
@@ -2631,13 +2750,18 @@ impl PreferencesDialog {
             }
         });
 
-        page_security.add(&group_crypto);
+        page_certificates.add(&group_crypto);
 
-        // Add pages to window
+        // Add 9 category pages matching Original Evolution sidebar
         self.add(&page_accounts);
-        self.add(&page_appearance);
+        self.add(&page_contacts);
+        self.add(&page_mail);
+        self.add(&page_composer);
+        self.add(&page_network);
         self.add(&page_calendar);
-        self.add(&page_security);
+        self.add(&page_certificates);
+        self.add(&page_appearance);
+        self.add(&page_backup);
     }
 
     fn show_toast(&self, message: &str) {
@@ -2649,6 +2773,342 @@ impl PreferencesDialog {
         }
         tracing::warn!(%message, "Preferences dialog result");
     }
+}
+
+const MAX_EDITABLE_MAIL_NORMAL_HEADERS: usize = 64;
+
+fn default_mail_normal_headers_for_editor() -> Vec<(String, bool)> {
+    [
+        ("From", true),
+        ("Reply-To", true),
+        ("To", true),
+        ("Cc", true),
+        ("Bcc", true),
+        ("Subject", true),
+        ("Date", true),
+        ("Newsgroups", true),
+        ("Face", true),
+        ("x-evolution-mailer", false),
+    ]
+    .into_iter()
+    .map(|(name, visible)| (name.to_string(), visible))
+    .collect()
+}
+
+fn build_mail_normal_headers_editor(settings: Option<AppSettings>) -> gtk::Box {
+    let state = Rc::new(RefCell::new(
+        settings
+            .as_ref()
+            .map(AppSettings::mail_normal_headers)
+            .unwrap_or_else(default_mail_normal_headers_for_editor),
+    ));
+    let list = gtk::ListBox::builder()
+        .selection_mode(gtk::SelectionMode::None)
+        .css_classes(vec!["boxed-list"])
+        .build();
+    rebuild_mail_normal_headers_list(&list, &state, &settings);
+
+    let add_box = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(6)
+        .margin_top(6)
+        .build();
+    let entry = gtk::Entry::builder()
+        .placeholder_text("Eigener Header, z. B. List-Id")
+        .hexpand(true)
+        .activates_default(true)
+        .build();
+    let add_button = gtk::Button::builder()
+        .label("Hinzufügen")
+        .css_classes(vec!["flat", "suggested-action"])
+        .sensitive(false)
+        .build();
+    add_box.append(&entry);
+    add_box.append(&add_button);
+
+    let validation_label = gtk::Label::builder()
+        .halign(gtk::Align::Start)
+        .wrap(true)
+        .css_classes(vec!["error"])
+        .visible(false)
+        .build();
+
+    let reset_button = gtk::Button::builder()
+        .label("Zurücksetzen")
+        .tooltip_text("Normale Header auf die Evolution-Defaultliste zurücksetzen")
+        .css_classes(vec!["flat"])
+        .halign(gtk::Align::Start)
+        .build();
+
+    let editor = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(4)
+        .build();
+    editor.append(&list);
+    editor.append(&add_box);
+    editor.append(&validation_label);
+    editor.append(&reset_button);
+
+    let state_for_validation = Rc::clone(&state);
+    let validation_for_entry = validation_label.clone();
+    let add_button_for_entry = add_button.clone();
+    entry.connect_changed(move |entry| {
+        let validation = validate_new_mail_normal_header(&entry.text(), &state_for_validation);
+        add_button_for_entry.set_sensitive(validation.is_ok());
+        set_mail_header_validation_message(&validation_for_entry, validation.err());
+    });
+
+    let add_header = {
+        let state = Rc::clone(&state);
+        let list = list.clone();
+        let settings = settings.clone();
+        let validation_label = validation_label.clone();
+        let entry = entry.clone();
+        move || {
+            add_mail_normal_header(&entry, &list, &state, &settings, &validation_label);
+        }
+    };
+    let add_header_for_button = add_header.clone();
+    add_button.connect_clicked(move |_| add_header_for_button());
+    entry.connect_activate(move |_| add_header());
+
+    let state_for_reset = Rc::clone(&state);
+    let list_for_reset = list.clone();
+    let settings_for_reset = settings.clone();
+    let entry_for_reset = entry.clone();
+    let validation_for_reset = validation_label.clone();
+    reset_button.connect_clicked(move |_| {
+        state_for_reset.replace(default_mail_normal_headers_for_editor());
+        persist_mail_normal_headers(&state_for_reset, &settings_for_reset);
+        rebuild_mail_normal_headers_list(&list_for_reset, &state_for_reset, &settings_for_reset);
+        entry_for_reset.set_text("");
+        set_mail_header_validation_message(&validation_for_reset, None);
+    });
+
+    editor
+}
+
+fn rebuild_mail_normal_headers_list(
+    list: &gtk::ListBox,
+    state: &Rc<RefCell<Vec<(String, bool)>>>,
+    settings: &Option<AppSettings>,
+) {
+    while let Some(child) = list.first_child() {
+        list.remove(&child);
+    }
+
+    let headers = state.borrow().clone();
+    for (index, (name, visible)) in headers.into_iter().enumerate() {
+        list.append(&mail_normal_header_row(
+            list, state, settings, index, name, visible,
+        ));
+    }
+}
+
+fn mail_normal_header_row(
+    list: &gtk::ListBox,
+    state: &Rc<RefCell<Vec<(String, bool)>>>,
+    settings: &Option<AppSettings>,
+    index: usize,
+    name: String,
+    visible: bool,
+) -> gtk::ListBoxRow {
+    let row = gtk::ListBoxRow::new();
+    row.set_selectable(false);
+    row.set_activatable(false);
+
+    let content = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(6)
+        .margin_top(4)
+        .margin_bottom(4)
+        .margin_start(8)
+        .margin_end(8)
+        .build();
+    let label = gtk::Label::builder()
+        .label(&name)
+        .halign(gtk::Align::Start)
+        .hexpand(true)
+        .ellipsize(gtk::pango::EllipsizeMode::End)
+        .build();
+    let visibility = gtk::Switch::builder()
+        .active(visible)
+        .valign(gtk::Align::Center)
+        .tooltip_text("Header in der normalen Leseansicht anzeigen")
+        .build();
+    let move_up =
+        mail_header_editor_button("go-up-symbolic", "Header nach oben verschieben", index > 0);
+    let move_down = mail_header_editor_button(
+        "go-down-symbolic",
+        "Header nach unten verschieben",
+        index + 1 < state.borrow().len(),
+    );
+    let remove = mail_header_editor_button("user-trash-symbolic", "Header entfernen", true);
+
+    content.append(&label);
+    content.append(&visibility);
+    content.append(&move_up);
+    content.append(&move_down);
+    content.append(&remove);
+    row.set_child(Some(&content));
+
+    let state_for_visibility = Rc::clone(state);
+    let settings_for_visibility = settings.clone();
+    let name_for_visibility = name.clone();
+    visibility.connect_active_notify(move |switch| {
+        let changed = {
+            let mut headers = state_for_visibility.borrow_mut();
+            if let Some((_, enabled)) = headers
+                .iter_mut()
+                .find(|(candidate, _)| candidate.eq_ignore_ascii_case(&name_for_visibility))
+            {
+                *enabled = switch.is_active();
+                true
+            } else {
+                false
+            }
+        };
+        if changed {
+            persist_mail_normal_headers(&state_for_visibility, &settings_for_visibility);
+        }
+    });
+
+    let state_for_up = Rc::clone(state);
+    let settings_for_up = settings.clone();
+    let list_for_up = list.clone();
+    let name_for_up = name.clone();
+    move_up.connect_clicked(move |_| {
+        move_mail_normal_header(
+            &list_for_up,
+            &state_for_up,
+            &settings_for_up,
+            &name_for_up,
+            -1,
+        );
+    });
+
+    let state_for_down = Rc::clone(state);
+    let settings_for_down = settings.clone();
+    let list_for_down = list.clone();
+    let name_for_down = name.clone();
+    move_down.connect_clicked(move |_| {
+        move_mail_normal_header(
+            &list_for_down,
+            &state_for_down,
+            &settings_for_down,
+            &name_for_down,
+            1,
+        );
+    });
+
+    let state_for_remove = Rc::clone(state);
+    let settings_for_remove = settings.clone();
+    let list_for_remove = list.clone();
+    remove.connect_clicked(move |_| {
+        state_for_remove
+            .borrow_mut()
+            .retain(|(candidate, _)| !candidate.eq_ignore_ascii_case(&name));
+        persist_mail_normal_headers(&state_for_remove, &settings_for_remove);
+        rebuild_mail_normal_headers_list(&list_for_remove, &state_for_remove, &settings_for_remove);
+    });
+
+    row
+}
+
+fn mail_header_editor_button(icon_name: &str, tooltip: &str, sensitive: bool) -> gtk::Button {
+    gtk::Button::builder()
+        .icon_name(icon_name)
+        .tooltip_text(tooltip)
+        .css_classes(vec!["flat"])
+        .sensitive(sensitive)
+        .valign(gtk::Align::Center)
+        .build()
+}
+
+fn move_mail_normal_header(
+    list: &gtk::ListBox,
+    state: &Rc<RefCell<Vec<(String, bool)>>>,
+    settings: &Option<AppSettings>,
+    name: &str,
+    direction: isize,
+) {
+    let mut headers = state.borrow_mut();
+    let Some(index) = headers
+        .iter()
+        .position(|(candidate, _)| candidate.eq_ignore_ascii_case(name))
+    else {
+        return;
+    };
+    let target = index as isize + direction;
+    if !(0..headers.len() as isize).contains(&target) {
+        return;
+    }
+    headers.swap(index, target as usize);
+    drop(headers);
+    persist_mail_normal_headers(state, settings);
+    rebuild_mail_normal_headers_list(list, state, settings);
+}
+
+fn persist_mail_normal_headers(
+    state: &Rc<RefCell<Vec<(String, bool)>>>,
+    settings: &Option<AppSettings>,
+) {
+    if let Some(settings) = settings.as_ref() {
+        let headers = state.borrow().clone();
+        settings.set_mail_normal_headers(&headers);
+    }
+}
+
+fn validate_new_mail_normal_header(
+    value: &str,
+    state: &Rc<RefCell<Vec<(String, bool)>>>,
+) -> Result<String, String> {
+    let name = validate_mail_normal_header_name(value)?;
+    let headers = state.borrow();
+    if headers.len() >= MAX_EDITABLE_MAIL_NORMAL_HEADERS {
+        return Err(format!(
+            "Es können höchstens {MAX_EDITABLE_MAIL_NORMAL_HEADERS} Header verwaltet werden."
+        ));
+    }
+    if headers
+        .iter()
+        .any(|(candidate, _)| candidate.eq_ignore_ascii_case(&name))
+    {
+        return Err(format!("Der Header „{name}“ ist bereits vorhanden."));
+    }
+    Ok(name)
+}
+
+fn set_mail_header_validation_message(label: &gtk::Label, message: Option<String>) {
+    if let Some(message) = message {
+        label.set_label(&message);
+        label.set_visible(true);
+    } else {
+        label.set_label("");
+        label.set_visible(false);
+    }
+}
+
+fn add_mail_normal_header(
+    entry: &gtk::Entry,
+    list: &gtk::ListBox,
+    state: &Rc<RefCell<Vec<(String, bool)>>>,
+    settings: &Option<AppSettings>,
+    validation_label: &gtk::Label,
+) {
+    let value = entry.text().to_string();
+    let name = match validate_new_mail_normal_header(&value, state) {
+        Ok(name) => name,
+        Err(message) => {
+            set_mail_header_validation_message(validation_label, Some(message));
+            return;
+        }
+    };
+    state.borrow_mut().push((name, true));
+    persist_mail_normal_headers(state, settings);
+    rebuild_mail_normal_headers_list(list, state, settings);
+    entry.set_text("");
+    set_mail_header_validation_message(validation_label, None);
 }
 
 fn smime_file_row(
@@ -3193,5 +3653,38 @@ fn filter_action_label(action: &FilterAction) -> String {
 impl Default for PreferencesDialog {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{default_mail_normal_headers_for_editor, validate_new_mail_normal_header};
+    use std::{cell::RefCell, rc::Rc};
+
+    #[test]
+    fn normal_header_editor_uses_evolution_default_order() {
+        assert_eq!(
+            default_mail_normal_headers_for_editor(),
+            vec![
+                ("From".to_string(), true),
+                ("Reply-To".to_string(), true),
+                ("To".to_string(), true),
+                ("Cc".to_string(), true),
+                ("Bcc".to_string(), true),
+                ("Subject".to_string(), true),
+                ("Date".to_string(), true),
+                ("Newsgroups".to_string(), true),
+                ("Face".to_string(), true),
+                ("x-evolution-mailer".to_string(), false),
+            ]
+        );
+    }
+
+    #[test]
+    fn normal_header_editor_reports_invalid_and_duplicate_names() {
+        let state = Rc::new(RefCell::new(vec![("Subject".to_string(), true)]));
+        assert!(validate_new_mail_normal_header("  X-Trace  ", &state).is_ok());
+        assert!(validate_new_mail_normal_header("subject", &state).is_err());
+        assert!(validate_new_mail_normal_header("X-Bad: value", &state).is_err());
     }
 }

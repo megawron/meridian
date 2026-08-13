@@ -28,7 +28,9 @@ use crate::services::html_sanitizer::html_to_plain_text;
 use crate::services::mail_filter_service::{
     FilterAction, FilterMessageContext, FilterScope, MailFilterRule, MailFilterStore,
 };
-use crate::services::mail_metadata_service::{MailMessageState, MailMetadataStore};
+use crate::services::mail_metadata_service::{
+    MailFollowUpState, MailMessageState, MailMetadataStore,
+};
 use crate::services::mail_thread_service::{
     ThreadIdentity, extract_message_ids, group_messages, normalize_message_id,
 };
@@ -87,6 +89,7 @@ pub struct ParsedMail {
     pub is_unread: bool,
     pub is_flagged: bool,
     pub is_important: bool,
+    pub follow_up_state: MailFollowUpState,
     pub labels: Vec<String>,
     pub attachments: Vec<AttachmentInfo>,
 }
@@ -117,6 +120,7 @@ impl ParsedMail {
             is_unread,
             is_flagged,
             is_important,
+            follow_up_state,
             labels,
             backend_location,
             attachments,
@@ -145,6 +149,7 @@ impl ParsedMail {
             is_unread,
             is_flagged,
             is_important,
+            follow_up_state,
             labels,
             backend_location,
             attachments,
@@ -592,6 +597,7 @@ impl MailStoreService {
         let folder_overrides = self.metadata.load_folder_overrides();
         let deleted = self.metadata.load_deleted();
         let labels = self.metadata.load_labels();
+        let follow_up = self.metadata.load_follow_up();
         let filter_rules = MailFilterStore::default().load();
         let mut messages = self.load_raw_local_records_cancelable(cancelled);
 
@@ -603,6 +609,9 @@ impl MailStoreService {
             }
             if let Some(message_labels) = labels.get(&message.id) {
                 message.labels = sorted_labels(message_labels);
+            }
+            if let Some(state) = follow_up.get(&message.id) {
+                message.follow_up_state = *state;
             }
             let effects =
                 apply_client_state(&metadata, &filter_rules, message, Some(&self.metadata));
@@ -662,6 +671,9 @@ impl MailStoreService {
                 }
                 if let Some(copy_labels) = labels.get(&copy_id) {
                     copy.labels = sorted_labels(copy_labels);
+                }
+                if let Some(state) = follow_up.get(&copy_id) {
+                    copy.follow_up_state = *state;
                 }
                 copied_messages.push(copy);
             }
@@ -746,6 +758,76 @@ impl MailStoreService {
         Ok(Some(report))
     }
 
+    /// Apply all enabled saved filter rules to the app-owned local mailbox.
+    pub fn run_all_active_filters(&self) -> std::io::Result<LocalFilterRunReport> {
+        let filter_store = MailFilterStore::default();
+        self.run_all_active_filters_with_store(&filter_store)
+    }
+
+    pub(crate) fn run_all_active_filters_with_store(
+        &self,
+        filter_store: &MailFilterStore,
+    ) -> std::io::Result<LocalFilterRunReport> {
+        let rules: Vec<_> = filter_store
+            .load()
+            .into_iter()
+            .filter(|rule| rule.enabled)
+            .collect();
+
+        let metadata = self.metadata.load();
+        let folder_overrides = self.metadata.load_folder_overrides();
+        let deleted = self.metadata.load_deleted();
+        let labels = self.metadata.load_labels();
+        let cancelled = AtomicBool::new(false);
+        let mut messages = self.load_raw_local_records_cancelable(&cancelled);
+        let mut report = LocalFilterRunReport::default();
+
+        for message in &mut messages {
+            if deleted.contains(&message.id) {
+                continue;
+            }
+            if let Some(folder_id) = folder_overrides.get(&message.id) {
+                message.folder_id = folder_id.clone();
+            }
+            if let Some(state) = metadata.get(&message.id) {
+                message.is_unread = state.is_unread;
+                message.is_flagged = state.is_flagged;
+                message.is_important = state.is_important;
+            }
+            if let Some(message_labels) = labels.get(&message.id) {
+                message.labels = sorted_labels(message_labels);
+            }
+
+            for rule in &rules {
+                if !message_matches_rule(rule, message) {
+                    continue;
+                }
+                report.matched_messages += 1;
+                let effects = apply_filter_rule(rule, message, Some(&self.metadata));
+                if effects.state_changed {
+                    self.metadata.update(
+                        &message.id,
+                        MailMessageState {
+                            is_unread: message.is_unread,
+                            is_flagged: message.is_flagged,
+                            is_important: message.is_important,
+                        },
+                    )?;
+                }
+                report.changed_messages += usize::from(effects.changed);
+                report.moved_messages += usize::from(effects.moved);
+                report.copied_messages += usize::from(effects.copied);
+                report.deleted_messages += usize::from(effects.deleted);
+
+                if effects.stop_processing || effects.deleted || effects.moved {
+                    break;
+                }
+            }
+        }
+
+        Ok(report)
+    }
+
     fn load_raw_local_records_cancelable(&self, cancelled: &AtomicBool) -> Vec<ParsedMail> {
         let mut paths = Vec::new();
         collect_mail_files(&self.mail_dir, &mut paths);
@@ -810,6 +892,14 @@ impl MailStoreService {
                 is_important,
             },
         )
+    }
+
+    pub fn persist_follow_up_state(
+        &self,
+        id: &str,
+        state: MailFollowUpState,
+    ) -> std::io::Result<()> {
+        self.metadata.set_follow_up(id, state)
     }
 
     /// Apply application-owned read/flag state and local filter rules to
@@ -1725,6 +1815,7 @@ pub(crate) fn parse_rfc822_bytes(
         is_unread: unread,
         is_flagged: false,
         is_important: false,
+        follow_up_state: MailFollowUpState::None,
         labels: Vec::new(),
         attachments: extracted.attachments,
     })
@@ -3651,6 +3742,44 @@ mod tests {
             MailStoreService::with_mail_dir(root.clone()).load_local_records_cancelable(&cancelled);
 
         assert!(records.is_empty());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn run_all_active_filters_executes_enabled_rules() {
+        let root = temporary_directory("all-active-filters");
+        fs::write(
+            root.join("invoice.eml"),
+            "From: Billing <billing@example.org>\nSubject: Important Invoice\n\nInvoice body\n",
+        )
+        .expect("mail should be written");
+
+        let filter_store = MailFilterStore::new(root.join("filters.json"));
+        let rule = MailFilterRule {
+            id: "invoice-rule".to_string(),
+            name: "Archive Invoices".to_string(),
+            enabled: true,
+            scope: FilterScope::Incoming,
+            condition: FilterCondition {
+                field: FilterField::Subject,
+                value: "Invoice".to_string(),
+                operator: FilterOperator::Contains,
+            },
+            action: FilterAction::MoveToFolder("archive".to_string()),
+            conditions: Vec::new(),
+            actions: Vec::new(),
+            match_all: true,
+        };
+        filter_store.upsert(rule).expect("rule should be saved");
+
+        let service =
+            MailStoreService::with_mail_dir_and_state_path(root.clone(), root.join("state.json"));
+        let report = service
+            .run_all_active_filters_with_store(&filter_store)
+            .expect("filter run should succeed");
+        assert_eq!(report.matched_messages, 1);
+        assert_eq!(report.moved_messages, 1);
+
         let _ = fs::remove_dir_all(root);
     }
 

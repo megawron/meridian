@@ -1447,6 +1447,7 @@ mod tests {
             is_unread,
             is_flagged,
             is_important,
+            follow_up_state: crate::services::mail_metadata_service::MailFollowUpState::None,
             labels: labels.iter().map(|label| (*label).to_string()).collect(),
             attachments,
         }
@@ -1633,6 +1634,7 @@ mod tests {
             is_unread: true,
             is_flagged: false,
             is_important: false,
+            follow_up_state: crate::services::mail_metadata_service::MailFollowUpState::None,
             labels: Vec::new(),
             attachments: Vec::new(),
         }];
