@@ -43,26 +43,25 @@ mod imp {
     impl ObjectSubclass for PreferencesDialog {
         const NAME: &'static str = "EvolutionPreferencesDialog";
         type Type = super::PreferencesDialog;
-        type ParentType = adw::PreferencesDialog;
+        type ParentType = adw::Dialog;
     }
 
     impl ObjectImpl for PreferencesDialog {
         fn constructed(&self) {
             self.parent_constructed();
-            self.obj().set_content_width(960);
-            self.obj().set_content_height(680);
+            self.obj().set_content_width(980);
+            self.obj().set_content_height(720);
             self.obj().build_ui();
         }
     }
 
     impl WidgetImpl for PreferencesDialog {}
     impl AdwDialogImpl for PreferencesDialog {}
-    impl PreferencesDialogImpl for PreferencesDialog {}
 }
 
 glib::wrapper! {
     pub struct PreferencesDialog(ObjectSubclass<imp::PreferencesDialog>)
-        @extends adw::PreferencesDialog, adw::Dialog, gtk::Widget,
+        @extends adw::Dialog, gtk::Widget,
         @implements gtk::Accessible, gtk::Buildable, gtk::ConstraintTarget;
 }
 
@@ -114,21 +113,6 @@ impl PreferencesDialog {
         let page_network = adw::PreferencesPage::builder()
             .title("Network Preferences")
             .icon_name("network-wired-symbolic")
-            .build();
-
-        let page_calendar = adw::PreferencesPage::builder()
-            .title("Calendar and Tasks")
-            .icon_name("x-office-calendar-symbolic")
-            .build();
-
-        let page_certificates = adw::PreferencesPage::builder()
-            .title("Certificates")
-            .icon_name("security-high-symbolic")
-            .build();
-
-        let page_appearance = adw::PreferencesPage::builder()
-            .title("Appearance")
-            .icon_name("display-brightness-symbolic")
             .build();
 
         let page_backup = adw::PreferencesPage::builder()
@@ -2593,13 +2577,6 @@ impl PreferencesDialog {
             });
         }
         group_task_memo_lists.add(&row_memo_sort_direction);
-        page_calendar.add(&group_task_memo_lists);
-
-        // ── 4. Page: Sicherheit & PGP/S-MIME ───────────────────────────────
-        let page_security = adw::PreferencesPage::builder()
-            .title("Sicherheit")
-            .icon_name("security-high-symbolic")
-            .build();
 
         let group_crypto = adw::PreferencesGroup::builder()
             .title("Verschlüsselung & Signaturen")
@@ -2750,18 +2727,239 @@ impl PreferencesDialog {
             }
         });
 
+        let page_certificates = adw::PreferencesPage::builder()
+            .title("Certificates")
+            .build();
         page_certificates.add(&group_crypto);
 
-        // Add 9 category pages matching Original Evolution sidebar
-        self.add(&page_accounts);
-        self.add(&page_contacts);
-        self.add(&page_mail);
-        self.add(&page_composer);
-        self.add(&page_network);
-        self.add(&page_calendar);
-        self.add(&page_certificates);
-        self.add(&page_appearance);
-        self.add(&page_backup);
+        // ── Construct 2-Column Sidebar + Top Horizontal Sub-Tabs Layout ──────
+
+        // Sub-Stack for Mail Preferences (General, HTML Messages, Labels, Headers, Junk, Confirmations)
+        let mail_sub_stack = gtk::Stack::builder()
+            .transition_type(gtk::StackTransitionType::SlideLeftRight)
+            .hexpand(true)
+            .vexpand(true)
+            .build();
+        let mail_sub_switcher = gtk::StackSwitcher::builder()
+            .stack(&mail_sub_stack)
+            .halign(gtk::Align::Center)
+            .margin_top(4)
+            .margin_bottom(8)
+            .build();
+
+        let page_mail_general = adw::PreferencesPage::builder().title("General").build();
+        page_mail_general.add(&group_reading);
+        let page_mail_html = adw::PreferencesPage::builder()
+            .title("HTML Messages")
+            .build();
+        page_mail_html.add(&group_theme);
+        let page_mail_labels = adw::PreferencesPage::builder().title("Labels").build();
+        page_mail_labels.add(&group_mail_columns);
+        let page_mail_headers = adw::PreferencesPage::builder().title("Headers").build();
+        page_mail_headers.add(&group_mail_normal_headers);
+        let page_mail_junk = adw::PreferencesPage::builder().title("Junk").build();
+        page_mail_junk.add(&group_filters);
+        let page_mail_confirmations = adw::PreferencesPage::builder()
+            .title("Confirmations")
+            .build();
+        page_mail_confirmations.add(&group_mail_list);
+
+        mail_sub_stack.add_titled(&page_mail_general, Some("general"), "General");
+        mail_sub_stack.add_titled(&page_mail_html, Some("html"), "HTML Messages");
+        mail_sub_stack.add_titled(&page_mail_labels, Some("labels"), "Labels");
+        mail_sub_stack.add_titled(&page_mail_headers, Some("headers"), "Headers");
+        mail_sub_stack.add_titled(&page_mail_junk, Some("junk"), "Junk");
+        mail_sub_stack.add_titled(
+            &page_mail_confirmations,
+            Some("confirmations"),
+            "Confirmations",
+        );
+
+        let mail_detail_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(4)
+            .hexpand(true)
+            .vexpand(true)
+            .build();
+        mail_detail_box.append(&mail_sub_switcher);
+        mail_detail_box.append(&mail_sub_stack);
+
+        // Sub-Stack for Composer Preferences (General, Signatures, Replies)
+        let composer_sub_stack = gtk::Stack::builder()
+            .transition_type(gtk::StackTransitionType::SlideLeftRight)
+            .hexpand(true)
+            .vexpand(true)
+            .build();
+        let composer_sub_switcher = gtk::StackSwitcher::builder()
+            .stack(&composer_sub_stack)
+            .halign(gtk::Align::Center)
+            .margin_top(4)
+            .margin_bottom(8)
+            .build();
+
+        let page_composer_general = adw::PreferencesPage::builder().title("General").build();
+        page_composer_general.add(&group_composer);
+        let page_composer_signatures = adw::PreferencesPage::builder().title("Signatures").build();
+        page_composer_signatures.add(&group_signature_editor);
+        let page_composer_replies = adw::PreferencesPage::builder().title("Replies").build();
+        page_composer_replies.add(&group_reply);
+
+        composer_sub_stack.add_titled(&page_composer_general, Some("general"), "General");
+        composer_sub_stack.add_titled(&page_composer_signatures, Some("signatures"), "Signatures");
+        composer_sub_stack.add_titled(&page_composer_replies, Some("replies"), "Replies");
+
+        let composer_detail_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(4)
+            .hexpand(true)
+            .vexpand(true)
+            .build();
+        composer_detail_box.append(&composer_sub_switcher);
+        composer_detail_box.append(&composer_sub_stack);
+
+        // Sub-Stack for Calendar and Tasks (General, Display & Formats)
+        let calendar_sub_stack = gtk::Stack::builder()
+            .transition_type(gtk::StackTransitionType::SlideLeftRight)
+            .hexpand(true)
+            .vexpand(true)
+            .build();
+        let calendar_sub_switcher = gtk::StackSwitcher::builder()
+            .stack(&calendar_sub_stack)
+            .halign(gtk::Align::Center)
+            .margin_top(4)
+            .margin_bottom(8)
+            .build();
+
+        let page_calendar_general = adw::PreferencesPage::builder().title("General").build();
+        page_calendar_general.add(&group_calendar_view);
+        page_calendar_general.add(&group_calendar_days);
+        page_calendar_general.add(&group_calendar_time);
+
+        let page_calendar_display = adw::PreferencesPage::builder()
+            .title("Display & Formats")
+            .build();
+        page_calendar_display.add(&group_default_ecal_sources);
+        page_calendar_display.add(&group_categories);
+        page_calendar_display.add(&group_task_memo_lists);
+
+        calendar_sub_stack.add_titled(&page_calendar_general, Some("general"), "General");
+        calendar_sub_stack.add_titled(&page_calendar_display, Some("display"), "Display & Formats");
+
+        let calendar_detail_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(4)
+            .hexpand(true)
+            .vexpand(true)
+            .build();
+        calendar_detail_box.append(&calendar_sub_switcher);
+        calendar_detail_box.append(&calendar_sub_stack);
+
+        // Sidebar Category List (Left Column)
+        let sidebar_list = gtk::ListBox::builder()
+            .selection_mode(gtk::SelectionMode::Single)
+            .css_classes(vec!["navigation-sidebar"])
+            .build();
+
+        for (title, icon_name) in [
+            ("Mail Accounts", "avatar-default-symbolic"),
+            ("Contacts", "contact-new-symbolic"),
+            ("Mail Preferences", "mail-unread-symbolic"),
+            ("Composer Preferences", "document-edit-symbolic"),
+            ("Network Preferences", "network-wired-symbolic"),
+            ("Calendar and Tasks", "x-office-calendar-symbolic"),
+            ("Certificates", "security-high-symbolic"),
+            ("Appearance", "display-brightness-symbolic"),
+            ("Import & Backup", "drive-harddisk-symbolic"),
+        ] {
+            let row = adw::ActionRow::builder()
+                .title(title)
+                .activatable(true)
+                .build();
+            let icon = gtk::Image::from_icon_name(icon_name);
+            row.add_prefix(&icon);
+            sidebar_list.append(&row);
+        }
+
+        let sidebar_scroll = gtk::ScrolledWindow::builder()
+            .width_request(230)
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .child(&sidebar_list)
+            .build();
+
+        // Right Detail Stack
+        let detail_stack = gtk::Stack::builder()
+            .transition_type(gtk::StackTransitionType::SlideLeftRight)
+            .hexpand(true)
+            .vexpand(true)
+            .margin_start(8)
+            .margin_end(8)
+            .margin_top(8)
+            .margin_bottom(8)
+            .build();
+
+        detail_stack.add_titled(&page_accounts, Some("accounts"), "Mail Accounts");
+        detail_stack.add_titled(&page_contacts, Some("contacts"), "Contacts");
+        detail_stack.add_titled(&mail_detail_box, Some("mail"), "Mail Preferences");
+        detail_stack.add_titled(
+            &composer_detail_box,
+            Some("composer"),
+            "Composer Preferences",
+        );
+        detail_stack.add_titled(&page_network, Some("network"), "Network Preferences");
+        detail_stack.add_titled(&calendar_detail_box, Some("calendar"), "Calendar and Tasks");
+        detail_stack.add_titled(&page_certificates, Some("certificates"), "Certificates");
+        detail_stack.add_titled(&page_appearance, Some("appearance"), "Appearance");
+        detail_stack.add_titled(&page_backup, Some("backup"), "Import & Backup");
+
+        let detail_stack_weak = detail_stack.downgrade();
+        sidebar_list.connect_row_selected(move |_, row| {
+            let Some(row) = row else { return };
+            let Some(stack) = detail_stack_weak.upgrade() else {
+                return;
+            };
+            let name = match row.index() {
+                0 => "accounts",
+                1 => "contacts",
+                2 => "mail",
+                3 => "composer",
+                4 => "network",
+                5 => "calendar",
+                6 => "certificates",
+                7 => "appearance",
+                8 => "backup",
+                _ => "accounts",
+            };
+            stack.set_visible_child_name(name);
+        });
+
+        // Select Mail Preferences (index 2) by default
+        if let Some(row) = sidebar_list.row_at_index(2) {
+            sidebar_list.select_row(Some(&row));
+        }
+
+        let main_split = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .hexpand(true)
+            .vexpand(true)
+            .build();
+        main_split.append(&sidebar_scroll);
+        main_split.append(&gtk::Separator::new(gtk::Orientation::Vertical));
+        main_split.append(&detail_stack);
+
+        let header_bar = adw::HeaderBar::builder()
+            .title_widget(&adw::WindowTitle::new("Evolution Preferences", ""))
+            .build();
+
+        let content_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .hexpand(true)
+            .vexpand(true)
+            .build();
+        content_box.append(&header_bar);
+        content_box.append(&main_split);
+
+        self.set_child(Some(&content_box));
     }
 
     fn show_toast(&self, message: &str) {

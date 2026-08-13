@@ -62,7 +62,7 @@ pub(crate) struct MailBackendLocation {
     pub(crate) message_id: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ParsedMail {
     pub id: String,
     pub folder_id: String,

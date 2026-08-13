@@ -10,7 +10,9 @@ use std::sync::Arc;
 use crate::services::mail_metadata_service::MailFollowUpState;
 use crate::services::mail_store_service::MailBackendLocation;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AttachmentInfo {
     pub filename: String,
     pub size_formatted: String,
@@ -20,7 +22,12 @@ pub struct AttachmentInfo {
     /// Decoded attachment bytes.  Keeping the payload with the parsed local
     /// message lets the UI offer a real “Save as…” operation without making
     /// assumptions about the lifetime of the source EML file.
+    #[serde(skip, default = "empty_arc_bytes")]
     pub content: Arc<[u8]>,
+}
+
+fn empty_arc_bytes() -> Arc<[u8]> {
+    Arc::from([])
 }
 
 mod imp {

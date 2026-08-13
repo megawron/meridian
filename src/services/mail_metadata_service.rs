@@ -29,7 +29,7 @@ pub struct MailMessageState {
 /// This deliberately remains separate from the ordinary starred/flagged bit:
 /// Evolution exposes both columns and stores follow-up through the
 /// `follow-up`/`completed-on` user tags.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum MailFollowUpState {
     #[default]

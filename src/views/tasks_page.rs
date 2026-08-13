@@ -427,11 +427,21 @@ impl TasksPage {
         let sidebar_scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
             .child(&sidebar_box)
+            .vexpand(true)
             .build();
+
+        let sidebar_outer_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .build();
+        sidebar_outer_box.append(&sidebar_scroll);
+        sidebar_outer_box.append(&crate::views::build_sidebar_module_switcher(
+            "tasks",
+            &sidebar_outer_box,
+        ));
 
         let sidebar_page = adw::NavigationPage::builder()
             .title("Aufgaben")
-            .child(&sidebar_scroll)
+            .child(&sidebar_outer_box)
             .build();
 
         split.set_sidebar(Some(&sidebar_page));

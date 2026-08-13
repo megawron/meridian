@@ -1106,7 +1106,7 @@ fn normal_header_display_name(name: &str) -> &str {
 fn default_normal_header_configuration() -> Vec<(String, bool)> {
     [
         ("From", true),
-        ("Reply-To", true),
+        ("Reply-To", false),
         ("To", true),
         ("Cc", true),
         ("Bcc", true),
@@ -1126,11 +1126,17 @@ fn configured_normal_header_fields(
     configuration: &[(String, bool)],
 ) -> Vec<(String, String)> {
     let mut selected = Vec::new();
+    let from_value = fields
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case("from"))
+        .map(|(_, val)| val.trim().to_lowercase());
+
     for (configured_name, enabled) in configuration {
         if !enabled {
             continue;
         }
         let configured_name = configured_name.trim();
+        let is_reply_to = configured_name.eq_ignore_ascii_case("reply-to");
         let mailer_pseudo_header = configured_name.eq_ignore_ascii_case("x-evolution-mailer");
         for (actual_name, value) in fields {
             let matches = actual_name.eq_ignore_ascii_case(configured_name)
@@ -1139,6 +1145,14 @@ fn configured_normal_header_fields(
                         .iter()
                         .any(|name| actual_name.eq_ignore_ascii_case(name));
             if matches && !value.trim().is_empty() {
+                if is_reply_to {
+                    let reply_to_val = value.trim().to_lowercase();
+                    if let Some(ref from_val) = from_value {
+                        if reply_to_val == *from_val || from_val.contains(&reply_to_val) {
+                            continue;
+                        }
+                    }
+                }
                 let value = if configured_name.eq_ignore_ascii_case("date") {
                     format_message_date(value)
                 } else {
@@ -1868,6 +1882,11 @@ fn load_mail_backend(
         Some(cancelled),
         progress_sender,
     );
+    if let Ok(ref camel) = camel_result {
+        if !camel.messages.is_empty() || !camel.folders.is_empty() {
+            camel_mail_service::save_mail_load_cache(camel);
+        }
+    }
     tracing::debug!(
         elapsed_ms = started.elapsed().as_millis() as u64,
         result = if camel_result.is_ok() { "ok" } else { "error" },
@@ -2329,6 +2348,32 @@ impl MailPage {
         }
     }
 
+    pub fn select_previous_message(&self) -> bool {
+        let Some(selection) = self.imp().message_selection.borrow().as_ref().cloned() else {
+            return false;
+        };
+        let current = selection.selected();
+        if current > 0 && current != gtk::INVALID_LIST_POSITION {
+            selection.set_selected(current - 1);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn select_next_message(&self) -> bool {
+        let Some(selection) = self.imp().message_selection.borrow().as_ref().cloned() else {
+            return false;
+        };
+        let current = selection.selected();
+        if current != gtk::INVALID_LIST_POSITION && current + 1 < selection.n_items() {
+            selection.set_selected(current + 1);
+            true
+        } else {
+            false
+        }
+    }
+
     fn set_crypto_status_routine(&self, routine: bool) {
         self.imp().crypto_status_routine.set(routine);
         self.refresh_crypto_status_visibility();
@@ -2383,18 +2428,12 @@ impl MailPage {
         replace_normal_header_rows(&grid, &fields);
     }
 
-    fn set_mail_status_areas_visible(&self, visible: bool) {
+    fn set_mail_status_areas_visible(&self, _visible: bool) {
         if let Some(area) = self.imp().source_status_area.borrow().as_ref() {
-            let has_source_status = self
-                .imp()
-                .source_state
-                .borrow()
-                .as_ref()
-                .is_some_and(|state| state.is_visible());
-            area.set_visible(visible && has_source_status);
+            area.set_visible(false);
         }
         if let Some(area) = self.imp().message_status_area.borrow().as_ref() {
-            area.set_visible(visible);
+            area.set_visible(false);
         }
     }
 
@@ -2655,21 +2694,27 @@ impl MailPage {
     fn apply_mail_layout(&self, layout: MailLayout) {
         let imp = self.imp();
         let previous_layout = imp.mail_layout.get();
-        if previous_layout == layout {
-            return;
-        }
+        let current_pos = imp.inner_paned.position();
         let next_position = AppSettings::try_new()
             .map(|settings| {
-                settings.set_mail_preview_position(
-                    previous_layout.setting_value(),
-                    imp.inner_paned.position(),
-                );
-                settings.mail_preview_position(layout.setting_value())
+                if current_pos > 50 {
+                    settings
+                        .set_mail_preview_position(previous_layout.setting_value(), current_pos);
+                }
+                let saved = settings.mail_preview_position(layout.setting_value());
+                if saved < 100 {
+                    layout.default_position()
+                } else {
+                    saved
+                }
             })
             .unwrap_or_else(|| layout.default_position());
         imp.mail_layout.set(layout);
         imp.inner_paned.set_orientation(layout.orientation());
-        imp.inner_paned.set_position(next_position);
+        imp.inner_paned.set_position(next_position.max(250));
+        if let Some(end_child) = imp.inner_paned.end_child() {
+            end_child.set_visible(true);
+        }
     }
 
     fn apply_default_folder(&self, folder_id: &str) {
@@ -5561,6 +5606,11 @@ impl MailPage {
         sidebar_content.append(&sidebar_scroll);
         sidebar_content.append(&source_status_area);
 
+        sidebar_content.append(&crate::views::build_sidebar_module_switcher(
+            "mail",
+            &sidebar_content,
+        ));
+
         let page = adw::NavigationPage::builder()
             .title("Ordner")
             .child(&sidebar_content)
@@ -6739,8 +6789,8 @@ impl MailPage {
                 page.set_mail_sort_from_header(MailSortField::Sender);
             }
         });
-        sender_label.set_tooltip_text(Some("Nach Absender sortieren"));
-        sender_label.add_controller(sender_sort_gesture);
+        sender_column.set_tooltip_text(Some("Nach Absender sortieren"));
+        sender_column.add_controller(sender_sort_gesture);
 
         let status_sort_gesture = gtk::GestureClick::new();
         status_sort_gesture.set_button(1);
@@ -6830,7 +6880,6 @@ impl MailPage {
             current_width_for_update.set(width);
             sender_column_for_update.set_width_request(width);
         });
-        let page_for_resize = self.downgrade();
         let settings_for_resize = settings.clone();
         let current_width_for_end = Rc::clone(&current_width);
         gesture.connect_drag_end(move |_, _, _| {
@@ -6838,11 +6887,8 @@ impl MailPage {
             if let Some(settings) = settings_for_resize.as_ref() {
                 settings.set_mail_sender_column_width(width);
             }
-            if let Some(page) = page_for_resize.upgrade() {
-                page.refresh_mail_column_header();
-                page.refresh_mail();
-            }
         });
+        resize_handle.set_cursor(gdk::Cursor::from_name("col-resize", None).as_ref());
         resize_handle.add_controller(gesture);
 
         self.imp().mail_column_header.replace(Some(header.clone()));
@@ -8335,15 +8381,10 @@ impl MailPage {
 
         list_container.append(&list_scroll);
         message_state_box.add_css_class("mail-pane-status");
-        message_state_box.set_visible(
-            AppSettings::try_new()
-                .map(|settings| settings.mail_show_statusbar())
-                .unwrap_or(true),
-        );
+        message_state_box.set_visible(false);
         self.imp()
             .message_status_area
             .replace(Some(message_state_box.clone()));
-        list_container.append(&message_state_box);
 
         self.imp().refresh_button.replace(Some(refresh_button));
         self.imp().load_more_button.replace(Some(load_more_button));
@@ -8632,21 +8673,40 @@ impl MailPage {
             .margin_top(2)
             .build();
 
+        let reply_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        let reply_icon = gtk::Image::from_icon_name("mail-reply-sender-symbolic");
+        let reply_label = gtk::Label::new(Some("Antworten"));
+        reply_box.append(&reply_icon);
+        reply_box.append(&reply_label);
         let reply_btn = gtk::Button::builder()
-            .icon_name("mail-reply-sender-symbolic")
-            .tooltip_text("Antworten (Ctrl+R)")
+            .child(&reply_box)
+            .tooltip_text("Antworten (Strg+R)")
             .css_classes(vec!["flat"])
             .build();
 
+        let reply_all_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        let reply_all_icon = gtk::Image::from_icon_name("mail-reply-all-symbolic");
+        let reply_all_label = gtk::Label::new(Some("Allen antworten"));
+        let reply_all_arrow = gtk::Image::from_icon_name("pan-down-symbolic");
+        reply_all_box.append(&reply_all_icon);
+        reply_all_box.append(&reply_all_label);
+        reply_all_box.append(&reply_all_arrow);
         let reply_all_btn = gtk::Button::builder()
-            .icon_name("mail-reply-all-symbolic")
-            .tooltip_text("Allen antworten (Ctrl+Shift+R)")
+            .child(&reply_all_box)
+            .tooltip_text("Allen antworten (Strg+Umschalt+R)")
             .css_classes(vec!["flat"])
             .build();
 
+        let forward_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        let forward_icon = gtk::Image::from_icon_name("mail-forward-symbolic");
+        let forward_label = gtk::Label::new(Some("Weiterleiten"));
+        let forward_arrow = gtk::Image::from_icon_name("pan-down-symbolic");
+        forward_box.append(&forward_icon);
+        forward_box.append(&forward_label);
+        forward_box.append(&forward_arrow);
         let forward_btn = gtk::Button::builder()
-            .icon_name("mail-forward-symbolic")
-            .tooltip_text("Weiterleiten (Ctrl+L)")
+            .child(&forward_box)
+            .tooltip_text("Weiterleiten (Strg+L)")
             .css_classes(vec!["flat"])
             .build();
 
@@ -8664,7 +8724,7 @@ impl MailPage {
 
         let delete_btn = gtk::Button::builder()
             .icon_name("user-trash-symbolic")
-            .tooltip_text("Löschen (Delete)")
+            .tooltip_text("Löschen (Entf)")
             .action_name("win.delete")
             .css_classes(vec!["flat"])
             .build();
@@ -8712,6 +8772,32 @@ impl MailPage {
             .tooltip_text("Als Nicht-Spam markieren")
             .css_classes(vec!["flat"])
             .build();
+
+        let prev_message_btn = gtk::Button::builder()
+            .icon_name("go-up-symbolic")
+            .tooltip_text("Vorherige Nachricht in der Liste (k)")
+            .css_classes(vec!["flat"])
+            .build();
+
+        let next_message_btn = gtk::Button::builder()
+            .icon_name("go-down-symbolic")
+            .tooltip_text("Nächste Nachricht in der Liste (j)")
+            .css_classes(vec!["flat"])
+            .build();
+
+        let page_for_prev = self.downgrade();
+        prev_message_btn.connect_clicked(move |_| {
+            if let Some(page) = page_for_prev.upgrade() {
+                page.select_previous_message();
+            }
+        });
+
+        let page_for_next = self.downgrade();
+        next_message_btn.connect_clicked(move |_| {
+            if let Some(page) = page_for_next.upgrade() {
+                page.select_next_message();
+            }
+        });
 
         for (button, preferred, fallback) in [
             (

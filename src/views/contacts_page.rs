@@ -495,6 +495,10 @@ impl ContactsPage {
 
         new_contact_bar.append(&new_contact_btn);
         sidebar_box.append(&new_contact_bar);
+        sidebar_box.append(&crate::views::build_sidebar_module_switcher(
+            "contacts",
+            &sidebar_box,
+        ));
 
         let sidebar_page = adw::NavigationPage::builder()
             .title("Kontakte")
@@ -1479,12 +1483,26 @@ fn refresh_contacts(
                 // sidebar height. Keep the state visible only when it carries
                 // an empty/error/warning message the user needs to see.
                 empty_state.set_visible(contact_status_needs_visibility(contact_count, warning));
-                let mut stored_ref = stored_contacts.borrow_mut();
-                for record in result.contacts {
-                    append_contact_row(&contact_list, &record);
-                    stored_ref.push(record);
+                let contacts = result.contacts;
+                let chunk_size = 40;
+                let mut index = 0;
+                while index < contacts.len() {
+                    let end = (index + chunk_size).min(contacts.len());
+                    let mut stored_ref = stored_contacts.borrow_mut();
+                    for record in &contacts[index..end] {
+                        append_contact_row(&contact_list, record);
+                        stored_ref.push(record.clone());
+                    }
+                    drop(stored_ref);
+                    index = end;
+                    if index < contacts.len() {
+                        glib::timeout_future_with_priority(
+                            glib::Priority::LOW,
+                            std::time::Duration::from_millis(5),
+                        )
+                        .await;
+                    }
                 }
-                drop(stored_ref);
                 mark_duplicate_rows(&contact_list, &stored_contacts);
                 refresh_contact_category_model(
                     &category_model,

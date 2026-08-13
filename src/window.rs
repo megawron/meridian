@@ -115,6 +115,15 @@ impl EvolutionWindow {
         self.imp().toast_overlay.add_toast(toast.clone());
     }
 
+    pub fn set_active_view(&self, view_name: &str) {
+        if let Some(stack) = self.imp().view_stack.borrow().as_ref() {
+            stack.set_visible_child_name(view_name);
+        }
+        if let Some(settings) = AppSettings::try_new() {
+            settings.set_active_view(view_name);
+        }
+    }
+
     fn mail_page(&self) -> Option<MailPage> {
         self.imp()
             .view_stack
@@ -844,18 +853,38 @@ impl EvolutionWindow {
             .policy(adw::ViewSwitcherPolicy::Narrow)
             .build();
 
-        if let Some(settings) = AppSettings::try_new() {
-            let view_switcher_for_setting = view_switcher.clone();
-            view_switcher_for_setting.set_visible(settings.switcher_location() != "bottom-left");
-            settings.connect_changed(Some("switcher-location"), move |_, _| {
-                let show_top = AppSettings::try_new()
-                    .map(|s| s.switcher_location() != "bottom-left")
+        let window_title = adw::WindowTitle::new("Evolution", "");
+
+        let title_stack = gtk::Stack::builder()
+            .transition_type(gtk::StackTransitionType::Crossfade)
+            .build();
+        title_stack.add_named(&window_title, Some("title"));
+        title_stack.add_named(&view_switcher, Some("switcher"));
+
+        let update_title_widget = {
+            let title_stack = title_stack.clone();
+            move || {
+                let is_bottom = AppSettings::try_new()
+                    .map(|s| s.switcher_location() == "bottom-left")
                     .unwrap_or(true);
-                view_switcher_for_setting.set_visible(show_top);
+                if is_bottom {
+                    title_stack.set_visible_child_name("title");
+                } else {
+                    title_stack.set_visible_child_name("switcher");
+                }
+            }
+        };
+
+        update_title_widget();
+
+        if let Some(settings) = AppSettings::try_new() {
+            let update_cb = update_title_widget.clone();
+            settings.connect_changed(Some("switcher-location"), move |_, _| {
+                update_cb();
             });
         }
 
-        header_bar.set_title_widget(Some(&view_switcher));
+        header_bar.set_title_widget(Some(&title_stack));
 
         let menu_model = Self::build_primary_menu();
         let menu_button = gtk::MenuButton::builder()
@@ -897,7 +926,7 @@ impl EvolutionWindow {
             .build();
 
         let online_toggle = gtk::Button::builder()
-            .icon_name("user-available-symbolic")
+            .icon_name("network-idle-symbolic")
             .tooltip_text("Online-Status (Online/Offline umschalten)")
             .css_classes(vec!["flat", "circular"])
             .build();
@@ -918,9 +947,9 @@ impl EvolutionWindow {
         if let Some(settings) = AppSettings::try_new() {
             statusbar_box.set_visible(settings.mail_show_statusbar());
             online_toggle.set_icon_name(if settings.offline_mode() {
-                "network-wireless-offline-symbolic"
+                "network-offline-symbolic"
             } else {
-                "user-available-symbolic"
+                "network-idle-symbolic"
             });
             online_toggle.set_tooltip_text(Some(if settings.offline_mode() {
                 "Offline-Modus aktiv; auf Online umschalten"
@@ -934,9 +963,9 @@ impl EvolutionWindow {
                 let offline = !settings_for_online.offline_mode();
                 settings_for_online.set_offline_mode(offline);
                 online_toggle_for_settings.set_icon_name(if offline {
-                    "network-wireless-offline-symbolic"
+                    "network-offline-symbolic"
                 } else {
-                    "user-available-symbolic"
+                    "network-idle-symbolic"
                 });
                 online_toggle_for_settings.set_tooltip_text(Some(if offline {
                     "Offline-Modus aktiv; auf Online umschalten"
@@ -954,9 +983,9 @@ impl EvolutionWindow {
             settings.connect_changed(Some("offline-mode"), move |settings, _| {
                 let offline = settings.boolean("offline-mode");
                 online_toggle_for_signal.set_icon_name(if offline {
-                    "network-wireless-offline-symbolic"
+                    "network-offline-symbolic"
                 } else {
-                    "user-available-symbolic"
+                    "network-idle-symbolic"
                 });
                 status_label_for_signal.set_label(if offline {
                     "Evolution GTK4  ·  Offline"

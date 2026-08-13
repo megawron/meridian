@@ -1078,10 +1078,12 @@ impl MailViewer {
             match event {
                 webkit6::LoadEvent::Started | webkit6::LoadEvent::Redirected => {
                     viewer.imp().webview_ready.set(false);
+                    webview.set_opacity(0.0);
                     viewer.show_renderer_loading();
                 }
                 webkit6::LoadEvent::Finished => {
                     viewer.imp().webview_ready.set(true);
+                    webview.set_opacity(1.0);
                     viewer.show_renderer_ready();
                 }
                 _ => {}
@@ -1172,6 +1174,9 @@ impl MailViewer {
         if let Some(label) = self.imp().renderer_error_label.borrow().as_ref() {
             label.set_visible(false);
         }
+        if let Some(webview) = self.imp().webview.borrow().as_ref() {
+            webview.set_opacity(0.0);
+        }
         if let Some(stack) = self.imp().renderer_stack.borrow().as_ref() {
             stack.set_visible_child_name("loading");
         }
@@ -1182,6 +1187,9 @@ impl MailViewer {
         if let Some(label) = self.imp().renderer_error_label.borrow().as_ref() {
             label.set_visible(false);
         }
+        if let Some(webview) = self.imp().webview.borrow().as_ref() {
+            webview.set_opacity(1.0);
+        }
         if let Some(stack) = self.imp().renderer_stack.borrow().as_ref() {
             stack.set_visible_child_name("webkit");
         }
@@ -1191,6 +1199,9 @@ impl MailViewer {
     fn show_renderer_error(&self) {
         self.imp().webview_ready.set(false);
         self.imp().last_render_key.take();
+        if let Some(webview) = self.imp().webview.borrow().as_ref() {
+            webview.set_opacity(0.0);
+        }
         if let Some(label) = self.imp().renderer_error_label.borrow().as_ref() {
             label.set_visible(true);
         }

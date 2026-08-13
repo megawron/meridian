@@ -110,7 +110,9 @@ fn renamed_folder_path(folder_name: &str, old_name: &str, new_name: &str) -> Opt
     })
 }
 
-#[derive(Debug, Clone)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct CamelFolderSummary {
     pub(crate) source_uid: String,
     pub(crate) source_display_name: String,
@@ -122,7 +124,7 @@ pub(crate) struct CamelFolderSummary {
     pub(crate) is_selectable: bool,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct CamelMailLoad {
     pub(crate) messages: Vec<ParsedMail>,
     pub(crate) folders: Vec<CamelFolderSummary>,
@@ -133,6 +135,31 @@ pub(crate) struct CamelMailLoad {
     pub(crate) is_graph: bool,
     pub(crate) search_query: Option<String>,
     pub(crate) graph_next_links: HashMap<String, String>,
+}
+
+pub(crate) fn mail_cache_path() -> std::path::PathBuf {
+    glib::user_cache_dir()
+        .join("evolution-gtk4")
+        .join("mail_load_cache.json")
+}
+
+pub(crate) fn save_mail_load_cache(load: &CamelMailLoad) {
+    if load.messages.is_empty() && load.folders.is_empty() {
+        return;
+    }
+    let path = mail_cache_path();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(json) = serde_json::to_string(load) {
+        let _ = std::fs::write(path, json);
+    }
+}
+
+pub(crate) fn load_mail_load_cache() -> Option<CamelMailLoad> {
+    let path = mail_cache_path();
+    let content = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str(&content).ok()
 }
 
 /// Portable Exchange fallback.  It deliberately returns the same plain

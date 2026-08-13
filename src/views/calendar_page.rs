@@ -307,9 +307,39 @@ impl CalendarPage {
                 };
                 state_label.set_label(&format!("{count} Termin(e) aus {origin} geladen."));
             }
-            for event in result.snapshot.events {
-                upsert_event_row(&event_list, Rc::clone(&event_records), event);
-            }
+            let events = result.snapshot.events;
+            event_records.borrow_mut().extend(events.clone());
+
+            let page_weak = self.downgrade();
+            let event_list_clone = event_list.clone();
+            let event_records_clone = Rc::clone(&event_records);
+            glib::spawn_future_local(async move {
+                let chunk_size = 40;
+                let mut index = 0;
+                while index < events.len() {
+                    let end = (index + chunk_size).min(events.len());
+                    for event in &events[index..end] {
+                        append_event_row(
+                            &event_list_clone,
+                            Rc::clone(&event_records_clone),
+                            event.clone(),
+                        );
+                    }
+                    index = end;
+                    if index < events.len() {
+                        glib::timeout_future_with_priority(
+                            glib::Priority::LOW,
+                            std::time::Duration::from_millis(5),
+                        )
+                        .await;
+                    }
+                }
+                if let Some(page) = page_weak.upgrade() {
+                    page.refresh_task_sidebar();
+                    page.refresh_calendar_views();
+                    page.refresh_event_list_visibility();
+                }
+            });
         }
 
         self.refresh_task_sidebar();
@@ -731,9 +761,19 @@ impl CalendarPage {
             .child(&sidebar_box)
             .vexpand(true)
             .build();
+
+        let sidebar_outer_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .build();
+        sidebar_outer_box.append(&sidebar_scroll);
+        sidebar_outer_box.append(&crate::views::build_sidebar_module_switcher(
+            "calendar",
+            &sidebar_outer_box,
+        ));
+
         let sidebar_page = adw::NavigationPage::builder()
             .title("Kalender")
-            .child(&sidebar_scroll)
+            .child(&sidebar_outer_box)
             .build();
         split.set_sidebar(Some(&sidebar_page));
 
