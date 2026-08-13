@@ -403,7 +403,7 @@ fn default_mail_font_family() -> String {
 }
 
 fn default_mail_font_size() -> u32 {
-    14
+    16
 }
 
 fn default_date_format() -> String {
@@ -1252,8 +1252,10 @@ mod tests {
         assert!(settings.notifications_enabled);
         assert!(settings.mark_read_on_selection);
         assert!(settings.show_message_preview);
+        assert_eq!(settings.mail_font_size, 16);
         assert_eq!(settings.mail_default_folder, "inbox");
         assert!(settings.spellcheck_languages.is_empty());
+        assert_eq!(settings.mail_font_size, 16);
         assert_eq!(settings.mail_layout, "classic");
         assert!(settings.mail_show_toolbar);
         assert!(settings.mail_show_sidebar);

@@ -5,6 +5,7 @@
 use glib::Object;
 use gtk::glib;
 use gtk::subclass::prelude::*;
+use std::sync::Arc;
 
 use crate::services::mail_store_service::MailBackendLocation;
 
@@ -18,7 +19,7 @@ pub struct AttachmentInfo {
     /// Decoded attachment bytes.  Keeping the payload with the parsed local
     /// message lets the UI offer a real “Save as…” operation without making
     /// assumptions about the lifetime of the source EML file.
-    pub content: Vec<u8>,
+    pub content: Arc<[u8]>,
 }
 
 mod imp {
@@ -45,6 +46,7 @@ mod imp {
         pub date_str: RefCell<String>,
         pub preview_snippet: RefCell<String>,
         pub html_body: RefCell<String>,
+        pub searchable_body_text: RefCell<Option<Arc<str>>>,
         pub is_unread: RefCell<bool>,
         pub is_flagged: RefCell<bool>,
         pub is_important: RefCell<bool>,
@@ -52,7 +54,7 @@ mod imp {
         pub(crate) backend_location: RefCell<Option<MailBackendLocation>>,
         /// Original RFC822 bytes for cryptographic inspection.  The parser
         /// only retains this for messages with a detected crypto envelope.
-        pub(crate) raw_mime: RefCell<Option<Vec<u8>>>,
+        pub(crate) raw_mime: RefCell<Option<Arc<[u8]>>>,
         pub attachments: RefCell<Vec<AttachmentInfo>>,
     }
 
@@ -205,6 +207,18 @@ impl MailMessageObject {
         self.imp().html_body.borrow().clone()
     }
 
+    pub(crate) fn searchable_body_text(&self) -> Arc<str> {
+        if let Some(cached) = self.imp().searchable_body_text.borrow().as_ref() {
+            return cached.clone();
+        }
+        let text: Arc<str> =
+            crate::services::html_sanitizer::html_to_plain_text(&self.imp().html_body.borrow())
+                .to_ascii_lowercase()
+                .into();
+        self.imp().searchable_body_text.replace(Some(text.clone()));
+        text
+    }
+
     pub(crate) fn replace_rendered_content(
         &self,
         html_body: String,
@@ -212,6 +226,7 @@ impl MailMessageObject {
         attachments: Vec<AttachmentInfo>,
     ) {
         *self.imp().html_body.borrow_mut() = html_body;
+        self.imp().searchable_body_text.take();
         *self.imp().preview_snippet.borrow_mut() = preview_snippet;
         *self.imp().attachments.borrow_mut() = attachments;
     }
@@ -269,16 +284,50 @@ impl MailMessageObject {
         self.imp().backend_location.borrow().clone()
     }
 
-    pub(crate) fn set_raw_mime(&self, raw: Option<Vec<u8>>) {
-        *self.imp().raw_mime.borrow_mut() = raw;
+    /// Keep a loaded Camel row addressable after an incremental folder
+    /// rename. Camel UIDs are folder-scoped, so both the backend location and
+    /// the synthetic row ID must change together.
+    pub(crate) fn rename_backend_folder(
+        &self,
+        source_uid: &str,
+        old_folder_name: &str,
+        new_folder_name: &str,
+    ) -> Option<(String, String)> {
+        let mut location = self.imp().backend_location.borrow_mut();
+        let Some(location) = location.as_mut() else {
+            return None;
+        };
+        if location.source_uid != source_uid || location.folder_name != old_folder_name {
+            return None;
+        }
+
+        let old_id = self.id();
+        location.folder_name = new_folder_name.to_string();
+        let new_id = format!(
+            "eds:{}:{}:{}",
+            location.source_uid, location.folder_name, location.message_uid
+        );
+        *self.imp().id.borrow_mut() = new_id.clone();
+        if self.thread_id() == old_id {
+            *self.imp().thread_id.borrow_mut() = new_id.clone();
+        }
+        Some((old_id, new_id))
     }
 
-    pub(crate) fn raw_mime(&self) -> Option<Vec<u8>> {
+    pub(crate) fn set_raw_mime(&self, raw: Option<Vec<u8>>) {
+        *self.imp().raw_mime.borrow_mut() = raw.map(Into::into);
+    }
+
+    pub(crate) fn raw_mime(&self) -> Option<Arc<[u8]>> {
         self.imp().raw_mime.borrow().clone()
     }
 
     pub fn attachments(&self) -> Vec<AttachmentInfo> {
         self.imp().attachments.borrow().clone()
+    }
+
+    pub fn attachment_count(&self) -> usize {
+        self.imp().attachments.borrow().len()
     }
 }
 
@@ -306,7 +355,7 @@ fn update_label_values(labels: &mut Vec<String>, label: &str, labeled: bool) -> 
 
 #[cfg(test)]
 mod tests {
-    use super::update_label_values;
+    use super::{MailBackendLocation, MailMessageObject, update_label_values};
 
     #[test]
     fn label_updates_are_case_insensitive_and_idempotent() {
@@ -318,5 +367,65 @@ mod tests {
         assert!(update_label_values(&mut labels, "WORK", false));
         assert_eq!(labels, ["Personal"]);
         assert!(!update_label_values(&mut labels, "", true));
+    }
+
+    #[test]
+    fn folder_rename_updates_backend_row_and_fallback_thread_identity_together() {
+        let old_id = "eds:account-a:Projects:uid-1";
+        let message = MailMessageObject::new(
+            old_id,
+            "all",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            None,
+            Vec::new(),
+            Vec::new(),
+            old_id,
+            1,
+            0,
+            "",
+            "",
+            "",
+            false,
+            false,
+            false,
+            Vec::new(),
+            Some(MailBackendLocation {
+                source_uid: "account-a".to_string(),
+                folder_name: "Projects".to_string(),
+                message_uid: "uid-1".to_string(),
+                message_id: None,
+            }),
+            Vec::new(),
+        );
+
+        assert_eq!(
+            message.rename_backend_folder("account-a", "Projects", "Archive"),
+            Some((
+                old_id.to_string(),
+                "eds:account-a:Archive:uid-1".to_string()
+            ))
+        );
+        assert_eq!(message.id(), "eds:account-a:Archive:uid-1");
+        assert_eq!(message.thread_id(), "eds:account-a:Archive:uid-1");
+        assert_eq!(message.backend_location().unwrap().folder_name, "Archive");
+
+        message.replace_rendered_content(
+            "<p>First body</p>".to_string(),
+            String::new(),
+            Vec::new(),
+        );
+        assert_eq!(message.searchable_body_text().as_ref(), "first body");
+        message.replace_rendered_content(
+            "<p>Updated body</p>".to_string(),
+            String::new(),
+            Vec::new(),
+        );
+        assert_eq!(message.searchable_body_text().as_ref(), "updated body");
     }
 }

@@ -16,6 +16,9 @@
 
 /* ── Message List ──────────────────────────────────────────────────────── */
 .message-list row {
+  min-height: 22px;
+  padding: 0;
+  margin: 0;
   transition: background-color 150ms ease;
 }
 
@@ -29,11 +32,11 @@
 }
 
 /* Evolution's default mail table is deliberately a dense, single-line
- * layout.  Keep actions compact so the subject column receives the space. */
+ * layout.  Keep the row compact through spacing, not undersized text. */
 .message-list .message-line {
   min-height: 22px;
-  padding-top: 0;
-  padding-bottom: 0;
+  padding: 0 4px;
+  margin: 0;
 }
 
 .message-list .message-line:hover {
@@ -53,28 +56,47 @@
 }
 
 .message-list .heading,
-.message-list .body {
-  font-size: 0.84rem;
-  line-height: 1;
+.message-list .title {
+  font-size: 1rem;
+  line-height: 1.05;
+}
+
+.message-list .body,
+.message-list .subtitle {
+  font-size: 0.96rem;
+  line-height: 1.05;
 }
 
 .message-list .caption {
-  font-size: 0.75rem;
-  line-height: 1;
+  font-size: 0.9rem;
+  line-height: 1.05;
 }
 
 .message-list .unread-heading {
   font-weight: 700;
 }
 
+.message-list separator {
+  min-height: 1px;
+  background-color: alpha(@borders, 0.55);
+}
+
 .mail-column-header {
   min-height: 22px;
+  padding: 0 4px;
   border-bottom: 1px solid alpha(@borders, 0.75);
   background-color: alpha(@window_fg_color, 0.035);
 }
 
+.mail-column-header label {
+  font-size: 0.82rem;
+  font-weight: 600;
+  line-height: 1.05;
+}
+
 .mail-column-resize-handle {
   min-width: 8px;
+  min-height: 14px;
   background-color: alpha(@borders, 0.35);
 }
 
@@ -97,19 +119,31 @@
 }
 
 .mail-detail-header {
-  background-color: alpha(@window_fg_color, 0.018);
+  background-color: transparent;
 }
 
 .mail-detail-header grid label {
-  font-size: 0.78rem;
-  line-height: 1;
+  font-size: 0.96rem;
+  line-height: 1.1;
+}
+
+/* Security is an inline status in Evolution, rather than a large banner. */
+.mail-detail-header .badge {
+  min-width: 0;
+  min-height: 0;
+  padding: 1px 4px;
+  border-radius: 3px;
+  background-color: alpha(@window_fg_color, 0.045);
+  color: @window_fg_color;
+  font-size: 0.86rem;
+  line-height: 1.1;
 }
 
 .mail-detail-actions button,
 .mail-detail-actions menubutton {
-  min-width: 22px;
-  min-height: 22px;
-  padding: 1px 3px;
+  min-width: 24px;
+  min-height: 24px;
+  padding: 0 3px;
 }
 
 .mail-detail-actions spacer {
@@ -118,11 +152,14 @@
 
 .mail-search-bar {
   min-height: 28px;
+  margin-top: 4px;
+  margin-bottom: 4px;
 }
 
 .mail-search-bar dropdown {
   min-width: 96px;
   min-height: 24px;
+  font-size: 0.88rem;
 }
 
 .mail-search-bar button,
@@ -139,8 +176,8 @@
 
 .thread-context label,
 .thread-context .thread-message {
-  font-size: 0.72rem;
-  line-height: 1;
+  font-size: 0.82rem;
+  line-height: 1.05;
 }
 
 .mail-plain-view {
@@ -191,10 +228,21 @@
   padding: 0;
 }
 
-.mail-sidebar .mail-sidebar-row {
-  min-height: 19px;
+.mail-sidebar .navigation-sidebar,
+.mail-sidebar listview {
   padding: 0;
-  margin: 0 1px;
+  margin: 0;
+}
+
+.mail-sidebar .mail-sidebar-row {
+  min-height: 22px;
+  padding: 0;
+  margin: 0;
+}
+
+.mail-sidebar .mail-sidebar-row label {
+  font-size: 0.96rem;
+  line-height: 1.1;
 }
 
 .mail-sidebar .mail-sidebar-row image {
@@ -204,14 +252,33 @@
 
 .mail-sidebar .navigation-sidebar row,
 .mail-sidebar listview row {
-  min-height: 19px;
+  min-height: 22px;
+  padding: 0 2px;
+  margin: 0 1px;
+  border-radius: 4px;
 }
 
-.mail-sidebar .badge {
-  min-width: 15px;
-  min-height: 15px;
-  padding: 0 4px;
-  font-size: 0.68rem;
+.mail-sidebar .navigation-sidebar button {
+  min-width: 20px;
+  min-height: 20px;
+  padding: 0;
+}
+
+.mail-sidebar .caption {
+  font-size: 0.9rem;
+  line-height: 1.1;
+}
+
+.mail-sidebar .mail-sidebar-row .badge {
+  min-width: 0;
+  min-height: 0;
+  padding: 0 2px;
+  border-radius: 0;
+  background-color: transparent;
+  color: alpha(@window_fg_color, 0.72);
+  font-size: 0.86rem;
+  font-weight: 600;
+  line-height: 1;
 }
 
 /* ── Mail Detail View ──────────────────────────────────────────────────── */
@@ -219,26 +286,26 @@
   border-bottom: 1px solid @borders;
 }
 
-/* Crypto status banners */
+/* Keep optional crypto status styles quiet and inline. */
 .crypto-valid {
   background-color: alpha(@green_3, 0.15);
   color: @green_5;
-  padding: 6px 12px;
-  border-radius: 6px;
+  padding: 1px 4px;
+  border-radius: 3px;
 }
 
 .crypto-invalid {
   background-color: alpha(@red_3, 0.15);
   color: @red_4;
-  padding: 6px 12px;
-  border-radius: 6px;
+  padding: 1px 4px;
+  border-radius: 3px;
 }
 
 .crypto-unknown {
   background-color: alpha(@yellow_3, 0.15);
   color: @yellow_5;
-  padding: 6px 12px;
-  border-radius: 6px;
+  padding: 1px 4px;
+  border-radius: 3px;
 }
 
 /* ── Attachment Chips ──────────────────────────────────────────────────── */
@@ -258,58 +325,8 @@
   padding: 32px 24px 16px 24px;
 }
 
-/* ── General Polish & Compact Mode (1:1 Evolution GTK3 Density) ─────────────── */
+/* ── General Polish ────────────────────────────────────────────────────── */
 /* Subtle shadow for the sidebar separator */
 splitview > separator {
   background-color: alpha(@borders, 0.5);
-}
-
-/* Compact Row Density for Sidebar and Mail List */
-.message-list row,
-listview.message-list > row,
-listview.mail-list > row,
-columnview.message-table cell {
-  min-height: 22px;
-  padding-top: 0;
-  padding-bottom: 0;
-  padding-left: 6px;
-  padding-right: 6px;
-  margin-top: 0;
-  margin-bottom: 0;
-}
-
-.navigation-sidebar row,
-listbox.sidebar-list > row,
-listbox > row {
-  min-height: 22px;
-  padding-top: 0;
-  padding-bottom: 0;
-  padding-left: 4px;
-  padding-right: 4px;
-  margin-top: 0;
-  margin-bottom: 0;
-  border-radius: 4px;
-}
-
-.navigation-sidebar button {
-  min-width: 20px;
-  min-height: 20px;
-  padding: 0;
-}
-
-/* Compact text sizes for table list rows */
-.message-list .title,
-.message-list .heading {
-  font-size: 0.88rem;
-  line-height: 1.2;
-}
-
-.message-list .subtitle,
-.message-list .body {
-  font-size: 0.82rem;
-  line-height: 1.15;
-}
-
-.navigation-sidebar label {
-  font-size: 0.82rem;
 }

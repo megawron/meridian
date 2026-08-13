@@ -20,6 +20,7 @@ gdk.workspace = true
 pango.workspace = true
 zbus.workspace = true
 async-channel.workspace = true
+tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 serde.workspace = true

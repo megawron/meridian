@@ -1417,7 +1417,7 @@ mod tests {
                     size_formatted: "1 KiB".to_string(),
                     mime_type: "application/octet-stream".to_string(),
                     content_id: None,
-                    content: Vec::new(),
+                    content: Vec::new().into(),
                 }]
             })
             .unwrap_or_default();

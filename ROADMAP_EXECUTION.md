@@ -63,8 +63,12 @@ Vor `DONE`:
 Statuswerte:
 
 - `READY`: ohne bekannte Vorbedingung auf der angegebenen Plattform startbar.
-- `ACTIVE`: genau ein aktuell bearbeiteter Punkt.
-- `BLOCKED_LINUX`: portable Vorbereitung fertig; reale Linux-Abnahme fehlt.
+- `IN PROGRESS`: Implementierung oder Integration begonnen; Tests und/oder
+  Abnahmebelege fehlen noch. Mehrere Punkte dürfen diesen Status nur bei
+  disjunkten Schreibbereichen tragen.
+- `BLOCKED_LINUX`: alle portablen Abnahmekriterien sind erfüllt; nur die
+  reale Linux-Abnahme fehlt. Ein Punkt mit noch offenen portablen Tests bleibt
+  `IN PROGRESS`.
 - `DONE`: alle Abnahmekriterien und Belege liegen vor.
 - `SUPERSEDED`: durch konkret genannte Nachfolgepunkte ersetzt.
 
@@ -103,14 +107,15 @@ und erweitert dessen Schreibbereich nur nach dokumentierter Kollisionsprüfung.
 | 8 | `P2-MIGRATION-001A` | `P2-MIGRATION-*` | `src/services/migration_service.rs` | keine | DONE | portable Werte, Warnungen und Geheimnis-Redaktion getestet |
 | 9 | `P0-STAB-001B` | `P0-STAB-001` | `src/views/mail_page.rs` | `P0-STAB-001A` | DONE | Einzel/Batch/Undo/Redo asynchron, abbrechbar und bestätigungsbasiert |
 | 10 | `P0-MAIL-001C` | `P0-MAIL-001` | `src/views/mail_viewer.rs` | `P0-MAIL-001A`, `P0-MAIL-001B` | DONE | Viewer-Fallback und nachrichtenbezogene Remote-Freigabe integriert |
-| 11 | `P0-MAIL-002A` | `P0-MAIL-002` | `src/views/mail_page.rs`, `src/style.css` | `P0-STAB-001B` | READY | kompakter Ordnerbaum und klassische Drei-Bereichsansicht |
-| 12 | `P0-MAIL-002B` | `P0-MAIL-002` | `src/views/mail_page.rs`, `src/services/settings_service.rs`, `src/dialogs/preferences_dialog.rs` | `P0-MAIL-002A` | READY | Spalten, Dichte und Layout persistent und live wirksam |
-| 13 | `P0-SYNC-001A` | `P0-SYNC-001` | `src/views/mail_page.rs`, `src/services/camel_mail_service.rs` | `P0-STAB-001B` | READY | generationensicheres Paging/Refresh mit stabiler Auswahl |
-| 14 | `P0-COMP-001B` | `P0-COMP-001` | `src/dialogs/compose_dialog.rs`, `src/services/draft_store_service.rs` | `P0-COMP-001A` | DONE | Autosave, Recovery, pro-Draft-Sendelock und revisionssicheres Cleanup integriert |
-| 15 | `P0-RECOVERY-001A` | `P0-RECOVERY-001` | `src/services/eds_service.rs`, `src/services/eds_source_cache_service.rs` | Pakete 9–14 | READY | Offline/Online, Backoff und Neustart portabel getestet |
-| 16 | `P1-CAL-001B` | `P1-CAL-001` | `src/views/calendar_page.rs` | `P1-CAL-001A` | DONE | Ansichten verwenden gemeinsame Recurrence-/Zeitzonenregeln |
-| 17 | `P1-CONTACT-001B` | `P1-CONTACT-001` | `src/views/contacts_page.rs` | `P1-CONTACT-001A` | DONE | kompakter quellenstabiler Kontaktworkflow und Dublettenpfad |
-| 18 | `P1-TASK-001A` | `P1-TASK-001` | `src/views/tasks_page.rs` | keine | DONE | Quick-Edit, Filter, Suche, Sortierung und Fehlerzustände integriert |
+| 11 | `P0-MAIL-001D` | `P0-MAIL-001` | `src/views/mail_viewer.rs`, `src/views/mail_page.rs`, `src/models/mail_message.rs`, `src/services/inline_content_service.rs` | `P0-MAIL-001A`, `P0-MAIL-001B` | BLOCKED_LINUX | Latest-Wins-Worker, CID/Anlagen ohne GTK-Kopie, Cache-/Stale-Gates grün; WebKitGTK-Churn-Abnahme offen |
+| 12 | `P0-MAIL-002A` | `P0-MAIL-002` | `src/views/mail_page.rs`, `src/style.css` | `P0-STAB-001B` | IN PROGRESS | kompakter Evolution-Ordnerbaum ohne Kontoicon, lesbare Tabellenschrift, Icon-Fallbacks und dezente Unread-Zähler |
+| 13 | `P0-MAIL-002B` | `P0-MAIL-002` | `src/views/mail_page.rs`, `src/services/settings_service.rs`, `src/dialogs/preferences_dialog.rs`, `data/org.gnome.Evolution4.gschema.xml` | `P0-MAIL-002A` | BLOCKED_LINUX | Defaults/Roundtrip/Reset und Live-Bindings portabel grün; sichtbare Linux-Abnahme offen |
+| 14 | `P0-SYNC-001A` | `P0-SYNC-001` | `src/views/mail_page.rs`, `src/services/camel_mail_service.rs`, `src/services/exchange_service.rs`, `src/models/mail_message.rs` | `P0-STAB-001B` | BLOCKED_LINUX | Portable Paging-, Watcher-, Auswahl-, Sortier- und echter Graph-Abbruchvertrag grün; Camel-Abnahme offen |
+| 15 | `P0-COMP-001B` | `P0-COMP-001` | `src/dialogs/compose_dialog.rs`, `src/services/draft_store_service.rs` | `P0-COMP-001A` | DONE | Autosave, Recovery, pro-Draft-Sendelock und revisionssicheres Cleanup integriert |
+| 16 | `P0-RECOVERY-001A` | `P0-RECOVERY-001` | `src/services/eds_service.rs`, `src/services/eds_source_cache_service.rs` | Pakete 9–15 | DONE | Offline/Online, persistenter Backoff, atomarer Cache und Neustart portabel getestet |
+| 17 | `P1-CAL-001B` | `P1-CAL-001` | `src/views/calendar_page.rs` | `P1-CAL-001A` | DONE | Ansichten verwenden gemeinsame Recurrence-/Zeitzonenregeln |
+| 18 | `P1-CONTACT-001B` | `P1-CONTACT-001` | `src/views/contacts_page.rs` | `P1-CONTACT-001A` | DONE | kompakter quellenstabiler Kontaktworkflow und Dublettenpfad |
+| 19 | `P1-TASK-001A` | `P1-TASK-001` | `src/views/tasks_page.rs` | keine | DONE | Quick-Edit, Filter, Suche, Sortierung und Fehlerzustände integriert |
 
 ### Parallelisierungsregeln
 
@@ -130,7 +135,7 @@ und erweitert dessen Schreibbereich nur nach dokumentierter Kollisionsprüfung.
 
 ### P0-STAB-001 — Mailmutationen vom GTK-Hauptthread trennen
 
-- Status: `BLOCKED_LINUX`
+- Status: `IN PROGRESS`
 - Quelle: `ROADMAP.md`, Phase 1 „Mailaktionen“ und Phase 7 „Performance“
 - Problem: Manuell ausgelöste Backendaktionen verwenden teilweise noch einen
   synchronen Command-Pfad aus GTK-Callbacks. Authentifizierung, Netzwerk oder
@@ -160,7 +165,8 @@ und erweitert dessen Schreibbereich nur nach dokumentierter Kollisionsprüfung.
 
 ### P0-MAIL-001 — MIME-, HTML- und Anhangsdarstellung produktionsfest machen
 
-- Status: `BLOCKED_LINUX`
+- Status: `BLOCKED_LINUX` (die portable Viewer- und Render-Strecke ist grün;
+  WebKitGTK-Runtime und Churn-Abnahme bleiben Linux-only)
 - Quelle: `ROADMAP.md`, Phase 1 „Sicherer WebKitGTK-Viewer“ und „Anhänge“
 - Lieferumfang:
   - Ein versioniertes, inhaltsneutrales Testkorpus für `multipart/alternative`,
@@ -182,9 +188,53 @@ und erweitert dessen Schreibbereich nur nach dokumentierter Kollisionsprüfung.
   Loading-/Fehler-/Klartextzustände, CID/Data-Ausnahme und nachrichtenbezogene
   Remote-Freigabe sind portabel getestet. Linux-WebKitGTK-Smoke bleibt offen.
 
+### P0-MAIL-001D — HTML-Rendering vom GTK-Hauptthread entkoppeln
+
+- Status: `BLOCKED_LINUX`
+- Quelle: `ROADMAP.md`, aktueller atomarer Mail-Kernblock
+- Schreibbereich: `src/views/mail_viewer.rs`, `src/views/mail_page.rs`,
+  `src/models/mail_message.rs` und die portablen HTML-/Inline-/Metadaten-
+  Services. Native EDS-/Camel-Brücken bleiben außerhalb dieses Pakets.
+- Lieferumfang:
+  - Eine vollständige Render-Anfrage (Nachrichtenkennung, HTML/Fallback,
+    Remote-Policy, Theme- und Schriftwerte) wird vor dem Worker-Lauf
+    unveränderlich erfasst.
+  - Sanitization, Remote-Bild-Entscheidung, Fallback-Ermittlung und
+    Dokumentkomposition laufen außerhalb des GTK-Hauptloops.
+  - Jede Antwort trägt die Generation und Anfrageidentität. Nach einem
+    Nachrichten- oder Einstellungswechsel verwirft die UI ein veraltetes
+    Ergebnis, bevor WebKit, Banner oder Klartext-Fallback aktualisiert werden.
+  - Identische aufeinanderfolgende Render-Anfragen werden nicht erneut
+    eingeplant. Lade-, Leer-, Fehler- und Fallback-Zustände bleiben explizit.
+  - Ein persistenter Latest-Wins-Worker ersetzt wartende veraltete Anfragen;
+    CID-Auflösung, Base64 und Sanitizing laufen dort statt im GTK-Kontext.
+    Anlagen- und Crypto-Payloads sind referenzgezählt und werden bei Auswahl
+    nicht vollständig kopiert.
+  - Remote-Content-Freigaben werden einmal pro Viewer geladen. Normale
+    Ordner-/Statusfilter sanitizen keinen HTML-Body; echte Body-Suchen nutzen
+    einen nach Inhaltsänderung invalidierten Klartextcache.
+- Abnahme:
+  - Pure Tests belegen Remote-Bild-Erkennung, Fallback-Entscheidung,
+    Anfragegleichheit und Stale-Discard bei mindestens zwei Generationen.
+  - `git diff --check`
+  - `cargo fmt --all -- --check`
+  - `cargo check --workspace --locked`
+  - `cargo test --workspace --locked --no-fail-fast --quiet`
+  - gezielt zusätzlich: `cargo test --workspace --locked mail_viewer -- --nocapture`
+  - Ein Linux-WebKitGTK-Lauf mit schnellem Umschalten großer HTML-Nachrichten
+    bestätigt, dass nur der zuletzt ausgewählte Inhalt erscheint und der
+    Hauptthread bedienbar bleibt; siehe `LINUX-P0-MAIL-003`.
+- Statusregel: Vor allen Gates bleibt der Punkt `IN PROGRESS`; ein grüner
+  Parser-Test allein darf ihn weder auf `DONE` noch auf Vollparität setzen.
+- Evidenz: Pure Tests decken Latest-Wins/Stale, CID-Auflösung, Payload-
+  Identität, exakte WebView-URI, Rendercache und Body-Cache-Invalidierung ab.
+  Format, Schema, normaler und erzwungener `eds_camel_bridge`-Check sowie
+  412/412 Workspace-Tests sind grün; offen bleibt `LINUX-P0-MAIL-003`.
+
 ### P0-MAIL-002 — klassischen Evolution-Mailworkflow vervollständigen
 
-- Status: `READY`
+- Status: `IN PROGRESS` (Teilpaket `P0-MAIL-002A`; `P0-MAIL-002B` ist portabel
+  grün und wartet auf Linux-Abnahme)
 - Quelle: `ROADMAP.md`, Phase 1 „Adaptives Layout“, „Mail-Liste“ und
   „Werkzeugleiste“
 - Lieferumfang:
@@ -196,17 +246,76 @@ und erweitert dessen Schreibbereich nur nach dokumentierter Kollisionsprüfung.
     Vorschaufenster und Sidebar sind persistent und wirken live.
   - Moderne Ansicht bleibt eine optionale Einstellung und verwendet dieselben
     Daten-, Auswahl- und Aktionspfade.
+  - Im Tabellenlauf stehen Anhangs-, Markierungs- und Wichtigkeitsindikatoren
+    links vor Absender/Betreff; permanente Auswahlkästchen entfallen, und ein
+    Expander erscheint nur bei einem echten Mehrfach-Thread.
+  - Konto-Wurzeln bleiben ohne dekoratives Icon, die Ordnerindentation bleibt
+    flach, und Badges zeigen ausschließlich nicht-null ungelesene Nachrichten.
+    Nach bestätigtem Lesen/Ungelesen- oder Ordner-Refresh wird der Wert reaktiv
+    neu berechnet; bei Fehler, Konflikt oder Abbruch bleibt der vorherige
+    bestätigte Wert erhalten.
+  - Der Routine-Sicherheitsstatus ist standardmäßig unsichtbar. Der UI-Pfad
+    startet die Crypto-Prüfung nur nach einem begrenzten Hinweis auf eine
+    OpenPGP-/S/MIME-Hülle; gültige, warnende und fehlgeschlagene Prüfungen
+    bleiben sichtbar.
+  - Die kompakte Zeilenhöhe bleibt mit einer lesbaren 16-Pixel-Mailbasis
+    vereinbar; Schrift- und Sicherheitsdetailspräferenzen werden in `002B`
+    separat persistent gemacht.
 - Abnahme:
   - Jede inventarisierte tägliche Aktion hat einen funktionierenden GTK4-Pfad
     oder einen expliziten Folgepunkt.
   - Keine sichtbaren Backendbegriffe wie EDS, Camel, ECal oder EBook.
   - Bei typischer Desktop-Höhe sind in kompakter Dichte ungefähr 40
     einzeilige Nachrichten sichtbar.
-- Evidenz: Teilbelege existieren; vollständiges Referenzinventar fehlt.
+  - Helper-/Layout-Tests belegen Zeilenstatus, Thread-Expander, flache
+    Ordnerindentation, Crypto-Preflight, Routinezeilen-Sichtbarkeit und
+    Unread-only-Badges.
+  - `git diff --check`, `cargo fmt --all -- --check`,
+    `cargo check --workspace --locked` und
+    `cargo test --workspace --locked --no-fail-fast --quiet` bestehen.
+  - Linux-Referenzvergleich für Icons, Dichte und bestätigte Counter besteht;
+    siehe `LINUX-P0-MAIL-003`.
+- Evidenz: Die portablen Gates einschließlich 422 Workspace-Tests bestehen.
+  Der zeilengebundene Sekundärklick selektiert vor
+  dem Öffnen des Kontextmenüs exakt seine Nachricht; Label-, Spam- und
+  Nicht-Spam-Aktionen sind dort und im Nachricht-Hauptmenü erreichbar.
+  Vollständiges Referenzinventar, Icon-/Dichte-Vergleich und reale
+  Counter-Abnahme fehlen; deshalb bleibt der Punkt `IN PROGRESS`.
+
+### P0-MAIL-002B — Mailpräferenzen persistent und live wirksam machen
+
+- Status: `BLOCKED_LINUX`
+- Abhängigkeit: `P0-MAIL-002A` und die portable Schema-/Dialog-Grundlage.
+- Schreibbereich: `src/services/settings_service.rs`,
+  `src/dialogs/preferences_dialog.rs`,
+  `data/org.gnome.Evolution4.gschema.xml` sowie die betroffenen View-Bindings.
+- Lieferumfang:
+  - Mail-/Composer-Schriftgröße startet mit einer lesbaren 16-Pixel-Basis,
+    bleibt im zulässigen Bereich und wird über GSettings gespeichert,
+    zurückgelesen und zurückgesetzt.
+  - `mail-show-security-details` ist standardmäßig `false`; `true` zeigt die
+    routinehafte Statuszeile optional, ohne echte Krypto-Warnungen oder
+    Prüfungsfehler auszublenden.
+  - Änderungen an Schrift, Sicherheitsdetails, Spalten, Dichte und Layout
+    aktualisieren die bereits geöffnete Mailansicht und überleben einen
+    Neustart/Backup-Roundtrip.
+- Abnahme:
+  - Schema-Kompilierung und Settings-Default-, Roundtrip- und Reset-Tests.
+  - `git diff --check`, `cargo fmt --all -- --check`,
+    `cargo check --workspace --locked` und
+    `cargo test --workspace --locked --no-fail-fast --quiet`.
+  - Linux-Abnahme bestätigt die sichtbare Wirkung im laufenden Fenster und
+    den Vergleich mit der klassischen Evolution-Anordnung; siehe
+    `LINUX-P0-MAIL-003`.
+- Statusregel: Ein erfolgreicher GSettings-Roundtrip ohne sichtbare Live-
+  Wirkung und Linux-Referenzvergleich ist kein `DONE`-Beleg.
+- Evidenz: Schema-Prüfung, Default-/Roundtrip-/Reset-Tests, sofortige
+  Sicherheitszeilen-Bindung, Workspace-Check und 396/396 Tests sind grün;
+  die sichtbare Linux-Abnahme in `LINUX-P0-MAIL-003` bleibt offen.
 
 ### P0-SYNC-001 — Mail-Laden, Paging und Aktualisierung stabilisieren
 
-- Status: `READY`
+- Status: `BLOCKED_LINUX`
 - Quelle: `ROADMAP.md`, Phase 1 „Asynchrones Laden“ und „Native Camel-Brücke“
 - Lieferumfang:
   - Konto-/Ordnerwechsel, Suche, „Mehr laden“, Refresh und Watcher-Ereignisse
@@ -221,7 +330,43 @@ und erweitert dessen Schreibbereich nur nach dokumentierter Kollisionsprüfung.
     Abbruch und Auswahlwiederherstellung.
   - Linux-Abnahme mit echter Camel-Mailbox und laufenden Änderungen.
 - Linux-Handoff: `LINUX-P0-MAIL-001` und `LINUX-P0-RECOVERY-001`.
-- Evidenz: Teilbelege für Chunking, Paging und Sortierung existieren.
+- Portable Evidenz:
+  - Camel und Graph normalisieren Seitengröße/Offset gemeinsam; Graph bewahrt
+    den opaken `@odata.nextLink`-Cursor jedes Ordners und lädt jede Folgeseite
+    genau über diesen Provider-Cursor statt über positionsbasiertes `$skip`.
+  - Backend-Ergebnisse und Change-UIDs werden quellen-/ordnerbezogen
+    dedupliziert; leere UIDs werden verworfen und Abbruch wird auch nach
+    Provideraufrufen sowie zwischen Parse-/Filter-/Thread-Phasen geprüft.
+  - Der Camel-Watcher beendet sich bei Queue-Druck nicht mehr still. Unbekannte
+    oder unvollständige Ereignisse fordern einen expliziten Vollabgleich an;
+    Rename-Aliase halten nachfolgende UID-Ereignisse adressierbar.
+  - Changed-, Folder-Rename- und Folder-Delete-Ereignisse aktualisieren
+    Nachrichten, Ordnerbaum, aktive Anfrage und Auswahl inkrementell. Paging,
+    Refresh und Sortierung restaurieren die Auswahl per ID/Index; entfernte
+    Nachrichten wählen den direkten Nachbarn, leere Modelle leeren den Reader.
+  - Nachrichten- und Threadmodelle werden in 32er-Hauptschleifenabschnitten
+    gelesen/aufgebaut. Stale Generationen werden vor jeder Modellmutation
+    verworfen; abgebrochene Graph-Suchen lassen die UI nicht im Ladezustand.
+  - Mail-Wurzeln und übergroße Einzelthreads extrahieren ihre primitiven
+    Sortierschlüssel in 32er-GTK-Abschnitten. Ab 128 Einträgen sortiert ein
+    Worker ausschließlich diese Schlüssel; sein Indexplan wird anschließend
+    wieder stückweise auf die GTK-Modelle angewandt. Auch eine manuelle
+    Sortieränderung verwendet damit keinen synchronen Komplettneuaufbau mehr.
+  - Der Graph-Transport verwendet abbrechbare Async-HTTP-Futures in einem
+    dedizierten Worker. Mail-Laden und Graph-Suche reichen ihren bestehenden
+    `Arc<AtomicBool>` bis zu diesem Transport durch; eine laufende langsame
+    Antwort wird per Future-Drop beendet und deterministisch als `Cancelled`
+    gemeldet.
+  - Portable Tests decken Page-Limits, `@odata.nextLink`, Cancellation, stale
+    Generationen, UID-/Ergebnisduplikate, Rename-Aliase, Ordnerpfade und
+    Nachbarauswahl ab. Normaler und erzwungener `eds_camel_bridge`-Rust-Check
+    sind grün.
+- Portable Restarbeit: keine für dieses Teilpaket; die verbleibenden Gates
+  benötigen echte Provider-/EDS-/Camel-Laufzeit auf Linux.
+- Linux-Restarbeit: reale Provider-, Event-Burst-, EDS-Neustart- und
+  WebKit/GTK-Reaktionsfähigkeitsabnahme in `LINUX-P0-MAIL-001` und
+  `LINUX-P0-RECOVERY-001`; erst nach portabler Restarbeit und Linux-Abnahme
+  `DONE`.
 
 ### P0-COMP-001 — Antworten, Entwürfe und Versand belastbar machen
 
@@ -248,7 +393,7 @@ und erweitert dessen Schreibbereich nur nach dokumentierter Kollisionsprüfung.
 
 ### P0-RECOVERY-001 — Offline/Online, Abbruch und Wiederanlauf absichern
 
-- Status: `READY`
+- Status: `BLOCKED_LINUX`
 - Quelle: `ROADMAP.md`, Phasen 1, 2 und 7
 - Lieferumfang:
   - Offline-Modus stoppt neue Remoteverbindungen und Watcher, erhält aber
@@ -262,7 +407,14 @@ und erweitert dessen Schreibbereich nur nach dokumentierter Kollisionsprüfung.
   - Portable Tests für Generationen, Cancellation, Backoff und korrupte Stores.
   - Linux-Wiederanlauftest für EDS, GOA, Camel und Desktop-Suspend.
 - Linux-Handoff: `LINUX-P0-RECOVERY-001`.
-- Evidenz: Teilbelege für Offline-Schalter, Cancellation und Retry existieren.
+- Evidenz: Offline-Wechsel stoppt Polling, Camel-Watcher und inkrementelle
+  Verarbeitung; Online-Wechsel startet Polling und den generationensicheren
+  Reload erneut. Die nicht-geheime Source-Discovery-Recovery wird atomar über
+  Neustarts gespeichert, verwendet begrenzten exponentiellen Backoff und
+  unterscheidet fehlende, gültige, unlesbare und beschädigte Cachedateien.
+  Beschädigte app-eigene Dateien werden vor erfolgreichem Neuaufbau
+  quarantänisiert. Pure Cache-/Backoff-/Transitions-Tests sind grün; echte
+  EDS-/GOA-/Suspend-Abnahme bleibt `LINUX-P0-RECOVERY-001`.
 
 ## 6. P1 — tägliche Groupware-Funktionen
 

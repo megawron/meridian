@@ -16,12 +16,21 @@ use adw::subclass::prelude::*;
 use gtk::gio;
 use gtk::glib;
 use std::cell::{Cell, RefCell};
+use std::collections::HashSet;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
 #[cfg(target_os = "linux")]
 use webkit6::prelude::*;
 
 use crate::services::AppSettings;
-use crate::services::html_sanitizer::{block_remote_images, html_to_plain_text, sanitize_html};
+use crate::services::html_sanitizer::{
+    block_remote_images, html_to_plain_text, sanitize_html, sanitized_html_to_plain_text,
+};
+use crate::services::inline_content_service::{InlineImage, resolve_cid_images};
 use crate::services::mail_metadata_service::RemoteContentStore;
+
+const MAX_CACHED_DERIVED_BYTES: usize = 4 * 1024 * 1024;
+const RENDER_LOADING_TEXT: &str = "Nachricht wird vorbereitet …";
 
 mod imp {
     use super::*;
@@ -38,10 +47,24 @@ mod imp {
         pub renderer_error_label: RefCell<Option<gtk::Label>>,
         pub current_message_id: RefCell<Option<String>>,
         pub current_html: RefCell<Option<String>>,
+        pub current_inline_images: RefCell<Vec<InlineImage>>,
         pub current_base_uri: RefCell<Option<String>>,
         pub current_fallback_text: RefCell<Option<String>>,
         pub remote_images_allowed_for_current: Cell<bool>,
+        pub source_generation: Cell<u64>,
+        pub render_generation: Cell<u64>,
+        pub render_worker_generation: Arc<AtomicU64>,
+        pub(super) render_worker_queue: Arc<(Mutex<Option<RenderJob>>, Condvar)>,
+        pub render_worker_shutdown: Arc<AtomicBool>,
+        pub(super) last_render_key: RefCell<Option<RenderRequestKey>>,
+        pub(super) render_cache: RefCell<Option<CachedMailRender>>,
+        #[cfg(target_os = "linux")]
+        pub active_webview_generation: Cell<u64>,
+        #[cfg(target_os = "linux")]
+        pub active_webview_uri: RefCell<Option<String>>,
         pub settings: RefCell<Option<AppSettings>>,
+        pub remote_content_store: RefCell<Option<RemoteContentStore>>,
+        pub remote_content_allowed: RefCell<HashSet<String>>,
     }
 
     #[glib::object_subclass]
@@ -62,6 +85,8 @@ mod imp {
         }
 
         fn dispose(&self) {
+            self.render_worker_shutdown.store(true, Ordering::Release);
+            self.render_worker_queue.1.notify_all();
             if let Some(child) = self.obj().first_child() {
                 child.unparent();
             }
@@ -152,7 +177,7 @@ impl MailViewer {
             let loading = adw::StatusPage::builder()
                 .title("Nachricht wird geladen …")
                 .description("Die sichere Darstellung wird vorbereitet.")
-                .icon_name("content-loading-symbolic")
+                .icon_name("view-refresh-symbolic")
                 .hexpand(true)
                 .vexpand(true)
                 .build();
@@ -198,6 +223,14 @@ impl MailViewer {
             box_container.append(&fallback_scroll);
         }
         self.imp().fallback_view.replace(Some(fallback_view));
+        let remote_content_store = RemoteContentStore::default();
+        self.imp()
+            .remote_content_allowed
+            .replace(remote_content_store.allowed_message_ids());
+        self.imp()
+            .remote_content_store
+            .replace(Some(remote_content_store));
+        self.start_render_worker();
 
         if let Some(settings) = AppSettings::try_new() {
             for key in [
@@ -259,9 +292,46 @@ impl MailViewer {
         base_uri: Option<&str>,
         fallback_text: Option<&str>,
     ) {
+        self.load_message_content_with_fallback(
+            message_id,
+            html_content,
+            &[],
+            base_uri,
+            fallback_text,
+        );
+    }
+
+    /// Load a message and resolve inline CID images in the render worker.
+    /// Attachment payloads are reference-counted, so rapid selection changes
+    /// do not copy or Base64-encode large images on GTK's main context.
+    pub(crate) fn load_message_content_with_fallback(
+        &self,
+        message_id: Option<&str>,
+        html_content: &str,
+        inline_images: &[InlineImage],
+        base_uri: Option<&str>,
+        fallback_text: Option<&str>,
+    ) {
         let message_changed = self.imp().current_message_id.borrow().as_deref() != message_id;
+        let source_changed = {
+            let imp = self.imp();
+            imp.current_message_id.borrow().as_deref() != message_id
+                || imp.current_html.borrow().as_deref() != Some(html_content)
+                || !inline_image_sources_match(
+                    imp.current_inline_images.borrow().as_slice(),
+                    inline_images,
+                )
+                || imp.current_base_uri.borrow().as_deref() != base_uri
+                || imp.current_fallback_text.borrow().as_deref() != fallback_text
+        };
         if message_changed {
             self.imp().remote_images_allowed_for_current.set(false);
+        }
+        if source_changed {
+            let source_generation = advance_generation(self.imp().source_generation.get());
+            self.imp().source_generation.set(source_generation);
+            self.imp().last_render_key.take();
+            self.imp().render_cache.take();
         }
         self.imp()
             .current_message_id
@@ -269,6 +339,9 @@ impl MailViewer {
         self.imp()
             .current_html
             .replace(Some(html_content.to_string()));
+        self.imp()
+            .current_inline_images
+            .replace(inline_images.to_vec());
         self.imp()
             .current_base_uri
             .replace(base_uri.map(str::to_string));
@@ -281,7 +354,12 @@ impl MailViewer {
             .map(AppSettings::auto_load_remote_images)
             .unwrap_or(false);
         let per_message_remote_images = message_id
-            .map(|message_id| RemoteContentStore::default().is_allowed(message_id))
+            .map(|message_id| {
+                self.imp()
+                    .remote_content_allowed
+                    .borrow()
+                    .contains(message_id)
+            })
             .unwrap_or(false);
         let remote_images_allowed = global_remote_images
             || per_message_remote_images
@@ -290,17 +368,179 @@ impl MailViewer {
             .as_ref()
             .map(AppSettings::render_html)
             .unwrap_or(true);
-        let has_remote_images = render_html && contains_remote_image_reference(html_content);
-        self.imp()
-            .banner
-            .set_revealed(has_remote_images && !remote_images_allowed);
-        let render_plan = prepare_mail_body(
-            html_content,
-            fallback_text,
+        let mail_font_family = settings
+            .as_ref()
+            .map(AppSettings::mail_font_family)
+            .unwrap_or_else(|| "system-ui, sans-serif".to_string());
+        let mail_font_size = settings
+            .as_ref()
+            .map(AppSettings::mail_font_size)
+            .unwrap_or(16);
+        let render_key = RenderRequestKey {
+            source_generation: self.imp().source_generation.get(),
             render_html,
             remote_images_allowed,
+            force_dark_mode: settings
+                .as_ref()
+                .map(AppSettings::force_dark_mode)
+                .unwrap_or(false),
+            mail_font_family: safe_css_font_family(&mail_font_family),
+            mail_font_size: safe_mail_font_size(mail_font_size),
+        };
+        if self.imp().last_render_key.borrow().as_ref() == Some(&render_key) {
+            return;
+        }
+        self.imp().last_render_key.replace(Some(render_key.clone()));
+        let generation = advance_generation(self.imp().render_generation.get());
+        self.imp().render_generation.set(generation);
+        self.imp()
+            .render_worker_generation
+            .store(generation, Ordering::Release);
+        self.imp().banner.set_revealed(false);
+        self.set_fallback_text(RENDER_LOADING_TEXT);
+        #[cfg(target_os = "linux")]
+        self.show_renderer_loading();
+
+        let decision = {
+            let cache = self.imp().render_cache.borrow();
+            render_decision(cache.as_ref(), &render_key)
+        };
+        match decision {
+            RenderDecision::UseCachedDocument => {
+                let cached = self.imp().render_cache.borrow().as_ref().cloned();
+                if let Some(cached) = cached
+                    && let Some(document) = cached.document
+                {
+                    self.apply_rendered_mail(
+                        generation,
+                        render_key,
+                        cached.plan,
+                        document.document,
+                    );
+                    return;
+                }
+            }
+            RenderDecision::RecomposeCachedBody => {
+                let plan = self
+                    .imp()
+                    .render_cache
+                    .borrow()
+                    .as_ref()
+                    .map(|cache| cache.plan.clone());
+                if let Some(plan) = plan {
+                    self.schedule_render(generation, render_key, RenderWork::Compose { plan });
+                    return;
+                }
+            }
+            RenderDecision::PrepareBody => {}
+        }
+        self.schedule_render(
+            generation,
+            render_key,
+            RenderWork::Prepare {
+                html_content: html_content.to_string(),
+                inline_images: inline_images.to_vec(),
+                fallback_text: fallback_text.map(str::to_string),
+            },
         );
+    }
+
+    fn schedule_render(&self, generation: u64, key: RenderRequestKey, work: RenderWork) {
+        let (queue, wake) = &*self.imp().render_worker_queue;
+        queue
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .replace(RenderJob {
+                generation,
+                key,
+                work,
+            });
+        wake.notify_one();
+    }
+
+    fn start_render_worker(&self) {
+        let queue = Arc::clone(&self.imp().render_worker_queue);
+        let current_generation = Arc::clone(&self.imp().render_worker_generation);
+        let shutdown = Arc::clone(&self.imp().render_worker_shutdown);
+        let (sender, receiver) = async_channel::unbounded();
+        std::thread::spawn(move || {
+            loop {
+                let job = {
+                    let (pending, wake) = &*queue;
+                    let mut pending = pending
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    while pending.is_none() && !shutdown.load(Ordering::Acquire) {
+                        pending = wake
+                            .wait(pending)
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    }
+                    if shutdown.load(Ordering::Acquire) {
+                        return;
+                    }
+                    pending.take()
+                };
+                let Some(job) = job else {
+                    continue;
+                };
+                if let Some(result) = execute_render_job(job, &current_generation)
+                    && sender.send_blocking(result).is_err()
+                {
+                    return;
+                }
+            }
+        });
+
+        let viewer = self.downgrade();
+        glib::spawn_future_local(async move {
+            while let Ok((generation, key, render_plan, document)) = receiver.recv().await {
+                let Some(viewer) = viewer.upgrade() else {
+                    return;
+                };
+                viewer.apply_rendered_mail(generation, key, render_plan, document);
+            }
+        });
+    }
+
+    fn apply_rendered_mail(
+        &self,
+        generation: u64,
+        key: RenderRequestKey,
+        render_plan: Arc<PreparedMailBody>,
+        document: Arc<str>,
+    ) {
+        if !render_result_is_current(
+            self.imp().render_generation.get(),
+            self.imp().source_generation.get(),
+            self.imp().last_render_key.borrow().as_ref(),
+            generation,
+            &key,
+        ) {
+            return;
+        }
+
+        self.imp().render_cache.replace(cache_mail_render(
+            key.source_generation,
+            &key,
+            render_plan.clone(),
+            document.clone(),
+        ));
+        self.imp()
+            .banner
+            .set_revealed(render_plan.has_remote_images && !key.remote_images_allowed);
         self.set_fallback_text(&render_plan.visible_text);
+        tracing::debug!(
+            html_bytes = self
+                .imp()
+                .current_html
+                .borrow()
+                .as_ref()
+                .map_or(0, String::len),
+            sanitized_bytes = render_plan.body.len(),
+            fallback_used = render_plan.used_fallback,
+            render_html = key.render_html,
+            "Prepared selected mail content"
+        );
 
         #[cfg(target_os = "linux")]
         {
@@ -308,53 +548,27 @@ impl MailViewer {
                 self.show_renderer_error();
                 return;
             };
-            self.show_renderer_loading();
-            tracing::debug!(
-                message_id = ?message_id,
-                html_bytes = html_content.len(),
-                sanitized_bytes = render_plan.body.len(),
-                fallback_used = render_plan.used_fallback,
-                render_html,
-                "Rendering selected mail content"
-            );
             if let Some(settings) = webkit6::prelude::WebViewExt::settings(&webview) {
-                // The document policy below blocks network image schemes
-                // deterministically. Keeping WebKit's generic image loading
-                // enabled is necessary for inline `data:`, `cid:` and `blob:`
-                // content to render while remote images remain disallowed.
+                // Keep generic image loading enabled for trusted inline
+                // `data:`, `cid:` and `blob:` content. The sanitized body,
+                // CSP and policy CSS continue to deny remote sources.
                 settings.set_auto_load_images(true);
             }
-            let is_dark_mode = settings
-                .as_ref()
-                .map(AppSettings::force_dark_mode)
-                .unwrap_or(false);
-            let mail_font_family = settings
-                .as_ref()
-                .map(AppSettings::mail_font_family)
-                .unwrap_or_else(|| "system-ui, sans-serif".to_string());
-            let mail_font_size = settings
-                .as_ref()
-                .map(AppSettings::mail_font_size)
-                .unwrap_or(14);
-            let styled_html = compose_sanitized_mail_document(
-                &render_plan.body,
-                render_html,
-                remote_images_allowed,
-                is_dark_mode,
-                &mail_font_family,
-                mail_font_size,
-            );
-
-            let effective_base_uri = effective_mail_base_uri(base_uri, remote_images_allowed);
-            webview.load_html(&styled_html, effective_base_uri);
+            let base_uri = self.imp().current_base_uri.borrow().clone();
+            let effective_base_uri =
+                effective_mail_base_uri(base_uri.as_deref(), key.remote_images_allowed);
+            let content_uri = renderer_content_uri(generation);
+            self.imp().active_webview_generation.set(generation);
+            self.imp()
+                .active_webview_uri
+                .replace(Some(content_uri.clone()));
+            webview.load_alternate_html(&document, &content_uri, effective_base_uri);
         }
 
         #[cfg(not(target_os = "linux"))]
         {
-            // The non-Linux fallback is intentionally plain text. It still
-            // uses the exact same sanitized/fallback decision as Linux so
-            // local development cannot hide empty-message or unsafe-content
-            // bugs behind a platform-specific code path.
+            // The non-Linux fallback is intentionally plain text. It uses
+            // the same sanitized/fallback decision as Linux.
             if let Some(view) = self.imp().fallback_view.borrow().as_ref() {
                 view.buffer().set_text(&render_plan.visible_text);
             }
@@ -368,9 +582,11 @@ impl MailViewer {
         let message_id = self.imp().current_message_id.borrow().clone();
         let base_uri = self.imp().current_base_uri.borrow().clone();
         let fallback_text = self.imp().current_fallback_text.borrow().clone();
-        self.load_html_for_message_with_fallback(
+        let inline_images = self.imp().current_inline_images.borrow().clone();
+        self.load_message_content_with_fallback(
             message_id.as_deref(),
             &html,
+            &inline_images,
             base_uri.as_deref(),
             fallback_text.as_deref(),
         );
@@ -379,8 +595,23 @@ impl MailViewer {
     /// Allow remote image loading for the current email.
     pub fn allow_remote_images(&self) {
         if let Some(message_id) = self.imp().current_message_id.borrow().as_deref() {
-            if let Err(error) = RemoteContentStore::default().set_allowed(message_id, true) {
-                tracing::warn!(%error, %message_id, "Could not persist remote content approval");
+            let result = self
+                .imp()
+                .remote_content_store
+                .borrow()
+                .as_ref()
+                .map(|store| store.set_allowed(message_id, true));
+            match result {
+                Some(Ok(())) => {
+                    self.imp()
+                        .remote_content_allowed
+                        .borrow_mut()
+                        .insert(message_id.to_string());
+                }
+                Some(Err(error)) => {
+                    tracing::warn!(%error, "Could not persist remote content approval");
+                }
+                None => tracing::warn!("Remote content store is unavailable"),
             }
         }
         self.imp().remote_images_allowed_for_current.set(true);
@@ -430,10 +661,13 @@ impl MailViewer {
             .build();
 
         let viewer_weak = self.downgrade();
-        webview.connect_load_changed(move |_, event| {
+        webview.connect_load_changed(move |webview, event| {
             let Some(viewer) = viewer_weak.upgrade() else {
                 return;
             };
+            if !viewer.is_current_webview_load(webview) {
+                return;
+            }
             match event {
                 webkit6::LoadEvent::Started | webkit6::LoadEvent::Redirected => {
                     viewer.show_renderer_loading();
@@ -444,10 +678,12 @@ impl MailViewer {
         });
 
         let viewer_weak = self.downgrade();
-        webview.connect_load_failed(move |_, _, failing_uri, error| {
+        webview.connect_load_failed(move |webview, _, failing_uri, error| {
             tracing::warn!(uri = %redact_renderer_uri(failing_uri), %error, "Mail viewer failed to load document");
             if let Some(viewer) = viewer_weak.upgrade() {
-                viewer.show_renderer_error();
+                if viewer.is_current_webview_load(webview) {
+                    viewer.show_renderer_error();
+                }
             }
             true
         });
@@ -463,8 +699,11 @@ impl MailViewer {
                     if let Some(mut action) = nav.navigation_action() {
                         if let Some(req) = action.request() {
                             if let Some(uri) = req.uri() {
-                                if uri != "about:blank" && !uri.starts_with("data:") {
-                                    tracing::info!("Opening external link in browser: {}", uri);
+                                if !is_internal_renderer_uri(&uri) && !uri.starts_with("data:") {
+                                    tracing::info!(
+                                        uri = %redact_renderer_uri(&uri),
+                                        "Opening external link in browser"
+                                    );
                                     let _ = gio::AppInfo::launch_default_for_uri(
                                         &uri,
                                         None::<&gio::AppLaunchContext>,
@@ -485,6 +724,17 @@ impl MailViewer {
         self.imp().webview.replace(Some(webview.clone()));
         tracing::debug!("Deferred WebKitGTK context and view created");
         Some(webview)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn is_current_webview_load(&self, webview: &webkit6::WebView) -> bool {
+        let current_uri = webview.uri();
+        webview_load_is_current(
+            self.imp().active_webview_generation.get(),
+            self.imp().render_generation.get(),
+            self.imp().active_webview_uri.borrow().as_deref(),
+            current_uri.as_deref(),
+        )
     }
 
     #[cfg(target_os = "linux")]
@@ -509,6 +759,7 @@ impl MailViewer {
 
     #[cfg(target_os = "linux")]
     fn show_renderer_error(&self) {
+        self.imp().last_render_key.take();
         if let Some(label) = self.imp().renderer_error_label.borrow().as_ref() {
             label.set_visible(true);
         }
@@ -523,6 +774,212 @@ struct PreparedMailBody {
     body: String,
     visible_text: String,
     used_fallback: bool,
+    has_remote_images: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BodyRenderKey {
+    render_html: bool,
+    remote_images_allowed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RenderRequestKey {
+    source_generation: u64,
+    render_html: bool,
+    remote_images_allowed: bool,
+    force_dark_mode: bool,
+    mail_font_family: String,
+    mail_font_size: u32,
+}
+
+impl RenderRequestKey {
+    fn body_key(&self) -> BodyRenderKey {
+        BodyRenderKey {
+            render_html: self.render_html,
+            remote_images_allowed: self.remote_images_allowed,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CachedDocument {
+    key: RenderRequestKey,
+    document: Arc<str>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CachedMailRender {
+    source_generation: u64,
+    body_key: BodyRenderKey,
+    plan: Arc<PreparedMailBody>,
+    document: Option<CachedDocument>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RenderDecision {
+    UseCachedDocument,
+    RecomposeCachedBody,
+    PrepareBody,
+}
+
+#[derive(Debug)]
+enum RenderWork {
+    Prepare {
+        html_content: String,
+        inline_images: Vec<InlineImage>,
+        fallback_text: Option<String>,
+    },
+    Compose {
+        plan: Arc<PreparedMailBody>,
+    },
+}
+
+#[derive(Debug)]
+struct RenderJob {
+    generation: u64,
+    key: RenderRequestKey,
+    work: RenderWork,
+}
+
+type RenderResult = (u64, RenderRequestKey, Arc<PreparedMailBody>, Arc<str>);
+
+fn execute_render_job(job: RenderJob, current_generation: &AtomicU64) -> Option<RenderResult> {
+    if current_generation.load(Ordering::Acquire) != job.generation {
+        return None;
+    }
+    let generation = job.generation;
+    let key = job.key;
+    let (render_plan, document) = match job.work {
+        RenderWork::Prepare {
+            html_content,
+            inline_images,
+            fallback_text,
+        } => {
+            let html_content = resolve_cid_images(&html_content, &inline_images);
+            if current_generation.load(Ordering::Acquire) != generation {
+                return None;
+            }
+            let render_plan = Arc::new(prepare_mail_body(
+                &html_content,
+                fallback_text.as_deref(),
+                key.render_html,
+                key.remote_images_allowed,
+            ));
+            if current_generation.load(Ordering::Acquire) != generation {
+                return None;
+            }
+            let document = compose_sanitized_mail_document(
+                &render_plan.body,
+                key.render_html,
+                key.remote_images_allowed,
+                key.force_dark_mode,
+                &key.mail_font_family,
+                key.mail_font_size,
+            );
+            (render_plan, document.into())
+        }
+        RenderWork::Compose { plan } => {
+            let document = compose_sanitized_mail_document(
+                &plan.body,
+                key.render_html,
+                key.remote_images_allowed,
+                key.force_dark_mode,
+                &key.mail_font_family,
+                key.mail_font_size,
+            );
+            (plan, document.into())
+        }
+    };
+    (current_generation.load(Ordering::Acquire) == generation).then_some((
+        generation,
+        key,
+        render_plan,
+        document,
+    ))
+}
+
+fn inline_image_sources_match(left: &[InlineImage], right: &[InlineImage]) -> bool {
+    left.len() == right.len()
+        && left.iter().zip(right).all(|(left, right)| {
+            left.content_id == right.content_id
+                && left.mime_type == right.mime_type
+                && Arc::ptr_eq(&left.content, &right.content)
+        })
+}
+
+fn advance_generation(current: u64) -> u64 {
+    current.wrapping_add(1).max(1)
+}
+
+fn render_decision(cache: Option<&CachedMailRender>, key: &RenderRequestKey) -> RenderDecision {
+    let Some(cache) = cache else {
+        return RenderDecision::PrepareBody;
+    };
+    if cache.source_generation != key.source_generation || cache.body_key != key.body_key() {
+        return RenderDecision::PrepareBody;
+    }
+    if cache
+        .document
+        .as_ref()
+        .is_some_and(|document| document.key == *key)
+    {
+        RenderDecision::UseCachedDocument
+    } else {
+        RenderDecision::RecomposeCachedBody
+    }
+}
+
+fn render_result_is_current(
+    active_generation: u64,
+    active_source_generation: u64,
+    active_key: Option<&RenderRequestKey>,
+    result_generation: u64,
+    result_key: &RenderRequestKey,
+) -> bool {
+    active_generation == result_generation
+        && active_source_generation == result_key.source_generation
+        && active_key == Some(result_key)
+}
+
+fn webview_load_is_current(
+    active_webview_generation: u64,
+    render_generation: u64,
+    expected_uri: Option<&str>,
+    current_uri: Option<&str>,
+) -> bool {
+    active_webview_generation == render_generation
+        && expected_uri.is_some()
+        && expected_uri == current_uri
+}
+
+fn cached_plan_bytes(plan: &PreparedMailBody) -> usize {
+    plan.body.len().saturating_add(plan.visible_text.len())
+}
+
+fn cache_mail_render(
+    source_generation: u64,
+    key: &RenderRequestKey,
+    plan: Arc<PreparedMailBody>,
+    document: Arc<str>,
+) -> Option<CachedMailRender> {
+    let plan_bytes = cached_plan_bytes(&plan);
+    if plan_bytes > MAX_CACHED_DERIVED_BYTES {
+        return None;
+    }
+    let document =
+        (plan_bytes.saturating_add(document.len()) <= MAX_CACHED_DERIVED_BYTES).then(|| {
+            CachedDocument {
+                key: key.clone(),
+                document,
+            }
+        });
+    Some(CachedMailRender {
+        source_generation,
+        body_key: key.body_key(),
+        plan,
+        document,
+    })
 }
 
 /// Apply the same sanitizer, remote-image policy and empty-body fallback on
@@ -536,6 +993,7 @@ fn prepare_mail_body(
 ) -> PreparedMailBody {
     if !render_html {
         let visible_text = html_to_fallback_text(html_content);
+        let used_fallback = visible_text.is_empty();
         let visible_text = if visible_text.is_empty() {
             readable_fallback_text(fallback_text)
         } else {
@@ -544,17 +1002,23 @@ fn prepare_mail_body(
         return PreparedMailBody {
             body: format!("<pre>{}</pre>", escape_html(&visible_text)),
             visible_text,
-            used_fallback: html_to_fallback_text(html_content).is_empty(),
+            used_fallback,
+            has_remote_images: false,
         };
     }
 
     let sanitized = sanitize_html(html_content);
+    let blocked = block_remote_images(&sanitized);
+    let has_remote_images = blocked != sanitized
+        || any_image_tag(&sanitized, |tag| {
+            image_attribute_value(tag, "xlink:href").is_some_and(is_remote_uri_reference)
+        });
     let sanitized = if remote_images_allowed {
         sanitized
     } else {
-        block_remote_images(&sanitized)
+        blocked
     };
-    let visible_text = html_to_fallback_text(&sanitized);
+    let visible_text = sanitized_html_to_plain_text(&sanitized);
     let has_renderable_content = !visible_text.is_empty() || contains_renderable_image(&sanitized);
 
     if !has_renderable_content {
@@ -563,6 +1027,7 @@ fn prepare_mail_body(
             body: format!("<pre>{}</pre>", escape_html(&visible_text)),
             visible_text,
             used_fallback: true,
+            has_remote_images,
         };
     }
 
@@ -574,6 +1039,7 @@ fn prepare_mail_body(
             visible_text
         },
         used_fallback: false,
+        has_remote_images,
     }
 }
 
@@ -612,6 +1078,17 @@ fn redact_renderer_uri(value: &str) -> &'static str {
     } else {
         "redacted resource"
     }
+}
+
+#[cfg(target_os = "linux")]
+fn renderer_content_uri(generation: u64) -> String {
+    format!("about:blank#evolution-mail-render-{generation}")
+}
+
+#[cfg(target_os = "linux")]
+fn is_internal_renderer_uri(value: &str) -> bool {
+    value.eq_ignore_ascii_case("about:blank")
+        || value.starts_with("about:blank#evolution-mail-render-")
 }
 
 fn compose_sanitized_mail_document(
@@ -970,10 +1447,27 @@ fn hex_digit(byte: u8) -> Option<u8> {
 #[cfg(test)]
 mod tests {
     use super::{
-        compose_sanitized_mail_document, contains_remote_image_reference, effective_mail_base_uri,
-        html_to_fallback_text, prepare_mail_body, readable_fallback_text, safe_css_font_family,
-        safe_mail_font_size,
+        CachedMailRender, RenderDecision, RenderJob, RenderRequestKey, RenderWork,
+        advance_generation, cache_mail_render, compose_sanitized_mail_document,
+        contains_remote_image_reference, effective_mail_base_uri, execute_render_job,
+        html_to_fallback_text, inline_image_sources_match, prepare_mail_body,
+        readable_fallback_text, render_decision, render_result_is_current, safe_css_font_family,
+        safe_mail_font_size, webview_load_is_current,
     };
+    use crate::services::inline_content_service::InlineImage;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicU64;
+
+    fn render_key(source_generation: u64) -> RenderRequestKey {
+        RenderRequestKey {
+            source_generation,
+            render_html: true,
+            remote_images_allowed: false,
+            force_dark_mode: false,
+            mail_font_family: "system-ui, sans-serif".to_string(),
+            mail_font_size: 16,
+        }
+    }
 
     #[test]
     fn fallback_text_preserves_mail_content_and_line_breaks() {
@@ -1032,6 +1526,7 @@ mod tests {
         );
 
         assert!(!plan.used_fallback);
+        assert!(plan.has_remote_images);
         assert_eq!(plan.visible_text, "Hallo");
         assert!(!plan.body.contains("cdn.example"));
         assert!(plan.body.contains("cid:logo@example.org"));
@@ -1048,6 +1543,7 @@ mod tests {
         );
 
         assert!(plan.used_fallback);
+        assert!(plan.has_remote_images);
         assert_eq!(plan.visible_text, "Lesbare Vorschau");
         assert!(plan.body.contains("Lesbare Vorschau"));
         assert!(!plan.body.contains("cdn.example"));
@@ -1098,6 +1594,131 @@ mod tests {
         );
         assert_eq!(safe_mail_font_size(1), 8);
         assert_eq!(safe_mail_font_size(100), 48);
+    }
+
+    #[test]
+    fn render_generation_never_uses_zero_as_a_live_value() {
+        assert_eq!(advance_generation(0), 1);
+        assert_eq!(advance_generation(u64::MAX), 1);
+    }
+
+    #[test]
+    fn inline_payload_identity_is_checked_without_copying_bytes() {
+        let bytes: Arc<[u8]> = vec![1, 2, 3].into();
+        let first = InlineImage::new("logo", "image/png", bytes.clone());
+        let same = first.clone();
+        assert!(inline_image_sources_match(&[first], &[same]));
+
+        let left = InlineImage::new("logo", "image/png", vec![1, 2, 3]);
+        let right = InlineImage::new("logo", "image/png", vec![1, 2, 3]);
+        assert!(!inline_image_sources_match(&[left], &[right]));
+    }
+
+    #[test]
+    fn render_worker_resolves_cid_content_and_drops_stale_jobs() {
+        let generation = AtomicU64::new(2);
+        let stale = RenderJob {
+            generation: 1,
+            key: render_key(1),
+            work: RenderWork::Prepare {
+                html_content: "<img src=\"cid:logo\">".to_string(),
+                inline_images: vec![InlineImage::new("logo", "image/png", b"PNG".to_vec())],
+                fallback_text: Some("Logo".to_string()),
+            },
+        };
+        assert!(execute_render_job(stale, &generation).is_none());
+
+        let current = RenderJob {
+            generation: 2,
+            key: render_key(2),
+            work: RenderWork::Prepare {
+                html_content: "<img src=\"cid:logo\">".to_string(),
+                inline_images: vec![InlineImage::new("logo", "image/png", b"PNG".to_vec())],
+                fallback_text: Some("Logo".to_string()),
+            },
+        };
+        let (_, _, plan, document) =
+            execute_render_job(current, &generation).expect("current work should finish");
+        assert!(plan.body.contains("data:image/png;base64,UE5H"));
+        assert!(document.contains("data:image/png;base64,UE5H"));
+    }
+
+    #[test]
+    fn render_cache_reuses_documents_and_only_recomposes_style_changes() {
+        let key = render_key(7);
+        let plan = prepare_mail_body("<p>Hallo</p>", Some("Hallo"), true, false);
+        let cache = cache_mail_render(
+            7,
+            &key,
+            Arc::new(plan),
+            Arc::<str>::from("<html>Hallo</html>"),
+        )
+        .expect("small derived content should be cached");
+
+        assert_eq!(
+            render_decision(Some(&cache), &key),
+            RenderDecision::UseCachedDocument
+        );
+
+        let mut font_change = key.clone();
+        font_change.mail_font_size = 18;
+        assert_eq!(
+            render_decision(Some(&cache), &font_change),
+            RenderDecision::RecomposeCachedBody
+        );
+
+        let mut policy_change = key.clone();
+        policy_change.remote_images_allowed = true;
+        assert_eq!(
+            render_decision(Some(&cache), &policy_change),
+            RenderDecision::PrepareBody
+        );
+        assert_eq!(
+            render_decision(None::<&CachedMailRender>, &key),
+            RenderDecision::PrepareBody
+        );
+    }
+
+    #[test]
+    fn stale_render_results_cannot_replace_the_active_message() {
+        let active_key = render_key(11);
+        assert!(render_result_is_current(
+            4,
+            11,
+            Some(&active_key),
+            4,
+            &active_key,
+        ));
+        assert!(!render_result_is_current(
+            4,
+            11,
+            Some(&active_key),
+            3,
+            &active_key,
+        ));
+
+        let stale_source = render_key(10);
+        assert!(!render_result_is_current(
+            4,
+            11,
+            Some(&active_key),
+            4,
+            &stale_source,
+        ));
+    }
+
+    #[test]
+    fn webview_load_requires_the_exact_current_internal_uri() {
+        let uri = "about:blank#evolution-mail-render-7";
+        assert!(webview_load_is_current(7, 7, Some(uri), Some(uri)));
+        assert!(!webview_load_is_current(7, 7, Some(uri), None));
+        assert!(!webview_load_is_current(6, 7, Some(uri), Some(uri)));
+        assert!(!webview_load_is_current(
+            7,
+            7,
+            Some(uri),
+            Some("about:blank#evolution-mail-render-6")
+        ));
     }
 
     #[test]

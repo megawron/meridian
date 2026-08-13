@@ -29,8 +29,10 @@ Distribution, Bibliotheksversionen und Kontotyp zu protokollieren.
 - Verknüpft: `P0-MAIL-001` und `P0-SYNC-001` aus
   `ROADMAP_EXECUTION.md`.
 - Portable Basis: Commits `10b0321` (MIME-Parser/HTML-Sanitizer) und `d6e7dcc`
-  (Viewer-Komposition, Fallbackzustände und Remote-Freigabe); ersetzen nicht
-  die folgende Linux-Abnahme.
+  (Viewer-Komposition, Fallbackzustände und Remote-Freigabe) sowie der
+  `P0-SYNC-001A`-Stand mit begrenzten Page-Windows, opaken Graph-NextLink-
+  Cursorn, UID-Deduplizierung, generationensicheren Modellen und normalisierten
+  Camel-Events; ersetzen nicht die folgende Linux-Abnahme.
 - Vorbereitung: vollständiger portabler Testlauf grün; ein EDS-Testkonto mit
   bekannten Plaintext-, HTML-, CID-, Remote-Bild- und Anhangsnachrichten.
 - Ablauf:
@@ -44,7 +46,110 @@ Distribution, Bibliotheksversionen und Kontotyp zu protokollieren.
      testen.
 - Erwartung: kein leerer Reader, kein ungefragter Remote-Request, korrekte
   Hintergründe/CSS, stabile Auswahl, keine Duplikate und kein GTK-Hänger.
+- Zusätzlich prüfen: Bei schnellem A→B→C-Umschalten mit großen CID-Anlagen darf
+  nur C sichtbar werden; CPU/RSS dürfen nicht durch wartende Render-Threads oder
+  wiederholte Anlagenkopien anwachsen. Kontozeilen haben kein dekoratives Icon,
+  optionale Mailicons zeigen entweder das Theme-Symbol oder den Fallback.
 - Evidenz: Logmarker, inhaltsneutrale Screenshots, Testkorpus-IDs und Commit.
+
+### LINUX-P0-MAIL-003 — Reader-Churn, Icons, Dichte und Unread-Counter
+
+- Verknüpft: `P0-MAIL-001D`, `P0-MAIL-002A` und `P0-MAIL-002B` aus
+  `ROADMAP_EXECUTION.md`.
+- Status: `[ ]`; dieser Punkt darf weder aus einem macOS-Build noch aus einem
+  einzelnen Rust-Unit-Test auf `[x]` gesetzt werden.
+- Voraussetzung: ein gebauter Commit mit den portablen Gates aus der
+  Ausführungsroadmap und ein inhaltsneutrales Testkonto. Das Testkorpus soll
+  mindestens 20 Nachrichten enthalten, darunter drei HTML-Nachrichten über
+  1 MiB, eine große Tabelle/Newsletter-CSS, eine fehlerhafte HTML-Mail, eine
+  CID-Mail, eine Mail mit externem Bild und eine Mail mit regulären Anhängen.
+  Keine persönlichen Mailinhalte oder Zugangsdaten in Logs/Screenshots
+  übernehmen.
+- Vor jedem Lauf protokollieren:
+
+  ```bash
+  git rev-parse HEAD
+  uname -a
+  pkg-config --modversion gtk4 libadwaita-1 webkitgtk-6.0 camel-1.2 libedataserver-1.2
+  cargo fmt --all -- --check
+  cargo check --workspace --locked
+  cargo test --workspace --locked --no-fail-fast --quiet
+  ```
+
+- Startbefehl mit Diagnose:
+
+  ```bash
+  RUST_LOG=evolution_gtk4=debug ./target/debug/evolution-gtk4 2>&1 | tee evolution-mail-core.log
+  ```
+
+- Ablauf und erwartetes Ergebnis:
+  1. Klassische Ansicht mit Konto/Ordnern links, Nachrichtenliste oben und
+     Vorschau unten öffnen. Bei 100-%-Skalierung die sichtbare Zahl der
+     einzeiligen Zeilen und die Fensterhöhe notieren; Ziel ist die gleiche
+     kompakte Größenordnung wie Evolution, ungefähr 40 Nachrichten bei einer
+     typischen Desktop-Höhe, ohne unlesbar kleine Schrift.
+  2. Innerhalb von 30 Sekunden mindestens 20-mal zwischen den großen
+     HTML-Nachrichten wechseln, zusätzlich mit Pfeil-/J-/K-Tastaturwegen und
+     einem Ordnerwechsel. Währenddessen Fenster verschieben, suchen und
+     Scrollen. Der GTK-Hauptthread muss Eingaben annehmen; nach Abschluss darf
+     nur der zuletzt ausgewählte Betreff/Body sichtbar sein. Kein stale Body,
+     leerer weißer Reader, dauerhaftes Loading, doppelter Inhalt, Crash oder
+     „Programm reagiert nicht“ ist zulässig.
+  3. Dieselbe Umschaltserie mit einer fehlerhaften/leer sanitisierten HTML-Mail
+     wiederholen. Erwartet wird der explizite Klartext-/Fehlerzustand, während
+     ein späteres Ergebnis einer vorherigen Nachricht verworfen bleibt.
+  4. Mit `GTK_ICON_THEME=Adwaita` erneut starten und alle sichtbaren
+     Mailzeilen, Spaltenköpfe, Sidebar-Wurzeln, Ordner und Detailaktionen
+     prüfen. Anhangs-, Markierungs- und Wichtigkeitssymbole stehen links vor
+     Absender/Betreff; fehlende Symbolnamen müssen einen sichtbaren Fallback
+     haben und dürfen keine leeren Flächen oder Text-Fehlglyphen erzeugen.
+  5. Sidebar prüfen: Konto-Wurzel ohne dekoratives Konto-Icon, flache
+     Ordnerindentation, kein Expander bei einer einzelnen Nachricht und keine
+     sichtbaren Backendbegriffe. Ein Unread-Badge erscheint nur bei einem
+     positiven Ungelesenwert; bei `0` verschwindet es und zeigt nicht den
+     Gesamtbestand als Ersatz an.
+  6. Eine Nachricht als gelesen und wieder ungelesen markieren, jeweils den
+     Backend-/Worker-Erfolg abwarten und danach Refresh, Ordnerwechsel und
+     Neustart ausführen. Erfolg muss den Counter entfernen bzw. wiederherstellen.
+     Einen absichtlich abgebrochenen oder fehlgeschlagenen Vorgang ausführen;
+     dabei darf der Counter nicht vorzeitig verschwinden und kein falscher
+     Erfolgsstatus stehen bleiben.
+  7. Eine gewöhnliche unverschlüsselte Mail öffnen: die Routine-
+     Sicherheitszeile bleibt standardmäßig verborgen und es wird keine
+     unnötige Vollprüfung gestartet. Danach die optionale Einstellung aktivieren
+     und die Zeile erneut prüfen. Eine echte OpenPGP-/S/MIME-Testmail muss ihre
+     Prüfung, Warnung oder ihren Fehler sichtbar machen; der Status darf durch
+     die optionale Routineeinstellung nicht unterdrückt werden.
+- Abnahmekriterien:
+  - Alle sieben Ablaufschritte sind mit Commit, Distribution, Versionsdaten,
+    Logmarker, anonymisierten Screenshots und Korpus-IDs dokumentiert.
+  - Die schnelle Umschaltserie bleibt interaktiv und zeigt niemals ein
+    Ergebnis einer nicht mehr ausgewählten Nachricht.
+  - Die klassische Dichte, linke Spaltenanordnung, Icon-Fallbacks, flache
+    Sidebar und Unread-only-Badges stimmen mit dem GTK3-/Evolution-
+    Referenzinventar überein; jede bewusste Abweichung ist als Einstellung
+    oder Folgepunkt notiert.
+  - Routine-Sicherheitsstatus ist standardmäßig unsichtbar, echte Crypto-
+    Zustände bleiben sichtbar, und ein negativer/abgebrochener Counterpfad ist
+    belegt.
+- Evidenzvorlage:
+
+  ```text
+  Commit:
+  Distribution / Kernel / Desktop:
+  GTK / libadwaita / WebKitGTK / EDS:
+  Testkorpus-IDs und Größen:
+  Umschaltserie / Dauer / letzter sichtbarer Message-Key:
+  sichtbare Zeilenzahl / Skalierung / Sidebar-Befund:
+  Icon-Theme / fehlende Icons / Fallback-Befund:
+  Counter-Erfolg / Counter-Fehlerpfad:
+  Routine-Crypto verborgen / echte Hülle geprüft:
+  Logs und Screenshots (inhaltsneutral):
+  Verbleibende Abweichungen:
+  ```
+
+- `[x]` ist erst zulässig, wenn alle Kriterien einschließlich mindestens
+  eines erfolgreichen und eines negativen Umschalt-/Counterpfads erfüllt sind.
 
 ### LINUX-P0-MAIL-002 — asynchrone Mailmutationen
 
@@ -338,12 +443,38 @@ Authentifizierungsdaten oder Mailinhalte in das Log übernehmen.
   - RFC-822-Inhalt, Header, MIME-Text, HTML und Anhänge mit bekannten
     Testnachrichten vergleichen.
 - `[~]` Pagination und Aktualisierung testen:
-  - mehr als eine Seite Nachrichten laden.
+  - einen Ordner mit deutlich mehr als 1.000 Nachrichten laden; erste Seite,
+    exakte Seitengrenze, mehrere „Mehr laden“-Schritte und Refresh prüfen.
+    Anonymisierte `(source, folder, UID)`-Listen müssen über Seiten hinweg
+    eindeutig sein und der Graph-Pfad darf pro Folgeseite nur das angeforderte
+    `$skip`-Fenster übertragen.
   - neue Nachricht, geänderte Flags, verschobene Nachricht, gelöschte
     Nachricht, gelöschter Ordner und umbenannter Ordner während des Laufens
     erzeugen.
+  - nach einer Ordnerumbenennung in Evolution im umbenannten Ordner weitere
+    Flag-/Löschänderungen auslösen; sie müssen trotz der alten nativen
+    Watcher-Ordnerkennung im neuen Pfad landen.
+  - Gelesen/Ungelesen extern und in der GTK4-App umschalten und die Badge-Werte
+    nach jeder Änderung gegen Evolution vergleichen. Der portable Pfad kann
+    Deltas für geladene UIDs berechnen; falls ein Provider Ereignisse für nicht
+    geladene UIDs ohne ausreichende Information liefert, muss das native
+    Change-Event zusätzlich die autoritativen Ordnerwerte `unread_count` und
+    `total_count` übertragen oder gezielt eine Folder-Summary nachladen.
+  - mehr als 32 Änderungen in kurzer Folge erzeugen. Der Watcher darf bei
+    Queue-Druck weder stoppen noch Ereignisse still verlieren; nach dem Burst
+    müssen UI, Evolution und Server denselben UID-/Flag-Zustand zeigen.
+  - nach App-Start einen neuen Unterordner anlegen und dort eine Nachricht
+    erzeugen. Falls der native Watcher neue Ordner noch nicht registriert,
+    `eds_camel_bridge.c` um Folder-Created-/Watcher-Anmeldung und ein explizites
+    Resync-Ereignis erweitern; anschließend ohne App-Neustart wiederholen.
+  - eine ausgewählte Nachricht am Anfang, in der Mitte und am Ende extern
+    löschen. Erwartung: nächster Nachbar, am Ende vorheriger Nachbar, bei leerem
+    Ordner vollständig geleerter Reader.
   - prüfen, dass UID-basierte Updates keine Duplikate oder veraltete Zeilen
     erzeugen.
+  - während Konto-/Ordnerwechsel, Suche, Refresh und „Mehr laden“ sofort einen
+    zweiten Zielordner wählen. Ausschließlich die letzte Generation darf
+    sichtbar werden; Refresh darf nicht zum vorherigen Ordner zurückspringen.
 - `[~]` Remote-Aktionen mit einem Testkonto testen:
   - gelesen/ungelesen, markiert, wichtig, Spam/Nicht-Spam, Archiv, Verschieben
     und Löschen.

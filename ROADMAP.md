@@ -15,6 +15,10 @@ Vollständige Architektur-Spezifikation, Feature-Mapping und Entwicklungs-Roadma
 > Aufgabenansichten ist mit 387/387 Tests und Workspace-Build verifiziert.
 > Echte WebKitGTK-, EDS/Camel/ECal/EBook-, Provider- und Desktop-Abnahme bleibt
 > ausdrücklich in `ROADMAP_LINUX.md` offen; dies ist keine Vollparitätsangabe.
+> Der nachfolgende atomare Mail-Kernblock hat am 13. August 2026 die portablen
+> Gates einschließlich Schema-Prüfung, Workspace-Build und 396/396 Tests
+> bestanden. WebKitGTK-, Icon-, Dichte-, Counter- und EDS/Camel-Abnahme auf
+> Linux bleibt offen und ist ausdrücklich kein Vollparitätsbeleg.
 
 ---
 
@@ -199,7 +203,7 @@ Implementierungsdetails getrennt.
 | **Ordner-Baumstruktur** | `GtkTreeListModel` + `GtkListView` in der Sidebar. Jeder Ordner ist ein `GObject` mit Properties (Name, Unread-Count, Icon). `GtkTreeExpander` für Verschachtelung. | `CamelStore.get_folder_info()` async |
 | **Virtuelle Suchordner** | `CamelVeeFolder` als Backend. In der UI als spezielle Sidebar-Einträge mit Such-Icon. Konfiguration über `AdwDialog` mit Rule-Builder. | `CamelVeeStore`, `CamelVeeFolder` |
 | **Mail-Filter & Regeln** | `AdwPreferencesWindow` mit Filter-Editor. Rules als serialisierbare Structs. Engine evaluiert beim Eingang via `CamelFilterDriver`. | `CamelFilterDriver`, `CamelFilterSearchFunc` |
-| **S/MIME & PGP** | `CamelGpgContext` / `CamelSMIMEContext` für Sign/Verify/Encrypt/Decrypt. Status-Anzeige im Message-Header als `AdwStatusPage`-ähnliches Banner mit Schloss-/Warn-Icon. | `CamelCipherContext`, `CamelGpgContext` |
+| **S/MIME & PGP** | `CamelGpgContext` / `CamelSMIMEContext` für Sign/Verify/Encrypt/Decrypt. Eine kompakte Statuszeile wird nur bei tatsächlicher OpenPGP-/S/MIME-Hülle oder nach expliziter Benutzereinstellung gezeigt; gültige, warnende und fehlgeschlagene Prüfungen bleiben sichtbar. | `CamelCipherContext`, `CamelGpgContext` |
 | **HTML-Editor (Compose)** | **WebKitGTK 6.0 WebView** im editierbaren Modus (`WebKitWebView::set_editable(true)`) mit Custom-Toolbar. Alternative: `GtkTextView` mit eigenem Rich-Text-Renderer. | `CamelMimeMessage` für Assemblierung |
 | **Inline-Anhänge** | `CamelMimePart` mit Content-ID → in WebView über `data:` URIs oder lokale Temp-Dateien eingebettet. Attachment-Bar als `GtkFlowBox` unterhalb der Leseansicht. | `CamelMimePart`, `CamelDataWrapper` |
 | **Threaded Conversation View** | `GtkListView` mit `GtkTreeListModel` für Thread-Verschachtelung. Summary-Zeile mit Expander. | `CamelFolderThread` |
@@ -407,9 +411,24 @@ werden.
   Tabellenlayouts der Nachricht werden dadurch nicht mehr flächendeckend
   überschrieben. Remote-CSS und Ressourcenzugriffe bleiben aus
   Datenschutzgründen blockiert.
+  Die CPU-lastige Sanitization und Dokumentkomposition werden für den aktuellen
+  Kernblock außerhalb des GTK-Hauptloops vorbereitet. Jede Antwort trägt eine
+  Generation und die vollständige Render-Anfrage; ein zwischenzeitlich
+  veraltetes Ergebnis wird vor dem Laden in WebKit oder den Klartext-Fallback
+  verworfen. Identische Anfragen werden zusammengelegt. Diese Stale-Discard-
+  Strecke ist erst nach den portablen Tests und dem Linux-Umschalttest als
+  belastbar zu werten.
   Die portable Leseeinstellung, ob eine Nachricht beim Auswählen als gelesen
   markiert wird, ist persistent und gilt für lokale sowie native Mailpfade;
   providerabhängige Lesestatus-Synchronisation bleibt Linux/EDS-Abnahme.
+- [~] Die Mail-Kryptografieanzeige führt vor einer teuren Prüfung nur einen
+  begrenzten MIME-Hüllen-Preflight aus. OpenPGP-/S/MIME-Prüfung und mögliche
+  Entschlüsselung werden nur bei einem tatsächlich erkannten Protokollhinweis
+  gestartet. Die Routinezeile für nicht signierte und nicht verschlüsselte
+  Nachrichten ist standardmäßig verborgen und kann über die persistente
+  Leseeinstellung eingeblendet werden; echte Status-, Warn- und Fehlerfälle
+  bleiben unabhängig davon sichtbar. Native Camel-/GnuPG-/Zertifikatsspeicher-
+  und Linux-Abnahme bleiben offen.
 - [~] EDS-Source-Registry-Abfrage über D-Bus; die `Data`-Keyfiles werden nach
   echten `Mail Account`-/Kalender-/Adressbuch-Erweiterungen klassifiziert und
   gefundene Mailquellen werden als
@@ -545,8 +564,9 @@ werden.
   Datumsnormalisierung und serverseitige Sortierung bleiben Teil der
   Linux/Camel-Strecke. Die Zeilen bleiben dabei tatsächlich einzeilig:
   Betreff und Vorschautext nutzen den flexiblen Mittelbereich, Anhangs-,
-  Markierungs- und Wichtigkeitssymbole sitzen kompakt am rechten Rand und
-  die nicht benötigten Auswahlkästchen werden nicht mehr angezeigt. Die
+  Markierungs- und Wichtigkeitssymbole sowie der Anhangshinweis sitzen kompakt
+  am linken Rand vor Absender und Betreff, und die nicht benötigten
+  Auswahlkästchen werden nicht mehr angezeigt. Die
   Konversationsspur im Reader ist als scrollbar begrenzter Kurzbereich mit
   einer sichtbaren Zeile ausgeführt; die Detailkopfzeile lässt dem eigentlichen
   Nachrichteninhalt entsprechend mehr Raum. Mail-CSS wird über einen
@@ -567,6 +587,13 @@ werden.
   Wiederverwendete GTK-Listenzeilen binden Markierungs- und Wichtigkeitsaktionen
   nur einmal an die Zeile und lesen beim Klick den aktuell gebundenen Datensatz,
   damit bei großen Ordnern keine veralteten Mehrfach-Callbacks entstehen.
+  Unread-Badges zeigen ausschließlich den aktuellen Wert ungelesener Nachrichten
+  und verschwinden bei `0`; der Gesamtbestand wird nicht als Ersatzwert
+  dargestellt. Der Standardwert für Mail-/Composer-Schrift ist auf eine lesbare
+  16-Pixel-Basis angehoben, bleibt persistent überschreibbar und darf durch die
+  kompakte Zeilenhöhe nicht wieder optisch unterschritten werden. Diese
+  sichtbaren Abweichungen vom historischen GTK3-Verhalten bleiben bis zur
+  Linux-Abnahme als `[~]` dokumentiert.
 - [~] Die Evolution-kompatible Mail-Werkzeugleiste ist standardmäßig sichtbar,
   sitzt über dem gesamten Mailbereich (Nachrichtenliste und Vorschau) und kann
   portabel ein- und ausgeblendet werden. Ihre vertrauten Aktionen
@@ -594,9 +621,14 @@ werden.
   Der Camel-Änderungsmonitor startet erst nach dem ersten sichtbaren
   Ladeergebnis, damit ein kalter EDS-Start nicht gleichzeitig Voll-Load und
   Dauer-Watcher initialisieren muss; nicht sichtbare EDS-Module werden beim
-  ersten Öffnen lazy erzeugt. Eine vollständige inkrementelle
-  Ordner-/Kontosynchronisation und eine einheitliche Retry-/Netzwerkstrategie
-  für alle EDS-Domänen fehlen noch. Der GTK-Modellaufbau ist zusätzlich in
+  ersten Öffnen lazy erzeugt. Der Monitor normalisiert/dedupliziert UID-Listen,
+  hält Ordner-Rename-Aliase für nachfolgende Ereignisse vor und beendet sich
+  bei Queue-Druck nicht mehr still; unbekannte oder unvollständige Ereignisse
+  lösen einen expliziten Vollabgleich aus. Ordner-Umbenennen und -Löschen
+  aktualisieren den geladenen Nachrichtenbestand, die aktive Anfrage und den
+  Ordnerbaum inkrementell. Neu nach Monitorstart erzeugte native Camel-Ordner,
+  eine einheitliche Retry-/Netzwerkstrategie für alle EDS-Domänen und die reale
+  Event-Burst-Abnahme fehlen noch. Der GTK-Modellaufbau ist zusätzlich in
   32er-Hauptschleifen-Chunks aufgeteilt: Nachrichten, Threadgruppen und
   Threadzeilen werden nach jedem Chunk zurück an GTK übergeben, damit große
   EDS-/lokale Mailboxen den Start nicht mehr als „Programm reagiert nicht“
@@ -609,6 +641,11 @@ werden.
   Die automatische Markierung einer ausgewählten Nachricht als gelesen läuft
   jetzt ebenfalls vollständig im Worker; der GTK-Auswahlcallback wartet nicht
   mehr synchron auf Camel/EDS-Authentifizierung oder Ordnersynchronisation.
+  Graph-Folgeseiten verwenden ein begrenztes `$skip`-Fenster statt sämtliche
+  vorherigen Nachrichten erneut zu übertragen. Backend-Duplikate werden über
+  Konto, Ordner und UID verworfen; Refresh, Paging und inkrementelle Änderungen
+  restaurieren die Auswahl anhand ID und altem Index. Wird die ausgewählte Mail
+  entfernt, folgt der direkte Nachbar; ein leerer Ordner leert den Reader.
 - [~] Native Linux-Camel-Brücke öffnet die aktivierten EDS-Mailquellen über
   `e_source_camel_configure_service()`, verwendet EDS-/GOA-Credentials und
   lädt Ordnerzusammenfassungen sowie begrenzte RFC-822-Nachrichten in
@@ -674,6 +711,50 @@ werden.
   übrigen Prädikate lokal nach; serverseitige gespeicherte Suchordner,
   CamelVeeStore/CamelVeeFolder und providerübergreifende Live-Zähler bleiben
   Linux-/Backend-Arbeit.
+
+#### Aktueller atomarer Mail-Kernblock — in Arbeit
+
+Die folgenden Teilziele beschreiben den aktuellen Arbeitsstand präzise. Sie
+werden nicht als Vollparität und nicht als abgeschlossen gezählt. Ein Eintrag
+bleibt `[~]`, bis die portable Testmatrix, der Linux-Smoke-Test und der
+jeweilige negative Fehlerpfad mit direkter Evidenz vorliegen.
+
+- `[~]` `P0-MAIL-001D` — HTML-Sanitization und Dokumentkomposition sind als
+  generationensichere, persistente Latest-Wins-Worker-Strecke umgesetzt:
+  CID/Base64, Sanitizer und Dokumentkomposition laufen außerhalb GTK; große
+  Anlagen und Crypto-Rohdaten werden bei der Auswahl referenzgezählt statt
+  kopiert, Remote-Freigaben bleiben im Viewer-Cache und stale Ergebnisse
+  dürfen weder WebKit noch Fallback ersetzen. Normale Filter überspringen den
+  HTML-Body vollständig, Body-Suchen verwenden einen invalidierbaren
+  Klartextcache. Offen bleibt das Linux-Umschalten großer HTML-Nachrichten.
+- `[~]` `P0-MAIL-002A` — klassische, kompakte Mail-Liste und Sidebar: Spalten-
+  und Statusindikatoren links, einzeilige Nachrichtenzellen ohne permanente
+  Checkboxen, Expander nur bei echten Threads, flache Ordnerindentation,
+  kein Konto-/Root-Icon, dezente textartige Unread-Zähler, lesbare kompakte
+  Schrift und geprüfte Laufzeit-Fallbacks für optionale Theme-Icons. Die Routine-
+  Sicherheitszeile bleibt standardmäßig verborgen; die eigentliche
+  OpenPGP-/S/MIME-Prüfung wird nur bei erkannter Hülle angestoßen. Offene
+  Belege: Der portable Helper-/Workspace-Test ist grün; offen bleiben
+  Linux-Referenzvergleich, Icon-Theme und sichtbare Dichte.
+- `[~]` `P0-MAIL-002B` — lesbare Schrift- und Anzeigepräferenzen: 16-Pixel-
+  Mailbasis, persistente optionale Sicherheitsdetails sowie live wirksame
+  Spalten-/Dichte-/Layoutwerte. Schema-Default/Reset/Roundtrip, sofortige
+  Sicherheitszeilenwirkung und vollständige Workspace-Tests sind grün;
+  offen bleibt die sichtbare Linux-Abnahme.
+
+Verbindliche portable Gates für diesen Block:
+
+```bash
+git diff --check
+cargo fmt --all -- --check
+cargo check --workspace --locked
+cargo test --workspace --locked --no-fail-fast --quiet
+```
+
+Diese Gates sind für den aktuellen Arbeitsstand grün (396/396 Tests).
+WebKitGTK-Runtime, echte EDS/Camel-Flags, Icon-Theme, sichtbare Dichte, rasches
+Umschalten und bestätigte Counter-Aktualisierung bleiben in
+`ROADMAP_LINUX.md` offen und dürfen hier nicht vorweggenommen werden.
 
 #### Phase 2 — Konten, Empfang und Mailversand
 
@@ -1250,8 +1331,11 @@ Der portable Mail-Empfang unterstützt inzwischen neben Konto-/Ordnerauswahl,
 Abrufintervall und Offline-Modus auch einen persistenten Seitenumfang von
 25–1000 Nachrichten je Remote-Ordner. Der Wert wird für Kontoauswahl,
 Ordnerauswahl, Graph-Suche und „Mehr laden“ gemeinsam verwendet und bei einer
-Änderung live angewendet. Lokale Mailbestände werden weiterhin vollständig
-angezeigt. Native IMAP/POP3-Empfang, Server-Junk/Spam, Quoten und
+Änderung live angewendet. Graph-Folgeseiten verwenden pro Ordner den vom
+Provider gelieferten, validierten `@odata.nextLink`-Cursor; gleichzeitig
+eintreffende Nachrichten verschieben daher keine synthetische `$skip`-Seite.
+Lokale Mailbestände werden weiterhin vollständig angezeigt. Native
+IMAP/POP3-Empfang, Server-Junk/Spam, Quoten und
 Desktop-Empfangsbenachrichtigungen bleiben bis zur Linux-Abnahme offen.
 
 ### Abnahmekriterium für den produktiven Ersatz

@@ -413,6 +413,14 @@ impl AppSettings {
         self.set_boolean("show-message-preview", value);
     }
 
+    pub fn mail_show_security_details(&self) -> bool {
+        self.settings.boolean("mail-show-security-details")
+    }
+
+    pub fn set_mail_show_security_details(&self, value: bool) {
+        self.set_boolean("mail-show-security-details", value);
+    }
+
     /// Select the folder shown when the mail view is opened.
     pub fn mail_default_folder(&self) -> String {
         match self.settings.string("mail-default-folder").as_str() {
@@ -992,6 +1000,9 @@ impl AppSettings {
             "show-message-preview" => {
                 self.set_show_message_preview(parse_migrated_bool(key, value)?);
             }
+            "mail-show-security-details" => {
+                self.set_mail_show_security_details(parse_migrated_bool(key, value)?);
+            }
             "mail-default-folder" => self.set_mail_default_folder(value),
             "mail-layout" => self.set_mail_layout(value),
             "mail-show-toolbar" => self.set_mail_show_toolbar(parse_migrated_bool(key, value)?),
@@ -1106,6 +1117,7 @@ impl AppSettings {
             "mail-font-size",
             "mark-read-on-selection",
             "show-message-preview",
+            "mail-show-security-details",
             "mail-default-folder",
             "mail-layout",
             "mail-show-toolbar",
@@ -1254,9 +1266,34 @@ fn sanitize_calendar_workdays(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        clamp_mail_sync_message_limit, normalized_mail_sort_field, sanitize_calendar_workdays,
-        sanitize_spellcheck_languages,
+        AppSettings, clamp_mail_sync_message_limit, normalized_mail_sort_field,
+        sanitize_calendar_workdays, sanitize_spellcheck_languages,
     };
+    use gtk::gio;
+
+    fn settings_schema() -> gio::SettingsSchema {
+        let installed_source = gio::SettingsSchemaSource::default();
+        installed_source
+            .as_ref()
+            .and_then(|source| source.lookup(crate::APP_ID, true))
+            .or_else(|| {
+                let directory = option_env!("EVOLUTION_GTK4_SCHEMA_DIR")?;
+                let source = gio::SettingsSchemaSource::from_directory(
+                    directory,
+                    installed_source.as_ref(),
+                    true,
+                )
+                .ok()?;
+                source.lookup(crate::APP_ID, true)
+            })
+            .expect("the application settings schema should be available in tests")
+    }
+
+    fn settings_with_backend(backend: &gio::SettingsBackend) -> AppSettings {
+        AppSettings {
+            settings: gio::Settings::new_full(&settings_schema(), Some(backend), None),
+        }
+    }
 
     #[test]
     fn spellcheck_language_values_are_sanitized_and_deduplicated() {
@@ -1290,5 +1327,37 @@ mod tests {
         assert_eq!(clamp_mail_sync_message_limit(0), 25);
         assert_eq!(clamp_mail_sync_message_limit(100), 100);
         assert_eq!(clamp_mail_sync_message_limit(10_000), 1_000);
+    }
+
+    #[test]
+    fn mail_security_details_and_font_size_defaults_match_the_mail_baseline() {
+        let backend = gio::memory_settings_backend_new();
+        let settings = settings_with_backend(&backend);
+
+        assert!(!settings.mail_show_security_details());
+        assert_eq!(settings.mail_font_size(), 16);
+    }
+
+    #[test]
+    fn mail_security_details_and_custom_font_size_round_trip() {
+        let backend = gio::memory_settings_backend_new();
+        let settings = settings_with_backend(&backend);
+        settings.set_mail_show_security_details(true);
+        settings.set_mail_font_size(23);
+
+        let reloaded = settings_with_backend(&backend);
+        assert!(reloaded.mail_show_security_details());
+        assert_eq!(reloaded.mail_font_size(), 23);
+
+        reloaded.set_mail_show_security_details(false);
+        reloaded.set_mail_font_size(11);
+        let updated = settings_with_backend(&backend);
+        assert!(!updated.mail_show_security_details());
+        assert_eq!(updated.mail_font_size(), 11);
+
+        updated.reset_to_defaults();
+        let reset = settings_with_backend(&backend);
+        assert!(!reset.mail_show_security_details());
+        assert_eq!(reset.mail_font_size(), 16);
     }
 }

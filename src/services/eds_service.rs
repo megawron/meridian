@@ -19,8 +19,14 @@
 
 use glib::{KeyFile, KeyFileFlags, MainContext};
 use serde::{Deserialize, Serialize};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use super::eds_source_cache_service::EdsSourceCache;
+use super::eds_source_cache_service::{
+    EdsSourceCache, EdsSourceCacheLoad, EdsSourceCacheRecovery, EdsSourceCacheStatus,
+};
+
+const EDS_RETRY_MIN_SECONDS: u64 = 2;
+const EDS_RETRY_MAX_SECONDS: u64 = 300;
 
 /// Represents a data source registered in EDS (mail account, calendar, etc.)
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -463,17 +469,30 @@ pub async fn list_address_book_sources() -> Result<Vec<EdsSource>, EdsServiceErr
 /// offline UI state.  A cached result is explicitly marked as such and is
 /// never treated as authoritative for mutations or message/calendar data.
 pub async fn discover_sources(kind: EdsSourceKind) -> EdsSourceDiscovery {
+    let cache = EdsSourceCache::new();
+    let cached = cache.load_with_status(kind);
+    let now = current_unix_seconds();
+    if let Some(remaining) = recovery_retry_remaining(&cached.recovery, now) {
+        return discovery_from_cache(
+            cached,
+            format!("Wiederverbindung in {remaining} Sekunde(n)"),
+        );
+    }
+
     let result = match kind {
         EdsSourceKind::Mail => list_mail_sources().await,
         EdsSourceKind::Calendar => list_calendar_sources().await,
         EdsSourceKind::AddressBook => list_address_book_sources().await,
     };
-    let cache = EdsSourceCache::new();
 
     match result {
         Ok(sources) => {
             if let Err(error) = cache.save(kind, &sources) {
                 tracing::warn!(%error, "Could not persist EDS source cache");
+            }
+            let recovery = recovery_after_success(&cached.recovery, now);
+            if let Err(error) = cache.save_recovery(kind, &recovery) {
+                tracing::warn!(%error, "Could not persist successful EDS recovery state");
             }
             EdsSourceDiscovery {
                 sources,
@@ -482,21 +501,88 @@ pub async fn discover_sources(kind: EdsSourceKind) -> EdsSourceDiscovery {
             }
         }
         Err(error) => {
-            let cached = cache.load(kind);
-            if cached.is_empty() {
-                EdsSourceDiscovery {
-                    sources: cached,
-                    origin: EdsSourceOrigin::Empty,
-                    error: Some(error.to_string()),
-                }
-            } else {
-                EdsSourceDiscovery {
-                    sources: cached,
-                    origin: EdsSourceOrigin::Cache,
-                    error: Some(error.to_string()),
-                }
+            let error = error.to_string();
+            let recovery = recovery_after_failure(&cached.recovery, now, &error);
+            if let Err(cache_error) = cache.save_recovery(kind, &recovery) {
+                tracing::warn!(%cache_error, "Could not persist failed EDS recovery state");
             }
+            discovery_from_cache(cached, error)
         }
+    }
+}
+
+fn current_unix_seconds() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or(Duration::ZERO)
+        .as_secs()
+        .min(i64::MAX as u64) as i64
+}
+
+fn recovery_delay_seconds(consecutive_failures: u32) -> u64 {
+    if consecutive_failures == 0 {
+        return 0;
+    }
+    let shift = consecutive_failures.saturating_sub(1).min(31);
+    EDS_RETRY_MIN_SECONDS
+        .saturating_mul(1_u64 << shift)
+        .min(EDS_RETRY_MAX_SECONDS)
+}
+
+fn recovery_retry_remaining(recovery: &EdsSourceCacheRecovery, now: i64) -> Option<u64> {
+    let failed_at = recovery.last_failure_unix_secs?;
+    let delay = recovery_delay_seconds(recovery.consecutive_failures);
+    let elapsed = now.saturating_sub(failed_at).max(0) as u64;
+    delay
+        .checked_sub(elapsed)
+        .filter(|remaining| *remaining > 0)
+}
+
+fn recovery_after_success(previous: &EdsSourceCacheRecovery, now: i64) -> EdsSourceCacheRecovery {
+    EdsSourceCacheRecovery {
+        generation: previous.generation.wrapping_add(1),
+        consecutive_failures: 0,
+        last_success_unix_secs: Some(now),
+        last_failure_unix_secs: previous.last_failure_unix_secs,
+        last_error: None,
+    }
+}
+
+fn recovery_after_failure(
+    previous: &EdsSourceCacheRecovery,
+    now: i64,
+    error: &str,
+) -> EdsSourceCacheRecovery {
+    EdsSourceCacheRecovery {
+        generation: previous.generation.wrapping_add(1),
+        consecutive_failures: previous.consecutive_failures.saturating_add(1),
+        last_success_unix_secs: previous.last_success_unix_secs,
+        last_failure_unix_secs: Some(now),
+        last_error: Some(error.to_string()),
+    }
+}
+
+fn discovery_from_cache(cached: EdsSourceCacheLoad, error: String) -> EdsSourceDiscovery {
+    let cache_warning = match (cached.status, cached.warning) {
+        (EdsSourceCacheStatus::Corrupt, Some(warning)) => {
+            Some(format!("Quellencache beschädigt: {warning}"))
+        }
+        (EdsSourceCacheStatus::Unreadable, Some(warning)) => {
+            Some(format!("Quellencache nicht lesbar: {warning}"))
+        }
+        _ => None,
+    };
+    let error = cache_warning
+        .map(|warning| format!("{error}; {warning}"))
+        .unwrap_or(error);
+    EdsSourceDiscovery {
+        origin: if cached.sources.is_empty() {
+            EdsSourceOrigin::Empty
+        } else {
+            EdsSourceOrigin::Cache
+        },
+        sources: cached.sources,
+        error: Some(error),
     }
 }
 
@@ -591,5 +677,53 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn recovery_backoff_is_exponential_and_bounded() {
+        assert_eq!(recovery_delay_seconds(0), 0);
+        assert_eq!(recovery_delay_seconds(1), 2);
+        assert_eq!(recovery_delay_seconds(2), 4);
+        assert_eq!(recovery_delay_seconds(5), 32);
+        assert_eq!(recovery_delay_seconds(32), EDS_RETRY_MAX_SECONDS);
+    }
+
+    #[test]
+    fn recovery_failure_and_success_transitions_survive_restart_time() {
+        let initial = EdsSourceCacheRecovery::default();
+        let failed = recovery_after_failure(&initial, 1_000, "registry unavailable");
+        assert_eq!(failed.generation, 1);
+        assert_eq!(failed.consecutive_failures, 1);
+        assert_eq!(recovery_retry_remaining(&failed, 1_000), Some(2));
+        assert_eq!(recovery_retry_remaining(&failed, 1_002), None);
+
+        let failed_again = recovery_after_failure(&failed, 1_010, "still unavailable");
+        assert_eq!(failed_again.consecutive_failures, 2);
+        assert_eq!(recovery_retry_remaining(&failed_again, 1_011), Some(3));
+
+        let recovered = recovery_after_success(&failed_again, 1_020);
+        assert_eq!(recovered.generation, 3);
+        assert_eq!(recovered.consecutive_failures, 0);
+        assert_eq!(recovered.last_success_unix_secs, Some(1_020));
+        assert_eq!(recovery_retry_remaining(&recovered, 1_020), None);
+        assert!(recovered.last_error.is_none());
+    }
+
+    #[test]
+    fn corrupt_cache_warning_is_not_reported_as_an_empty_valid_cache() {
+        let discovery = discovery_from_cache(
+            EdsSourceCacheLoad {
+                sources: Vec::new(),
+                status: EdsSourceCacheStatus::Corrupt,
+                warning: Some("invalid JSON".to_string()),
+                recovery: EdsSourceCacheRecovery::default(),
+            },
+            "registry unavailable".to_string(),
+        );
+
+        assert_eq!(discovery.origin, EdsSourceOrigin::Empty);
+        let error = discovery.error.expect("warning should remain visible");
+        assert!(error.contains("registry unavailable"));
+        assert!(error.contains("Quellencache beschädigt"));
     }
 }

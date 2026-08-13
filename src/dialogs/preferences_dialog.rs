@@ -1679,7 +1679,7 @@ impl PreferencesDialog {
 
         let row_mail_font_size = adw::SpinRow::with_range(8.0, 48.0, 1.0);
         row_mail_font_size.set_title("Schriftgröße für Mail und Composer");
-        row_mail_font_size.set_subtitle("8–48 Punkt");
+        row_mail_font_size.set_subtitle("8–48 Pixel; Standard 16 Pixel");
         row_mail_font_size.set_digits(0);
         row_mail_font_size.set_snap_to_ticks(true);
         if let Some(settings) = settings.clone() {
@@ -1715,6 +1715,21 @@ impl PreferencesDialog {
             });
         }
         group_reading.add(&row_message_preview);
+
+        let row_mail_security_details = adw::SwitchRow::builder()
+            .title("Sicherheitsstatus für normale E-Mails anzeigen")
+            .subtitle(
+                "Zeigt OpenPGP-/S/MIME-Status und Details; Warnungen sowie gültige oder fehlgeschlagene Prüfungen bleiben sichtbar",
+            )
+            .active(false)
+            .build();
+        if let Some(settings) = settings.clone() {
+            row_mail_security_details.set_active(settings.mail_show_security_details());
+            row_mail_security_details.connect_active_notify(move |row| {
+                settings.set_mail_show_security_details(row.is_active());
+            });
+        }
+        group_reading.add(&row_mail_security_details);
 
         let row_mail_default_folder = adw::ComboRow::builder()
             .title("Startordner")

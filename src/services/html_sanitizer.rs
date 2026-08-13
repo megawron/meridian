@@ -222,7 +222,13 @@ pub fn block_remote_images(input: &str) -> String {
 /// boundaries.  This is shared by the viewer and search/filter paths so a
 /// search uses the same content the user can actually read.
 pub fn html_to_plain_text(value: &str) -> String {
-    let sanitized = strip_style_blocks(&sanitize_html(value));
+    sanitized_html_to_plain_text(&sanitize_html(value))
+}
+
+/// Convert already-sanitized mail markup to visible text without running the
+/// sanitizer a second time. Callers must only use this after `sanitize_html`.
+pub(crate) fn sanitized_html_to_plain_text(value: &str) -> String {
+    let sanitized = strip_style_blocks(value);
     let mut output = String::with_capacity(sanitized.len());
     let mut in_tag = false;
     let mut tag = String::new();

@@ -82,14 +82,14 @@ impl SearchFolderService {
             SearchFolderObject::new(
                 "vfolder-flagged",
                 "Wichtig & Markiert",
-                "emblem-important-symbolic",
+                "mail-mark-important-symbolic",
                 "is:starred",
                 0,
             ),
             SearchFolderObject::new(
                 "vfolder-important",
                 "Wichtig",
-                "emblem-important-symbolic",
+                "mail-mark-important-symbolic",
                 "is:important",
                 0,
             ),

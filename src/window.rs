@@ -1108,6 +1108,7 @@ impl EvolutionWindow {
             Some("Wichtigkeitsmarkierung umschalten"),
             Some("win.toggle-important"),
         );
+        message_menu.append(Some("Labels bearbeiten..."), Some("win.edit-labels"));
         message_menu.append(Some("Archivieren"), Some("win.archive"));
         message_menu.append(Some("Als Spam markieren"), Some("win.mark-junk"));
         message_menu.append(Some("Als Nicht-Spam markieren"), Some("win.mark-not-junk"));
@@ -1575,6 +1576,20 @@ impl EvolutionWindow {
             }
         ));
         self.add_action(&action_toggle_important);
+
+        let action_edit_labels = gio::SimpleAction::new("edit-labels", None);
+        action_edit_labels.connect_activate(glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            move |_, _| {
+                if let Some(mail_page) = win.mail_page() {
+                    mail_page.present_label_editor();
+                } else {
+                    win.add_toast(&adw::Toast::new("Mailansicht ist nicht verfügbar"));
+                }
+            }
+        ));
+        self.add_action(&action_edit_labels);
 
         let action_archive = gio::SimpleAction::new("archive", None);
         action_archive.connect_activate(glib::clone!(

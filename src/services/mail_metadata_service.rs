@@ -403,6 +403,13 @@ impl RemoteContentStore {
         file.allowed_message_ids.contains(message_id)
     }
 
+    /// Load the approval set once for a long-lived viewer. The viewer updates
+    /// its in-memory copy after successful writes, avoiding filesystem and
+    /// JSON work on every message selection.
+    pub(crate) fn allowed_message_ids(&self) -> HashSet<String> {
+        self.load_file().allowed_message_ids
+    }
+
     pub fn set_allowed(&self, message_id: &str, allowed: bool) -> io::Result<()> {
         if message_id.trim().is_empty() {
             return Ok(());

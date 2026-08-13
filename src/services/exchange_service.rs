@@ -8,11 +8,13 @@
 // intentionally never serialized, logged, or placed in an AccountProfile.
 
 use chrono::Datelike;
-use reqwest::blocking::Client;
+use reqwest::Client;
 use reqwest::{Method, StatusCode, Url};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
 use super::out_of_office_service::OutOfOfficeSettings;
@@ -26,6 +28,8 @@ const GRAPH_PAGE_SIZE: usize = 1_000;
 const MAX_GAL_RESULTS: usize = 250;
 const MAX_GRAPH_SEARCH_ITEMS: usize = 1_000;
 const GRAPH_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+const GRAPH_CANCELLATION_POLL: Duration = Duration::from_millis(10);
+const GRAPH_CANCELLATION_ACK_TIMEOUT: Duration = Duration::from_millis(500);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GalContact {
@@ -184,7 +188,7 @@ impl ExchangeMailMessage {
                         attachment.content_type
                     },
                     content_id: attachment.content_id,
-                    content: attachment.content,
+                    content: attachment.content.into(),
                 })
                 .collect(),
         }
@@ -969,6 +973,7 @@ pub enum ExchangeError {
     InvalidUrl(String),
     InvalidQuery(String),
     MissingAccessToken,
+    Cancelled,
     Transport(String),
     Http {
         status: u16,
@@ -991,6 +996,7 @@ impl std::fmt::Display for ExchangeError {
                     "Microsoft-Graph-Zugriff benötigt ein gültiges OAuth2-Token"
                 )
             }
+            Self::Cancelled => write!(formatter, "Microsoft-Graph-Anfrage wurde abgebrochen"),
             Self::Transport(message) => {
                 write!(formatter, "Microsoft-Graph-Netzwerkfehler: {message}")
             }
@@ -1017,6 +1023,40 @@ impl std::fmt::Display for ExchangeError {
 
 impl std::error::Error for ExchangeError {}
 
+/// Cooperative cancellation shared by a synchronous Graph operation and its
+/// owner.  The token is one-shot: create one token per operation or service
+/// clone.  Cancelling it drops the async HTTP future even while Graph is still
+/// waiting for headers or response bytes; it does not retry the request.
+#[derive(Clone, Debug)]
+struct ExchangeCancellationToken {
+    requested: Arc<AtomicBool>,
+}
+
+impl Default for ExchangeCancellationToken {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ExchangeCancellationToken {
+    fn new() -> Self {
+        Self {
+            requested: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    /// Adopt the existing cancellation representation used by the mail and
+    /// Camel workers.  No flag is copied, so a later store by the owner is
+    /// observed by the Graph transport immediately.
+    fn from_flag(requested: Arc<AtomicBool>) -> Self {
+        Self { requested }
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.requested.load(Ordering::Acquire)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExchangeOutOfOffice {
     pub enabled: bool,
@@ -1040,6 +1080,23 @@ impl From<ExchangeOutOfOffice> for OutOfOfficeSettings {
     }
 }
 
+enum GraphHttpBody {
+    Json(serde_json::Value),
+    Raw(Vec<u8>),
+}
+
+struct GraphHttpRequest {
+    method: Method,
+    url: Url,
+    params: Vec<(String, String)>,
+    body: Option<GraphHttpBody>,
+}
+
+struct GraphHttpResponse {
+    status: StatusCode,
+    text: String,
+}
+
 #[derive(Clone)]
 pub struct ExchangeService {
     pub server_url: String,
@@ -1047,6 +1104,7 @@ pub struct ExchangeService {
     pub auth_status: ExchangeAuthStatus,
     access_token: Option<String>,
     client: Client,
+    cancellation: ExchangeCancellationToken,
 }
 
 impl std::fmt::Debug for ExchangeService {
@@ -1080,7 +1138,8 @@ impl ExchangeService {
                 .connect_timeout(GRAPH_REQUEST_TIMEOUT)
                 .timeout(GRAPH_REQUEST_TIMEOUT)
                 .build()
-                .expect("reqwest blocking client should build"),
+                .expect("reqwest async client should build"),
+            cancellation: ExchangeCancellationToken::new(),
         }
     }
 
@@ -1124,11 +1183,20 @@ impl ExchangeService {
         self.access_token.is_some()
     }
 
+    /// Create a service clone bound to an existing mail/Camel cancellation
+    /// flag.  The flag is shared rather than copied, so the established
+    /// `Arc<AtomicBool>` cancellation API can stop an in-flight Graph request.
+    pub fn with_cancellation_flag(&self, requested: Arc<AtomicBool>) -> Self {
+        let mut service = self.clone();
+        service.cancellation = ExchangeCancellationToken::from_flag(requested);
+        service
+    }
+
     /// Search the Global Address List through Microsoft Graph.
     ///
     /// This async compatibility wrapper keeps the original service API.  UI
     /// callers should use `search_gal_sync` from a worker thread because the
-    /// portable fallback deliberately uses a blocking HTTP client.
+    /// portable fallback deliberately exposes a synchronous service boundary.
     pub async fn search_gal(&self, query: &str) -> Result<Vec<GalContact>, String> {
         self.search_gal_sync(query)
             .map_err(|error| error.to_string())
@@ -1219,6 +1287,46 @@ impl ExchangeService {
             max_items,
         )?;
         self.into_public_messages(messages, folder_id)
+    }
+
+    /// Load exactly one Graph collection page and return the validated opaque
+    /// continuation URL. Keeping this cursor avoids position-based `$skip`
+    /// drift when new messages arrive between UI paging requests.
+    pub fn list_messages_cursor_sync(
+        &self,
+        folder_id: &str,
+        cursor: Option<&str>,
+        max_items: usize,
+    ) -> Result<(Vec<ExchangeMailMessage>, Option<String>), ExchangeError> {
+        let max_items = validate_limit(max_items)?;
+        let encoded_folder_id = encode_path_segment(folder_id)?;
+        let params = vec![
+            (
+                "$select".to_string(),
+                "id,parentFolderId,internetMessageId,subject,sender,from,toRecipients,ccRecipients,bccRecipients,replyTo,receivedDateTime,sentDateTime,body,bodyPreview,hasAttachments,isRead,flag,importance,categories"
+                    .to_string(),
+            ),
+            ("$orderby".to_string(), "receivedDateTime desc".to_string()),
+            ("$top".to_string(), page_size(max_items).to_string()),
+        ];
+        let (url, query) = match cursor {
+            Some(cursor) => (self.validate_next_link(cursor)?, &[][..]),
+            None => (
+                self.endpoint(&format!("me/mailFolders/{encoded_folder_id}/messages"))?,
+                params.as_slice(),
+            ),
+        };
+        let page: GraphCollection<GraphMessage> =
+            self.request_json_url(Method::GET, url, query, None)?;
+        let next_link = page
+            .next_link
+            .map(|link| self.validate_next_link(&link).map(|url| url.to_string()))
+            .transpose()?;
+        let messages = page.value.into_iter().take(max_items).collect::<Vec<_>>();
+        Ok((
+            self.into_public_messages(messages, encoded_folder_id)?,
+            next_link,
+        ))
     }
 
     /// Search the signed-in mailbox using Outlook/Graph KQL.  The Graph mail
@@ -1734,28 +1842,20 @@ impl ExchangeService {
             .as_deref()
             .filter(|token| !token.is_empty())
             .ok_or(ExchangeError::MissingAccessToken)?;
-        let mut request = self
-            .client
-            .request(method, url)
-            .bearer_auth(token)
-            .header(reqwest::header::ACCEPT, "application/json")
-            .query(params);
-        if let Some(body) = body {
-            request = request
-                .header(reqwest::header::CONTENT_TYPE, "application/json")
-                .json(&body);
+        let response = self.request_payload(
+            token,
+            GraphHttpRequest {
+                method,
+                url,
+                params: params.to_vec(),
+                body: body.map(GraphHttpBody::Json),
+            },
+        )?;
+        if !response.status.is_success() {
+            return Err(parse_http_error(response.status, &response.text));
         }
-        let response = request
-            .send()
-            .map_err(|error| ExchangeError::Transport(sanitize_transport_error(error)))?;
-        let status = response.status();
-        let text = response
-            .text()
-            .map_err(|error| ExchangeError::Transport(sanitize_transport_error(error)))?;
-        if !status.is_success() {
-            return Err(parse_http_error(status, &text));
-        }
-        serde_json::from_str(&text).map_err(|error| ExchangeError::Decode(error.to_string()))
+        serde_json::from_str(&response.text)
+            .map_err(|error| ExchangeError::Decode(error.to_string()))
     }
 
     fn request_empty(
@@ -1771,26 +1871,17 @@ impl ExchangeService {
             .filter(|token| !token.is_empty())
             .ok_or(ExchangeError::MissingAccessToken)?;
         let url = self.endpoint(path)?;
-        let mut request = self
-            .client
-            .request(method, url)
-            .bearer_auth(token)
-            .header(reqwest::header::ACCEPT, "application/json")
-            .query(params);
-        if let Some(body) = body {
-            request = request
-                .header(reqwest::header::CONTENT_TYPE, "application/json")
-                .json(&body);
-        }
-        let response = request
-            .send()
-            .map_err(|error| ExchangeError::Transport(sanitize_transport_error(error)))?;
-        let status = response.status();
-        let text = response
-            .text()
-            .map_err(|error| ExchangeError::Transport(sanitize_transport_error(error)))?;
-        if !status.is_success() {
-            return Err(parse_http_error(status, &text));
+        let response = self.request_payload(
+            token,
+            GraphHttpRequest {
+                method,
+                url,
+                params: params.to_vec(),
+                body: body.map(GraphHttpBody::Json),
+            },
+        )?;
+        if !response.status.is_success() {
+            return Err(parse_http_error(response.status, &response.text));
         }
         Ok(())
     }
@@ -1812,23 +1903,64 @@ impl ExchangeService {
             .filter(|token| !token.is_empty())
             .ok_or(ExchangeError::MissingAccessToken)?;
         let url = self.endpoint(path)?;
-        let response = self
-            .client
-            .request(method, url)
-            .bearer_auth(token)
-            .header(reqwest::header::ACCEPT, "application/json")
-            .header(reqwest::header::CONTENT_TYPE, "text/plain")
-            .body(body.to_vec())
-            .send()
-            .map_err(|error| ExchangeError::Transport(sanitize_transport_error(error)))?;
-        let status = response.status();
-        let text = response
-            .text()
-            .map_err(|error| ExchangeError::Transport(sanitize_transport_error(error)))?;
-        if !status.is_success() {
-            return Err(parse_http_error(status, &text));
+        let response = self.request_payload(
+            token,
+            GraphHttpRequest {
+                method,
+                url,
+                params: Vec::new(),
+                body: Some(GraphHttpBody::Raw(body.to_vec())),
+            },
+        )?;
+        if !response.status.is_success() {
+            return Err(parse_http_error(response.status, &response.text));
         }
         Ok(())
+    }
+
+    fn request_payload(
+        &self,
+        token: &str,
+        request: GraphHttpRequest,
+    ) -> Result<GraphHttpResponse, ExchangeError> {
+        if self.cancellation.is_cancelled() {
+            return Err(ExchangeError::Cancelled);
+        }
+
+        let (result_sender, result_receiver) = mpsc::sync_channel(1);
+        let (cancel_sender, cancel_receiver) = tokio::sync::oneshot::channel();
+        let client = self.client.clone();
+        let token = token.to_string();
+        std::thread::spawn(move || {
+            let result = run_graph_http_request(client, token, request, cancel_receiver);
+            let _ = result_sender.send(result);
+        });
+
+        loop {
+            match result_receiver.recv_timeout(GRAPH_CANCELLATION_POLL) {
+                Ok(result) => return result,
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err(ExchangeError::Transport(
+                        "der Graph-HTTP-Arbeiter wurde unerwartet beendet".to_string(),
+                    ));
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    if !self.cancellation.is_cancelled() {
+                        continue;
+                    }
+
+                    // Dropping the request future is the cancellation point.
+                    // Wait briefly for the worker to acknowledge that drop so
+                    // normal tests and callers can rely on the socket being
+                    // released before the operation returns.  The bounded
+                    // fallback keeps cancellation prompt even if a resolver
+                    // or platform TLS backend does not unwind immediately.
+                    let _ = cancel_sender.send(());
+                    let _ = result_receiver.recv_timeout(GRAPH_CANCELLATION_ACK_TIMEOUT);
+                    return Err(ExchangeError::Cancelled);
+                }
+            }
+        }
     }
 
     fn request_collection<T: DeserializeOwned>(
@@ -1911,11 +2043,14 @@ impl ExchangeService {
         }
         let base = Url::parse(self.server_url.trim_end_matches('/'))
             .map_err(|error| ExchangeError::InvalidUrl(error.to_string()))?;
-        if next.host_str() != base.host_str()
+        if next.scheme() != base.scheme()
+            || next.host_str() != base.host_str()
             || next.port_or_known_default() != base.port_or_known_default()
+            || !next.username().is_empty()
+            || next.password().is_some()
         {
             return Err(ExchangeError::InvalidUrl(
-                "Graph-Fortsetzungslink zeigt auf einen fremden Host".to_string(),
+                "Graph-Fortsetzungslink verwendet eine fremde Herkunft".to_string(),
             ));
         }
         Ok(next)
@@ -1949,6 +2084,59 @@ impl ExchangeService {
         );
         Url::parse(&joined).map_err(|error| ExchangeError::InvalidUrl(error.to_string()))
     }
+}
+
+fn run_graph_http_request(
+    client: Client,
+    token: String,
+    request: GraphHttpRequest,
+    cancel_receiver: tokio::sync::oneshot::Receiver<()>,
+) -> Result<GraphHttpResponse, ExchangeError> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| ExchangeError::Transport(format!("Tokio-HTTP-Arbeiter: {error}")))?;
+
+    runtime.block_on(async move {
+        let request_future = async move {
+            let GraphHttpRequest {
+                method,
+                url,
+                params,
+                body,
+            } = request;
+            let mut builder = client
+                .request(method, url)
+                .bearer_auth(token)
+                .header(reqwest::header::ACCEPT, "application/json")
+                .query(&params);
+            if let Some(body) = body {
+                builder = match body {
+                    GraphHttpBody::Json(body) => builder
+                        .header(reqwest::header::CONTENT_TYPE, "application/json")
+                        .json(&body),
+                    GraphHttpBody::Raw(body) => builder
+                        .header(reqwest::header::CONTENT_TYPE, "text/plain")
+                        .body(body),
+                };
+            }
+            let response = builder
+                .send()
+                .await
+                .map_err(|error| ExchangeError::Transport(sanitize_transport_error(error)))?;
+            let status = response.status();
+            let text = response
+                .text()
+                .await
+                .map_err(|error| ExchangeError::Transport(sanitize_transport_error(error)))?;
+            Ok(GraphHttpResponse { status, text })
+        };
+
+        tokio::select! {
+            result = request_future => result,
+            _ = cancel_receiver => Err(ExchangeError::Cancelled),
+        }
+    })
 }
 
 /// Select the configured Exchange profile used by the portable development
@@ -2594,8 +2782,11 @@ mod tests {
     use super::*;
     use std::io::{Read, Write};
     use std::net::{TcpListener, TcpStream};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::mpsc;
     use std::thread;
+    use std::time::Instant;
 
     fn mock_server(
         response: &'static str,
@@ -2614,6 +2805,37 @@ mod tests {
                 .expect("mock response should be written");
         });
         (format!("http://{address}/v1.0"), receiver, handle)
+    }
+
+    fn slow_mock_server() -> (
+        String,
+        mpsc::Receiver<()>,
+        mpsc::Sender<()>,
+        thread::JoinHandle<()>,
+    ) {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("mock server should bind");
+        let address = listener
+            .local_addr()
+            .expect("mock server address should exist");
+        let (seen_sender, seen_receiver) = mpsc::channel();
+        let (release_sender, release_receiver) = mpsc::channel();
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("client should connect");
+            let _request = read_request(&mut stream);
+            seen_sender.send(()).expect("request should be observed");
+            release_receiver
+                .recv()
+                .expect("test should release the slow response");
+            let _ = stream.write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{\"value\":[]}",
+            );
+        });
+        (
+            format!("http://{address}/v1.0"),
+            seen_receiver,
+            release_sender,
+            handle,
+        )
     }
 
     fn read_request(stream: &mut TcpStream) -> String {
@@ -2752,6 +2974,58 @@ mod tests {
         let debug = format!("{service:?}");
         assert!(!debug.contains("secret-token"));
         assert!(debug.contains("<redacted>"));
+    }
+
+    #[test]
+    fn graph_http_cancellation_drops_a_slow_in_flight_request_promptly() {
+        let (base_url, request_seen, release_server, server_handle) = slow_mock_server();
+        let requested = Arc::new(AtomicBool::new(false));
+        let service = ExchangeService {
+            server_url: base_url,
+            ..ExchangeService::graph("user@example.org", "token")
+        }
+        .with_cancellation_flag(Arc::clone(&requested));
+        let (result_sender, result_receiver) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            let result = service.list_messages_cursor_sync("folder-id", None, 20);
+            result_sender
+                .send(result)
+                .expect("request result should be observed");
+        });
+
+        request_seen
+            .recv_timeout(Duration::from_secs(1))
+            .expect("slow server should observe the request");
+        let cancellation_started = Instant::now();
+        requested.store(true, Ordering::Release);
+        let result = result_receiver.recv_timeout(Duration::from_secs(1));
+        release_server
+            .send(())
+            .expect("slow server should be released");
+        worker.join().expect("Graph worker should finish");
+        server_handle.join().expect("slow server should finish");
+
+        assert_eq!(
+            result.expect("cancellation should finish promptly"),
+            Err(ExchangeError::Cancelled)
+        );
+        assert!(
+            cancellation_started.elapsed() < Duration::from_secs(1),
+            "cancellation took too long: {:?}",
+            cancellation_started.elapsed()
+        );
+    }
+
+    #[test]
+    fn graph_http_cancellation_before_start_skips_transport() {
+        let requested = Arc::new(AtomicBool::new(true));
+        let service =
+            ExchangeService::graph("user@example.org", "token").with_cancellation_flag(requested);
+
+        assert_eq!(
+            service.list_messages_cursor_sync("folder-id", None, 20),
+            Err(ExchangeError::Cancelled)
+        );
     }
 
     #[test]
@@ -3042,6 +3316,65 @@ mod tests {
         assert_eq!(record.uid, "event-id");
         assert_eq!(record.summary, "Planning");
         assert_eq!(record.location, "Berlin");
+    }
+
+    #[test]
+    fn graph_next_link_must_keep_the_configured_origin() {
+        let service = ExchangeService::graph("user@example.org", "token");
+        assert!(
+            service
+                .validate_next_link("https://graph.microsoft.com/v1.0/me/messages?$skiptoken=abc")
+                .is_ok()
+        );
+        assert!(
+            service
+                .validate_next_link("http://graph.microsoft.com/v1.0/me/messages?$skiptoken=abc")
+                .is_err()
+        );
+        assert!(
+            service
+                .validate_next_link("https://attacker@example.com/v1.0/me/messages")
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn graph_mail_cursor_uses_validated_next_link_instead_of_numeric_skip() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("mock server should bind");
+        let address = listener.local_addr().expect("mock address should exist");
+        let (sender, receiver) = mpsc::channel();
+        let first = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{{\"value\":[],\"@odata.nextLink\":\"http://{address}/v1.0/messages-next?page=2\"}}"
+        );
+        let second = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{\"value\":[]}";
+        let handle = thread::spawn(move || {
+            let mut requests = Vec::new();
+            for response in [first.as_str(), second] {
+                let (mut stream, _) = listener.accept().expect("client should connect");
+                requests.push(read_request(&mut stream));
+                stream
+                    .write_all(response.as_bytes())
+                    .expect("mock response should be written");
+            }
+            sender.send(requests).expect("requests should be observed");
+        });
+        let service = ExchangeService {
+            server_url: format!("http://{address}/v1.0"),
+            ..ExchangeService::graph("user@example.org", "token")
+        };
+        let (_, cursor) = service
+            .list_messages_cursor_sync("folder-id", None, 20)
+            .expect("first cursor page should load");
+        let cursor = cursor.expect("next link should be retained");
+        let (_, next) = service
+            .list_messages_cursor_sync("folder-id", Some(&cursor), 20)
+            .expect("cursor page should load");
+        assert!(next.is_none());
+        let requests = receiver.recv().expect("requests should be captured");
+        handle.join().expect("mock server should finish");
+        assert!(requests[0].contains("/v1.0/me/mailFolders/folder-id/messages?"));
+        assert!(requests[1].contains("/v1.0/messages-next?page=2"));
+        assert!(!requests[1].contains("skip"));
     }
 
     #[test]

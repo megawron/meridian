@@ -10,6 +10,7 @@ use super::draft_store_service::DraftAttachment;
 use chrono::Utc;
 use std::fs;
 use std::path::Path;
+use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 pub(crate) struct OutgoingMessage {
@@ -52,7 +53,7 @@ pub(crate) struct ExportMessage {
 pub(crate) struct ExportAttachment {
     pub(crate) filename: String,
     pub(crate) mime_type: String,
-    pub(crate) content: Vec<u8>,
+    pub(crate) content: Arc<[u8]>,
 }
 
 pub(crate) fn build_rfc822(message: &OutgoingMessage) -> Result<Vec<u8>, String> {
@@ -379,7 +380,7 @@ fn load_attachments(attachments: &[DraftAttachment]) -> Result<Vec<ExportAttachm
             Ok(ExportAttachment {
                 filename: attachment.filename.clone(),
                 mime_type: attachment.mime_type.clone(),
-                content,
+                content: content.into(),
             })
         })
         .collect()
@@ -850,7 +851,7 @@ mod tests {
             attachments: vec![ExportAttachment {
                 filename: "note.txt".to_string(),
                 mime_type: "text/plain".to_string(),
-                content: b"note".to_vec(),
+                content: b"note".to_vec().into(),
             }],
         })
         .expect("export should build");

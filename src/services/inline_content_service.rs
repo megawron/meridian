@@ -8,6 +8,7 @@
 // through the HTML sanitizer before it reaches WebKit.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 const MAX_INLINE_IMAGE_BYTES: usize = 10 * 1024 * 1024;
 
@@ -15,19 +16,19 @@ const MAX_INLINE_IMAGE_BYTES: usize = 10 * 1024 * 1024;
 pub struct InlineImage {
     pub content_id: String,
     pub mime_type: String,
-    pub content: Vec<u8>,
+    pub content: Arc<[u8]>,
 }
 
 impl InlineImage {
     pub fn new(
         content_id: impl Into<String>,
         mime_type: impl Into<String>,
-        content: Vec<u8>,
+        content: impl Into<Arc<[u8]>>,
     ) -> Self {
         Self {
             content_id: content_id.into(),
             mime_type: mime_type.into(),
-            content,
+            content: content.into(),
         }
     }
 }

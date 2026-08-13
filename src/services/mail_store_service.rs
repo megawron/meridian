@@ -1953,7 +1953,7 @@ fn extract_mime_content(
             size_formatted: format_size(decoded.len()),
             mime_type: media_type,
             content_id,
-            content: decoded,
+            content: decoded.into(),
         });
         return;
     }
@@ -1977,7 +1977,7 @@ fn extract_mime_content(
                 size_formatted: format_size(decoded.len()),
                 mime_type: media_type,
                 content_id,
-                content: decoded,
+                content: decoded.into(),
             });
         }
     }
@@ -2633,9 +2633,9 @@ mod tests {
             message.attachments[0].content_id.as_deref(),
             Some("inline42@example.invalid")
         );
-        assert_eq!(message.attachments[0].content, b"PNG");
+        assert_eq!(message.attachments[0].content.as_ref(), b"PNG");
         assert_eq!(message.attachments[1].filename, "payload.bin");
-        assert_eq!(message.attachments[1].content, vec![1, 2, 3]);
+        assert_eq!(message.attachments[1].content.as_ref(), [1, 2, 3]);
     }
 
     #[test]
@@ -2712,7 +2712,7 @@ mod tests {
         assert!(message.html_body.contains("<p>Report</p>"));
         assert_eq!(message.attachments.len(), 1);
         assert_eq!(message.attachments[0].filename, "report.pdf");
-        assert_eq!(message.attachments[0].content, b"Hi");
+        assert_eq!(message.attachments[0].content.as_ref(), b"Hi");
         assert_eq!(message.folder_id, "sent");
     }
 
@@ -2786,7 +2786,7 @@ mod tests {
             Some("logo@example.org")
         );
         assert_eq!(message.attachments[0].mime_type, "image/png");
-        assert_eq!(message.attachments[0].content, b"PNG");
+        assert_eq!(message.attachments[0].content.as_ref(), b"PNG");
     }
 
     #[test]
@@ -3192,7 +3192,7 @@ mod tests {
             size_formatted: "1 KiB".to_string(),
             mime_type: "application/pdf".to_string(),
             content_id: None,
-            content: vec![1, 2, 3],
+            content: vec![1, 2, 3].into(),
         });
 
         let make_rule =

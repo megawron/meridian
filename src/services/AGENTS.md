@@ -19,6 +19,21 @@ settings persistence.
 - Do not depend on GTK widgets or libadwaita types.
 - Expose cancellation, warnings, conflicts, and backend-unavailable states so
   views can present honest status instead of hanging.
+- Bind Graph HTTP futures to the caller's one-shot cancellation flag and drop
+  an in-flight request promptly; checking only before and after a blocking
+  request is insufficient. Source discovery persists only non-secret recovery
+  timing/counters, uses bounded exponential backoff across restarts, writes
+  cache state atomically, and quarantines corrupt app-owned cache files.
+- Normalize mail page windows at the service boundary. Provider requests must
+  use bounded page sizes and checked offsets; later pages must not download an
+  ever-growing prefix. Graph continuation must preserve and validate opaque
+  `@odata.nextLink` cursors instead of synthesizing positional `$skip` pages.
+  Reject empty UIDs and deduplicate messages by
+  `(source_uid, folder_name, message_uid)` before results reach GTK.
+- Camel change streams must apply backpressure or request an explicit resync;
+  a full event queue, unknown event, or malformed identifier must never stop a
+  watcher silently. Preserve rename aliases for subsequent folder-scoped UID
+  events until Linux can provide a stable native folder identity.
 - Mail mutations expose a one-shot lifecycle and cooperative cancellation.
   Record undo/redo only after confirmed backend success, serialize conflicting
   work for the same message, and surface failed batch rollback explicitly.
@@ -34,6 +49,10 @@ settings persistence.
 - Keep all portable behavior deterministic and covered by unit tests.
 - Preserve safe embedded mail layout CSS while removing active/resource-loading
   declarations; external stylesheets and remote content remain policy-gated.
+- Provide a conversion path for already-sanitized HTML so viewer preparation
+  does not sanitize the same document twice. Long-lived viewers may cache the
+  non-secret remote-content approval set and must update it only after a
+  successful atomic store write.
 
 ## Verification
 

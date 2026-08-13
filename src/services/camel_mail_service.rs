@@ -7,11 +7,107 @@
 use super::exchange_service::graph_service_for_configured_account;
 use super::mail_store_service::{MailBackendLocation, ParsedMail, assign_thread_metadata};
 
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 #[cfg(eds_camel_bridge)]
 use super::mail_store_service::{MailStoreService, parse_rfc822};
+
+const DEFAULT_MAIL_PAGE_SIZE: usize = 100;
+const MAX_MAIL_PAGE_SIZE: usize = 1_000;
+const MAX_MAIL_PAGE_OFFSET: usize = i32::MAX as usize;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PageWindow {
+    offset: usize,
+    limit: usize,
+}
+
+impl PageWindow {
+    fn normalized(offset: usize, requested_limit: i32) -> Result<Self, String> {
+        if offset > MAX_MAIL_PAGE_OFFSET {
+            return Err("Der angeforderte Nachrichtenbereich ist zu groß".to_string());
+        }
+        let requested_limit = usize::try_from(requested_limit)
+            .ok()
+            .filter(|limit| *limit > 0)
+            .unwrap_or(DEFAULT_MAIL_PAGE_SIZE);
+        Ok(Self {
+            offset,
+            limit: requested_limit.min(MAX_MAIL_PAGE_SIZE),
+        })
+    }
+}
+
+fn cancellation_error(cancelled: &AtomicBool, operation: &str) -> Result<(), String> {
+    if cancelled.load(Ordering::Relaxed) {
+        Err(format!("{operation} wurde abgebrochen"))
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(any(eds_camel_bridge, test))]
+fn normalized_uids(values: impl IntoIterator<Item = String>) -> Vec<String> {
+    let mut seen = HashSet::new();
+    values
+        .into_iter()
+        .filter_map(|value| {
+            let value = value.trim().to_string();
+            (!value.is_empty() && seen.insert(value.clone())).then_some(value)
+        })
+        .collect()
+}
+
+fn deduplicate_messages(messages: &mut Vec<ParsedMail>) -> Result<(), String> {
+    let mut seen = HashSet::new();
+    let mut malformed_backend_identity = false;
+    messages.retain(|message| {
+        let key = match message.backend_location.as_ref() {
+            Some(location)
+                if !location.source_uid.trim().is_empty()
+                    && !location.folder_name.trim().is_empty()
+                    && !location.message_uid.trim().is_empty() =>
+            {
+                Some(format!(
+                    "backend\u{1f}{}\u{1f}{}\u{1f}{}",
+                    location.source_uid, location.folder_name, location.message_uid
+                ))
+            }
+            Some(_) => {
+                malformed_backend_identity = true;
+                None
+            }
+            None if !message.id.trim().is_empty() => Some(format!("id\u{1f}{}", message.id)),
+            None => None,
+        };
+        key.is_some_and(|key| seen.insert(key))
+    });
+    if malformed_backend_identity {
+        Err(
+            "Mailbackend lieferte eine Nachricht ohne vollständige Konto-/Ordner-/UID-Identität"
+                .to_string(),
+        )
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(any(eds_camel_bridge, test))]
+fn folder_path_is_within(folder_name: &str, parent_name: &str) -> bool {
+    folder_name == parent_name
+        || folder_name
+            .strip_prefix(parent_name)
+            .is_some_and(|suffix| suffix.starts_with('/'))
+}
+
+#[cfg(any(eds_camel_bridge, test))]
+fn renamed_folder_path(folder_name: &str, old_name: &str, new_name: &str) -> Option<String> {
+    folder_name.strip_prefix(old_name).and_then(|suffix| {
+        (suffix.is_empty() || suffix.starts_with('/')).then(|| format!("{new_name}{suffix}"))
+    })
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct CamelFolderSummary {
@@ -35,6 +131,7 @@ pub(crate) struct CamelMailLoad {
     pub(crate) warning: Option<String>,
     pub(crate) is_graph: bool,
     pub(crate) search_query: Option<String>,
+    pub(crate) graph_next_links: HashMap<String, String>,
 }
 
 /// Portable Exchange fallback.  It deliberately returns the same plain
@@ -47,23 +144,24 @@ pub(crate) fn load_messages_graph(
     folder_name: Option<&str>,
     offset: usize,
     max_messages_per_folder: i32,
-    cancelled: &AtomicBool,
+    cursors: &HashMap<String, String>,
+    cancelled: &Arc<AtomicBool>,
 ) -> Result<CamelMailLoad, String> {
+    let window = PageWindow::normalized(offset, max_messages_per_folder)?;
     let Some((configured_source_uid, service)) = graph_service_for_configured_account() else {
         return Err("Kein aktiviertes Exchange-Profil mit Graph-Zugriff verfügbar".to_string());
     };
+    let service = service.with_cancellation_flag(cancelled.clone());
     if let Some(source_uid) = source_uid {
         if source_uid != configured_source_uid {
             return Err("Das angeforderte Konto ist kein Graph-Exchange-Konto".to_string());
         }
     }
-    if cancelled.load(Ordering::Relaxed) {
-        return Err("Graph-Mail-Laden wurde abgebrochen".to_string());
-    }
-    let page_size = max_messages_per_folder.max(1) as usize;
+    cancellation_error(cancelled, "Graph-Mail-Laden")?;
     let graph_folders = service
         .list_mail_folders_sync()
         .map_err(|error| error.to_string())?;
+    cancellation_error(cancelled, "Graph-Mail-Laden")?;
     let folders = graph_folders
         .iter()
         .map(|folder| CamelFolderSummary {
@@ -93,16 +191,22 @@ pub(crate) fn load_messages_graph(
 
     let mut messages = Vec::new();
     let mut failed_folders = Vec::new();
+    let mut graph_next_links = HashMap::new();
     for folder in selected {
-        if cancelled.load(Ordering::Relaxed) {
-            return Err("Graph-Mail-Laden wurde abgebrochen".to_string());
+        let cursor = (window.offset > 0)
+            .then(|| cursors.get(&folder.id).map(String::as_str))
+            .flatten();
+        if window.offset > 0 && cursor.is_none() {
+            continue;
         }
+        cancellation_error(cancelled, "Graph-Mail-Laden")?;
         let page = service
-            .list_messages_sync(&folder.id, page_size.saturating_add(offset))
-            .map(|page| {
+            .list_messages_cursor_sync(&folder.id, cursor, window.limit)
+            .map(|(page, next_link)| {
+                if let Some(next_link) = next_link {
+                    graph_next_links.insert(folder.id.clone(), next_link);
+                }
                 page.into_iter()
-                    .skip(offset)
-                    .take(page_size)
                     .map(|message| {
                         message.into_parsed_mail(&configured_source_uid, &folder.display_name)
                     })
@@ -110,8 +214,17 @@ pub(crate) fn load_messages_graph(
             });
         match page {
             Ok(mut page) => messages.append(&mut page),
-            Err(error) => failed_folders.push(format!("{}: {error}", folder.display_name)),
+            Err(error) => {
+                // A transient failure while following a continuation must not
+                // silently mark that folder as exhausted. Keep the last known
+                // cursor so the next paging request can retry the same page.
+                if let Some(cursor) = cursor {
+                    graph_next_links.insert(folder.id.clone(), cursor.to_string());
+                }
+                failed_folders.push(format!("{}: {error}", folder.display_name));
+            }
         }
+        cancellation_error(cancelled, "Graph-Mail-Laden")?;
     }
     if messages.is_empty() && !failed_folders.is_empty() {
         return Err(format!(
@@ -119,9 +232,13 @@ pub(crate) fn load_messages_graph(
             failed_folders.join("; ")
         ));
     }
+    deduplicate_messages(&mut messages)?;
+    cancellation_error(cancelled, "Graph-Mail-Laden")?;
     crate::services::mail_store_service::MailStoreService::new()
         .apply_backend_filters(&mut messages);
+    cancellation_error(cancelled, "Graph-Mail-Laden")?;
     assign_thread_metadata(&mut messages);
+    cancellation_error(cancelled, "Graph-Mail-Laden")?;
     Ok(CamelMailLoad {
         messages,
         folders,
@@ -131,6 +248,7 @@ pub(crate) fn load_messages_graph(
         warning: (!failed_folders.is_empty()).then(|| failed_folders.join("; ")),
         is_graph: true,
         search_query: None,
+        graph_next_links,
     })
 }
 
@@ -142,23 +260,24 @@ pub(crate) fn search_messages_graph(
     folder_name: Option<&str>,
     query: &str,
     max_items: i32,
-    cancelled: &AtomicBool,
+    cancelled: &Arc<AtomicBool>,
 ) -> Result<CamelMailLoad, String> {
+    let window = PageWindow::normalized(0, max_items)?;
     let Some((configured_source_uid, service)) = graph_service_for_configured_account() else {
         return Err("Kein aktiviertes Exchange-Profil mit Graph-Zugriff verfügbar".to_string());
     };
+    let service = service.with_cancellation_flag(cancelled.clone());
     if let Some(source_uid) = source_uid {
         if source_uid != configured_source_uid {
             return Err("Das angeforderte Konto ist kein Graph-Exchange-Konto".to_string());
         }
     }
-    if cancelled.load(Ordering::Relaxed) {
-        return Err("Graph-Mail-Suche wurde abgebrochen".to_string());
-    }
+    cancellation_error(cancelled, "Graph-Mail-Suche")?;
 
     let graph_folders = service
         .list_mail_folders_sync()
         .map_err(|error| error.to_string())?;
+    cancellation_error(cancelled, "Graph-Mail-Suche")?;
     let selected_folder = folder_name.and_then(|wanted| {
         graph_folders
             .iter()
@@ -172,12 +291,10 @@ pub(crate) fn search_messages_graph(
             selected_folder.map(|folder| folder.id.as_str()),
             folder_name,
             query,
-            max_items.max(1) as usize,
+            window.limit,
         )
         .map_err(|error| error.to_string())?;
-    if cancelled.load(Ordering::Relaxed) {
-        return Err("Graph-Mail-Suche wurde abgebrochen".to_string());
-    }
+    cancellation_error(cancelled, "Graph-Mail-Suche")?;
     let mut messages = messages
         .into_iter()
         .map(|message| {
@@ -193,9 +310,13 @@ pub(crate) fn search_messages_graph(
             message.into_parsed_mail(&configured_source_uid, &display_folder)
         })
         .collect::<Vec<_>>();
+    deduplicate_messages(&mut messages)?;
+    cancellation_error(cancelled, "Graph-Mail-Suche")?;
     crate::services::mail_store_service::MailStoreService::new()
         .apply_backend_filters(&mut messages);
+    cancellation_error(cancelled, "Graph-Mail-Suche")?;
     assign_thread_metadata(&mut messages);
+    cancellation_error(cancelled, "Graph-Mail-Suche")?;
     let folders = graph_folders
         .iter()
         .map(|folder| CamelFolderSummary {
@@ -218,6 +339,7 @@ pub(crate) fn search_messages_graph(
         warning: None,
         is_graph: true,
         search_query: Some(query.to_string()),
+        graph_next_links: HashMap::new(),
     })
 }
 
@@ -339,7 +461,7 @@ pub(crate) enum CamelChangeKind {
     FolderRenamed,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CamelChangeEvent {
     pub(crate) kind: CamelChangeKind,
     pub(crate) source_uid: String,
@@ -355,6 +477,114 @@ pub(crate) struct CamelChangeEvent {
     pub(crate) recent_uids: Vec<String>,
 }
 
+#[cfg(any(eds_camel_bridge, test))]
+#[derive(Debug, Default)]
+struct CamelChangeNormalizer {
+    folder_aliases: HashMap<(String, String), String>,
+}
+
+#[cfg(any(eds_camel_bridge, test))]
+impl CamelChangeNormalizer {
+    fn resolve_folder(&self, source_uid: &str, folder_name: &str) -> String {
+        let mut current = folder_name.to_string();
+        for _ in 0..16 {
+            let Some((alias, target)) = self
+                .folder_aliases
+                .iter()
+                .filter(|((source, alias), _)| {
+                    source == source_uid && folder_path_is_within(&current, alias)
+                })
+                .max_by_key(|((_, alias), _)| alias.len())
+                .map(|((_, alias), target)| (alias, target))
+            else {
+                break;
+            };
+            let Some(next) = renamed_folder_path(&current, alias, target) else {
+                break;
+            };
+            if next == current {
+                break;
+            }
+            current = next;
+        }
+        current
+    }
+
+    fn normalize(&mut self, mut event: CamelChangeEvent) -> Result<CamelChangeEvent, String> {
+        event.source_uid = event.source_uid.trim().to_string();
+        event.folder_name = event.folder_name.trim().to_string();
+        event.old_folder_name = event
+            .old_folder_name
+            .take()
+            .map(|name| name.trim().to_string())
+            .filter(|name| !name.is_empty());
+        if event.source_uid.is_empty() || event.folder_name.is_empty() {
+            return Err("Camel-Änderung ohne Konto- oder Ordnerkennung".to_string());
+        }
+
+        match event.kind {
+            CamelChangeKind::FolderRenamed => {
+                let old_folder = event.old_folder_name.clone().ok_or_else(|| {
+                    "Camel-Ordnerumbenennung ohne vorherigen Ordnernamen".to_string()
+                })?;
+                let old_folder = self.resolve_folder(&event.source_uid, &old_folder);
+                // The new name comes from Camel's current folder object and
+                // is authoritative. Resolving it through an older alias would
+                // break valid name reuse such as A -> B -> A.
+                let new_folder = event.folder_name.clone();
+                self.folder_aliases
+                    .remove(&(event.source_uid.clone(), new_folder.clone()));
+                for ((source, _), target) in &mut self.folder_aliases {
+                    if source == &event.source_uid
+                        && let Some(renamed) = renamed_folder_path(target, &old_folder, &new_folder)
+                    {
+                        *target = renamed;
+                    }
+                }
+                self.folder_aliases.insert(
+                    (event.source_uid.clone(), old_folder.clone()),
+                    new_folder.clone(),
+                );
+                event.old_folder_name = Some(old_folder);
+                event.folder_name = new_folder;
+            }
+            CamelChangeKind::Changed | CamelChangeKind::FolderDeleted => {
+                event.folder_name = self.resolve_folder(&event.source_uid, &event.folder_name);
+                if event.kind == CamelChangeKind::FolderDeleted {
+                    let source_uid = event.source_uid.clone();
+                    let deleted = event.folder_name.clone();
+                    self.folder_aliases.retain(|(source, alias), target| {
+                        source != &source_uid
+                            || (!folder_path_is_within(alias, &deleted)
+                                && !folder_path_is_within(target, &deleted))
+                    });
+                }
+            }
+        }
+
+        event.removed_uids = normalized_uids(event.removed_uids);
+        let removed = event.removed_uids.iter().cloned().collect::<HashSet<_>>();
+        event.added_uids = normalized_uids(event.added_uids)
+            .into_iter()
+            .filter(|uid| !removed.contains(uid))
+            .collect();
+        let added = event.added_uids.iter().cloned().collect::<HashSet<_>>();
+        event.changed_uids = normalized_uids(event.changed_uids)
+            .into_iter()
+            .filter(|uid| !removed.contains(uid) && !added.contains(uid))
+            .collect();
+        event.recent_uids = normalized_uids(event.recent_uids)
+            .into_iter()
+            .filter(|uid| !removed.contains(uid))
+            .collect();
+        event.added_count = event.added_uids.len();
+        event.removed_count = event.removed_uids.len();
+        event.changed_count = event.changed_uids.len();
+        event.recent_count = event.recent_uids.len();
+        Ok(event)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct CamelWatcherStatus {
     pub(crate) configured_sources: usize,
@@ -367,6 +597,7 @@ pub(crate) struct CamelWatcherStatus {
 pub(crate) enum CamelSyncEvent {
     Ready(CamelWatcherStatus),
     Change(CamelChangeEvent),
+    ResyncRequired(String),
     Error(String),
 }
 
@@ -378,16 +609,20 @@ impl CamelMailLoad {
         message_offset: usize,
         max_messages_per_folder: i32,
     ) -> bool {
-        let page_size = max_messages_per_folder.max(1) as usize;
-        let next_offset = message_offset.saturating_add(page_size);
+        let Ok(window) = PageWindow::normalized(message_offset, max_messages_per_folder) else {
+            return false;
+        };
+        let Some(next_offset) = window.offset.checked_add(window.limit) else {
+            return false;
+        };
 
         self.folders.iter().any(|folder| {
             let source_matches = source_uid
                 .map(|uid| folder.source_uid == uid)
                 .unwrap_or(true);
             let folder_matches = folder_name
-                .map(|name| folder.folder_name == name)
-                .unwrap_or(true);
+                .map(|name| folder_matches_name(&folder.folder_name, name))
+                .unwrap_or_else(|| !self.is_graph || is_initial_graph_folder(&folder.folder_name));
 
             source_matches
                 && folder_matches
@@ -578,7 +813,8 @@ pub(crate) fn default_page_limit() -> i32 {
         .ok()
         .and_then(|value| value.parse::<i32>().ok())
         .filter(|value| *value > 0)
-        .unwrap_or(100)
+        .map(|value| value.min(MAX_MAIL_PAGE_SIZE as i32))
+        .unwrap_or(DEFAULT_MAIL_PAGE_SIZE as i32)
 }
 
 #[allow(dead_code)]
@@ -764,12 +1000,9 @@ fn load_messages_native(
         cancelled.load(Ordering::Relaxed) as i32
     }
 
-    let message_offset = message_offset.min(i32::MAX as usize) as i32;
-    let max_messages = if max_messages_per_folder > 0 {
-        max_messages_per_folder
-    } else {
-        default_page_limit()
-    };
+    let window = PageWindow::normalized(message_offset, max_messages_per_folder)?;
+    let message_offset = window.offset as i32;
+    let max_messages = window.limit as i32;
 
     let mut records = std::ptr::null_mut();
     let mut record_count = 0usize;
@@ -867,10 +1100,11 @@ fn load_messages_native(
         unsafe { ffi::evolution_eds_camel_free_folders(folders, folder_count) };
     }
 
-    let messages = parse_native_messages(records, record_count);
+    let messages = parse_native_messages(records, record_count, cancelled);
     if !records.is_null() {
         unsafe { ffi::evolution_eds_camel_free_messages(records, record_count) };
     }
+    let messages = messages?;
 
     Ok(CamelMailLoad {
         messages,
@@ -881,6 +1115,7 @@ fn load_messages_native(
         warning,
         is_graph: false,
         search_query: None,
+        graph_next_links: HashMap::new(),
     })
 }
 
@@ -888,16 +1123,20 @@ fn load_messages_native(
 fn parse_native_messages(
     records: *const ffi::EvolutionEdsCamelMessage,
     record_count: usize,
-) -> Vec<ParsedMail> {
+    cancelled: Option<&AtomicBool>,
+) -> Result<Vec<ParsedMail>, String> {
     use std::slice;
 
     let mut messages = Vec::with_capacity(record_count);
     if records.is_null() {
-        return messages;
+        return Ok(messages);
     }
 
     let records_slice = unsafe { slice::from_raw_parts(records, record_count) };
     for record in records_slice {
+        if cancelled.is_some_and(|cancelled| cancelled.load(Ordering::Relaxed)) {
+            return Err("Camel-Mail-Verarbeitung wurde abgebrochen".to_string());
+        }
         if record.raw_message.is_null() || record.raw_message_len == 0 {
             continue;
         }
@@ -928,9 +1167,16 @@ fn parse_native_messages(
         }
     }
 
+    deduplicate_messages(&mut messages)?;
+    if cancelled.is_some_and(|cancelled| cancelled.load(Ordering::Relaxed)) {
+        return Err("Camel-Mail-Verarbeitung wurde abgebrochen".to_string());
+    }
     MailStoreService::new().apply_backend_filters(&mut messages);
+    if cancelled.is_some_and(|cancelled| cancelled.load(Ordering::Relaxed)) {
+        return Err("Camel-Mail-Verarbeitung wurde abgebrochen".to_string());
+    }
     assign_thread_metadata(&mut messages);
-    messages
+    Ok(messages)
 }
 
 pub(crate) fn load_messages_for_uids(
@@ -960,10 +1206,6 @@ fn load_messages_for_uids_native(
 ) -> Result<Vec<ParsedMail>, String> {
     use std::ffi::{CStr, CString, c_char, c_void};
 
-    if message_uids.is_empty() {
-        return Ok(Vec::new());
-    }
-
     unsafe extern "C" fn cancellation_callback(user_data: *mut c_void) -> i32 {
         if user_data.is_null() {
             return 0;
@@ -977,13 +1219,17 @@ fn load_messages_for_uids_native(
         .map_err(|_| "EDS source UID contains an invalid NUL byte".to_string())?;
     let folder_name = CString::new(folder_name)
         .map_err(|_| "EDS folder name contains an invalid NUL byte".to_string())?;
-    let message_uids = message_uids
-        .iter()
+    cancellation_error(cancelled, "Inkrementelles Camel-Laden")?;
+    let message_uids = normalized_uids(message_uids.iter().cloned())
+        .into_iter()
         .map(|uid| {
-            CString::new(uid.as_str())
+            CString::new(uid)
                 .map_err(|_| "EDS message UID contains an invalid NUL byte".to_string())
         })
         .collect::<Result<Vec<_>, _>>()?;
+    if message_uids.is_empty() {
+        return Ok(Vec::new());
+    }
     let message_uid_ptrs = message_uids
         .iter()
         .map(|uid| uid.as_ptr())
@@ -1019,14 +1265,43 @@ fn load_messages_for_uids_native(
             .unwrap_or_else(|| "Inkrementelles EDS/Camel-Laden ist fehlgeschlagen".to_string()));
     }
 
-    let messages = parse_native_messages(records, record_count);
+    let messages = parse_native_messages(records, record_count, Some(cancelled));
     if !records.is_null() {
         unsafe { ffi::evolution_eds_camel_free_messages(records, record_count) };
     }
-    if cancelled.load(Ordering::Relaxed) {
-        return Err("Inkrementelles Camel-Laden wurde abgebrochen".to_string());
-    }
+    let messages = messages?;
+    cancellation_error(cancelled, "Inkrementelles Camel-Laden")?;
     Ok(messages)
+}
+
+#[cfg(any(eds_camel_bridge, test))]
+fn send_watcher_event(
+    sender: &async_channel::Sender<CamelSyncEvent>,
+    cancelled: &AtomicBool,
+    event: CamelSyncEvent,
+) -> bool {
+    let mut pending = event;
+    let mut overflowed = false;
+    loop {
+        if cancelled.load(Ordering::Relaxed) {
+            return false;
+        }
+        match sender.try_send(pending) {
+            Ok(()) => return true,
+            Err(async_channel::TrySendError::Closed(_)) => return false,
+            Err(async_channel::TrySendError::Full(event)) => {
+                if !overflowed {
+                    pending = CamelSyncEvent::ResyncRequired(
+                        "Camel-Änderungswarteschlange war ausgelastet".to_string(),
+                    );
+                    overflowed = true;
+                } else {
+                    pending = event;
+                }
+                std::thread::park_timeout(std::time::Duration::from_millis(10));
+            }
+        }
+    }
 }
 
 pub(crate) fn start_change_monitor()
@@ -1063,18 +1338,31 @@ pub(crate) fn start_change_monitor()
             });
 
             if result == 0 || watcher.is_null() {
-                let _ = sender.try_send(CamelSyncEvent::Error(warning.unwrap_or_else(|| {
-                    "EDS/Camel-Signalmonitor konnte nicht gestartet werden".to_string()
-                })));
+                let _ = send_watcher_event(
+                    &sender,
+                    &cancellation,
+                    CamelSyncEvent::Error(warning.unwrap_or_else(|| {
+                        "EDS/Camel-Signalmonitor konnte nicht gestartet werden".to_string()
+                    })),
+                );
                 return;
             }
 
-            let _ = sender.try_send(CamelSyncEvent::Ready(CamelWatcherStatus {
-                configured_sources,
-                successful_sources,
-                failed_sources,
-                warning,
-            }));
+            if !send_watcher_event(
+                &sender,
+                &cancellation,
+                CamelSyncEvent::Ready(CamelWatcherStatus {
+                    configured_sources,
+                    successful_sources,
+                    failed_sources,
+                    warning,
+                }),
+            ) {
+                unsafe { ffi::evolution_eds_camel_watcher_free(watcher) };
+                return;
+            }
+
+            let mut normalizer = CamelChangeNormalizer::default();
 
             while !cancellation.load(Ordering::Relaxed) {
                 let mut raw_event = ffi::EvolutionEdsCamelChangeEvent {
@@ -1099,6 +1387,13 @@ pub(crate) fn start_change_monitor()
                     ffi::evolution_eds_camel_watcher_next_event(watcher, 1000, &mut raw_event)
                 };
                 if next < 0 {
+                    let _ = send_watcher_event(
+                        &sender,
+                        &cancellation,
+                        CamelSyncEvent::Error(
+                            "EDS/Camel-Signalmonitor wurde unerwartet beendet".to_string(),
+                        ),
+                    );
                     break;
                 }
                 if next == 0 {
@@ -1111,7 +1406,18 @@ pub(crate) fn start_change_monitor()
                     3 => Some(CamelChangeKind::FolderRenamed),
                     _ => None,
                 }) else {
+                    let unknown_kind = raw_event.kind;
                     unsafe { ffi::evolution_eds_camel_free_change_event(&mut raw_event) };
+                    if !send_watcher_event(
+                        &sender,
+                        &cancellation,
+                        CamelSyncEvent::ResyncRequired(format!(
+                            "Unbekanntes Camel-Änderungsereignis {}",
+                            unknown_kind
+                        )),
+                    ) {
+                        break;
+                    }
                     continue;
                 };
                 let event = CamelChangeEvent {
@@ -1130,7 +1436,11 @@ pub(crate) fn start_change_monitor()
                     recent_uids: c_strings(raw_event.recent_uids, raw_event.recent_uid_count),
                 };
                 unsafe { ffi::evolution_eds_camel_free_change_event(&mut raw_event) };
-                if sender.try_send(CamelSyncEvent::Change(event)).is_err() {
+                let event = match normalizer.normalize(event) {
+                    Ok(event) => CamelSyncEvent::Change(event),
+                    Err(reason) => CamelSyncEvent::ResyncRequired(reason),
+                };
+                if !send_watcher_event(&sender, &cancellation, event) {
                     break;
                 }
             }
@@ -1150,6 +1460,59 @@ pub(crate) fn start_change_monitor()
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn change_event(kind: CamelChangeKind, folder_name: &str) -> CamelChangeEvent {
+        CamelChangeEvent {
+            kind,
+            source_uid: " account-a ".to_string(),
+            folder_name: folder_name.to_string(),
+            old_folder_name: None,
+            added_count: 99,
+            removed_count: 99,
+            changed_count: 99,
+            recent_count: 99,
+            added_uids: Vec::new(),
+            removed_uids: Vec::new(),
+            changed_uids: Vec::new(),
+            recent_uids: Vec::new(),
+        }
+    }
+
+    fn parsed_mail(id: &str, message_uid: &str) -> ParsedMail {
+        ParsedMail {
+            id: id.to_string(),
+            folder_id: "inbox".to_string(),
+            folder_name: "INBOX".to_string(),
+            backend_location: Some(MailBackendLocation {
+                source_uid: "account-a".to_string(),
+                folder_name: "INBOX".to_string(),
+                message_uid: message_uid.to_string(),
+                message_id: None,
+            }),
+            sender_name: String::new(),
+            sender_email: String::new(),
+            recipient_to: String::new(),
+            recipient_cc: String::new(),
+            recipient_bcc: String::new(),
+            reply_to: String::new(),
+            subject: String::new(),
+            message_id: None,
+            in_reply_to: Vec::new(),
+            references: Vec::new(),
+            thread_id: id.to_string(),
+            thread_size: 1,
+            thread_position: 0,
+            date_str: String::new(),
+            preview_snippet: String::new(),
+            html_body: String::new(),
+            raw_mime: None,
+            is_unread: false,
+            is_flagged: false,
+            is_important: false,
+            labels: Vec::new(),
+            attachments: Vec::new(),
+        }
+    }
 
     #[test]
     fn has_more_respects_source_folder_and_page_offset() {
@@ -1183,12 +1546,157 @@ mod tests {
             warning: None,
             is_graph: false,
             search_query: None,
+            graph_next_links: HashMap::new(),
         };
 
         assert!(load.has_more_for(Some("account-a"), Some("INBOX"), 0, 10));
         assert!(!load.has_more_for(Some("account-b"), Some("INBOX"), 0, 10));
         assert!(!load.has_more_for(Some("account-a"), Some("Sent"), 0, 10));
         assert!(!load.has_more_for(Some("account-a"), Some("INBOX"), 10, 10));
+        assert!(load.has_more_for(Some("account-a"), Some("inbox"), 0, 10));
+    }
+
+    #[test]
+    fn page_windows_apply_defaults_caps_and_reject_unrepresentable_offsets() {
+        assert_eq!(
+            PageWindow::normalized(20, 0).unwrap(),
+            PageWindow {
+                offset: 20,
+                limit: DEFAULT_MAIL_PAGE_SIZE,
+            }
+        );
+        assert_eq!(
+            PageWindow::normalized(0, 50_000).unwrap().limit,
+            MAX_MAIL_PAGE_SIZE
+        );
+        assert!(PageWindow::normalized(MAX_MAIL_PAGE_OFFSET + 1, 10).is_err());
+    }
+
+    #[test]
+    fn cancellation_wins_before_a_late_backend_result_is_applied() {
+        let cancelled = AtomicBool::new(false);
+        assert!(cancellation_error(&cancelled, "Testladen").is_ok());
+        cancelled.store(true, Ordering::Relaxed);
+        assert_eq!(
+            cancellation_error(&cancelled, "Testladen").unwrap_err(),
+            "Testladen wurde abgebrochen"
+        );
+    }
+
+    #[test]
+    fn watcher_backpressure_coalesces_to_resync_without_ignoring_cancellation() {
+        let (sender, receiver) = async_channel::bounded(1);
+        sender
+            .try_send(CamelSyncEvent::Error("first".to_string()))
+            .unwrap();
+        let receiver_thread = std::thread::spawn(move || {
+            std::thread::park_timeout(std::time::Duration::from_millis(25));
+            let first = receiver.recv_blocking().unwrap();
+            let second = receiver.recv_blocking().unwrap();
+            (first, second)
+        });
+        let cancelled = AtomicBool::new(false);
+        assert!(send_watcher_event(
+            &sender,
+            &cancelled,
+            CamelSyncEvent::Error("second".to_string()),
+        ));
+        let (first, second) = receiver_thread.join().unwrap();
+        assert!(matches!(first, CamelSyncEvent::Error(message) if message == "first"));
+        assert!(matches!(second, CamelSyncEvent::ResyncRequired(_)));
+
+        cancelled.store(true, Ordering::Relaxed);
+        assert!(!send_watcher_event(
+            &sender,
+            &cancelled,
+            CamelSyncEvent::Error("ignored".to_string()),
+        ));
+    }
+
+    #[test]
+    fn uid_and_message_deduplication_is_stable_and_folder_scoped() {
+        assert_eq!(
+            normalized_uids(vec![
+                " one ".to_string(),
+                String::new(),
+                "two".to_string(),
+                "one".to_string(),
+            ]),
+            vec!["one", "two"]
+        );
+
+        let mut messages = vec![
+            parsed_mail("first", "uid-1"),
+            parsed_mail("duplicate", "uid-1"),
+            parsed_mail("second", "uid-2"),
+        ];
+        deduplicate_messages(&mut messages).unwrap();
+        assert_eq!(
+            messages
+                .iter()
+                .map(|message| message.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["first", "second"]
+        );
+
+        let mut invalid = vec![parsed_mail("invalid", "")];
+        assert!(deduplicate_messages(&mut invalid).is_err());
+    }
+
+    #[test]
+    fn change_normalizer_deduplicates_uids_and_tracks_folder_renames() {
+        let mut normalizer = CamelChangeNormalizer::default();
+        let mut rename = change_event(CamelChangeKind::FolderRenamed, "Archive/2026");
+        rename.old_folder_name = Some("Archive/Old".to_string());
+        let rename = normalizer.normalize(rename).unwrap();
+        assert_eq!(rename.old_folder_name.as_deref(), Some("Archive/Old"));
+
+        let mut changed = change_event(CamelChangeKind::Changed, "Archive/Old");
+        changed.added_uids = vec!["a".to_string(), "a".to_string(), "b".to_string()];
+        changed.changed_uids = vec!["a".to_string(), "c".to_string()];
+        changed.removed_uids = vec![" b ".to_string(), "b".to_string()];
+        changed.recent_uids = vec!["a".to_string(), "b".to_string(), "a".to_string()];
+        let changed = normalizer.normalize(changed).unwrap();
+
+        assert_eq!(changed.folder_name, "Archive/2026");
+        assert_eq!(changed.added_uids, vec!["a"]);
+        assert_eq!(changed.changed_uids, vec!["c"]);
+        assert_eq!(changed.removed_uids, vec!["b"]);
+        assert_eq!(changed.recent_uids, vec!["a"]);
+        assert_eq!(changed.added_count, 1);
+        assert_eq!(changed.changed_count, 1);
+        assert_eq!(changed.removed_count, 1);
+        assert_eq!(changed.recent_count, 1);
+
+        let descendant = normalizer
+            .normalize(change_event(
+                CamelChangeKind::Changed,
+                "Archive/Old/Receipts",
+            ))
+            .unwrap();
+        assert_eq!(descendant.folder_name, "Archive/2026/Receipts");
+
+        let mut second_rename = change_event(CamelChangeKind::FolderRenamed, "Archive/Final");
+        second_rename.old_folder_name = Some("Archive/2026".to_string());
+        normalizer.normalize(second_rename).unwrap();
+        let original_alias = normalizer
+            .normalize(change_event(
+                CamelChangeKind::Changed,
+                "Archive/Old/Receipts",
+            ))
+            .unwrap();
+        assert_eq!(original_alias.folder_name, "Archive/Final/Receipts");
+
+        let mut reused_name = change_event(CamelChangeKind::FolderRenamed, "Archive/Old");
+        reused_name.old_folder_name = Some("Archive/Final".to_string());
+        normalizer.normalize(reused_name).unwrap();
+        let reused_name_event = normalizer
+            .normalize(change_event(
+                CamelChangeKind::Changed,
+                "Archive/Old/Receipts",
+            ))
+            .unwrap();
+        assert_eq!(reused_name_event.folder_name, "Archive/Old/Receipts");
     }
 
     #[test]

@@ -122,7 +122,7 @@
       <summary>Font family used for mail and composer text</summary>
     </key>
     <key name="mail-font-size" type="i">
-      <default>14</default>
+      <default>16</default>
       <summary>Font size used for mail and composer text</summary>
     </key>
     <key name="mark-read-on-selection" type="b">
@@ -132,6 +132,10 @@
     <key name="show-message-preview" type="b">
       <default>true</default>
       <summary>Show the selected message preview pane</summary>
+    </key>
+    <key name="mail-show-security-details" type="b">
+      <default>false</default>
+      <summary>Show routine mail security status and details</summary>
     </key>
     <key name="mail-default-folder" type="s">
       <default>'inbox'</default>
