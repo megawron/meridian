@@ -634,12 +634,39 @@ fn mail_row_density_metrics(value: &str) -> (i32, i32) {
     }
 }
 
-fn mail_row_status_icon(is_unread: bool) -> &'static str {
-    if is_unread {
-        "mail-unread-symbolic"
+fn mail_row_status_icon(
+    is_unread: bool,
+    is_replied: bool,
+    is_forwarded: bool,
+) -> (&'static str, &'static str) {
+    if is_replied {
+        ("mail-replied-symbolic", "Beantwortet")
+    } else if is_forwarded {
+        ("mail-forwarded-symbolic", "Weitergeleitet")
+    } else if is_unread {
+        ("mail-unread-symbolic", "Ungelesen")
     } else {
-        "mail-read-symbolic"
+        ("mail-read-symbolic", "Gelesen")
     }
+}
+
+fn mail_row_attachment_info(
+    attachments: &[crate::models::mail_message::AttachmentInfo],
+) -> Option<(&'static str, &'static str)> {
+    if attachments.is_empty() {
+        return None;
+    }
+    for att in attachments {
+        let mime = att.mime_type.to_ascii_lowercase();
+        let filename = att.filename.to_ascii_lowercase();
+        if mime.contains("calendar") || filename.ends_with(".ics") {
+            return Some(("x-office-calendar-symbolic", "Termineinladung (.ics)"));
+        }
+        if mime.contains("vcard") || filename.ends_with(".vcf") {
+            return Some(("x-office-address-book-symbolic", "Kontaktkarte (.vcf)"));
+        }
+    }
+    Some(("mail-attachment-symbolic", "Anhang"))
 }
 
 fn themed_icon_name<W: IsA<gtk::Widget>>(widget: &W, preferred: &str, fallback: &str) -> String {
@@ -677,7 +704,7 @@ fn compact_folder_indent(depth: usize) -> i32 {
     1 + (depth as i32).saturating_mul(12)
 }
 
-const MAIL_THREAD_COLUMN_WIDTH: i32 = 32;
+const MAIL_THREAD_COLUMN_WIDTH: i32 = 18;
 const MAIL_INDICATOR_COLUMN_WIDTH: i32 = 22;
 const MAIL_AVATAR_COLUMN_WIDTH: i32 = 28;
 const MAIL_PREVIEW_COLUMN_WIDTH: i32 = 160;
@@ -6639,6 +6666,16 @@ impl MailPage {
         child
     }
 
+    fn cell_label(cell: &gtk::Widget) -> Option<gtk::Label> {
+        if let Some(lbl) = cell.downcast_ref::<gtk::Label>() {
+            Some(lbl.clone())
+        } else if let Some(bx) = cell.downcast_ref::<gtk::Box>() {
+            bx.first_child().and_downcast::<gtk::Label>()
+        } else {
+            None
+        }
+    }
+
     fn refresh_mail_column_header(&self) {
         let Some(header) = self.imp().mail_column_header.borrow().as_ref().cloned() else {
             return;
@@ -6678,24 +6715,29 @@ impl MailPage {
         }
         if let Some(attachment) = Self::mail_header_child(&header, 2) {
             attachment.set_visible(show_attachment);
-            if let Some(attachment) = attachment.downcast_ref::<gtk::Label>() {
-                attachment
-                    .set_label(&self.mail_header_sort_label("📎", MailSortField::Attachments));
+            if let Some(lbl) = Self::cell_label(&attachment) {
+                lbl.set_label(&self.mail_header_sort_label("📎", MailSortField::Attachments));
             }
         }
-        if let Some(status) = Self::mail_header_child(&header, 1).and_downcast::<gtk::Label>() {
-            status.set_label(&self.mail_header_sort_label("●", MailSortField::Unread));
+        if let Some(status) = Self::mail_header_child(&header, 1) {
+            if let Some(lbl) = Self::cell_label(&status) {
+                lbl.set_label(&self.mail_header_sort_label("●", MailSortField::Unread));
+            }
         }
-        if let Some(star) = Self::mail_header_child(&header, 4).and_downcast::<gtk::Label>() {
-            star.set_label(&self.mail_header_sort_label("★", MailSortField::Flagged));
+        if let Some(star) = Self::mail_header_child(&header, 4) {
+            if let Some(lbl) = Self::cell_label(&star) {
+                lbl.set_label(&self.mail_header_sort_label("★", MailSortField::Flagged));
+            }
         }
-        if let Some(important) = Self::mail_header_child(&header, 5).and_downcast::<gtk::Label>() {
-            important.set_label(&self.mail_header_sort_label("!", MailSortField::Important));
+        if let Some(important) = Self::mail_header_child(&header, 5) {
+            if let Some(lbl) = Self::cell_label(&important) {
+                lbl.set_label(&self.mail_header_sort_label("!", MailSortField::Important));
+            }
         }
         if let Some(sender_column) = Self::mail_header_child(&header, 7) {
             sender_column.set_visible(show_sender || show_recipient);
             sender_column.set_width_request(sender_width);
-            if let Some(sender_label) = sender_column.first_child().and_downcast::<gtk::Label>() {
+            if let Some(sender_label) = Self::cell_label(&sender_column) {
                 let label = match (show_sender, show_recipient) {
                     (true, true) => "Von / An",
                     (true, false) => "Von",
@@ -6705,16 +6747,18 @@ impl MailPage {
                 sender_label.set_label(&self.mail_header_sort_label(label, MailSortField::Sender));
             }
         }
-        if let Some(subject) = Self::mail_header_child(&header, 8).and_downcast::<gtk::Label>() {
-            subject.set_label(&self.mail_header_sort_label("Betreff", MailSortField::Subject));
+        if let Some(subject) = Self::mail_header_child(&header, 8) {
+            if let Some(lbl) = Self::cell_label(&subject) {
+                lbl.set_label(&self.mail_header_sort_label("Betreff", MailSortField::Subject));
+            }
         }
         if let Some(preview) = Self::mail_header_child(&header, 9) {
             preview.set_visible(show_preview);
         }
         if let Some(date) = Self::mail_header_child(&header, 10) {
             date.set_visible(show_date);
-            if let Some(date) = date.downcast_ref::<gtk::Label>() {
-                date.set_label(&self.mail_header_sort_label("Datum", MailSortField::Date));
+            if let Some(lbl) = Self::cell_label(&date) {
+                lbl.set_label(&self.mail_header_sort_label("Datum", MailSortField::Date));
             }
         }
     }
@@ -6740,12 +6784,21 @@ impl MailPage {
             .width_request(MAIL_THREAD_COLUMN_WIDTH)
             .css_classes(vec!["mail-column-header-cell"])
             .build();
-        let status_spacer = gtk::Label::builder()
-            .label("●")
+
+        let status_column = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
             .width_request(MAIL_INDICATOR_COLUMN_WIDTH)
-            .halign(gtk::Align::Center)
-            .css_classes(vec!["caption", "dim-label", "mail-column-header-cell"])
+            .halign(gtk::Align::Fill)
+            .css_classes(vec!["mail-column-header-cell"])
             .build();
+        let status_label = gtk::Label::builder()
+            .label("●")
+            .halign(gtk::Align::Center)
+            .hexpand(true)
+            .css_classes(vec!["caption", "dim-label"])
+            .build();
+        status_column.append(&status_label);
+
         let avatar_spacer = gtk::Box::builder()
             .width_request(MAIL_AVATAR_COLUMN_WIDTH)
             .css_classes(vec!["mail-column-header-cell"])
@@ -6769,68 +6822,123 @@ impl MailPage {
             .build();
         sender_column.append(&sender_label);
 
-        let date = gtk::Label::builder()
-            .label("Datum")
+        let date_column = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
             .width_request(MAIL_DATE_COLUMN_WIDTH)
+            .halign(gtk::Align::Fill)
+            .css_classes(vec!["mail-column-header-cell"])
+            .build();
+        let date_label = gtk::Label::builder()
+            .label("Datum")
             .halign(gtk::Align::End)
+            .hexpand(true)
             .ellipsize(pango::EllipsizeMode::End)
             .width_chars(1)
             .max_width_chars(16)
-            .css_classes(vec!["caption", "dim-label", "mail-column-header-cell"])
+            .css_classes(vec!["caption", "dim-label"])
             .build();
-        let attachment = gtk::Label::builder()
+        date_column.append(&date_label);
+
+        let attachment_column = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .width_request(MAIL_INDICATOR_COLUMN_WIDTH)
+            .halign(gtk::Align::Fill)
+            .css_classes(vec!["mail-column-header-cell"])
+            .build();
+        let attachment_label = gtk::Label::builder()
             .label("📎")
-            .width_request(MAIL_INDICATOR_COLUMN_WIDTH)
             .halign(gtk::Align::Center)
-            .css_classes(vec!["caption", "dim-label", "mail-column-header-cell"])
+            .hexpand(true)
+            .css_classes(vec!["caption", "dim-label"])
             .build();
-        let star = gtk::Label::builder()
+        attachment_column.append(&attachment_label);
+
+        let star_column = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .width_request(MAIL_INDICATOR_COLUMN_WIDTH)
+            .halign(gtk::Align::Fill)
+            .css_classes(vec!["mail-column-header-cell"])
+            .build();
+        let star_label = gtk::Label::builder()
             .label("★")
-            .width_request(MAIL_INDICATOR_COLUMN_WIDTH)
             .halign(gtk::Align::Center)
-            .css_classes(vec!["caption", "dim-label", "mail-column-header-cell"])
+            .hexpand(true)
+            .css_classes(vec!["caption", "dim-label"])
             .build();
-        let follow_up = gtk::Label::builder()
-            .label("⚑")
+        star_column.append(&star_label);
+
+        let follow_up_column = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
             .width_request(MAIL_INDICATOR_COLUMN_WIDTH)
-            .halign(gtk::Align::Center)
+            .halign(gtk::Align::Fill)
             .tooltip_text("Nachverfolgung")
-            .css_classes(vec!["caption", "dim-label", "mail-column-header-cell"])
+            .css_classes(vec!["mail-column-header-cell"])
             .build();
-        let important = gtk::Label::builder()
-            .label("!")
-            .width_request(MAIL_INDICATOR_COLUMN_WIDTH)
+        let follow_up_label = gtk::Label::builder()
+            .label("⚑")
             .halign(gtk::Align::Center)
-            .css_classes(vec!["caption", "dim-label", "mail-column-header-cell"])
+            .hexpand(true)
+            .css_classes(vec!["caption", "dim-label"])
             .build();
-        let subject = gtk::Label::builder()
+        follow_up_column.append(&follow_up_label);
+
+        let important_column = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .width_request(MAIL_INDICATOR_COLUMN_WIDTH)
+            .halign(gtk::Align::Fill)
+            .css_classes(vec!["mail-column-header-cell"])
+            .build();
+        let important_label = gtk::Label::builder()
+            .label("!")
+            .halign(gtk::Align::Center)
+            .hexpand(true)
+            .css_classes(vec!["caption", "dim-label"])
+            .build();
+        important_column.append(&important_label);
+
+        let subject_column = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .hexpand(true)
+            .halign(gtk::Align::Fill)
+            .css_classes(vec!["mail-column-header-cell"])
+            .build();
+        let subject_label = gtk::Label::builder()
             .label("Betreff")
             .halign(gtk::Align::Start)
             .hexpand(true)
             .ellipsize(pango::EllipsizeMode::End)
-            .css_classes(vec!["caption", "dim-label", "mail-column-header-cell"])
+            .css_classes(vec!["caption", "dim-label"])
             .build();
-        let preview = gtk::Label::builder()
-            .label("Vorschau")
+        subject_column.append(&subject_label);
+
+        let preview_column = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
             .width_request(MAIL_PREVIEW_COLUMN_WIDTH)
             .halign(gtk::Align::Start)
+            .css_classes(vec!["mail-column-header-cell"])
+            .build();
+        let preview_label = gtk::Label::builder()
+            .label("Vorschau")
+            .halign(gtk::Align::Start)
+            .hexpand(true)
             .ellipsize(pango::EllipsizeMode::End)
             .width_chars(1)
             .max_width_chars(20)
-            .css_classes(vec!["caption", "dim-label", "mail-column-header-cell"])
+            .css_classes(vec!["caption", "dim-label"])
             .build();
+        preview_column.append(&preview_label);
 
         header.append(&thread_spacer);
-        header.append(&status_spacer);
-        header.append(&attachment);
-        header.append(&follow_up);
-        header.append(&star);
-        header.append(&important);
+        header.append(&status_column);
+        header.append(&attachment_column);
+        header.append(&follow_up_column);
+        header.append(&star_column);
+        header.append(&important_column);
         header.append(&avatar_spacer);
         header.append(&sender_column);
-        header.append(&subject);
-        header.append(&preview);
-        header.append(&date);
+        header.append(&subject_column);
+        header.append(&preview_column);
+        header.append(&date_column);
 
         // Sorting when clicking inside the column body (away from right border)
         let sender_sort_gesture = gtk::GestureClick::new();
@@ -6928,8 +7036,8 @@ impl MailPage {
                 page.set_mail_sort_from_header(MailSortField::Unread);
             }
         });
-        status_spacer.set_tooltip_text(Some("Nach Lesestatus sortieren"));
-        status_spacer.add_controller(status_sort_gesture);
+        status_column.set_tooltip_text(Some("Nach Lesestatus sortieren"));
+        status_column.add_controller(status_sort_gesture);
 
         let date_sort_gesture = gtk::GestureClick::new();
         date_sort_gesture.set_button(1);
@@ -6939,8 +7047,8 @@ impl MailPage {
                 page.set_mail_sort_from_header(MailSortField::Date);
             }
         });
-        date.set_tooltip_text(Some("Nach Datum sortieren"));
-        date.add_controller(date_sort_gesture);
+        date_column.set_tooltip_text(Some("Nach Datum sortieren"));
+        date_column.add_controller(date_sort_gesture);
 
         let attachment_sort_gesture = gtk::GestureClick::new();
         attachment_sort_gesture.set_button(1);
@@ -6950,8 +7058,8 @@ impl MailPage {
                 page.set_mail_sort_from_header(MailSortField::Attachments);
             }
         });
-        attachment.set_tooltip_text(Some("Nach Anhängen sortieren"));
-        attachment.add_controller(attachment_sort_gesture);
+        attachment_column.set_tooltip_text(Some("Nach Anhängen sortieren"));
+        attachment_column.add_controller(attachment_sort_gesture);
 
         let star_sort_gesture = gtk::GestureClick::new();
         star_sort_gesture.set_button(1);
@@ -6961,8 +7069,8 @@ impl MailPage {
                 page.set_mail_sort_from_header(MailSortField::Flagged);
             }
         });
-        star.set_tooltip_text(Some("Nach Markierung sortieren"));
-        star.add_controller(star_sort_gesture);
+        star_column.set_tooltip_text(Some("Nach Markierung sortieren"));
+        star_column.add_controller(star_sort_gesture);
 
         let important_sort_gesture = gtk::GestureClick::new();
         important_sort_gesture.set_button(1);
@@ -6972,8 +7080,8 @@ impl MailPage {
                 page.set_mail_sort_from_header(MailSortField::Important);
             }
         });
-        important.set_tooltip_text(Some("Nach Wichtigkeit sortieren"));
-        important.add_controller(important_sort_gesture);
+        important_column.set_tooltip_text(Some("Nach Wichtigkeit sortieren"));
+        important_column.add_controller(important_sort_gesture);
 
         let subject_sort_gesture = gtk::GestureClick::new();
         subject_sort_gesture.set_button(1);
@@ -6983,8 +7091,8 @@ impl MailPage {
                 page.set_mail_sort_from_header(MailSortField::Subject);
             }
         });
-        subject.set_tooltip_text(Some("Nach Betreff sortieren"));
-        subject.add_controller(subject_sort_gesture);
+        subject_column.set_tooltip_text(Some("Nach Betreff sortieren"));
+        subject_column.add_controller(subject_sort_gesture);
 
         self.imp().mail_column_header.replace(Some(header.clone()));
         self.refresh_mail_column_header();
@@ -7216,9 +7324,10 @@ impl MailPage {
 
             let status = gtk::Image::new();
             status.set_width_request(MAIL_INDICATOR_COLUMN_WIDTH);
+            let (init_status_icon, _) = mail_row_status_icon(false, false, false);
             set_image_icon_with_fallback(
                 &status,
-                mail_row_status_icon(false),
+                init_status_icon,
                 "mail-message-new-symbolic",
             );
             status.add_css_class("dim-label");
@@ -7590,14 +7699,24 @@ impl MailPage {
             {
                 let is_conversation =
                     mail_row_expander_visible(visible_thread_size, tree_row.depth());
-                let conversation_count = visible_thread_size.to_string();
-                thread_button.set_label(if is_conversation {
-                    &conversation_count
+                thread_button.set_label("");
+                if is_conversation {
+                    set_button_icon_with_fallback(
+                        &thread_button,
+                        if tree_row.is_expanded() {
+                            "pan-down-symbolic"
+                        } else {
+                            "pan-end-symbolic"
+                        },
+                        "go-next-symbolic",
+                    );
+                    thread_button.set_opacity(1.0);
+                    thread_button.set_sensitive(true);
                 } else {
-                    ""
-                });
-                thread_button.set_sensitive(is_conversation);
-                thread_button.set_opacity(if is_conversation { 1.0 } else { 0.0 });
+                    thread_button.set_icon_name("");
+                    thread_button.set_opacity(0.0);
+                    thread_button.set_sensitive(false);
+                }
                 thread_button.set_tooltip_text(is_conversation.then_some(
                     if tree_row.is_expanded() {
                         "Konversation zuklappen"
@@ -7610,16 +7729,9 @@ impl MailPage {
             if let Some(status) =
                 Self::mail_header_child(&header_box, 1).and_downcast::<gtk::Image>()
             {
-                set_image_icon_with_fallback(
-                    &status,
-                    mail_row_status_icon(msg.is_unread()),
-                    "mail-message-new-symbolic",
-                );
-                status.set_tooltip_text(Some(if msg.is_unread() {
-                    "Ungelesen"
-                } else {
-                    "Gelesen"
-                }));
+                let (icon_name, tooltip) = mail_row_status_icon(msg.is_unread(), false, false);
+                set_image_icon_with_fallback(&status, icon_name, "mail-message-new-symbolic");
+                status.set_tooltip_text(Some(tooltip));
             }
 
             if let Some(avatar) =
@@ -7675,17 +7787,19 @@ impl MailPage {
             if let Some(attachment) =
                 Self::mail_header_child(&header_box, 2).and_downcast::<gtk::Image>()
             {
-                set_image_icon_with_fallback(
-                    &attachment,
-                    "mail-attachment-symbolic",
-                    "insert-object-symbolic",
-                );
                 attachment.set_visible(show_attachment);
-                attachment.set_opacity(if msg.attachments().is_empty() {
-                    0.0
+                if let Some((icon_name, tooltip)) = mail_row_attachment_info(&msg.attachments()) {
+                    set_image_icon_with_fallback(
+                        &attachment,
+                        icon_name,
+                        "mail-attachment-symbolic",
+                    );
+                    attachment.set_opacity(1.0);
+                    attachment.set_tooltip_text(Some(tooltip));
                 } else {
-                    1.0
-                });
+                    attachment.set_opacity(0.0);
+                    attachment.set_tooltip_text(None);
+                }
             }
 
             if let Some(button) =
@@ -12836,8 +12950,22 @@ mod tests {
 
     #[test]
     fn mail_row_indicators_conversation_counts_and_zebra_order_stay_compact() {
-        assert_eq!(mail_row_status_icon(true), "mail-unread-symbolic");
-        assert_eq!(mail_row_status_icon(false), "mail-read-symbolic");
+        assert_eq!(
+            mail_row_status_icon(true, false, false),
+            ("mail-unread-symbolic", "Ungelesen")
+        );
+        assert_eq!(
+            mail_row_status_icon(false, false, false),
+            ("mail-read-symbolic", "Gelesen")
+        );
+        assert_eq!(
+            mail_row_status_icon(false, true, false),
+            ("mail-replied-symbolic", "Beantwortet")
+        );
+        assert_eq!(
+            mail_row_status_icon(false, false, true),
+            ("mail-forwarded-symbolic", "Weitergeleitet")
+        );
         assert!(mail_row_expander_visible(2, 0));
         assert!(!mail_row_expander_visible(1, 0));
         assert!(!mail_row_expander_visible(2, 1));
@@ -12846,6 +12974,43 @@ mod tests {
         assert!(mail_row_is_shaded(0));
         assert!(!mail_row_is_shaded(1));
         assert!(mail_row_is_shaded(2));
+
+        let cal_attachment = crate::models::mail_message::AttachmentInfo {
+            filename: "meeting.ics".to_string(),
+            size_formatted: "1 KB".to_string(),
+            mime_type: "text/calendar".to_string(),
+            content_id: None,
+            content: std::sync::Arc::from([]),
+        };
+        assert_eq!(
+            mail_row_attachment_info(&[cal_attachment]),
+            Some(("x-office-calendar-symbolic", "Termineinladung (.ics)"))
+        );
+
+        let vcard_attachment = crate::models::mail_message::AttachmentInfo {
+            filename: "contact.vcf".to_string(),
+            size_formatted: "500 B".to_string(),
+            mime_type: "text/vcard".to_string(),
+            content_id: None,
+            content: std::sync::Arc::from([]),
+        };
+        assert_eq!(
+            mail_row_attachment_info(&[vcard_attachment]),
+            Some(("x-office-address-book-symbolic", "Kontaktkarte (.vcf)"))
+        );
+
+        let file_attachment = crate::models::mail_message::AttachmentInfo {
+            filename: "document.pdf".to_string(),
+            size_formatted: "2 MB".to_string(),
+            mime_type: "application/pdf".to_string(),
+            content_id: None,
+            content: std::sync::Arc::from([]),
+        };
+        assert_eq!(
+            mail_row_attachment_info(&[file_attachment]),
+            Some(("mail-attachment-symbolic", "Anhang"))
+        );
+        assert_eq!(mail_row_attachment_info(&[]), None);
     }
 
     #[test]
