@@ -3172,13 +3172,14 @@ fn append_event_row(
     let event_for_edit = event.clone();
     let edit_button_for_context = edit_button.clone();
     let edit_button_for_signal = edit_button.clone();
+    let edit_button_for_click = edit_button.clone();
     edit_button_for_signal.connect_clicked(move |_| {
         if let Some(error) = event_mutation_error(&event_for_edit) {
-            show_toast_for_widget(&edit_button, error);
+            show_toast_for_widget(&edit_button_for_click, error);
             return;
         }
         let dialog = crate::dialogs::EventDialog::new_for_edit(&event_for_edit);
-        if let Some(root) = edit_button.root() {
+        if let Some(root) = edit_button_for_click.root() {
             let evolution_window = root
                 .clone()
                 .downcast::<crate::window::EvolutionWindow>()
@@ -3414,6 +3415,16 @@ fn append_event_row(
         popover.popup();
     });
     row.add_controller(context_click);
+
+    let double_click = gtk::GestureClick::builder().button(1).build();
+    let edit_button_for_double_click = edit_button.clone();
+    double_click.connect_pressed(move |gesture, n_press, _, _| {
+        if n_press == 2 {
+            edit_button_for_double_click.activate();
+            gesture.set_state(gtk::EventSequenceState::Claimed);
+        }
+    });
+    row.add_controller(double_click);
 
     event_list.append(&row);
 }

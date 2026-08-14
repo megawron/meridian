@@ -1276,6 +1276,11 @@ impl ContactsPage {
             }
         ));
 
+        let edit_btn_for_activate = edit_btn.clone();
+        contact_list.connect_row_activated(move |_, _| {
+            edit_btn_for_activate.activate();
+        });
+
         if let Some((cancel, receiver)) = EBookService::new().start_change_monitor() {
             *self.imp().ebook_monitor_cancel.borrow_mut() = Some(cancel);
             let contact_list_for_monitor = contact_list.clone();
