@@ -49,6 +49,15 @@ pub fn show_shortcuts_dialog<W: IsA<gtk::Window>>(parent: &W) {
         .accelerator("<Control><Shift>f")
         .build();
 
+    let s8 = gtk::ShortcutsShortcut::builder()
+        .title("Rückgängig")
+        .accelerator("<Control>z")
+        .build();
+    let s9 = gtk::ShortcutsShortcut::builder()
+        .title("Wiederholen")
+        .accelerator("<Control><Shift>z")
+        .build();
+
     group_general.append(&s1);
     group_general.append(&s2);
     group_general.append(&s3);
@@ -56,6 +65,8 @@ pub fn show_shortcuts_dialog<W: IsA<gtk::Window>>(parent: &W) {
     group_general.append(&s5);
     group_general.append(&s6);
     group_general.append(&s7);
+    group_general.append(&s8);
+    group_general.append(&s9);
     section.append(&group_general);
 
     // Group 2: Mail Actions
@@ -64,7 +75,7 @@ pub fn show_shortcuts_dialog<W: IsA<gtk::Window>>(parent: &W) {
         .build();
 
     let m1 = gtk::ShortcutsShortcut::builder()
-        .title("Neue Aktion im aktiven Modul")
+        .title("Neue Nachricht verfassen")
         .accelerator("<Control>n")
         .build();
     let m2 = gtk::ShortcutsShortcut::builder()
@@ -84,12 +95,36 @@ pub fn show_shortcuts_dialog<W: IsA<gtk::Window>>(parent: &W) {
         .accelerator("Delete")
         .build();
     let m6 = gtk::ShortcutsShortcut::builder()
-        .title("Alle sichtbaren Nachrichten auswählen")
+        .title("Alle Nachrichten auswählen")
         .accelerator("<Control>a")
         .build();
     let m7 = gtk::ShortcutsShortcut::builder()
-        .title("Wichtigkeitsmarkierung umschalten")
+        .title("Wichtigkeit umschalten")
         .accelerator("<Control>i")
+        .build();
+    let m8 = gtk::ShortcutsShortcut::builder()
+        .title("Gelesen markieren")
+        .accelerator("<Control>k")
+        .build();
+    let m9 = gtk::ShortcutsShortcut::builder()
+        .title("Ungelesen markieren")
+        .accelerator("<Control><Shift>k")
+        .build();
+    let m10 = gtk::ShortcutsShortcut::builder()
+        .title("Nachricht verschieben")
+        .accelerator("<Control><Shift>v")
+        .build();
+    let m11 = gtk::ShortcutsShortcut::builder()
+        .title("Nachricht kopieren")
+        .accelerator("<Control><Shift>c")
+        .build();
+    let m12 = gtk::ShortcutsShortcut::builder()
+        .title("Quelltext anzeigen")
+        .accelerator("<Control>u")
+        .build();
+    let m13 = gtk::ShortcutsShortcut::builder()
+        .title("Filter anwenden")
+        .accelerator("<Control>y")
         .build();
 
     group_mail.append(&m1);
@@ -99,6 +134,12 @@ pub fn show_shortcuts_dialog<W: IsA<gtk::Window>>(parent: &W) {
     group_mail.append(&m5);
     group_mail.append(&m6);
     group_mail.append(&m7);
+    group_mail.append(&m8);
+    group_mail.append(&m9);
+    group_mail.append(&m10);
+    group_mail.append(&m11);
+    group_mail.append(&m12);
+    group_mail.append(&m13);
     section.append(&group_mail);
 
     // Group 3: Module navigation

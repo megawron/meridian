@@ -1228,6 +1228,11 @@ impl MemosPage {
             }
         ));
 
+        let memo_text_for_activate = memo_text.clone();
+        memo_list.connect_row_activated(move |_, _| {
+            memo_text_for_activate.grab_focus();
+        });
+
         let memo_list_for_load = memo_list.clone();
         let empty_state_for_load = empty_state.clone();
         let memo_meta_for_load = memo_meta.clone();
