@@ -578,6 +578,7 @@ fn folder_aliases(value: &str) -> Vec<&'static str> {
     }
 }
 
+#[allow(dead_code)]
 #[cfg(test)]
 fn parse_address_list(value: &str) -> Vec<ExchangeEmailAddress> {
     value
