@@ -1802,6 +1802,7 @@ fn readable_fallback_text(value: Option<&str>) -> String {
 /// Return whether a mail body contains an external image source that is
 /// subject to the remote-content decision.  Inline `cid:` and `data:` images
 /// intentionally do not trigger the privacy banner.
+#[cfg(test)]
 fn contains_remote_image_reference(value: &str) -> bool {
     let sanitized = sanitize_html(value);
     block_remote_images(&sanitized) != sanitized

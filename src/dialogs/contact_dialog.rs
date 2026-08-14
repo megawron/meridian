@@ -713,6 +713,7 @@ struct ContactVCardFields {
     evolution_list_show_addresses: bool,
 }
 
+#[cfg(test)]
 fn build_vcard(
     name: &str,
     organization: &str,

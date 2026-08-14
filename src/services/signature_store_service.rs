@@ -48,6 +48,7 @@ impl SignatureStore {
         Self::new(path)
     }
 
+    #[allow(dead_code)]
     pub fn path(&self) -> &Path {
         &self.path
     }
@@ -109,6 +110,7 @@ impl SignatureStore {
         Ok(true)
     }
 
+    #[allow(dead_code)]
     pub fn remove(&self, id: &str) -> io::Result<bool> {
         let mut file = self.load_file();
         let original_len = file.signatures.len();

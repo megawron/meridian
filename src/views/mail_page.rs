@@ -2161,9 +2161,9 @@ mod imp {
                 .set_orientation(self.mail_layout.get().orientation());
             self.inner_paned.set_wide_handle(true);
             self.inner_paned.set_resize_start_child(true);
-            self.inner_paned.set_shrink_start_child(true);
+            self.inner_paned.set_shrink_start_child(false);
             self.inner_paned.set_resize_end_child(true);
-            self.inner_paned.set_shrink_end_child(true);
+            self.inner_paned.set_shrink_end_child(false);
             self.inner_paned.set_position(preview_position);
             let obj = self.obj();
 
@@ -2600,7 +2600,6 @@ impl MailPage {
                 "mail-show-attachment",
                 "mail-show-preview-text",
                 "mail-show-labels",
-                "mail-sender-column-width",
             ] {
                 let page_weak_for_columns = self.downgrade();
                 settings.connect_changed(Some(key), move |_, _| {
@@ -2610,6 +2609,12 @@ impl MailPage {
                     }
                 });
             }
+            let page_weak_for_col_width = self.downgrade();
+            settings.connect_changed(Some("mail-sender-column-width"), move |_, _| {
+                if let Some(page) = page_weak_for_col_width.upgrade() {
+                    page.refresh_mail_column_header();
+                }
+            });
             let page_weak_for_sort_field = self.downgrade();
             settings.connect_changed(Some("mail-sort-field"), move |_, _| {
                 if let Some(page) = page_weak_for_sort_field.upgrade() {
@@ -2695,6 +2700,7 @@ impl MailPage {
         let imp = self.imp();
         let previous_layout = imp.mail_layout.get();
         let current_pos = imp.inner_paned.position();
+        let total_width = imp.inner_paned.width();
         let next_position = AppSettings::try_new()
             .map(|settings| {
                 if current_pos > 50 {
@@ -2709,9 +2715,18 @@ impl MailPage {
                 }
             })
             .unwrap_or_else(|| layout.default_position());
+
+        let target_pos = if layout == MailLayout::Modern && total_width > 650 {
+            next_position.clamp(280, (total_width - 350).max(280))
+        } else if layout == MailLayout::Modern {
+            (total_width / 2).clamp(280, 500)
+        } else {
+            next_position.clamp(180, 600)
+        };
+
         imp.mail_layout.set(layout);
         imp.inner_paned.set_orientation(layout.orientation());
-        imp.inner_paned.set_position(next_position.max(250));
+        imp.inner_paned.set_position(target_pos);
         if let Some(end_child) = imp.inner_paned.end_child() {
             end_child.set_visible(true);
         }
@@ -6341,6 +6356,7 @@ impl MailPage {
             .replace('/', " / ")
     }
 
+    #[cfg(test)]
     fn is_builtin_folder_id(folder_id: &str) -> bool {
         matches!(
             folder_id,
@@ -6683,15 +6699,17 @@ impl MailPage {
 
         let thread_spacer = gtk::Box::builder()
             .width_request(MAIL_THREAD_COLUMN_WIDTH)
+            .css_classes(vec!["mail-column-header-cell"])
             .build();
         let status_spacer = gtk::Label::builder()
             .label("●")
             .width_request(MAIL_INDICATOR_COLUMN_WIDTH)
             .halign(gtk::Align::Center)
-            .css_classes(vec!["caption", "dim-label"])
+            .css_classes(vec!["caption", "dim-label", "mail-column-header-cell"])
             .build();
         let avatar_spacer = gtk::Box::builder()
             .width_request(MAIL_AVATAR_COLUMN_WIDTH)
+            .css_classes(vec!["mail-column-header-cell"])
             .build();
 
         let sender_column = gtk::Box::builder()
@@ -6701,6 +6719,7 @@ impl MailPage {
             .hexpand(false)
             .halign(gtk::Align::Start)
             .overflow(gtk::Overflow::Hidden)
+            .css_classes(vec!["mail-column-header-cell"])
             .build();
         let sender_label = gtk::Label::builder()
             .label("Von")
@@ -6725,39 +6744,39 @@ impl MailPage {
             .ellipsize(pango::EllipsizeMode::End)
             .width_chars(1)
             .max_width_chars(16)
-            .css_classes(vec!["caption", "dim-label"])
+            .css_classes(vec!["caption", "dim-label", "mail-column-header-cell"])
             .build();
         let attachment = gtk::Label::builder()
             .label("📎")
             .width_request(MAIL_INDICATOR_COLUMN_WIDTH)
             .halign(gtk::Align::Center)
-            .css_classes(vec!["caption", "dim-label"])
+            .css_classes(vec!["caption", "dim-label", "mail-column-header-cell"])
             .build();
         let star = gtk::Label::builder()
             .label("★")
             .width_request(MAIL_INDICATOR_COLUMN_WIDTH)
             .halign(gtk::Align::Center)
-            .css_classes(vec!["caption", "dim-label"])
+            .css_classes(vec!["caption", "dim-label", "mail-column-header-cell"])
             .build();
         let follow_up = gtk::Label::builder()
             .label("⚑")
             .width_request(MAIL_INDICATOR_COLUMN_WIDTH)
             .halign(gtk::Align::Center)
             .tooltip_text("Nachverfolgung")
-            .css_classes(vec!["caption", "dim-label"])
+            .css_classes(vec!["caption", "dim-label", "mail-column-header-cell"])
             .build();
         let important = gtk::Label::builder()
             .label("!")
             .width_request(MAIL_INDICATOR_COLUMN_WIDTH)
             .halign(gtk::Align::Center)
-            .css_classes(vec!["caption", "dim-label"])
+            .css_classes(vec!["caption", "dim-label", "mail-column-header-cell"])
             .build();
         let subject = gtk::Label::builder()
             .label("Betreff")
             .halign(gtk::Align::Start)
             .hexpand(true)
             .ellipsize(pango::EllipsizeMode::End)
-            .css_classes(vec!["caption", "dim-label"])
+            .css_classes(vec!["caption", "dim-label", "mail-column-header-cell"])
             .build();
         let preview = gtk::Label::builder()
             .label("Vorschau")
@@ -6766,7 +6785,7 @@ impl MailPage {
             .ellipsize(pango::EllipsizeMode::End)
             .width_chars(1)
             .max_width_chars(20)
-            .css_classes(vec!["caption", "dim-label"])
+            .css_classes(vec!["caption", "dim-label", "mail-column-header-cell"])
             .build();
 
         header.append(&thread_spacer);

@@ -5,6 +5,8 @@
 // Evolution's files; client-owned state and logical local folder/deletion
 // overrides are writable until a Camel/EDS backend is available.
 
+#![allow(dead_code)]
+
 use std::fmt;
 use std::fs;
 use std::io;

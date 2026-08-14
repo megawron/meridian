@@ -578,6 +578,7 @@ fn folder_aliases(value: &str) -> Vec<&'static str> {
     }
 }
 
+#[cfg(test)]
 fn parse_address_list(value: &str) -> Vec<ExchangeEmailAddress> {
     value
         .split([',', ';'])
@@ -1011,6 +1012,7 @@ fn ical_datetime(value: &str, all_day: bool) -> String {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 pub enum ExchangeAuthStatus {
     Authenticated,
     TokenExpired,
@@ -1225,11 +1227,13 @@ impl ExchangeService {
         };
     }
 
+    #[allow(dead_code)]
     pub fn clear_access_token(&mut self) {
         self.access_token = None;
         self.auth_status = ExchangeAuthStatus::Disconnected;
     }
 
+    #[allow(dead_code)]
     pub fn has_access_token(&self) -> bool {
         self.access_token.is_some()
     }
@@ -1248,6 +1252,7 @@ impl ExchangeService {
     /// This async compatibility wrapper keeps the original service API.  UI
     /// callers should use `search_gal_sync` from a worker thread because the
     /// portable fallback deliberately exposes a synchronous service boundary.
+    #[allow(dead_code)]
     pub async fn search_gal(&self, query: &str) -> Result<Vec<GalContact>, String> {
         self.search_gal_sync(query)
             .map_err(|error| error.to_string())
@@ -1316,6 +1321,7 @@ impl ExchangeService {
     /// Load messages from one Graph mail folder.  The limit is applied after
     /// continuation pages have been followed, so a caller never has to
     /// reason about Graph's page size or opaque `@odata.nextLink` values.
+    #[allow(dead_code)]
     pub fn list_messages_sync(
         &self,
         folder_id: &str,
@@ -1561,6 +1567,7 @@ impl ExchangeService {
             .collect())
     }
 
+    #[allow(dead_code)]
     pub fn send_mail_sync(
         &self,
         from: &str,
@@ -1593,6 +1600,7 @@ impl ExchangeService {
         self.request_empty(Method::POST, "me/sendMail", &[], Some(payload))
     }
 
+    #[allow(dead_code)]
     pub fn set_message_state_sync(
         &self,
         message_id: &str,

@@ -33,6 +33,7 @@ pub(crate) enum EBookDataOrigin {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub(crate) enum EBookServiceError {
     Unsupported,
     Backend(String),
@@ -50,6 +51,7 @@ impl std::fmt::Display for EBookServiceError {
 impl std::error::Error for EBookServiceError {}
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub(crate) enum EBookMutationError {
     Unsupported,
     Conflict(String),

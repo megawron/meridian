@@ -96,6 +96,7 @@ impl ReminderStore {
         Ok(Self { path, state })
     }
 
+    #[allow(dead_code)]
     pub fn path(&self) -> &Path {
         &self.path
     }
@@ -150,6 +151,7 @@ impl ReminderStore {
         self.mark_delivered(key)
     }
 
+    #[allow(dead_code)]
     pub fn is_delivered(&self, key: &str) -> bool {
         self.state.delivered.contains(key)
     }

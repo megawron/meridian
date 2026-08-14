@@ -127,6 +127,7 @@ impl SourceKeyFile {
 /// is intentionally supplied by the user instead of guessed automatically so
 /// that this portable importer cannot accidentally modify or scan a live EDS
 /// profile without an explicit action.
+#[allow(dead_code)]
 pub fn import_evolution_sources(
     root: impl AsRef<Path>,
     store: &AccountConfigStore,
@@ -141,6 +142,7 @@ pub fn import_evolution_sources(
 /// The explicit filter store parameter keeps this operation deterministic in
 /// tests and lets callers choose the app-owned destination.  The public
 /// convenience function above uses the normal app filter store.
+#[allow(dead_code)]
 pub fn import_evolution_sources_with_filter_store(
     root: impl AsRef<Path>,
     store: &AccountConfigStore,
@@ -301,6 +303,7 @@ pub fn import_evolution_local_data(
 
 /// Import source metadata, portable filters, and all safe text signatures into
 /// explicitly supplied app-owned stores.
+#[allow(dead_code)]
 pub fn import_evolution_sources_with_stores(
     root: impl AsRef<Path>,
     store: &AccountConfigStore,
@@ -2396,6 +2399,7 @@ fn unescape_keyfile_value(value: &str) -> String {
     result
 }
 
+#[allow(dead_code)]
 fn profile_from_source(path: &Path, source: &SourceKeyFile) -> Result<AccountProfile, String> {
     profile_from_source_with_warnings(path, source).map(|(profile, _)| profile)
 }

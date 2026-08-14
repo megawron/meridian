@@ -136,6 +136,7 @@ impl DraftStoreService {
     /// The lookup is intentionally performed against the same serialized
     /// store transaction as saves and deletes, so a composer never restores a
     /// half-written snapshot.
+    #[allow(dead_code)]
     pub fn find(&self, id: &str) -> Option<DraftMessage> {
         let _lock = draft_store_lock();
         match self.load_unlocked() {

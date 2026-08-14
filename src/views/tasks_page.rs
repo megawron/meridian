@@ -1823,10 +1823,12 @@ fn compare_optional_dates(left: Option<NaiveDate>, right: Option<NaiveDate>) -> 
     }
 }
 
+#[cfg(test)]
 fn task_matches_filter(task: &TaskItemObject, filter: TaskFilter, query: &str) -> bool {
     task_matches_filter_with_source(task, filter, None, query)
 }
 
+#[cfg(test)]
 fn task_matches_filter_with_source(
     task: &TaskItemObject,
     filter: TaskFilter,

@@ -156,6 +156,7 @@ pub(crate) fn save_mail_load_cache(load: &CamelMailLoad) {
     }
 }
 
+#[allow(dead_code)]
 pub(crate) fn load_mail_load_cache() -> Option<CamelMailLoad> {
     let path = mail_cache_path();
     let content = std::fs::read_to_string(path).ok()?;
@@ -2401,6 +2402,7 @@ pub(crate) fn send_message(source_uid: &str, raw_message: &[u8]) -> Result<bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 pub(crate) enum CamelSaveFolder {
     Drafts,
     Sent,
