@@ -218,7 +218,11 @@ impl MemosPage {
     }
 
     fn build_ui(&self) {
-        let split = adw::NavigationSplitView::new();
+        let split = adw::NavigationSplitView::builder()
+            .min_sidebar_width(240.0)
+            .max_sidebar_width(240.0)
+            .sidebar_width_fraction(0.0)
+            .build();
 
         let memo_sort = Rc::new(Cell::new(
             AppSettings::try_new()
@@ -304,17 +308,17 @@ impl MemosPage {
             .memo_category_selector
             .replace(Some(category_selector.clone()));
         search_entry.set_hexpand(true);
-        let search_toolbar = gtk::Box::builder()
+        sidebar_box.append(&search_entry);
+
+        let sort_row = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
-            .spacing(8)
+            .spacing(6)
             .margin_bottom(4)
             .build();
-        search_toolbar.append(&search_entry);
-        search_toolbar.append(&sort_selector);
-        search_toolbar.append(&direction_button);
-        search_toolbar.append(&source_selector);
-        search_toolbar.append(&category_selector);
-        sidebar_box.append(&search_toolbar);
+        sort_selector.set_hexpand(true);
+        sort_row.append(&sort_selector);
+        sort_row.append(&direction_button);
+        sidebar_box.append(&sort_row);
 
         let memo_list = gtk::ListBox::builder()
             .selection_mode(gtk::SelectionMode::Single)
@@ -740,9 +744,26 @@ impl MemosPage {
             .vexpand(true)
             .build();
 
+        let drawer_header = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(8)
+            .css_classes(vec!["sidebar-drawer-header"])
+            .build();
+        let drawer_icon = gtk::Image::from_icon_name("accessory-text-editor-symbolic");
+        let drawer_title = gtk::Label::builder()
+            .label("Notizen")
+            .halign(gtk::Align::Start)
+            .hexpand(true)
+            .build();
+        drawer_header.append(&drawer_icon);
+        drawer_header.append(&drawer_title);
+
         let sidebar_outer_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
+            .width_request(240)
+            .css_classes(vec!["evolution-sidebar-drawer"])
             .build();
+        sidebar_outer_box.append(&drawer_header);
         sidebar_outer_box.append(&sidebar_scroll);
         sidebar_outer_box.append(&crate::views::build_sidebar_module_switcher(
             "memos",
@@ -752,6 +773,8 @@ impl MemosPage {
         let sidebar_page = adw::NavigationPage::builder()
             .title("Notizen")
             .child(&sidebar_outer_box)
+            .width_request(240)
+            .css_classes(vec!["evolution-sidebar-drawer"])
             .build();
 
         split.set_sidebar(Some(&sidebar_page));
@@ -1381,8 +1404,6 @@ impl MemosPage {
             .build();
 
         split.set_content(Some(&content_page));
-        split.set_min_sidebar_width(260.0);
-        split.set_max_sidebar_width(360.0);
         let split_for_navigation = split.clone();
         let key_controller = gtk::EventControllerKey::new();
         key_controller.connect_key_pressed(move |_, key, _, modifiers| {

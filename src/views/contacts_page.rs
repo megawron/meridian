@@ -111,7 +111,11 @@ impl ContactsPage {
     }
 
     fn build_ui(&self) {
-        let split = adw::NavigationSplitView::new();
+        let split = adw::NavigationSplitView::builder()
+            .min_sidebar_width(240.0)
+            .max_sidebar_width(240.0)
+            .sidebar_width_fraction(0.0)
+            .build();
 
         // ── Contact List (Sidebar) ──────────────────────────────────────
 
@@ -495,14 +499,46 @@ impl ContactsPage {
 
         new_contact_bar.append(&new_contact_btn);
         sidebar_box.append(&new_contact_bar);
-        sidebar_box.append(&crate::views::build_sidebar_module_switcher(
+
+        let sidebar_scroll = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .child(&sidebar_box)
+            .width_request(240)
+            .vexpand(true)
+            .build();
+
+        let drawer_header = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(8)
+            .css_classes(vec!["sidebar-drawer-header"])
+            .build();
+        let drawer_icon = gtk::Image::from_icon_name("x-office-address-book-symbolic");
+        let drawer_title = gtk::Label::builder()
+            .label("Kontakte")
+            .halign(gtk::Align::Start)
+            .hexpand(true)
+            .build();
+        drawer_header.append(&drawer_icon);
+        drawer_header.append(&drawer_title);
+
+        let sidebar_outer_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .width_request(240)
+            .css_classes(vec!["evolution-sidebar-drawer"])
+            .build();
+        sidebar_outer_box.append(&drawer_header);
+        sidebar_outer_box.append(&sidebar_scroll);
+        sidebar_outer_box.append(&crate::views::build_sidebar_module_switcher(
             "contacts",
-            &sidebar_box,
+            &sidebar_outer_box,
         ));
 
         let sidebar_page = adw::NavigationPage::builder()
             .title("Kontakte")
-            .child(&sidebar_box)
+            .child(&sidebar_outer_box)
+            .width_request(240)
+            .css_classes(vec!["evolution-sidebar-drawer"])
             .build();
 
         split.set_sidebar(Some(&sidebar_page));
@@ -1399,8 +1435,6 @@ impl ContactsPage {
             .build();
 
         split.set_content(Some(&content_page));
-        split.set_min_sidebar_width(280.0);
-        split.set_max_sidebar_width(400.0);
         let split_for_navigation = split.clone();
         let key_controller = gtk::EventControllerKey::new();
         key_controller.connect_key_pressed(move |_, key, _, modifiers| {

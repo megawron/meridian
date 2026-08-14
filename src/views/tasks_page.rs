@@ -363,7 +363,11 @@ impl TasksPage {
                 .task_sort_descending
                 .set(settings.task_sort_descending());
         }
-        let split = adw::NavigationSplitView::new();
+        let split = adw::NavigationSplitView::builder()
+            .min_sidebar_width(240.0)
+            .max_sidebar_width(240.0)
+            .sidebar_width_fraction(0.0)
+            .build();
 
         // ── Sidebar (Categories) ────────────────────────────────────────
 
@@ -430,9 +434,26 @@ impl TasksPage {
             .vexpand(true)
             .build();
 
+        let drawer_header = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(8)
+            .css_classes(vec!["sidebar-drawer-header"])
+            .build();
+        let drawer_icon = gtk::Image::from_icon_name("checkbox-checked-symbolic");
+        let drawer_title = gtk::Label::builder()
+            .label("Aufgaben")
+            .halign(gtk::Align::Start)
+            .hexpand(true)
+            .build();
+        drawer_header.append(&drawer_icon);
+        drawer_header.append(&drawer_title);
+
         let sidebar_outer_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
+            .width_request(240)
+            .css_classes(vec!["evolution-sidebar-drawer"])
             .build();
+        sidebar_outer_box.append(&drawer_header);
         sidebar_outer_box.append(&sidebar_scroll);
         sidebar_outer_box.append(&crate::views::build_sidebar_module_switcher(
             "tasks",
@@ -442,6 +463,8 @@ impl TasksPage {
         let sidebar_page = adw::NavigationPage::builder()
             .title("Aufgaben")
             .child(&sidebar_outer_box)
+            .width_request(240)
+            .css_classes(vec!["evolution-sidebar-drawer"])
             .build();
 
         split.set_sidebar(Some(&sidebar_page));
@@ -1113,8 +1136,6 @@ impl TasksPage {
             .build();
 
         split.set_content(Some(&content_page));
-        split.set_min_sidebar_width(260.0);
-        split.set_max_sidebar_width(360.0);
         let split_for_navigation = split.clone();
         let key_controller = gtk::EventControllerKey::new();
         key_controller.connect_key_pressed(move |_, key, _, modifiers| {

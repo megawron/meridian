@@ -167,7 +167,7 @@
       <summary>Show the mail folder sidebar</summary>
     </key>
     <key name="mail-sidebar-position" type="i">
-      <default>220</default>
+      <default>240</default>
       <range min="0" max="2000"/>
       <summary>Mail folder sidebar width</summary>
     </key>

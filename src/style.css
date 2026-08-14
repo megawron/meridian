@@ -136,17 +136,6 @@
   color: @accent_color;
 }
 
-.mail-column-resize-handle {
-  min-width: 6px;
-  min-height: 16px;
-  background-color: alpha(@borders, 0.35);
-  border-radius: 1px;
-}
-
-.mail-column-resize-handle:hover {
-  background-color: @accent_bg_color;
-}
-
 /* Thread context is useful, but it must never push the actual message body
  * out of view.  The surrounding ScrolledWindow supplies the hard 58px cap. */
 .thread-context row {
@@ -392,4 +381,78 @@
 /* Subtle shadow for the sidebar separator */
 splitview > separator {
   background-color: alpha(@borders, 0.5);
+}
+
+/* ── Unified Left Sidebar Drawer ───────────────────────────────────────── */
+.evolution-sidebar-drawer,
+splitview > sidebar,
+splitview > .sidebar,
+.evolution-sidebar-drawer list,
+.evolution-sidebar-drawer listview,
+.evolution-sidebar-drawer listbox,
+.evolution-sidebar-drawer .navigation-sidebar,
+.evolution-sidebar-drawer scrolledwindow,
+.evolution-sidebar-drawer scrolledwindow > viewport,
+.evolution-sidebar-drawer > box,
+.evolution-sidebar-drawer calendar {
+  background-color: #ffffff;
+  background: #ffffff;
+}
+
+.evolution-sidebar-drawer {
+  background-color: #ffffff;
+  border-right: 1px solid alpha(@borders, 0.45);
+  min-width: 240px;
+}
+
+.evolution-sidebar-drawer .navigation-sidebar {
+  background-color: #ffffff;
+}
+
+/* ── Sidebar Drawer Header Bar ─────────────────────────────────────────── */
+.sidebar-drawer-header {
+  min-height: 28px;
+  margin-top: 4px;
+  margin-bottom: 4px;
+  padding: 4px 8px;
+  background-color: #ffffff;
+  border-bottom: 1px solid alpha(@borders, 0.45);
+}
+
+.sidebar-drawer-header label {
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: @window_fg_color;
+}
+
+.sidebar-drawer-header image {
+  color: @accent_color;
+}
+
+.evolution-module-switcher {
+  border-top: 1px solid alpha(@borders, 0.45);
+  background-color: #ffffff;
+  padding: 6px;
+}
+
+.evolution-module-switcher button {
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-size: 0.9rem;
+  font-weight: 500;
+}
+
+.evolution-module-switcher button.flat {
+  background-color: transparent;
+  color: @window_fg_color;
+}
+
+.evolution-module-switcher button.flat:hover {
+  background-color: alpha(@window_fg_color, 0.07);
+}
+
+.evolution-module-switcher button.suggested-action {
+  background-color: alpha(@accent_color, 0.15);
+  color: @accent_color;
+  font-weight: 700;
 }

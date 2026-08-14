@@ -235,6 +235,22 @@ impl FolderSelection {
             }
         }
     }
+
+    fn title_and_icon(&self) -> (&str, &str) {
+        if let Some(ref name) = self.folder_name {
+            (name.as_str(), "folder-symbolic")
+        } else {
+            match self.folder_id.as_str() {
+                "inbox" => ("Posteingang", "mail-inbox-symbolic"),
+                "sent" => ("Gesendet", "mail-send-symbolic"),
+                "drafts" => ("Entwürfe", "document-edit-symbolic"),
+                "trash" => ("Papierkorb", "user-trash-symbolic"),
+                "archive" => ("Archiv", "mail-archive-symbolic"),
+                "spam" => ("Junk", "mail-mark-junk-symbolic"),
+                _ => ("Posteingang", "mail-inbox-symbolic"),
+            }
+        }
+    }
 }
 
 impl Default for FolderSelection {
@@ -2122,6 +2138,8 @@ mod imp {
         pub(super) mail_layout: Cell<MailLayout>,
         pub mail_sort_selector: RefCell<Option<gtk::DropDown>>,
         pub mail_sort_direction_button: RefCell<Option<gtk::Button>>,
+        pub drawer_header_title: RefCell<Option<gtk::Label>>,
+        pub drawer_header_icon: RefCell<Option<gtk::Image>>,
     }
 
     #[glib::object_subclass]
@@ -5608,6 +5626,22 @@ impl MailPage {
             .source_status_area
             .replace(Some(source_status_area.clone()));
 
+        let drawer_header = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(8)
+            .css_classes(vec!["sidebar-drawer-header"])
+            .build();
+        let drawer_icon = gtk::Image::from_icon_name("mail-inbox-symbolic");
+        let drawer_title = gtk::Label::builder()
+            .label("Posteingang")
+            .halign(gtk::Align::Start)
+            .hexpand(true)
+            .build();
+        drawer_header.append(&drawer_icon);
+        drawer_header.append(&drawer_title);
+        self.imp().drawer_header_title.replace(Some(drawer_title));
+        self.imp().drawer_header_icon.replace(Some(drawer_icon));
+
         let sidebar_scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
             .vscrollbar_policy(gtk::PolicyType::Automatic)
@@ -5616,8 +5650,11 @@ impl MailPage {
             .build();
         let sidebar_content = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
+            .width_request(240)
+            .css_classes(vec!["evolution-sidebar-drawer"])
             .build();
         sidebar_scroll.set_vexpand(true);
+        sidebar_content.append(&drawer_header);
         sidebar_content.append(&sidebar_scroll);
         sidebar_content.append(&source_status_area);
 
@@ -5629,6 +5666,8 @@ impl MailPage {
         let page = adw::NavigationPage::builder()
             .title("Ordner")
             .child(&sidebar_content)
+            .width_request(240)
+            .css_classes(vec!["evolution-sidebar-drawer"])
             .build();
 
         (
@@ -6728,14 +6767,7 @@ impl MailPage {
             .ellipsize(pango::EllipsizeMode::End)
             .css_classes(vec!["caption", "dim-label"])
             .build();
-        let resize_handle = gtk::Box::builder()
-            .width_request(8)
-            .hexpand(false)
-            .css_classes(vec!["mail-column-resize-handle"])
-            .build();
-        set_accessible_label(&resize_handle, "Absender-Spaltenbreite ändern");
         sender_column.append(&sender_label);
-        sender_column.append(&resize_handle);
 
         let date = gtk::Label::builder()
             .label("Datum")
@@ -6800,16 +6832,93 @@ impl MailPage {
         header.append(&preview);
         header.append(&date);
 
+        // Sorting when clicking inside the column body (away from right border)
         let sender_sort_gesture = gtk::GestureClick::new();
         sender_sort_gesture.set_button(1);
         let page_for_sender_sort = self.downgrade();
-        sender_sort_gesture.connect_pressed(move |_, _, _, _| {
-            if let Some(page) = page_for_sender_sort.upgrade() {
-                page.set_mail_sort_from_header(MailSortField::Sender);
+        let sender_col_for_sort = sender_column.clone();
+        sender_sort_gesture.connect_pressed(move |gesture, _, x, _| {
+            let width = sender_col_for_sort.width();
+            if x < (width - 8) as f64 {
+                if let Some(page) = page_for_sender_sort.upgrade() {
+                    page.set_mail_sort_from_header(MailSortField::Sender);
+                }
+            } else {
+                gesture.set_state(gtk::EventSequenceState::Denied);
             }
         });
         sender_column.set_tooltip_text(Some("Nach Absender sortieren"));
         sender_column.add_controller(sender_sort_gesture);
+
+        // Edge cursor motion controller: show col-resize cursor when hovering right border
+        let motion = gtk::EventControllerMotion::new();
+        let sender_col_for_motion = sender_column.clone();
+        motion.connect_motion(move |_, x, _| {
+            let width = sender_col_for_motion.width();
+            if x >= (width - 8) as f64 {
+                sender_col_for_motion
+                    .set_cursor(gdk::Cursor::from_name("col-resize", None).as_ref());
+            } else {
+                sender_col_for_motion.set_cursor(None);
+            }
+        });
+        let sender_col_for_leave = sender_column.clone();
+        motion.connect_leave(move |_| {
+            sender_col_for_leave.set_cursor(None);
+        });
+        sender_column.add_controller(motion);
+
+        // Edge drag resizing: dragging from right border resizes the column smoothly
+        let is_resizing = Rc::new(Cell::new(false));
+        let width_at_start = Rc::new(Cell::new(sender_width));
+        let current_width = Rc::new(Cell::new(sender_width));
+        let drag_gesture = gtk::GestureDrag::new();
+        drag_gesture.set_button(1);
+
+        let sender_col_for_begin = sender_column.clone();
+        let width_at_start_for_begin = Rc::clone(&width_at_start);
+        let current_width_for_begin = Rc::clone(&current_width);
+        let is_resizing_for_begin = Rc::clone(&is_resizing);
+        drag_gesture.connect_drag_begin(move |gesture, start_x, _| {
+            let width = sender_col_for_begin.width_request().clamp(80, 450);
+            if start_x >= (sender_col_for_begin.width() - 8) as f64 {
+                is_resizing_for_begin.set(true);
+                width_at_start_for_begin.set(width);
+                current_width_for_begin.set(width);
+                gesture.set_state(gtk::EventSequenceState::Claimed);
+            } else {
+                is_resizing_for_begin.set(false);
+            }
+        });
+
+        let sender_col_for_update = sender_column.clone();
+        let width_at_start_for_update = Rc::clone(&width_at_start);
+        let current_width_for_update = Rc::clone(&current_width);
+        let is_resizing_for_update = Rc::clone(&is_resizing);
+        drag_gesture.connect_drag_update(move |gesture, offset_x, _| {
+            if is_resizing_for_update.get() {
+                let width = (width_at_start_for_update.get() as f64 + offset_x)
+                    .round()
+                    .clamp(80.0, 450.0) as i32;
+                current_width_for_update.set(width);
+                sender_col_for_update.set_width_request(width);
+                gesture.set_state(gtk::EventSequenceState::Claimed);
+            }
+        });
+
+        let settings_for_resize = settings.clone();
+        let current_width_for_end = Rc::clone(&current_width);
+        let is_resizing_for_end = Rc::clone(&is_resizing);
+        drag_gesture.connect_drag_end(move |_, _, _| {
+            if is_resizing_for_end.get() {
+                is_resizing_for_end.set(false);
+                let width = current_width_for_end.get().clamp(80, 450);
+                if let Some(settings) = settings_for_resize.as_ref() {
+                    settings.set_mail_sender_column_width(width);
+                }
+            }
+        });
+        sender_column.add_controller(drag_gesture);
 
         let status_sort_gesture = gtk::GestureClick::new();
         status_sort_gesture.set_button(1);
@@ -6876,39 +6985,6 @@ impl MailPage {
         });
         subject.set_tooltip_text(Some("Nach Betreff sortieren"));
         subject.add_controller(subject_sort_gesture);
-
-        let width_at_start = Rc::new(Cell::new(sender_width));
-        let current_width = Rc::new(Cell::new(sender_width));
-        let gesture = gtk::GestureDrag::new();
-        gesture.set_button(1);
-        let sender_column_for_begin = sender_column.clone();
-        let width_at_start_for_begin = Rc::clone(&width_at_start);
-        let current_width_for_begin = Rc::clone(&current_width);
-        gesture.connect_drag_begin(move |_, _, _| {
-            let width = sender_column_for_begin.width_request().clamp(80, 360);
-            width_at_start_for_begin.set(width);
-            current_width_for_begin.set(width);
-        });
-        let sender_column_for_update = sender_column.clone();
-        let width_at_start_for_update = Rc::clone(&width_at_start);
-        let current_width_for_update = Rc::clone(&current_width);
-        gesture.connect_drag_update(move |_, offset_x, _| {
-            let width = (width_at_start_for_update.get() as f64 + offset_x)
-                .round()
-                .clamp(80.0, 360.0) as i32;
-            current_width_for_update.set(width);
-            sender_column_for_update.set_width_request(width);
-        });
-        let settings_for_resize = settings.clone();
-        let current_width_for_end = Rc::clone(&current_width);
-        gesture.connect_drag_end(move |_, _, _| {
-            let width = current_width_for_end.get().clamp(80, 360);
-            if let Some(settings) = settings_for_resize.as_ref() {
-                settings.set_mail_sender_column_width(width);
-            }
-        });
-        resize_handle.set_cursor(gdk::Cursor::from_name("col-resize", None).as_ref());
-        resize_handle.add_controller(gesture);
 
         self.imp().mail_column_header.replace(Some(header.clone()));
         self.refresh_mail_column_header();
@@ -8458,9 +8534,16 @@ impl MailPage {
             folder_selection_for_rows.replace(selection.clone());
             message_filter_for_rows.set(MessageFilter::All);
             query_for_folder.replace(MessageSearchQuery::default());
+            let (folder_title, folder_icon) = selection.title_and_icon();
             if let Some(page) = page_for_rows.upgrade() {
                 if let Some(quick_filter) = page.imp().quick_filter.borrow().as_ref() {
                     quick_filter.set_selected(0);
+                }
+                if let Some(title) = page.imp().drawer_header_title.borrow().as_ref() {
+                    title.set_label(folder_title);
+                }
+                if let Some(icon) = page.imp().drawer_header_icon.borrow().as_ref() {
+                    icon.set_icon_name(Some(folder_icon));
                 }
             }
             if row.is_some() {
@@ -9756,6 +9839,7 @@ impl MailPage {
         // Outer gtk::Paned: folder sidebar | message+preview area
         // Gives the user a draggable divider between the folder list and messages.
         let sidebar_child: gtk::Widget = sidebar.upcast();
+        sidebar_child.set_width_request(240);
         imp.outer_paned.set_start_child(Some(&sidebar_child));
         imp.outer_paned.set_resize_start_child(false);
         imp.outer_paned.set_shrink_start_child(false);
@@ -9781,16 +9865,11 @@ impl MailPage {
         imp.outer_paned.set_end_child(Some(&imp.inner_paned));
         imp.outer_paned.set_resize_end_child(true);
         imp.outer_paned.set_shrink_end_child(false);
-        let (sidebar_visible, sidebar_position) = AppSettings::try_new()
-            .map(|settings| {
-                (
-                    settings.mail_show_sidebar(),
-                    settings.mail_sidebar_position(),
-                )
-            })
-            .unwrap_or((true, 220));
+        let sidebar_visible = AppSettings::try_new()
+            .map(|settings| settings.mail_show_sidebar())
+            .unwrap_or(true);
         imp.outer_paned
-            .set_position(if sidebar_visible { sidebar_position } else { 0 });
+            .set_position(if sidebar_visible { 240 } else { 0 });
         if let Some(settings) = AppSettings::try_new() {
             imp.outer_paned.connect_position_notify(move |paned| {
                 let position = paned.position();

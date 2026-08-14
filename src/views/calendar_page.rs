@@ -377,20 +377,20 @@ impl CalendarPage {
         // same adaptive navigation contract as the other groupware modules
         // when the window becomes narrow.
         let split = adw::NavigationSplitView::builder()
-            .min_sidebar_width(260.0)
-            .max_sidebar_width(380.0)
-            .sidebar_width_fraction(0.24)
+            .min_sidebar_width(240.0)
+            .max_sidebar_width(240.0)
+            .sidebar_width_fraction(0.0)
             .build();
 
         // ── Sidebar (Calendar Picker + Task List) ───────────────────────
 
         let sidebar_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
-            .spacing(12)
-            .margin_start(12)
-            .margin_end(12)
-            .margin_top(12)
-            .margin_bottom(12)
+            .spacing(8)
+            .margin_start(4)
+            .margin_end(4)
+            .margin_top(8)
+            .margin_bottom(8)
             .build();
 
         let mini_calendar = gtk::Calendar::new();
@@ -762,9 +762,26 @@ impl CalendarPage {
             .vexpand(true)
             .build();
 
+        let drawer_header = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(8)
+            .css_classes(vec!["sidebar-drawer-header"])
+            .build();
+        let drawer_icon = gtk::Image::from_icon_name("x-office-calendar-symbolic");
+        let drawer_title = gtk::Label::builder()
+            .label("Kalender")
+            .halign(gtk::Align::Start)
+            .hexpand(true)
+            .build();
+        drawer_header.append(&drawer_icon);
+        drawer_header.append(&drawer_title);
+
         let sidebar_outer_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
+            .width_request(240)
+            .css_classes(vec!["evolution-sidebar-drawer"])
             .build();
+        sidebar_outer_box.append(&drawer_header);
         sidebar_outer_box.append(&sidebar_scroll);
         sidebar_outer_box.append(&crate::views::build_sidebar_module_switcher(
             "calendar",
@@ -774,6 +791,8 @@ impl CalendarPage {
         let sidebar_page = adw::NavigationPage::builder()
             .title("Kalender")
             .child(&sidebar_outer_box)
+            .width_request(240)
+            .css_classes(vec!["evolution-sidebar-drawer"])
             .build();
         split.set_sidebar(Some(&sidebar_page));
 
@@ -1345,11 +1364,13 @@ impl CalendarPage {
     fn refresh_calendar_views(&self) {
         self.refresh_task_sidebar();
         self.refresh_calendar_category_model();
-        self.refresh_month_grid();
-        self.refresh_day_view();
-        self.refresh_week_view();
-        self.refresh_workweek_view();
-        self.refresh_agenda_view();
+        match *self.imp().current_view.borrow() {
+            CalendarView::Month => self.refresh_month_grid(),
+            CalendarView::Day => self.refresh_day_view(),
+            CalendarView::Week => self.refresh_week_view(),
+            CalendarView::WorkWeek => self.refresh_workweek_view(),
+            CalendarView::Agenda => self.refresh_agenda_view(),
+        }
         self.refresh_period_label();
     }
 

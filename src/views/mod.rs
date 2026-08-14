@@ -66,25 +66,33 @@ pub fn build_sidebar_module_switcher(
         .column_spacing(4)
         .row_spacing(4)
         .column_homogeneous(true)
-        .row_homogeneous(true)
+        .row_homogeneous(false)
         .build();
 
-    // Static fixed module layout — position and order never change.
     let modules = [
-        ("mail", "Mail", 0, 0, 1),
-        ("contacts", "Kontakte", 1, 0, 1),
-        ("calendar", "Kalender", 0, 1, 1),
-        ("tasks", "Aufgaben", 1, 1, 1),
-        ("memos", "Memos", 0, 2, 2),
+        ("mail", "Mail"),
+        ("contacts", "Contacts"),
+        ("calendar", "Calendar"),
+        ("tasks", "Tasks"),
+        ("memos", "Memos"),
     ];
 
-    for (name, label, col, row, width) in modules {
+    let mut buttons_vec = Vec::new();
+
+    for (name, label) in modules {
         let is_active = name == active_view;
         let btn = gtk::Button::builder()
             .child(&{
                 let bx = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+                bx.set_margin_start(4);
+                bx.set_margin_end(4);
                 bx.append(&module_icon_widget(name));
-                bx.append(&gtk::Label::new(Some(label)));
+                let lbl = gtk::Label::builder()
+                    .label(label)
+                    .halign(gtk::Align::Start)
+                    .hexpand(true)
+                    .build();
+                bx.append(&lbl);
                 bx
             })
             .halign(gtk::Align::Fill)
@@ -104,8 +112,85 @@ pub fn build_sidebar_module_switcher(
                 }
             }
         });
-        grid.attach(&btn, col, row, width, 1);
+        buttons_vec.push(btn);
     }
+
+    let buttons: [gtk::Button; 5] = match buttons_vec.try_into() {
+        Ok(arr) => arr,
+        Err(_) => unreachable!(),
+    };
+
+    let current_mode = std::rc::Rc::new(std::cell::Cell::new(0u8));
+
+    let apply_layout = {
+        let grid = grid.clone();
+        let buttons = buttons.clone();
+        let current_mode = std::rc::Rc::clone(&current_mode);
+        move |width: i32| {
+            if width <= 0 {
+                return;
+            }
+            // Layout modes:
+            // 4: 5 vertical full-width rows (width < 200)
+            // 1: 1 top full-width + 2x2 grid (200 <= width < 340)
+            // 2: 1 top full-width + 1x4 row (340 <= width < 480)
+            // 3: 1x5 horizontal row (width >= 480)
+            let new_mode = if width < 200 {
+                4
+            } else if width < 340 {
+                1
+            } else if width < 480 {
+                2
+            } else {
+                3
+            };
+
+            if current_mode.get() == new_mode {
+                return;
+            }
+            current_mode.set(new_mode);
+
+            while let Some(child) = grid.first_child() {
+                grid.remove(&child);
+            }
+
+            match new_mode {
+                4 => {
+                    for (i, btn) in buttons.iter().enumerate() {
+                        grid.attach(btn, 0, i as i32, 1, 1);
+                    }
+                }
+                1 => {
+                    grid.attach(&buttons[0], 0, 0, 2, 1);
+                    grid.attach(&buttons[1], 0, 1, 1, 1);
+                    grid.attach(&buttons[2], 1, 1, 1, 1);
+                    grid.attach(&buttons[3], 0, 2, 1, 1);
+                    grid.attach(&buttons[4], 1, 2, 1, 1);
+                }
+                2 => {
+                    grid.attach(&buttons[0], 0, 0, 4, 1);
+                    grid.attach(&buttons[1], 0, 1, 1, 1);
+                    grid.attach(&buttons[2], 1, 1, 1, 1);
+                    grid.attach(&buttons[3], 2, 1, 1, 1);
+                    grid.attach(&buttons[4], 3, 1, 1, 1);
+                }
+                _ => {
+                    for (i, btn) in buttons.iter().enumerate() {
+                        grid.attach(btn, i as i32, 0, 1, 1);
+                    }
+                }
+            }
+        }
+    };
+
+    // Initial default layout: 1 top + 2x2 grid (standard ~240px sidebar)
+    apply_layout(240);
+
+    let apply_layout_for_notify = apply_layout.clone();
+    switcher_box.connect_notify_local(Some("width"), move |widget, _| {
+        let w = widget.width();
+        apply_layout_for_notify(w);
+    });
 
     switcher_box.append(&grid);
 
