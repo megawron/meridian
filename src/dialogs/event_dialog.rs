@@ -23,6 +23,10 @@ use crate::services::calendar_store_service::{
 };
 use crate::services::ecal_service::{ECalComponentType, ECalService};
 use crate::services::eds_service;
+use crate::services::reminder_service::{
+    Alarm, AlarmAction, AlarmDuration, AlarmRelation, AlarmTrigger, parse_alarms,
+    replace_component_alarms,
+};
 use crate::services::settings_service::AppSettings;
 
 mod imp {
@@ -322,16 +326,14 @@ impl EventDialog {
         attachment_box.append(&attachment_header);
         attachment_box.append(&attachment_scroll);
         group_recurrence.add(&attachment_box);
-        let row_alarm = adw::SpinRow::with_range(0.0, 10_080.0, 5.0);
-        row_alarm.set_title("Erinnerung vorher (Minuten)");
-        row_alarm.set_digits(0);
-        row_alarm.set_snap_to_ticks(true);
-        row_alarm.set_value(
-            AppSettings::try_new()
+        let alarm_editor = AlarmEditor::new(edit_component.as_deref(), "");
+        if edit_component.is_none() {
+            let default_minutes = AppSettings::try_new()
                 .map(|settings| settings.calendar_default_reminder_minutes())
-                .unwrap_or(15) as f64,
-        );
-        group_recurrence.add(&row_alarm);
+                .unwrap_or(15);
+            alarm_editor.add_default_display_if_empty(default_minutes);
+        }
+        group_recurrence.add(alarm_editor.widget());
         let row_private = adw::SwitchRow::builder()
             .title("Privater Termin")
             .subtitle("Andere Personen sehen den Termin als privat markiert")
@@ -420,7 +422,6 @@ impl EventDialog {
             row_attendees.set_text(&ical_properties(component, "ATTENDEE").join(", "));
             row_categories.set_text(&ical_property(component, "CATEGORIES").unwrap_or_default());
             attachment_buffer.set_text(&ical_properties(component, "ATTACH").join("\n"));
-            row_alarm.set_value(ical_alarm_minutes(component).unwrap_or(0) as f64);
             row_private.set_active(
                 ical_property(component, "CLASS")
                     .map(|value| value.eq_ignore_ascii_case("PRIVATE"))
@@ -549,6 +550,8 @@ impl EventDialog {
                 &attachment_buffer.end_iter(),
                 false,
             );
+            alarm_editor.set_summary(&entry_title.text());
+            let alarms = alarm_editor.alarms();
             let new_component = match build_event_component(
                 &entry_title.text(),
                 &row_location.text(),
@@ -573,7 +576,7 @@ impl EventDialog {
                 &row_attendees.text(),
                 &row_categories.text(),
                 &attachments,
-                row_alarm.value().round() as u32,
+                &alarms,
                 row_private.is_active(),
             ) {
                 Ok(component) => component,
@@ -699,7 +702,7 @@ impl EventDialog {
                     false,
                 ));
                 updated = replace_ical_attachments(&updated, &attachments);
-                updated = replace_ical_alarm(&updated, row_alarm.value().round() as u32);
+                updated = replace_component_alarms(&updated, &alarms);
                 updated
             } else {
                 new_component
@@ -773,34 +776,618 @@ impl Default for EventDialog {
     }
 }
 
+/// Shared GTK4 reminder page used by event, task and memo editors.  The
+/// service owns the VALARM value model; this small widget owns only staged
+/// ordering and editor state.  Every visible control below changes that
+/// staged list or opens a real editor, so imported non-DISPLAY alarms are
+/// never represented by a decorative, non-functional button.
+#[derive(Clone)]
+pub(crate) struct AlarmEditor {
+    root: gtk::Box,
+    alarms: Rc<RefCell<Vec<Alarm>>>,
+    list: gtk::ListBox,
+    summary: Rc<RefCell<String>>,
+}
+
+impl AlarmEditor {
+    pub(crate) fn new(component: Option<&str>, summary: &str) -> Self {
+        let root = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(8)
+            .build();
+        let heading = gtk::Label::builder()
+            .label("Erinnerungen")
+            .halign(gtk::Align::Start)
+            .css_classes(vec!["heading"])
+            .build();
+        root.append(&heading);
+        let description = gtk::Label::builder()
+            .label("Mehrere VALARM-Einträge; fremde Eigenschaften bleiben erhalten")
+            .halign(gtk::Align::Start)
+            .wrap(true)
+            .css_classes(vec!["dim-label"])
+            .build();
+        root.append(&description);
+
+        let list = gtk::ListBox::new();
+        list.set_selection_mode(gtk::SelectionMode::Single);
+        list.set_vexpand(false);
+        list.add_css_class("boxed-list");
+        let list_scroll = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .min_content_height(84)
+            .max_content_height(220)
+            .child(&list)
+            .build();
+        root.append(&list_scroll);
+
+        let controls = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(6)
+            .halign(gtk::Align::Start)
+            .build();
+        let add_button = gtk::Button::with_label("Hinzufügen");
+        let edit_button = gtk::Button::with_label("Bearbeiten");
+        let remove_button = gtk::Button::with_label("Entfernen");
+        remove_button.add_css_class("destructive-action");
+        let up_button = gtk::Button::with_label("Nach oben");
+        let down_button = gtk::Button::with_label("Nach unten");
+        for button in [
+            &add_button,
+            &edit_button,
+            &remove_button,
+            &up_button,
+            &down_button,
+        ] {
+            button.set_valign(gtk::Align::Center);
+            controls.append(button);
+        }
+        root.append(&controls);
+
+        let editor = Self {
+            root,
+            alarms: Rc::new(RefCell::new(
+                component.map(parse_alarms).unwrap_or_default(),
+            )),
+            list,
+            summary: Rc::new(RefCell::new(summary.to_string())),
+        };
+
+        let editor_for_add = editor.clone();
+        add_button.connect_clicked(move |_| editor_for_add.present_alarm_dialog(None));
+        let editor_for_edit = editor.clone();
+        edit_button.connect_clicked(move |_| {
+            if let Some(index) = editor_for_edit.selected_index() {
+                editor_for_edit.present_alarm_dialog(Some(index));
+            }
+        });
+        let editor_for_remove = editor.clone();
+        remove_button.connect_clicked(move |_| {
+            let Some(index) = editor_for_remove.selected_index() else {
+                return;
+            };
+            editor_for_remove.alarms.borrow_mut().remove(index);
+            editor_for_remove.rebuild(Some(index.saturating_sub(1)));
+        });
+        let editor_for_up = editor.clone();
+        up_button.connect_clicked(move |_| editor_for_up.move_selected(-1));
+        let editor_for_down = editor.clone();
+        down_button.connect_clicked(move |_| editor_for_down.move_selected(1));
+
+        let edit_button_for_selection = edit_button.clone();
+        let remove_button_for_selection = remove_button.clone();
+        let up_button_for_selection = up_button.clone();
+        let down_button_for_selection = down_button.clone();
+        let list_for_selection = editor.list.clone();
+        editor.list.connect_row_selected(move |_, row| {
+            let Some(row) = row else {
+                edit_button_for_selection.set_sensitive(false);
+                remove_button_for_selection.set_sensitive(false);
+                up_button_for_selection.set_sensitive(false);
+                down_button_for_selection.set_sensitive(false);
+                return;
+            };
+            let index = row.index();
+            let last = list_for_selection.observe_children().n_items() as i32 - 1;
+            edit_button_for_selection.set_sensitive(true);
+            remove_button_for_selection.set_sensitive(true);
+            up_button_for_selection.set_sensitive(index > 0);
+            down_button_for_selection.set_sensitive(index >= 0 && index < last);
+        });
+
+        editor.rebuild(None);
+        editor
+    }
+
+    pub(crate) fn widget(&self) -> &gtk::Box {
+        &self.root
+    }
+
+    pub(crate) fn alarms(&self) -> Vec<Alarm> {
+        self.alarms.borrow().clone()
+    }
+
+    pub(crate) fn set_component(&self, component: Option<&str>, summary: &str) {
+        self.alarms
+            .replace(component.map(parse_alarms).unwrap_or_default());
+        self.summary.replace(summary.to_string());
+        self.rebuild(None);
+    }
+
+    pub(crate) fn set_summary(&self, summary: &str) {
+        self.summary.replace(summary.to_string());
+    }
+
+    pub(crate) fn add_default_display_if_empty(&self, minutes: u32) {
+        if minutes == 0 || !self.alarms.borrow().is_empty() {
+            return;
+        }
+        self.alarms.borrow_mut().push(Alarm::new_display_relative(
+            AlarmRelation::Start,
+            -i64::from(minutes) * 60,
+            None,
+        ));
+        self.rebuild(Some(0));
+    }
+
+    fn selected_index(&self) -> Option<usize> {
+        self.list
+            .selected_row()
+            .map(|row| row.index())
+            .filter(|index| *index >= 0)
+            .map(|index| index as usize)
+    }
+
+    fn move_selected(&self, direction: isize) {
+        let Some(index) = self.selected_index() else {
+            return;
+        };
+        let target = index as isize + direction;
+        if target < 0 || target as usize >= self.alarms.borrow().len() {
+            return;
+        }
+        self.alarms.borrow_mut().swap(index, target as usize);
+        self.rebuild(Some(target as usize));
+    }
+
+    fn rebuild(&self, select_index: Option<usize>) {
+        while let Some(child) = self.list.first_child() {
+            self.list.remove(&child);
+        }
+        for alarm in self.alarms.borrow().iter() {
+            let subtitle = if alarm.is_safe_to_notify() {
+                "Desktop-Benachrichtigung"
+            } else {
+                "Nur angezeigt und bewahrt; wird niemals automatisch ausgeführt"
+            };
+            let row = adw::ActionRow::builder()
+                .title(alarm.label())
+                .subtitle(subtitle)
+                .build();
+            self.list.append(&row);
+        }
+        if let Some(index) = select_index {
+            if let Some(row) = self.list.row_at_index(index as i32) {
+                self.list.select_row(Some(&row));
+            }
+        }
+    }
+
+    fn present_alarm_dialog(&self, index: Option<usize>) {
+        let Some(parent) = self.root.root().and_downcast::<gtk::Window>() else {
+            return;
+        };
+        let existing = index.and_then(|index| self.alarms.borrow().get(index).cloned());
+        let initial = existing
+            .clone()
+            .unwrap_or_else(|| Alarm::new_display_relative(AlarmRelation::Start, -15 * 60, None));
+        let window = adw::Window::builder()
+            .title(if index.is_some() {
+                "Erinnerung bearbeiten"
+            } else {
+                "Erinnerung hinzufügen"
+            })
+            .modal(true)
+            .default_width(480)
+            .default_height(620)
+            .transient_for(&parent)
+            .build();
+        let toolbar = adw::ToolbarView::new();
+        let header = adw::HeaderBar::new();
+        let save = gtk::Button::builder()
+            .label("Übernehmen")
+            .css_classes(vec!["suggested-action"])
+            .build();
+        header.pack_end(&save);
+        toolbar.add_top_bar(&header);
+
+        let content = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(12)
+            .margin_start(18)
+            .margin_end(18)
+            .margin_top(14)
+            .margin_bottom(18)
+            .build();
+        let scroll = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .child(&content)
+            .build();
+        toolbar.set_content(Some(&scroll));
+        window.set_content(Some(&toolbar));
+
+        let action_values = Rc::new({
+            let mut values = vec![
+                AlarmAction::Display,
+                AlarmAction::Audio,
+                AlarmAction::Email,
+                AlarmAction::Procedure,
+            ];
+            if let AlarmAction::Unknown(value) = &initial.action {
+                values.push(AlarmAction::Unknown(value.clone()));
+            }
+            values
+        });
+        let action_labels = action_values
+            .iter()
+            .map(AlarmAction::label)
+            .collect::<Vec<_>>();
+        let action_label_refs = action_labels.iter().map(String::as_str).collect::<Vec<_>>();
+        let action_model = gtk::StringList::new(&action_label_refs);
+        let action_row = adw::ComboRow::builder()
+            .title("Aktion")
+            .model(&action_model)
+            .build();
+        let action_index = action_values
+            .iter()
+            .position(|value| value == &initial.action)
+            .unwrap_or(0);
+        action_row.set_selected(action_index as u32);
+        content.append(&action_row);
+
+        let safety_note = gtk::Label::builder()
+            .label(
+                "Ton, E-Mail und Prozedur werden aus Sicherheitsgründen nur angezeigt und bewahrt.",
+            )
+            .halign(gtk::Align::Start)
+            .wrap(true)
+            .css_classes(vec!["warning", "dim-label"])
+            .build();
+        safety_note.set_visible(!initial.action.is_safe_to_notify());
+        content.append(&safety_note);
+        let safety_note_for_action = safety_note.clone();
+        let action_values_for_signal = Rc::clone(&action_values);
+        action_row.connect_selected_notify(move |row| {
+            let unsafe_action = action_values_for_signal
+                .get(row.selected() as usize)
+                .is_some_and(|action| !action.is_safe_to_notify());
+            safety_note_for_action.set_visible(unsafe_action);
+        });
+
+        let trigger_values = Rc::new({
+            let mut values = vec![0_u8, 1_u8];
+            if matches!(initial.trigger, AlarmTrigger::Unknown { .. }) {
+                values.push(2);
+            }
+            values
+        });
+        let trigger_model = gtk::StringList::new(
+            &[
+                "Relativ zu Beginn/Ende",
+                "Absoluter Zeitpunkt",
+                "Unbekannter Trigger (bewahren)",
+            ][..trigger_values.len()],
+        );
+        let trigger_row = adw::ComboRow::builder()
+            .title("Trigger-Typ")
+            .model(&trigger_model)
+            .build();
+        let trigger_index = match initial.trigger {
+            AlarmTrigger::Relative { .. } => 0,
+            AlarmTrigger::Absolute { .. } => 1,
+            AlarmTrigger::Unknown { .. } => 2,
+        };
+        trigger_row.set_selected(trigger_index);
+        content.append(&trigger_row);
+
+        let relative_group = adw::PreferencesGroup::builder()
+            .title("Relativer Trigger")
+            .build();
+        let relative_to_model = gtk::StringList::new(&["Beginn", "Ende"]);
+        let relative_to_row = adw::ComboRow::builder()
+            .title("Bezugspunkt")
+            .model(&relative_to_model)
+            .build();
+        let direction_model = gtk::StringList::new(&["Vorher", "Nachher"]);
+        let direction_row = adw::ComboRow::builder()
+            .title("Richtung")
+            .model(&direction_model)
+            .build();
+        let offset_row = adw::SpinRow::with_range(0.0, 10_000_000.0, 1.0);
+        offset_row.set_title("Abstand");
+        offset_row.set_digits(0);
+        offset_row.set_snap_to_ticks(true);
+        let unit_model = gtk::StringList::new(&["Minuten", "Stunden", "Tage"]);
+        let unit_row = adw::ComboRow::builder()
+            .title("Einheit")
+            .model(&unit_model)
+            .build();
+        relative_group.add(&relative_to_row);
+        relative_group.add(&direction_row);
+        relative_group.add(&offset_row);
+        relative_group.add(&unit_row);
+        content.append(&relative_group);
+
+        let absolute_entry = adw::EntryRow::builder()
+            .title("Absoluter Zeitpunkt")
+            .build();
+        absolute_entry.set_tooltip_text(Some("YYYYMMDDTHHMMSSZ oder YYYYMMDDTHHMMSS"));
+        content.append(&absolute_entry);
+        let unknown_trigger_label = gtk::Label::builder()
+            .label("Der unbekannte Trigger bleibt beim Speichern unverändert.")
+            .halign(gtk::Align::Start)
+            .wrap(true)
+            .css_classes(vec!["dim-label"])
+            .build();
+        content.append(&unknown_trigger_label);
+
+        let (relation, offset) = match initial.trigger {
+            AlarmTrigger::Relative {
+                relation,
+                offset_seconds,
+                ..
+            } => (relation, offset_seconds),
+            _ => (AlarmRelation::Start, -15 * 60),
+        };
+        relative_to_row.set_selected(match relation {
+            AlarmRelation::Start => 0,
+            AlarmRelation::End => 1,
+        });
+        direction_row.set_selected((offset >= 0) as u32);
+        let (offset_value, offset_unit) = duration_editor_parts(offset.unsigned_abs());
+        offset_row.set_value(offset_value as f64);
+        unit_row.set_selected(offset_unit);
+        if let AlarmTrigger::Absolute { value, .. } = &initial.trigger {
+            absolute_entry.set_text(value);
+        }
+
+        let relative_group_for_trigger = relative_group.clone();
+        let absolute_entry_for_trigger = absolute_entry.clone();
+        let unknown_trigger_for_trigger = unknown_trigger_label.clone();
+        trigger_row.connect_selected_notify(move |row| {
+            let selected = row.selected();
+            relative_group_for_trigger.set_visible(selected == 0);
+            absolute_entry_for_trigger.set_visible(selected == 1);
+            unknown_trigger_for_trigger.set_visible(selected == 2);
+        });
+        relative_group.set_visible(trigger_index == 0);
+        absolute_entry.set_visible(trigger_index == 1);
+        unknown_trigger_label.set_visible(trigger_index == 2);
+
+        let repeat_group = adw::PreferencesGroup::builder()
+            .title("Wiederholung")
+            .build();
+        let repeat_row = adw::SpinRow::with_range(0.0, 4_096.0, 1.0);
+        repeat_row.set_title("Wiederholungen nach dem ersten Alarm");
+        repeat_row.set_digits(0);
+        repeat_row.set_snap_to_ticks(true);
+        repeat_row.set_value(initial.repeat.unwrap_or(0) as f64);
+        let repeat_interval_row = adw::SpinRow::with_range(0.0, 10_000_000.0, 1.0);
+        repeat_interval_row.set_title("Abstand der Wiederholungen");
+        repeat_interval_row.set_digits(0);
+        repeat_interval_row.set_snap_to_ticks(true);
+        let repeat_unit_model = gtk::StringList::new(&["Minuten", "Stunden", "Tage"]);
+        let repeat_unit_row = adw::ComboRow::builder()
+            .title("Einheit")
+            .model(&repeat_unit_model)
+            .build();
+        if let Some(duration) = &initial.duration {
+            let (value, unit) = duration_editor_parts(duration.seconds.unsigned_abs());
+            repeat_interval_row.set_value(value as f64);
+            repeat_unit_row.set_selected(unit);
+        } else {
+            repeat_interval_row.set_value(5.0);
+        }
+        repeat_group.add(&repeat_row);
+        repeat_group.add(&repeat_interval_row);
+        repeat_group.add(&repeat_unit_row);
+        content.append(&repeat_group);
+
+        let options = adw::PreferencesGroup::builder()
+            .title("Nachricht und Aktionsdaten")
+            .build();
+        let message_view = gtk::TextView::builder()
+            .wrap_mode(gtk::WrapMode::WordChar)
+            .height_request(86)
+            .margin_start(12)
+            .margin_end(12)
+            .margin_top(6)
+            .margin_bottom(6)
+            .build();
+        if let Some(message) = initial.message.as_deref() {
+            message_view.buffer().set_text(message);
+        }
+        options.add(
+            &adw::ActionRow::builder()
+                .title("Benutzerdefinierte Nachricht")
+                .build(),
+        );
+        options.add(&message_view);
+        let attachments_entry = adw::EntryRow::builder()
+            .title("Sound/Prozedur-Anhänge (eine URI pro Zeile)")
+            .build();
+        attachments_entry.set_text(&initial.attachments.join("\n"));
+        options.add(&attachments_entry);
+        let attendees_entry = adw::EntryRow::builder()
+            .title("E-Mail-Empfänger (eine Adresse pro Zeile)")
+            .build();
+        attendees_entry.set_text(&initial.attendees.join("\n"));
+        options.add(&attendees_entry);
+        content.append(&options);
+
+        let editor = self.clone();
+        let initial_for_save = initial.clone();
+        let action_values_for_save = Rc::clone(&action_values);
+        let trigger_values_for_save = Rc::clone(&trigger_values);
+        let window_for_save = window.clone();
+        save.connect_clicked(move |_| {
+            let action = action_values_for_save
+                .get(action_row.selected() as usize)
+                .cloned()
+                .unwrap_or(AlarmAction::Display);
+            let trigger = match trigger_values_for_save
+                .get(trigger_row.selected() as usize)
+                .copied()
+                .unwrap_or(0)
+            {
+                0 => {
+                    let unit_seconds = alarm_unit_seconds(unit_row.selected());
+                    let magnitude = offset_row.value().round() as i64;
+                    let signed = magnitude.saturating_mul(unit_seconds);
+                    let signed = if direction_row.selected() == 0 {
+                        signed.saturating_neg()
+                    } else {
+                        signed
+                    };
+                    AlarmTrigger::relative(
+                        if relative_to_row.selected() == 1 {
+                            AlarmRelation::End
+                        } else {
+                            AlarmRelation::Start
+                        },
+                        signed,
+                    )
+                }
+                1 => {
+                    let value = absolute_entry.text().trim().to_string();
+                    if !is_valid_absolute_alarm_value(&value) {
+                        show_alarm_error(
+                            &window_for_save,
+                            "Der absolute Trigger muss YYYYMMDDTHHMMSS[Z] entsprechen.",
+                        );
+                        return;
+                    }
+                    AlarmTrigger::absolute(value)
+                }
+                _ => initial_for_save.trigger.clone(),
+            };
+            let repeat = (repeat_row.value().round() as u32).min(4_096);
+            let repeat_interval = repeat_interval_row.value().round() as i64;
+            let duration = (repeat_interval > 0).then(|| {
+                AlarmDuration::new(repeat_interval * alarm_unit_seconds(repeat_unit_row.selected()))
+            });
+            let message = message_view
+                .buffer()
+                .text(
+                    &message_view.buffer().start_iter(),
+                    &message_view.buffer().end_iter(),
+                    false,
+                )
+                .to_string();
+            let attachments = attachments_entry
+                .text()
+                .lines()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned)
+                .collect::<Vec<_>>();
+            let attendees = attendees_entry
+                .text()
+                .lines()
+                .flat_map(|line| line.split(',').map(str::trim))
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned)
+                .collect::<Vec<_>>();
+            let mut alarm = initial_for_save.clone();
+            alarm.action = action;
+            alarm.trigger = trigger;
+            alarm.repeat = (repeat > 0).then_some(repeat);
+            alarm.duration = duration;
+            alarm.message = (!message.trim().is_empty()).then_some(message);
+            alarm.attachments = attachments;
+            alarm.attendees = attendees;
+            if let Some(index) = index {
+                if let Some(existing) = editor.alarms.borrow_mut().get_mut(index) {
+                    *existing = alarm;
+                }
+                editor.rebuild(Some(index));
+            } else {
+                editor.alarms.borrow_mut().push(alarm);
+                let index = editor.alarms.borrow().len().saturating_sub(1);
+                editor.rebuild(Some(index));
+            }
+            window_for_save.close();
+        });
+
+        window.present();
+    }
+}
+
+fn duration_editor_parts(seconds: u64) -> (u64, u32) {
+    if seconds != 0 && seconds % (24 * 60 * 60) == 0 {
+        (seconds / (24 * 60 * 60), 2)
+    } else if seconds != 0 && seconds % (60 * 60) == 0 {
+        (seconds / (60 * 60), 1)
+    } else {
+        (seconds / 60, 0)
+    }
+}
+
+fn alarm_unit_seconds(index: u32) -> i64 {
+    match index {
+        1 => 60 * 60,
+        2 => 24 * 60 * 60,
+        _ => 60,
+    }
+}
+
+fn is_valid_absolute_alarm_value(value: &str) -> bool {
+    let value = value.trim();
+    if value.len() != 15 && value.len() != 16 {
+        return false;
+    }
+    if value.as_bytes().get(8) != Some(&b'T')
+        || !value[..8]
+            .chars()
+            .all(|character| character.is_ascii_digit())
+        || !value[9..]
+            .chars()
+            .all(|character| character.is_ascii_digit() || character == 'Z')
+    {
+        return false;
+    }
+    chrono::NaiveDateTime::parse_from_str(&value[..15], "%Y%m%dT%H%M%S").is_ok()
+}
+
+fn show_alarm_error(parent: &adw::Window, message: &str) {
+    let dialog = adw::AlertDialog::new(
+        Some("Erinnerung konnte nicht übernommen werden"),
+        Some(message),
+    );
+    dialog.add_response("ok", "OK");
+    dialog.set_default_response(Some("ok"));
+    dialog.present(Some(parent));
+}
+
 fn ical_property(raw: &str, name: &str) -> Option<String> {
     let target = name.to_ascii_uppercase();
-    raw.replace("\r\n", "\n")
-        .replace('\r', "\n")
-        .lines()
-        .find_map(|line| {
-            let (property, value) = line.split_once(':')?;
-            let property_name = property
-                .split(';')
-                .next()
-                .unwrap_or(property)
-                .to_ascii_uppercase();
-            (property_name == target).then(|| {
-                value
-                    .replace("\\n", "\n")
-                    .replace("\\N", "\n")
-                    .replace("\\,", ",")
-                    .replace("\\;", ";")
-                    .replace("\\\\", "\\")
-            })
-        })
+    unfold_ical_lines(raw).into_iter().find_map(|line| {
+        let (property, value) = line.split_once(':')?;
+        let property_name = property
+            .split(';')
+            .next()
+            .unwrap_or(property)
+            .to_ascii_uppercase();
+        (property_name == target).then(|| unescape_ical_text(value))
+    })
 }
 
 fn ical_properties(raw: &str, name: &str) -> Vec<String> {
     let target = name.to_ascii_uppercase();
-    raw.replace("\r\n", "\n")
-        .replace('\r', "\n")
-        .lines()
+    unfold_ical_lines(raw)
+        .into_iter()
         .filter_map(|line| {
             let (property, value) = line.split_once(':')?;
             let property_name = property
@@ -808,14 +1395,7 @@ fn ical_properties(raw: &str, name: &str) -> Vec<String> {
                 .next()
                 .unwrap_or(property)
                 .to_ascii_uppercase();
-            (property_name == target).then(|| {
-                value
-                    .replace("\\n", "\n")
-                    .replace("\\N", "\n")
-                    .replace("\\,", ",")
-                    .replace("\\;", ";")
-                    .replace("\\\\", "\\")
-            })
+            (property_name == target).then(|| unescape_ical_text(value))
         })
         .collect()
 }
@@ -918,24 +1498,6 @@ fn ical_recurrence_property_prefix(raw: &str, name: &str, all_day: bool) -> Opti
     None
 }
 
-fn ical_alarm_minutes(raw: &str) -> Option<u32> {
-    raw.replace("\r\n", "\n")
-        .replace('\r', "\n")
-        .lines()
-        .find_map(|line| {
-            let (property, value) = line.split_once(':')?;
-            if !property
-                .split(';')
-                .next()
-                .is_some_and(|name| name.eq_ignore_ascii_case("TRIGGER"))
-            {
-                return None;
-            }
-            let value = value.strip_prefix("-PT")?.strip_suffix('M')?;
-            value.parse::<u32>().ok()
-        })
-}
-
 fn parse_attendees(value: &str) -> Vec<String> {
     value
         .split(|character| character == ',' || character == ';')
@@ -956,21 +1518,18 @@ fn parse_attachments(value: &str) -> Vec<String> {
 
 fn component_property_has_date_value(raw: &str, name: &str) -> bool {
     let target = name.to_ascii_uppercase();
-    raw.replace("\r\n", "\n")
-        .replace('\r', "\n")
-        .lines()
-        .any(|line| {
-            line.split_once(':')
-                .map(|(property, _)| {
-                    property
-                        .split(';')
-                        .next()
-                        .unwrap_or(property)
-                        .eq_ignore_ascii_case(&target)
-                        && property.to_ascii_uppercase().contains("VALUE=DATE")
-                })
-                .unwrap_or(false)
-        })
+    unfold_ical_lines(raw).into_iter().any(|line| {
+        line.split_once(':')
+            .map(|(property, _)| {
+                property
+                    .split(';')
+                    .next()
+                    .unwrap_or(property)
+                    .eq_ignore_ascii_case(&target)
+                    && property.to_ascii_uppercase().contains("VALUE=DATE")
+            })
+            .unwrap_or(false)
+    })
 }
 
 fn ical_datetime_property_prefix(raw: &str, name: &str) -> Option<String> {
@@ -989,6 +1548,9 @@ fn ical_datetime_property_prefix(raw: &str, name: &str) -> Option<String> {
 
 fn format_event_datetime_for_editor(value: &str, all_day: bool) -> String {
     let value = value.trim_end_matches('Z');
+    if !value.is_ascii() {
+        return value.to_string();
+    }
     if all_day && value.len() >= 8 {
         return format!("{}-{}-{}", &value[..4], &value[4..6], &value[6..8]);
     }
@@ -1021,7 +1583,7 @@ fn build_event_component(
     attendees: &str,
     categories: &str,
     attachments: &str,
-    alarm_minutes: u32,
+    alarms: &[Alarm],
     private: bool,
 ) -> Result<String, String> {
     let title = title.trim();
@@ -1107,17 +1669,7 @@ fn build_event_component(
         format!("CONFERENCE:{}\r\n", escape_ical_text(conference.trim()))
     };
     let class_line = if private { "CLASS:PRIVATE\r\n" } else { "" };
-    let alarm = if alarm_minutes > 0 {
-        format!(
-            "BEGIN:VALARM\r\nACTION:DISPLAY\r\nDESCRIPTION:{}\r\nTRIGGER:-PT{}M\r\nEND:VALARM\r\n",
-            escape_ical_text(title),
-            alarm_minutes
-        )
-    } else {
-        String::new()
-    };
-
-    Ok(format!(
+    let component = format!(
         "BEGIN:VEVENT\r\nUID:{uid}\r\nDTSTAMP:{stamp}\r\nSUMMARY:{}\r\n{}\
          \r\n{}\r\nLOCATION:{}\r\nDESCRIPTION:{}\r\n{}{}{}{}{}{}{}{}{}{}{}END:VEVENT\r\n",
         escape_ical_text(title),
@@ -1135,8 +1687,9 @@ fn build_event_component(
         categories_line,
         attachment_lines,
         class_line,
-        alarm,
-    ))
+        "",
+    );
+    Ok(replace_component_alarms(&component, alarms))
 }
 
 fn replace_ical_attendees(raw: &str, values: &[String]) -> String {
@@ -1219,86 +1772,6 @@ fn existing_attendee_properties(raw: &str) -> Vec<(String, String)> {
     attendees
 }
 
-fn replace_ical_alarm(raw: &str, alarm_minutes: u32) -> String {
-    let source = unfold_ical_lines(raw);
-    let mut lines = Vec::new();
-    let mut depth = 0usize;
-    let mut replaced = false;
-    let mut index = 0usize;
-    while index < source.len() {
-        let line = &source[index];
-        if line.eq_ignore_ascii_case("BEGIN:VALARM") && depth == 1 {
-            let end = source
-                .iter()
-                .enumerate()
-                .skip(index + 1)
-                .find(|(_, line)| line.eq_ignore_ascii_case("END:VALARM"))
-                .map(|(index, _)| index);
-            let Some(end) = end else {
-                lines.push(line.clone());
-                index += 1;
-                continue;
-            };
-            let alarm = &source[index..=end];
-            if is_editable_display_alarm(alarm) {
-                if alarm_minutes > 0 && !replaced {
-                    lines.extend(display_alarm_lines(alarm_minutes));
-                    replaced = true;
-                }
-            } else {
-                lines.extend(alarm.iter().cloned());
-            }
-            index = end + 1;
-            continue;
-        }
-        lines.push(line.clone());
-        if line.eq_ignore_ascii_case("BEGIN:VEVENT") {
-            depth = depth.saturating_add(1);
-        } else if line.eq_ignore_ascii_case("END:VEVENT") {
-            depth = depth.saturating_sub(1);
-        }
-        index += 1;
-    }
-    if alarm_minutes > 0 && !replaced {
-        insert_before_event_end(&mut lines, display_alarm_lines(alarm_minutes));
-    }
-    format!("{}\r\n", lines.join("\r\n"))
-}
-
-fn is_editable_display_alarm(lines: &[String]) -> bool {
-    let mut display = false;
-    let mut relative_minutes = false;
-    for line in lines {
-        let Some((property, value)) = line.split_once(':') else {
-            continue;
-        };
-        let name = property
-            .split(';')
-            .next()
-            .unwrap_or(property)
-            .to_ascii_uppercase();
-        if name == "ACTION" && value.eq_ignore_ascii_case("DISPLAY") {
-            display = true;
-        } else if name == "TRIGGER" {
-            relative_minutes = value
-                .strip_prefix("-PT")
-                .and_then(|value| value.strip_suffix('M'))
-                .is_some_and(|value| value.parse::<u32>().is_ok());
-        }
-    }
-    display && relative_minutes
-}
-
-fn display_alarm_lines(alarm_minutes: u32) -> Vec<String> {
-    vec![
-        "BEGIN:VALARM".to_string(),
-        "ACTION:DISPLAY".to_string(),
-        "DESCRIPTION:Reminder".to_string(),
-        format!("TRIGGER:-PT{alarm_minutes}M"),
-        "END:VALARM".to_string(),
-    ]
-}
-
 fn insert_before_event_end<I>(lines: &mut Vec<String>, values: I)
 where
     I: IntoIterator<Item = String>,
@@ -1312,13 +1785,17 @@ where
 
 fn unfold_ical_lines(raw: &str) -> Vec<String> {
     let mut lines: Vec<String> = Vec::new();
-    for line in raw.replace("\r\n", "\n").replace('\r', "\n").lines() {
-        if line.starts_with(' ') || line.starts_with('\t') {
+    for raw_line in raw
+        .replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .split_terminator('\n')
+    {
+        if raw_line.starts_with(' ') || raw_line.starts_with('\t') {
             if let Some(previous) = lines.last_mut() {
-                previous.push_str(line.trim_start());
+                previous.push_str(raw_line.get(1..).unwrap_or_default());
             }
-        } else {
-            lines.push(line.to_string());
+        } else if !raw_line.is_empty() || !lines.is_empty() {
+            lines.push(raw_line.to_string());
         }
     }
     lines
@@ -1345,12 +1822,29 @@ fn escape_ical_text(value: &str) -> String {
 }
 
 fn unescape_ical_text(value: &str) -> String {
-    value
-        .replace("\\n", "\n")
-        .replace("\\N", "\n")
-        .replace("\\,", ",")
-        .replace("\\;", ";")
-        .replace("\\\\", "\\")
+    let mut result = String::with_capacity(value.len());
+    let mut escaped = false;
+    for character in value.chars() {
+        if escaped {
+            match character {
+                'n' | 'N' => result.push('\n'),
+                ',' | ';' | '\\' => result.push(character),
+                other => {
+                    result.push('\\');
+                    result.push(other);
+                }
+            }
+            escaped = false;
+        } else if character == '\\' {
+            escaped = true;
+        } else {
+            result.push(character);
+        }
+    }
+    if escaped {
+        result.push('\\');
+    }
+    result
 }
 
 #[cfg(test)]
@@ -1375,7 +1869,11 @@ mod tests {
             "mailto:person@example.org",
             "Work",
             "",
-            15,
+            &[Alarm::new_display_relative(
+                AlarmRelation::Start,
+                -15 * 60,
+                None,
+            )],
             true,
         )
         .expect("event should serialize");
@@ -1418,7 +1916,7 @@ mod tests {
                 "",
                 "",
                 "",
-                0,
+                &[],
                 false,
             )
             .is_err()
@@ -1440,7 +1938,7 @@ mod tests {
                 "",
                 "",
                 "",
-                0,
+                &[],
                 false,
             )
             .is_err()
@@ -1488,12 +1986,12 @@ mod tests {
             "",
             "",
             "https://calendar.example.test/agenda.ics?tags=a,b;kind=agenda\nfile:///tmp/notes.pdf",
-            0,
+            &[],
             false,
         )
         .expect("event with attachments should serialize");
-        assert!(component.contains(
-            "ATTACH;VALUE=URI:https://calendar.example.test/agenda.ics?tags=a,b;kind=agenda"
+        assert!(ical_properties(&component, "ATTACH").contains(
+            &"https://calendar.example.test/agenda.ics?tags=a,b;kind=agenda".to_string()
         ));
         assert!(component.contains("ATTACH;VALUE=URI:file:///tmp/notes.pdf"));
 
@@ -1567,17 +2065,70 @@ mod tests {
             "BEGIN:VALARM\r\nACTION:DISPLAY\r\nTRIGGER;RELATED=START:-PT15M\r\n",
             "DESCRIPTION:Reminder\r\nEND:VALARM\r\nEND:VEVENT\r\n"
         );
-        assert_eq!(ical_alarm_minutes(raw), Some(15));
-        let removed = replace_ical_alarm(raw, 0);
+        let alarms = parse_alarms(raw);
+        assert_eq!(alarms.len(), 2);
+        assert!(matches!(alarms[0].action, AlarmAction::Email));
+        assert_eq!(alarms[1].trigger.offset_seconds(), Some(-15 * 60));
+
+        let removed = replace_component_alarms(raw, &alarms[..1]);
         assert!(removed.contains("ACTION:EMAIL"));
         assert!(removed.contains("TRIGGER:-P1D"));
         assert!(!removed.contains("TRIGGER;RELATED=START:-PT15M"));
 
-        let updated = replace_ical_alarm(raw, 30);
+        let updated_alarm = Alarm::new_display_relative(
+            AlarmRelation::Start,
+            -30 * 60,
+            Some("Reminder".to_string()),
+        );
+        let updated = replace_component_alarms(raw, &[alarms[0].clone(), updated_alarm]);
         assert!(updated.contains("ACTION:EMAIL"));
         assert!(updated.contains("TRIGGER:-P1D"));
         assert!(updated.contains("TRIGGER:-PT30M"));
         assert!(!updated.contains("TRIGGER;RELATED=START:-PT15M"));
+    }
+
+    #[test]
+    fn alarm_editor_model_roundtrips_all_actions_repeat_duration_and_unknowns() {
+        let raw = concat!(
+            "BEGIN:VEVENT\r\nUID:event-alarms\r\n",
+            "X-COMPONENT-STATE:keep-me\r\n",
+            "BEGIN:VALARM\r\n",
+            "ACTION:DISPLAY\r\n",
+            "TRIGGER;RELATED=END;X-TRIGGER=keep:-PT30M\r\n",
+            "REPEAT:2\r\nDURATION:PT15M\r\n",
+            "DESCRIPTION:Custom\\, message\\;\r\n",
+            "X-ALARM-PROPERTY:preserve\r\n",
+            "END:VALARM\r\n",
+            "BEGIN:VALARM\r\nACTION:AUDIO\r\n",
+            "TRIGGER;VALUE=DATE-TIME:20261025T013000Z\r\n",
+            "ATTACH;FMTTYPE=audio/ogg;VALUE=URI:https://example.test/alarm.ogg\r\n",
+            "END:VALARM\r\n",
+            "BEGIN:VALARM\r\nACTION:EMAIL\r\nTRIGGER:-P1D\r\n",
+            "ATTENDEE;CN=Ops:mailto:ops@example.test\r\nEND:VALARM\r\n",
+            "BEGIN:VALARM\r\nACTION:PROCEDURE\r\nTRIGGER:-PT5M\r\n",
+            "X-EXECUTABLE:do-not-run\r\nEND:VALARM\r\n",
+            "END:VEVENT\r\n"
+        );
+        let alarms = parse_alarms(raw);
+        assert_eq!(alarms.len(), 4);
+        assert_eq!(alarms[0].repeat, Some(2));
+        assert_eq!(
+            alarms[0].duration.as_ref().map(|value| value.seconds),
+            Some(15 * 60)
+        );
+        assert_eq!(alarms[0].message.as_deref(), Some("Custom, message;"));
+        assert!(!alarms[1].is_safe_to_notify());
+        assert!(!alarms[2].is_safe_to_notify());
+        assert!(!alarms[3].is_safe_to_notify());
+
+        let roundtrip = replace_component_alarms(raw, &alarms);
+        assert!(roundtrip.contains("X-COMPONENT-STATE:keep-me"));
+        assert!(roundtrip.contains("X-ALARM-PROPERTY:preserve"));
+        assert!(
+            roundtrip.contains("ATTACH;FMTTYPE=audio/ogg;VALUE=URI:https://example.test/alarm.ogg")
+        );
+        assert!(roundtrip.contains("ATTENDEE;CN=Ops:mailto:ops@example.test"));
+        assert_eq!(parse_alarms(&roundtrip), alarms);
     }
 
     #[test]

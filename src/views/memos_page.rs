@@ -14,6 +14,7 @@ use gtk::{gio, glib};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
+use crate::dialogs::event_dialog::AlarmEditor;
 use crate::services::calendar_category_service::CalendarCategoryStore;
 use crate::services::calendar_store_service::update_ical_property;
 use crate::services::calendar_store_service::{
@@ -24,6 +25,7 @@ use crate::services::ecal_service::{
     load_snapshot_prefer_eds, parse_change_record,
 };
 use crate::services::eds_service;
+use crate::services::reminder_service::{Alarm, replace_component_alarms};
 use crate::services::settings_service::AppSettings;
 use crate::views::accessibility::set_accessible_label;
 
@@ -837,6 +839,8 @@ impl MemosPage {
             .build();
         memo_categories.set_tooltip_text(Some("z. B. Arbeit, Privat"));
         content_box.append(&memo_categories);
+        let memo_alarm_editor = AlarmEditor::new(None, "");
+        content_box.append(memo_alarm_editor.widget());
         content_box.append(&memo_meta);
         content_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
         content_box.append(&memo_text);
@@ -865,6 +869,7 @@ impl MemosPage {
         let memo_title_for_save = memo_title.clone();
         let memo_categories_for_save = memo_categories.clone();
         let memo_text_for_save = memo_text.clone();
+        let memo_alarm_editor_for_save = memo_alarm_editor.clone();
         let memo_list_for_save = memo_list.clone();
         let save_memo_btn_for_signal = save_memo_btn.clone();
         save_memo_btn_for_signal.connect_clicked(move |_| {
@@ -914,6 +919,8 @@ impl MemosPage {
                 "LAST-MODIFIED",
                 Some(&Utc::now().format("%Y%m%dT%H%M%SZ").to_string()),
             );
+            memo_alarm_editor_for_save.set_summary(&title);
+            component = replace_component_alarms(&component, &memo_alarm_editor_for_save.alarms());
             let component_for_result = component.clone();
             let source_uid = memo.source_uid.clone();
             let uid = memo.uid.clone();
@@ -939,6 +946,7 @@ impl MemosPage {
             let memo_title_for_result = memo_title_for_save.clone();
             let memo_categories_for_result = memo_categories_for_save.clone();
             let memo_text_for_result = memo_text_for_save.clone();
+            let memo_alarm_editor_for_result = memo_alarm_editor_for_save.clone();
             glib::spawn_future_local(async move {
                 let Ok(result) = receiver.recv().await else {
                     save_button_for_result.set_sensitive(true);
@@ -951,7 +959,7 @@ impl MemosPage {
                             uid: memo.uid.clone(),
                             source_uid: memo.source_uid.clone(),
                             source_display_name: memo.source_display_name.clone(),
-                            component: confirmed_component,
+                            component: confirmed_component.clone(),
                             summary: title.clone(),
                             description: description.clone(),
                             updated: Utc::now().format("%Y-%m-%d %H:%M").to_string(),
@@ -966,6 +974,8 @@ impl MemosPage {
                         memo_title_for_result.set_text(&title);
                         memo_categories_for_result.set_text(&categories);
                         memo_text_for_result.buffer().set_text(&description);
+                        memo_alarm_editor_for_result
+                            .set_component(Some(&confirmed_component), &title);
                         if let Some(page) = page_weak_for_result.upgrade() {
                             refresh_memo_category_model(&page, &memo_list_for_result);
                             page.show_toast(&format!("Notiz aktualisiert ({})", memo.uid));
@@ -1204,6 +1214,7 @@ impl MemosPage {
         let memo_records_for_selection = Rc::clone(&memo_records);
         let selected_memo_for_selection = Rc::clone(&selected_memo);
         let split_for_selection = split.clone();
+        let memo_alarm_editor_for_selection = memo_alarm_editor.clone();
         memo_list.connect_row_selected(glib::clone!(
             #[weak]
             memo_title,
@@ -1217,9 +1228,12 @@ impl MemosPage {
             selected_memo_for_selection,
             #[strong]
             split_for_selection,
+            #[strong]
+            memo_alarm_editor_for_selection,
             move |_, row| {
                 let Some(row) = row else {
                     *selected_memo_for_selection.borrow_mut() = None;
+                    memo_alarm_editor_for_selection.set_component(None, "");
                     split_for_selection.set_show_content(false);
                     return;
                 };
@@ -1247,6 +1261,7 @@ impl MemosPage {
                 memo_categories.set_text(&component_categories(&memo.component));
                 memo_meta.set_label(&format!("VJOURNAL · {}", memo.updated));
                 memo_text.buffer().set_text(&memo.description);
+                memo_alarm_editor_for_selection.set_component(Some(&memo.component), &memo.summary);
                 split_for_selection.set_show_content(true);
             }
         ));
@@ -1319,6 +1334,7 @@ impl MemosPage {
             let memo_categories_for_monitor = memo_categories.clone();
             let memo_meta_for_monitor = memo_meta.clone();
             let memo_text_for_monitor = memo_text.clone();
+            let memo_alarm_editor_for_monitor = memo_alarm_editor.clone();
             let page_weak_for_monitor = self.downgrade();
             glib::spawn_future_local(async move {
                 while let Ok(event) = receiver.recv().await {
@@ -1357,6 +1373,7 @@ impl MemosPage {
                                     memo_text_for_monitor
                                         .buffer()
                                         .set_text("Noch keine Notizdaten verfügbar.");
+                                    memo_alarm_editor_for_monitor.set_component(None, "");
                                 }
                             }
                             ECalChangeKind::Added | ECalChangeKind::Modified => {
@@ -1380,6 +1397,8 @@ impl MemosPage {
                                         memo_meta_for_monitor
                                             .set_label(&format!("VJOURNAL · {}", memo.updated));
                                         memo_text_for_monitor.buffer().set_text(&memo.description);
+                                        memo_alarm_editor_for_monitor
+                                            .set_component(Some(&memo.component), &memo.summary);
                                     }
                                 }
                             }
@@ -1490,6 +1509,8 @@ impl MemosPage {
             .build();
         categories_entry.set_tooltip_text(Some("z. B. Arbeit, Privat"));
         details.add(&categories_entry);
+        let alarm_editor = AlarmEditor::new(None, &title_entry.text());
+        details.add(alarm_editor.widget());
         content_box.append(&details);
 
         let description_group = adw::PreferencesGroup::builder().title("Notiz").build();
@@ -1593,6 +1614,7 @@ impl MemosPage {
                 &title_entry.text(),
                 &description,
                 &categories_entry.text(),
+                &alarm_editor.alarms(),
             ) {
                 Ok(component) => component,
                 Err(error) => {
@@ -1952,6 +1974,7 @@ fn build_memo_component(
     title: &str,
     description: &str,
     categories: &str,
+    alarms: &[Alarm],
 ) -> Result<String, String> {
     let title = title.trim();
     if title.is_empty() {
@@ -1976,7 +1999,10 @@ fn build_memo_component(
         component.push(format!("CATEGORIES:{categories}"));
     }
     component.push("END:VJOURNAL".to_string());
-    Ok(format!("{}\r\n", component.join("\r\n")))
+    Ok(replace_component_alarms(
+        &format!("{}\r\n", component.join("\r\n")),
+        alarms,
+    ))
 }
 
 fn escape_ical_text(value: &str) -> String {
@@ -2026,9 +2052,13 @@ mod tests {
 
     #[test]
     fn memo_component_serialization_is_ical_safe() {
-        let component =
-            build_memo_component("A, note; title", "Line one\nLine two", "Work, Personal")
-                .expect("memo component should be valid");
+        let component = build_memo_component(
+            "A, note; title",
+            "Line one\nLine two",
+            "Work, Personal",
+            &[],
+        )
+        .expect("memo component should be valid");
         assert!(component.starts_with("BEGIN:VJOURNAL\r\n"));
         assert!(component.contains("SUMMARY:A\\, note\\; title\r\n"));
         assert!(component.contains("DESCRIPTION:Line one\\nLine two\r\n"));
@@ -2038,7 +2068,7 @@ mod tests {
 
     #[test]
     fn memo_component_rejects_empty_title() {
-        assert!(build_memo_component("  ", "body", "").is_err());
+        assert!(build_memo_component("  ", "body", "", &[]).is_err());
     }
 
     #[test]

@@ -12,6 +12,7 @@ use gtk::{gio, glib};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
+use crate::dialogs::event_dialog::AlarmEditor;
 use crate::models::task_item::TaskItemObject;
 use crate::services::calendar_category_service::{
     CalendarCategory, CalendarCategoryStore, category_names_from_ical_component,
@@ -31,6 +32,7 @@ use crate::services::ical_time_service::{
 use crate::services::recurrence_service::{
     next_recurrence_date, parse_ical_date, parse_recurrence_rule,
 };
+use crate::services::reminder_service::{Alarm, parse_alarms, replace_component_alarms};
 use crate::services::settings_service::{AppSettings, normalized_task_category_filter};
 use crate::views::accessibility::set_accessible_label;
 use adw::prelude::*;
@@ -623,7 +625,7 @@ fn update_task_quick_fields(
         &ical_properties(&component, "EXDATE").join(","),
         priority,
         categories,
-        parse_ical_alarm_minutes(&component).unwrap_or_default(),
+        &parse_alarms(&component),
         &ical_property(&component, "DESCRIPTION").unwrap_or_default(),
         &ical_properties(&component, "ATTACH").join("\n"),
         status,
@@ -1825,12 +1827,9 @@ impl TasksPage {
         attachment_box.append(&attachment_header);
         attachment_box.append(&attachment_scroll);
         details.add(&attachment_box);
-        let reminder_row = adw::SpinRow::with_range(0.0, 10_080.0, 5.0);
-        reminder_row.set_title("Erinnerung vorher (Minuten)");
-        reminder_row.set_subtitle("0 deaktiviert die Erinnerung");
-        reminder_row.set_digits(0);
-        reminder_row.set_snap_to_ticks(true);
-        details.add(&reminder_row);
+        let alarm_component = task_to_edit.as_ref().map(|task| task.component());
+        let alarm_editor = AlarmEditor::new(alarm_component.as_deref(), &title_entry.text());
+        details.add(alarm_editor.widget());
         content_box.append(&details);
 
         let attachment_buffer_for_picker = attachment_buffer.clone();
@@ -1911,8 +1910,6 @@ impl TasksPage {
             categories_entry
                 .set_text(&ical_property(&task.component(), "CATEGORIES").unwrap_or_default());
             attachment_buffer.set_text(&ical_properties(&task.component(), "ATTACH").join("\n"));
-            reminder_row
-                .set_value(parse_ical_alarm_minutes(&task.component()).unwrap_or_default() as f64);
             description_view
                 .buffer()
                 .set_text(&ical_property(&task.component(), "DESCRIPTION").unwrap_or_default());
@@ -2019,7 +2016,8 @@ impl TasksPage {
             let exdates = exdate_entry.text();
             let priority = priority_spin.value() as u8;
             let categories = categories_entry.text();
-            let reminder_minutes = reminder_row.value().round() as u32;
+            alarm_editor.set_summary(&title_entry.text());
+            let alarms = alarm_editor.alarms();
             let status = task_status_from_index(status_row.selected());
             let percent = match status {
                 "COMPLETED" => 100,
@@ -2036,7 +2034,7 @@ impl TasksPage {
                     &exdates,
                     priority,
                     &categories,
-                    reminder_minutes,
+                    &alarms,
                     &description,
                     &attachments,
                     status,
@@ -2050,7 +2048,7 @@ impl TasksPage {
                     &exdates,
                     priority,
                     &categories,
-                    reminder_minutes,
+                    &alarms,
                     &description,
                     &attachments,
                     status,
@@ -3537,7 +3535,7 @@ fn build_task_component(
     exdates: &str,
     priority: u8,
     categories: &str,
-    reminder_minutes: u32,
+    alarms: &[Alarm],
     description: &str,
     attachments: &str,
     status: &str,
@@ -3607,15 +3605,6 @@ fn build_task_component(
                 )
             }),
     );
-    if reminder_minutes > 0 {
-        component.extend([
-            "BEGIN:VALARM".to_string(),
-            "ACTION:DISPLAY".to_string(),
-            format!("TRIGGER:-PT{reminder_minutes}M"),
-            format!("DESCRIPTION:{}", escape_ical_text(title)),
-            "END:VALARM".to_string(),
-        ]);
-    }
     if !description.trim().is_empty() {
         component.push(format!(
             "DESCRIPTION:{}",
@@ -3626,7 +3615,10 @@ fn build_task_component(
         component.push(format!("COMPLETED:{}", Utc::now().format("%Y%m%dT%H%M%SZ")));
     }
     component.push("END:VTODO".to_string());
-    Ok(format!("{}\r\n", component.join("\r\n")))
+    Ok(replace_component_alarms(
+        &format!("{}\r\n", component.join("\r\n")),
+        alarms,
+    ))
 }
 
 fn update_task_component(
@@ -3638,7 +3630,7 @@ fn update_task_component(
     exdates: &str,
     priority: u8,
     categories: &str,
-    reminder_minutes: u32,
+    alarms: &[Alarm],
     description: &str,
     attachments: &str,
     status: &str,
@@ -3704,7 +3696,7 @@ fn update_task_component(
         update_ical_property(&component, "CATEGORIES", Some(&categories))
     };
     component = replace_ical_attachments(&component, &parse_attachments(attachments));
-    component = update_ical_alarm(&component, reminder_minutes, title);
+    component = replace_component_alarms(&component, alarms);
     component = if description.trim().is_empty() {
         update_ical_property(&component, "DESCRIPTION", None)
     } else {
@@ -3833,75 +3825,6 @@ fn serialize_categories(value: &str) -> String {
         .join(",")
 }
 
-fn parse_ical_alarm_minutes(raw: &str) -> Option<u32> {
-    unfold_ical_lines(raw).into_iter().find_map(|line| {
-        let (property, value) = line.split_once(':')?;
-        let property = property
-            .split(';')
-            .next()
-            .unwrap_or(property)
-            .to_ascii_uppercase();
-        (property == "TRIGGER")
-            .then(|| value.strip_prefix("-PT")?.strip_suffix('M')?.parse().ok())
-            .flatten()
-    })
-}
-
-fn update_ical_alarm(raw: &str, reminder_minutes: u32, title: &str) -> String {
-    let mut lines = unfold_ical_lines(raw);
-    let alarm_start = lines
-        .iter()
-        .position(|line| line.eq_ignore_ascii_case("BEGIN:VALARM"));
-    if let Some(start) = alarm_start {
-        let end = lines
-            .iter()
-            .enumerate()
-            .skip(start + 1)
-            .find(|(_, line)| line.eq_ignore_ascii_case("END:VALARM"))
-            .map(|(index, _)| index);
-        if let Some(end) = end {
-            if reminder_minutes == 0 {
-                lines.drain(start..=end);
-            } else {
-                let mut trigger_replaced = false;
-                for line in &mut lines[start + 1..end] {
-                    let property = line
-                        .split_once(':')
-                        .map(|(property, _)| property)
-                        .unwrap_or_default()
-                        .split(';')
-                        .next()
-                        .unwrap_or_default();
-                    if property.eq_ignore_ascii_case("TRIGGER") {
-                        *line = format!("TRIGGER:-PT{reminder_minutes}M");
-                        trigger_replaced = true;
-                        break;
-                    }
-                }
-                if !trigger_replaced {
-                    lines.insert(start + 1, format!("TRIGGER:-PT{reminder_minutes}M"));
-                }
-            }
-        }
-    } else if reminder_minutes > 0 {
-        let insertion = lines
-            .iter()
-            .position(|line| line.eq_ignore_ascii_case("END:VTODO"))
-            .unwrap_or(lines.len());
-        lines.splice(
-            insertion..insertion,
-            [
-                "BEGIN:VALARM".to_string(),
-                "ACTION:DISPLAY".to_string(),
-                format!("TRIGGER:-PT{reminder_minutes}M"),
-                format!("DESCRIPTION:{}", escape_ical_text(title)),
-                "END:VALARM".to_string(),
-            ],
-        );
-    }
-    format!("{}\r\n", lines.join("\r\n"))
-}
-
 fn unfold_ical_lines(raw: &str) -> Vec<String> {
     let mut lines: Vec<String> = Vec::new();
     for raw_line in raw.replace("\r\n", "\n").replace('\r', "\n").lines() {
@@ -3919,6 +3842,7 @@ fn unfold_ical_lines(raw: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::services::reminder_service::AlarmRelation;
 
     fn fixed_context(date: &str, hour: u32) -> TaskFilterContext {
         let today = NaiveDate::parse_from_str(date, "%Y-%m-%d").unwrap();
@@ -3983,7 +3907,11 @@ mod tests {
             "2026-08-15",
             1,
             "Work, Important",
-            30,
+            &[Alarm::new_display_relative(
+                AlarmRelation::Start,
+                -30 * 60,
+                None,
+            )],
             "Line one\nLine two",
             "",
             "NEEDS-ACTION",
@@ -4014,7 +3942,7 @@ mod tests {
                 "",
                 0,
                 "",
-                0,
+                &[],
                 "",
                 "",
                 "NEEDS-ACTION",
@@ -4031,7 +3959,7 @@ mod tests {
                 "",
                 0,
                 "",
-                0,
+                &[],
                 "",
                 "",
                 "NEEDS-ACTION",
@@ -4040,8 +3968,21 @@ mod tests {
             .is_err()
         );
         assert!(
-            build_task_component("Task", "", "", "", "", 10, "", 0, "", "", "NEEDS-ACTION", 0,)
-                .is_err()
+            build_task_component(
+                "Task",
+                "",
+                "",
+                "",
+                "",
+                10,
+                "",
+                &[],
+                "",
+                "",
+                "NEEDS-ACTION",
+                0,
+            )
+            .is_err()
         );
     }
 
@@ -4072,7 +4013,11 @@ mod tests {
             "20260824",
             2,
             "Work,Next",
-            10,
+            &[Alarm::new_display_relative(
+                AlarmRelation::Start,
+                -10 * 60,
+                Some("Reminder".to_string()),
+            )],
             "New description",
             "",
             "NEEDS-ACTION",
@@ -4103,7 +4048,11 @@ mod tests {
             "",
             2,
             "Work,Next",
-            10,
+            &[Alarm::new_display_relative(
+                AlarmRelation::Start,
+                -10 * 60,
+                None,
+            )],
             "New description",
             "",
             "IN-PROCESS",
@@ -4123,7 +4072,7 @@ mod tests {
             "",
             2,
             "Work,Next",
-            0,
+            &[],
             "New description",
             "",
             "NEEDS-ACTION",
@@ -4143,7 +4092,7 @@ mod tests {
             "",
             1,
             "Work",
-            0,
+            &[],
             "",
             "https://files.example.test/report.pdf?kind=a,b;rev=2\nfile:///tmp/notes.txt",
             "NEEDS-ACTION",
@@ -4171,7 +4120,7 @@ mod tests {
             "",
             0,
             "",
-            0,
+            &[],
             "",
             "https://files.example.test/report.pdf?kind=a,b;rev=2\nhttps://files.example.test/new.pdf",
             "NEEDS-ACTION",
