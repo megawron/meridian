@@ -7,13 +7,15 @@
 // - Dynamic Task list with checkable boxes, priority chips, and due dates
 // - "+ Neue Aufgabe" task creation dialog connection
 
-use chrono::{Local, NaiveDate, Utc};
+use chrono::{Duration, Local, NaiveDate, NaiveDateTime, Utc};
 use gtk::{gio, glib};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use crate::models::task_item::TaskItemObject;
-use crate::services::calendar_category_service::CalendarCategoryStore;
+use crate::services::calendar_category_service::{
+    CalendarCategory, CalendarCategoryStore, category_names_from_ical_component,
+};
 use crate::services::calendar_store_service::{
     CalendarStoreService, TaskRecord, export_ical_component, replace_ical_attachments,
     serialize_ical_attachment_value, update_ical_property,
@@ -23,10 +25,13 @@ use crate::services::ecal_service::{
     load_snapshot_prefer_eds, parse_change_record,
 };
 use crate::services::eds_service;
+use crate::services::ical_time_service::{
+    property_local_date, property_local_dates, property_local_datetime, property_local_timestamp,
+};
 use crate::services::recurrence_service::{
     next_recurrence_date, parse_ical_date, parse_recurrence_rule,
 };
-use crate::services::settings_service::AppSettings;
+use crate::services::settings_service::{AppSettings, normalized_task_category_filter};
 use crate::views::accessibility::set_accessible_label;
 use adw::prelude::*;
 use adw::subclass::prelude::*;
@@ -38,11 +43,14 @@ mod imp {
     pub struct TasksPage {
         pub ecal_monitor_cancel: RefCell<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>>,
         pub(super) task_filter: Cell<TaskFilter>,
+        pub(super) task_search_mode: Cell<TaskSearchMode>,
         pub(super) task_source_filter: RefCell<Option<String>>,
         pub(super) task_sort: Cell<TaskSort>,
         pub(super) task_sort_descending: Cell<bool>,
         pub task_query: RefCell<String>,
         pub(super) task_category_filter: RefCell<Option<String>>,
+        pub(super) task_category_metadata: RefCell<Option<Vec<CalendarCategory>>>,
+        pub(super) task_category_metadata_generation: Cell<u64>,
         pub(super) task_category_model: RefCell<Option<gtk::StringList>>,
         pub(super) task_category_selector: RefCell<Option<gtk::DropDown>>,
         pub task_list: RefCell<Option<gtk::ListBox>>,
@@ -98,12 +106,97 @@ enum TaskFilter {
     #[default]
     All,
     Today,
+    Next7,
+    Next30,
+    Next365,
     Important,
     Overdue,
+    Scheduled,
+    NoDue,
+    WithAttachments,
+    Started,
+    WithoutCategory,
+    Uncompleted,
     InProgress,
     Cancelled,
     Completed,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum TaskSearchMode {
+    #[default]
+    AnyField,
+    Summary,
+    Description,
+    Advanced,
+}
+
+const TASK_FILTER_OPTIONS: [(TaskFilter, &str, &str); 16] = [
+    (TaskFilter::All, "view-list-symbolic", "Alle Aufgaben"),
+    (TaskFilter::Today, "alarm-symbolic", "Heute fällig"),
+    (
+        TaskFilter::Next7,
+        "appointment-soon-symbolic",
+        "Nächste 7 Tage",
+    ),
+    (
+        TaskFilter::Next30,
+        "appointment-soon-symbolic",
+        "Nächste 30 Tage",
+    ),
+    (
+        TaskFilter::Next365,
+        "appointment-soon-symbolic",
+        "Aktiv · nächste 365 Tage",
+    ),
+    (
+        TaskFilter::Overdue,
+        "appointment-missed-symbolic",
+        "Überfällig",
+    ),
+    (
+        TaskFilter::Scheduled,
+        "x-office-calendar-symbolic",
+        "Mit Fälligkeit",
+    ),
+    (TaskFilter::NoDue, "view-list-symbolic", "Ohne Fälligkeit"),
+    (
+        TaskFilter::WithAttachments,
+        "mail-attachment-symbolic",
+        "Mit Anhängen",
+    ),
+    (
+        TaskFilter::Started,
+        "media-playback-start-symbolic",
+        "Begonnen",
+    ),
+    (
+        TaskFilter::WithoutCategory,
+        "tag-symbolic",
+        "Ohne Kategorie",
+    ),
+    (
+        TaskFilter::Uncompleted,
+        "view-list-symbolic",
+        "Offene Aufgaben",
+    ),
+    (
+        TaskFilter::Important,
+        "emblem-important-symbolic",
+        "Wichtig",
+    ),
+    (
+        TaskFilter::InProgress,
+        "media-playback-start-symbolic",
+        "In Bearbeitung",
+    ),
+    (
+        TaskFilter::Cancelled,
+        "window-close-symbolic",
+        "Abgebrochen",
+    ),
+    (TaskFilter::Completed, "emblem-ok-symbolic", "Erledigt"),
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 enum TaskSort {
@@ -117,8 +210,17 @@ impl TaskFilter {
     fn from_setting(value: &str) -> Self {
         match value {
             "today" => Self::Today,
+            "next-7" => Self::Next7,
+            "next-30" => Self::Next30,
+            "next-365" | "active" => Self::Next365,
             "important" => Self::Important,
             "overdue" => Self::Overdue,
+            "scheduled" => Self::Scheduled,
+            "no-due" => Self::NoDue,
+            "with-attachments" => Self::WithAttachments,
+            "started" => Self::Started,
+            "without-category" => Self::WithoutCategory,
+            "uncompleted" => Self::Uncompleted,
             "in-progress" => Self::InProgress,
             "cancelled" => Self::Cancelled,
             "completed" => Self::Completed,
@@ -130,8 +232,17 @@ impl TaskFilter {
         match self {
             Self::All => "all",
             Self::Today => "today",
+            Self::Next7 => "next-7",
+            Self::Next30 => "next-30",
+            Self::Next365 => "next-365",
             Self::Important => "important",
             Self::Overdue => "overdue",
+            Self::Scheduled => "scheduled",
+            Self::NoDue => "no-due",
+            Self::WithAttachments => "with-attachments",
+            Self::Started => "started",
+            Self::WithoutCategory => "without-category",
+            Self::Uncompleted => "uncompleted",
             Self::InProgress => "in-progress",
             Self::Cancelled => "cancelled",
             Self::Completed => "completed",
@@ -140,15 +251,312 @@ impl TaskFilter {
 }
 
 fn task_filter_index(filter: TaskFilter) -> i32 {
-    match filter {
-        TaskFilter::All => 0,
-        TaskFilter::Today => 1,
-        TaskFilter::Important => 2,
-        TaskFilter::Overdue => 3,
-        TaskFilter::InProgress => 4,
-        TaskFilter::Cancelled => 5,
-        TaskFilter::Completed => 6,
+    TASK_FILTER_OPTIONS
+        .iter()
+        .position(|(candidate, _, _)| *candidate == filter)
+        .unwrap_or(0) as i32
+}
+
+fn task_filter_from_index(index: i32) -> TaskFilter {
+    index
+        .try_into()
+        .ok()
+        .and_then(|index: usize| TASK_FILTER_OPTIONS.get(index))
+        .map(|(filter, _, _)| *filter)
+        .unwrap_or(TaskFilter::All)
+}
+
+impl TaskSearchMode {
+    fn from_setting(value: &str) -> Self {
+        match value {
+            "summary" => Self::Summary,
+            "description" => Self::Description,
+            "advanced" => Self::Advanced,
+            _ => Self::AnyField,
+        }
     }
+
+    fn setting_value(self) -> &'static str {
+        match self {
+            Self::AnyField => "any-field",
+            Self::Summary => "summary",
+            Self::Description => "description",
+            Self::Advanced => "advanced",
+        }
+    }
+
+    fn index(self) -> u32 {
+        match self {
+            Self::AnyField => 0,
+            Self::Summary => 1,
+            Self::Description => 2,
+            Self::Advanced => 3,
+        }
+    }
+
+    fn from_index(index: u32) -> Self {
+        match index {
+            1 => Self::Summary,
+            2 => Self::Description,
+            3 => Self::Advanced,
+            _ => Self::AnyField,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TaskFilterContext {
+    now: NaiveDateTime,
+    now_timestamp: i64,
+    today: NaiveDate,
+}
+
+fn current_task_filter_context() -> TaskFilterContext {
+    let timezone = AppSettings::try_new()
+        .map(|settings| settings.calendar_time_zone())
+        .and_then(|identifier| {
+            if identifier.eq_ignore_ascii_case("system") {
+                Some(glib::TimeZone::local())
+            } else if identifier.eq_ignore_ascii_case("utc") {
+                Some(glib::TimeZone::utc())
+            } else {
+                glib::TimeZone::from_identifier(Some(&identifier))
+            }
+        })
+        .unwrap_or_else(glib::TimeZone::local);
+    let current = glib::DateTime::now(&timezone).ok();
+    let now = current
+        .as_ref()
+        .and_then(|datetime| {
+            NaiveDate::from_ymd_opt(
+                datetime.year(),
+                datetime.month() as u32,
+                datetime.day_of_month() as u32,
+            )?
+            .and_hms_opt(
+                datetime.hour() as u32,
+                datetime.minute() as u32,
+                datetime.second() as u32,
+            )
+        })
+        .unwrap_or_else(|| Local::now().naive_local());
+    TaskFilterContext {
+        today: now.date(),
+        now,
+        now_timestamp: current
+            .map(|datetime| datetime.to_unix())
+            .unwrap_or_else(|| Utc::now().timestamp()),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TaskTextField {
+    Any,
+    Summary,
+    Description,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TaskDateConstraint {
+    None,
+    Today,
+    Next(i64),
+    Overdue,
+    Scheduled,
+    Started,
+    Range(NaiveDate, NaiveDate),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum TaskQueryPredicate {
+    Category(Option<String>),
+    Status(String),
+    Due(TaskDateConstraint),
+    Start(TaskDateConstraint),
+    HasAttachments(bool),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+struct TaskQuery {
+    text: Vec<(TaskTextField, String)>,
+    predicates: Vec<TaskQueryPredicate>,
+}
+
+impl TaskQuery {
+    fn parse(mode: TaskSearchMode, raw: &str) -> Self {
+        let mut query = Self::default();
+        match mode {
+            TaskSearchMode::AnyField | TaskSearchMode::Summary | TaskSearchMode::Description => {
+                let field = match mode {
+                    TaskSearchMode::AnyField => TaskTextField::Any,
+                    TaskSearchMode::Summary => TaskTextField::Summary,
+                    TaskSearchMode::Description => TaskTextField::Description,
+                    TaskSearchMode::Advanced => unreachable!(),
+                };
+                query.text.extend(
+                    raw.split_whitespace()
+                        .map(str::trim)
+                        .filter(|term| !term.is_empty())
+                        .map(|term| (field, term.to_lowercase())),
+                );
+            }
+            TaskSearchMode::Advanced => {
+                for token in advanced_query_tokens(raw) {
+                    let Some((field, value)) = token.split_once(':') else {
+                        if !token.trim().is_empty() {
+                            query.text.push((TaskTextField::Any, token.to_lowercase()));
+                        }
+                        continue;
+                    };
+                    let field = field.trim().to_ascii_lowercase();
+                    let value = value.trim();
+                    if value.is_empty() {
+                        continue;
+                    }
+                    let value_lower = value.to_lowercase();
+                    if (field == "category" || field == "categories")
+                        && value.eq_ignore_ascii_case("any")
+                    {
+                        continue;
+                    }
+                    let predicate = match field.as_str() {
+                        "category" | "categories" => Some(TaskQueryPredicate::Category(
+                            (!value.eq_ignore_ascii_case("none")).then_some(value.to_string()),
+                        )),
+                        "status" => normalize_query_status(value)
+                            .map(|status| TaskQueryPredicate::Status(status.to_string())),
+                        "due" => parse_task_date_constraint(value).map(TaskQueryPredicate::Due),
+                        "start" | "starts" => {
+                            parse_task_date_constraint(value).map(TaskQueryPredicate::Start)
+                        }
+                        "has"
+                            if value.eq_ignore_ascii_case("attachment")
+                                || value.eq_ignore_ascii_case("attachments") =>
+                        {
+                            Some(TaskQueryPredicate::HasAttachments(true))
+                        }
+                        "has"
+                            if value.eq_ignore_ascii_case("no-attachment")
+                                || value.eq_ignore_ascii_case("no-attachments") =>
+                        {
+                            Some(TaskQueryPredicate::HasAttachments(false))
+                        }
+                        _ => None,
+                    };
+                    if let Some(predicate) = predicate {
+                        query.predicates.push(predicate);
+                    } else {
+                        query.text.push((
+                            if field == "summary" {
+                                TaskTextField::Summary
+                            } else if field == "description" {
+                                TaskTextField::Description
+                            } else {
+                                TaskTextField::Any
+                            },
+                            if field == "summary" || field == "description" {
+                                value_lower
+                            } else {
+                                token.to_lowercase()
+                            },
+                        ));
+                    }
+                }
+            }
+        }
+        query
+    }
+
+    fn matches(&self, task: &TaskItemObject, context: TaskFilterContext) -> bool {
+        self.text.iter().all(|(field, term)| {
+            let haystack = match field {
+                TaskTextField::Any => task_search_haystack(task),
+                TaskTextField::Summary => task.title().to_lowercase(),
+                TaskTextField::Description => ical_property(&task.component(), "DESCRIPTION")
+                    .unwrap_or_default()
+                    .to_lowercase(),
+            };
+            haystack.contains(term)
+        }) && self
+            .predicates
+            .iter()
+            .all(|predicate| task_query_predicate_matches(task, predicate, context))
+    }
+}
+
+fn advanced_query_tokens(raw: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    let mut quote = None;
+    let mut escaped = false;
+    for character in raw.chars() {
+        if escaped {
+            current.push(character);
+            escaped = false;
+            continue;
+        }
+        if character == '\\' && quote.is_some() {
+            escaped = true;
+            continue;
+        }
+        if let Some(active_quote) = quote {
+            if character == active_quote {
+                quote = None;
+            } else {
+                current.push(character);
+            }
+        } else if character == '"' || character == '\'' {
+            quote = Some(character);
+        } else if character.is_whitespace() {
+            if !current.is_empty() {
+                tokens.push(std::mem::take(&mut current));
+            }
+        } else {
+            current.push(character);
+        }
+    }
+    if escaped {
+        current.push('\\');
+    }
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+    tokens
+}
+
+fn normalize_query_status(value: &str) -> Option<&'static str> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "open" | "needs-action" | "todo" => Some("NEEDS-ACTION"),
+        "in-progress" | "inprogress" | "started" => Some("IN-PROCESS"),
+        "completed" | "complete" | "done" => Some("COMPLETED"),
+        "cancelled" | "canceled" => Some("CANCELLED"),
+        _ => None,
+    }
+}
+
+fn parse_task_date_constraint(value: &str) -> Option<TaskDateConstraint> {
+    let value = value.trim();
+    match value.to_ascii_lowercase().as_str() {
+        "none" | "no-due" | "no-start" => return Some(TaskDateConstraint::None),
+        "today" => return Some(TaskDateConstraint::Today),
+        "next7" | "next-7" => return Some(TaskDateConstraint::Next(7)),
+        "next30" | "next-30" => return Some(TaskDateConstraint::Next(30)),
+        "next365" | "next-365" => return Some(TaskDateConstraint::Next(365)),
+        "overdue" => return Some(TaskDateConstraint::Overdue),
+        "scheduled" => return Some(TaskDateConstraint::Scheduled),
+        "started" => return Some(TaskDateConstraint::Started),
+        _ => {}
+    }
+    let (start, end) = value.split_once("..")?;
+    let start = parse_task_query_date(start)?;
+    let end = parse_task_query_date(end)?;
+    (start <= end).then_some(TaskDateConstraint::Range(start, end))
+}
+
+fn parse_task_query_date(value: &str) -> Option<NaiveDate> {
+    NaiveDate::parse_from_str(value.trim(), "%Y-%m-%d")
+        .or_else(|_| NaiveDate::parse_from_str(value.trim(), "%Y%m%d"))
+        .ok()
 }
 
 impl TaskSort {
@@ -223,6 +631,7 @@ fn update_task_quick_fields(
     )
 }
 
+#[cfg(test)]
 fn normalize_task_query(query: &str) -> String {
     query
         .split_whitespace()
@@ -248,13 +657,9 @@ fn task_search_haystack(task: &TaskItemObject) -> String {
     .to_lowercase()
 }
 
+#[cfg(test)]
 fn task_query_matches(task: &TaskItemObject, query: &str) -> bool {
-    let query = normalize_task_query(query);
-    if query.is_empty() {
-        return true;
-    }
-    let haystack = task_search_haystack(task);
-    query.split_whitespace().all(|term| haystack.contains(term))
+    TaskQuery::parse(TaskSearchMode::AnyField, query).matches(task, current_task_filter_context())
 }
 
 impl TasksPage {
@@ -337,14 +742,46 @@ impl TasksPage {
     /// Re-render category names and colored task rows after the presentation-
     /// only category store changed in Preferences.
     pub fn refresh_category_presentation(&self) {
-        let (Some(task_list), Some(task_store), Some(empty_state)) = (
-            self.imp().task_list.borrow().as_ref().cloned(),
-            self.imp().task_store.borrow().as_ref().cloned(),
-            self.imp().task_empty_state.borrow().as_ref().cloned(),
-        ) else {
-            return;
-        };
-        render_task_rows(self, &task_list, &task_store, &empty_state);
+        self.reload_task_category_metadata();
+    }
+
+    fn reload_task_category_metadata(&self) {
+        let generation = self
+            .imp()
+            .task_category_metadata_generation
+            .get()
+            .wrapping_add(1);
+        self.imp().task_category_metadata_generation.set(generation);
+
+        let (sender, receiver) = async_channel::bounded(1);
+        std::thread::spawn(move || {
+            let categories = CalendarCategoryStore::default().load();
+            if let Err(error) = sender.send_blocking(categories) {
+                tracing::debug!(%error, "Task category metadata was dropped before delivery");
+            }
+        });
+
+        let page_weak = self.downgrade();
+        glib::spawn_future_local(async move {
+            let Ok(categories) = receiver.recv().await else {
+                return;
+            };
+            let Some(page) = page_weak.upgrade() else {
+                return;
+            };
+            if page.imp().task_category_metadata_generation.get() != generation {
+                return;
+            }
+            page.imp().task_category_metadata.replace(Some(categories));
+            let (Some(task_list), Some(task_store), Some(empty_state)) = (
+                page.imp().task_list.borrow().as_ref().cloned(),
+                page.imp().task_store.borrow().as_ref().cloned(),
+                page.imp().task_empty_state.borrow().as_ref().cloned(),
+            ) else {
+                return;
+            };
+            render_task_rows(&page, &task_list, &task_store, &empty_state);
+        });
     }
 
     fn build_ui(&self) {
@@ -352,10 +789,17 @@ impl TasksPage {
             self.imp()
                 .task_filter
                 .set(TaskFilter::from_setting(&settings.task_filter()));
+            self.imp()
+                .task_search_mode
+                .set(TaskSearchMode::from_setting(&settings.task_search_mode()));
             let source_filter = settings.task_source_filter();
             self.imp()
                 .task_source_filter
                 .replace((!source_filter.trim().is_empty()).then_some(source_filter));
+            let category_filter = settings.task_category_filter();
+            self.imp()
+                .task_category_filter
+                .replace((!category_filter.trim().is_empty()).then_some(category_filter));
             self.imp()
                 .task_sort
                 .set(TaskSort::from_setting(&settings.task_sort_field()));
@@ -409,17 +853,7 @@ impl TasksPage {
             .css_classes(vec!["navigation-sidebar"])
             .build();
 
-        let categories = [
-            ("view-list-symbolic", "Alle Aufgaben"),
-            ("alarm-symbolic", "Heute fällig"),
-            ("emblem-important-symbolic", "Wichtig"),
-            ("appointment-missed-symbolic", "Überfällig"),
-            ("media-playback-start-symbolic", "In Bearbeitung"),
-            ("window-close-symbolic", "Abgebrochen"),
-            ("emblem-ok-symbolic", "Erledigt"),
-        ];
-
-        for (icon, label) in categories {
+        for (_, icon, label) in TASK_FILTER_OPTIONS {
             let row = adw::ActionRow::builder().title(label).build();
             let img = gtk::Image::from_icon_name(icon);
             row.add_prefix(&img);
@@ -485,10 +919,26 @@ impl TasksPage {
             .margin_bottom(12)
             .build();
 
+        let search_mode_model = gtk::StringList::new(&[
+            "Alle Felder",
+            "Zusammenfassung",
+            "Beschreibung",
+            "Erweitert",
+        ]);
+        let search_mode_selector =
+            gtk::DropDown::new(Some(search_mode_model), None::<&gtk::Expression>);
+        search_mode_selector.set_selected(self.imp().task_search_mode.get().index());
+        search_mode_selector.set_tooltip_text(Some(
+            "Suchfeld wählen; Erweitert unterstützt summary:, description:, category:, due:, start:, status: und has:attachment",
+        ));
+
         let search_entry = gtk::SearchEntry::builder()
             .placeholder_text("Aufgaben durchsuchen…")
             .hexpand(true)
             .build();
+        search_entry.set_tooltip_text(Some(
+            "Mehrere Begriffe werden kombiniert. Im Modus Erweitert: category:Work due:next7 has:attachment",
+        ));
         self.imp().search_entry.replace(Some(search_entry.clone()));
 
         let sort_model = gtk::StringList::new(&["Fälligkeit", "Titel", "Priorität"]);
@@ -559,6 +1009,7 @@ impl TasksPage {
             .new_task_button
             .replace(Some(btn_add_task.clone()));
 
+        toolbar.append(&search_mode_selector);
         toolbar.append(&search_entry);
         toolbar.append(&sort_selector);
         toolbar.append(&direction_button);
@@ -712,6 +1163,27 @@ impl TasksPage {
             );
         });
 
+        let page_weak_for_search_mode = self.downgrade();
+        let task_list_for_search_mode = task_list.clone();
+        let task_store_for_search_mode = task_store.clone();
+        let empty_tasks_for_search_mode = empty_tasks.clone();
+        search_mode_selector.connect_selected_notify(move |selector| {
+            let Some(page) = page_weak_for_search_mode.upgrade() else {
+                return;
+            };
+            let mode = TaskSearchMode::from_index(selector.selected());
+            page.imp().task_search_mode.set(mode);
+            if let Some(settings) = AppSettings::try_new() {
+                settings.set_task_search_mode(mode.setting_value());
+            }
+            render_task_rows(
+                &page,
+                &task_list_for_search_mode,
+                &task_store_for_search_mode,
+                &empty_tasks_for_search_mode,
+            );
+        });
+
         let page_weak_for_sort = self.downgrade();
         let task_list_for_sort = task_list.clone();
         let task_store_for_sort = task_store.clone();
@@ -812,6 +1284,15 @@ impl TasksPage {
                     .map(|value| value.to_string())
             };
             page.imp().task_category_filter.replace(category);
+            if let Some(settings) = AppSettings::try_new() {
+                settings.set_task_category_filter(
+                    page.imp()
+                        .task_category_filter
+                        .borrow()
+                        .as_deref()
+                        .unwrap_or_default(),
+                );
+            }
             render_task_rows(
                 &page,
                 &task_list_for_category,
@@ -833,15 +1314,7 @@ impl TasksPage {
             let Some(page) = page_weak_for_categories.upgrade() else {
                 return;
             };
-            let filter = match row.index() {
-                1 => TaskFilter::Today,
-                2 => TaskFilter::Important,
-                3 => TaskFilter::Overdue,
-                4 => TaskFilter::InProgress,
-                5 => TaskFilter::Cancelled,
-                6 => TaskFilter::Completed,
-                _ => TaskFilter::All,
-            };
+            let filter = task_filter_from_index(row.index());
             page.imp().task_filter.set(filter);
             if let Some(settings) = AppSettings::try_new() {
                 settings.set_task_filter(filter.setting_value());
@@ -854,15 +1327,7 @@ impl TasksPage {
             );
             split_for_category_sidebar.set_show_content(true);
         });
-        let initial_filter_index = match self.imp().task_filter.get() {
-            TaskFilter::All => 0,
-            TaskFilter::Today => 1,
-            TaskFilter::Important => 2,
-            TaskFilter::Overdue => 3,
-            TaskFilter::InProgress => 4,
-            TaskFilter::Cancelled => 5,
-            TaskFilter::Completed => 6,
-        };
+        let initial_filter_index = task_filter_index(self.imp().task_filter.get());
         if let Some(row) = cat_list.row_at_index(initial_filter_index) {
             cat_list.select_row(Some(&row));
         }
@@ -888,6 +1353,48 @@ impl TasksPage {
                     &task_list_for_settings,
                     &task_store_for_settings,
                     &empty_tasks_for_settings,
+                );
+            });
+
+            let page_weak = self.downgrade();
+            let task_list_for_category_settings = task_list.clone();
+            let task_store_for_category_settings = task_store.clone();
+            let empty_tasks_for_category_settings = empty_tasks.clone();
+            settings.connect_changed(Some("task-category-filter"), move |settings, _| {
+                let Some(page) = page_weak.upgrade() else {
+                    return;
+                };
+                let raw_value = settings.string("task-category-filter");
+                let value = normalized_task_category_filter(&raw_value);
+                page.imp()
+                    .task_category_filter
+                    .replace((!value.trim().is_empty()).then_some(value));
+                render_task_rows(
+                    &page,
+                    &task_list_for_category_settings,
+                    &task_store_for_category_settings,
+                    &empty_tasks_for_category_settings,
+                );
+            });
+
+            let page_weak = self.downgrade();
+            let task_list_for_search_mode_settings = task_list.clone();
+            let task_store_for_search_mode_settings = task_store.clone();
+            let empty_tasks_for_search_mode_settings = empty_tasks.clone();
+            let search_mode_selector_for_settings = search_mode_selector.clone();
+            settings.connect_changed(Some("task-search-mode"), move |settings, _| {
+                let Some(page) = page_weak.upgrade() else {
+                    return;
+                };
+                let mode =
+                    TaskSearchMode::from_setting(settings.string("task-search-mode").as_str());
+                page.imp().task_search_mode.set(mode);
+                search_mode_selector_for_settings.set_selected(mode.index());
+                render_task_rows(
+                    &page,
+                    &task_list_for_search_mode_settings,
+                    &task_store_for_search_mode_settings,
+                    &empty_tasks_for_search_mode_settings,
                 );
             });
 
@@ -1045,14 +1552,14 @@ impl TasksPage {
                             return;
                         };
                         for task in result.snapshot.tasks {
-                            upsert_task_row(
-                                &page,
-                                &task_list_for_load,
-                                &task_store_for_load,
-                                &empty_tasks_for_load,
-                                task,
-                            );
+                            upsert_task_store(&task_list_for_load, &task_store_for_load, task);
                         }
+                        render_task_rows(
+                            &page,
+                            &task_list_for_load,
+                            &task_store_for_load,
+                            &empty_tasks_for_load,
+                        );
                     }
                 }
                 Err(error) => {
@@ -1136,6 +1643,7 @@ impl TasksPage {
             .build();
 
         split.set_content(Some(&content_page));
+        self.reload_task_category_metadata();
         let split_for_navigation = split.clone();
         let key_controller = gtk::EventControllerKey::new();
         key_controller.connect_key_pressed(move |_, key, _, modifiers| {
@@ -1689,7 +2197,13 @@ fn render_task_rows(
     task_store: &gio::ListStore,
     empty_tasks: &gtk::Label,
 ) {
-    refresh_task_category_model(page, task_store);
+    let category_metadata = page
+        .imp()
+        .task_category_metadata
+        .borrow()
+        .clone()
+        .unwrap_or_default();
+    refresh_task_category_model(page, task_store, &category_metadata);
     while let Some(child) = task_list.first_child() {
         task_list.remove(&child);
     }
@@ -1698,38 +2212,66 @@ fn render_task_rows(
     let source_filter = page.imp().task_source_filter.borrow().clone();
     let category_filter = page.imp().task_category_filter.borrow().clone();
     let sort = page.imp().task_sort.get();
-    let query = normalize_task_query(page.imp().task_query.borrow().as_str());
+    let context = current_task_filter_context();
+    let query = TaskQuery::parse(
+        page.imp().task_search_mode.get(),
+        page.imp().task_query.borrow().as_str(),
+    );
     let mut visible = 0;
     let mut tasks = Vec::new();
     for index in 0..task_store.n_items() {
         let Some(task) = task_store.item(index).and_downcast::<TaskItemObject>() else {
             continue;
         };
-        if task_matches_filter_with_source_and_category(
+        if task_matches_filter_with_context(
             &task,
             filter,
             source_filter.as_deref(),
             category_filter.as_deref(),
             &query,
+            context,
         ) {
             tasks.push(task);
         }
     }
     tasks.sort_by(|left, right| {
-        compare_tasks(left, right, sort, page.imp().task_sort_descending.get())
+        compare_tasks(
+            left,
+            right,
+            sort,
+            page.imp().task_sort_descending.get(),
+            context,
+        )
     });
     for task in tasks {
-        append_task_row(page, task_list, task_store, empty_tasks, &task);
+        append_task_row(
+            page,
+            task_list,
+            task_store,
+            empty_tasks,
+            &task,
+            context,
+            &category_metadata,
+        );
         visible += 1;
     }
     empty_tasks.set_visible(visible == 0);
     if visible == 0 {
-        empty_tasks.set_label(if query.is_empty() && category_filter.is_none() {
+        empty_tasks.set_label(if query_is_empty(&query) && category_filter.is_none() {
             match filter {
                 TaskFilter::All => "Keine Aufgaben geladen",
                 TaskFilter::Today => "Keine heute fällige Aufgabe",
+                TaskFilter::Next7 => "Keine Aufgabe in den nächsten 7 Tagen",
+                TaskFilter::Next30 => "Keine Aufgabe in den nächsten 30 Tagen",
+                TaskFilter::Next365 => "Keine aktive Aufgabe in den nächsten 365 Tagen",
                 TaskFilter::Important => "Keine wichtigen Aufgaben",
                 TaskFilter::Overdue => "Keine überfällige Aufgabe",
+                TaskFilter::Scheduled => "Keine Aufgabe mit Fälligkeit",
+                TaskFilter::NoDue => "Keine Aufgabe ohne Fälligkeit",
+                TaskFilter::WithAttachments => "Keine Aufgabe mit Anhängen",
+                TaskFilter::Started => "Keine begonnene Aufgabe",
+                TaskFilter::WithoutCategory => "Keine Aufgabe ohne Kategorie",
+                TaskFilter::Uncompleted => "Keine offene Aufgabe",
                 TaskFilter::InProgress => "Keine Aufgabe in Bearbeitung",
                 TaskFilter::Cancelled => "Keine abgebrochene Aufgabe",
                 TaskFilter::Completed => "Keine erledigten Aufgaben",
@@ -1740,7 +2282,11 @@ fn render_task_rows(
     }
 }
 
-fn refresh_task_category_model(page: &TasksPage, task_store: &gio::ListStore) {
+fn refresh_task_category_model(
+    page: &TasksPage,
+    task_store: &gio::ListStore,
+    category_metadata: &[CalendarCategory],
+) {
     let Some(model) = page.imp().task_category_model.borrow().as_ref().cloned() else {
         return;
     };
@@ -1748,26 +2294,20 @@ fn refresh_task_category_model(page: &TasksPage, task_store: &gio::ListStore) {
         return;
     };
 
-    let mut categories = CalendarCategoryStore::default()
-        .load()
-        .into_iter()
+    let mut categories = category_metadata
+        .iter()
+        .cloned()
         .map(|category| category.name)
         .collect::<Vec<_>>();
+    let current_filter = page.imp().task_category_filter.borrow().clone();
     for index in 0..task_store.n_items() {
         let Some(task) = task_store.item(index).and_downcast::<TaskItemObject>() else {
             continue;
         };
-        categories.extend(
-            ical_properties(&task.component(), "CATEGORIES")
-                .into_iter()
-                .flat_map(|value| {
-                    value
-                        .split(',')
-                        .map(str::trim)
-                        .map(ToOwned::to_owned)
-                        .collect::<Vec<_>>()
-                }),
-        );
+        categories.extend(category_names_from_ical_component(&task.component()));
+    }
+    if let Some(current_filter) = current_filter.as_ref() {
+        categories.push(current_filter.clone());
     }
     categories.retain(|category| !category.is_empty());
     categories.sort_by_cached_key(|category| category.to_lowercase());
@@ -1775,7 +2315,6 @@ fn refresh_task_category_model(page: &TasksPage, task_store: &gio::ListStore) {
 
     let mut names = vec!["Alle Kategorien".to_string()];
     names.extend(categories.clone());
-    let current_filter = page.imp().task_category_filter.borrow().clone();
     let selected = current_filter
         .as_deref()
         .and_then(|filter| {
@@ -1785,9 +2324,6 @@ fn refresh_task_category_model(page: &TasksPage, task_store: &gio::ListStore) {
         })
         .map(|index| index as u32 + 1)
         .unwrap_or(0);
-    if current_filter.is_some() && selected == 0 {
-        page.imp().task_category_filter.replace(None);
-    }
     let name_refs = names.iter().map(String::as_str).collect::<Vec<_>>();
     model.splice(0, model.n_items(), &name_refs);
     if selector.selected() != selected {
@@ -1800,12 +2336,13 @@ fn compare_tasks(
     right: &TaskItemObject,
     sort: TaskSort,
     descending: bool,
+    context: TaskFilterContext,
 ) -> std::cmp::Ordering {
     let completed_order = task_is_completed(left).cmp(&task_is_completed(right));
     let ordering = match sort {
         TaskSort::DueDate => compare_optional_dates(
-            task_next_due_date(left, Local::now().date_naive()),
-            task_next_due_date(right, Local::now().date_naive()),
+            task_next_due_date(left, context.today),
+            task_next_due_date(right, context.today),
         ),
         TaskSort::Title => left
             .title()
@@ -1844,6 +2381,10 @@ fn compare_optional_dates(left: Option<NaiveDate>, right: Option<NaiveDate>) -> 
     }
 }
 
+fn query_is_empty(query: &TaskQuery) -> bool {
+    query.text.is_empty() && query.predicates.is_empty()
+}
+
 #[cfg(test)]
 fn task_matches_filter(task: &TaskItemObject, filter: TaskFilter, query: &str) -> bool {
     task_matches_filter_with_source(task, filter, None, query)
@@ -1859,6 +2400,7 @@ fn task_matches_filter_with_source(
     task_matches_filter_with_source_and_category(task, filter, source_filter, None, query)
 }
 
+#[cfg(test)]
 fn task_matches_filter_with_source_and_category(
     task: &TaskItemObject,
     filter: TaskFilter,
@@ -1866,39 +2408,165 @@ fn task_matches_filter_with_source_and_category(
     category_filter: Option<&str>,
     query: &str,
 ) -> bool {
+    let query = TaskQuery::parse(TaskSearchMode::AnyField, query);
+    task_matches_filter_with_context(
+        task,
+        filter,
+        source_filter,
+        category_filter,
+        &query,
+        current_task_filter_context(),
+    )
+}
+
+fn task_matches_filter_with_context(
+    task: &TaskItemObject,
+    filter: TaskFilter,
+    source_filter: Option<&str>,
+    category_filter: Option<&str>,
+    query: &TaskQuery,
+    context: TaskFilterContext,
+) -> bool {
     if source_filter.is_some_and(|source_uid| task.source_uid() != source_uid) {
         return false;
     }
     if category_filter.is_some_and(|category_filter| {
-        !ical_properties(&task.component(), "CATEGORIES")
-            .into_iter()
-            .flat_map(|value| {
-                value
-                    .split(',')
-                    .map(str::trim)
-                    .map(ToOwned::to_owned)
-                    .collect::<Vec<_>>()
-            })
-            .any(|category| category.eq_ignore_ascii_case(category_filter))
+        !task_categories(task).any(|category| category.eq_ignore_ascii_case(category_filter))
     }) {
         return false;
     }
     let matches_filter = match filter {
         TaskFilter::All => true,
-        TaskFilter::Today => {
-            task_next_due_date(task, Local::now().date_naive()) == Some(Local::now().date_naive())
+        TaskFilter::Today => task_matches_due_constraint(task, TaskDateConstraint::Today, context),
+        TaskFilter::Next7 => {
+            task_matches_due_constraint(task, TaskDateConstraint::Next(7), context)
+        }
+        TaskFilter::Next30 => {
+            task_matches_due_constraint(task, TaskDateConstraint::Next(30), context)
+        }
+        TaskFilter::Next365 => {
+            task_matches_due_constraint(task, TaskDateConstraint::Next(365), context)
+                && !task_is_completed(task)
         }
         TaskFilter::Important => task_priority_value(&task.priority()) > 0,
         TaskFilter::Overdue => {
-            task_next_due_date(task, Local::now().date_naive())
-                .is_some_and(|due| due < Local::now().date_naive())
-                && !task_is_completed(task)
+            task_matches_due_constraint(task, TaskDateConstraint::Overdue, context)
         }
+        TaskFilter::Scheduled => task_has_due(task),
+        TaskFilter::NoDue => !task_has_due(task),
+        TaskFilter::WithAttachments => task_has_attachments(task),
+        TaskFilter::Started => task_started(task, context),
+        TaskFilter::WithoutCategory => task_categories(task).next().is_none(),
+        TaskFilter::Uncompleted => !task_is_completed(task),
         TaskFilter::InProgress => task_status_value(&task.component()) == "IN-PROCESS",
         TaskFilter::Cancelled => task_status_value(&task.component()) == "CANCELLED",
         TaskFilter::Completed => task_is_completed(task),
     };
-    matches_filter && task_query_matches(task, query)
+    matches_filter && query.matches(task, context)
+}
+
+fn task_query_predicate_matches(
+    task: &TaskItemObject,
+    predicate: &TaskQueryPredicate,
+    context: TaskFilterContext,
+) -> bool {
+    match predicate {
+        TaskQueryPredicate::Category(category) => match category {
+            Some(category) => {
+                task_categories(task).any(|candidate| candidate.eq_ignore_ascii_case(category))
+            }
+            None => task_categories(task).next().is_none(),
+        },
+        TaskQueryPredicate::Status(status) => task_status_value(&task.component()) == status,
+        TaskQueryPredicate::Due(constraint) => {
+            task_matches_due_constraint(task, *constraint, context)
+        }
+        TaskQueryPredicate::Start(constraint) => {
+            task_matches_start_constraint(task, *constraint, context)
+        }
+        TaskQueryPredicate::HasAttachments(expected) => task_has_attachments(task) == *expected,
+    }
+}
+
+fn task_matches_due_constraint(
+    task: &TaskItemObject,
+    constraint: TaskDateConstraint,
+    context: TaskFilterContext,
+) -> bool {
+    match constraint {
+        TaskDateConstraint::None => !task_has_due(task),
+        TaskDateConstraint::Today => task_due_in_range(task, context.today, 0),
+        TaskDateConstraint::Next(days) => task_due_in_range(task, context.today, days),
+        TaskDateConstraint::Overdue => {
+            let epoch = NaiveDate::from_ymd_opt(1970, 1, 1).expect("Unix epoch is valid");
+            task_next_due_date(task, epoch).is_some_and(|due| due >= epoch && due <= context.today)
+                && !task_is_completed(task)
+        }
+        TaskDateConstraint::Scheduled => task_has_due(task),
+        TaskDateConstraint::Started => task_started(task, context),
+        TaskDateConstraint::Range(start, end) => {
+            task_next_due_date(task, start).is_some_and(|due| due >= start && due <= end)
+        }
+    }
+}
+
+fn task_matches_start_constraint(
+    task: &TaskItemObject,
+    constraint: TaskDateConstraint,
+    context: TaskFilterContext,
+) -> bool {
+    match constraint {
+        TaskDateConstraint::None => !task_has_start(task),
+        TaskDateConstraint::Today => {
+            task_start_local_datetime(task).is_some_and(|start| start.date() == context.today)
+        }
+        TaskDateConstraint::Next(days) => task_start_local_datetime(task).is_some_and(|start| {
+            start.date() >= context.today && start.date() <= context.today + Duration::days(days)
+        }),
+        TaskDateConstraint::Overdue => {
+            task_start_timestamp(task).is_some_and(|start| start < context.now_timestamp)
+        }
+        TaskDateConstraint::Scheduled => task_has_start(task),
+        TaskDateConstraint::Started => task_started(task, context),
+        TaskDateConstraint::Range(start, end) => task_start_local_datetime(task)
+            .is_some_and(|value| value.date() >= start && value.date() <= end),
+    }
+}
+
+fn task_due_in_range(task: &TaskItemObject, start: NaiveDate, days: i64) -> bool {
+    let Some(end) = start.checked_add_signed(Duration::days(days)) else {
+        return false;
+    };
+    task_next_due_date(task, start).is_some_and(|due| due >= start && due <= end)
+}
+
+fn task_categories(task: &TaskItemObject) -> impl Iterator<Item = String> {
+    category_names_from_ical_component(&task.component()).into_iter()
+}
+
+fn task_has_due(task: &TaskItemObject) -> bool {
+    !ical_properties(&task.component(), "DUE").is_empty() || !task.due_date().trim().is_empty()
+}
+
+fn task_has_attachments(task: &TaskItemObject) -> bool {
+    !ical_properties(&task.component(), "ATTACH").is_empty()
+}
+
+fn task_start_local_datetime(task: &TaskItemObject) -> Option<NaiveDateTime> {
+    property_local_datetime(&task.component(), "DTSTART", false)
+}
+
+fn task_start_timestamp(task: &TaskItemObject) -> Option<i64> {
+    let (property, value) = ical_property_with_parameters(&task.component(), "DTSTART")?;
+    property_local_timestamp(&property, &value, 0)
+}
+
+fn task_has_start(task: &TaskItemObject) -> bool {
+    task_start_local_datetime(task).is_some()
+}
+
+fn task_started(task: &TaskItemObject, context: TaskFilterContext) -> bool {
+    task_start_timestamp(task).is_none_or(|start| start <= context.now_timestamp)
 }
 
 fn task_due_date(value: &str) -> Option<NaiveDate> {
@@ -1908,24 +2576,20 @@ fn task_due_date(value: &str) -> Option<NaiveDate> {
 }
 
 fn task_excluded_dates(task: &TaskItemObject) -> Vec<NaiveDate> {
-    ical_properties(&task.component(), "EXDATE")
-        .iter()
-        .flat_map(|value| value.split(','))
-        .filter_map(parse_ical_date)
-        .collect()
+    property_local_dates(&task.component(), "EXDATE")
 }
 
 fn task_additional_dates(task: &TaskItemObject) -> Vec<NaiveDate> {
-    ical_properties(&task.component(), "RDATE")
-        .iter()
-        .flat_map(|value| value.split(','))
-        .filter_map(parse_ical_date)
-        .collect()
+    property_local_dates(&task.component(), "RDATE")
+}
+
+fn task_due_local_date(task: &TaskItemObject) -> Option<NaiveDate> {
+    property_local_date(&task.component(), "DUE", false).or_else(|| task_due_date(&task.due_date()))
 }
 
 fn task_next_due_date(task: &TaskItemObject, from: NaiveDate) -> Option<NaiveDate> {
     let excluded_dates = task_excluded_dates(task);
-    let rule_next = task_due_date(&task.due_date()).and_then(|due| {
+    let rule_next = task_due_local_date(task).and_then(|due| {
         let Some(raw_rule) = ical_property(&task.component(), "RRULE") else {
             return Some(due);
         };
@@ -2035,6 +2699,11 @@ fn upsert_task_row(
     empty_tasks: &gtk::Label,
     task: TaskRecord,
 ) {
+    upsert_task_store(task_list, task_store, task);
+    render_task_rows(page, task_list, task_store, empty_tasks);
+}
+
+fn upsert_task_store(task_list: &gtk::ListBox, task_store: &gio::ListStore, task: TaskRecord) {
     let existing_index = (0..task_store.n_items()).find(|index| {
         task_store
             .item(*index)
@@ -2063,7 +2732,6 @@ fn upsert_task_row(
         &task.component,
     );
     task_store.append(&task_object);
-    render_task_rows(page, task_list, task_store, empty_tasks);
 }
 
 fn remove_task_record(
@@ -2092,11 +2760,12 @@ fn append_task_row(
     task_store: &gio::ListStore,
     empty_tasks: &gtk::Label,
     task: &TaskItemObject,
+    context: TaskFilterContext,
+    category_metadata: &[CalendarCategory],
 ) {
     let title = glib::markup_escape_text(&task.title());
     let due = task.due_date();
-    let today = Local::now().date_naive();
-    let recurrence_due = task_next_due_date(task, today);
+    let recurrence_due = task_next_due_date(task, context.today);
     let due_text = match (task_due_date(&due), recurrence_due) {
         (Some(base), Some(next)) if base != next => format!(
             "Fällig: {} · Nächste Fälligkeit: {}",
@@ -2124,7 +2793,7 @@ fn append_task_row(
         row.set_data("task-id", task.id());
         row.set_data("task-source-uid", task.source_uid());
     }
-    if let Some(color) = CalendarCategoryStore::default().color_for_component(&task.component()) {
+    if let Some(color) = category_color_for_component(category_metadata, &task.component()) {
         let category_dot = gtk::Label::new(None);
         category_dot.set_markup(&format!("<span foreground=\"{color}\">●</span>"));
         category_dot.set_tooltip_text(Some("Aufgabenkategorie"));
@@ -2575,6 +3244,20 @@ fn append_task_row(
     });
     row.add_controller(context_click);
     task_list.append(&row);
+}
+
+fn category_color_for_component(
+    category_metadata: &[CalendarCategory],
+    component: &str,
+) -> Option<String> {
+    category_names_from_ical_component(component)
+        .into_iter()
+        .find_map(|name| {
+            category_metadata
+                .iter()
+                .find(|category| category.name.eq_ignore_ascii_case(&name))
+                .map(|category| category.color.clone())
+        })
 }
 
 fn remove_task_row(task_list: &gtk::ListBox, source_uid: &str, task_uid: &str) {
@@ -3076,6 +3759,23 @@ fn ical_property(raw: &str, property_name: &str) -> Option<String> {
     })
 }
 
+fn ical_property_with_parameters(raw: &str, property_name: &str) -> Option<(String, String)> {
+    let target = property_name
+        .split(';')
+        .next()
+        .unwrap_or(property_name)
+        .to_ascii_uppercase();
+    unfold_ical_lines(raw).into_iter().find_map(|line| {
+        let (property, value) = line.split_once(':')?;
+        let name = property
+            .split(';')
+            .next()
+            .unwrap_or(property)
+            .to_ascii_uppercase();
+        (name == target).then(|| (property.to_string(), value.to_string()))
+    })
+}
+
 fn ical_properties(raw: &str, property_name: &str) -> Vec<String> {
     let target = property_name
         .split(';')
@@ -3219,6 +3919,59 @@ fn unfold_ical_lines(raw: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn fixed_context(date: &str, hour: u32) -> TaskFilterContext {
+        let today = NaiveDate::parse_from_str(date, "%Y-%m-%d").unwrap();
+        let now = today.and_hms_opt(hour, 30, 0).unwrap();
+        TaskFilterContext {
+            today,
+            now,
+            now_timestamp: now.and_utc().timestamp(),
+        }
+    }
+
+    fn fixture_task(
+        uid: &str,
+        title: &str,
+        due: Option<&str>,
+        start: Option<&str>,
+        status: &str,
+        categories: Option<&str>,
+        attachment: bool,
+        description: &str,
+    ) -> TaskItemObject {
+        let mut lines = vec![
+            "BEGIN:VTODO".to_string(),
+            format!("UID:{uid}"),
+            format!("SUMMARY:{title}"),
+            format!("STATUS:{status}"),
+        ];
+        if let Some(due) = due {
+            lines.push(format!("DUE;VALUE=DATE:{}", due.replace('-', "")));
+        }
+        if let Some(start) = start {
+            lines.push(format!("DTSTART;VALUE=DATE:{}", start.replace('-', "")));
+        }
+        if let Some(categories) = categories {
+            lines.push(format!("CATEGORIES:{categories}"));
+        }
+        if attachment {
+            lines.push("ATTACH;VALUE=URI:https://files.example.test/task.pdf".to_string());
+        }
+        if !description.is_empty() {
+            lines.push(format!("DESCRIPTION:{description}"));
+        }
+        lines.push("END:VTODO".to_string());
+        TaskItemObject::new(
+            "local-calendar",
+            uid,
+            title,
+            due.unwrap_or_default(),
+            "1",
+            status == "COMPLETED",
+            &format!("{}\r\n", lines.join("\r\n")),
+        )
+    }
 
     #[test]
     fn task_component_serialization_validates_and_escapes_fields() {
@@ -3636,6 +4389,250 @@ mod tests {
             "BEGIN:VTODO\r\nSTATUS:CANCELLED\r\nEND:VTODO\r\n",
         );
         assert!(task_matches_filter(&cancelled, TaskFilter::Cancelled, ""));
+    }
+
+    #[test]
+    fn task_filter_truth_table_covers_upstream_daily_filters() {
+        let context = fixed_context("2026-08-10", 10);
+        let today = fixture_task(
+            "today",
+            "Plan review",
+            Some("2026-08-10"),
+            Some("2026-08-09"),
+            "NEEDS-ACTION",
+            Some("Work Team"),
+            true,
+            "Send the review to accounting",
+        );
+        let next_seven = fixture_task(
+            "next-seven",
+            "Next week",
+            Some("2026-08-17"),
+            None,
+            "NEEDS-ACTION",
+            None,
+            false,
+            "",
+        );
+        let after_seven = fixture_task(
+            "after-seven",
+            "Later",
+            Some("2026-08-18"),
+            None,
+            "NEEDS-ACTION",
+            None,
+            false,
+            "",
+        );
+        let no_due = fixture_task(
+            "no-due",
+            "Someday",
+            None,
+            None,
+            "NEEDS-ACTION",
+            None,
+            false,
+            "",
+        );
+        let completed = fixture_task(
+            "completed",
+            "Finished",
+            Some("2026-08-18"),
+            None,
+            "COMPLETED",
+            Some("Work"),
+            false,
+            "",
+        );
+        let future_start = fixture_task(
+            "future-start",
+            "Not started",
+            None,
+            Some("2026-08-11"),
+            "NEEDS-ACTION",
+            None,
+            false,
+            "",
+        );
+
+        let query = TaskQuery::default();
+        let matches = |task: &TaskItemObject, filter: TaskFilter| {
+            task_matches_filter_with_context(task, filter, None, None, &query, context)
+        };
+
+        assert!(matches(&today, TaskFilter::Today));
+        assert!(matches(&today, TaskFilter::Overdue));
+        assert!(matches(&next_seven, TaskFilter::Next7));
+        assert!(!matches(&after_seven, TaskFilter::Next7));
+        assert!(matches(&after_seven, TaskFilter::Next30));
+        assert!(matches(&after_seven, TaskFilter::Next365));
+        assert!(!matches(&completed, TaskFilter::Next365));
+        assert!(matches(&no_due, TaskFilter::NoDue));
+        assert!(!matches(&today, TaskFilter::NoDue));
+        assert!(matches(&today, TaskFilter::Scheduled));
+        assert!(matches(&today, TaskFilter::WithAttachments));
+        assert!(matches(&today, TaskFilter::Started));
+        assert!(matches(&no_due, TaskFilter::Started));
+        assert!(!matches(&future_start, TaskFilter::Started));
+        assert!(matches(&no_due, TaskFilter::WithoutCategory));
+        assert!(matches(&today, TaskFilter::Uncompleted));
+        assert!(!matches(&completed, TaskFilter::Uncompleted));
+    }
+
+    #[test]
+    fn advanced_task_query_combines_fields_categories_dates_and_attachments() {
+        let task = fixture_task(
+            "advanced",
+            "Plan review",
+            Some("2026-08-10"),
+            Some("2026-08-09"),
+            "NEEDS-ACTION",
+            Some("Work Team"),
+            true,
+            "Send the review to accounting",
+        );
+        let context = fixed_context("2026-08-10", 10);
+        let query = TaskQuery::parse(
+            TaskSearchMode::Advanced,
+            r#"summary:"Plan review" description:accounting category:"Work Team" due:2026-08-10..2026-08-17 start:started status:open has:attachment"#,
+        );
+        assert!(query.matches(&task, context));
+
+        let no_attachment = fixture_task(
+            "advanced-no-attachment",
+            "Plan review",
+            Some("2026-08-10"),
+            Some("2026-08-09"),
+            "NEEDS-ACTION",
+            Some("Work Team"),
+            false,
+            "Send the review to accounting",
+        );
+        assert!(!query.matches(&no_attachment, context));
+
+        let no_category_query =
+            TaskQuery::parse(TaskSearchMode::Advanced, "category:none due:none");
+        let no_due = fixture_task(
+            "advanced-no-category",
+            "Someday",
+            None,
+            None,
+            "NEEDS-ACTION",
+            None,
+            false,
+            "",
+        );
+        assert!(no_category_query.matches(&no_due, context));
+    }
+
+    #[test]
+    fn next_ranges_use_calendar_days_across_dst_boundary() {
+        let context = fixed_context("2026-03-29", 1);
+        let boundary = fixture_task(
+            "dst-boundary",
+            "DST boundary",
+            Some("2026-04-05"),
+            None,
+            "NEEDS-ACTION",
+            None,
+            false,
+            "",
+        );
+        let after_boundary = fixture_task(
+            "dst-after-boundary",
+            "After DST range",
+            Some("2026-04-06"),
+            None,
+            "NEEDS-ACTION",
+            None,
+            false,
+            "",
+        );
+        let query = TaskQuery::default();
+        assert!(task_matches_filter_with_context(
+            &boundary,
+            TaskFilter::Next7,
+            None,
+            None,
+            &query,
+            context,
+        ));
+        assert!(!task_matches_filter_with_context(
+            &after_boundary,
+            TaskFilter::Next7,
+            None,
+            None,
+            &query,
+            context,
+        ));
+    }
+
+    #[test]
+    fn category_filters_keep_escaped_commas_as_one_category() {
+        let task = TaskItemObject::new(
+            "local-calendar",
+            "escaped-category",
+            "Research",
+            "",
+            "normal",
+            false,
+            "BEGIN:VTODO\r\nCATEGORIES:Research\\,Ops,Work\r\nEND:VTODO\r\n",
+        );
+        assert_eq!(
+            task_categories(&task).collect::<Vec<_>>(),
+            vec!["Research,Ops".to_string(), "Work".to_string()]
+        );
+        let query = TaskQuery::default();
+        let context = fixed_context("2026-08-10", 10);
+        assert!(task_matches_filter_with_context(
+            &task,
+            TaskFilter::All,
+            None,
+            Some("research,ops"),
+            &query,
+            context,
+        ));
+        assert!(!task_matches_filter_with_context(
+            &task,
+            TaskFilter::All,
+            None,
+            Some("research"),
+            &query,
+            context,
+        ));
+    }
+
+    #[test]
+    fn started_filter_compares_absolute_dtstart_timestamp() {
+        let task = TaskItemObject::new(
+            "local-calendar",
+            "utc-start",
+            "UTC start",
+            "",
+            "normal",
+            false,
+            "BEGIN:VTODO\r\nDTSTART:20260810T120000Z\r\nEND:VTODO\r\n",
+        );
+        let now = NaiveDate::from_ymd_opt(2026, 8, 10)
+            .unwrap()
+            .and_hms_opt(10, 0, 0)
+            .unwrap();
+        let now_timestamp = glib::DateTime::from_utc(2026, 8, 10, 13, 0, 0.0)
+            .unwrap()
+            .to_unix();
+        let context = TaskFilterContext {
+            today: now.date(),
+            now,
+            now_timestamp,
+        };
+        assert!(task_matches_filter_with_context(
+            &task,
+            TaskFilter::Started,
+            None,
+            None,
+            &TaskQuery::default(),
+            context,
+        ));
     }
 }
 

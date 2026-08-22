@@ -309,7 +309,42 @@
     </key>
     <key name="task-filter" type="s">
       <default>'all'</default>
-      <summary>Initial task filter (all, today, important, or completed)</summary>
+      <summary>Initial task filter (including date, status, category, and attachment filters)</summary>
+      <description>Supported values include all, today, next-7, next-30, next-365, important, overdue, in-progress, cancelled, completed, uncompleted, scheduled, no-due, with-attachments, started, and without-category.</description>
+      <choices>
+        <choice value='all'/>
+        <choice value='today'/>
+        <choice value='next-7'/>
+        <choice value='next-30'/>
+        <choice value='next-365'/>
+        <choice value='important'/>
+        <choice value='overdue'/>
+        <choice value='in-progress'/>
+        <choice value='cancelled'/>
+        <choice value='completed'/>
+        <choice value='uncompleted'/>
+        <choice value='scheduled'/>
+        <choice value='no-due'/>
+        <choice value='with-attachments'/>
+        <choice value='started'/>
+        <choice value='without-category'/>
+      </choices>
+    </key>
+    <key name="task-category-filter" type="s">
+      <default>''</default>
+      <summary>Selected task category filter</summary>
+      <description>An empty value shows every category. The value is a validated category name and is combined with the task view filter.</description>
+    </key>
+    <key name="task-search-mode" type="s">
+      <default>'any-field'</default>
+      <summary>Task search mode (any field, summary, description, or advanced)</summary>
+      <description>Any-field, summary, and description modes search all terms with AND semantics. Advanced mode supports field predicates.</description>
+      <choices>
+        <choice value='any-field'/>
+        <choice value='summary'/>
+        <choice value='description'/>
+        <choice value='advanced'/>
+      </choices>
     </key>
     <key name="task-source-filter" type="s">
       <default>''</default>

@@ -20,6 +20,7 @@ use super::mail_filter_service::{
     MailFilterStore,
 };
 use super::mail_store_service::MailStoreService;
+use super::settings_service::MAX_TASK_CATEGORY_FILTER_BYTES;
 use super::signature_store_service::{SignatureProfile, SignatureStore};
 use std::collections::BTreeMap;
 use std::fs;
@@ -992,6 +993,8 @@ fn is_supported_migration_key(key: &str) -> bool {
             | "mail-sort-descending"
             | "mail-threading"
             | "task-filter"
+            | "task-category-filter"
+            | "task-search-mode"
             | "task-source-filter"
             | "task-sort-field"
             | "task-sort-descending"
@@ -1099,9 +1102,26 @@ fn normalize_imported_setting_value(key: &str, value: &str) -> Result<String, &'
             _ => Err("kein unterstützter Zitierstil"),
         },
         "task-filter" => match value.to_ascii_lowercase().as_str() {
-            "all" | "today" | "important" | "overdue" | "in-progress" | "cancelled"
-            | "completed" => Ok(value.to_ascii_lowercase()),
+            "all" | "today" | "next-7" | "next-30" | "next-365" | "active" | "important"
+            | "overdue" | "in-progress" | "cancelled" | "completed" | "uncompleted"
+            | "scheduled" | "no-due" | "with-attachments" | "started" | "without-category" => {
+                Ok(match value.to_ascii_lowercase().as_str() {
+                    "active" => "next-365".to_string(),
+                    normalized => normalized.to_string(),
+                })
+            }
             _ => Err("kein unterstützter Aufgabenfilter"),
+        },
+        "task-category-filter" => {
+            if value.len() > MAX_TASK_CATEGORY_FILTER_BYTES || value.chars().any(char::is_control) {
+                Err("ungültiger Aufgaben-Kategoriefilter")
+            } else {
+                Ok(value.to_string())
+            }
+        }
+        "task-search-mode" => match value.to_ascii_lowercase().as_str() {
+            "any-field" | "summary" | "description" | "advanced" => Ok(value.to_ascii_lowercase()),
+            _ => Err("kein unterstützter Aufgaben-Suchmodus"),
         },
         "task-sort-field" => match value.to_ascii_lowercase().as_str() {
             "due" | "title" | "priority" => Ok(value.to_ascii_lowercase()),
@@ -2847,6 +2867,39 @@ calendar-hidden-sources=@as ['calendar-work', 'calendar-home']
                 .warnings
                 .iter()
                 .any(|warning| warning.contains("mail-threading"))
+        );
+    }
+
+    #[test]
+    fn migrates_task_filter_values_and_rejects_unsupported_modes() {
+        let parsed = parse_evolution_settings(
+            r#"
+[org/gnome/evolution/tasks]
+task-filter='active'
+task-category-filter='  Work Team  '
+task-search-mode='ADVANCED'
+task-search-mode='bogus'
+"#,
+            Path::new("evolution-task-settings.ini"),
+        );
+
+        assert!(parsed.settings.contains(&ImportedSetting {
+            key: "task-filter".to_string(),
+            value: "next-365".to_string(),
+        }));
+        assert!(parsed.settings.contains(&ImportedSetting {
+            key: "task-category-filter".to_string(),
+            value: "Work Team".to_string(),
+        }));
+        assert!(parsed.settings.contains(&ImportedSetting {
+            key: "task-search-mode".to_string(),
+            value: "advanced".to_string(),
+        }));
+        assert!(
+            parsed
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("task-search-mode"))
         );
     }
 

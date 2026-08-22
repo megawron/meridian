@@ -47,6 +47,14 @@ fn default_task_filter() -> String {
     "all".to_string()
 }
 
+fn default_task_category_filter() -> String {
+    String::new()
+}
+
+fn default_task_search_mode() -> String {
+    "any-field".to_string()
+}
+
 fn default_task_sort_field() -> String {
     "due".to_string()
 }
@@ -252,6 +260,10 @@ struct BackupSettings {
     calendar_time_zone: String,
     #[serde(default = "default_task_filter")]
     task_filter: String,
+    #[serde(default = "default_task_category_filter")]
+    task_category_filter: String,
+    #[serde(default = "default_task_search_mode")]
+    task_search_mode: String,
     #[serde(default = "default_task_source_filter")]
     task_source_filter: String,
     #[serde(default = "default_task_sort_field")]
@@ -529,6 +541,8 @@ impl BackupSettings {
             mail_threading: settings.mail_threading(),
             calendar_time_zone: settings.calendar_time_zone(),
             task_filter: settings.task_filter(),
+            task_category_filter: settings.task_category_filter(),
+            task_search_mode: settings.task_search_mode(),
             task_source_filter: settings.task_source_filter(),
             task_sort_field: settings.task_sort_field(),
             task_sort_descending: settings.task_sort_descending(),
@@ -627,6 +641,8 @@ impl BackupSettings {
         settings.set_mail_threading(self.mail_threading);
         settings.set_calendar_time_zone(&self.calendar_time_zone);
         settings.set_task_filter(&self.task_filter);
+        settings.set_task_category_filter(&self.task_category_filter);
+        settings.set_task_search_mode(&self.task_search_mode);
         settings.set_task_source_filter(&self.task_source_filter);
         settings.set_task_sort_field(&self.task_sort_field);
         settings.set_task_sort_descending(self.task_sort_descending);
@@ -1320,6 +1336,9 @@ mod tests {
         assert!(settings.mail_threading);
         assert!(settings.task_source_filter.is_empty());
         assert!(settings.task_sort_descending);
+        assert_eq!(settings.task_filter, "all");
+        assert!(settings.task_category_filter.is_empty());
+        assert_eq!(settings.task_search_mode, "any-field");
         assert!(settings.memo_source_filter.is_empty());
         assert!(settings.memo_sort_descending);
     }
@@ -1351,6 +1370,23 @@ mod tests {
         assert!(settings.local_contact_directory.is_empty());
         assert!(settings.quote_original);
         assert_eq!(settings.quote_style, "blockquote");
+    }
+
+    #[test]
+    fn task_filter_settings_survive_backup_json_roundtrip() {
+        let settings: BackupSettings = serde_json::from_value(serde_json::json!({
+            "task_filter": "next-30",
+            "task_category_filter": "Work Team",
+            "task_search_mode": "advanced"
+        }))
+        .expect("task settings should parse");
+        let raw = serde_json::to_vec(&settings).expect("task settings should serialize");
+        let restored: BackupSettings =
+            serde_json::from_slice(&raw).expect("task settings should round-trip");
+
+        assert_eq!(restored.task_filter, "next-30");
+        assert_eq!(restored.task_category_filter, "Work Team");
+        assert_eq!(restored.task_search_mode, "advanced");
     }
 
     #[test]

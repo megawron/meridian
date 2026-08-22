@@ -26,6 +26,37 @@ fn normalized_mail_sort_field(value: &str) -> &str {
     }
 }
 
+fn normalized_task_filter(value: &str) -> &str {
+    match value {
+        "all" | "today" | "next-7" | "next-30" | "next-365" | "important" | "overdue"
+        | "in-progress" | "cancelled" | "completed" | "uncompleted" | "scheduled" | "no-due"
+        | "with-attachments" | "started" | "without-category" => value,
+        "active" => "next-365",
+        _ => "all",
+    }
+}
+
+fn normalized_task_search_mode(value: &str) -> &str {
+    match value {
+        "any-field" | "summary" | "description" | "advanced" => value,
+        _ => "any-field",
+    }
+}
+
+pub(crate) const MAX_TASK_CATEGORY_FILTER_BYTES: usize = 128;
+
+pub(crate) fn normalized_task_category_filter(value: &str) -> String {
+    let value = value.trim();
+    if value.is_empty()
+        || value.len() > MAX_TASK_CATEGORY_FILTER_BYTES
+        || value.chars().any(char::is_control)
+    {
+        String::new()
+    } else {
+        value.to_string()
+    }
+}
+
 const DEFAULT_MAIL_NORMAL_HEADERS: [(&str, bool); 10] = [
     ("From", true),
     ("Reply-To", true),
@@ -992,20 +1023,35 @@ impl AppSettings {
     }
 
     pub fn task_filter(&self) -> String {
-        let value = self.settings.string("task-filter").to_string();
-        match value.as_str() {
-            "today" | "important" | "overdue" | "in-progress" | "cancelled" | "completed" => value,
-            _ => "all".to_string(),
-        }
+        normalized_task_filter(&self.settings.string("task-filter")).to_string()
     }
 
     pub fn set_task_filter(&self, value: &str) {
-        let value = match value {
-            "today" | "important" | "overdue" | "in-progress" | "cancelled" | "completed" => value,
-            _ => "all",
-        };
+        let value = normalized_task_filter(value);
         if let Err(error) = self.settings.set_string("task-filter", value) {
             tracing::warn!(%error, "Could not persist task filter");
+        }
+    }
+
+    pub fn task_category_filter(&self) -> String {
+        normalized_task_category_filter(&self.settings.string("task-category-filter"))
+    }
+
+    pub fn set_task_category_filter(&self, value: &str) {
+        let value = normalized_task_category_filter(value);
+        if let Err(error) = self.settings.set_string("task-category-filter", &value) {
+            tracing::warn!(%error, "Could not persist task category filter");
+        }
+    }
+
+    pub fn task_search_mode(&self) -> String {
+        normalized_task_search_mode(&self.settings.string("task-search-mode")).to_string()
+    }
+
+    pub fn set_task_search_mode(&self, value: &str) {
+        let value = normalized_task_search_mode(value);
+        if let Err(error) = self.settings.set_string("task-search-mode", value) {
+            tracing::warn!(%error, "Could not persist task search mode");
         }
     }
 
@@ -1224,6 +1270,8 @@ impl AppSettings {
             }
             "mail-threading" => self.set_mail_threading(parse_migrated_bool(key, value)?),
             "task-filter" => self.set_task_filter(value),
+            "task-category-filter" => self.set_task_category_filter(value),
+            "task-search-mode" => self.set_task_search_mode(value),
             "task-source-filter" => self.set_task_source_filter(value),
             "task-sort-field" => self.set_task_sort_field(value),
             "task-sort-descending" => {
@@ -1319,6 +1367,8 @@ impl AppSettings {
             "mail-sort-descending",
             "mail-threading",
             "task-filter",
+            "task-category-filter",
+            "task-search-mode",
             "task-source-filter",
             "task-sort-field",
             "task-sort-descending",
@@ -1633,5 +1683,76 @@ mod tests {
         assert!(!reset.mail_show_all_headers());
         assert!(reset.mail_show_statusbar());
         assert_eq!(reset.mail_font_size(), 16);
+    }
+
+    #[test]
+    fn task_filter_values_round_trip_with_validation_and_migration_aliases() {
+        let backend = gio::memory_settings_backend_new();
+        let settings = settings_with_backend(&backend);
+
+        for value in [
+            "all",
+            "today",
+            "next-7",
+            "next-30",
+            "next-365",
+            "important",
+            "overdue",
+            "in-progress",
+            "cancelled",
+            "completed",
+            "uncompleted",
+            "scheduled",
+            "no-due",
+            "with-attachments",
+            "started",
+            "without-category",
+        ] {
+            settings.set_task_filter(value);
+            assert_eq!(settings.task_filter(), value);
+        }
+        settings.set_task_filter("next-30");
+        settings.set_task_category_filter("  Work Team  ");
+        settings.set_task_search_mode("any-field");
+        assert_eq!(settings.task_search_mode(), "any-field");
+        settings.set_task_search_mode("advanced");
+        let reloaded = settings_with_backend(&backend);
+        assert_eq!(reloaded.task_filter(), "next-30");
+        assert_eq!(reloaded.task_category_filter(), "Work Team");
+        assert_eq!(reloaded.task_search_mode(), "advanced");
+
+        reloaded.set_task_filter("not-a-filter");
+        reloaded.set_task_category_filter("bad\ncategory");
+        reloaded.set_task_search_mode("not-a-mode");
+        assert_eq!(reloaded.task_filter(), "all");
+        assert!(reloaded.task_category_filter().is_empty());
+        assert_eq!(reloaded.task_search_mode(), "any-field");
+
+        assert!(
+            reloaded
+                .settings
+                .set_string("task-filter", "not-a-filter")
+                .is_err()
+        );
+        assert_eq!(reloaded.task_filter(), "all");
+
+        reloaded
+            .apply_migrated_setting("task-filter", "active")
+            .expect("upstream active filter should migrate");
+        reloaded
+            .apply_migrated_setting("task-search-mode", "description")
+            .expect("search mode should migrate");
+        reloaded
+            .apply_migrated_setting("task-category-filter", "  Finance  ")
+            .expect("category filter should migrate");
+        assert_eq!(reloaded.task_filter(), "next-365");
+        assert_eq!(reloaded.task_search_mode(), "description");
+        assert_eq!(reloaded.task_category_filter(), "Finance");
+
+        reloaded.reset_to_defaults();
+        let reset = settings_with_backend(&backend);
+        assert_eq!(reset.task_filter(), "all");
+        assert!(reset.task_category_filter().is_empty());
+        assert_eq!(reset.task_search_mode(), "any-field");
     }
 }
