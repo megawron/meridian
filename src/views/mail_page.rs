@@ -17,7 +17,7 @@ use std::time::{Duration as StdDuration, Instant};
 
 use crate::models::eds_source::EdsSourceObject;
 use crate::models::folder::FolderObject;
-use crate::models::mail_message::MailMessageObject;
+use crate::models::mail_message::{MailMessageIdentity, MailMessageObject};
 use crate::services::AppSettings;
 use crate::services::account_config_service::AccountConfigStore;
 use crate::services::camel_mail_service::{self, CamelFolderSummary, CamelMailLoad};
@@ -26,6 +26,7 @@ use crate::services::draft_store_service::{DraftMessage, DraftStoreService};
 use crate::services::ecal_service::{ECalComponentType, ECalService};
 use crate::services::eds_service::{self, EdsSourceDiscovery, EdsSourceKind, EdsSourceOrigin};
 use crate::services::eds_source_cache_service::EdsSourceCache;
+use crate::services::html_sanitizer::html_to_plain_text;
 use crate::services::inline_content_service::InlineImage;
 use crate::services::itip_service::{
     ItipInvitation, ItipMethod, ItipReplyStatus, build_reply_component, normalize_attendee_address,
@@ -783,11 +784,10 @@ fn message_matches_filter(
     let recipient_cc = message.recipient_cc().to_lowercase();
     let recipient_bcc = message.recipient_bcc().to_lowercase();
     let preview = message.preview_snippet().to_lowercase();
-    let body = if search_query_needs_body(query) {
-        message.searchable_body_text()
-    } else {
-        Arc::<str>::from("")
-    };
+    let searchable_body_text = search_query_needs_body(query)
+        .then(|| message.searchable_body_text())
+        .flatten();
+    let body = searchable_body_text.as_deref().unwrap_or("");
     let label_values = message.labels();
     let labels = label_values
         .iter()
@@ -979,7 +979,9 @@ fn message_search_field_matches(
             .contains(&value),
         MessageSearchField::Subject => message.subject().to_ascii_lowercase().contains(&value),
         MessageSearchField::Body => {
-            message.searchable_body_text().contains(&value)
+            message
+                .searchable_body_text()
+                .is_some_and(|body| body.contains(&value))
                 || message
                     .preview_snippet()
                     .to_ascii_lowercase()
@@ -1311,17 +1313,26 @@ fn displayed_message_search_status(result: &MessageSearchResult) -> String {
         MessageSearchStatus::EmptyQuery => String::new(),
         MessageSearchStatus::NoDisplayedMessage => "Keine Nachricht angezeigt".to_string(),
         MessageSearchStatus::Pending => "Suche …".to_string(),
-        MessageSearchStatus::Found => format!(
-            "{} von {}",
-            result.current_match.unwrap_or(1),
-            result.match_count
-        ),
-        MessageSearchStatus::NotFound => "Keine Treffer".to_string(),
+        MessageSearchStatus::Found | MessageSearchStatus::NotFound => {
+            format!("Treffer: {}", result.match_count)
+        }
     }
 }
 
-fn update_displayed_message_search_status(label: &gtk::Label, result: &MessageSearchResult) {
+fn displayed_message_search_has_matches(result: &MessageSearchResult) -> bool {
+    result.status == MessageSearchStatus::Found && result.match_count > 0
+}
+
+fn update_displayed_message_search_status(
+    label: &gtk::Label,
+    find_previous: &gtk::Button,
+    find_next: &gtk::Button,
+    result: &MessageSearchResult,
+) {
     label.set_label(&displayed_message_search_status(result));
+    let sensitive = displayed_message_search_has_matches(result);
+    find_previous.set_sensitive(sensitive);
+    find_next.set_sensitive(sensitive);
 }
 
 fn export_filename(subject: &str) -> String {
@@ -1447,18 +1458,94 @@ impl MailLoadRequest {
 }
 
 enum MailPageLoadResult {
-    Camel(CamelMailLoad),
+    Camel {
+        camel: CamelMailLoad,
+        searchable_body_texts: SearchableBodyTextCache,
+    },
     Combined {
         camel: CamelMailLoad,
         local_messages: Vec<ParsedMail>,
         local_folders: HashSet<String>,
+        searchable_body_texts: SearchableBodyTextCache,
     },
     Local {
         reason: String,
         messages: Vec<ParsedMail>,
         local_folders: HashSet<String>,
+        searchable_body_texts: SearchableBodyTextCache,
     },
     Error(String),
+}
+
+type SearchableBodyTextCache = HashMap<MailMessageIdentity, Arc<str>>;
+
+/// Prepare the body index while the backend result is still owned by a
+/// worker.  The GTK filter only consumes the resulting immutable Arc values;
+/// it must never turn a message's HTML into plaintext on demand.
+fn prepare_searchable_body_text(html_body: &str) -> Arc<str> {
+    html_to_plain_text(html_body).to_ascii_lowercase().into()
+}
+
+fn parsed_mail_identity(message: &ParsedMail) -> MailMessageIdentity {
+    MailMessageIdentity::from_parts(
+        &message.id,
+        &message.folder_id,
+        message.message_id.as_deref(),
+        message.backend_location.as_ref(),
+    )
+}
+
+fn insert_searchable_body_text_first(
+    cache: &mut SearchableBodyTextCache,
+    identity: MailMessageIdentity,
+    html_body: &str,
+) {
+    cache
+        .entry(identity)
+        .or_insert_with(|| prepare_searchable_body_text(html_body));
+}
+
+fn prepare_searchable_body_texts(
+    messages: &[ParsedMail],
+    cancelled: &AtomicBool,
+) -> Result<SearchableBodyTextCache, String> {
+    let mut texts = HashMap::with_capacity(messages.len());
+    for message in messages {
+        if cancelled.load(Ordering::Relaxed) {
+            return Err("Mail-Suchindex wurde abgebrochen".to_string());
+        }
+        if !message.id.trim().is_empty() {
+            insert_searchable_body_text_first(
+                &mut texts,
+                parsed_mail_identity(message),
+                &message.html_body,
+            );
+        }
+    }
+    Ok(texts)
+}
+
+/// Merge the authoritative Camel cache before supplemental local records.
+/// Exact identity collisions are first-wins; a local body can never replace
+/// the body prepared for the Camel row that will be displayed for that ID.
+fn merge_authoritative_searchable_body_texts(
+    mut authoritative: SearchableBodyTextCache,
+    supplemental: SearchableBodyTextCache,
+) -> SearchableBodyTextCache {
+    for (identity, text) in supplemental {
+        authoritative.entry(identity).or_insert(text);
+    }
+    authoritative
+}
+
+fn prepared_camel_result(camel: CamelMailLoad, cancelled: &AtomicBool) -> MailPageLoadResult {
+    match prepare_searchable_body_texts(&camel.messages, cancelled) {
+        Ok(searchable_body_texts) => MailPageLoadResult::Camel {
+            camel,
+            searchable_body_texts,
+        },
+        Err(error) => MailPageLoadResult::Error(error),
+    }
 }
 
 const MAIL_MODEL_CHUNK_SIZE: usize = 32;
@@ -1648,6 +1735,7 @@ struct PendingMailApply {
     stage: PendingMailApplyStage,
     active_messages: Vec<ParsedMail>,
     local_messages: Option<Vec<ParsedMail>>,
+    searchable_body_texts: SearchableBodyTextCache,
     combined: bool,
     local_folders: HashSet<String>,
     local_counts: HashMap<String, (u32, u32)>,
@@ -1689,6 +1777,19 @@ fn fallback_selection_index(item_count: u32, previous_index: Option<u32>) -> Opt
 
 fn generation_is_current(current: u64, result_generation: u64) -> bool {
     current == result_generation
+}
+
+fn advance_generation(current: u64) -> u64 {
+    current.wrapping_add(1).max(1)
+}
+
+fn crypto_result_is_current(
+    active_generation: u64,
+    result_generation: u64,
+    active_identity: &MailMessageIdentity,
+    result_identity: &MailMessageIdentity,
+) -> bool {
+    active_generation == result_generation && active_identity == result_identity
 }
 
 fn camel_folder_counter_delta(
@@ -1804,6 +1905,7 @@ impl PendingMailApply {
         mut request: MailLoadRequest,
         mut camel: CamelMailLoad,
         local_messages: Option<Vec<ParsedMail>>,
+        searchable_body_texts: SearchableBodyTextCache,
         local_folders: HashSet<String>,
         replace: bool,
         previous_selection: MailSelectionAnchor,
@@ -1841,6 +1943,7 @@ impl PendingMailApply {
             active_messages: messages,
             combined,
             local_messages,
+            searchable_body_texts,
             local_folders,
             local_counts: HashMap::new(),
             existing_ids: HashSet::new(),
@@ -1859,6 +1962,7 @@ impl PendingMailApply {
         request: MailLoadRequest,
         reason: String,
         messages: Vec<ParsedMail>,
+        searchable_body_texts: SearchableBodyTextCache,
         local_folders: HashSet<String>,
         replace: bool,
         previous_selection: MailSelectionAnchor,
@@ -1876,6 +1980,7 @@ impl PendingMailApply {
             active_messages: messages,
             combined: false,
             local_messages: None,
+            searchable_body_texts,
             local_folders,
             local_counts: HashMap::new(),
             existing_ids: HashSet::new(),
@@ -1907,10 +2012,16 @@ fn load_mail_backend(
     );
     if offline_mode {
         let store = crate::services::MailStoreService::new();
+        let messages = store.load_local_records_cancelable(cancelled);
+        let searchable_body_texts = match prepare_searchable_body_texts(&messages, cancelled) {
+            Ok(texts) => texts,
+            Err(error) => return MailPageLoadResult::Error(error),
+        };
         return MailPageLoadResult::Local {
             reason: "Offline-Modus: lokaler Evolution-Speicher".to_string(),
-            messages: store.load_local_records_cancelable(cancelled),
+            messages,
             local_folders: store.local_folder_definitions(),
+            searchable_body_texts,
         };
     }
     tracing::debug!(
@@ -1942,7 +2053,7 @@ fn load_mail_backend(
 
     if request.is_remote_or_paged() {
         return match camel_result {
-            Ok(camel) => MailPageLoadResult::Camel(camel),
+            Ok(camel) => prepared_camel_result(camel, cancelled),
             Err(error) => match camel_mail_service::load_messages_graph(
                 request.source_uid.as_deref(),
                 request.folder_name.as_deref(),
@@ -1951,7 +2062,7 @@ fn load_mail_backend(
                 &request.graph_cursors,
                 cancelled,
             ) {
-                Ok(graph) => MailPageLoadResult::Camel(graph),
+                Ok(graph) => prepared_camel_result(graph, cancelled),
                 Err(graph_error) => MailPageLoadResult::Error(format!(
                     "Mailkonto-Synchronisation nicht verfügbar ({error}); Online-Suche ebenfalls nicht verfügbar ({graph_error})"
                 )),
@@ -1968,13 +2079,31 @@ fn load_mail_backend(
             let store = crate::services::MailStoreService::new();
             let local_folders = store.local_folder_definitions();
             let local_messages = store.load_local_records_cancelable(cancelled);
+            let mut searchable_body_texts =
+                match prepare_searchable_body_texts(&camel.messages, cancelled) {
+                    Ok(texts) => texts,
+                    Err(error) => return MailPageLoadResult::Error(error),
+                };
+            let local_searchable_body_texts =
+                match prepare_searchable_body_texts(&local_messages, cancelled) {
+                    Ok(texts) => texts,
+                    Err(error) => return MailPageLoadResult::Error(error),
+                };
+            searchable_body_texts = merge_authoritative_searchable_body_texts(
+                searchable_body_texts,
+                local_searchable_body_texts,
+            );
             if local_messages.is_empty() && local_folders.is_empty() {
-                MailPageLoadResult::Camel(camel)
+                MailPageLoadResult::Camel {
+                    camel,
+                    searchable_body_texts,
+                }
             } else {
                 MailPageLoadResult::Combined {
                     camel,
                     local_messages,
                     local_folders,
+                    searchable_body_texts,
                 }
             }
         }
@@ -1987,13 +2116,19 @@ fn load_mail_backend(
                 &request.graph_cursors,
                 cancelled,
             ) {
-                return MailPageLoadResult::Camel(graph);
+                return prepared_camel_result(graph, cancelled);
             }
             let store = crate::services::MailStoreService::new();
+            let messages = store.load_local_records_cancelable(cancelled);
+            let searchable_body_texts = match prepare_searchable_body_texts(&messages, cancelled) {
+                Ok(texts) => texts,
+                Err(error) => return MailPageLoadResult::Error(error),
+            };
             MailPageLoadResult::Local {
                 reason: "Keine aktiven Mailkonten; lokaler Evolution-Speicher".to_string(),
-                messages: store.load_local_records_cancelable(cancelled),
+                messages,
                 local_folders: store.local_folder_definitions(),
+                searchable_body_texts,
             }
         }
         Err(error) => {
@@ -2005,15 +2140,23 @@ fn load_mail_backend(
                 &request.graph_cursors,
                 cancelled,
             ) {
-                return MailPageLoadResult::Camel(graph);
+                return prepared_camel_result(graph, cancelled);
             }
             let store = crate::services::MailStoreService::new();
+            let messages = store.load_local_records_cancelable(cancelled);
+            let searchable_body_texts = match prepare_searchable_body_texts(&messages, cancelled) {
+                Ok(texts) => texts,
+                Err(search_error) => {
+                    return MailPageLoadResult::Error(search_error);
+                }
+            };
             MailPageLoadResult::Local {
                 reason: format!(
                     "Mailkonto-Synchronisation nicht verfügbar ({error}); lokaler Evolution-Speicher"
                 ),
-                messages: store.load_local_records_cancelable(cancelled),
+                messages,
                 local_folders: store.local_folder_definitions(),
+                searchable_body_texts,
             }
         }
     }
@@ -2104,6 +2247,7 @@ mod imp {
         pub crypto_status_caption: RefCell<Option<gtk::Label>>,
         pub crypto_status_chip: RefCell<Option<gtk::Box>>,
         pub crypto_status_routine: Cell<bool>,
+        pub crypto_request_generation: Cell<u64>,
         pub all_headers_revealer: RefCell<Option<gtk::Revealer>>,
         pub all_headers_grid: RefCell<Option<gtk::Grid>>,
         pub normal_headers_grid: RefCell<Option<gtk::Grid>>,
@@ -2416,6 +2560,21 @@ impl MailPage {
             true
         } else {
             false
+        }
+    }
+
+    fn begin_crypto_request(&self) -> u64 {
+        let generation = advance_generation(self.imp().crypto_request_generation.get());
+        self.imp().crypto_request_generation.set(generation);
+        generation
+    }
+
+    fn invalidate_message_filters(&self) {
+        if let Some(filter) = self.imp().message_filter.borrow().as_ref() {
+            filter.changed(gtk::FilterChange::Different);
+        }
+        if let Some(filter) = self.imp().thread_filter.borrow().as_ref() {
+            filter.changed(gtk::FilterChange::Different);
         }
     }
 
@@ -9379,6 +9538,8 @@ impl MailPage {
         set_accessible_label(&find_previous, "Vorheriger Treffer");
         set_accessible_label(&find_next, "Nächster Treffer");
         set_accessible_label(&find_close, "Suche in Nachricht schließen");
+        find_previous.set_sensitive(false);
+        find_next.set_sensitive(false);
         let message_find_bar = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(4)
@@ -9401,24 +9562,40 @@ impl MailPage {
 
         let viewer_for_find = mail_viewer.clone();
         let status_for_find = message_find_status.clone();
+        let previous_for_find = find_previous.clone();
+        let next_for_find = find_next.clone();
         message_find_entry.connect_search_changed(move |entry| {
             let result = viewer_for_find.search_displayed_message(entry.text().as_str());
-            update_displayed_message_search_status(&status_for_find, &result);
+            update_displayed_message_search_status(
+                &status_for_find,
+                &previous_for_find,
+                &next_for_find,
+                &result,
+            );
             if result.status != MessageSearchStatus::Pending {
                 return;
             }
             let viewer = viewer_for_find.downgrade();
             let status = status_for_find.downgrade();
+            let previous = previous_for_find.downgrade();
+            let next = next_for_find.downgrade();
             let generation = result.generation;
             let attempts = Rc::new(Cell::new(0u16));
             glib::timeout_add_local(StdDuration::from_millis(40), move || {
-                let (Some(viewer), Some(status)) = (viewer.upgrade(), status.upgrade()) else {
+                let (Some(viewer), Some(status), Some(previous), Some(next)) = (
+                    viewer.upgrade(),
+                    status.upgrade(),
+                    previous.upgrade(),
+                    next.upgrade(),
+                ) else {
                     return glib::ControlFlow::Break;
                 };
                 let attempt = attempts.get().saturating_add(1);
                 attempts.set(attempt);
                 if attempt >= 250 {
                     status.set_label("Suche nicht verfügbar");
+                    previous.set_sensitive(false);
+                    next.set_sensitive(false);
                     return glib::ControlFlow::Break;
                 }
                 let Some(result) = viewer.displayed_message_search_result() else {
@@ -9427,7 +9604,7 @@ impl MailPage {
                 if result.generation != generation {
                     return glib::ControlFlow::Break;
                 }
-                update_displayed_message_search_status(&status, &result);
+                update_displayed_message_search_status(&status, &previous, &next, &result);
                 if result.status == MessageSearchStatus::Pending {
                     glib::ControlFlow::Continue
                 } else {
@@ -9437,15 +9614,29 @@ impl MailPage {
         });
         let viewer_for_previous = mail_viewer.clone();
         let status_for_previous = message_find_status.clone();
+        let previous_for_previous = find_previous.clone();
+        let next_for_previous = find_next.clone();
         find_previous.connect_clicked(move |_| {
             let result = viewer_for_previous.search_displayed_message_previous();
-            update_displayed_message_search_status(&status_for_previous, &result);
+            update_displayed_message_search_status(
+                &status_for_previous,
+                &previous_for_previous,
+                &next_for_previous,
+                &result,
+            );
         });
         let viewer_for_next = mail_viewer.clone();
         let status_for_next = message_find_status.clone();
+        let previous_for_next = find_previous.clone();
+        let next_for_next = find_next.clone();
         find_next.connect_clicked(move |_| {
             let result = viewer_for_next.search_displayed_message_next();
-            update_displayed_message_search_status(&status_for_next, &result);
+            update_displayed_message_search_status(
+                &status_for_next,
+                &previous_for_next,
+                &next_for_next,
+                &result,
+            );
         });
         let viewer_for_close = mail_viewer.clone();
         let entry_for_close = message_find_entry.clone();
@@ -9543,6 +9734,10 @@ impl MailPage {
             #[weak]
             thread_context,
             move |sel| {
+                let crypto_request_generation = page_for_read
+                    .upgrade()
+                    .map(|page| page.begin_crypto_request())
+                    .unwrap_or_default();
                 if let Some(page) = page_for_read.upgrade() {
                     page.reset_displayed_message_search_for_selection();
                 }
@@ -9582,6 +9777,7 @@ impl MailPage {
                     let raw_mime = msg.raw_mime();
                     let has_crypto_envelope =
                         raw_mime.as_deref().is_some_and(raw_mime_may_contain_crypto);
+                    let message_identity = msg.message_identity();
                     if let Some(page) = page_for_read.upgrade() {
                         page.set_crypto_status_routine(!has_crypto_envelope);
                     }
@@ -9601,6 +9797,7 @@ impl MailPage {
                         let attachment_bar_for_crypto = attachment_bar.clone();
                         let (crypto_sender, crypto_receiver) = async_channel::bounded(1);
                         let message_id_for_parse = message_id.clone();
+                        let message_identity_for_worker = message_identity.clone();
                         let smime_options = AppSettings::try_new()
                             .map(|settings| settings.smime_options(false, false))
                             .unwrap_or_default();
@@ -9620,27 +9817,44 @@ impl MailPage {
                                         )
                                     },
                                 );
-                                (inspection, decrypted)
+                                let searchable_body_text = decrypted
+                                    .as_ref()
+                                    .map(|parsed| prepare_searchable_body_text(&parsed.html_body));
+                                (inspection, decrypted, searchable_body_text)
                             });
-                            if let Err(error) = crypto_sender.send_blocking(result) {
+                            if let Err(error) = crypto_sender.send_blocking((
+                                crypto_request_generation,
+                                message_identity_for_worker,
+                                result,
+                            )) {
                                 tracing::debug!(%error, "OpenPGP inspection result was dropped");
                             }
                         });
                         glib::spawn_future_local(async move {
-                            let Ok(inspection) = crypto_receiver.recv().await else {
+                            let Ok((result_generation, result_identity, inspection)) =
+                                crypto_receiver.recv().await
+                            else {
                                 return;
                             };
-                            let Some(label) = label_for_crypto.upgrade() else {
+                            let Some(page) = page_for_crypto.upgrade() else {
                                 return;
                             };
                             let Some(current) = selected_mail_message(&selection_for_crypto) else {
                                 return;
                             };
-                            if current.id() != message_id {
+                            if !crypto_result_is_current(
+                                page.imp().crypto_request_generation.get(),
+                                result_generation,
+                                &current.message_identity(),
+                                &result_identity,
+                            ) {
                                 return;
                             }
+                            let Some(label) = label_for_crypto.upgrade() else {
+                                return;
+                            };
                             match inspection {
-                                Ok((inspection, decrypted)) => {
+                                Ok((inspection, decrypted, searchable_body_text)) => {
                                     let label_text = inspection.details.display_text();
                                     let crypto_visible =
                                         crypto_details_are_visible(&inspection.details);
@@ -9649,7 +9863,9 @@ impl MailPage {
                                             parsed.html_body,
                                             parsed.preview_snippet,
                                             parsed.attachments,
+                                            searchable_body_text,
                                         );
+                                        page.invalidate_message_filters();
                                         Self::render_message_content(
                                             &current,
                                             &viewer_for_crypto,
@@ -9657,17 +9873,13 @@ impl MailPage {
                                         );
                                     }
                                     label.set_label(&label_text);
-                                    if let Some(page) = page_for_crypto.upgrade() {
-                                        page.set_crypto_status_routine(!crypto_visible);
-                                    }
+                                    page.set_crypto_status_routine(!crypto_visible);
                                 }
                                 Err(error) => {
                                     label.set_label(&format!(
                                         "Kryptografie-Prüfung fehlgeschlagen: {error}"
                                     ));
-                                    if let Some(page) = page_for_crypto.upgrade() {
-                                        page.set_crypto_status_routine(false);
-                                    }
+                                    page.set_crypto_status_routine(false);
                                 }
                             }
                         });
@@ -10499,7 +10711,11 @@ impl MailPage {
                 &worker_folder_name,
                 &message_uids,
                 &worker_cancellation,
-            );
+            )
+            .and_then(|messages| {
+                prepare_searchable_body_texts(&messages, &worker_cancellation)
+                    .map(|searchable_body_texts| (messages, searchable_body_texts))
+            });
             if let Err(error) = sender.send_blocking(result) {
                 tracing::debug!(%error, "Incremental Camel result was dropped");
             }
@@ -10518,7 +10734,7 @@ impl MailPage {
             }
             page.imp().mail_incremental_loading.set(false);
             match result {
-                Ok(messages) => {
+                Ok((messages, searchable_body_texts)) => {
                     let (unread_delta, total_delta) =
                         camel_folder_counter_delta(&change_for_result, &previous_unread, &messages);
                     page.apply_camel_folder_counter_delta(
@@ -10530,7 +10746,7 @@ impl MailPage {
                     if let Some(store) = page.imp().message_store.borrow().as_ref() {
                         Self::remove_message_ids(store, &removed_ids);
                         Self::remove_message_ids(store, &replaced_ids);
-                        page.replace_or_append_messages(store, messages);
+                        page.replace_or_append_messages(store, messages, searchable_body_texts);
                     }
                     if let Some(filter) = page.imp().message_filter.borrow().as_ref() {
                         filter.changed(gtk::FilterChange::Different);
@@ -11107,7 +11323,11 @@ impl MailPage {
                 &graph_query,
                 search_limit,
                 &cancellation,
-            );
+            )
+            .and_then(|load| {
+                prepare_searchable_body_texts(&load.messages, &cancellation)
+                    .map(|searchable_body_texts| (load, searchable_body_texts))
+            });
             if let Err(error) = sender.send_blocking(result) {
                 tracing::debug!(%error, "Graph search result was dropped before delivery");
             }
@@ -11130,8 +11350,15 @@ impl MailPage {
                 button.set_sensitive(true);
             }
             match result {
-                Ok(Ok(load)) => {
-                    page.apply_mail_load(request, MailPageLoadResult::Camel(load), true);
+                Ok(Ok((load, searchable_body_texts))) => {
+                    page.apply_mail_load(
+                        request,
+                        MailPageLoadResult::Camel {
+                            camel: load,
+                            searchable_body_texts,
+                        },
+                        true,
+                    );
                 }
                 Ok(Err(error)) => {
                     tracing::warn!(%error, query = %input, "Graph mail search failed");
@@ -11172,7 +11399,8 @@ impl MailPage {
 
     fn apply_mail_load(&self, request: MailLoadRequest, result: MailPageLoadResult, replace: bool) {
         let pending_search = match &result {
-            MailPageLoadResult::Camel(camel) | MailPageLoadResult::Combined { camel, .. }
+            MailPageLoadResult::Camel { camel, .. }
+            | MailPageLoadResult::Combined { camel, .. }
                 if camel.is_graph && camel.search_query.is_none() =>
             {
                 self.imp()
@@ -11185,7 +11413,7 @@ impl MailPage {
             _ => None,
         };
         let result_kind = match &result {
-            MailPageLoadResult::Camel(_) => "camel",
+            MailPageLoadResult::Camel { .. } => "camel",
             MailPageLoadResult::Combined { .. } => "combined",
             MailPageLoadResult::Local { .. } => "local",
             MailPageLoadResult::Error(_) => "error",
@@ -11204,12 +11432,14 @@ impl MailPage {
             MailPageLoadResult::Combined {
                 camel,
                 local_messages,
+                searchable_body_texts,
                 local_folders,
             } => {
                 self.begin_pending_mail_apply(PendingMailApply::from_camel(
                     request,
                     camel,
                     Some(local_messages),
+                    searchable_body_texts,
                     local_folders,
                     replace,
                     previous_selection,
@@ -11217,7 +11447,10 @@ impl MailPage {
                     self.imp().load_generation.get(),
                 ));
             }
-            MailPageLoadResult::Camel(camel) => {
+            MailPageLoadResult::Camel {
+                camel,
+                searchable_body_texts,
+            } => {
                 tracing::debug!(
                     folders = camel.folders.len(),
                     messages = camel.messages.len(),
@@ -11227,6 +11460,7 @@ impl MailPage {
                     request,
                     camel,
                     None,
+                    searchable_body_texts,
                     HashSet::new(),
                     replace,
                     previous_selection,
@@ -11237,12 +11471,14 @@ impl MailPage {
             MailPageLoadResult::Local {
                 reason,
                 messages,
+                searchable_body_texts,
                 local_folders,
             } => {
                 self.begin_pending_mail_apply(PendingMailApply::from_local(
                     request,
                     reason,
                     messages,
+                    searchable_body_texts,
                     local_folders,
                     replace,
                     previous_selection,
@@ -11442,7 +11678,14 @@ impl MailPage {
                 }
             }
             if pending.existing_ids.insert(record.id.clone()) {
-                objects.push(record.into_object().upcast::<glib::Object>());
+                let searchable_body_text = pending
+                    .searchable_body_texts
+                    .remove(&parsed_mail_identity(&record));
+                let object = record.into_object();
+                if let Some(searchable_body_text) = searchable_body_text {
+                    object.set_searchable_body_text(searchable_body_text);
+                }
+                objects.push(object.upcast::<glib::Object>());
                 pending.appended = pending.appended.saturating_add(1);
             }
         }
@@ -12005,17 +12248,29 @@ impl MailPage {
         }
     }
 
-    fn replace_or_append_messages(&self, store: &gio::ListStore, messages: Vec<ParsedMail>) {
+    fn replace_or_append_messages(
+        &self,
+        store: &gio::ListStore,
+        messages: Vec<ParsedMail>,
+        mut searchable_body_texts: SearchableBodyTextCache,
+    ) {
         let mut unique_messages = Vec::with_capacity(messages.len());
         let mut ids = std::collections::HashSet::new();
         for message in messages {
-            if !message.id.trim().is_empty() && ids.insert(message.id.clone()) {
-                unique_messages.push(message);
+            let id = message.id.clone();
+            if !id.trim().is_empty() && ids.insert(id.clone()) {
+                let searchable_body_text =
+                    searchable_body_texts.remove(&parsed_mail_identity(&message));
+                unique_messages.push((message, searchable_body_text));
             }
         }
         Self::remove_message_ids(store, &ids);
-        for message in unique_messages {
-            store.append(&message.into_object());
+        for (message, searchable_body_text) in unique_messages {
+            let object = message.into_object();
+            if let Some(searchable_body_text) = searchable_body_text {
+                object.set_searchable_body_text(searchable_body_text);
+            }
+            store.append(&object);
         }
     }
 
@@ -12716,7 +12971,8 @@ mod tests {
             match_count: 4,
             current_match: Some(2),
         };
-        assert_eq!(displayed_message_search_status(&result), "2 von 4");
+        assert_eq!(displayed_message_search_status(&result), "Treffer: 4");
+        assert!(displayed_message_search_has_matches(&result));
 
         let not_found = MessageSearchResult {
             status: MessageSearchStatus::NotFound,
@@ -12724,7 +12980,55 @@ mod tests {
             current_match: None,
             ..result
         };
-        assert_eq!(displayed_message_search_status(&not_found), "Keine Treffer");
+        assert_eq!(displayed_message_search_status(&not_found), "Treffer: 0");
+        assert!(!displayed_message_search_has_matches(&not_found));
+    }
+
+    #[test]
+    fn searchable_body_cache_is_camel_first_and_first_wins_for_duplicate_ids() {
+        let camel_identity = MailMessageIdentity::from_parts(
+            "same-id",
+            "inbox",
+            Some("<same@example.test>"),
+            Some(&MailBackendLocation {
+                source_uid: "account-a".to_string(),
+                folder_name: "INBOX".to_string(),
+                message_uid: "uid-1".to_string(),
+                message_id: Some("<same@example.test>".to_string()),
+            }),
+        );
+        let local_identity =
+            MailMessageIdentity::from_parts("same-id", "inbox", Some("<same@example.test>"), None);
+        let mut camel = HashMap::new();
+        insert_searchable_body_text_first(&mut camel, camel_identity.clone(), "<p>Camel body</p>");
+        let mut local = HashMap::new();
+        insert_searchable_body_text_first(&mut local, local_identity.clone(), "<p>Local body</p>");
+        insert_searchable_body_text_first(
+            &mut local,
+            local_identity.clone(),
+            "<p>Later duplicate</p>",
+        );
+        local.insert(camel_identity.clone(), Arc::from("local collision"));
+
+        let merged = merge_authoritative_searchable_body_texts(camel, local);
+        assert_eq!(
+            merged.get(&camel_identity).map(Arc::as_ref),
+            Some("camel body")
+        );
+        assert_eq!(
+            merged.get(&local_identity).map(Arc::as_ref),
+            Some("local body")
+        );
+    }
+
+    #[test]
+    fn stale_crypto_result_is_rejected_even_when_message_id_is_unchanged() {
+        let identity = MailMessageIdentity::from_parts("same-id", "inbox", None, None);
+        let other_identity = MailMessageIdentity::from_parts("same-id", "archive", None, None);
+
+        assert!(crypto_result_is_current(7, 7, &identity, &identity));
+        assert!(!crypto_result_is_current(8, 7, &identity, &identity));
+        assert!(!crypto_result_is_current(7, 7, &identity, &other_identity));
     }
 
     #[test]
@@ -12823,6 +13127,64 @@ mod tests {
         assert!(search_query_needs_body(&MessageSearchQuery::parse(
             "-body:secret"
         )));
+    }
+
+    #[test]
+    fn searchable_body_text_is_prepared_as_lowercase_plaintext_off_ui_thread() {
+        let prepared = std::thread::spawn(|| {
+            prepare_searchable_body_text("<p>Body <strong>TERM</strong></p>")
+        })
+        .join()
+        .expect("worker preparation should finish");
+
+        assert_eq!(&*prepared, "body term");
+    }
+
+    #[test]
+    fn message_body_filter_uses_only_prepared_worker_text() {
+        let message = MailMessageObject::new(
+            "message-body",
+            "inbox",
+            "Alice",
+            "alice@example.test",
+            "me@example.test",
+            "",
+            "",
+            "",
+            "Body search",
+            None,
+            Vec::new(),
+            Vec::new(),
+            "message-body",
+            1,
+            0,
+            "Tue, 11 Aug 2026 14:30:00 +0000",
+            "",
+            "<p>Prepared later</p>",
+            false,
+            false,
+            false,
+            MailFollowUpState::None,
+            Vec::new(),
+            None,
+            Vec::new(),
+        );
+        let query = MessageSearchQuery::parse("body:prepared");
+
+        assert!(!message_matches_filter(
+            &message,
+            &query,
+            MessageFilter::All,
+            &FolderSelection::all(),
+        ));
+
+        message.set_searchable_body_text(Arc::from("prepared later"));
+        assert!(message_matches_filter(
+            &message,
+            &query,
+            MessageFilter::All,
+            &FolderSelection::all(),
+        ));
     }
 
     #[test]

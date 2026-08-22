@@ -30,6 +30,53 @@ fn empty_arc_bytes() -> Arc<[u8]> {
     Arc::from([])
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct MailBackendIdentity {
+    pub(crate) source_uid: String,
+    pub(crate) folder_name: String,
+    pub(crate) message_uid: String,
+    pub(crate) message_id: Option<String>,
+}
+
+/// Stable identity for one displayed message record.
+///
+/// The row ID alone is not sufficient: a local record and a Camel record can
+/// legitimately expose the same ID while carrying different bodies.  The
+/// backend location therefore remains part of the key, and local records
+/// retain their folder and RFC822 Message-ID context.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct MailMessageIdentity {
+    pub(crate) id: String,
+    pub(crate) folder_id: String,
+    pub(crate) message_id: Option<String>,
+    pub(crate) backend: Option<MailBackendIdentity>,
+}
+
+impl MailMessageIdentity {
+    pub(crate) fn from_parts(
+        id: &str,
+        folder_id: &str,
+        message_id: Option<&str>,
+        backend_location: Option<&MailBackendLocation>,
+    ) -> Self {
+        let message_id = message_id
+            .map(str::to_string)
+            .or_else(|| backend_location.and_then(|location| location.message_id.clone()));
+        let backend = backend_location.map(|location| MailBackendIdentity {
+            source_uid: location.source_uid.clone(),
+            folder_name: location.folder_name.clone(),
+            message_uid: location.message_uid.clone(),
+            message_id: message_id.clone(),
+        });
+        Self {
+            id: id.to_string(),
+            folder_id: folder_id.to_string(),
+            message_id,
+            backend,
+        }
+    }
+}
+
 mod imp {
     use super::*;
     use std::cell::RefCell;
@@ -222,16 +269,31 @@ impl MailMessageObject {
         self.imp().html_body.borrow().clone()
     }
 
-    pub(crate) fn searchable_body_text(&self) -> Arc<str> {
-        if let Some(cached) = self.imp().searchable_body_text.borrow().as_ref() {
-            return cached.clone();
-        }
-        let text: Arc<str> =
-            crate::services::html_sanitizer::html_to_plain_text(&self.imp().html_body.borrow())
-                .to_ascii_lowercase()
-                .into();
-        self.imp().searchable_body_text.replace(Some(text.clone()));
-        text
+    /// Return the body text prepared by a non-GTK worker.
+    ///
+    /// Filtering and in-message search must never turn a selected GObject's
+    /// HTML into plaintext lazily.  A missing value therefore means that the
+    /// record has not crossed the worker boundary with a searchable body yet;
+    /// callers must treat it as an empty body rather than preparing it here.
+    pub(crate) fn searchable_body_text(&self) -> Option<Arc<str>> {
+        self.imp().searchable_body_text.borrow().clone()
+    }
+
+    pub(crate) fn set_searchable_body_text(&self, text: Arc<str>) {
+        self.imp().searchable_body_text.replace(Some(text));
+    }
+
+    pub(crate) fn message_identity(&self) -> MailMessageIdentity {
+        let id = self.id();
+        let folder_id = self.folder_id();
+        let message_id = self.message_id();
+        let backend_location = self.backend_location();
+        MailMessageIdentity::from_parts(
+            &id,
+            &folder_id,
+            message_id.as_deref(),
+            backend_location.as_ref(),
+        )
     }
 
     pub(crate) fn replace_rendered_content(
@@ -239,11 +301,15 @@ impl MailMessageObject {
         html_body: String,
         preview_snippet: String,
         attachments: Vec<AttachmentInfo>,
+        searchable_body_text: Option<Arc<str>>,
     ) {
         *self.imp().html_body.borrow_mut() = html_body;
         self.imp().searchable_body_text.take();
         *self.imp().preview_snippet.borrow_mut() = preview_snippet;
         *self.imp().attachments.borrow_mut() = attachments;
+        if let Some(searchable_body_text) = searchable_body_text {
+            self.set_searchable_body_text(searchable_body_text);
+        }
     }
 
     pub fn is_unread(&self) -> bool {
@@ -386,7 +452,12 @@ fn update_label_values(labels: &mut Vec<String>, label: &str, labeled: bool) -> 
 
 #[cfg(test)]
 mod tests {
-    use super::{MailBackendLocation, MailFollowUpState, MailMessageObject, update_label_values};
+    use std::sync::Arc;
+
+    use super::{
+        MailBackendLocation, MailFollowUpState, MailMessageIdentity, MailMessageObject,
+        update_label_values,
+    };
 
     #[test]
     fn label_updates_are_case_insensitive_and_idempotent() {
@@ -447,17 +518,50 @@ mod tests {
         assert_eq!(message.thread_id(), "eds:account-a:Archive:uid-1");
         assert_eq!(message.backend_location().unwrap().folder_name, "Archive");
 
-        message.replace_rendered_content(
-            "<p>First body</p>".to_string(),
-            String::new(),
-            Vec::new(),
+        assert!(message.searchable_body_text().is_none());
+        message.set_searchable_body_text(Arc::from("first body"));
+        assert_eq!(
+            message.searchable_body_text().as_deref(),
+            Some("first body")
         );
-        assert_eq!(message.searchable_body_text().as_ref(), "first body");
         message.replace_rendered_content(
             "<p>Updated body</p>".to_string(),
             String::new(),
             Vec::new(),
+            Some(Arc::from("updated body")),
         );
-        assert_eq!(message.searchable_body_text().as_ref(), "updated body");
+        assert_eq!(
+            message.searchable_body_text().as_deref(),
+            Some("updated body")
+        );
+
+        message.replace_rendered_content(
+            "<p>Unprepared body</p>".to_string(),
+            String::new(),
+            Vec::new(),
+            None,
+        );
+        assert!(message.searchable_body_text().is_none());
+    }
+
+    #[test]
+    fn message_identity_distinguishes_local_and_camel_records_with_same_id() {
+        let local =
+            MailMessageIdentity::from_parts("same-id", "inbox", Some("<same@example.test>"), None);
+        let camel = MailMessageIdentity::from_parts(
+            "same-id",
+            "inbox",
+            Some("<same@example.test>"),
+            Some(&MailBackendLocation {
+                source_uid: "account-a".to_string(),
+                folder_name: "INBOX".to_string(),
+                message_uid: "uid-1".to_string(),
+                message_id: Some("<same@example.test>".to_string()),
+            }),
+        );
+
+        assert_ne!(local, camel);
+        assert_eq!(local, local.clone());
+        assert_eq!(camel, camel.clone());
     }
 }

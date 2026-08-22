@@ -550,7 +550,7 @@ impl MailViewer {
                 source_generation: key.source_generation,
                 render_generation: generation,
                 message_id: self.imp().current_message_id.borrow().clone(),
-                text: render_plan.visible_text.clone(),
+                render_plan: render_plan.clone(),
             }));
         tracing::debug!(
             html_bytes = self
@@ -753,7 +753,7 @@ impl MailViewer {
             return result;
         };
 
-        let matches = plaintext_search_matches(&displayed.text, query);
+        let matches = plaintext_search_matches(&displayed.render_plan.visible_text, query);
         let result = MessageSearchResult {
             generation,
             backend: Some(MessageSearchBackend::PlaintextFallback),
@@ -1251,7 +1251,7 @@ struct DisplayedPlaintext {
     source_generation: u64,
     render_generation: u64,
     message_id: Option<String>,
-    text: String,
+    render_plan: Arc<PreparedMailBody>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
