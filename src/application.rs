@@ -372,6 +372,7 @@ impl EvolutionApplication {
         self.set_accels_for_action("win.show-help-overlay", &["<Ctrl>question"]);
         self.set_accels_for_action("win.search", &["<Ctrl>F"]);
         self.set_accels_for_action("win.refresh-mail", &["F5"]);
+        self.set_accels_for_action("win.mail-send-receive", &["F12"]);
         self.set_accels_for_action("win.undo", &["<Ctrl>Z"]);
         self.set_accels_for_action("win.redo", &["<Ctrl><Shift>Z"]);
         self.set_accels_for_action("win.apply-filters", &["<Ctrl>Y"]);

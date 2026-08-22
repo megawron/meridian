@@ -4,16 +4,15 @@
 // Camel owns the actual mail store.  The adapter deliberately returns plain
 // Rust records so all GTK work remains on the main thread.
 
-use super::exchange_service::graph_service_for_configured_account;
+use super::exchange_service::graph_service_for_configured_account_worker;
 use super::mail_metadata_service::MailFollowUpState;
 use super::mail_store_service::{MailBackendLocation, ParsedMail, assign_thread_metadata};
+use super::mail_transport_service::{MailTransportMode, MailTransportService};
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-
-#[cfg(eds_camel_bridge)]
-use super::mail_store_service::MailStoreService;
+use uuid::Uuid;
 
 const DEFAULT_MAIL_PAGE_SIZE: usize = 100;
 const MAX_MAIL_PAGE_SIZE: usize = 1_000;
@@ -138,9 +137,18 @@ pub(crate) struct CamelMailLoad {
 }
 
 pub(crate) fn mail_cache_path() -> std::path::PathBuf {
-    glib::user_cache_dir()
-        .join("evolution-gtk4")
-        .join("mail_load_cache.json")
+    crate::services::app_cache_dir().join("mail_load_cache.json")
+}
+
+/// Build the local-store facade without resolving GSettings.  Graph and Camel
+/// provider work runs on workers; the facade is only needed for portable
+/// filter-rule loading and therefore uses the same explicit environment/data
+/// root policy as the other framework-neutral service paths.
+fn worker_mail_store_service() -> crate::services::mail_store_service::MailStoreService {
+    let mail_dir = std::env::var_os("EVOLUTION_GTK4_MAIL_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| crate::services::app_data_dir().join("mail"));
+    crate::services::mail_store_service::MailStoreService::with_mail_dir(mail_dir)
 }
 
 pub(crate) fn save_mail_load_cache(load: &CamelMailLoad) {
@@ -177,7 +185,8 @@ pub(crate) fn load_messages_graph(
     cancelled: &Arc<AtomicBool>,
 ) -> Result<CamelMailLoad, String> {
     let window = PageWindow::normalized(offset, max_messages_per_folder)?;
-    let Some((configured_source_uid, service)) = graph_service_for_configured_account() else {
+    let Some((configured_source_uid, service)) = graph_service_for_configured_account_worker()
+    else {
         return Err("Kein aktiviertes Exchange-Profil mit Graph-Zugriff verfügbar".to_string());
     };
     let service = service.with_cancellation_flag(cancelled.clone());
@@ -263,8 +272,7 @@ pub(crate) fn load_messages_graph(
     }
     deduplicate_messages(&mut messages)?;
     cancellation_error(cancelled, "Graph-Mail-Laden")?;
-    crate::services::mail_store_service::MailStoreService::new()
-        .apply_backend_filters(&mut messages);
+    worker_mail_store_service().apply_backend_filters(&mut messages);
     cancellation_error(cancelled, "Graph-Mail-Laden")?;
     assign_thread_metadata(&mut messages);
     cancellation_error(cancelled, "Graph-Mail-Laden")?;
@@ -292,7 +300,8 @@ pub(crate) fn search_messages_graph(
     cancelled: &Arc<AtomicBool>,
 ) -> Result<CamelMailLoad, String> {
     let window = PageWindow::normalized(0, max_items)?;
-    let Some((configured_source_uid, service)) = graph_service_for_configured_account() else {
+    let Some((configured_source_uid, service)) = graph_service_for_configured_account_worker()
+    else {
         return Err("Kein aktiviertes Exchange-Profil mit Graph-Zugriff verfügbar".to_string());
     };
     let service = service.with_cancellation_flag(cancelled.clone());
@@ -341,8 +350,7 @@ pub(crate) fn search_messages_graph(
         .collect::<Vec<_>>();
     deduplicate_messages(&mut messages)?;
     cancellation_error(cancelled, "Graph-Mail-Suche")?;
-    crate::services::mail_store_service::MailStoreService::new()
-        .apply_backend_filters(&mut messages);
+    worker_mail_store_service().apply_backend_filters(&mut messages);
     cancellation_error(cancelled, "Graph-Mail-Suche")?;
     assign_thread_metadata(&mut messages);
     cancellation_error(cancelled, "Graph-Mail-Suche")?;
@@ -1234,7 +1242,7 @@ fn parse_native_messages(
     if cancelled.is_some_and(|cancelled| cancelled.load(Ordering::Relaxed)) {
         return Err("Camel-Mail-Verarbeitung wurde abgebrochen".to_string());
     }
-    MailStoreService::new().apply_backend_filters(&mut messages);
+    worker_mail_store_service().apply_backend_filters(&mut messages);
     if cancelled.is_some_and(|cancelled| cancelled.load(Ordering::Relaxed)) {
         return Err("Camel-Mail-Verarbeitung wurde abgebrochen".to_string());
     }
@@ -1267,7 +1275,9 @@ pub(crate) fn load_raw_message(
     location: &MailBackendLocation,
     cancelled: &Arc<AtomicBool>,
 ) -> Result<Vec<u8>, String> {
-    if let Some(service) = super::exchange_service::graph_service_for_source(&location.source_uid) {
+    if let Some(service) =
+        super::exchange_service::graph_service_for_source_worker(&location.source_uid)
+    {
         cancellation_error(cancelled, "Graph-Nachrichtenquelle laden")?;
         let service = service.with_cancellation_flag(cancelled.clone());
         let source = service
@@ -2203,7 +2213,9 @@ pub(crate) fn apply_follow_up_state_with_cancellation(
     due_by: Option<String>,
     cancelled: Arc<AtomicBool>,
 ) -> Result<(), String> {
-    if let Some(service) = super::exchange_service::graph_service_for_source(&location.source_uid) {
+    if let Some(service) =
+        super::exchange_service::graph_service_for_source_worker(&location.source_uid)
+    {
         return service
             .with_cancellation_flag(cancelled)
             .set_message_follow_up_state_sync(&location.message_uid, state)
@@ -2240,7 +2252,7 @@ pub(crate) fn apply_operation_with_result(
             destination,
         } => {
             let Some(service) =
-                super::exchange_service::graph_service_for_source(&location.source_uid)
+                super::exchange_service::graph_service_for_source_worker(&location.source_uid)
             else {
                 return Err(
                     "EDS/Camel-Kopieren ist in diesem Backend noch nicht implementiert".to_string(),
@@ -2261,7 +2273,7 @@ pub(crate) fn apply_operation_with_result(
         }
         CamelMailOperation::RemoveCopy { location } => {
             let Some(service) =
-                super::exchange_service::graph_service_for_source(&location.source_uid)
+                super::exchange_service::graph_service_for_source_worker(&location.source_uid)
             else {
                 return Err(
                     "EDS/Camel-Kopieren ist in diesem Backend noch nicht implementiert".to_string(),
@@ -2279,7 +2291,7 @@ pub(crate) fn apply_operation_with_result(
 }
 
 fn apply_graph_operation(operation: &CamelMailOperation) -> Option<Result<(), String>> {
-    use super::exchange_service::graph_service_for_source;
+    use super::exchange_service::graph_service_for_source_worker;
     let location = match operation {
         CamelMailOperation::SetMessageState { location, .. }
         | CamelMailOperation::SetFollowUp { location, .. }
@@ -2294,7 +2306,7 @@ fn apply_graph_operation(operation: &CamelMailOperation) -> Option<Result<(), St
         | CamelMailOperation::RestoreDeleted { location }
         | CamelMailOperation::RestoreArchived { location } => location,
     };
-    let service = graph_service_for_source(&location.source_uid)?;
+    let service = graph_service_for_source_worker(&location.source_uid)?;
     if matches!(
         operation,
         CamelMailOperation::Copy { .. } | CamelMailOperation::RemoveCopy { .. }
@@ -2355,7 +2367,51 @@ fn apply_graph_operation(operation: &CamelMailOperation) -> Option<Result<(), St
 /// callers run it on a worker thread so Camel can authenticate and perform
 /// network I/O without blocking GTK's main context.
 pub(crate) fn send_message(source_uid: &str, raw_message: &[u8]) -> Result<bool, String> {
-    if let Some(service) = super::exchange_service::graph_service_for_source(source_uid) {
+    send_message_with_cancellation(source_uid, raw_message, None)
+}
+
+/// Send one message while binding Graph's cancellation token to the caller's
+/// one-shot flag.  The native Camel bridge predates a cancellable send entry
+/// point, so it receives a pre-flight cancellation check and remains isolated
+/// behind `eds_camel_bridge`; a confirmed native send is never re-queued merely
+/// because cancellation was requested while Camel was finishing it.
+pub(crate) fn send_message_with_cancellation(
+    source_uid: &str,
+    raw_message: &[u8],
+    cancelled: Option<Arc<AtomicBool>>,
+) -> Result<bool, String> {
+    if cancelled
+        .as_ref()
+        .is_some_and(|cancelled| cancelled.load(Ordering::Acquire))
+    {
+        return Err("Mail-Versand wurde abgebrochen".to_string());
+    }
+
+    // Offline sending is an explicit local queue operation.  Read the
+    // framework-neutral transport state instead of GSettings: this function
+    // is called by the composer worker, where GTK/GObject access is forbidden.
+    // It returns an error to the existing composer contract so no caller can
+    // mistake a queued message for an EDS/Camel/Graph success or delete its
+    // draft.
+    let transport = MailTransportService::shared();
+    if transport.snapshot().mode == MailTransportMode::Offline {
+        let queue_id = format!("offline-{}", Uuid::new_v4());
+        transport
+            .enqueue_message(&queue_id, source_uid, raw_message)
+            .map_err(|error| {
+                format!("Offline-Nachricht konnte nicht vorgemerkt werden: {error}")
+            })?;
+        return Err(
+            "Offline-Modus: Nachricht wurde in die lokale Transportwarteschlange gelegt"
+                .to_string(),
+        );
+    }
+
+    if let Some(service) = super::exchange_service::graph_service_for_source_worker(source_uid) {
+        let service = cancelled
+            .as_ref()
+            .map(|cancelled| service.with_cancellation_flag(cancelled.clone()))
+            .unwrap_or(service);
         return service
             .send_raw_message_sync(raw_message, false)
             .map_err(|error| error.to_string());
@@ -2396,7 +2452,7 @@ pub(crate) fn send_message(source_uid: &str, raw_message: &[u8]) -> Result<bool,
 
     #[cfg(not(eds_camel_bridge))]
     {
-        let _ = (source_uid, raw_message);
+        let _ = (source_uid, raw_message, cancelled);
         Err("native EDS/Camel adapter is not available in this build".to_string())
     }
 }
@@ -2413,7 +2469,7 @@ pub(crate) fn save_message(
     raw_message: &[u8],
     folder: CamelSaveFolder,
 ) -> Result<(), String> {
-    if let Some(service) = super::exchange_service::graph_service_for_source(source_uid) {
+    if let Some(service) = super::exchange_service::graph_service_for_source_worker(source_uid) {
         let save_as_draft = matches!(folder, CamelSaveFolder::Drafts);
         service
             .send_raw_message_sync(raw_message, save_as_draft)

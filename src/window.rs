@@ -19,11 +19,17 @@
 use adw::prelude::*;
 use adw::subclass::prelude::*;
 use gtk::{gio, glib};
+use std::cell::Cell;
 use std::rc::Rc;
 
 use crate::application::EvolutionApplication;
 use crate::services::AppSettings;
 use crate::services::mail_print_service::MailPrintAction;
+use crate::services::mail_transport_service::{
+    MAIL_STOP_ACTION_ID, MailTransportAction, MailTransportMode, MailTransportOperation,
+    MailTransportService, MailTransportSnapshot, MailTransportStartError, MailTransportState,
+    WORK_OFFLINE_ACTION_ID, WORK_ONLINE_ACTION_ID,
+};
 use crate::views::{CalendarPage, ContactsPage, MailPage, MemosPage, TasksPage};
 
 // ─── GObject Subclass ───────────────────────────────────────────────────────
@@ -37,6 +43,12 @@ mod imp {
         pub view_stack: RefCell<Option<adw::ViewStack>>,
         pub toast_overlay: adw::ToastOverlay,
         pub status_label: RefCell<Option<gtk::Label>>,
+        pub status_progress: RefCell<Option<gtk::ProgressBar>>,
+        pub online_toggle: RefCell<Option<gtk::Button>>,
+        pub(crate) transport_service: MailTransportService,
+        pub transport_generation: Cell<u64>,
+        pub transport_queued_items: Cell<usize>,
+        pub transport_status_source: RefCell<Option<glib::SourceId>>,
     }
 
     #[glib::object_subclass]
@@ -77,6 +89,10 @@ mod imp {
     impl WindowImpl for EvolutionWindow {
         fn close_request(&self) -> glib::Propagation {
             let window = self.obj();
+            window.imp().transport_service.stop();
+            if let Some(source) = self.transport_status_source.borrow_mut().take() {
+                source.remove();
+            }
             if let Some(mail_page) = window.mail_page() {
                 mail_page.shutdown_print();
             }
@@ -320,6 +336,198 @@ impl EvolutionWindow {
                 label.set_label(&format!("Evolution GTK4  ·  {status_text}"));
             }
         }
+    }
+
+    fn update_transport_action_sensitivity(&self, snapshot: &MailTransportSnapshot) {
+        for (name, enabled) in [
+            ("mail-send-receive", snapshot.actions.mail_send_receive),
+            ("mail-receive-all", snapshot.actions.mail_receive_all),
+            ("mail-send-all", snapshot.actions.mail_send_all),
+            (MAIL_STOP_ACTION_ID, snapshot.actions.mail_stop),
+            (WORK_OFFLINE_ACTION_ID, snapshot.actions.work_offline),
+            (WORK_ONLINE_ACTION_ID, snapshot.actions.work_online),
+        ] {
+            if let Some(action) = self
+                .lookup_action(name)
+                .and_then(|action| action.downcast::<gio::SimpleAction>().ok())
+            {
+                action.set_enabled(enabled);
+            }
+        }
+    }
+
+    fn update_transport_presentation(&self, snapshot: &MailTransportSnapshot) {
+        let current_generation = self.imp().transport_generation.get();
+        if snapshot.generation < current_generation {
+            return;
+        }
+        self.imp().transport_generation.set(snapshot.generation);
+        self.imp().transport_queued_items.set(snapshot.queued_items);
+
+        if let Some(toggle) = self.imp().online_toggle.borrow().as_ref() {
+            let offline = snapshot.mode == MailTransportMode::Offline;
+            toggle.set_icon_name(if offline {
+                "network-offline-symbolic"
+            } else {
+                "network-idle-symbolic"
+            });
+            toggle.set_tooltip_text(Some(if offline {
+                "Offline-Modus aktiv; auf Online umschalten"
+            } else {
+                "Online-Modus aktiv; auf Offline umschalten"
+            }));
+        }
+
+        if let Some(label) = self.imp().status_label.borrow().as_ref() {
+            label.set_label(&format!("Evolution GTK4  ·  {}", snapshot.status_text()));
+        }
+
+        if let Some(progress) = self.imp().status_progress.borrow().as_ref() {
+            let active = matches!(
+                snapshot.state,
+                MailTransportState::Running
+                    | MailTransportState::Retrying
+                    | MailTransportState::CancelRequested
+            );
+            progress.set_visible(active);
+            if let Some(total) = snapshot.progress.total.filter(|total| *total > 0) {
+                progress.set_fraction(
+                    (snapshot.progress.completed as f64 / total as f64).clamp(0.0, 1.0),
+                );
+            } else if active {
+                progress.pulse();
+            } else {
+                progress.set_fraction(0.0);
+            }
+        }
+
+        self.update_transport_action_sensitivity(snapshot);
+    }
+
+    fn sync_transport_mode(&self, offline: bool, refresh_mail: bool) {
+        let mode = if offline {
+            MailTransportMode::Offline
+        } else {
+            MailTransportMode::Online
+        };
+        let snapshot = self.imp().transport_service.set_mode(mode);
+        self.update_transport_presentation(&snapshot);
+        if refresh_mail {
+            // MailPage's existing generation/cancellation gate is the owner
+            // of its model load.  Refreshing after the setting change makes
+            // that gate stop remote work and load the local snapshot offline,
+            // or restart the provider path online.
+            self.refresh_mail_page();
+        }
+        if !offline {
+            self.drain_transport_queue();
+        }
+    }
+
+    fn set_offline_mode(&self, offline: bool) {
+        if let Some(settings) = AppSettings::try_new() {
+            settings.set_offline_mode(offline);
+        } else {
+            self.sync_transport_mode(offline, true);
+        }
+    }
+
+    fn start_mail_transport(&self, action: MailTransportAction) {
+        self.start_mail_transport_with_feedback(action, true);
+    }
+
+    fn start_mail_transport_with_feedback(
+        &self,
+        action: MailTransportAction,
+        show_start_error: bool,
+    ) {
+        let operation = match self.imp().transport_service.start(action) {
+            Ok(operation) => operation,
+            Err(error) => {
+                self.update_transport_presentation(&self.imp().transport_service.snapshot());
+                if show_start_error {
+                    let message = match error {
+                        MailTransportStartError::AlreadyRunning => {
+                            "Ein Mail-Transport läuft bereits"
+                        }
+                        MailTransportStartError::Offline => {
+                            "Offline-Modus: Nachricht bleibt in der lokalen Warteschlange"
+                        }
+                        MailTransportStartError::NoQueuedMessages => {
+                            "Keine ausstehenden Nachrichten"
+                        }
+                    };
+                    self.add_toast(&adw::Toast::new(message));
+                }
+                return;
+            }
+        };
+
+        self.update_transport_presentation(&self.imp().transport_service.snapshot());
+        self.watch_mail_transport(operation, action);
+    }
+
+    fn drain_transport_queue(&self) {
+        let Some(operation) = self.imp().transport_service.start_queued_if_online() else {
+            return;
+        };
+        self.update_transport_presentation(&self.imp().transport_service.snapshot());
+        self.watch_mail_transport(operation, MailTransportAction::SendAll);
+    }
+
+    fn watch_mail_transport(&self, operation: MailTransportOperation, action: MailTransportAction) {
+        let window = self.downgrade();
+        let generation = operation.generation;
+        glib::spawn_future_local(async move {
+            while let Ok(event) = operation.events.recv().await {
+                let Some(window) = window.upgrade() else {
+                    break;
+                };
+                if event.generation != window.imp().transport_generation.get() {
+                    // The setting changed or a newer operation won.  The
+                    // service still completes its provider work, but this
+                    // result is intentionally invisible to GTK.
+                    continue;
+                }
+                let snapshot = event.snapshot;
+                let terminal = !matches!(
+                    snapshot.state,
+                    MailTransportState::Running
+                        | MailTransportState::Retrying
+                        | MailTransportState::CancelRequested
+                ) && snapshot.action.is_none();
+                window.update_transport_presentation(&snapshot);
+                if terminal
+                    && snapshot.state == MailTransportState::Failed
+                    && let Some(error) = snapshot.error.as_ref()
+                {
+                    window.add_toast(&adw::Toast::new(&format!("Mail-Transport: {error}")));
+                }
+                if terminal
+                    && snapshot.state == MailTransportState::Succeeded
+                    && matches!(
+                        action,
+                        MailTransportAction::SendReceive | MailTransportAction::ReceiveAll
+                    )
+                {
+                    // The transport contract intentionally returns no GTK
+                    // model.  Reuse MailPage's own bounded worker/generation
+                    // path to apply the fresh provider snapshot.
+                    window.refresh_mail_page();
+                }
+                if terminal
+                    && snapshot.mode == MailTransportMode::Online
+                    && snapshot.queued_items > 0
+                    && snapshot.message.as_deref() == Some("Veraltetes Transportergebnis verworfen")
+                {
+                    // A mode change invalidated the old worker.  Once its
+                    // provider call has actually unwound, drain only the
+                    // messages still lacking provider confirmation.
+                    window.drain_transport_queue();
+                }
+            }
+            tracing::debug!(generation, "Mail transport event stream closed");
+        });
     }
 
     pub(crate) fn refresh_category_presentation(&self) {
@@ -907,6 +1115,13 @@ impl EvolutionWindow {
 
         header_bar.pack_start(&sidebar_button);
 
+        let transport_button = gtk::MenuButton::builder()
+            .icon_name("mail-send-receive-symbolic")
+            .menu_model(&Self::build_transport_menu())
+            .tooltip_text("Senden und Empfangen (F12)")
+            .build();
+        header_bar.pack_start(&transport_button);
+
         let view_switcher = adw::ViewSwitcher::builder()
             .stack(&view_stack)
             .policy(adw::ViewSwitcherPolicy::Narrow)
@@ -1005,61 +1220,23 @@ impl EvolutionWindow {
 
         if let Some(settings) = AppSettings::try_new() {
             statusbar_box.set_visible(settings.mail_show_statusbar());
-            online_toggle.set_icon_name(if settings.offline_mode() {
-                "network-offline-symbolic"
-            } else {
-                "network-idle-symbolic"
-            });
-            online_toggle.set_tooltip_text(Some(if settings.offline_mode() {
-                "Offline-Modus aktiv; auf Online umschalten"
-            } else {
-                "Online-Modus aktiv; auf Offline umschalten"
-            }));
             let settings_for_online = settings.clone();
-            let status_label_for_online = status_label.clone();
-            let online_toggle_for_settings = online_toggle.clone();
+            let window_for_online = self.downgrade();
             online_toggle.connect_clicked(move |_| {
                 let offline = !settings_for_online.offline_mode();
-                settings_for_online.set_offline_mode(offline);
-                online_toggle_for_settings.set_icon_name(if offline {
-                    "network-offline-symbolic"
-                } else {
-                    "network-idle-symbolic"
-                });
-                online_toggle_for_settings.set_tooltip_text(Some(if offline {
-                    "Offline-Modus aktiv; auf Online umschalten"
-                } else {
-                    "Online-Modus aktiv; auf Offline umschalten"
-                }));
-                status_label_for_online.set_label(if offline {
-                    "Evolution GTK4  ·  Offline"
-                } else {
-                    "Evolution GTK4  ·  Online"
-                });
+                if let Some(window) = window_for_online.upgrade() {
+                    window.set_offline_mode(offline);
+                }
             });
-            let online_toggle_for_signal = online_toggle.clone();
-            let status_label_for_signal = status_label.clone();
+            let window_for_signal = self.downgrade();
             settings.connect_changed(Some("offline-mode"), move |settings, _| {
-                let offline = settings.boolean("offline-mode");
-                online_toggle_for_signal.set_icon_name(if offline {
-                    "network-offline-symbolic"
-                } else {
-                    "network-idle-symbolic"
-                });
-                status_label_for_signal.set_label(if offline {
-                    "Evolution GTK4  ·  Offline"
-                } else {
-                    "Evolution GTK4  ·  Online"
-                });
+                if let Some(window) = window_for_signal.upgrade() {
+                    window.sync_transport_mode(settings.boolean("offline-mode"), false);
+                }
             });
             let statusbar_for_setting = statusbar_box.clone();
             settings.connect_changed(Some("mail-show-statusbar"), move |settings, _| {
                 statusbar_for_setting.set_visible(settings.boolean("mail-show-statusbar"));
-            });
-            status_label.set_label(if settings.offline_mode() {
-                "Evolution GTK4  ·  Offline"
-            } else {
-                "Evolution GTK4  ·  Online"
             });
         } else {
             online_toggle.set_sensitive(false);
@@ -1068,6 +1245,39 @@ impl EvolutionWindow {
         statusbar_box.append(&online_toggle);
         statusbar_box.append(&status_label);
         statusbar_box.append(&status_progress);
+
+        self.imp().status_label.replace(Some(status_label.clone()));
+        self.imp()
+            .status_progress
+            .replace(Some(status_progress.clone()));
+        self.imp()
+            .online_toggle
+            .replace(Some(online_toggle.clone()));
+        let initial_transport_snapshot = self.imp().transport_service.set_mode(
+            if AppSettings::try_new().is_some_and(|settings| settings.offline_mode()) {
+                MailTransportMode::Offline
+            } else {
+                MailTransportMode::Online
+            },
+        );
+        self.imp()
+            .transport_generation
+            .set(initial_transport_snapshot.generation);
+        self.update_transport_presentation(&initial_transport_snapshot);
+        let window_for_transport_status = self.downgrade();
+        let transport_status_source = glib::timeout_add_seconds_local(1, move || {
+            let Some(window) = window_for_transport_status.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
+            let snapshot = window.imp().transport_service.snapshot();
+            if snapshot.queued_items != window.imp().transport_queued_items.get() {
+                window.update_transport_presentation(&snapshot);
+            }
+            glib::ControlFlow::Continue
+        });
+        self.imp()
+            .transport_status_source
+            .replace(Some(transport_status_source));
 
         let toolbar_view = adw::ToolbarView::new();
         toolbar_view.add_top_bar(&header_bar);
@@ -1143,6 +1353,9 @@ impl EvolutionWindow {
         new_menu.append(Some("Neuer Ordner..."), Some("win.new-folder"));
         file_menu.append_submenu(Some("Neu"), &new_menu);
         file_menu.append(Some("Lokale Entwürfe"), Some("app.drafts"));
+        file_menu.append(Some("Senden & Empfangen"), Some("win.mail-send-receive"));
+        file_menu.append(Some("Offline arbeiten"), Some("win.work-offline"));
+        file_menu.append(Some("Online arbeiten"), Some("win.work-online"));
         file_menu.append(Some("Ausgewählte E-Mail exportieren"), Some("win.export"));
         file_menu.append(Some("Ausgewählte E-Mail drucken…"), Some("win.mail-print"));
         file_menu.append(
@@ -1290,7 +1503,6 @@ impl EvolutionWindow {
 
         // ─── 6. Extras (Tools) ─────────────────────────────────────────────
         let tools_menu = gio::Menu::new();
-        tools_menu.append(Some("Senden & Empfangen"), Some("win.refresh-mail"));
         tools_menu.append(Some("Abwesenheitsnotiz (OOF)..."), Some("win.oof-settings"));
         tools_menu.append(
             Some("Filterregeln bearbeiten..."),
@@ -1312,7 +1524,69 @@ impl EvolutionWindow {
         menu
     }
 
+    fn build_transport_menu() -> gio::Menu {
+        let menu = gio::Menu::new();
+        menu.append(Some("Senden & Empfangen"), Some("win.mail-send-receive"));
+        menu.append(Some("Alle Konten empfangen"), Some("win.mail-receive-all"));
+        menu.append(
+            Some("Ausstehende Nachrichten senden"),
+            Some("win.mail-send-all"),
+        );
+        menu.append(Some("Abbrechen"), Some("win.mail-stop"));
+        menu
+    }
+
+    fn setup_mail_transport_actions(&self) {
+        for transport_action in [
+            MailTransportAction::SendReceive,
+            MailTransportAction::ReceiveAll,
+            MailTransportAction::SendAll,
+        ] {
+            let name = transport_action.action_id();
+            let action = gio::SimpleAction::new(name, None);
+            action.connect_activate(glib::clone!(
+                #[weak(rename_to = window)]
+                self,
+                move |_, _| window.start_mail_transport(transport_action)
+            ));
+            self.add_action(&action);
+        }
+
+        let action_stop = gio::SimpleAction::new(MAIL_STOP_ACTION_ID, None);
+        action_stop.connect_activate(glib::clone!(
+            #[weak(rename_to = window)]
+            self,
+            move |_, _| {
+                if !window.imp().transport_service.stop() {
+                    window.add_toast(&adw::Toast::new("Kein abbrechbarer Mail-Transport läuft"));
+                }
+                window.update_transport_presentation(&window.imp().transport_service.snapshot());
+            }
+        ));
+        self.add_action(&action_stop);
+
+        let action_work_offline = gio::SimpleAction::new(WORK_OFFLINE_ACTION_ID, None);
+        action_work_offline.connect_activate(glib::clone!(
+            #[weak(rename_to = window)]
+            self,
+            move |_, _| window.set_offline_mode(true)
+        ));
+        self.add_action(&action_work_offline);
+
+        let action_work_online = gio::SimpleAction::new(WORK_ONLINE_ACTION_ID, None);
+        action_work_online.connect_activate(glib::clone!(
+            #[weak(rename_to = window)]
+            self,
+            move |_, _| window.set_offline_mode(false)
+        ));
+        self.add_action(&action_work_online);
+
+        let snapshot = self.imp().transport_service.snapshot();
+        self.update_transport_presentation(&snapshot);
+    }
+
     fn setup_actions(&self) {
+        self.setup_mail_transport_actions();
         let action_new = gio::SimpleAction::new("new", None);
         action_new.connect_activate(glib::clone!(
             #[weak(rename_to = win)]

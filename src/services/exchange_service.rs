@@ -2298,24 +2298,60 @@ pub(crate) fn graph_service_for_configured_account() -> Option<(String, Exchange
     let preferred_id = AppSettings::try_new()
         .map(|settings| settings.default_account_id())
         .filter(|id| !id.trim().is_empty());
-    let is_exchange = |profile: &&crate::services::account_config_service::AccountProfile| {
-        profile.enabled && profile.protocol == AccountProtocol::Exchange
-    };
-    let profile = preferred_id
-        .as_deref()
-        .and_then(|id| {
-            accounts
-                .iter()
-                .find(|profile| is_exchange(profile) && profile.id == id)
-        })
-        .or_else(|| accounts.iter().find(is_exchange))?;
-    let service = ExchangeService::from_environment(&profile.email)?;
-    Some((profile.id.clone(), service))
+    graph_service_for_accounts(
+        &accounts,
+        preferred_id.as_deref(),
+        AccountProtocol::Exchange,
+    )
 }
 
 pub(crate) fn graph_service_for_source(source_uid: &str) -> Option<ExchangeService> {
     let (configured_source_uid, service) = graph_service_for_configured_account()?;
     (configured_source_uid == source_uid).then_some(service)
+}
+
+/// Resolve a Graph account without consulting GSettings.  Provider workers
+/// must remain framework-neutral: selecting a configured account is file/env
+/// work, while `AppSettings` is a GObject-backed UI boundary.  The normal
+/// UI-facing selector above still honors the persisted default account.
+pub(crate) fn graph_service_for_configured_account_worker() -> Option<(String, ExchangeService)> {
+    use crate::services::account_config_service::{AccountConfigStore, AccountProtocol};
+
+    let accounts = AccountConfigStore::default().load();
+    graph_service_for_accounts(&accounts, None, AccountProtocol::Exchange)
+}
+
+/// Resolve the exact Graph profile named by a provider worker.  This avoids
+/// falling back to the first Exchange account when a send belongs to another
+/// configured source, and it never touches GTK/GSettings.
+pub(crate) fn graph_service_for_source_worker(source_uid: &str) -> Option<ExchangeService> {
+    use crate::services::account_config_service::{AccountConfigStore, AccountProtocol};
+
+    let accounts = AccountConfigStore::default().load();
+    let profile = accounts.iter().find(|profile| {
+        profile.enabled && profile.protocol == AccountProtocol::Exchange && profile.id == source_uid
+    })?;
+    ExchangeService::from_environment(&profile.email)
+}
+
+fn graph_service_for_accounts(
+    accounts: &[crate::services::account_config_service::AccountProfile],
+    preferred_id: Option<&str>,
+    protocol: crate::services::account_config_service::AccountProtocol,
+) -> Option<(String, ExchangeService)> {
+    let is_matching_profile =
+        |profile: &&crate::services::account_config_service::AccountProfile| {
+            profile.enabled && profile.protocol == protocol
+        };
+    let profile = preferred_id
+        .and_then(|id| {
+            accounts
+                .iter()
+                .find(|profile| is_matching_profile(profile) && profile.id == id)
+        })
+        .or_else(|| accounts.iter().find(is_matching_profile))?;
+    let service = ExchangeService::from_environment(&profile.email)?;
+    Some((profile.id.clone(), service))
 }
 
 #[derive(Debug, Deserialize)]
