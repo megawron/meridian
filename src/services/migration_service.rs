@@ -20,8 +20,11 @@ use super::mail_filter_service::{
     MailFilterStore,
 };
 use super::mail_store_service::MailStoreService;
-use super::settings_service::MAX_TASK_CATEGORY_FILTER_BYTES;
+use super::settings_service::{
+    MAX_TASK_CATEGORY_FILTER_BYTES, normalize_composer_charset, parse_mail_normal_headers_value,
+};
 use super::signature_store_service::{SignatureProfile, SignatureStore};
+use glib::prelude::StaticVariantType;
 use std::collections::BTreeMap;
 use std::fs;
 use std::hash::{Hash, Hasher};
@@ -226,7 +229,7 @@ pub fn import_evolution_local_data(
             Err(error) => {
                 warnings.push(format!(
                     "{}: lokale Profildatei konnte nicht gelesen werden: {error}",
-                    path.display()
+                    migration_source_label(&path)
                 ));
                 continue;
             }
@@ -350,7 +353,7 @@ fn import_evolution_sources_inner(
                 report.skipped_sources += 1;
                 report.warnings.push(format!(
                     "{}: Datei konnte nicht gelesen werden: {error}",
-                    path.display()
+                    migration_source_label(&path)
                 ));
                 continue;
             }
@@ -359,7 +362,9 @@ fn import_evolution_sources_inner(
             Ok(source) => source,
             Err(error) => {
                 report.skipped_sources += 1;
-                report.warnings.push(format!("{}: {error}", path.display()));
+                report
+                    .warnings
+                    .push(format!("{}: {error}", migration_source_label(&path)));
                 continue;
             }
         };
@@ -368,7 +373,7 @@ fn import_evolution_sources_inner(
             source
                 .warnings
                 .iter()
-                .map(|warning| format!("{}: {warning}", path.display())),
+                .map(|warning| format!("{}: {warning}", migration_source_label(&path))),
         );
         for (kind, eds_source) in eds_sources_from_keyfile(&path, &source) {
             match kind {
@@ -383,14 +388,14 @@ fn import_evolution_sources_inner(
                 report.warnings.extend(
                     warnings
                         .into_iter()
-                        .map(|warning| format!("{}: {warning}", path.display())),
+                        .map(|warning| format!("{}: {warning}", migration_source_label(&path))),
                 );
                 store.upsert(profile).map_err(|error| {
                     io::Error::new(
                         error.kind(),
                         format!(
                             "Profil aus {} konnte nicht gespeichert werden: {error}",
-                            path.display()
+                            migration_source_label(&path)
                         ),
                     )
                 })?;
@@ -400,7 +405,7 @@ fn import_evolution_sources_inner(
                 report.skipped_sources += 1;
                 report
                     .warnings
-                    .push(format!("{}: {reason}", path.display()));
+                    .push(format!("{}: {reason}", migration_source_label(&path)));
             }
         }
     }
@@ -444,7 +449,7 @@ fn import_evolution_sources_inner(
             Err(error) => {
                 report.warnings.push(format!(
                     "{}: Einstellungsdatei konnte nicht gelesen werden: {error}",
-                    path.display()
+                    migration_source_label(&path)
                 ));
                 continue;
             }
@@ -459,7 +464,7 @@ fn import_evolution_sources_inner(
             {
                 report.warnings.push(format!(
                     "{}: doppelter Einstellungswert für „{}“ wurde durch den späteren Eintrag ersetzt",
-                    path.display(),
+                    migration_source_label(&path),
                     setting.key
                 ));
             }
@@ -481,7 +486,7 @@ fn import_evolution_sources_inner(
             Err(error) => {
                 report.warnings.push(format!(
                     "{}: Filterdatei konnte nicht gelesen werden: {error}",
-                    path.display()
+                    migration_source_label(&path)
                 ));
                 continue;
             }
@@ -491,7 +496,7 @@ fn import_evolution_sources_inner(
             Err(reason) => {
                 report.warnings.push(format!(
                     "{}: Filter konnten nicht importiert werden: {reason}",
-                    path.display()
+                    migration_source_label(&path)
                 ));
                 continue;
             }
@@ -504,7 +509,7 @@ fn import_evolution_sources_inner(
                 Ok(()) => report.imported_filters += 1,
                 Err(error) => report.warnings.push(format!(
                     "{}: Filter konnte nicht gespeichert werden: {error}",
-                    path.display()
+                    migration_source_label(&path)
                 )),
             }
         }
@@ -518,7 +523,7 @@ fn import_evolution_sources_inner(
             Err(error) => {
                 report.warnings.push(format!(
                     "{}: Signaturliste konnte nicht gelesen werden: {error}",
-                    list_path.display()
+                    migration_source_label(&list_path)
                 ));
                 continue;
             }
@@ -542,7 +547,7 @@ fn import_evolution_sources_inner(
             else {
                 report.warnings.push(format!(
                     "{}: Unsicherer Signaturpfad wurde ignoriert",
-                    list_path.display()
+                    migration_source_label(&list_path)
                 ));
                 continue;
             };
@@ -551,7 +556,7 @@ fn import_evolution_sources_inner(
                 Err(error) => {
                     report.warnings.push(format!(
                         "{}: Signatur konnte nicht gelesen werden: {error}",
-                        signature_path.display()
+                        migration_source_label(&signature_path)
                     ));
                     continue;
                 }
@@ -601,7 +606,7 @@ fn import_evolution_sources_inner(
                 }
                 Err(error) => report.warnings.push(format!(
                     "{}: Signatur konnte nicht gespeichert werden: {error}",
-                    signature_path.display()
+                    migration_source_label(&signature_path)
                 )),
             }
         }
@@ -801,17 +806,31 @@ fn collect_evolution_settings_files(root: &Path, result: &mut Vec<PathBuf>) -> i
 fn parse_evolution_settings(raw: &str, path: &Path) -> ParsedEvolutionSettings {
     let mut result = ParsedEvolutionSettings::default();
     let mut group = String::new();
-    for raw_line in raw.lines() {
+    for (line_index, raw_line) in raw.lines().enumerate() {
         let line = raw_line.trim();
         if line.is_empty() || line.starts_with('#') || line.starts_with(';') {
             continue;
         }
-        if line.starts_with('[') && line.ends_with(']') {
+        if line.starts_with('[') {
+            if !line.ends_with(']') {
+                result.warnings.push(format!(
+                    "{}: unvollständiger Abschnitt in Zeile {} wurde ignoriert",
+                    migration_source_label(path),
+                    line_index + 1
+                ));
+                group.clear();
+                continue;
+            }
             group = line[1..line.len() - 1].trim().to_string();
             continue;
         }
         let Some((raw_key, raw_value)) = line.split_once('=').or_else(|| line.split_once(':'))
         else {
+            result.warnings.push(format!(
+                "{}: unvollständige Einstellungszeile {} wurde ignoriert",
+                migration_source_label(path),
+                line_index + 1
+            ));
             continue;
         };
         let key = normalize_setting_key(raw_key);
@@ -822,20 +841,32 @@ fn parse_evolution_settings(raw: &str, path: &Path) -> ParsedEvolutionSettings {
             result.ignored_secret_fields += 1;
             continue;
         }
-        let Some((canonical_key, value)) = canonical_setting(&group, &key, raw_value) else {
-            result.warnings.push(format!(
-                "{}: unbekannte oder nicht unterstützte Einstellung „{}“ wurde nicht übernommen",
-                path.display(),
-                safe_warning_key(&key)
-            ));
-            continue;
+        let (canonical_key, value) = match canonical_setting(&group, &key, raw_value) {
+            Ok(Some(setting)) => setting,
+            Ok(None) => {
+                result.warnings.push(format!(
+                    "{}: unbekannte oder nicht unterstützte Einstellung „{}“ wurde nicht übernommen",
+                    migration_source_label(path),
+                    safe_warning_key(&key)
+                ));
+                continue;
+            }
+            Err(reason) => {
+                result.warnings.push(format!(
+                    "{}: Wert für Einstellung „{}“ ist {} und wurde nicht übernommen",
+                    migration_source_label(path),
+                    safe_warning_key(&key),
+                    reason
+                ));
+                continue;
+            }
         };
         let value = match normalize_imported_setting_value(&canonical_key, &value) {
             Ok(value) => value,
             Err(reason) => {
                 result.warnings.push(format!(
                     "{}: Wert für Einstellung „{}“ ist {} und wurde nicht übernommen",
-                    path.display(),
+                    migration_source_label(path),
                     safe_warning_key(&canonical_key),
                     reason
                 ));
@@ -850,10 +881,17 @@ fn parse_evolution_settings(raw: &str, path: &Path) -> ParsedEvolutionSettings {
     if result.settings.is_empty() && !raw.trim().is_empty() {
         result.warnings.push(format!(
             "{}: keine unterstützten nicht-geheimen Evolution-Einstellungen gefunden",
-            path.display()
+            migration_source_label(path)
         ));
     }
     result
+}
+
+/// Diagnostics must identify the import source without disclosing the
+/// user-selected absolute profile path.  Relative setting/filter keys remain
+/// useful context and are already passed through the safe label helpers.
+fn migration_source_label(_path: &Path) -> &'static str {
+    "Evolution-Profil"
 }
 
 fn normalize_setting_key(value: &str) -> String {
@@ -867,7 +905,21 @@ fn normalize_setting_key(value: &str) -> String {
         .to_ascii_lowercase()
 }
 
-fn canonical_setting(group: &str, key: &str, raw_value: &str) -> Option<(String, String)> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SettingValueType {
+    String,
+    Boolean,
+    Int32,
+    Uint32,
+    StringArray,
+    HeaderArray,
+}
+
+fn canonical_setting(
+    group: &str,
+    key: &str,
+    raw_value: &str,
+) -> Result<Option<(String, String)>, &'static str> {
     let group = group.to_ascii_lowercase();
     let canonical = match key {
         "show-preview" | "message-preview" | "show-message-preview" => "show-message-preview",
@@ -887,6 +939,11 @@ fn canonical_setting(group: &str, key: &str, raw_value: &str) -> Option<(String,
         "show-attachment" | "show-attachments" if group.contains("mail") => "mail-show-attachment",
         "show-labels" | "show-tags" if group.contains("mail") => "mail-show-labels",
         "show-preview-text" if group.contains("mail") => "mail-show-preview-text",
+        "show-security-details" if group.contains("mail") => "mail-show-security-details",
+        "show-all-headers" if group.contains("mail") => "mail-show-all-headers",
+        "statusbar-visible" | "statusbar-visible-sub" if group.contains("shell") => {
+            "mail-show-statusbar"
+        }
         "layout" if group.contains("mail") => "mail-layout",
         "threading" | "thread-list" if group.contains("mail") => "mail-threading",
         "default-folder" if group.contains("mail") => "mail-default-folder",
@@ -894,24 +951,35 @@ fn canonical_setting(group: &str, key: &str, raw_value: &str) -> Option<(String,
         "sort-descending" if group.contains("mail") => "mail-sort-descending",
         "offline-mode" => "offline-mode",
         value if is_supported_migration_key(value) => value,
-        _ => return None,
+        _ => return Ok(None),
     };
-    let mut value = decode_setting_value(raw_value);
+    let value_type = if matches!(key, "use-12-hour-format" | "use-12-hour-clock") {
+        SettingValueType::Boolean
+    } else {
+        migration_value_type(canonical)
+    };
+    let mut value = decode_setting_value(raw_value, value_type)?;
     if key == "use-12-hour-format" {
-        return parse_setting_bool(&value).map(|enabled| {
-            (
-                "time-format".to_string(),
-                if enabled { "12h" } else { "24h" }.to_string(),
-            )
-        });
+        return parse_setting_bool(&value)
+            .map(|enabled| {
+                (
+                    "time-format".to_string(),
+                    if enabled { "12h" } else { "24h" }.to_string(),
+                )
+            })
+            .ok_or("kein gültiger boolescher Wert")
+            .map(Some);
     }
     if key == "use-12-hour-clock" {
-        return parse_setting_bool(&value).map(|enabled| {
-            (
-                "time-format".to_string(),
-                if enabled { "12h" } else { "24h" }.to_string(),
-            )
-        });
+        return parse_setting_bool(&value)
+            .map(|enabled| {
+                (
+                    "time-format".to_string(),
+                    if enabled { "12h" } else { "24h" }.to_string(),
+                )
+            })
+            .ok_or("kein gültiger boolescher Wert")
+            .map(Some);
     }
     if canonical == "calendar-week-start" {
         value = match value.to_ascii_lowercase().as_str() {
@@ -920,7 +988,38 @@ fn canonical_setting(group: &str, key: &str, raw_value: &str) -> Option<(String,
             _ => value,
         };
     }
-    Some((canonical.to_string(), value))
+    Ok(Some((canonical.to_string(), value)))
+}
+
+fn migration_value_type(key: &str) -> SettingValueType {
+    if is_boolean_migration_key(key) {
+        return SettingValueType::Boolean;
+    }
+    if matches!(
+        key,
+        "window-width"
+            | "window-height"
+            | "mail-sidebar-position"
+            | "mail-modern-preview-position"
+            | "mail-classic-preview-position"
+            | "mail-sender-column-width"
+            | "mail-font-size"
+            | "calendar-workday-start"
+            | "calendar-workday-end"
+            | "calendar-default-reminder"
+            | "mail-sync-interval"
+            | "mail-sync-message-limit"
+            | "draft-autosave-interval"
+    ) {
+        return SettingValueType::Int32;
+    }
+    if key == "calendar-hidden-sources" {
+        return SettingValueType::StringArray;
+    }
+    if key == "mail-normal-headers" {
+        return SettingValueType::HeaderArray;
+    }
+    SettingValueType::String
 }
 
 fn is_supported_migration_key(key: &str) -> bool {
@@ -952,6 +1051,7 @@ fn is_supported_migration_key(key: &str) -> bool {
             | "force-dark-mode"
             | "render-html"
             | "composer-html"
+            | "composer-charset"
             | "request-read-receipt"
             | "spellcheck-languages"
             | "mail-font-family"
@@ -966,6 +1066,7 @@ fn is_supported_migration_key(key: &str) -> bool {
             | "mail-sidebar-position"
             | "mail-modern-preview-position"
             | "mail-classic-preview-position"
+            | "mail-sender-column-width"
             | "mail-row-density"
             | "mail-show-avatar"
             | "mail-show-sender"
@@ -974,7 +1075,11 @@ fn is_supported_migration_key(key: &str) -> bool {
             | "mail-show-attachment"
             | "mail-show-preview-text"
             | "mail-show-labels"
+            | "mail-show-security-details"
+            | "mail-show-all-headers"
+            | "mail-show-statusbar"
             | "color-scheme"
+            | "switcher-location"
             | "sign-new-messages"
             | "default-pgp-key"
             | "crypto-protocol"
@@ -987,6 +1092,9 @@ fn is_supported_migration_key(key: &str) -> bool {
             | "draft-autosave-interval"
             | "append-signature"
             | "signature-text"
+            | "local-mail-directory"
+            | "local-calendar-directory"
+            | "local-contact-directory"
             | "quote-original"
             | "quote-style"
             | "mail-sort-field"
@@ -1016,16 +1124,24 @@ fn normalize_imported_setting_value(key: &str, value: &str) -> Result<String, &'
     match key {
         "window-width" => normalize_i32_setting(value, 360, i32::MAX),
         "window-height" => normalize_i32_setting(value, 480, i32::MAX),
+        "switcher-location" => match value {
+            "top" | "bottom-left" => Ok(value.to_string()),
+            _ => Err("keine unterstützte Position des Modulumschalters"),
+        },
         "mail-sidebar-position" => normalize_i32_setting(value, 0, 2_000),
         "mail-modern-preview-position" | "mail-classic-preview-position" => {
             normalize_i32_setting(value, 120, 4_096)
         }
+        "mail-sender-column-width" => normalize_i32_setting(value, 80, 360),
         "mail-font-size" => normalize_u32_setting(value, 8, 48),
         "calendar-workday-start" | "calendar-workday-end" => normalize_u32_setting(value, 0, 1_439),
         "calendar-default-reminder" => normalize_u32_setting(value, 0, 10_080),
         "mail-sync-interval" => normalize_u32_setting(value, 0, 86_400),
         "mail-sync-message-limit" => normalize_u32_setting(value, 25, 1_000),
         "draft-autosave-interval" => normalize_u32_setting(value, 0, 3_600),
+        "composer-charset" => normalize_composer_charset(value)
+            .map(str::to_string)
+            .ok_or("keine unterstützte Zeichenkodierung"),
         "active-view" => match value.to_ascii_lowercase().as_str() {
             "mail" | "calendar" | "contacts" | "addressbook" | "tasks" | "memos" => {
                 Ok(if value.eq_ignore_ascii_case("addressbook") {
@@ -1074,6 +1190,16 @@ fn normalize_imported_setting_value(key: &str, value: &str) -> Result<String, &'
             "classic" | "modern" => Ok(value.to_ascii_lowercase()),
             _ => Err("kein unterstütztes Mail-Layout"),
         },
+        "mail-normal-headers" => parse_mail_normal_headers_value(value)
+            .map(|_| value.to_string())
+            .map_err(|_| "keine gültige Headerliste"),
+        "local-mail-directory" | "local-calendar-directory" | "local-contact-directory" => {
+            if value.len() > 4_096 || value.chars().any(char::is_control) {
+                Err("kein sicherer portabler Verzeichnispfad")
+            } else {
+                Ok(value.to_string())
+            }
+        }
         "mail-row-density" => match value.to_ascii_lowercase().as_str() {
             "compact" | "comfortable" | "spacious" => Ok(value.to_ascii_lowercase()),
             _ => Err("keine unterstützte Mail-Dichte"),
@@ -1181,6 +1307,9 @@ fn is_boolean_migration_key(key: &str) -> bool {
             | "show-message-preview"
             | "mail-show-toolbar"
             | "mail-show-sidebar"
+            | "mail-show-security-details"
+            | "mail-show-all-headers"
+            | "mail-show-statusbar"
             | "mail-show-avatar"
             | "mail-show-sender"
             | "mail-show-recipient"
@@ -1274,31 +1403,147 @@ fn is_secret_setting_key(key: &str) -> bool {
         "privatekey",
         "oauth",
         "keyring",
+        "api-key",
+        "apikey",
+        "client-key",
+        "certificate-key",
+        "cert-key",
+        "key-password",
     ]
     .iter()
     .any(|secret| key.contains(secret))
 }
 
-fn decode_setting_value(raw_value: &str) -> String {
-    let mut value = raw_value.trim();
-    if let Some((prefix, rest)) = value.split_once(' ') {
-        if matches!(prefix, "@as" | "as") {
-            return decode_gvariant_string_list(rest.trim());
-        }
-        if matches!(
-            prefix,
-            "@s" | "@b" | "@i" | "@u" | "@d" | "string" | "boolean" | "int32" | "uint32"
-        ) {
-            value = rest.trim();
-        }
-    }
-    if value.len() >= 2
-        && ((value.starts_with('\'') && value.ends_with('\''))
-            || (value.starts_with('"') && value.ends_with('"')))
+fn decode_setting_value(
+    raw_value: &str,
+    expected_type: SettingValueType,
+) -> Result<String, &'static str> {
+    let (explicit_type, value) = split_setting_type_prefix(raw_value)?;
+    if let Some(explicit_type) = explicit_type
+        && !setting_types_compatible(expected_type, explicit_type)
     {
-        return unescape_setting_value(&value[1..value.len() - 1]);
+        return Err("besitzt einen falschen Typ");
     }
-    value.to_string()
+
+    match explicit_type {
+        Some(SettingValueType::StringArray) => decode_gvariant_string_list(value),
+        Some(SettingValueType::String) => parse_setting_string(value),
+        Some(SettingValueType::HeaderArray) => {
+            if value.trim().is_empty() {
+                Err("besitzt eine leere Headerliste")
+            } else {
+                Ok(value.trim().to_string())
+            }
+        }
+        _ => match expected_type {
+            SettingValueType::String
+                if value.trim().starts_with('\'') || value.trim().starts_with('"') =>
+            {
+                parse_setting_string(value)
+            }
+            SettingValueType::StringArray if value.trim().starts_with('[') => {
+                decode_gvariant_string_list(value)
+            }
+            SettingValueType::StringArray
+                if value.trim().starts_with('\'') || value.trim().starts_with('"') =>
+            {
+                parse_setting_string(value)
+            }
+            _ => Ok(value.trim().to_string()),
+        },
+    }
+}
+
+fn split_setting_type_prefix(
+    raw_value: &str,
+) -> Result<(Option<SettingValueType>, &str), &'static str> {
+    let value = raw_value.trim();
+    let Some((prefix, rest)) = value.split_once(char::is_whitespace) else {
+        if value.starts_with('@') {
+            return Err("besitzt einen unvollständigen Typpräfix");
+        }
+        return Ok((None, value));
+    };
+    let explicit_type = match prefix {
+        "@s" | "string" => Some(SettingValueType::String),
+        "@b" | "boolean" => Some(SettingValueType::Boolean),
+        "@i" | "int32" => Some(SettingValueType::Int32),
+        "@u" | "uint32" => Some(SettingValueType::Uint32),
+        "@as" | "as" => Some(SettingValueType::StringArray),
+        "@a(sb)" | "a(sb)" => Some(SettingValueType::HeaderArray),
+        "@d" => return Err("besitzt einen nicht unterstützten Gleitkommatyp"),
+        _ if prefix.starts_with('@') => return Err("besitzt einen unbekannten Typpräfix"),
+        _ => {
+            // A plain untyped string is allowed to contain whitespace.  Only
+            // a recognized type token consumes the first word; otherwise the
+            // complete value must be retained (for example a font family,
+            // path, task category, or GVariant header array).
+            return Ok((None, value));
+        }
+    };
+    if explicit_type.is_some() && rest.trim().is_empty() {
+        return Err("besitzt keinen Wert");
+    }
+    Ok((explicit_type, rest.trim()))
+}
+
+fn setting_types_compatible(expected: SettingValueType, actual: SettingValueType) -> bool {
+    match expected {
+        SettingValueType::String => actual == SettingValueType::String,
+        SettingValueType::Boolean => actual == SettingValueType::Boolean,
+        SettingValueType::Int32 => actual == SettingValueType::Int32,
+        SettingValueType::Uint32 => actual == SettingValueType::Uint32,
+        SettingValueType::StringArray => {
+            matches!(
+                actual,
+                SettingValueType::String | SettingValueType::StringArray
+            )
+        }
+        SettingValueType::HeaderArray => actual == SettingValueType::HeaderArray,
+    }
+}
+
+fn parse_setting_string(value: &str) -> Result<String, &'static str> {
+    let value = value.trim();
+    let Some(quote) = value.chars().next() else {
+        return Ok(String::new());
+    };
+    if !matches!(quote, '\'' | '"') {
+        return Ok(value.to_string());
+    }
+
+    if let Ok(variant) = glib::Variant::parse(
+        Some(<String as StaticVariantType>::static_variant_type().as_ref()),
+        value,
+    ) {
+        if let Some(value) = variant.get::<String>() {
+            return Ok(value);
+        }
+    }
+
+    let mut raw = String::new();
+    let mut characters = value[quote.len_utf8()..].chars();
+    let mut escaped = false;
+    while let Some(character) = characters.next() {
+        if escaped {
+            raw.push('\\');
+            raw.push(character);
+            escaped = false;
+        } else if character == '\\' {
+            escaped = true;
+        } else if character == quote {
+            if !characters.all(char::is_whitespace) {
+                return Err("besitzt Text nach dem Stringabschluss");
+            }
+            if escaped {
+                return Err("besitzt einen unvollständigen Escape");
+            }
+            return Ok(unescape_setting_value(&raw));
+        } else {
+            raw.push(character);
+        }
+    }
+    Err("besitzt einen nicht abgeschlossenen String")
 }
 
 fn unescape_setting_value(value: &str) -> String {
@@ -1318,6 +1563,33 @@ fn unescape_setting_value(value: &str) -> String {
             'r' => output.push('\r'),
             't' => output.push('\t'),
             's' => output.push(' '),
+            '\\' => output.push('\\'),
+            '\'' => output.push('\''),
+            '"' => output.push('"'),
+            'u' | 'U' => {
+                let digits = if escaped == 'u' { 4 } else { 8 };
+                let mut hex = String::with_capacity(digits);
+                for _ in 0..digits {
+                    if let Some(digit) = characters.next() {
+                        hex.push(digit);
+                    }
+                }
+                if hex.len() == digits
+                    && u32::from_str_radix(&hex, 16)
+                        .ok()
+                        .and_then(char::from_u32)
+                        .is_some()
+                {
+                    output.push(
+                        char::from_u32(u32::from_str_radix(&hex, 16).unwrap())
+                            .expect("validated Unicode escape"),
+                    );
+                } else {
+                    output.push('\\');
+                    output.push(escaped);
+                    output.push_str(&hex);
+                }
+            }
             'x' => {
                 let first = characters.next();
                 let second = characters.next();
@@ -1359,24 +1631,56 @@ fn unescape_setting_value(value: &str) -> String {
     output
 }
 
-fn decode_gvariant_string_list(value: &str) -> String {
+fn decode_gvariant_string_list(value: &str) -> Result<String, &'static str> {
     let value = value.trim();
-    if value == "[]" {
-        return String::new();
+
+    if let Ok(variant) = glib::Variant::parse(
+        Some(<Vec<String> as StaticVariantType>::static_variant_type().as_ref()),
+        value,
+    ) {
+        if let Some(values) = variant.get::<Vec<String>>() {
+            if values
+                .iter()
+                .any(|value| value.contains(',') || value.chars().any(char::is_control))
+            {
+                return Err("besitzt ein nicht-portables Stringlistenelement");
+            }
+            return Ok(values.join(","));
+        }
     }
-    let body = value
+
+    let Some(body) = value
         .strip_prefix('[')
         .and_then(|value| value.strip_suffix(']'))
-        .unwrap_or(value);
+    else {
+        return Err("besitzt keine gültige Stringliste");
+    };
+    if body.trim().is_empty() {
+        return Ok(String::new());
+    }
     let mut result = Vec::new();
     let mut characters = body.chars().peekable();
-    while let Some(character) = characters.next() {
-        if character != '\'' && character != '"' {
-            continue;
+    let mut trailing_comma = false;
+    loop {
+        while characters
+            .peek()
+            .is_some_and(|character| character.is_whitespace())
+        {
+            characters.next();
         }
-        let quote = character;
+        if characters.peek().is_none() {
+            return if trailing_comma {
+                Err("besitzt ein fehlendes Stringlistenelement")
+            } else {
+                Ok(result.join(","))
+            };
+        }
+        let Some(quote @ ('\'' | '"')) = characters.next() else {
+            return Err("besitzt ein ungültiges Stringlistenelement");
+        };
         let mut raw_item = String::new();
         let mut escaped = false;
+        let mut closed = false;
         while let Some(character) = characters.next() {
             if escaped {
                 raw_item.push('\\');
@@ -1385,14 +1689,33 @@ fn decode_gvariant_string_list(value: &str) -> String {
             } else if character == '\\' {
                 escaped = true;
             } else if character == quote {
+                closed = true;
                 break;
             } else {
                 raw_item.push(character);
             }
         }
-        result.push(unescape_setting_value(&raw_item));
+        if escaped || !closed {
+            return Err("besitzt ein nicht abgeschlossenes Stringlistenelement");
+        }
+        let item = unescape_setting_value(&raw_item);
+        if item.contains(',') || item.chars().any(char::is_control) {
+            return Err("besitzt ein nicht-portables Stringlistenelement");
+        }
+        result.push(item);
+        while characters
+            .peek()
+            .is_some_and(|character| character.is_whitespace())
+        {
+            characters.next();
+        }
+        match characters.next() {
+            None => break,
+            Some(',') => trailing_comma = true,
+            Some(_) => return Err("besitzt ein ungültiges Trennzeichen in der Stringliste"),
+        }
     }
-    result.join(",")
+    Ok(result.join(","))
 }
 
 fn parse_setting_bool(value: &str) -> Option<bool> {
@@ -1800,7 +2123,7 @@ fn unsupported_filter_warnings(raw: &str, path: &Path) -> Vec<String> {
         {
             warnings.push(format!(
                 "{}: Aktivierungswert in „{}“ ist nicht unterstützt und wird als aktiviert behandelt",
-                path.display(),
+                migration_source_label(path),
                 rule_name
             ));
         }
@@ -1810,7 +2133,7 @@ fn unsupported_filter_warnings(raw: &str, path: &Path) -> Vec<String> {
         {
             warnings.push(format!(
                 "{}: Filterbereich „{}“ in „{}“ wird als Eingang verarbeitet",
-                path.display(),
+                migration_source_label(path),
                 safe_warning_key(&scope),
                 rule_name
             ));
@@ -1821,7 +2144,7 @@ fn unsupported_filter_warnings(raw: &str, path: &Path) -> Vec<String> {
         {
             warnings.push(format!(
                 "{}: Verknüpfung „{}“ in „{}“ wird als UND verarbeitet",
-                path.display(),
+                migration_source_label(path),
                 safe_warning_key(&match_type),
                 rule_name
             ));
@@ -1836,14 +2159,14 @@ fn unsupported_filter_warnings(raw: &str, path: &Path) -> Vec<String> {
                 if name.trim().is_empty() {
                     warnings.push(format!(
                         "{}: Bedingung {} in „{}“ besitzt kein unterstütztes Feld",
-                        path.display(),
+                        migration_source_label(path),
                         part_index + 1,
                         rule_name
                     ));
                 } else {
                     warnings.push(format!(
                         "{}: Bedingung „{}“ in „{}“ wird portabel nicht ausgewertet",
-                        path.display(),
+                        migration_source_label(path),
                         safe_warning_key(&name),
                         rule_name
                     ));
@@ -1856,7 +2179,7 @@ fn unsupported_filter_warnings(raw: &str, path: &Path) -> Vec<String> {
             else {
                 warnings.push(format!(
                     "{}: Wert für Bedingung „{}“ in „{}“ fehlt und wird nicht importiert",
-                    path.display(),
+                    migration_source_label(path),
                     safe_warning_key(&name),
                     rule_name
                 ));
@@ -1869,7 +2192,7 @@ fn unsupported_filter_warnings(raw: &str, path: &Path) -> Vec<String> {
             {
                 warnings.push(format!(
                     "{}: Werttyp „{}“ für Bedingung „{}“ in „{}“ wird portabel als Text verarbeitet",
-                    path.display(),
+                    migration_source_label(path),
                     safe_warning_key(&value_type),
                     safe_warning_key(&name),
                     rule_name
@@ -1879,14 +2202,14 @@ fn unsupported_filter_warnings(raw: &str, path: &Path) -> Vec<String> {
             if operator_name.trim().is_empty() {
                 warnings.push(format!(
                     "{}: Vergleich für Bedingung „{}“ in „{}“ fehlt und wird als „enthält“ importiert",
-                    path.display(),
+                    migration_source_label(path),
                     safe_warning_key(&name),
                     rule_name
                 ));
             } else if filter_operator_from_evolution_name(&operator_name).is_none() {
                 warnings.push(format!(
                     "{}: Vergleich „{}“ in „{}“ wird portabel als „enthält“ importiert",
-                    path.display(),
+                    migration_source_label(path),
                     safe_warning_key(&operator_name),
                     rule_name
                 ));
@@ -1897,7 +2220,7 @@ fn unsupported_filter_warnings(raw: &str, path: &Path) -> Vec<String> {
                 condition_imported = false;
                 warnings.push(format!(
                     "{}: Leerer Wert für Bedingung „{}“ in „{}“ wird nicht importiert",
-                    path.display(),
+                    migration_source_label(path),
                     safe_warning_key(&name),
                     rule_name
                 ));
@@ -1918,7 +2241,7 @@ fn unsupported_filter_warnings(raw: &str, path: &Path) -> Vec<String> {
             if name.trim().is_empty() {
                 warnings.push(format!(
                     "{}: Aktion {} in „{}“ besitzt keinen unterstützten Namen",
-                    path.display(),
+                    migration_source_label(path),
                     action_index + 1,
                     rule_name
                 ));
@@ -1927,7 +2250,7 @@ fn unsupported_filter_warnings(raw: &str, path: &Path) -> Vec<String> {
             if filter_action_requires_target(&name) && target.trim().is_empty() {
                 warnings.push(format!(
                     "{}: Aktion „{}“ in „{}“ besitzt kein Ziel und wird nicht importiert",
-                    path.display(),
+                    migration_source_label(path),
                     safe_warning_key(&name),
                     rule_name
                 ));
@@ -1941,7 +2264,7 @@ fn unsupported_filter_warnings(raw: &str, path: &Path) -> Vec<String> {
             if filter_action_from_evolution_name(&name, recognition_target).is_none() {
                 warnings.push(format!(
                     "{}: Aktion „{}“ in „{}“ wird portabel nicht ausgeführt",
-                    path.display(),
+                    migration_source_label(path),
                     safe_warning_key(&name),
                     rule_name
                 ));
@@ -1952,14 +2275,14 @@ fn unsupported_filter_warnings(raw: &str, path: &Path) -> Vec<String> {
         if !portable_condition {
             warnings.push(format!(
                 "{}: Regel „{}“ besitzt keine importierbare Bedingung",
-                path.display(),
+                migration_source_label(path),
                 rule_name
             ));
         }
         if !portable_action {
             warnings.push(format!(
                 "{}: Regel „{}“ besitzt keine importierbare Aktion",
-                path.display(),
+                migration_source_label(path),
                 rule_name
             ));
         }
@@ -2294,6 +2617,12 @@ fn is_secret_key(key: &str) -> bool {
         "keyring",
         "authdata",
         "auth-data",
+        "api-key",
+        "apikey",
+        "client-key",
+        "certificate-key",
+        "cert-key",
+        "key-password",
     ]
     .iter()
     .any(|marker| key.contains(marker))
@@ -2395,26 +2724,46 @@ fn is_supported_source_key(group: &str, key: &str) -> bool {
 
 fn unescape_keyfile_value(value: &str) -> String {
     let mut result = String::with_capacity(value.len());
-    let mut escaped = false;
-    for character in value.chars() {
-        if escaped {
-            result.push(match character {
-                'n' => '\n',
-                'r' => '\r',
-                't' => '\t',
-                's' => ' ',
-                '\\' => '\\',
-                other => other,
-            });
-            escaped = false;
-        } else if character == '\\' {
-            escaped = true;
-        } else {
+    let mut characters = value.chars().peekable();
+    while let Some(character) = characters.next() {
+        if character != '\\' {
             result.push(character);
+            continue;
         }
-    }
-    if escaped {
-        result.push('\\');
+        let Some(escaped) = characters.next() else {
+            result.push('\\');
+            break;
+        };
+        match escaped {
+            'n' => result.push('\n'),
+            'r' => result.push('\r'),
+            't' => result.push('\t'),
+            's' => result.push(' '),
+            '\\' => result.push('\\'),
+            'u' | 'U' => {
+                let digits = if escaped == 'u' { 4 } else { 8 };
+                let mut hex = String::with_capacity(digits);
+                for _ in 0..digits {
+                    if let Some(digit) = characters.next() {
+                        hex.push(digit);
+                    }
+                }
+                if hex.len() == digits
+                    && let Ok(value) = u32::from_str_radix(&hex, 16)
+                    && let Some(value) = char::from_u32(value)
+                {
+                    result.push(value);
+                } else {
+                    result.push('\\');
+                    result.push(escaped);
+                    result.push_str(&hex);
+                }
+            }
+            other => {
+                result.push('\\');
+                result.push(other);
+            }
+        }
     }
     result
 }
@@ -2756,6 +3105,145 @@ mod tests {
     use super::*;
 
     #[test]
+    fn set01_migration_gaps_have_positive_and_negative_fixtures() {
+        let positive = [
+            ("switcher-location", "'bottom-left'", "bottom-left"),
+            ("mail-sender-column-width", "@i 240", "240"),
+            ("mail-show-security-details", "@b true", "true"),
+            ("mail-show-all-headers", "@b true", "true"),
+            ("mail-show-statusbar", "@b false", "false"),
+            (
+                "local-mail-directory",
+                "@s '/portable/mail'",
+                "/portable/mail",
+            ),
+            (
+                "local-calendar-directory",
+                "@s '/portable/calendar'",
+                "/portable/calendar",
+            ),
+            (
+                "local-contact-directory",
+                "@s '/portable/contacts'",
+                "/portable/contacts",
+            ),
+        ];
+        for (key, raw_value, expected) in positive {
+            let parsed = parse_evolution_settings(
+                &format!("[org/gnome/evolution]\n{key}={raw_value}\n"),
+                Path::new("set-01-positive.ini"),
+            );
+            assert_eq!(
+                parsed
+                    .settings
+                    .iter()
+                    .find(|setting| setting.key == key)
+                    .map(|setting| setting.value.as_str()),
+                Some(expected),
+                "positive fixture for {key}"
+            );
+        }
+        let upstream_aliases = parse_evolution_settings(
+            "[org/gnome/evolution/mail]\nshow-security-details=@b true\nshow-all-headers=@b true\n[org/gnome/evolution/shell]\nstatusbar-visible=@b false\n",
+            Path::new("set-01-upstream-aliases.ini"),
+        );
+        assert!(upstream_aliases.settings.contains(&ImportedSetting {
+            key: "mail-show-security-details".to_string(),
+            value: "true".to_string(),
+        }));
+        assert!(upstream_aliases.settings.contains(&ImportedSetting {
+            key: "mail-show-all-headers".to_string(),
+            value: "true".to_string(),
+        }));
+        assert!(upstream_aliases.settings.contains(&ImportedSetting {
+            key: "mail-show-statusbar".to_string(),
+            value: "false".to_string(),
+        }));
+
+        let negative = [
+            ("switcher-location", "'sidebar'"),
+            ("mail-sender-column-width", "@i 79"),
+            ("mail-show-security-details", "@s 'true'"),
+            ("mail-show-all-headers", "@s 'true'"),
+            ("mail-show-statusbar", "@s 'false'"),
+            ("local-mail-directory", "@i 7"),
+            ("local-calendar-directory", "@i 7"),
+            ("local-contact-directory", "@i 7"),
+        ];
+        for (key, raw_value) in negative {
+            let parsed = parse_evolution_settings(
+                &format!("[org/gnome/evolution]\n{key}={raw_value}\n"),
+                Path::new("set-01-negative.ini"),
+            );
+            assert!(!parsed.settings.iter().any(|setting| setting.key == key));
+            assert!(
+                parsed.warnings.iter().any(|warning| warning.contains(key)),
+                "negative fixture for {key} should be diagnosable"
+            );
+        }
+    }
+
+    #[test]
+    fn migration_parser_rejects_truncated_values_and_reports_type_errors_without_values() {
+        let parsed = parse_evolution_settings(
+            "[org/gnome/evolution]\nmail-show-statusbar=@b\nlocal-mail-directory=@s '/tmp/unterminated\nmail-sender-column-width=@s '240'\n",
+            Path::new("set-01-malformed.ini"),
+        );
+        assert!(parsed.settings.is_empty());
+        assert!(
+            parsed
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("mail-show-statusbar"))
+        );
+        assert!(
+            parsed
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("local-mail-directory"))
+        );
+        assert!(
+            parsed
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("mail-sender-column-width"))
+        );
+        assert!(
+            !parsed
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("unterminated"))
+        );
+    }
+
+    #[test]
+    fn migration_parser_preserves_untyped_text_unicode_and_hides_profile_paths() {
+        let profile_path = Path::new("/private/secret-profile/with credentials/evolution.ini");
+        let parsed = parse_evolution_settings(
+            r#"
+[org/gnome/evolution/tasks]
+task-category-filter=Work Team
+task-category-filter='Gr\u00fcne Gruppe'
+unknown-setting='value'
+"#,
+            profile_path,
+        );
+
+        assert!(parsed.settings.contains(&ImportedSetting {
+            key: "task-category-filter".to_string(),
+            value: "Work Team".to_string(),
+        }));
+        assert!(parsed.settings.contains(&ImportedSetting {
+            key: "task-category-filter".to_string(),
+            value: "Grüne Gruppe".to_string(),
+        }));
+        let warning_text = parsed.warnings.join(" ");
+        assert!(warning_text.contains("Evolution-Profil"));
+        assert!(!warning_text.contains("secret-profile"));
+        assert!(!warning_text.contains("with credentials"));
+    }
+
+    #[test]
     fn parses_exported_settings_without_retaining_secrets() {
         let parsed = parse_evolution_settings(
             r#"
@@ -2909,7 +3397,7 @@ task-search-mode='bogus'
             r#"
 [Data Source]
 UID=mail-source-1
-DisplayName=Person\sMailbox
+DisplayName=Gr\u00fcne\sMailbox
 Enabled=true
 
 [Mail Identity]
@@ -2925,6 +3413,7 @@ User=person@example.org
 Port=143
 AuthMethod=plain
 Password=must-not-be-imported
+ApiKey=must-not-be-imported
 
 [Mail Submission]
 Host=smtp.example.org
@@ -2951,12 +3440,12 @@ JunkFolder=Junk
         .expect("source should parse");
         assert!(source.get(&["Authentication"], &["Password"]).is_none());
         assert!(source.get(&["Security"], &["OAuth2AccessToken"]).is_none());
-        assert_eq!(source.ignored_secret_keys.len(), 2);
+        assert_eq!(source.ignored_secret_keys.len(), 3);
 
         let profile = profile_from_source(Path::new("mail-source-1.source"), &source)
             .expect("mail profile should be detected");
         assert_eq!(profile.id, "evolution-source:mail-source-1");
-        assert_eq!(profile.display_name, "Person Mailbox");
+        assert_eq!(profile.display_name, "Grüne Mailbox");
         assert_eq!(profile.email, "person@example.org");
         assert_eq!(profile.imap_host, "imap.example.org");
         assert_eq!(profile.smtp_host, "smtp.example.org");

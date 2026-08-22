@@ -43,6 +43,13 @@ fn normalized_task_search_mode(value: &str) -> &str {
     }
 }
 
+fn normalized_switcher_location(value: &str) -> &'static str {
+    match value {
+        "top" => "top",
+        _ => "bottom-left",
+    }
+}
+
 pub(crate) const MAX_TASK_CATEGORY_FILTER_BYTES: usize = 128;
 
 pub(crate) fn normalized_task_category_filter(value: &str) -> String {
@@ -134,21 +141,49 @@ fn mail_normal_headers_variant_type() -> std::borrow::Cow<'static, glib::Variant
     <Vec<(String, bool)> as StaticVariantType>::static_variant_type()
 }
 
-fn parse_mail_normal_headers_value(value: &str) -> Result<Vec<(String, bool)>, String> {
+pub(crate) fn parse_mail_normal_headers_value(value: &str) -> Result<Vec<(String, bool)>, String> {
     let value = value.trim();
     if value.is_empty() {
         return Err("Die Headerliste ist leer.".to_string());
     }
 
     let variant = glib::Variant::parse(Some(mail_normal_headers_variant_type().as_ref()), value)
-        .map_err(|error| format!("ungültige show-headers-Liste: {error}"))?;
-    variant
+        .map_err(|_| "ungültige show-headers-Liste".to_string())?;
+    let headers = variant
         .get::<Vec<(String, bool)>>()
-        .ok_or_else(|| "ungültiger Typ für die show-headers-Liste".to_string())
+        .ok_or_else(|| "ungültiger Typ für die show-headers-Liste".to_string())?;
+    if headers.len() > MAX_MAIL_NORMAL_HEADERS {
+        return Err(format!(
+            "Die Headerliste darf höchstens {MAX_MAIL_NORMAL_HEADERS} Einträge enthalten."
+        ));
+    }
+
+    let mut seen = HashSet::with_capacity(headers.len());
+    headers
+        .into_iter()
+        .map(|(name, visible)| {
+            let name = validate_mail_normal_header_name(&name)?;
+            if !seen.insert(name.to_ascii_lowercase()) {
+                return Err("Die Headerliste enthält doppelte Feldnamen.".to_string());
+            }
+            Ok((name, visible))
+        })
+        .collect()
 }
 
 const MIN_MAIL_SYNC_MESSAGE_LIMIT: i32 = 25;
 const MAX_MAIL_SYNC_MESSAGE_LIMIT: i32 = 1_000;
+
+pub(crate) fn normalize_composer_charset(value: &str) -> Option<&'static str> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "utf-8" | "utf8" => Some("UTF-8"),
+        "iso-8859-1" | "latin1" | "latin-1" => Some("ISO-8859-1"),
+        "iso-8859-15" | "latin9" | "latin-9" => Some("ISO-8859-15"),
+        "windows-1252" | "cp1252" => Some("Windows-1252"),
+        "us-ascii" | "ascii" => Some("US-ASCII"),
+        _ => None,
+    }
+}
 
 fn clamp_mail_sync_message_limit(value: i32) -> i32 {
     value.clamp(MIN_MAIL_SYNC_MESSAGE_LIMIT, MAX_MAIL_SYNC_MESSAGE_LIMIT)
@@ -225,10 +260,11 @@ impl AppSettings {
     }
 
     pub fn switcher_location(&self) -> String {
-        self.settings.string("switcher-location").to_string()
+        normalized_switcher_location(&self.settings.string("switcher-location")).to_string()
     }
 
     pub fn set_switcher_location(&self, value: &str) {
+        let value = normalized_switcher_location(value);
         if let Err(error) = self.settings.set_string("switcher-location", value) {
             tracing::warn!(%error, "Could not persist switcher location");
         }
@@ -495,28 +531,13 @@ impl AppSettings {
     /// Persistent default used when opening a new composer. Individual
     /// messages keep their selected charset in their recovery draft.
     pub fn composer_charset(&self) -> String {
-        match self
-            .settings
-            .string("composer-charset")
-            .to_ascii_lowercase()
-            .as_str()
-        {
-            "iso-8859-1" | "latin1" | "latin-1" => "ISO-8859-1".to_string(),
-            "iso-8859-15" | "latin9" | "latin-9" => "ISO-8859-15".to_string(),
-            "windows-1252" | "cp1252" => "Windows-1252".to_string(),
-            "us-ascii" | "ascii" => "US-ASCII".to_string(),
-            _ => "UTF-8".to_string(),
-        }
+        normalize_composer_charset(&self.settings.string("composer-charset"))
+            .unwrap_or("UTF-8")
+            .to_string()
     }
 
     pub fn set_composer_charset(&self, value: &str) {
-        let value = match value.trim().to_ascii_lowercase().as_str() {
-            "iso-8859-1" | "latin1" | "latin-1" => "ISO-8859-1",
-            "iso-8859-15" | "latin9" | "latin-9" => "ISO-8859-15",
-            "windows-1252" | "cp1252" => "Windows-1252",
-            "us-ascii" | "ascii" => "US-ASCII",
-            _ => "UTF-8",
-        };
+        let value = normalize_composer_charset(value).unwrap_or("UTF-8");
         self.set_string("composer-charset", value);
     }
 
@@ -1163,10 +1184,22 @@ impl AppSettings {
     pub fn apply_migrated_setting(&self, key: &str, value: &str) -> Result<(), String> {
         let value = value.trim();
         match key {
-            "window-width" => self.set_window_width(parse_migrated_i32(key, value)?),
-            "window-height" => self.set_window_height(parse_migrated_i32(key, value)?),
+            "window-width" => {
+                self.set_window_width(parse_migrated_i32_in_range(key, value, 360, i32::MAX)?);
+            }
+            "window-height" => {
+                self.set_window_height(parse_migrated_i32_in_range(key, value, 480, i32::MAX)?);
+            }
             "is-maximized" => self.set_is_maximized(parse_migrated_bool(key, value)?),
             "active-view" => self.set_active_view(value),
+            "switcher-location" => {
+                if !matches!(value, "top" | "bottom-left") {
+                    return Err(format!(
+                        "ungültiger Wert für „{key}“ (erwartet „top“ oder „bottom-left“)"
+                    ));
+                }
+                self.set_switcher_location(value);
+            }
             "default-account" => self.set_default_account_id(value),
             "default-calendar-source" => self.set_default_calendar_source_uid(value),
             "default-task-source" => self.set_default_task_source_uid(value),
@@ -1176,13 +1209,19 @@ impl AppSettings {
             "calendar-week-start" => self.set_calendar_week_start(value),
             "calendar-workdays" => self.set_calendar_workdays(value),
             "calendar-workday-start" => {
-                self.set_calendar_workday_start_minutes(parse_migrated_u32(key, value)?);
+                self.set_calendar_workday_start_minutes(parse_migrated_u32_in_range(
+                    key, value, 0, 1_439,
+                )?);
             }
             "calendar-workday-end" => {
-                self.set_calendar_workday_end_minutes(parse_migrated_u32(key, value)?);
+                self.set_calendar_workday_end_minutes(parse_migrated_u32_in_range(
+                    key, value, 0, 1_439,
+                )?);
             }
             "calendar-default-reminder" => {
-                self.set_calendar_default_reminder_minutes(parse_migrated_u32(key, value)?);
+                self.set_calendar_default_reminder_minutes(parse_migrated_u32_in_range(
+                    key, value, 0, 10_080,
+                )?);
             }
             "notifications-enabled" => {
                 self.set_notifications_enabled(parse_migrated_bool(key, value)?);
@@ -1200,6 +1239,11 @@ impl AppSettings {
                     .filter(|source_uid| !source_uid.is_empty())
                     .map(ToOwned::to_owned)
                     .collect::<Vec<_>>();
+                if source_uids.iter().any(|source_uid| {
+                    source_uid.is_empty() || source_uid.chars().any(char::is_control)
+                }) {
+                    return Err(format!("ungültige Quellenliste für „{key}“"));
+                }
                 self.set_calendar_hidden_sources(&source_uids);
             }
             "date-format" => self.set_date_format(value),
@@ -1212,13 +1256,19 @@ impl AppSettings {
             "force-dark-mode" => self.set_force_dark_mode(parse_migrated_bool(key, value)?),
             "render-html" => self.set_render_html(parse_migrated_bool(key, value)?),
             "composer-html" => self.set_composer_html(parse_migrated_bool(key, value)?),
-            "composer-charset" => self.set_composer_charset(value),
+            "composer-charset" => {
+                let value = normalize_composer_charset(value)
+                    .ok_or_else(|| format!("ungültige Zeichenkodierung für „{key}“"))?;
+                self.set_composer_charset(value);
+            }
             "request-read-receipt" => {
                 self.set_request_read_receipt(parse_migrated_bool(key, value)?);
             }
             "spellcheck-languages" => self.set_spellcheck_languages(value),
             "mail-font-family" => self.set_mail_font_family(value),
-            "mail-font-size" => self.set_mail_font_size(parse_migrated_u32(key, value)?),
+            "mail-font-size" => {
+                self.set_mail_font_size(parse_migrated_u32_in_range(key, value, 8, 48)?);
+            }
             "mark-read-on-selection" => {
                 self.set_mark_read_on_selection(parse_migrated_bool(key, value)?);
             }
@@ -1243,13 +1293,19 @@ impl AppSettings {
             "mail-show-toolbar" => self.set_mail_show_toolbar(parse_migrated_bool(key, value)?),
             "mail-show-sidebar" => self.set_mail_show_sidebar(parse_migrated_bool(key, value)?),
             "mail-sidebar-position" => {
-                self.set_mail_sidebar_position(parse_migrated_i32(key, value)?);
+                self.set_mail_sidebar_position(parse_migrated_i32_in_range(key, value, 0, 2_000)?);
             }
             "mail-modern-preview-position" => {
-                self.set_mail_preview_position("modern", parse_migrated_i32(key, value)?);
+                self.set_mail_preview_position(
+                    "modern",
+                    parse_migrated_i32_in_range(key, value, 120, 4_096)?,
+                );
             }
             "mail-classic-preview-position" => {
-                self.set_mail_preview_position("classic", parse_migrated_i32(key, value)?);
+                self.set_mail_preview_position(
+                    "classic",
+                    parse_migrated_i32_in_range(key, value, 120, 4_096)?,
+                );
             }
             "mail-row-density" => self.set_mail_row_density(value),
             "mail-show-avatar" => self.set_mail_show_avatar(parse_migrated_bool(key, value)?),
@@ -1265,12 +1321,18 @@ impl AppSettings {
                 self.set_mail_show_preview_text(parse_migrated_bool(key, value)?);
             }
             "mail-show-labels" => self.set_mail_show_labels(parse_migrated_bool(key, value)?),
+            "mail-sender-column-width" => {
+                let value = parse_migrated_i32_in_range(key, value, 80, 360)?;
+                self.set_mail_sender_column_width(value);
+            }
             "color-scheme" => self.set_color_scheme(value),
             "sign-new-messages" => self.set_sign_new_messages(parse_migrated_bool(key, value)?),
             "default-pgp-key" => self.set_default_pgp_key(value),
             "crypto-protocol" => self.set_crypto_protocol(value),
             "smime-signer-certificate" => self.set_smime_signer_certificate(value),
-            "smime-private-key" => self.set_smime_private_key(value),
+            "smime-private-key" => {
+                return Err("geheimes S/MIME-Schlüsselfeld wird nicht importiert".to_string());
+            }
             "smime-recipient-certificates" => self.set_smime_recipient_certificates(
                 &value
                     .split('\n')
@@ -1281,16 +1343,34 @@ impl AppSettings {
             ),
             "smime-ca-file" => self.set_smime_ca_file(value),
             "mail-sync-interval" => {
-                self.set_mail_sync_interval_seconds(parse_migrated_u32(key, value)?);
+                self.set_mail_sync_interval_seconds(parse_migrated_u32_in_range(
+                    key, value, 0, 86_400,
+                )?);
             }
             "mail-sync-message-limit" => {
-                self.set_mail_sync_message_limit(parse_migrated_u32(key, value)?);
+                self.set_mail_sync_message_limit(parse_migrated_u32_in_range(
+                    key,
+                    value,
+                    MIN_MAIL_SYNC_MESSAGE_LIMIT as u32,
+                    MAX_MAIL_SYNC_MESSAGE_LIMIT as u32,
+                )?);
             }
             "draft-autosave-interval" => {
-                self.set_draft_autosave_interval_seconds(parse_migrated_u32(key, value)?);
+                self.set_draft_autosave_interval_seconds(parse_migrated_u32_in_range(
+                    key, value, 0, 3_600,
+                )?);
             }
             "append-signature" => self.set_append_signature(parse_migrated_bool(key, value)?),
             "signature-text" => self.set_signature_text(value),
+            "local-mail-directory" | "local-calendar-directory" | "local-contact-directory" => {
+                let value = parse_migrated_directory(key, value)?;
+                match key {
+                    "local-mail-directory" => self.set_local_mail_directory(&value),
+                    "local-calendar-directory" => self.set_local_calendar_directory(&value),
+                    "local-contact-directory" => self.set_local_contact_directory(&value),
+                    _ => unreachable!("directory key matched above"),
+                }
+            }
             "quote-original" => self.set_quote_original(parse_migrated_bool(key, value)?),
             "quote-style" => self.set_quote_style(value),
             "mail-sort-field" => self.set_mail_sort_field(value),
@@ -1326,6 +1406,7 @@ impl AppSettings {
             "window-height",
             "is-maximized",
             "active-view",
+            "switcher-location",
             "default-account",
             "default-calendar-source",
             "default-address-book-source",
@@ -1444,11 +1525,48 @@ fn parse_migrated_i32(key: &str, value: &str) -> Result<i32, String> {
         .map_err(|_| format!("ungültiger Ganzzahlwert für „{key}“"))
 }
 
+fn parse_migrated_i32_in_range(
+    key: &str,
+    value: &str,
+    minimum: i32,
+    maximum: i32,
+) -> Result<i32, String> {
+    let value = parse_migrated_i32(key, value)?;
+    if !(minimum..=maximum).contains(&value) {
+        return Err(format!(
+            "Wert für „{key}“ liegt außerhalb des Bereichs {minimum}..={maximum}"
+        ));
+    }
+    Ok(value)
+}
+
 fn parse_migrated_u32(key: &str, value: &str) -> Result<u32, String> {
     value
         .trim()
         .parse::<u32>()
         .map_err(|_| format!("ungültiger positiver Ganzzahlwert für „{key}“"))
+}
+
+fn parse_migrated_u32_in_range(
+    key: &str,
+    value: &str,
+    minimum: u32,
+    maximum: u32,
+) -> Result<u32, String> {
+    let value = parse_migrated_u32(key, value)?;
+    if !(minimum..=maximum).contains(&value) {
+        return Err(format!(
+            "Wert für „{key}“ liegt außerhalb des Bereichs {minimum}..={maximum}"
+        ));
+    }
+    Ok(value)
+}
+
+fn parse_migrated_directory(key: &str, value: &str) -> Result<String, String> {
+    if value.len() > 4_096 || value.chars().any(char::is_control) {
+        return Err(format!("ungültiger Pfadwert für „{key}“"));
+    }
+    Ok(value.to_string())
 }
 
 fn sanitize_font_family(value: &str) -> String {
@@ -1510,9 +1628,9 @@ fn sanitize_calendar_workdays(value: &str) -> String {
 mod tests {
     use super::{
         AppSettings, DEFAULT_MAIL_NORMAL_HEADERS, MAX_MAIL_NORMAL_HEADERS,
-        clamp_mail_sync_message_limit, default_mail_normal_headers, normalized_mail_sort_field,
-        sanitize_calendar_workdays, sanitize_spellcheck_languages,
-        validate_mail_normal_header_name,
+        clamp_mail_sync_message_limit, default_mail_normal_headers, normalize_composer_charset,
+        normalized_mail_sort_field, normalized_switcher_location, sanitize_calendar_workdays,
+        sanitize_spellcheck_languages, validate_mail_normal_header_name,
     };
     use gtk::gio;
     use gtk::gio::prelude::*;
@@ -1658,12 +1776,21 @@ mod tests {
         reloaded
             .apply_migrated_setting(
                 "mail-normal-headers",
-                "[('From', true), ('x-test', false), ('X-TEST', true)]",
+                "[('From', true), ('x-test', false), ('X-Other', true)]",
             )
             .expect("GVariant show-headers value should migrate");
         assert_eq!(
             reloaded.mail_normal_headers(),
-            vec![("From".to_string(), true), ("x-test".to_string(), false)]
+            vec![
+                ("From".to_string(), true),
+                ("x-test".to_string(), false),
+                ("X-Other".to_string(), true),
+            ]
+        );
+        assert!(
+            reloaded
+                .apply_migrated_setting("mail-normal-headers", "[('From', true), ('from', false)]",)
+                .is_err()
         );
 
         reloaded.reset_to_defaults();
@@ -1730,6 +1857,75 @@ mod tests {
         assert_eq!(reloaded.composer_charset(), "UTF-8");
         reloaded.reset_to_defaults();
         assert_eq!(reloaded.composer_charset(), "UTF-8");
+    }
+
+    #[test]
+    fn set01_settings_round_trip_and_reject_invalid_portable_values() {
+        assert_eq!(normalized_switcher_location("top"), "top");
+        assert_eq!(normalized_switcher_location("unknown"), "bottom-left");
+        assert_eq!(normalize_composer_charset("utf8"), Some("UTF-8"));
+        assert_eq!(normalize_composer_charset("unknown"), None);
+
+        let backend = gio::memory_settings_backend_new();
+        let settings = settings_with_backend(&backend);
+        for (key, value) in [
+            ("switcher-location", "top"),
+            ("mail-sender-column-width", "240"),
+            ("mail-show-security-details", "true"),
+            ("mail-show-all-headers", "true"),
+            ("mail-show-statusbar", "false"),
+            ("local-mail-directory", "/portable/mail"),
+            ("local-calendar-directory", "/portable/calendar"),
+            ("local-contact-directory", "/portable/contacts"),
+            ("composer-charset", "ISO-8859-15"),
+            ("mail-sync-message-limit", "250"),
+        ] {
+            settings
+                .apply_migrated_setting(key, value)
+                .unwrap_or_else(|error| panic!("{key} should be accepted: {error}"));
+        }
+
+        let reloaded = settings_with_backend(&backend);
+        assert_eq!(reloaded.switcher_location(), "top");
+        assert_eq!(reloaded.mail_sender_column_width(), 240);
+        assert!(reloaded.mail_show_security_details());
+        assert!(reloaded.mail_show_all_headers());
+        assert!(!reloaded.mail_show_statusbar());
+        assert_eq!(reloaded.local_mail_directory(), "/portable/mail");
+        assert_eq!(reloaded.local_calendar_directory(), "/portable/calendar");
+        assert_eq!(reloaded.local_contact_directory(), "/portable/contacts");
+        assert_eq!(reloaded.composer_charset(), "ISO-8859-15");
+        assert_eq!(reloaded.mail_sync_message_limit(), 250);
+
+        for (key, value) in [
+            ("switcher-location", "sidebar"),
+            ("mail-sender-column-width", "79"),
+            ("mail-show-statusbar", "not-a-bool"),
+            ("local-mail-directory", "/bad\npath"),
+            ("composer-charset", "X-UNKNOWN"),
+            ("mail-sync-message-limit", "24"),
+        ] {
+            assert!(
+                reloaded.apply_migrated_setting(key, value).is_err(),
+                "{key}"
+            );
+        }
+        let error = reloaded
+            .apply_migrated_setting("smime-private-key", "private-key-path")
+            .expect_err("private key migration must be refused");
+        assert!(!error.contains("private-key-path"));
+
+        reloaded.reset_to_defaults();
+        assert_eq!(reloaded.switcher_location(), "bottom-left");
+        assert_eq!(reloaded.mail_sender_column_width(), 180);
+        assert!(!reloaded.mail_show_security_details());
+        assert!(!reloaded.mail_show_all_headers());
+        assert!(reloaded.mail_show_statusbar());
+        assert!(reloaded.local_mail_directory().is_empty());
+        assert!(reloaded.local_calendar_directory().is_empty());
+        assert!(reloaded.local_contact_directory().is_empty());
+        assert_eq!(reloaded.composer_charset(), "UTF-8");
+        assert_eq!(reloaded.mail_sync_message_limit(), 100);
     }
 
     #[test]

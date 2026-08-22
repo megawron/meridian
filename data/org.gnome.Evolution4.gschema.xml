@@ -229,6 +229,10 @@
     <key name="switcher-location" type="s">
       <default>'bottom-left'</default>
       <summary>Location of module switcher buttons (top in header bar or bottom-left in sidebar)</summary>
+      <choices>
+        <choice value='top'/>
+        <choice value='bottom-left'/>
+      </choices>
     </key>
     <key name="sign-new-messages" type="b">
       <default>false</default>

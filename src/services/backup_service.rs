@@ -9,15 +9,19 @@
 
 use chrono::Utc;
 use glib::{Checksum, ChecksumType};
+use serde::de::{DeserializeSeed, Deserializer, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use std::fmt;
 use std::fs;
-use std::io;
+use std::io::{self, Write};
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::settings_service::AppSettings;
 
-const CURRENT_VERSION: u32 = 3;
+const CURRENT_VERSION: u32 = 4;
+static TEMP_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 fn default_calendar_view() -> String {
     "month".to_string()
@@ -104,10 +108,14 @@ const APP_OWNED_DIRECTORIES: &[&str] = &["ical", "vcards", "mail"];
 struct BackupFile {
     relative_path: String,
     contents: Vec<u8>,
-    /// Optional for backwards compatibility with version-3 backups created
+    /// Optional for backwards compatibility with version-3 and older backups
     /// before integrity metadata was added.
     #[serde(default)]
     checksum_sha256: String,
+    /// Number of JSON fields deliberately removed by the safe backup
+    /// redactor. Older formats do not have this metadata.
+    #[serde(default)]
+    redacted_fields: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -140,6 +148,8 @@ struct BackupSettings {
     render_html: bool,
     #[serde(default = "default_composer_html")]
     composer_html: bool,
+    #[serde(default = "default_composer_charset")]
+    composer_charset: String,
     #[serde(default)]
     request_read_receipt: bool,
     #[serde(default)]
@@ -194,6 +204,8 @@ struct BackupSettings {
     mail_sender_column_width: i32,
     #[serde(default = "default_color_scheme")]
     color_scheme: String,
+    #[serde(default = "default_switcher_location")]
+    switcher_location: String,
     #[serde(default)]
     sign_new_messages: bool,
     #[serde(default)]
@@ -202,7 +214,10 @@ struct BackupSettings {
     crypto_protocol: String,
     #[serde(default)]
     smime_signer_certificate: String,
-    #[serde(default)]
+    /// Private key material is native crypto state and is never included in
+    /// portable backups. `skip` also keeps legacy JSON fields from being
+    /// re-emitted during a round-trip.
+    #[serde(skip)]
     smime_private_key: String,
     #[serde(default)]
     smime_recipient_certificates: String,
@@ -210,6 +225,8 @@ struct BackupSettings {
     smime_ca_file: String,
     #[serde(default = "default_mail_sync_interval")]
     mail_sync_interval: u32,
+    #[serde(default = "default_mail_sync_message_limit")]
+    mail_sync_message_limit: u32,
     #[serde(default = "default_draft_autosave_interval")]
     draft_autosave_interval: u32,
     #[serde(default)]
@@ -304,6 +321,18 @@ fn default_color_scheme() -> String {
 
 fn default_mail_sync_interval() -> u32 {
     30
+}
+
+fn default_mail_sync_message_limit() -> u32 {
+    100
+}
+
+fn default_composer_charset() -> String {
+    "UTF-8".to_string()
+}
+
+fn default_switcher_location() -> String {
+    "bottom-left".to_string()
 }
 
 fn default_crypto_protocol() -> String {
@@ -425,7 +454,7 @@ fn default_mail_show_sidebar() -> bool {
 }
 
 fn default_mail_sidebar_position() -> i32 {
-    220
+    240
 }
 
 fn default_mail_modern_preview_position() -> i32 {
@@ -481,6 +510,7 @@ impl BackupSettings {
             force_dark_mode: settings.force_dark_mode(),
             render_html: settings.render_html(),
             composer_html: settings.composer_html(),
+            composer_charset: settings.composer_charset(),
             request_read_receipt: settings.request_read_receipt(),
             spellcheck_languages: settings.spellcheck_languages(),
             mail_font_family: settings.mail_font_family(),
@@ -508,14 +538,16 @@ impl BackupSettings {
             mail_show_labels: settings.mail_show_labels(),
             mail_sender_column_width: settings.mail_sender_column_width(),
             color_scheme: settings.color_scheme(),
+            switcher_location: settings.switcher_location(),
             sign_new_messages: settings.sign_new_messages(),
             default_pgp_key: settings.default_pgp_key(),
             crypto_protocol: settings.crypto_protocol(),
             smime_signer_certificate: settings.smime_signer_certificate(),
-            smime_private_key: settings.smime_private_key(),
+            smime_private_key: String::new(),
             smime_recipient_certificates: settings.smime_recipient_certificates().join("\n"),
             smime_ca_file: settings.smime_ca_file(),
             mail_sync_interval: settings.mail_sync_interval_seconds(),
+            mail_sync_message_limit: settings.mail_sync_message_limit(),
             draft_autosave_interval: settings.draft_autosave_interval_seconds(),
             append_signature: settings.append_signature(),
             signature_text: settings.signature_text(),
@@ -567,6 +599,7 @@ impl BackupSettings {
         settings.set_force_dark_mode(self.force_dark_mode);
         settings.set_render_html(self.render_html);
         settings.set_composer_html(self.composer_html);
+        settings.set_composer_charset(&self.composer_charset);
         settings.set_request_read_receipt(self.request_read_receipt);
         settings.set_spellcheck_languages(&self.spellcheck_languages);
         settings.set_mail_font_family(&self.mail_font_family);
@@ -594,11 +627,11 @@ impl BackupSettings {
         settings.set_mail_show_labels(self.mail_show_labels);
         settings.set_mail_sender_column_width(self.mail_sender_column_width);
         settings.set_color_scheme(&self.color_scheme);
+        settings.set_switcher_location(&self.switcher_location);
         settings.set_sign_new_messages(self.sign_new_messages);
         settings.set_default_pgp_key(&self.default_pgp_key);
         settings.set_crypto_protocol(&self.crypto_protocol);
         settings.set_smime_signer_certificate(&self.smime_signer_certificate);
-        settings.set_smime_private_key(&self.smime_private_key);
         settings.set_smime_recipient_certificates(
             &self
                 .smime_recipient_certificates
@@ -610,6 +643,7 @@ impl BackupSettings {
         );
         settings.set_smime_ca_file(&self.smime_ca_file);
         settings.set_mail_sync_interval_seconds(self.mail_sync_interval);
+        settings.set_mail_sync_message_limit(self.mail_sync_message_limit);
         settings.set_draft_autosave_interval_seconds(self.draft_autosave_interval);
         settings.set_append_signature(self.append_signature);
         settings.set_signature_text(&self.signature_text);
@@ -650,6 +684,365 @@ impl BackupSettings {
         settings.set_memo_source_filter(&self.memo_source_filter);
         settings.set_memo_sort_descending(self.memo_sort_descending);
     }
+
+    fn validate(&self) -> io::Result<()> {
+        validate_i32_setting("window_width", self.window_width, 360, i32::MAX)?;
+        validate_i32_setting("window_height", self.window_height, 480, i32::MAX)?;
+        validate_choice(
+            "active_view",
+            &self.active_view,
+            &["mail", "calendar", "contacts", "tasks", "memos"],
+        )?;
+        validate_choice(
+            "composer_charset",
+            &self.composer_charset,
+            &[
+                "UTF-8",
+                "ISO-8859-1",
+                "ISO-8859-15",
+                "Windows-1252",
+                "US-ASCII",
+            ],
+        )?;
+        validate_choice(
+            "switcher_location",
+            &self.switcher_location,
+            &["top", "bottom-left"],
+        )?;
+        validate_i32_setting(
+            "mail_sidebar_position",
+            self.mail_sidebar_position,
+            0,
+            2_000,
+        )?;
+        validate_i32_setting(
+            "mail_modern_preview_position",
+            self.mail_modern_preview_position,
+            120,
+            4_096,
+        )?;
+        validate_i32_setting(
+            "mail_classic_preview_position",
+            self.mail_classic_preview_position,
+            120,
+            4_096,
+        )?;
+        validate_i32_setting(
+            "mail_sender_column_width",
+            self.mail_sender_column_width,
+            80,
+            360,
+        )?;
+        validate_u32_setting("mail_font_size", self.mail_font_size, 8, 48)?;
+        validate_u32_setting(
+            "calendar_workday_start",
+            self.calendar_workday_start,
+            0,
+            1_439,
+        )?;
+        validate_u32_setting("calendar_workday_end", self.calendar_workday_end, 0, 1_439)?;
+        validate_u32_setting(
+            "calendar_default_reminder",
+            self.calendar_default_reminder,
+            0,
+            10_080,
+        )?;
+        validate_u32_setting("mail_sync_interval", self.mail_sync_interval, 0, 86_400)?;
+        validate_u32_setting(
+            "mail_sync_message_limit",
+            self.mail_sync_message_limit,
+            25,
+            1_000,
+        )?;
+        validate_u32_setting(
+            "draft_autosave_interval",
+            self.draft_autosave_interval,
+            0,
+            3_600,
+        )?;
+
+        validate_choice(
+            "calendar_view",
+            &self.calendar_view,
+            &["day", "week", "workweek", "month", "agenda"],
+        )?;
+        validate_choice(
+            "calendar_week_start",
+            &self.calendar_week_start,
+            &["monday", "sunday"],
+        )?;
+        validate_choice("date_format", &self.date_format, &["german", "iso", "us"])?;
+        validate_choice("time_format", &self.time_format, &["12h", "24h"])?;
+        validate_choice(
+            "mail_default_folder",
+            &self.mail_default_folder,
+            &["all", "inbox", "sent", "drafts", "trash", "archive", "spam"],
+        )?;
+        validate_choice(
+            "mail_sort_field",
+            &self.mail_sort_field,
+            &[
+                "subject",
+                "sender",
+                "date",
+                "unread",
+                "flagged",
+                "important",
+                "attachments",
+            ],
+        )?;
+        validate_choice("mail_layout", &self.mail_layout, &["classic", "modern"])?;
+        validate_choice(
+            "mail_row_density",
+            &self.mail_row_density,
+            &["compact", "comfortable", "spacious"],
+        )?;
+        validate_choice(
+            "color_scheme",
+            &self.color_scheme,
+            &["system", "light", "dark"],
+        )?;
+        validate_choice(
+            "crypto_protocol",
+            &self.crypto_protocol,
+            &["openpgp", "smime"],
+        )?;
+        validate_choice("quote_style", &self.quote_style, &["prefix", "blockquote"])?;
+        validate_choice(
+            "task_search_mode",
+            &self.task_search_mode,
+            &["any-field", "summary", "description", "advanced"],
+        )?;
+        validate_choice(
+            "task_sort_field",
+            &self.task_sort_field,
+            &["due", "title", "priority"],
+        )?;
+        validate_choice(
+            "memo_sort_field",
+            &self.memo_sort_field,
+            &["updated", "title", "source"],
+        )?;
+        validate_task_filter(&self.task_filter)?;
+        validate_string(
+            "task_category_filter",
+            &self.task_category_filter,
+            128,
+            true,
+        )?;
+        validate_mail_normal_headers(&self.mail_normal_headers)?;
+        validate_font_family(&self.mail_font_family)?;
+        validate_spellcheck_languages(&self.spellcheck_languages)?;
+        validate_calendar_workdays(&self.calendar_workdays)?;
+        validate_calendar_hidden_sources(&self.calendar_hidden_sources)?;
+        for (name, value) in [
+            ("default_account", &self.default_account),
+            ("default_calendar_source", &self.default_calendar_source),
+            (
+                "default_address_book_source",
+                &self.default_address_book_source,
+            ),
+            ("default_task_source", &self.default_task_source),
+            ("default_memo_source", &self.default_memo_source),
+            ("calendar_workdays", &self.calendar_workdays),
+            ("calendar_time_zone", &self.calendar_time_zone),
+            ("local_mail_directory", &self.local_mail_directory),
+            ("local_calendar_directory", &self.local_calendar_directory),
+            ("local_contact_directory", &self.local_contact_directory),
+            ("default_pgp_key", &self.default_pgp_key),
+            ("smime_signer_certificate", &self.smime_signer_certificate),
+            ("smime_ca_file", &self.smime_ca_file),
+            ("task_source_filter", &self.task_source_filter),
+            ("memo_source_filter", &self.memo_source_filter),
+        ] {
+            validate_string(name, value, 4_096, true)?;
+        }
+        for certificate in self
+            .smime_recipient_certificates
+            .split('\n')
+            .filter(|certificate| !certificate.trim().is_empty())
+        {
+            validate_string("smime_recipient_certificates", certificate, 4_096, false)?;
+        }
+        Ok(())
+    }
+}
+
+fn validation_error(field: &str, reason: &str) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!("Ungültiger Sicherungswert für {field}: {reason}"),
+    )
+}
+
+fn validate_i32_setting(field: &str, value: i32, minimum: i32, maximum: i32) -> io::Result<()> {
+    if !(minimum..=maximum).contains(&value) {
+        return Err(validation_error(
+            field,
+            "außerhalb des portablen Wertebereichs",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_u32_setting(field: &str, value: u32, minimum: u32, maximum: u32) -> io::Result<()> {
+    if !(minimum..=maximum).contains(&value) {
+        return Err(validation_error(
+            field,
+            "außerhalb des portablen Wertebereichs",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_choice(field: &str, value: &str, choices: &[&str]) -> io::Result<()> {
+    if choices.contains(&value) {
+        Ok(())
+    } else {
+        Err(validation_error(field, "nicht unterstützt"))
+    }
+}
+
+fn validate_string(
+    field: &str,
+    value: &str,
+    maximum_bytes: usize,
+    allow_empty: bool,
+) -> io::Result<()> {
+    if (!allow_empty && value.is_empty())
+        || value.len() > maximum_bytes
+        || value.chars().any(char::is_control)
+    {
+        return Err(validation_error(field, "ungültiger Textwert"));
+    }
+    Ok(())
+}
+
+fn validate_task_filter(value: &str) -> io::Result<()> {
+    validate_choice(
+        "task_filter",
+        value,
+        &[
+            "all",
+            "today",
+            "next-7",
+            "next-30",
+            "next-365",
+            "important",
+            "overdue",
+            "in-progress",
+            "cancelled",
+            "completed",
+            "uncompleted",
+            "scheduled",
+            "no-due",
+            "with-attachments",
+            "started",
+            "without-category",
+        ],
+    )
+}
+
+fn validate_mail_normal_headers(headers: &[(String, bool)]) -> io::Result<()> {
+    let mut seen = HashSet::with_capacity(headers.len());
+    if headers.len() > 64 {
+        return Err(validation_error(
+            "mail_normal_headers",
+            "ungültige Headerliste",
+        ));
+    }
+    for (name, _) in headers {
+        let name = super::settings_service::validate_mail_normal_header_name(name)
+            .map_err(|_| validation_error("mail_normal_headers", "ungültige Headerliste"))?;
+        if !seen.insert(name.to_ascii_lowercase()) {
+            return Err(validation_error(
+                "mail_normal_headers",
+                "doppelte Headernamen",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_font_family(value: &str) -> io::Result<()> {
+    if value.is_empty()
+        || value.len() > 120
+        || value
+            .chars()
+            .any(|character| !(character.is_ascii_alphanumeric() || " ,-_'\"".contains(character)))
+    {
+        return Err(validation_error(
+            "mail_font_family",
+            "keine portable Schriftfamilie",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_spellcheck_languages(value: &str) -> io::Result<()> {
+    if value
+        .split(',')
+        .filter(|language| !language.trim().is_empty())
+        .any(|language| {
+            let language = language.trim();
+            language.len() > 35
+                || language
+                    .chars()
+                    .any(|character| !(character.is_ascii_alphanumeric() || character == '-'))
+        })
+    {
+        return Err(validation_error(
+            "spellcheck_languages",
+            "keine portable Sprachliste",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_calendar_workdays(value: &str) -> io::Result<()> {
+    if value.is_empty() {
+        return Ok(());
+    }
+    let mut seen = HashSet::new();
+    for day in value.split(',').map(str::trim) {
+        if !matches!(
+            day,
+            "monday" | "tuesday" | "wednesday" | "thursday" | "friday" | "saturday" | "sunday"
+        ) || !seen.insert(day)
+        {
+            return Err(validation_error(
+                "calendar_workdays",
+                "keine eindeutige portable Wochentagsliste",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_calendar_hidden_sources(value: &str) -> io::Result<()> {
+    if value.is_empty() || value.len() > 4_096 {
+        if value.is_empty() {
+            return Ok(());
+        }
+        return Err(validation_error(
+            "calendar_hidden_sources",
+            "ungültige Quellenliste",
+        ));
+    }
+
+    let mut seen = HashSet::new();
+    for source_uid in value.split(',').map(str::trim) {
+        if source_uid.is_empty()
+            || source_uid.chars().any(char::is_control)
+            || !seen.insert(source_uid)
+        {
+            return Err(validation_error(
+                "calendar_hidden_sources",
+                "keine eindeutige portable Quellenliste",
+            ));
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -666,6 +1059,9 @@ struct BackupBundle {
 pub struct RestoreReport {
     pub files_restored: usize,
     pub settings_restored: bool,
+    /// Safe, value-free diagnostics for fields that were not portable or
+    /// were intentionally redacted.
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -675,6 +1071,7 @@ pub struct BackupInspection {
     pub settings_present: bool,
     pub checksummed_files: usize,
     pub legacy_files_without_checksum: usize,
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -698,28 +1095,424 @@ struct DiagnosticBundle {
     settings_available: bool,
 }
 
+const BACKUP_BUNDLE_FIELDS: &[&str] = &["version", "created_at", "settings", "files"];
+const BACKUP_FILE_FIELDS: &[&str] = &[
+    "relative_path",
+    "contents",
+    "checksum_sha256",
+    "redacted_fields",
+];
+const BACKUP_SETTINGS_FIELDS: &[&str] = &[
+    "window_width",
+    "window_height",
+    "is_maximized",
+    "active_view",
+    "default_account",
+    "default_calendar_source",
+    "default_address_book_source",
+    "default_task_source",
+    "default_memo_source",
+    "auto_load_remote_images",
+    "offline_mode",
+    "force_dark_mode",
+    "render_html",
+    "composer_html",
+    "composer_charset",
+    "request_read_receipt",
+    "spellcheck_languages",
+    "mail_font_family",
+    "mail_font_size",
+    "mark_read_on_selection",
+    "show_message_preview",
+    "mail_show_security_details",
+    "mail_show_all_headers",
+    "mail_normal_headers",
+    "mail_show_statusbar",
+    "mail_default_folder",
+    "mail_layout",
+    "mail_show_toolbar",
+    "mail_show_sidebar",
+    "mail_sidebar_position",
+    "mail_modern_preview_position",
+    "mail_classic_preview_position",
+    "mail_row_density",
+    "mail_show_avatar",
+    "mail_show_sender",
+    "mail_show_recipient",
+    "mail_show_date",
+    "mail_show_attachment",
+    "mail_show_preview_text",
+    "mail_show_labels",
+    "mail_sender_column_width",
+    "color_scheme",
+    "switcher_location",
+    "sign_new_messages",
+    "default_pgp_key",
+    "crypto_protocol",
+    "smime_signer_certificate",
+    "smime_recipient_certificates",
+    "smime_ca_file",
+    "mail_sync_interval",
+    "mail_sync_message_limit",
+    "draft_autosave_interval",
+    "append_signature",
+    "signature_text",
+    "local_mail_directory",
+    "local_calendar_directory",
+    "local_contact_directory",
+    "quote_original",
+    "quote_style",
+    "calendar_view",
+    "calendar_week_start",
+    "calendar_workdays",
+    "calendar_workday_start",
+    "calendar_workday_end",
+    "calendar_default_reminder",
+    "notifications_enabled",
+    "confirm_destructive_actions",
+    "calendar_show_week_numbers",
+    "calendar_hidden_sources",
+    "date_format",
+    "time_format",
+    "mail_sort_field",
+    "mail_sort_descending",
+    "mail_threading",
+    "calendar_time_zone",
+    "task_filter",
+    "task_category_filter",
+    "task_search_mode",
+    "task_source_filter",
+    "task_sort_field",
+    "task_sort_descending",
+    "memo_sort_field",
+    "memo_source_filter",
+    "memo_sort_descending",
+];
+
+fn is_sensitive_backup_key(key: &str) -> bool {
+    let key = key.to_ascii_lowercase().replace('_', "-");
+    [
+        "password",
+        "passwd",
+        "token",
+        "secret",
+        "credential",
+        "passphrase",
+        "private-key",
+        "privatekey",
+        "oauth",
+        "keyring",
+        "api-key",
+        "apikey",
+        "client-key",
+        "key-password",
+        "certificate-key",
+        "cert-key",
+        "certificate",
+        "certificates",
+        "ca-file",
+    ]
+    .iter()
+    .any(|needle| key.contains(needle))
+}
+
+fn safe_backup_field_name(value: &str) -> String {
+    if value.len() <= 80
+        && value.chars().all(|character| {
+            character.is_ascii_alphanumeric() || character == '-' || character == '_'
+        })
+    {
+        value.to_string()
+    } else {
+        "nicht-öffentlicher Schlüssel".to_string()
+    }
+}
+
+fn append_unknown_field_warnings(
+    warnings: &mut Vec<String>,
+    scope: &str,
+    object: &serde_json::Map<String, serde_json::Value>,
+    known_fields: &[&str],
+) {
+    let mut unknown = object
+        .keys()
+        .filter(|key| !known_fields.contains(&key.as_str()))
+        .cloned()
+        .collect::<Vec<_>>();
+    unknown.sort();
+    for key in unknown {
+        if is_sensitive_backup_key(&key) {
+            warnings.push(format!(
+                "{scope}: ein nicht-portables oder geheimes Feld wurde verworfen"
+            ));
+        } else {
+            warnings.push(format!(
+                "{scope}: unbekanntes Feld „{}“ wurde nicht übernommen",
+                safe_backup_field_name(&key)
+            ));
+        }
+    }
+}
+
+fn parse_backup_bundle(raw: &[u8]) -> io::Result<(BackupBundle, Vec<String>)> {
+    reject_duplicate_json_keys(raw)?;
+    let value = serde_json::from_slice::<serde_json::Value>(raw).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Ungültiges JSON-Sicherungsformat",
+        )
+    })?;
+    let mut warnings = Vec::new();
+    if let Some(object) = value.as_object() {
+        append_unknown_field_warnings(
+            &mut warnings,
+            "Sicherungscontainer",
+            object,
+            BACKUP_BUNDLE_FIELDS,
+        );
+        if let Some(settings) = object
+            .get("settings")
+            .and_then(serde_json::Value::as_object)
+        {
+            append_unknown_field_warnings(
+                &mut warnings,
+                "Sicherungseinstellungen",
+                settings,
+                BACKUP_SETTINGS_FIELDS,
+            );
+        }
+        if let Some(files) = object.get("files").and_then(serde_json::Value::as_array) {
+            for file in files {
+                if let Some(file) = file.as_object() {
+                    append_unknown_field_warnings(
+                        &mut warnings,
+                        "Sicherungsdatei",
+                        file,
+                        BACKUP_FILE_FIELDS,
+                    );
+                }
+            }
+        }
+    }
+    let mut bundle = serde_json::from_value::<BackupBundle>(value).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Ungültige Typen oder Felder im Sicherungsformat",
+        )
+    })?;
+    sanitize_backup_file_payloads(&mut bundle)?;
+    for file in &bundle.files {
+        if file.redacted_fields > 0 {
+            warnings.push(format!(
+                "Sicherungsdatei enthält {} redigierte geheime JSON-Felder",
+                file.redacted_fields
+            ));
+        }
+    }
+    Ok((bundle, warnings))
+}
+
+fn sanitize_backup_file_payloads(bundle: &mut BackupBundle) -> io::Result<()> {
+    for file in &mut bundle.files {
+        if !file.relative_path.ends_with(".json") {
+            continue;
+        }
+        let (contents, redacted_fields) = redact_backup_json(&file.contents)?;
+        if redacted_fields == 0 {
+            continue;
+        }
+        if !file.checksum_sha256.is_empty() && file.checksum_sha256 != sha256(&contents) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Sicherungsdatei enthält nicht redigierte geheime JSON-Felder",
+            ));
+        }
+        file.contents = contents;
+        if !file.checksum_sha256.is_empty() {
+            file.checksum_sha256 = sha256(&file.contents);
+        }
+        file.redacted_fields = file.redacted_fields.saturating_add(redacted_fields);
+    }
+    Ok(())
+}
+
+struct DuplicateJsonValueSeed;
+
+impl<'de> DeserializeSeed<'de> for DuplicateJsonValueSeed {
+    type Value = ();
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_any(DuplicateJsonValueVisitor)
+    }
+}
+
+struct DuplicateJsonValueVisitor;
+
+impl<'de> Visitor<'de> for DuplicateJsonValueVisitor {
+    type Value = ();
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("einen JSON-Wert ohne doppelte Objektschlüssel")
+    }
+
+    fn visit_bool<E>(self, _value: bool) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        Ok(())
+    }
+
+    fn visit_i64<E>(self, _value: i64) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        Ok(())
+    }
+
+    fn visit_u64<E>(self, _value: u64) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        Ok(())
+    }
+
+    fn visit_f64<E>(self, _value: f64) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        Ok(())
+    }
+
+    fn visit_str<E>(self, _value: &str) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        Ok(())
+    }
+
+    fn visit_string<E>(self, _value: String) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        Ok(())
+    }
+
+    fn visit_none<E>(self) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        Ok(())
+    }
+
+    fn visit_unit<E>(self) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        Ok(())
+    }
+
+    fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        while sequence
+            .next_element_seed(DuplicateJsonValueSeed)?
+            .is_some()
+        {}
+        Ok(())
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut keys = HashSet::new();
+        while let Some(key) = map.next_key::<String>()? {
+            if !keys.insert(key) {
+                return Err(serde::de::Error::custom("doppelter JSON-Schlüssel"));
+            }
+            map.next_value_seed(DuplicateJsonValueSeed)?;
+        }
+        Ok(())
+    }
+}
+
+fn reject_duplicate_json_keys(raw: &[u8]) -> io::Result<()> {
+    let mut deserializer = serde_json::Deserializer::from_slice(raw);
+    deserializer
+        .deserialize_any(DuplicateJsonValueVisitor)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
+    deserializer
+        .end()
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))
+}
+
+fn redact_backup_json(contents: &[u8]) -> io::Result<(Vec<u8>, u32)> {
+    reject_duplicate_json_keys(contents)?;
+    let mut value = serde_json::from_slice::<serde_json::Value>(contents).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "App-eigene JSON-Datei konnte nicht sicher redigiert werden",
+        )
+    })?;
+    let redacted = redact_json_value(&mut value);
+    if redacted == 0 {
+        return Ok((contents.to_vec(), 0));
+    }
+    let encoded = serde_json::to_vec_pretty(&value)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    Ok((encoded, redacted))
+}
+
+fn redact_json_value(value: &mut serde_json::Value) -> u32 {
+    match value {
+        serde_json::Value::Array(values) => values.iter_mut().map(redact_json_value).sum(),
+        serde_json::Value::Object(object) => {
+            let secret_keys = object
+                .keys()
+                .filter(|key| is_sensitive_backup_key(key))
+                .cloned()
+                .collect::<Vec<_>>();
+            let mut redacted = 0;
+            for key in secret_keys {
+                if object.remove(&key).is_some() {
+                    redacted += 1;
+                }
+            }
+            redacted + object.values_mut().map(redact_json_value).sum::<u32>()
+        }
+        _ => 0,
+    }
+}
+
 /// Create a JSON backup of application-owned state.
 pub fn create_backup() -> io::Result<Vec<u8>> {
     let root = app_data_root();
     let relative_paths = collect_app_owned_paths(&root)?;
-    let files = relative_paths
-        .iter()
-        .filter_map(|relative_path| {
-            let path = root.join(relative_path);
-            if let Err(error) = ensure_safe_app_path(&root, relative_path) {
-                return Some(Err(error));
-            }
-            match fs::read(&path) {
-                Ok(contents) => Some(Ok(BackupFile {
-                    relative_path: relative_path.clone(),
-                    checksum_sha256: sha256(&contents),
-                    contents,
-                })),
-                Err(error) if error.kind() == io::ErrorKind::NotFound => None,
-                Err(error) => Some(Err(error)),
-            }
-        })
-        .collect::<io::Result<Vec<_>>>()?;
+    let mut files = Vec::new();
+    for relative_path in relative_paths {
+        let path = root.join(&relative_path);
+        ensure_safe_app_path(&root, &relative_path)?;
+        let contents = match fs::read(&path) {
+            Ok(contents) => contents,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error),
+        };
+        let (contents, redacted_fields) = if relative_path.ends_with(".json") {
+            redact_backup_json(&contents)?
+        } else {
+            (contents, 0)
+        };
+        files.push(BackupFile {
+            relative_path,
+            checksum_sha256: sha256(&contents),
+            redacted_fields,
+            contents,
+        });
+    }
     let settings = AppSettings::try_new()
         .as_ref()
         .map(BackupSettings::from_app);
@@ -747,9 +1540,13 @@ pub fn create_diagnostic_package() -> io::Result<Vec<u8>> {
 /// Existing files listed in the backup are replaced atomically; files not
 /// present in the backup are intentionally left untouched.
 pub fn restore_backup(raw: &[u8]) -> io::Result<RestoreReport> {
-    let bundle = serde_json::from_slice::<BackupBundle>(raw)
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-    restore_bundle(bundle, &app_data_root(), AppSettings::try_new().as_ref())
+    let (bundle, warnings) = parse_backup_bundle(raw)?;
+    restore_bundle_with_warnings(
+        bundle,
+        &app_data_root(),
+        AppSettings::try_new().as_ref(),
+        warnings,
+    )
 }
 
 /// Validate a backup without touching the application data directory.
@@ -757,8 +1554,7 @@ pub fn restore_backup(raw: &[u8]) -> io::Result<RestoreReport> {
 /// This is used by the UI before showing a destructive restore confirmation,
 /// so malformed paths and corrupted file contents are reported early.
 pub fn inspect_backup(raw: &[u8]) -> io::Result<BackupInspection> {
-    let bundle = serde_json::from_slice::<BackupBundle>(raw)
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    let (bundle, warnings) = parse_backup_bundle(raw)?;
     validate_bundle(&bundle)?;
     let checksummed_files = bundle
         .files
@@ -771,18 +1567,51 @@ pub fn inspect_backup(raw: &[u8]) -> io::Result<BackupInspection> {
         settings_present: bundle.settings.is_some(),
         checksummed_files,
         legacy_files_without_checksum: bundle.files.len() - checksummed_files,
+        warnings,
     })
 }
 
 /// Validate the complete bundle before writing anything and roll back files
 /// already replaced if a later atomic write fails.  This keeps a malformed or
 /// interrupted restore from leaving a half-restored app-owned data set.
+#[cfg(test)]
 fn restore_bundle(
     bundle: BackupBundle,
     root: &Path,
     app_settings: Option<&AppSettings>,
 ) -> io::Result<RestoreReport> {
+    restore_bundle_with_warnings(bundle, root, app_settings, Vec::new())
+}
+
+fn restore_bundle_with_warnings(
+    bundle: BackupBundle,
+    root: &Path,
+    app_settings: Option<&AppSettings>,
+    warnings: Vec<String>,
+) -> io::Result<RestoreReport> {
+    restore_bundle_with_writer(bundle, root, app_settings, warnings, write_atomic)
+}
+
+fn restore_bundle_with_writer<F>(
+    bundle: BackupBundle,
+    root: &Path,
+    app_settings: Option<&AppSettings>,
+    warnings: Vec<String>,
+    writer: F,
+) -> io::Result<RestoreReport>
+where
+    F: Fn(&Path, &[u8]) -> io::Result<()> + Copy,
+{
+    let mut bundle = bundle;
+    sanitize_backup_file_payloads(&mut bundle)?;
     validate_bundle(&bundle)?;
+    let mut warnings = warnings;
+    if bundle.settings.is_some() && app_settings.is_none() {
+        warnings.push(
+            "Portable Einstellungen wurden nicht angewendet, weil das GSettings-Schema nicht verfügbar ist"
+                .to_string(),
+        );
+    }
 
     if fs::symlink_metadata(root)
         .ok()
@@ -814,9 +1643,9 @@ fn restore_bundle(
 
     let mut written = Vec::with_capacity(entries.len());
     for entry in &entries {
-        if let Err(error) = write_atomic(&entry.path, &entry.contents) {
-            restore_entries(&written);
-            restore_entry(entry);
+        if let Err(error) = writer(&entry.path, &entry.contents) {
+            restore_entries(&written, writer);
+            restore_entry(entry, writer);
             return Err(error);
         }
         written.push(entry);
@@ -830,6 +1659,7 @@ fn restore_bundle(
     Ok(RestoreReport {
         files_restored: entries.len(),
         settings_restored,
+        warnings,
     })
 }
 
@@ -842,6 +1672,10 @@ fn validate_bundle(bundle: &BackupBundle) -> io::Result<()> {
                 bundle.version, CURRENT_VERSION
             ),
         ));
+    }
+
+    if let Some(settings) = bundle.settings.as_ref() {
+        settings.validate()?;
     }
 
     let mut relative_paths = HashSet::new();
@@ -881,15 +1715,21 @@ struct RestoreEntry {
     previous: Option<Vec<u8>>,
 }
 
-fn restore_entries(entries: &[&RestoreEntry]) {
+fn restore_entries<F>(entries: &[&RestoreEntry], writer: F)
+where
+    F: Fn(&Path, &[u8]) -> io::Result<()> + Copy,
+{
     for entry in entries.iter().rev() {
-        restore_entry(entry);
+        restore_entry(entry, writer);
     }
 }
 
-fn restore_entry(entry: &RestoreEntry) {
+fn restore_entry<F>(entry: &RestoreEntry, writer: F)
+where
+    F: Fn(&Path, &[u8]) -> io::Result<()> + Copy,
+{
     let result = match entry.previous.as_deref() {
-        Some(contents) => write_atomic(&entry.path, contents),
+        Some(contents) => writer(&entry.path, contents),
         None => match fs::remove_file(&entry.path) {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
@@ -897,7 +1737,7 @@ fn restore_entry(entry: &RestoreEntry) {
         },
     };
     if let Err(error) = result {
-        tracing::error!(path = %entry.path.display(), %error, "Could not roll back backup restore");
+        tracing::error!(%error, "Could not roll back backup restore");
     }
 }
 
@@ -1118,12 +1958,46 @@ fn ensure_safe_app_path(root: &Path, relative_path: &str) -> io::Result<()> {
 }
 
 fn write_atomic(path: &Path, contents: &[u8]) -> io::Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
+    let parent = path.parent().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Atomarer Sicherungspfad besitzt keinen Elternordner",
+        )
+    })?;
+    fs::create_dir_all(parent)?;
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Atomarer Sicherungspfad besitzt keinen gültigen Dateinamen",
+            )
+        })?;
+    let sequence = TEMP_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let temporary_path = parent.join(format!(
+        ".{file_name}.restore-{}-{sequence}.tmp",
+        std::process::id()
+    ));
+
+    let result = (|| {
+        let mut temporary = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary_path)?;
+        temporary.write_all(contents)?;
+        temporary.sync_all()?;
+        drop(temporary);
+        fs::rename(&temporary_path, path)?;
+        if let Ok(directory) = fs::File::open(parent) {
+            let _ = directory.sync_all();
+        }
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary_path);
     }
-    let temporary_path = path.with_extension("restore.tmp");
-    fs::write(&temporary_path, contents)?;
-    fs::rename(temporary_path, path)
+    result
 }
 
 #[cfg(test)]
@@ -1147,12 +2021,381 @@ mod tests {
                 relative_path: "drafts.json".to_string(),
                 contents: br#"{"version":1}"#.to_vec(),
                 checksum_sha256: sha256(br#"{"version":1}"#),
+                redacted_fields: 0,
             }],
         };
         let raw = serde_json::to_vec(&bundle).expect("bundle should serialize");
         let decoded: BackupBundle = serde_json::from_slice(&raw).expect("bundle should parse");
         assert_eq!(decoded, bundle);
         assert!(!String::from_utf8_lossy(&raw).contains("password"));
+    }
+
+    #[test]
+    fn current_backup_roundtrip_preserves_set01_fields_deterministically() {
+        let raw = serde_json::to_vec(&serde_json::json!({
+            "version": CURRENT_VERSION,
+            "created_at": "2026-08-22T12:00:00Z",
+            "settings": {
+                "composer_charset": "ISO-8859-15",
+                "switcher_location": "top",
+                "mail_sync_message_limit": 250,
+                "mail_sidebar_position": 240
+            },
+            "files": []
+        }))
+        .expect("current fixture should serialize");
+
+        let (bundle, warnings) = parse_backup_bundle(&raw).expect("current fixture should parse");
+        assert!(warnings.is_empty());
+        let settings = bundle
+            .settings
+            .as_ref()
+            .expect("settings should be present");
+        assert_eq!(settings.composer_charset, "ISO-8859-15");
+        assert_eq!(settings.switcher_location, "top");
+        assert_eq!(settings.mail_sync_message_limit, 250);
+        assert_eq!(settings.mail_sidebar_position, 240);
+        validate_bundle(&bundle).expect("current fixture should validate");
+
+        let encoded = serde_json::to_vec(&bundle).expect("current fixture should round-trip");
+        let decoded = serde_json::from_slice::<BackupBundle>(&encoded)
+            .expect("round-tripped current fixture should parse");
+        assert_eq!(decoded, bundle);
+        assert_eq!(
+            encoded,
+            serde_json::to_vec(&decoded).expect("encoding should be stable")
+        );
+    }
+
+    #[test]
+    fn older_backup_versions_keep_legacy_files_and_use_safe_new_defaults() {
+        for version in [1, 2, 3] {
+            let raw = serde_json::to_vec(&serde_json::json!({
+                "version": version,
+                "created_at": "2026-08-22T12:00:00Z",
+                "settings": {
+                    "window_width": 1100,
+                    "window_height": 700,
+                    "active_view": "mail",
+                    "mail_sidebar_position": 220,
+                    "smime_private_key": "PRIVATE-KEY-MUST-NOT-ROUNDTRIP"
+                },
+                "files": [{
+                    "relative_path": "drafts.json",
+                    "contents": [123, 34, 118, 101, 114, 115, 105, 111, 110, 34, 58, 49, 125]
+                }]
+            }))
+            .expect("legacy fixture should serialize");
+
+            let (bundle, warnings) =
+                parse_backup_bundle(&raw).expect("legacy fixture should parse");
+            validate_bundle(&bundle).expect("legacy fixture should validate");
+            let settings = bundle
+                .settings
+                .as_ref()
+                .expect("legacy settings should be present");
+            assert_eq!(settings.composer_charset, "UTF-8");
+            assert_eq!(settings.switcher_location, "bottom-left");
+            assert_eq!(settings.mail_sync_message_limit, 100);
+            assert_eq!(settings.mail_sidebar_position, 220);
+            assert!(settings.smime_private_key.is_empty());
+            assert!(
+                warnings
+                    .iter()
+                    .any(|warning| warning.contains("geheimes Feld"))
+            );
+
+            let encoded = serde_json::to_vec(&bundle).expect("legacy fixture should round-trip");
+            let text = String::from_utf8_lossy(&encoded);
+            assert!(!text.contains("smime_private_key"));
+            assert!(!text.contains("PRIVATE-KEY-MUST-NOT-ROUNDTRIP"));
+            let decoded = serde_json::from_slice::<BackupBundle>(&encoded)
+                .expect("round-tripped legacy fixture should parse");
+            assert_eq!(decoded.version, version);
+            assert!(decoded.files[0].checksum_sha256.is_empty());
+            assert_eq!(decoded.files[0].redacted_fields, 0);
+        }
+    }
+
+    #[test]
+    fn backup_rejects_malformed_types_ranges_and_unknown_future_values() {
+        for raw in [b"{\"version\":4".as_slice(), b"not-json".as_slice()] {
+            let error = inspect_backup(raw).expect_err("malformed backup must be rejected");
+            assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        }
+
+        let raw = serde_json::to_vec(&serde_json::json!({
+            "version": CURRENT_VERSION,
+            "created_at": "2026-08-22T12:00:00Z",
+            "settings": {"mail_sync_message_limit": "PASSWORD-MUST-NOT-APPEAR"},
+            "files": []
+        }))
+        .expect("secret type-error fixture should serialize");
+        let error = inspect_backup(&raw).expect_err("secret type mismatch must be rejected");
+        assert!(!error.to_string().contains("PASSWORD-MUST-NOT-APPEAR"));
+
+        let fixtures = [
+            serde_json::json!({"mail_sync_message_limit": "100"}),
+            serde_json::json!({"mail_sync_message_limit": 24}),
+            serde_json::json!({"mail_sender_column_width": 79}),
+            serde_json::json!({"switcher_location": "sidebar"}),
+            serde_json::json!({"composer_charset": "X-UNKNOWN"}),
+            serde_json::json!({"calendar_hidden_sources": "source-a,source-a"}),
+            serde_json::json!({
+                "mail_normal_headers": [["From", true], ["from", false]]
+            }),
+        ];
+        for settings in fixtures {
+            let raw = serde_json::to_vec(&serde_json::json!({
+                "version": CURRENT_VERSION,
+                "created_at": "2026-08-22T12:00:00Z",
+                "settings": settings,
+                "files": []
+            }))
+            .expect("invalid fixture should serialize");
+            let error = inspect_backup(&raw).expect_err("invalid setting must be rejected");
+            assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+            assert!(!error.to_string().contains("X-UNKNOWN"));
+        }
+
+        let raw = serde_json::to_vec(&serde_json::json!({
+            "version": CURRENT_VERSION,
+            "created_at": "2026-08-22T12:00:00Z",
+            "settings": {
+                "future-setting": "new-value",
+                "api_token": "MUST-NOT-APPEAR"
+            },
+            "files": []
+        }))
+        .expect("unknown-field fixture should serialize");
+        let (bundle, warnings) = parse_backup_bundle(&raw).expect("unknown fields remain readable");
+        assert!(bundle.settings.is_some());
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.contains("future-setting"))
+        );
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.contains("geheimes Feld"))
+        );
+        let warning_text = warnings.join(" ");
+        assert!(!warning_text.contains("MUST-NOT-APPEAR"));
+        assert!(!warning_text.contains("api_token"));
+    }
+
+    #[test]
+    fn backup_rejects_duplicate_json_keys_without_exposing_values() {
+        let raw = br#"{
+            "version": 4,
+            "created_at": "2026-08-22T12:00:00Z",
+            "settings": {
+                "api_key": "FIRST-SECRET",
+                "api_key": "SECOND-SECRET"
+            },
+            "files": []
+        }"#;
+        let error = inspect_backup(raw).expect_err("duplicate JSON keys must be rejected");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("doppelter JSON-Schlüssel"));
+        assert!(!error.to_string().contains("FIRST-SECRET"));
+        assert!(!error.to_string().contains("SECOND-SECRET"));
+    }
+
+    #[test]
+    fn restore_redacts_secret_values_in_legacy_json_payloads_before_writing() {
+        let secret_contents = serde_json::to_vec(&serde_json::json!({
+            "private_key": "LEGACY-PRIVATE-KEY"
+        }))
+        .expect("legacy JSON contents should serialize");
+        let raw = serde_json::to_vec(&serde_json::json!({
+            "version": 3,
+            "created_at": "2026-08-22T12:00:00Z",
+            "settings": null,
+            "files": [{
+                "relative_path": "drafts.json",
+                "contents": secret_contents.clone()
+            }]
+        }))
+        .expect("legacy secret fixture should serialize");
+        let (bundle, warnings) =
+            parse_backup_bundle(&raw).expect("checksum-free legacy JSON should be safely redacted");
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.contains("redigierte"))
+        );
+        let contents = String::from_utf8(bundle.files[0].contents.clone())
+            .expect("redacted legacy JSON should remain UTF-8");
+        assert!(!contents.contains("LEGACY-PRIVATE-KEY"));
+        assert_eq!(bundle.files[0].redacted_fields, 1);
+
+        let inconsistent = serde_json::to_vec(&serde_json::json!({
+            "version": 4,
+            "created_at": "2026-08-22T12:00:00Z",
+            "settings": null,
+            "files": [{
+                "relative_path": "drafts.json",
+                "contents": secret_contents,
+                "checksum_sha256": sha256(&secret_contents)
+            }]
+        }))
+        .expect("inconsistent checksum fixture should serialize");
+        let error = parse_backup_bundle(&inconsistent)
+            .expect_err("a checksum for unredacted content must not be rewritten");
+        assert!(
+            error
+                .to_string()
+                .contains("nicht redigierte geheime JSON-Felder")
+        );
+        assert!(!error.to_string().contains("LEGACY-PRIVATE-KEY"));
+
+        let root = temporary_directory("restore-legacy-redaction");
+        restore_bundle(bundle, &root, None).expect("redacted legacy restore should succeed");
+        let restored = fs::read_to_string(root.join("drafts.json"))
+            .expect("restored draft JSON should be readable");
+        assert!(!restored.contains("LEGACY-PRIVATE-KEY"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn backup_redaction_removes_nested_secret_values_but_keeps_portable_data() {
+        let contents = br#"{
+            "user": "alice",
+            "password": "PASSWORD-MUST-NOT-APPEAR",
+            "access_token": "TOKEN-MUST-NOT-APPEAR",
+            "apiKey": "API-KEY-MUST-NOT-APPEAR",
+            "nested": {
+                "privateKey": "PRIVATE-KEY-MUST-NOT-APPEAR",
+                "certificate": "CERTIFICATE-MUST-NOT-APPEAR",
+                "keep": "portable"
+            },
+            "items": [{"oauth_token": "OAUTH-MUST-NOT-APPEAR"}]
+        }"#;
+        let (redacted, count) = redact_backup_json(contents).expect("JSON should be redacted");
+        let text = String::from_utf8(redacted).expect("redacted JSON should remain UTF-8");
+        assert_eq!(count, 6);
+        assert!(text.contains("alice"));
+        assert!(text.contains("portable"));
+        for secret in [
+            "PASSWORD-MUST-NOT-APPEAR",
+            "TOKEN-MUST-NOT-APPEAR",
+            "PRIVATE-KEY-MUST-NOT-APPEAR",
+            "CERTIFICATE-MUST-NOT-APPEAR",
+            "OAUTH-MUST-NOT-APPEAR",
+            "API-KEY-MUST-NOT-APPEAR",
+        ] {
+            assert!(!text.contains(secret));
+        }
+
+        let malformed = br#"{"password":"SECRET-TRUNCATED""#;
+        let error = redact_backup_json(malformed)
+            .expect_err("malformed app-owned JSON must fail closed before backup");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(!error.to_string().contains("SECRET-TRUNCATED"));
+    }
+
+    #[test]
+    fn atomic_write_replaces_file_without_leaking_temporary_files() {
+        let root = temporary_directory("atomic-write");
+        let path = root.join("nested/state.json");
+        fs::create_dir_all(path.parent().expect("parent should exist"))
+            .expect("parent should exist");
+        fs::write(&path, b"old").expect("old contents should be written");
+
+        write_atomic(&path, b"new").expect("atomic write should succeed");
+        assert_eq!(
+            fs::read(&path).expect("new contents should be readable"),
+            b"new"
+        );
+        assert_eq!(
+            fs::read_dir(path.parent().expect("parent should exist"))
+                .expect("parent should be readable")
+                .filter_map(Result::ok)
+                .filter(|entry| entry.file_name().to_string_lossy().contains(".restore-"))
+                .count(),
+            0
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn atomic_write_cleans_temporary_file_when_rename_fails() {
+        let root = temporary_directory("atomic-rename-failure");
+        let target = root.join("target-directory");
+        fs::create_dir_all(&target).expect("target directory should exist");
+
+        let error = write_atomic(&target, b"must-not-replace-directory")
+            .expect_err("renaming a file over a directory must fail");
+        assert!(matches!(
+            error.kind(),
+            io::ErrorKind::IsADirectory | io::ErrorKind::AlreadyExists | io::ErrorKind::Other
+        ));
+        assert_eq!(
+            fs::read_dir(&root)
+                .expect("root should be readable")
+                .filter_map(Result::ok)
+                .filter(|entry| entry.file_name().to_string_lossy().contains(".restore-"))
+                .count(),
+            0
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn restore_rolls_back_previous_files_after_a_later_write_failure() {
+        let root = temporary_directory("restore-rollback");
+        fs::write(root.join("accounts.json"), br#"{"state":"old-account"}"#)
+            .expect("old account contents should be written");
+        fs::write(root.join("drafts.json"), br#"{"state":"old-draft"}"#)
+            .expect("old draft contents should be written");
+
+        let bundle = BackupBundle {
+            version: CURRENT_VERSION,
+            created_at: "2026-08-22T12:00:00Z".to_string(),
+            settings: None,
+            files: vec![
+                BackupFile {
+                    relative_path: "accounts.json".to_string(),
+                    contents: br#"{"state":"new-account"}"#.to_vec(),
+                    checksum_sha256: sha256(br#"{"state":"new-account"}"#),
+                    redacted_fields: 0,
+                },
+                BackupFile {
+                    relative_path: "drafts.json".to_string(),
+                    contents: br#"{"state":"new-draft"}"#.to_vec(),
+                    checksum_sha256: sha256(br#"{"state":"new-draft"}"#),
+                    redacted_fields: 0,
+                },
+            ],
+        };
+        let writer = |path: &Path, contents: &[u8]| {
+            if path.file_name().is_some_and(|name| name == "drafts.json") {
+                Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    "injected rename failure",
+                ))
+            } else {
+                write_atomic(path, contents)
+            }
+        };
+
+        let error = restore_bundle_with_writer(bundle, &root, None, Vec::new(), writer)
+            .expect_err("a later write failure must abort the restore");
+        assert_eq!(error.kind(), io::ErrorKind::Other);
+        assert_eq!(
+            fs::read(root.join("accounts.json")).unwrap(),
+            br#"{"state":"old-account"}"#
+        );
+        assert_eq!(
+            fs::read(root.join("drafts.json")).unwrap(),
+            br#"{"state":"old-draft"}"#
+        );
+
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -1164,8 +2407,9 @@ mod tests {
             settings: None,
             files: vec![BackupFile {
                 relative_path: "accounts.json".to_string(),
-                contents: b"modified".to_vec(),
-                checksum_sha256: sha256(b"original"),
+                contents: br#"{"state":"modified"}"#.to_vec(),
+                checksum_sha256: sha256(br#"{"state":"original"}"#),
+                redacted_fields: 0,
             }],
         };
 
@@ -1212,11 +2456,13 @@ mod tests {
                     relative_path: "ical/imported/event.ics".to_string(),
                     contents: b"restored event".to_vec(),
                     checksum_sha256: String::new(),
+                    redacted_fields: 0,
                 },
                 BackupFile {
                     relative_path: "vcards/imported.vcf".to_string(),
                     contents: b"restored contact".to_vec(),
                     checksum_sha256: String::new(),
+                    redacted_fields: 0,
                 },
             ],
         };
@@ -1246,13 +2492,15 @@ mod tests {
             files: vec![
                 BackupFile {
                     relative_path: "accounts.json".to_string(),
-                    contents: b"replacement".to_vec(),
+                    contents: br#"{"state":"replacement"}"#.to_vec(),
                     checksum_sha256: String::new(),
+                    redacted_fields: 0,
                 },
                 BackupFile {
                     relative_path: "../outside.json".to_string(),
-                    contents: b"must not be written".to_vec(),
+                    contents: br#"{"state":"must-not-be-written"}"#.to_vec(),
                     checksum_sha256: String::new(),
+                    redacted_fields: 0,
                 },
             ],
         };
@@ -1306,6 +2554,7 @@ mod tests {
         assert!(settings.notifications_enabled);
         assert!(settings.mark_read_on_selection);
         assert!(settings.show_message_preview);
+        assert_eq!(settings.composer_charset, "UTF-8");
         assert!(!settings.mail_show_security_details);
         assert!(!settings.mail_show_all_headers);
         assert_eq!(settings.mail_normal_headers, default_mail_normal_headers());
@@ -1318,7 +2567,7 @@ mod tests {
         assert!(settings.mail_show_toolbar);
         assert!(settings.mail_show_sidebar);
         assert_eq!(settings.calendar_time_zone, "system");
-        assert_eq!(settings.mail_sidebar_position, 220);
+        assert_eq!(settings.mail_sidebar_position, 240);
         assert_eq!(settings.mail_modern_preview_position, 420);
         assert_eq!(settings.mail_classic_preview_position, 360);
         assert_eq!(settings.mail_row_density, "compact");
@@ -1356,12 +2605,14 @@ mod tests {
         assert!(!settings.force_dark_mode);
         assert!(settings.render_html);
         assert!(settings.composer_html);
+        assert_eq!(settings.composer_charset, "UTF-8");
         assert!(!settings.request_read_receipt);
         assert!(settings.spellcheck_languages.is_empty());
         assert_eq!(settings.color_scheme, "system");
         assert!(!settings.sign_new_messages);
         assert!(settings.default_pgp_key.is_empty());
         assert_eq!(settings.mail_sync_interval, 30);
+        assert_eq!(settings.mail_sync_message_limit, 100);
         assert_eq!(settings.draft_autosave_interval, 30);
         assert!(!settings.append_signature);
         assert!(settings.signature_text.is_empty());
