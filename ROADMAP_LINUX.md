@@ -5,9 +5,10 @@ GTK4, libadwaita und dem originalen Evolution Data Server (EDS) benötigen.
 Sie ergänzt die allgemeine [ROADMAP.md](ROADMAP.md). Die priorisierte,
 atomare Reihenfolge steht in [ROADMAP_EXECUTION.md](ROADMAP_EXECUTION.md);
 plattformunabhängige Rust-, GTK4-rs- und Service-Arbeiten bleiben dort.
-Die statischen Quellen-/UI-Belege stehen in
-[`docs/UPSTREAM_GROUPWARE_PARITY_AUDIT.md`](docs/UPSTREAM_GROUPWARE_PARITY_AUDIT.md)
-und [`docs/UPSTREAM_MAIL_SHELL_PARITY_AUDIT.md`](docs/UPSTREAM_MAIL_SHELL_PARITY_AUDIT.md);
+Die statischen Quellen-/UI-/Settings-Belege stehen in
+[`docs/UPSTREAM_GROUPWARE_PARITY_AUDIT.md`](docs/UPSTREAM_GROUPWARE_PARITY_AUDIT.md),
+[`docs/UPSTREAM_MAIL_SHELL_PARITY_AUDIT.md`](docs/UPSTREAM_MAIL_SHELL_PARITY_AUDIT.md)
+und [`docs/UPSTREAM_SETTINGS_PARITY_AUDIT.md`](docs/UPSTREAM_SETTINGS_PARITY_AUDIT.md);
 deren portable Pakete ersetzen keine Linux-Abnahme.
 
 Ein Punkt ist erst `[x]`, wenn er auf Linux reproduzierbar gebaut und mit
@@ -28,26 +29,41 @@ markieren. Ein Linux-Agent beginnt mit dem ersten offenen P0-Handoff, dessen
 zugehöriger portabler Punkt vorbereitet ist. Vor jedem Lauf sind Commit,
 Distribution, Bibliotheksversionen und Kontotyp zu protokollieren.
 
-Der aktuelle portable Arbeitsstand für `P0-MAIL-001D-SEARCH`,
-`GW-TASK-FILTERS` und `GW-CONTACT-LISTS` ist mit 482/482 Tests grün; beide
-unabhängigen Reviews sind abgeschlossen und der Arbeitsstand ist uncommitted.
-Alle drei Pakete stehen auf `BLOCKED_LINUX`. Das ist nur eine portable
-Vorbedingung. Kein Audit-Slice, kein visueller Befund und kein
+Der aktuelle uncommitted Arbeitsstand umfasst als zweite portable Runde
+`MAIL-PRINT-ACTION`, `COMPOSER-ACTION-SURFACE` und `GW-ALARMS`. Cargo-Format-/
+Check-, strikte Schema- und Diff-Prüfung sind grün; ein vollständiger Lauf hat
+504/504 Workspace-Tests erfolgreich belegt. Spätere Sandbox-Wiederholungen
+scheiterten ausschließlich an 18 Graph-Loopbacktests. Die unabhängigen Reviews
+sind abgeschlossen; alle drei Pakete stehen auf `BLOCKED_LINUX`. Das ist nur
+eine portable Vorbedingung. Kein Audit-Slice, kein visueller Befund und kein
 EDS-/Provider-Rest wird deshalb als `[x]` geführt.
 
 ### Audit-abgeleitete Linux-Handoffs
 
 - `[ ]` `MAIL-PRINT-ACTION`: Liste und Reader drucken, Vorschau/PDF und
   `Ctrl+P` prüfen; GtkPrint/Portal-Fehler, Abbruch, HTML/WebKitGTK-
-  Seitenumbrüche und visuelle Übereinstimmung dokumentieren.
+  Seitenumbrüche und visuelle Übereinstimmung dokumentieren. Der portable
+  Snapshot-/Job-/Cancel-Vertrag ist abgeschlossen und nicht erneut zu bauen.
 - `[ ]` `MAIL-TRANSPORT-COMMANDS`: Send/Receive/All/Stop und Offline mit
   `F12`, echter Camel-/EDS-Authentifizierung, Queue, Fortschritt, Abbruch und
   Providerfehlern prüfen. `win.refresh-mail`/`F5` darf die getrennten
-  Richtungen nicht wieder als eine Aktion ausgeben.
+  Richtungen nicht wieder als eine Aktion ausgeben. Diese Abnahme beginnt erst,
+  nachdem das `READY`-Paket seine portablen Action-/Statusgates erfüllt hat.
 - `[ ]` `COMPOSER-ACTION-SURFACE`: Menü-/Toolbar-/Shortcutpfade für Send,
   Draft, Save-as, Print, Close/New, Receipt, Priority, Charset, Sign/Encrypt
   sowie Recovery gegen EDS-Identität, Drafts/Sent, WebKitGTK, Portal und
-  Crypto prüfen.
+  Crypto prüfen. Dirty-/atomare Save-/MIME-Verträge sind portabel belegt.
+- `[ ]` `GW-ALARMS`: den portablen Multi-VALARM-Parser/Editor/Scheduler gegen
+  echte ECal-VEVENT/VTODO/VJOURNAL-Quellen, ClientView-Watcher, Sourcewechsel,
+  Factory-Neustart, absolute/relative Trigger, `RELATED`, Repeat/Duration und
+  Zeitzone/DST abnehmen. AUDIO/EMAIL/PROCEDURE/Unknown dürfen auch auf Linux
+  nie vom portablen Scheduler ausgeführt werden.
+- `[ ]` `GW-REMINDER-RUNTIME`: erst nach Abschluss des `READY`-Pakets die
+  Desktop-Notification-Actions, Deep-Link-Aktivierung und Fensterfokus unter
+  GNOME/Wayland prüfen; dies ersetzt den separaten EDS-Watcher-Test nicht.
+- `[ ]` `SET-01`: nach portabler Schließung der belegten Backup-/Migrations-
+  Lücken Restore-/Preferences-Wirkung, native GSettings-Werte und bewusste
+  EDS/Camel/GOA-/Secret-Service-Ausschlüsse sichtbar abnehmen.
 - `[ ]` `GW-TASK-FILTERS`: EDS-S-Expressions/Rangegrenzen, Source-Refresh,
   Zeitzone/DST, Query-Fehler und die sichtbare Trennung lokaler Filter von
   Provider-Suche gegen reale Aufgabenquellen prüfen.
@@ -66,8 +82,8 @@ EDS-/Provider-Rest wird deshalb als `[x]` geführt.
   `P0-SYNC-001A`-Stand mit begrenzten Page-Windows, opaken Graph-NextLink-
   Cursorn, UID-Deduplizierung, generationensicheren Modellen und normalisierten
   Camel-Events. Der aktuelle uncommitted portable Verification-Snapshot umfasst
-  zusätzlich 482/482 Tests; keine dieser Angaben ersetzt die folgende
-  Linux-Abnahme.
+  zusätzlich den einmal vollständigen 504/504-Testlauf; keine dieser Angaben
+  ersetzt die folgende Linux-Abnahme.
 - Vorbereitung: vollständiger portabler Testlauf grün; ein EDS-Testkonto mit
   bekannten Plaintext-, HTML-, CID-, Remote-Bild- und Anhangsnachrichten.
 - Ablauf:
@@ -718,7 +734,8 @@ Mit einem Testkonto ohne produktive Empfänger prüfen:
 - Portable Basis: Historischer Commit `d6e7dcc` vereinheitlicht
   Kalenderansichten über RRULE/RDATE/EXDATE, Mehrtagstermine, exklusive
   DTEND-Grenzen und validierte Zeitzonen/Quellen; der aktuelle uncommitted
-  Verification-Snapshot umfasst 482/482 Tests und `GW-TASK-FILTERS` ergänzt
+  Verification-Snapshot umfasst den einmal vollständigen 504/504-Testlauf;
+  `GW-TASK-FILTERS` ergänzt
   Filter-/Advanced-/Persistenzverträge. Aufgaben bieten kompaktes Quick-Edit
   für Status, Priorität, Fälligkeit und Kategorien. Native ECal-Wirkung bleibt
   offen.
@@ -732,7 +749,7 @@ Mit einem Testkonto ohne produktive Empfänger prüfen:
   den GTK4-rs-Modellen prüfen; keine Duplikate und kein veralteter Detailview.
 - `[~]` Die portable Aufgaben-/Memo-Strecke ist für den EDS-unabhängigen Pfad
   bereits persistent: lokale VTODO-/VJOURNAL-Create/Modify/Remove-Operationen,
-  VTODO-Statuswechsel, Fälligkeit, Kategorien, Display-Alarm und die sortierte
+  VTODO-Statuswechsel, Fälligkeit, Kategorien, Multi-VALARM und die sortierte
   Suchliste müssen auf Linux zusätzlich gegen echte ECal-UIDs, mehrere Quellen,
   schreibgeschützte Quellen, UID-Konflikte und parallele Änderungen abgenommen
   werden. Dabei dürfen lokale app-eigene Komponenten nicht doppelt erscheinen,
@@ -742,8 +759,8 @@ Mit einem Testkonto ohne produktive Empfänger prüfen:
   und attachment müssen dieselben Records wie Evolution liefern. EDS-Query-
   Grenzen, Serverfehler, Zeitzone/DST, Monitor-Refresh und die persistierte
   Quellen-/Kategorienauswahl sind getrennt zu protokollieren; der portable
-  Query-AST, zwei abgeschlossene unabhängige Reviews und 482/482 Tests sind
-  dafür nur Vorbereitung.
+  Query-AST, zwei abgeschlossene unabhängige Reviews und der 504/504-Testlauf
+  sind dafür nur Vorbereitung.
 - `[ ]` Wiederholungen, Zeitzonen, Teilnehmer, iTIP/iMIP, freie Zeit,
   Einladungsantworten, private Termine, Kategorien, Anhänge und Alarme mit
   realen EDS-Kalendern testen. Dabei auch prüfen, dass die portable UI beim
@@ -760,12 +777,15 @@ Mit einem Testkonto ohne produktive Empfänger prüfen:
   schreibgeschützte Quellen und abweichende Kalenderberechtigungen müssen in
   der Linux-Abnahme geprüft werden; die portable UI darf die native
   Teilnehmerverfügbarkeit nicht als bereits verifiziert anzeigen.
-- `[~]` Den portablen Reminder-Service an den nativen ECal-Snapshot anschließen:
-  VALARM-Display-Trigger, Zustellung, 10-Minuten-/1-Stunden-Snooze, Erledigt-
-  Aktion und Wiederanlauf gegen echte EDS-UIDs prüfen. Zusätzlich müssen
-  absolute Trigger, `RELATED=END`, wiederkehrende Termine, Quelländerungen,
-  Zeitzonen/DST und EDS-Factory-Neustarts verifiziert werden; lokale
-  macOS-/Fallback-Tests ersetzen diese Linux-Abnahme nicht.
+- `[~]` `GW-ALARMS` an den nativen ECal-Snapshot anschließen: geordnete
+  mehrere VALARMs für VEVENT/VTODO/VJOURNAL, sichere DISPLAY-Zustellung,
+  Snooze/Erledigt und Wiederanlauf gegen echte EDS-UIDs prüfen. Absolute und
+  relative Trigger, `RELATED=END`, REPEAT/DURATION, wiederkehrende Komponenten,
+  Quelländerungen, Zeitzonen/DST und EDS-Factory-Neustarts sind zu
+  verifizieren. AUDIO/EMAIL/PROCEDURE/Unknown bleiben inert; lokale
+  Fallback-Tests ersetzen diese Linux-Abnahme nicht. Desktop-Deep-Link- und
+  Fensteraktionen werden erst nach dem portablen `GW-REMINDER-RUNTIME`-Paket
+  abgenommen.
 - `[~]` Native Datenpfade speisen Tages-, Wochen-, Monats- und die portable
   Agendaansicht; die Linux-Laufzeitprüfung gegen Zeitzonenwechsel, DST-Grenzen
   und wiederkehrende Termine sowie das echte Arbeitswochenraster stehen noch
@@ -779,7 +799,8 @@ Mit einem Testkonto ohne produktive Empfänger prüfen:
 - Portable Basis: Historischer Commit `d6e7dcc` liefert kompakte
   quellenneutrale Liste/Detailansicht, Mehrwortsuche, Kategorien und eine
   begrenzte Dublettenerkennung; der aktuelle uncommitted Verification-Snapshot
-  umfasst 482/482 Tests und `GW-CONTACT-LISTS` ergänzt portable vCard-3/4-
+  umfasst den einmal vollständigen 504/504-Testlauf und `GW-CONTACT-LISTS`
+  ergänzt portable vCard-3/4-
   Listen mit Member-UI. Echte EBook-/GAL-Identität und Mutationen bleiben
   offen.
 
@@ -795,7 +816,7 @@ Mit einem Testkonto ohne produktive Empfänger prüfen:
   abnehmen: vCard-3-Evolution-Listen und vCard-4-`KIND:group`/`MEMBER`, lokale,
   externe und verschachtelte Mitglieder, ungültige Member, Anzeigenamen,
   Member-UID-Auflösung, ACLs und parallele Änderungen prüfen. Atomare portable
-  Store-Tests, zwei abgeschlossene unabhängige Reviews und 482/482 Tests
+  Store-Tests, zwei abgeschlossene unabhängige Reviews und der 504/504-Testlauf
   ersetzen weder EBook-Capabilities noch Provider-/Linux-Visualabnahme.
 - `[ ]` Native EBook-Feldabdeckung prüfen: mehrere Namen, E-Mail-Adressen,
   Telefone, Adressen, Organisation, Kategorien, Notizen, Fotos, Geburtstage,
@@ -999,7 +1020,9 @@ die native Abnahme.
   `VALARM`-Display, Audio, E-Mail und prozedurale Typen, absolute und
   relative Trigger, `RELATED=END`, Snooze/Dismiss, wiederkehrende Termine,
   Offline-Zustellung und nachträgliches Zurückziehen. Nicht unterstützte
-  Alarmtypen müssen erhalten bleiben und dürfen nicht als gelöscht gelten.
+  Alarmtypen müssen erhalten bleiben und dürfen nicht als gelöscht gelten;
+  AUDIO, E-Mail, PROCEDURE und unbekannte Actions werden nur auf Roundtrip und
+  Providerverhalten geprüft und nie vom portablen Scheduler ausgeführt.
 - `[ ]` Kalenderberechtigungen und Quellenmetadaten abnehmen:
   read-only, Schreibrechte, Delegation, Quellefarbe, Sichtbarkeit,
   Standardquelle, Aktualisierungsintervall, abonnierte Kalender und
@@ -1098,10 +1121,11 @@ Evolution Data Server: 3.60.2
 Camel: 3.60.2
 Kontotyp und Authentifizierung: EDS/Camel-Smoke-Konto; GOA-/Passwortpfad
   teilweise verifiziert, Ablauf-/Fehlerfälle bleiben offen
-Portable Vorbedingung: uncommitted Verification-Snapshot; normaler und
-  erzwungener eds_camel_bridge-Cargo-Check, Formatprüfung, git diff --check,
-  strikte Schema-Prüfung und 482/482 Tests außerhalb der Sandbox grün; beide
-  unabhängigen Reviews abgeschlossen; die drei aktuellen Pakete BLOCKED_LINUX
+Portable Vorbedingung: zweite uncommitted Verification-Runde; Cargo-Format-/
+  Check-, strikte Schema- und git-diff-Prüfung grün; 504/504 Workspace-Tests
+  einmal vollständig erfolgreich, spätere Sandboxläufe nur an 18 Graph-
+  Loopbacktests gescheitert; unabhängige Reviews abgeschlossen;
+  MAIL-PRINT-ACTION, COMPOSER-ACTION-SURFACE und GW-ALARMS BLOCKED_LINUX
 Commit für den konkreten Linux-Lauf: vor dem Lauf eintragen; dieser
   Roadmap-/Auditlauf hat keinen Commit und keinen Push erzeugt
 Build-Befehl: cargo check --workspace && cargo test --workspace

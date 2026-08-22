@@ -57,6 +57,28 @@ settings persistence.
   `KIND:group`/`MEMBER` properties, including local, external, nested, and
   invalid members. Member validation is visible and atomic store writes must
   retain unrecognized safe list properties rather than silently dropping them.
+- Mail printing accepts only an immutable, GTK-free selection snapshot.
+  Prepare deterministic HTML/plain documents in a cancellable worker, resolve
+  only loaded CID data, remove active and remote content, preserve stable
+  header/attachment ordering, and expose explicit job/error states. Native
+  WebKitGTK printing is a Linux presentation boundary, not service evidence.
+- Composer recovery drafts persist per-message receipt, priority, charset and
+  MIME/security choices without promoting them to global defaults. Explicit,
+  autosave and pre-send writes use the same revision-checked atomic draft
+  contract; atomic EML save must leave an existing destination untouched on
+  cancellation or failure. MIME assembly validates charsets and fails closed
+  on unsupported encoding or unsafe header state.
+- VALARM parsing and serialization preserve ordered multiple alarms, relative
+  and absolute triggers, RELATED, REPEAT/DURATION, attachments and unknown safe
+  properties for VEVENT, VTODO and VJOURNAL. The scheduler may execute only
+  DISPLAY delivery; AUDIO, EMAIL, PROCEDURE and unknown actions remain inert
+  data. Stable deep links are service output, while application routing and a
+  reminder window belong to `GW-REMINDER-RUNTIME`; native EDS watchers remain
+  Linux acceptance.
+- A schema key alone is not settings parity. For each settings package record
+  schema/default, preference surface, live use, backup and migration evidence
+  separately, preserve deliberate secret exclusions, and report unsupported
+  or missing fields instead of inferring native EDS/provider effect.
 
 ## Work Guidance
 

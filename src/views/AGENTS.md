@@ -98,6 +98,17 @@ accessibility helpers, and view-local GTK state.
   WebKit uses its FindController; plaintext fallback offsets are Unicode
   character offsets. Selection, source and render generations invalidate stale
   matches, highlights and asynchronous result signals.
+- Mail print and preview actions capture one immutable selected-message
+  snapshot before starting worker preparation. Keep Print, Preview, loading,
+  cancellation, error and action-sensitivity states explicit; generation-gate
+  worker results and never move GTK/GObject values or reparse MIME in the
+  worker. The preview consumes the prepared safe document, while native
+  WebKitGTK print dialogs and visual page acceptance remain Linux-only.
+- Event, task and memo editors must pass the complete ordered VALARM list to
+  the shared parser/serializer contract. Do not collapse multiple alarms into
+  one display reminder or silently discard imported AUDIO, EMAIL, PROCEDURE,
+  unknown triggers, repeat/duration fields, attachments or safe extension
+  properties. Only DISPLAY alarms may reach portable notification delivery.
 - Treat the currently requested account/folder as authoritative immediately,
   even before its worker returns. Every load, search, paging result and
   incremental model build must be generation-gated; stale results cannot
@@ -132,7 +143,8 @@ accessibility helpers, and view-local GTK state.
   `cargo check --workspace --locked`, and
   `cargo test --workspace --locked --no-fail-fast --quiet`.
   Rapid HTML-message switching, WebKitGTK rendering, icon fallback, density,
-  and real unread-counter confirmation are Linux acceptance work documented in
+  native print dialogs/page layout, real unread-counter confirmation and EDS
+  reminder watchers are Linux acceptance work documented in
   `ROADMAP_LINUX.md`; these checks must not be declared complete from macOS.
 
 ## Child DOX Index

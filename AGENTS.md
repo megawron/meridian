@@ -131,5 +131,8 @@ When the user requests a durable behavior change, record it here or in the relev
   groupware evidence matrix, portable package cuts, and Linux boundaries.
 - `docs/UPSTREAM_MAIL_SHELL_PARITY_AUDIT.md` owns the static upstream
   mail/shell action matrix and the strongest next mail-surface packages.
+- `docs/UPSTREAM_SETTINGS_PARITY_AUDIT.md` owns the upstream-to-GTK4 settings
+  key inventory, preference/live/backup/migration evidence, and atomic
+  settings package cuts.
 - Other root-owned files include `README.md`, `LICENSE`, `banner.jpg`,
   `video-thumbnail.jpg`, and root-level project documentation.

@@ -25,6 +25,16 @@ and updates to the service/settings APIs.
   outside the GTK main thread. Preserve a complete recovery draft before send,
   reject duplicate send starts, and remove the draft only after confirmed
   transport success; cancellation and failure keep the editor recoverable.
+- Composer menu, toolbar and local shortcuts use one action graph. Track dirty
+  revisions across recipients, body, attachments and per-message options;
+  clean close is immediate, dirty close offers save/discard/cancel, and active
+  save/send/export operations block conflicting actions. Save-as EML is atomic.
+  Receipt, priority, charset, MIME mode and security choices round-trip through
+  recovery drafts without overwriting application defaults.
+- The shared alarm editor stages an ordered multi-VALARM value for events,
+  tasks and memos. Add/edit/remove/reorder operations must preserve unsupported
+  actions, unknown triggers and safe extension properties; unsafe imported
+  actions remain visible data and are never executed by the dialog.
 - Contact-list editing uses the same atomic save contract: list name/options
   and local/external/nested members are edited as one pending value, invalid
   members remain visible with a validation error, and the original record is
