@@ -24,6 +24,7 @@ pub mod mail_composer_service;
 pub mod mail_filter_service;
 pub mod mail_metadata_service;
 pub mod mail_operations_service;
+pub mod mail_print_service;
 pub mod mail_store_service;
 pub mod mail_thread_service;
 pub mod migration_service;

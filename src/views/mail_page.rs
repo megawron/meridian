@@ -38,6 +38,9 @@ use crate::services::mail_operations_service::{
     MailCommand, MailCommandStack, MailOperationCancellation, MailOperationContext,
     MailOperationCoordinator, MailOperationError, MailOperationsService,
 };
+use crate::services::mail_print_service::{
+    self, MailPrintAction, MailPrintAttachment, MailPrintJobState, MailPrintSnapshot,
+};
 use crate::services::mail_store_service::{
     MailBackendLocation, MailStoreService, ParsedMail, parse_rfc822_bytes,
     parse_rfc822_header_fields,
@@ -1089,6 +1092,46 @@ fn export_message_from(message: &MailMessageObject) -> ExportMessage {
     }
 }
 
+fn print_snapshot_from(message: &MailMessageObject) -> MailPrintSnapshot {
+    let message_attachments = message.attachments();
+    let attachments = message_attachments
+        .iter()
+        .filter(|attachment| attachment.content_id.is_none())
+        .map(|attachment| MailPrintAttachment {
+            filename: attachment.filename.clone(),
+            mime_type: attachment.mime_type.clone(),
+            size_formatted: attachment.size_formatted.clone(),
+        })
+        .collect::<Vec<_>>();
+    let inline_images = message_attachments
+        .iter()
+        .filter_map(|attachment| {
+            attachment.content_id.clone().map(|content_id| {
+                InlineImage::new(
+                    content_id,
+                    attachment.mime_type.clone(),
+                    attachment.content.clone(),
+                )
+            })
+        })
+        .collect::<Vec<_>>();
+
+    MailPrintSnapshot {
+        message_key: message.id(),
+        sender: sender_header(message),
+        reply_to: message.reply_to(),
+        to: message.recipient_to(),
+        cc: message.recipient_cc(),
+        bcc: message.recipient_bcc(),
+        subject: message.subject(),
+        date: message.date_str(),
+        html_body: message.html_body(),
+        fallback_text: message.preview_snippet(),
+        inline_images,
+        attachments,
+    }
+}
+
 fn rfc822_header_block(raw: &[u8]) -> &[u8] {
     for separator in [
         b"\r\n\r\n".as_slice(),
@@ -1555,6 +1598,8 @@ const MESSAGE_CONTEXT_ACTIONS: &[(&str, &str)] = &[
     ("Allen antworten", "win.reply-all"),
     ("Weiterleiten", "win.forward"),
     ("Als EML speichern …", "win.export"),
+    ("Drucken …", "win.mail-print"),
+    ("Druckvorschau …", "win.mail-print-preview"),
     ("Nachrichtenquelle anzeigen", "win.view-message-source"),
     ("Als gelesen markieren", "win.mark-read"),
     ("Als ungelesen markieren", "win.mark-unread"),
@@ -2255,6 +2300,14 @@ mod imp {
         pub all_headers_cancellation: RefCell<Option<Arc<AtomicBool>>>,
         pub(super) message_source_windows: RefCell<HashMap<String, MessageSourceWindowState>>,
         pub mail_viewer: RefCell<Option<MailViewer>>,
+        pub print_status_area: RefCell<Option<gtk::Box>>,
+        pub print_status_label: RefCell<Option<gtk::Label>>,
+        pub print_cancel_button: RefCell<Option<gtk::Button>>,
+        pub print_preview_window: RefCell<Option<gtk::Window>>,
+        pub print_viewer: RefCell<Option<MailViewer>>,
+        pub print_cancellation: RefCell<Option<Arc<AtomicBool>>>,
+        pub print_generation: Cell<u64>,
+        pub print_state: Cell<MailPrintJobState>,
         pub message_find_revealer: RefCell<Option<gtk::Revealer>>,
         pub message_find_entry: RefCell<Option<gtk::SearchEntry>>,
         pub folder_section: RefCell<Option<gtk::Box>>,
@@ -2478,6 +2531,7 @@ mod imp {
                 state.cancellation.store(true, Ordering::Relaxed);
                 state.window.close();
             }
+            self.obj().shutdown_print();
             for cancellation in self.mail_operation_cancellations.borrow().values() {
                 cancellation.cancel();
             }
@@ -3189,6 +3243,304 @@ impl MailPage {
         self.present_composer(dialog)
     }
 
+    pub(crate) fn print_action_enabled(&self, action: MailPrintAction) -> bool {
+        if matches!(action, MailPrintAction::Print) && !cfg!(target_os = "linux") {
+            return false;
+        }
+        self.imp()
+            .print_state
+            .get()
+            .action_enabled(self.selected_message().is_some())
+    }
+
+    pub(crate) fn print_job_active(&self) -> bool {
+        self.imp().print_state.get().is_running()
+    }
+
+    pub(crate) fn print_cancel_enabled(&self) -> bool {
+        self.imp().print_state.get().is_cancellable()
+    }
+
+    /// Start either the direct print action or the deterministic in-app
+    /// preview for the currently selected row/reader message.  The snapshot
+    /// is intentionally captured before entering the worker and contains no
+    /// GTK object or MIME operation.
+    pub(crate) fn start_print(&self, action: MailPrintAction) -> bool {
+        if self.print_job_active() {
+            self.show_toast("Ein Druckvorgang läuft bereits");
+            return true;
+        }
+        let Some(message) = self.selected_message() else {
+            self.set_print_state(
+                MailPrintJobState::Error,
+                "Drucken nicht möglich: keine Nachricht ausgewählt",
+            );
+            return false;
+        };
+        let snapshot = print_snapshot_from(&message);
+        let generation = advance_generation(self.imp().print_generation.get());
+        self.imp().print_generation.set(generation);
+        let cancellation = Arc::new(AtomicBool::new(false));
+        self.imp()
+            .print_cancellation
+            .replace(Some(cancellation.clone()));
+        self.set_print_state(
+            MailPrintJobState::Preparing,
+            if action.is_preview() {
+                "Druckvorschau wird vorbereitet …"
+            } else {
+                "Druck wird vorbereitet …"
+            },
+        );
+
+        let (sender, receiver) = async_channel::bounded(1);
+        let worker_cancellation = cancellation.clone();
+        let worker = std::thread::Builder::new()
+            .name("mail-print-preparation".to_string())
+            .spawn(move || {
+                let result =
+                    mail_print_service::prepare_print_document(&snapshot, &worker_cancellation);
+                if let Err(error) = sender.send_blocking(result) {
+                    tracing::debug!(%error, "Print document result was dropped");
+                }
+            });
+        if let Err(error) = worker {
+            drop(receiver);
+            self.finish_print_error(
+                generation,
+                format!("Druckvorbereitung konnte nicht gestartet werden: {error}"),
+            );
+            return true;
+        }
+
+        let page = self.downgrade();
+        glib::spawn_future_local(async move {
+            let result = receiver.recv().await.unwrap_or_else(|_| {
+                Err(mail_print_service::MailPrintDocumentError::WorkerDisconnected)
+            });
+            let Some(page) = page.upgrade() else {
+                return;
+            };
+            if page.imp().print_generation.get() != generation {
+                return;
+            }
+            match result {
+                Ok(document) if action.is_preview() => {
+                    page.set_print_state(
+                        MailPrintJobState::Previewing,
+                        "Druckvorschau wird geöffnet …",
+                    );
+                    if let Err(error) = page.present_print_preview(document) {
+                        page.finish_print_error(generation, error);
+                    } else {
+                        page.finish_print_state(
+                            generation,
+                            MailPrintJobState::Idle,
+                            "Druckvorschau geöffnet",
+                        );
+                    }
+                }
+                Ok(document) => page.start_native_print(generation, document),
+                Err(mail_print_service::MailPrintDocumentError::Cancelled) => {
+                    page.imp().print_cancellation.borrow_mut().take();
+                    page.finish_print_state(
+                        generation,
+                        MailPrintJobState::Cancelled,
+                        "Druckvorbereitung abgebrochen",
+                    );
+                }
+                Err(error) => page.finish_print_error(generation, error.to_string()),
+            }
+        });
+        true
+    }
+
+    pub(crate) fn cancel_print(&self) -> bool {
+        if !self.imp().print_state.get().is_cancellable() {
+            return false;
+        }
+        let Some(cancellation) = self.imp().print_cancellation.borrow_mut().take() else {
+            return false;
+        };
+        cancellation.store(true, Ordering::Release);
+        let generation = advance_generation(self.imp().print_generation.get());
+        self.imp().print_generation.set(generation);
+        self.set_print_state(MailPrintJobState::Cancelled, "Druckvorgang abgebrochen");
+        true
+    }
+
+    /// Invalidate every print callback before the window or page is torn down.
+    /// The native WebKit dialog has its own cancellation control; advancing
+    /// the generation is still required so a late `finished`/`failed` signal
+    /// cannot update a closing page.
+    pub(crate) fn shutdown_print(&self) {
+        let generation = advance_generation(self.imp().print_generation.get());
+        self.imp().print_generation.set(generation);
+        if let Some(cancellation) = self.imp().print_cancellation.borrow_mut().take() {
+            cancellation.store(true, Ordering::Release);
+        }
+        if let Some(window) = self.imp().print_preview_window.borrow_mut().take() {
+            window.close();
+        }
+        self.imp().print_viewer.borrow_mut().take();
+        self.imp().print_state.set(MailPrintJobState::Cancelled);
+        if let Some(area) = self.imp().print_status_area.borrow().as_ref() {
+            area.set_visible(false);
+        }
+        if let Some(cancel_button) = self.imp().print_cancel_button.borrow().as_ref() {
+            cancel_button.set_visible(false);
+        }
+    }
+
+    fn set_print_state(&self, state: MailPrintJobState, message: &str) {
+        self.imp().print_state.set(state);
+        if let Some(label) = self.imp().print_status_label.borrow().as_ref() {
+            label.set_label(message);
+        }
+        if let Some(area) = self.imp().print_status_area.borrow().as_ref() {
+            area.set_visible(!matches!(state, MailPrintJobState::Idle));
+        }
+        if let Some(cancel_button) = self.imp().print_cancel_button.borrow().as_ref() {
+            cancel_button.set_visible(state.is_cancellable());
+        }
+        if let Some(root) = self.root().and_downcast::<crate::window::EvolutionWindow>() {
+            root.update_mail_print_actions();
+        }
+    }
+
+    fn finish_print_state(&self, generation: u64, state: MailPrintJobState, message: &str) {
+        if self.imp().print_generation.get() != generation {
+            return;
+        }
+        self.imp().print_cancellation.borrow_mut().take();
+        self.set_print_state(state, message);
+    }
+
+    fn finish_print_error(&self, generation: u64, error: impl Into<String>) {
+        if self.imp().print_generation.get() != generation {
+            return;
+        }
+        let error = error.into();
+        self.imp().print_cancellation.borrow_mut().take();
+        self.set_print_state(
+            MailPrintJobState::Error,
+            &format!("Drucken nicht möglich: {error}"),
+        );
+        self.show_toast(&format!("Drucken nicht möglich: {error}"));
+    }
+
+    fn present_print_preview(
+        &self,
+        document: mail_print_service::MailPrintDocument,
+    ) -> Result<(), String> {
+        let parent = self
+            .root()
+            .and_downcast::<gtk::Window>()
+            .ok_or_else(|| "Kein Fenster für die Druckvorschau verfügbar".to_string())?;
+        if let Some(window) = self.imp().print_preview_window.borrow_mut().take() {
+            window.close();
+        }
+
+        let preview_viewer = MailViewer::new();
+        preview_viewer.load_print_document(&document)?;
+        let preview_window = gtk::Window::builder()
+            .title("Druckvorschau")
+            .default_width(900)
+            .default_height(700)
+            .transient_for(&parent)
+            .build();
+        let header = gtk::HeaderBar::new();
+        let close_button = gtk::Button::builder()
+            .icon_name("window-close-symbolic")
+            .tooltip_text("Druckvorschau schließen")
+            .build();
+        set_accessible_label(&close_button, "Druckvorschau schließen");
+        let preview_window_for_close = preview_window.downgrade();
+        close_button.connect_clicked(move |_| {
+            if let Some(window) = preview_window_for_close.upgrade() {
+                window.close();
+            }
+        });
+        header.pack_end(&close_button);
+        let content = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .build();
+        content.append(&header);
+        content.append(&preview_viewer);
+        preview_window.set_child(Some(&content));
+        let page = self.downgrade();
+        preview_window.connect_close_request(move |window| {
+            if let Some(page) = page.upgrade()
+                && page
+                    .imp()
+                    .print_preview_window
+                    .borrow()
+                    .as_ref()
+                    .is_some_and(|current| current == window)
+            {
+                page.imp().print_preview_window.borrow_mut().take();
+            }
+            glib::Propagation::Proceed
+        });
+        self.imp()
+            .print_preview_window
+            .replace(Some(preview_window.clone()));
+        preview_window.present();
+        Ok(())
+    }
+
+    fn start_native_print(&self, generation: u64, document: mail_print_service::MailPrintDocument) {
+        if self.imp().print_generation.get() != generation {
+            return;
+        }
+        // The preparation worker has already returned its immutable
+        // document.  From here on the native dialog owns cancellation, so a
+        // stale preparation token must not make the UI promise a cancellation
+        // that WebKitGTK cannot perform.
+        self.imp().print_cancellation.borrow_mut().take();
+        self.set_print_state(MailPrintJobState::Printing, "Druckdialog wird geöffnet …");
+
+        #[cfg(target_os = "linux")]
+        {
+            let Some(parent) = self.root().and_downcast::<gtk::Window>() else {
+                self.finish_print_error(generation, "Kein Fenster für den Druckdialog verfügbar");
+                return;
+            };
+            let print_viewer = MailViewer::new();
+            self.imp().print_viewer.replace(Some(print_viewer.clone()));
+            let page = self.downgrade();
+            print_viewer.print_document(&document, &parent, move |result| {
+                let Some(page) = page.upgrade() else {
+                    return;
+                };
+                page.imp().print_viewer.borrow_mut().take();
+                match result {
+                    Ok(crate::views::mail_viewer::MailPrintDialogResult::Printed) => {
+                        page.finish_print_state(
+                            generation,
+                            MailPrintJobState::Idle,
+                            "Druckauftrag wurde an das System übergeben",
+                        );
+                    }
+                    Ok(crate::views::mail_viewer::MailPrintDialogResult::Cancelled) => {
+                        page.finish_print_state(
+                            generation,
+                            MailPrintJobState::Cancelled,
+                            "Druckdialog abgebrochen",
+                        );
+                    }
+                    Err(error) => page.finish_print_error(generation, error),
+                }
+            });
+        }
+
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = document;
+            self.finish_print_error(generation, MailViewer::native_print_unavailable());
+        }
+    }
+
     /// Export the selected message as a complete RFC822/EML file.  This is a
     /// local, loss-minimizing operation: the original EDS/Camel message is
     /// never modified and the parsed thread and attachment metadata are
@@ -3648,8 +4000,7 @@ impl MailPage {
             .message_selection
             .borrow()
             .as_ref()
-            .and_then(|selection| selection.selected_item())
-            .and_then(|item| item.downcast::<MailMessageObject>().ok())
+            .and_then(selected_mail_message)
     }
 
     pub fn has_selected_message(&self) -> bool {
@@ -3667,9 +4018,9 @@ impl MailPage {
             callback(false);
             return;
         };
-        callback(selection.selected_item().is_some());
+        callback(selected_mail_message(&selection).is_some());
         selection.connect_selected_item_notify(move |selection| {
-            callback(selection.selected_item().is_some());
+            callback(selected_mail_message(selection).is_some());
         });
     }
 
@@ -6709,6 +7060,8 @@ impl MailPage {
                 "mail-reply-sender-symbolic" | "mail-reply-all-symbolic" => "go-previous-symbolic",
                 "mail-forward-symbolic" => "go-next-symbolic",
                 "document-save-symbolic" => "document-save-symbolic",
+                "document-print-symbolic" => "document-save-symbolic",
+                "document-print-preview-symbolic" => "document-print-symbolic",
                 "mail-read-symbolic" | "mail-unread-symbolic" => "mail-message-new-symbolic",
                 "starred-symbolic" => "bookmark-new-symbolic",
                 "mail-mark-important-symbolic" => "dialog-warning-symbolic",
@@ -6747,6 +7100,16 @@ impl MailPage {
                 "document-save-symbolic",
                 "Als EML speichern (Ctrl+Shift+S)",
                 "win.export",
+            ),
+            (
+                "document-print-symbolic",
+                "Drucken (Ctrl+P)",
+                "win.mail-print",
+            ),
+            (
+                "document-print-preview-symbolic",
+                "Druckvorschau",
+                "win.mail-print-preview",
             ),
         ] {
             toolbar.append(&button(icon_name, tooltip, action_name));
@@ -9091,6 +9454,20 @@ impl MailPage {
             .css_classes(vec!["flat"])
             .build();
 
+        let print_btn = gtk::Button::builder()
+            .icon_name("document-print-symbolic")
+            .tooltip_text("E-Mail drucken (Ctrl+P)")
+            .action_name("win.mail-print")
+            .css_classes(vec!["flat"])
+            .build();
+
+        let print_preview_btn = gtk::Button::builder()
+            .icon_name("document-print-preview-symbolic")
+            .tooltip_text("Druckvorschau anzeigen")
+            .action_name("win.mail-print-preview")
+            .css_classes(vec!["flat"])
+            .build();
+
         let label_btn = gtk::Button::builder()
             .icon_name("bookmark-new-symbolic")
             .tooltip_text("Label setzen oder entfernen")
@@ -9187,6 +9564,16 @@ impl MailPage {
             ),
             (&forward_btn, "mail-forward-symbolic", "go-next-symbolic"),
             (
+                &print_btn,
+                "document-print-symbolic",
+                "document-save-symbolic",
+            ),
+            (
+                &print_preview_btn,
+                "document-print-preview-symbolic",
+                "document-print-symbolic",
+            ),
+            (
                 &unread_btn,
                 "mail-unread-symbolic",
                 "mail-message-new-symbolic",
@@ -9218,6 +9605,8 @@ impl MailPage {
             (&reply_all_btn, "Allen Empfängern antworten"),
             (&forward_btn, "Nachricht weiterleiten"),
             (&export_btn, "Nachricht als EML exportieren"),
+            (&print_btn, "Nachricht drucken"),
+            (&print_preview_btn, "Druckvorschau der Nachricht anzeigen"),
             (&label_btn, "Label bearbeiten"),
             (&delete_btn, "Nachricht löschen"),
             (&unread_btn, "Nachricht als ungelesen markieren"),
@@ -9334,6 +9723,8 @@ impl MailPage {
         action_bar.append(&reply_btn);
         action_bar.append(&reply_all_btn);
         action_bar.append(&forward_btn);
+        action_bar.append(&print_btn);
+        action_bar.append(&print_preview_btn);
 
         let move_popover_content = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
@@ -9511,6 +9902,41 @@ impl MailPage {
 
         let mail_viewer = MailViewer::new();
 
+        let print_status_label = gtk::Label::builder()
+            .css_classes(vec!["caption", "dim-label"])
+            .halign(gtk::Align::Start)
+            .hexpand(true)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .build();
+        let print_cancel_button = gtk::Button::builder()
+            .label("Abbrechen")
+            .tooltip_text("Druckvorbereitung abbrechen")
+            .action_name("win.mail-print-cancel")
+            .css_classes(vec!["flat"])
+            .visible(false)
+            .build();
+        set_accessible_label(&print_cancel_button, "Druckvorgang abbrechen");
+        let print_status_area = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(6)
+            .margin_start(8)
+            .margin_end(8)
+            .margin_top(3)
+            .margin_bottom(3)
+            .visible(false)
+            .build();
+        print_status_area.append(&print_status_label);
+        print_status_area.append(&print_cancel_button);
+        self.imp()
+            .print_status_area
+            .replace(Some(print_status_area.clone()));
+        self.imp()
+            .print_status_label
+            .replace(Some(print_status_label.clone()));
+        self.imp()
+            .print_cancel_button
+            .replace(Some(print_cancel_button.clone()));
+
         let message_find_entry = gtk::SearchEntry::builder()
             .placeholder_text("In Nachricht suchen")
             .hexpand(true)
@@ -9682,6 +10108,7 @@ impl MailPage {
         detail_view.append(&mail_viewer);
         detail_view.append(&attachment_separator);
         detail_view.append(&attachment_bar);
+        detail_view.append(&print_status_area);
 
         (
             detail_view,
@@ -12890,6 +13317,8 @@ mod tests {
         for required in [
             "win.reply",
             "win.export",
+            "win.mail-print",
+            "win.mail-print-preview",
             "win.view-message-source",
             "win.edit-labels",
             "win.move-message",

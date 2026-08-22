@@ -23,6 +23,7 @@ use std::rc::Rc;
 
 use crate::application::EvolutionApplication;
 use crate::services::AppSettings;
+use crate::services::mail_print_service::MailPrintAction;
 use crate::views::{CalendarPage, ContactsPage, MailPage, MemosPage, TasksPage};
 
 // ─── GObject Subclass ───────────────────────────────────────────────────────
@@ -76,6 +77,9 @@ mod imp {
     impl WindowImpl for EvolutionWindow {
         fn close_request(&self) -> glib::Propagation {
             let window = self.obj();
+            if let Some(mail_page) = window.mail_page() {
+                mail_page.shutdown_print();
+            }
             if let Some(settings) = AppSettings::try_new() {
                 settings.set_window_width(window.default_width());
                 settings.set_window_height(window.default_height());
@@ -632,6 +636,8 @@ impl EvolutionWindow {
             "reply-all",
             "forward",
             "export",
+            "mail-print",
+            "mail-print-preview",
             "view-message-source",
             "find-in-message",
             "delete",
@@ -675,6 +681,8 @@ impl EvolutionWindow {
             "reply-all",
             "forward",
             "export",
+            "mail-print",
+            "mail-print-preview",
             "view-message-source",
             "find-in-message",
             "delete",
@@ -697,6 +705,57 @@ impl EvolutionWindow {
                 action.set_enabled(enabled);
             }
         }
+        let print_enabled = enabled
+            && self
+                .mail_page()
+                .is_some_and(|mail_page| mail_page.print_action_enabled(MailPrintAction::Print));
+        let preview_enabled = enabled
+            && self
+                .mail_page()
+                .is_some_and(|mail_page| mail_page.print_action_enabled(MailPrintAction::Preview));
+        for (name, action_enabled) in [
+            ("mail-print", print_enabled),
+            ("mail-print-preview", preview_enabled),
+        ] {
+            if let Some(action) = self
+                .lookup_action(name)
+                .and_then(|action| action.downcast::<gio::SimpleAction>().ok())
+            {
+                action.set_enabled(action_enabled);
+            }
+        }
+        if let Some(action) = self
+            .lookup_action("mail-print-cancel")
+            .and_then(|action| action.downcast::<gio::SimpleAction>().ok())
+        {
+            let is_mail_view = self
+                .imp()
+                .view_stack
+                .borrow()
+                .as_ref()
+                .and_then(|view_stack| view_stack.visible_child_name())
+                .is_some_and(|view_name| view_name == "mail");
+            action.set_enabled(
+                is_mail_view
+                    && self
+                        .mail_page()
+                        .is_some_and(|mail_page| mail_page.print_cancel_enabled()),
+            );
+        }
+    }
+
+    pub(crate) fn update_mail_print_actions(&self) {
+        let is_mail_view = self
+            .imp()
+            .view_stack
+            .borrow()
+            .as_ref()
+            .and_then(|view_stack| view_stack.visible_child_name())
+            .is_some_and(|view_name| view_name == "mail");
+        let has_selection = self
+            .mail_page()
+            .is_some_and(|mail_page| mail_page.has_selected_message());
+        self.set_message_actions_enabled(is_mail_view && has_selection);
     }
 
     fn setup_layout(&self) {
@@ -1085,6 +1144,11 @@ impl EvolutionWindow {
         file_menu.append_submenu(Some("Neu"), &new_menu);
         file_menu.append(Some("Lokale Entwürfe"), Some("app.drafts"));
         file_menu.append(Some("Ausgewählte E-Mail exportieren"), Some("win.export"));
+        file_menu.append(Some("Ausgewählte E-Mail drucken…"), Some("win.mail-print"));
+        file_menu.append(
+            Some("Druckvorschau der ausgewählten E-Mail…"),
+            Some("win.mail-print-preview"),
+        );
         menu.append_submenu(Some("Datei"), &file_menu);
 
         // ─── 2. Bearbeiten (Edit) ──────────────────────────────────────────
@@ -1195,6 +1259,8 @@ impl EvolutionWindow {
         message_menu.append(Some("Allen antworten"), Some("win.reply-all"));
         message_menu.append(Some("Weiterleiten"), Some("win.forward"));
         message_menu.append(Some("Als EML speichern..."), Some("win.export"));
+        message_menu.append(Some("Drucken…"), Some("win.mail-print"));
+        message_menu.append(Some("Druckvorschau…"), Some("win.mail-print-preview"));
         message_menu.append(
             Some("Alle sichtbaren Nachrichten auswählen"),
             Some("win.select-all-mail"),
@@ -1536,6 +1602,51 @@ impl EvolutionWindow {
             }
         ));
         self.add_action(&action_export);
+
+        let action_mail_print = gio::SimpleAction::new("mail-print", None);
+        action_mail_print.connect_activate(glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            move |_, _| {
+                let started = win
+                    .mail_page()
+                    .is_some_and(|mail_page| mail_page.start_print(MailPrintAction::Print));
+                if !started {
+                    tracing::debug!("Print action ignored without a selected message");
+                }
+            }
+        ));
+        self.add_action(&action_mail_print);
+
+        let action_mail_print_preview = gio::SimpleAction::new("mail-print-preview", None);
+        action_mail_print_preview.connect_activate(glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            move |_, _| {
+                let started = win
+                    .mail_page()
+                    .is_some_and(|mail_page| mail_page.start_print(MailPrintAction::Preview));
+                if !started {
+                    tracing::debug!("Print preview action ignored without a selected message");
+                }
+            }
+        ));
+        self.add_action(&action_mail_print_preview);
+
+        let action_mail_print_cancel = gio::SimpleAction::new("mail-print-cancel", None);
+        action_mail_print_cancel.connect_activate(glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            move |_, _| {
+                if !win
+                    .mail_page()
+                    .is_some_and(|mail_page| mail_page.cancel_print())
+                {
+                    tracing::debug!("Print cancellation ignored without an active print job");
+                }
+            }
+        ));
+        self.add_action(&action_mail_print_cancel);
 
         let action_message_source = gio::SimpleAction::new("view-message-source", None);
         action_message_source.connect_activate(glib::clone!(

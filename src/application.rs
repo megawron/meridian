@@ -392,6 +392,7 @@ impl EvolutionApplication {
         self.set_accels_for_action("win.reply-all", &["<Ctrl><Shift>R"]);
         self.set_accels_for_action("win.forward", &["<Ctrl>L"]);
         self.set_accels_for_action("win.export", &["<Ctrl><Shift>S"]);
+        self.set_accels_for_action("win.mail-print", &["<Ctrl>P"]);
         self.set_accels_for_action("win.view-message-source", &["<Ctrl>U"]);
         self.set_accels_for_action("win.find-in-message", &["<Ctrl><Shift>F"]);
         self.set_accels_for_action("win.delete", &["Delete"]);

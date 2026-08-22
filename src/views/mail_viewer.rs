@@ -17,8 +17,12 @@ use gtk::gio;
 use gtk::glib;
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
+#[cfg(target_os = "linux")]
+use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
+#[cfg(target_os = "linux")]
+use std::time::Duration;
 #[cfg(target_os = "linux")]
 use webkit6::prelude::*;
 
@@ -28,6 +32,7 @@ use crate::services::html_sanitizer::{
 };
 use crate::services::inline_content_service::{InlineImage, resolve_cid_images};
 use crate::services::mail_metadata_service::RemoteContentStore;
+use crate::services::mail_print_service::MailPrintDocument;
 
 const MAX_CACHED_DERIVED_BYTES: usize = 4 * 1024 * 1024;
 #[cfg(target_os = "linux")]
@@ -72,6 +77,8 @@ mod imp {
         pub(super) find_controller: RefCell<Option<webkit6::FindController>>,
         #[cfg(target_os = "linux")]
         pub(super) webview_ready: Cell<bool>,
+        #[cfg(target_os = "linux")]
+        pub(super) print_operation: RefCell<Option<webkit6::PrintOperation>>,
         pub settings: RefCell<Option<AppSettings>>,
         pub remote_content_store: RefCell<Option<RemoteContentStore>>,
         pub remote_content_allowed: RefCell<HashSet<String>>,
@@ -97,6 +104,8 @@ mod imp {
         fn dispose(&self) {
             self.render_worker_shutdown.store(true, Ordering::Release);
             self.render_worker_queue.1.notify_all();
+            #[cfg(target_os = "linux")]
+            self.print_operation.borrow_mut().take();
             if let Some(child) = self.obj().first_child() {
                 child.unparent();
             }
@@ -613,6 +622,185 @@ impl MailViewer {
             base_uri.as_deref(),
             fallback_text.as_deref(),
         );
+    }
+
+    /// Load an already prepared print document without consulting viewer
+    /// settings or starting another MIME/HTML preparation pass.  The document
+    /// was sanitized on a worker by `mail_print_service`; this method only
+    /// hands those bytes to the target renderer and is therefore safe for the
+    /// GTK context.
+    pub(crate) fn load_print_document(&self, document: &MailPrintDocument) -> Result<u64, String> {
+        let source_generation = advance_generation(self.imp().source_generation.get());
+        self.imp().source_generation.set(source_generation);
+        let render_generation = advance_generation(self.imp().render_generation.get());
+        self.imp().render_generation.set(render_generation);
+        self.imp()
+            .render_worker_generation
+            .store(render_generation, Ordering::Release);
+        self.imp().last_render_key.take();
+        self.imp().render_cache.take();
+        self.invalidate_message_search_context();
+        self.imp().current_message_id.replace(None);
+        self.imp().current_html.replace(Some(document.html.clone()));
+        self.imp().current_inline_images.replace(Vec::new());
+        self.imp().current_base_uri.replace(None);
+        self.imp()
+            .current_fallback_text
+            .replace(Some(document.plain_text.clone()));
+        self.imp().remote_images_allowed_for_current.set(false);
+        self.imp().banner.set_revealed(false);
+        self.set_fallback_text(&document.plain_text);
+
+        #[cfg(target_os = "linux")]
+        {
+            self.imp().webview_ready.set(false);
+            let Some(webview) = self.ensure_webkit() else {
+                self.show_renderer_error();
+                return Err("WebKit-Druckdarsteller ist nicht verfügbar".to_string());
+            };
+            let content_uri = renderer_content_uri(render_generation);
+            self.imp().active_webview_generation.set(render_generation);
+            self.imp()
+                .active_webview_uri
+                .replace(Some(content_uri.clone()));
+            webview.load_alternate_html(&document.html, &content_uri, None);
+        }
+
+        #[cfg(not(target_os = "linux"))]
+        {
+            let fallback_view = self.imp().fallback_view.borrow();
+            let Some(view) = fallback_view.as_ref() else {
+                return Err("Keine Druckdarstellung ist verfügbar".to_string());
+            };
+            view.buffer().set_text(&document.plain_text);
+        }
+
+        Ok(render_generation)
+    }
+
+    /// Open the native GTK/WebKit print dialog for a worker-prepared
+    /// document.  The Linux implementation mirrors Evolution's
+    /// `e-mail-printer.c` flow: wait for a fully loaded isolated WebKit view,
+    /// then hand that view to `WebKitPrintOperation`.  Non-Linux builds keep a
+    /// real, explicit capability error instead of presenting a button that
+    /// silently does nothing.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn print_document<F>(
+        &self,
+        document: &MailPrintDocument,
+        parent: &gtk::Window,
+        callback: F,
+    ) where
+        F: FnOnce(Result<MailPrintDialogResult, String>) + 'static,
+    {
+        let render_generation = match self.load_print_document(document) {
+            Ok(generation) => generation,
+            Err(error) => {
+                callback(Err(error));
+                return;
+            }
+        };
+        let viewer = self.downgrade();
+        let parent = parent.clone();
+        let attempts = Cell::new(0u16);
+        let callback = Rc::new(RefCell::new(Some(callback)));
+        glib::timeout_add_local(Duration::from_millis(40), move || {
+            let Some(viewer) = viewer.upgrade() else {
+                if let Some(callback) = callback.borrow_mut().take() {
+                    callback(Err("Druckdarsteller wurde geschlossen".to_string()));
+                }
+                return glib::ControlFlow::Break;
+            };
+            if viewer.imp().render_generation.get() != render_generation {
+                if let Some(callback) = callback.borrow_mut().take() {
+                    callback(Err(
+                        "Druckdokument wurde durch eine neuere Auswahl ersetzt".to_string()
+                    ));
+                }
+                return glib::ControlFlow::Break;
+            }
+            if !viewer.imp().webview_ready.get() {
+                let attempt = attempts.get().saturating_add(1);
+                attempts.set(attempt);
+                if attempt >= 250 {
+                    if let Some(callback) = callback.borrow_mut().take() {
+                        callback(Err(
+                            "Druckdarstellung wurde nicht rechtzeitig geladen".to_string()
+                        ));
+                    }
+                    return glib::ControlFlow::Break;
+                }
+                return glib::ControlFlow::Continue;
+            }
+            let Some(webview) = viewer.imp().webview.borrow().as_ref().cloned() else {
+                if let Some(callback) = callback.borrow_mut().take() {
+                    callback(Err("WebKit-Druckdarsteller ist nicht verfügbar".to_string()));
+                }
+                return glib::ControlFlow::Break;
+            };
+
+            let print_operation = webkit6::PrintOperation::new(&webview);
+            let print_error = Rc::new(RefCell::new(None::<String>));
+            let print_error_for_signal = Rc::clone(&print_error);
+            print_operation.connect_failed(move |_, error| {
+                print_error_for_signal.replace(Some(error.to_string()));
+            });
+            let callback_for_finished = Rc::clone(&callback);
+            let print_error_for_finished = Rc::clone(&print_error);
+            let viewer_for_finished = viewer.downgrade();
+            print_operation.connect_finished(move |_| {
+                if let Some(viewer) = viewer_for_finished.upgrade() {
+                    viewer.imp().print_operation.borrow_mut().take();
+                }
+                let result = print_error_for_finished
+                    .borrow_mut()
+                    .take()
+                    .map_or(Ok(MailPrintDialogResult::Printed), Err);
+                if let Some(callback) = callback_for_finished.borrow_mut().take() {
+                    callback(result);
+                }
+            });
+            viewer
+                .imp()
+                .print_operation
+                .replace(Some(print_operation.clone()));
+            let response = print_operation.run_dialog(Some(&parent));
+            match response {
+                // The `finished` signal is authoritative for a successful
+                // print. It may run inside `run_dialog` or shortly after it
+                // returns; the retained operation keeps that signal alive.
+                webkit6::PrintOperationResponse::Print => {
+                    if let Some(error) = print_error.borrow_mut().take() {
+                        viewer.imp().print_operation.borrow_mut().take();
+                        if let Some(callback) = callback.borrow_mut().take() {
+                            callback(Err(error));
+                        }
+                    }
+                }
+                webkit6::PrintOperationResponse::Cancel => {
+                    viewer.imp().print_operation.borrow_mut().take();
+                    let result = print_error
+                        .borrow_mut()
+                        .take()
+                        .map_or(Ok(MailPrintDialogResult::Cancelled), Err);
+                    if let Some(callback) = callback.borrow_mut().take() {
+                        callback(result);
+                    }
+                }
+                _ => {
+                    viewer.imp().print_operation.borrow_mut().take();
+                    if let Some(callback) = callback.borrow_mut().take() {
+                        callback(Err("Unbekannte Antwort des Druckdialogs".to_string()));
+                    }
+                }
+            }
+            glib::ControlFlow::Break
+        });
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    pub(crate) fn native_print_unavailable() -> &'static str {
+        "Natives GTK/WebKit-Drucken ist in diesem Build nur unter Linux verfügbar"
     }
 
     /// Allow remote image loading for the current email.
@@ -1209,6 +1397,13 @@ impl MailViewer {
             stack.set_visible_child_name("error");
         }
     }
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum MailPrintDialogResult {
+    Printed,
+    Cancelled,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
