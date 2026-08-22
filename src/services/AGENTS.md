@@ -49,6 +49,14 @@ settings persistence.
 - MIME, vCard, settings, filter, and profile import paths preserve unknown safe
   data where possible. Unsupported values become redacted warnings; credentials
   and secret material must never enter app-owned stores, reports, or logs.
+- Portable task filters are a typed, persistable contract: upstream-relevant
+  date/status/category/attachment predicates and advanced search terms are
+  normalized on load and migration, evaluated deterministically across date
+  boundaries, and kept separate from native EDS query semantics.
+- vCard contact lists preserve vCard 3 Evolution list properties and vCard 4
+  `KIND:group`/`MEMBER` properties, including local, external, nested, and
+  invalid members. Member validation is visible and atomic store writes must
+  retain unrecognized safe list properties rather than silently dropping them.
 
 ## Work Guidance
 
@@ -72,6 +80,9 @@ settings persistence.
   does not sanitize the same document twice. Long-lived viewers may cache the
   non-secret remote-content approval set and must update it only after a
   successful atomic store write.
+- Worker-prepared searchable body text and crypto results must carry the same
+  source/folder/message identity used by the visible record; a body replacement
+  invalidates derived search text before filters are reevaluated.
 
 ## Verification
 

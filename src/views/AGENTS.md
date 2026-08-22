@@ -46,12 +46,17 @@ accessibility helpers, and view-local GTK state.
   are discarded before they can replace the WebKit document or fallback text,
   and identical requests are coalesced. Use one persistent latest-wins worker;
   CID/Base64 work and large attachment copies must never run on selection in
-  the GTK context.
+  the GTK context. Body-search text is prepared in a worker path, carried
+  with the complete message identity, and consumed by filters without a
+  selection-time HTML-to-text conversion. Replacing rendered/decrypted content
+  invalidates the body cache and emits a filter change before the new result is
+  searchable.
 - Perform only a bounded, cheap MIME-envelope preflight on the GTK path for
   cryptography. Run OpenPGP/S-MIME inspection only for messages that advertise
   a corresponding envelope. Hide routine unsigned/unencrypted status by
   default; a persistent opt-in may reveal it, while valid, warning, and error
-  states remain visible.
+  states remain visible. Crypto worker results are accepted only when both the
+  request generation and the complete message identity still match.
 - Keep the mail table Evolution-compact: attachment and status indicators
   lead the row, header and row cells share fixed column widths, and clicking a
   sortable header exposes the active direction there instead of requiring a
@@ -81,6 +86,14 @@ accessibility helpers, and view-local GTK state.
   base URIs, fallback text, loading, and errors must remain explicit.
 - Keep loading and empty/error states explicit. Never leave a permanent
   spinner when a module has finished loading or failed.
+- Task filters use the persisted typed filter/search contract: date windows,
+  status, category, attachments, due/start state, and advanced predicates are
+  combinable and update the open view after settings or model changes. Unknown
+  imported values fall back visibly instead of being treated as upstream
+  parity.
+- Contact-list editors expose local and external members, preserve list
+  metadata and vCard 3/4 representations, mark invalid members, and refresh
+  the visible member rows from the pending atomic write model.
 - Find-in-message uses Evolution's `Ctrl+Shift+F` path and an in-reader bar.
   WebKit uses its FindController; plaintext fallback offsets are Unicode
   character offsets. Selection, source and render generations invalidate stale

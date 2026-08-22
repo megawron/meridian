@@ -9,16 +9,15 @@ Vollständige Architektur-Spezifikation, Feature-Mapping und Entwicklungs-Roadma
 > [Linux-/EDS-Roadmap](ROADMAP_LINUX.md). Der Produktumfang darf aus keiner
 > dieser Sichten verkleinert werden.
 
-> **Belegter Zwischenstand `d6e7dcc`:** Die tägliche portable GTK4-Strecke für
-> sicheren Mail-Viewer, asynchrone Mailmutationen einschließlich Undo/Redo,
-> Composer-Recovery/Doppelsendeschutz sowie kompakte Kalender-, Kontakt- und
-> Aufgabenansichten ist mit 387/387 Tests und Workspace-Build verifiziert.
-> Echte WebKitGTK-, EDS/Camel/ECal/EBook-, Provider- und Desktop-Abnahme bleibt
-> ausdrücklich in `ROADMAP_LINUX.md` offen; dies ist keine Vollparitätsangabe.
-> Der nachfolgende atomare Mail-Kernblock hat am 13. August 2026 die portablen
-> Gates einschließlich Schema-Prüfung, Workspace-Build und 396/396 Tests
-> bestanden. WebKitGTK-, Icon-, Dichte-, Counter- und EDS/Camel-Abnahme auf
-> Linux bleibt offen und ist ausdrücklich kein Vollparitätsbeleg.
+> **Arbeitsstand 2026-08-22 (uncommitted verification snapshot):** Beide
+> unabhängigen Reviews sind abgeschlossen. Normaler und erzwungener
+> `eds_camel_bridge`-Cargo-Check, Formatprüfung, `git diff --check`, strikte
+> Schema-Prüfung und der vollständige Testlauf außerhalb der Sandbox sind mit
+> 482/482 Tests grün. `P0-MAIL-001D-SEARCH`, `GW-TASK-FILTERS` und
+> `GW-CONTACT-LISTS` stehen deshalb auf `BLOCKED_LINUX`, nicht auf `DONE` oder
+> Vollparität: WebKitGTK-, visuelle, EDS/Camel/ECal/EBook-, Provider- und
+> Desktop-Abnahme bleibt ausdrücklich in `ROADMAP_LINUX.md` offen. Dieser
+> Dokumentationslauf erzeugt keinen Commit und keinen Push.
 
 ---
 
@@ -744,9 +743,42 @@ jeweilige negative Fehlerpfad mit direkter Evidenz vorliegen.
   CID/Base64, Sanitizer und Dokumentkomposition laufen außerhalb GTK; große
   Anlagen und Crypto-Rohdaten werden bei der Auswahl referenzgezählt statt
   kopiert, Remote-Freigaben bleiben im Viewer-Cache und stale Ergebnisse
-  dürfen weder WebKit noch Fallback ersetzen. Normale Filter überspringen den
-  HTML-Body vollständig, Body-Suchen verwenden einen invalidierbaren
-  Klartextcache. Offen bleibt das Linux-Umschalten großer HTML-Nachrichten.
+  dürfen weder WebKit noch Fallback ersetzen. Das Elternziel bleibt offen,
+  bis WebKitGTK-/Linux-Churn und native Providerwirkung abgenommen sind.
+- `[~]` `P0-MAIL-001D-SEARCH` — der Suchtext für Mailkörper wird im Worker als
+  bereinigter, kleingeschriebener Klartext vorbereitet und als immutable
+  Cache mit vollständiger Nachrichtsidentität (`source`, Ordner, UID,
+  Message-ID bzw. Backend-Lokation) an die GTK-Modelle übergeben. Camel-
+  Ergebnisse gewinnen bei Kollisionen gegen ergänzende lokale Datensätze;
+  Auswahlfilter erzeugen keinen synchronen HTML-/Body-Text mehr. Ersetzte
+  oder entschlüsselte Inhalte invalidieren den Cache und lösen eine
+  Filterneubewertung aus; Crypto-Ergebnisse werden zusätzlich durch Request-
+  Generation und Identität gegen stale Zustände geschützt. Die portablen
+  Gates sind im aktuellen Arbeitsstand mit 482/482 Tests grün, beide
+  unabhängigen Reviews sind abgeschlossen. Das Paket steht auf
+  `BLOCKED_LINUX`; Provider-Body-Suche, Linux-Churn und EDS/Camel-Abnahme
+  bleiben in `ROADMAP_LINUX.md` offen.
+- `[~]` `GW-TASK-FILTERS` — die Aufgabenansicht führt einen persistierten,
+  validierten Filtervertrag für Heute, nächste 7/30/365 Tage, überfällig,
+  erledigt/offen, Status, ohne Fälligkeit, geplant, begonnen, Anhänge und
+  Kategorien. Der Advanced-Modus kombiniert Text-, Kategorie-, Status-,
+  Start-/Fälligkeits- und Attachment-Prädikate; Migrationen normalisieren
+  Aliaswerte und ungültige Eingaben fallen sicher zurück. Deterministische
+  Datums-/DST-Fixtures, Live-Neuberechnung und GSettings-Roundtrip sind im
+  aktuellen 482/482-Teststand belegt; beide unabhängigen Reviews sind
+  abgeschlossen. Das Paket steht auf `BLOCKED_LINUX`; EDS-Query-Semantik und
+  Providergrenzen bleiben offen. Die weitere upstream-Taskpad-Fläche wird in
+  separaten Groupware-Paketen verfolgt.
+- `[~]` `GW-CONTACT-LISTS` — der portable vCard-Listeneditor unterstützt
+  Evolution-vCard-3-Listen sowie vCard 4 `KIND:group`/`MEMBER`, lokale und
+  externe Mitglieder, verschachtelte Listen, Anzeigenamen, Sichtbarkeit der
+  Adressen und sichtbare Validierungsfehler. Parser/Serializer bewahren
+  unerkannte sichere Listeneigenschaften; die Dialog-UI schreibt Mitglieder
+  über einen atomaren Storepfad und verhindert stille Teilverluste. vCard-3/4-
+  Roundtrip-, invalid-member- und Member-UI-Tests sind im 482/482-Stand
+  enthalten; beide unabhängigen Reviews sind abgeschlossen. Das Paket steht
+  auf `BLOCKED_LINUX`; EBook-Listenfähigkeiten, ACLs und native
+  Provider-/Linux-Abnahme bleiben offen.
 - `[~]` `P0-MAIL-002A` — klassische, kompakte Mail-Liste und Sidebar: Spalten-
   und Statusindikatoren links, einzeilige Nachrichtenzellen ohne permanente
   Checkboxen, feste gemeinsame Kopf-/Zeilenbreiten, Sortierpfeile direkt im
@@ -794,10 +826,37 @@ cargo check --workspace --locked
 cargo test --workspace --locked --no-fail-fast --quiet
 ```
 
-Diese Gates sind für den aktuellen Arbeitsstand grün (450/450 Tests).
-WebKitGTK-Runtime, echte EDS/Camel-Flags, Icon-Theme, sichtbare Dichte, rasches
-Umschalten und bestätigte Counter-Aktualisierung bleiben in
-`ROADMAP_LINUX.md` offen und dürfen hier nicht vorweggenommen werden.
+Diese Gates, die normale und erzwungene `eds_camel_bridge`-Cargo-Prüfung sowie
+die strikte Schema-Prüfung sind für den aktuellen Arbeitsstand grün; der
+vollständige Testlauf außerhalb der Sandbox umfasst 482/482 Tests. Beide
+unabhängigen Reviews sind abgeschlossen. WebKitGTK-Runtime, echte
+EDS/Camel-Flags, Icon-Theme, sichtbare Dichte, rasches Umschalten und bestätigte
+Counter-Aktualisierung bleiben in `ROADMAP_LINUX.md` offen und dürfen hier
+nicht vorweggenommen werden.
+
+#### Aus den Upstream-Audits übernommene nächste atomare Pakete
+
+Die beiden statischen Audits sind jetzt DOX-indexiert und speisen die nächste
+Warteschlange. Ihre Statuswerte sind Quellen-/UI-Belege, keine Laufzeit- oder
+Providerabnahme:
+
+1. `MAIL-PRINT-ACTION` — Auswahl/aktuelle Nachricht, Render-/Jobmodell,
+   Print/Preview und `Ctrl+P`; GtkPrint/Portal, PDF, WebKitGTK und Seitenlayout
+   bleiben Linux-Rest.
+2. `MAIL-TRANSPORT-COMMANDS` — getrennte Send-, Receive-, All-, Stop- und
+   Offline-Kommandos mit eigenem Statusmodell; Camel/EDS, Auth, Queue und
+   Fehler-/Fortschrittsmeldungen bleiben Linux-Rest.
+3. `COMPOSER-ACTION-SURFACE` — stabile Composer-Menü-/Toolbar-Actions für
+   Send, Draft, Save-as, Print, Close/New und per-Nachricht Receipt, Priority,
+   Charset, Sign/Encrypt; Provider-, Portal- und Crypto-Wirkung bleibt offen.
+4. Groupware-Lücken — nach den aktuellen Review-Slices folgen
+   `GW-CAL-VIEWS`/`GW-CAL-SHELL`/`GW-CAL-ACTIONS`,
+   `GW-EVENT-EDITOR`, `GW-TASK-SURFACE`/`GW-TASK-EDITOR`,
+   `GW-CONTACT-ACTIONS`/`GW-CONTACT-SEARCH`,
+   `GW-SOURCE-SELECTOR`/`GW-SOURCE-MGMT`, `GW-ALARMS`,
+   `GW-REMINDER-RUNTIME`, `GW-IMPORT-FRAMEWORK` und `GW-EXPORT-PRINT`;
+   jeweils mit portablem Daten-/UI-Vertrag und separatem
+   ECal/EBook-/Provider-/Desktop-Rest.
 
 #### Phase 2 — Konten, Empfang und Mailversand
 
@@ -978,8 +1037,12 @@ Umschalten und bestätigte Counter-Aktualisierung bleiben in
   Erledigt-Schalter schreibt den Status über denselben lokalen bzw. nativen
   ECal-Mutationspfad zurück. Aufgaben- und Notizseiten zeigen ihre
   verfügbaren EDS-/lokalen Listen zusätzlich als synchronisierte linke
-  Navigation. Eine vollständige Aufgabenlisten-Parität fehlt noch. Wenn EDS
-  nicht verfügbar ist, können neue lokale VTODOs und
+  Navigation. `GW-TASK-FILTERS` ergänzt aktuell den portablen Filter-/Advanced-
+  Suchvertrag mit persistierter Quellen-/Kategorienauswahl, validierter
+  Migration und DST-Fixtures; beide unabhängigen Reviews sind abgeschlossen
+  und das Paket steht bis zur EDS-/Provider-Abnahme auf `BLOCKED_LINUX`. Eine
+  vollständige Aufgabenlisten- und upstream-Taskpad-Parität fehlt weiterhin.
+  Wenn EDS nicht verfügbar ist, können neue lokale VTODOs und
   VJOURNALs im app-eigenen Kalenderbestand persistent gespeichert werden.
   Standard-Aufgabenliste und Standard-Notizliste werden getrennt von der
   Standard-Kalenderquelle in den Einstellungen vorselektiert, als lokale oder
@@ -1104,7 +1167,11 @@ Umschalten und bestätigte Counter-Aktualisierung bleiben in
   an. Die portable Kontaktbearbeitung zeigt außerdem zentrale
   `X-EVOLUTION-*`-Felder (Sortiername, Vorgesetzter, Assistenz, Partner,
   Blog/Video und Mailinglisten-/HTML-Präferenzen). Nachträgliche
-  Dublettenänderungen invalidieren den GTK-Filter korrekt.
+  Dublettenänderungen invalidieren den GTK-Filter korrekt. `GW-CONTACT-LISTS`
+  ergänzt im aktuellen portablen Arbeitsstand den vCard-3/4-Listeneditor mit
+  lokalen, externen und verschachtelten Mitgliedern, sichtbarer Validierung
+  und atomarem Write-Pfad; beide unabhängigen Reviews sind abgeschlossen und
+  das Paket steht bis zur EBook-/ACL-/Provider-Abnahme auf `BLOCKED_LINUX`.
 - [~] Der vCard-Parser/Serializer erhält mehrere E-Mail-Adressen,
   Telefonnummern, Adressen, Kategorien, URLs, Spitznamen und Geburtstage
   zusätzlich zu den bisherigen Kernfeldern sowie `N`, Jahrestag, Rolle,
@@ -1114,7 +1181,9 @@ Umschalten und bestätigte Counter-Aktualisierung bleiben in
   Eigenschaften wie weitere Fotos, Kategorien, zusätzliche Kontaktwege und
   beliebige `X-*`-/`X-EVOLUTION-*`-Felder erhalten; die zentralen Evolution-
   Felder können portabel bearbeitet werden. Escaped Kommas in Kategorien
-  überstehen Parser-/Serializer-Roundtrips.
+  überstehen Parser-/Serializer-Roundtrips. Kontaktlisten-Metadaten und
+  Mitglieder werden dabei für Evolution-vCard-3 und vCard 4 als verlustarme
+  portable Roundtrips behandelt; native Listenfähigkeiten sind nicht belegt.
 - [~] EBook-/EDS-Quellen werden dynamisch erkannt; der native Adressbuch-
   Stream liefert vCards mit Quellen- und Kontakt-UIDs; der native Adapter
   unterstützt bereits Create/Modify/Remove mit Konfliktstatus, der app-eigene

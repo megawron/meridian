@@ -22,8 +22,13 @@ thread-safe-to-transfer domain values.
   selection, rendering, saving, and crypto preflight do not duplicate buffers.
   Preserve original RFC822 header bytes separately when available so the
   all-header view does not require retaining each complete MIME payload.
-  Derived searchable body text may be cached but must be invalidated whenever
-  rendered message content is replaced.
+  Derived searchable body text may be cached only after worker preparation;
+  the cache key must include the complete source/folder/message identity and
+  must be invalidated whenever rendered or decrypted message content is
+  replaced. The owning GTK filter must be notified after invalidation.
+- Crypto and other asynchronous message results must carry a generation plus
+  the same complete identity as the model row; equal display IDs in different
+  folders or backends must never alias.
 - Keep display formatting separate from authoritative service data when a
   view-specific presentation is needed.
 

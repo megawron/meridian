@@ -25,6 +25,10 @@ and updates to the service/settings APIs.
   outside the GTK main thread. Preserve a complete recovery draft before send,
   reject duplicate send starts, and remove the draft only after confirmed
   transport success; cancellation and failure keep the editor recoverable.
+- Contact-list editing uses the same atomic save contract: list name/options
+  and local/external/nested members are edited as one pending value, invalid
+  members remain visible with a validation error, and the original record is
+  unchanged when validation, cancellation, or the backend write fails.
 
 ## Verification
 

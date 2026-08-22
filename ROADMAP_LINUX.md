@@ -5,6 +5,10 @@ GTK4, libadwaita und dem originalen Evolution Data Server (EDS) benötigen.
 Sie ergänzt die allgemeine [ROADMAP.md](ROADMAP.md). Die priorisierte,
 atomare Reihenfolge steht in [ROADMAP_EXECUTION.md](ROADMAP_EXECUTION.md);
 plattformunabhängige Rust-, GTK4-rs- und Service-Arbeiten bleiben dort.
+Die statischen Quellen-/UI-Belege stehen in
+[`docs/UPSTREAM_GROUPWARE_PARITY_AUDIT.md`](docs/UPSTREAM_GROUPWARE_PARITY_AUDIT.md)
+und [`docs/UPSTREAM_MAIL_SHELL_PARITY_AUDIT.md`](docs/UPSTREAM_MAIL_SHELL_PARITY_AUDIT.md);
+deren portable Pakete ersetzen keine Linux-Abnahme.
 
 Ein Punkt ist erst `[x]`, wenn er auf Linux reproduzierbar gebaut und mit
 einem echten EDS-/GNOME-Konto ausgeführt wurde. Ein bestandener Rust-Test auf
@@ -24,15 +28,46 @@ markieren. Ein Linux-Agent beginnt mit dem ersten offenen P0-Handoff, dessen
 zugehöriger portabler Punkt vorbereitet ist. Vor jedem Lauf sind Commit,
 Distribution, Bibliotheksversionen und Kontotyp zu protokollieren.
 
+Der aktuelle portable Arbeitsstand für `P0-MAIL-001D-SEARCH`,
+`GW-TASK-FILTERS` und `GW-CONTACT-LISTS` ist mit 482/482 Tests grün; beide
+unabhängigen Reviews sind abgeschlossen und der Arbeitsstand ist uncommitted.
+Alle drei Pakete stehen auf `BLOCKED_LINUX`. Das ist nur eine portable
+Vorbedingung. Kein Audit-Slice, kein visueller Befund und kein
+EDS-/Provider-Rest wird deshalb als `[x]` geführt.
+
+### Audit-abgeleitete Linux-Handoffs
+
+- `[ ]` `MAIL-PRINT-ACTION`: Liste und Reader drucken, Vorschau/PDF und
+  `Ctrl+P` prüfen; GtkPrint/Portal-Fehler, Abbruch, HTML/WebKitGTK-
+  Seitenumbrüche und visuelle Übereinstimmung dokumentieren.
+- `[ ]` `MAIL-TRANSPORT-COMMANDS`: Send/Receive/All/Stop und Offline mit
+  `F12`, echter Camel-/EDS-Authentifizierung, Queue, Fortschritt, Abbruch und
+  Providerfehlern prüfen. `win.refresh-mail`/`F5` darf die getrennten
+  Richtungen nicht wieder als eine Aktion ausgeben.
+- `[ ]` `COMPOSER-ACTION-SURFACE`: Menü-/Toolbar-/Shortcutpfade für Send,
+  Draft, Save-as, Print, Close/New, Receipt, Priority, Charset, Sign/Encrypt
+  sowie Recovery gegen EDS-Identität, Drafts/Sent, WebKitGTK, Portal und
+  Crypto prüfen.
+- `[ ]` `GW-TASK-FILTERS`: EDS-S-Expressions/Rangegrenzen, Source-Refresh,
+  Zeitzone/DST, Query-Fehler und die sichtbare Trennung lokaler Filter von
+  Provider-Suche gegen reale Aufgabenquellen prüfen.
+- `[ ]` `GW-CONTACT-LISTS`: vCard 3/4-Listen, lokale/externe/verschachtelte
+  Mitglieder und ungültige Member gegen EBook-Serverfähigkeiten, ACLs,
+  Member-UIDs, parallele Änderungen und Providerfehler prüfen; atomare
+  portable Speicherung ist kein Beleg für native Listenparität.
+
 ### LINUX-P0-MAIL-001 — Konto, Ordner, Nachricht und WebKit-Reader
 
 - Verknüpft: `P0-MAIL-001` und `P0-SYNC-001` aus
   `ROADMAP_EXECUTION.md`.
-- Portable Basis: Commits `10b0321` (MIME-Parser/HTML-Sanitizer) und `d6e7dcc`
+- Portable Basis: Historische Commits `10b0321` (MIME-Parser/HTML-Sanitizer)
+  und `d6e7dcc`
   (Viewer-Komposition, Fallbackzustände und Remote-Freigabe) sowie der
   `P0-SYNC-001A`-Stand mit begrenzten Page-Windows, opaken Graph-NextLink-
   Cursorn, UID-Deduplizierung, generationensicheren Modellen und normalisierten
-  Camel-Events; ersetzen nicht die folgende Linux-Abnahme.
+  Camel-Events. Der aktuelle uncommitted portable Verification-Snapshot umfasst
+  zusätzlich 482/482 Tests; keine dieser Angaben ersetzt die folgende
+  Linux-Abnahme.
 - Vorbereitung: vollständiger portabler Testlauf grün; ein EDS-Testkonto mit
   bekannten Plaintext-, HTML-, CID-, Remote-Bild- und Anhangsnachrichten.
 - Ablauf:
@@ -651,11 +686,15 @@ Ergebnis bei paralleler Änderung:
   echte Serverantworten müssen Message-ID, providerabhängige Sent-Kopien und
   Fehlerfälle noch auf Linux verifiziert werden; ein bereits vom Transport
   akzeptierter Versand wird dabei nicht fälschlich als fehlgeschlagen gemeldet.
-- `[x]` EDS Mail backend `ews`, `imapx`, `pop3` Integration:
+- `[~]` Eingeschränkter historischer EDS-Mail-Smoke für Backend `ews`,
+  `imapx`, `pop3`:
   - GOA Session D-Bus Automatische Host-Auflösung (`org.gnome.OnlineAccounts.Exchange`) ✓
   - Automatische Passwort-Abfrage über GOA D-Bus (`org.gnome.OnlineAccounts.PasswordBased`) ✓
   - `CamelOfflineStore` Online-Steuerung in `eds_camel_bridge.c` ✓
-  - Live-Posteingang mit 211 E-Mails und 13 Ordnern von `user@example.com` verifiziert ✓
+  - Ein früher Live-Posteingangstest mit 211 E-Mails und 13 Ordnern wurde
+    protokolliert; er ist kein aktueller Vollbeleg für Kontolebenszyklus,
+    Providerparität, Auth-/Offline-Fehler oder die drei neuen Transport-
+    Kommandos.
 - `[ ]` TLS-Zertifikatsfehler, Offline-Versand, SMTP-Authentifizierung und
   Serverlimits testen.
 
@@ -676,10 +715,13 @@ Mit einem Testkonto ohne produktive Empfänger prüfen:
 
 ## 6. ECal: Kalender, Aufgaben und Memos
 
-- Portable Basis: Commit `d6e7dcc` vereinheitlicht Kalenderansichten über
-  RRULE/RDATE/EXDATE, Mehrtagstermine, exklusive DTEND-Grenzen und validierte
-  Zeitzonen/Quellen; Aufgaben bieten kompaktes Quick-Edit für Status,
-  Priorität, Fälligkeit und Kategorien. Native ECal-Wirkung bleibt offen.
+- Portable Basis: Historischer Commit `d6e7dcc` vereinheitlicht
+  Kalenderansichten über RRULE/RDATE/EXDATE, Mehrtagstermine, exklusive
+  DTEND-Grenzen und validierte Zeitzonen/Quellen; der aktuelle uncommitted
+  Verification-Snapshot umfasst 482/482 Tests und `GW-TASK-FILTERS` ergänzt
+  Filter-/Advanced-/Persistenzverträge. Aufgaben bieten kompaktes Quick-Edit
+  für Status, Priorität, Fälligkeit und Kategorien. Native ECal-Wirkung bleibt
+  offen.
 
 - `[~]` Native ECal-Brücke auf Linux gegen echte Kalender-, Aufgaben- und
   Memo-Quellen kompilieren und verbinden.
@@ -695,6 +737,13 @@ Mit einem Testkonto ohne produktive Empfänger prüfen:
   schreibgeschützte Quellen, UID-Konflikte und parallele Änderungen abgenommen
   werden. Dabei dürfen lokale app-eigene Komponenten nicht doppelt erscheinen,
   wenn EDS gleichzeitig verfügbar ist.
+- `[ ]` `GW-TASK-FILTERS` gegen echte ECal-Quellen abnehmen: Today und
+  Next-7/30/365, no-due, starts/due, completed/uncompleted, status, category
+  und attachment müssen dieselben Records wie Evolution liefern. EDS-Query-
+  Grenzen, Serverfehler, Zeitzone/DST, Monitor-Refresh und die persistierte
+  Quellen-/Kategorienauswahl sind getrennt zu protokollieren; der portable
+  Query-AST, zwei abgeschlossene unabhängige Reviews und 482/482 Tests sind
+  dafür nur Vorbereitung.
 - `[ ]` Wiederholungen, Zeitzonen, Teilnehmer, iTIP/iMIP, freie Zeit,
   Einladungsantworten, private Termine, Kategorien, Anhänge und Alarme mit
   realen EDS-Kalendern testen. Dabei auch prüfen, dass die portable UI beim
@@ -727,9 +776,12 @@ Mit einem Testkonto ohne produktive Empfänger prüfen:
 
 ## 7. EBook: Kontakte, GAL und Adressbücher
 
-- Portable Basis: Commit `d6e7dcc` liefert kompakte quellenneutrale
-  Liste/Detailansicht, Mehrwortsuche, Kategorien und eine begrenzte
-  Dublettenerkennung; echte EBook-/GAL-Identität und Mutationen bleiben offen.
+- Portable Basis: Historischer Commit `d6e7dcc` liefert kompakte
+  quellenneutrale Liste/Detailansicht, Mehrwortsuche, Kategorien und eine
+  begrenzte Dublettenerkennung; der aktuelle uncommitted Verification-Snapshot
+  umfasst 482/482 Tests und `GW-CONTACT-LISTS` ergänzt portable vCard-3/4-
+  Listen mit Member-UI. Echte EBook-/GAL-Identität und Mutationen bleiben
+  offen.
 
 - `[~]` Native EBook-Brücke auf Linux gegen lokale, LDAP-, GOA- und – soweit
   verfügbar – Exchange-Adressbücher kompilieren und verbinden.
@@ -739,6 +791,12 @@ Mit einem Testkonto ohne produktive Empfänger prüfen:
   unbekannten vCard-Erweiterungen, paralleler EDS-Änderung und einem Fehler
   zwischen Modify und Remove testen; ein partieller Remote-Fehler muss sichtbar
   bleiben und darf nicht als atomar oder rückgängig machbar erscheinen.
+- `[ ]` `GW-CONTACT-LISTS` gegen lokale, LDAP-, GOA- und Exchange-Adressbücher
+  abnehmen: vCard-3-Evolution-Listen und vCard-4-`KIND:group`/`MEMBER`, lokale,
+  externe und verschachtelte Mitglieder, ungültige Member, Anzeigenamen,
+  Member-UID-Auflösung, ACLs und parallele Änderungen prüfen. Atomare portable
+  Store-Tests, zwei abgeschlossene unabhängige Reviews und 482/482 Tests
+  ersetzen weder EBook-Capabilities noch Provider-/Linux-Visualabnahme.
 - `[ ]` Native EBook-Feldabdeckung prüfen: mehrere Namen, E-Mail-Adressen,
   Telefone, Adressen, Organisation, Kategorien, Notizen, Fotos, Geburtstage,
   strukturierte Zusatzfelder und benutzerdefinierte Felder. Der portable
@@ -1040,7 +1098,12 @@ Evolution Data Server: 3.60.2
 Camel: 3.60.2
 Kontotyp und Authentifizierung: EDS/Camel-Smoke-Konto; GOA-/Passwortpfad
   teilweise verifiziert, Ablauf-/Fehlerfälle bleiben offen
-Commit (letzter verifizierter Stand vor dieser Roadmap-Erweiterung): 9a565df
+Portable Vorbedingung: uncommitted Verification-Snapshot; normaler und
+  erzwungener eds_camel_bridge-Cargo-Check, Formatprüfung, git diff --check,
+  strikte Schema-Prüfung und 482/482 Tests außerhalb der Sandbox grün; beide
+  unabhängigen Reviews abgeschlossen; die drei aktuellen Pakete BLOCKED_LINUX
+Commit für den konkreten Linux-Lauf: vor dem Lauf eintragen; dieser
+  Roadmap-/Auditlauf hat keinen Commit und keinen Push erzeugt
 Build-Befehl: cargo check --workspace && cargo test --workspace
 Testkonto / Testordner: EDS-/Camel-Smoke-Konto; vollständige Kontolebenszyklus-
   und Fehlerabnahme bleibt in den Abschnitten 2–5 offen

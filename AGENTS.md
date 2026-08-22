@@ -110,6 +110,15 @@ When the user requests a durable behavior change, record it here or in the relev
   critical path, and integrate each result separately through review and
   verification. Agent worktrees are temporary implementation machinery, not
   additional product branches; `main` remains the only maintained branch.
+- The agent-manager workflow is explicit: the main agent coordinates the queue,
+  assigns Luna-Max subagents disjoint implementation paths, reviews each
+  report and diff, runs the relevant verification, and is the only agent that
+  integrates, commits, or pushes. Luna-Max subagents stay within their assigned
+  paths and do not edit roadmaps/DOX files or commit/push on their own.
+- A portable green test run is evidence for the portable slice only. Keep
+  independent review, Linux, visual, EDS, provider, and desktop acceptance
+  visibly open until their direct evidence exists; do not convert these rests
+  into `DONE` or completion percentages.
 
 ## Child DOX Index
 
@@ -118,5 +127,9 @@ When the user requests a durable behavior change, record it here or in the relev
 - `ROADMAP.md` owns complete product scope and verified parity status.
 - `ROADMAP_EXECUTION.md` owns atomic priorities and acceptance criteria.
 - `ROADMAP_LINUX.md` owns Linux-/EDS-only implementation and acceptance.
+- `docs/UPSTREAM_GROUPWARE_PARITY_AUDIT.md` owns the static GTK3↔GTK4
+  groupware evidence matrix, portable package cuts, and Linux boundaries.
+- `docs/UPSTREAM_MAIL_SHELL_PARITY_AUDIT.md` owns the static upstream
+  mail/shell action matrix and the strongest next mail-surface packages.
 - Other root-owned files include `README.md`, `LICENSE`, `banner.jpg`,
   `video-thumbnail.jpg`, and root-level project documentation.

@@ -15,6 +15,9 @@ Die vollständige Produktspezifikation und der belegte Ist-Stand bleiben in
   Paketabnahme kann nur auf einem Linux-System erfolgen?
 - `AGENTS.md` und die untergeordneten DOX-Dateien beantworten: Welche dauerhaften
   Arbeits- und Architekturverträge gelten beim Ändern des Projekts?
+- `docs/UPSTREAM_GROUPWARE_PARITY_AUDIT.md` und
+  `docs/UPSTREAM_MAIL_SHELL_PARITY_AUDIT.md` liefern statische Upstream-
+  Belege und schneiden daraus portable Pakete sowie ihre Linux-Grenzen.
 
 Keines dieser Dokumente ersetzt ein anderes. Ein Ausführungspunkt darf den
 Produktumfang aus `ROADMAP.md` nicht verkleinern.
@@ -109,7 +112,8 @@ und erweitert dessen Schreibbereich nur nach dokumentierter Kollisionsprüfung.
 | 8 | `P2-MIGRATION-001A` | `P2-MIGRATION-*` | `src/services/migration_service.rs` | keine | DONE | portable Werte, Warnungen und Geheimnis-Redaktion getestet |
 | 9 | `P0-STAB-001B` | `P0-STAB-001` | `src/views/mail_page.rs` | `P0-STAB-001A` | DONE | Einzel/Batch/Undo/Redo asynchron, abbrechbar und bestätigungsbasiert |
 | 10 | `P0-MAIL-001C` | `P0-MAIL-001` | `src/views/mail_viewer.rs` | `P0-MAIL-001A`, `P0-MAIL-001B` | DONE | Viewer-Fallback und nachrichtenbezogene Remote-Freigabe integriert |
-| 11 | `P0-MAIL-001D` | `P0-MAIL-001` | `src/views/mail_viewer.rs`, `src/views/mail_page.rs`, `src/models/mail_message.rs`, `src/services/inline_content_service.rs` | `P0-MAIL-001A`, `P0-MAIL-001B` | BLOCKED_LINUX | Latest-Wins-Worker, CID/Anlagen ohne GTK-Kopie, Cache-/Stale-Gates grün; WebKitGTK-Churn-Abnahme offen |
+| 11 | `P0-MAIL-001D` | `P0-MAIL-001` | `src/views/mail_viewer.rs`, `src/views/mail_page.rs`, `src/models/mail_message.rs`, `src/services/inline_content_service.rs` | `P0-MAIL-001A`, `P0-MAIL-001B` | BLOCKED_LINUX | Render-Worker und Body-Suche portabel belegt; WebKitGTK-Churn und native Providerwirkung bleiben Linux-only |
+| 11a | `P0-MAIL-001D-SEARCH` | `P0-MAIL-001D` | `src/views/mail_page.rs`, `src/models/mail_message.rs` | `P0-MAIL-001A`, `P0-MAIL-001B` | BLOCKED_LINUX | Worker-Bodytext, vollständige Identität, Crypto-Generation und Filterinvalidierung portabel mit 482/482 Tests und zwei abgeschlossenen Reviews belegt; Provider-/Linux-Abnahme offen |
 | 12 | `P0-MAIL-002A` | `P0-MAIL-002` | `src/views/mail_page.rs`, `src/style.css` | `P0-STAB-001B` | IN PROGRESS | kompakter Evolution-Ordnerbaum ohne Kontoicon, lesbare Tabellenschrift, Icon-Fallbacks und dezente Unread-Zähler |
 | 12a | `P0-MAIL-002A-SOURCE` | `P0-MAIL-002A` | `src/views/mail_page.rs`, `src/window.rs`, `src/application.rs`, `src/services/{camel_mail_service,exchange_service}.rs` | `P0-MAIL-002A` | BLOCKED_LINUX | `Ctrl+U`/Menüs, exakter Worker-Abruf, sofortiges wiederverwendbares Lade-/Fehlerfenster sowie Abbruch- und Request-Identitätsgates portabel grün; Byte-/Fenster-Laufzeitabnahme offen |
 | 12b | `P0-MAIL-002A-HEADERS` | `P0-MAIL-002A` | `src/views/mail_page.rs`, `src/dialogs/preferences_dialog.rs`, `src/services/{camel_mail_service,exchange_service,mail_store_service,settings_service,backup_service,migration_service,vcard_service}.rs`, `data/org.gnome.Evolution4.gschema.xml` | `P0-MAIL-002A-SOURCE` | BLOCKED_LINUX | vollständige und normale Kopfzeilenansicht, Evolution-`show-headers`-Editor, `Face`-Bild, Graph-Headerübernahme, Persistenz/Migration/Backup und portable Gates grün; Provider-/Dichte-Abnahme offen |
@@ -118,9 +122,14 @@ und erweitert dessen Schreibbereich nur nach dokumentierter Kollisionsprüfung.
 | 15 | `P0-COMP-001B` | `P0-COMP-001` | `src/dialogs/compose_dialog.rs`, `src/services/draft_store_service.rs` | `P0-COMP-001A` | DONE | Autosave, Recovery, pro-Draft-Sendelock und revisionssicheres Cleanup integriert |
 | 16 | `P0-RECOVERY-001A` | `P0-RECOVERY-001` | `src/services/eds_service.rs`, `src/services/eds_source_cache_service.rs` | Pakete 9–15 | DONE | Offline/Online, persistenter Backoff, atomarer Cache und Neustart portabel getestet |
 | 17 | `P1-CAL-001B` | `P1-CAL-001` | `src/views/calendar_page.rs` | `P1-CAL-001A` | DONE | Ansichten verwenden gemeinsame Recurrence-/Zeitzonenregeln |
-| 18 | `P1-CONTACT-001B` | `P1-CONTACT-001` | `src/views/contacts_page.rs` | `P1-CONTACT-001A` | DONE | kompakter quellenstabiler Kontaktworkflow und Dublettenpfad |
-| 19 | `P1-TASK-001A` | `P1-TASK-001` | `src/views/tasks_page.rs` | keine | DONE | Quick-Edit, Filter, Suche, Sortierung und Fehlerzustände integriert |
+| 18 | `P1-CONTACT-001B` | `P1-CONTACT-001` | `src/views/contacts_page.rs` | `P1-CONTACT-001A` | IN PROGRESS | `GW-CONTACT-LISTS` ist `BLOCKED_LINUX`; weitere Kontaktaktionen/-suche sowie EBook-/Provider-Reste halten das Elternziel offen |
+| 19 | `P1-TASK-001A` | `P1-TASK-001` | `src/views/tasks_page.rs` | keine | IN PROGRESS | Task-CRUD ist belegt und `GW-TASK-FILTERS` ist `BLOCKED_LINUX`; weitere Taskpad-/Editor- und EDS-Reste halten das Elternziel offen |
 | 20 | `P1-MAIL-FIND` | `P0-MAIL-002A` | `src/views/{mail_page,mail_viewer}.rs`, `src/window.rs`, `src/application.rs` | `P0-MAIL-001C` | BLOCKED_LINUX | Evolution-Menü/Shortcut, kompakte Suchleiste, Unicode-Fallback, WebKit-FindController, Wrap und stale Generationsgates portabel grün; WebKit-Laufzeitabnahme offen |
+| 21 | `MAIL-PRINT-ACTION` | `P0-MAIL-002` | `src/window.rs`, `src/views/mail_page.rs`, `src/views/mail_viewer.rs` | `P0-MAIL-002A` | READY | Liste/Reader-Auswahl, Print-/Preview-Jobmodell und `Ctrl+P`; GtkPrint/Portal, PDF, WebKitGTK und Seitenlayout separat abnehmen |
+| 22 | `MAIL-TRANSPORT-COMMANDS` | `P0-MAIL-002` | `src/application.rs`, `src/window.rs`, `src/services/camel_mail_service.rs`, `src/services/exchange_service.rs` | `P0-COMP-001` | READY | getrennte Send-/Receive-/All-/Stop-/Offline-Kommandos und Statusmodell; Camel/EDS/Auth/Offline-Queue bleiben offen |
+| 23 | `COMPOSER-ACTION-SURFACE` | `P0-COMP-001` | `src/dialogs/compose_dialog.rs`, `src/services/draft_store_service.rs` | `P0-COMP-001B` | READY | Composer-Menü/Toolbar, Draft-/Save-as-/Print-/Close-/New-Actions und per-message Optionen; Portal/Crypto/EDS-Identität bleiben offen |
+| 24 | `GW-TASK-FILTERS` | `P1-TASK-001` | `src/views/tasks_page.rs`, `src/services/settings_service.rs`, `data/org.gnome.Evolution4.gschema.xml` | `P1-TASK-001A` | BLOCKED_LINUX | Upstream-Filter/Advanced/Persistenz portabel mit 482/482 Tests und zwei abgeschlossenen Reviews belegt; EDS-Query-/Providersemantik offen |
+| 25 | `GW-CONTACT-LISTS` | `P1-CONTACT-001` | `src/services/vcard_service.rs`, `src/services/contact_store_service.rs`, `src/dialogs/contact_dialog.rs`, `src/views/contacts_page.rs` | `P1-CONTACT-001B` | BLOCKED_LINUX | vCard 3/4, Member-Resolution, UI und atomarer Storepfad portabel mit 482/482 Tests und zwei abgeschlossenen Reviews belegt; EBook-Capabilities/ACL/Provider offen |
 
 ### Parallelisierungsregeln
 
@@ -135,6 +144,11 @@ und erweitert dessen Schreibbereich nur nach dokumentierter Kollisionsprüfung.
   ausgeführte Tests und bekannte Restarbeit. Reine Analyse schließt kein Paket.
 - Ein fehlender Agentenslot blockiert die Warteschlange nicht; der Hauptagent
   bearbeitet dann das erste startbare Paket selbst.
+- Der Hauptagent ist der Agent-Manager: Er koordiniert die Reihenfolge,
+  weist Luna-Max-Subagenten disjunkte Schreibpfade zu, reviewt deren Diffs und
+  Berichte, führt die Gates aus und integriert erst danach. Subagenten
+  implementieren nur ihren zugewiesenen Pfad; Roadmaps/DOX, Commit und Push
+  bleiben beim Hauptagenten.
 
 ## 5. P0 — täglicher Mailbetrieb und Stabilität
 
@@ -195,7 +209,8 @@ und erweitert dessen Schreibbereich nur nach dokumentierter Kollisionsprüfung.
 
 ### P0-MAIL-001D — HTML-Rendering vom GTK-Hauptthread entkoppeln
 
-- Status: `BLOCKED_LINUX`
+- Status: `BLOCKED_LINUX` (Renderpfad und `P0-MAIL-001D-SEARCH` sind portabel
+  belegt; WebKitGTK-/Linux-Churn und native Providerwirkung bleiben offen)
 - Quelle: `ROADMAP.md`, aktueller atomarer Mail-Kernblock
 - Schreibbereich: `src/views/mail_viewer.rs`, `src/views/mail_page.rs`,
   `src/models/mail_message.rs` und die portablen HTML-/Inline-/Metadaten-
@@ -236,8 +251,41 @@ und erweitert dessen Schreibbereich nur nach dokumentierter Kollisionsprüfung.
   Die CID-Auflösung kodiert nur noch tatsächlich in URI-Attributen
   referenzierte Inline-Bilder und überspringt unreferenzierte Payloads vor der
   Base64-Arbeit.
-  Format, Schema, normaler und erzwungener `eds_camel_bridge`-Check sowie
-  423/423 Workspace-Tests sind grün; offen bleibt `LINUX-P0-MAIL-003`.
+  Format, strikte Schema-Prüfung, `git diff --check`, normaler und erzwungener
+  `eds_camel_bridge`-Cargo-Check sowie der vollständige Lauf außerhalb der
+  Sandbox mit 482/482 Workspace-Tests sind grün; beide unabhängigen Reviews
+  sind abgeschlossen. Offen bleiben `LINUX-P0-MAIL-003` und die
+  Provider-Body-Suche.
+
+### P0-MAIL-001D-SEARCH — Worker-vorbereitete Body-Suche
+
+- Status: `BLOCKED_LINUX`
+- Quelle: `P0-MAIL-001D` und der aktuelle Mail-Viewer-/Modellvertrag aus
+  `src/views/AGENTS.md` und `src/models/AGENTS.md`
+- Schreibbereich: `src/views/mail_page.rs`, `src/models/mail_message.rs`;
+  keine native EDS-/Camel-Brücke in diesem Paket.
+- Lieferumfang:
+  - Suchbarer Klartext wird im Worker aus dem HTML-Körper vorbereitet und als
+    immutable Cache an die GTK-Modelle übergeben; die Filterstrecke bereitet
+    auf Auswahl niemals synchron Bodytext vor.
+  - Cache-Schlüssel und Crypto-Ergebnisse verwenden die vollständige
+    Nachrichtenidentität plus Generation, damit gleiche IDs in Ordnern oder
+    Backends nicht stale Ergebnisse akzeptieren.
+  - Camel-first-Merge bei identischen Datensätzen, explizite Invalidation nach
+    Body-/Entschlüsselungsersatz und `Different`-Filterbenachrichtigung sind
+    Bestandteil des Pakets.
+- Abnahme:
+  - Pure Tests für worker-vorbereiteten Kleinschreib-/Plaintext, Camel-first-
+    Cache, Identitätskollisionen, Crypto-Stale-Gates und Filterinvalidierung.
+  - `git diff --check`, `cargo fmt --all -- --check`,
+    `cargo check --workspace --locked` und
+    `cargo test --workspace --locked --no-fail-fast --quiet`.
+  - Der vollständige Lauf außerhalb der Sandbox ist mit 482/482 Tests grün;
+    beide unabhängigen Reviews sind abgeschlossen. Das Paket ist wegen der
+    folgenden Linux-/Provider-Reste `BLOCKED_LINUX`, nicht `DONE`.
+- Linux-/Provider-Rest: serverseitige Body-Suche, Camel-/Graph-Ergebnisgrenzen,
+  WebKit-/Reader-Churn und reale EDS-/Providerreaktionen bleiben offen und
+  werden über `LINUX-P0-MAIL-001`/`LINUX-P0-MAIL-003` abgenommen.
 
 ### P0-MAIL-002 — klassischen Evolution-Mailworkflow vervollständigen
 
@@ -303,7 +351,9 @@ und erweitert dessen Schreibbereich nur nach dokumentierter Kollisionsprüfung.
     `cargo test --workspace --locked --no-fail-fast --quiet` bestehen.
   - Linux-Referenzvergleich für Icons, Dichte und bestätigte Counter besteht;
     siehe `LINUX-P0-MAIL-003`.
-- Evidenz: Die portablen Gates einschließlich 450 Workspace-Tests bestehen.
+- Evidenz: Die portablen Gates einschließlich 482 Workspace-Tests bestehen;
+  beide unabhängigen Reviews der aktuellen angrenzenden Slices sind
+  abgeschlossen.
   Der zeilengebundene Sekundärklick selektiert vor
   dem Öffnen des Kontextmenüs exakt seine Nachricht; Label-, Spam- und
   Nicht-Spam-Aktionen sind dort und im Nachricht-Hauptmenü erreichbar.
@@ -372,7 +422,7 @@ und erweitert dessen Schreibbereich nur nach dokumentierter Kollisionsprüfung.
   Wirkung und Linux-Referenzvergleich ist kein `DONE`-Beleg.
 - Evidenz: Schema-Prüfung, Default-/Roundtrip-/Reset-Tests, sofortige
   Sicherheitszeilen-Bindung, Headereditor, Backup-/Migrationspfad,
-  Workspace-Check und 450/450 Tests sind grün;
+  Workspace-Check und 482/482 Tests sind grün;
   die sichtbare Linux-Abnahme in `LINUX-P0-MAIL-003` bleibt offen.
 
 ### P0-SYNC-001 — Mail-Laden, Paging und Aktualisierung stabilisieren
@@ -478,6 +528,85 @@ und erweitert dessen Schreibbereich nur nach dokumentierter Kollisionsprüfung.
   quarantänisiert. Pure Cache-/Backoff-/Transitions-Tests sind grün; echte
   EDS-/GOA-/Suspend-Abnahme bleibt `LINUX-P0-RECOVERY-001`.
 
+## 5a. Audit-abgeleitete atomare Pakete
+
+Die beiden Audits sind statische Quellen-/UI-Vergleiche. Sie liefern die
+kleinsten nächsten Implementierungszuschnitte, aber keine Laufzeit-, Provider-
+oder visuellen Linux-Belege.
+
+### MAIL-PRINT-ACTION
+
+- Status: `READY`; P0 vor Groupware-Folgearbeiten.
+- Ziel: Eine gemeinsame Print-/Preview-Aktion für aktuelle Auswahl und
+  Reader, inklusive stabiler Render-/Jobdaten, `Ctrl+P`, sichtbarem Loading,
+  Abbruch und Fehlerpfad.
+- Portable Abnahme: Auswahl-Snapshot, deterministisches Printmodell,
+  Reihenfolge/Encoding und bestehende-Datei-Sicherheit testen.
+- Linux-Rest: GtkPrint/Portal, PDF-Ziel, HTML/WebKitGTK, Seitenumbrüche und
+  visuelle Evolution-Nähe.
+
+### MAIL-TRANSPORT-COMMANDS
+
+- Status: `READY`; nach `MAIL-PRINT-ACTION` bzw. parallel bei disjunktem
+  Schreibbereich.
+- Ziel: `mail-send-receive`, `mail-receive-all`, `mail-send-all`, `mail-stop`
+  und Offline-Zustand als getrennte Action-IDs mit nachvollziehbarem Status,
+  Cancellation und Fehler-/Fortschrittsmodell; `F12` muss den vorgesehenen
+  Send-/Receive-Weg erreichen.
+- Portable Abnahme: Action-Sensitivität, Stop/Cancel, Offline-Queue-Modell und
+  Statusübergänge mit Fehler-/Retry-Fixtures.
+- Linux-Rest: Camel/EDS-Transport, Authentifizierung, Provider-Queue und echte
+  Fortschritts-/Fehlerantworten.
+
+### COMPOSER-ACTION-SURFACE
+
+- Status: `READY`; abhängig von der bestehenden Composer-Recovery-Strecke.
+- Ziel: Upstream-kompatible Composer-Menüs/Toolbars für Send, Draft, Save-as,
+  Print, Close/New sowie per-Nachricht Receipt, Priority, Charset,
+  Sign/Encrypt und klare Draft-Zustände.
+- Portable Abnahme: Tastatur-/Menüpfade, Draft-Recovery, Doppelsendeschutz,
+  HTML/plain, Anlage, Option-Serialization und Abbruch.
+- Linux-Rest: WebKitGTK-/Print-Portal, EDS-Identitäten, Crypto-Backends und
+  native Draft-/Sent-/Transportwirkung.
+
+### GW-TASK-FILTERS
+
+- Status: `BLOCKED_LINUX`; portabler Slice mit 482/482 Tests und zwei
+  abgeschlossenen unabhängigen Reviews.
+- Ziel: Upstream-Filter und Advanced-Suche als persistierbarer Query-Vertrag
+  für Text, Today/Next-7/30/365, no-due, completed/uncompleted, status,
+  starts/due, category und attachments. Unbekannte Importwerte werden als
+  begrenzte Teilmenge kenntlich gemacht.
+- Portable Evidenz: typed AST, GSettings-Normalisierung/Migration,
+  kombinierbare Predikate, live offene Ansicht, Filtertruth-table und DST-
+  Grenztests.
+- Linux-Rest: EDS-S-Expression/Range-Semantik, Provider-Suchgrenzen,
+  Multi-Source-Refresh und upstream-Taskpad-/Editor-Aktionen.
+
+### GW-CONTACT-LISTS
+
+- Status: `BLOCKED_LINUX`; portabler Slice mit 482/482 Tests und zwei
+  abgeschlossenen unabhängigen Reviews.
+- Ziel: Kontaktlisten mit vCard-3-Evolution-Properties und vCard-4-
+  `KIND:group`/`MEMBER`, lokalen/externen/verschachtelten Mitgliedern,
+  Anzeigenamen, Listenoptionen und sichtbarer Invalidierung.
+- Portable Evidenz: Parser-/Serializer-Roundtrips für vCard 3/4, Member-
+  Resolution, invalid-member reporting, member-aware GTK-Dialog und atomarer
+  Store-/Rollbackpfad.
+- Linux-Rest: EBook-Listen-Capabilities, ACLs, serverseitige Member-UIDs,
+  Provider-Fehler, Synchronisation und visuelle/Map-/Print-Integration.
+
+### Weitere Groupware-Lücken aus dem Audit
+
+Als nächste disjunkte Folgepakete werden nach den beiden Reviews priorisiert:
+`GW-CAL-VIEWS`, `GW-CAL-SHELL`, `GW-CAL-ACTIONS`, `GW-EVENT-EDITOR`,
+`GW-TASK-SURFACE`, `GW-TASK-EDITOR`, `GW-MEMO-SURFACE`, `GW-MEMO-EDITOR`,
+`GW-MEMO-FILTERS`, `GW-CONTACT-ACTIONS`, `GW-CONTACT-SEARCH`,
+`GW-SOURCE-SELECTOR`, `GW-SOURCE-MGMT`, `GW-ALARMS`, `GW-REMINDER-RUNTIME`,
+`GW-IMPORT-FRAMEWORK` und `GW-EXPORT-PRINT`. Jedes Paket benötigt einen
+eigenen portablen Daten-/UI-Vertrag, negative Tests und einen expliziten
+Linux-/EDS-/Desktop-Handoff.
+
 ## 6. P1 — tägliche Groupware-Funktionen
 
 ### P1-CAL-001 — Kalenderworkflow
@@ -494,7 +623,7 @@ und erweitert dessen Schreibbereich nur nach dokumentierter Kollisionsprüfung.
 
 ### P1-CONTACT-001 — Kontakte und Empfänger
 
-- Status: `READY`
+- Status: `IN PROGRESS`
 - Ziel: vollständiger täglicher Kontakt-CRUD, Suche, Kategorien, Fotos,
   Dubletten und verlustfreier vCard-Roundtrip; Composer-Autocomplete und GAL
   verwenden denselben ausgewählten Kontaktbestand.
@@ -502,18 +631,25 @@ und erweitert dessen Schreibbereich nur nach dokumentierter Kollisionsprüfung.
   Abschnitt 7 von `ROADMAP_LINUX.md`.
 - Evidenz: `P1-CONTACT-001A/B` in Commit `d6e7dcc` beziehungsweise `10b0321`:
   kompakte quellenneutrale Liste/Detailansicht, Mehrwortsuche, Kategorien und
-  sicher begrenzter Dublettenpfad; Linux-EBook/GAL-Abnahme offen.
+  sicher begrenzter Dublettenpfad. Der aktuelle uncommitted Slice
+  `GW-CONTACT-LISTS` ergänzt vCard-3/4-Mitglieder und Member-UI; beide
+  unabhängigen Reviews sind abgeschlossen und das Paket ist `BLOCKED_LINUX`.
+  Weitere Kontaktflächen sowie Linux-EBook/GAL-/ACL-Abnahme bleiben offen.
 
 ### P1-TASK-001 — Aufgaben, Memos und Erinnerungen
 
-- Status: `READY`
+- Status: `IN PROGRESS`
 - Ziel: VTODO/VJOURNAL-CRUD, Status, Priorität, Fälligkeit, Kategorien,
   Sortierung, Suche, Alarme, Snooze und Neustartverhalten entsprechen dem
   Kalender-/Quellenmodell.
 - Abnahme: portable Store-/Reminder-Tests plus Linux-ECal-Handoff.
 - Evidenz: `P1-TASK-001A` in Commit `d6e7dcc`: Status, Priorität, Fälligkeit
   und Kategorien sind kompakt editierbar; Suche/Filter/Sortierung werden nach
-  Mutationen aktualisiert. Memo-/Alarm- und Linux-ECal-Parität bleibt offen.
+  Mutationen aktualisiert. Der aktuelle uncommitted Slice `GW-TASK-FILTERS`
+  ergänzt Upstream-Filter/Advanced/Persistenz und ist mit 482/482 Tests sowie
+  zwei abgeschlossenen unabhängigen Reviews portabel belegt. Das Paket ist
+  `BLOCKED_LINUX`; Memo-/Alarm- und weitere Taskpad-Parität bleiben als
+  separate Arbeiten offen.
 
 ### P1-SEARCH-001 — Suche, Suchordner und Filter
 
@@ -525,8 +661,9 @@ und erweitert dessen Schreibbereich nur nach dokumentierter Kollisionsprüfung.
   native CamelVee-/CamelFilterDriver-Abnahme auf Linux.
 - Evidenz: Manuelle Filterausführung (`Ctrl+Y` / `Message -> Apply Filters`)
   sowie Mehrfachregel-Filterlauf (`run_all_active_filters`) und vFolder-
-  Verwaltung in der Ordnerleiste portabel integriert. 449/449 Workspace-Tests
-  und `cargo fmt` bestanden; native CamelVee/FilterDriver-Laufzeitabnahme auf
+  Verwaltung in der Ordnerleiste portabel integriert. Der aktuelle portable
+  Arbeitsstand umfasst 482/482 Workspace-Tests; native
+  CamelVee/FilterDriver-Laufzeitabnahme auf
   Linux bleibt `LINUX-P1-SEARCH-001`.
 
 ## 7. P2/P3 — Vollparität nach stabilen Kernabläufen
@@ -567,6 +704,21 @@ Verbleibende Abweichungen: keine
 
 Ein Eintrag mit verbleibender Pflichtabweichung darf nicht `DONE` sein; dafür
 wird ein konkreter Folgepunkt angelegt und der Elternpunkt bleibt offen.
+
+### Arbeitsstand 2026-08-22 — uncommitted Verification-Snapshot
+
+- Aktuelle portable Slices: `P0-MAIL-001D-SEARCH`, `GW-TASK-FILTERS` und
+  `GW-CONTACT-LISTS`.
+- Portable Evidenz: normaler und erzwungener `eds_camel_bridge`-Cargo-Check,
+  Formatprüfung, `git diff --check`, strikte Schema-Prüfung und vollständiger
+  Testlauf außerhalb der Sandbox mit 482/482 Workspace-Tests sind grün; beide
+  unabhängigen Reviews sind abgeschlossen.
+- Paketstatus: Alle drei aktuellen Slices sind `BLOCKED_LINUX`.
+- Offene Grenzen: Linux-/visuelle-/EDS-/EBook-/ECal-/Camel-/Provider- und
+  Desktop-Abnahme bleibt in `ROADMAP_LINUX.md` offen; kein Slice wird daraus
+  als `DONE` oder als Vollparität gemeldet.
+- Commit/Push: für diesen Verification-Snapshot nicht vorhanden und nicht
+  ausgeführt.
 
 ### Commit `10b0321` — portable Kernrunde
 
