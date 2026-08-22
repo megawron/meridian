@@ -29,14 +29,16 @@ markieren. Ein Linux-Agent beginnt mit dem ersten offenen P0-Handoff, dessen
 zugehöriger portabler Punkt vorbereitet ist. Vor jedem Lauf sind Commit,
 Distribution, Bibliotheksversionen und Kontotyp zu protokollieren.
 
-Der aktuelle uncommitted Arbeitsstand umfasst als zweite portable Runde
-`MAIL-PRINT-ACTION`, `COMPOSER-ACTION-SURFACE` und `GW-ALARMS`. Cargo-Format-/
-Check-, strikte Schema- und Diff-Prüfung sind grün; ein vollständiger Lauf hat
-504/504 Workspace-Tests erfolgreich belegt. Spätere Sandbox-Wiederholungen
-scheiterten ausschließlich an 18 Graph-Loopbacktests. Die unabhängigen Reviews
-sind abgeschlossen; alle drei Pakete stehen auf `BLOCKED_LINUX`. Das ist nur
-eine portable Vorbedingung. Kein Audit-Slice, kein visueller Befund und kein
-EDS-/Provider-Rest wird deshalb als `[x]` geführt.
+Der aktuelle uncommitted Arbeitsstand umfasst `MAIL-TRANSPORT-COMMANDS`,
+`SET-01` und den eigenen atomaren `GW-MEMO-EDITOR`; alle drei portablen
+Implementierungen sind unabhängig reviewt und stehen wegen des nativen/
+provider-/Desktop-Rests auf `BLOCKED_LINUX`. Cargo-Format-/Check-, strikte
+Schema- und Diff-Prüfung, normaler und `eds_camel_bridge`-Cargo-Check sind
+grün; der finale unsandboxed Workspace-Testlauf hat 547/547 Tests bestanden.
+Ein früherer sandboxed Lauf konnte 18 Graph-Loopback-Mockserver nicht binden
+und ist nicht der finale Testbeleg. Das ist nur eine portable Vorbedingung.
+Kein Audit-Slice, kein visueller Befund und kein EDS-/Provider-Rest wird deshalb
+als `[x]` geführt.
 
 ### Audit-abgeleitete Linux-Handoffs
 
@@ -44,11 +46,12 @@ EDS-/Provider-Rest wird deshalb als `[x]` geführt.
   `Ctrl+P` prüfen; GtkPrint/Portal-Fehler, Abbruch, HTML/WebKitGTK-
   Seitenumbrüche und visuelle Übereinstimmung dokumentieren. Der portable
   Snapshot-/Job-/Cancel-Vertrag ist abgeschlossen und nicht erneut zu bauen.
-- `[ ]` `MAIL-TRANSPORT-COMMANDS`: Send/Receive/All/Stop und Offline mit
-  `F12`, echter Camel-/EDS-Authentifizierung, Queue, Fortschritt, Abbruch und
-  Providerfehlern prüfen. `win.refresh-mail`/`F5` darf die getrennten
-  Richtungen nicht wieder als eine Aktion ausgeben. Diese Abnahme beginnt erst,
-  nachdem das `READY`-Paket seine portablen Action-/Statusgates erfüllt hat.
+- `[ ]` `MAIL-TRANSPORT-COMMANDS`: Die portablen Action-/Statusgates sind
+  abgeschlossen und unabhängig reviewt. Unter Linux Send/Receive/All/Stop und
+  Offline mit `F12`, echter Camel-/EDS-Authentifizierung, provider-bestätigter
+  Queue, Live-Fortschritt, Abbruch und Providerfehlern prüfen.
+  `win.refresh-mail`/`F5` darf die getrennten Richtungen nicht wieder als eine
+  Aktion ausgeben.
 - `[ ]` `COMPOSER-ACTION-SURFACE`: Menü-/Toolbar-/Shortcutpfade für Send,
   Draft, Save-as, Print, Close/New, Receipt, Priority, Charset, Sign/Encrypt
   sowie Recovery gegen EDS-Identität, Drafts/Sent, WebKitGTK, Portal und
@@ -58,12 +61,22 @@ EDS-/Provider-Rest wird deshalb als `[x]` geführt.
   Factory-Neustart, absolute/relative Trigger, `RELATED`, Repeat/Duration und
   Zeitzone/DST abnehmen. AUDIO/EMAIL/PROCEDURE/Unknown dürfen auch auf Linux
   nie vom portablen Scheduler ausgeführt werden.
-- `[ ]` `GW-REMINDER-RUNTIME`: erst nach Abschluss des `READY`-Pakets die
+- `[ ]` `GW-MEMO-EDITOR`: Der portable Produktionsschnitt umfasst exakt
+  `src/services/calendar_store_service.rs` und `src/views/memos_page.rs`;
+  der separate test-only Cross-Surface-RFC5545-Test liegt in
+  `src/views/tasks_page.rs`. Der Schnitt ist abgeschlossen und unabhängig
+  reviewt. Unter Linux EDS/VJOURNAL-Capabilities,
+  ACLs, Provider-Attachment-Transfer, Change-Monitor/Factory-Restart sowie
+  Open-URL-/Print-/Desktop-Aktionen prüfen; Save/Discard/Cancel, stale/confirmed
+  mutation, Export und der 75-Oktett-/unfolded-ATTACH-Vertrag werden nicht
+  erneut portabel gebaut.
+- `[ ]` `GW-REMINDER-RUNTIME`: als nächste portable kritische Priorität die
   Desktop-Notification-Actions, Deep-Link-Aktivierung und Fensterfokus unter
   GNOME/Wayland prüfen; dies ersetzt den separaten EDS-Watcher-Test nicht.
-- `[ ]` `SET-01`: nach portabler Schließung der belegten Backup-/Migrations-
-  Lücken Restore-/Preferences-Wirkung, native GSettings-Werte und bewusste
-  EDS/Camel/GOA-/Secret-Service-Ausschlüsse sichtbar abnehmen.
+- `[ ]` `SET-01`: Der portable Backup-/Migrationsschnitt ist abgeschlossen und
+  unabhängig reviewt. Unter Linux Restore-/Preferences-Wirkung, native
+  GSettings-Werte und bewusste EDS/Camel/GOA-/Secret-Service-Ausschlüsse
+  sichtbar abnehmen.
 - `[ ]` `GW-TASK-FILTERS`: EDS-S-Expressions/Rangegrenzen, Source-Refresh,
   Zeitzone/DST, Query-Fehler und die sichtbare Trennung lokaler Filter von
   Provider-Suche gegen reale Aufgabenquellen prüfen.
@@ -82,7 +95,7 @@ EDS-/Provider-Rest wird deshalb als `[x]` geführt.
   `P0-SYNC-001A`-Stand mit begrenzten Page-Windows, opaken Graph-NextLink-
   Cursorn, UID-Deduplizierung, generationensicheren Modellen und normalisierten
   Camel-Events. Der aktuelle uncommitted portable Verification-Snapshot umfasst
-  zusätzlich den einmal vollständigen 504/504-Testlauf; keine dieser Angaben
+  zusätzlich den einmal vollständigen 547/547-Testlauf; keine dieser Angaben
   ersetzt die folgende Linux-Abnahme.
 - Vorbereitung: vollständiger portabler Testlauf grün; ein EDS-Testkonto mit
   bekannten Plaintext-, HTML-, CID-, Remote-Bild- und Anhangsnachrichten.
@@ -734,11 +747,24 @@ Mit einem Testkonto ohne produktive Empfänger prüfen:
 - Portable Basis: Historischer Commit `d6e7dcc` vereinheitlicht
   Kalenderansichten über RRULE/RDATE/EXDATE, Mehrtagstermine, exklusive
   DTEND-Grenzen und validierte Zeitzonen/Quellen; der aktuelle uncommitted
-  Verification-Snapshot umfasst den einmal vollständigen 504/504-Testlauf;
+  Verification-Snapshot umfasst den einmal vollständigen 547/547-Testlauf;
   `GW-TASK-FILTERS` ergänzt
   Filter-/Advanced-/Persistenzverträge. Aufgaben bieten kompaktes Quick-Edit
   für Status, Priorität, Fälligkeit und Kategorien. Native ECal-Wirkung bleibt
   offen.
+
+- `[~]` `GW-MEMO-EDITOR` ist als eigener portabler Schnitt mit exakt diesem
+  Produktionsscope in `src/services/calendar_store_service.rs` und
+  `src/views/memos_page.rs` implementiert, unabhängig reviewt und
+  `BLOCKED_LINUX`; der separate test-only Cross-Surface-RFC5545-Test liegt in
+  `src/views/tasks_page.rs`. Der VJOURNAL-Draft
+  bewahrt Felder, URI-/BINARY-Attachments, URL, unbekannte Properties/Parameter
+  und geordnete `VALARM`s; atomarer/cross-process Store, Save/Discard/Cancel,
+  stale/confirmed Mutation und Export sind belegt. Der Cross-Surface-RFC5545-
+  Regressionstest vergleicht entfaltete semantische `ATTACH`-Zeilen und prüft
+  physische Zeilen mit höchstens 75 Oktetten. Die folgenden Linux-Punkte prüfen
+  ausschließlich EDS-Capabilities/ACL, Provider-Attachment-Transfer,
+  Change-Monitor/Factory-Restart und Desktop-Aktionen wie Open URL/Print.
 
 - `[~]` Native ECal-Brücke auf Linux gegen echte Kalender-, Aufgaben- und
   Memo-Quellen kompilieren und verbinden.
@@ -759,7 +785,7 @@ Mit einem Testkonto ohne produktive Empfänger prüfen:
   und attachment müssen dieselben Records wie Evolution liefern. EDS-Query-
   Grenzen, Serverfehler, Zeitzone/DST, Monitor-Refresh und die persistierte
   Quellen-/Kategorienauswahl sind getrennt zu protokollieren; der portable
-  Query-AST, zwei abgeschlossene unabhängige Reviews und der 504/504-Testlauf
+  Query-AST, zwei abgeschlossene unabhängige Reviews und der 547/547-Testlauf
   sind dafür nur Vorbereitung.
 - `[ ]` Wiederholungen, Zeitzonen, Teilnehmer, iTIP/iMIP, freie Zeit,
   Einladungsantworten, private Termine, Kategorien, Anhänge und Alarme mit
@@ -799,7 +825,7 @@ Mit einem Testkonto ohne produktive Empfänger prüfen:
 - Portable Basis: Historischer Commit `d6e7dcc` liefert kompakte
   quellenneutrale Liste/Detailansicht, Mehrwortsuche, Kategorien und eine
   begrenzte Dublettenerkennung; der aktuelle uncommitted Verification-Snapshot
-  umfasst den einmal vollständigen 504/504-Testlauf und `GW-CONTACT-LISTS`
+  umfasst den einmal vollständigen 547/547-Testlauf und `GW-CONTACT-LISTS`
   ergänzt portable vCard-3/4-
   Listen mit Member-UI. Echte EBook-/GAL-Identität und Mutationen bleiben
   offen.
@@ -816,7 +842,7 @@ Mit einem Testkonto ohne produktive Empfänger prüfen:
   abnehmen: vCard-3-Evolution-Listen und vCard-4-`KIND:group`/`MEMBER`, lokale,
   externe und verschachtelte Mitglieder, ungültige Member, Anzeigenamen,
   Member-UID-Auflösung, ACLs und parallele Änderungen prüfen. Atomare portable
-  Store-Tests, zwei abgeschlossene unabhängige Reviews und der 504/504-Testlauf
+  Store-Tests, zwei abgeschlossene unabhängige Reviews und der 547/547-Testlauf
   ersetzen weder EBook-Capabilities noch Provider-/Linux-Visualabnahme.
 - `[ ]` Native EBook-Feldabdeckung prüfen: mehrere Namen, E-Mail-Adressen,
   Telefone, Adressen, Organisation, Kategorien, Notizen, Fotos, Geburtstage,
@@ -1121,11 +1147,13 @@ Evolution Data Server: 3.60.2
 Camel: 3.60.2
 Kontotyp und Authentifizierung: EDS/Camel-Smoke-Konto; GOA-/Passwortpfad
   teilweise verifiziert, Ablauf-/Fehlerfälle bleiben offen
-Portable Vorbedingung: zweite uncommitted Verification-Runde; Cargo-Format-/
-  Check-, strikte Schema- und git-diff-Prüfung grün; 504/504 Workspace-Tests
-  einmal vollständig erfolgreich, spätere Sandboxläufe nur an 18 Graph-
-  Loopbacktests gescheitert; unabhängige Reviews abgeschlossen;
-  MAIL-PRINT-ACTION, COMPOSER-ACTION-SURFACE und GW-ALARMS BLOCKED_LINUX
+Portable Vorbedingung: aktuelle uncommitted Verification-Runde; Cargo-Format-/
+  Check-, strikte Schema- und git-diff-Prüfung grün; 547/547 Workspace-Tests
+  im finalen unsandboxed Lauf vollständig erfolgreich; ein früherer sandboxed
+  Lauf konnte 18 Graph-Loopback-Mockserver nicht binden; unabhängige Reviews
+  abgeschlossen; `MAIL-TRANSPORT-COMMANDS`, `SET-01` und `GW-MEMO-EDITOR`
+  sowie `MAIL-PRINT-ACTION`, `COMPOSER-ACTION-SURFACE` und `GW-ALARMS` stehen
+  auf `BLOCKED_LINUX`.
 Commit für den konkreten Linux-Lauf: vor dem Lauf eintragen; dieser
   Roadmap-/Auditlauf hat keinen Commit und keinen Push erzeugt
 Build-Befehl: cargo check --workspace && cargo test --workspace

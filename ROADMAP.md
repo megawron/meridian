@@ -9,17 +9,19 @@ Vollständige Architektur-Spezifikation, Feature-Mapping und Entwicklungs-Roadma
 > [Linux-/EDS-Roadmap](ROADMAP_LINUX.md). Der Produktumfang darf aus keiner
 > dieser Sichten verkleinert werden.
 
-> **Arbeitsstand 2026-08-22 (zweite uncommitted verification round):** Die
-> unabhängigen Reviews sind abgeschlossen; Cargo-Format-/Check-, strikte
-> Schema- und Diff-Prüfung sind grün. Ein vollständiger Workspace-Lauf hat
-> 504/504 Tests erfolgreich belegt; spätere Sandbox-Wiederholungen scheiterten
-> ausschließlich an 18 Graph-Loopbacktests. `MAIL-PRINT-ACTION`,
-> `COMPOSER-ACTION-SURFACE` und `GW-ALARMS` stehen deshalb auf
-> `BLOCKED_LINUX`, nicht auf `DONE` oder Vollparität. Native WebKitGTK-,
-> visuelle, EDS/Camel/ECal-, Provider- und Desktop-Abnahme bleibt ausdrücklich
-> in `ROADMAP_LINUX.md` offen; das noch portable App-/Deep-Link-/Fenster-Wiring
-> ist als `GW-REMINDER-RUNTIME` separat `READY`. Dieser Dokumentationslauf
-> erzeugt keinen Commit und keinen Push.
+> **Arbeitsstand 2026-08-22 (aktuelle uncommitted verification round):** Die
+> unabhängigen Reviews sind abgeschlossen; `git diff --check`,
+> `cargo fmt --all -- --check`, strikte Schema-Prüfung, normaler und mit
+> `RUSTFLAGS='--cfg=eds_camel_bridge'` erzwungener Cargo-Check sind grün. Der
+> finale unsandboxed `cargo test --workspace --locked --no-fail-fast --quiet`-
+> Lauf hat 547/547 Tests bestanden. `MAIL-TRANSPORT-COMMANDS`, `SET-01` und der
+> eigene atomare `GW-MEMO-EDITOR` sind portabel implementiert/reviewt, stehen
+> wegen nativer/provider-/Desktop-Reste aber auf `BLOCKED_LINUX`, nicht auf
+> `DONE` oder Vollparität. `GW-REMINDER-RUNTIME` ist jetzt die nächste
+> portable kritische Priorität; sein App-/Window-Schreibscope ist frei. Native
+> WebKitGTK-, visuelle, EDS/Camel/ECal-, Provider- und Desktop-Abnahme bleibt
+> ausdrücklich in `ROADMAP_LINUX.md` offen. Dieser Dokumentationslauf erzeugt
+> keinen Commit und keinen Push.
 
 ---
 
@@ -756,7 +758,7 @@ jeweilige negative Fehlerpfad mit direkter Evidenz vorliegen.
   oder entschlüsselte Inhalte invalidieren den Cache und lösen eine
   Filterneubewertung aus; Crypto-Ergebnisse werden zusätzlich durch Request-
   Generation und Identität gegen stale Zustände geschützt. Die portablen
-  Gates sind im aktuellen Arbeitsstand mit 504/504 Tests einmal vollständig
+  Gates sind im aktuellen Arbeitsstand mit 547/547 Tests einmal vollständig
   grün belegt; beide unabhängigen Reviews sind abgeschlossen. Das Paket steht auf
   `BLOCKED_LINUX`; Provider-Body-Suche, Linux-Churn und EDS/Camel-Abnahme
   bleiben in `ROADMAP_LINUX.md` offen.
@@ -767,7 +769,7 @@ jeweilige negative Fehlerpfad mit direkter Evidenz vorliegen.
   Start-/Fälligkeits- und Attachment-Prädikate; Migrationen normalisieren
   Aliaswerte und ungültige Eingaben fallen sicher zurück. Deterministische
   Datums-/DST-Fixtures, Live-Neuberechnung und GSettings-Roundtrip sind im
-  aktuellen 504/504-Teststand belegt; beide unabhängigen Reviews sind
+  aktuellen 547/547-Teststand belegt; beide unabhängigen Reviews sind
   abgeschlossen. Das Paket steht auf `BLOCKED_LINUX`; EDS-Query-Semantik und
   Providergrenzen bleiben offen. Die weitere upstream-Taskpad-Fläche wird in
   separaten Groupware-Paketen verfolgt.
@@ -777,7 +779,7 @@ jeweilige negative Fehlerpfad mit direkter Evidenz vorliegen.
   Adressen und sichtbare Validierungsfehler. Parser/Serializer bewahren
   unerkannte sichere Listeneigenschaften; die Dialog-UI schreibt Mitglieder
   über einen atomaren Storepfad und verhindert stille Teilverluste. vCard-3/4-
-  Roundtrip-, invalid-member- und Member-UI-Tests sind im 504/504-Stand
+  Roundtrip-, invalid-member- und Member-UI-Tests sind im 547/547-Stand
   enthalten; beide unabhängigen Reviews sind abgeschlossen. Das Paket steht
   auf `BLOCKED_LINUX`; EBook-Listenfähigkeiten, ACLs und native
   Provider-/Linux-Abnahme bleiben offen.
@@ -855,9 +857,10 @@ cargo test --workspace --locked --no-fail-fast --quiet
 ```
 
 Cargo-Format-/Check-, strikte Schema- und Diff-Prüfung sind für den aktuellen
-Arbeitsstand grün; ein vollständiger Workspace-Lauf hat 504/504 Tests
-erfolgreich belegt. Weitere Sandboxläufe scheiterten ausschließlich an den 18
-Graph-Loopbacktests. Die unabhängigen Reviews sind abgeschlossen.
+Arbeitsstand grün; der finale unsandboxed Workspace-Lauf hat 547/547 Tests
+erfolgreich belegt. Ein früherer sandboxed Lauf konnte 18 Graph-Loopback-
+Mockserver nicht binden und ist nicht der finale Testbeleg. Die unabhängigen
+Reviews sind abgeschlossen.
 WebKitGTK-Runtime, echte
 EDS/Camel-Flags, Icon-Theme, sichtbare Dichte, rasches Umschalten und bestätigte
 Counter-Aktualisierung bleiben in `ROADMAP_LINUX.md` offen und dürfen hier
@@ -866,24 +869,42 @@ nicht vorweggenommen werden.
 #### Aus den Upstream-Audits übernommene nächste atomare Pakete
 
 Die drei statischen Audits sind jetzt DOX-indexiert und speisen die nächste
-Warteschlange. Ihre Statuswerte sind Quellen-/UI-Belege, keine Laufzeit- oder
-Providerabnahme:
+Warteschlange. Die folgende Liste ist ein Statusinventar, keine zusätzliche
+Startreihenfolge; operativ maßgeblich ist `ROADMAP_EXECUTION.md`. Dort bleibt
+`GW-REMINDER-RUNTIME` nach den abgeschlossenen portablen Slices die nächste
+startbare `READY`-Priorität. Die Statuswerte sind Quellen-/UI-Belege, keine
+Laufzeit- oder Providerabnahme:
 
-1. `MAIL-TRANSPORT-COMMANDS` — `READY` und nächste portable Priorität:
-   getrennte Send-, Receive-, All-, Stop- und
-   Offline-Kommandos mit eigenem Statusmodell; Camel/EDS, Auth, Queue und
-   Fehler-/Fortschrittsmeldungen bleiben Linux-Rest.
-2. `GW-REMINDER-RUNTIME` — danach `READY`: vorhandene sichere Reminder-
-   Deep-Links in Application-/Window-Routing und ein Reminder-Fenster mit
-   Snooze/Erledigt verdrahten; der native EDS-Watcher bleibt Linux-Rest.
-3. `SET-01` — ebenfalls ohne unerfüllte portable Abhängigkeit `READY` und bei
-   disjunktem Schreibbereich parallel startbar: acht Migrations- und drei
-   Backup-Lücken sowie den Sidebar-Default 240/220 aus dem Settings-Audit
-   schließen.
-4. `MAIL-PRINT-ACTION`, `COMPOSER-ACTION-SURFACE` und `GW-ALARMS` sind portabel
+1. `MAIL-TRANSPORT-COMMANDS` — `BLOCKED_LINUX`: portable Implementierung und
+   unabhängiger Review abgeschlossen; getrennte Send-/Receive-/All-/Stop- und
+   Offline-Actions, F12, State/Progress/Error/Retry/Cancel/Generation,
+   FIFO/Dedupe, Offline-Queue mit Bestätigung erst nach erfolgreichem
+   Backend-Lauf und Transport-Worker-Sicherheit sind belegt. Camel/EDS/Auth/
+   Provider-Bestätigung und Live-Fortschritt bleiben Linux-Rest.
+2. `SET-01` — `BLOCKED_LINUX`: portable Implementierung und unabhängiger Review
+   abgeschlossen; acht Migrationsparser- und drei Backup-Lücken, Version-4-
+   Backcompat, strikte Validierung, Duplicate-Key-/Redaction-/Restore-/
+   Diagnostics-/Rollback-Tests sowie der aktuelle Sidebar-Default 240 und der
+   Erhalt eines explizit gespeicherten Legacy-JSON-Werts 220 sind belegt.
+   Native GSettings-/Preferences-/EDS-/Camel-/GOA-/Secret-Service-Wirkung
+   bleibt Linux-Rest.
+3. `GW-MEMO-EDITOR` — `BLOCKED_LINUX`: eigenes atomares Paket mit exakt
+   diesem Produktions-Schreibbereich: `src/services/calendar_store_service.rs`
+   und `src/views/memos_page.rs`; der separate test-only Cross-Surface-ATTACH-
+   Test in `src/views/tasks_page.rs` prüft entfaltete Semantik und 75-Oktett-
+   Folding. Vollständiger portabler VJOURNAL-Draft, Felder, Attachments/URL/
+   unknown props/VALARM preservation, atomic/cross-process store,
+   Save/Discard/Cancel, stale/confirmed mutation und Export sind belegt.
+   Native EDS-Capabilities/ACL/Provider-Attachment-Transfer/Desktop-Aktionen
+   bleiben Linux-Rest.
+4. `GW-REMINDER-RUNTIME` — `READY` und jetzt nächste portable kritische
+   Priorität: vorhandene sichere Reminder-Deep-Links in Application-/Window-
+   Routing und ein Reminder-Fenster mit Snooze/Erledigt verdrahten; der native
+   EDS-Watcher bleibt Linux-Rest. Der App-/Window-Schreibscope ist frei.
+5. `MAIL-PRINT-ACTION`, `COMPOSER-ACTION-SURFACE` und `GW-ALARMS` sind portabel
    abgeschlossen und `BLOCKED_LINUX`; sie bleiben Linux-Handoffs, nicht erneut
    startbare portable Pakete.
-5. Weitere Groupware-Lücken — nach den aktuellen Paketen folgen
+6. Weitere Groupware-Lücken — nach den aktuellen Paketen folgen
    `GW-CAL-VIEWS`/`GW-CAL-SHELL`/`GW-CAL-ACTIONS`,
    `GW-EVENT-EDITOR`, `GW-TASK-SURFACE`/`GW-TASK-EDITOR`,
    `GW-CONTACT-ACTIONS`/`GW-CONTACT-SEARCH`,
@@ -891,7 +912,7 @@ Providerabnahme:
    `GW-EXPORT-PRINT`;
    jeweils mit portablem Daten-/UI-Vertrag und separatem
    ECal/EBook-/Provider-/Desktop-Rest.
-6. Weitere Settings-Slices aus dem Audit (`MAIL-01..03`, `COMP-01`,
+7. Weitere Settings-Slices aus dem Audit (`MAIL-01..03`, `COMP-01`,
    `GROUP-01`, `CONTACT-01`, `ACCOUNT-01`, `NET-01`, `CRYPTO-01`,
    `PLUGIN-01`) werden erst nach atomarem Zuschnitt und belegter
    Abhängigkeitsprüfung in die startbare Queue übernommen.
@@ -1097,6 +1118,19 @@ Providerabnahme:
   Notizlisten können zusätzlich über eine persistente Quellen-Auswahl gefiltert
   werden; nicht mehr verfügbare gespeicherte Quellen bleiben als Hinweis
   sichtbar.
+- [~] `GW-MEMO-EDITOR` ist als eigenes atomares Paket mit exakt diesem
+  Produktions-Schreibbereich: `src/services/calendar_store_service.rs` und
+  `src/views/memos_page.rs` portabel implementiert, unabhängig reviewt und
+  `BLOCKED_LINUX`. Der separate test-only Cross-Surface-RFC5545-
+  Regressionstest in `src/views/tasks_page.rs` vergleicht entfaltete
+  semantische `ATTACH`-Zeilen und prüft physische Zeilen mit höchstens 75
+  Oktetten. Der vollständige VJOURNAL-Draft bewahrt UID/DTSTAMP/SUMMARY/
+  DESCRIPTION/DTSTART/CLASS/STATUS/URL/CATEGORIES, URI-/BINARY-Attachments,
+  unbekannte Properties/Parameter und geordnete `VALARM`s. Der Store arbeitet
+  atomar und cross-process; der Editor belegt Save/Discard/Cancel, stale
+  Generation, bestätigte Mutation und Export. Native EDS-Capabilities/ACL,
+  Provider-Attachment-Transfer und Desktop-Aktionen (Open URL/Print) bleiben
+  Linux; die übrige Memo-Surface wird nicht als vollständige Parität gezählt.
 - [~] EDS-Source-Registry und ESource-basierte Kalenderauswahl werden dynamisch
   angezeigt; Kalender-, Aufgaben- und Memo-Quellen werden per
   e_cal_client_connect_sync() gelesen, inklusive Quellidentität und
@@ -1445,17 +1479,23 @@ Providerabnahme:
   lokale EML/mbox-, ICS/VCS- und VCF/vCard-Importe sind im GTK4-rs-Frontend
   verfügbar. Ein technisches, inhaltsfreies Diagnosepaket und eine
   bestätigungspflichtige Löschung der app-eigenen Dateien/Einstellungen sind
-  vorhanden; vollständige Evolution-Profilmigration, Diagnose-/Restore-
-  Fehlerberichte und Upgrade-/Rollback-Prüfung fehlen noch.
+  vorhanden; vollständige Evolution-Profilmigration, produktweite
+  Diagnose-/Restore-Fehlerberichte und Upgrade-/Rollback-Prüfung außerhalb des
+  SET-01-Vertrags fehlen noch.
   Das statische
   [`UPSTREAM_SETTINGS_PARITY_AUDIT`](docs/UPSTREAM_SETTINGS_PARITY_AUDIT.md)
   inventarisiert 85 GTK4-Keys getrennt nach Schema/Default, Preference,
-  Live-Wirkung, Backup und Migration. `SET-01` ist als nächster atomarer
-  Settings-Slice `READY`: acht Import-/Migrationslücken, drei Backup-Lücken und
-  die Sidebar-Defaultabweichung 240/220 werden gemeinsam mit positiven,
-  negativen und Abwärtskompatibilitätstests geschlossen. Die übrigen Audit-
-  Familien bleiben eigene Folgepakete; aus einem Schema-Key allein folgt keine
-  Upstream-, Provider- oder Laufzeitparität.
+  Live-Wirkung, Backup und Migration. `SET-01` ist portabel implementiert,
+  unabhängig reviewt und wegen nativer Effekte `BLOCKED_LINUX`: acht
+  Migrationsparser-Lücken, drei Backup-Lücken, Version-4-Backcompat, strikte
+  Validation, Duplicate-Key-Rejection, Redaction auch in Restore/Diagnostics,
+  atomarer Rollback sowie der aktuelle Sidebar-Default 240 und der Erhalt eines
+  explizit gespeicherten Legacy-JSON-Werts 220 sind getestet. Ein separater
+  220-Fallback für ein fehlendes Feld ist nicht belegt; fehlende Felder
+  verwenden den aktuellen Default. Native GSettings-/Preferences- sowie
+  EDS-/Camel-/GOA-/Secret-Service-Wirkung bleibt in `ROADMAP_LINUX.md` offen.
+  Die übrigen Audit-Familien bleiben eigene Folgepakete; aus einem Schema-Key
+  allein folgt keine Upstream-, Provider- oder Laufzeitparität.
 - [~] Tastaturbedienung besitzt echte globale GTK-Aktionen für Navigation,
   Suche, Synchronisation, Sidebar, Mailaktionen und Modulwechsel; das
   Shortcuts-Fenster zeigt dieselben Beschleuniger. Die klassische Mailansicht
