@@ -51,7 +51,7 @@ impl VCardProperty {
     }
 
     fn serialized_value(&self, current_value: &str) -> String {
-        if self.value == current_value {
+        if self.value == current_value && !self.raw_value.is_empty() {
             self.raw_value.clone()
         } else {
             escape_value(current_value)
@@ -105,6 +105,267 @@ impl VCardPhoto {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VCardListMemberKind {
+    ExternalAddress,
+    LocalContact,
+    NestedList,
+    StandardMember,
+    Invalid,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VCardListMember {
+    pub kind: VCardListMemberKind,
+    pub display_name: String,
+    pub email: String,
+    pub contact_uid: String,
+    pub source_uid: String,
+    pub email_num: Option<usize>,
+    pub parent_id: Option<String>,
+    /// The original property and logical value. Keeping these on the member
+    /// lets an untouched EDS destination survive a parse/serialize cycle.
+    pub property: String,
+    pub value: String,
+    pub raw_value: String,
+}
+
+impl VCardListMember {
+    pub fn external_address(email: &str, display_name: &str) -> Self {
+        Self {
+            kind: VCardListMemberKind::ExternalAddress,
+            display_name: display_name.trim().to_string(),
+            email: normalize_mail_address(email),
+            contact_uid: String::new(),
+            source_uid: String::new(),
+            email_num: Some(0),
+            parent_id: Some("0".to_string()),
+            property: String::new(),
+            value: String::new(),
+            raw_value: String::new(),
+        }
+    }
+
+    pub fn local_contact(
+        uid: &str,
+        source_uid: &str,
+        display_name: &str,
+        email: &str,
+        email_num: Option<usize>,
+    ) -> Self {
+        Self {
+            kind: VCardListMemberKind::LocalContact,
+            display_name: display_name.trim().to_string(),
+            email: normalize_mail_address(email),
+            contact_uid: uid.trim().to_string(),
+            source_uid: source_uid.trim().to_string(),
+            email_num: email_num.or(Some(0)),
+            parent_id: Some("0".to_string()),
+            property: String::new(),
+            value: String::new(),
+            raw_value: String::new(),
+        }
+    }
+
+    pub fn nested_list(uid: &str, display_name: &str, parent_id: Option<&str>) -> Self {
+        Self {
+            kind: VCardListMemberKind::NestedList,
+            display_name: display_name.trim().to_string(),
+            email: String::new(),
+            contact_uid: uid.trim().to_string(),
+            source_uid: String::new(),
+            email_num: None,
+            parent_id: parent_id.map(ToOwned::to_owned).or(Some("0".to_string())),
+            property: String::new(),
+            value: String::new(),
+            raw_value: String::new(),
+        }
+    }
+
+    pub fn is_valid(&self) -> bool {
+        self.validation_error().is_none()
+    }
+
+    pub fn validation_error(&self) -> Option<String> {
+        match self.kind {
+            VCardListMemberKind::ExternalAddress => {
+                if is_valid_email(&self.email) {
+                    None
+                } else {
+                    Some("ungültige externe E-Mail-Adresse".to_string())
+                }
+            }
+            VCardListMemberKind::LocalContact => {
+                if self.contact_uid.trim().is_empty() {
+                    Some("lokale Kontakt-UID fehlt".to_string())
+                } else if !is_valid_email(&self.email) {
+                    Some("lokales Mitglied hat keine gültige E-Mail-Adresse".to_string())
+                } else {
+                    None
+                }
+            }
+            VCardListMemberKind::NestedList => {
+                if self.contact_uid.trim().is_empty() {
+                    Some("verschachtelte Liste hat keine CL-UID".to_string())
+                } else if self.display_name.trim().is_empty() {
+                    Some("verschachtelte Liste hat keinen Anzeigenamen".to_string())
+                } else {
+                    None
+                }
+            }
+            VCardListMemberKind::StandardMember => {
+                if self.email.trim().is_empty() && self.value.trim().is_empty() {
+                    Some("Mitgliedswert fehlt".to_string())
+                } else if !self.email.trim().is_empty() && !is_valid_email(&self.email) {
+                    Some("MEMBER enthält keine gültige mailto-Adresse".to_string())
+                } else {
+                    None
+                }
+            }
+            VCardListMemberKind::Invalid => Some("unbekanntes Listenmitglied".to_string()),
+        }
+    }
+
+    pub fn display_text(&self, show_address: bool) -> String {
+        let display_name = self.display_name.trim();
+        let email = self.email.trim();
+        let text = if show_address && !email.is_empty() && !display_name.is_empty() {
+            format!("{display_name} <{email}>")
+        } else if !display_name.is_empty() {
+            display_name.to_string()
+        } else if !show_address && !email.is_empty() {
+            match self.kind {
+                VCardListMemberKind::ExternalAddress => "Externe Adresse".to_string(),
+                VCardListMemberKind::LocalContact => "Lokaler Kontakt".to_string(),
+                VCardListMemberKind::StandardMember => "Listenmitglied".to_string(),
+                _ => email.to_string(),
+            }
+        } else if !email.is_empty() {
+            email.to_string()
+        } else if !self.value.trim().is_empty() {
+            self.value.trim().to_string()
+        } else {
+            "Unbekanntes Mitglied".to_string()
+        };
+        if self.is_valid() {
+            text
+        } else {
+            format!("⚠ {text}")
+        }
+    }
+
+    pub fn to_vcard_line(&self) -> Option<String> {
+        self.to_vcard_line_for_version(false)
+    }
+
+    fn to_vcard_line_for_version(&self, vcard4_group: bool) -> Option<String> {
+        if !self.property.trim().is_empty()
+            && !self.raw_value.is_empty()
+            && is_safe_property(self.property.trim())
+            && unescape_value(&self.raw_value) == self.value
+        {
+            return Some(format!("{}:{}", self.property.trim(), self.raw_value));
+        }
+
+        let parent_id = self
+            .parent_id
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or("0");
+        if vcard4_group {
+            return match self.kind {
+                VCardListMemberKind::ExternalAddress => self
+                    .is_valid()
+                    .then(|| format!("MEMBER:mailto:{}", self.email.trim())),
+                VCardListMemberKind::LocalContact | VCardListMemberKind::NestedList => {
+                    if !self.is_valid() {
+                        return None;
+                    }
+                    let uid = self.contact_uid.trim();
+                    (!uid.is_empty()).then(|| {
+                        let value = if uid
+                            .get(..9)
+                            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("urn:uuid:"))
+                        {
+                            uid.to_string()
+                        } else {
+                            format!("urn:uuid:{uid}")
+                        };
+                        format!("MEMBER:{value}")
+                    })
+                }
+                VCardListMemberKind::StandardMember | VCardListMemberKind::Invalid => {
+                    let value = if self.value.trim().is_empty() {
+                        self.email.trim().to_string()
+                    } else {
+                        self.value.trim().to_string()
+                    };
+                    (!value.is_empty()).then(|| format!("MEMBER:{value}"))
+                }
+            };
+        }
+        match self.kind {
+            VCardListMemberKind::NestedList => {
+                let uid = self.contact_uid.trim();
+                if uid.is_empty() || self.display_name.trim().is_empty() {
+                    return None;
+                }
+                Some(format!(
+                    "X-EVOLUTION-CONTACT-LIST;X-EVOLUTION-CL-UID={};X-EVOLUTION-PARENT-CL={parent_id}:{}",
+                    format_parameter_value(uid),
+                    escape_value(self.display_name.trim())
+                ))
+            }
+            VCardListMemberKind::ExternalAddress | VCardListMemberKind::LocalContact => {
+                if !self.is_valid() {
+                    return None;
+                }
+                let mut property = String::from("EMAIL;X-EVOLUTION-DEST-HTML-MAIL=FALSE");
+                if !self.contact_uid.trim().is_empty() {
+                    property.push_str(";X-EVOLUTION-DEST-EMAIL-NUM=");
+                    property.push_str(&self.email_num.unwrap_or(0).to_string());
+                    property.push_str(";X-EVOLUTION-DEST-CONTACT-UID=\"");
+                    property.push_str(&escape_parameter(self.contact_uid.trim()));
+                    property.push('"');
+                }
+                if !self.source_uid.trim().is_empty() {
+                    property.push_str(";X-EVOLUTION-DEST-SOURCE-UID=\"");
+                    property.push_str(&escape_parameter(self.source_uid.trim()));
+                    property.push('"');
+                }
+                property.push_str(";X-EVOLUTION-PARENT-CL=");
+                property.push_str(parent_id);
+                let value = if self.display_name.trim().is_empty() {
+                    self.email.trim().to_string()
+                } else {
+                    format!("{} <{}>", self.display_name.trim(), self.email.trim())
+                };
+                Some(format!("{property}:{}", escape_value(&value)))
+            }
+            VCardListMemberKind::StandardMember => {
+                let value = if self.value.trim().is_empty() {
+                    format!("mailto:{}", self.email.trim())
+                } else {
+                    self.value.trim().to_string()
+                };
+                (!value.is_empty()).then(|| format!("MEMBER:{}", escape_value(&value)))
+            }
+            VCardListMemberKind::Invalid => {
+                if self.property.trim().is_empty() || self.value.trim().is_empty() {
+                    None
+                } else {
+                    Some(format!(
+                        "{}:{}",
+                        self.property.trim(),
+                        escape_value(self.value.trim())
+                    ))
+                }
+            }
+        }
+    }
+}
+
 #[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VCardContact {
@@ -147,6 +408,16 @@ pub struct VCardContact {
     pub url_properties: Vec<VCardProperty>,
     pub impp_properties: Vec<VCardProperty>,
     pub related_properties: Vec<VCardProperty>,
+    /// Raw X-* properties in input order. `extensions` remains the compact
+    /// logical API used by providers, while this parallel representation
+    /// preserves provider escaping when a contact is edited and serialized.
+    pub extension_properties: Vec<VCardProperty>,
+    /// Evolution contact lists use X-EVOLUTION-LIST and EMAIL destinations;
+    /// vCard 4 lists may use KIND:group and MEMBER instead.
+    pub is_list: bool,
+    pub list_name: String,
+    pub list_show_addresses: bool,
+    pub list_members: Vec<VCardListMember>,
     /// Unknown standard properties such as UID, PRODID, REV, KEY, or LOGO.
     /// They are retained separately from `extensions` so Evolution/X fields
     /// remain available through the existing API.
@@ -192,8 +463,182 @@ impl VCardContact {
             url_properties: Vec::new(),
             impp_properties: Vec::new(),
             related_properties: Vec::new(),
+            extension_properties: Vec::new(),
+            is_list: false,
+            list_name: String::new(),
+            list_show_addresses: false,
+            list_members: Vec::new(),
             unknown_properties: Vec::new(),
         }
+    }
+
+    pub fn new_list(name: &str, show_addresses: bool, uid: Option<&str>) -> Self {
+        let name = name.trim();
+        let mut contact = Self::new(name, "", "", "");
+        contact.version = "3.0".to_string();
+        contact.is_list = true;
+        contact.list_name = name.to_string();
+        contact.list_show_addresses = show_addresses;
+        contact.set_extension_value("X-EVOLUTION-FILE-AS", name);
+        if let Some(uid) = uid.filter(|uid| !uid.trim().is_empty()) {
+            contact.set_uid(uid);
+        }
+        contact
+    }
+
+    pub fn set_uid(&mut self, uid: &str) {
+        let uid = uid.trim();
+        if uid.is_empty() {
+            return;
+        }
+        if let Some(property) = self
+            .unknown_properties
+            .iter_mut()
+            .find(|property| property.property_name().eq_ignore_ascii_case("UID"))
+        {
+            property.value = uid.to_string();
+            property.raw_value = escape_value(uid);
+        } else {
+            self.unknown_properties.push(VCardProperty {
+                property: "UID".to_string(),
+                value: uid.to_string(),
+                raw_value: escape_value(uid),
+            });
+        }
+    }
+
+    pub fn uid(&self) -> Option<String> {
+        self.unknown_properties
+            .iter()
+            .find(|property| property.property_name().eq_ignore_ascii_case("UID"))
+            .map(|property| property.value.clone())
+    }
+
+    pub fn set_extension_value(&mut self, property_name: &str, value: &str) {
+        let extension_index = self.extensions.iter().position(|extension| {
+            extension
+                .property_name()
+                .eq_ignore_ascii_case(property_name)
+        });
+        if let Some(extension_index) = extension_index {
+            let property = self.extensions[extension_index].property.clone();
+            self.extensions[extension_index].value = value.to_string();
+            if let Some(raw) = self
+                .extension_properties
+                .iter_mut()
+                .find(|property| property.property_name().eq_ignore_ascii_case(property_name))
+            {
+                raw.value = value.to_string();
+                raw.raw_value = escape_value(value);
+            } else {
+                self.extension_properties.push(VCardProperty {
+                    property,
+                    value: value.to_string(),
+                    raw_value: escape_value(value),
+                });
+            }
+        } else {
+            self.extensions.push(VCardExtension {
+                property: property_name.to_string(),
+                value: value.to_string(),
+            });
+            self.extension_properties.push(VCardProperty {
+                property: property_name.to_string(),
+                value: value.to_string(),
+                raw_value: escape_value(value),
+            });
+        }
+    }
+
+    pub fn invalid_list_members(&self) -> Vec<(usize, String)> {
+        self.list_members
+            .iter()
+            .enumerate()
+            .filter_map(|(index, member)| member.validation_error().map(|error| (index, error)))
+            .collect()
+    }
+
+    pub fn list_member_emails(&self) -> Vec<String> {
+        self.list_members
+            .iter()
+            .filter(|member| member.is_valid())
+            .map(|member| member.email.trim().to_string())
+            .filter(|email| !email.is_empty())
+            .fold(Vec::new(), |mut emails, email| {
+                if !emails
+                    .iter()
+                    .any(|existing: &String| existing.eq_ignore_ascii_case(&email))
+                {
+                    emails.push(email);
+                }
+                emails
+            })
+    }
+
+    fn uses_vcard4_group_format(&self) -> bool {
+        self.is_list
+            && self.version.trim().eq_ignore_ascii_case("4.0")
+            && (self.has_vcard4_group_kind()
+                || self
+                    .list_members
+                    .iter()
+                    .any(|member| matches!(member.kind, VCardListMemberKind::StandardMember)))
+    }
+
+    fn has_vcard4_group_kind(&self) -> bool {
+        self.unknown_properties.iter().any(|property| {
+            property.property_name().eq_ignore_ascii_case("KIND")
+                && property.value.trim().eq_ignore_ascii_case("group")
+        })
+    }
+
+    /// Repair a vCard 4 list which already carries MEMBER values but omitted
+    /// the mandatory group kind.  This is used only on an explicit list save;
+    /// parsing itself keeps the missing property observable for validation.
+    pub fn ensure_vcard4_group_kind(&mut self) {
+        if self.version.trim().eq_ignore_ascii_case("4.0")
+            && self.is_list
+            && !self.has_vcard4_group_kind()
+        {
+            self.unknown_properties.push(VCardProperty {
+                property: "KIND".to_string(),
+                value: "group".to_string(),
+                raw_value: "group".to_string(),
+            });
+        }
+    }
+
+    /// Return a backend-facing validation error for a contact list.
+    ///
+    /// vCard 4 requires `KIND:group` whenever `MEMBER` is present.  The
+    /// Evolution vCard 3 representation is deliberately kept separate: its
+    /// destinations are EMAIL properties with X-EVOLUTION parameters, while
+    /// a vCard 3 MEMBER line is not a valid replacement for those metadata.
+    pub fn list_validation_error(&self) -> Option<String> {
+        if !self.is_list {
+            return None;
+        }
+        if self.version.trim().eq_ignore_ascii_case("4.0") && !self.has_vcard4_group_kind() {
+            return Some("Eine vCard-4-Kontaktliste benötigt KIND:group".to_string());
+        }
+        if self.version.trim().eq_ignore_ascii_case("4.0") {
+            return self
+                .invalid_list_members()
+                .into_iter()
+                .next()
+                .map(|(index, error)| format!("Listenmitglied {} ist {error}", index + 1));
+        }
+        if self
+            .list_members
+            .iter()
+            .any(|member| matches!(member.kind, VCardListMemberKind::StandardMember))
+        {
+            return Some("vCard-3-Kontaktlisten benötigen EMAIL-Ziele".to_string());
+        }
+        self.invalid_list_members()
+            .into_iter()
+            .next()
+            .map(|(index, error)| format!("Listenmitglied {} ist {error}", index + 1))
     }
 
     /// Serialize this contact into vCard format.
@@ -223,18 +668,20 @@ impl VCardContact {
                 escape_value(&self.name.suffix)
             ));
         }
-        let emails = if self.emails.is_empty() {
-            std::slice::from_ref(&self.email)
-        } else {
-            self.emails.as_slice()
-        };
-        append_repeated_properties(
-            &mut lines,
-            "EMAIL;TYPE=INTERNET",
-            "EMAIL",
-            emails,
-            &self.email_properties,
-        );
+        if !self.is_list || self.uses_vcard4_group_format() {
+            let emails = if self.emails.is_empty() {
+                std::slice::from_ref(&self.email)
+            } else {
+                self.emails.as_slice()
+            };
+            append_repeated_properties(
+                &mut lines,
+                "EMAIL;TYPE=INTERNET",
+                "EMAIL",
+                emails,
+                &self.email_properties,
+            );
+        }
         if !self.org.trim().is_empty() {
             lines.push(format!("ORG:{}", escape_value(&self.org)));
         }
@@ -304,6 +751,46 @@ impl VCardContact {
         if !self.note.trim().is_empty() {
             lines.push(format!("NOTE:{}", escape_value(&self.note)));
         }
+        if self.is_list {
+            let vcard4_group = self.uses_vcard4_group_format();
+            if !vcard4_group {
+                lines.push("X-EVOLUTION-LIST:TRUE".to_string());
+                lines.push(format!(
+                    "X-EVOLUTION-LIST-SHOW-ADDRESSES:{}",
+                    if self.list_show_addresses {
+                        "TRUE"
+                    } else {
+                        "FALSE"
+                    }
+                ));
+                if !self.list_name.trim().is_empty() {
+                    lines.push(format!(
+                        "X-EVOLUTION-LIST-NAME:{}",
+                        escape_value(self.list_name.trim())
+                    ));
+                }
+            }
+            if vcard4_group {
+                if let Some(kind) = self
+                    .unknown_properties
+                    .iter()
+                    .find(|property| property.property_name().eq_ignore_ascii_case("KIND"))
+                {
+                    lines.push(format!(
+                        "{}:{}",
+                        kind.property.trim(),
+                        kind.serialized_value(&kind.value)
+                    ));
+                } else {
+                    lines.push("KIND:group".to_string());
+                }
+            }
+            for member in &self.list_members {
+                if let Some(line) = member.to_vcard_line_for_version(vcard4_group) {
+                    lines.push(line);
+                }
+            }
+        }
         let photos = if self.photos.is_empty() {
             self.photo.iter().collect::<Vec<_>>()
         } else {
@@ -341,19 +828,47 @@ impl VCardContact {
                 lines.push(format!("{property}:{value}"));
             }
         }
-        for extension in &self.extensions {
-            let property = extension.property.trim();
-            if !is_extension_property(property)
-                || extension.value.contains('\r')
-                || extension.value.contains('\n')
-            {
-                continue;
+        if self.extension_properties.is_empty() {
+            for extension in &self.extensions {
+                let property = extension.property.trim();
+                if !is_extension_property(property)
+                    || extension.value.contains('\r')
+                    || extension.value.contains('\n')
+                    || (self.is_list
+                        && !self.uses_vcard4_group_format()
+                        && is_list_representation_property(property))
+                {
+                    continue;
+                }
+                lines.push(format!("{property}:{}", escape_value(&extension.value)));
             }
-            lines.push(format!("{property}:{}", escape_value(&extension.value)));
+        } else {
+            for extension in &self.extension_properties {
+                let property = extension.property.trim();
+                if !is_extension_property(property)
+                    || extension.value.contains('\r')
+                    || extension.value.contains('\n')
+                    || (self.is_list
+                        && !self.uses_vcard4_group_format()
+                        && is_list_representation_property(property))
+                {
+                    continue;
+                }
+                let value = if !extension.raw_value.is_empty()
+                    && unescape_value(&extension.raw_value) == extension.value
+                {
+                    extension.raw_value.clone()
+                } else {
+                    escape_value(&extension.value)
+                };
+                lines.push(format!("{property}:{value}"));
+            }
         }
         for unknown in &self.unknown_properties {
             if !is_safe_property(unknown.property.trim())
                 || is_core_property(unknown.property_name())
+                || (self.uses_vcard4_group_format()
+                    && unknown.property_name().eq_ignore_ascii_case("KIND"))
                 || unknown.value.contains('\r')
                 || unknown.value.contains('\n')
             {
@@ -389,6 +904,16 @@ impl VCardContact {
             self.timezone.clone(),
             self.geo.clone(),
         ];
+        if self.is_list {
+            values.push(self.list_name.clone());
+            values.extend(self.list_members.iter().flat_map(|member| {
+                [
+                    member.display_name.clone(),
+                    member.email.clone(),
+                    member.value.clone(),
+                ]
+            }));
+        }
         values.extend(self.emails.iter().cloned());
         values.extend(self.phones.iter().cloned());
         values.extend(self.addresses.iter().cloned());
@@ -433,10 +958,13 @@ impl VCardContact {
 
     pub fn duplicate_keys(&self) -> Vec<String> {
         let mut keys = Vec::new();
-        let emails = if self.emails.is_empty() {
-            std::slice::from_ref(&self.email)
+        let list_emails = self.list_member_emails();
+        let emails: Vec<&str> = if self.is_list {
+            list_emails.iter().map(String::as_str).collect()
+        } else if self.emails.is_empty() {
+            vec![self.email.as_str()]
         } else {
-            self.emails.as_slice()
+            self.emails.iter().map(String::as_str).collect()
         };
         for email in emails {
             let normalized = email.trim().to_ascii_lowercase();
@@ -502,8 +1030,7 @@ impl VCardContact {
                 ));
             }
             for line in lines {
-                let property_name = line
-                    .split_once(':')
+                let property_name = split_property_value(&line)
                     .map(|(property, _)| {
                         property
                             .split(';')
@@ -569,10 +1096,15 @@ impl VCardContact {
         let mut url_properties = Vec::new();
         let mut impp_properties = Vec::new();
         let mut related_properties = Vec::new();
+        let mut extension_properties = Vec::new();
+        let mut is_list = false;
+        let mut list_name = String::new();
+        let mut list_show_addresses = false;
+        let mut list_members = Vec::new();
         let mut unknown_properties = Vec::new();
 
         for line in lines {
-            let Some((raw_property, raw_value)) = line.split_once(':') else {
+            let Some((raw_property, raw_value)) = split_property_value(&line) else {
                 continue;
             };
             let property = raw_property.trim();
@@ -596,6 +1128,9 @@ impl VCardContact {
                         value,
                         raw_value: raw_value.to_string(),
                     });
+                    if !version.trim().eq_ignore_ascii_case("4.0") {
+                        list_members.push(parse_email_list_member(property, raw_value));
+                    }
                 }
                 "ORG" => org = value,
                 "TITLE" => title = value,
@@ -666,11 +1201,45 @@ impl VCardContact {
                         photos.push(parsed_photo);
                     }
                 }
-                _ if property_name.starts_with("X-") => {
-                    extensions.push(VCardExtension {
+                "MEMBER" => {
+                    is_list = true;
+                    list_members.push(parse_standard_list_member(property, raw_value, &value));
+                }
+                "KIND" if value.trim().eq_ignore_ascii_case("group") => {
+                    is_list = true;
+                    unknown_properties.push(VCardProperty {
                         property: property.to_string(),
                         value,
+                        raw_value: raw_value.to_string(),
                     });
+                }
+                _ if property_name.starts_with("X-") => {
+                    if property_name.eq_ignore_ascii_case("X-EVOLUTION-LIST") {
+                        is_list = parse_vcard_bool(&value);
+                    } else if property_name.eq_ignore_ascii_case("X-EVOLUTION-LIST-NAME") {
+                        list_name = value.clone();
+                    } else if is_list_show_addresses_property(&property_name) {
+                        list_show_addresses = parse_vcard_bool(&value);
+                    } else if property_name.eq_ignore_ascii_case("X-EVOLUTION-CONTACT-LIST") {
+                        is_list = true;
+                        list_members.push(parse_nested_list_member(property, raw_value, &value));
+                    }
+                    if property_name.eq_ignore_ascii_case("X-EVOLUTION-FILE-AS")
+                        && list_name.trim().is_empty()
+                    {
+                        list_name = value.clone();
+                    }
+                    if !property_name.eq_ignore_ascii_case("X-EVOLUTION-CONTACT-LIST") {
+                        extensions.push(VCardExtension {
+                            property: property.to_string(),
+                            value: value.clone(),
+                        });
+                        extension_properties.push(VCardProperty {
+                            property: property.to_string(),
+                            value,
+                            raw_value: raw_value.to_string(),
+                        });
+                    }
                 }
                 _ if !matches!(property_name.as_str(), "BEGIN" | "END") => {
                     unknown_properties.push(VCardProperty {
@@ -719,6 +1288,11 @@ impl VCardContact {
             url_properties,
             impp_properties,
             related_properties,
+            extension_properties,
+            is_list,
+            list_name,
+            list_show_addresses,
+            list_members: if is_list { list_members } else { Vec::new() },
             unknown_properties,
         })
     }
@@ -727,6 +1301,253 @@ impl VCardContact {
 fn property_base_name(property: &str) -> &str {
     let name = property.split(';').next().unwrap_or(property);
     name.rsplit('.').next().unwrap_or(name)
+}
+
+fn split_property_value(line: &str) -> Option<(&str, &str)> {
+    let mut quoted = false;
+    let mut escaped = false;
+    for (index, character) in line.char_indices() {
+        if quoted {
+            if escaped {
+                escaped = false;
+            } else if character == '\\' {
+                escaped = true;
+            } else if character == '"' {
+                quoted = false;
+            }
+        } else if character == '"' {
+            quoted = true;
+        } else if character == ':' {
+            return Some((&line[..index], &line[index + character.len_utf8()..]));
+        }
+    }
+    None
+}
+
+fn parse_vcard_bool(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "true" | "yes" | "1" | "on"
+    )
+}
+
+fn is_list_show_addresses_property(property: &str) -> bool {
+    property.eq_ignore_ascii_case("X-EVOLUTION-LIST-SHOW-ADDRESSES")
+        || property.eq_ignore_ascii_case("X-EVOLUTION-LIST-SHOW_ADDRESSES")
+}
+
+fn is_list_representation_property(property: &str) -> bool {
+    let name = property_base_name(property);
+    name.eq_ignore_ascii_case("X-EVOLUTION-LIST")
+        || name.eq_ignore_ascii_case("X-EVOLUTION-LIST-NAME")
+        || is_list_show_addresses_property(name)
+        || name.eq_ignore_ascii_case("X-EVOLUTION-CONTACT-LIST")
+}
+
+fn split_property_parts(property: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut start = 0;
+    let mut quoted = false;
+    for (index, character) in property.char_indices() {
+        match character {
+            '"' => quoted = !quoted,
+            ';' if !quoted => {
+                parts.push(&property[start..index]);
+                start = index + character.len_utf8();
+            }
+            _ => {}
+        }
+    }
+    parts.push(&property[start..]);
+    parts
+}
+
+fn property_parameters(property: &str) -> Vec<(String, String)> {
+    split_property_parts(property)
+        .into_iter()
+        .skip(1)
+        .filter_map(|part| {
+            let (name, value) = part.split_once('=')?;
+            Some((
+                name.trim().to_ascii_uppercase(),
+                unescape_parameter(value.trim().trim_matches('"')),
+            ))
+        })
+        .collect()
+}
+
+fn parameter_value(property: &str, name: &str) -> Option<String> {
+    property_parameters(property)
+        .into_iter()
+        .find(|(parameter, _)| parameter.eq_ignore_ascii_case(name))
+        .map(|(_, value)| value)
+}
+
+fn parse_email_list_member(property: &str, raw_value: &str) -> VCardListMember {
+    let value = unescape_value(raw_value);
+    let (display_name, parsed_email) = parse_recipient_value(&value);
+    let contact_uid = parameter_value(property, "X-EVOLUTION-DEST-CONTACT-UID").unwrap_or_default();
+    let source_uid = parameter_value(property, "X-EVOLUTION-DEST-SOURCE-UID").unwrap_or_default();
+    let display_name = parameter_value(property, "X-EVOLUTION-DEST-NAME")
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or(display_name);
+    let email = parameter_value(property, "X-EVOLUTION-DEST-EMAIL")
+        .map(|value| normalize_mail_address(&value))
+        .filter(|value| !value.is_empty())
+        .unwrap_or(parsed_email);
+    let email_num = parameter_value(property, "X-EVOLUTION-DEST-EMAIL-NUM")
+        .and_then(|value| value.parse::<usize>().ok());
+    let kind = if !contact_uid.trim().is_empty() {
+        VCardListMemberKind::LocalContact
+    } else if is_valid_email(&email) {
+        VCardListMemberKind::ExternalAddress
+    } else {
+        VCardListMemberKind::Invalid
+    };
+    VCardListMember {
+        kind,
+        display_name,
+        email,
+        contact_uid,
+        source_uid,
+        email_num,
+        parent_id: parameter_value(property, "X-EVOLUTION-PARENT-CL"),
+        property: property.to_string(),
+        value,
+        raw_value: raw_value.to_string(),
+    }
+}
+
+fn parse_nested_list_member(property: &str, raw_value: &str, value: &str) -> VCardListMember {
+    VCardListMember {
+        kind: VCardListMemberKind::NestedList,
+        display_name: value.trim().to_string(),
+        email: String::new(),
+        contact_uid: parameter_value(property, "X-EVOLUTION-CL-UID").unwrap_or_default(),
+        source_uid: String::new(),
+        email_num: None,
+        parent_id: parameter_value(property, "X-EVOLUTION-PARENT-CL"),
+        property: property.to_string(),
+        value: value.to_string(),
+        raw_value: raw_value.to_string(),
+    }
+}
+
+fn parse_standard_list_member(property: &str, raw_value: &str, value: &str) -> VCardListMember {
+    let (display_name, parsed_email) = parse_recipient_value(value);
+    let is_uri_member = !value.to_ascii_lowercase().starts_with("mailto:")
+        && value.contains(':')
+        && !value.chars().any(char::is_whitespace);
+    let email = if is_uri_member {
+        String::new()
+    } else {
+        parsed_email
+    };
+    let contact_uid = value
+        .get(..9)
+        .filter(|prefix| prefix.eq_ignore_ascii_case("urn:uuid:"))
+        .map(|_| value[9..].to_string())
+        .unwrap_or_default();
+    VCardListMember {
+        kind: if is_valid_email(&email) || is_uri_member {
+            VCardListMemberKind::StandardMember
+        } else {
+            VCardListMemberKind::Invalid
+        },
+        display_name,
+        email,
+        contact_uid,
+        source_uid: String::new(),
+        email_num: None,
+        parent_id: None,
+        property: property.to_string(),
+        value: value.to_string(),
+        raw_value: raw_value.to_string(),
+    }
+}
+
+fn parse_recipient_value(value: &str) -> (String, String) {
+    let value = value.trim();
+    if let Some(start) = value.rfind('<') {
+        if value.ends_with('>') && start + 1 < value.len() {
+            let display_name = value[..start].trim().trim_matches('"').trim().to_string();
+            let email = normalize_mail_address(&value[start + 1..value.len() - 1]);
+            return (display_name, email);
+        }
+    }
+    let email = normalize_mail_address(value);
+    (String::new(), email)
+}
+
+fn normalize_mail_address(value: &str) -> String {
+    let value = value.trim().trim_matches('<').trim_matches('>');
+    let value = if value
+        .get(..7)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("mailto:"))
+    {
+        &value[7..]
+    } else {
+        value
+    };
+    value.trim().to_string()
+}
+
+fn is_valid_email(value: &str) -> bool {
+    let value = normalize_mail_address(value);
+    if value.matches('@').count() != 1 || value.chars().any(char::is_control) {
+        return false;
+    }
+    let Some((local, domain)) = value.split_once('@') else {
+        return false;
+    };
+    !local.trim().is_empty()
+        && !domain.trim().is_empty()
+        && !local.starts_with('.')
+        && !local.ends_with('.')
+        && !domain.starts_with('.')
+        && !domain.ends_with('.')
+        && !value.chars().any(|character| {
+            character.is_whitespace() || matches!(character, '<' | '>' | ',' | ';')
+        })
+}
+
+fn escape_parameter(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace(';', "\\;")
+        .replace(':', "\\:")
+        .replace(',', "\\,")
+}
+
+fn unescape_parameter(value: &str) -> String {
+    let mut unescaped = String::with_capacity(value.len());
+    let mut characters = value.chars();
+    while let Some(character) = characters.next() {
+        if character != '\\' {
+            unescaped.push(character);
+            continue;
+        }
+        match characters.next() {
+            Some(next @ ('\\' | '"' | ';' | ':' | ',')) => unescaped.push(next),
+            Some(other) => {
+                unescaped.push('\\');
+                unescaped.push(other);
+            }
+            None => unescaped.push('\\'),
+        }
+    }
+    unescaped
+}
+
+fn format_parameter_value(value: &str) -> String {
+    if value.chars().any(|character| {
+        matches!(character, ',' | ';' | ':' | '"' | '\\') || character.is_whitespace()
+    }) {
+        format!("\"{}\"", escape_parameter(value))
+    } else {
+        value.to_string()
+    }
 }
 
 fn is_core_property(property: &str) -> bool {
@@ -759,9 +1580,26 @@ fn is_core_property(property: &str) -> bool {
 }
 
 fn is_safe_property(property: &str) -> bool {
-    !property.is_empty()
-        && !property.contains(['\r', '\n', ':'])
-        && !property_base_name(property).trim().is_empty()
+    if property.is_empty()
+        || property.contains(['\r', '\n'])
+        || property_base_name(property).trim().is_empty()
+    {
+        return false;
+    }
+    let mut quoted = false;
+    let mut escaped = false;
+    for character in property.chars() {
+        if escaped {
+            escaped = false;
+        } else if character == '\\' {
+            escaped = true;
+        } else if character == '"' {
+            quoted = !quoted;
+        } else if character == ':' && !quoted {
+            return false;
+        }
+    }
+    !quoted
 }
 
 fn is_extension_property(property: &str) -> bool {
@@ -912,7 +1750,7 @@ fn is_complete_vcard(lines: &[String]) -> bool {
 }
 
 fn merge_property_signature(line: &str) -> Option<String> {
-    let (property, value) = line.split_once(':')?;
+    let (property, value) = split_property_value(line)?;
     let property_name = property_base_name(property).to_ascii_lowercase();
     if matches!(property_name.as_str(), "begin" | "end") {
         return None;
@@ -1463,5 +2301,172 @@ mod tests {
         let reparsed = VCardContact::parse_vcard_string(&roundtrip).expect("photos roundtrip");
         assert_eq!(reparsed.photos.len(), 2);
         assert_eq!(reparsed.photos[1].decoded_bytes(), Some(b"abcd".to_vec()));
+    }
+
+    #[test]
+    fn evolution_list_vcard_3_roundtrip_keeps_external_local_and_nested_members() {
+        let mut list = VCardContact::new_list("Team Europa", false, Some("list-1"));
+        list.list_members = vec![
+            VCardListMember::external_address("external@example.test", "Extern"),
+            VCardListMember::local_contact(
+                "contact-1",
+                "local-addressbook",
+                "Ada Lovelace",
+                "ada@example.test",
+                Some(0),
+            ),
+            VCardListMember::nested_list("2", "Unterteam", Some("0")),
+        ];
+
+        let serialized = list.to_vcard_string();
+        assert!(serialized.contains("VERSION:3.0"));
+        assert!(serialized.contains("X-EVOLUTION-LIST:TRUE"));
+        assert!(serialized.contains("X-EVOLUTION-LIST-SHOW-ADDRESSES:FALSE"));
+        let unfolded = serialized.replace("\r\n ", "");
+        assert!(unfolded.contains("X-EVOLUTION-DEST-CONTACT-UID="));
+        assert!(unfolded.contains("contact-1"));
+        assert!(serialized.contains("X-EVOLUTION-CONTACT-LIST;X-EVOLUTION-CL-UID=2"));
+
+        let parsed = VCardContact::parse_vcard_string(&serialized).expect("list should parse");
+        assert!(parsed.is_list);
+        assert_eq!(parsed.list_name, "Team Europa");
+        assert!(!parsed.list_show_addresses);
+        assert_eq!(parsed.list_members.len(), 3);
+        assert_eq!(
+            parsed.list_members[0].kind,
+            VCardListMemberKind::ExternalAddress
+        );
+        assert_eq!(parsed.list_members[1].contact_uid, "contact-1");
+        assert_eq!(parsed.list_members[2].kind, VCardListMemberKind::NestedList);
+
+        let reparsed = VCardContact::parse_vcard_string(&parsed.to_vcard_string())
+            .expect("list roundtrip should parse");
+        assert_eq!(reparsed.list_members, parsed.list_members);
+    }
+
+    #[test]
+    fn vcard_4_member_lists_roundtrip_and_mark_invalid_members() {
+        let vcard = concat!(
+            "BEGIN:VCARD\r\nVERSION:4.0\r\nKIND:group\r\nFN:Projekt\r\n",
+            "MEMBER:mailto:ada@example.test\r\n",
+            "MEMBER:mailto:not-an-address\r\n",
+            "MEMBER:urn:uuid:contact-1\r\n",
+            "X-PROVIDER-UNKNOWN;X-PARAM=one:kept\r\nEND:VCARD\r\n"
+        );
+        let list = VCardContact::parse_vcard_string(vcard).expect("vCard 4 list should parse");
+        assert!(list.is_list);
+        assert_eq!(list.list_members.len(), 3);
+        assert!(list.list_members[0].is_valid());
+        assert!(!list.list_members[1].is_valid());
+        assert_eq!(
+            list.list_members[2].kind,
+            VCardListMemberKind::StandardMember
+        );
+        assert!(list.list_members[2].is_valid());
+        assert_eq!(list.invalid_list_members().len(), 1);
+        let roundtrip = list.to_vcard_string();
+        assert!(roundtrip.contains("VERSION:4.0"));
+        assert!(roundtrip.contains("MEMBER:mailto:ada@example.test"));
+        assert!(roundtrip.contains("MEMBER:mailto:not-an-address"));
+        assert!(roundtrip.contains("MEMBER:urn:uuid:contact-1"));
+        assert!(roundtrip.contains("X-PROVIDER-UNKNOWN;X-PARAM=one:kept"));
+    }
+
+    #[test]
+    fn eds_list_parser_distinguishes_invalid_external_and_local_destinations() {
+        let vcard = concat!(
+            "BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Ungültige Liste\r\n",
+            "X-EVOLUTION-LIST:TRUE\r\n",
+            "EMAIL:broken-address\r\n",
+            "EMAIL;X-EVOLUTION-DEST-CONTACT-UID=local-1:broken-local\r\n",
+            "END:VCARD\r\n"
+        );
+        let list = VCardContact::parse_vcard_string(vcard).expect("EDS list should parse");
+        assert_eq!(list.list_members.len(), 2);
+        assert_eq!(list.list_members[0].kind, VCardListMemberKind::Invalid);
+        assert_eq!(list.list_members[1].kind, VCardListMemberKind::LocalContact);
+        assert_eq!(list.invalid_list_members().len(), 2);
+    }
+
+    #[test]
+    fn vcard4_group_uses_kind_and_member_without_eds_destination_lines() {
+        let vcard = concat!(
+            "BEGIN:VCARD\r\nVERSION:4.0\r\nUID:group-1\r\n",
+            "FN:Projekt\r\nKIND:group\r\nEMAIL:group@example.test\r\n",
+            "MEMBER:mailto:ada@example.test\r\nMEMBER:urn:uuid:contact-1\r\n",
+            "END:VCARD\r\n"
+        );
+        let list = VCardContact::parse_vcard_string(vcard).expect("group should parse");
+        assert!(list.is_list);
+        assert!(list.list_validation_error().is_none());
+
+        let roundtrip = list.to_vcard_string();
+        assert!(roundtrip.contains("KIND:group"));
+        assert!(roundtrip.contains("MEMBER:mailto:ada@example.test"));
+        assert!(roundtrip.contains("MEMBER:urn:uuid:contact-1"));
+        assert!(roundtrip.contains("EMAIL:group@example.test"));
+        assert!(!roundtrip.contains("X-EVOLUTION-LIST:TRUE"));
+        assert!(!roundtrip.contains("X-EVOLUTION-DEST-CONTACT-UID"));
+
+        let reparsed = VCardContact::parse_vcard_string(&roundtrip).expect("roundtrip parses");
+        assert_eq!(reparsed.list_members, list.list_members);
+        assert_eq!(reparsed.emails, vec!["group@example.test"]);
+    }
+
+    #[test]
+    fn vcard4_member_without_group_kind_is_rejected_until_repaired() {
+        let vcard = concat!(
+            "BEGIN:VCARD\r\nVERSION:4.0\r\nUID:group-2\r\nFN:Projekt\r\n",
+            "MEMBER:mailto:ada@example.test\r\nEND:VCARD\r\n"
+        );
+        let mut list = VCardContact::parse_vcard_string(vcard).expect("group should parse");
+        assert!(
+            list.list_validation_error()
+                .is_some_and(|error| error.contains("KIND:group"))
+        );
+        list.ensure_vcard4_group_kind();
+        assert!(list.list_validation_error().is_none());
+        assert!(list.to_vcard_string().contains("KIND:group"));
+    }
+
+    #[test]
+    fn evolution_destination_parameters_unescape_and_roundtrip_exactly() {
+        let vcard = concat!(
+            "BEGIN:VCARD\r\nVERSION:3.0\r\nUID:list-parameters\r\nFN:Team\r\n",
+            "X-EVOLUTION-LIST:TRUE\r\n",
+            "EMAIL;X-EVOLUTION-DEST-NAME=\"Ada\\, Lovelace\";",
+            "X-EVOLUTION-DEST-CONTACT-UID=\"contact\\:1\";",
+            "X-EVOLUTION-DEST-SOURCE-UID=\"source\\,1\";",
+            "X-EVOLUTION-DEST-EMAIL-NUM=2;X-EVOLUTION-PARENT-CL=0:",
+            "Ada Lovelace <ada@example.test>\r\nEND:VCARD\r\n"
+        );
+        let list = VCardContact::parse_vcard_string(vcard).expect("list should parse");
+        let member = &list.list_members[0];
+        assert_eq!(member.display_name, "Ada, Lovelace");
+        assert_eq!(member.contact_uid, "contact:1");
+        assert_eq!(member.source_uid, "source,1");
+        assert_eq!(member.email_num, Some(2));
+        let serialized = list.to_vcard_string();
+        let unfolded = serialized.replace("\r\n ", "");
+        assert!(unfolded.contains(
+            "EMAIL;X-EVOLUTION-DEST-NAME=\"Ada\\, Lovelace\";X-EVOLUTION-DEST-CONTACT-UID=\"contact\\:1\";X-EVOLUTION-DEST-SOURCE-UID=\"source\\,1\";X-EVOLUTION-DEST-EMAIL-NUM=2;X-EVOLUTION-PARENT-CL=0:Ada Lovelace <ada@example.test>"
+        ), "serialized vCard: {serialized}");
+    }
+
+    #[test]
+    fn long_unknown_extension_keeps_logical_value_after_folding() {
+        let long_value = "provider-value-".to_string() + &"x".repeat(160);
+        let vcard = format!(
+            "BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Provider\r\nX-PROVIDER-LONG:{long_value}\r\nEND:VCARD\r\n"
+        );
+        let contact = VCardContact::parse_vcard_string(&vcard).expect("vCard should parse");
+        let serialized = contact.to_vcard_string();
+        assert!(serialized.contains("X-PROVIDER-LONG:"));
+        assert!(serialized.contains("\r\n "));
+        let reparsed = VCardContact::parse_vcard_string(&serialized).expect("folded output parses");
+        assert_eq!(
+            reparsed.extension_values("X-PROVIDER-LONG"),
+            vec![long_value]
+        );
     }
 }

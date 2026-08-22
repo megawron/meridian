@@ -7,7 +7,8 @@
 
 use super::vcard_service::VCardContact;
 use std::fs;
-use std::io;
+use std::fs::OpenOptions;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -139,11 +140,25 @@ impl ContactStoreService {
     pub fn create_contact(&self, vcard: &str) -> io::Result<(String, String)> {
         self.ensure_writable()?;
         let vcard = ensure_vcard_uid(vcard, None);
+        validate_vcard(&vcard)?;
         let uid = vcard_uid(&vcard).ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidInput, "vCard enthält keine UID")
         })?;
         let path = self.contact_file_path();
         let mut contents = read_contact_file(&path)?;
+        for existing_path in self.mutable_vcard_files() {
+            let existing_contents = read_contact_file(&existing_path)?;
+            if split_vcards(&existing_contents)
+                .iter()
+                .filter_map(|card| vcard_uid(card))
+                .any(|existing_uid| existing_uid == uid)
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    format!("Eine vCard mit der UID existiert bereits: {uid}"),
+                ));
+            }
+        }
         insert_vcard(&mut contents, &vcard)?;
         write_atomic(&path, contents.as_bytes())?;
         Ok((uid, vcard))
@@ -151,7 +166,14 @@ impl ContactStoreService {
 
     pub fn modify_contact(&self, uid: &str, vcard: &str) -> io::Result<(String, String)> {
         self.ensure_writable()?;
+        if uid.trim().is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Ändern benötigt eine Kontakt-UID",
+            ));
+        }
         let vcard = ensure_vcard_uid(vcard, Some(uid));
+        validate_vcard(&vcard)?;
         let replacement_uid = vcard_uid(&vcard).ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidInput, "vCard enthält keine UID")
         })?;
@@ -242,6 +264,7 @@ impl ContactStoreService {
             ));
         }
         let merged_vcard = ensure_vcard_uid(merged_vcard, Some(primary_uid));
+        validate_vcard(&merged_vcard)?;
         let merged_uid = vcard_uid(&merged_vcard).ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -481,7 +504,10 @@ fn vcard_uid(raw: &str) -> Option<String> {
             .next()
             .is_some_and(|name| name.eq_ignore_ascii_case("UID"))
         {
-            return Some(unescape_vcard_value(value));
+            let uid = unescape_vcard_value(value);
+            if !uid.trim().is_empty() {
+                return Some(uid);
+            }
         }
     }
     None
@@ -492,20 +518,34 @@ fn local_contact_id(raw: &str, path: &Path, index: usize) -> String {
 }
 
 fn ensure_vcard_uid(raw: &str, fallback_uid: Option<&str>) -> String {
-    let mut lines = unfold_lines(raw);
-    let uid = vcard_uid(raw)
-        .or_else(|| fallback_uid.map(ToOwned::to_owned))
-        .unwrap_or_else(|| format!("evolution-gtk4-{}", uuid::Uuid::new_v4()));
-    if vcard_uid(raw).is_none() {
-        let insertion = lines
-            .iter()
-            .position(|line| line.eq_ignore_ascii_case("BEGIN:VCARD"))
-            .map(|index| index + 1)
-            .unwrap_or(0);
-        lines.insert(insertion, format!("UID:{uid}"));
+    if vcard_uid(raw).is_some() {
+        return normalize_line_endings(raw);
     }
-    let mut result = lines.join("\r\n");
-    result.push_str("\r\n");
+    let uid = fallback_uid
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| format!("evolution-gtk4-{}", uuid::Uuid::new_v4()));
+    let normalized = normalize_line_endings(raw);
+    let mut lines = normalized
+        .split("\r\n")
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+    let insertion = lines
+        .iter()
+        .position(|line| line.eq_ignore_ascii_case("BEGIN:VCARD"))
+        .map(|index| index + 1)
+        .unwrap_or(0);
+    lines.insert(insertion, format!("UID:{uid}"));
+    lines.join("\r\n")
+}
+
+fn normalize_line_endings(raw: &str) -> String {
+    let mut result = raw
+        .replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .replace('\n', "\r\n");
+    if !result.ends_with("\r\n") {
+        result.push_str("\r\n");
+    }
     result
 }
 
@@ -572,9 +612,51 @@ fn write_atomic(path: &Path, contents: &[u8]) -> io::Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let temporary = path.with_extension("vcf.tmp");
-    fs::write(&temporary, contents)?;
-    fs::rename(temporary, path)
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("contacts.vcf");
+    let temporary = path.with_file_name(format!(".{file_name}.tmp-{}", uuid::Uuid::new_v4()));
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temporary)?;
+    file.write_all(contents)?;
+    file.sync_all()?;
+    drop(file);
+    match fs::rename(&temporary, path) {
+        Ok(()) => {
+            if let Some(parent) = path.parent() {
+                if let Ok(directory) = fs::File::open(parent) {
+                    let _ = directory.sync_all();
+                }
+            }
+            Ok(())
+        }
+        Err(error) => {
+            let _ = fs::remove_file(&temporary);
+            Err(error)
+        }
+    }
+}
+
+fn validate_vcard(vcard: &str) -> io::Result<VCardContact> {
+    if split_vcards(vcard).len() != 1 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Eine Mutation benötigt genau eine vCard",
+        ));
+    }
+    let Some(contact) = VCardContact::parse_vcard_string(vcard) else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Ungültige vCard",
+        ));
+    };
+    if let Some(error) = contact.list_validation_error() {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, error));
+    }
+    Ok(contact)
 }
 
 fn unescape_vcard_value(value: &str) -> String {
@@ -587,23 +669,26 @@ fn unescape_vcard_value(value: &str) -> String {
 }
 
 fn split_vcards(raw: &str) -> Vec<String> {
-    let lines = unfold_lines(raw);
+    let normalized = raw.replace("\r\n", "\n").replace('\r', "\n");
     let mut cards = Vec::new();
     let mut current = Vec::new();
     let mut inside = false;
 
-    for line in lines {
+    for line in normalized.split('\n') {
+        if line.is_empty() && !inside {
+            continue;
+        }
         if line.eq_ignore_ascii_case("BEGIN:VCARD") {
             current.clear();
-            current.push(line);
+            current.push(line.to_string());
             inside = true;
         } else if inside && line.eq_ignore_ascii_case("END:VCARD") {
-            current.push(line);
+            current.push(line.to_string());
             cards.push(current.join("\r\n"));
             current.clear();
             inside = false;
         } else if inside {
-            current.push(line);
+            current.push(line.to_string());
         }
     }
 
@@ -615,7 +700,7 @@ fn unfold_lines(raw: &str) -> Vec<String> {
     for raw_line in raw.replace("\r\n", "\n").replace('\r', "\n").lines() {
         if raw_line.starts_with(' ') || raw_line.starts_with('\t') {
             if let Some(previous) = lines.last_mut() {
-                previous.push_str(raw_line.trim_start());
+                previous.push_str(&raw_line[1..]);
             }
         } else {
             lines.push(raw_line.to_string());
@@ -721,6 +806,156 @@ mod tests {
             uid
         );
         assert!(service.load_contacts().is_empty());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn writable_local_store_persists_and_reloads_contact_lists_without_losing_extensions() {
+        let root = temporary_directory("vcard-list-persistence");
+        let service = ContactStoreService::with_writable_contact_dir(&root);
+        let list = concat!(
+            "BEGIN:VCARD\r\nVERSION:3.0\r\nUID:list-1\r\nFN:Projektteam\r\n",
+            "N:;Projektteam;;;\r\nX-EVOLUTION-LIST:TRUE\r\n",
+            "X-EVOLUTION-LIST-SHOW-ADDRESSES:FALSE\r\n",
+            "X-EVOLUTION-LIST-NAME:Projektteam\r\n",
+            "EMAIL:Extern <external@example.test>\r\n",
+            "EMAIL;X-EVOLUTION-DEST-CONTACT-UID=contact-1;X-EVOLUTION-DEST-SOURCE-UID=local-addressbook:Alice <alice@example.test>\r\n",
+            "X-PROVIDER-UNKNOWN;X-PARAM=kept:opaque\r\nEND:VCARD\r\n"
+        );
+        service
+            .create_contact(list)
+            .expect("contact list should be persisted");
+
+        let loaded = service.load_contacts();
+        assert_eq!(loaded.len(), 1);
+        assert!(loaded[0].contact.is_list);
+        assert_eq!(loaded[0].contact.list_members.len(), 2);
+        assert_eq!(loaded[0].contact.list_members[1].contact_uid, "contact-1");
+        assert!(
+            loaded[0]
+                .vcard
+                .contains("X-PROVIDER-UNKNOWN;X-PARAM=kept:opaque")
+        );
+        assert!(!loaded[0].contact.list_show_addresses);
+
+        let updated = loaded[0].contact.to_vcard_string().replace(
+            "X-EVOLUTION-LIST-SHOW-ADDRESSES:FALSE",
+            "X-EVOLUTION-LIST-SHOW-ADDRESSES:TRUE",
+        );
+        service
+            .modify_contact("list-1", &updated)
+            .expect("contact list should be modified");
+        let reloaded = service.load_contacts();
+        assert!(reloaded[0].contact.list_show_addresses);
+        assert_eq!(reloaded[0].contact.list_members.len(), 2);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn invalid_list_member_is_rejected_without_changing_existing_file() {
+        let root = temporary_directory("vcard-list-invalid");
+        let service = ContactStoreService::with_writable_contact_dir(&root);
+        let valid = concat!(
+            "BEGIN:VCARD\r\nVERSION:3.0\r\nUID:list-2\r\nFN:Team\r\n",
+            "X-EVOLUTION-LIST:TRUE\r\nEMAIL:valid@example.test\r\nEND:VCARD\r\n"
+        );
+        service
+            .create_contact(valid)
+            .expect("valid list should be created");
+        let path = root.join("evolution-gtk4-local.vcf");
+        let original = fs::read_to_string(&path).expect("list file should exist");
+        let invalid = valid.replace("valid@example.test", "not-an-email");
+        let error = service
+            .modify_contact("list-2", &invalid)
+            .expect_err("invalid list member should be rejected");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert_eq!(fs::read_to_string(path).unwrap(), original);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn duplicate_uid_is_rejected_before_the_atomic_write() {
+        let root = temporary_directory("vcard-duplicate-uid");
+        let service = ContactStoreService::with_writable_contact_dir(&root);
+        let vcard = concat!(
+            "BEGIN:VCARD\r\nVERSION:3.0\r\nUID:duplicate-uid\r\n",
+            "FN:Erster Kontakt\r\nEND:VCARD\r\n"
+        );
+        service
+            .create_contact(vcard)
+            .expect("first contact should save");
+        let error = service
+            .create_contact(vcard)
+            .expect_err("duplicate UID should be rejected");
+        assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(service.load_contacts().len(), 1);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn existing_folding_survives_create_and_modify() {
+        let root = temporary_directory("vcard-folding-persistence");
+        let service = ContactStoreService::with_writable_contact_dir(&root);
+        let vcard = concat!(
+            "BEGIN:VCARD\r\nVERSION:3.0\r\nUID:folded-1\r\nFN:Gefaltete Karte\r\n",
+            "X-PROVIDER-LONG:erste Zeile\r\n zweite Zeile mit Daten\r\n",
+            "END:VCARD\r\n"
+        );
+        service
+            .create_contact(vcard)
+            .expect("folded contact should save");
+        let path = root.join("evolution-gtk4-local.vcf");
+        let stored = fs::read_to_string(&path).expect("store should be readable");
+        assert!(stored.contains("X-PROVIDER-LONG:erste Zeile\r\n zweite Zeile"));
+
+        service
+            .modify_contact("folded-1", vcard)
+            .expect("folded contact should modify");
+        let modified = fs::read_to_string(path).expect("modified store should be readable");
+        assert!(modified.contains("X-PROVIDER-LONG:erste Zeile\r\n zweite Zeile"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn malformed_or_multi_card_mutations_are_rejected_without_creating_a_file() {
+        let root = temporary_directory("vcard-invalid-mutation");
+        let service = ContactStoreService::with_writable_contact_dir(&root);
+        let malformed = "BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Unvollständig\r\n";
+        let error = service
+            .create_contact(malformed)
+            .expect_err("malformed vCard should be rejected");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+
+        let multiple = concat!(
+            "BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Eins\r\nEND:VCARD\r\n",
+            "BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Zwei\r\nEND:VCARD\r\n"
+        );
+        let error = service
+            .create_contact(multiple)
+            .expect_err("multiple cards should be rejected");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(!root.join("evolution-gtk4-local.vcf").exists());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn vcard4_group_requires_kind_group_in_local_persistence() {
+        let root = temporary_directory("vcard4-group-validation");
+        let service = ContactStoreService::with_writable_contact_dir(&root);
+        let invalid = concat!(
+            "BEGIN:VCARD\r\nVERSION:4.0\r\nUID:group-invalid\r\nFN:Team\r\n",
+            "MEMBER:mailto:person@example.test\r\nEND:VCARD\r\n"
+        );
+        let error = service
+            .create_contact(invalid)
+            .expect_err("vCard 4 member without KIND should be rejected");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
 
         let _ = fs::remove_dir_all(root);
     }

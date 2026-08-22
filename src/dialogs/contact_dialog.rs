@@ -11,15 +11,15 @@
 use adw::prelude::*;
 use adw::subclass::prelude::*;
 use gtk::glib;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use crate::services::contact_store_service::ContactStoreService;
-use crate::services::ebook_service::EBookContactRecord;
 use crate::services::ebook_service::EBookService;
+use crate::services::ebook_service::{EBookContactRecord, load_contacts_prefer_eds};
 use crate::services::eds_service;
 use crate::services::settings_service::AppSettings;
-use crate::services::vcard_service::VCardContact;
+use crate::services::vcard_service::{VCardContact, VCardListMember, VCardListMemberKind};
 
 mod imp {
     use super::*;
@@ -29,6 +29,8 @@ mod imp {
         pub edit_vcard: RefCell<Option<String>>,
         pub edit_uid: RefCell<Option<String>>,
         pub edit_source_uid: RefCell<Option<String>>,
+        pub list_mode: Cell<bool>,
+        pub save_in_progress: Cell<bool>,
     }
 
     #[glib::object_subclass]
@@ -47,6 +49,9 @@ mod imp {
                     glib::ParamSpecString::builder("edit-vcard").build(),
                     glib::ParamSpecString::builder("edit-uid").build(),
                     glib::ParamSpecString::builder("edit-source-uid").build(),
+                    glib::ParamSpecBoolean::builder("list-mode")
+                        .default_value(false)
+                        .build(),
                 ]
             })
         }
@@ -58,6 +63,7 @@ mod imp {
                 "edit-source-uid" => {
                     *self.edit_source_uid.borrow_mut() = value.get().expect("string")
                 }
+                "list-mode" => self.list_mode.set(value.get().expect("boolean")),
                 _ => {}
             }
         }
@@ -67,6 +73,7 @@ mod imp {
                 "edit-vcard" => self.edit_vcard.borrow().to_value(),
                 "edit-uid" => self.edit_uid.borrow().to_value(),
                 "edit-source-uid" => self.edit_source_uid.borrow().to_value(),
+                "list-mode" => self.list_mode.get().to_value(),
                 _ => glib::Value::from_type(pspec.value_type()),
             }
         }
@@ -99,6 +106,16 @@ impl ContactDialog {
             .build()
     }
 
+    pub(crate) fn new_for_list() -> Self {
+        glib::Object::builder()
+            .property("title", "Neue Kontaktliste")
+            .property("modal", true)
+            .property("default-width", 620)
+            .property("default-height", 620)
+            .property("list-mode", true)
+            .build()
+    }
+
     pub(crate) fn new_for_edit(record: &EBookContactRecord) -> Self {
         glib::Object::builder()
             .property("title", "Kontakt bearbeiten")
@@ -108,10 +125,16 @@ impl ContactDialog {
             .property("edit-vcard", &record.vcard)
             .property("edit-uid", &record.uid)
             .property("edit-source-uid", &record.source_uid)
+            .property("list-mode", record.contact.is_list)
             .build()
     }
 
     fn build_ui(&self) {
+        if self.imp().list_mode.get() {
+            self.build_list_ui();
+            return;
+        }
+        self.guard_close_while_saving();
         let edit_vcard = self.imp().edit_vcard.borrow().clone();
         let edit_uid = self.imp().edit_uid.borrow().clone();
         let edit_source_uid = self.imp().edit_source_uid.borrow().clone();
@@ -195,6 +218,7 @@ impl ContactDialog {
             .title("Adressbuch")
             .model(&source_model)
             .build();
+        source_row.set_sensitive(edit_uid.is_none());
         group_general.add(&source_row);
         let settings_for_default_address_book = AppSettings::try_new();
         let source_uids_for_selection = Rc::clone(&source_uids);
@@ -333,13 +357,13 @@ impl ContactDialog {
             .title("Mailingliste")
             .subtitle("Kontakt als Liste behandeln")
             .build();
-        group_evolution.add(&row_evolution_list);
         let row_evolution_list_name = adw::EntryRow::builder().title("Listenname").build();
-        group_evolution.add(&row_evolution_list_name);
         let row_evolution_list_show_addresses = adw::SwitchRow::builder()
             .title("Listenadressen anzeigen")
             .build();
-        group_evolution.add(&row_evolution_list_show_addresses);
+        // List editing has a dedicated member-aware UI. Keep these widgets
+        // only as compatibility storage for the existing individual vCard
+        // builder tests; they are intentionally not shown here.
 
         if let Some(vcard) = edit_vcard.as_deref() {
             if let Some(contact) = VCardContact::parse_vcard_string(vcard) {
@@ -601,6 +625,7 @@ impl ContactDialog {
             let vcard_for_worker = vcard.clone();
             let was_edit = edit_vcard_for_save.is_some();
             let (sender, receiver) = async_channel::bounded(1);
+            dialog.imp().save_in_progress.set(true);
             save_button_for_closure.set_sensitive(false);
             std::thread::spawn(move || {
                 let service = EBookService::new();
@@ -618,9 +643,15 @@ impl ContactDialog {
             let dialog_weak_for_result = dialog.downgrade();
             glib::spawn_future_local(async move {
                 let Ok(result) = receiver.recv().await else {
+                    if let Some(dialog) = dialog_weak_for_result.upgrade() {
+                        dialog.imp().save_in_progress.set(false);
+                    }
                     save_button_for_result.set_sensitive(true);
                     return;
                 };
+                if let Some(dialog) = dialog_weak_for_result.upgrade() {
+                    dialog.imp().save_in_progress.set(false);
+                }
                 match result {
                     Ok(result) => {
                         let message = if was_edit {
@@ -646,6 +677,540 @@ impl ContactDialog {
         });
     }
 
+    fn build_list_ui(&self) {
+        self.guard_close_while_saving();
+        let edit_vcard = self.imp().edit_vcard.borrow().clone();
+        let edit_uid = self.imp().edit_uid.borrow().clone();
+        let edit_source_uid = self.imp().edit_source_uid.borrow().clone();
+        let original_contact = edit_vcard
+            .as_deref()
+            .and_then(VCardContact::parse_vcard_string);
+        let initial_name = original_contact
+            .as_ref()
+            .map(|contact| {
+                if contact.list_name.trim().is_empty() {
+                    contact.fn_name.clone()
+                } else {
+                    contact.list_name.clone()
+                }
+            })
+            .unwrap_or_default();
+        let initial_show_addresses = original_contact
+            .as_ref()
+            .is_some_and(|contact| contact.list_show_addresses);
+        let members = Rc::new(RefCell::new(
+            original_contact
+                .as_ref()
+                .map(|contact| contact.list_members.clone())
+                .unwrap_or_default(),
+        ));
+
+        let toolbar_view = adw::ToolbarView::new();
+        let header_bar = adw::HeaderBar::new();
+        let save_button = gtk::Button::builder()
+            .label("Speichern")
+            .css_classes(vec!["suggested-action"])
+            .build();
+        header_bar.pack_end(&save_button);
+        toolbar_view.add_top_bar(&header_bar);
+
+        let content_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(16)
+            .margin_start(20)
+            .margin_end(20)
+            .margin_top(16)
+            .margin_bottom(20)
+            .build();
+        let list_group = adw::PreferencesGroup::builder()
+            .title("Kontaktliste")
+            .description("Verteilerlisten können lokale Kontakte und externe Adressen enthalten.")
+            .build();
+        let name_row = adw::EntryRow::builder().title("Listenname").build();
+        name_row.set_text(&initial_name);
+        list_group.add(&name_row);
+
+        let source_model = gtk::StringList::new(&["Adressbücher werden geladen…"]);
+        let source_uids = Rc::new(RefCell::new(Vec::<String>::new()));
+        let source_row = adw::ComboRow::builder()
+            .title("Adressbuch")
+            .model(&source_model)
+            .build();
+        source_row.set_sensitive(edit_uid.is_none());
+        list_group.add(&source_row);
+        let source_uids_for_settings = Rc::clone(&source_uids);
+        let settings_for_source = AppSettings::try_new();
+        source_row.connect_selected_notify(move |row| {
+            let Some(settings) = settings_for_source.as_ref() else {
+                return;
+            };
+            if let Some(source_uid) = source_uids_for_settings
+                .borrow()
+                .get(row.selected() as usize)
+            {
+                settings.set_default_address_book_source_uid(source_uid);
+            }
+        });
+
+        let show_addresses = adw::SwitchRow::builder()
+            .title("Mitgliederadressen anzeigen")
+            .subtitle("Wenn deaktiviert, werden Empfängeradressen in der Liste privat gehalten.")
+            .active(initial_show_addresses)
+            .build();
+        list_group.add(&show_addresses);
+        content_box.append(&list_group);
+
+        let member_group = adw::PreferencesGroup::builder()
+            .title("Mitglieder")
+            .description("Ungültige oder nicht mehr auflösbare Mitglieder bleiben sichtbar und müssen vor dem Speichern entfernt oder ersetzt werden.")
+            .build();
+        let external_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(8)
+            .build();
+        let external_entry = gtk::Entry::builder()
+            .placeholder_text("Name <adresse@example.org> oder adresse@example.org")
+            .hexpand(true)
+            .build();
+        let add_external = gtk::Button::builder()
+            .label("Externe Adresse hinzufügen")
+            .build();
+        external_box.append(&external_entry);
+        external_box.append(&add_external);
+        member_group.add(&external_box);
+
+        let local_model = gtk::StringList::new(&["Adressbuchkontakte werden geladen…"]);
+        let local_dropdown =
+            gtk::DropDown::new(Some(local_model.clone()), None::<&gtk::Expression>);
+        local_dropdown.set_hexpand(true);
+        let add_local = gtk::Button::builder()
+            .label("Lokalen Kontakt hinzufügen")
+            .build();
+        let local_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(8)
+            .margin_top(8)
+            .build();
+        local_box.append(&local_dropdown);
+        local_box.append(&add_local);
+        member_group.add(&local_box);
+
+        let nested_model = gtk::StringList::new(&["Kontaktlisten werden geladen…"]);
+        let nested_dropdown =
+            gtk::DropDown::new(Some(nested_model.clone()), None::<&gtk::Expression>);
+        nested_dropdown.set_hexpand(true);
+        let add_nested = gtk::Button::builder()
+            .label("Kontaktliste hinzufügen")
+            .build();
+        let nested_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(8)
+            .margin_top(8)
+            .build();
+        nested_box.append(&nested_dropdown);
+        nested_box.append(&add_nested);
+        member_group.add(&nested_box);
+
+        let member_list = gtk::ListBox::new();
+        member_list.set_selection_mode(gtk::SelectionMode::None);
+        member_list.add_css_class("boxed-list");
+        member_group.add(&member_list);
+        content_box.append(&member_group);
+
+        refresh_list_member_rows(&member_list, &members, &show_addresses);
+        let members_for_visibility = Rc::clone(&members);
+        let member_list_for_visibility = member_list.clone();
+        show_addresses.connect_active_notify(move |row| {
+            refresh_list_member_rows(&member_list_for_visibility, &members_for_visibility, row);
+        });
+
+        let dialog_weak_for_external = self.downgrade();
+        let members_for_external = Rc::clone(&members);
+        let member_list_for_external = member_list.clone();
+        let show_addresses_for_external = show_addresses.clone();
+        let external_entry_for_external = external_entry.clone();
+        add_external.connect_clicked(move |_| {
+            let Some((display_name, email)) =
+                parse_list_recipient_input(&external_entry_for_external.text())
+            else {
+                if let Some(dialog) = dialog_weak_for_external.upgrade() {
+                    dialog.show_toast("Bitte eine gültige externe E-Mail-Adresse eingeben");
+                }
+                return;
+            };
+            let member = VCardListMember::external_address(&email, &display_name);
+            if !member.is_valid() {
+                if let Some(dialog) = dialog_weak_for_external.upgrade() {
+                    dialog.show_toast("Die externe Adresse ist ungültig");
+                }
+                return;
+            }
+            if members_for_external
+                .borrow()
+                .iter()
+                .any(|existing| existing.email.eq_ignore_ascii_case(&member.email))
+            {
+                if let Some(dialog) = dialog_weak_for_external.upgrade() {
+                    dialog.show_toast("Diese Adresse ist bereits Mitglied der Liste");
+                }
+                return;
+            }
+            members_for_external.borrow_mut().push(member);
+            external_entry_for_external.set_text("");
+            refresh_list_member_rows(
+                &member_list_for_external,
+                &members_for_external,
+                &show_addresses_for_external,
+            );
+        });
+
+        let local_contacts = Rc::new(RefCell::new(Vec::<EBookContactRecord>::new()));
+        let nested_contacts = Rc::new(RefCell::new(Vec::<EBookContactRecord>::new()));
+        let local_contacts_for_add = Rc::clone(&local_contacts);
+        let members_for_local = Rc::clone(&members);
+        let member_list_for_local = member_list.clone();
+        let show_addresses_for_local = show_addresses.clone();
+        let dialog_weak_for_local = self.downgrade();
+        add_local.connect_clicked(move |_| {
+            let Some(record) = local_contacts_for_add
+                .borrow()
+                .get(local_dropdown.selected() as usize)
+                .cloned()
+            else {
+                if let Some(dialog) = dialog_weak_for_local.upgrade() {
+                    dialog.show_toast("Es ist kein lokaler Kontakt ausgewählt");
+                }
+                return;
+            };
+            let Some((email_num, email)) = first_contact_email_with_index(&record.contact) else {
+                if let Some(dialog) = dialog_weak_for_local.upgrade() {
+                    dialog.show_toast("Der lokale Kontakt hat keine E-Mail-Adresse");
+                }
+                return;
+            };
+            let member = VCardListMember::local_contact(
+                &record.uid,
+                &record.source_uid,
+                &record.contact.fn_name,
+                email,
+                Some(email_num),
+            );
+            if members_for_local.borrow().iter().any(|existing| {
+                existing.kind == VCardListMemberKind::LocalContact
+                    && existing.contact_uid == member.contact_uid
+                    && existing.source_uid == member.source_uid
+                    && existing.email_num == member.email_num
+            }) {
+                if let Some(dialog) = dialog_weak_for_local.upgrade() {
+                    dialog.show_toast("Dieser Kontakt ist bereits Mitglied der Liste");
+                }
+                return;
+            }
+            members_for_local.borrow_mut().push(member);
+            refresh_list_member_rows(
+                &member_list_for_local,
+                &members_for_local,
+                &show_addresses_for_local,
+            );
+        });
+
+        let nested_contacts_for_add = Rc::clone(&nested_contacts);
+        let members_for_nested = Rc::clone(&members);
+        let member_list_for_nested = member_list.clone();
+        let show_addresses_for_nested = show_addresses.clone();
+        let dialog_weak_for_nested = self.downgrade();
+        let edit_uid_for_nested = edit_uid.clone();
+        add_nested.connect_clicked(move |_| {
+            let Some(record) = nested_contacts_for_add
+                .borrow()
+                .get(nested_dropdown.selected() as usize)
+                .cloned()
+            else {
+                if let Some(dialog) = dialog_weak_for_nested.upgrade() {
+                    dialog.show_toast("Es ist keine verschachtelbare Kontaktliste ausgewählt");
+                }
+                return;
+            };
+            if edit_uid_for_nested.as_deref() == Some(record.uid.as_str()) {
+                if let Some(dialog) = dialog_weak_for_nested.upgrade() {
+                    dialog.show_toast("Eine Kontaktliste kann sich nicht selbst enthalten");
+                }
+                return;
+            }
+            let member = VCardListMember::nested_list(&record.uid, &record.contact.fn_name, None);
+            if members_for_nested.borrow().iter().any(|existing| {
+                existing.contact_uid == member.contact_uid
+                    && matches!(
+                        existing.kind,
+                        VCardListMemberKind::NestedList | VCardListMemberKind::StandardMember
+                    )
+            }) {
+                if let Some(dialog) = dialog_weak_for_nested.upgrade() {
+                    dialog.show_toast("Diese Kontaktliste ist bereits Mitglied der Liste");
+                }
+                return;
+            }
+            members_for_nested.borrow_mut().push(member);
+            refresh_list_member_rows(
+                &member_list_for_nested,
+                &members_for_nested,
+                &show_addresses_for_nested,
+            );
+        });
+
+        let source_model_for_load = source_model.clone();
+        let source_uids_for_load = Rc::clone(&source_uids);
+        let source_row_for_load = source_row.clone();
+        let edit_source_uid_for_load = edit_source_uid.clone();
+        let preferred_source_uid = AppSettings::try_new()
+            .map(|settings| settings.default_address_book_source_uid())
+            .filter(|uid| !uid.trim().is_empty());
+        let local_available = ContactStoreService::new().is_writable();
+        glib::spawn_future_local(async move {
+            let discovery =
+                eds_service::discover_sources(eds_service::EdsSourceKind::AddressBook).await;
+            let mut names = Vec::new();
+            let mut uids = Vec::new();
+            let mut sources = discovery.sources;
+            sources.retain(|source| source.enabled);
+            sources.sort_by_cached_key(|source| {
+                (source.display_name.to_lowercase(), source.uid.clone())
+            });
+            for source in sources {
+                names.push(if source.backend_name.trim().is_empty() {
+                    source.display_name
+                } else {
+                    format!("{} · {}", source.display_name, source.backend_name)
+                });
+                uids.push(source.uid);
+            }
+            let preferred = edit_source_uid_for_load
+                .as_deref()
+                .or(preferred_source_uid.as_deref());
+            if let Some(uid) = preferred.filter(|uid| {
+                !uid.trim().is_empty() && !uids.iter().any(|candidate| candidate == *uid)
+            }) {
+                names.push(format!("Nicht verfügbare Quelle · {uid}"));
+                uids.push(uid.to_string());
+            }
+            if local_available {
+                names.push("Lokales Adressbuch".to_string());
+                uids.push("local-addressbook".to_string());
+            }
+            let name_refs = names.iter().map(String::as_str).collect::<Vec<_>>();
+            source_model_for_load.splice(0, source_model_for_load.n_items(), &name_refs);
+            source_uids_for_load.replace(uids.clone());
+            if let Some(preferred) = preferred {
+                if let Some(index) = uids.iter().position(|uid| uid == preferred) {
+                    source_row_for_load.set_selected(index as u32);
+                }
+            }
+        });
+
+        let local_model_for_load = local_model.clone();
+        let local_contacts_for_load = Rc::clone(&local_contacts);
+        let nested_model_for_load = nested_model.clone();
+        let nested_contacts_for_load = Rc::clone(&nested_contacts);
+        let edit_uid_for_nested_load = edit_uid.clone();
+        glib::spawn_future_local(async move {
+            let (sender, receiver) = async_channel::bounded(1);
+            std::thread::spawn(move || {
+                let result = load_contacts_prefer_eds();
+                let _ = sender.send_blocking(result);
+            });
+            let Ok(result) = receiver.recv().await else {
+                return;
+            };
+            let mut contacts = Vec::new();
+            let mut lists = Vec::new();
+            for record in result.contacts {
+                if record.contact.is_list {
+                    if edit_uid_for_nested_load.as_deref() != Some(record.uid.as_str()) {
+                        lists.push(record);
+                    }
+                } else if first_contact_email(&record.contact).is_some() {
+                    contacts.push(record);
+                }
+            }
+            let names = contacts
+                .iter()
+                .map(|record| {
+                    format!(
+                        "{} · {}",
+                        record.contact.fn_name,
+                        contact_source_label(&record.source_display_name, &record.source_uid)
+                    )
+                })
+                .collect::<Vec<_>>();
+            let name_refs = names.iter().map(String::as_str).collect::<Vec<_>>();
+            local_model_for_load.splice(0, local_model_for_load.n_items(), &name_refs);
+            local_contacts_for_load.replace(contacts);
+            let list_names = lists
+                .iter()
+                .map(|record| {
+                    format!(
+                        "{} · {}",
+                        record.contact.fn_name,
+                        contact_source_label(&record.source_display_name, &record.source_uid)
+                    )
+                })
+                .collect::<Vec<_>>();
+            let list_name_refs = list_names.iter().map(String::as_str).collect::<Vec<_>>();
+            nested_model_for_load.splice(0, nested_model_for_load.n_items(), &list_name_refs);
+            nested_contacts_for_load.replace(lists);
+        });
+
+        let source_uids_for_save = Rc::clone(&source_uids);
+        let members_for_save = Rc::clone(&members);
+        let nested_contacts_for_save = Rc::clone(&nested_contacts);
+        let original_contact_for_save = original_contact.clone();
+        let edit_uid_for_save = edit_uid.clone();
+        let edit_vcard_for_save = edit_vcard.clone();
+        let save_button_for_signal = save_button.clone();
+        let save_button_for_closure = save_button.clone();
+        let dialog_weak = self.downgrade();
+        save_button_for_signal.connect_clicked(move |_| {
+            let Some(dialog) = dialog_weak.upgrade() else {
+                return;
+            };
+            let name = name_row.text().trim().to_string();
+            if name.is_empty() {
+                dialog.show_toast("Eine Kontaktliste benötigt einen Namen");
+                return;
+            }
+            if let Some((index, error)) = members_for_save
+                .borrow()
+                .iter()
+                .enumerate()
+                .find_map(|(index, member)| member.validation_error().map(|error| (index, error)))
+            {
+                dialog.show_toast(&format!("Mitglied {} ist {error}", index + 1));
+                return;
+            }
+            if let Some(current_uid) = edit_uid_for_save.as_deref() {
+                let nested_contacts = nested_contacts_for_save.borrow();
+                let has_cycle = members_for_save.borrow().iter().any(|member| {
+                    matches!(
+                        member.kind,
+                        VCardListMemberKind::NestedList | VCardListMemberKind::StandardMember
+                    ) && !member.contact_uid.trim().is_empty()
+                        && nested_list_reaches_uid(
+                            &member.contact_uid,
+                            current_uid,
+                            &nested_contacts,
+                            &mut std::collections::HashSet::new(),
+                        )
+                });
+                if has_cycle {
+                    dialog.show_toast("Verschachtelte Kontaktlisten dürfen keinen Zyklus bilden");
+                    return;
+                }
+            }
+            let selected = source_row.selected() as usize;
+            let Some(source_uid) = source_uids_for_save.borrow().get(selected).cloned() else {
+                dialog.show_toast("Kein aktives Adressbuch ist ausgewählt");
+                return;
+            };
+            let mut contact = original_contact_for_save.clone().unwrap_or_else(|| {
+                VCardContact::new_list(
+                    &name,
+                    show_addresses.is_active(),
+                    edit_uid_for_save.as_deref(),
+                )
+            });
+            contact.is_list = true;
+            contact.fn_name = name.clone();
+            contact.name.family.clear();
+            contact.name.given = name.clone();
+            contact.name.additional.clear();
+            contact.name.prefix.clear();
+            contact.name.suffix.clear();
+            contact.list_name = name.clone();
+            contact.list_show_addresses = show_addresses.is_active();
+            contact.list_members = members_for_save.borrow().clone();
+            contact.email.clear();
+            contact.emails.clear();
+            contact.email_properties.clear();
+            contact.set_extension_value("X-EVOLUTION-FILE-AS", &name);
+            if let Some(uid) = edit_uid_for_save.as_deref() {
+                contact.set_uid(uid);
+            }
+            if contact.version.trim().eq_ignore_ascii_case("4.0")
+                && contact
+                    .list_members
+                    .iter()
+                    .any(|member| matches!(member.kind, VCardListMemberKind::StandardMember))
+                && contact
+                    .list_validation_error()
+                    .is_some_and(|error| error.contains("KIND:group"))
+            {
+                contact.ensure_vcard4_group_kind();
+            }
+            if let Some(error) = contact.list_validation_error() {
+                dialog.show_toast(&error);
+                return;
+            }
+            let vcard = contact.to_vcard_string();
+            let source_uid_for_worker = source_uid.clone();
+            let operation_uid = edit_uid_for_save.clone();
+            let was_edit = edit_vcard_for_save.is_some();
+            let (sender, receiver) = async_channel::bounded(1);
+            dialog.imp().save_in_progress.set(true);
+            save_button_for_closure.set_sensitive(false);
+            std::thread::spawn(move || {
+                let service = EBookService::new();
+                let result = match operation_uid.as_deref() {
+                    Some(uid) => service.modify_contact(&source_uid_for_worker, uid, &vcard),
+                    None => service.create_contact(&source_uid_for_worker, &vcard),
+                };
+                let _ = sender.send_blocking(result);
+            });
+            let save_button_for_result = save_button_for_closure.clone();
+            let dialog_weak_for_result = dialog.downgrade();
+            glib::spawn_future_local(async move {
+                let Ok(result) = receiver.recv().await else {
+                    if let Some(dialog) = dialog_weak_for_result.upgrade() {
+                        dialog.imp().save_in_progress.set(false);
+                    }
+                    save_button_for_result.set_sensitive(true);
+                    return;
+                };
+                if let Some(dialog) = dialog_weak_for_result.upgrade() {
+                    dialog.imp().save_in_progress.set(false);
+                }
+                match result {
+                    Ok(result) => {
+                        let message = if was_edit {
+                            format!("Kontaktliste aktualisiert ({})", result.uid)
+                        } else {
+                            format!("Kontaktliste gespeichert ({})", result.uid)
+                        };
+                        if let Some(dialog) = dialog_weak_for_result.upgrade() {
+                            dialog.show_toast(&message);
+                            dialog.close();
+                        }
+                    }
+                    Err(error) => {
+                        if let Some(dialog) = dialog_weak_for_result.upgrade() {
+                            dialog.show_toast(&format!(
+                                "Kontaktliste konnte nicht gespeichert werden: {error}"
+                            ));
+                        }
+                    }
+                }
+                save_button_for_result.set_sensitive(true);
+            });
+        });
+
+        let content_scroll = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .child(&content_box)
+            .build();
+        toolbar_view.set_content(Some(&content_scroll));
+        self.set_content(Some(&toolbar_view));
+    }
+
     fn show_toast(&self, message: &str) {
         let Some(parent) = self.transient_for() else {
             tracing::warn!(%message, "EBook dialog result");
@@ -657,15 +1222,205 @@ impl ContactDialog {
             tracing::warn!(%message, "EBook dialog result");
         }
     }
+
+    fn guard_close_while_saving(&self) {
+        let dialog_weak = self.downgrade();
+        self.connect_close_request(move |_| {
+            let Some(dialog) = dialog_weak.upgrade() else {
+                return glib::Propagation::Proceed;
+            };
+            if dialog.imp().save_in_progress.get() {
+                dialog.show_toast("Speichern läuft noch – bitte kurz warten");
+                glib::Propagation::Stop
+            } else {
+                glib::Propagation::Proceed
+            }
+        });
+    }
+}
+
+fn refresh_list_member_rows(
+    list: &gtk::ListBox,
+    members: &Rc<RefCell<Vec<VCardListMember>>>,
+    show_addresses: &adw::SwitchRow,
+) {
+    while let Some(child) = list.first_child() {
+        list.remove(&child);
+    }
+    for (index, member) in members.borrow().iter().cloned().enumerate() {
+        let subtitle = match member.kind {
+            VCardListMemberKind::ExternalAddress => "Externe Adresse".to_string(),
+            VCardListMemberKind::LocalContact => {
+                if member.source_uid.trim().is_empty() {
+                    "Lokaler Kontakt".to_string()
+                } else {
+                    format!("Lokaler Kontakt · {}", member.source_uid)
+                }
+            }
+            VCardListMemberKind::NestedList => "Verschachtelte Kontaktliste".to_string(),
+            VCardListMemberKind::StandardMember => "vCard-4-Mitglied".to_string(),
+            VCardListMemberKind::Invalid => "Ungültiges Listenmitglied".to_string(),
+        };
+        let subtitle = member
+            .validation_error()
+            .map(|error| format!("{subtitle} · {error}"))
+            .unwrap_or(subtitle);
+        let row = adw::ActionRow::builder()
+            .title(member.display_text(show_addresses.is_active()))
+            .subtitle(subtitle)
+            .build();
+        if !member.is_valid() {
+            row.add_css_class("error");
+        }
+        let remove_button = gtk::Button::builder()
+            .icon_name("user-trash-symbolic")
+            .tooltip_text("Mitglied entfernen")
+            .css_classes(vec!["flat", "circular"])
+            .valign(gtk::Align::Center)
+            .build();
+        let move_up = gtk::Button::builder()
+            .icon_name("go-up-symbolic")
+            .tooltip_text("Mitglied nach oben verschieben")
+            .css_classes(vec!["flat", "circular"])
+            .sensitive(index > 0)
+            .valign(gtk::Align::Center)
+            .build();
+        let move_down = gtk::Button::builder()
+            .icon_name("go-down-symbolic")
+            .tooltip_text("Mitglied nach unten verschieben")
+            .css_classes(vec!["flat", "circular"])
+            .valign(gtk::Align::Center)
+            .build();
+        let member_actions = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(2)
+            .valign(gtk::Align::Center)
+            .build();
+        member_actions.append(&move_up);
+        member_actions.append(&move_down);
+        member_actions.append(&remove_button);
+        row.add_suffix(&member_actions);
+        let move_down_is_last = index + 1 >= members.borrow().len();
+        move_down.set_sensitive(!move_down_is_last);
+        let members_for_up = Rc::clone(members);
+        let list_for_up = list.clone();
+        let show_addresses_for_up = show_addresses.clone();
+        move_up.connect_clicked(move |_| {
+            let mut values = members_for_up.borrow_mut();
+            if index > 0 && index < values.len() {
+                values.swap(index - 1, index);
+            }
+            drop(values);
+            refresh_list_member_rows(&list_for_up, &members_for_up, &show_addresses_for_up);
+        });
+        let members_for_down = Rc::clone(members);
+        let list_for_down = list.clone();
+        let show_addresses_for_down = show_addresses.clone();
+        move_down.connect_clicked(move |_| {
+            let mut values = members_for_down.borrow_mut();
+            if index + 1 < values.len() {
+                values.swap(index, index + 1);
+            }
+            drop(values);
+            refresh_list_member_rows(&list_for_down, &members_for_down, &show_addresses_for_down);
+        });
+        let members_for_remove = Rc::clone(members);
+        let list_for_remove = list.clone();
+        let show_addresses_for_remove = show_addresses.clone();
+        remove_button.connect_clicked(move |_| {
+            if index < members_for_remove.borrow().len() {
+                members_for_remove.borrow_mut().remove(index);
+                refresh_list_member_rows(
+                    &list_for_remove,
+                    &members_for_remove,
+                    &show_addresses_for_remove,
+                );
+            }
+        });
+        list.append(&row);
+    }
+}
+
+fn parse_list_recipient_input(value: &str) -> Option<(String, String)> {
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+    let (display_name, email) = if let Some(start) = value.rfind('<') {
+        if value.ends_with('>') {
+            (
+                value[..start].trim().trim_matches('"').trim().to_string(),
+                value[start + 1..value.len() - 1].trim().to_string(),
+            )
+        } else {
+            return None;
+        }
+    } else if let Some((display, candidate)) = value.rsplit_once(char::is_whitespace) {
+        (display.trim().to_string(), candidate.trim().to_string())
+    } else {
+        (String::new(), value.to_string())
+    };
+    let member = VCardListMember::external_address(&email, &display_name);
+    member.is_valid().then_some((display_name, member.email))
+}
+
+fn nested_list_reaches_uid(
+    candidate_uid: &str,
+    target_uid: &str,
+    records: &[EBookContactRecord],
+    visited: &mut std::collections::HashSet<String>,
+) -> bool {
+    if candidate_uid == target_uid {
+        return true;
+    }
+    if !visited.insert(candidate_uid.to_string()) {
+        return false;
+    }
+    let reaches_target = records
+        .iter()
+        .find(|record| record.uid == candidate_uid && record.contact.is_list)
+        .is_some_and(|record| {
+            record.contact.list_members.iter().any(|member| {
+                matches!(
+                    member.kind,
+                    VCardListMemberKind::NestedList | VCardListMemberKind::StandardMember
+                ) && !member.contact_uid.trim().is_empty()
+                    && nested_list_reaches_uid(&member.contact_uid, target_uid, records, visited)
+            })
+        });
+    visited.remove(candidate_uid);
+    reaches_target
+}
+
+fn first_contact_email(contact: &VCardContact) -> Option<&str> {
+    first_contact_email_with_index(contact).map(|(_, email)| email)
+}
+
+fn first_contact_email_with_index(contact: &VCardContact) -> Option<(usize, &str)> {
+    contact
+        .emails
+        .iter()
+        .enumerate()
+        .map(|(index, email)| (index, email.as_str()))
+        .chain((!contact.email.trim().is_empty()).then_some((0, contact.email.as_str())))
+        .find(|(_, email)| !email.trim().is_empty())
+}
+
+fn contact_source_label(display_name: &str, source_uid: &str) -> String {
+    if !display_name.trim().is_empty() {
+        display_name.trim().to_string()
+    } else if source_uid == "local-addressbook" {
+        "Lokales Adressbuch".to_string()
+    } else {
+        "Adressbuch".to_string()
+    }
 }
 
 fn vcard_property(vcard: &str, name: &str, occurrence: usize) -> Option<String> {
-    vcard
-        .replace("\r\n", "\n")
-        .replace('\r', "\n")
-        .lines()
+    unfold_vcard_lines(vcard)
+        .into_iter()
         .filter_map(|line| {
-            let (property, value) = line.split_once(':')?;
+            let (property, value) = split_vcard_property_value(&line)?;
             let property_name = property.split(';').next().unwrap_or(property);
             property_name.eq_ignore_ascii_case(name).then(|| {
                 value
@@ -775,6 +1530,15 @@ fn build_vcard_with_fields(
     let name = name.trim();
     if name.is_empty() {
         return Err("Ein Kontakt benötigt einen Namen".to_string());
+    }
+    for (label, value) in [
+        ("private E-Mail-Adresse", email),
+        ("geschäftliche E-Mail-Adresse", email_work),
+        ("weitere E-Mail-Adresse", email_other),
+    ] {
+        if !value.trim().is_empty() && !is_valid_contact_email(value) {
+            return Err(format!("Die {label} ist ungültig"));
+        }
     }
     let uid = uid
         .filter(|uid| !uid.trim().is_empty())
@@ -910,7 +1674,11 @@ fn build_vcard_with_fields(
         fields.evolution_list_show_addresses,
     );
     lines.push("END:VCARD".to_string());
-    Ok(format!("{}\r\n", lines.join("\r\n")))
+    let folded = lines
+        .into_iter()
+        .flat_map(fold_dialog_vcard_line)
+        .collect::<Vec<_>>();
+    Ok(format!("{}\r\n", folded.join("\r\n")))
 }
 
 fn append_optional_vcard_value(lines: &mut Vec<String>, property: &str, value: &str) {
@@ -963,8 +1731,23 @@ fn preserve_vcard_extensions(generated: &str, original: &str) -> String {
     let mut photo_count = 0;
     let mut impp_count = 0;
     let mut related_count = 0;
+    let generated_photo_count = generated
+        .replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .lines()
+        .filter(|line| {
+            split_vcard_property_value(line)
+                .map(|(property, _)| {
+                    property
+                        .split(';')
+                        .next()
+                        .is_some_and(|name| name.eq_ignore_ascii_case("PHOTO"))
+                })
+                .unwrap_or(false)
+        })
+        .count();
     for line in unfold_vcard_lines(original) {
-        let Some((property, _)) = line.split_once(':') else {
+        let Some((property, _)) = split_vcard_property_value(&line) else {
             continue;
         };
         let name = property
@@ -987,7 +1770,7 @@ fn preserve_vcard_extensions(generated: &str, original: &str) -> String {
             }
             "PHOTO" => {
                 photo_count += 1;
-                photo_count >= 1
+                generated_photo_count == 0 || photo_count > generated_photo_count
             }
             "IMPP" => {
                 impp_count += 1;
@@ -1042,7 +1825,7 @@ fn preserve_vcard_extensions(generated: &str, original: &str) -> String {
         .filter(|line| !line.eq_ignore_ascii_case("END:VCARD"))
         .map(ToOwned::to_owned)
         .collect::<Vec<_>>();
-    lines.extend(extras);
+    lines.extend(extras.into_iter().flat_map(fold_dialog_vcard_line));
     lines.push("END:VCARD".to_string());
     format!("{}\r\n", lines.join("\r\n"))
 }
@@ -1052,13 +1835,33 @@ fn unfold_vcard_lines(raw: &str) -> Vec<String> {
     for line in raw.replace("\r\n", "\n").replace('\r', "\n").lines() {
         if line.starts_with(' ') || line.starts_with('\t') {
             if let Some(previous) = lines.last_mut() {
-                previous.push_str(line.trim_start());
+                previous.push_str(&line[1..]);
             }
         } else {
             lines.push(line.to_string());
         }
     }
     lines
+}
+
+fn fold_dialog_vcard_line(line: String) -> Vec<String> {
+    const MAX_OCTETS: usize = 75;
+    if line.len() <= MAX_OCTETS {
+        return vec![line];
+    }
+    let mut folded = Vec::new();
+    let mut current = String::new();
+    for character in line.chars() {
+        if current.len() + character.len_utf8() > MAX_OCTETS && !current.is_empty() {
+            folded.push(current);
+            current = " ".to_string();
+        }
+        current.push(character);
+    }
+    if !current.is_empty() {
+        folded.push(current);
+    }
+    folded
 }
 
 fn escape_vcard_text(value: &str) -> String {
@@ -1068,6 +1871,49 @@ fn escape_vcard_text(value: &str) -> String {
         .replace(',', "\\,")
         .replace('\r', "")
         .replace('\n', "\\n")
+}
+
+fn split_vcard_property_value(line: &str) -> Option<(&str, &str)> {
+    let mut quoted = false;
+    let mut escaped = false;
+    for (index, character) in line.char_indices() {
+        if quoted {
+            if escaped {
+                escaped = false;
+            } else if character == '\\' {
+                escaped = true;
+            } else if character == '"' {
+                quoted = false;
+            }
+        } else if character == '"' {
+            quoted = true;
+        } else if character == ':' {
+            return Some((&line[..index], &line[index + character.len_utf8()..]));
+        }
+    }
+    None
+}
+
+fn is_valid_contact_email(value: &str) -> bool {
+    let value = value.trim();
+    if value.matches('@').count() != 1
+        || value.chars().any(|character| {
+            character.is_control()
+                || character.is_whitespace()
+                || matches!(character, '<' | '>' | ',' | ';')
+        })
+    {
+        return false;
+    }
+    let Some((local, domain)) = value.split_once('@') else {
+        return false;
+    };
+    !local.is_empty()
+        && !domain.is_empty()
+        && !local.starts_with('.')
+        && !local.ends_with('.')
+        && !domain.starts_with('.')
+        && !domain.ends_with('.')
 }
 
 impl Default for ContactDialog {
@@ -1190,5 +2036,69 @@ mod tests {
         assert!(vcard.contains("X-EVOLUTION-LIST-SHOW-ADDRESSES:TRUE"));
         assert!(parse_vcard_bool("yes"));
         assert!(!parse_vcard_bool("FALSE"));
+    }
+
+    #[test]
+    fn contact_vcard_rejects_malformed_email_input() {
+        let error = build_vcard(
+            "Ada Lovelace",
+            "",
+            "",
+            "ada@@example.test",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            None,
+        )
+        .expect_err("malformed email should be rejected");
+        assert!(error.contains("E-Mail-Adresse"));
+    }
+
+    #[test]
+    fn first_local_email_keeps_the_actual_email_index() {
+        let mut contact = VCardContact::new("Ada Lovelace", "", "", "");
+        contact.emails = vec![String::new(), "ada.work@example.test".to_string()];
+        assert_eq!(
+            first_contact_email_with_index(&contact),
+            Some((1, "ada.work@example.test"))
+        );
+    }
+
+    #[test]
+    fn nested_list_cycle_detection_stops_recursive_membership() {
+        let mut list_a = VCardContact::new_list("A", true, Some("list-a"));
+        list_a.list_members = vec![VCardListMember::nested_list("list-b", "B", None)];
+        let mut list_b = VCardContact::new_list("B", true, Some("list-b"));
+        list_b.list_members = vec![VCardListMember::nested_list("list-a", "A", None)];
+        let records = vec![
+            EBookContactRecord {
+                source_uid: "local-addressbook".to_string(),
+                source_display_name: "Lokal".to_string(),
+                uid: "list-a".to_string(),
+                vcard: list_a.to_vcard_string(),
+                contact: list_a,
+            },
+            EBookContactRecord {
+                source_uid: "local-addressbook".to_string(),
+                source_display_name: "Lokal".to_string(),
+                uid: "list-b".to_string(),
+                vcard: list_b.to_vcard_string(),
+                contact: list_b,
+            },
+        ];
+        assert!(nested_list_reaches_uid(
+            "list-b",
+            "list-a",
+            &records,
+            &mut std::collections::HashSet::new()
+        ));
     }
 }

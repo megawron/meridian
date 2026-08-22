@@ -14,7 +14,7 @@ use crate::services::ebook_service::{
 };
 use crate::services::eds_service;
 use crate::services::settings_service::AppSettings;
-use crate::services::vcard_service::VCardContact;
+use crate::services::vcard_service::{VCardContact, VCardListMemberKind};
 use crate::views::accessibility::set_accessible_label;
 
 const LOCAL_ADDRESS_BOOK_SOURCE_UID: &str = "local-addressbook";
@@ -296,6 +296,7 @@ impl ContactsPage {
 
         let stored_contacts = Rc::new(RefCell::new(Vec::<EBookContactRecord>::new()));
         let selected_contact = Rc::new(RefCell::new(None::<EBookContactRecord>));
+        let refresh_generation = Rc::new(Cell::new(0u64));
 
         set_contact_filter(
             &contact_list,
@@ -313,6 +314,7 @@ impl ContactsPage {
             category_model.clone(),
             category_selector.clone(),
             Rc::clone(&selected_category),
+            Rc::clone(&refresh_generation),
         );
 
         let search_query_for_filter = Rc::clone(&search_query);
@@ -459,6 +461,7 @@ impl ContactsPage {
         let stored_contacts_for_new = Rc::clone(&stored_contacts);
         let empty_state_for_new = empty_state.clone();
         let selected_contact_for_new = Rc::clone(&selected_contact);
+        let refresh_generation_for_new = Rc::clone(&refresh_generation);
         let category_model_for_new = category_model.clone();
         let category_selector_for_new = category_selector.clone();
         let selected_category_for_new = Rc::clone(&selected_category);
@@ -478,6 +481,7 @@ impl ContactsPage {
                 let category_model_for_close = category_model_for_new.clone();
                 let category_selector_for_close = category_selector_for_new.clone();
                 let selected_category_for_close = Rc::clone(&selected_category_for_new);
+                let refresh_generation_for_close = Rc::clone(&refresh_generation_for_new);
                 dialog.connect_close_request(move |_| {
                     refresh_contacts(
                         contact_list_for_close.clone(),
@@ -487,6 +491,7 @@ impl ContactsPage {
                         category_model_for_close.clone(),
                         category_selector_for_close.clone(),
                         Rc::clone(&selected_category_for_close),
+                        Rc::clone(&refresh_generation_for_close),
                     );
                     glib::Propagation::Proceed
                 });
@@ -498,6 +503,56 @@ impl ContactsPage {
             .replace(Some(new_contact_btn.clone()));
 
         new_contact_bar.append(&new_contact_btn);
+
+        let new_list_btn = gtk::Button::builder()
+            .label("Neue Kontaktliste")
+            .icon_name("view-list-symbolic")
+            .css_classes(vec!["suggested-action"])
+            .hexpand(true)
+            .build();
+        let contact_list_for_new_list = contact_list.clone();
+        let stored_contacts_for_new_list = Rc::clone(&stored_contacts);
+        let empty_state_for_new_list = empty_state.clone();
+        let selected_contact_for_new_list = Rc::clone(&selected_contact);
+        let refresh_generation_for_new_list = Rc::clone(&refresh_generation);
+        let category_model_for_new_list = category_model.clone();
+        let category_selector_for_new_list = category_selector.clone();
+        let selected_category_for_new_list = Rc::clone(&selected_category);
+        new_list_btn.connect_clicked(glib::clone!(
+            #[weak(rename_to = page)]
+            self,
+            move |_| {
+                let dialog = crate::dialogs::ContactDialog::new_for_list();
+                let root = page.root();
+                if let Some(win) = root.and_then(|root| root.downcast::<gtk::Window>().ok()) {
+                    dialog.set_transient_for(Some(&win));
+                }
+                let contact_list_for_close = contact_list_for_new_list.clone();
+                let stored_contacts_for_close = Rc::clone(&stored_contacts_for_new_list);
+                let empty_state_for_close = empty_state_for_new_list.clone();
+                let selected_contact_for_close = Rc::clone(&selected_contact_for_new_list);
+                let category_model_for_close = category_model_for_new_list.clone();
+                let category_selector_for_close = category_selector_for_new_list.clone();
+                let selected_category_for_close = Rc::clone(&selected_category_for_new_list);
+                let refresh_generation_for_close = Rc::clone(&refresh_generation_for_new_list);
+                dialog.connect_close_request(move |_| {
+                    refresh_contacts(
+                        contact_list_for_close.clone(),
+                        Rc::clone(&stored_contacts_for_close),
+                        empty_state_for_close.clone(),
+                        Rc::clone(&selected_contact_for_close),
+                        category_model_for_close.clone(),
+                        category_selector_for_close.clone(),
+                        Rc::clone(&selected_category_for_close),
+                        Rc::clone(&refresh_generation_for_close),
+                    );
+                    glib::Propagation::Proceed
+                });
+                dialog.present();
+            }
+        ));
+        set_accessible_label(&new_list_btn, "Neue Kontaktliste erstellen");
+        new_contact_bar.append(&new_list_btn);
         sidebar_box.append(&new_contact_bar);
 
         let sidebar_scroll = gtk::ScrolledWindow::builder()
@@ -609,6 +664,7 @@ impl ContactsPage {
         set_accessible_label(&email_btn, "E-Mail an den Kontakt senden");
 
         let selected_contact_for_email = Rc::clone(&selected_contact);
+        let stored_contacts_for_email = Rc::clone(&stored_contacts);
         email_btn.connect_clicked(glib::clone!(
             #[weak(rename_to = page)]
             self,
@@ -617,7 +673,10 @@ impl ContactsPage {
                     page.show_toast("Kein Kontakt ausgewählt");
                     return;
                 };
-                let recipient = contact_email_text(&record.contact);
+                let recipient = contact_recipient_text_with_records(
+                    &record.contact,
+                    &stored_contacts_for_email.borrow(),
+                );
                 if recipient.trim().is_empty() {
                     page.show_toast("Der ausgewählte Kontakt hat keine E-Mail-Adresse");
                     return;
@@ -645,6 +704,7 @@ impl ContactsPage {
         let category_model_for_edit = category_model.clone();
         let category_selector_for_edit = category_selector.clone();
         let selected_category_for_edit = Rc::clone(&selected_category);
+        let refresh_generation_for_edit = Rc::clone(&refresh_generation);
         edit_btn.connect_clicked(glib::clone!(
             #[weak(rename_to = page)]
             self,
@@ -671,6 +731,7 @@ impl ContactsPage {
                 let category_model_for_close = category_model_for_edit.clone();
                 let category_selector_for_close = category_selector_for_edit.clone();
                 let selected_category_for_close = Rc::clone(&selected_category_for_edit);
+                let refresh_generation_for_close = Rc::clone(&refresh_generation_for_edit);
                 dialog.connect_close_request(move |_| {
                     refresh_contacts(
                         contact_list_for_close.clone(),
@@ -680,6 +741,7 @@ impl ContactsPage {
                         category_model_for_close.clone(),
                         category_selector_for_close.clone(),
                         Rc::clone(&selected_category_for_close),
+                        Rc::clone(&refresh_generation_for_close),
                     );
                     glib::Propagation::Proceed
                 });
@@ -1207,6 +1269,7 @@ impl ContactsPage {
             .build();
         set_accessible_label(&copy_btn1, "E-Mail-Adresse kopieren");
         let selected_contact_for_copy = Rc::clone(&selected_contact);
+        let stored_contacts_for_copy = Rc::clone(&stored_contacts);
         copy_btn1.connect_clicked(glib::clone!(
             #[weak(rename_to = page)]
             self,
@@ -1215,7 +1278,18 @@ impl ContactsPage {
                     page.show_toast("Kein Kontakt ausgewählt");
                     return;
                 };
-                let email = contact_email_text(&record.contact);
+                let email = if record.contact.is_list {
+                    if record.contact.list_show_addresses {
+                        contact_recipient_text_with_records(
+                            &record.contact,
+                            &stored_contacts_for_copy.borrow(),
+                        )
+                    } else {
+                        String::new()
+                    }
+                } else {
+                    contact_email_text(&record.contact)
+                };
                 if email.trim().is_empty() {
                     page.show_toast("Keine E-Mail-Adresse zum Kopieren vorhanden");
                     return;
@@ -1293,11 +1367,8 @@ impl ContactsPage {
                     } else {
                         phone_text.as_str()
                     });
-                    detail_title.set_label(if record.contact.title.is_empty() {
-                        &record.contact.org
-                    } else {
-                        &record.contact.title
-                    });
+                    let detail_title_text = contact_detail_title(&record.contact);
+                    detail_title.set_label(&detail_title_text);
                     detail_extra.set_label(&contact_detail_summary(&record.contact));
                     merge_btn.set_sensitive(
                         !record.source_uid.is_empty()
@@ -1474,7 +1545,10 @@ fn refresh_contacts(
     category_model: gtk::StringList,
     category_selector: gtk::DropDown,
     selected_category: Rc<RefCell<String>>,
+    refresh_generation: Rc<Cell<u64>>,
 ) {
+    let generation = refresh_generation.get().wrapping_add(1);
+    refresh_generation.set(generation);
     let selected_identity = selected_contact
         .borrow()
         .as_ref()
@@ -1495,8 +1569,12 @@ fn refresh_contacts(
         }
     });
     glib::spawn_future_local(async move {
+        let is_current = || refresh_generation.get() == generation;
         match receiver.recv().await {
             Ok(result) => {
+                if !is_current() {
+                    return;
+                }
                 let warning = result.warning.as_deref();
                 if let Some(warning) = warning {
                     tracing::warn!(%warning, "Contact refresh completed with an EBook warning");
@@ -1526,6 +1604,9 @@ fn refresh_contacts(
                 let chunk_size = 40;
                 let mut index = 0;
                 while index < contacts.len() {
+                    if !is_current() {
+                        return;
+                    }
                     let end = (index + chunk_size).min(contacts.len());
                     let mut stored_ref = stored_contacts.borrow_mut();
                     for record in &contacts[index..end] {
@@ -1540,6 +1621,9 @@ fn refresh_contacts(
                             std::time::Duration::from_millis(5),
                         )
                         .await;
+                        if !is_current() {
+                            return;
+                        }
                     }
                 }
                 mark_duplicate_rows(&contact_list, &stored_contacts);
@@ -1908,11 +1992,8 @@ fn update_contact_detail(
     } else {
         phone_text.as_str()
     });
-    detail_title.set_label(if record.contact.title.is_empty() {
-        &record.contact.org
-    } else {
-        &record.contact.title
-    });
+    let detail_title_text = contact_detail_title(&record.contact);
+    detail_title.set_label(&detail_title_text);
     detail_extra.set_label(&contact_detail_summary(&record.contact));
 }
 
@@ -2036,6 +2117,15 @@ fn set_avatar_photo(
 }
 
 fn contact_email_text(contact: &VCardContact) -> String {
+    if contact.is_list {
+        if contact.list_show_addresses {
+            return contact.list_member_emails().join(", ");
+        }
+        return format!(
+            "Kontaktliste · {} Mitglied(e) · Adressen verborgen",
+            contact.list_members.len()
+        );
+    }
     if contact.emails.is_empty() {
         contact.email.clone()
     } else {
@@ -2043,7 +2133,87 @@ fn contact_email_text(contact: &VCardContact) -> String {
     }
 }
 
+fn contact_recipient_text(contact: &VCardContact) -> String {
+    contact_recipient_text_with_records(contact, &[])
+}
+
+fn contact_recipient_text_with_records(
+    contact: &VCardContact,
+    records: &[EBookContactRecord],
+) -> String {
+    if !contact.is_list {
+        return contact_email_text(contact);
+    }
+    let mut recipients = Vec::new();
+    append_list_recipients(contact, records, &mut Vec::new(), &mut recipients);
+    recipients.join(", ")
+}
+
+fn append_list_recipients(
+    contact: &VCardContact,
+    records: &[EBookContactRecord],
+    visited: &mut Vec<String>,
+    recipients: &mut Vec<String>,
+) {
+    for member in &contact.list_members {
+        if !member.email.trim().is_empty() {
+            push_unique_recipient(recipients, &member.email);
+        }
+        let Some(member_uid) = member
+            .contact_uid
+            .trim()
+            .strip_prefix("urn:uuid:")
+            .or_else(|| {
+                (!member.contact_uid.trim().is_empty()).then_some(member.contact_uid.trim())
+            })
+        else {
+            continue;
+        };
+        if !matches!(
+            member.kind,
+            VCardListMemberKind::NestedList | VCardListMemberKind::StandardMember
+        ) {
+            continue;
+        }
+        if visited.iter().any(|uid| uid == member_uid) {
+            continue;
+        }
+        let Some(record) = records.iter().find(|record| record.uid == member_uid) else {
+            continue;
+        };
+        visited.push(member_uid.to_string());
+        if record.contact.is_list {
+            append_list_recipients(&record.contact, records, visited, recipients);
+        } else {
+            for email in if record.contact.emails.is_empty() {
+                std::slice::from_ref(&record.contact.email)
+            } else {
+                record.contact.emails.as_slice()
+            } {
+                if !email.trim().is_empty() {
+                    push_unique_recipient(recipients, email);
+                }
+            }
+        }
+        visited.pop();
+    }
+}
+
+fn push_unique_recipient(recipients: &mut Vec<String>, email: &str) {
+    let email = email.trim();
+    if !email.is_empty()
+        && !recipients
+            .iter()
+            .any(|existing| existing.eq_ignore_ascii_case(email))
+    {
+        recipients.push(email.to_string());
+    }
+}
+
 fn contact_phone_text(contact: &VCardContact) -> String {
+    if contact.is_list {
+        return String::new();
+    }
     if contact.phones.is_empty() {
         contact.tel.clone()
     } else {
@@ -2051,8 +2221,36 @@ fn contact_phone_text(contact: &VCardContact) -> String {
     }
 }
 
+fn contact_detail_title(contact: &VCardContact) -> String {
+    if contact.is_list {
+        format!("Kontaktliste · {} Mitglied(e)", contact.list_members.len())
+    } else if contact.title.is_empty() {
+        contact.org.clone()
+    } else {
+        contact.title.clone()
+    }
+}
+
 fn contact_detail_summary(contact: &VCardContact) -> String {
     let mut lines = Vec::new();
+    if contact.is_list {
+        lines.push(format!(
+            "Kontaktliste: {} Mitglied(e)",
+            contact.list_members.len()
+        ));
+        if contact.list_show_addresses {
+            let members = contact
+                .list_members
+                .iter()
+                .map(|member| member.display_text(true))
+                .collect::<Vec<_>>();
+            if !members.is_empty() {
+                lines.push(format!("Mitglieder: {}", members.join(" · ")));
+            }
+        } else {
+            lines.push("Mitgliederadressen: verborgen".to_string());
+        }
+    }
     if !contact.addresses.is_empty() {
         lines.push(format!("Adresse: {}", contact.addresses.join(" · ")));
     }
@@ -2108,9 +2306,11 @@ impl Default for ContactsPage {
 #[cfg(test)]
 mod tests {
     use super::{
-        confirmed_contact_uid, contact_category_matches, contact_load_status_message,
-        contact_query_matches, contact_records_are_duplicates, contact_records_share_duplicate_key,
-        contact_sort_key, contact_source_label, contact_status_needs_visibility,
+        confirmed_contact_uid, contact_category_matches, contact_detail_summary,
+        contact_email_text, contact_load_status_message, contact_query_matches,
+        contact_recipient_text, contact_recipient_text_with_records,
+        contact_records_are_duplicates, contact_records_share_duplicate_key, contact_sort_key,
+        contact_source_label, contact_status_needs_visibility,
     };
     use crate::services::ebook_service::{EBookContactRecord, EBookDataOrigin};
     use crate::services::vcard_service::VCardContact;
@@ -2224,5 +2424,57 @@ mod tests {
             confirmed_contact_uid("confirmed-42", "contact-42"),
             "confirmed-42"
         );
+    }
+
+    #[test]
+    fn contact_list_display_hides_addresses_but_keeps_recipients_for_mail() {
+        let mut list = VCardContact::new_list("Projektteam", false, Some("list-1"));
+        list.list_members = vec![
+            crate::services::vcard_service::VCardListMember::external_address(
+                "external@example.test",
+                "Extern",
+            ),
+            crate::services::vcard_service::VCardListMember::local_contact(
+                "contact-1",
+                "local-addressbook",
+                "Ada Lovelace",
+                "ada@example.test",
+                Some(0),
+            ),
+        ];
+        assert!(contact_email_text(&list).contains("Adressen verborgen"));
+        assert!(!contact_email_text(&list).contains("external@example.test"));
+        assert_eq!(
+            contact_recipient_text(&list),
+            "external@example.test, ada@example.test"
+        );
+        assert!(contact_detail_summary(&list).contains("Mitgliederadressen: verborgen"));
+    }
+
+    #[test]
+    fn nested_list_recipients_are_resolved_without_leaking_hidden_display_text() {
+        let mut nested = VCardContact::new_list("Unterteam", true, Some("nested-list"));
+        nested.list_members = vec![
+            crate::services::vcard_service::VCardListMember::external_address(
+                "nested@example.test",
+                "Unterteam-Adresse",
+            ),
+        ];
+        let mut outer = VCardContact::new_list("Team", false, Some("outer-list"));
+        outer.list_members = vec![
+            crate::services::vcard_service::VCardListMember::nested_list(
+                "nested-list",
+                "Unterteam",
+                None,
+            ),
+        ];
+        let nested_record = record("book-a", "nested-list", nested);
+        assert_eq!(contact_recipient_text(&outer), "");
+        assert_eq!(
+            contact_recipient_text_with_records(&outer, &[nested_record]),
+            "nested@example.test"
+        );
+        assert!(contact_email_text(&outer).contains("Adressen verborgen"));
+        assert!(!contact_email_text(&outer).contains("nested@example.test"));
     }
 }
