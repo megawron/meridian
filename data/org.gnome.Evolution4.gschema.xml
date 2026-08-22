@@ -109,6 +109,10 @@
       <default>true</default>
       <summary>Use HTML mode when composing new messages</summary>
     </key>
+    <key name="composer-charset" type="s">
+      <default>'UTF-8'</default>
+      <summary>Default character encoding for new composed messages</summary>
+    </key>
     <key name="request-read-receipt" type="b">
       <default>false</default>
       <summary>Request a read receipt for new messages</summary>

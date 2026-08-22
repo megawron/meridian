@@ -492,6 +492,34 @@ impl AppSettings {
         self.set_boolean("composer-html", value);
     }
 
+    /// Persistent default used when opening a new composer. Individual
+    /// messages keep their selected charset in their recovery draft.
+    pub fn composer_charset(&self) -> String {
+        match self
+            .settings
+            .string("composer-charset")
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "iso-8859-1" | "latin1" | "latin-1" => "ISO-8859-1".to_string(),
+            "iso-8859-15" | "latin9" | "latin-9" => "ISO-8859-15".to_string(),
+            "windows-1252" | "cp1252" => "Windows-1252".to_string(),
+            "us-ascii" | "ascii" => "US-ASCII".to_string(),
+            _ => "UTF-8".to_string(),
+        }
+    }
+
+    pub fn set_composer_charset(&self, value: &str) {
+        let value = match value.trim().to_ascii_lowercase().as_str() {
+            "iso-8859-1" | "latin1" | "latin-1" => "ISO-8859-1",
+            "iso-8859-15" | "latin9" | "latin-9" => "ISO-8859-15",
+            "windows-1252" | "cp1252" => "Windows-1252",
+            "us-ascii" | "ascii" => "US-ASCII",
+            _ => "UTF-8",
+        };
+        self.set_string("composer-charset", value);
+    }
+
     pub fn request_read_receipt(&self) -> bool {
         self.settings.boolean("request-read-receipt")
     }
@@ -1184,6 +1212,7 @@ impl AppSettings {
             "force-dark-mode" => self.set_force_dark_mode(parse_migrated_bool(key, value)?),
             "render-html" => self.set_render_html(parse_migrated_bool(key, value)?),
             "composer-html" => self.set_composer_html(parse_migrated_bool(key, value)?),
+            "composer-charset" => self.set_composer_charset(value),
             "request-read-receipt" => {
                 self.set_request_read_receipt(parse_migrated_bool(key, value)?);
             }
@@ -1319,6 +1348,7 @@ impl AppSettings {
             "force-dark-mode",
             "render-html",
             "composer-html",
+            "composer-charset",
             "request-read-receipt",
             "spellcheck-languages",
             "mail-font-family",
@@ -1683,6 +1713,23 @@ mod tests {
         assert!(!reset.mail_show_all_headers());
         assert!(reset.mail_show_statusbar());
         assert_eq!(reset.mail_font_size(), 16);
+    }
+
+    #[test]
+    fn composer_charset_is_canonical_persistent_and_resettable() {
+        let backend = gio::memory_settings_backend_new();
+        let settings = settings_with_backend(&backend);
+        assert_eq!(settings.composer_charset(), "UTF-8");
+
+        settings.set_composer_charset("latin-1");
+        let reloaded = settings_with_backend(&backend);
+        assert_eq!(reloaded.composer_charset(), "ISO-8859-1");
+        assert_eq!(reloaded.settings.string("composer-charset"), "ISO-8859-1");
+
+        reloaded.set_composer_charset("not-a-charset");
+        assert_eq!(reloaded.composer_charset(), "UTF-8");
+        reloaded.reset_to_defaults();
+        assert_eq!(reloaded.composer_charset(), "UTF-8");
     }
 
     #[test]

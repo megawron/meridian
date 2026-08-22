@@ -6,7 +6,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fs;
-use std::io;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
@@ -77,8 +77,10 @@ pub struct DraftMessage {
     pub pgp_encrypt: bool,
     #[serde(default)]
     pub pgp_key: String,
+    /// Legacy-compatible container for per-message composer options and
+    /// optional S/MIME settings. See [`DraftComposerOptions`].
     #[serde(default)]
-    pub(crate) smime_options: Option<SmimeOptions>,
+    pub(crate) smime_options: Option<DraftComposerOptions>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -89,6 +91,79 @@ pub struct DraftAttachment {
     pub mime_type: String,
     #[serde(default)]
     pub size: u64,
+}
+
+/// Composer-only metadata kept in the recovery draft.
+///
+/// The outer JSON property is still called `smime_options` for compatibility
+/// with the first draft-store format. The nested `smime` value contains the
+/// existing S/MIME material, while the other values are per-message choices.
+/// They must not be promoted to application defaults when a draft is opened.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct DraftComposerOptions {
+    #[serde(default)]
+    pub(crate) request_read_receipt: bool,
+    #[serde(default)]
+    pub(crate) priority: bool,
+    #[serde(default = "default_charset")]
+    pub(crate) charset: String,
+    #[serde(default)]
+    pub(crate) smime: Option<SmimeOptions>,
+}
+
+impl Default for DraftComposerOptions {
+    fn default() -> Self {
+        Self {
+            request_read_receipt: false,
+            priority: false,
+            charset: default_charset(),
+            smime: None,
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for DraftComposerOptions {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Debug, Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Current {
+            #[serde(default)]
+            request_read_receipt: bool,
+            #[serde(default)]
+            priority: bool,
+            #[serde(default = "default_charset")]
+            charset: String,
+            #[serde(default)]
+            smime: Option<SmimeOptions>,
+        }
+
+        #[derive(Debug, Deserialize)]
+        #[serde(untagged)]
+        enum Stored {
+            Current(Current),
+            Legacy(SmimeOptions),
+        }
+
+        match Stored::deserialize(deserializer)? {
+            Stored::Current(options) => Ok(Self {
+                request_read_receipt: options.request_read_receipt,
+                priority: options.priority,
+                charset: options.charset,
+                smime: options.smime,
+            }),
+            Stored::Legacy(smime) => Ok(Self {
+                smime: Some(smime),
+                ..Self::default()
+            }),
+        }
+    }
+}
+
+fn default_charset() -> String {
+    "UTF-8".to_string()
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -181,11 +256,50 @@ impl DraftStoreService {
         self.save_all(&drafts)
     }
 
+    /// Save a snapshot only when the draft version observed by the composer
+    /// is still current.  `updated_at` is the store's existing revision token;
+    /// using it instead of the complete payload also permits recovery to
+    /// sanitize legacy HTML or fill newly introduced per-message defaults
+    /// without falsely reporting a conflict.
+    pub(crate) fn save_if_matches(
+        &self,
+        expected: Option<&DraftMessage>,
+        draft: DraftMessage,
+    ) -> io::Result<bool> {
+        let _lock = draft_store_lock();
+        let mut drafts = self.load_unlocked()?;
+        let current_index = drafts.iter().position(|stored| stored.id == draft.id);
+        let can_replace = match (expected, current_index) {
+            (None, None) => true,
+            (Some(expected), Some(index)) => {
+                drafts[index].id == expected.id && drafts[index].updated_at == expected.updated_at
+            }
+            _ => false,
+        };
+        if !can_replace {
+            return Ok(false);
+        }
+        upsert_draft(&mut drafts, draft);
+        self.save_all(&drafts)?;
+        Ok(true)
+    }
+
     /// Prevent two open composers in this process from transporting the same
     /// recovery draft concurrently. The guard is intentionally held by the
     /// worker across the complete transport attempt.
     pub(crate) fn try_claim_send(&self, id: &str) -> Option<DraftSendClaim> {
-        let key = format!("{}\0{id}", self.path.to_string_lossy());
+        let path = self
+            .path
+            .canonicalize()
+            .or_else(|_| {
+                self.path
+                    .parent()
+                    .unwrap_or_else(|| Path::new("."))
+                    .canonicalize()
+                    .map(|parent| parent.join(self.path.file_name().unwrap_or_default()))
+            })
+            .unwrap_or_else(|_| self.path.clone());
+        let key = format!("{}\0{id}", path.to_string_lossy());
         let mut claims = draft_send_claims();
         if !claims.insert(key.clone()) {
             return None;
@@ -237,9 +351,36 @@ impl DraftStoreService {
         };
         let encoded = serde_json::to_vec_pretty(&file)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-        let temporary_path = self.path.with_extension("json.tmp");
-        fs::write(&temporary_path, encoded)?;
-        fs::rename(temporary_path, &self.path)
+        let file_name = self
+            .path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("drafts.json");
+        let temporary_path = self
+            .path
+            .with_file_name(format!(".{file_name}.{}.tmp", uuid::Uuid::new_v4()));
+        let write_result = (|| -> io::Result<()> {
+            let mut file = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temporary_path)?;
+            file.write_all(&encoded)?;
+            file.sync_all()?;
+            fs::rename(&temporary_path, &self.path)?;
+            if let Some(parent) = self
+                .path
+                .parent()
+                .filter(|parent| !parent.as_os_str().is_empty())
+                && let Ok(directory) = fs::File::open(parent)
+            {
+                let _ = directory.sync_all();
+            }
+            Ok(())
+        })();
+        if write_result.is_err() {
+            let _ = fs::remove_file(&temporary_path);
+        }
+        write_result
     }
 }
 
@@ -282,13 +423,18 @@ mod tests {
             pgp_sign: true,
             pgp_encrypt: true,
             pgp_key: "AABBCCDDEEFF0011".to_string(),
-            smime_options: Some(SmimeOptions {
-                sign: true,
-                encrypt: false,
-                signer_certificate: "/tmp/signer.pem".to_string(),
-                private_key: "/tmp/signer.key".to_string(),
-                recipient_certificates: Vec::new(),
-                ca_file: "/tmp/ca.pem".to_string(),
+            smime_options: Some(DraftComposerOptions {
+                request_read_receipt: true,
+                priority: true,
+                charset: "ISO-8859-1".to_string(),
+                smime: Some(SmimeOptions {
+                    sign: true,
+                    encrypt: false,
+                    signer_certificate: "/tmp/signer.pem".to_string(),
+                    private_key: "/tmp/signer.key".to_string(),
+                    recipient_certificates: Vec::new(),
+                    ca_file: "/tmp/ca.pem".to_string(),
+                }),
             }),
         };
 
@@ -299,6 +445,41 @@ mod tests {
 
         assert_eq!(store.load(), vec![updated]);
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn legacy_smime_metadata_still_loads_as_composer_options() {
+        let options: DraftComposerOptions = serde_json::from_str(
+            r#"{
+                "sign": true,
+                "encrypt": false,
+                "signer_certificate": "signer.pem",
+                "private_key": "signer.key",
+                "recipient_certificates": [],
+                "ca_file": "ca.pem"
+            }"#,
+        )
+        .expect("legacy S/MIME metadata should deserialize");
+
+        assert!(!options.request_read_receipt);
+        assert!(!options.priority);
+        assert_eq!(options.charset, "UTF-8");
+        assert_eq!(options.smime.as_ref().map(|smime| smime.sign), Some(true));
+    }
+
+    #[test]
+    fn composer_options_roundtrip_keeps_per_message_values() {
+        let options = DraftComposerOptions {
+            request_read_receipt: true,
+            priority: true,
+            charset: "Windows-1252".to_string(),
+            smime: None,
+        };
+
+        let encoded = serde_json::to_string(&options).expect("composer options should serialize");
+        let decoded: DraftComposerOptions =
+            serde_json::from_str(&encoded).expect("composer options should deserialize");
+        assert_eq!(decoded, options);
     }
 
     #[test]
@@ -462,6 +643,34 @@ mod tests {
             !store
                 .delete_if_matches(&sent)
                 .expect("revision-aware cleanup should succeed")
+        );
+        assert_eq!(store.load(), vec![newer]);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn stale_composer_snapshot_cannot_replace_a_newer_revision() {
+        let root = temporary_directory("draft-stale-save");
+        let store = DraftStoreService::new(root.join("drafts.json"));
+        let original = test_draft("draft-shared");
+        store
+            .save(original.clone())
+            .expect("initial draft should persist");
+
+        let mut newer = original.clone();
+        newer.updated_at = "2026-08-12T13:00:00Z".to_string();
+        newer.subject = "newer revision".to_string();
+        store
+            .save(newer.clone())
+            .expect("newer draft should persist");
+
+        let mut stale_update = original.clone();
+        stale_update.updated_at = "2026-08-12T14:00:00Z".to_string();
+        stale_update.subject = "stale update".to_string();
+        assert!(
+            !store
+                .save_if_matches(Some(&original), stale_update)
+                .expect("stale save should be checked")
         );
         assert_eq!(store.load(), vec![newer]);
         let _ = fs::remove_dir_all(root);
