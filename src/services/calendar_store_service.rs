@@ -5,10 +5,17 @@
 // stay read-only, while the app-owned fallback can persist local components.
 
 use std::fs;
-use std::io;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, MutexGuard};
+use std::time::Duration;
 
 use super::ical_time_service::property_local_display;
+use super::reminder_service::{Alarm, parse_alarms, replace_component_alarms};
+
+static ATOMIC_WRITE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+static CALENDAR_MUTATION_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CalendarEventRecord {
@@ -45,6 +52,344 @@ pub struct MemoRecord {
     pub summary: String,
     pub description: String,
     pub updated: String,
+}
+
+/// One RFC5545 ATTACH value as a GTK-free value object.
+///
+/// URI values and inline values are deliberately kept as text.  The portable
+/// editor never follows a URI, opens a file, decodes an inline payload, or
+/// otherwise interprets untrusted attachment content.  `unknown_parameters`
+/// contains parameters other than the two fields exposed by the editor;
+/// their source order is retained internally for lossless serialization.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemoAttachment {
+    pub uri: Option<String>,
+    pub inline_content: Option<String>,
+    pub filename: Option<String>,
+    pub fmttype: Option<String>,
+    pub unknown_parameters: Vec<MemoAttachmentParameter>,
+    raw_property: Option<String>,
+    raw_property_lines: Vec<String>,
+    raw_parameters: Vec<String>,
+    source_signature: Option<MemoAttachmentSignature>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemoAttachmentParameter {
+    pub name: String,
+    pub value: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MemoAttachmentSignature {
+    uri: Option<String>,
+    inline_content: Option<String>,
+    filename: Option<String>,
+    fmttype: Option<String>,
+    unknown_parameters: Vec<MemoAttachmentParameter>,
+}
+
+impl MemoAttachment {
+    pub fn uri(value: impl Into<String>) -> Self {
+        Self {
+            uri: Some(value.into()),
+            inline_content: None,
+            filename: None,
+            fmttype: None,
+            unknown_parameters: Vec::new(),
+            raw_property: None,
+            raw_property_lines: Vec::new(),
+            raw_parameters: Vec::new(),
+            source_signature: None,
+        }
+    }
+
+    pub fn inline(value: impl Into<String>) -> Self {
+        Self {
+            uri: None,
+            inline_content: Some(value.into()),
+            filename: None,
+            fmttype: None,
+            unknown_parameters: Vec::new(),
+            raw_property: None,
+            raw_property_lines: Vec::new(),
+            raw_parameters: Vec::new(),
+            source_signature: None,
+        }
+    }
+
+    pub fn is_inline(&self) -> bool {
+        self.inline_content.is_some()
+    }
+
+    pub fn is_uri(&self) -> bool {
+        self.uri.is_some()
+    }
+
+    fn signature(&self) -> MemoAttachmentSignature {
+        MemoAttachmentSignature {
+            uri: self.uri.clone(),
+            inline_content: self.inline_content.clone(),
+            filename: self.filename.clone(),
+            fmttype: self.fmttype.clone(),
+            unknown_parameters: self.unknown_parameters.clone(),
+        }
+    }
+
+    fn is_unchanged(&self) -> bool {
+        self.raw_property.is_some()
+            && self
+                .source_signature
+                .as_ref()
+                .is_some_and(|signature| *signature == self.signature())
+    }
+}
+
+/// GTK-free, staged VJOURNAL editor state.
+///
+/// The original component is copied on construction.  `apply` starts from
+/// that copy and changes only the managed fields whose typed values changed;
+/// unknown top-level properties, X-properties, their parameters and nested
+/// VALARM blocks therefore remain untouched unless the caller explicitly
+/// changes the corresponding attachment/alarm collection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemoEditorDraft {
+    pub uid: String,
+    pub summary: String,
+    pub dtstart: Option<String>,
+    pub class: Option<String>,
+    pub status: Option<String>,
+    pub url: Option<String>,
+    pub categories: Vec<String>,
+    pub description: String,
+    pub attachments: Vec<MemoAttachment>,
+    pub alarms: Vec<Alarm>,
+    original_component: String,
+    original_summary: Option<String>,
+    original_dtstart: Option<String>,
+    original_class: Option<String>,
+    original_status: Option<String>,
+    original_url: Option<String>,
+    original_categories: Vec<String>,
+    original_description: Option<String>,
+    original_attachments: Vec<MemoAttachment>,
+    original_alarms: Vec<Alarm>,
+}
+
+impl MemoEditorDraft {
+    pub fn parse(component: &str) -> Result<Self, String> {
+        Self::from_component(component)
+    }
+
+    pub fn from_component(component: &str) -> Result<Self, String> {
+        if component_kind(component) != Some("VJOURNAL") {
+            return Err("Die Komponente ist kein VJOURNAL".to_string());
+        }
+
+        let properties = top_level_properties(component);
+        let first = |name: &str| {
+            properties
+                .iter()
+                .find(|(property, _, _)| property.eq_ignore_ascii_case(name))
+                .map(|(_, value, _)| unescape(value))
+        };
+        let categories = properties
+            .iter()
+            .filter(|(property, _, _)| property.eq_ignore_ascii_case("CATEGORIES"))
+            .flat_map(|(_, value, _)| split_ical_list(value))
+            .collect::<Vec<_>>();
+        let attachments = top_level_attachment_properties(component)
+            .into_iter()
+            .filter_map(|line| parse_memo_attachment(&line))
+            .collect::<Vec<_>>();
+        let memo_component = first_primary_component(component);
+        let alarms = memo_component
+            .as_deref()
+            .map(parse_alarms)
+            .unwrap_or_default();
+        let summary = first("SUMMARY").unwrap_or_default();
+        let dtstart = first("DTSTART");
+        let class = first("CLASS");
+        let status = first("STATUS");
+        let url = first("URL");
+        let description = first("DESCRIPTION").unwrap_or_default();
+        let uid = first("UID").unwrap_or_default();
+
+        Ok(Self {
+            uid,
+            summary: summary.clone(),
+            dtstart: dtstart.clone(),
+            class: class.clone(),
+            status: status.clone(),
+            url: url.clone(),
+            categories: categories.clone(),
+            description: description.clone(),
+            attachments: attachments.clone(),
+            alarms: alarms.clone(),
+            original_component: component.to_string(),
+            original_summary: first("SUMMARY"),
+            original_dtstart: dtstart,
+            original_class: class,
+            original_status: status,
+            original_url: url,
+            original_categories: categories,
+            original_description: first("DESCRIPTION"),
+            original_attachments: attachments,
+            original_alarms: alarms,
+        })
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        if self.summary.trim().is_empty() {
+            return Err("Eine Notiz benötigt einen Titel".to_string());
+        }
+        validate_single_line("Summary", &self.summary)?;
+        for (label, value) in [
+            ("DTSTART", self.dtstart.as_deref()),
+            ("CLASS", self.class.as_deref()),
+            ("STATUS", self.status.as_deref()),
+            ("URL", self.url.as_deref()),
+        ] {
+            if let Some(value) = value {
+                validate_single_line(label, value)?;
+                if label == "DTSTART" && !value.trim().is_empty() {
+                    validate_dtstart_value(value)?;
+                }
+            }
+        }
+        for category in &self.categories {
+            validate_single_line("Kategorie", category)?;
+        }
+        for attachment in &self.attachments {
+            if attachment.uri.is_some() == attachment.inline_content.is_some() {
+                return Err(
+                    "Jeder Anhang muss genau eine URI oder einen Inline-Inhalt besitzen"
+                        .to_string(),
+                );
+            }
+            if let Some(uri) = attachment.uri.as_deref() {
+                validate_single_line("Anhang-URI", uri)?;
+            }
+            if let Some(content) = attachment.inline_content.as_deref() {
+                validate_single_line("Inline-Anhang", content)?;
+            }
+            if let Some(filename) = attachment.filename.as_deref() {
+                validate_single_line("Anhang-Dateiname", filename)?;
+            }
+            if let Some(fmttype) = attachment.fmttype.as_deref() {
+                validate_single_line("Anhang-FMTTYPE", fmttype)?;
+            }
+            for parameter in &attachment.unknown_parameters {
+                validate_ical_token("Anhang-Parametername", &parameter.name)?;
+                if let Some(value) = parameter.value.as_deref() {
+                    validate_single_line("Anhang-Parameterwert", value)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn is_dirty(&self) -> bool {
+        self.summary != self.original_summary.clone().unwrap_or_default()
+            || self.dtstart != self.original_dtstart
+            || self.class != self.original_class
+            || self.status != self.original_status
+            || self.url != self.original_url
+            || self.categories != self.original_categories
+            || self.description != self.original_description.clone().unwrap_or_default()
+            || self.attachments != self.original_attachments
+            || self.alarms != self.original_alarms
+    }
+
+    pub fn apply(&self) -> Result<String, String> {
+        self.validate()?;
+        if !self.is_dirty() {
+            return Ok(self.original_component.clone());
+        }
+
+        let mut component = self.original_component.clone();
+        if self.summary != self.original_summary.clone().unwrap_or_default() {
+            component = update_ical_property(
+                &component,
+                "SUMMARY",
+                Some(&escape_ical_text_value(&self.summary)),
+            );
+        }
+        if self.dtstart != self.original_dtstart {
+            let dtstart = self
+                .dtstart
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+                .map(strip_line_breaks);
+            if let Some(dtstart) = dtstart.as_deref() {
+                let original_prefix = top_level_properties(&component)
+                    .into_iter()
+                    .find(|(property, _, _)| property.eq_ignore_ascii_case("DTSTART"))
+                    .map(|(_, _, prefix)| prefix);
+                let original_is_date = original_prefix
+                    .as_deref()
+                    .is_some_and(|prefix| property_has_parameter(prefix, "VALUE", "DATE"));
+                if original_is_date != is_ical_date(dtstart) {
+                    return Err(
+                        "DTSTART darf beim Bearbeiten nicht zwischen DATE und Datum/Zeit wechseln"
+                            .to_string(),
+                    );
+                }
+                if !original_is_date && !is_ical_date_time(dtstart) {
+                    return Err("DTSTART benötigt einen Datum/Zeit-Wert".to_string());
+                }
+            }
+            component = update_ical_property(&component, "DTSTART", dtstart.as_deref());
+        }
+        if self.class != self.original_class {
+            let class = self
+                .class
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+                .map(escape_ical_text_value);
+            component = update_ical_property(&component, "CLASS", class.as_deref());
+        }
+        if self.status != self.original_status {
+            let status = self
+                .status
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+                .map(escape_ical_text_value);
+            component = update_ical_property(&component, "STATUS", status.as_deref());
+        }
+        if self.url != self.original_url {
+            let url = self
+                .url
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+                .map(strip_line_breaks);
+            component = update_ical_property(&component, "URL;VALUE=URI", url.as_deref());
+        }
+        if self.categories != self.original_categories {
+            let categories = serialize_ical_categories(&self.categories);
+            component = update_ical_property(
+                &component,
+                "CATEGORIES",
+                (!categories.is_empty()).then_some(categories.as_str()),
+            );
+        }
+        if self.description != self.original_description.clone().unwrap_or_default() {
+            let description = (!self.description.trim().is_empty())
+                .then(|| escape_ical_text_value(&self.description));
+            component = update_ical_property(&component, "DESCRIPTION", description.as_deref());
+        }
+        if self.attachments != self.original_attachments {
+            component = replace_ical_memo_attachments(&component, &self.attachments);
+        }
+        if self.alarms != self.original_alarms {
+            component = replace_memo_component_alarms(&component, &self.alarms);
+        }
+        Ok(component)
+    }
+
+    pub fn apply_to_component(&self) -> Result<String, String> {
+        self.apply()
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -163,6 +508,7 @@ impl CalendarStoreService {
 
     pub fn create_component(&self, component: &str) -> io::Result<(String, String)> {
         self.ensure_writable()?;
+        let _mutation_guard = lock_calendar_mutations()?;
         let kind = component_kind(component).ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -171,14 +517,16 @@ impl CalendarStoreService {
         })?;
         let (uid, component) = ensure_component_uid(component, kind, None);
         let path = self.calendar_file_path();
+        let _file_lock = CalendarFileLock::acquire(&path)?;
         let mut calendar = read_calendar_file(&path)?;
         insert_calendar_component(&mut calendar, &component)?;
-        write_atomic(&path, calendar.as_bytes())?;
+        write_atomic_locked(&path, calendar.as_bytes())?;
         Ok((uid, component))
     }
 
     pub fn modify_component(&self, uid: &str, component: &str) -> io::Result<(String, String)> {
         self.ensure_writable()?;
+        let _mutation_guard = lock_calendar_mutations()?;
         let kind = component_kind(component).ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -193,6 +541,7 @@ impl CalendarStoreService {
             ));
         }
         for path in self.mutable_calendar_files() {
+            let _file_lock = CalendarFileLock::acquire(&path)?;
             let Ok(calendar) = fs::read_to_string(&path) else {
                 continue;
             };
@@ -200,7 +549,7 @@ impl CalendarStoreService {
                 continue;
             }
             let updated = replace_calendar_component(&calendar, &path, uid, &component)?;
-            write_atomic(&path, updated.as_bytes())?;
+            write_atomic_locked(&path, updated.as_bytes())?;
             return Ok((component_uid, component));
         }
         Err(io::Error::new(
@@ -211,7 +560,9 @@ impl CalendarStoreService {
 
     pub fn remove_component(&self, uid: &str) -> io::Result<String> {
         self.ensure_writable()?;
+        let _mutation_guard = lock_calendar_mutations()?;
         for path in self.mutable_calendar_files() {
+            let _file_lock = CalendarFileLock::acquire(&path)?;
             let Ok(calendar) = fs::read_to_string(&path) else {
                 continue;
             };
@@ -219,7 +570,7 @@ impl CalendarStoreService {
                 continue;
             }
             let updated = remove_calendar_component(&calendar, &path, uid)?;
-            write_atomic(&path, updated.as_bytes())?;
+            write_atomic_locked(&path, updated.as_bytes())?;
             return Ok(uid.to_string());
         }
         Err(io::Error::new(
@@ -349,6 +700,42 @@ fn component_kind(raw: &str) -> Option<&'static str> {
             None
         }
     })
+}
+
+fn first_primary_component(raw: &str) -> Option<String> {
+    let lines = logical_lines(raw);
+    let start = lines
+        .iter()
+        .position(|line| is_primary_component_begin(&line.unfolded))?;
+    let kind = primary_component_kind(&lines[start].unfolded)?;
+    let mut nested_depth = 0usize;
+    let mut end = None;
+    for (index, line) in lines.iter().enumerate().skip(start + 1) {
+        if line
+            .unfolded
+            .get(..6)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("BEGIN:"))
+        {
+            nested_depth = nested_depth.saturating_add(1);
+        } else if line
+            .unfolded
+            .get(..4)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("END:"))
+        {
+            if nested_depth == 0 && line.unfolded.eq_ignore_ascii_case(&format!("END:{kind}")) {
+                end = Some(index);
+                break;
+            }
+            nested_depth = nested_depth.saturating_sub(1);
+        }
+    }
+    let end = end?;
+    Some(finish_physical_lines(
+        lines[start..=end]
+            .iter()
+            .flat_map(|line| line.physical.iter().cloned())
+            .collect(),
+    ))
 }
 
 fn ensure_component_uid(raw: &str, kind: &str, fallback_uid: Option<&str>) -> (String, String) {
@@ -529,13 +916,134 @@ fn component_uid_from_lines(lines: &[String]) -> Option<String> {
     None
 }
 
-fn write_atomic(path: &Path, contents: &[u8]) -> io::Result<()> {
-    if let Some(parent) = path.parent() {
+struct CalendarFileLock {
+    path: PathBuf,
+}
+
+impl CalendarFileLock {
+    fn acquire(path: &Path) -> io::Result<Self> {
+        let parent = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
         fs::create_dir_all(parent)?;
+        let basename = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("calendar");
+        let lock_path = parent.join(format!(".{basename}.lock"));
+        for _ in 0..200 {
+            match fs::create_dir(&lock_path) {
+                Ok(()) => return Ok(Self { path: lock_path }),
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            format!(
+                "iCalendar-Datei wird bereits bearbeitet: {}",
+                path.display()
+            ),
+        ))
     }
-    let temporary = path.with_extension("ics.tmp");
-    fs::write(&temporary, contents)?;
-    fs::rename(temporary, path)
+}
+
+impl Drop for CalendarFileLock {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir(&self.path);
+    }
+}
+
+fn lock_calendar_mutations() -> io::Result<MutexGuard<'static, ()>> {
+    CALENDAR_MUTATION_LOCK
+        .lock()
+        .map_err(|_| io::Error::other("Kalender-Mutationssperre ist vergiftet"))
+}
+
+#[cfg(test)]
+fn write_atomic(path: &Path, contents: &[u8]) -> io::Result<()> {
+    let _mutation_guard = lock_calendar_mutations()?;
+    let _file_lock = CalendarFileLock::acquire(path)?;
+    write_atomic_locked(path, contents)
+}
+
+fn write_atomic_locked(path: &Path, contents: &[u8]) -> io::Result<()> {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent)?;
+    let previous_permissions = fs::metadata(path)
+        .ok()
+        .map(|metadata| metadata.permissions());
+    let basename = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("calendar");
+    let mut temporary = None;
+    let mut temporary_file = None;
+    for _ in 0..32 {
+        let sequence = ATOMIC_WRITE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let candidate = parent.join(format!(
+            ".{basename}.{}.{}.tmp",
+            std::process::id(),
+            sequence
+        ));
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&candidate)
+        {
+            Ok(file) => {
+                temporary = Some(candidate);
+                temporary_file = Some(file);
+                break;
+            }
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    let Some(temporary) = temporary else {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "Kein eindeutiger temporärer iCalendar-Pfad verfügbar",
+        ));
+    };
+    let mut temporary_file = Some(temporary_file.expect("temporary file exists with its path"));
+    let mut renamed = false;
+    let result = (|| {
+        if let Some(permissions) = previous_permissions {
+            fs::set_permissions(&temporary, permissions)?;
+        }
+        {
+            let file = temporary_file
+                .as_mut()
+                .expect("temporary file exists until it is closed");
+            file.write_all(contents)?;
+            file.flush()?;
+            file.sync_all()?;
+        }
+        temporary_file.take();
+        fs::rename(&temporary, path)?;
+        renamed = true;
+
+        // Directory fsync is a durability best effort on platforms which
+        // expose directory handles.  The atomic replacement has already
+        // succeeded; a platform that rejects opening the directory must not
+        // turn a successful replacement into a reported write failure.
+        if let Ok(directory) = fs::File::open(parent) {
+            let _ = directory.sync_all();
+        }
+        Ok(())
+    })();
+    if !renamed {
+        temporary_file.take();
+        let _ = fs::remove_file(&temporary);
+    }
+    result
 }
 
 pub(crate) fn parse_ical_component(
@@ -798,18 +1306,75 @@ fn append_component(
     }
 }
 
-fn unfold_lines(raw: &str) -> Vec<String> {
-    let mut lines: Vec<String> = Vec::new();
+#[derive(Debug, Clone)]
+struct IcalLogicalLine {
+    unfolded: String,
+    physical: Vec<String>,
+}
+
+fn logical_lines(raw: &str) -> Vec<IcalLogicalLine> {
+    let mut lines: Vec<IcalLogicalLine> = Vec::new();
     for raw_line in raw.replace("\r\n", "\n").replace('\r', "\n").lines() {
         if raw_line.starts_with(' ') || raw_line.starts_with('\t') {
             if let Some(previous) = lines.last_mut() {
-                previous.push_str(raw_line.trim_start());
+                previous.unfolded.push_str(&raw_line[1..]);
+                previous.physical.push(raw_line.to_string());
             }
         } else {
-            lines.push(raw_line.to_string());
+            lines.push(IcalLogicalLine {
+                unfolded: raw_line.to_string(),
+                physical: vec![raw_line.to_string()],
+            });
         }
     }
     lines
+}
+
+fn unfold_lines(raw: &str) -> Vec<String> {
+    logical_lines(raw)
+        .into_iter()
+        .map(|line| line.unfolded)
+        .collect()
+}
+
+fn fold_ical_line(line: &str) -> Vec<String> {
+    const MAX_OCTETS: usize = 75;
+    if line.len() <= MAX_OCTETS {
+        return vec![line.to_string()];
+    }
+
+    let mut folded = Vec::new();
+    let mut remaining = line;
+    let mut first = true;
+    while !remaining.is_empty() {
+        let budget = if first { MAX_OCTETS } else { MAX_OCTETS - 1 };
+        let mut end = remaining.len().min(budget);
+        while end > 0 && !remaining.is_char_boundary(end) {
+            end -= 1;
+        }
+        if end == 0 {
+            break;
+        }
+        let (part, rest) = remaining.split_at(end);
+        folded.push(if first {
+            part.to_string()
+        } else {
+            format!(" {part}")
+        });
+        remaining = rest;
+        first = false;
+    }
+    folded
+}
+
+fn append_folded_line(lines: &mut Vec<String>, prefix: &str, value: &str) {
+    lines.extend(fold_ical_line(&format!("{prefix}:{value}")));
+}
+
+fn finish_physical_lines(lines: Vec<String>) -> String {
+    let mut result = lines.join("\r\n");
+    result.push_str("\r\n");
+    result
 }
 
 fn unescape(value: &str) -> String {
@@ -821,166 +1386,1006 @@ fn unescape(value: &str) -> String {
         .replace("\\\\", "\\")
 }
 
+fn escape_ical_text_value(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace(';', "\\;")
+        .replace(',', "\\,")
+        .replace('\r', "")
+        .replace('\n', "\\n")
+}
+
+fn strip_line_breaks(value: &str) -> String {
+    value
+        .chars()
+        .filter(|character| *character != '\r' && *character != '\n')
+        .collect()
+}
+
+fn validate_single_line(label: &str, value: &str) -> Result<(), String> {
+    if value.contains('\r') || value.contains('\n') {
+        Err(format!("{label} darf keine Zeilenumbrüche enthalten"))
+    } else {
+        Ok(())
+    }
+}
+
+fn validate_dtstart_value(value: &str) -> Result<(), String> {
+    let value = value.trim();
+    if is_ical_date(value) || is_ical_date_time(value) {
+        Ok(())
+    } else {
+        Err("DTSTART muss ein iCalendar-Datum oder ein Datum/Zeit-Wert sein".to_string())
+    }
+}
+
+fn is_ical_date(value: &str) -> bool {
+    value.len() == 8 && value.chars().all(|character| character.is_ascii_digit())
+}
+
+fn is_ical_date_time(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    (bytes.len() == 15 || bytes.len() == 16)
+        && bytes.get(8) == Some(&b'T')
+        && bytes[..8].iter().all(u8::is_ascii_digit)
+        && bytes[9..15].iter().all(u8::is_ascii_digit)
+        && (value.len() == 15 || value.ends_with('Z'))
+}
+
+fn property_has_parameter(prefix: &str, expected_name: &str, expected_value: &str) -> bool {
+    split_ical_parameters(prefix)
+        .into_iter()
+        .skip(1)
+        .any(|parameter| {
+            let (name, value) = parameter_name_value(parameter);
+            name.eq_ignore_ascii_case(expected_name)
+                && value
+                    .map(unquote_parameter_value)
+                    .is_some_and(|value| value.eq_ignore_ascii_case(expected_value))
+        })
+}
+
+fn validate_ical_token(label: &str, value: &str) -> Result<(), String> {
+    if !value.is_empty()
+        && value
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || character == '-')
+    {
+        Ok(())
+    } else {
+        Err(format!("{label} enthält einen ungültigen iCalendar-Namen"))
+    }
+}
+
+fn split_ical_property_line(line: &str) -> Option<(&str, &str)> {
+    let mut quoted = false;
+    let mut escaped = false;
+    for (index, character) in line.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if character == '\\' {
+            escaped = true;
+            continue;
+        }
+        if character == '"' {
+            quoted = !quoted;
+        } else if character == ':' && !quoted {
+            return Some((&line[..index], &line[index + character.len_utf8()..]));
+        }
+    }
+    None
+}
+
+fn split_ical_parameters(prefix: &str) -> Vec<&str> {
+    let mut parameters = Vec::new();
+    let mut start = 0usize;
+    let mut quoted = false;
+    let mut escaped = false;
+    for (index, character) in prefix.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if character == '\\' {
+            escaped = true;
+            continue;
+        }
+        if character == '"' {
+            quoted = !quoted;
+        } else if character == ';' && !quoted {
+            parameters.push(&prefix[start..index]);
+            start = index + character.len_utf8();
+        }
+    }
+    parameters.push(&prefix[start..]);
+    parameters
+}
+
+fn property_name(prefix: &str) -> &str {
+    split_ical_parameters(prefix)
+        .first()
+        .copied()
+        .unwrap_or(prefix)
+        .trim()
+}
+
+fn parameter_name_value(parameter: &str) -> (&str, Option<&str>) {
+    parameter
+        .split_once('=')
+        .map(|(name, value)| (name.trim(), Some(value.trim())))
+        .unwrap_or((parameter.trim(), None))
+}
+
+fn unquote_parameter_value(value: &str) -> String {
+    let value = value.trim();
+    let value = value
+        .strip_prefix('"')
+        .and_then(|value| value.strip_suffix('"'))
+        .unwrap_or(value);
+    value.replace("\\\"", "\"").replace("\\\\", "\\")
+}
+
+fn top_level_properties(raw: &str) -> Vec<(String, String, String)> {
+    let mut properties = Vec::new();
+    let mut depth = 0usize;
+    let mut target_depth = None;
+    for logical in logical_lines(raw) {
+        let line = logical.unfolded;
+        if is_primary_component_begin(&line) {
+            if target_depth.is_none() {
+                target_depth = Some(depth + 1);
+            }
+            depth = depth.saturating_add(1);
+            continue;
+        }
+        if line
+            .get(..6)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("BEGIN:"))
+        {
+            depth = depth.saturating_add(1);
+            continue;
+        }
+        if line
+            .get(..4)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("END:"))
+        {
+            if target_depth == Some(depth) {
+                break;
+            }
+            depth = depth.saturating_sub(1);
+            continue;
+        }
+        if target_depth != Some(depth) {
+            continue;
+        }
+        let Some((prefix, value)) = split_ical_property_line(&line) else {
+            continue;
+        };
+        properties.push((
+            property_name(prefix).to_ascii_uppercase(),
+            value.to_string(),
+            prefix.to_string(),
+        ));
+    }
+    properties
+}
+
+fn is_primary_component_begin(line: &str) -> bool {
+    primary_component_kind(line).is_some()
+}
+
+fn primary_component_kind(line: &str) -> Option<&'static str> {
+    if line.eq_ignore_ascii_case("BEGIN:VEVENT") {
+        Some("VEVENT")
+    } else if line.eq_ignore_ascii_case("BEGIN:VTODO") {
+        Some("VTODO")
+    } else if line.eq_ignore_ascii_case("BEGIN:VJOURNAL") {
+        Some("VJOURNAL")
+    } else {
+        None
+    }
+}
+
+fn top_level_attachment_properties(raw: &str) -> Vec<String> {
+    let mut attachments = Vec::new();
+    let mut depth = 0usize;
+    let mut target_depth = None;
+    for logical in logical_lines(raw) {
+        let line = &logical.unfolded;
+        if is_primary_component_begin(line) {
+            if target_depth.is_none() {
+                target_depth = Some(depth + 1);
+            }
+            depth = depth.saturating_add(1);
+            continue;
+        }
+        if line
+            .get(..6)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("BEGIN:"))
+        {
+            depth = depth.saturating_add(1);
+            continue;
+        }
+        if line
+            .get(..4)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("END:"))
+        {
+            if target_depth == Some(depth) {
+                break;
+            }
+            depth = depth.saturating_sub(1);
+            continue;
+        }
+        if target_depth != Some(depth) {
+            continue;
+        }
+        let Some((prefix, _)) = split_ical_property_line(line) else {
+            continue;
+        };
+        if property_name(prefix).eq_ignore_ascii_case("ATTACH") {
+            attachments.push(logical.physical.join("\r\n"));
+        }
+    }
+    attachments
+}
+
+fn split_ical_list(value: &str) -> Vec<String> {
+    let mut values = Vec::new();
+    let mut current = String::new();
+    let mut escaped = false;
+    for character in value.chars() {
+        if escaped {
+            current.push('\\');
+            current.push(character);
+            escaped = false;
+        } else if character == '\\' {
+            escaped = true;
+        } else if character == ',' {
+            if !current.trim().is_empty() {
+                values.push(unescape(current.trim()));
+            }
+            current.clear();
+        } else {
+            current.push(character);
+        }
+    }
+    if escaped {
+        current.push('\\');
+    }
+    if !current.trim().is_empty() {
+        values.push(unescape(current.trim()));
+    }
+    values
+}
+
+fn serialize_ical_categories(categories: &[String]) -> String {
+    categories
+        .iter()
+        .map(|category| escape_ical_text_value(category.trim()))
+        .filter(|category| !category.is_empty())
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn parse_memo_attachment(line: &str) -> Option<MemoAttachment> {
+    let logical = logical_lines(line).into_iter().next()?;
+    let line = logical.unfolded;
+    let (prefix, value) = split_ical_property_line(&line)?;
+    if !property_name(prefix).eq_ignore_ascii_case("ATTACH") {
+        return None;
+    }
+
+    let raw_parameters = split_ical_parameters(prefix)
+        .into_iter()
+        .skip(1)
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+    let mut filename = None;
+    let mut fmttype = None;
+    let mut unknown_parameters = Vec::new();
+    let mut value_kind = None;
+    let mut encoding = None;
+    for parameter in &raw_parameters {
+        let (name, parameter_value) = parameter_name_value(parameter);
+        let normalized = name.to_ascii_uppercase();
+        let parsed_value = parameter_value.map(unquote_parameter_value);
+        match normalized.as_str() {
+            "FILENAME" => filename = parsed_value,
+            "FMTTYPE" => fmttype = parsed_value,
+            "VALUE" => value_kind = parsed_value,
+            "ENCODING" => encoding = parsed_value,
+            _ => unknown_parameters.push(MemoAttachmentParameter {
+                name: name.to_string(),
+                value: parsed_value,
+            }),
+        }
+    }
+
+    let is_inline = value_kind
+        .as_deref()
+        .is_some_and(|value| value.eq_ignore_ascii_case("BINARY"))
+        || encoding
+            .as_deref()
+            .is_some_and(|value| !value.eq_ignore_ascii_case("NONE"));
+    let (uri, inline_content) = if is_inline {
+        (None, Some(value.to_string()))
+    } else {
+        (Some(unescape(value)), None)
+    };
+    let mut attachment = MemoAttachment {
+        uri,
+        inline_content,
+        filename,
+        fmttype,
+        unknown_parameters,
+        raw_property: Some(line),
+        raw_property_lines: logical.physical,
+        raw_parameters,
+        source_signature: None,
+    };
+    attachment.source_signature = Some(attachment.signature());
+    Some(attachment)
+}
+
+fn render_parameter_value(value: &str) -> String {
+    let value = strip_line_breaks(value);
+    if value
+        .chars()
+        .all(|character| character.is_ascii_alphanumeric() || "-._/".contains(character))
+    {
+        value
+    } else {
+        format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
+    }
+}
+
+fn render_parameter(name: &str, value: Option<&str>) -> String {
+    match value {
+        Some(value) => format!("{name}={}", render_parameter_value(value)),
+        None => name.to_string(),
+    }
+}
+
+fn render_memo_attachment(attachment: &MemoAttachment) -> String {
+    if attachment.is_unchanged() {
+        return attachment.raw_property.clone().unwrap_or_default();
+    }
+
+    let mut parameters = Vec::new();
+    let source_filename = attachment
+        .source_signature
+        .as_ref()
+        .and_then(|signature| signature.filename.as_deref());
+    let source_fmttype = attachment
+        .source_signature
+        .as_ref()
+        .and_then(|signature| signature.fmttype.as_deref());
+    let source_unknown_parameters = attachment
+        .source_signature
+        .as_ref()
+        .map(|signature| signature.unknown_parameters.as_slice())
+        .unwrap_or(&[]);
+    let mut used_unknown_parameters = vec![false; attachment.unknown_parameters.len()];
+    let mut used_source_unknown_parameters = vec![false; source_unknown_parameters.len()];
+    let mut filename_written = false;
+    let mut fmttype_written = false;
+    let mut value_written = false;
+    let mut encoding_written = false;
+    for raw_parameter in &attachment.raw_parameters {
+        let (name, raw_value) = parameter_name_value(raw_parameter);
+        if name.eq_ignore_ascii_case("FILENAME") {
+            if !filename_written {
+                if let Some(filename) = attachment.filename.as_deref() {
+                    if source_filename == Some(filename) {
+                        parameters.push(raw_parameter.clone());
+                    } else {
+                        parameters.push(render_parameter(name, Some(filename)));
+                    }
+                    filename_written = true;
+                }
+            }
+        } else if name.eq_ignore_ascii_case("FMTTYPE") {
+            if !fmttype_written {
+                if let Some(fmttype) = attachment.fmttype.as_deref() {
+                    if source_fmttype == Some(fmttype) {
+                        parameters.push(raw_parameter.clone());
+                    } else {
+                        parameters.push(render_parameter(name, Some(fmttype)));
+                    }
+                    fmttype_written = true;
+                }
+            }
+        } else if name.eq_ignore_ascii_case("VALUE") {
+            if !value_written {
+                let wanted = if attachment.inline_content.is_some() {
+                    "BINARY"
+                } else {
+                    "URI"
+                };
+                if raw_value
+                    .map(unquote_parameter_value)
+                    .is_some_and(|value| value.eq_ignore_ascii_case(wanted))
+                {
+                    parameters.push(raw_parameter.clone());
+                } else {
+                    parameters.push(render_parameter(name, Some(wanted)));
+                }
+                value_written = true;
+            }
+        } else if name.eq_ignore_ascii_case("ENCODING") {
+            if !encoding_written {
+                // ENCODING is meaningful for inline content.  When the
+                // value changes to a URI, stale BINARY/8BIT metadata must
+                // not remain attached to it.
+                if attachment.inline_content.is_some() {
+                    parameters.push(raw_parameter.clone());
+                }
+                encoding_written = true;
+            }
+        } else if let Some((index, parameter)) = attachment
+            .unknown_parameters
+            .iter()
+            .enumerate()
+            .find(|(index, parameter)| {
+                !used_unknown_parameters[*index] && parameter.name.eq_ignore_ascii_case(name)
+            })
+        {
+            used_unknown_parameters[index] = true;
+            let source_parameter =
+                source_unknown_parameters
+                    .iter()
+                    .enumerate()
+                    .find(|(index, parameter)| {
+                        !used_source_unknown_parameters[*index]
+                            && parameter.name.eq_ignore_ascii_case(name)
+                    });
+            if let Some((source_index, source_parameter)) = source_parameter {
+                used_source_unknown_parameters[source_index] = true;
+                if source_parameter == parameter {
+                    parameters.push(raw_parameter.clone());
+                    continue;
+                }
+            }
+            parameters.push(render_parameter(name, parameter.value.as_deref()));
+        }
+    }
+    if !filename_written {
+        if let Some(filename) = attachment.filename.as_deref() {
+            parameters.push(render_parameter("FILENAME", Some(filename)));
+        }
+    }
+    if !fmttype_written {
+        if let Some(fmttype) = attachment.fmttype.as_deref() {
+            parameters.push(render_parameter("FMTTYPE", Some(fmttype)));
+        }
+    }
+    parameters.extend(
+        attachment
+            .unknown_parameters
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| !used_unknown_parameters[*index])
+            .map(|(_, parameter)| parameter)
+            .map(|parameter| render_parameter(&parameter.name, parameter.value.as_deref())),
+    );
+    if !value_written && !attachment.raw_parameters.is_empty() {
+        parameters.push(render_parameter(
+            "VALUE",
+            Some(if attachment.inline_content.is_some() {
+                "BINARY"
+            } else {
+                "URI"
+            }),
+        ));
+    }
+    if attachment.raw_parameters.is_empty() {
+        if attachment.inline_content.is_some() {
+            parameters.push("VALUE=BINARY".to_string());
+        } else {
+            parameters.push("VALUE=URI".to_string());
+        }
+    }
+    let prefix = if parameters.is_empty() {
+        "ATTACH".to_string()
+    } else {
+        format!("ATTACH;{}", parameters.join(";"))
+    };
+    let value = attachment
+        .inline_content
+        .as_deref()
+        .or(attachment.uri.as_deref())
+        .unwrap_or_default();
+    let serialized_value = if attachment.inline_content.is_some() {
+        strip_line_breaks(value)
+    } else {
+        serialize_memo_uri_value(value)
+    };
+    format!("{prefix}:{serialized_value}")
+}
+
+fn render_memo_attachment_lines(attachment: &MemoAttachment) -> Vec<String> {
+    if attachment.is_unchanged() && !attachment.raw_property_lines.is_empty() {
+        attachment.raw_property_lines.clone()
+    } else {
+        fold_ical_line(&render_memo_attachment(attachment))
+    }
+}
+
 /// Replace or remove a top-level iCalendar property while preserving the rest
 /// of the component, including nested alarms and vendor-specific fields.
-pub(crate) fn update_ical_property(raw: &str, property_name: &str, value: Option<&str>) -> String {
-    let target = property_name
+pub(crate) fn update_ical_property(
+    raw: &str,
+    requested_property: &str,
+    value: Option<&str>,
+) -> String {
+    let target = requested_property
         .split(';')
         .next()
-        .unwrap_or(property_name)
+        .unwrap_or(requested_property)
         .to_ascii_uppercase();
     let mut lines = Vec::new();
     let mut replaced = false;
-    let mut component_depth = 0usize;
+    let mut in_primary = false;
+    let mut nested_depth = 0usize;
+    let mut primary_kind = None;
+    let mut primary_seen = false;
 
-    for line in unfold_lines(raw) {
-        let property = line
-            .split_once(':')
-            .map(|(property, _)| property)
-            .unwrap_or(line.as_str())
-            .split(';')
-            .next()
-            .unwrap_or_default()
-            .to_ascii_uppercase();
-        if property == target && component_depth <= 1 {
+    for logical in logical_lines(raw) {
+        let line = &logical.unfolded;
+        if !in_primary {
+            if !primary_seen {
+                if let Some(kind) = primary_component_kind(line) {
+                    in_primary = true;
+                    primary_seen = true;
+                    primary_kind = Some(kind.to_string());
+                }
+            }
+            lines.extend(logical.physical);
+            continue;
+        }
+
+        let prefix = split_ical_property_line(line)
+            .map(|(prefix, _)| prefix)
+            .unwrap_or(line);
+        let property = property_name(prefix).to_ascii_uppercase();
+        if property == target && nested_depth == 0 {
             if !replaced {
                 if let Some(value) = value {
-                    lines.push(format!("{property_name}:{value}"));
+                    // Keep the complete original parameter set, including
+                    // VALUE=DATE/VALUE=URI and vendor parameters.  The
+                    // requested prefix is used only when the property is new.
+                    append_folded_line(&mut lines, prefix, value);
                 }
                 replaced = true;
             }
             continue;
         }
-        lines.push(line);
 
-        if property == "BEGIN" {
-            component_depth = component_depth.saturating_add(1);
-        } else if property == "END" {
-            component_depth = component_depth.saturating_sub(1);
+        if nested_depth == 0
+            && primary_kind
+                .as_deref()
+                .is_some_and(|kind| line.eq_ignore_ascii_case(&format!("END:{kind}")))
+        {
+            if value.is_some() && !replaced {
+                append_folded_line(&mut lines, requested_property, value.unwrap_or_default());
+                replaced = true;
+            }
+            lines.extend(logical.physical);
+            in_primary = false;
+            primary_kind = None;
+            continue;
+        }
+
+        lines.extend(logical.physical);
+        if line
+            .get(..6)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("BEGIN:"))
+        {
+            nested_depth = nested_depth.saturating_add(1);
+        } else if line
+            .get(..4)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("END:"))
+        {
+            nested_depth = nested_depth.saturating_sub(1);
         }
     }
 
     if value.is_some() && !replaced {
-        let insertion = lines
-            .iter()
-            .position(|line| line.eq_ignore_ascii_case("END:VEVENT"))
-            .or_else(|| {
-                lines
-                    .iter()
-                    .position(|line| line.eq_ignore_ascii_case("END:VTODO"))
-            })
-            .or_else(|| {
-                lines
-                    .iter()
-                    .position(|line| line.eq_ignore_ascii_case("END:VJOURNAL"))
-            })
-            .unwrap_or(lines.len());
-        lines.insert(
-            insertion,
-            format!("{property_name}:{}", value.unwrap_or_default()),
-        );
+        append_folded_line(&mut lines, requested_property, value.unwrap_or_default());
     }
-
-    let mut result = lines.join("\r\n");
-    result.push_str("\r\n");
-    result
+    finish_physical_lines(lines)
 }
 
 /// Replace top-level ATTACH properties while retaining parameters for URIs that
 /// remain attached to the component.
 pub(crate) fn replace_ical_attachments(raw: &str, values: &[String]) -> String {
-    let existing = existing_attachment_properties(raw);
+    let existing = top_level_attachment_properties(raw)
+        .into_iter()
+        .filter_map(|line| parse_memo_attachment(&line))
+        .collect::<Vec<_>>();
     let mut lines = Vec::new();
     let mut replaced = false;
-    let mut depth = 0usize;
-    for line in unfold_lines(raw) {
-        let property_part = line
-            .split_once(':')
-            .map(|(property, _)| property)
-            .unwrap_or(line.as_str());
-        let property = property_part
-            .split(';')
-            .next()
-            .unwrap_or_default()
-            .to_ascii_uppercase();
-        if property == "ATTACH" && depth <= 1 {
+    let mut in_primary = false;
+    let mut primary_seen = false;
+    let mut nested_depth = 0usize;
+    let mut primary_kind = None;
+    let mut used_existing = vec![false; existing.len()];
+    for logical in logical_lines(raw) {
+        let line = &logical.unfolded;
+        if !in_primary {
+            if !primary_seen {
+                if let Some(kind) = primary_component_kind(line) {
+                    in_primary = true;
+                    primary_seen = true;
+                    primary_kind = Some(kind);
+                }
+            }
+            lines.extend(logical.physical);
+            continue;
+        }
+        let prefix = split_ical_property_line(line)
+            .map(|(prefix, _)| prefix)
+            .unwrap_or(line);
+        let property = property_name(prefix).to_ascii_uppercase();
+        if property == "ATTACH" && nested_depth == 0 {
             if !replaced {
-                let mut used = vec![false; existing.len()];
                 for value in values {
-                    let matching_existing =
-                        existing
-                            .iter()
-                            .enumerate()
-                            .find(|(index, (existing_value, _))| {
-                                !used[*index] && existing_value.eq_ignore_ascii_case(value)
-                            });
-                    let line = if let Some((index, (_, property_prefix))) = matching_existing {
-                        used[index] = true;
-                        format!(
-                            "{property_prefix}:{}",
-                            serialize_ical_attachment_value(value)
-                        )
+                    let matching_existing = existing.iter().enumerate().find(|(index, current)| {
+                        !used_existing[*index]
+                            && current
+                                .uri
+                                .as_ref()
+                                .is_some_and(|uri| uri.eq_ignore_ascii_case(value))
+                    });
+                    if let Some((index, current)) = matching_existing {
+                        used_existing[index] = true;
+                        lines.extend(if current.raw_property_lines.is_empty() {
+                            vec![format!(
+                                "ATTACH;VALUE=URI:{}",
+                                serialize_ical_attachment_value(value)
+                            )]
+                        } else {
+                            current.raw_property_lines.clone()
+                        });
                     } else {
-                        format!(
+                        lines.push(format!(
                             "ATTACH;VALUE=URI:{}",
                             serialize_ical_attachment_value(value)
-                        )
-                    };
-                    lines.push(line);
+                        ));
+                    }
                 }
                 replaced = true;
             }
             continue;
         }
-        lines.push(line);
-        if property == "BEGIN" {
-            depth = depth.saturating_add(1);
-        } else if property == "END" {
-            depth = depth.saturating_sub(1);
+        if nested_depth == 0
+            && primary_kind
+                .as_deref()
+                .is_some_and(|kind| line.eq_ignore_ascii_case(&format!("END:{kind}")))
+        {
+            if !replaced && !values.is_empty() {
+                lines.extend(values.iter().map(|value| {
+                    format!(
+                        "ATTACH;VALUE=URI:{}",
+                        serialize_ical_attachment_value(value)
+                    )
+                }));
+                replaced = true;
+            }
+            lines.extend(logical.physical);
+            in_primary = false;
+            primary_kind = None;
+            continue;
+        }
+        lines.extend(logical.physical);
+        if line
+            .get(..6)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("BEGIN:"))
+        {
+            nested_depth = nested_depth.saturating_add(1);
+        } else if line
+            .get(..4)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("END:"))
+        {
+            nested_depth = nested_depth.saturating_sub(1);
         }
     }
     if !replaced && !values.is_empty() {
-        let insertion = lines
-            .iter()
-            .position(|line| {
-                line.eq_ignore_ascii_case("END:VEVENT")
-                    || line.eq_ignore_ascii_case("END:VTODO")
-                    || line.eq_ignore_ascii_case("END:VJOURNAL")
-            })
-            .unwrap_or(lines.len());
-        let attachments = values.iter().map(|value| {
+        lines.extend(values.iter().map(|value| {
             format!(
                 "ATTACH;VALUE=URI:{}",
                 serialize_ical_attachment_value(value)
             )
-        });
-        lines.splice(insertion..insertion, attachments);
+        }));
     }
-    format!("{}\r\n", lines.join("\r\n"))
+    if !replaced && values.is_empty() {
+        return raw.to_string();
+    }
+    finish_physical_lines(lines)
 }
 
-fn existing_attachment_properties(raw: &str) -> Vec<(String, String)> {
-    let mut attachments = Vec::new();
-    let mut depth = 0usize;
-    for line in unfold_lines(raw) {
-        let Some((property, value)) = line.split_once(':') else {
+pub(crate) fn replace_ical_memo_attachments(raw: &str, attachments: &[MemoAttachment]) -> String {
+    let existing = top_level_attachment_properties(raw)
+        .into_iter()
+        .filter_map(|line| parse_memo_attachment(&line))
+        .collect::<Vec<_>>();
+    let mut lines = Vec::new();
+    let mut replaced = false;
+    let mut in_primary = false;
+    let mut nested_depth = 0usize;
+    let mut primary_kind = None;
+    let mut primary_seen = false;
+    let mut used_existing = vec![false; existing.len()];
+    for logical in logical_lines(raw) {
+        let line = &logical.unfolded;
+        if !in_primary {
+            if !primary_seen {
+                if let Some(kind) = primary_component_kind(line) {
+                    in_primary = true;
+                    primary_seen = true;
+                    primary_kind = Some(kind.to_string());
+                }
+            }
+            lines.extend(logical.physical);
             continue;
-        };
-        let name = property
-            .split(';')
-            .next()
-            .unwrap_or(property)
-            .to_ascii_uppercase();
-        if name == "ATTACH" && depth == 1 {
-            attachments.push((unescape(value), property.to_string()));
         }
-        if name == "BEGIN" {
-            depth = depth.saturating_add(1);
-        } else if name == "END" {
-            depth = depth.saturating_sub(1);
+
+        let prefix = split_ical_property_line(line)
+            .map(|(prefix, _)| prefix)
+            .unwrap_or(line);
+        let property = property_name(prefix).to_ascii_uppercase();
+        if property == "ATTACH" && nested_depth == 0 {
+            if !replaced {
+                for attachment in attachments {
+                    let matching_existing = existing.iter().enumerate().find(|(index, current)| {
+                        !used_existing[*index]
+                            && attachment.uri.is_some()
+                            && attachment.inline_content.is_none()
+                            && current.uri.as_ref().is_some_and(|uri| {
+                                attachment
+                                    .uri
+                                    .as_ref()
+                                    .is_some_and(|value| uri.eq_ignore_ascii_case(value))
+                            })
+                    });
+                    if let Some((index, current)) = matching_existing {
+                        used_existing[index] = true;
+                        if attachment.raw_property.is_none()
+                            && attachment.filename.is_none()
+                            && attachment.fmttype.is_none()
+                            && attachment.unknown_parameters.is_empty()
+                        {
+                            lines.extend(if current.raw_property_lines.is_empty() {
+                                render_memo_attachment_lines(attachment)
+                            } else {
+                                current.raw_property_lines.clone()
+                            });
+                            continue;
+                        }
+                    }
+                    lines.extend(render_memo_attachment_lines(attachment));
+                }
+                replaced = true;
+            }
+            continue;
+        }
+
+        if nested_depth == 0
+            && primary_kind
+                .as_deref()
+                .is_some_and(|kind| line.eq_ignore_ascii_case(&format!("END:{kind}")))
+        {
+            if !replaced && !attachments.is_empty() {
+                for attachment in attachments {
+                    lines.extend(render_memo_attachment_lines(attachment));
+                }
+                replaced = true;
+            }
+            lines.extend(logical.physical);
+            in_primary = false;
+            primary_kind = None;
+            continue;
+        }
+
+        lines.extend(logical.physical);
+        if line
+            .get(..6)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("BEGIN:"))
+        {
+            nested_depth = nested_depth.saturating_add(1);
+        } else if line
+            .get(..4)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("END:"))
+        {
+            nested_depth = nested_depth.saturating_sub(1);
         }
     }
-    attachments
+    if !replaced && !attachments.is_empty() {
+        for attachment in attachments {
+            lines.extend(render_memo_attachment_lines(attachment));
+        }
+    }
+    if !replaced && attachments.is_empty() {
+        return raw.to_string();
+    }
+    finish_physical_lines(lines)
+}
+
+fn replace_memo_component_alarms(raw: &str, alarms: &[Alarm]) -> String {
+    let source = logical_lines(raw);
+    let Some(start) = source
+        .iter()
+        .position(|line| is_primary_component_begin(&line.unfolded))
+    else {
+        return raw.to_string();
+    };
+    let Some(kind) = primary_component_kind(&source[start].unfolded) else {
+        return raw.to_string();
+    };
+    let mut nested_depth = 0usize;
+    let Some(end) = source
+        .iter()
+        .enumerate()
+        .skip(start + 1)
+        .find_map(|(index, line)| {
+            if line
+                .unfolded
+                .get(..6)
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case("BEGIN:"))
+            {
+                nested_depth = nested_depth.saturating_add(1);
+                return None;
+            }
+            if line
+                .unfolded
+                .get(..4)
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case("END:"))
+            {
+                if nested_depth == 0 && line.unfolded.eq_ignore_ascii_case(&format!("END:{kind}")) {
+                    return Some(index);
+                }
+                nested_depth = nested_depth.saturating_sub(1);
+            }
+            None
+        })
+    else {
+        return raw.to_string();
+    };
+
+    let component = finish_physical_lines(
+        source[start..=end]
+            .iter()
+            .flat_map(|line| line.physical.iter().cloned())
+            .collect(),
+    );
+    let original_alarms = parse_alarms(&component);
+    let original_blocks = top_level_alarm_blocks(&component);
+    let generated = replace_component_alarms(&component, alarms);
+    let generated_blocks = top_level_alarm_blocks(&generated);
+    let mut used_original = vec![false; original_alarms.len()];
+    let replacement_blocks = alarms
+        .iter()
+        .enumerate()
+        .map(|(index, alarm)| {
+            let matching_original = original_alarms
+                .iter()
+                .enumerate()
+                .find(|(old_index, old)| !used_original[*old_index] && *old == alarm);
+            if let Some((old_index, _)) = matching_original {
+                used_original[old_index] = true;
+                original_blocks
+                    .get(old_index)
+                    .cloned()
+                    .or_else(|| generated_blocks.get(index).cloned())
+                    .unwrap_or_default()
+            } else {
+                generated_blocks.get(index).cloned().unwrap_or_default()
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let mut output = source[..start]
+        .iter()
+        .flat_map(|line| line.physical.iter().cloned())
+        .collect::<Vec<_>>();
+    let mut alarm_index = 0usize;
+    let mut index = start;
+    let mut primary_nested_depth = 0usize;
+    while index <= end {
+        if index == start {
+            output.extend(source[index].physical.iter().cloned());
+            index += 1;
+            continue;
+        }
+        let line = &source[index].unfolded;
+        if line.eq_ignore_ascii_case("BEGIN:VALARM") && primary_nested_depth == 0 {
+            let Some(alarm_end) = source
+                .iter()
+                .enumerate()
+                .skip(index + 1)
+                .find(|(_, candidate)| candidate.unfolded.eq_ignore_ascii_case("END:VALARM"))
+                .map(|(position, _)| position)
+            else {
+                output.extend(source[index].physical.iter().cloned());
+                index += 1;
+                continue;
+            };
+            if let Some(block) = replacement_blocks.get(alarm_index) {
+                output.extend(block.iter().cloned());
+                alarm_index += 1;
+            }
+            index = alarm_end + 1;
+            continue;
+        }
+        if primary_nested_depth == 0 && line.eq_ignore_ascii_case(&format!("END:{kind}")) {
+            output.extend(
+                replacement_blocks
+                    .iter()
+                    .skip(alarm_index)
+                    .flat_map(|block| block.iter().cloned()),
+            );
+            alarm_index = replacement_blocks.len();
+            output.extend(source[index].physical.iter().cloned());
+            index += 1;
+            continue;
+        }
+        output.extend(source[index].physical.iter().cloned());
+        if line
+            .get(..6)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("BEGIN:"))
+        {
+            primary_nested_depth = primary_nested_depth.saturating_add(1);
+        } else if line
+            .get(..4)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("END:"))
+        {
+            primary_nested_depth = primary_nested_depth.saturating_sub(1);
+        }
+        index += 1;
+    }
+    output.extend(
+        source[end + 1..]
+            .iter()
+            .flat_map(|line| line.physical.iter().cloned()),
+    );
+    finish_physical_lines(output)
+}
+
+fn top_level_alarm_blocks(raw: &str) -> Vec<Vec<String>> {
+    let lines = logical_lines(raw);
+    let Some(start) = lines
+        .iter()
+        .position(|line| is_primary_component_begin(&line.unfolded))
+    else {
+        return Vec::new();
+    };
+    let mut blocks = Vec::new();
+    let mut index = start + 1;
+    while index < lines.len() {
+        if lines[index].unfolded.eq_ignore_ascii_case("BEGIN:VALARM") {
+            let Some(end) = lines
+                .iter()
+                .enumerate()
+                .skip(index + 1)
+                .find(|(_, line)| line.unfolded.eq_ignore_ascii_case("END:VALARM"))
+                .map(|(position, _)| position)
+            else {
+                break;
+            };
+            blocks.push(
+                lines[index..=end]
+                    .iter()
+                    .flat_map(|line| line.physical.iter().cloned())
+                    .collect(),
+            );
+            index = end + 1;
+        } else {
+            index += 1;
+        }
+    }
+    blocks
 }
 
 pub(crate) fn serialize_ical_attachment_value(value: &str) -> String {
@@ -990,20 +2395,37 @@ pub(crate) fn serialize_ical_attachment_value(value: &str) -> String {
         .collect()
 }
 
+fn serialize_memo_uri_value(value: &str) -> String {
+    value
+        .chars()
+        .filter(|character| *character != '\r' && *character != '\n')
+        .fold(String::new(), |mut escaped, character| {
+            match character {
+                '\\' => escaped.push_str("\\\\"),
+                ';' => escaped.push_str("\\;"),
+                ',' => escaped.push_str("\\,"),
+                _ => escaped.push(character),
+            }
+            escaped
+        })
+}
+
 /// Return a standards-shaped iCalendar document for a single component.
 ///
 /// ECal and the local parser work with bare VEVENT/VTODO/VJOURNAL components,
 /// but exported files should contain a VCALENDAR envelope so they can be
 /// opened by Evolution and other calendar applications without heuristics.
 pub(crate) fn export_ical_component(raw: &str) -> String {
-    let lines = unfold_lines(raw);
-    if lines
+    let logical = logical_lines(raw);
+    let lines = logical
+        .iter()
+        .flat_map(|line| line.physical.iter().cloned())
+        .collect::<Vec<_>>();
+    if logical
         .first()
-        .is_some_and(|line| line.eq_ignore_ascii_case("BEGIN:VCALENDAR"))
+        .is_some_and(|line| line.unfolded.eq_ignore_ascii_case("BEGIN:VCALENDAR"))
     {
-        let mut result = lines.join("\r\n");
-        result.push_str("\r\n");
-        return result;
+        return finish_physical_lines(lines);
     }
 
     let mut result =
@@ -1034,6 +2456,11 @@ fn format_ical_datetime(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, Barrier};
+    use std::thread;
+
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
 
     #[test]
     fn parses_events_tasks_and_memos_from_one_calendar_file() {
@@ -1318,6 +2745,415 @@ mod tests {
 
         let already_wrapped = export_ical_component(&exported);
         assert_eq!(already_wrapped.matches("BEGIN:VCALENDAR").count(), 1);
+
+        let folded = concat!(
+            "BEGIN:VJOURNAL\r\nUID:folded-export\r\n",
+            "X-UNKNOWN:first part\r\n second part\r\nEND:VJOURNAL\r\n"
+        );
+        let folded_export = export_ical_component(folded);
+        assert!(folded_export.contains("X-UNKNOWN:first part\r\n second part\r\n"));
+    }
+
+    #[test]
+    fn memo_draft_roundtrips_uri_inline_unknown_data_and_managed_parameters() {
+        let raw = concat!(
+            "BEGIN:VJOURNAL\r\n",
+            "UID:memo-editor-1\r\n",
+            "SUMMARY:Original note\r\n",
+            "DTSTART;VALUE=DATE;X-DATE=keep:20260822\r\n",
+            "CLASS;X-CLASS=keep:PRIVATE\r\n",
+            "STATUS;X-STATUS=keep:DRAFT\r\n",
+            "URL;VALUE=URI;X-URL=keep:https://example.test/note\r\n",
+            "CATEGORIES:Work\\, urgent,Personal\r\n",
+            "DESCRIPTION:Original body\\nsecond line\r\n",
+            "ATTACH;VALUE=URI;FILENAME=note.txt;FMTTYPE=text/plain;X-ATTACH=uri:https://example.test/note.txt\r\n",
+            "ATTACH;VALUE=BINARY;ENCODING=BASE64;FMTTYPE=image/png;X-ATTACH=inline:UE5H\r\n",
+            "X-MEMO-UNKNOWN;X-PARAM=keep:preserve me\r\n",
+            "BEGIN:VALARM\r\n",
+            "ACTION:DISPLAY\r\n",
+            "TRIGGER:-PT10M\r\n",
+            "X-ALARM-UNKNOWN:preserve\r\n",
+            "END:VALARM\r\n",
+            "END:VJOURNAL\r\n"
+        );
+
+        let mut draft = MemoEditorDraft::from_component(raw).expect("VJOURNAL should parse");
+        assert_eq!(draft.summary, "Original note");
+        assert_eq!(draft.dtstart.as_deref(), Some("20260822"));
+        assert_eq!(draft.url.as_deref(), Some("https://example.test/note"));
+        assert_eq!(draft.categories, ["Work, urgent", "Personal"]);
+        assert_eq!(draft.attachments.len(), 2);
+        assert_eq!(
+            draft.attachments[0].uri.as_deref(),
+            Some("https://example.test/note.txt")
+        );
+        assert_eq!(draft.attachments[0].filename.as_deref(), Some("note.txt"));
+        assert_eq!(draft.attachments[0].fmttype.as_deref(), Some("text/plain"));
+        assert_eq!(draft.attachments[0].unknown_parameters[0].name, "X-ATTACH");
+        assert_eq!(draft.attachments[1].inline_content.as_deref(), Some("UE5H"));
+        assert!(!draft.is_dirty());
+        assert_eq!(
+            draft.apply().expect("unchanged draft applies losslessly"),
+            raw
+        );
+
+        draft.summary = "Changed note".to_string();
+        let changed = draft.apply().expect("changed draft should apply");
+        assert!(changed.contains("SUMMARY:Changed note\r\n"));
+        assert!(changed.contains("DTSTART;VALUE=DATE;X-DATE=keep:20260822\r\n"));
+        assert!(changed.contains("URL;VALUE=URI;X-URL=keep:https://example.test/note\r\n"));
+        assert!(changed.contains("X-MEMO-UNKNOWN;X-PARAM=keep:preserve me\r\n"));
+        assert!(changed.contains("X-ALARM-UNKNOWN:preserve\r\n"));
+        assert!(changed.contains(
+            "ATTACH;VALUE=BINARY;ENCODING=BASE64;FMTTYPE=image/png;X-ATTACH=inline:UE5H\r\n"
+        ));
+    }
+
+    #[test]
+    fn memo_draft_applies_all_managed_vjournal_properties() {
+        let raw = concat!(
+            "BEGIN:VJOURNAL\r\n",
+            "UID:memo-managed-fields\r\n",
+            "SUMMARY:Old summary\r\n",
+            "DTSTART;VALUE=DATE;X-DATE=keep:20260822\r\n",
+            "CLASS;X-CLASS=keep:PUBLIC\r\n",
+            "STATUS;X-STATUS=keep:DRAFT\r\n",
+            "URL;VALUE=URI;X-URL=keep:https://example.test/old\r\n",
+            "CATEGORIES:Old\r\n",
+            "DESCRIPTION:Old description\r\n",
+            "X-UNKNOWN;X-PARAM=keep:untouched\r\n",
+            "END:VJOURNAL\r\n"
+        );
+        let mut draft = MemoEditorDraft::from_component(raw).expect("memo should parse");
+        draft.summary = "New, summary".to_string();
+        draft.dtstart = Some("20260823".to_string());
+        draft.class = Some("PRIVATE".to_string());
+        draft.status = Some("COMPLETED".to_string());
+        draft.url = Some("https://example.test/new".to_string());
+        draft.categories = vec!["Work, urgent".to_string(), "Personal".to_string()];
+        draft.description = "New description\nsecond line".to_string();
+
+        let updated = draft.apply().expect("all managed fields should apply");
+        assert!(updated.contains("SUMMARY:New\\, summary\r\n"));
+        assert!(updated.contains("DTSTART;VALUE=DATE;X-DATE=keep:20260823\r\n"));
+        assert!(updated.contains("CLASS;X-CLASS=keep:PRIVATE\r\n"));
+        assert!(updated.contains("STATUS;X-STATUS=keep:COMPLETED\r\n"));
+        assert!(updated.contains("URL;VALUE=URI;X-URL=keep:https://example.test/new\r\n"));
+        assert!(updated.contains("CATEGORIES:Work\\, urgent,Personal\r\n"));
+        assert!(updated.contains("DESCRIPTION:New description\\nsecond line\r\n"));
+        assert!(updated.contains("X-UNKNOWN;X-PARAM=keep:untouched\r\n"));
+    }
+
+    #[test]
+    fn memo_apply_updates_only_the_first_vjournal_inside_a_vcalendar() {
+        let raw = concat!(
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\n",
+            "X-CALENDAR-UNKNOWN:keep\r\n",
+            "BEGIN:VJOURNAL\r\nUID:memo-wrapper\r\nSUMMARY:Old\r\n",
+            "ATTACH;VALUE=URI;FILENAME=old.txt;X-UNKNOWN=keep:https://example.test/a\r\n",
+            "BEGIN:VALARM\r\nACTION:DISPLAY\r\nTRIGGER:-PT5M\r\nEND:VALARM\r\n",
+            "END:VJOURNAL\r\n",
+            "BEGIN:VEVENT\r\nUID:other-component\r\nSUMMARY:Other\r\n",
+            "ATTACH;VALUE=URI:https://example.test/other\r\n",
+            "END:VEVENT\r\nEND:VCALENDAR\r\n"
+        );
+        let mut draft = MemoEditorDraft::from_component(raw).expect("wrapped memo should parse");
+        draft.summary = "Changed".to_string();
+        draft.attachments[0].filename = Some("new.txt".to_string());
+        let updated = draft.apply().expect("wrapped memo should apply");
+
+        assert_eq!(updated.matches("SUMMARY:Changed\r\n").count(), 1);
+        assert_eq!(updated.matches("ATTACH;").count(), 2);
+        assert!(updated.contains("X-CALENDAR-UNKNOWN:keep\r\n"));
+        assert!(updated.contains("ATTACH;VALUE=URI;FILENAME=new.txt;X-UNKNOWN=keep"));
+        assert!(updated.contains("ATTACH;VALUE=URI:https://example.test/other\r\n"));
+        assert!(updated.contains("BEGIN:VALARM\r\nACTION:DISPLAY\r\n"));
+    }
+
+    #[test]
+    fn memo_apply_preserves_unmanaged_folding_and_is_idempotent() {
+        let raw = concat!(
+            "BEGIN:VJOURNAL\r\nUID:memo-folding\r\nSUMMARY:Old\r\n",
+            "X-UNMANAGED;X-PARAM=keep:first physical part\r\n",
+            " continuation physical part\r\n",
+            "END:VJOURNAL\r\n"
+        );
+        let mut draft = MemoEditorDraft::from_component(raw).expect("memo should parse");
+        draft.summary = "A deliberately long summary that must be folded at the RFC5545 line boundary without changing any unrelated property".to_string();
+        let updated = draft.apply().expect("long summary should apply");
+        assert!(updated.contains(
+            "X-UNMANAGED;X-PARAM=keep:first physical part\r\n continuation physical part\r\n"
+        ));
+        assert!(
+            unfold_lines(&updated)
+                .iter()
+                .any(|line| { line.starts_with("SUMMARY:A deliberately long summary") })
+        );
+        assert!(
+            updated
+                .lines()
+                .filter(|line| !line.is_empty())
+                .all(|line| line.len() <= 75)
+        );
+        assert_eq!(
+            draft.apply().expect("repeated apply should be stable"),
+            updated
+        );
+        let reparsed = MemoEditorDraft::from_component(&updated).expect("folded memo should parse");
+        assert_eq!(
+            reparsed
+                .apply()
+                .expect("unchanged folded memo should roundtrip"),
+            updated
+        );
+    }
+
+    #[test]
+    fn memo_attach_switches_uri_and_inline_semantics_without_stale_controls() {
+        let raw = concat!(
+            "BEGIN:VJOURNAL\r\nUID:memo-attach-switch\r\nSUMMARY:Attachments\r\n",
+            "ATTACH;VALUE=URI;FILENAME=first.txt;FMTTYPE=text/plain;X-DUP=one;X-DUP=two:https://example.test/a\r\n",
+            "ATTACH;VALUE=BINARY;ENCODING=8BIT;FILENAME=second.txt;FMTTYPE=text/plain;X-KEEP=yes:literal\r\n",
+            "END:VJOURNAL\r\n"
+        );
+        let mut draft = MemoEditorDraft::from_component(raw).expect("memo should parse");
+        draft.attachments[0].uri = None;
+        draft.attachments[0].inline_content = Some("A,B;C\\D".to_string());
+        draft.attachments[1].uri = Some("file:///tmp/a,b;c\\d".to_string());
+        draft.attachments[1].inline_content = None;
+        let updated = draft.apply().expect("attachment kind changes should apply");
+        let lines = unfold_lines(&updated);
+        let first = lines
+            .iter()
+            .find(|line| line.starts_with("ATTACH;VALUE=BINARY"))
+            .expect("inline attachment should be present");
+        let second = lines
+            .iter()
+            .find(|line| line.contains("FILENAME=second.txt"))
+            .expect("URI attachment should be present");
+        assert!(first.contains("X-DUP=one;X-DUP=two:A,B;C\\D"));
+        assert!(
+            second
+                .starts_with("ATTACH;VALUE=URI;FILENAME=second.txt;FMTTYPE=text/plain;X-KEEP=yes:")
+        );
+        assert!(!second.contains("ENCODING="));
+        assert!(second.ends_with("file:///tmp/a\\,b\\;c\\\\d"));
+        let reparsed =
+            MemoEditorDraft::from_component(&updated).expect("switched memo should parse");
+        assert_eq!(
+            reparsed.attachments[0].inline_content.as_deref(),
+            Some("A,B;C\\D")
+        );
+        assert_eq!(
+            reparsed.attachments[1].uri.as_deref(),
+            Some("file:///tmp/a,b;c\\d")
+        );
+
+        let mut removed_parameter_draft =
+            MemoEditorDraft::from_component(raw).expect("memo should parse for parameter removal");
+        removed_parameter_draft.attachments[0]
+            .unknown_parameters
+            .remove(0);
+        let removed_parameter = removed_parameter_draft
+            .apply()
+            .expect("unknown parameter removal should apply");
+        let removed_line = unfold_lines(&removed_parameter)
+            .into_iter()
+            .find(|line| line.starts_with("ATTACH;VALUE=URI"))
+            .expect("URI attachment should remain");
+        assert!(!removed_line.contains("X-DUP=one"));
+        assert!(removed_line.contains("X-DUP=two:"));
+    }
+
+    #[test]
+    fn memo_dtstart_preserves_date_and_tzid_semantics() {
+        let date_raw = concat!(
+            "BEGIN:VJOURNAL\r\nUID:memo-date\r\nSUMMARY:Old\r\n",
+            "DTSTART;VALUE=DATE;X-DATE=keep:20260822\r\nEND:VJOURNAL\r\n"
+        );
+        let mut date_draft = MemoEditorDraft::from_component(date_raw).expect("date memo parses");
+        date_draft.dtstart = Some("20260823".to_string());
+        assert!(
+            date_draft
+                .apply()
+                .expect("date-only DTSTART should apply")
+                .contains("DTSTART;VALUE=DATE;X-DATE=keep:20260823\r\n")
+        );
+        date_draft.dtstart = Some("20260823T120000Z".to_string());
+        assert!(date_draft.apply().is_err());
+
+        let timed_raw = concat!(
+            "BEGIN:VJOURNAL\r\nUID:memo-time\r\nSUMMARY:Old\r\n",
+            "DTSTART;TZID=Europe/Berlin;X-TZ=keep:20260822T120000\r\nEND:VJOURNAL\r\n"
+        );
+        let mut timed_draft =
+            MemoEditorDraft::from_component(timed_raw).expect("timed memo parses");
+        timed_draft.dtstart = Some("20260823T130000".to_string());
+        assert!(
+            timed_draft
+                .apply()
+                .expect("TZID DTSTART should apply")
+                .contains("DTSTART;TZID=Europe/Berlin;X-TZ=keep:20260823T130000\r\n")
+        );
+    }
+
+    #[test]
+    fn memo_alarm_replace_is_scoped_and_keeps_other_component_alarms() {
+        let raw = concat!(
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\n",
+            "BEGIN:VJOURNAL\r\nUID:memo-alarm-scope\r\nSUMMARY:Memo\r\n",
+            "BEGIN:VALARM\r\nACTION:DISPLAY\r\nTRIGGER:-PT5M\r\nEND:VALARM\r\n",
+            "END:VJOURNAL\r\n",
+            "BEGIN:VEVENT\r\nUID:event-alarm-scope\r\nSUMMARY:Event\r\n",
+            "BEGIN:VALARM\r\nACTION:DISPLAY\r\nTRIGGER:-PT10M\r\nEND:VALARM\r\n",
+            "END:VEVENT\r\nEND:VCALENDAR\r\n"
+        );
+        let mut draft = MemoEditorDraft::from_component(raw).expect("wrapped memo parses");
+        draft.alarms.clear();
+        let updated = draft.apply().expect("memo alarm removal should apply");
+        assert_eq!(updated.matches("BEGIN:VALARM").count(), 1);
+        assert!(updated.contains("TRIGGER:-PT10M\r\n"));
+        assert!(!updated.contains("TRIGGER:-PT5M\r\n"));
+    }
+
+    #[test]
+    fn memo_attachment_edits_keep_unknown_parameters_and_order() {
+        let raw = concat!(
+            "BEGIN:VJOURNAL\r\nUID:memo-attachments\r\nSUMMARY:Attachments\r\n",
+            "ATTACH;VALUE=URI;FILENAME=old.txt;FMTTYPE=text/plain;X-ONE=1;X-TWO=2:https://example.test/a\r\n",
+            "ATTACH;VALUE=BINARY;ENCODING=8BIT;FMTTYPE=text/plain;X-INLINE=yes:literal\r\n",
+            "END:VJOURNAL\r\n"
+        );
+        let mut draft = MemoEditorDraft::from_component(raw).expect("memo should parse");
+        draft.attachments[0].filename = Some("new.txt".to_string());
+        draft.attachments[1].inline_content = Some("changed-inline".to_string());
+        let updated = draft.apply().expect("attachment edits should apply");
+        let unfolded = unfold_lines(&updated);
+        assert!(unfolded.contains(
+            &"ATTACH;VALUE=URI;FILENAME=new.txt;FMTTYPE=text/plain;X-ONE=1;X-TWO=2:https://example.test/a"
+                .to_string()
+        ));
+        assert!(
+            unfolded.contains(
+                &"ATTACH;VALUE=BINARY;ENCODING=8BIT;FMTTYPE=text/plain;X-INLINE=yes:changed-inline"
+                    .to_string()
+            )
+        );
+        let reparsed = MemoEditorDraft::from_component(&updated).expect("updated memo parses");
+        assert_eq!(reparsed.attachments.len(), 2);
+        assert_eq!(reparsed.attachments[0].filename.as_deref(), Some("new.txt"));
+        assert_eq!(
+            reparsed.attachments[1].inline_content.as_deref(),
+            Some("changed-inline")
+        );
+
+        draft.attachments[0].unknown_parameters[1].value = Some("updated".to_string());
+        let updated_parameter = draft
+            .apply()
+            .expect("changing an unknown parameter should apply");
+        assert!(unfold_lines(&updated_parameter).contains(
+            &"ATTACH;VALUE=URI;FILENAME=new.txt;FMTTYPE=text/plain;X-ONE=1;X-TWO=updated:https://example.test/a"
+                .to_string()
+        ));
+    }
+
+    #[test]
+    fn atomic_write_flushes_successfully_and_cleans_failed_temporary_files() {
+        let root = temporary_directory("ical-atomic-write");
+        let path = root.join("calendar.ics");
+        let old = b"old bytes\r\n";
+        let new = b"new bytes\r\n";
+        write_atomic(&path, old).expect("initial atomic write should succeed");
+        assert_eq!(fs::read(&path).expect("old file should exist"), old);
+        write_atomic(&path, new).expect("replacement atomic write should succeed");
+        assert_eq!(fs::read(&path).expect("new file should exist"), new);
+        assert!(
+            !fs::read_dir(&root)
+                .expect("atomic directory should be readable")
+                .flatten()
+                .any(|entry| entry
+                    .file_name()
+                    .to_string_lossy()
+                    .contains(".calendar.ics.")
+                    && entry.file_name().to_string_lossy().ends_with(".tmp"))
+                && !fs::read_dir(&root)
+                    .expect("atomic directory should be readable")
+                    .flatten()
+                    .any(|entry| entry.file_name().to_string_lossy() == ".calendar.ics.lock")
+        );
+
+        let target_directory = root.join("target.ics");
+        fs::create_dir(&target_directory).expect("failure target directory should exist");
+        let sentinel = target_directory.join("sentinel");
+        fs::write(&sentinel, b"unchanged").expect("sentinel should exist");
+        assert!(write_atomic(&target_directory, b"must fail").is_err());
+        assert_eq!(
+            fs::read(&sentinel).expect("sentinel should remain"),
+            b"unchanged"
+        );
+        assert!(
+            !fs::read_dir(&root)
+                .expect("atomic directory should be readable after failure")
+                .flatten()
+                .any(
+                    |entry| entry.file_name().to_string_lossy().contains(".target.ics.")
+                        && entry.file_name().to_string_lossy().ends_with(".tmp")
+                )
+                && !fs::read_dir(&root)
+                    .expect("atomic directory should be readable after failure")
+                    .flatten()
+                    .any(|entry| entry.file_name().to_string_lossy() == ".target.ics.lock")
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_replacement_preserves_existing_file_mode() {
+        let root = temporary_directory("ical-atomic-mode");
+        let path = root.join("calendar.ics");
+        write_atomic(&path, b"old\r\n").expect("initial write should succeed");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o640))
+            .expect("test mode should be set");
+        write_atomic(&path, b"new\r\n").expect("replacement should succeed");
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o640
+        );
+        assert_eq!(fs::read(&path).unwrap(), b"new\r\n");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn local_store_serializes_concurrent_read_modify_writers() {
+        let root = temporary_directory("ical-concurrent-writers");
+        let service = Arc::new(CalendarStoreService::with_writable_calendar_dir(&root));
+        let barrier = Arc::new(Barrier::new(8));
+        let handles = (0..8)
+            .map(|index| {
+                let service = Arc::clone(&service);
+                let barrier = Arc::clone(&barrier);
+                thread::spawn(move || {
+                    barrier.wait();
+                    let component = format!(
+                        "BEGIN:VJOURNAL\r\nUID:concurrent-{index}\r\nSUMMARY:Memo {index}\r\nEND:VJOURNAL\r\n"
+                    );
+                    service
+                        .create_component(&component)
+                        .expect("concurrent memo creation should succeed");
+                })
+            })
+            .collect::<Vec<_>>();
+        for handle in handles {
+            handle.join().expect("writer thread should finish");
+        }
+        assert_eq!(service.load_snapshot().memos.len(), 8);
+        assert!(!fs::read_dir(&root).unwrap().flatten().any(|entry| {
+            let name = entry.file_name();
+            name.to_string_lossy().ends_with(".tmp") || name.to_string_lossy().ends_with(".lock")
+        }));
+        let _ = fs::remove_dir_all(root);
     }
 
     fn temporary_directory(label: &str) -> PathBuf {

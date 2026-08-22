@@ -4127,11 +4127,23 @@ mod tests {
             0,
         )
         .expect("task attachment update should be valid");
-        assert!(updated.contains(
-            "ATTACH;FMTTYPE=application/pdf;VALUE=URI:https://files.example.test/report.pdf?kind=a,b;rev=2"
-        ));
-        assert!(updated.contains("ATTACH;VALUE=URI:https://files.example.test/new.pdf"));
-        assert!(!updated.contains("https://files.example.test/old.pdf"));
+        let attachments = unfold_ical_lines(&updated)
+            .into_iter()
+            .filter(|line| line.starts_with("ATTACH;"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            attachments,
+            vec![
+                "ATTACH;FMTTYPE=application/pdf;VALUE=URI:https://files.example.test/report.pdf?kind=a,b;rev=2",
+                "ATTACH;VALUE=URI:https://files.example.test/new.pdf",
+            ]
+        );
+        assert!(
+            updated
+                .split_terminator("\r\n")
+                .filter(|line| !line.is_empty())
+                .all(|line| line.len() <= 75)
+        );
     }
 
     #[test]

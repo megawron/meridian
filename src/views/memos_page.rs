@@ -16,9 +16,8 @@ use std::rc::Rc;
 
 use crate::dialogs::event_dialog::AlarmEditor;
 use crate::services::calendar_category_service::CalendarCategoryStore;
-use crate::services::calendar_store_service::update_ical_property;
 use crate::services::calendar_store_service::{
-    CalendarStoreService, MemoRecord, export_ical_component,
+    CalendarStoreService, MemoAttachment, MemoEditorDraft, MemoRecord, export_ical_component,
 };
 use crate::services::ecal_service::{
     CalendarDataOrigin, ECalChangeKind, ECalComponentType, ECalRecord, ECalService, ECalSyncEvent,
@@ -389,6 +388,7 @@ impl MemosPage {
 
         let memo_records = Rc::new(RefCell::new(Vec::<MemoRecord>::new()));
         let selected_memo = Rc::new(RefCell::new(None::<MemoRecord>));
+        let memo_mutation_generation = Rc::new(Cell::new(0u64));
 
         let empty_state = gtk::Label::builder()
             .label("Keine synchronisierten Notizen geladen")
@@ -857,6 +857,7 @@ impl MemosPage {
                 memo_list_for_dialog.clone(),
                 Rc::clone(&memo_records_for_dialog),
                 empty_state_for_dialog.clone(),
+                None,
             );
         });
 
@@ -871,8 +872,8 @@ impl MemosPage {
         let memo_text_for_save = memo_text.clone();
         let memo_alarm_editor_for_save = memo_alarm_editor.clone();
         let memo_list_for_save = memo_list.clone();
-        let save_memo_btn_for_signal = save_memo_btn.clone();
-        save_memo_btn_for_signal.connect_clicked(move |_| {
+        let empty_state_for_save = empty_state.clone();
+        save_memo_btn.connect_clicked(move |_| {
             let Some(memo) = selected_memo_for_save.borrow().clone() else {
                 show_toast_for_widget(&memo_title_for_save, "Keine Notiz ausgewählt");
                 return;
@@ -884,11 +885,7 @@ impl MemosPage {
                 );
                 return;
             }
-            let title = memo_title_for_save.text().trim().to_string();
-            if title.is_empty() {
-                show_toast_for_widget(&memo_title_for_save, "Eine Notiz benötigt einen Titel");
-                return;
-            }
+            let title = memo_title_for_save.text().to_string();
             let description = memo_text_for_save
                 .buffer()
                 .text(
@@ -897,97 +894,43 @@ impl MemosPage {
                     false,
                 )
                 .to_string();
-            let categories = serialize_categories(&memo_categories_for_save.text());
-            let mut component =
-                update_ical_property(&memo.component, "SUMMARY", Some(&escape_ical_text(&title)));
-            component = if description.trim().is_empty() {
-                update_ical_property(&component, "DESCRIPTION", None)
-            } else {
-                update_ical_property(
-                    &component,
-                    "DESCRIPTION",
-                    Some(&escape_ical_text(description.trim())),
-                )
-            };
-            component = update_ical_property(
-                &component,
-                "CATEGORIES",
-                (!categories.is_empty()).then_some(categories.as_str()),
-            );
-            component = update_ical_property(
-                &component,
-                "LAST-MODIFIED",
-                Some(&Utc::now().format("%Y%m%dT%H%M%SZ").to_string()),
-            );
-            memo_alarm_editor_for_save.set_summary(&title);
-            component = replace_component_alarms(&component, &memo_alarm_editor_for_save.alarms());
-            let component_for_result = component.clone();
-            let source_uid = memo.source_uid.clone();
-            let uid = memo.uid.clone();
-            let (sender, receiver) = async_channel::bounded(1);
-            save_memo_btn.set_sensitive(false);
-            std::thread::spawn(move || {
-                let result = ECalService::new().modify_component(
-                    &source_uid,
-                    ECalComponentType::Memo,
-                    &uid,
-                    &component,
-                );
-                if let Err(error) = sender.send_blocking(result) {
-                    tracing::debug!(%error, "Memo update result was dropped");
-                }
-            });
-
-            let save_button_for_result = save_memo_btn.clone();
-            let memo_records_for_result = Rc::clone(&memo_records_for_save);
-            let memo_list_for_result = memo_list_for_save.clone();
-            let selected_memo_for_result = Rc::clone(&selected_memo_for_save);
-            let page_weak_for_result = page_weak_for_save.clone();
-            let memo_title_for_result = memo_title_for_save.clone();
-            let memo_categories_for_result = memo_categories_for_save.clone();
-            let memo_text_for_result = memo_text_for_save.clone();
-            let memo_alarm_editor_for_result = memo_alarm_editor_for_save.clone();
-            glib::spawn_future_local(async move {
-                let Ok(result) = receiver.recv().await else {
-                    save_button_for_result.set_sensitive(true);
+            let mut draft = match MemoEditorDraft::parse(&memo.component) {
+                Ok(draft) => draft,
+                Err(error) => {
+                    show_toast_for_widget(&memo_title_for_save, &error);
                     return;
-                };
-                match result {
-                    Ok(result) => {
-                        let confirmed_component = result.component.unwrap_or(component_for_result);
-                        let updated = MemoRecord {
-                            uid: memo.uid.clone(),
-                            source_uid: memo.source_uid.clone(),
-                            source_display_name: memo.source_display_name.clone(),
-                            component: confirmed_component.clone(),
-                            summary: title.clone(),
-                            description: description.clone(),
-                            updated: Utc::now().format("%Y-%m-%d %H:%M").to_string(),
-                        };
-                        upsert_memo_row(
-                            &memo_list_for_result,
-                            Rc::clone(&memo_records_for_result),
-                            updated.clone(),
-                        );
-                        select_memo_row(&memo_list_for_result, &updated.source_uid, &updated.uid);
-                        *selected_memo_for_result.borrow_mut() = Some(updated);
-                        memo_title_for_result.set_text(&title);
-                        memo_categories_for_result.set_text(&categories);
-                        memo_text_for_result.buffer().set_text(&description);
-                        memo_alarm_editor_for_result
-                            .set_component(Some(&confirmed_component), &title);
-                        if let Some(page) = page_weak_for_result.upgrade() {
-                            refresh_memo_category_model(&page, &memo_list_for_result);
-                            page.show_toast(&format!("Notiz aktualisiert ({})", memo.uid));
-                        }
-                    }
-                    Err(error) => show_toast_for_widget(
-                        &save_button_for_result,
-                        &format!("Notiz konnte nicht aktualisiert werden: {error}"),
-                    ),
                 }
-                save_button_for_result.set_sensitive(true);
-            });
+            };
+            draft.summary = title.clone();
+            draft.description = description.clone();
+            draft.categories = parse_categories_input(&memo_categories_for_save.text());
+            memo_alarm_editor_for_save.set_summary(&title);
+            draft.alarms = memo_alarm_editor_for_save.alarms();
+            let component = match draft.apply() {
+                Ok(component) => component,
+                Err(error) => {
+                    show_toast_for_widget(&memo_title_for_save, &error);
+                    return;
+                }
+            };
+            let staged = MemoRecord {
+                uid: memo.uid,
+                source_uid: memo.source_uid,
+                source_display_name: memo.source_display_name,
+                component,
+                summary: title,
+                description,
+                updated: memo.updated,
+            };
+            let Some(page) = page_weak_for_save.upgrade() else {
+                return;
+            };
+            page.open_memo_dialog(
+                memo_list_for_save.clone(),
+                Rc::clone(&memo_records_for_save),
+                empty_state_for_save.clone(),
+                Some(staged),
+            );
         });
 
         let selected_memo_for_export = Rc::clone(&selected_memo);
@@ -1003,6 +946,18 @@ impl MemosPage {
                 );
                 return;
             }
+            let component = match confirmed_memo_component(Some(memo.component)) {
+                Ok((component, _)) => component,
+                Err(error) => {
+                    show_toast_for_widget(
+                        button,
+                        &format!(
+                            "Diese Notiz enthält keine vollständige iCalendar-Komponente: {error}"
+                        ),
+                    );
+                    return;
+                }
+            };
             let Some(root) = button.root() else {
                 return;
             };
@@ -1014,7 +969,6 @@ impl MemosPage {
                 .initial_name("notiz.ics")
                 .modal(true)
                 .build();
-            let component = memo.component;
             let button_for_result = button.clone();
             file_dialog.save(Some(&window), None::<&gio::Cancellable>, move |result| {
                 let Ok(file) = result else {
@@ -1047,6 +1001,7 @@ impl MemosPage {
         let memo_title_for_delete = memo_title.clone();
         let memo_categories_for_delete = memo_categories.clone();
         let memo_text_for_delete = memo_text.clone();
+        let memo_mutation_generation_for_delete = Rc::clone(&memo_mutation_generation);
         delete_memo_btn.connect_clicked(move |_| {
             let Some(memo) = selected_memo_for_delete.borrow().clone() else {
                 show_toast_for_widget(&memo_title_for_delete, "Keine Notiz ausgewählt");
@@ -1064,6 +1019,7 @@ impl MemosPage {
             } else {
                 "Die Notiz wird dauerhaft aus der synchronisierten Notizliste entfernt."
             };
+            let delete_generation = memo_mutation_generation_for_delete.get();
             let memo_for_action = memo.clone();
             let selected_memo_for_action = Rc::clone(&selected_memo_for_delete);
             let memo_records_for_action = Rc::clone(&memo_records_for_delete);
@@ -1073,12 +1029,17 @@ impl MemosPage {
             let memo_title_for_action = memo_title_for_delete.clone();
             let memo_categories_for_action = memo_categories_for_delete.clone();
             let memo_text_for_action = memo_text_for_delete.clone();
+            let memo_mutation_generation_for_action =
+                Rc::clone(&memo_mutation_generation_for_delete);
             crate::dialogs::run_destructive_action(
                 &memo_title_for_delete,
                 "Notiz löschen?",
                 confirmation_message,
                 "Löschen",
                 move || {
+                    if memo_mutation_generation_for_action.get() != delete_generation {
+                        return;
+                    }
                     let source_uid = memo_for_action.source_uid.clone();
                     let source_uid_for_result = source_uid.clone();
                     let uid = memo_for_action.uid.clone();
@@ -1102,8 +1063,14 @@ impl MemosPage {
                     let memo_categories_for_result = memo_categories_for_action.clone();
                     let memo_text_for_result = memo_text_for_action.clone();
                     let page_weak_for_result = page_weak_for_action.clone();
+                    let memo_mutation_generation_for_result =
+                        Rc::clone(&memo_mutation_generation_for_action);
                     glib::spawn_future_local(async move {
-                        match receiver.recv().await {
+                        let result = receiver.recv().await;
+                        if memo_mutation_generation_for_result.get() != delete_generation {
+                            return;
+                        }
+                        match result {
                             Ok(Ok(result)) => {
                                 let uid = result.uid;
                                 remove_memo_row(
@@ -1213,6 +1180,7 @@ impl MemosPage {
 
         let memo_records_for_selection = Rc::clone(&memo_records);
         let selected_memo_for_selection = Rc::clone(&selected_memo);
+        let memo_mutation_generation_for_selection = Rc::clone(&memo_mutation_generation);
         let split_for_selection = split.clone();
         let memo_alarm_editor_for_selection = memo_alarm_editor.clone();
         memo_list.connect_row_selected(glib::clone!(
@@ -1229,8 +1197,12 @@ impl MemosPage {
             #[strong]
             split_for_selection,
             #[strong]
+            memo_mutation_generation_for_selection,
+            #[strong]
             memo_alarm_editor_for_selection,
             move |_, row| {
+                memo_mutation_generation_for_selection
+                    .set(memo_mutation_generation_for_selection.get().wrapping_add(1));
                 let Some(row) = row else {
                     *selected_memo_for_selection.borrow_mut() = None;
                     memo_alarm_editor_for_selection.set_component(None, "");
@@ -1448,12 +1420,40 @@ impl MemosPage {
         memo_list: gtk::ListBox,
         memo_records: Rc<RefCell<Vec<MemoRecord>>>,
         empty_state: gtk::Label,
+        memo_to_edit: Option<MemoRecord>,
     ) {
+        let editing = memo_to_edit.is_some();
+        let initial_component = memo_to_edit
+            .as_ref()
+            .map(|memo| memo.component.clone())
+            .unwrap_or_else(|| {
+                build_memo_component("Neue Notiz", "", "", &[])
+                    .expect("the default memo component is valid")
+            });
+        let initial_draft = match MemoEditorDraft::parse(&initial_component) {
+            Ok(draft) => draft,
+            Err(error) => {
+                tracing::warn!(%error, "Could not create memo editor draft");
+                return;
+            }
+        };
+        let draft_for_save = Rc::new(RefCell::new(initial_draft.clone()));
+        let dirty = Rc::new(Cell::new(false));
+        let operation_in_progress = Rc::new(Cell::new(false));
+        let request_generation = Rc::new(Cell::new(0u64));
+        let close_confirmed = Rc::new(Cell::new(false));
+        let close_prompt_open = Rc::new(Cell::new(false));
+        let attachment_loading = Rc::new(Cell::new(false));
+
         let dialog = adw::Window::builder()
-            .title("Neue Notiz")
+            .title(if editing {
+                "Notiz bearbeiten"
+            } else {
+                "Neue Notiz"
+            })
             .modal(true)
-            .default_width(560)
-            .default_height(540)
+            .default_width(680)
+            .default_height(760)
             .build();
         if let Some(root) = self.root() {
             if let Ok(window) = root.downcast::<gtk::Window>() {
@@ -1463,6 +1463,8 @@ impl MemosPage {
 
         let toolbar_view = adw::ToolbarView::new();
         let header_bar = adw::HeaderBar::new();
+        let cancel_button = gtk::Button::with_label("Abbrechen");
+        header_bar.pack_start(&cancel_button);
         let save_button = gtk::Button::builder()
             .label("Speichern")
             .css_classes(vec!["suggested-action"])
@@ -1500,30 +1502,100 @@ impl MemosPage {
             };
             settings.set_default_memo_source_uid(&source_uid);
         });
+
         let details = adw::PreferencesGroup::builder().title("Details").build();
         details.add(&source_row);
-        let title_entry = adw::EntryRow::builder().title("Titel").build();
+        let title_entry = adw::EntryRow::builder().title("Summary").build();
         details.add(&title_entry);
+        let dtstart_entry = adw::EntryRow::builder()
+            .title("DTSTART (iCalendar-Wert)")
+            .build();
+        dtstart_entry.set_tooltip_text(Some("z. B. 20260822 oder 20260822T120000Z"));
+        details.add(&dtstart_entry);
+        let class_entry = adw::EntryRow::builder().title("Class").build();
+        class_entry.set_tooltip_text(Some("z. B. PUBLIC, PRIVATE oder CONFIDENTIAL"));
+        details.add(&class_entry);
+        let status_entry = adw::EntryRow::builder().title("Status").build();
+        status_entry.set_tooltip_text(Some("RFC5545-STATUS, z. B. DRAFT oder FINAL"));
+        details.add(&status_entry);
+        let url_entry = adw::EntryRow::builder().title("URL").build();
+        details.add(&url_entry);
         let categories_entry = adw::EntryRow::builder()
             .title("Kategorien (Komma getrennt)")
             .build();
         categories_entry.set_tooltip_text(Some("z. B. Arbeit, Privat"));
         details.add(&categories_entry);
-        let alarm_editor = AlarmEditor::new(None, &title_entry.text());
+        let alarm_editor = AlarmEditor::new(Some(&initial_component), &initial_draft.summary);
+        let alarm_dirty_gesture = gtk::GestureClick::new();
+        let dirty_for_alarm = Rc::clone(&dirty);
+        alarm_dirty_gesture.connect_pressed(move |_, _, _, _| dirty_for_alarm.set(true));
+        alarm_editor.widget().add_controller(alarm_dirty_gesture);
         details.add(alarm_editor.widget());
         content_box.append(&details);
 
-        let description_group = adw::PreferencesGroup::builder().title("Notiz").build();
+        title_entry.set_text(&initial_draft.summary);
+        dtstart_entry.set_text(initial_draft.dtstart.as_deref().unwrap_or_default());
+        class_entry.set_text(initial_draft.class.as_deref().unwrap_or_default());
+        status_entry.set_text(initial_draft.status.as_deref().unwrap_or_default());
+        url_entry.set_text(initial_draft.url.as_deref().unwrap_or_default());
+        categories_entry.set_text(&serialize_categories_vec(&initial_draft.categories));
+
+        let description_group = adw::PreferencesGroup::builder()
+            .title("Beschreibung")
+            .build();
         let description_view = gtk::TextView::builder()
             .wrap_mode(gtk::WrapMode::WordChar)
-            .height_request(260)
+            .height_request(180)
             .margin_start(12)
             .margin_end(12)
             .margin_top(8)
             .margin_bottom(8)
             .build();
+        description_view
+            .buffer()
+            .set_text(&initial_draft.description);
         description_group.add(&description_view);
         content_box.append(&description_group);
+
+        let attachment_group = adw::PreferencesGroup::builder().title("Anhänge").build();
+        let attachment_buffer = gtk::TextBuffer::new(None);
+        attachment_buffer.set_text(&memo_attachments_editor_text(&initial_draft.attachments));
+        let attachment_view = gtk::TextView::builder()
+            .buffer(&attachment_buffer)
+            .wrap_mode(gtk::WrapMode::WordChar)
+            .height_request(120)
+            .margin_start(12)
+            .margin_end(12)
+            .margin_top(8)
+            .margin_bottom(4)
+            .build();
+        attachment_view.set_monospace(true);
+        attachment_view.set_tooltip_text(Some(
+            "Eine URI oder INLINE:<Inhalt> pro Zeile; Inhalte werden nicht ausgeführt",
+        ));
+        let attachment_picker = gtk::Button::with_label("URI/Datei hinzufügen");
+        let attachment_controls = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(8)
+            .margin_start(12)
+            .margin_end(12)
+            .margin_bottom(8)
+            .build();
+        let attachment_hint = gtk::Label::builder()
+            .label("URI:… oder INLINE:… (eine Zeile pro Anhang)")
+            .halign(gtk::Align::Start)
+            .hexpand(true)
+            .css_classes(vec!["dim-label"])
+            .build();
+        attachment_controls.append(&attachment_hint);
+        attachment_controls.append(&attachment_picker);
+        let attachment_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .build();
+        attachment_box.append(&attachment_view);
+        attachment_box.append(&attachment_controls);
+        attachment_group.add(&attachment_box);
+        content_box.append(&attachment_group);
 
         let scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
@@ -1533,13 +1605,152 @@ impl MemosPage {
         toolbar_view.set_content(Some(&scroll));
         dialog.set_content(Some(&toolbar_view));
 
+        for entry in [
+            title_entry.clone(),
+            dtstart_entry.clone(),
+            class_entry.clone(),
+            status_entry.clone(),
+            url_entry.clone(),
+            categories_entry.clone(),
+        ] {
+            let dirty_for_entry = Rc::clone(&dirty);
+            entry.connect_changed(move |_| dirty_for_entry.set(true));
+        }
+        let dirty_for_description = Rc::clone(&dirty);
+        description_view
+            .buffer()
+            .connect_changed(move |_| dirty_for_description.set(true));
+        let dirty_for_attachments = Rc::clone(&dirty);
+        attachment_buffer.connect_changed(move |_| dirty_for_attachments.set(true));
+
+        let attachment_loading_for_picker = Rc::clone(&attachment_loading);
+        let attachment_buffer_for_picker = attachment_buffer.clone();
+        attachment_picker.connect_clicked(move |button| {
+            let Some(root) = button.root().and_downcast::<gtk::Window>() else {
+                return;
+            };
+            attachment_loading_for_picker.set(true);
+            let file_dialog = gtk::FileDialog::builder()
+                .title("Memo-Anhänge auswählen")
+                .modal(true)
+                .build();
+            let buffer_for_result = attachment_buffer_for_picker.clone();
+            let loading_for_result = Rc::clone(&attachment_loading_for_picker);
+            file_dialog.open_multiple(Some(&root), None::<&gio::Cancellable>, move |result| {
+                if let Ok(files) = result {
+                    let mut values = buffer_for_result
+                        .text(
+                            &buffer_for_result.start_iter(),
+                            &buffer_for_result.end_iter(),
+                            false,
+                        )
+                        .lines()
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(ToOwned::to_owned)
+                        .collect::<Vec<_>>();
+                    for index in 0..files.n_items() {
+                        let Some(file) = files.item(index).and_downcast::<gio::File>() else {
+                            continue;
+                        };
+                        let uri = file.uri().to_string();
+                        if !uri.is_empty() {
+                            values.push(format!("URI:{uri}"));
+                        }
+                    }
+                    buffer_for_result.set_text(&values.join("\n"));
+                }
+                loading_for_result.set(false);
+            });
+        });
+
+        let dialog_weak_for_close = dialog.downgrade();
+        let close_confirmed_for_close = Rc::clone(&close_confirmed);
+        let close_prompt_open_for_close = Rc::clone(&close_prompt_open);
+        let dirty_for_close = Rc::clone(&dirty);
+        let operation_for_close = Rc::clone(&operation_in_progress);
+        let request_generation_for_close = Rc::clone(&request_generation);
+        let save_button_for_close = save_button.clone();
+        dialog.connect_close_request(move |_| {
+            if close_confirmed_for_close.replace(false) {
+                return glib::Propagation::Proceed;
+            }
+            match memo_close_decision(
+                dirty_for_close.get(),
+                operation_for_close.get(),
+                close_prompt_open_for_close.get(),
+            ) {
+                MemoCloseDecision::Allow => return glib::Propagation::Proceed,
+                MemoCloseDecision::BlockSave => {
+                    if let Some(dialog) = dialog_weak_for_close.upgrade() {
+                        show_toast_for_widget(&dialog, "Speichern läuft noch; bitte kurz warten");
+                    }
+                    return glib::Propagation::Stop;
+                }
+                MemoCloseDecision::KeepPrompt => return glib::Propagation::Stop,
+                MemoCloseDecision::Prompt => close_prompt_open_for_close.set(true),
+            }
+            let confirmation = adw::AlertDialog::new(
+                Some("Ungespeicherte Memo-Änderungen"),
+                Some("Die Notiz wurde seit dem letzten bestätigten Speichern geändert."),
+            );
+            confirmation.add_responses(&[
+                ("cancel", "Abbrechen"),
+                ("save", "Speichern"),
+                ("discard", "Verwerfen"),
+            ]);
+            confirmation.set_response_appearance("discard", adw::ResponseAppearance::Destructive);
+            let dialog_weak_for_response = dialog_weak_for_close.clone();
+            let close_confirmed_for_response = Rc::clone(&close_confirmed_for_close);
+            let close_prompt_open_for_response = Rc::clone(&close_prompt_open_for_close);
+            let request_generation_for_response = Rc::clone(&request_generation_for_close);
+            let save_button_for_response = save_button_for_close.clone();
+            confirmation.connect_response(None, move |alert, response| {
+                alert.close();
+                close_prompt_open_for_response.set(false);
+                let Some(dialog) = dialog_weak_for_response.upgrade() else {
+                    return;
+                };
+                match response {
+                    "discard" => {
+                        request_generation_for_response
+                            .set(request_generation_for_response.get().wrapping_add(1));
+                        close_confirmed_for_response.set(true);
+                        dialog.close();
+                    }
+                    "save" => save_button_for_response.emit_clicked(),
+                    _ => {}
+                }
+            });
+            if let Some(dialog) = dialog_weak_for_close.upgrade() {
+                confirmation.present(Some(&dialog));
+            } else {
+                close_prompt_open_for_close.set(false);
+            }
+            glib::Propagation::Stop
+        });
+        let dialog_weak_for_cancel = dialog.downgrade();
+        cancel_button.connect_clicked(move |_| {
+            if let Some(dialog) = dialog_weak_for_cancel.upgrade() {
+                dialog.close();
+            }
+        });
+
         let source_model_for_load = source_model.clone();
         let source_uids_for_load = Rc::clone(&source_uids);
         let source_row_for_load = source_row.clone();
+        let save_button_for_load = save_button.clone();
         let local_calendar_available = CalendarStoreService::new().is_writable();
+        let edit_source_uid = memo_to_edit
+            .as_ref()
+            .map(|memo| memo.source_uid.clone())
+            .filter(|uid| !uid.trim().is_empty());
         let preferred_source_uid = AppSettings::try_new()
             .map(|settings| settings.default_memo_source_uid())
             .filter(|uid| !uid.trim().is_empty());
+        save_button.set_sensitive(edit_source_uid.is_some());
+        let edit_source_uid_for_load = edit_source_uid.clone();
+        let preferred_source_uid_for_load = preferred_source_uid.clone();
         glib::spawn_future_local(async move {
             let discovery =
                 eds_service::discover_sources(eds_service::EdsSourceKind::Calendar).await;
@@ -1564,9 +1775,12 @@ impl MemosPage {
             let mut uids = source_uids_for_load.borrow_mut();
             uids.clear();
             uids.extend(active_sources.into_iter().map(|source| source.uid));
-            let preserved_source_uid = preferred_source_uid.as_deref().filter(|uid| {
-                *uid != "local-calendar" && !uids.iter().any(|candidate| candidate == uid)
-            });
+            let preserved_source_uid = edit_source_uid_for_load
+                .as_deref()
+                .or(preferred_source_uid_for_load.as_deref())
+                .filter(|uid| {
+                    *uid != "local-calendar" && !uids.iter().any(|candidate| candidate == uid)
+                });
             if let Some(uid) = preserved_source_uid {
                 names.push(format!("Nicht verfügbare Quelle · {uid}"));
                 uids.push(uid.to_string());
@@ -1584,56 +1798,120 @@ impl MemosPage {
             }
             let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
             source_model_for_load.splice(0, source_model_for_load.n_items(), &name_refs);
-            let selected_index = preferred_source_uid
+            let selected_index = edit_source_uid_for_load
                 .as_deref()
-                .and_then(|uid| uids.iter().position(|candidate| candidate == uid));
+                .or(preferred_source_uid_for_load.as_deref())
+                .and_then(|uid| uids.iter().position(|candidate| candidate == uid))
+                .or_else(|| (!uids.is_empty()).then_some(0));
             drop(uids);
             if let Some(index) = selected_index {
                 source_row_for_load.set_selected(index as u32);
+                save_button_for_load.set_sensitive(true);
+            } else {
+                save_button_for_load.set_sensitive(false);
             }
         });
 
         let dialog_weak = dialog.downgrade();
         let page_weak = self.downgrade();
         let source_uids_for_save = Rc::clone(&source_uids);
-        save_button.connect_clicked(move |_| {
+        let draft_for_save_signal = Rc::clone(&draft_for_save);
+        let operation_for_save = Rc::clone(&operation_in_progress);
+        let request_generation_for_save = Rc::clone(&request_generation);
+        let close_confirmed_for_save = Rc::clone(&close_confirmed);
+        let attachment_loading_for_save = Rc::clone(&attachment_loading);
+        let memo_to_edit_for_save = memo_to_edit.clone();
+        let source_display_name_for_save = memo_to_edit
+            .as_ref()
+            .map(|memo| memo.source_display_name.clone());
+        let save_button_for_signal = save_button.clone();
+        save_button_for_signal.connect_clicked(move |_| {
             let Some(dialog) = dialog_weak.upgrade() else {
                 return;
             };
+            if operation_for_save.get() {
+                return;
+            }
             let selected = source_row.selected() as usize;
-            let Some(source_uid) = source_uids_for_save.borrow().get(selected).cloned() else {
+            let source_uid = if let Some(memo) = memo_to_edit_for_save.as_ref() {
+                memo.source_uid.clone()
+            } else if let Some(source_uid) = source_uids_for_save.borrow().get(selected).cloned() {
+                source_uid
+            } else {
                 show_toast_for_widget(&dialog, "Keine aktive Notizliste ist ausgewählt");
                 return;
             };
+            if source_uid.trim().is_empty() {
+                show_toast_for_widget(&dialog, "Die ausgewählte Notizliste ist ungültig");
+                return;
+            }
+            if let Some(error) = memo_attachment_save_error(attachment_loading_for_save.get()) {
+                show_toast_for_widget(&dialog, error);
+                return;
+            }
             let description = description_view.buffer().text(
                 &description_view.buffer().start_iter(),
                 &description_view.buffer().end_iter(),
                 false,
             );
-            let component = match build_memo_component(
-                &title_entry.text(),
-                &description,
-                &categories_entry.text(),
-                &alarm_editor.alarms(),
-            ) {
+            let attachment_text = attachment_buffer.text(
+                &attachment_buffer.start_iter(),
+                &attachment_buffer.end_iter(),
+                false,
+            );
+            let mut draft = draft_for_save_signal.borrow().clone();
+            draft.summary = title_entry.text().to_string();
+            draft.dtstart = optional_text(&dtstart_entry.text());
+            draft.class = optional_text(&class_entry.text());
+            draft.status = optional_text(&status_entry.text());
+            draft.url = optional_text(&url_entry.text());
+            draft.categories = parse_categories_input(&categories_entry.text());
+            draft.description = description.to_string();
+            draft.attachments =
+                match parse_memo_attachment_editor_text(&attachment_text, &draft.attachments) {
+                    Ok(attachments) => attachments,
+                    Err(error) => {
+                        show_toast_for_widget(&dialog, &error);
+                        return;
+                    }
+                };
+            alarm_editor.set_summary(&draft.summary);
+            draft.alarms = alarm_editor.alarms();
+            let mut component = match draft.apply_to_component() {
                 Ok(component) => component,
                 Err(error) => {
                     show_toast_for_widget(&dialog, &error);
                     return;
                 }
             };
-            let component_for_model = component.clone();
-            let title_for_model = title_entry.text().trim().to_string();
-            let description_for_model = description.to_string();
+            let modified = Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
+            component = crate::services::calendar_store_service::update_ical_property(
+                &component,
+                "LAST-MODIFIED",
+                Some(&modified),
+            );
+            let operation_uid = memo_to_edit_for_save.as_ref().map(|memo| memo.uid.clone());
+            let expected_uid = operation_uid.clone();
+            let generation = request_generation_for_save.get().wrapping_add(1);
+            request_generation_for_save.set(generation);
+            operation_for_save.set(true);
+            save_button.set_sensitive(false);
             let source_uid_for_model = source_uid.clone();
             let source_uid_for_selection = source_uid_for_model.clone();
             let (sender, receiver) = async_channel::bounded(1);
             std::thread::spawn(move || {
-                let result = ECalService::new().create_component(
-                    &source_uid,
-                    ECalComponentType::Memo,
-                    &component,
-                );
+                let service = ECalService::new();
+                let result = match operation_uid.as_deref() {
+                    Some(uid) => service.modify_component(
+                        &source_uid,
+                        ECalComponentType::Memo,
+                        uid,
+                        &component,
+                    ),
+                    None => {
+                        service.create_component(&source_uid, ECalComponentType::Memo, &component)
+                    }
+                };
                 if let Err(error) = sender.send_blocking(result) {
                     tracing::debug!(%error, "Memo mutation result was dropped");
                 }
@@ -1644,31 +1922,72 @@ impl MemosPage {
             let memo_list_for_result = memo_list.clone();
             let memo_records_for_result = Rc::clone(&memo_records);
             let empty_state_for_result = empty_state.clone();
+            let save_button_for_result = save_button.clone();
+            let operation_for_result = Rc::clone(&operation_for_save);
+            let request_generation_for_result = Rc::clone(&request_generation_for_save);
+            let close_confirmed_for_result = Rc::clone(&close_confirmed_for_save);
+            let draft_for_result = Rc::clone(&draft_for_save_signal);
+            let source_display_name_for_result = source_display_name_for_save.clone();
             glib::spawn_future_local(async move {
-                let Ok(result) = receiver.recv().await else {
-                    return;
-                };
+                let result = receiver.recv().await;
                 let Some(dialog) = dialog_weak_for_result.upgrade() else {
                     return;
                 };
+                if !memo_result_is_current(
+                    request_generation_for_result.get(),
+                    generation,
+                    dialog.is_visible(),
+                ) {
+                    return;
+                }
+                operation_for_result.set(false);
+                save_button_for_result.set_sensitive(true);
                 match result {
-                    Ok(result) => {
-                        let component = result.component.unwrap_or(component_for_model);
-                        let uid = result.uid;
-                        let source_display_name = if source_uid_for_model == "local-calendar" {
-                            "Lokale Notizliste".to_string()
-                        } else {
-                            "synchronisiertem Notizbestand".to_string()
+                    Ok(Ok(result)) => {
+                        let (component, confirmed_draft) = match
+                            confirmed_memo_component(result.component)
+                        {
+                            Ok(confirmed) => confirmed,
+                            Err(error) => {
+                                show_toast_for_widget(
+                                    &dialog,
+                                    &format!("Bestätigte Memo-Komponente fehlt oder ist ungültig: {error}"),
+                                );
+                                return;
+                            }
                         };
+                        let uid = match confirmed_memo_uid(
+                            expected_uid.as_deref(),
+                            &result.uid,
+                            &confirmed_draft.uid,
+                        ) {
+                            Ok(uid) => uid,
+                            Err(error) => {
+                                show_toast_for_widget(
+                                    &dialog,
+                                    &format!("Bestätigte Memo-Identität ist ungültig: {error}"),
+                                );
+                                return;
+                            }
+                        };
+                        let source_display_name =
+                            source_display_name_for_result.unwrap_or_else(|| {
+                                if source_uid_for_model == "local-calendar" {
+                                    "Lokale Notizliste".to_string()
+                                } else {
+                                    "synchronisiertem Notizbestand".to_string()
+                                }
+                            });
                         let memo = MemoRecord {
                             uid: uid.clone(),
                             source_uid: source_uid_for_model,
                             source_display_name,
                             component,
-                            summary: title_for_model,
-                            description: description_for_model,
+                            summary: confirmed_draft.summary.clone(),
+                            description: confirmed_draft.description.clone(),
                             updated: Utc::now().format("%Y-%m-%d %H:%M").to_string(),
                         };
+                        *draft_for_result.borrow_mut() = confirmed_draft;
                         upsert_memo_row(
                             &memo_list_for_result,
                             Rc::clone(&memo_records_for_result),
@@ -1678,13 +1997,23 @@ impl MemosPage {
                         empty_state_for_result.set_visible(false);
                         if let Some(page) = page_weak_for_result.upgrade() {
                             refresh_memo_category_model(&page, &memo_list_for_result);
-                            page.show_toast(&format!("Notiz gespeichert ({uid})"));
+                            let message = if editing {
+                                format!("Notiz aktualisiert ({uid})")
+                            } else {
+                                format!("Notiz gespeichert ({uid})")
+                            };
+                            page.show_toast(&message);
                         }
+                        close_confirmed_for_result.set(true);
                         dialog.close();
                     }
-                    Err(error) => show_toast_for_widget(
+                    Ok(Err(error)) => show_toast_for_widget(
                         &dialog,
                         &format!("Notiz konnte nicht gespeichert werden: {error}"),
+                    ),
+                    Err(error) => show_toast_for_widget(
+                        &dialog,
+                        &format!("Notiz-Speicherergebnis fehlt: {error}"),
                     ),
                 }
             });
@@ -1970,6 +2299,215 @@ fn show_toast_for_widget<W: IsA<gtk::Widget>>(widget: &W, message: &str) {
     tracing::warn!(%message, "Memo UI result");
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MemoCloseDecision {
+    Allow,
+    Prompt,
+    KeepPrompt,
+    BlockSave,
+}
+
+fn memo_close_decision(dirty: bool, saving: bool, prompt_open: bool) -> MemoCloseDecision {
+    if saving {
+        MemoCloseDecision::BlockSave
+    } else if !dirty {
+        MemoCloseDecision::Allow
+    } else if prompt_open {
+        MemoCloseDecision::KeepPrompt
+    } else {
+        MemoCloseDecision::Prompt
+    }
+}
+
+fn memo_result_is_current(
+    current_generation: u64,
+    expected_generation: u64,
+    dialog_visible: bool,
+) -> bool {
+    current_generation == expected_generation && dialog_visible
+}
+
+fn confirmed_memo_component(
+    component: Option<String>,
+) -> Result<(String, MemoEditorDraft), String> {
+    let component = component
+        .filter(|component| !component.trim().is_empty())
+        .ok_or_else(|| "ECal lieferte keine vollständige Komponente".to_string())?;
+    let draft = MemoEditorDraft::from_component(&component).map_err(|error| format!("{error}"))?;
+    Ok((component, draft))
+}
+
+fn confirmed_memo_uid(
+    expected_uid: Option<&str>,
+    result_uid: &str,
+    component_uid: &str,
+) -> Result<String, String> {
+    if let Some(expected_uid) = expected_uid {
+        if component_uid != expected_uid {
+            return Err("Komponenten-UID stimmt nicht mit der Anfrage überein".to_string());
+        }
+        return Ok(expected_uid.to_string());
+    }
+    if !result_uid.trim().is_empty() && result_uid != component_uid {
+        return Err("ECal-Ergebnis und bestätigte Komponente haben verschiedene UIDs".to_string());
+    }
+    let uid = if result_uid.trim().is_empty() {
+        component_uid
+    } else {
+        result_uid
+    };
+    (!uid.trim().is_empty())
+        .then(|| uid.to_string())
+        .ok_or_else(|| "Die bestätigte Memo-Komponente hat keine UID".to_string())
+}
+
+#[cfg(test)]
+fn memo_delete_confirmed(response: &str) -> bool {
+    response == "confirm"
+}
+
+fn memo_attachment_save_error(loading: bool) -> Option<&'static str> {
+    loading.then_some("Anhänge werden noch geladen; bitte warten")
+}
+
+fn optional_text(value: &str) -> Option<String> {
+    let value = value.trim();
+    (!value.is_empty()).then(|| value.to_string())
+}
+
+fn serialize_categories_vec(categories: &[String]) -> String {
+    categories
+        .iter()
+        .map(|category| escape_ical_text(category.trim()))
+        .filter(|category| !category.is_empty())
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn parse_categories_input(value: &str) -> Vec<String> {
+    let mut categories = Vec::new();
+    let mut current = String::new();
+    let mut escaped = false;
+    for character in value.chars() {
+        if escaped {
+            current.push('\\');
+            current.push(character);
+            escaped = false;
+        } else if character == '\\' {
+            escaped = true;
+        } else if character == ',' {
+            if !current.trim().is_empty() {
+                categories.push(unescape_ical_text(current.trim()));
+            }
+            current.clear();
+        } else {
+            current.push(character);
+        }
+    }
+    if escaped {
+        current.push('\\');
+    }
+    if !current.trim().is_empty() {
+        categories.push(unescape_ical_text(current.trim()));
+    }
+    categories
+}
+
+fn memo_attachment_editor_line(attachment: &MemoAttachment) -> String {
+    if attachment.is_uri() && !attachment.is_inline() {
+        let uri = attachment.uri.as_deref().unwrap_or_default();
+        format!("URI:{uri}")
+    } else {
+        format!(
+            "INLINE:{}",
+            attachment.inline_content.as_deref().unwrap_or_default()
+        )
+    }
+}
+
+fn memo_attachments_editor_text(attachments: &[MemoAttachment]) -> String {
+    attachments
+        .iter()
+        .map(memo_attachment_editor_line)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn attachment_with_editor_value(original: &MemoAttachment, line: &str) -> Option<MemoAttachment> {
+    let mut attachment = original.clone();
+    if let Some(uri) = line.strip_prefix("URI:") {
+        let uri = uri.trim();
+        if uri.is_empty() {
+            return None;
+        }
+        attachment.uri = Some(uri.to_string());
+        attachment.inline_content = None;
+    } else if let Some(content) = line.strip_prefix("INLINE:") {
+        attachment.uri = None;
+        attachment.inline_content = Some(content.to_string());
+    } else {
+        let uri = line.trim();
+        if uri.is_empty() {
+            return None;
+        }
+        attachment.uri = Some(uri.to_string());
+        attachment.inline_content = None;
+    }
+    Some(attachment)
+}
+
+fn parse_memo_attachment_editor_text(
+    value: &str,
+    existing: &[MemoAttachment],
+) -> Result<Vec<MemoAttachment>, String> {
+    let mut used_existing = vec![false; existing.len()];
+    let mut attachments = Vec::new();
+    for (line_index, raw_line) in value.lines().enumerate() {
+        let line = raw_line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if line.contains('\r') || line.contains('\n') {
+            return Err("Die Anhangsliste enthält ungültige Zeilenumbrüche".to_string());
+        }
+        if let Some((index, attachment)) =
+            existing.iter().enumerate().find(|(index, attachment)| {
+                !used_existing[*index] && memo_attachment_editor_line(attachment) == line
+            })
+        {
+            used_existing[index] = true;
+            attachments.push(attachment.clone());
+            continue;
+        }
+        if let Some((index, attachment)) = existing
+            .get(line_index)
+            .filter(|_| !used_existing.get(line_index).copied().unwrap_or(true))
+            .map(|attachment| (line_index, attachment))
+        {
+            if let Some(attachment) = attachment_with_editor_value(attachment, line) {
+                used_existing[index] = true;
+                attachments.push(attachment);
+                continue;
+            }
+        }
+        if let Some(uri) = line.strip_prefix("URI:") {
+            let uri = uri.trim();
+            if uri.is_empty() {
+                return Err("Ein URI-Anhang darf nicht leer sein".to_string());
+            }
+            attachments.push(MemoAttachment::uri(uri.to_string()));
+        } else if let Some(content) = line.strip_prefix("INLINE:") {
+            attachments.push(MemoAttachment::inline(content.to_string()));
+        } else {
+            // A bare line is accepted as a URI for the same compact workflow
+            // as Evolution's attachment page.  It is only serialized; it is
+            // never opened or fetched by this editor.
+            attachments.push(MemoAttachment::uri(line.to_string()));
+        }
+    }
+    Ok(attachments)
+}
+
 fn build_memo_component(
     title: &str,
     description: &str,
@@ -2049,6 +2587,7 @@ fn unescape_ical_text(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::services::calendar_store_service::MemoAttachmentParameter;
 
     #[test]
     fn memo_component_serialization_is_ical_safe() {
@@ -2095,6 +2634,132 @@ mod tests {
         assert!(search.contains("project-x"));
         assert!(memo_matches_filter(&memo, None, Some("project-x"), ""));
         assert!(!memo_matches_filter(&memo, None, Some("personal"), ""));
+    }
+
+    #[test]
+    fn memo_attachment_editor_keeps_existing_uri_and_inline_values_in_order() {
+        let mut first = MemoAttachment::uri("https://example.test/a");
+        first.filename = Some("a.txt".to_string());
+        first.fmttype = Some("text/plain".to_string());
+        first.unknown_parameters.push(MemoAttachmentParameter {
+            name: "X-KEEP".to_string(),
+            value: Some("yes".to_string()),
+        });
+        let second = MemoAttachment::inline("UE5H");
+        let existing = vec![first.clone(), second.clone()];
+        let text = memo_attachments_editor_text(&existing);
+        let parsed = parse_memo_attachment_editor_text(&text, &existing)
+            .expect("unchanged attachment editor text should parse");
+        assert_eq!(parsed, existing);
+
+        let changed = parse_memo_attachment_editor_text(
+            "URI:https://example.test/a\nINLINE:UE5H\nURI:https://example.test/c",
+            &existing,
+        )
+        .expect("new URI should be accepted");
+        assert_eq!(changed.len(), 3);
+        assert_eq!(changed[0].filename.as_deref(), Some("a.txt"));
+        assert_eq!(changed[1].inline_content.as_deref(), Some("UE5H"));
+        assert_eq!(changed[2].uri.as_deref(), Some("https://example.test/c"));
+    }
+
+    #[test]
+    fn memo_attachment_editor_changes_retain_existing_metadata() {
+        let mut uri = MemoAttachment::uri("https://example.test/old");
+        uri.filename = Some("memo.txt".to_string());
+        uri.fmttype = Some("text/plain".to_string());
+        uri.unknown_parameters.push(MemoAttachmentParameter {
+            name: "X-SAFE".to_string(),
+            value: Some("keep".to_string()),
+        });
+        let mut inline = MemoAttachment::inline("old-payload");
+        inline.filename = Some("payload.bin".to_string());
+        inline.fmttype = Some("application/octet-stream".to_string());
+        inline.unknown_parameters.push(MemoAttachmentParameter {
+            name: "X-INLINE".to_string(),
+            value: Some("keep".to_string()),
+        });
+        let existing = vec![uri, inline];
+        let changed = parse_memo_attachment_editor_text(
+            "URI:https://example.test/new\nINLINE:new-payload",
+            &existing,
+        )
+        .expect("edited attachment values should parse");
+        assert_eq!(changed[0].uri.as_deref(), Some("https://example.test/new"));
+        assert_eq!(changed[0].filename.as_deref(), Some("memo.txt"));
+        assert_eq!(changed[0].fmttype.as_deref(), Some("text/plain"));
+        assert_eq!(changed[0].unknown_parameters[0].name, "X-SAFE");
+        assert_eq!(changed[1].inline_content.as_deref(), Some("new-payload"));
+        assert_eq!(changed[1].filename.as_deref(), Some("payload.bin"));
+        assert_eq!(changed[1].unknown_parameters[0].name, "X-INLINE");
+    }
+
+    #[test]
+    fn memo_dialog_close_and_mutation_guards_cover_cancel_dirty_and_stale_results() {
+        assert_eq!(
+            memo_close_decision(false, false, false),
+            MemoCloseDecision::Allow
+        );
+        assert_eq!(
+            memo_close_decision(true, false, false),
+            MemoCloseDecision::Prompt
+        );
+        assert_eq!(
+            memo_close_decision(true, false, true),
+            MemoCloseDecision::KeepPrompt
+        );
+        assert_eq!(
+            memo_close_decision(true, true, false),
+            MemoCloseDecision::BlockSave
+        );
+        assert!(!memo_delete_confirmed("cancel"));
+        assert!(memo_delete_confirmed("confirm"));
+        assert!(memo_result_is_current(4, 4, true));
+        assert!(!memo_result_is_current(4, 3, true));
+        assert!(!memo_result_is_current(4, 4, false));
+    }
+
+    #[test]
+    fn invalid_and_loading_attachment_states_are_rejected_before_component_apply() {
+        let existing = Vec::new();
+        assert!(parse_memo_attachment_editor_text("URI:", &existing).is_err());
+        assert_eq!(
+            memo_attachment_save_error(true),
+            Some("Anhänge werden noch geladen; bitte warten")
+        );
+        assert_eq!(memo_attachment_save_error(false), None);
+        let mut draft = MemoEditorDraft::from_component(
+            "BEGIN:VJOURNAL\r\nUID:memo-invalid\r\nSUMMARY:Valid\r\nEND:VJOURNAL\r\n",
+        )
+        .expect("valid draft should parse");
+        let mut invalid_attachment = MemoAttachment::uri("https://example.test/a\nunsafe");
+        invalid_attachment.filename = Some("bad\nname".to_string());
+        draft.attachments = vec![invalid_attachment];
+        assert!(draft.apply().is_err());
+    }
+
+    #[test]
+    fn confirmed_memo_result_is_required_before_model_data_can_be_built() {
+        assert!(confirmed_memo_component(None).is_err());
+        assert!(confirmed_memo_component(Some(String::new())).is_err());
+        assert!(
+            confirmed_memo_component(Some(
+                "BEGIN:VEVENT\r\nUID:not-a-memo\r\nEND:VEVENT\r\n".to_string()
+            ))
+            .is_err()
+        );
+        let component = "BEGIN:VJOURNAL\r\nUID:confirmed\r\nSUMMARY:Confirmed\r\nEND:VJOURNAL\r\n";
+        let (confirmed, draft) = confirmed_memo_component(Some(component.to_string()))
+            .expect("complete confirmed memo should be accepted");
+        assert_eq!(confirmed, component);
+        assert_eq!(draft.uid, "confirmed");
+        assert_eq!(draft.summary, "Confirmed");
+        assert!(confirmed_memo_uid(Some("expected"), "expected", "other").is_err());
+        assert!(confirmed_memo_uid(None, "one", "two").is_err());
+        assert_eq!(
+            confirmed_memo_uid(None, "", "component").expect("component UID is usable"),
+            "component"
+        );
     }
 }
 
