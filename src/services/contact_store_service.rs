@@ -98,6 +98,19 @@ impl ContactStoreService {
         Ok(imported)
     }
 
+    /// Import raw vCard content into the configured local source directory.
+    pub fn import_vcard_content(&self, content: &str) -> io::Result<usize> {
+        fs::create_dir_all(&self.contact_dir)?;
+        if content.trim().is_empty() {
+            return Ok(0);
+        }
+        let uid = format!("imported-{}", uuid::Uuid::new_v4());
+        let file_name = format!("{uid}.vcf");
+        let destination = unique_destination(&self.contact_dir, &file_name);
+        fs::write(destination, content)?;
+        Ok(1)
+    }
+
     pub fn load_contacts(&self) -> Vec<LocalContactRecord> {
         let mut paths = Vec::new();
         collect_vcard_files(&self.contact_dir, &mut paths);

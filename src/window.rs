@@ -1907,6 +1907,7 @@ impl EvolutionWindow {
         file_menu.append(Some("Senden & Empfangen"), Some("win.mail-send-receive"));
         file_menu.append(Some("Offline arbeiten"), Some("win.work-offline"));
         file_menu.append(Some("Online arbeiten"), Some("win.work-online"));
+        file_menu.append(Some("Daten importieren…"), Some("win.import"));
         file_menu.append(Some("Ausgewählte E-Mail exportieren"), Some("win.export"));
         file_menu.append(Some("Ausgewählte E-Mail drucken…"), Some("win.mail-print"));
         file_menu.append(
@@ -1925,6 +1926,10 @@ impl EvolutionWindow {
             Some("win.find-in-message"),
         );
         edit_menu.append(Some("Globale Suche"), Some("app.global-search"));
+        edit_menu.append(
+            Some("Vergangene Termine löschen…"),
+            Some("win.purge-calendar"),
+        );
         edit_menu.append(
             Some("Filterregeln bearbeiten..."),
             Some("win.filter-editor"),
@@ -3023,6 +3028,34 @@ impl EvolutionWindow {
             }
         ));
         self.add_action(&action_folder_subscriptions);
+
+        let action_import = gio::SimpleAction::new("import", None);
+        action_import.connect_activate(glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            move |_, _| {
+                let dialog = crate::dialogs::ImportDialog::new();
+                dialog.set_transient_for(Some(&win));
+                dialog.present();
+            }
+        ));
+        self.add_action(&action_import);
+
+        let action_purge_calendar = gio::SimpleAction::new("purge-calendar", None);
+        action_purge_calendar.connect_activate(glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            move |_, _| {
+                if let Some(cal_page) = win.calendar_page() {
+                    cal_page.present_calendar_purge_dialog();
+                } else {
+                    let dialog = crate::dialogs::CalendarPurgeDialog::new();
+                    dialog.set_transient_for(Some(&win));
+                    dialog.present();
+                }
+            }
+        ));
+        self.add_action(&action_purge_calendar);
 
         for (action_name, heading, body, success) in [
             (

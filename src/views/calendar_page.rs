@@ -1090,6 +1090,15 @@ impl CalendarPage {
         self.imp().calendar_reload_debounce.replace(Some(source));
     }
 
+    /// Present the calendar purge dialog to purge past events.
+    pub fn present_calendar_purge_dialog(&self) {
+        let dialog = crate::dialogs::CalendarPurgeDialog::new();
+        if let Some(root) = self.root().and_downcast::<gtk::Window>() {
+            dialog.set_transient_for(Some(&root));
+        }
+        dialog.present();
+    }
+
     fn start_calendar_snapshot_load(&self) {
         self.cancel_calendar_snapshot_load();
         self.cancel_calendar_projection();
