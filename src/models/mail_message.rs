@@ -7,7 +7,7 @@ use gtk::glib;
 use gtk::subclass::prelude::*;
 use std::sync::Arc;
 
-use crate::services::mail_metadata_service::MailFollowUpState;
+use crate::services::mail_metadata_service::{MailFollowUpMetadata, MailFollowUpState};
 use crate::services::mail_store_service::MailBackendLocation;
 
 use serde::{Deserialize, Serialize};
@@ -106,6 +106,7 @@ mod imp {
         pub is_flagged: RefCell<bool>,
         pub is_important: RefCell<bool>,
         pub follow_up_state: RefCell<MailFollowUpState>,
+        pub follow_up: RefCell<MailFollowUpMetadata>,
         pub labels: RefCell<Vec<String>>,
         pub(crate) backend_location: RefCell<Option<MailBackendLocation>>,
         /// Original RFC822 header block. Keeping headers independently avoids
@@ -157,6 +158,7 @@ impl MailMessageObject {
         is_flagged: bool,
         is_important: bool,
         follow_up_state: MailFollowUpState,
+        follow_up: MailFollowUpMetadata,
         labels: Vec<String>,
         backend_location: Option<MailBackendLocation>,
         attachments: Vec<AttachmentInfo>,
@@ -171,7 +173,8 @@ impl MailMessageObject {
         *imp.recipient_cc.borrow_mut() = recipient_cc.to_string();
         *imp.recipient_bcc.borrow_mut() = recipient_bcc.to_string();
         *imp.reply_to.borrow_mut() = reply_to.to_string();
-        *imp.subject.borrow_mut() = crate::services::mail_store_service::decode_mime_header(subject);
+        *imp.subject.borrow_mut() =
+            crate::services::mail_store_service::decode_mime_header(subject);
         *imp.message_id.borrow_mut() = message_id;
         *imp.in_reply_to.borrow_mut() = in_reply_to;
         *imp.references.borrow_mut() = references;
@@ -185,6 +188,7 @@ impl MailMessageObject {
         *imp.is_flagged.borrow_mut() = is_flagged;
         *imp.is_important.borrow_mut() = is_important;
         *imp.follow_up_state.borrow_mut() = follow_up_state;
+        *imp.follow_up.borrow_mut() = follow_up;
         *imp.labels.borrow_mut() = labels;
         *imp.backend_location.borrow_mut() = backend_location;
         *imp.attachments.borrow_mut() = attachments;
@@ -342,6 +346,17 @@ impl MailMessageObject {
 
     pub fn set_follow_up_state(&self, state: MailFollowUpState) {
         *self.imp().follow_up_state.borrow_mut() = state;
+        self.imp().follow_up.borrow_mut().state = state;
+    }
+
+    pub fn follow_up(&self) -> MailFollowUpMetadata {
+        self.imp().follow_up.borrow().clone()
+    }
+
+    pub fn set_follow_up(&self, metadata: MailFollowUpMetadata) {
+        let metadata = metadata.normalized();
+        *self.imp().follow_up_state.borrow_mut() = metadata.state;
+        *self.imp().follow_up.borrow_mut() = metadata;
     }
 
     pub fn labels(&self) -> Vec<String> {
@@ -455,8 +470,8 @@ mod tests {
     use std::sync::Arc;
 
     use super::{
-        MailBackendLocation, MailFollowUpState, MailMessageIdentity, MailMessageObject,
-        update_label_values,
+        MailBackendLocation, MailFollowUpMetadata, MailFollowUpState, MailMessageIdentity,
+        MailMessageObject, update_label_values,
     };
 
     #[test]
@@ -497,6 +512,7 @@ mod tests {
             false,
             false,
             MailFollowUpState::None,
+            MailFollowUpMetadata::default(),
             Vec::new(),
             Some(MailBackendLocation {
                 source_uid: "account-a".to_string(),

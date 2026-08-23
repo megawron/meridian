@@ -432,6 +432,1108 @@ finish:
     return result;
 }
 
+static const gchar *
+source_extension_name_for_type (EvolutionEdsECalSourceType source_type)
+{
+    switch (source_type) {
+    case EVOLUTION_EDS_ECAL_EVENTS:
+        return E_SOURCE_EXTENSION_CALENDAR;
+    case EVOLUTION_EDS_ECAL_TASKS:
+        return E_SOURCE_EXTENSION_TASK_LIST;
+    case EVOLUTION_EDS_ECAL_MEMOS:
+        return E_SOURCE_EXTENSION_MEMO_LIST;
+    default:
+        return NULL;
+    }
+}
+
+static gboolean
+append_source_capability (EvolutionEdsECalSourceCapability **sources,
+                          size_t *count,
+                          size_t *capacity,
+                          ESourceRegistry *registry,
+                          ESource *source,
+                          ECalClient *client,
+                          EvolutionEdsECalSourceType source_type)
+{
+    ESource *collection;
+    EvolutionEdsECalSourceCapability *slot;
+    EvolutionEdsECalSourceCapability *next;
+
+    if (*count == *capacity) {
+        size_t next_capacity = *capacity == 0 ? 8 : *capacity * 2;
+        next = g_realloc_n (*sources, next_capacity, sizeof (*next));
+        if (!next)
+            return FALSE;
+        *sources = next;
+        *capacity = next_capacity;
+    }
+    slot = &(*sources)[(*count)++];
+    slot->source_uid = g_strdup (e_source_get_uid (source));
+    slot->source_display_name = g_strdup (e_source_get_display_name (source));
+    slot->connected = client != NULL;
+    slot->source_writable = e_source_get_writable (source);
+    slot->writable = client && !e_client_is_readonly (E_CLIENT (client));
+    slot->refresh_supported = client &&
+        e_client_check_refresh_supported (E_CLIENT (client));
+    slot->removable = e_source_get_removable (source);
+    slot->remote_deletable = e_source_get_remote_deletable (source);
+    collection = e_source_registry_find_extension (
+        registry, source, E_SOURCE_EXTENSION_COLLECTION);
+    slot->in_collection = collection != NULL;
+    slot->task_assignment_supported = source_type == EVOLUTION_EDS_ECAL_TASKS &&
+        client && !e_client_check_capability (
+            E_CLIENT (client), E_CAL_STATIC_CAPABILITY_NO_TASK_ASSIGNMENT);
+    slot->task_assignment_conversion_supported =
+        slot->task_assignment_supported && !e_client_check_capability (
+            E_CLIENT (client), E_CAL_STATIC_CAPABILITY_NO_CONV_TO_ASSIGN_TASK);
+    g_clear_object (&collection);
+    return TRUE;
+}
+
+int
+evolution_eds_ecal_list_source_capabilities (
+    EvolutionEdsECalSourceType source_type,
+    EvolutionEdsECalSourceCapability **out_sources,
+    size_t *out_count,
+    char **out_error)
+{
+    ESourceRegistry *registry = NULL;
+    GList *sources = NULL;
+    GList *link;
+    EvolutionEdsECalSourceCapability *capabilities = NULL;
+    size_t count = 0;
+    size_t capacity = 0;
+    GError *error = NULL;
+    gchar *first_error = NULL;
+    const gchar *extension_name;
+    int result = 0;
+
+    if (out_sources)
+        *out_sources = NULL;
+    if (out_count)
+        *out_count = 0;
+    if (out_error)
+        *out_error = NULL;
+    extension_name = source_extension_name_for_type (source_type);
+    if (!extension_name) {
+        if (out_error)
+            *out_error = g_strdup ("Unbekannter ECal-Quellentyp");
+        return 0;
+    }
+    registry = e_source_registry_new_sync (NULL, &error);
+    if (!registry)
+        goto finish;
+
+    sources = e_source_registry_list_enabled (registry, extension_name);
+    for (link = sources; link != NULL; link = link->next) {
+        ESource *source = E_SOURCE (link->data);
+        ECalClient *client = NULL;
+        const gchar *display_name = e_source_get_display_name (source);
+
+        /* Defend against a registry/provider inconsistency: only enumerate
+         * the exact extension requested by the Rust component type. */
+        if (!e_source_has_extension (source, extension_name))
+            continue;
+        client = E_CAL_CLIENT (e_cal_client_connect_sync (
+            source, (ECalClientSourceType) source_type, 15, NULL, &error));
+        if (!client && !first_error && error) {
+            first_error = g_strdup_printf (
+                "%s: %s", display_name && *display_name ? display_name : "ECal-Quelle",
+                error->message ? error->message : "Verbindung fehlgeschlagen");
+        }
+        g_clear_error (&error);
+        if (!append_source_capability (
+                &capabilities, &count, &capacity, registry, source, client,
+                source_type)) {
+            g_clear_object (&client);
+            g_set_error_literal (
+                &error, G_IO_ERROR, G_IO_ERROR_NO_SPACE,
+                "ECal-Quellmetadaten konnten nicht gespeichert werden");
+            goto finish;
+        }
+        g_clear_object (&client);
+    }
+    result = 1;
+
+finish:
+    if (result == 0 && out_error) {
+        *out_error = g_strdup (
+            error && error->message ? error->message :
+            "EDS/ECal-Quellen konnten nicht gelesen werden");
+    } else if (result == 1 && out_error && first_error) {
+        *out_error = g_steal_pointer (&first_error);
+    }
+    g_clear_error (&error);
+    g_free (first_error);
+    g_list_free_full (sources, g_object_unref);
+    g_clear_object (&registry);
+    if (result == 1) {
+        if (out_sources) {
+            *out_sources = capabilities;
+            capabilities = NULL;
+        }
+        if (out_count)
+            *out_count = count;
+    }
+    evolution_eds_ecal_free_source_capabilities (capabilities, count);
+    return result;
+}
+
+int
+evolution_eds_ecal_refresh_source (
+    const char *source_uid,
+    EvolutionEdsECalSourceType source_type,
+    char **out_error)
+{
+    ESourceRegistry *registry = NULL;
+    ESource *source = NULL;
+    GError *error = NULL;
+    const gchar *extension_name;
+    int result = 0;
+
+    if (out_error)
+        *out_error = NULL;
+    if (!source_uid || !*source_uid) {
+        if (out_error)
+            *out_error = g_strdup ("ECal-Aktualisierung benötigt eine Quell-UID");
+        return 0;
+    }
+    extension_name = source_extension_name_for_type (source_type);
+    if (!extension_name) {
+        if (out_error)
+            *out_error = g_strdup ("Unbekannter ECal-Quellentyp");
+        return 0;
+    }
+
+    registry = e_source_registry_new_sync (NULL, &error);
+    if (!registry)
+        goto finish;
+    source = e_source_registry_ref_source (registry, source_uid);
+    if (!source) {
+        g_set_error_literal (
+            &error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
+            "Die ECal-Quelle existiert nicht mehr");
+        goto finish;
+    }
+    if (!e_source_get_enabled (source)) {
+        g_set_error_literal (
+            &error, G_IO_ERROR, G_IO_ERROR_FAILED,
+            "Die ECal-Quelle ist deaktiviert");
+        goto finish;
+    }
+    if (!e_source_has_extension (source, extension_name)) {
+        g_set_error_literal (
+            &error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
+            "Die ECal-Quelle hat nicht den erwarteten Quellentyp");
+        goto finish;
+    }
+    client = E_CAL_CLIENT (e_cal_client_connect_sync (
+        source, (ECalClientSourceType) source_type, 15, NULL, &error));
+    if (!client)
+        goto finish;
+    if (!e_client_check_refresh_supported (E_CLIENT (client))) {
+        result = 2;
+        goto finish;
+    }
+    if (!e_client_refresh_sync (E_CLIENT (client), NULL, &error))
+        goto finish;
+    result = 1;
+
+finish:
+    if (result == 0 && out_error) {
+        *out_error = g_strdup (
+            error && error->message ? error->message :
+            "EDS/ECal-Aktualisierung fehlgeschlagen");
+    }
+    g_clear_error (&error);
+    g_clear_object (&client);
+    g_clear_object (&source);
+    g_clear_object (&registry);
+    return result;
+}
+
+static int
+return_source_management_error (GError **error,
+                                char **out_error,
+                                const gchar *fallback_message)
+{
+    if (out_error) {
+        *out_error = g_strdup (
+            error && *error && (*error)->message ? (*error)->message :
+            fallback_message);
+    }
+    if (error)
+        g_clear_error (error);
+    return 0;
+}
+
+static gboolean
+source_is_in_collection (ESourceRegistry *registry,
+                         ESource *source)
+{
+    ESource *collection;
+    gboolean in_collection;
+
+    collection = e_source_registry_find_extension (
+        registry, source, E_SOURCE_EXTENSION_COLLECTION);
+    in_collection = collection != NULL;
+    g_clear_object (&collection);
+    return in_collection;
+}
+
+static gboolean
+resolve_source_for_management (ESourceRegistry *registry,
+                               const gchar *source_uid,
+                               EvolutionEdsECalSourceType source_type,
+                               ESource **out_source,
+                               GError **error)
+{
+    const gchar *extension_name;
+    ESource *source;
+
+    if (out_source)
+        *out_source = NULL;
+    extension_name = source_extension_name_for_type (source_type);
+    if (!extension_name) {
+        g_set_error_literal (
+            error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
+            "Unbekannter ECal-Quellentyp");
+        return FALSE;
+    }
+    source = e_source_registry_ref_source (registry, source_uid);
+    if (!source) {
+        g_set_error_literal (
+            error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
+            "Die ECal-Quelle existiert nicht mehr");
+        return FALSE;
+    }
+    if (!e_source_has_extension (source, extension_name)) {
+        g_set_error_literal (
+            error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
+            "Die ECal-Quelle hat nicht den erwarteten Quellentyp");
+        g_object_unref (source);
+        return FALSE;
+    }
+    if (out_source)
+        *out_source = source;
+    else
+        g_object_unref (source);
+    return TRUE;
+}
+
+int
+evolution_eds_ecal_rename_source (
+    const char *source_uid,
+    EvolutionEdsECalSourceType source_type,
+    const char *display_name,
+    char **out_error)
+{
+    ESourceRegistry *registry = NULL;
+    ESource *source = NULL;
+    GError *error = NULL;
+    gchar *trimmed_name = NULL;
+    int result = 0;
+
+    if (out_error)
+        *out_error = NULL;
+    if (!source_uid || !*source_uid) {
+        g_set_error_literal (
+            &error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
+            "ECal-Umbenennung benötigt eine Quell-UID");
+        goto finish;
+    }
+    trimmed_name = g_strdup (display_name ? display_name : "");
+    if (!*g_strstrip (trimmed_name)) {
+        g_set_error_literal (
+            &error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
+            "ECal-Umbenennung benötigt einen Namen");
+        goto finish;
+    }
+    registry = e_source_registry_new_sync (NULL, &error);
+    if (!registry)
+        goto finish;
+    if (!resolve_source_for_management (
+            registry, source_uid, source_type, &source, &error))
+        goto finish;
+    if (!e_source_get_enabled (source)) {
+        g_set_error_literal (
+            &error, G_IO_ERROR, G_IO_ERROR_FAILED,
+            "Die ECal-Quelle ist deaktiviert");
+        goto finish;
+    }
+    if (!e_source_get_writable (source)) {
+        g_set_error_literal (
+            &error, G_IO_ERROR, G_IO_ERROR_PERMISSION_DENIED,
+            "Die ECal-Quelle ist nicht schreibbar");
+        goto finish;
+    }
+    if (source_is_in_collection (registry, source)) {
+        g_set_error_literal (
+            &error, G_IO_ERROR, G_IO_ERROR_PERMISSION_DENIED,
+            "Eine sammlungsverwaltete ECal-Quelle kann nicht umbenannt werden");
+        goto finish;
+    }
+    e_source_set_display_name (source, display_name);
+    if (!e_source_write_sync (source, NULL, &error))
+        goto finish;
+    result = 1;
+
+finish:
+    if (result == 0)
+        result = return_source_management_error (
+            &error, out_error, "EDS/ECal-Umbenennung fehlgeschlagen");
+    g_free (trimmed_name);
+    g_clear_object (&source);
+    g_clear_object (&registry);
+    return result;
+}
+
+int
+evolution_eds_ecal_delete_source (
+    const char *source_uid,
+    EvolutionEdsECalSourceType source_type,
+    char **out_error)
+{
+    ESourceRegistry *registry = NULL;
+    ESource *source = NULL;
+    GError *error = NULL;
+    int result = 0;
+
+    if (out_error)
+        *out_error = NULL;
+    if (!source_uid || !*source_uid) {
+        g_set_error_literal (
+            &error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
+            "ECal-Löschen benötigt eine Quell-UID");
+        goto finish;
+    }
+    registry = e_source_registry_new_sync (NULL, &error);
+    if (!registry)
+        goto finish;
+    if (!resolve_source_for_management (
+            registry, source_uid, source_type, &source, &error))
+        goto finish;
+    if (e_source_get_remote_deletable (source)) {
+        if (!e_source_remote_delete_sync (source, NULL, &error))
+            goto finish;
+    } else {
+        if (!e_source_get_removable (source)) {
+            g_set_error_literal (
+                &error, G_IO_ERROR, G_IO_ERROR_PERMISSION_DENIED,
+                "Die ECal-Quelle kann nicht gelöscht werden");
+            goto finish;
+        }
+        if (!e_source_remove_sync (source, NULL, &error))
+            goto finish;
+    }
+    result = 1;
+
+finish:
+    if (result == 0)
+        result = return_source_management_error (
+            &error, out_error, "EDS/ECal-Löschen fehlgeschlagen");
+    g_clear_object (&source);
+    g_clear_object (&registry);
+    return result;
+}
+
+typedef struct {
+    ECalClient *from_client;
+    ECalClient *to_client;
+    gboolean success;
+    GError **error;
+} ECalCopyTimezoneData;
+
+static void
+copy_source_timezone_cb (ICalParameter *parameter,
+                         gpointer user_data)
+{
+    ECalCopyTimezoneData *data = user_data;
+    ICalTimezone *timezone = NULL;
+    const gchar *tzid;
+
+    if (!data || !data->success)
+        return;
+    tzid = i_cal_parameter_get_tzid (parameter);
+    if (!tzid || !*tzid)
+        return;
+    data->success = e_cal_client_get_timezone_sync (
+        data->from_client, tzid, &timezone, NULL, data->error);
+    if (data->success && timezone) {
+        data->success = e_cal_client_add_timezone_sync (
+            data->to_client, timezone, NULL, data->error);
+    }
+}
+
+static void
+free_ical_component_list (GSList *components)
+{
+    GSList *link;
+
+    for (link = components; link; link = link->next) {
+        if (link->data)
+            g_object_unref (link->data);
+    }
+    g_slist_free (components);
+}
+
+int
+evolution_eds_ecal_copy_source (
+    const char *from_source_uid,
+    const char *to_source_uid,
+    EvolutionEdsECalSourceType source_type,
+    size_t *out_copied_count,
+    size_t *out_updated_count,
+    char **out_error)
+{
+    ESourceRegistry *registry = NULL;
+    ESource *from_source = NULL;
+    ESource *to_source = NULL;
+    ECalClient *from_client = NULL;
+    ECalClient *to_client = NULL;
+    GSList *components = NULL;
+    GSList *link;
+    GError *error = NULL;
+    size_t copied_count = 0;
+    size_t updated_count = 0;
+    int result = 0;
+
+    if (out_copied_count)
+        *out_copied_count = 0;
+    if (out_updated_count)
+        *out_updated_count = 0;
+    if (out_error)
+        *out_error = NULL;
+    if (!from_source_uid || !*from_source_uid ||
+        !to_source_uid || !*to_source_uid) {
+        g_set_error_literal (
+            &error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
+            "ECal-Quellenkopie benötigt zwei Quell-UIDs");
+        goto finish;
+    }
+    if (g_strcmp0 (from_source_uid, to_source_uid) == 0) {
+        g_set_error_literal (
+            &error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
+            "Quelle und Ziel der ECal-Quellenkopie müssen verschieden sein");
+        goto finish;
+    }
+    registry = e_source_registry_new_sync (NULL, &error);
+    if (!registry)
+        goto finish;
+    if (!resolve_source_for_management (
+            registry, from_source_uid, source_type, &from_source, &error) ||
+        !resolve_source_for_management (
+            registry, to_source_uid, source_type, &to_source, &error))
+        goto finish;
+    if (!e_source_get_enabled (from_source) || !e_source_get_enabled (to_source)) {
+        g_set_error_literal (
+            &error, G_IO_ERROR, G_IO_ERROR_FAILED,
+            "Quelle oder Ziel der ECal-Quellenkopie ist deaktiviert");
+        goto finish;
+    }
+    from_client = E_CAL_CLIENT (e_cal_client_connect_sync (
+        from_source, (ECalClientSourceType) source_type, 15, NULL, &error));
+    if (!from_client)
+        goto finish;
+    to_client = E_CAL_CLIENT (e_cal_client_connect_sync (
+        to_source, (ECalClientSourceType) source_type, 15, NULL, &error));
+    if (!to_client)
+        goto finish;
+    if (e_client_is_readonly (E_CLIENT (to_client))) {
+        g_set_error_literal (
+            &error, G_IO_ERROR, G_IO_ERROR_READ_ONLY,
+            "Das Ziel der ECal-Quellenkopie ist schreibgeschützt");
+        goto finish;
+    }
+    if (!e_cal_client_get_object_list_sync (
+            from_client, "#t", &components, NULL, &error))
+        goto finish;
+
+    for (link = components; link; link = link->next) {
+        ICalComponent *component = I_CAL_COMPONENT (link->data);
+        ICalComponent *existing = NULL;
+        GError *local_error = NULL;
+        const gchar *uid;
+
+        if (!component) {
+            g_set_error_literal (
+                &error, G_IO_ERROR, G_IO_ERROR_INVALID_DATA,
+                "Die ECal-Quelle enthält eine ungültige Komponente");
+            result = 2;
+            goto finish;
+        }
+        uid = i_cal_component_get_uid (component);
+        if (!uid || !*uid) {
+            g_set_error_literal (
+                &error, G_IO_ERROR, G_IO_ERROR_INVALID_DATA,
+                "Die ECal-Quelle enthält eine Komponente ohne UID");
+            result = 2;
+            goto finish;
+        }
+        if (e_cal_client_get_object_sync (
+                to_client, uid, NULL, &existing, NULL, &local_error)) {
+            if (!e_cal_client_modify_object_sync (
+                    to_client, component, E_CAL_OBJ_MOD_ALL,
+                    E_CAL_OPERATION_FLAG_NONE, NULL, &error)) {
+                g_clear_object (&existing);
+                result = 2;
+                goto finish;
+            }
+            g_clear_object (&existing);
+            copied_count++;
+            updated_count++;
+            continue;
+        }
+        if (local_error && !g_error_matches (
+                local_error, E_CAL_CLIENT_ERROR,
+                E_CAL_CLIENT_ERROR_OBJECT_NOT_FOUND)) {
+            g_propagate_error (&error, local_error);
+            result = 2;
+            goto finish;
+        }
+        g_clear_error (&local_error);
+
+        {
+            ECalCopyTimezoneData timezone_data = {
+                from_client, to_client, TRUE, &error
+            };
+
+            i_cal_component_foreach_tzid (
+                component, copy_source_timezone_cb, &timezone_data);
+            if (!timezone_data.success) {
+                result = 2;
+                goto finish;
+            }
+        }
+        if (!e_cal_client_create_object_sync (
+                to_client, component, E_CAL_OPERATION_FLAG_NONE,
+                NULL, NULL, &error)) {
+            result = 2;
+            goto finish;
+        }
+        copied_count++;
+    }
+    result = 1;
+
+finish:
+    if (out_copied_count)
+        *out_copied_count = copied_count;
+    if (out_updated_count)
+        *out_updated_count = updated_count;
+    if (result == 0) {
+        if (out_error) {
+            *out_error = g_strdup (
+                error && error->message ? error->message :
+                "EDS/ECal-Quellenkopie fehlgeschlagen");
+        }
+    } else if (result == 2 && out_error) {
+        *out_error = g_strdup_printf (
+            "ECal-Quellenkopie nach %zu bestätigten Komponenten fehlgeschlagen: %s",
+            copied_count,
+            error && error->message ? error->message : "unbekannter ECal-Fehler");
+    }
+    g_clear_error (&error);
+    free_ical_component_list (components);
+    g_clear_object (&to_client);
+    g_clear_object (&from_client);
+    g_clear_object (&to_source);
+    g_clear_object (&from_source);
+    g_clear_object (&registry);
+    return result;
+}
+
+static gboolean
+is_valid_source_color (const gchar *color)
+{
+    guint ii;
+
+    if (!color || strlen (color) != 7 || color[0] != '#')
+        return FALSE;
+    for (ii = 1; ii < 7; ii++) {
+        if (!g_ascii_isxdigit (color[ii]))
+            return FALSE;
+    }
+    return TRUE;
+}
+
+int
+evolution_eds_ecal_create_local_source (
+    const char *display_name,
+    const char *color,
+    EvolutionEdsECalSourceType source_type,
+    char **out_source_uid,
+    char **out_warning,
+    char **out_error)
+{
+    ESourceRegistry *registry = NULL;
+    ESource *parent_source = NULL;
+    ESource *created_source = NULL;
+    ESource *committed_source = NULL;
+    ESourceExtension *component_extension;
+    ESourceLocal *local_extension;
+    ECalClient *client = NULL;
+    GError *error = NULL;
+    const gchar *extension_name;
+    const gchar *source_uid;
+    gchar *trimmed_display_name = NULL;
+    int result = 0;
+
+    if (out_source_uid)
+        *out_source_uid = NULL;
+    if (out_warning)
+        *out_warning = NULL;
+    if (out_error)
+        *out_error = NULL;
+    trimmed_display_name = g_strdup (display_name ? display_name : "");
+    if (!*g_strstrip (trimmed_display_name)) {
+        g_set_error_literal (
+            &error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
+            "Eine lokale ECal-Quelle benötigt einen Namen");
+        goto finish;
+    }
+    if (!is_valid_source_color (color)) {
+        g_set_error_literal (
+            &error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
+            "Die Farbe der lokalen ECal-Quelle muss #RRGGBB sein");
+        goto finish;
+    }
+    extension_name = source_extension_name_for_type (source_type);
+    if (!extension_name) {
+        g_set_error_literal (
+            &error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
+            "Unbekannter ECal-Quellentyp");
+        goto finish;
+    }
+    registry = e_source_registry_new_sync (NULL, &error);
+    if (!registry)
+        goto finish;
+    parent_source = e_source_registry_ref_source (registry, "local-stub");
+    if (!parent_source || !e_source_get_enabled (parent_source)) {
+        g_set_error_literal (
+            &error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
+            "Die lokale ECal-Stammquelle ist nicht verfügbar");
+        goto finish;
+    }
+    created_source = e_source_new (NULL, NULL, &error);
+    if (!created_source)
+        goto finish;
+    e_source_set_parent (created_source, "local-stub");
+    e_source_set_display_name (created_source, display_name);
+    component_extension = e_source_get_extension (created_source, extension_name);
+    if (!component_extension) {
+        g_set_error_literal (
+            &error, G_IO_ERROR, G_IO_ERROR_FAILED,
+            "Die lokale ECal-Quellenerweiterung konnte nicht erstellt werden");
+        goto finish;
+    }
+    e_source_backend_set_backend_name (
+        E_SOURCE_BACKEND (component_extension), "local");
+    e_source_selectable_set_color (
+        E_SOURCE_SELECTABLE (component_extension), color);
+    local_extension = e_source_get_extension (
+        created_source, E_SOURCE_EXTENSION_LOCAL_BACKEND);
+    if (!local_extension) {
+        g_set_error_literal (
+            &error, G_IO_ERROR, G_IO_ERROR_FAILED,
+            "Die lokale ECal-Backend-Erweiterung konnte nicht erstellt werden");
+        goto finish;
+    }
+    e_source_local_set_writable (local_extension, TRUE);
+    e_source_local_set_custom_file (local_extension, NULL);
+    if (!e_source_registry_commit_source_sync (
+            registry, created_source, NULL, &error))
+        goto finish;
+
+    source_uid = e_source_get_uid (created_source);
+    if (!source_uid || !*source_uid) {
+        g_set_error_literal (
+            &error, G_IO_ERROR, G_IO_ERROR_FAILED,
+            "EDS bestätigte eine lokale Quelle ohne gültige UID");
+        goto finish;
+    }
+    if (out_source_uid)
+        *out_source_uid = g_strdup (source_uid);
+    if (!resolve_source_for_management (
+            registry, source_uid, source_type, &committed_source, &error)) {
+        if (out_warning) {
+            *out_warning = g_strdup (
+                error && error->message ? error->message :
+                "Die lokale ECal-Quelle wurde erstellt, aber noch nicht gefunden");
+        }
+        g_clear_error (&error);
+        result = 2;
+        goto finish;
+    }
+    if (!e_source_get_enabled (committed_source)) {
+        if (out_warning)
+            *out_warning = g_strdup (
+                "Die lokale ECal-Quelle wurde erstellt, ist aber deaktiviert");
+        result = 2;
+        goto finish;
+    }
+    client = E_CAL_CLIENT (e_cal_client_connect_sync (
+        committed_source, (ECalClientSourceType) source_type,
+        15, NULL, &error));
+    if (!client) {
+        if (out_warning) {
+            *out_warning = g_strdup (
+                error && error->message ? error->message :
+                "Die lokale ECal-Quelle wurde erstellt, ist aber noch nicht erreichbar");
+        }
+        g_clear_error (&error);
+        result = 2;
+        goto finish;
+    }
+    result = 1;
+
+finish:
+    if (result == 0 && out_error) {
+        *out_error = g_strdup (
+            error && error->message ? error->message :
+            "EDS konnte die lokale ECal-Quelle nicht erstellen");
+    }
+    g_clear_error (&error);
+    g_free (trimmed_display_name);
+    g_clear_object (&client);
+    g_clear_object (&committed_source);
+    g_clear_object (&created_source);
+    g_clear_object (&parent_source);
+    g_clear_object (&registry);
+    return result;
+}
+
+static ESource *
+ref_builtin_source_for_type (ESourceRegistry *registry,
+                             EvolutionEdsECalSourceType source_type)
+{
+    switch (source_type) {
+    case EVOLUTION_EDS_ECAL_EVENTS:
+        return e_source_registry_ref_builtin_calendar (registry);
+    case EVOLUTION_EDS_ECAL_TASKS:
+        return e_source_registry_ref_builtin_task_list (registry);
+    case EVOLUTION_EDS_ECAL_MEMOS:
+        return e_source_registry_ref_builtin_memo_list (registry);
+    default:
+        return NULL;
+    }
+}
+
+/* Returns 1 for an exact local source, 2 for a supported exact non-local
+ * source, and 0 for stale/wrong-type registry failures. */
+static int
+resolve_local_source_for_properties (ESourceRegistry *registry,
+                                     const gchar *source_uid,
+                                     EvolutionEdsECalSourceType source_type,
+                                     ESource **out_source,
+                                     ESourceExtension **out_component_extension,
+                                     ESourceLocal **out_local_extension,
+                                     GError **error)
+{
+    ESource *source = NULL;
+    ESourceExtension *component_extension;
+    ESourceLocal *local_extension;
+    const gchar *backend_name;
+
+    if (out_source)
+        *out_source = NULL;
+    if (out_component_extension)
+        *out_component_extension = NULL;
+    if (out_local_extension)
+        *out_local_extension = NULL;
+    if (!resolve_source_for_management (
+            registry, source_uid, source_type, &source, error))
+        return 0;
+    component_extension = e_source_get_extension (
+        source, source_extension_name_for_type (source_type));
+    backend_name = component_extension
+        ? e_source_backend_get_backend_name (E_SOURCE_BACKEND (component_extension))
+        : NULL;
+    local_extension = e_source_get_extension (
+        source, E_SOURCE_EXTENSION_LOCAL_BACKEND);
+    if (!backend_name || g_strcmp0 (backend_name, "local") != 0 || !local_extension) {
+        g_clear_object (&source);
+        return 2;
+    }
+    if (out_source)
+        *out_source = source;
+    else
+        g_object_unref (source);
+    if (out_component_extension)
+        *out_component_extension = component_extension;
+    if (out_local_extension)
+        *out_local_extension = local_extension;
+    return 1;
+}
+
+void
+evolution_eds_ecal_clear_local_source_properties (
+    EvolutionEdsECalLocalSourceProperties *properties)
+{
+    if (!properties)
+        return;
+    g_free (properties->source_uid);
+    g_free (properties->display_name);
+    g_free (properties->color);
+    g_free (properties->custom_file_uri);
+    g_free (properties->email_address);
+    memset (properties, 0, sizeof (*properties));
+}
+
+int
+evolution_eds_ecal_get_local_source_properties (
+    const char *source_uid,
+    EvolutionEdsECalSourceType source_type,
+    EvolutionEdsECalLocalSourceProperties *out_properties,
+    char **out_error)
+{
+    ESourceRegistry *registry = NULL;
+    ESource *source = NULL;
+    ESourceExtension *component_extension = NULL;
+    ESourceLocal *local_extension = NULL;
+    ESource *builtin_source = NULL;
+    GFile *custom_file;
+    const gchar *color;
+    GError *error = NULL;
+    int resolved;
+    int result = 0;
+
+    if (out_properties)
+        memset (out_properties, 0, sizeof (*out_properties));
+    if (out_error)
+        *out_error = NULL;
+    if (!source_uid || !*source_uid || !out_properties) {
+        if (out_error)
+            *out_error = g_strdup ("Lokale ECal-Eigenschaften benötigen eine Quell-UID");
+        return 0;
+    }
+    registry = e_source_registry_new_sync (NULL, &error);
+    if (!registry)
+        goto finish;
+    resolved = resolve_local_source_for_properties (
+        registry, source_uid, source_type, &source, &component_extension,
+        &local_extension, &error);
+    if (resolved == 2) {
+        result = 2;
+        goto finish;
+    }
+    if (resolved == 0)
+        goto finish;
+    if (!e_source_get_enabled (source)) {
+        g_set_error_literal (
+            &error, G_IO_ERROR, G_IO_ERROR_FAILED,
+            "Die ECal-Quelle ist deaktiviert");
+        goto finish;
+    }
+    builtin_source = ref_builtin_source_for_type (registry, source_type);
+    custom_file = e_source_local_get_custom_file (local_extension);
+    color = e_source_selectable_get_color (E_SOURCE_SELECTABLE (component_extension));
+    if (!is_valid_source_color (color)) {
+        g_set_error_literal (
+            &error, G_IO_ERROR, G_IO_ERROR_FAILED,
+            "EDS lieferte keine gültige Farbe für die lokale ECal-Quelle");
+        goto finish;
+    }
+    out_properties->source_uid = g_strdup (e_source_get_uid (source));
+    out_properties->display_name = g_strdup (e_source_get_display_name (source));
+    out_properties->color = g_strdup (color);
+    out_properties->custom_file_uri = custom_file ? g_file_get_uri (custom_file) : NULL;
+    out_properties->custom_file_writable = e_source_local_get_writable (local_extension);
+    out_properties->email_address = g_strdup (
+        e_source_local_get_email_address (local_extension));
+    out_properties->is_builtin = builtin_source && e_source_equal (source, builtin_source);
+    result = 1;
+
+finish:
+    if (result == 0) {
+        evolution_eds_ecal_clear_local_source_properties (out_properties);
+        if (out_error) {
+            *out_error = g_strdup (
+                error && error->message ? error->message :
+                "EDS konnte die lokalen ECal-Eigenschaften nicht lesen");
+        }
+    }
+    g_clear_error (&error);
+    g_clear_object (&builtin_source);
+    g_clear_object (&source);
+    g_clear_object (&registry);
+    return result;
+}
+
+int
+evolution_eds_ecal_update_local_source_properties (
+    const char *source_uid,
+    EvolutionEdsECalSourceType source_type,
+    const char *display_name,
+    const char *color,
+    const char *custom_file_uri,
+    int custom_file_writable,
+    const char *email_address,
+    char **out_warning,
+    char **out_error)
+{
+    ESourceRegistry *registry = NULL;
+    ESource *source = NULL;
+    ESourceExtension *component_extension = NULL;
+    ESourceLocal *local_extension = NULL;
+    ESource *builtin_source = NULL;
+    GDBusObject *dbus_object = NULL;
+    ESource *scratch_source = NULL;
+    ESourceExtension *scratch_component_extension;
+    ESourceLocal *scratch_local_extension;
+    ESource *committed_source = NULL;
+    ECalClient *client = NULL;
+    GFile *custom_file = NULL;
+    gchar *normalized_uri = NULL;
+    gchar *trimmed_display_name = NULL;
+    const gchar *uid;
+    GError *error = NULL;
+    int resolved;
+    int result = 0;
+
+    if (out_warning)
+        *out_warning = NULL;
+    if (out_error)
+        *out_error = NULL;
+    if (!source_uid || !*source_uid) {
+        g_set_error_literal (&error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
+            "Lokale ECal-Eigenschaften benötigen eine Quell-UID");
+        goto finish;
+    }
+    trimmed_display_name = g_strdup (display_name ? display_name : "");
+    if (!*g_strstrip (trimmed_display_name)) {
+        g_set_error_literal (&error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
+            "Lokale ECal-Eigenschaften benötigen einen Namen");
+        goto finish;
+    }
+    if (!is_valid_source_color (color)) {
+        g_set_error_literal (&error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
+            "Die Farbe der lokalen ECal-Quelle muss #RRGGBB sein");
+        goto finish;
+    }
+    if (custom_file_uri) {
+        gchar *scheme = g_uri_parse_scheme (custom_file_uri);
+        if (!*custom_file_uri || !scheme) {
+            g_free (scheme);
+            g_set_error_literal (&error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
+                "Die Datei-URI der lokalen ECal-Quelle ist ungültig");
+            goto finish;
+        }
+        g_free (scheme);
+        custom_file = g_file_new_for_uri (custom_file_uri);
+        normalized_uri = custom_file ? g_file_get_uri (custom_file) : NULL;
+        if (!normalized_uri || !*normalized_uri) {
+            g_set_error_literal (&error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
+                "Die Datei-URI der lokalen ECal-Quelle ist ungültig");
+            goto finish;
+        }
+    }
+    registry = e_source_registry_new_sync (NULL, &error);
+    if (!registry)
+        goto finish;
+    resolved = resolve_local_source_for_properties (
+        registry, source_uid, source_type, &source, &component_extension,
+        &local_extension, &error);
+    if (resolved == 2) {
+        result = 3;
+        goto finish;
+    }
+    if (resolved == 0)
+        goto finish;
+    if (!e_source_get_enabled (source)) {
+        g_set_error_literal (&error, G_IO_ERROR, G_IO_ERROR_FAILED,
+            "Die ECal-Quelle ist deaktiviert");
+        goto finish;
+    }
+    if (!e_source_get_writable (source)) {
+        g_set_error_literal (&error, G_IO_ERROR, G_IO_ERROR_PERMISSION_DENIED,
+            "Die ECal-Quelle ist nicht schreibbar");
+        goto finish;
+    }
+    builtin_source = ref_builtin_source_for_type (registry, source_type);
+    if (custom_file && builtin_source && e_source_equal (source, builtin_source)) {
+        g_set_error_literal (&error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
+            "Die eingebaute lokale ECal-Quelle verwendet keine eigene Datei");
+        goto finish;
+    }
+    dbus_object = e_source_ref_dbus_object (source);
+    scratch_source = dbus_object
+        ? e_source_new (dbus_object, NULL, &error)
+        : g_object_ref (source);
+    if (!scratch_source)
+        goto finish;
+    uid = e_source_get_uid (scratch_source);
+    if (!uid || g_strcmp0 (uid, source_uid) != 0) {
+        g_set_error_literal (&error, G_IO_ERROR, G_IO_ERROR_FAILED,
+            "EDS lieferte eine bearbeitbare Kopie für eine andere Quelle");
+        goto finish;
+    }
+    scratch_component_extension = e_source_get_extension (
+        scratch_source, source_extension_name_for_type (source_type));
+    scratch_local_extension = e_source_get_extension (
+        scratch_source, E_SOURCE_EXTENSION_LOCAL_BACKEND);
+    if (!scratch_component_extension || !scratch_local_extension) {
+        g_set_error_literal (&error, G_IO_ERROR, G_IO_ERROR_FAILED,
+            "EDS konnte die lokalen Quellenerweiterungen nicht bearbeiten");
+        goto finish;
+    }
+    e_source_set_display_name (scratch_source, display_name);
+    e_source_selectable_set_color (
+        E_SOURCE_SELECTABLE (scratch_component_extension), color);
+    e_source_local_set_custom_file (scratch_local_extension, custom_file);
+    e_source_local_set_writable (scratch_local_extension, custom_file_writable != 0);
+    e_source_local_set_email_address (
+        scratch_local_extension, email_address ? email_address : "");
+    if (!e_source_registry_commit_source_sync (registry, scratch_source, NULL, &error))
+        goto finish;
+    g_clear_object (&source);
+    if (!resolve_source_for_management (
+            registry, source_uid, source_type, &committed_source, &error)) {
+        if (out_warning)
+            *out_warning = g_strdup (error && error->message ? error->message :
+                "Die lokalen ECal-Eigenschaften wurden gespeichert, aber die Quelle ist nicht erreichbar");
+        g_clear_error (&error);
+        result = 2;
+        goto finish;
+    }
+    if (!e_source_get_enabled (committed_source)) {
+        if (out_warning)
+            *out_warning = g_strdup (
+                "Die lokalen ECal-Eigenschaften wurden gespeichert, aber die Quelle ist deaktiviert");
+        result = 2;
+        goto finish;
+    }
+    client = E_CAL_CLIENT (e_cal_client_connect_sync (
+        committed_source, (ECalClientSourceType) source_type, 15, NULL, &error));
+    if (!client) {
+        if (out_warning)
+            *out_warning = g_strdup (error && error->message ? error->message :
+                "Die lokalen ECal-Eigenschaften wurden gespeichert, aber die Quelle ist noch nicht erreichbar");
+        g_clear_error (&error);
+        result = 2;
+        goto finish;
+    }
+    result = 1;
+
+finish:
+    if (result == 0 && out_error) {
+        *out_error = g_strdup (error && error->message ? error->message :
+            "EDS konnte die lokalen ECal-Eigenschaften nicht speichern");
+    }
+    g_clear_error (&error);
+    g_free (trimmed_display_name);
+    g_free (normalized_uri);
+    g_clear_object (&custom_file);
+    g_clear_object (&client);
+    g_clear_object (&committed_source);
+    g_clear_object (&scratch_source);
+    g_clear_object (&dbus_object);
+    g_clear_object (&builtin_source);
+    g_clear_object (&source);
+    g_clear_object (&registry);
+    return result;
+}
+
 void
 evolution_eds_ecal_free_components (
     EvolutionEdsECalComponent *components,
@@ -447,6 +1549,22 @@ evolution_eds_ecal_free_components (
         g_free (components[ii].component);
     }
     g_free (components);
+}
+
+void
+evolution_eds_ecal_free_source_capabilities (
+    EvolutionEdsECalSourceCapability *sources,
+    size_t count)
+{
+    size_t ii;
+
+    if (!sources)
+        return;
+    for (ii = 0; ii < count; ii++) {
+        g_free (sources[ii].source_uid);
+        g_free (sources[ii].source_display_name);
+    }
+    g_free (sources);
 }
 
 void

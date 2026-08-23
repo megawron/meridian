@@ -485,7 +485,10 @@ impl EventDialog {
                     }
                 })
                 .collect();
-            let mut uids: Vec<String> = active_sources.into_iter().map(|source| source.uid).collect();
+            let mut uids: Vec<String> = active_sources
+                .into_iter()
+                .map(|source| source.uid)
+                .collect();
             let preserved_source_uid = edit_source_uid_for_load
                 .as_deref()
                 .or(preferred_source_uid.as_deref())

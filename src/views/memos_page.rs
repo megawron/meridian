@@ -21,10 +21,9 @@ use crate::services::calendar_store_service::{
     CalendarStoreService, MemoAttachment, MemoEditorDraft, MemoRecord,
 };
 use crate::services::ecal_service::{
-    CalendarDataOrigin, ECalChangeKind, ECalComponentType, ECalRecord, ECalService, ECalSyncEvent,
-    load_snapshot_prefer_eds, parse_change_record,
+    CalendarDataOrigin, ECalChangeKind, ECalComponentType, ECalRecord, ECalService,
+    ECalSourceCapability, ECalSyncEvent, load_snapshot_prefer_eds, parse_change_record,
 };
-use crate::services::eds_service;
 use crate::services::memo_filter_service::{MemoCategoryFilter, MemoFilter, MemoSearchMode};
 use crate::services::memo_surface_service::{
     MemoActionState, MemoIdentity, MemoPasteItem, MemoPreviewOrientation, MemoPreviewState,
@@ -48,6 +47,7 @@ mod imp {
         pub memo_source_filter: RefCell<Option<String>>,
         pub memo_available_sources: RefCell<HashSet<String>>,
         pub memo_unavailable_sources: RefCell<HashSet<String>>,
+        pub memo_writable_sources: RefCell<HashSet<String>>,
         pub memo_search_mode: Cell<MemoSearchMode>,
         pub memo_search_query: RefCell<String>,
         pub memo_selection: RefCell<MemoSelection>,
@@ -110,6 +110,51 @@ enum MemoSort {
     Updated,
     Title,
     Source,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MemoSourceProjection {
+    uid: String,
+    display_name: String,
+    connected: bool,
+    available: bool,
+    writable: bool,
+}
+
+fn project_memo_source_capabilities(
+    capabilities: Vec<ECalSourceCapability>,
+) -> Vec<MemoSourceProjection> {
+    let mut seen = HashSet::new();
+    let mut sources = capabilities
+        .into_iter()
+        .filter_map(|source| {
+            let uid = source.source_uid.trim().to_string();
+            (!uid.is_empty() && seen.insert(uid.clone())).then(|| MemoSourceProjection {
+                uid,
+                display_name: source.display_name,
+                connected: source.connected,
+                available: source.available && source.connected,
+                writable: source.available && source.connected && source.writable,
+            })
+        })
+        .collect::<Vec<_>>();
+    sources.sort_by_cached_key(|source| (source.display_name.to_lowercase(), source.uid.clone()));
+    sources
+}
+
+fn memo_source_projection_label(source: &MemoSourceProjection) -> String {
+    let name = (!source.display_name.trim().is_empty())
+        .then_some(source.display_name.as_str())
+        .unwrap_or(source.uid.as_str());
+    if !source.connected {
+        format!("Nicht erreichbar · {name}")
+    } else if !source.available {
+        format!("Nicht verfügbar · {name}")
+    } else if !source.writable {
+        format!("Schreibgeschützt · {name}")
+    } else {
+        name.to_string()
+    }
 }
 
 impl MemoSort {
@@ -561,7 +606,7 @@ impl MemosPage {
         let (source_sender, source_receiver) = async_channel::bounded(1);
         std::thread::spawn(move || {
             let discovery =
-                eds_service::discover_sources_blocking(eds_service::EdsSourceKind::Calendar);
+                ECalService::new().discover_source_capabilities(ECalComponentType::Memo);
             if let Err(error) = source_sender.send_blocking(discovery) {
                 tracing::debug!(%error, "Memo source discovery was dropped");
             }
@@ -570,27 +615,31 @@ impl MemosPage {
             let Ok(discovery) = source_receiver.recv().await else {
                 return;
             };
-            let mut sources = discovery.sources;
-            sources.retain(|source| source.enabled);
-            sources.sort_by_cached_key(|source| {
-                (source.display_name.to_lowercase(), source.uid.clone())
-            });
-            let sources_are_live = matches!(discovery.origin, eds_service::EdsSourceOrigin::Live);
+            let (sources, warning) = match discovery {
+                Ok(discovery) => (
+                    project_memo_source_capabilities(discovery.sources),
+                    discovery.warning,
+                ),
+                Err(error) => (Vec::new(), Some(error.to_string())),
+            };
+            if let Some(warning) = warning {
+                tracing::warn!(%warning, "Could not reach EDS memo lists");
+            }
 
             let mut names = vec!["Alle Notizlisten".to_string()];
             let mut uids = Vec::new();
             let mut available_sources = HashSet::new();
             let mut unavailable_sources = HashSet::new();
+            let mut writable_sources = HashSet::new();
             for source in sources {
-                names.push(if source.backend_name.trim().is_empty() {
-                    source.display_name
-                } else {
-                    format!("{} · {}", source.display_name, source.backend_name)
-                });
-                if sources_are_live {
+                names.push(memo_source_projection_label(&source));
+                if source.available {
                     available_sources.insert(source.uid.clone());
                 } else {
                     unavailable_sources.insert(source.uid.clone());
+                }
+                if source.writable {
+                    writable_sources.insert(source.uid.clone());
                 }
                 uids.push(source.uid);
             }
@@ -605,6 +654,7 @@ impl MemosPage {
                 names.push("Lokale Notizliste".to_string());
                 uids.push("local-calendar".to_string());
                 available_sources.insert("local-calendar".to_string());
+                writable_sources.insert("local-calendar".to_string());
             }
 
             let name_refs = names.iter().map(String::as_str).collect::<Vec<_>>();
@@ -615,6 +665,7 @@ impl MemosPage {
                 page.imp()
                     .memo_unavailable_sources
                     .replace(unavailable_sources);
+                page.imp().memo_writable_sources.replace(writable_sources);
                 refresh_memo_filter_view(
                     &page,
                     &memo_list_for_source_load_actions,
@@ -2565,10 +2616,11 @@ impl MemosPage {
         let edit_source_uid_for_load = edit_source_uid.clone();
         let preferred_source_uid_for_load = preferred_source_uid.clone();
         let page_weak_for_dialog_source_load = self.downgrade();
+        let dialog_weak_for_dialog_source_load = dialog.downgrade();
         let (dialog_source_sender, dialog_source_receiver) = async_channel::bounded(1);
         std::thread::spawn(move || {
             let discovery =
-                eds_service::discover_sources_blocking(eds_service::EdsSourceKind::Calendar);
+                ECalService::new().discover_source_capabilities(ECalComponentType::Memo);
             if let Err(error) = dialog_source_sender.send_blocking(discovery) {
                 tracing::debug!(%error, "Memo dialog source discovery was dropped");
             }
@@ -2577,37 +2629,41 @@ impl MemosPage {
             let Ok(discovery) = dialog_source_receiver.recv().await else {
                 return;
             };
-            if let Some(error) = discovery.error.as_deref() {
-                tracing::warn!(%error, "Could not reach EDS memo lists for memo dialog");
+            let Some(dialog) = dialog_weak_for_dialog_source_load.upgrade() else {
+                return;
+            };
+            if !dialog.is_visible() {
+                return;
             }
-            let active_sources: Vec<_> = discovery
-                .sources
-                .into_iter()
-                .filter(|source| source.enabled)
-                .collect();
-            let sources_are_live = matches!(discovery.origin, eds_service::EdsSourceOrigin::Live);
+            let (sources, warning, discovery_failed) = match discovery {
+                Ok(discovery) => (
+                    project_memo_source_capabilities(discovery.sources),
+                    discovery.warning,
+                    false,
+                ),
+                Err(error) => (Vec::new(), Some(error.to_string()), true),
+            };
+            if let Some(warning) = warning {
+                tracing::warn!(%warning, "Could not reach EDS memo lists for memo dialog");
+            }
             let mut available_sources = HashSet::new();
             let mut unavailable_sources = HashSet::new();
-            let mut names: Vec<String> = active_sources
-                .iter()
-                .map(|source| {
-                    if source.backend_name.is_empty() {
-                        source.display_name.clone()
-                    } else {
-                        format!("{} · {}", source.display_name, source.backend_name)
-                    }
-                })
-                .collect();
-            for source in &active_sources {
-                if sources_are_live {
+            let mut writable_sources = HashSet::new();
+            let mut names = Vec::new();
+            let mut uids = source_uids_for_load.borrow_mut();
+            uids.clear();
+            for source in sources {
+                names.push(memo_source_projection_label(&source));
+                if source.available {
                     available_sources.insert(source.uid.clone());
                 } else {
                     unavailable_sources.insert(source.uid.clone());
                 }
+                if source.writable {
+                    writable_sources.insert(source.uid.clone());
+                }
+                uids.push(source.uid);
             }
-            let mut uids = source_uids_for_load.borrow_mut();
-            uids.clear();
-            uids.extend(active_sources.into_iter().map(|source| source.uid));
             let preserved_source_uid = edit_source_uid_for_load
                 .as_deref()
                 .or(preferred_source_uid_for_load.as_deref())
@@ -2623,9 +2679,10 @@ impl MemosPage {
                 names.push("Lokale Notizliste".to_string());
                 uids.push("local-calendar".to_string());
                 available_sources.insert("local-calendar".to_string());
+                writable_sources.insert("local-calendar".to_string());
             }
             if names.is_empty() {
-                names.push(if discovery.error.is_some() {
+                names.push(if discovery_failed {
                     "Notizlisten sind nicht erreichbar".to_string()
                 } else {
                     "Keine aktive Notizliste verfügbar".to_string()
@@ -2638,6 +2695,7 @@ impl MemosPage {
                 page.imp()
                     .memo_unavailable_sources
                     .replace(unavailable_sources);
+                page.imp().memo_writable_sources.replace(writable_sources);
             }
             let selected_index = edit_source_uid_for_load
                 .as_deref()
@@ -3741,13 +3799,18 @@ fn memo_source_is_writable_for_page(page: &MemosPage, source_uid: &str) -> bool 
     {
         return false;
     }
-    // EDS/provider capability checks remain a native Linux handoff.  An
-    // actively discovered source is eligible for the operation plan; an
-    // unknown or unavailable cached source is never treated as writable.
+    // Remote mutating operations require the authoritative client read-only
+    // capability.  An unknown, unavailable, or read-only source never falls
+    // back to a guessed writable state.
     page.imp()
         .memo_available_sources
         .borrow()
         .contains(source_uid)
+        && page
+            .imp()
+            .memo_writable_sources
+            .borrow()
+            .contains(source_uid)
 }
 
 fn compare_memo_rows(
@@ -4180,6 +4243,103 @@ mod tests {
         let component = "BEGIN:VJOURNAL\r\nCATEGORIES:Work\\, urgent,Personal\r\nEND:VJOURNAL\r\n";
         assert_eq!(component_categories(component), "Work, urgent,Personal");
         assert_eq!(serialize_categories("Work, Personal"), "Work,Personal");
+    }
+
+    #[test]
+    fn memo_source_capability_projection_is_exact_sorted_and_fail_closed() {
+        let sources = project_memo_source_capabilities(vec![
+            ECalSourceCapability {
+                source_uid: "readonly".to_string(),
+                display_name: "Zulu".to_string(),
+                connected: true,
+                available: true,
+                writable: false,
+                source_writable: true,
+                refresh_supported: false,
+                removable: false,
+                remote_deletable: false,
+                in_collection: false,
+                task_assignment_supported: false,
+                task_assignment_conversion_supported: false,
+            },
+            ECalSourceCapability {
+                source_uid: "offline".to_string(),
+                display_name: "Alpha".to_string(),
+                connected: false,
+                available: true,
+                writable: true,
+                source_writable: true,
+                refresh_supported: true,
+                removable: false,
+                remote_deletable: false,
+                in_collection: false,
+                task_assignment_supported: false,
+                task_assignment_conversion_supported: false,
+            },
+            ECalSourceCapability {
+                source_uid: "writable".to_string(),
+                display_name: "Beta".to_string(),
+                connected: true,
+                available: true,
+                writable: true,
+                source_writable: true,
+                refresh_supported: true,
+                removable: false,
+                remote_deletable: false,
+                in_collection: false,
+                task_assignment_supported: false,
+                task_assignment_conversion_supported: false,
+            },
+            ECalSourceCapability {
+                source_uid: "writable".to_string(),
+                display_name: "Duplicate must not win".to_string(),
+                connected: true,
+                available: true,
+                writable: false,
+                source_writable: true,
+                refresh_supported: false,
+                removable: false,
+                remote_deletable: false,
+                in_collection: false,
+                task_assignment_supported: false,
+                task_assignment_conversion_supported: false,
+            },
+            ECalSourceCapability {
+                source_uid: "  ".to_string(),
+                display_name: "Invalid".to_string(),
+                connected: true,
+                available: true,
+                writable: true,
+                source_writable: true,
+                refresh_supported: true,
+                removable: false,
+                remote_deletable: false,
+                in_collection: false,
+                task_assignment_supported: false,
+                task_assignment_conversion_supported: false,
+            },
+        ]);
+
+        assert_eq!(
+            sources
+                .iter()
+                .map(|source| source.uid.as_str())
+                .collect::<Vec<_>>(),
+            vec!["offline", "writable", "readonly"]
+        );
+        assert!(!sources[0].available);
+        assert!(!sources[0].writable);
+        assert_eq!(
+            memo_source_projection_label(&sources[0]),
+            "Nicht erreichbar · Alpha"
+        );
+        assert!(sources[1].available);
+        assert!(sources[1].writable);
+        assert!(!sources[2].writable);
+        assert_eq!(
+            memo_source_projection_label(&sources[2]),
+            "Schreibgeschützt · Zulu"
+        );
     }
 
     #[test]

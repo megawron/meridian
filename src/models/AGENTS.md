@@ -31,6 +31,9 @@ thread-safe-to-transfer domain values.
   folders or backends must never alias.
 - Keep display formatting separate from authoritative service data when a
   view-specific presentation is needed.
+- Keep complete follow-up metadata alongside its compatibility state field and
+  update both atomically; list rendering, the editor, reload, and undo must not
+  observe different follow-up states for the same message.
 
 ## Verification
 

@@ -10,25 +10,27 @@
 use chrono::{Duration, Local, NaiveDate, NaiveDateTime, Utc};
 use gtk::{gio, glib};
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU8, Ordering};
 
 use crate::dialogs::event_dialog::AlarmEditor;
 use crate::models::task_item::TaskItemObject;
 use crate::services::calendar_category_service::{
     CalendarCategory, CalendarCategoryStore, category_names_from_ical_component,
+    category_names_from_ical_value,
 };
 use crate::services::calendar_store_service::{
     CalendarStoreService, TaskRecord, export_ical_component, serialize_ical_attachment_value,
     update_ical_property,
 };
 use crate::services::ecal_service::{
-    CalendarDataOrigin, ECalChangeKind, ECalComponentType, ECalMutationError, ECalMutationResult,
-    ECalRecord, ECalService, ECalSyncEvent, load_snapshot_prefer_eds, parse_change_record,
+    CalendarDataOrigin, CalendarLoadResult, ECalChangeKind, ECalComponentType,
+    ECalLocalSourceCreateStatus, ECalLocalSourceProperties, ECalLocalSourcePropertiesUpdate,
+    ECalRecord, ECalRefreshOutcome, ECalService, ECalServiceError, ECalSourceCapability,
+    ECalSourceCopyStatus, ECalSyncEvent, load_snapshot_prefer_eds, parse_change_record,
 };
-use crate::services::eds_service;
 use crate::services::ical_time_service::{
     property_local_date, property_local_dates, property_local_datetime, property_local_display,
     property_local_timestamp,
@@ -62,6 +64,63 @@ mod imp {
         pub task_list: RefCell<Option<gtk::ListBox>>,
         pub task_store: RefCell<Option<gio::ListStore>>,
         pub task_empty_state: RefCell<Option<gtk::Label>>,
+        pub(super) task_selection: RefCell<Vec<TaskSelectionIdentity>>,
+        pub(super) task_selection_restoring: Cell<bool>,
+        pub(super) task_selection_status: RefCell<Option<gtk::Label>>,
+        pub(super) task_forward_button: RefCell<Option<gtk::Button>>,
+        pub(super) task_assign_button: RefCell<Option<gtk::Button>>,
+        pub(super) task_open_url_button: RefCell<Option<gtk::Button>>,
+        pub(super) task_print_button: RefCell<Option<gtk::Button>>,
+        pub(super) task_copy_button: RefCell<Option<gtk::Button>>,
+        pub(super) task_cut_button: RefCell<Option<gtk::Button>>,
+        pub(super) task_paste_button: RefCell<Option<gtk::Button>>,
+        pub(super) task_select_all_button: RefCell<Option<gtk::Button>>,
+        pub(super) task_bulk_edit_button: RefCell<Option<gtk::Button>>,
+        pub(super) task_preview_toggle: RefCell<Option<gtk::ToggleButton>>,
+        pub(super) task_preview_orientation: RefCell<Option<gtk::DropDown>>,
+        pub(super) task_preview_paned: RefCell<Option<gtk::Paned>>,
+        pub(super) task_preview_box: RefCell<Option<gtk::Box>>,
+        pub(super) task_preview_content: RefCell<Option<gtk::TextView>>,
+        pub(super) task_preview_find_bar: RefCell<Option<gtk::Box>>,
+        pub(super) task_preview_find_entry: RefCell<Option<gtk::SearchEntry>>,
+        pub(super) task_preview_find_status: RefCell<Option<gtk::Label>>,
+        pub(super) task_preview_identity: RefCell<Option<TaskSelectionIdentity>>,
+        pub(super) task_preview_text: RefCell<String>,
+        pub(super) task_preview_find: RefCell<TaskPreviewFindState>,
+        pub(super) task_preview_position_restoring: Cell<bool>,
+        pub(super) task_export_button: RefCell<Option<gtk::Button>>,
+        pub(super) task_complete_button: RefCell<Option<gtk::Button>>,
+        pub(super) task_incomplete_button: RefCell<Option<gtk::Button>>,
+        pub(super) task_delete_selection_button: RefCell<Option<gtk::Button>>,
+        pub(super) task_purge_button: RefCell<Option<gtk::Button>>,
+        pub(super) task_refresh_button: RefCell<Option<gtk::Button>>,
+        pub(super) task_refresh_running: Cell<bool>,
+        pub(super) task_refresh_generation: Cell<u64>,
+        pub(super) task_refresh_unsupported_sources: RefCell<HashSet<String>>,
+        pub(super) task_source_capabilities: RefCell<HashMap<String, TaskSourceCapability>>,
+        pub(super) task_source_metadata: RefCell<HashMap<String, ECalSourceCapability>>,
+        pub(super) task_source_model: RefCell<Option<gtk::StringList>>,
+        pub(super) task_source_selector: RefCell<Option<gtk::DropDown>>,
+        pub(super) task_source_list: RefCell<Option<gtk::ListBox>>,
+        pub(super) task_source_discovery_generation: Cell<u64>,
+        pub(super) task_source_management_running: Cell<bool>,
+        pub(super) task_source_management_generation: Cell<u64>,
+        pub(super) task_source_new_button: RefCell<Option<gtk::Button>>,
+        pub(super) task_source_copy_button: RefCell<Option<gtk::Button>>,
+        pub(super) task_source_rename_button: RefCell<Option<gtk::Button>>,
+        pub(super) task_source_properties_button: RefCell<Option<gtk::Button>>,
+        pub(super) task_source_delete_button: RefCell<Option<gtk::Button>>,
+        pub(super) task_assignment_running: Cell<bool>,
+        pub(super) task_assignment_generation: Cell<u64>,
+        pub(super) task_lifecycle_batch_running: Cell<bool>,
+        pub(super) task_lifecycle_batch_generation: Cell<u64>,
+        pub(super) task_delete_batch_running: Cell<bool>,
+        pub(super) task_delete_batch_generation: Cell<u64>,
+        pub(super) task_paste_batch_running: Cell<bool>,
+        pub(super) task_paste_batch_generation: Cell<u64>,
+        pub(super) task_bulk_edit_running: Cell<bool>,
+        pub(super) task_bulk_edit_generation: Cell<u64>,
+        pub(super) task_source_uids: RefCell<Vec<String>>,
         pub new_task_button: RefCell<Option<gtk::Button>>,
         pub search_entry: RefCell<Option<gtk::SearchEntry>>,
     }
@@ -315,6 +374,2138 @@ struct TaskFilterContext {
     now: NaiveDateTime,
     now_timestamp: i64,
     today: NaiveDate,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct TaskSelectionIdentity {
+    source_uid: String,
+    task_uid: String,
+}
+
+impl TaskSelectionIdentity {
+    fn from_task(task: &TaskItemObject) -> Self {
+        Self {
+            source_uid: task.source_uid(),
+            task_uid: task.id(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TaskSelectionActionState {
+    export_enabled: bool,
+    single_task_actions_enabled: bool,
+    forward_enabled: bool,
+    open_url_enabled: bool,
+    print_enabled: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TaskPreviewOrientation {
+    Classic,
+    Vertical,
+}
+
+impl TaskPreviewOrientation {
+    fn from_setting(value: &str) -> Self {
+        match value {
+            "vertical" => Self::Vertical,
+            _ => Self::Classic,
+        }
+    }
+
+    fn setting_value(self) -> &'static str {
+        match self {
+            Self::Classic => "classic",
+            Self::Vertical => "vertical",
+        }
+    }
+
+    fn paned_orientation(self) -> gtk::Orientation {
+        match self {
+            // Evolution's classic task view places preview below the list.
+            Self::Classic => gtk::Orientation::Vertical,
+            // Its vertical task view places preview beside the list.
+            Self::Vertical => gtk::Orientation::Horizontal,
+        }
+    }
+
+    fn index(self) -> u32 {
+        match self {
+            Self::Classic => 0,
+            Self::Vertical => 1,
+        }
+    }
+
+    fn from_index(index: u32) -> Self {
+        match index {
+            1 => Self::Vertical,
+            _ => Self::Classic,
+        }
+    }
+
+    fn default_position(self) -> i32 {
+        match self {
+            Self::Classic => 400,
+            Self::Vertical => 200,
+        }
+    }
+}
+
+fn apply_task_preview_paned_layout(page: &TasksPage, orientation: TaskPreviewOrientation) {
+    let Some(paned) = page.imp().task_preview_paned.borrow().as_ref().cloned() else {
+        return;
+    };
+    let position = AppSettings::try_new()
+        .map(|settings| settings.task_preview_position(orientation.setting_value()))
+        .unwrap_or_else(|| orientation.default_position());
+    page.imp().task_preview_position_restoring.set(true);
+    paned.set_orientation(orientation.paned_orientation());
+    paned.set_position(position);
+    page.imp().task_preview_position_restoring.set(false);
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct TaskPreviewFindState {
+    query: String,
+    matches: Vec<(usize, usize)>,
+    current: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TaskPreviewDocument {
+    identity: TaskSelectionIdentity,
+    text: String,
+}
+
+fn task_selection_action_state(
+    selection_count: usize,
+    has_exact_forward_payload: bool,
+    has_valid_url: bool,
+    has_print_document: bool,
+) -> TaskSelectionActionState {
+    TaskSelectionActionState {
+        export_enabled: selection_count > 0,
+        single_task_actions_enabled: selection_count == 1,
+        forward_enabled: selection_count == 1 && has_exact_forward_payload,
+        open_url_enabled: selection_count == 1 && has_valid_url,
+        print_enabled: selection_count == 1 && has_print_document,
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TaskExportCandidate {
+    identity: TaskSelectionIdentity,
+    component: String,
+}
+
+fn task_export_candidates(task_store: &gio::ListStore) -> Vec<TaskExportCandidate> {
+    (0..task_store.n_items())
+        .filter_map(|index| task_store.item(index).and_downcast::<TaskItemObject>())
+        .map(|task| TaskExportCandidate {
+            identity: TaskSelectionIdentity::from_task(&task),
+            component: task.component(),
+        })
+        .collect()
+}
+
+fn selected_task_candidate<'a>(
+    selection: &[TaskSelectionIdentity],
+    candidates: &'a [TaskExportCandidate],
+) -> Result<&'a TaskExportCandidate, String> {
+    let [identity] = selection else {
+        return Err("Diese Aktion ist nur für genau eine Aufgabe verfügbar".to_string());
+    };
+    let matches = candidates
+        .iter()
+        .filter(|candidate| candidate.identity == *identity)
+        .collect::<Vec<_>>();
+    let [candidate] = matches.as_slice() else {
+        return Err("Die ausgewählte Aufgabe ist nicht mehr verfügbar".to_string());
+    };
+    Ok(candidate)
+}
+
+fn validated_task_vtodo_component(
+    candidate: &TaskExportCandidate,
+    expected_identity: &TaskSelectionIdentity,
+) -> Result<String, String> {
+    let lines = candidate
+        .component
+        .lines()
+        .map(str::trim_end)
+        .collect::<Vec<_>>();
+    let uids = ical_properties(&candidate.component, "UID");
+    if lines
+        .first()
+        .is_none_or(|line| !line.eq_ignore_ascii_case("BEGIN:VTODO"))
+        || lines
+            .last()
+            .is_none_or(|line| !line.eq_ignore_ascii_case("END:VTODO"))
+        || lines
+            .iter()
+            .filter(|line| line.eq_ignore_ascii_case("BEGIN:VTODO"))
+            .count()
+            != 1
+        || lines
+            .iter()
+            .filter(|line| line.eq_ignore_ascii_case("END:VTODO"))
+            .count()
+            != 1
+        || uids.len() != 1
+        || uids.first().map(String::as_str) != Some(expected_identity.task_uid.as_str())
+    {
+        return Err("Eine ausgewählte Aufgabe enthält keine gültige VTODO-Komponente".to_string());
+    }
+    Ok(lines.join("\r\n"))
+}
+
+fn task_preview_document(
+    selection: &[TaskSelectionIdentity],
+    candidates: &[TaskExportCandidate],
+) -> Result<TaskPreviewDocument, String> {
+    let candidate = selected_task_candidate(selection, candidates)?;
+    let component = validated_task_vtodo_component(candidate, &candidate.identity)?;
+    let mut fields = Vec::<(String, String)>::new();
+    let first = |name| ical_property(&component, name).filter(|value| !value.trim().is_empty());
+    let all = |name| {
+        ical_properties(&component, name)
+            .into_iter()
+            .filter(|value| !value.trim().is_empty())
+            .collect::<Vec<_>>()
+    };
+    let push = |fields: &mut Vec<(String, String)>, label: &str, value: Option<String>| {
+        if let Some(value) = value {
+            fields.push((label.to_string(), value));
+        }
+    };
+
+    push(
+        &mut fields,
+        "Zusammenfassung",
+        Some(first("SUMMARY").unwrap_or_else(|| "Unbenannt".to_string())),
+    );
+    push(&mut fields, "Ort", first("LOCATION"));
+    push(&mut fields, "GEO", first("GEO"));
+    push(&mut fields, "Kommentar", first("COMMENT"));
+    push(&mut fields, "Beginn", first("DTSTART"));
+    push(&mut fields, "Wiederholung", first("RRULE"));
+    push(&mut fields, "Fällig", first("DUE"));
+    push(&mut fields, "Geschätzte Dauer", first("ESTIMATED-DURATION"));
+    push(&mut fields, "Status", first("STATUS"));
+    push(&mut fields, "Kategorien", first("CATEGORIES"));
+    push(&mut fields, "Priorität", first("PRIORITY"));
+    push(&mut fields, "Sichtbarkeit", first("CLASS"));
+    push(&mut fields, "Organisator", first("ORGANIZER"));
+    let attendees = all("ATTENDEE");
+    if !attendees.is_empty() {
+        fields.push(("Teilnehmende".to_string(), attendees.join("\n")));
+    }
+    push(&mut fields, "URL", first("URL"));
+    push(&mut fields, "Beschreibung", first("DESCRIPTION"));
+    push(&mut fields, "Alternativbeschreibung", first("X-ALT-DESC"));
+    let attachments = task_top_level_attachment_lines(&component)
+        .into_iter()
+        .map(|attachment| match attachment.kind {
+            TaskAttachmentValueKind::Uri => format!("URI (nicht geöffnet): {}", attachment.value),
+            TaskAttachmentValueKind::Binary => "Binäranhang".to_string(),
+            TaskAttachmentValueKind::Other => format!("Anhang: {}", attachment.value),
+        })
+        .collect::<Vec<_>>();
+    if !attachments.is_empty() {
+        fields.push(("Anhänge".to_string(), attachments.join("\n")));
+    }
+
+    if fields.is_empty() {
+        return Err("Die ausgewählte Aufgabe enthält keine darstellbaren Felder".to_string());
+    }
+    let text = fields
+        .into_iter()
+        .map(|(label, value)| format!("{label}\n{value}"))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    Ok(TaskPreviewDocument {
+        identity: candidate.identity.clone(),
+        text,
+    })
+}
+
+fn task_preview_match_ranges(text: &str, query: &str) -> Vec<(usize, usize)> {
+    let query = query.trim();
+    if query.is_empty() {
+        return Vec::new();
+    }
+    // Lowercasing can expand one Unicode scalar (for example `İ` becomes
+    // `i` plus a combining dot). Keep an explicit map back to the original
+    // GtkTextBuffer character offsets instead of applying folded offsets to
+    // the original buffer.
+    let mut folded_text = String::new();
+    let mut folded_to_original = Vec::new();
+    for (original_offset, character) in text.chars().enumerate() {
+        for folded_character in character.to_lowercase() {
+            folded_text.push(folded_character);
+            folded_to_original.push((original_offset, original_offset + 1));
+        }
+    }
+    let folded_query = query.to_lowercase();
+    if folded_query.is_empty() {
+        return Vec::new();
+    }
+    folded_text
+        .match_indices(&folded_query)
+        .filter_map(|(start, matched)| {
+            let folded_start = folded_text[..start].chars().count();
+            let folded_end = folded_start + matched.chars().count();
+            let original_start = folded_to_original.get(folded_start)?.0;
+            let original_end = folded_to_original.get(folded_end.checked_sub(1)?)?.1;
+            Some((original_start, original_end))
+        })
+        .collect()
+}
+
+fn task_preview_find_state(
+    text: &str,
+    query: &str,
+    current: Option<usize>,
+) -> TaskPreviewFindState {
+    let matches = task_preview_match_ranges(text, query);
+    let current = (!matches.is_empty()).then(|| current.unwrap_or(0) % matches.len());
+    TaskPreviewFindState {
+        query: query.trim().to_string(),
+        matches,
+        current,
+    }
+}
+
+fn task_preview_find_step(state: &TaskPreviewFindState, forward: bool) -> TaskPreviewFindState {
+    let mut result = state.clone();
+    let Some(current) = state.current else {
+        return result;
+    };
+    result.current = Some(if forward {
+        (current + 1) % state.matches.len()
+    } else {
+        (current + state.matches.len() - 1) % state.matches.len()
+    });
+    result
+}
+
+fn strip_task_valarms(component: &str) -> Result<String, String> {
+    let mut result = Vec::new();
+    let mut alarm_depth = 0usize;
+    for line in component.lines() {
+        if line.eq_ignore_ascii_case("BEGIN:VALARM") {
+            alarm_depth += 1;
+            continue;
+        }
+        if line.eq_ignore_ascii_case("END:VALARM") {
+            if alarm_depth == 0 {
+                return Err("Die ausgewählte Aufgabe enthält einen ungültigen Alarm".to_string());
+            }
+            alarm_depth -= 1;
+            continue;
+        }
+        if alarm_depth == 0 {
+            result.push(line);
+        }
+    }
+    if alarm_depth != 0 {
+        return Err("Die ausgewählte Aufgabe enthält einen unvollständigen Alarm".to_string());
+    }
+    Ok(result.join("\r\n"))
+}
+
+fn build_task_forward_payload(
+    selection: &[TaskSelectionIdentity],
+    candidates: &[TaskExportCandidate],
+) -> Result<String, String> {
+    let candidate = selected_task_candidate(selection, candidates)?;
+    let identity = selection
+        .first()
+        .expect("selected_task_candidate validated one identity");
+    let component = strip_task_valarms(&validated_task_vtodo_component(candidate, identity)?)?;
+    Ok(format!(
+        "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Evolution GTK4//EN\r\nMETHOD:PUBLISH\r\n{component}\r\nEND:VCALENDAR\r\n"
+    ))
+}
+
+fn validate_task_open_url(value: &str) -> Result<String, String> {
+    let value = value.trim();
+    let Some((scheme, _)) = value.split_once(':') else {
+        return Err("Die Aufgaben-URL benötigt http oder https".to_string());
+    };
+    if !matches!(scheme.to_ascii_lowercase().as_str(), "http" | "https") {
+        return Err("Nur http- und https-Aufgaben-URLs werden unterstützt".to_string());
+    }
+    // Reuse the hardened URI authority/port policy already shared by the memo
+    // surface, while narrowing this task action to upstream's web-page intent.
+    crate::services::memo_surface_service::validate_open_url(value)
+        .map_err(|_| "Die Aufgaben-URL ist ungültig".to_string())
+}
+
+fn selected_task_open_url(
+    selection: &[TaskSelectionIdentity],
+    candidates: &[TaskExportCandidate],
+) -> Result<String, String> {
+    let candidate = selected_task_candidate(selection, candidates)?;
+    let identity = selection
+        .first()
+        .expect("selected_task_candidate validated one identity");
+    let component = validated_task_vtodo_component(candidate, identity)?;
+    let url = ical_property(&component, "URL")
+        .ok_or_else(|| "Die ausgewählte Aufgabe hat keine URL".to_string())?;
+    validate_task_open_url(&url)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TaskPrintDocument {
+    html: String,
+    plain_text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TaskListPrintDocument {
+    html: String,
+    plain_text: String,
+    row_count: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TaskListPrintAction {
+    Print,
+    Preview,
+}
+
+impl TaskListPrintAction {
+    fn preparing_label(self) -> &'static str {
+        match self {
+            Self::Print => "Druckliste wird vorbereitet …",
+            Self::Preview => "Druckvorschau wird vorbereitet …",
+        }
+    }
+
+    fn preparation_label(self) -> &'static str {
+        match self {
+            Self::Print => "Druckdokument vorbereitet",
+            Self::Preview => "Druckvorschau vorbereitet",
+        }
+    }
+}
+
+fn task_print_field(label: &str, value: &str) -> (String, String) {
+    (
+        format!(
+            "<dt>{}</dt><dd>{}</dd>",
+            glib::markup_escape_text(label),
+            glib::markup_escape_text(value)
+        ),
+        format!("{label}: {value}"),
+    )
+}
+
+fn build_task_print_document(
+    selection: &[TaskSelectionIdentity],
+    candidates: &[TaskExportCandidate],
+) -> Result<TaskPrintDocument, String> {
+    let candidate = selected_task_candidate(selection, candidates)?;
+    let identity = selection
+        .first()
+        .expect("selected_task_candidate validated one identity");
+    let component = validated_task_vtodo_component(candidate, identity)?;
+    let title = ical_property(&component, "SUMMARY").unwrap_or_default();
+    let status = task_status_label(&component);
+    let due = property_local_display(&component, "DUE", false).unwrap_or_default();
+    let priority = ical_property(&component, "PRIORITY").unwrap_or_default();
+    let categories = ical_property(&component, "CATEGORIES").unwrap_or_default();
+    let description = ical_property(&component, "DESCRIPTION").unwrap_or_default();
+
+    let mut html_fields = Vec::new();
+    let mut text_fields = Vec::new();
+    for (label, value) in [
+        ("Status", status.to_string()),
+        ("Fällig", due),
+        ("Priorität", priority),
+        ("Kategorien", categories),
+    ] {
+        if !value.trim().is_empty() {
+            let (html, text) = task_print_field(label, &value);
+            html_fields.push(html);
+            text_fields.push(text);
+        }
+    }
+    if !description.trim().is_empty() {
+        html_fields.push(format!(
+            "<h2>Beschreibung</h2><pre>{}</pre>",
+            glib::markup_escape_text(&description)
+        ));
+        text_fields.push(format!("Beschreibung:\n{description}"));
+    }
+
+    Ok(TaskPrintDocument {
+        html: format!(
+            "<!doctype html><html><head><meta charset=\"utf-8\"><title>{}</title></head><body><h1>{}</h1><dl>{}</dl></body></html>",
+            glib::markup_escape_text(&title),
+            glib::markup_escape_text(&title),
+            html_fields.join("")
+        ),
+        plain_text: std::iter::once(title)
+            .chain(text_fields)
+            .collect::<Vec<_>>()
+            .join("\n\n"),
+    })
+}
+
+fn build_task_list_print_document(
+    visible: &[TaskSelectionIdentity],
+    candidates: &[TaskExportCandidate],
+) -> Result<TaskListPrintDocument, String> {
+    if visible.is_empty() {
+        return Err("Es sind keine sichtbaren Aufgaben zum Drucken vorhanden".to_string());
+    }
+    let mut seen = HashSet::new();
+    let mut html_rows = Vec::with_capacity(visible.len());
+    let mut text_rows = Vec::with_capacity(visible.len());
+    for identity in visible {
+        if !seen.insert(identity.clone()) {
+            return Err("Die sichtbare Aufgabenliste enthält eine doppelte Identität".to_string());
+        }
+        let matches = candidates
+            .iter()
+            .filter(|candidate| candidate.identity == *identity)
+            .collect::<Vec<_>>();
+        let [candidate] = matches.as_slice() else {
+            return Err("Eine sichtbare Aufgabe ist nicht mehr eindeutig verfügbar".to_string());
+        };
+        let component = validated_task_vtodo_component(candidate, identity)?;
+        let completion = if task_component_is_completed_for_purge(&component) {
+            "✓"
+        } else {
+            ""
+        };
+        let status = task_status_label(&component);
+        let summary =
+            ical_property(&component, "SUMMARY").unwrap_or_else(|| "Unbenannt".to_string());
+        let due = property_local_display(&component, "DUE", false).unwrap_or_default();
+        let priority = ical_property(&component, "PRIORITY").unwrap_or_default();
+        let categories = category_names_from_ical_component(&component).join(", ");
+        let cells = [
+            completion.to_string(),
+            status.to_string(),
+            summary.clone(),
+            due.clone(),
+            priority.clone(),
+            identity.source_uid.clone(),
+            categories.clone(),
+        ];
+        html_rows.push(format!(
+            "<tr>{}</tr>",
+            cells
+                .iter()
+                .map(|value| format!("<td>{}</td>", glib::markup_escape_text(value)))
+                .collect::<Vec<_>>()
+                .join("")
+        ));
+        text_rows.push(format!(
+            "{} | {} | {} | {} | {} | {} | {}",
+            completion, status, summary, due, priority, identity.source_uid, categories
+        ));
+    }
+    let headings = [
+        "Erledigt",
+        "Status",
+        "Zusammenfassung",
+        "Fällig",
+        "Priorität",
+        "Quelle",
+        "Kategorien",
+    ];
+    Ok(TaskListPrintDocument {
+        html: format!(
+            "<!doctype html><html><head><meta charset=\"utf-8\"><title>Print Tasks</title></head><body><h1>Aufgaben</h1><table><thead><tr>{}</tr></thead><tbody>{}</tbody></table></body></html>",
+            headings
+                .iter()
+                .map(|heading| format!("<th>{}</th>", glib::markup_escape_text(heading)))
+                .collect::<Vec<_>>()
+                .join(""),
+            html_rows.join("")
+        ),
+        plain_text: std::iter::once(headings.join(" | "))
+            .chain(text_rows)
+            .collect::<Vec<_>>()
+            .join("\n"),
+        row_count: visible.len(),
+    })
+}
+
+fn prepare_task_list_print(
+    page: &TasksPage,
+    button: &gtk::Button,
+    task_list: &gtk::ListBox,
+    task_store: &gio::ListStore,
+    action: TaskListPrintAction,
+) {
+    show_toast_for_widget(button, action.preparing_label());
+    // Snapshot only the rows currently displayed by the list.  This is
+    // deliberately independent of selection and does not consult a backend.
+    let visible = match task_visible_identities(task_list) {
+        Ok(visible) => visible,
+        Err(error) => {
+            show_toast_for_widget(
+                button,
+                &format!("Druckliste konnte nicht vorbereitet werden: {error}"),
+            );
+            return;
+        }
+    };
+    let document = build_task_list_print_document(&visible, &task_export_candidates(task_store));
+    match document {
+        Ok(document) => page.show_toast(&format!(
+            "{} ({} Aufgaben, {} Zeichen); GTK-Druckdialog/Portal ist Linux-Handoff",
+            action.preparation_label(),
+            document.row_count,
+            document.plain_text.chars().count()
+        )),
+        Err(error) => show_toast_for_widget(
+            button,
+            &format!("Druckliste konnte nicht vorbereitet werden: {error}"),
+        ),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TaskLifecycleBatchOperation {
+    Complete,
+    Incomplete,
+}
+
+impl TaskLifecycleBatchOperation {
+    fn completed(self) -> bool {
+        matches!(self, Self::Complete)
+    }
+
+    fn progress_label(self) -> &'static str {
+        match self {
+            Self::Complete => "Aufgaben werden als erledigt markiert …",
+            Self::Incomplete => "Aufgaben werden als offen markiert …",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TaskLifecycleMutation {
+    identity: TaskSelectionIdentity,
+    component: String,
+    completed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TaskLifecycleBatchPlan {
+    operation: TaskLifecycleBatchOperation,
+    mutations: Vec<TaskLifecycleMutation>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+struct TaskLifecycleActionState {
+    complete_enabled: bool,
+    incomplete_enabled: bool,
+}
+
+fn task_has_top_level_property(component: &str, property_name: &str) -> bool {
+    let mut in_vtodo = false;
+    let mut nested_depth = 0usize;
+    for line in unfold_ical_lines(component) {
+        if !in_vtodo {
+            in_vtodo = line.eq_ignore_ascii_case("BEGIN:VTODO");
+            continue;
+        }
+        if nested_depth == 0 && line.eq_ignore_ascii_case("END:VTODO") {
+            break;
+        }
+        if nested_depth == 0
+            && line.split_once(':').is_some_and(|(property, _)| {
+                property
+                    .split(';')
+                    .next()
+                    .is_some_and(|name| name.eq_ignore_ascii_case(property_name))
+            })
+        {
+            return true;
+        }
+        if line
+            .get(..6)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("BEGIN:"))
+        {
+            nested_depth += 1;
+        } else if line
+            .get(..4)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("END:"))
+        {
+            nested_depth = nested_depth.saturating_sub(1);
+        }
+    }
+    false
+}
+
+fn task_lifecycle_component_is_complete(component: &str) -> bool {
+    task_has_top_level_property(component, "COMPLETED")
+}
+
+fn task_component_is_completed_for_purge(component: &str) -> bool {
+    task_lifecycle_component_is_complete(component)
+        || task_status_value(component) == "COMPLETED"
+        || parse_task_percent(component) == 100
+}
+
+fn resolve_task_lifecycle_selection(
+    selection: &[TaskSelectionIdentity],
+    candidates: &[TaskExportCandidate],
+    capabilities: &HashMap<String, TaskSourceCapability>,
+    local_writable: bool,
+) -> Result<Vec<TaskLifecycleMutation>, String> {
+    if selection.is_empty() {
+        return Err("Keine Aufgaben ausgewählt".to_string());
+    }
+    let mut resolved = Vec::with_capacity(selection.len());
+    let mut seen = HashSet::with_capacity(selection.len());
+    for identity in selection {
+        if !seen.insert(identity.clone()) {
+            return Err("Eine ausgewählte Aufgabe wurde mehrfach aufgelöst".to_string());
+        }
+        let matches = candidates
+            .iter()
+            .filter(|candidate| candidate.identity == *identity)
+            .collect::<Vec<_>>();
+        let [candidate] = matches.as_slice() else {
+            return Err("Die ausgewählte Aufgabe ist nicht mehr eindeutig verfügbar".to_string());
+        };
+        let component = validated_task_vtodo_component(candidate, identity)?;
+        if task_source_capability(&identity.source_uid, capabilities, local_writable)
+            != TaskSourceCapability::Writable
+        {
+            return Err(
+                "Mindestens eine ausgewählte Aufgabenliste ist nicht schreibfähig oder nicht verfügbar"
+                    .to_string(),
+            );
+        }
+        resolved.push(TaskLifecycleMutation {
+            identity: identity.clone(),
+            completed: task_lifecycle_component_is_complete(&component),
+            component,
+        });
+    }
+    Ok(resolved)
+}
+
+fn task_lifecycle_action_state(
+    selection: &[TaskSelectionIdentity],
+    candidates: &[TaskExportCandidate],
+    capabilities: &HashMap<String, TaskSourceCapability>,
+    local_writable: bool,
+    batch_running: bool,
+) -> TaskLifecycleActionState {
+    if batch_running {
+        return TaskLifecycleActionState::default();
+    }
+    let Ok(resolved) =
+        resolve_task_lifecycle_selection(selection, candidates, capabilities, local_writable)
+    else {
+        return TaskLifecycleActionState::default();
+    };
+    TaskLifecycleActionState {
+        complete_enabled: resolved.iter().any(|mutation| !mutation.completed),
+        incomplete_enabled: resolved.iter().any(|mutation| mutation.completed),
+    }
+}
+
+fn transform_task_lifecycle_component(
+    component: &str,
+    operation: TaskLifecycleBatchOperation,
+    completed_timestamp: &str,
+) -> Result<String, String> {
+    if matches!(operation, TaskLifecycleBatchOperation::Complete)
+        && NaiveDateTime::parse_from_str(completed_timestamp, "%Y%m%dT%H%M%SZ").is_err()
+    {
+        return Err("Der Abschlusszeitpunkt ist ungültig".to_string());
+    }
+    let component = match operation {
+        TaskLifecycleBatchOperation::Complete => {
+            let component = update_ical_property(component, "STATUS", Some("COMPLETED"));
+            let component = update_ical_property(&component, "PERCENT-COMPLETE", Some("100"));
+            if task_lifecycle_component_is_complete(&component) {
+                component
+            } else {
+                update_ical_property(&component, "COMPLETED", Some(completed_timestamp))
+            }
+        }
+        TaskLifecycleBatchOperation::Incomplete => {
+            let component = update_ical_property(component, "STATUS", Some("NEEDS-ACTION"));
+            let component = update_ical_property(&component, "PERCENT-COMPLETE", None);
+            update_ical_property(&component, "COMPLETED", None)
+        }
+    };
+    Ok(component)
+}
+
+fn build_task_lifecycle_batch_plan(
+    selection: &[TaskSelectionIdentity],
+    candidates: &[TaskExportCandidate],
+    capabilities: &HashMap<String, TaskSourceCapability>,
+    local_writable: bool,
+    operation: TaskLifecycleBatchOperation,
+    completed_timestamp: &str,
+) -> Result<TaskLifecycleBatchPlan, String> {
+    let resolved =
+        resolve_task_lifecycle_selection(selection, candidates, capabilities, local_writable)?;
+    let should_run = match operation {
+        TaskLifecycleBatchOperation::Complete => {
+            resolved.iter().any(|mutation| !mutation.completed)
+        }
+        TaskLifecycleBatchOperation::Incomplete => {
+            resolved.iter().any(|mutation| mutation.completed)
+        }
+    };
+    if !should_run {
+        return Err("Für diese Stapelaktion gibt es keine passenden Aufgaben".to_string());
+    }
+    let mutations = resolved
+        .into_iter()
+        .map(|mutation| {
+            let component = transform_task_lifecycle_component(
+                &mutation.component,
+                operation,
+                completed_timestamp,
+            )?;
+            Ok(TaskLifecycleMutation {
+                completed: operation.completed(),
+                component,
+                ..mutation
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    Ok(TaskLifecycleBatchPlan {
+        operation,
+        mutations,
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum TaskLifecycleDispatchResult {
+    Success(TaskLifecycleMutation),
+    Failure {
+        identity: TaskSelectionIdentity,
+        error: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+struct TaskLifecycleBatchReduction {
+    successes: Vec<TaskLifecycleMutation>,
+    failures: Vec<(TaskSelectionIdentity, String)>,
+}
+
+fn reduce_task_lifecycle_batch_results(
+    plan: &TaskLifecycleBatchPlan,
+    results: &[TaskLifecycleDispatchResult],
+) -> TaskLifecycleBatchReduction {
+    let mut reduction = TaskLifecycleBatchReduction::default();
+    for mutation in &plan.mutations {
+        let matching = results
+            .iter()
+            .filter(|result| match result {
+                TaskLifecycleDispatchResult::Success(success) => {
+                    success.identity == mutation.identity
+                }
+                TaskLifecycleDispatchResult::Failure { identity, .. } => {
+                    *identity == mutation.identity
+                }
+            })
+            .collect::<Vec<_>>();
+        match matching.as_slice() {
+            [TaskLifecycleDispatchResult::Success(success)] => {
+                reduction.successes.push(success.clone())
+            }
+            [TaskLifecycleDispatchResult::Failure { error, .. }] => {
+                reduction
+                    .failures
+                    .push((mutation.identity.clone(), error.clone()));
+            }
+            [] => reduction.failures.push((
+                mutation.identity.clone(),
+                "Das Backend hat kein Ergebnis für diese Aufgabe geliefert".to_string(),
+            )),
+            _ => reduction.failures.push((
+                mutation.identity.clone(),
+                "Das Backend hat mehrdeutige Ergebnisse für diese Aufgabe geliefert".to_string(),
+            )),
+        }
+    }
+    reduction
+}
+
+fn task_lifecycle_result_is_current(expected_generation: u64, result_generation: u64) -> bool {
+    expected_generation == result_generation
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+struct TaskBulkEditDraft {
+    dtstart: Option<String>,
+    due: Option<String>,
+    completed: Option<String>,
+    status: Option<String>,
+    priority: Option<String>,
+    percent: Option<String>,
+    class: Option<String>,
+    estimated_duration: Option<String>,
+    timezone: Option<String>,
+    categories_add: Vec<String>,
+    categories_remove: Vec<String>,
+}
+
+impl TaskBulkEditDraft {
+    fn has_changes(&self) -> bool {
+        self.dtstart.is_some()
+            || self.due.is_some()
+            || self.completed.is_some()
+            || self.status.is_some()
+            || self.priority.is_some()
+            || self.percent.is_some()
+            || self.class.is_some()
+            || self.estimated_duration.is_some()
+            || self.timezone.is_some()
+            || !self.categories_add.is_empty()
+            || !self.categories_remove.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TaskBulkEditMutation {
+    identity: TaskSelectionIdentity,
+    component: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TaskBulkEditPlan {
+    mutations: Vec<TaskBulkEditMutation>,
+}
+
+fn parse_task_bulk_categories(value: &str) -> Vec<String> {
+    category_names_from_ical_value(value)
+        .into_iter()
+        .map(|category| category.trim().to_string())
+        .filter(|category| !category.is_empty())
+        .collect()
+}
+
+fn validate_task_bulk_duration(value: &str) -> Result<Option<String>, String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Ok(None);
+    }
+    let Some(rest) = value.strip_prefix('P') else {
+        return Err("ESTIMATED-DURATION muss eine ISO-8601-Dauer wie PT1H sein".to_string());
+    };
+    let mut in_time = false;
+    let mut digits = String::new();
+    let mut last_order = 0u8;
+    let mut saw_unit = false;
+    let mut saw_week = false;
+    for character in rest.chars() {
+        if character.is_ascii_digit() {
+            digits.push(character);
+            continue;
+        }
+        if character == 'T' {
+            if in_time || saw_week || !digits.is_empty() {
+                return Err("ESTIMATED-DURATION muss eine ISO-8601-Dauer wie PT1H sein".to_string());
+            }
+            in_time = true;
+            continue;
+        }
+        if digits.is_empty() {
+            return Err("ESTIMATED-DURATION muss eine ISO-8601-Dauer wie PT1H sein".to_string());
+        }
+        let order = match (in_time, character) {
+            (false, 'W') => 1,
+            (false, 'D') => 2,
+            (true, 'H') => 3,
+            (true, 'M') => 4,
+            (true, 'S') => 5,
+            _ => {
+                return Err("ESTIMATED-DURATION muss eine ISO-8601-Dauer wie PT1H sein".to_string());
+            }
+        };
+        if order <= last_order || (character == 'W' && saw_unit) || (saw_week && character != 'W') {
+            return Err("ESTIMATED-DURATION muss eine ISO-8601-Dauer wie PT1H sein".to_string());
+        }
+        last_order = order;
+        saw_unit = true;
+        saw_week |= character == 'W';
+        digits.clear();
+    }
+    if !saw_unit || !digits.is_empty() {
+        return Err("ESTIMATED-DURATION muss eine ISO-8601-Dauer wie PT1H sein".to_string());
+    }
+    Ok(Some(value.to_string()))
+}
+
+fn transform_task_bulk_edit_component(
+    component: &str,
+    draft: &TaskBulkEditDraft,
+    completed_timestamp: &str,
+) -> Result<String, String> {
+    if !draft.has_changes() {
+        return Ok(component.to_string());
+    }
+    if draft
+        .timezone
+        .as_deref()
+        .is_some_and(|timezone| !timezone.trim().is_empty())
+    {
+        return Err(
+            "Zeitzonen-Stapelbearbeitung benötigt native VTIMEZONE-Unterstützung (Linux-Handoff)"
+                .to_string(),
+        );
+    }
+    let editor = task_editor_draft_from_component(component);
+    let dtstart_mutation = draft
+        .dtstart
+        .as_deref()
+        .map(|value| task_date_mutation(&editor.dtstart, value, "DTSTART"))
+        .transpose()?
+        .map_or(TaskDateMutation::Preserve, |(mutation, _)| mutation);
+    let due_mutation = draft
+        .due
+        .as_deref()
+        .map(|value| task_date_mutation(&editor.due, value, "DUE"))
+        .transpose()?
+        .map_or(TaskDateMutation::Preserve, |(mutation, _)| mutation);
+    let start = task_date_mutation_date(dtstart_mutation).or(editor.dtstart.original_date);
+    let due = task_date_mutation_date(due_mutation).or(editor.due.original_date);
+    if (task_date_mutation_changed(dtstart_mutation) || task_date_mutation_changed(due_mutation))
+        && let (Some(start), Some(due)) = (start, due)
+        && due <= start
+    {
+        return Err("Das Fälligkeitsdatum muss nach dem Beginn liegen".to_string());
+    }
+    let mut result = apply_task_date_pair_mutations(
+        component,
+        &editor.dtstart,
+        &editor.due,
+        dtstart_mutation,
+        due_mutation,
+    );
+
+    let lifecycle_changed =
+        draft.status.is_some() || draft.percent.is_some() || draft.completed.is_some();
+    if lifecycle_changed {
+        let mut status = draft
+            .status
+            .as_deref()
+            .map(normalize_task_status)
+            .transpose()?
+            .unwrap_or_else(|| task_status_value(component));
+        let mut percent = draft
+            .percent
+            .as_deref()
+            .map(|value| {
+                value
+                    .trim()
+                    .parse::<u8>()
+                    .ok()
+                    .filter(|value| *value <= 100)
+                    .ok_or_else(|| "PERCENT-COMPLETE muss zwischen 0 und 100 liegen".to_string())
+            })
+            .transpose()?
+            .unwrap_or_else(|| parse_task_percent(component));
+        let completed = draft
+            .completed
+            .as_deref()
+            .map(|value| task_date_mutation(&editor.completed, value, "COMPLETED"))
+            .transpose()?;
+        if draft.status.is_some() {
+            match status {
+                "COMPLETED" => percent = 100,
+                "IN-PROCESS" if percent == 0 || percent == 100 => percent = 50,
+                "NEEDS-ACTION" => percent = 0,
+                _ => {}
+            }
+        }
+        if draft.percent.is_some() {
+            status = match percent {
+                100 => "COMPLETED",
+                0 => "NEEDS-ACTION",
+                _ => "IN-PROCESS",
+            };
+        }
+        if let Some((mutation, _)) = completed {
+            match mutation {
+                TaskDateMutation::Remove => {
+                    if status == "COMPLETED" {
+                        status = "NEEDS-ACTION";
+                        percent = 0;
+                    }
+                }
+                TaskDateMutation::Set(_) => {
+                    status = "COMPLETED";
+                    percent = 100;
+                }
+                TaskDateMutation::Preserve => {}
+            }
+        }
+        result = update_ical_property(&result, "STATUS", Some(status));
+        result = update_ical_property(&result, "PERCENT-COMPLETE", Some(&percent.to_string()));
+        result = match status {
+            "COMPLETED" => match completed.map(|(mutation, _)| mutation) {
+                Some(TaskDateMutation::Set(date)) => set_task_date_property(
+                    &result,
+                    "COMPLETED",
+                    date,
+                    TaskDateValueKind::DateOnly,
+                    Some(&editor.completed),
+                ),
+                Some(TaskDateMutation::Remove) => unreachable!("completed status was normalized"),
+                _ if editor.completed.original_date.is_some() => result,
+                _ => update_ical_property(&result, "COMPLETED", Some(completed_timestamp)),
+            },
+            _ => update_ical_property(&result, "COMPLETED", None),
+        };
+    }
+    if let Some(priority) = draft.priority.as_deref() {
+        let priority = priority.trim();
+        if priority.is_empty() {
+            result = update_ical_property(&result, "PRIORITY", None);
+        } else {
+            let priority = priority
+                .parse::<u8>()
+                .ok()
+                .filter(|value| *value <= 9)
+                .map(|value| value.to_string())
+                .ok_or_else(|| "PRIORITY muss leer oder zwischen 0 und 9 liegen".to_string())?;
+            result = update_ical_property(&result, "PRIORITY", Some(&priority));
+        }
+    }
+    if let Some(class) = draft.class.as_deref() {
+        let class = class.trim().to_ascii_uppercase();
+        if !class.is_empty() && !matches!(class.as_str(), "PUBLIC" | "PRIVATE" | "CONFIDENTIAL") {
+            return Err("CLASS muss PUBLIC, PRIVATE, CONFIDENTIAL oder leer sein".to_string());
+        }
+        result = update_ical_property(
+            &result,
+            "CLASS",
+            (!class.is_empty()).then_some(class.as_str()),
+        );
+    }
+    if let Some(duration) = draft.estimated_duration.as_deref() {
+        let duration = validate_task_bulk_duration(duration)?;
+        result = update_ical_property(&result, "ESTIMATED-DURATION", duration.as_deref());
+    }
+    if !draft.categories_add.is_empty() || !draft.categories_remove.is_empty() {
+        let mut categories = category_names_from_ical_component(&result);
+        categories.retain(|category| {
+            !draft
+                .categories_remove
+                .iter()
+                .any(|remove| category.eq_ignore_ascii_case(remove))
+        });
+        for add in &draft.categories_add {
+            if !categories
+                .iter()
+                .any(|category| category.eq_ignore_ascii_case(add))
+            {
+                categories.push(add.clone());
+            }
+        }
+        let categories = categories
+            .iter()
+            .map(|category| escape_ical_text(category))
+            .collect::<Vec<_>>()
+            .join(",");
+        result = update_ical_property(
+            &result,
+            "CATEGORIES",
+            (!categories.is_empty()).then_some(categories.as_str()),
+        );
+    }
+    Ok(result)
+}
+
+fn build_task_bulk_edit_plan(
+    selection: &[TaskSelectionIdentity],
+    candidates: &[TaskExportCandidate],
+    capabilities: &HashMap<String, TaskSourceCapability>,
+    local_writable: bool,
+    draft: &TaskBulkEditDraft,
+    completed_timestamp: &str,
+) -> Result<TaskBulkEditPlan, String> {
+    if !draft.has_changes() {
+        return Err("Für die Stapelbearbeitung wurde kein Feld ausgewählt".to_string());
+    }
+    let resolved =
+        resolve_task_lifecycle_selection(selection, candidates, capabilities, local_writable)?;
+    let mutations = resolved
+        .into_iter()
+        .map(|mutation| {
+            let component = transform_task_bulk_edit_component(
+                &mutation.component,
+                draft,
+                completed_timestamp,
+            )?;
+            validated_task_vtodo_component(
+                &TaskExportCandidate {
+                    identity: mutation.identity.clone(),
+                    component: component.clone(),
+                },
+                &mutation.identity,
+            )?;
+            Ok(TaskBulkEditMutation {
+                identity: mutation.identity,
+                component,
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    Ok(TaskBulkEditPlan { mutations })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TaskBulkEditWorkerResult {
+    successes: Vec<TaskBulkEditMutation>,
+    failure: Option<(TaskSelectionIdentity, String)>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+struct TaskBulkEditReduction {
+    successes: Vec<TaskBulkEditMutation>,
+    failure: Option<(TaskSelectionIdentity, String)>,
+    unattempted: usize,
+    invalid_result: bool,
+}
+
+fn reduce_task_bulk_edit_result(
+    plan: &TaskBulkEditPlan,
+    result: &TaskBulkEditWorkerResult,
+) -> TaskBulkEditReduction {
+    let valid = result.successes.len() <= plan.mutations.len()
+        && result
+            .successes
+            .iter()
+            .zip(&plan.mutations)
+            .all(|(success, expected)| success.identity == expected.identity)
+        && result.failure.as_ref().is_none_or(|(identity, _)| {
+            plan.mutations
+                .get(result.successes.len())
+                .is_some_and(|expected| expected.identity == *identity)
+        });
+    if !valid {
+        return TaskBulkEditReduction {
+            failure: Some((
+                plan.mutations
+                    .first()
+                    .map(|mutation| mutation.identity.clone())
+                    .unwrap_or(TaskSelectionIdentity {
+                        source_uid: String::new(),
+                        task_uid: String::new(),
+                    }),
+                "Das Backend lieferte ein veraltetes oder mehrdeutiges Stapelergebnis".to_string(),
+            )),
+            unattempted: plan.mutations.len(),
+            invalid_result: true,
+            ..TaskBulkEditReduction::default()
+        };
+    }
+    let unattempted = plan
+        .mutations
+        .len()
+        .saturating_sub(result.successes.len() + usize::from(result.failure.is_some()));
+    TaskBulkEditReduction {
+        successes: result.successes.clone(),
+        failure: result.failure.clone(),
+        unattempted,
+        ..TaskBulkEditReduction::default()
+    }
+}
+
+fn task_bulk_edit_result_is_current(expected_generation: u64, result_generation: u64) -> bool {
+    expected_generation == result_generation
+}
+
+fn reload_task_snapshot_after_bulk_edit_uncertainty(
+    page: &TasksPage,
+    task_store: &gio::ListStore,
+    task_list: &gtk::ListBox,
+    empty_tasks: &gtk::Label,
+) {
+    let generation = page.imp().task_bulk_edit_generation.get();
+    let (sender, receiver) = async_channel::bounded(1);
+    std::thread::spawn(move || {
+        let snapshot = load_snapshot_prefer_eds().snapshot;
+        if let Err(error) = sender.send_blocking(snapshot) {
+            tracing::debug!(%error, "Task bulk-edit recovery snapshot was dropped");
+        }
+    });
+    let page_weak = page.downgrade();
+    let task_store = task_store.clone();
+    let task_list = task_list.clone();
+    let empty_tasks = empty_tasks.clone();
+    glib::spawn_future_local(async move {
+        let Ok(snapshot) = receiver.recv().await else {
+            return;
+        };
+        let Some(page) = page_weak.upgrade() else {
+            return;
+        };
+        if !task_bulk_edit_result_is_current(page.imp().task_bulk_edit_generation.get(), generation)
+        {
+            return;
+        }
+        task_store.remove_all();
+        for task in snapshot.tasks {
+            let priority = if task.priority == 0 {
+                "normal".to_string()
+            } else {
+                task.priority.to_string()
+            };
+            task_store.append(&TaskItemObject::new(
+                &task.source_uid,
+                &task.uid,
+                &task.summary,
+                &task.due,
+                &priority,
+                task.completed,
+                &task.component,
+            ));
+        }
+        render_task_rows(&page, &task_list, &task_store, &empty_tasks);
+    });
+}
+
+fn task_bulk_edit_field(
+    content: &gtk::Box,
+    label: &str,
+    placeholder: &str,
+) -> (gtk::CheckButton, gtk::Entry) {
+    let row = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(8)
+        .build();
+    let check = gtk::CheckButton::with_label(label);
+    let entry = gtk::Entry::builder()
+        .placeholder_text(placeholder)
+        .hexpand(true)
+        .sensitive(false)
+        .build();
+    let entry_for_toggle = entry.clone();
+    check.connect_toggled(move |check| entry_for_toggle.set_sensitive(check.is_active()));
+    row.append(&check);
+    row.append(&entry);
+    content.append(&row);
+    (check, entry)
+}
+
+fn present_task_bulk_edit_dialog(
+    page: &TasksPage,
+    button: &gtk::Button,
+    task_store: &gio::ListStore,
+    task_list: &gtk::ListBox,
+    empty_tasks: &gtk::Label,
+) {
+    if task_mutation_batch_running(page) {
+        return;
+    }
+    // Preflight on opening makes unavailable sources explicit, while the
+    // toolbar remains enabled for any non-empty upstream selection.
+    if let Err(error) = resolve_task_lifecycle_selection(
+        &page.imp().task_selection.borrow(),
+        &task_export_candidates(task_store),
+        &page.imp().task_source_capabilities.borrow(),
+        CalendarStoreService::new().is_writable(),
+    ) {
+        show_toast_for_widget(button, &error);
+        return;
+    }
+    let content = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(6)
+        .margin_top(6)
+        .build();
+    let hint = gtk::Label::builder()
+        .label("Nur aktivierte Felder werden geändert. Leere Datums-, Prioritäts-, Klasse- oder Dauerwerte entfernen die jeweilige Eigenschaft.")
+        .wrap(true)
+        .halign(gtk::Align::Start)
+        .css_classes(vec!["dim-label"])
+        .build();
+    content.append(&hint);
+    let (dtstart_check, dtstart) = task_bulk_edit_field(&content, "Beginn", "YYYY-MM-DD");
+    let (due_check, due) = task_bulk_edit_field(&content, "Fälligkeit", "YYYY-MM-DD");
+    let (completed_check, completed) =
+        task_bulk_edit_field(&content, "Abgeschlossen", "YYYY-MM-DD");
+    let (status_check, status) = task_bulk_edit_field(
+        &content,
+        "Status",
+        "NEEDS-ACTION | IN-PROCESS | COMPLETED | CANCELLED",
+    );
+    let (priority_check, priority) = task_bulk_edit_field(&content, "Priorität", "0 bis 9");
+    let (percent_check, percent) = task_bulk_edit_field(&content, "Fortschritt", "0 bis 100");
+    let (class_check, class) = task_bulk_edit_field(
+        &content,
+        "Klassifizierung",
+        "PUBLIC | PRIVATE | CONFIDENTIAL",
+    );
+    let (duration_check, duration) = task_bulk_edit_field(&content, "Geschätzte Dauer", "PT1H");
+    let (categories_add_check, categories_add) =
+        task_bulk_edit_field(&content, "Kategorien hinzufügen", "Kommagetrennt");
+    let (categories_remove_check, categories_remove) =
+        task_bulk_edit_field(&content, "Kategorien entfernen", "Kommagetrennt");
+    let timezone =
+        gtk::CheckButton::with_label("Zeitzone (native VTIMEZONE-Unterstützung erforderlich)");
+    timezone.set_sensitive(false);
+    content.append(&timezone);
+    let dialog = adw::AlertDialog::builder()
+        .heading("Aufgaben stapelweise bearbeiten")
+        .body("Die Änderungen werden nacheinander auf die ausgewählten Aufgaben angewendet.")
+        .extra_child(&content)
+        .default_response("apply")
+        .build();
+    dialog.add_responses(&[("cancel", "Abbrechen"), ("apply", "Anwenden")]);
+    let page_weak = page.downgrade();
+    let button_for_result = button.clone();
+    let dialog_parent = button.root();
+    let task_store = task_store.clone();
+    let task_list = task_list.clone();
+    let empty_tasks = empty_tasks.clone();
+    dialog.connect_response(None, move |dialog, response| {
+        if response != "apply" {
+            dialog.close();
+            return;
+        }
+        let selected = |check: &gtk::CheckButton, entry: &gtk::Entry| {
+            check.is_active().then(|| entry.text().to_string())
+        };
+        let draft = TaskBulkEditDraft {
+            dtstart: selected(&dtstart_check, &dtstart),
+            due: selected(&due_check, &due),
+            completed: selected(&completed_check, &completed),
+            status: selected(&status_check, &status),
+            priority: selected(&priority_check, &priority),
+            percent: selected(&percent_check, &percent),
+            class: selected(&class_check, &class),
+            estimated_duration: selected(&duration_check, &duration),
+            timezone: timezone.is_active().then_some("native".to_string()),
+            categories_add: categories_add_check
+                .is_active()
+                .then(|| parse_task_bulk_categories(&categories_add.text()))
+                .unwrap_or_default(),
+            categories_remove: categories_remove_check
+                .is_active()
+                .then(|| parse_task_bulk_categories(&categories_remove.text()))
+                .unwrap_or_default(),
+        };
+        if !draft.has_changes() {
+            show_toast_for_widget(
+                &button_for_result,
+                "Für die Stapelbearbeitung wurde kein Feld ausgewählt",
+            );
+            return;
+        }
+        let Some(page) = page_weak.upgrade() else {
+            return;
+        };
+        dialog.close();
+        start_task_bulk_edit(
+            &page,
+            &button_for_result,
+            &task_store,
+            &task_list,
+            &empty_tasks,
+            draft,
+        );
+    });
+    dialog.present(dialog_parent.as_ref());
+}
+
+fn start_task_bulk_edit(
+    page: &TasksPage,
+    button: &gtk::Button,
+    task_store: &gio::ListStore,
+    task_list: &gtk::ListBox,
+    empty_tasks: &gtk::Label,
+    draft: TaskBulkEditDraft,
+) {
+    if task_mutation_batch_running(page) {
+        return;
+    }
+    let selection = page.imp().task_selection.borrow().clone();
+    let capabilities = page.imp().task_source_capabilities.borrow().clone();
+    let stamp = Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
+    let plan = match build_task_bulk_edit_plan(
+        &selection,
+        &task_export_candidates(task_store),
+        &capabilities,
+        CalendarStoreService::new().is_writable(),
+        &draft,
+        &stamp,
+    ) {
+        Ok(plan) => plan,
+        Err(error) => {
+            show_toast_for_widget(button, &error);
+            return;
+        }
+    };
+    let generation = page.imp().task_bulk_edit_generation.get().wrapping_add(1);
+    page.imp().task_bulk_edit_generation.set(generation);
+    page.imp().task_bulk_edit_running.set(true);
+    task_list.set_sensitive(false);
+    update_task_selection_controls(page);
+    let (sender, receiver) = async_channel::bounded(1);
+    let plan_for_worker = plan.clone();
+    std::thread::spawn(move || {
+        let service = ECalService::new();
+        let local_writable = CalendarStoreService::new().is_writable();
+        let mut result = TaskBulkEditWorkerResult {
+            successes: Vec::new(),
+            failure: None,
+        };
+        for mutation in plan_for_worker.mutations {
+            if task_source_capability(&mutation.identity.source_uid, &capabilities, local_writable)
+                != TaskSourceCapability::Writable
+            {
+                result.failure = Some((
+                    mutation.identity,
+                    "Eine Aufgabenliste ist nicht mehr schreibfähig".to_string(),
+                ));
+                break;
+            }
+            match service.modify_component(
+                &mutation.identity.source_uid,
+                ECalComponentType::Task,
+                &mutation.identity.task_uid,
+                &mutation.component,
+            ) {
+                Ok(mut confirmed) => {
+                    if confirmed
+                        .component
+                        .as_deref()
+                        .is_none_or(|value| value.trim().is_empty())
+                    {
+                        confirmed.component = load_snapshot_prefer_eds()
+                            .snapshot
+                            .tasks
+                            .into_iter()
+                            .find(|task| {
+                                task.source_uid == mutation.identity.source_uid
+                                    && task.uid == mutation.identity.task_uid
+                            })
+                            .map(|task| task.component);
+                    }
+                    match task_authoritative_component(
+                        &mutation.identity.task_uid,
+                        &confirmed.uid,
+                        confirmed.component,
+                    )
+                    .and_then(|component| {
+                        validated_task_vtodo_component(
+                            &TaskExportCandidate {
+                                identity: mutation.identity.clone(),
+                                component,
+                            },
+                            &mutation.identity,
+                        )
+                    }) {
+                        Ok(component) => result.successes.push(TaskBulkEditMutation {
+                            component,
+                            ..mutation
+                        }),
+                        Err(error) => {
+                            result.failure = Some((mutation.identity, error));
+                            break;
+                        }
+                    }
+                }
+                Err(error) => {
+                    result.failure = Some((mutation.identity, error.to_string()));
+                    break;
+                }
+            }
+        }
+        if let Err(error) = sender.send_blocking(result) {
+            tracing::debug!(%error, "Task bulk-edit result was dropped");
+        }
+    });
+    let page_weak = page.downgrade();
+    let task_store = task_store.clone();
+    let task_list = task_list.clone();
+    let empty_tasks = empty_tasks.clone();
+    let button_for_result = button.clone();
+    glib::spawn_future_local(async move {
+        let received = receiver.recv().await;
+        let Some(page) = page_weak.upgrade() else {
+            return;
+        };
+        if !task_bulk_edit_result_is_current(page.imp().task_bulk_edit_generation.get(), generation)
+        {
+            return;
+        }
+        page.imp().task_bulk_edit_running.set(false);
+        task_list.set_sensitive(true);
+        let result = match received {
+            Ok(result) => result,
+            Err(error) => {
+                tracing::debug!(%error, "Task bulk-edit channel closed");
+                update_task_selection_controls(&page);
+                reload_task_snapshot_after_bulk_edit_uncertainty(
+                    &page,
+                    &task_store,
+                    &task_list,
+                    &empty_tasks,
+                );
+                show_toast_for_widget(
+                    &button_for_result,
+                    "Stapelbearbeitungsergebnis ging verloren; autoritative Daten werden neu geladen",
+                );
+                return;
+            }
+        };
+        let reduction = reduce_task_bulk_edit_result(&plan, &result);
+        let successes = reduction.successes;
+        let failure = reduction.failure;
+        let unattempted = reduction.unattempted;
+        let mut applied = 0usize;
+        let mut recovery_required = reduction.invalid_result;
+        for success in &successes {
+            let matches = (0..task_store.n_items())
+                .filter(|index| {
+                    task_store
+                        .item(*index)
+                        .and_downcast::<TaskItemObject>()
+                        .is_some_and(|task| {
+                            task.source_uid() == success.identity.source_uid
+                                && task.id() == success.identity.task_uid
+                        })
+                })
+                .collect::<Vec<_>>();
+            if let [index] = matches.as_slice() {
+                match task_item_from_confirmed_component(
+                    &success.identity.source_uid,
+                    &success.identity.task_uid,
+                    &success.component,
+                ) {
+                    Ok(item) => {
+                        task_store.remove(*index);
+                        task_store.insert(*index, &item);
+                        applied += 1;
+                    }
+                    Err(_) => recovery_required = true,
+                }
+            } else {
+                recovery_required = true;
+            }
+        }
+        render_task_rows(&page, &task_list, &task_store, &empty_tasks);
+        if recovery_required {
+            reload_task_snapshot_after_bulk_edit_uncertainty(
+                &page,
+                &task_store,
+                &task_list,
+                &empty_tasks,
+            );
+        }
+        match (applied, failure.is_some() || recovery_required, unattempted) {
+            (count, false, 0) => page.show_toast(&format!(
+                "{count} Aufgabe{} bearbeitet",
+                if count == 1 { "" } else { "n" }
+            )),
+            (count, true, pending) => page.show_toast(&format!(
+                "{count} Aufgabe{} bearbeitet; Fehler, {pending} nicht versucht",
+                if count == 1 { "" } else { "n" }
+            )),
+            _ => page.show_toast("Keine Aufgabe bearbeitet"),
+        }
+    });
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TaskDeleteMutation {
+    identity: TaskSelectionIdentity,
+    summary: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TaskDeletePlan {
+    mutations: Vec<TaskDeleteMutation>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TaskDeleteResolved {
+    identity: TaskSelectionIdentity,
+    component: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TaskDeleteConfirmation {
+    title: String,
+    description: String,
+}
+
+fn resolve_task_delete_selection(
+    selection: &[TaskSelectionIdentity],
+    candidates: &[TaskExportCandidate],
+    capabilities: &HashMap<String, TaskSourceCapability>,
+    local_writable: bool,
+) -> Result<Vec<TaskDeleteResolved>, String> {
+    if selection.is_empty() {
+        return Err("Keine Aufgaben ausgewählt".to_string());
+    }
+    let mut seen = HashSet::with_capacity(selection.len());
+    let mut resolved = Vec::with_capacity(selection.len());
+    for identity in selection {
+        if !seen.insert(identity.clone()) {
+            return Err("Eine ausgewählte Aufgabe wurde mehrfach aufgelöst".to_string());
+        }
+        let matches = candidates
+            .iter()
+            .filter(|candidate| candidate.identity == *identity)
+            .collect::<Vec<_>>();
+        let [candidate] = matches.as_slice() else {
+            return Err("Die ausgewählte Aufgabe ist nicht mehr eindeutig verfügbar".to_string());
+        };
+        let component = validated_task_vtodo_component(candidate, identity)?;
+        if task_source_capability(&identity.source_uid, capabilities, local_writable)
+            != TaskSourceCapability::Writable
+        {
+            return Err(
+                "Mindestens eine ausgewählte Aufgabenliste ist nicht schreibfähig oder nicht verfügbar"
+                    .to_string(),
+            );
+        }
+        resolved.push(TaskDeleteResolved {
+            identity: identity.clone(),
+            component,
+        });
+    }
+    Ok(resolved)
+}
+
+fn build_task_delete_plan(
+    selection: &[TaskSelectionIdentity],
+    candidates: &[TaskExportCandidate],
+    capabilities: &HashMap<String, TaskSourceCapability>,
+    local_writable: bool,
+) -> Result<TaskDeletePlan, String> {
+    let resolved =
+        resolve_task_delete_selection(selection, candidates, capabilities, local_writable)?;
+    let mut mutations = Vec::with_capacity(resolved.len());
+    for resolved in resolved {
+        let TaskDeleteResolved {
+            identity,
+            component,
+        } = resolved;
+        if task_has_top_level_property(&component, "RECURRENCE-ID") {
+            return Err(
+                "Serienaufgaben mit RECURRENCE-ID können ohne MOD_THIS-Unterstützung nicht sicher gelöscht werden"
+                    .to_string(),
+            );
+        }
+        // Upstream offers an iTIP cancellation/retract prompt only for the
+        // single selected task.  The portable ECal bridge cannot send that
+        // notice, so fail closed for exactly that case while preserving
+        // upstream's multi-selection deletion behavior.
+        if selection.len() == 1
+            && (task_has_top_level_property(&component, "ORGANIZER")
+                || task_has_top_level_property(&component, "ATTENDEE"))
+        {
+            return Err(
+                "Diese zugewiesene Aufgabe benötigt eine iTIP-Stornierungsbenachrichtigung (Linux-Handoff)"
+                    .to_string(),
+            );
+        }
+        mutations.push(TaskDeleteMutation {
+            identity,
+            summary: ical_property(&component, "SUMMARY").unwrap_or_default(),
+        });
+    }
+    Ok(TaskDeletePlan { mutations })
+}
+
+fn build_task_purge_plan(
+    candidates: &[TaskExportCandidate],
+    capabilities: &HashMap<String, TaskSourceCapability>,
+    local_writable: bool,
+) -> Result<TaskDeletePlan, String> {
+    let mut seen = HashSet::new();
+    let mut mutations = Vec::new();
+    for candidate in candidates {
+        if !task_component_is_completed_for_purge(&candidate.component) {
+            continue;
+        }
+        if task_source_capability(&candidate.identity.source_uid, capabilities, local_writable)
+            != TaskSourceCapability::Writable
+        {
+            continue;
+        }
+        if !seen.insert(candidate.identity.clone()) {
+            return Err("Eine erledigte Aufgabe ist nicht mehr eindeutig verfügbar".to_string());
+        }
+        let component = validated_task_vtodo_component(candidate, &candidate.identity)?;
+        if task_has_top_level_property(&component, "RECURRENCE-ID") {
+            return Err(
+                "Eine erledigte Serieninstanz benötigt native MOD_THIS-Unterstützung (Linux-Handoff)"
+                    .to_string(),
+            );
+        }
+        mutations.push(TaskDeleteMutation {
+            identity: candidate.identity.clone(),
+            summary: ical_property(&component, "SUMMARY").unwrap_or_default(),
+        });
+    }
+    if mutations.is_empty() {
+        return Err("Keine erledigten Aufgaben in schreibfähigen Aufgabenlisten".to_string());
+    }
+    Ok(TaskDeletePlan { mutations })
+}
+
+fn task_delete_confirmation(plan: &TaskDeletePlan) -> TaskDeleteConfirmation {
+    let count = plan.mutations.len();
+    if let [mutation] = plan.mutations.as_slice()
+        && !mutation.summary.trim().is_empty()
+    {
+        let summary = glib::markup_escape_text(&mutation.summary);
+        return TaskDeleteConfirmation {
+            title: format!("Aufgabe „{summary}“ löschen?"),
+            description: "Alle Informationen zu dieser Aufgabe werden unwiderruflich gelöscht."
+                .to_string(),
+        };
+    }
+    TaskDeleteConfirmation {
+        title: if count == 1 {
+            "Aufgabe löschen?".to_string()
+        } else {
+            format!("{count} Aufgaben löschen?")
+        },
+        description: if count == 1 {
+            "Alle Informationen zu dieser Aufgabe werden unwiderruflich gelöscht.".to_string()
+        } else {
+            format!("Alle Informationen zu diesen {count} Aufgaben werden unwiderruflich gelöscht.")
+        },
+    }
+}
+
+fn task_delete_action_enabled(
+    selection: &[TaskSelectionIdentity],
+    candidates: &[TaskExportCandidate],
+    capabilities: &HashMap<String, TaskSourceCapability>,
+    local_writable: bool,
+    batch_running: bool,
+) -> bool {
+    !batch_running
+        && resolve_task_delete_selection(selection, candidates, capabilities, local_writable)
+            .is_ok()
+}
+
+fn task_delete_can_dispatch(confirmed: bool) -> bool {
+    confirmed
+}
+
+fn task_delete_plan_matches_selection(
+    plan: &TaskDeletePlan,
+    selection: &[TaskSelectionIdentity],
+) -> bool {
+    plan.mutations
+        .iter()
+        .map(|mutation| &mutation.identity)
+        .eq(selection.iter())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TaskDeleteWorkerResult {
+    removed: Vec<TaskSelectionIdentity>,
+    failure: Option<(TaskSelectionIdentity, String)>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+struct TaskDeleteBatchReduction {
+    removed: Vec<TaskSelectionIdentity>,
+    failure: Option<(TaskSelectionIdentity, String)>,
+    unattempted: Vec<TaskSelectionIdentity>,
+}
+
+fn reduce_task_delete_batch_result(
+    plan: &TaskDeletePlan,
+    result: &TaskDeleteWorkerResult,
+) -> TaskDeleteBatchReduction {
+    let mut reduction = TaskDeleteBatchReduction::default();
+    let expected = plan
+        .mutations
+        .iter()
+        .map(|mutation| mutation.identity.clone())
+        .collect::<Vec<_>>();
+    let removed_valid = result.removed.len() <= expected.len()
+        && result
+            .removed
+            .iter()
+            .zip(expected.iter())
+            .all(|(removed, expected)| removed == expected)
+        && result.removed.iter().collect::<HashSet<_>>().len() == result.removed.len();
+    let failure_valid = result.failure.as_ref().is_none_or(|(identity, _)| {
+        expected
+            .get(result.removed.len())
+            .is_some_and(|expected| expected == identity)
+    });
+    if !removed_valid || !failure_valid {
+        reduction.failure = Some((
+            expected.first().cloned().unwrap_or(TaskSelectionIdentity {
+                source_uid: String::new(),
+                task_uid: String::new(),
+            }),
+            "Das Backend lieferte ein veraltetes oder mehrdeutiges Lösch-Ergebnis".to_string(),
+        ));
+        reduction.unattempted = expected;
+        return reduction;
+    }
+    reduction.removed = result.removed.clone();
+    reduction.failure = result.failure.clone();
+    let attempted = result.removed.len() + usize::from(result.failure.is_some());
+    reduction.unattempted = expected.into_iter().skip(attempted).collect();
+    reduction
+}
+
+fn task_delete_result_is_current(expected_generation: u64, result_generation: u64) -> bool {
+    expected_generation == result_generation
+}
+
+fn build_selected_task_export(
+    selection: &[TaskSelectionIdentity],
+    candidates: &[TaskExportCandidate],
+) -> Result<String, String> {
+    if selection.is_empty() {
+        return Err("Keine Aufgaben ausgewählt".to_string());
+    }
+
+    let mut components = Vec::with_capacity(selection.len());
+    for identity in selection {
+        let matches = candidates
+            .iter()
+            .filter(|candidate| candidate.identity == *identity)
+            .collect::<Vec<_>>();
+        let [candidate] = matches.as_slice() else {
+            return Err("Die ausgewählte Aufgabe ist nicht mehr verfügbar".to_string());
+        };
+        components.push(validated_task_vtodo_component(candidate, identity)?);
+    }
+
+    Ok(format!(
+        "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Evolution GTK4//EN\r\n{}\r\nEND:VCALENDAR\r\n",
+        components.join("\r\n")
+    ))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+struct TaskClipboardActionState {
+    copy_enabled: bool,
+    cut_enabled: bool,
+    paste_enabled: bool,
+    select_all_enabled: bool,
+}
+
+fn task_clipboard_action_state(
+    selection_count: usize,
+    copy_payload_valid: bool,
+    all_selected_writable: bool,
+    destination_writable: bool,
+    calendar_clipboard_available: bool,
+    editing_or_mutating: bool,
+) -> TaskClipboardActionState {
+    if editing_or_mutating {
+        return TaskClipboardActionState {
+            // Upstream keeps Select All available even while editing.  A
+            // running mutation still makes the list itself insensitive.
+            select_all_enabled: true,
+            ..TaskClipboardActionState::default()
+        };
+    }
+    TaskClipboardActionState {
+        copy_enabled: selection_count > 0 && copy_payload_valid,
+        cut_enabled: selection_count > 0 && copy_payload_valid && all_selected_writable,
+        paste_enabled: destination_writable && calendar_clipboard_available,
+        // Mirrors ETaskTable: this is available even for an empty visible
+        // table, unless a mutation has made the list insensitive.
+        select_all_enabled: true,
+    }
+}
+
+fn task_paste_destination(
+    source_uids: &[String],
+    capabilities: &HashMap<String, TaskSourceCapability>,
+    local_writable: bool,
+    preferred_source_uid: Option<&str>,
+) -> Result<String, String> {
+    let Some(index) = task_default_source_index(
+        source_uids,
+        preferred_source_uid,
+        None,
+        capabilities,
+        local_writable,
+    ) else {
+        return Err(
+            "Keine schreibfähige Standard-Aufgabenliste für Einfügen verfügbar".to_string(),
+        );
+    };
+    let Some(source_uid) = source_uids.get(index) else {
+        return Err("Die Ziel-Aufgabenliste ist nicht eindeutig verfügbar".to_string());
+    };
+    if task_source_capability(source_uid, capabilities, local_writable)
+        != TaskSourceCapability::Writable
+    {
+        return Err(
+            "Die Ziel-Aufgabenliste ist nicht schreibfähig oder nicht verfügbar".to_string(),
+        );
+    }
+    Ok(source_uid.clone())
+}
+
+fn task_component_requires_vtimezone(component: &str) -> bool {
+    unfold_ical_lines(component).iter().any(|line| {
+        line.split_once(':').is_some_and(|(property, _)| {
+            property.split(';').skip(1).any(|parameter| {
+                parameter.eq_ignore_ascii_case("TZID")
+                    || parameter
+                        .get(..5)
+                        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("TZID="))
+            })
+        })
+    })
+}
+
+fn parse_task_clipboard_payload(payload: &str) -> Result<Vec<String>, String> {
+    let lines = payload.lines().map(str::trim_end).collect::<Vec<_>>();
+    if lines
+        .first()
+        .is_some_and(|line| line.eq_ignore_ascii_case("BEGIN:VTODO"))
+        && lines
+            .last()
+            .is_some_and(|line| line.eq_ignore_ascii_case("END:VTODO"))
+    {
+        return Ok(vec![lines.join("\r\n")]);
+    }
+    if lines
+        .first()
+        .is_none_or(|line| !line.eq_ignore_ascii_case("BEGIN:VCALENDAR"))
+        || lines
+            .last()
+            .is_none_or(|line| !line.eq_ignore_ascii_case("END:VCALENDAR"))
+    {
+        return Err(
+            "Die Zwischenablage enthält keine gültige VCALENDAR-Aufgabenauswahl".to_string(),
+        );
+    }
+    let mut components = Vec::new();
+    let mut component = Vec::new();
+    let mut depth = 0usize;
+    for line in &lines[1..lines.len() - 1] {
+        if component.is_empty() {
+            if line.eq_ignore_ascii_case("BEGIN:VTODO") {
+                component.push(*line);
+                depth = 1;
+            } else if line
+                .get(..6)
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case("BEGIN:"))
+            {
+                return Err(
+                    "Die Zwischenablage enthält keine ausschließlich portablen VTODO-Komponenten"
+                        .to_string(),
+                );
+            }
+            continue;
+        }
+        component.push(*line);
+        if line
+            .get(..6)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("BEGIN:"))
+        {
+            depth += 1;
+        } else if line
+            .get(..4)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("END:"))
+        {
+            depth = depth.saturating_sub(1);
+            if depth == 0 {
+                if !line.eq_ignore_ascii_case("END:VTODO") {
+                    return Err(
+                        "Die Zwischenablage enthält eine ungültig verschachtelte Aufgabe"
+                            .to_string(),
+                    );
+                }
+                components.push(component.join("\r\n"));
+                component.clear();
+            }
+        }
+    }
+    if !component.is_empty() || components.is_empty() {
+        return Err("Die Zwischenablage enthält keine vollständige VTODO-Aufgabe".to_string());
+    }
+    Ok(components)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TaskPasteMutation {
+    identity: TaskSelectionIdentity,
+    component: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TaskPastePlan {
+    destination_uid: String,
+    mutations: Vec<TaskPasteMutation>,
+}
+
+fn plan_task_clipboard_paste_with_uids(
+    payload: &str,
+    destination_uid: &str,
+    existing: &[TaskSelectionIdentity],
+    fresh_uids: &[String],
+) -> Result<TaskPastePlan, String> {
+    if destination_uid.trim().is_empty() {
+        return Err("Die Ziel-Aufgabenliste ist ungültig".to_string());
+    }
+    let components = parse_task_clipboard_payload(payload)?;
+    if components.len() != fresh_uids.len() {
+        return Err("Die Einfügeplanung enthält keine eindeutigen neuen Aufgaben-UIDs".to_string());
+    }
+    let mut identities = existing.iter().cloned().collect::<HashSet<_>>();
+    let mut mutations = Vec::with_capacity(components.len());
+    for (component, fresh_uid) in components.into_iter().zip(fresh_uids) {
+        if task_component_requires_vtimezone(&component) {
+            return Err("Aufgaben mit TZID benötigen VTIMEZONE-Unterstützung und werden nicht unsicher eingefügt".to_string());
+        }
+        let original_uid = ical_properties(&component, "UID");
+        let [_original_uid] = original_uid.as_slice() else {
+            return Err("Eine Zwischenablage-Aufgabe hat keine eindeutige UID".to_string());
+        };
+        if fresh_uid.trim().is_empty() {
+            return Err("Die Zwischenablage-Aufgaben sind nicht eindeutig".to_string());
+        }
+        let identity = TaskSelectionIdentity {
+            source_uid: destination_uid.to_string(),
+            task_uid: fresh_uid.clone(),
+        };
+        if !identities.insert(identity.clone()) {
+            return Err("Eine neue Aufgaben-UID kollidiert bereits in der Zielquelle".to_string());
+        }
+        let component = update_ical_property(&component, "UID", Some(fresh_uid));
+        let component = validated_task_vtodo_component(
+            &TaskExportCandidate {
+                identity: identity.clone(),
+                component,
+            },
+            &identity,
+        )?;
+        mutations.push(TaskPasteMutation {
+            identity,
+            component,
+        });
+    }
+    Ok(TaskPastePlan {
+        destination_uid: destination_uid.to_string(),
+        mutations,
+    })
 }
 
 fn current_task_filter_context() -> TaskFilterContext {
@@ -689,7 +2880,11 @@ impl TaskDateDraft {
                 } else {
                     date
                 };
-                (display_date.format("%Y-%m-%d").to_string(), Some(kind), Some(display_date))
+                (
+                    display_date.format("%Y-%m-%d").to_string(),
+                    Some(kind),
+                    Some(display_date),
+                )
             }
             None => (value.clone(), None, None),
         };
@@ -817,14 +3012,12 @@ fn task_lifecycle_edits_inferred(
     completed: &str,
 ) -> TaskLifecycleEdits {
     TaskLifecycleEdits {
-        status: draft.unsupported_status.is_none()
-            && !draft.status.eq_ignore_ascii_case(status),
-        percent: draft.unsupported_percent.is_none()
-            && !draft
-                .percent_raw
-                .as_deref()
-                .and_then(parse_task_percent_value)
-                .is_some_and(|value| value == percent),
+        // This helper is used by non-interactive callers such as quick edit.
+        // Compare against the displayed draft values rather than property
+        // presence, otherwise changing the title of a task without a
+        // PERCENT-COMPLETE property would manufacture one on save.
+        status: !draft.status.eq_ignore_ascii_case(status),
+        percent: draft.percent != percent,
         completed: completed.trim() != draft.completed.input.trim(),
     }
 }
@@ -974,10 +3167,7 @@ fn task_lifecycle_for_date_with_presence(
     }
 }
 
-fn task_initial_editor_lifecycle(
-    draft: &TaskEditorDraft,
-    today: NaiveDate,
-) -> (u8, String) {
+fn task_initial_editor_lifecycle(draft: &TaskEditorDraft, today: NaiveDate) -> (u8, String) {
     // Unsupported imported values are deliberately displayed as-is (with a
     // warning in the dialog) until the user explicitly changes the field.
     if draft.unsupported_status.is_some() || draft.unsupported_percent.is_some() {
@@ -1142,10 +3332,11 @@ fn task_date_property_prefix(
         .split(';')
         .skip(1)
         .filter(|parameter| {
-            let name = parameter.split_once('=').map_or(*parameter, |(name, _)| name);
+            let name = parameter
+                .split_once('=')
+                .map_or(*parameter, |(name, _)| name);
             !name.eq_ignore_ascii_case("VALUE")
-                && !(kind == TaskDateValueKind::DateOnly
-                    && name.eq_ignore_ascii_case("TZID"))
+                && !(kind == TaskDateValueKind::DateOnly && name.eq_ignore_ascii_case("TZID"))
         })
         .map(str::to_string)
         .collect::<Vec<_>>();
@@ -1202,8 +3393,7 @@ fn apply_task_date_pair_mutations(
     dtstart_mutation: TaskDateMutation,
     due_mutation: TaskDateMutation,
 ) -> String {
-    let Some(pair_kind) = task_date_pair_kind(dtstart, due, dtstart_mutation, due_mutation)
-    else {
+    let Some(pair_kind) = task_date_pair_kind(dtstart, due, dtstart_mutation, due_mutation) else {
         return existing.to_string();
     };
 
@@ -1388,10 +3578,13 @@ impl TasksPage {
             };
             if matches {
                 task_list.select_row(Some(&row));
-                if !task_source_is_writable_now(&source_uid) {
-                    self.show_toast(
-                        "Diese Aufgabenliste ist nicht als schreibfähig bestätigt",
-                    );
+                if task_source_capability(
+                    &source_uid,
+                    &self.imp().task_source_capabilities.borrow(),
+                    CalendarStoreService::new().is_writable(),
+                ) != TaskSourceCapability::Writable
+                {
+                    self.show_toast("Diese Aufgabenliste ist nicht als schreibfähig bestätigt");
                     return true;
                 }
                 self.open_task_dialog(task_store, task_list, empty_tasks, Some(task));
@@ -1490,16 +3683,97 @@ impl TasksPage {
             .label("Aufgabenlisten")
             .css_classes(vec!["title-4"])
             .halign(gtk::Align::Start)
+            .hexpand(true)
             .margin_top(4)
             .margin_bottom(4)
             .build();
-        sidebar_box.append(&header);
+        let source_header = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(4)
+            .build();
+        source_header.append(&header);
+        let new_task_source_button = gtk::Button::builder()
+            .icon_name("list-add-symbolic")
+            .tooltip_text("Neue lokale Aufgabenliste")
+            .css_classes(vec!["flat", "circular"])
+            .build();
+        set_accessible_label(&new_task_source_button, "Neue lokale Aufgabenliste");
+        let copy_task_source_button = gtk::Button::builder()
+            .icon_name("edit-copy-symbolic")
+            .tooltip_text("Ausgewählte Aufgabenliste kopieren")
+            .css_classes(vec!["flat", "circular"])
+            .sensitive(false)
+            .build();
+        set_accessible_label(
+            &copy_task_source_button,
+            "Ausgewählte Aufgabenliste kopieren",
+        );
+        let rename_task_source_button = gtk::Button::builder()
+            .icon_name("document-edit-symbolic")
+            .tooltip_text("Ausgewählte Aufgabenliste umbenennen")
+            .css_classes(vec!["flat", "circular"])
+            .sensitive(false)
+            .build();
+        set_accessible_label(
+            &rename_task_source_button,
+            "Ausgewählte Aufgabenliste umbenennen",
+        );
+        let properties_task_source_button = gtk::Button::builder()
+            .icon_name("document-properties-symbolic")
+            .tooltip_text("Eigenschaften der ausgewählten Aufgabenliste")
+            .css_classes(vec!["flat", "circular"])
+            .sensitive(false)
+            .build();
+        set_accessible_label(
+            &properties_task_source_button,
+            "Eigenschaften der ausgewählten Aufgabenliste",
+        );
+        let delete_task_source_button = gtk::Button::builder()
+            .icon_name("user-trash-symbolic")
+            .tooltip_text("Ausgewählte Aufgabenliste löschen")
+            .css_classes(vec!["flat", "circular", "destructive-action"])
+            .sensitive(false)
+            .build();
+        set_accessible_label(
+            &delete_task_source_button,
+            "Ausgewählte Aufgabenliste löschen",
+        );
+        source_header.append(&new_task_source_button);
+        sidebar_box.append(&source_header);
+        let source_actions = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(4)
+            .halign(gtk::Align::End)
+            .build();
+        source_actions.append(&copy_task_source_button);
+        source_actions.append(&rename_task_source_button);
+        source_actions.append(&properties_task_source_button);
+        source_actions.append(&delete_task_source_button);
+        sidebar_box.append(&source_actions);
 
         let task_source_list = gtk::ListBox::builder()
             .selection_mode(gtk::SelectionMode::Single)
             .css_classes(vec!["navigation-sidebar"])
             .build();
         sidebar_box.append(&task_source_list);
+        self.imp()
+            .task_source_list
+            .replace(Some(task_source_list.clone()));
+        self.imp()
+            .task_source_new_button
+            .replace(Some(new_task_source_button.clone()));
+        self.imp()
+            .task_source_copy_button
+            .replace(Some(copy_task_source_button.clone()));
+        self.imp()
+            .task_source_rename_button
+            .replace(Some(rename_task_source_button.clone()));
+        self.imp()
+            .task_source_properties_button
+            .replace(Some(properties_task_source_button.clone()));
+        self.imp()
+            .task_source_delete_button
+            .replace(Some(delete_task_source_button.clone()));
 
         let category_header = gtk::Label::builder()
             .label("Ansichten")
@@ -1638,10 +3912,15 @@ impl TasksPage {
         set_direction_button(&direction_button, self.imp().task_sort_descending.get());
 
         let source_model = gtk::StringList::new(&["Alle Aufgabenlisten"]);
-        let source_uids = Rc::new(RefCell::new(Vec::<String>::new()));
         let source_selector =
             gtk::DropDown::new(Some(source_model.clone()), None::<&gtk::Expression>);
         source_selector.set_tooltip_text(Some("Aufgabenliste auswählen"));
+        self.imp()
+            .task_source_model
+            .replace(Some(source_model.clone()));
+        self.imp()
+            .task_source_selector
+            .replace(Some(source_selector.clone()));
         let source_selector_for_sidebar = source_selector.clone();
         let split_for_source_sidebar = split.clone();
         task_source_list.connect_row_selected(move |_, row| {
@@ -1650,7 +3929,6 @@ impl TasksPage {
                 split_for_source_sidebar.set_show_content(true);
             }
         });
-        let initial_source_filter = self.imp().task_source_filter.borrow().clone();
         let category_model = gtk::StringList::new(&["Alle Kategorien"]);
         let category_selector =
             gtk::DropDown::new(Some(category_model.clone()), None::<&gtk::Expression>);
@@ -1670,13 +3948,254 @@ impl TasksPage {
         self.imp()
             .new_task_button
             .replace(Some(btn_add_task.clone()));
+        let selection_status = gtk::Label::builder()
+            .label("Keine Auswahl")
+            .css_classes(vec!["dim-label"])
+            .build();
+        let forward_selection_button = gtk::Button::builder()
+            .icon_name("mail-forward-symbolic")
+            .tooltip_text("Ausgewählte Aufgabe als iCalendar weiterleiten")
+            .sensitive(false)
+            .build();
+        set_accessible_label(
+            &forward_selection_button,
+            "Ausgewählte Aufgabe als iCalendar weiterleiten",
+        );
+        let assign_selection_button = gtk::Button::builder()
+            .icon_name("avatar-default-symbolic")
+            .tooltip_text("Ausgewählte Aufgabe zuweisen")
+            .sensitive(false)
+            .build();
+        set_accessible_label(&assign_selection_button, "Ausgewählte Aufgabe zuweisen");
+        let open_url_selection_button = gtk::Button::builder()
+            .icon_name("external-link-symbolic")
+            .tooltip_text("URL der ausgewählten Aufgabe öffnen")
+            .sensitive(false)
+            .build();
+        set_accessible_label(
+            &open_url_selection_button,
+            "URL der ausgewählten Aufgabe öffnen",
+        );
+        let print_selection_button = gtk::Button::builder()
+            .icon_name("document-print-symbolic")
+            .tooltip_text("Ausgewählte Aufgabe drucken")
+            .sensitive(false)
+            .build();
+        set_accessible_label(&print_selection_button, "Ausgewählte Aufgabe drucken");
+        let print_list_button = gtk::Button::builder()
+            .label("Liste drucken")
+            .icon_name("document-print-symbolic")
+            .tooltip_text("Sichtbare Aufgabenliste drucken (Strg+P)")
+            .build();
+        set_accessible_label(&print_list_button, "Sichtbare Aufgabenliste drucken");
+        let print_list_preview_button = gtk::Button::builder()
+            .label("Druckvorschau")
+            .icon_name("document-print-preview-symbolic")
+            .tooltip_text("Druckvorschau der sichtbaren Aufgabenliste vorbereiten")
+            .build();
+        set_accessible_label(
+            &print_list_preview_button,
+            "Druckvorschau der sichtbaren Aufgabenliste vorbereiten",
+        );
+        let refresh_source_button = gtk::Button::builder()
+            .label("Aktualisieren")
+            .icon_name("view-refresh-symbolic")
+            .tooltip_text("Ausgewählte Aufgabenliste beim Anbieter aktualisieren")
+            .sensitive(false)
+            .build();
+        set_accessible_label(
+            &refresh_source_button,
+            "Ausgewählte Aufgabenliste aktualisieren",
+        );
+        let copy_selection_button = gtk::Button::builder()
+            .icon_name("edit-copy-symbolic")
+            .tooltip_text("Ausgewählte Aufgaben in die Zwischenablage kopieren")
+            .sensitive(false)
+            .build();
+        set_accessible_label(
+            &copy_selection_button,
+            "Ausgewählte Aufgaben in die Zwischenablage kopieren",
+        );
+        let cut_selection_button = gtk::Button::builder()
+            .icon_name("edit-cut-symbolic")
+            .tooltip_text("Ausgewählte Aufgaben ausschneiden")
+            .sensitive(false)
+            .build();
+        set_accessible_label(&cut_selection_button, "Ausgewählte Aufgaben ausschneiden");
+        let paste_selection_button = gtk::Button::builder()
+            .icon_name("edit-paste-symbolic")
+            .tooltip_text("Aufgaben aus der Zwischenablage einfügen")
+            .sensitive(false)
+            .build();
+        set_accessible_label(
+            &paste_selection_button,
+            "Aufgaben aus der Zwischenablage einfügen",
+        );
+        let select_all_tasks_button = gtk::Button::builder()
+            .icon_name("edit-select-all-symbolic")
+            .tooltip_text("Alle sichtbaren Aufgaben auswählen")
+            .build();
+        set_accessible_label(
+            &select_all_tasks_button,
+            "Alle sichtbaren Aufgaben auswählen",
+        );
+        let bulk_edit_button = gtk::Button::builder()
+            .label("Stapel bearbeiten")
+            .icon_name("document-edit-symbolic")
+            .tooltip_text("Ausgewählte Aufgaben gemeinsam bearbeiten")
+            .sensitive(false)
+            .build();
+        set_accessible_label(
+            &bulk_edit_button,
+            "Ausgewählte Aufgaben gemeinsam bearbeiten",
+        );
+        let complete_selection_button = gtk::Button::builder()
+            .label("Erledigt")
+            .icon_name("emblem-ok-symbolic")
+            .tooltip_text("Ausgewählte Aufgaben als erledigt markieren")
+            .sensitive(false)
+            .build();
+        set_accessible_label(
+            &complete_selection_button,
+            "Ausgewählte Aufgaben als erledigt markieren",
+        );
+        let incomplete_selection_button = gtk::Button::builder()
+            .label("Offen")
+            .icon_name("view-refresh-symbolic")
+            .tooltip_text("Ausgewählte Aufgaben als offen markieren")
+            .sensitive(false)
+            .build();
+        set_accessible_label(
+            &incomplete_selection_button,
+            "Ausgewählte Aufgaben als offen markieren",
+        );
+        let delete_selection_button = gtk::Button::builder()
+            .label("Auswahl löschen")
+            .icon_name("user-trash-symbolic")
+            .tooltip_text("Ausgewählte Aufgaben löschen")
+            .css_classes(vec!["destructive-action"])
+            .sensitive(false)
+            .build();
+        set_accessible_label(&delete_selection_button, "Ausgewählte Aufgaben löschen");
+        let purge_button = gtk::Button::builder()
+            .label("Erledigte löschen")
+            .icon_name("edit-clear-all-symbolic")
+            .tooltip_text("Alle erledigten Aufgaben dauerhaft löschen (Strg+E)")
+            .css_classes(vec!["destructive-action"])
+            .sensitive(false)
+            .build();
+        set_accessible_label(&purge_button, "Alle erledigten Aufgaben dauerhaft löschen");
+        let export_selection_button = gtk::Button::builder()
+            .label("Auswahl exportieren")
+            .icon_name("document-save-symbolic")
+            .tooltip_text("Ausgewählte Aufgaben gemeinsam als iCalendar exportieren")
+            .sensitive(false)
+            .build();
+        set_accessible_label(
+            &export_selection_button,
+            "Ausgewählte Aufgaben gemeinsam als iCalendar exportieren",
+        );
+        let preview_visible = AppSettings::try_new()
+            .map(|settings| settings.task_preview_visible())
+            .unwrap_or(true);
+        let preview_toggle = gtk::ToggleButton::builder()
+            .icon_name("view-dual-symbolic")
+            .tooltip_text("Aufgabenvorschau ein-/ausblenden (Strg+M)")
+            .active(preview_visible)
+            .build();
+        set_accessible_label(&preview_toggle, "Aufgabenvorschau ein- oder ausblenden");
+        let preview_orientation_model =
+            gtk::StringList::new(&["Vorschau unten", "Vorschau daneben"]);
+        let preview_orientation_selector =
+            gtk::DropDown::new(Some(preview_orientation_model), None::<&gtk::Expression>);
+        let preview_orientation = AppSettings::try_new()
+            .map(|settings| {
+                TaskPreviewOrientation::from_setting(&settings.task_preview_orientation())
+            })
+            .unwrap_or(TaskPreviewOrientation::Classic);
+        preview_orientation_selector.set_selected(preview_orientation.index());
+        preview_orientation_selector.set_tooltip_text(Some("Anordnung der Aufgabenvorschau"));
+        self.imp()
+            .task_selection_status
+            .replace(Some(selection_status.clone()));
+        self.imp()
+            .task_forward_button
+            .replace(Some(forward_selection_button.clone()));
+        self.imp()
+            .task_assign_button
+            .replace(Some(assign_selection_button.clone()));
+        self.imp()
+            .task_open_url_button
+            .replace(Some(open_url_selection_button.clone()));
+        self.imp()
+            .task_print_button
+            .replace(Some(print_selection_button.clone()));
+        self.imp()
+            .task_copy_button
+            .replace(Some(copy_selection_button.clone()));
+        self.imp()
+            .task_cut_button
+            .replace(Some(cut_selection_button.clone()));
+        self.imp()
+            .task_paste_button
+            .replace(Some(paste_selection_button.clone()));
+        self.imp()
+            .task_select_all_button
+            .replace(Some(select_all_tasks_button.clone()));
+        self.imp()
+            .task_bulk_edit_button
+            .replace(Some(bulk_edit_button.clone()));
+        self.imp()
+            .task_complete_button
+            .replace(Some(complete_selection_button.clone()));
+        self.imp()
+            .task_incomplete_button
+            .replace(Some(incomplete_selection_button.clone()));
+        self.imp()
+            .task_delete_selection_button
+            .replace(Some(delete_selection_button.clone()));
+        self.imp()
+            .task_purge_button
+            .replace(Some(purge_button.clone()));
+        self.imp()
+            .task_refresh_button
+            .replace(Some(refresh_source_button.clone()));
+        self.imp()
+            .task_export_button
+            .replace(Some(export_selection_button.clone()));
+        self.imp()
+            .task_preview_toggle
+            .replace(Some(preview_toggle.clone()));
+        self.imp()
+            .task_preview_orientation
+            .replace(Some(preview_orientation_selector.clone()));
 
         toolbar.append(&search_mode_selector);
         toolbar.append(&search_entry);
         toolbar.append(&sort_selector);
         toolbar.append(&direction_button);
         toolbar.append(&source_selector);
+        toolbar.append(&refresh_source_button);
         toolbar.append(&category_selector);
+        toolbar.append(&selection_status);
+        toolbar.append(&assign_selection_button);
+        toolbar.append(&forward_selection_button);
+        toolbar.append(&open_url_selection_button);
+        toolbar.append(&print_selection_button);
+        toolbar.append(&print_list_button);
+        toolbar.append(&print_list_preview_button);
+        toolbar.append(&copy_selection_button);
+        toolbar.append(&cut_selection_button);
+        toolbar.append(&paste_selection_button);
+        toolbar.append(&select_all_tasks_button);
+        toolbar.append(&bulk_edit_button);
+        toolbar.append(&complete_selection_button);
+        toolbar.append(&incomplete_selection_button);
+        toolbar.append(&delete_selection_button);
+        toolbar.append(&purge_button);
+        toolbar.append(&export_selection_button);
+        toolbar.append(&preview_toggle);
+        toolbar.append(&preview_orientation_selector);
         toolbar.append(&btn_add_task);
 
         content_box.append(&toolbar);
@@ -1685,7 +4204,7 @@ impl TasksPage {
         let task_store = gio::ListStore::new::<TaskItemObject>();
 
         let task_list = gtk::ListBox::builder()
-            .selection_mode(gtk::SelectionMode::Single)
+            .selection_mode(gtk::SelectionMode::Multiple)
             .margin_start(16)
             .margin_end(16)
             .margin_top(12)
@@ -1703,7 +4222,609 @@ impl TasksPage {
         self.imp()
             .task_empty_state
             .replace(Some(empty_tasks.clone()));
+
+        let preview_find_bar = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(6)
+            .margin_start(8)
+            .margin_end(8)
+            .margin_top(6)
+            .margin_bottom(6)
+            .visible(false)
+            .build();
+        let preview_find_entry = gtk::SearchEntry::builder()
+            .placeholder_text("In Vorschau suchen")
+            .hexpand(true)
+            .sensitive(false)
+            .build();
+        let preview_find_previous = gtk::Button::builder()
+            .icon_name("go-up-symbolic")
+            .tooltip_text("Vorheriger Treffer")
+            .build();
+        let preview_find_next = gtk::Button::builder()
+            .icon_name("go-down-symbolic")
+            .tooltip_text("Nächster Treffer")
+            .build();
+        let preview_find_status = gtk::Label::new(None);
+        let preview_find_close = gtk::Button::builder()
+            .icon_name("window-close-symbolic")
+            .tooltip_text("Vorschau-Suche schließen")
+            .build();
+        preview_find_bar.append(&preview_find_entry);
+        preview_find_bar.append(&preview_find_previous);
+        preview_find_bar.append(&preview_find_next);
+        preview_find_bar.append(&preview_find_status);
+        preview_find_bar.append(&preview_find_close);
+        let preview_content = gtk::TextView::builder()
+            .editable(false)
+            .cursor_visible(false)
+            .wrap_mode(gtk::WrapMode::WordChar)
+            .left_margin(12)
+            .right_margin(12)
+            .top_margin(12)
+            .bottom_margin(12)
+            .build();
+        let preview_scroll = gtk::ScrolledWindow::builder()
+            .child(&preview_content)
+            .vexpand(true)
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .build();
+        let preview_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .css_classes(vec!["background"])
+            .visible(preview_visible)
+            .build();
+        preview_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+        preview_box.append(&preview_find_bar);
+        preview_box.append(&preview_scroll);
+        self.imp()
+            .task_preview_box
+            .replace(Some(preview_box.clone()));
+        self.imp()
+            .task_preview_content
+            .replace(Some(preview_content.clone()));
+        self.imp()
+            .task_preview_find_bar
+            .replace(Some(preview_find_bar.clone()));
+        self.imp()
+            .task_preview_find_entry
+            .replace(Some(preview_find_entry.clone()));
+        self.imp()
+            .task_preview_find_status
+            .replace(Some(preview_find_status.clone()));
+
+        let page_weak_for_preview_find = self.downgrade();
+        preview_find_entry.connect_search_changed(move |entry| {
+            if let Some(page) = page_weak_for_preview_find.upgrade() {
+                let text = page.imp().task_preview_text.borrow().clone();
+                apply_task_preview_find(
+                    &page,
+                    task_preview_find_state(&text, entry.text().as_str(), None),
+                );
+            }
+        });
+        for (button, forward) in [
+            (preview_find_previous.clone(), false),
+            (preview_find_next.clone(), true),
+        ] {
+            let page_weak = self.downgrade();
+            button.connect_clicked(move |_| {
+                if let Some(page) = page_weak.upgrade() {
+                    let state = page.imp().task_preview_find.borrow().clone();
+                    apply_task_preview_find(&page, task_preview_find_step(&state, forward));
+                }
+            });
+        }
+        let preview_find_entry_for_close = preview_find_entry.clone();
+        let preview_find_bar_for_close = preview_find_bar.clone();
+        preview_find_close.connect_clicked(move |_| {
+            preview_find_entry_for_close.set_text("");
+            preview_find_bar_for_close.set_visible(false);
+        });
+
+        let page_weak_for_preview_toggle = self.downgrade();
+        preview_toggle.connect_toggled(move |toggle| {
+            if let Some(settings) = AppSettings::try_new() {
+                settings.set_task_preview_visible(toggle.is_active());
+            }
+            if let Some(page) = page_weak_for_preview_toggle.upgrade() {
+                refresh_task_preview(&page);
+            }
+        });
+        let page_weak_for_preview_orientation = self.downgrade();
+        preview_orientation_selector.connect_selected_notify(move |selector| {
+            let orientation = TaskPreviewOrientation::from_index(selector.selected());
+            if let Some(settings) = AppSettings::try_new() {
+                settings.set_task_preview_orientation(orientation.setting_value());
+            }
+            if let Some(page) = page_weak_for_preview_orientation.upgrade() {
+                apply_task_preview_paned_layout(&page, orientation);
+            }
+        });
         content_box.append(&empty_tasks);
+
+        let page_weak_for_selection = self.downgrade();
+        task_list.connect_selected_rows_changed(move |list| {
+            let Some(page) = page_weak_for_selection.upgrade() else {
+                return;
+            };
+            if page.imp().task_selection_restoring.get() {
+                return;
+            }
+            page.imp()
+                .task_selection
+                .replace(task_selection_from_list(list));
+            update_task_selection_controls(&page);
+        });
+
+        let page_weak_for_copy = self.downgrade();
+        let task_store_for_copy = task_store.clone();
+        copy_selection_button.connect_clicked(move |button| {
+            let Some(page) = page_weak_for_copy.upgrade() else {
+                return;
+            };
+            if task_mutation_batch_running(&page) {
+                return;
+            }
+            let selection = page.imp().task_selection.borrow().clone();
+            match build_selected_task_export(
+                &selection,
+                &task_export_candidates(&task_store_for_copy),
+            ) {
+                Ok(payload) => {
+                    button.display().clipboard().set_text(&payload);
+                    show_toast_for_widget(button, "Aufgabe(n) in die Zwischenablage kopiert");
+                }
+                Err(error) => show_toast_for_widget(button, &error),
+            }
+        });
+
+        let page_weak_for_cut = self.downgrade();
+        let task_store_for_cut = task_store.clone();
+        let task_list_for_cut = task_list.clone();
+        let empty_tasks_for_cut = empty_tasks.clone();
+        cut_selection_button.connect_clicked(move |button| {
+            let Some(page) = page_weak_for_cut.upgrade() else {
+                return;
+            };
+            if task_mutation_batch_running(&page) {
+                return;
+            }
+            let selection = page.imp().task_selection.borrow().clone();
+            let candidates = task_export_candidates(&task_store_for_cut);
+            if !task_delete_action_enabled(
+                &selection,
+                &candidates,
+                &page.imp().task_source_capabilities.borrow(),
+                CalendarStoreService::new().is_writable(),
+                false,
+            ) {
+                show_toast_for_widget(button, "Ausschneiden ist für diese Auswahl nicht verfügbar");
+                return;
+            }
+            let payload = match build_selected_task_export(&selection, &candidates) {
+                Ok(payload) => payload,
+                Err(error) => {
+                    show_toast_for_widget(button, &error);
+                    return;
+                }
+            };
+            // GTK's set_text copies this immutable value into the clipboard
+            // synchronously.  Only then enter the existing guarded deletion
+            // confirmation; a failed copy never removes source tasks.
+            button.display().clipboard().set_text(&payload);
+            present_task_delete_confirmation(
+                &page,
+                button,
+                &task_store_for_cut,
+                &task_list_for_cut,
+                &empty_tasks_for_cut,
+            );
+        });
+
+        let page_weak_for_paste = self.downgrade();
+        let task_store_for_paste = task_store.clone();
+        let task_list_for_paste = task_list.clone();
+        let empty_tasks_for_paste = empty_tasks.clone();
+        paste_selection_button.connect_clicked(move |button| {
+            let Some(page) = page_weak_for_paste.upgrade() else {
+                return;
+            };
+            start_task_clipboard_paste(
+                &page,
+                button,
+                &task_store_for_paste,
+                &task_list_for_paste,
+                &empty_tasks_for_paste,
+            );
+        });
+
+        let task_list_for_select_all = task_list.clone();
+        select_all_tasks_button.connect_clicked(move |_| task_list_for_select_all.select_all());
+
+        let copy_for_keys = copy_selection_button.clone();
+        let cut_for_keys = cut_selection_button.clone();
+        let paste_for_keys = paste_selection_button.clone();
+        let select_all_for_keys = select_all_tasks_button.clone();
+        let bulk_edit_for_keys = bulk_edit_button.clone();
+        let print_list_for_keys = print_list_button.clone();
+        let purge_for_keys = purge_button.clone();
+        let preview_toggle_for_keys = preview_toggle.clone();
+        let preview_find_bar_for_keys = preview_find_bar.clone();
+        let preview_find_entry_for_keys = preview_find_entry.clone();
+        let clipboard_keys = gtk::EventControllerKey::new();
+        clipboard_keys.connect_key_pressed(move |_, key, _, modifiers| {
+            if !modifiers.contains(gtk::gdk::ModifierType::CONTROL_MASK) {
+                return glib::Propagation::Proceed;
+            }
+            if matches!(key, gtk::gdk::Key::f | gtk::gdk::Key::F)
+                && modifiers.contains(gtk::gdk::ModifierType::SHIFT_MASK)
+            {
+                // This controller belongs only to the task list.  Require an
+                // exact current single selection before exposing preview find.
+                if preview_toggle_for_keys.is_active() && preview_find_entry_for_keys.is_sensitive()
+                {
+                    preview_find_bar_for_keys.set_visible(true);
+                    preview_find_entry_for_keys.grab_focus();
+                    return glib::Propagation::Stop;
+                }
+                return glib::Propagation::Proceed;
+            }
+            if matches!(key, gtk::gdk::Key::m | gtk::gdk::Key::M) {
+                preview_toggle_for_keys.set_active(!preview_toggle_for_keys.is_active());
+                return glib::Propagation::Stop;
+            }
+            if matches!(key, gtk::gdk::Key::p | gtk::gdk::Key::P)
+                && !modifiers.intersects(
+                    gtk::gdk::ModifierType::SHIFT_MASK
+                        | gtk::gdk::ModifierType::ALT_MASK
+                        | gtk::gdk::ModifierType::SUPER_MASK
+                        | gtk::gdk::ModifierType::META_MASK,
+                )
+            {
+                print_list_for_keys.activate();
+                return glib::Propagation::Stop;
+            }
+            let action = match key {
+                gtk::gdk::Key::c | gtk::gdk::Key::C => Some(&copy_for_keys),
+                gtk::gdk::Key::x | gtk::gdk::Key::X => Some(&cut_for_keys),
+                gtk::gdk::Key::v | gtk::gdk::Key::V => Some(&paste_for_keys),
+                gtk::gdk::Key::a | gtk::gdk::Key::A => Some(&select_all_for_keys),
+                gtk::gdk::Key::b | gtk::gdk::Key::B => Some(&bulk_edit_for_keys),
+                gtk::gdk::Key::e | gtk::gdk::Key::E => Some(&purge_for_keys),
+                _ => None,
+            };
+            if let Some(action) = action.filter(|action| action.is_sensitive()) {
+                action.activate();
+                glib::Propagation::Stop
+            } else {
+                glib::Propagation::Proceed
+            }
+        });
+        // This controller is attached only to the task list, so editable
+        // search and task-editor widgets retain their standard shortcuts.
+        task_list.add_controller(clipboard_keys);
+
+        let page_weak_for_bulk_edit = self.downgrade();
+        let task_store_for_bulk_edit = task_store.clone();
+        let task_list_for_bulk_edit = task_list.clone();
+        let empty_tasks_for_bulk_edit = empty_tasks.clone();
+        bulk_edit_button.connect_clicked(move |button| {
+            let Some(page) = page_weak_for_bulk_edit.upgrade() else {
+                return;
+            };
+            present_task_bulk_edit_dialog(
+                &page,
+                button,
+                &task_store_for_bulk_edit,
+                &task_list_for_bulk_edit,
+                &empty_tasks_for_bulk_edit,
+            );
+        });
+
+        let page_weak_for_clipboard_formats = self.downgrade();
+        paste_selection_button
+            .display()
+            .clipboard()
+            .connect_changed(move |_| {
+                if let Some(page) = page_weak_for_clipboard_formats.upgrade() {
+                    update_task_selection_controls(&page);
+                }
+            });
+
+        let page_weak_for_export = self.downgrade();
+        let task_store_for_export = task_store.clone();
+        export_selection_button.connect_clicked(move |button| {
+            let Some(page) = page_weak_for_export.upgrade() else {
+                return;
+            };
+            let selection = page.imp().task_selection.borrow().clone();
+            let candidates = task_export_candidates(&task_store_for_export);
+            // Validate every identity and component before allowing the file
+            // chooser to expose an existing target.
+            let payload = match build_selected_task_export(&selection, &candidates) {
+                Ok(payload) => payload,
+                Err(error) => {
+                    show_toast_for_widget(button, &error);
+                    return;
+                }
+            };
+            let Some(root) = button.root() else {
+                return;
+            };
+            let Ok(window) = root.downcast::<gtk::Window>() else {
+                return;
+            };
+            let file_dialog = gtk::FileDialog::builder()
+                .title("Aufgabenauswahl als iCalendar speichern")
+                .initial_name("aufgaben.ics")
+                .modal(true)
+                .build();
+            let button_for_result = button.clone();
+            file_dialog.save(Some(&window), None::<&gio::Cancellable>, move |result| {
+                let Ok(file) = result else {
+                    return;
+                };
+                // GIO's replace operation is atomic: a failed replacement
+                // leaves an existing destination intact.
+                let save_result = file.replace_contents(
+                    payload.as_bytes(),
+                    None,
+                    true,
+                    gio::FileCreateFlags::NONE,
+                    None::<&gio::Cancellable>,
+                );
+                match save_result {
+                    Ok(_) => show_toast_for_widget(
+                        &button_for_result,
+                        "Aufgabenauswahl als iCalendar exportiert",
+                    ),
+                    Err(error) => show_toast_for_widget(
+                        &button_for_result,
+                        &format!("iCalendar konnte nicht gespeichert werden: {error}"),
+                    ),
+                }
+            });
+        });
+
+        let page_weak_for_forward = self.downgrade();
+        let task_store_for_forward = task_store.clone();
+        forward_selection_button.connect_clicked(move |button| {
+            let Some(page) = page_weak_for_forward.upgrade() else {
+                return;
+            };
+            let selection = page.imp().task_selection.borrow().clone();
+            match build_task_forward_payload(
+                &selection,
+                &task_export_candidates(&task_store_for_forward),
+            ) {
+                Ok(payload) => {
+                    button.display().clipboard().set_text(&payload);
+                    show_toast_for_widget(
+                        button,
+                        "METHOD:PUBLISH bereitgestellt; echtes iTIP-Weiterleiten ist Linux-Handoff",
+                    );
+                }
+                Err(error) => show_toast_for_widget(button, &error),
+            }
+        });
+
+        let page_weak_for_assign = self.downgrade();
+        let task_store_for_assign = task_store.clone();
+        let task_list_for_assign = task_list.clone();
+        let empty_tasks_for_assign = empty_tasks.clone();
+        assign_selection_button.connect_clicked(move |button| {
+            let Some(page) = page_weak_for_assign.upgrade() else {
+                return;
+            };
+            present_task_assignment_dialog(
+                &page,
+                button,
+                &task_store_for_assign,
+                &task_list_for_assign,
+                &empty_tasks_for_assign,
+            );
+        });
+
+        let page_weak_for_open_url = self.downgrade();
+        let task_store_for_open_url = task_store.clone();
+        open_url_selection_button.connect_clicked(move |button| {
+            let Some(page) = page_weak_for_open_url.upgrade() else {
+                return;
+            };
+            let selection = page.imp().task_selection.borrow().clone();
+            let url = match selected_task_open_url(
+                &selection,
+                &task_export_candidates(&task_store_for_open_url),
+            ) {
+                Ok(url) => url,
+                Err(error) => {
+                    show_toast_for_widget(button, &error);
+                    return;
+                }
+            };
+            let button_for_result = button.clone();
+            gio::AppInfo::launch_default_for_uri_async(
+                &url,
+                None::<&gio::AppLaunchContext>,
+                None::<&gio::Cancellable>,
+                move |result| match result {
+                    Ok(()) => show_toast_for_widget(&button_for_result, "URL geöffnet"),
+                    Err(error) => show_toast_for_widget(
+                        &button_for_result,
+                        &format!("URL konnte nicht geöffnet werden: {error}"),
+                    ),
+                },
+            );
+        });
+
+        let page_weak_for_print = self.downgrade();
+        let task_store_for_print = task_store.clone();
+        print_selection_button.connect_clicked(move |button| {
+            let Some(page) = page_weak_for_print.upgrade() else {
+                return;
+            };
+            show_toast_for_widget(button, "Druckdokument wird vorbereitet …");
+            let selection = page.imp().task_selection.borrow().clone();
+            match build_task_print_document(
+                &selection,
+                &task_export_candidates(&task_store_for_print),
+            ) {
+                Ok(document) => show_toast_for_widget(
+                    button,
+                    &format!(
+                        "Druckdokument vorbereitet ({} Zeichen); GTK-Druckdialog/Portal ist Linux-Handoff",
+                        document.plain_text.chars().count()
+                    ),
+                ),
+                Err(error) => show_toast_for_widget(
+                    button,
+                    &format!("Druckdokument konnte nicht vorbereitet werden: {error}"),
+                ),
+            }
+        });
+
+        let page_weak_for_list_print = self.downgrade();
+        let task_store_for_list_print = task_store.clone();
+        let task_list_for_list_print = task_list.clone();
+        print_list_button.connect_clicked(move |button| {
+            if let Some(page) = page_weak_for_list_print.upgrade() {
+                prepare_task_list_print(
+                    &page,
+                    button,
+                    &task_list_for_list_print,
+                    &task_store_for_list_print,
+                    TaskListPrintAction::Print,
+                );
+            }
+        });
+
+        let page_weak_for_list_preview = self.downgrade();
+        let task_store_for_list_preview = task_store.clone();
+        let task_list_for_list_preview = task_list.clone();
+        print_list_preview_button.connect_clicked(move |button| {
+            if let Some(page) = page_weak_for_list_preview.upgrade() {
+                prepare_task_list_print(
+                    &page,
+                    button,
+                    &task_list_for_list_preview,
+                    &task_store_for_list_preview,
+                    TaskListPrintAction::Preview,
+                );
+            }
+        });
+
+        let page_weak_for_complete = self.downgrade();
+        let task_store_for_complete = task_store.clone();
+        let task_list_for_complete = task_list.clone();
+        let empty_tasks_for_complete = empty_tasks.clone();
+        complete_selection_button.connect_clicked(move |button| {
+            let Some(page) = page_weak_for_complete.upgrade() else {
+                return;
+            };
+            start_task_lifecycle_batch(
+                &page,
+                button,
+                &task_store_for_complete,
+                &task_list_for_complete,
+                &empty_tasks_for_complete,
+                TaskLifecycleBatchOperation::Complete,
+            );
+        });
+
+        let page_weak_for_incomplete = self.downgrade();
+        let task_store_for_incomplete = task_store.clone();
+        let task_list_for_incomplete = task_list.clone();
+        let empty_tasks_for_incomplete = empty_tasks.clone();
+        incomplete_selection_button.connect_clicked(move |button| {
+            let Some(page) = page_weak_for_incomplete.upgrade() else {
+                return;
+            };
+            start_task_lifecycle_batch(
+                &page,
+                button,
+                &task_store_for_incomplete,
+                &task_list_for_incomplete,
+                &empty_tasks_for_incomplete,
+                TaskLifecycleBatchOperation::Incomplete,
+            );
+        });
+
+        let page_weak_for_delete_selection = self.downgrade();
+        let task_store_for_delete_selection = task_store.clone();
+        let task_list_for_delete_selection = task_list.clone();
+        let empty_tasks_for_delete_selection = empty_tasks.clone();
+        delete_selection_button.connect_clicked(move |button| {
+            let Some(page) = page_weak_for_delete_selection.upgrade() else {
+                return;
+            };
+            present_task_delete_confirmation(
+                &page,
+                button,
+                &task_store_for_delete_selection,
+                &task_list_for_delete_selection,
+                &empty_tasks_for_delete_selection,
+            );
+        });
+
+        let page_weak_for_purge = self.downgrade();
+        let task_store_for_purge = task_store.clone();
+        let task_list_for_purge = task_list.clone();
+        let empty_tasks_for_purge = empty_tasks.clone();
+        purge_button.connect_clicked(move |button| {
+            let Some(page) = page_weak_for_purge.upgrade() else {
+                return;
+            };
+            present_task_purge_confirmation(
+                &page,
+                button,
+                &task_store_for_purge,
+                &task_list_for_purge,
+                &empty_tasks_for_purge,
+            );
+        });
+
+        let page_weak_for_refresh = self.downgrade();
+        refresh_source_button.connect_clicked(move |button| {
+            if let Some(page) = page_weak_for_refresh.upgrade() {
+                start_task_source_refresh(&page, button);
+            }
+        });
+
+        let page_weak_for_source_rename = self.downgrade();
+        rename_task_source_button.connect_clicked(move |button| {
+            if let Some(page) = page_weak_for_source_rename.upgrade() {
+                present_task_source_rename(&page, button);
+            }
+        });
+
+        let page_weak_for_source_new = self.downgrade();
+        new_task_source_button.connect_clicked(move |button| {
+            if let Some(page) = page_weak_for_source_new.upgrade() {
+                present_new_local_task_source(&page, button);
+            }
+        });
+
+        let page_weak_for_source_properties = self.downgrade();
+        properties_task_source_button.connect_clicked(move |button| {
+            if let Some(page) = page_weak_for_source_properties.upgrade() {
+                present_task_source_properties(&page, button);
+            }
+        });
+
+        let page_weak_for_source_copy = self.downgrade();
+        copy_task_source_button.connect_clicked(move |button| {
+            if let Some(page) = page_weak_for_source_copy.upgrade() {
+                present_task_source_copy(&page, button);
+            }
+        });
+
+        let page_weak_for_source_delete = self.downgrade();
+        delete_task_source_button.connect_clicked(move |button| {
+            if let Some(page) = page_weak_for_source_delete.upgrade() {
+                present_task_source_delete_confirmation(&page, button);
+            }
+        });
 
         let page_weak_for_activation = self.downgrade();
         let task_store_for_activation = task_store.clone();
@@ -1736,10 +4857,13 @@ impl TasksPage {
             let Some(page) = page_weak_for_activation.upgrade() else {
                 return;
             };
-            if !task_source_is_writable_now(&source_uid) {
-                page.show_toast(
-                    "Diese Aufgabenliste ist nicht als schreibfähig bestätigt",
-                );
+            if task_source_capability(
+                &source_uid,
+                &page.imp().task_source_capabilities.borrow(),
+                CalendarStoreService::new().is_writable(),
+            ) != TaskSourceCapability::Writable
+            {
+                page.show_toast("Diese Aufgabenliste ist nicht als schreibfähig bestätigt");
                 return;
             }
             page.open_task_dialog(
@@ -1748,64 +4872,6 @@ impl TasksPage {
                 empty_tasks_for_activation.clone(),
                 Some(task),
             );
-        });
-
-        let source_model_for_load = source_model.clone();
-        let source_uids_for_load = Rc::clone(&source_uids);
-        let source_selector_for_load = source_selector.clone();
-        let task_source_list_for_load = task_source_list.clone();
-        glib::spawn_future_local(async move {
-            let discovery =
-                eds_service::discover_sources(eds_service::EdsSourceKind::Calendar).await;
-            let mut sources = discovery.sources;
-            sources.retain(|source| source.enabled);
-            sources.sort_by_cached_key(|source| {
-                (source.display_name.to_lowercase(), source.uid.clone())
-            });
-
-            let mut names = vec!["Alle Aufgabenlisten".to_string()];
-            let mut uids = Vec::new();
-            for source in sources {
-                names.push(source.display_name);
-                uids.push(source.uid);
-            }
-            if let Some(initial_source_filter) = initial_source_filter.as_deref()
-                && !uids.iter().any(|uid| uid == initial_source_filter)
-            {
-                names.push(format!("Nicht verfügbare Quelle · {initial_source_filter}"));
-                uids.push(initial_source_filter.to_string());
-            }
-            if CalendarStoreService::new().is_writable() {
-                names.push("Lokale Aufgabenliste".to_string());
-                uids.push("local-calendar".to_string());
-            }
-
-            let name_refs = names.iter().map(String::as_str).collect::<Vec<_>>();
-            source_model_for_load.splice(0, source_model_for_load.n_items(), &name_refs);
-            source_uids_for_load.replace(uids.clone());
-            while let Some(child) = task_source_list_for_load.first_child() {
-                task_source_list_for_load.remove(&child);
-            }
-            for (index, name) in names.iter().enumerate() {
-                let escaped = glib::markup_escape_text(name);
-                let row = adw::ActionRow::builder().title(escaped.as_str()).build();
-                let image = gtk::Image::from_icon_name(if index == 0 {
-                    "view-list-symbolic"
-                } else {
-                    "view-list-details-symbolic"
-                });
-                row.add_prefix(&image);
-                task_source_list_for_load.append(&row);
-            }
-            let selected = initial_source_filter
-                .as_deref()
-                .and_then(|uid| uids.iter().position(|candidate| candidate == uid))
-                .map(|index| index as u32 + 1)
-                .unwrap_or(0);
-            source_selector_for_load.set_selected(selected);
-            if let Some(row) = task_source_list_for_load.row_at_index(selected as i32) {
-                task_source_list_for_load.select_row(Some(&row));
-            }
         });
 
         let page_weak_for_search = self.downgrade();
@@ -1894,7 +4960,6 @@ impl TasksPage {
         });
 
         let page_weak_for_source = self.downgrade();
-        let source_uids_for_selector = Rc::clone(&source_uids);
         let task_source_list_for_selector = task_source_list.clone();
         let task_list_for_source = task_list.clone();
         let task_store_for_source = task_store.clone();
@@ -1906,7 +4971,8 @@ impl TasksPage {
             let source_filter = if selector.selected() == 0 {
                 None
             } else {
-                source_uids_for_selector
+                page.imp()
+                    .task_source_uids
                     .borrow()
                     .get(selector.selected() as usize - 1)
                     .cloned()
@@ -2065,20 +5131,20 @@ impl TasksPage {
             let task_store_for_source_settings = task_store.clone();
             let empty_tasks_for_source_settings = empty_tasks.clone();
             let source_selector_for_settings = source_selector.clone();
-            let source_uids_for_settings = Rc::clone(&source_uids);
             settings.connect_changed(Some("task-source-filter"), move |settings, _| {
                 let value = settings.string("task-source-filter");
+                let Some(page) = page_weak.upgrade() else {
+                    return;
+                };
                 let selected = if value.trim().is_empty() {
                     Some(0)
                 } else {
-                    source_uids_for_settings
+                    page.imp()
+                        .task_source_uids
                         .borrow()
                         .iter()
                         .position(|uid| uid == value.as_str())
                         .map(|index| index as u32 + 1)
-                };
-                let Some(page) = page_weak.upgrade() else {
-                    return;
                 };
                 page.imp()
                     .task_source_filter
@@ -2164,6 +5230,40 @@ impl TasksPage {
                     );
                 }
             });
+
+            let page_weak = self.downgrade();
+            let preview_toggle_for_settings = preview_toggle.clone();
+            settings.connect_changed(Some("task-preview-visible"), move |settings, _| {
+                let visible = settings.boolean("task-preview-visible");
+                preview_toggle_for_settings.set_active(visible);
+                if let Some(page) = page_weak.upgrade() {
+                    refresh_task_preview(&page);
+                }
+            });
+
+            let page_weak = self.downgrade();
+            let preview_orientation_for_settings = preview_orientation_selector.clone();
+            settings.connect_changed(Some("task-preview-orientation"), move |settings, _| {
+                let orientation = TaskPreviewOrientation::from_setting(
+                    settings.string("task-preview-orientation").as_str(),
+                );
+                preview_orientation_for_settings.set_selected(orientation.index());
+                if let Some(page) = page_weak.upgrade() {
+                    apply_task_preview_paned_layout(&page, orientation);
+                }
+            });
+
+            for key in ["task-hpane-position", "task-vpane-position"] {
+                let page_weak = self.downgrade();
+                settings.connect_changed(Some(key), move |settings, _| {
+                    let orientation = TaskPreviewOrientation::from_setting(
+                        settings.string("task-preview-orientation").as_str(),
+                    );
+                    if let Some(page) = page_weak.upgrade() {
+                        apply_task_preview_paned_layout(&page, orientation);
+                    }
+                });
+            }
         }
 
         let page_weak = self.downgrade();
@@ -2186,6 +5286,8 @@ impl TasksPage {
         let task_list_for_load = task_list.clone();
         let empty_tasks_for_load = empty_tasks.clone();
         let page_weak_for_load = self.downgrade();
+        let load_generation = self.imp().task_refresh_generation.get().wrapping_add(1);
+        self.imp().task_refresh_generation.set(load_generation);
         let (task_sender, task_receiver) = async_channel::bounded(1);
         std::thread::spawn(move || {
             let result = load_snapshot_prefer_eds();
@@ -2196,6 +5298,12 @@ impl TasksPage {
         glib::spawn_future_local(async move {
             match task_receiver.recv().await {
                 Ok(result) => {
+                    let Some(page) = page_weak_for_load.upgrade() else {
+                        return;
+                    };
+                    if page.imp().task_refresh_generation.get() != load_generation {
+                        return;
+                    }
                     if let Some(warning) = result.warning {
                         tracing::warn!(%warning, "Task data loaded with a backend warning");
                     }
@@ -2210,9 +5318,6 @@ impl TasksPage {
                         empty_tasks_for_load.set_visible(true);
                     } else {
                         empty_tasks_for_load.set_visible(false);
-                        let Some(page) = page_weak_for_load.upgrade() else {
-                            return;
-                        };
                         for task in result.snapshot.tasks {
                             upsert_task_store(&task_list_for_load, &task_store_for_load, task);
                         }
@@ -2225,6 +5330,12 @@ impl TasksPage {
                     }
                 }
                 Err(error) => {
+                    let Some(page) = page_weak_for_load.upgrade() else {
+                        return;
+                    };
+                    if page.imp().task_refresh_generation.get() != load_generation {
+                        return;
+                    }
                     empty_tasks_for_load.set_label("Aufgaben konnten nicht geladen werden");
                     empty_tasks_for_load.set_visible(true);
                     tracing::debug!(%error, "Task snapshot unavailable");
@@ -2296,8 +5407,41 @@ impl TasksPage {
             .child(&task_list)
             .vexpand(true)
             .build();
-
-        content_box.append(&task_scroll);
+        let preview_paned = gtk::Paned::builder()
+            .orientation(preview_orientation.paned_orientation())
+            .wide_handle(true)
+            .vexpand(true)
+            .build();
+        preview_paned.set_start_child(Some(&task_scroll));
+        preview_paned.set_end_child(Some(&preview_box));
+        preview_paned.set_resize_start_child(true);
+        preview_paned.set_resize_end_child(true);
+        preview_paned.set_position(
+            AppSettings::try_new()
+                .map(|settings| settings.task_preview_position(preview_orientation.setting_value()))
+                .unwrap_or_else(|| preview_orientation.default_position()),
+        );
+        self.imp()
+            .task_preview_paned
+            .replace(Some(preview_paned.clone()));
+        let page_weak_for_preview_position = self.downgrade();
+        preview_paned.connect_position_notify(move |paned| {
+            let Some(page) = page_weak_for_preview_position.upgrade() else {
+                return;
+            };
+            if page.imp().task_preview_position_restoring.get() {
+                return;
+            }
+            let orientation = if paned.orientation() == gtk::Orientation::Horizontal {
+                TaskPreviewOrientation::Vertical
+            } else {
+                TaskPreviewOrientation::Classic
+            };
+            if let Some(settings) = AppSettings::try_new() {
+                settings.set_task_preview_position(orientation.setting_value(), paned.position());
+            }
+        });
+        content_box.append(&preview_paned);
 
         let content_page = adw::NavigationPage::builder()
             .title("Aufgaben-Übersicht")
@@ -2324,6 +5468,7 @@ impl TasksPage {
         });
         split.add_controller(key_controller);
         split.set_parent(self);
+        start_task_source_discovery(self, self.imp().task_source_filter.borrow().clone(), false);
     }
 
     fn open_task_dialog(
@@ -2404,10 +5549,7 @@ impl TasksPage {
             else {
                 return;
             };
-            let writable = task_source_is_writable(
-                &source_uid,
-                &source_capabilities_for_selection,
-            );
+            let writable = task_source_is_writable(&source_uid, &source_capabilities_for_selection);
             if writable {
                 if let Some(settings) = settings_for_default_task.as_ref() {
                     settings.set_default_task_source_uid(&source_uid);
@@ -2632,7 +5774,8 @@ impl TasksPage {
         description_view
             .buffer()
             .set_text(&initial_draft.description);
-        if initial_draft.unsupported_status.is_some() || initial_draft.unsupported_percent.is_some() {
+        if initial_draft.unsupported_status.is_some() || initial_draft.unsupported_percent.is_some()
+        {
             let mut imported = Vec::new();
             if let Some(status) = initial_draft.unsupported_status.as_deref() {
                 imported.push(format!("STATUS={status}"));
@@ -2650,16 +5793,39 @@ impl TasksPage {
                 .css_classes(vec!["warning", "dim-label"])
                 .build();
             details.add(&imported_label);
-            status_row.set_tooltip_text(Some("Importierter, nicht unterstützter STATUS-Wert; unverändert bewahrt"));
-            percent_row.set_tooltip_text(Some("Importierter, nicht unterstützter PERCENT-COMPLETE-Wert; unverändert bewahrt"));
+            status_row.set_tooltip_text(Some(
+                "Importierter, nicht unterstützter STATUS-Wert; unverändert bewahrt",
+            ));
+            percent_row.set_tooltip_text(Some(
+                "Importierter, nicht unterstützter PERCENT-COMPLETE-Wert; unverändert bewahrt",
+            ));
         }
         let percent_adjustment = percent_row.adjustment();
+        // Imported VTODO lifecycle values can be outside the portable picker
+        // vocabulary. Track direct editor interaction separately from dirty
+        // state so saving another field cannot rewrite those values.
+        let lifecycle_edits = Rc::new(RefCell::new(
+            if initial_draft.unsupported_status.is_none()
+                && initial_draft.unsupported_percent.is_none()
+            {
+                // The standard editor normalizes incomplete built-in lifecycle
+                // states when it presents them (for example COMPLETED without a
+                // date). Persist that visible repair, while keeping imported
+                // unsupported values untouched until interaction.
+                TaskLifecycleEdits {
+                    status: false,
+                    percent: initial_percent != initial_draft.percent,
+                    completed: initial_completed.trim() != initial_draft.completed.input.trim(),
+                }
+            } else {
+                TaskLifecycleEdits::default()
+            },
+        ));
 
         for entry in [
             title_entry.clone(),
             dtstart_entry.clone(),
             due_entry.clone(),
-            completed_entry.clone(),
             recurrence_entry.clone(),
             rdate_entry.clone(),
             exdate_entry.clone(),
@@ -2680,24 +5846,34 @@ impl TasksPage {
         });
         let dirty_for_status = Rc::clone(&dirty);
         let dialog_state_for_status = Rc::clone(&dialog_state);
+        let lifecycle_edits_for_status = Rc::clone(&lifecycle_edits);
         status_row.connect_selected_notify(move |_| {
             dirty_for_status.set(true);
             dialog_state_for_status.set(TaskEditorDialogState::Dirty);
+            lifecycle_edits_for_status.borrow_mut().status = true;
         });
         let dirty_for_percent = Rc::clone(&dirty);
         let dialog_state_for_percent = Rc::clone(&dialog_state);
+        let lifecycle_edits_for_percent = Rc::clone(&lifecycle_edits);
         percent_adjustment.connect_value_changed(move |_| {
             dirty_for_percent.set(true);
             dialog_state_for_percent.set(TaskEditorDialogState::Dirty);
+            lifecycle_edits_for_percent.borrow_mut().percent = true;
+        });
+        let dirty_for_completed = Rc::clone(&dirty);
+        let dialog_state_for_completed = Rc::clone(&dialog_state);
+        let lifecycle_edits_for_completed = Rc::clone(&lifecycle_edits);
+        completed_entry.connect_changed(move |_| {
+            dirty_for_completed.set(true);
+            dialog_state_for_completed.set(TaskEditorDialogState::Dirty);
+            lifecycle_edits_for_completed.borrow_mut().completed = true;
         });
         let dirty_for_description = Rc::clone(&dirty);
         let dialog_state_for_description = Rc::clone(&dialog_state);
-        description_view
-            .buffer()
-            .connect_changed(move |_| {
-                dirty_for_description.set(true);
-                dialog_state_for_description.set(TaskEditorDialogState::Dirty);
-            });
+        description_view.buffer().connect_changed(move |_| {
+            dirty_for_description.set(true);
+            dialog_state_for_description.set(TaskEditorDialogState::Dirty);
+        });
         let dirty_for_attachments = Rc::clone(&dirty);
         let dialog_state_for_attachments = Rc::clone(&dialog_state);
         attachment_buffer.connect_changed(move |_| {
@@ -2805,9 +5981,16 @@ impl TasksPage {
         let request_generation_for_load = Rc::clone(&request_generation);
         let source_load_generation = request_generation.get();
         save_button.set_sensitive(false);
-        glib::spawn_future_local(async move {
+        let (source_sender, source_receiver) = async_channel::bounded(1);
+        std::thread::spawn(move || {
             let discovery =
-                eds_service::discover_sources(eds_service::EdsSourceKind::Calendar).await;
+                ECalService::new().discover_source_capabilities(ECalComponentType::Task);
+            if let Err(error) = source_sender.send_blocking(discovery) {
+                tracing::debug!(%error, "Task editor source capability result was dropped");
+            }
+        });
+        glib::spawn_future_local(async move {
+            let discovery = source_receiver.recv().await;
             let Some(dialog) = dialog_weak_for_load.upgrade() else {
                 return;
             };
@@ -2818,45 +6001,36 @@ impl TasksPage {
             ) {
                 return;
             }
-            if let Some(error) = discovery.error.as_deref() {
-                tracing::warn!(%error, "Could not reach EDS task lists for task dialog");
-            }
-            let active_sources: Vec<_> = discovery
-                .sources
-                .into_iter()
-                .filter(|source| source.enabled)
-                .collect();
-            let source_capability = if matches!(
-                discovery.origin,
-                eds_service::EdsSourceOrigin::Live
-            ) {
-                // EdsSource currently carries no can-write capability.  A
-                // live registry entry is therefore known to exist, but its
-                // mutation capability is unknown and must fail closed.
-                TaskSourceCapability::Unknown
-            } else {
-                TaskSourceCapability::Unavailable
+            let (mut active_sources, discovery_failed) = match discovery {
+                Ok(Ok(discovery)) => {
+                    if let Some(warning) = discovery.warning.as_deref() {
+                        tracing::warn!(%warning, "Some EDS task lists are unavailable in task editor");
+                    }
+                    (discovery.sources, false)
+                }
+                Ok(Err(error)) => {
+                    tracing::warn!(%error, "Could not reach exact EDS task lists for task dialog");
+                    (Vec::new(), true)
+                }
+                Err(error) => {
+                    tracing::debug!(%error, "Task editor source capability channel closed");
+                    (Vec::new(), true)
+                }
             };
+            active_sources.sort_by_cached_key(|source| {
+                (
+                    source.display_name.to_lowercase(),
+                    source.source_uid.clone(),
+                )
+            });
             let mut names = Vec::new();
             let mut capabilities = HashMap::new();
             let mut uids = source_uids_for_load.borrow_mut();
             uids.clear();
             for source in active_sources {
-                let uid = source.uid;
-                let name = match source_capability {
-                    TaskSourceCapability::Unknown => {
-                        format!("{} (Schreibfähigkeit unbekannt)", source.display_name)
-                    }
-                    TaskSourceCapability::ReadOnly => {
-                        format!("{} (schreibgeschützt)", source.display_name)
-                    }
-                    TaskSourceCapability::Unavailable => {
-                        format!("{} (nicht verfügbar)", source.display_name)
-                    }
-                    TaskSourceCapability::Writable => source.display_name,
-                };
-                names.push(name);
-                capabilities.insert(uid.clone(), source_capability);
+                let uid = source.source_uid.clone();
+                names.push(task_source_capability_label(&source));
+                capabilities.insert(uid.clone(), task_source_capability_from_ecal(&source));
                 uids.push(uid);
             }
             let preserved_source_uid = edit_source_uid_for_load.as_deref().filter(|uid| {
@@ -2880,7 +6054,7 @@ impl TasksPage {
                 );
             }
             if names.is_empty() {
-                names.push(if discovery.error.is_some() {
+                names.push(if discovery_failed {
                     "Aufgabenlisten sind nicht erreichbar".to_string()
                 } else {
                     "Keine aktive Aufgabenliste verfügbar".to_string()
@@ -2901,9 +6075,9 @@ impl TasksPage {
             if let Some(index) = selected_index {
                 source_row_for_load.set_selected(index as u32);
             }
-            let writable = selected_uid.as_deref().is_some_and(|uid| {
-                task_source_is_writable(uid, &source_capabilities_for_load)
-            });
+            let writable = selected_uid
+                .as_deref()
+                .is_some_and(|uid| task_source_is_writable(uid, &source_capabilities_for_load));
             save_button_for_load.set_sensitive(writable);
         });
 
@@ -2915,6 +6089,7 @@ impl TasksPage {
         let save_control_for_save = Arc::clone(&save_control);
         let request_generation_for_save = Rc::clone(&request_generation);
         let dirty_for_save = Rc::clone(&dirty);
+        let lifecycle_edits_for_save = Rc::clone(&lifecycle_edits);
         let dialog_state_for_save = Rc::clone(&dialog_state);
         let close_confirmed_for_save = Rc::clone(&close_confirmed);
         let save_button_for_signal = save_button.clone();
@@ -2967,7 +6142,7 @@ impl TasksPage {
             let status = task_status_from_index(status_row.selected());
             let percent = percent_row.value().round().clamp(0.0, 100.0) as u8;
             let component_result = match task_to_edit_for_save.as_ref() {
-                Some(task) => update_task_component_with_dates(
+                Some(task) => update_task_component_with_dates_and_lifecycle_edits(
                     &task.component(),
                     &title_entry.text(),
                     &dtstart_entry.text(),
@@ -2983,6 +6158,7 @@ impl TasksPage {
                     &attachments,
                     status,
                     percent,
+                    *lifecycle_edits_for_save.borrow(),
                 ),
                 None => build_task_component_with_dates(
                     &title_entry.text(),
@@ -3430,6 +6606,8 @@ fn render_task_rows(
     task_store: &gio::ListStore,
     empty_tasks: &gtk::Label,
 ) {
+    let preserved_selection = page.imp().task_selection.borrow().clone();
+    page.imp().task_selection_restoring.set(true);
     let category_metadata = page
         .imp()
         .task_category_metadata
@@ -3477,6 +6655,7 @@ fn render_task_rows(
         )
     });
     for task in tasks {
+        let selected = preserved_selection.contains(&TaskSelectionIdentity::from_task(&task));
         append_task_row(
             page,
             task_list,
@@ -3486,8 +6665,19 @@ fn render_task_rows(
             context,
             &category_metadata,
         );
+        if selected && let Some(row) = task_list.last_child().and_downcast::<gtk::ListBoxRow>() {
+            task_list.select_row(Some(&row));
+        }
         visible += 1;
     }
+    page.imp().task_selection_restoring.set(false);
+    // A filter change or backend removal can make a preserved identity
+    // invisible. Keep the page-owned selection and its actions aligned with
+    // the rows GTK actually restored instead of exporting a hidden stale task.
+    page.imp()
+        .task_selection
+        .replace(task_selection_from_list(task_list));
+    update_task_selection_controls(page);
     empty_tasks.set_visible(visible == 0);
     if visible == 0 {
         empty_tasks.set_label(if query_is_empty(&query) && category_filter.is_none() {
@@ -3513,6 +6703,1602 @@ fn render_task_rows(
             "Keine passenden Aufgaben"
         });
     }
+}
+
+fn task_selection_from_list(task_list: &gtk::ListBox) -> Vec<TaskSelectionIdentity> {
+    task_list
+        .selected_rows()
+        .into_iter()
+        .filter_map(|row| {
+            let task_row = row.child()?.downcast::<adw::ActionRow>().ok()?;
+            let read_data = |key: &str| unsafe {
+                task_row
+                    .data::<String>(key)
+                    .map(|value| value.as_ref().clone())
+            };
+            let source_uid = read_data("task-source-uid")?;
+            let task_uid = read_data("task-id")?;
+            Some(TaskSelectionIdentity {
+                source_uid,
+                task_uid,
+            })
+        })
+        .collect()
+}
+
+fn task_visible_identities(task_list: &gtk::ListBox) -> Result<Vec<TaskSelectionIdentity>, String> {
+    let mut identities = Vec::new();
+    let mut child = task_list.first_child();
+    while let Some(current) = child {
+        let next = current.next_sibling();
+        let row = current
+            .downcast::<gtk::ListBoxRow>()
+            .map_err(|_| "Eine sichtbare Aufgabenzeile ist ungültig".to_string())?;
+        let action_row = row
+            .child()
+            .and_downcast::<adw::ActionRow>()
+            .ok_or_else(|| "Eine sichtbare Aufgabenzeile ist nicht mehr verfügbar".to_string())?;
+        let read_data = |key: &str| unsafe {
+            action_row
+                .data::<String>(key)
+                .map(|value| value.as_ref().clone())
+        };
+        let source_uid = read_data("task-source-uid")
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| "Eine sichtbare Aufgabe hat keine gültige Quelle".to_string())?;
+        let task_uid = read_data("task-id")
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| "Eine sichtbare Aufgabe hat keine gültige Kennung".to_string())?;
+        identities.push(TaskSelectionIdentity {
+            source_uid,
+            task_uid,
+        });
+        child = next;
+    }
+    Ok(identities)
+}
+
+fn task_assignment_action_enabled(
+    selection: &[TaskSelectionIdentity],
+    candidates: &[TaskExportCandidate],
+    metadata: &HashMap<String, ECalSourceCapability>,
+    mutation_running: bool,
+) -> bool {
+    if mutation_running {
+        return false;
+    }
+    let Ok(candidate) = selected_task_candidate(selection, candidates) else {
+        return false;
+    };
+    if validated_task_vtodo_component(candidate, &candidate.identity).is_err() {
+        return false;
+    }
+    metadata
+        .get(&candidate.identity.source_uid)
+        .is_some_and(|source| {
+            source.connected
+                && source.writable
+                && source.task_assignment_supported
+                && source.task_assignment_conversion_supported
+        })
+}
+
+fn update_task_selection_controls(page: &TasksPage) {
+    let selection = page.imp().task_selection.borrow().clone();
+    let candidates = page
+        .imp()
+        .task_store
+        .borrow()
+        .as_ref()
+        .map(task_export_candidates)
+        .unwrap_or_default();
+    let state = task_selection_action_state(
+        selection.len(),
+        build_task_forward_payload(&selection, &candidates).is_ok(),
+        selected_task_open_url(&selection, &candidates).is_ok(),
+        build_task_print_document(&selection, &candidates).is_ok(),
+    );
+    let preview_available = task_preview_document(&selection, &candidates).is_ok();
+    let mutation_running = task_mutation_batch_running(page);
+    let capabilities = page.imp().task_source_capabilities.borrow();
+    let primary_source = page.imp().task_source_filter.borrow().clone();
+    let refresh_known_unsupported = primary_source.as_ref().is_some_and(|source_uid| {
+        page.imp()
+            .task_refresh_unsupported_sources
+            .borrow()
+            .contains(source_uid)
+    });
+    let refresh_enabled = task_refresh_action_enabled(
+        primary_source.as_deref(),
+        primary_source
+            .as_ref()
+            .and_then(|source_uid| capabilities.get(source_uid))
+            .is_some_and(|capability| {
+                matches!(
+                    capability,
+                    TaskSourceCapability::Writable | TaskSourceCapability::ReadOnly
+                )
+            }),
+        refresh_known_unsupported,
+        page.imp().task_refresh_running.get(),
+        mutation_running,
+    );
+    let local_writable = CalendarStoreService::new().is_writable();
+    let paste_destination = task_paste_destination(
+        &page.imp().task_source_uids.borrow(),
+        &capabilities,
+        local_writable,
+        AppSettings::try_new()
+            .map(|settings| settings.default_task_source_uid())
+            .filter(|uid| !uid.trim().is_empty())
+            .as_deref(),
+    );
+    let calendar_clipboard_available =
+        page.imp()
+            .task_paste_button
+            .borrow()
+            .as_ref()
+            .is_some_and(|button| {
+                button
+                    .display()
+                    .clipboard()
+                    .formats()
+                    .contains_type(glib::Type::STRING)
+            });
+    let clipboard_state = task_clipboard_action_state(
+        selection.len(),
+        build_selected_task_export(&selection, &candidates).is_ok(),
+        task_delete_action_enabled(
+            &selection,
+            &candidates,
+            &capabilities,
+            local_writable,
+            mutation_running,
+        ),
+        paste_destination.is_ok(),
+        calendar_clipboard_available,
+        mutation_running,
+    );
+    let lifecycle_state = task_lifecycle_action_state(
+        &selection,
+        &candidates,
+        &capabilities,
+        local_writable,
+        mutation_running,
+    );
+    let assignment_enabled = task_assignment_action_enabled(
+        &selection,
+        &candidates,
+        &page.imp().task_source_metadata.borrow(),
+        mutation_running,
+    );
+    if let Some(export_button) = page.imp().task_export_button.borrow().as_ref() {
+        export_button.set_sensitive(state.export_enabled);
+    }
+    if let Some(forward_button) = page.imp().task_forward_button.borrow().as_ref() {
+        forward_button.set_sensitive(state.forward_enabled);
+    }
+    if let Some(assign_button) = page.imp().task_assign_button.borrow().as_ref() {
+        assign_button.set_sensitive(assignment_enabled);
+        assign_button.set_tooltip_text(Some(if page.imp().task_assignment_running.get() {
+            "Aufgabe wird zugewiesen …"
+        } else if assignment_enabled {
+            "Ausgewählte Aufgabe zuweisen"
+        } else {
+            "Zuweisen benötigt genau eine schreibfähige Aufgabe und Anbieter-Unterstützung"
+        }));
+    }
+    if let Some(open_url_button) = page.imp().task_open_url_button.borrow().as_ref() {
+        open_url_button.set_sensitive(state.open_url_enabled);
+    }
+    if let Some(print_button) = page.imp().task_print_button.borrow().as_ref() {
+        print_button.set_sensitive(state.print_enabled);
+    }
+    if let Some(copy_button) = page.imp().task_copy_button.borrow().as_ref() {
+        copy_button.set_sensitive(clipboard_state.copy_enabled);
+    }
+    if let Some(cut_button) = page.imp().task_cut_button.borrow().as_ref() {
+        cut_button.set_sensitive(clipboard_state.cut_enabled);
+    }
+    if let Some(paste_button) = page.imp().task_paste_button.borrow().as_ref() {
+        paste_button.set_sensitive(clipboard_state.paste_enabled);
+        paste_button.set_tooltip_text(Some(if paste_destination.is_ok() {
+            "Aufgaben aus der Zwischenablage in die Standard-Aufgabenliste einfügen"
+        } else {
+            "Keine schreibfähige Standard-Aufgabenliste verfügbar"
+        }));
+    }
+    if let Some(select_all_button) = page.imp().task_select_all_button.borrow().as_ref() {
+        select_all_button.set_sensitive(clipboard_state.select_all_enabled);
+    }
+    if let Some(bulk_edit_button) = page.imp().task_bulk_edit_button.borrow().as_ref() {
+        // Evolution exposes Bulk Edit for any non-empty selection.  Detailed
+        // Source+UID and writable-source validation belongs to activation so
+        // unsupported selections receive a visible fail-closed explanation.
+        bulk_edit_button.set_sensitive(!selection.is_empty() && !mutation_running);
+    }
+    if let Some(preview_find_entry) = page.imp().task_preview_find_entry.borrow().as_ref() {
+        preview_find_entry.set_sensitive(preview_available);
+    }
+    if !preview_available
+        && let Some(preview_find_bar) = page.imp().task_preview_find_bar.borrow().as_ref()
+    {
+        preview_find_bar.set_visible(false);
+    }
+    if let Some(complete_button) = page.imp().task_complete_button.borrow().as_ref() {
+        complete_button.set_sensitive(lifecycle_state.complete_enabled);
+    }
+    if let Some(incomplete_button) = page.imp().task_incomplete_button.borrow().as_ref() {
+        incomplete_button.set_sensitive(lifecycle_state.incomplete_enabled);
+    }
+    let delete_plan =
+        build_task_delete_plan(&selection, &candidates, &capabilities, local_writable);
+    let delete_enabled = task_delete_action_enabled(
+        &selection,
+        &candidates,
+        &capabilities,
+        local_writable,
+        mutation_running,
+    );
+    let delete_tooltip = delete_plan
+        .as_ref()
+        .err()
+        .map_or_else(|| "Ausgewählte Aufgaben löschen".to_string(), Clone::clone);
+    if let Some(delete_button) = page.imp().task_delete_selection_button.borrow().as_ref() {
+        delete_button.set_sensitive(delete_enabled);
+        delete_button.set_tooltip_text(Some(&delete_tooltip));
+    }
+    let purge_plan = build_task_purge_plan(&candidates, &capabilities, local_writable);
+    if let Some(purge_button) = page.imp().task_purge_button.borrow().as_ref() {
+        purge_button.set_sensitive(!mutation_running && purge_plan.is_ok());
+        purge_button.set_tooltip_text(Some(purge_plan.as_ref().err().map_or(
+            "Alle erledigten Aufgaben dauerhaft löschen (Strg+E)",
+            String::as_str,
+        )));
+    }
+    if let Some(refresh_button) = page.imp().task_refresh_button.borrow().as_ref() {
+        refresh_button.set_sensitive(refresh_enabled);
+        refresh_button.set_tooltip_text(Some(if page.imp().task_refresh_running.get() {
+            "Aufgabenliste wird aktualisiert…"
+        } else if primary_source.is_none() {
+            "Zum Aktualisieren eine einzelne Aufgabenliste auswählen"
+        } else if refresh_known_unsupported {
+            "Diese Aufgabenliste unterstützt keine Anbieter-Aktualisierung"
+        } else if !refresh_enabled {
+            "Die ausgewählte Aufgabenliste ist nicht verfügbar"
+        } else {
+            "Ausgewählte Aufgabenliste beim Anbieter aktualisieren"
+        }));
+    }
+    let source_action_state = task_source_action_state(
+        primary_source.as_deref(),
+        &page.imp().task_source_metadata.borrow(),
+        mutation_running,
+    );
+    if let Some(button) = page.imp().task_source_new_button.borrow().as_ref() {
+        button.set_sensitive(!mutation_running);
+        button.set_tooltip_text(Some(if mutation_running {
+            "Eine andere Aufgabenänderung läuft bereits"
+        } else {
+            "Neue lokale Aufgabenliste"
+        }));
+    }
+    if let Some(button) = page.imp().task_source_copy_button.borrow().as_ref() {
+        button.set_sensitive(source_action_state.copy_enabled);
+        button.set_tooltip_text(Some(if primary_source.is_none() {
+            "Zum Kopieren eine einzelne Aufgabenliste auswählen"
+        } else if !source_action_state.copy_enabled {
+            "Die ausgewählte Aufgabenliste ist nicht als EDS-Quelle verfügbar"
+        } else {
+            "Ausgewählte Aufgabenliste kopieren"
+        }));
+    }
+    if let Some(button) = page.imp().task_source_rename_button.borrow().as_ref() {
+        button.set_sensitive(source_action_state.rename_enabled);
+        button.set_tooltip_text(Some(if primary_source.is_none() {
+            "Zum Umbenennen eine einzelne Aufgabenliste auswählen"
+        } else if !source_action_state.rename_enabled {
+            "Nur schreibfähige Aufgabenlisten außerhalb einer Sammlung können umbenannt werden"
+        } else {
+            "Ausgewählte Aufgabenliste umbenennen"
+        }));
+    }
+    if let Some(button) = page.imp().task_source_properties_button.borrow().as_ref() {
+        button.set_sensitive(source_action_state.properties_enabled);
+        button.set_tooltip_text(Some(if primary_source.is_none() {
+            "Zum Bearbeiten eine einzelne Aufgabenliste auswählen"
+        } else if !source_action_state.properties_enabled {
+            "Die Eigenschaften dieser Aufgabenliste sind nicht schreibbar"
+        } else {
+            "Eigenschaften der ausgewählten Aufgabenliste"
+        }));
+    }
+    if let Some(button) = page.imp().task_source_delete_button.borrow().as_ref() {
+        button.set_sensitive(source_action_state.delete_enabled);
+        button.set_tooltip_text(Some(if primary_source.is_none() {
+            "Zum Löschen eine einzelne Aufgabenliste auswählen"
+        } else if !source_action_state.delete_enabled {
+            "Diese Aufgabenliste kann nicht entfernt werden"
+        } else {
+            "Ausgewählte Aufgabenliste löschen"
+        }));
+    }
+    let label = match selection.len() {
+        0 => "Keine Auswahl".to_string(),
+        1 => "1 Aufgabe ausgewählt".to_string(),
+        count => format!("{count} Aufgaben ausgewählt"),
+    };
+    if let Some(selection_status) = page.imp().task_selection_status.borrow().as_ref() {
+        selection_status.set_label(&label);
+    }
+    refresh_task_preview(page);
+}
+
+fn task_mutation_batch_running(page: &TasksPage) -> bool {
+    page.imp().task_lifecycle_batch_running.get()
+        || page.imp().task_delete_batch_running.get()
+        || page.imp().task_paste_batch_running.get()
+        || page.imp().task_bulk_edit_running.get()
+        || page.imp().task_refresh_running.get()
+        || page.imp().task_source_management_running.get()
+        || page.imp().task_assignment_running.get()
+}
+
+#[derive(Debug)]
+enum TaskRefreshFailure {
+    Unsupported,
+    Backend(String),
+}
+
+fn task_refresh_action_enabled(
+    primary_source: Option<&str>,
+    source_available: bool,
+    known_unsupported: bool,
+    refresh_running: bool,
+    mutation_running: bool,
+) -> bool {
+    primary_source.is_some_and(|uid| !uid.trim().is_empty())
+        && source_available
+        && !known_unsupported
+        && !refresh_running
+        && !mutation_running
+}
+
+fn task_refresh_result_is_current(
+    current_generation: u64,
+    result_generation: u64,
+    current_source: Option<&str>,
+    result_source: &str,
+) -> bool {
+    current_generation == result_generation && current_source == Some(result_source)
+}
+
+fn apply_authoritative_task_snapshot(
+    page: &TasksPage,
+    task_store: &gio::ListStore,
+    task_list: &gtk::ListBox,
+    empty_tasks: &gtk::Label,
+    result: CalendarLoadResult,
+) {
+    if let Some(warning) = result.warning.as_deref() {
+        tracing::warn!(%warning, "Task refresh reload completed with a backend warning");
+    }
+    task_store.remove_all();
+    for task in result.snapshot.tasks {
+        upsert_task_store(task_list, task_store, task);
+    }
+    render_task_rows(page, task_list, task_store, empty_tasks);
+}
+
+fn start_task_source_refresh(page: &TasksPage, button: &gtk::Button) {
+    if task_mutation_batch_running(page) || page.imp().task_refresh_running.get() {
+        return;
+    }
+    let Some(source_uid) = page.imp().task_source_filter.borrow().clone() else {
+        show_toast_for_widget(button, "Zum Aktualisieren eine Aufgabenliste auswählen");
+        return;
+    };
+    if !page
+        .imp()
+        .task_source_capabilities
+        .borrow()
+        .get(&source_uid)
+        .is_some_and(|capability| {
+            matches!(
+                capability,
+                TaskSourceCapability::Writable | TaskSourceCapability::ReadOnly
+            )
+        })
+    {
+        show_toast_for_widget(
+            button,
+            "Die ausgewählte Aufgabenliste ist nicht mehr verfügbar",
+        );
+        return;
+    }
+    if page
+        .imp()
+        .task_refresh_unsupported_sources
+        .borrow()
+        .contains(&source_uid)
+    {
+        show_toast_for_widget(
+            button,
+            "Diese Aufgabenliste unterstützt keine Anbieter-Aktualisierung",
+        );
+        return;
+    }
+    let (Some(task_store), Some(task_list), Some(empty_tasks)) = (
+        page.imp().task_store.borrow().as_ref().cloned(),
+        page.imp().task_list.borrow().as_ref().cloned(),
+        page.imp().task_empty_state.borrow().as_ref().cloned(),
+    ) else {
+        return;
+    };
+
+    let generation = page.imp().task_refresh_generation.get().wrapping_add(1);
+    page.imp().task_refresh_generation.set(generation);
+    page.imp().task_refresh_running.set(true);
+    update_task_selection_controls(page);
+    show_toast_for_widget(button, "Aufgabenliste wird aktualisiert…");
+
+    let (sender, receiver) = async_channel::bounded(1);
+    let source_uid_for_worker = source_uid.clone();
+    std::thread::spawn(move || {
+        let service = ECalService::new();
+        let result = match service.refresh_source(&source_uid_for_worker, ECalComponentType::Task) {
+            Ok(outcome) => {
+                let reload = load_snapshot_prefer_eds();
+                if outcome == ECalRefreshOutcome::RemoteRefreshed
+                    && (reload.origin != CalendarDataOrigin::Eds || reload.warning.is_some())
+                {
+                    Err(TaskRefreshFailure::Backend(
+                        "Die aktualisierte Aufgabenliste konnte nicht autoritativ neu geladen werden"
+                            .to_string(),
+                    ))
+                } else {
+                    Ok((outcome, reload))
+                }
+            }
+            Err(ECalServiceError::Unsupported) => Err(TaskRefreshFailure::Unsupported),
+            Err(ECalServiceError::Backend(message)) => Err(TaskRefreshFailure::Backend(message)),
+        };
+        if let Err(error) = sender.send_blocking(result) {
+            tracing::debug!(%error, "Task refresh result was dropped before delivery");
+        }
+    });
+
+    let page_weak = page.downgrade();
+    glib::spawn_future_local(async move {
+        let Ok(result) = receiver.recv().await else {
+            return;
+        };
+        let Some(page) = page_weak.upgrade() else {
+            return;
+        };
+        if page.imp().task_refresh_generation.get() != generation {
+            return;
+        }
+        page.imp().task_refresh_running.set(false);
+        let is_current = task_refresh_result_is_current(
+            page.imp().task_refresh_generation.get(),
+            generation,
+            page.imp().task_source_filter.borrow().as_deref(),
+            &source_uid,
+        );
+        if !is_current {
+            update_task_selection_controls(&page);
+            return;
+        }
+        match result {
+            Ok((outcome, reload)) => {
+                page.imp()
+                    .task_refresh_unsupported_sources
+                    .borrow_mut()
+                    .remove(&source_uid);
+                apply_authoritative_task_snapshot(
+                    &page,
+                    &task_store,
+                    &task_list,
+                    &empty_tasks,
+                    reload,
+                );
+                page.reload_task_category_metadata();
+                page.show_toast(match outcome {
+                    ECalRefreshOutcome::LocalReloadOnly => "Lokale Aufgabenliste wurde neu geladen",
+                    ECalRefreshOutcome::RemoteRefreshed => "Aufgabenliste wurde aktualisiert",
+                });
+            }
+            Err(TaskRefreshFailure::Unsupported) => {
+                page.imp()
+                    .task_refresh_unsupported_sources
+                    .borrow_mut()
+                    .insert(source_uid);
+                page.show_toast("Diese Aufgabenliste unterstützt keine Anbieter-Aktualisierung");
+            }
+            Err(TaskRefreshFailure::Backend(message)) => page.show_toast(&message),
+        }
+        update_task_selection_controls(&page);
+    });
+}
+
+fn apply_task_preview_find(page: &TasksPage, state: TaskPreviewFindState) {
+    let Some(text_view) = page.imp().task_preview_content.borrow().as_ref().cloned() else {
+        return;
+    };
+    let buffer = text_view.buffer();
+    let tag = buffer
+        .tag_table()
+        .lookup("task-preview-find-match")
+        .unwrap_or_else(|| {
+            let tag = gtk::TextTag::builder()
+                .name("task-preview-find-match")
+                .background("#f8e45c")
+                .build();
+            buffer.tag_table().add(&tag);
+            tag
+        });
+    let mut start = buffer.start_iter();
+    let mut end = buffer.end_iter();
+    buffer.remove_tag(&tag, &mut start, &mut end);
+    for (match_start, match_end) in &state.matches {
+        let mut match_start_iter = buffer.iter_at_offset(*match_start as i32);
+        let mut match_end_iter = buffer.iter_at_offset(*match_end as i32);
+        buffer.apply_tag(&tag, &mut match_start_iter, &mut match_end_iter);
+    }
+    if let Some(index) = state.current {
+        if let Some((match_start, match_end)) = state.matches.get(index).copied() {
+            let mut match_start_iter = buffer.iter_at_offset(match_start as i32);
+            let mut match_end_iter = buffer.iter_at_offset(match_end as i32);
+            buffer.select_range(&mut match_start_iter, &mut match_end_iter);
+            text_view.scroll_to_iter(&mut match_start_iter, 0.2, false, 0.0, 0.0);
+        }
+    }
+    if let Some(status) = page.imp().task_preview_find_status.borrow().as_ref() {
+        let label = match state.current {
+            Some(index) => format!("{}/{}", index + 1, state.matches.len()),
+            None if state.query.is_empty() => String::new(),
+            None => "0/0".to_string(),
+        };
+        status.set_label(&label);
+    }
+    page.imp().task_preview_find.replace(state);
+}
+
+fn refresh_task_preview(page: &TasksPage) {
+    let visible = AppSettings::try_new()
+        .map(|settings| settings.task_preview_visible())
+        .or_else(|| {
+            page.imp()
+                .task_preview_toggle
+                .borrow()
+                .as_ref()
+                .map(gtk::ToggleButton::is_active)
+        })
+        .unwrap_or(true);
+    if let Some(preview_box) = page.imp().task_preview_box.borrow().as_ref() {
+        preview_box.set_visible(visible);
+    }
+    let Some(text_view) = page.imp().task_preview_content.borrow().as_ref().cloned() else {
+        return;
+    };
+    if !visible {
+        text_view.buffer().set_text("");
+        page.imp().task_preview_identity.replace(None);
+        page.imp().task_preview_text.replace(String::new());
+        if let Some(entry) = page.imp().task_preview_find_entry.borrow().as_ref() {
+            entry.set_text("");
+        }
+        if let Some(find_bar) = page.imp().task_preview_find_bar.borrow().as_ref() {
+            find_bar.set_visible(false);
+        }
+        apply_task_preview_find(page, TaskPreviewFindState::default());
+        return;
+    }
+    let selection = page.imp().task_selection.borrow().clone();
+    let candidates = page
+        .imp()
+        .task_store
+        .borrow()
+        .as_ref()
+        .map(task_export_candidates)
+        .unwrap_or_default();
+    let document = task_preview_document(&selection, &candidates);
+    let (identity, text) = match document {
+        Ok(document) => (Some(document.identity), document.text),
+        Err(_error) if selection.len() != 1 => (None, "".to_string()),
+        Err(error) => (None, format!("Vorschau nicht verfügbar: {error}")),
+    };
+    let changed = *page.imp().task_preview_identity.borrow() != identity
+        || *page.imp().task_preview_text.borrow() != text;
+    if changed {
+        text_view.buffer().set_text(&text);
+        page.imp().task_preview_identity.replace(identity);
+        page.imp().task_preview_text.replace(text.clone());
+        // Selection/component changes must never retain a stale query, match
+        // range, or visible search bar from the previously rendered task.
+        if let Some(entry) = page.imp().task_preview_find_entry.borrow().as_ref() {
+            entry.set_text("");
+        }
+        if let Some(find_bar) = page.imp().task_preview_find_bar.borrow().as_ref() {
+            find_bar.set_visible(false);
+        }
+        apply_task_preview_find(page, TaskPreviewFindState::default());
+    }
+}
+
+fn task_lifecycle_authoritative_component(
+    mutation: &TaskLifecycleMutation,
+    result_uid: &str,
+    result_component: Option<String>,
+) -> Result<String, String> {
+    let component =
+        task_authoritative_component(&mutation.identity.task_uid, result_uid, result_component)?;
+    validated_task_vtodo_component(
+        &TaskExportCandidate {
+            identity: mutation.identity.clone(),
+            component,
+        },
+        &mutation.identity,
+    )
+}
+
+fn apply_task_lifecycle_successes(
+    task_store: &gio::ListStore,
+    reduction: &mut TaskLifecycleBatchReduction,
+) {
+    let mut applied = Vec::new();
+    for success in &reduction.successes {
+        let matches = (0..task_store.n_items())
+            .filter_map(|index| task_store.item(index).and_downcast::<TaskItemObject>())
+            .filter(|task| {
+                task.source_uid() == success.identity.source_uid
+                    && task.id() == success.identity.task_uid
+            })
+            .collect::<Vec<_>>();
+        let [task] = matches.as_slice() else {
+            reduction.failures.push((
+                success.identity.clone(),
+                "Die bestätigte Aufgabe ist nicht mehr eindeutig geladen; bitte neu laden"
+                    .to_string(),
+            ));
+            continue;
+        };
+        task.set_component(success.component.clone());
+        task.set_completed(task_lifecycle_component_is_complete(&success.component));
+        applied.push(success.identity.clone());
+    }
+    reduction
+        .successes
+        .retain(|success| applied.contains(&success.identity));
+}
+
+fn start_task_lifecycle_batch(
+    page: &TasksPage,
+    button: &gtk::Button,
+    task_store: &gio::ListStore,
+    task_list: &gtk::ListBox,
+    empty_tasks: &gtk::Label,
+    operation: TaskLifecycleBatchOperation,
+) {
+    if task_mutation_batch_running(page) {
+        return;
+    }
+    let selection = page.imp().task_selection.borrow().clone();
+    let candidates = task_export_candidates(task_store);
+    let capabilities = page.imp().task_source_capabilities.borrow().clone();
+    let completed_timestamp = Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
+    let plan = match build_task_lifecycle_batch_plan(
+        &selection,
+        &candidates,
+        &capabilities,
+        CalendarStoreService::new().is_writable(),
+        operation,
+        &completed_timestamp,
+    ) {
+        Ok(plan) => plan,
+        Err(error) => {
+            show_toast_for_widget(button, &error);
+            return;
+        }
+    };
+
+    let generation = page
+        .imp()
+        .task_lifecycle_batch_generation
+        .get()
+        .wrapping_add(1);
+    page.imp().task_lifecycle_batch_generation.set(generation);
+    page.imp().task_lifecycle_batch_running.set(true);
+    task_list.set_sensitive(false);
+    update_task_selection_controls(page);
+    show_toast_for_widget(button, operation.progress_label());
+
+    let (sender, receiver) = async_channel::bounded(1);
+    let plan_for_worker = plan.clone();
+    std::thread::spawn(move || {
+        let local_writable = CalendarStoreService::new().is_writable();
+        let service = ECalService::new();
+        let results = plan_for_worker
+            .mutations
+            .into_iter()
+            .map(|mutation| {
+                if task_source_capability(
+                    &mutation.identity.source_uid,
+                    &capabilities,
+                    local_writable,
+                ) != TaskSourceCapability::Writable
+                {
+                    return TaskLifecycleDispatchResult::Failure {
+                        identity: mutation.identity,
+                        error: "Die Aufgabenliste ist unmittelbar vor der Stapelaktion nicht mehr schreibfähig"
+                            .to_string(),
+                    };
+                }
+                match service.modify_component(
+                    &mutation.identity.source_uid,
+                    ECalComponentType::Task,
+                    &mutation.identity.task_uid,
+                    &mutation.component,
+                ) {
+                    Ok(mut result) => {
+                        if result
+                            .component
+                            .as_deref()
+                            .is_none_or(|component| component.trim().is_empty())
+                        {
+                            result.component = load_snapshot_prefer_eds()
+                                .snapshot
+                                .tasks
+                                .into_iter()
+                                .find(|task| {
+                                    task.source_uid == mutation.identity.source_uid
+                                        && task.uid == mutation.identity.task_uid
+                                })
+                                .map(|task| task.component);
+                        }
+                        match task_lifecycle_authoritative_component(
+                            &mutation,
+                            &result.uid,
+                            result.component,
+                        ) {
+                        Ok(component) => TaskLifecycleDispatchResult::Success(
+                            TaskLifecycleMutation {
+                                component,
+                                ..mutation
+                            },
+                        ),
+                        Err(error) => TaskLifecycleDispatchResult::Failure {
+                            identity: mutation.identity,
+                            error,
+                        },
+                        }
+                    }
+                    Err(error) => TaskLifecycleDispatchResult::Failure {
+                        identity: mutation.identity,
+                        error: error.to_string(),
+                    },
+                }
+            })
+            .collect::<Vec<_>>();
+        if let Err(error) = sender.send_blocking(results) {
+            tracing::debug!(%error, "Task lifecycle batch result was dropped");
+        }
+    });
+
+    let page_weak = page.downgrade();
+    let task_store = task_store.clone();
+    let task_list = task_list.clone();
+    let empty_tasks = empty_tasks.clone();
+    let button = button.clone();
+    glib::spawn_future_local(async move {
+        let received = receiver.recv().await;
+        let Some(page) = page_weak.upgrade() else {
+            return;
+        };
+        if !task_lifecycle_result_is_current(
+            page.imp().task_lifecycle_batch_generation.get(),
+            generation,
+        ) {
+            return;
+        }
+        page.imp().task_lifecycle_batch_running.set(false);
+        task_list.set_sensitive(true);
+        let results = match received {
+            Ok(results) => results,
+            Err(error) => {
+                tracing::debug!(%error, "Task lifecycle batch channel closed");
+                update_task_selection_controls(&page);
+                show_toast_for_widget(
+                    &button,
+                    "Die Stapelaktion wurde nicht bestätigt; Aufgaben wurden nicht lokal geändert",
+                );
+                return;
+            }
+        };
+        let mut reduction = reduce_task_lifecycle_batch_results(&plan, &results);
+        apply_task_lifecycle_successes(&task_store, &mut reduction);
+        if !reduction.successes.is_empty() {
+            render_task_rows(&page, &task_list, &task_store, &empty_tasks);
+        } else {
+            update_task_selection_controls(&page);
+        }
+        match (reduction.successes.len(), reduction.failures.len()) {
+            (successes, 0) => page.show_toast(&format!(
+                "{successes} Aufgabe{} aktualisiert",
+                if successes == 1 { "" } else { "n" }
+            )),
+            (0, failures) => page.show_toast(&format!(
+                "Keine Aufgabe aktualisiert; {failures} Fehler. Bitte autoritative Daten neu laden"
+            )),
+            (successes, failures) => page.show_toast(&format!(
+                "{successes} Aufgabe{} aktualisiert; {failures} Fehler. Fehlgeschlagene Aufgaben blieben unverändert",
+                if successes == 1 { "" } else { "n" }
+            )),
+        }
+    });
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TaskPasteWorkerResult {
+    created: Vec<TaskPasteMutation>,
+    failure: Option<(TaskSelectionIdentity, String)>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+struct TaskPasteReduction {
+    created: Vec<TaskPasteMutation>,
+    failure: Option<(TaskSelectionIdentity, String)>,
+    unattempted: Vec<TaskSelectionIdentity>,
+}
+
+fn reduce_task_paste_worker_result(
+    plan: &TaskPastePlan,
+    result: &TaskPasteWorkerResult,
+) -> TaskPasteReduction {
+    let expected = plan.mutations.as_slice();
+    let created_valid = result.created.len() <= expected.len()
+        && result
+            .created
+            .iter()
+            .zip(expected)
+            .all(|(created, expected)| created.identity == expected.identity)
+        && result
+            .created
+            .iter()
+            .map(|created| &created.identity)
+            .collect::<HashSet<_>>()
+            .len()
+            == result.created.len();
+    let failure_valid = result.failure.as_ref().is_none_or(|(identity, _)| {
+        expected
+            .get(result.created.len())
+            .is_some_and(|expected| expected.identity == *identity)
+    });
+    if !created_valid || !failure_valid {
+        return TaskPasteReduction {
+            failure: Some((
+                expected
+                    .first()
+                    .map(|mutation| mutation.identity.clone())
+                    .unwrap_or(TaskSelectionIdentity {
+                        source_uid: String::new(),
+                        task_uid: String::new(),
+                    }),
+                "Das Backend lieferte ein veraltetes oder mehrdeutiges Einfüge-Ergebnis"
+                    .to_string(),
+            )),
+            unattempted: expected
+                .iter()
+                .map(|mutation| mutation.identity.clone())
+                .collect(),
+            ..TaskPasteReduction::default()
+        };
+    }
+    let attempted = result.created.len() + usize::from(result.failure.is_some());
+    TaskPasteReduction {
+        created: result.created.clone(),
+        failure: result.failure.clone(),
+        unattempted: expected
+            .iter()
+            .skip(attempted)
+            .map(|mutation| mutation.identity.clone())
+            .collect(),
+    }
+}
+
+fn task_paste_result_is_current(expected_generation: u64, result_generation: u64) -> bool {
+    expected_generation == result_generation
+}
+
+fn reload_task_snapshot_after_paste_uncertainty(
+    page: &TasksPage,
+    task_store: &gio::ListStore,
+    task_list: &gtk::ListBox,
+    empty_tasks: &gtk::Label,
+) {
+    let generation = page.imp().task_paste_batch_generation.get();
+    let (sender, receiver) = async_channel::bounded(1);
+    std::thread::spawn(move || {
+        let snapshot = load_snapshot_prefer_eds().snapshot;
+        if let Err(error) = sender.send_blocking(snapshot) {
+            tracing::debug!(%error, "Task paste recovery snapshot was dropped");
+        }
+    });
+    let page_weak = page.downgrade();
+    let task_store = task_store.clone();
+    let task_list = task_list.clone();
+    let empty_tasks = empty_tasks.clone();
+    glib::spawn_future_local(async move {
+        let Ok(snapshot) = receiver.recv().await else {
+            return;
+        };
+        let Some(page) = page_weak.upgrade() else {
+            return;
+        };
+        if !task_paste_result_is_current(page.imp().task_paste_batch_generation.get(), generation) {
+            return;
+        }
+        task_store.remove_all();
+        for task in snapshot.tasks {
+            let priority = if task.priority == 0 {
+                "normal".to_string()
+            } else {
+                task.priority.to_string()
+            };
+            task_store.append(&TaskItemObject::new(
+                &task.source_uid,
+                &task.uid,
+                &task.summary,
+                &task.due,
+                &priority,
+                task.completed,
+                &task.component,
+            ));
+        }
+        render_task_rows(&page, &task_list, &task_store, &empty_tasks);
+    });
+}
+
+fn start_task_clipboard_paste(
+    page: &TasksPage,
+    button: &gtk::Button,
+    task_store: &gio::ListStore,
+    task_list: &gtk::ListBox,
+    empty_tasks: &gtk::Label,
+) {
+    if task_mutation_batch_running(page) {
+        return;
+    }
+    let capabilities = page.imp().task_source_capabilities.borrow().clone();
+    let source_uids = page.imp().task_source_uids.borrow().clone();
+    let preferred = AppSettings::try_new()
+        .map(|settings| settings.default_task_source_uid())
+        .filter(|uid| !uid.trim().is_empty());
+    let destination = match task_paste_destination(
+        &source_uids,
+        &capabilities,
+        CalendarStoreService::new().is_writable(),
+        preferred.as_deref(),
+    ) {
+        Ok(destination) => destination,
+        Err(error) => {
+            show_toast_for_widget(button, &error);
+            return;
+        }
+    };
+    let generation = page.imp().task_paste_batch_generation.get().wrapping_add(1);
+    page.imp().task_paste_batch_generation.set(generation);
+    page.imp().task_paste_batch_running.set(true);
+    update_task_selection_controls(page);
+
+    let button_for_result = button.clone();
+    let page_weak = page.downgrade();
+    let task_store = task_store.clone();
+    let task_list = task_list.clone();
+    let empty_tasks = empty_tasks.clone();
+    button.display().clipboard().read_text_async(None::<&gio::Cancellable>, move |result| {
+        let Some(page) = page_weak.upgrade() else {
+            return;
+        };
+        if !task_paste_result_is_current(page.imp().task_paste_batch_generation.get(), generation) {
+            return;
+        }
+        let payload = match result {
+            Ok(Some(payload)) => payload.to_string(),
+            Ok(None) => {
+                page.imp().task_paste_batch_running.set(false);
+                update_task_selection_controls(&page);
+                show_toast_for_widget(&button_for_result, "Die Zwischenablage enthält keinen Text");
+                return;
+            }
+            Err(error) => {
+                page.imp().task_paste_batch_running.set(false);
+                update_task_selection_controls(&page);
+                show_toast_for_widget(&button_for_result, &format!("Zwischenablage nicht lesbar: {error}"));
+                return;
+            }
+        };
+        // Re-resolve the current default source after the asynchronous read.
+        let capabilities = page.imp().task_source_capabilities.borrow().clone();
+        let source_uids = page.imp().task_source_uids.borrow().clone();
+        let preferred = AppSettings::try_new()
+            .map(|settings| settings.default_task_source_uid())
+            .filter(|uid| !uid.trim().is_empty());
+        let current_destination = match task_paste_destination(
+            &source_uids,
+            &capabilities,
+            CalendarStoreService::new().is_writable(),
+            preferred.as_deref(),
+        ) {
+            Ok(current_destination) if current_destination == destination => current_destination,
+            Ok(_) | Err(_) => {
+                page.imp().task_paste_batch_running.set(false);
+                update_task_selection_controls(&page);
+                show_toast_for_widget(
+                    &button_for_result,
+                    "Die Standard-Aufgabenliste hat sich geändert oder ist nicht mehr schreibfähig",
+                );
+                return;
+            }
+        };
+        let components = match parse_task_clipboard_payload(&payload) {
+            Ok(components) => components,
+            Err(error) => {
+                page.imp().task_paste_batch_running.set(false);
+                update_task_selection_controls(&page);
+                show_toast_for_widget(&button_for_result, &error);
+                return;
+            }
+        };
+        let fresh_uids = components
+            .iter()
+            .map(|_| format!("evolution-gtk4-{}", uuid::Uuid::new_v4()))
+            .collect::<Vec<_>>();
+        let existing = task_export_candidates(&task_store)
+            .into_iter()
+            .map(|candidate| candidate.identity)
+            .collect::<Vec<_>>();
+        let plan = match plan_task_clipboard_paste_with_uids(
+            &payload,
+            &current_destination,
+            &existing,
+            &fresh_uids,
+        ) {
+            Ok(plan) => plan,
+            Err(error) => {
+                page.imp().task_paste_batch_running.set(false);
+                update_task_selection_controls(&page);
+                show_toast_for_widget(&button_for_result, &error);
+                return;
+            }
+        };
+        task_list.set_sensitive(false);
+        update_task_selection_controls(&page);
+        show_toast_for_widget(&button_for_result, "Aufgaben werden eingefügt …");
+        let (sender, receiver) = async_channel::bounded(1);
+        let plan_for_worker = plan.clone();
+        std::thread::spawn(move || {
+            let local_writable = CalendarStoreService::new().is_writable();
+            let service = ECalService::new();
+            let mut result = TaskPasteWorkerResult {
+                created: Vec::new(),
+                failure: None,
+            };
+            for mutation in plan_for_worker.mutations {
+                if task_source_capability(&mutation.identity.source_uid, &capabilities, local_writable)
+                    != TaskSourceCapability::Writable
+                {
+                    result.failure = Some((
+                        mutation.identity,
+                        "Die Ziel-Aufgabenliste ist unmittelbar vor dem Einfügen nicht mehr schreibfähig"
+                            .to_string(),
+                    ));
+                    break;
+                }
+                match service.create_component(
+                    &mutation.identity.source_uid,
+                    ECalComponentType::Task,
+                    &mutation.component,
+                ) {
+                    Ok(mut confirmed) => {
+                        if confirmed
+                            .component
+                            .as_deref()
+                            .is_none_or(|component| component.trim().is_empty())
+                        {
+                            confirmed.component = load_snapshot_prefer_eds()
+                                .snapshot
+                                .tasks
+                                .into_iter()
+                                .find(|task| {
+                                    task.source_uid == mutation.identity.source_uid
+                                        && task.uid == mutation.identity.task_uid
+                                })
+                                .map(|task| task.component);
+                        }
+                        match task_authoritative_component(
+                            &mutation.identity.task_uid,
+                            &confirmed.uid,
+                            confirmed.component,
+                        )
+                        .and_then(|component| {
+                            validated_task_vtodo_component(
+                                &TaskExportCandidate {
+                                    identity: mutation.identity.clone(),
+                                    component,
+                                },
+                                &mutation.identity,
+                            )
+                        }) {
+                            Ok(component) => result.created.push(TaskPasteMutation {
+                                component,
+                                ..mutation
+                            }),
+                            Err(error) => {
+                                result.failure = Some((mutation.identity, error));
+                                break;
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        result.failure = Some((mutation.identity, error.to_string()));
+                        break;
+                    }
+                }
+            }
+            if let Err(error) = sender.send_blocking(result) {
+                tracing::debug!(%error, "Task paste result was dropped");
+            }
+        });
+
+        let page_weak = page.downgrade();
+        let button = button_for_result.clone();
+        glib::spawn_future_local(async move {
+            let received = receiver.recv().await;
+            let Some(page) = page_weak.upgrade() else {
+                return;
+            };
+            if !task_paste_result_is_current(page.imp().task_paste_batch_generation.get(), generation) {
+                return;
+            }
+            page.imp().task_paste_batch_running.set(false);
+            task_list.set_sensitive(true);
+            let result = match received {
+                Ok(result) => result,
+                Err(error) => {
+                    tracing::debug!(%error, "Task paste result channel closed");
+                    update_task_selection_controls(&page);
+                    reload_task_snapshot_after_paste_uncertainty(
+                        &page,
+                        &task_store,
+                        &task_list,
+                        &empty_tasks,
+                    );
+                    show_toast_for_widget(
+                        &button,
+                        "Einfüge-Ergebnis ging verloren; autoritative Aufgaben werden neu geladen",
+                    );
+                    return;
+                }
+            };
+            let mut reduction = reduce_task_paste_worker_result(&plan, &result);
+            let mut applied = Vec::new();
+            let mut recovery_required = reduction.failure.is_some()
+                && reduction.created.is_empty()
+                && reduction.unattempted.len() == plan.mutations.len();
+            for mutation in &reduction.created {
+                if task_export_candidates(&task_store)
+                    .iter()
+                    .any(|candidate| candidate.identity == mutation.identity)
+                {
+                    reduction.failure = Some((
+                        mutation.identity.clone(),
+                        "Eine bestätigte neue Aufgabe kollidiert mit der aktuellen Auswahl".to_string(),
+                    ));
+                    recovery_required = true;
+                    continue;
+                }
+                match task_item_from_confirmed_component(
+                    &mutation.identity.source_uid,
+                    &mutation.identity.task_uid,
+                    &mutation.component,
+                ) {
+                    Ok(item) => {
+                        task_store.append(&item);
+                        applied.push(mutation.identity.clone());
+                    }
+                    Err(error) => {
+                        reduction.failure = Some((mutation.identity.clone(), error));
+                        recovery_required = true;
+                    }
+                }
+            }
+            reduction.created.retain(|mutation| applied.contains(&mutation.identity));
+            render_task_rows(&page, &task_list, &task_store, &empty_tasks);
+            if recovery_required {
+                reload_task_snapshot_after_paste_uncertainty(
+                    &page,
+                    &task_store,
+                    &task_list,
+                    &empty_tasks,
+                );
+            }
+            match (reduction.created.len(), reduction.failure.is_some(), reduction.unattempted.len()) {
+                (created, false, 0) => page.show_toast(&format!(
+                    "{created} Aufgabe{} eingefügt",
+                    if created == 1 { "" } else { "n" }
+                )),
+                (0, true, unattempted) => page.show_toast(&format!(
+                    "Keine Aufgabe eingefügt; ein Fehler ist aufgetreten. {unattempted} Aufgabe{} wurden nicht versucht",
+                    if unattempted == 1 { "" } else { "n" }
+                )),
+                (created, true, unattempted) => page.show_toast(&format!(
+                    "{created} Aufgabe{} eingefügt; ein Fehler. {unattempted} Aufgabe{} wurden nicht versucht",
+                    if created == 1 { "" } else { "n" },
+                    if unattempted == 1 { "" } else { "n" }
+                )),
+                _ => page.show_toast("Das Einfügen lieferte kein bestätigtes Ergebnis"),
+            }
+        });
+    });
+}
+
+fn present_task_delete_confirmation(
+    page: &TasksPage,
+    button: &gtk::Button,
+    task_store: &gio::ListStore,
+    task_list: &gtk::ListBox,
+    empty_tasks: &gtk::Label,
+) {
+    if task_mutation_batch_running(page) {
+        return;
+    }
+    let selection = page.imp().task_selection.borrow().clone();
+    let plan = match build_task_delete_plan(
+        &selection,
+        &task_export_candidates(task_store),
+        &page.imp().task_source_capabilities.borrow(),
+        CalendarStoreService::new().is_writable(),
+    ) {
+        Ok(plan) => plan,
+        Err(error) => {
+            show_toast_for_widget(button, &error);
+            return;
+        }
+    };
+    let prompt = task_delete_confirmation(&plan);
+    let dialog = adw::AlertDialog::new(Some(&prompt.title), Some(&prompt.description));
+    dialog.add_responses(&[("cancel", "Nicht löschen"), ("delete", "Löschen")]);
+    dialog.set_response_appearance("delete", adw::ResponseAppearance::Destructive);
+    let page_weak = page.downgrade();
+    let task_store = task_store.clone();
+    let task_list = task_list.clone();
+    let empty_tasks = empty_tasks.clone();
+    let button = button.clone();
+    let button_for_dialog = button.clone();
+    dialog.connect_response(None, move |dialog, response| {
+        if !task_delete_can_dispatch(response == "delete") {
+            dialog.close();
+            return;
+        }
+        dialog.close();
+        let Some(page) = page_weak.upgrade() else {
+            return;
+        };
+        start_task_delete_batch(
+            &page,
+            &button,
+            &task_store,
+            &task_list,
+            &empty_tasks,
+            &plan,
+            false,
+        );
+    });
+    dialog.present(Some(&button_for_dialog));
+}
+
+fn present_task_purge_confirmation(
+    page: &TasksPage,
+    button: &gtk::Button,
+    task_store: &gio::ListStore,
+    task_list: &gtk::ListBox,
+    empty_tasks: &gtk::Label,
+) {
+    if task_mutation_batch_running(page) {
+        return;
+    }
+    let plan = match build_task_purge_plan(
+        &task_export_candidates(task_store),
+        &page.imp().task_source_capabilities.borrow(),
+        CalendarStoreService::new().is_writable(),
+    ) {
+        Ok(plan) => plan,
+        Err(error) => {
+            show_toast_for_widget(button, &error);
+            return;
+        }
+    };
+    let count = plan.mutations.len();
+    let dialog = adw::AlertDialog::new(
+        Some("Erledigte Aufgaben endgültig löschen?"),
+        Some(&format!(
+            "{count} erledigte Aufgabe{} werden aus allen schreibfähigen Aufgabenlisten dauerhaft gelöscht und können nicht wiederhergestellt werden.",
+            if count == 1 { "" } else { "n" }
+        )),
+    );
+    dialog.add_responses(&[("cancel", "Nicht löschen"), ("delete", "Endgültig löschen")]);
+    dialog.set_response_appearance("delete", adw::ResponseAppearance::Destructive);
+    let page_weak = page.downgrade();
+    let task_store = task_store.clone();
+    let task_list = task_list.clone();
+    let empty_tasks = empty_tasks.clone();
+    let button = button.clone();
+    let button_for_dialog = button.clone();
+    dialog.connect_response(None, move |dialog, response| {
+        dialog.close();
+        if response != "delete" {
+            return;
+        }
+        let Some(page) = page_weak.upgrade() else {
+            return;
+        };
+        start_task_delete_batch(
+            &page,
+            &button,
+            &task_store,
+            &task_list,
+            &empty_tasks,
+            &plan,
+            true,
+        );
+    });
+    dialog.present(Some(&button_for_dialog));
+}
+
+fn apply_task_delete_removals(task_store: &gio::ListStore, identities: &[TaskSelectionIdentity]) {
+    let mut indexes = Vec::new();
+    for identity in identities {
+        let matches = (0..task_store.n_items())
+            .filter(|index| {
+                task_store
+                    .item(*index)
+                    .and_downcast::<TaskItemObject>()
+                    .is_some_and(|task| {
+                        task.source_uid() == identity.source_uid && task.id() == identity.task_uid
+                    })
+            })
+            .collect::<Vec<_>>();
+        if let [index] = matches.as_slice() {
+            indexes.push(*index);
+        }
+    }
+    indexes.sort_unstable_by(|left, right| right.cmp(left));
+    for index in indexes {
+        task_store.remove(index);
+    }
+}
+
+fn reload_task_snapshot_after_delete_uncertainty(
+    page: &TasksPage,
+    task_store: &gio::ListStore,
+    task_list: &gtk::ListBox,
+    empty_tasks: &gtk::Label,
+) {
+    let generation = page.imp().task_delete_batch_generation.get();
+    let (sender, receiver) = async_channel::bounded(1);
+    std::thread::spawn(move || {
+        let snapshot = load_snapshot_prefer_eds().snapshot;
+        if let Err(error) = sender.send_blocking(snapshot) {
+            tracing::debug!(%error, "Task delete recovery snapshot was dropped");
+        }
+    });
+    let page_weak = page.downgrade();
+    let task_store = task_store.clone();
+    let task_list = task_list.clone();
+    let empty_tasks = empty_tasks.clone();
+    glib::spawn_future_local(async move {
+        let Ok(snapshot) = receiver.recv().await else {
+            return;
+        };
+        let Some(page) = page_weak.upgrade() else {
+            return;
+        };
+        if !task_delete_result_is_current(page.imp().task_delete_batch_generation.get(), generation)
+        {
+            return;
+        }
+        task_store.remove_all();
+        for task in snapshot.tasks {
+            let priority = if task.priority == 0 {
+                "normal".to_string()
+            } else {
+                task.priority.to_string()
+            };
+            task_store.append(&TaskItemObject::new(
+                &task.source_uid,
+                &task.uid,
+                &task.summary,
+                &task.due,
+                &priority,
+                task.completed,
+                &task.component,
+            ));
+        }
+        render_task_rows(&page, &task_list, &task_store, &empty_tasks);
+    });
+}
+
+fn start_task_delete_batch(
+    page: &TasksPage,
+    button: &gtk::Button,
+    task_store: &gio::ListStore,
+    task_list: &gtk::ListBox,
+    empty_tasks: &gtk::Label,
+    confirmed_plan: &TaskDeletePlan,
+    purge_completed: bool,
+) {
+    if task_mutation_batch_running(page) {
+        return;
+    }
+    // Re-resolve after the confirmation rather than deleting a task that
+    // changed or disappeared while the dialog was open.
+    let selection = page.imp().task_selection.borrow().clone();
+    let candidates = task_export_candidates(task_store);
+    let current_plan = if purge_completed {
+        build_task_purge_plan(
+            &candidates,
+            &page.imp().task_source_capabilities.borrow(),
+            CalendarStoreService::new().is_writable(),
+        )
+    } else {
+        build_task_delete_plan(
+            &selection,
+            &candidates,
+            &page.imp().task_source_capabilities.borrow(),
+            CalendarStoreService::new().is_writable(),
+        )
+    };
+    let plan = match current_plan {
+        Ok(plan)
+            if plan == *confirmed_plan
+                && (purge_completed || task_delete_plan_matches_selection(&plan, &selection)) =>
+        {
+            plan
+        }
+        Ok(_) => {
+            show_toast_for_widget(
+                button,
+                if purge_completed {
+                    "Die Menge erledigter Aufgaben hat sich vor dem Löschen geändert"
+                } else {
+                    "Die Aufgaben-Auswahl hat sich vor dem Löschen geändert"
+                },
+            );
+            return;
+        }
+        Err(error) => {
+            show_toast_for_widget(button, &error);
+            return;
+        }
+    };
+    let generation = page
+        .imp()
+        .task_delete_batch_generation
+        .get()
+        .wrapping_add(1);
+    page.imp().task_delete_batch_generation.set(generation);
+    page.imp().task_delete_batch_running.set(true);
+    task_list.set_sensitive(false);
+    update_task_selection_controls(page);
+    show_toast_for_widget(button, "Aufgaben werden gelöscht …");
+
+    let capabilities = page.imp().task_source_capabilities.borrow().clone();
+    let plan_for_worker = plan.clone();
+    let (sender, receiver) = async_channel::bounded(1);
+    std::thread::spawn(move || {
+        let local_writable = CalendarStoreService::new().is_writable();
+        let service = ECalService::new();
+        let mut result = TaskDeleteWorkerResult {
+            removed: Vec::new(),
+            failure: None,
+        };
+        for mutation in plan_for_worker.mutations {
+            if task_source_capability(&mutation.identity.source_uid, &capabilities, local_writable)
+                != TaskSourceCapability::Writable
+            {
+                result.failure = Some((
+                    mutation.identity,
+                    "Die Aufgabenliste ist unmittelbar vor dem Löschen nicht mehr schreibfähig"
+                        .to_string(),
+                ));
+                break;
+            }
+            match service.remove_component(
+                &mutation.identity.source_uid,
+                ECalComponentType::Task,
+                &mutation.identity.task_uid,
+            ) {
+                Ok(confirmed) if confirmed.uid == mutation.identity.task_uid => {
+                    result.removed.push(mutation.identity);
+                }
+                Ok(_) => {
+                    result.failure = Some((
+                        mutation.identity,
+                        "Das Backend bestätigte das Löschen einer anderen Aufgabe".to_string(),
+                    ));
+                    break;
+                }
+                Err(error) => {
+                    result.failure = Some((mutation.identity, error.to_string()));
+                    break;
+                }
+            }
+        }
+        if let Err(error) = sender.send_blocking(result) {
+            tracing::debug!(%error, "Task delete batch result was dropped");
+        }
+    });
+
+    let page_weak = page.downgrade();
+    let task_store = task_store.clone();
+    let task_list = task_list.clone();
+    let empty_tasks = empty_tasks.clone();
+    let button = button.clone();
+    glib::spawn_future_local(async move {
+        let received = receiver.recv().await;
+        let Some(page) = page_weak.upgrade() else {
+            return;
+        };
+        if !task_delete_result_is_current(page.imp().task_delete_batch_generation.get(), generation)
+        {
+            return;
+        }
+        page.imp().task_delete_batch_running.set(false);
+        task_list.set_sensitive(true);
+        let result = match received {
+            Ok(result) => result,
+            Err(error) => {
+                tracing::debug!(%error, "Task delete batch channel closed");
+                update_task_selection_controls(&page);
+                reload_task_snapshot_after_delete_uncertainty(
+                    &page,
+                    &task_store,
+                    &task_list,
+                    &empty_tasks,
+                );
+                show_toast_for_widget(
+                    &button,
+                    "Lösch-Ergebnis ging verloren; autoritative Aufgaben werden neu geladen",
+                );
+                return;
+            }
+        };
+        let reduction = reduce_task_delete_batch_result(&plan, &result);
+        apply_task_delete_removals(&task_store, &reduction.removed);
+        render_task_rows(&page, &task_list, &task_store, &empty_tasks);
+        match (
+            reduction.removed.len(),
+            reduction.failure.is_some(),
+            reduction.unattempted.len(),
+        ) {
+            (removed, false, 0) => page.show_toast(&format!(
+                "{removed} Aufgabe{} gelöscht",
+                if removed == 1 { "" } else { "n" }
+            )),
+            (0, true, unattempted) => page.show_toast(&format!(
+                "Keine Aufgabe gelöscht; ein Fehler ist aufgetreten. {unattempted} Aufgabe{} wurden nicht versucht",
+                if unattempted == 1 { "" } else { "n" }
+            )),
+            (removed, true, unattempted) => page.show_toast(&format!(
+                "{removed} Aufgabe{} gelöscht; ein Fehler. {unattempted} Aufgabe{} wurden nicht versucht",
+                if removed == 1 { "" } else { "n" },
+                if unattempted == 1 { "" } else { "n" }
+            )),
+            _ => page.show_toast("Das Löschen lieferte kein bestätigtes Ergebnis"),
+        }
+    });
 }
 
 fn refresh_task_category_model(
@@ -4070,7 +8856,10 @@ fn append_task_row(
             return;
         }
         let completed = button.is_active();
-        if !task_source_is_writable_now(&source_uid) {
+        let Some(page) = page_weak_for_check.upgrade() else {
+            return;
+        };
+        if !task_source_is_writable_on_page(&page, &source_uid) {
             updating_for_callback.set(true);
             button.set_active(!completed);
             updating_for_callback.set(false);
@@ -4086,16 +8875,6 @@ fn append_task_row(
         } else {
             "NEEDS-ACTION"
         };
-        if !task_source_is_writable_now(&source_uid) {
-            updating_for_callback.set(true);
-            button.set_active(!completed);
-            updating_for_callback.set(false);
-            show_toast_for_widget(
-                button,
-                "Diese Aufgabenliste ist nicht mehr als schreibfähig bestätigt",
-            );
-            return;
-        }
         let percent = if completed { "100" } else { "0" };
         let mut component = update_ical_property(&task_clone.component(), "STATUS", Some(status));
         component = update_ical_property(&component, "PERCENT-COMPLETE", Some(percent));
@@ -4147,20 +8926,17 @@ fn append_task_row(
             };
             match result {
                 Ok(result) => {
-                    let component = match task_authoritative_component(
-                        &uid,
-                        &result.uid,
-                        result.component,
-                    ) {
-                        Ok(component) => component,
-                        Err(error) => {
-                            updating_for_result.set(true);
-                            button_for_result.set_active(!completed);
-                            updating_for_result.set(false);
-                            show_toast_for_widget(&button_for_result, &error);
-                            return;
-                        }
-                    };
+                    let component =
+                        match task_authoritative_component(&uid, &result.uid, result.component) {
+                            Ok(component) => component,
+                            Err(error) => {
+                                updating_for_result.set(true);
+                                button_for_result.set_active(!completed);
+                                updating_for_result.set(false);
+                                show_toast_for_widget(&button_for_result, &error);
+                                return;
+                            }
+                        };
                     task_for_result.set_completed(completed);
                     task_for_result.set_component(component);
                     if let Some(page) = page_for_result.upgrade() {
@@ -4192,7 +8968,7 @@ fn append_task_row(
         .tooltip_text("Status, Priorität, Fälligkeit und Kategorien schnell bearbeiten")
         .css_classes(vec!["flat"])
         .valign(gtk::Align::Center)
-        .sensitive(task_source_is_writable_now(&task.source_uid()))
+        .sensitive(task_source_is_writable_on_page(page, &task.source_uid()))
         .build();
     set_accessible_label(
         &quick_edit_button,
@@ -4224,16 +9000,16 @@ fn append_task_row(
     let edit_button_for_signal = edit_button.clone();
     let edit_button_for_closure = edit_button.clone();
     edit_button_for_signal.connect_clicked(move |_| {
-        if !task_source_is_writable_now(&task_for_edit.source_uid()) {
+        let Some(page) = page_weak_for_edit.upgrade() else {
+            return;
+        };
+        if !task_source_is_writable_on_page(&page, &task_for_edit.source_uid()) {
             show_toast_for_widget(
                 &edit_button_for_closure,
                 "Diese Aufgabenliste ist nicht als schreibfähig bestätigt",
             );
             return;
         }
-        let Some(page) = page_weak_for_edit.upgrade() else {
-            return;
-        };
         page.open_task_dialog(
             task_store_for_edit.clone(),
             task_list_for_edit.clone(),
@@ -4303,122 +9079,38 @@ fn append_task_row(
         .build();
     set_accessible_label(&delete_button, "Aufgabe löschen");
     row.add_suffix(&delete_button);
-    let task_for_delete = task.clone();
     let task_store_for_delete = task_store.clone();
     let task_list_for_delete = task_list.clone();
     let empty_tasks_for_delete = empty_tasks.clone();
     let delete_button_for_context = delete_button.clone();
     let delete_button_for_signal = delete_button.clone();
     let page_weak_for_delete = page.downgrade();
-    delete_button_for_signal.connect_clicked(move |_| {
-        let source_uid = task_for_delete.source_uid();
-        if !task_source_is_writable_now(&source_uid) {
-            show_toast_for_widget(
-                &delete_button,
-                "Diese Aufgabenliste ist nicht als schreibfähig bestätigt",
-            );
+    delete_button_for_signal.connect_clicked(move |button| {
+        let Some(page) = page_weak_for_delete.upgrade() else {
             return;
-        }
-        let confirmation_message = if source_uid == "local-calendar" {
-            "Die Aufgabe wird dauerhaft aus der lokalen Aufgabenliste entfernt."
-        } else {
-            "Die Aufgabe wird dauerhaft aus der synchronisierten Aufgabenliste entfernt."
         };
-        let task_for_action = task_for_delete.clone();
-        let task_store_for_action = task_store_for_delete.clone();
-        let task_list_for_action = task_list_for_delete.clone();
-        let empty_tasks_for_action = empty_tasks_for_delete.clone();
-        let delete_button_for_action = delete_button.clone();
-        let page_weak_for_action = page_weak_for_delete.clone();
-        crate::dialogs::run_destructive_action(
-            &delete_button,
-            "Aufgabe löschen?",
-            confirmation_message,
-            "Löschen",
-            move || {
-                let source_uid = task_for_action.source_uid();
-                if !task_source_is_writable_now(&source_uid) {
-                    show_toast_for_widget(
-                        &delete_button_for_action,
-                        "Diese Aufgabenliste ist nicht mehr als schreibfähig bestätigt",
-                    );
-                    return;
-                }
-                let source_uid_for_result = source_uid.clone();
-                let uid = task_for_action.id();
-                let (sender, receiver) = async_channel::bounded(1);
-                delete_button_for_action.set_sensitive(false);
-                std::thread::spawn(move || {
-                    let result = ECalService::new().remove_component(
-                        &source_uid,
-                        ECalComponentType::Task,
-                        &uid,
-                    );
-                    if let Err(error) = sender.send_blocking(result) {
-                        tracing::debug!(%error, "Task deletion result was dropped");
-                    }
-                });
-
-                let task_store_for_result = task_store_for_action.clone();
-                let task_list_for_result = task_list_for_action.clone();
-                let empty_tasks_for_result = empty_tasks_for_action.clone();
-                let delete_button_for_result = delete_button_for_action.clone();
-                let page_weak_for_result = page_weak_for_action.clone();
-                glib::spawn_future_local(async move {
-                    match receiver.recv().await {
-                        Ok(Ok(result)) => {
-                            let uid = result.uid;
-                            let mut store_index = None;
-                            for index in 0..task_store_for_result.n_items() {
-                                if task_store_for_result
-                                    .item(index)
-                                    .and_downcast::<TaskItemObject>()
-                                    .is_some_and(|task| {
-                                        task.id() == uid
-                                            && task.source_uid() == source_uid_for_result
-                                    })
-                                {
-                                    store_index = Some(index);
-                                    break;
-                                }
-                            }
-                            if let Some(index) = store_index {
-                                task_store_for_result.remove(index);
-                            }
-                            if let Some(page) = page_weak_for_result.upgrade() {
-                                render_task_rows(
-                                    &page,
-                                    &task_list_for_result,
-                                    &task_store_for_result,
-                                    &empty_tasks_for_result,
-                                );
-                            } else if let Some(row) = delete_button_for_result
-                                .ancestor(gtk::ListBoxRow::static_type())
-                                .and_downcast::<gtk::ListBoxRow>()
-                            {
-                                task_list_for_result.remove(&row);
-                                empty_tasks_for_result
-                                    .set_visible(task_store_for_result.n_items() == 0);
-                            }
-                            show_toast_for_widget(
-                                &delete_button_for_result,
-                                &format!("Aufgabe gelöscht ({uid})"),
-                            );
-                        }
-                        Ok(Err(error)) => {
-                            delete_button_for_result.set_sensitive(true);
-                            show_toast_for_widget(
-                                &delete_button_for_result,
-                                &format!("Aufgabe konnte nicht gelöscht werden: {error}"),
-                            );
-                        }
-                        Err(error) => {
-                            delete_button_for_result.set_sensitive(true);
-                            tracing::debug!(%error, "Task deletion channel closed");
-                        }
-                    }
-                });
-            },
+        let Some(row) = button
+            .ancestor(gtk::ListBoxRow::static_type())
+            .and_downcast::<gtk::ListBoxRow>()
+        else {
+            show_toast_for_widget(button, "Die Aufgabe ist nicht mehr verfügbar");
+            return;
+        };
+        // Row and context deletion must target the clicked task, not a prior
+        // multi-selection.  Route it through the same preflight, confirmation,
+        // iTIP/recurrence boundary, and sequential worker as the toolbar.
+        task_list_for_delete.unselect_all();
+        task_list_for_delete.select_row(Some(&row));
+        page.imp()
+            .task_selection
+            .replace(task_selection_from_list(&task_list_for_delete));
+        update_task_selection_controls(&page);
+        present_task_delete_confirmation(
+            &page,
+            button,
+            &task_store_for_delete,
+            &task_list_for_delete,
+            &empty_tasks_for_delete,
         );
     });
 
@@ -4441,6 +9133,9 @@ fn append_task_row(
             .ancestor(gtk::ListBoxRow::static_type())
             .and_downcast::<gtk::ListBoxRow>()
         {
+            // Context actions always operate on the task under the pointer,
+            // not an earlier multi-selection.
+            task_list_for_context.unselect_all();
             task_list_for_context.select_row(Some(&list_row));
         }
 
@@ -4584,6 +9279,1501 @@ enum TaskSourceCapability {
     Unknown,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TaskSourceActionState {
+    copy_enabled: bool,
+    rename_enabled: bool,
+    properties_enabled: bool,
+    delete_enabled: bool,
+}
+
+fn task_source_action_state(
+    primary_source: Option<&str>,
+    metadata: &HashMap<String, ECalSourceCapability>,
+    operation_running: bool,
+) -> TaskSourceActionState {
+    let source = primary_source.and_then(|uid| metadata.get(uid));
+    TaskSourceActionState {
+        // Evolution enables Copy for any exact primary ESource.  The
+        // app-owned portable fallback is not an ESource and is therefore not
+        // projected into this authoritative metadata map.
+        copy_enabled: source.is_some() && !operation_running,
+        rename_enabled: source
+            .is_some_and(|source| source.source_writable && !source.in_collection)
+            && !operation_running,
+        properties_enabled: source.is_some_and(|source| source.source_writable)
+            && !operation_running,
+        delete_enabled: source.is_some_and(|source| source.removable || source.remote_deletable)
+            && !operation_running,
+    }
+}
+
+fn start_task_source_discovery(
+    page: &TasksPage,
+    preferred_source_uid: Option<String>,
+    show_error: bool,
+) {
+    let generation = page
+        .imp()
+        .task_source_discovery_generation
+        .get()
+        .wrapping_add(1);
+    page.imp().task_source_discovery_generation.set(generation);
+    let (sender, receiver) = async_channel::bounded(1);
+    std::thread::spawn(move || {
+        let discovery = ECalService::new().discover_source_capabilities(ECalComponentType::Task);
+        if let Err(error) = sender.send_blocking(discovery) {
+            tracing::debug!(%error, "Task source capability result was dropped");
+        }
+    });
+
+    let page_weak = page.downgrade();
+    glib::spawn_future_local(async move {
+        let (mut sources, warning) = match receiver.recv().await {
+            Ok(Ok(discovery)) => (discovery.sources, discovery.warning),
+            Ok(Err(error)) => {
+                tracing::warn!(%error, "Could not discover exact EDS task lists");
+                if let Some(page) = page_weak.upgrade()
+                    && show_error
+                {
+                    page.show_toast(&format!(
+                        "Aufgabenlisten konnten nicht neu eingelesen werden: {error}"
+                    ));
+                    return;
+                }
+                (Vec::new(), None)
+            }
+            Err(error) => {
+                tracing::debug!(%error, "Task source capability channel closed");
+                return;
+            }
+        };
+        let Some(page) = page_weak.upgrade() else {
+            return;
+        };
+        if page.imp().task_source_discovery_generation.get() != generation {
+            return;
+        }
+        if let Some(warning) = warning.as_deref() {
+            tracing::warn!(%warning, "Some EDS task lists are unavailable");
+        }
+        sources.sort_by_cached_key(|source| {
+            (
+                source.display_name.to_lowercase(),
+                source.source_uid.clone(),
+            )
+        });
+
+        let mut names = vec!["Alle Aufgabenlisten".to_string()];
+        let mut uids = Vec::new();
+        let mut capabilities = HashMap::new();
+        let mut metadata = HashMap::new();
+        let mut refresh_unsupported = HashSet::new();
+        for source in sources {
+            if source.source_uid.trim().is_empty()
+                || metadata.contains_key(source.source_uid.as_str())
+            {
+                continue;
+            }
+            names.push(task_source_capability_label(&source));
+            let capability = task_source_capability_from_ecal(&source);
+            if source.connected && !source.refresh_supported {
+                refresh_unsupported.insert(source.source_uid.clone());
+            }
+            capabilities.insert(source.source_uid.clone(), capability);
+            uids.push(source.source_uid.clone());
+            metadata.insert(source.source_uid.clone(), source);
+        }
+        if let Some(preferred_source_uid) = preferred_source_uid.as_deref()
+            && !uids.iter().any(|uid| uid == preferred_source_uid)
+            && preferred_source_uid != "local-calendar"
+        {
+            names.push(format!("Nicht verfügbare Quelle · {preferred_source_uid}"));
+            uids.push(preferred_source_uid.to_string());
+            capabilities.insert(
+                preferred_source_uid.to_string(),
+                TaskSourceCapability::Unavailable,
+            );
+        }
+        if CalendarStoreService::new().is_writable() {
+            names.push("Lokale Aufgabenliste".to_string());
+            capabilities.insert("local-calendar".to_string(), TaskSourceCapability::Writable);
+            uids.push("local-calendar".to_string());
+        }
+
+        page.imp().task_source_capabilities.replace(capabilities);
+        page.imp().task_source_metadata.replace(metadata);
+        page.imp()
+            .task_refresh_unsupported_sources
+            .replace(refresh_unsupported);
+        page.imp().task_source_uids.replace(uids.clone());
+
+        let Some(source_model) = page.imp().task_source_model.borrow().as_ref().cloned() else {
+            return;
+        };
+        let Some(source_selector) = page.imp().task_source_selector.borrow().as_ref().cloned()
+        else {
+            return;
+        };
+        let Some(source_list) = page.imp().task_source_list.borrow().as_ref().cloned() else {
+            return;
+        };
+        let name_refs = names.iter().map(String::as_str).collect::<Vec<_>>();
+        source_model.splice(0, source_model.n_items(), &name_refs);
+        while let Some(child) = source_list.first_child() {
+            source_list.remove(&child);
+        }
+        for (index, name) in names.iter().enumerate() {
+            let escaped = glib::markup_escape_text(name);
+            let row = adw::ActionRow::builder().title(escaped.as_str()).build();
+            let image = gtk::Image::from_icon_name(if index == 0 {
+                "view-list-symbolic"
+            } else {
+                "view-list-details-symbolic"
+            });
+            row.add_prefix(&image);
+            source_list.append(&row);
+        }
+        let selected = preferred_source_uid
+            .as_deref()
+            .and_then(|uid| uids.iter().position(|candidate| candidate == uid))
+            .map(|index| index as u32 + 1)
+            .unwrap_or(0);
+        source_selector.set_selected(selected);
+        if let Some(row) = source_list.row_at_index(selected as i32) {
+            source_list.select_row(Some(&row));
+        }
+        update_task_selection_controls(&page);
+    });
+}
+
+fn current_task_source_metadata(page: &TasksPage) -> Option<(String, ECalSourceCapability)> {
+    let source_uid = page.imp().task_source_filter.borrow().clone()?;
+    let source = page
+        .imp()
+        .task_source_metadata
+        .borrow()
+        .get(&source_uid)
+        .cloned()?;
+    Some((source_uid, source))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TaskAssignmentDraft {
+    organizer: String,
+    attendees: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TaskAssignmentUpdate {
+    organizer_line: String,
+    attendee_lines: Vec<String>,
+}
+
+fn task_top_level_property_lines(component: &str, property_name: &str) -> Vec<String> {
+    let mut result = Vec::new();
+    let mut primary_seen = false;
+    let mut nested_depth = 0usize;
+    for line in unfold_ical_lines(component) {
+        if !primary_seen {
+            if line.eq_ignore_ascii_case("BEGIN:VTODO") {
+                primary_seen = true;
+            }
+            continue;
+        }
+        if nested_depth == 0 && line.eq_ignore_ascii_case("END:VTODO") {
+            break;
+        }
+        if nested_depth == 0
+            && line.split_once(':').is_some_and(|(property, _)| {
+                property
+                    .split(';')
+                    .next()
+                    .is_some_and(|name| name.eq_ignore_ascii_case(property_name))
+            })
+        {
+            result.push(line.clone());
+        }
+        if line
+            .get(..6)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("BEGIN:"))
+        {
+            nested_depth = nested_depth.saturating_add(1);
+        } else if line
+            .get(..4)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("END:"))
+        {
+            nested_depth = nested_depth.saturating_sub(1);
+        }
+    }
+    result
+}
+
+fn task_assignment_draft(component: &str) -> TaskAssignmentDraft {
+    TaskAssignmentDraft {
+        organizer: task_top_level_property_lines(component, "ORGANIZER")
+            .into_iter()
+            .next()
+            .unwrap_or_default(),
+        attendees: task_top_level_property_lines(component, "ATTENDEE").join("\n"),
+    }
+}
+
+fn normalize_task_assignment_property(input: &str, property_name: &str) -> Result<String, String> {
+    let input = input.trim();
+    if input.is_empty()
+        || input
+            .chars()
+            .any(|character| matches!(character, '\r' | '\n'))
+    {
+        return Err(format!("{property_name} darf nicht leer sein"));
+    }
+    if let Some((property, value)) = input.split_once(':') {
+        let actual_name = property.split(';').next().unwrap_or_default();
+        if !actual_name.eq_ignore_ascii_case(property_name)
+            || property.is_empty()
+            || value.trim().is_empty()
+        {
+            return Err(format!("Ungültige {property_name}-Eigenschaft"));
+        }
+        return Ok(format!("{property}:{}", value.trim()));
+    }
+    let address = input
+        .strip_prefix("mailto:")
+        .or_else(|| input.strip_prefix("MAILTO:"))
+        .unwrap_or(input)
+        .trim();
+    let Some((local, domain)) = address.rsplit_once('@') else {
+        return Err(format!(
+            "{property_name} benötigt eine gültige E-Mail-Adresse"
+        ));
+    };
+    if local.is_empty()
+        || domain.is_empty()
+        || address
+            .chars()
+            .any(|character| character.is_whitespace() || matches!(character, ',' | ';' | ':'))
+    {
+        return Err(format!(
+            "{property_name} benötigt eine gültige E-Mail-Adresse"
+        ));
+    }
+    if property_name.eq_ignore_ascii_case("ATTENDEE") {
+        Ok(format!(
+            "ATTENDEE;CUTYPE=INDIVIDUAL;ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=TRUE:mailto:{address}"
+        ))
+    } else {
+        Ok(format!("ORGANIZER:mailto:{address}"))
+    }
+}
+
+fn parse_task_assignment_update(
+    organizer: &str,
+    attendees: &str,
+) -> Result<TaskAssignmentUpdate, String> {
+    let organizer_line = normalize_task_assignment_property(organizer, "ORGANIZER")?;
+    let mut attendee_lines = Vec::new();
+    for input in attendees
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+    {
+        let line = normalize_task_assignment_property(input, "ATTENDEE")?;
+        if !attendee_lines
+            .iter()
+            .any(|current: &String| current.eq_ignore_ascii_case(&line))
+        {
+            attendee_lines.push(line);
+        }
+    }
+    if attendee_lines.is_empty() {
+        return Err("Mindestens eine teilnehmende Person ist erforderlich".to_string());
+    }
+    Ok(TaskAssignmentUpdate {
+        organizer_line,
+        attendee_lines,
+    })
+}
+
+fn replace_task_assignment_properties(component: &str, update: &TaskAssignmentUpdate) -> String {
+    let current_organizer = task_top_level_property_lines(component, "ORGANIZER");
+    let current_attendees = task_top_level_property_lines(component, "ATTENDEE");
+    if current_organizer.as_slice() == [update.organizer_line.as_str()]
+        && current_attendees == update.attendee_lines
+    {
+        return component.to_string();
+    }
+    let mut output = Vec::new();
+    let mut primary_seen = false;
+    let mut nested_depth = 0usize;
+    let mut inserted = false;
+    for line in unfold_ical_lines(component) {
+        if !primary_seen {
+            output.push(line.clone());
+            if line.eq_ignore_ascii_case("BEGIN:VTODO") {
+                primary_seen = true;
+            }
+            continue;
+        }
+        let is_assignment_property = nested_depth == 0
+            && line.split_once(':').is_some_and(|(property, _)| {
+                property.split(';').next().is_some_and(|name| {
+                    name.eq_ignore_ascii_case("ORGANIZER") || name.eq_ignore_ascii_case("ATTENDEE")
+                })
+            });
+        if is_assignment_property {
+            if !inserted {
+                output.push(update.organizer_line.clone());
+                output.extend(update.attendee_lines.iter().cloned());
+                inserted = true;
+            }
+            continue;
+        }
+        if nested_depth == 0 && line.eq_ignore_ascii_case("END:VTODO") {
+            if !inserted {
+                output.push(update.organizer_line.clone());
+                output.extend(update.attendee_lines.iter().cloned());
+                inserted = true;
+            }
+            output.push(line);
+            continue;
+        }
+        if line
+            .get(..6)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("BEGIN:"))
+        {
+            nested_depth = nested_depth.saturating_add(1);
+        }
+        output.push(line.clone());
+        if line
+            .get(..4)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("END:"))
+        {
+            nested_depth = nested_depth.saturating_sub(1);
+        }
+    }
+    if !inserted {
+        output.push(update.organizer_line.clone());
+        output.extend(update.attendee_lines.iter().cloned());
+    }
+    fold_task_ical_component(&format!("{}\r\n", output.join("\r\n")))
+}
+
+fn build_task_assignment_request(component: &str) -> String {
+    format!(
+        "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Evolution GTK4//Task Assignment//EN\r\nMETHOD:REQUEST\r\n{}\r\nEND:VCALENDAR\r\n",
+        component.trim()
+    )
+}
+
+fn present_task_assignment_dialog(
+    page: &TasksPage,
+    button: &gtk::Button,
+    task_store: &gio::ListStore,
+    task_list: &gtk::ListBox,
+    empty_tasks: &gtk::Label,
+) {
+    let selection = page.imp().task_selection.borrow().clone();
+    let candidates = task_export_candidates(task_store);
+    if !task_assignment_action_enabled(
+        &selection,
+        &candidates,
+        &page.imp().task_source_metadata.borrow(),
+        task_mutation_batch_running(page),
+    ) {
+        show_toast_for_widget(
+            button,
+            "Diese Aufgabe oder ihr Anbieter unterstützt keine Zuweisung",
+        );
+        return;
+    }
+    let Ok(candidate) = selected_task_candidate(&selection, &candidates) else {
+        return;
+    };
+    let Ok(component) = validated_task_vtodo_component(candidate, &candidate.identity) else {
+        show_toast_for_widget(button, "Die ausgewählte Aufgabe ist nicht mehr gültig");
+        return;
+    };
+    let identity = candidate.identity.clone();
+    let initial_component = component.clone();
+    let draft = task_assignment_draft(&component);
+    let organizer_entry = gtk::Entry::builder()
+        .text(&draft.organizer)
+        .placeholder_text("organizer@example.org oder vollständige ORGANIZER-Zeile")
+        .hexpand(true)
+        .build();
+    let attendee_view = gtk::TextView::builder()
+        .wrap_mode(gtk::WrapMode::None)
+        .height_request(120)
+        .build();
+    attendee_view.buffer().set_text(&draft.attendees);
+    let attendee_scroll = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Automatic)
+        .vscrollbar_policy(gtk::PolicyType::Automatic)
+        .min_content_height(100)
+        .child(&attendee_view)
+        .build();
+    let content = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(8)
+        .build();
+    content.append(
+        &gtk::Label::builder()
+            .label("Organisator")
+            .halign(gtk::Align::Start)
+            .build(),
+    );
+    content.append(&organizer_entry);
+    content.append(
+        &gtk::Label::builder()
+            .label("Teilnehmende (eine E-Mail- oder vollständige ATTENDEE-Zeile pro Zeile)")
+            .wrap(true)
+            .halign(gtk::Align::Start)
+            .build(),
+    );
+    content.append(&attendee_scroll);
+    content.append(
+        &gtk::Label::builder()
+            .label("Die Zuweisungsdaten werden gespeichert. Der Versand von iTIP-Benachrichtigungen benötigt die native Linux-/EDS-Laufzeit.")
+            .wrap(true)
+            .xalign(0.0)
+            .css_classes(vec!["dim-label"])
+            .build(),
+    );
+    let dialog = adw::AlertDialog::new(Some("Aufgabe zuweisen"), None);
+    dialog.set_extra_child(Some(&content));
+    dialog.add_response("cancel", "Abbrechen");
+    dialog.add_response("assign", "Zuweisen");
+    dialog.set_response_appearance("assign", adw::ResponseAppearance::Suggested);
+    dialog.set_default_response(Some("assign"));
+    dialog.set_close_response("cancel");
+    let page_weak = page.downgrade();
+    let task_store = task_store.clone();
+    let task_list = task_list.clone();
+    let empty_tasks = empty_tasks.clone();
+    let assignment_button = button.clone();
+    dialog.connect_response(None, move |_, response| {
+        if response != "assign" {
+            return;
+        }
+        let Some(page) = page_weak.upgrade() else {
+            return;
+        };
+        let current_candidates = task_export_candidates(&task_store);
+        if !task_assignment_action_enabled(
+            std::slice::from_ref(&identity),
+            &current_candidates,
+            &page.imp().task_source_metadata.borrow(),
+            task_mutation_batch_running(&page),
+        ) {
+            page.show_toast("Die Aufgabe oder Anbieter-Capability hat sich geändert");
+            return;
+        }
+        let Ok(current) = selected_task_candidate(
+            std::slice::from_ref(&identity),
+            &current_candidates,
+        ) else {
+            page.show_toast("Die Aufgabe ist nicht mehr verfügbar");
+            return;
+        };
+        let Ok(current_component) = validated_task_vtodo_component(current, &identity) else {
+            page.show_toast("Die Aufgabe ist nicht mehr gültig");
+            return;
+        };
+        if current_component != initial_component {
+            page.show_toast("Die Aufgabe wurde inzwischen geändert; Zuweisung bitte erneut öffnen");
+            return;
+        }
+        let buffer = attendee_view.buffer();
+        let attendees = buffer.text(&buffer.start_iter(), &buffer.end_iter(), false);
+        let update = match parse_task_assignment_update(&organizer_entry.text(), &attendees) {
+            Ok(update) => update,
+            Err(error) => {
+                page.show_toast(&error);
+                return;
+            }
+        };
+        let component = replace_task_assignment_properties(&current_component, &update);
+        let request_payload = build_task_assignment_request(&component);
+        let generation = page.imp().task_assignment_generation.get().wrapping_add(1);
+        page.imp().task_assignment_generation.set(generation);
+        page.imp().task_assignment_running.set(true);
+        update_task_selection_controls(&page);
+        let identity_for_worker = identity.clone();
+        let (sender, receiver) = async_channel::bounded(1);
+        std::thread::spawn(move || {
+            let result = ECalService::new()
+                .modify_component(
+                    &identity_for_worker.source_uid,
+                    ECalComponentType::Task,
+                    &identity_for_worker.task_uid,
+                    &component,
+                )
+                .map_err(|error| error.to_string())
+                .and_then(|_| {
+                    let reload = load_snapshot_prefer_eds();
+                    let confirmed = reload.origin == CalendarDataOrigin::Eds
+                        && reload.warning.is_none()
+                        && reload.snapshot.tasks.iter().any(|task| {
+                            task.source_uid == identity_for_worker.source_uid
+                                && task.uid == identity_for_worker.task_uid
+                        });
+                    confirmed.then_some(reload).ok_or_else(|| {
+                        "Die Zuweisung wurde gespeichert, konnte aber nicht autoritativ neu geladen werden"
+                            .to_string()
+                    })
+                });
+            if let Err(error) = sender.send_blocking(result) {
+                tracing::debug!(%error, "Task assignment result was dropped");
+            }
+        });
+        let page_weak = page.downgrade();
+        let button_for_result = assignment_button.clone();
+        let task_store_for_result = task_store.clone();
+        let task_list_for_result = task_list.clone();
+        let empty_tasks_for_result = empty_tasks.clone();
+        glib::spawn_future_local(async move {
+            let Ok(result) = receiver.recv().await else {
+                return;
+            };
+            let Some(page) = page_weak.upgrade() else {
+                return;
+            };
+            if page.imp().task_assignment_generation.get() != generation {
+                return;
+            }
+            page.imp().task_assignment_running.set(false);
+            match result {
+                Ok(reload) => {
+                    apply_authoritative_task_snapshot(
+                        &page,
+                        &task_store_for_result,
+                        &task_list_for_result,
+                        &empty_tasks_for_result,
+                        reload,
+                    );
+                    button_for_result
+                        .display()
+                        .clipboard()
+                        .set_text(&request_payload);
+                    page.show_toast(
+                        "Aufgabe wurde zugewiesen und METHOD:REQUEST bereitgestellt; echter iTIP-Versand bleibt Linux-/EDS-Handoff",
+                    );
+                }
+                Err(error) => page.show_toast(&error),
+            }
+            update_task_selection_controls(&page);
+        });
+    });
+    dialog.present(Some(button));
+}
+
+fn begin_task_source_management(page: &TasksPage) -> Option<u64> {
+    if task_mutation_batch_running(page) {
+        return None;
+    }
+    let generation = page
+        .imp()
+        .task_source_management_generation
+        .get()
+        .wrapping_add(1);
+    page.imp().task_source_management_generation.set(generation);
+    page.imp().task_source_management_running.set(true);
+    update_task_selection_controls(page);
+    Some(generation)
+}
+
+fn task_source_management_result_is_current(page: &TasksPage, generation: u64) -> bool {
+    page.imp().task_source_management_generation.get() == generation
+}
+
+fn task_source_color_hex(color: &gtk::gdk::RGBA) -> String {
+    let channel = |value: f32| (value.clamp(0.0, 1.0) * 255.0).round() as u8;
+    format!(
+        "#{:02X}{:02X}{:02X}",
+        channel(color.red()),
+        channel(color.green()),
+        channel(color.blue())
+    )
+}
+
+fn present_new_local_task_source(page: &TasksPage, button: &gtk::Button) {
+    if task_mutation_batch_running(page) {
+        show_toast_for_widget(button, "Eine andere Aufgabenänderung läuft bereits");
+        return;
+    }
+    let name_entry = gtk::Entry::builder()
+        .placeholder_text("Name der Aufgabenliste")
+        .activates_default(true)
+        .hexpand(true)
+        .build();
+    let color_dialog = gtk::ColorDialog::builder()
+        .title("Farbe der Aufgabenliste")
+        .build();
+    let color_button = gtk::ColorDialogButton::new(Some(color_dialog));
+    if let Ok(color) = gtk::gdk::RGBA::parse("#62a0ea") {
+        color_button.set_rgba(&color);
+    }
+    color_button.set_tooltip_text(Some("Farbe der Aufgabenliste auswählen"));
+    let default_check = gtk::CheckButton::with_label("Als Standard-Aufgabenliste verwenden");
+    let content = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(8)
+        .build();
+    content.append(
+        &gtk::Label::builder()
+            .label("Name")
+            .halign(gtk::Align::Start)
+            .build(),
+    );
+    content.append(&name_entry);
+    content.append(
+        &gtk::Label::builder()
+            .label("Farbe")
+            .halign(gtk::Align::Start)
+            .build(),
+    );
+    content.append(&color_button);
+    content.append(&default_check);
+    let dialog = adw::AlertDialog::new(
+        Some("Neue lokale Aufgabenliste"),
+        Some("Die Aufgabenliste wird im lokalen EDS-Kalenderdienst angelegt."),
+    );
+    dialog.set_extra_child(Some(&content));
+    dialog.add_response("cancel", "Abbrechen");
+    dialog.add_response("create", "Erstellen");
+    dialog.set_response_appearance("create", adw::ResponseAppearance::Suggested);
+    dialog.set_default_response(Some("create"));
+    dialog.set_close_response("cancel");
+    let page_weak = page.downgrade();
+    let button_for_result = button.clone();
+    dialog.connect_response(None, move |_, response| {
+        if response != "create" {
+            return;
+        }
+        let Some(page) = page_weak.upgrade() else {
+            return;
+        };
+        let display_name = name_entry.text().trim().to_string();
+        if display_name.is_empty() {
+            show_toast_for_widget(&button_for_result, "Der Name darf nicht leer sein");
+            return;
+        }
+        let color = task_source_color_hex(&color_button.rgba());
+        let make_default = default_check.is_active();
+        let Some(generation) = begin_task_source_management(&page) else {
+            show_toast_for_widget(
+                &button_for_result,
+                "Eine andere Aufgabenänderung läuft bereits",
+            );
+            return;
+        };
+        show_toast_for_widget(&button_for_result, "Aufgabenliste wird erstellt …");
+        let (sender, receiver) = async_channel::bounded(1);
+        std::thread::spawn(move || {
+            let result = ECalService::new().create_local_source(
+                &display_name,
+                &color,
+                ECalComponentType::Task,
+            );
+            if let Err(error) = sender.send_blocking(result) {
+                tracing::debug!(%error, "Local task source creation result was dropped");
+            }
+        });
+        let page_weak = page.downgrade();
+        glib::spawn_future_local(async move {
+            let Ok(result) = receiver.recv().await else {
+                return;
+            };
+            let Some(page) = page_weak.upgrade() else {
+                return;
+            };
+            if !task_source_management_result_is_current(&page, generation) {
+                return;
+            }
+            page.imp().task_source_management_running.set(false);
+            match result {
+                Ok(created) => {
+                    if make_default
+                        && let Some(settings) = AppSettings::try_new()
+                    {
+                        settings.set_default_task_source_uid(&created.source_uid);
+                    }
+                    match created.status {
+                        ECalLocalSourceCreateStatus::Available => {
+                            page.show_toast("Lokale Aufgabenliste wurde erstellt");
+                        }
+                        ECalLocalSourceCreateStatus::CreatedUnavailable(warning) => {
+                            page.show_toast(&format!(
+                                "Aufgabenliste wurde erstellt, ist aber noch nicht verfügbar: {warning}"
+                            ));
+                        }
+                    }
+                    start_task_source_discovery(&page, Some(created.source_uid), true);
+                }
+                Err(ECalServiceError::Unsupported) => {
+                    page.show_toast(
+                        "Lokale EDS-Aufgabenlisten werden von diesem Backend nicht unterstützt",
+                    );
+                }
+                Err(ECalServiceError::Backend(message)) => page.show_toast(&message),
+            }
+            update_task_selection_controls(&page);
+        });
+    });
+    dialog.present(Some(button));
+}
+
+fn task_source_custom_file_label(uri: Option<&str>) -> String {
+    let Some(uri) = uri.filter(|uri| !uri.trim().is_empty()) else {
+        return "Keine iCalendar-Datei ausgewählt".to_string();
+    };
+    gio::File::for_uri(uri)
+        .path()
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|| uri.to_string())
+}
+
+fn present_task_source_properties(page: &TasksPage, button: &gtk::Button) {
+    let Some((source_uid, _)) = current_task_source_metadata(page) else {
+        show_toast_for_widget(button, "Zum Bearbeiten eine Aufgabenliste auswählen");
+        return;
+    };
+    let state = task_source_action_state(
+        Some(&source_uid),
+        &page.imp().task_source_metadata.borrow(),
+        task_mutation_batch_running(page),
+    );
+    if !state.properties_enabled {
+        show_toast_for_widget(
+            button,
+            "Die Eigenschaften dieser Aufgabenliste sind nicht schreibbar",
+        );
+        return;
+    }
+    let Some(generation) = begin_task_source_management(page) else {
+        show_toast_for_widget(button, "Eine andere Aufgabenänderung läuft bereits");
+        return;
+    };
+    show_toast_for_widget(button, "Aufgabenlisten-Eigenschaften werden geladen …");
+    let source_uid_for_worker = source_uid.clone();
+    let (sender, receiver) = async_channel::bounded(1);
+    std::thread::spawn(move || {
+        let result = ECalService::new()
+            .local_source_properties(&source_uid_for_worker, ECalComponentType::Task);
+        if let Err(error) = sender.send_blocking(result) {
+            tracing::debug!(%error, "Local task source properties result was dropped");
+        }
+    });
+    let page_weak = page.downgrade();
+    let button = button.clone();
+    glib::spawn_future_local(async move {
+        let Ok(result) = receiver.recv().await else {
+            return;
+        };
+        let Some(page) = page_weak.upgrade() else {
+            return;
+        };
+        if !task_source_management_result_is_current(&page, generation) {
+            return;
+        }
+        match result {
+            Ok(properties) => {
+                present_loaded_task_source_properties(&page, &button, generation, properties)
+            }
+            Err(ECalServiceError::Unsupported) => {
+                page.imp().task_source_management_running.set(false);
+                page.show_toast(
+                    "Provider-spezifische Eigenschaften sind für diese Aufgabenliste noch nicht verfügbar",
+                );
+                update_task_selection_controls(&page);
+            }
+            Err(ECalServiceError::Backend(message)) => {
+                page.imp().task_source_management_running.set(false);
+                page.show_toast(&message);
+                update_task_selection_controls(&page);
+            }
+        }
+    });
+}
+
+fn present_loaded_task_source_properties(
+    page: &TasksPage,
+    button: &gtk::Button,
+    generation: u64,
+    properties: ECalLocalSourceProperties,
+) {
+    let name_entry = gtk::Entry::builder()
+        .text(&properties.display_name)
+        .placeholder_text("Name der Aufgabenliste")
+        .activates_default(true)
+        .hexpand(true)
+        .build();
+    let color_dialog = gtk::ColorDialog::builder()
+        .title("Farbe der Aufgabenliste")
+        .build();
+    let color_button = gtk::ColorDialogButton::new(Some(color_dialog));
+    if let Ok(color) = gtk::gdk::RGBA::parse(&properties.color) {
+        color_button.set_rgba(&color);
+    }
+    let email_entry = gtk::Entry::builder()
+        .text(&properties.email_address)
+        .placeholder_text("E-Mail-Adresse (optional)")
+        .hexpand(true)
+        .build();
+    let default_was_selected = AppSettings::try_new()
+        .is_some_and(|settings| settings.default_task_source_uid() == properties.source_uid);
+    let default_check = gtk::CheckButton::with_label("Als Standard-Aufgabenliste verwenden");
+    default_check.set_active(default_was_selected);
+
+    let custom_file_uri = Rc::new(RefCell::new(properties.custom_file_uri.clone()));
+    let custom_file_check = gtk::CheckButton::with_label("Vorhandene iCalendar-Datei verwenden");
+    custom_file_check.set_active(!properties.is_builtin && properties.custom_file_uri.is_some());
+    custom_file_check.set_sensitive(!properties.is_builtin);
+    let custom_file_label = gtk::Label::builder()
+        .label(task_source_custom_file_label(
+            properties.custom_file_uri.as_deref(),
+        ))
+        .ellipsize(gtk::pango::EllipsizeMode::Middle)
+        .hexpand(true)
+        .halign(gtk::Align::Start)
+        .build();
+    let choose_file_button = gtk::Button::builder()
+        .label("Datei wählen …")
+        .sensitive(!properties.is_builtin && properties.custom_file_uri.is_some())
+        .build();
+    let file_row = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(8)
+        .build();
+    file_row.append(&custom_file_label);
+    file_row.append(&choose_file_button);
+    file_row.set_visible(!properties.is_builtin && properties.custom_file_uri.is_some());
+    let custom_writable_check =
+        gtk::CheckButton::with_label("Evolution darf die iCalendar-Datei aktualisieren");
+    custom_writable_check.set_active(properties.custom_file_writable);
+    custom_writable_check
+        .set_visible(!properties.is_builtin && properties.custom_file_uri.is_some());
+    let builtin_hint = gtk::Label::builder()
+        .label("Die eingebaute Aufgabenliste kann keine externe iCalendar-Datei verwenden.")
+        .wrap(true)
+        .xalign(0.0)
+        .css_classes(vec!["dim-label"])
+        .visible(properties.is_builtin)
+        .build();
+
+    let content = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(8)
+        .build();
+    for (label, widget) in [
+        ("Name", name_entry.clone().upcast::<gtk::Widget>()),
+        ("Farbe", color_button.clone().upcast::<gtk::Widget>()),
+        ("E-Mail", email_entry.clone().upcast::<gtk::Widget>()),
+    ] {
+        content.append(
+            &gtk::Label::builder()
+                .label(label)
+                .halign(gtk::Align::Start)
+                .build(),
+        );
+        content.append(&widget);
+    }
+    content.append(&default_check);
+    content.append(&custom_file_check);
+    content.append(&file_row);
+    content.append(&custom_writable_check);
+    content.append(&builtin_hint);
+
+    let dialog = adw::AlertDialog::new(
+        Some("Eigenschaften der Aufgabenliste"),
+        Some("Lokale EDS-Eigenschaften bearbeiten"),
+    );
+    dialog.set_extra_child(Some(&content));
+    dialog.add_response("cancel", "Abbrechen");
+    dialog.add_response("save", "Speichern");
+    dialog.set_response_appearance("save", adw::ResponseAppearance::Suggested);
+    dialog.set_default_response(Some("save"));
+    dialog.set_close_response("cancel");
+
+    let update_save_state = {
+        let dialog = dialog.downgrade();
+        let name_entry = name_entry.clone();
+        let custom_file_check = custom_file_check.clone();
+        let custom_file_uri = Rc::clone(&custom_file_uri);
+        move || {
+            if let Some(dialog) = dialog.upgrade() {
+                dialog.set_response_enabled(
+                    "save",
+                    !name_entry.text().trim().is_empty()
+                        && (!custom_file_check.is_active() || custom_file_uri.borrow().is_some()),
+                );
+            }
+        }
+    };
+    update_save_state();
+    let update_save_state_for_name = update_save_state.clone();
+    name_entry.connect_changed(move |_| update_save_state_for_name());
+    let update_save_state_for_toggle = update_save_state.clone();
+    let file_row_for_toggle = file_row.clone();
+    let choose_file_for_toggle = choose_file_button.clone();
+    let writable_for_toggle = custom_writable_check.clone();
+    custom_file_check.connect_toggled(move |check| {
+        let active = check.is_active();
+        file_row_for_toggle.set_visible(active);
+        choose_file_for_toggle.set_sensitive(active);
+        writable_for_toggle.set_visible(active);
+        update_save_state_for_toggle();
+    });
+
+    let button_for_file = button.clone();
+    let file_label_for_choose = custom_file_label.clone();
+    let custom_file_uri_for_choose = Rc::clone(&custom_file_uri);
+    let update_save_state_for_file = update_save_state.clone();
+    choose_file_button.connect_clicked(move |_| {
+        let Some(window) = button_for_file.root().and_downcast::<gtk::Window>() else {
+            return;
+        };
+        let file_dialog = gtk::FileDialog::builder()
+            .title("iCalendar-Datei auswählen")
+            .modal(true)
+            .build();
+        let file_label = file_label_for_choose.clone();
+        let custom_file_uri = Rc::clone(&custom_file_uri_for_choose);
+        let update_save_state = update_save_state_for_file.clone();
+        file_dialog.open(Some(&window), None::<&gio::Cancellable>, move |result| {
+            let Ok(file) = result else {
+                return;
+            };
+            let uri = file.uri().to_string();
+            file_label.set_label(&task_source_custom_file_label(Some(&uri)));
+            custom_file_uri.replace(Some(uri));
+            update_save_state();
+        });
+    });
+
+    let page_weak = page.downgrade();
+    let source_uid = properties.source_uid.clone();
+    dialog.connect_response(None, move |_, response| {
+        let Some(page) = page_weak.upgrade() else {
+            return;
+        };
+        if !task_source_management_result_is_current(&page, generation) {
+            return;
+        }
+        if response != "save" {
+            page.imp().task_source_management_running.set(false);
+            update_task_selection_controls(&page);
+            return;
+        }
+        let update = ECalLocalSourcePropertiesUpdate {
+            display_name: name_entry.text().trim().to_string(),
+            color: task_source_color_hex(&color_button.rgba()),
+            custom_file_uri: custom_file_check
+                .is_active()
+                .then(|| custom_file_uri.borrow().clone())
+                .flatten(),
+            custom_file_writable: custom_writable_check.is_active(),
+            email_address: email_entry.text().trim().to_string(),
+        };
+        let make_default = default_check.is_active();
+        let source_uid_for_worker = source_uid.clone();
+        let (sender, receiver) = async_channel::bounded(1);
+        std::thread::spawn(move || {
+            let result = ECalService::new().update_local_source_properties(
+                &source_uid_for_worker,
+                ECalComponentType::Task,
+                &update,
+            );
+            if let Err(error) = sender.send_blocking(result) {
+                tracing::debug!(%error, "Local task source update result was dropped");
+            }
+        });
+        let page_weak = page.downgrade();
+        glib::spawn_future_local(async move {
+            let Ok(result) = receiver.recv().await else {
+                return;
+            };
+            let Some(page) = page_weak.upgrade() else {
+                return;
+            };
+            if !task_source_management_result_is_current(&page, generation) {
+                return;
+            }
+            page.imp().task_source_management_running.set(false);
+            match result {
+                Ok(updated) => {
+                    if let Some(settings) = AppSettings::try_new() {
+                        if make_default {
+                            settings.set_default_task_source_uid(&updated.source_uid);
+                        } else if default_was_selected {
+                            settings.set_default_task_source_uid("");
+                        }
+                    }
+                    match updated.status {
+                        ECalLocalSourceCreateStatus::Available => {
+                            page.show_toast("Aufgabenlisten-Eigenschaften wurden gespeichert");
+                        }
+                        ECalLocalSourceCreateStatus::CreatedUnavailable(warning) => {
+                            page.show_toast(&format!(
+                                "Eigenschaften wurden gespeichert, die Aufgabenliste ist aber noch nicht verfügbar: {warning}"
+                            ));
+                        }
+                    }
+                    start_task_source_discovery(&page, Some(updated.source_uid), true);
+                }
+                Err(ECalServiceError::Unsupported) => page.show_toast(
+                    "Provider-spezifische Eigenschaften sind für diese Aufgabenliste noch nicht verfügbar",
+                ),
+                Err(ECalServiceError::Backend(message)) => page.show_toast(&message),
+            }
+            update_task_selection_controls(&page);
+        });
+    });
+    dialog.present(Some(button));
+}
+
+fn present_task_source_rename(page: &TasksPage, button: &gtk::Button) {
+    let Some((source_uid, source)) = current_task_source_metadata(page) else {
+        show_toast_for_widget(button, "Zum Umbenennen eine Aufgabenliste auswählen");
+        return;
+    };
+    let state = task_source_action_state(
+        Some(&source_uid),
+        &page.imp().task_source_metadata.borrow(),
+        task_mutation_batch_running(page),
+    );
+    if !state.rename_enabled {
+        show_toast_for_widget(button, "Diese Aufgabenliste kann nicht umbenannt werden");
+        return;
+    }
+
+    let entry = gtk::Entry::builder()
+        .text(&source.display_name)
+        .activates_default(true)
+        .hexpand(true)
+        .build();
+    entry.set_accessible_role(gtk::AccessibleRole::TextBox);
+    let content = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(8)
+        .build();
+    content.append(
+        &gtk::Label::builder()
+            .label("Neuer Name")
+            .halign(gtk::Align::Start)
+            .build(),
+    );
+    content.append(&entry);
+    let dialog = adw::AlertDialog::new(
+        Some("Aufgabenliste umbenennen"),
+        Some("Der neue Name wird direkt in der ausgewählten EDS-Quelle gespeichert."),
+    );
+    dialog.set_extra_child(Some(&content));
+    dialog.add_response("cancel", "Abbrechen");
+    dialog.add_response("rename", "Umbenennen");
+    dialog.set_response_appearance("rename", adw::ResponseAppearance::Suggested);
+    dialog.set_default_response(Some("rename"));
+    dialog.set_close_response("cancel");
+    let page_weak = page.downgrade();
+    let button_for_result = button.clone();
+    dialog.connect_response(None, move |_, response| {
+        if response != "rename" {
+            return;
+        }
+        let Some(page) = page_weak.upgrade() else {
+            return;
+        };
+        let display_name = entry.text().trim().to_string();
+        if display_name.is_empty() {
+            show_toast_for_widget(&button_for_result, "Der Name darf nicht leer sein");
+            return;
+        }
+        if display_name == source.display_name {
+            return;
+        }
+        let Some(generation) = begin_task_source_management(&page) else {
+            show_toast_for_widget(
+                &button_for_result,
+                "Eine andere Aufgabenänderung läuft bereits",
+            );
+            return;
+        };
+        show_toast_for_widget(&button_for_result, "Aufgabenliste wird umbenannt …");
+        let (sender, receiver) = async_channel::bounded(1);
+        let source_uid_for_worker = source_uid.clone();
+        std::thread::spawn(move || {
+            let result = ECalService::new().rename_source(
+                &source_uid_for_worker,
+                ECalComponentType::Task,
+                &display_name,
+            );
+            if let Err(error) = sender.send_blocking(result) {
+                tracing::debug!(%error, "Task source rename result was dropped");
+            }
+        });
+        let page_weak = page.downgrade();
+        glib::spawn_future_local(async move {
+            let Ok(result) = receiver.recv().await else {
+                return;
+            };
+            let Some(page) = page_weak.upgrade() else {
+                return;
+            };
+            if !task_source_management_result_is_current(&page, generation) {
+                return;
+            }
+            page.imp().task_source_management_running.set(false);
+            let preferred = page.imp().task_source_filter.borrow().clone();
+            match result {
+                Ok(()) => {
+                    page.show_toast("Aufgabenliste wurde umbenannt");
+                    start_task_source_discovery(&page, preferred, true);
+                }
+                Err(ECalServiceError::Unsupported) => {
+                    page.show_toast("Umbenennen wird von diesem Backend nicht unterstützt");
+                    start_task_source_discovery(&page, preferred, false);
+                }
+                Err(ECalServiceError::Backend(message)) => {
+                    page.show_toast(&message);
+                    start_task_source_discovery(&page, preferred, false);
+                }
+            }
+            update_task_selection_controls(&page);
+        });
+    });
+    dialog.present(Some(button));
+}
+
+fn present_task_source_copy(page: &TasksPage, button: &gtk::Button) {
+    let Some((source_uid, source)) = current_task_source_metadata(page) else {
+        show_toast_for_widget(button, "Zum Kopieren eine Aufgabenliste auswählen");
+        return;
+    };
+    let state = task_source_action_state(
+        Some(&source_uid),
+        &page.imp().task_source_metadata.borrow(),
+        task_mutation_batch_running(page),
+    );
+    if !state.copy_enabled {
+        show_toast_for_widget(button, "Diese Aufgabenliste kann nicht kopiert werden");
+        return;
+    }
+    let mut destinations = page
+        .imp()
+        .task_source_metadata
+        .borrow()
+        .values()
+        .filter(|candidate| candidate.source_uid != source_uid)
+        .cloned()
+        .collect::<Vec<_>>();
+    destinations.sort_by_cached_key(|candidate| {
+        (
+            candidate.display_name.to_lowercase(),
+            candidate.source_uid.clone(),
+        )
+    });
+    if destinations.is_empty() {
+        show_toast_for_widget(button, "Es ist keine andere EDS-Aufgabenliste verfügbar");
+        return;
+    }
+    let destination_names = destinations
+        .iter()
+        .map(task_source_capability_label)
+        .collect::<Vec<_>>();
+    let destination_uids = destinations
+        .iter()
+        .map(|candidate| candidate.source_uid.clone())
+        .collect::<Vec<_>>();
+    let destination_refs = destination_names
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    let destination_model = gtk::StringList::new(&destination_refs);
+    let destination_selector =
+        gtk::DropDown::new(Some(destination_model), None::<&gtk::Expression>);
+    destination_selector.set_selected(0);
+    destination_selector.set_tooltip_text(Some("Ziel-Aufgabenliste auswählen"));
+    let content = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(8)
+        .build();
+    content.append(
+        &gtk::Label::builder()
+            .label("Ziel-Aufgabenliste")
+            .halign(gtk::Align::Start)
+            .build(),
+    );
+    content.append(&destination_selector);
+    let dialog = adw::AlertDialog::new(
+        Some("Aufgabenliste kopieren"),
+        Some(&format!(
+            "Alle Aufgaben aus „{}“ werden in die gewählte Liste kopiert. Gleiche UIDs werden aktualisiert.",
+            source.display_name
+        )),
+    );
+    dialog.set_extra_child(Some(&content));
+    dialog.add_response("cancel", "Abbrechen");
+    dialog.add_response("copy", "Kopieren");
+    dialog.set_response_appearance("copy", adw::ResponseAppearance::Suggested);
+    dialog.set_default_response(Some("copy"));
+    dialog.set_close_response("cancel");
+    let page_weak = page.downgrade();
+    let button_for_result = button.clone();
+    dialog.connect_response(None, move |_, response| {
+        if response != "copy" {
+            return;
+        }
+        let Some(page) = page_weak.upgrade() else {
+            return;
+        };
+        let Some(destination_uid) = destination_uids
+            .get(destination_selector.selected() as usize)
+            .cloned()
+        else {
+            show_toast_for_widget(&button_for_result, "Ungültige Ziel-Aufgabenliste");
+            return;
+        };
+        let Some(generation) = begin_task_source_management(&page) else {
+            show_toast_for_widget(
+                &button_for_result,
+                "Eine andere Aufgabenänderung läuft bereits",
+            );
+            return;
+        };
+        show_toast_for_widget(&button_for_result, "Aufgabenliste wird kopiert …");
+        let (sender, receiver) = async_channel::bounded(1);
+        let source_uid_for_worker = source_uid.clone();
+        std::thread::spawn(move || {
+            let result = ECalService::new()
+                .copy_source(
+                    &source_uid_for_worker,
+                    &destination_uid,
+                    ECalComponentType::Task,
+                )
+                .map(|copy| (copy, load_snapshot_prefer_eds()));
+            if let Err(error) = sender.send_blocking(result) {
+                tracing::debug!(%error, "Task source copy result was dropped");
+            }
+        });
+        let page_weak = page.downgrade();
+        glib::spawn_future_local(async move {
+            let Ok(result) = receiver.recv().await else {
+                return;
+            };
+            let Some(page) = page_weak.upgrade() else {
+                return;
+            };
+            if !task_source_management_result_is_current(&page, generation) {
+                return;
+            }
+            page.imp().task_source_management_running.set(false);
+            match result {
+                Ok((copy, reload)) => {
+                    if reload.origin == CalendarDataOrigin::Eds && reload.warning.is_none() {
+                        if let (Some(task_store), Some(task_list), Some(empty_tasks)) = (
+                            page.imp().task_store.borrow().as_ref().cloned(),
+                            page.imp().task_list.borrow().as_ref().cloned(),
+                            page.imp().task_empty_state.borrow().as_ref().cloned(),
+                        ) {
+                            apply_authoritative_task_snapshot(
+                                &page,
+                                &task_store,
+                                &task_list,
+                                &empty_tasks,
+                                reload,
+                            );
+                            page.reload_task_category_metadata();
+                        }
+                    } else {
+                        page.show_toast(
+                            "Die Kopie wurde bestätigt, konnte aber nicht autoritativ neu geladen werden",
+                        );
+                    }
+                    let changed = copy.copied_count;
+                    let created = copy.copied_count.saturating_sub(copy.updated_count);
+                    match copy.status {
+                        ECalSourceCopyStatus::Complete => page.show_toast(&format!(
+                            "Aufgabenliste wurde kopiert ({changed} Aufgaben; {} neu, {} aktualisiert)",
+                            created, copy.updated_count
+                        )),
+                        ECalSourceCopyStatus::PartialFailure(message) => page.show_toast(&format!(
+                            "Aufgabenliste wurde teilweise kopiert ({changed} bestätigt): {message}"
+                        )),
+                    }
+                    start_task_source_discovery(
+                        &page,
+                        page.imp().task_source_filter.borrow().clone(),
+                        false,
+                    );
+                }
+                Err(ECalServiceError::Unsupported) => {
+                    page.show_toast("Kopieren wird von diesem Backend nicht unterstützt");
+                }
+                Err(ECalServiceError::Backend(message)) => page.show_toast(&message),
+            }
+            update_task_selection_controls(&page);
+        });
+    });
+    dialog.present(Some(button));
+}
+
+fn present_task_source_delete_confirmation(page: &TasksPage, button: &gtk::Button) {
+    let Some((source_uid, source)) = current_task_source_metadata(page) else {
+        show_toast_for_widget(button, "Zum Löschen eine Aufgabenliste auswählen");
+        return;
+    };
+    let state = task_source_action_state(
+        Some(&source_uid),
+        &page.imp().task_source_metadata.borrow(),
+        task_mutation_batch_running(page),
+    );
+    if !state.delete_enabled {
+        show_toast_for_widget(button, "Diese Aufgabenliste kann nicht gelöscht werden");
+        return;
+    }
+    let remote = source.remote_deletable;
+    let title = if remote {
+        "Remote-Aufgabenliste löschen?"
+    } else {
+        "Aufgabenliste entfernen?"
+    };
+    let description = if remote {
+        format!(
+            "„{}“ und ihre Aufgaben werden dauerhaft beim Anbieter gelöscht.",
+            source.display_name
+        )
+    } else {
+        format!(
+            "„{}“ wird aus Evolution entfernt. Diese Aktion kann nicht rückgängig gemacht werden.",
+            source.display_name
+        )
+    };
+    let dialog = adw::AlertDialog::new(Some(title), Some(&description));
+    dialog.add_response("cancel", "Abbrechen");
+    dialog.add_response("delete", "Löschen");
+    dialog.set_response_appearance("delete", adw::ResponseAppearance::Destructive);
+    dialog.set_default_response(Some("cancel"));
+    dialog.set_close_response("cancel");
+    let page_weak = page.downgrade();
+    let button_for_result = button.clone();
+    dialog.connect_response(None, move |_, response| {
+        if response != "delete" {
+            return;
+        }
+        let Some(page) = page_weak.upgrade() else {
+            return;
+        };
+        let Some(generation) = begin_task_source_management(&page) else {
+            show_toast_for_widget(
+                &button_for_result,
+                "Eine andere Aufgabenänderung läuft bereits",
+            );
+            return;
+        };
+        show_toast_for_widget(&button_for_result, "Aufgabenliste wird gelöscht …");
+        let (sender, receiver) = async_channel::bounded(1);
+        let source_uid_for_worker = source_uid.clone();
+        std::thread::spawn(move || {
+            let result =
+                ECalService::new().delete_source(&source_uid_for_worker, ECalComponentType::Task);
+            if let Err(error) = sender.send_blocking(result) {
+                tracing::debug!(%error, "Task source delete result was dropped");
+            }
+        });
+        let page_weak = page.downgrade();
+        let source_uid_for_result = source_uid.clone();
+        glib::spawn_future_local(async move {
+            let Ok(result) = receiver.recv().await else {
+                return;
+            };
+            let Some(page) = page_weak.upgrade() else {
+                return;
+            };
+            if !task_source_management_result_is_current(&page, generation) {
+                return;
+            }
+            page.imp().task_source_management_running.set(false);
+            match result {
+                Ok(()) => {
+                    if page.imp().task_source_filter.borrow().as_deref()
+                        == Some(source_uid_for_result.as_str())
+                    {
+                        page.imp().task_source_filter.replace(None);
+                        if let Some(settings) = AppSettings::try_new() {
+                            settings.set_task_source_filter("");
+                        }
+                    }
+                    if let (Some(task_store), Some(task_list), Some(empty_tasks)) = (
+                        page.imp().task_store.borrow().as_ref().cloned(),
+                        page.imp().task_list.borrow().as_ref().cloned(),
+                        page.imp().task_empty_state.borrow().as_ref().cloned(),
+                    ) {
+                        for index in (0..task_store.n_items()).rev() {
+                            if task_store
+                                .item(index)
+                                .and_downcast::<TaskItemObject>()
+                                .is_some_and(|task| task.source_uid() == source_uid_for_result)
+                            {
+                                task_store.remove(index);
+                            }
+                        }
+                        render_task_rows(&page, &task_list, &task_store, &empty_tasks);
+                    }
+                    page.show_toast("Aufgabenliste wurde gelöscht");
+                    start_task_source_discovery(
+                        &page,
+                        page.imp().task_source_filter.borrow().clone(),
+                        true,
+                    );
+                }
+                Err(ECalServiceError::Unsupported) => {
+                    page.show_toast("Löschen wird von diesem Backend nicht unterstützt");
+                    start_task_source_discovery(
+                        &page,
+                        page.imp().task_source_filter.borrow().clone(),
+                        false,
+                    );
+                }
+                Err(ECalServiceError::Backend(message)) => {
+                    page.show_toast(&message);
+                    start_task_source_discovery(
+                        &page,
+                        page.imp().task_source_filter.borrow().clone(),
+                        false,
+                    );
+                }
+            }
+            update_task_selection_controls(&page);
+        });
+    });
+    dialog.present(Some(button));
+}
+
+fn task_source_capability_from_ecal(source: &ECalSourceCapability) -> TaskSourceCapability {
+    if !source.connected || !source.available {
+        TaskSourceCapability::Unavailable
+    } else if source.writable {
+        TaskSourceCapability::Writable
+    } else {
+        TaskSourceCapability::ReadOnly
+    }
+}
+
+fn task_source_capability_label(source: &ECalSourceCapability) -> String {
+    let display_name = if source.display_name.trim().is_empty() {
+        source.source_uid.as_str()
+    } else {
+        source.display_name.as_str()
+    };
+    match task_source_capability_from_ecal(source) {
+        TaskSourceCapability::Writable => display_name.to_string(),
+        TaskSourceCapability::ReadOnly => format!("{display_name} (schreibgeschützt)"),
+        TaskSourceCapability::Unavailable => format!("{display_name} (nicht verfügbar)"),
+        TaskSourceCapability::Unknown => unreachable!("ECal discovery never projects Unknown"),
+    }
+}
+
 fn task_source_capability(
     source_uid: &str,
     capabilities: &HashMap<String, TaskSourceCapability>,
@@ -4625,15 +10815,12 @@ fn task_source_is_writable(
     )
 }
 
-fn task_source_is_writable_now(source_uid: &str) -> bool {
-    if source_uid == "local-calendar" {
-        CalendarStoreService::new().is_writable()
-    } else {
-        // Row actions do not have a fresh EDS capability snapshot.  Unknown
-        // external capabilities fail closed instead of being guessed from a
-        // live source listing.
-        false
-    }
+fn task_source_is_writable_on_page(page: &TasksPage, source_uid: &str) -> bool {
+    task_source_capability(
+        source_uid,
+        &page.imp().task_source_capabilities.borrow(),
+        CalendarStoreService::new().is_writable(),
+    ) == TaskSourceCapability::Writable
 }
 
 fn task_default_source_index(
@@ -4775,7 +10962,12 @@ enum TaskCancelResult {
 enum TaskSaveWorkerMessage {
     Committing,
     CancelledBeforeDispatch,
-    Finished(Result<crate::services::ecal_service::ECalMutationResult, crate::services::ecal_service::ECalMutationError>),
+    Finished(
+        Result<
+            crate::services::ecal_service::ECalMutationResult,
+            crate::services::ecal_service::ECalMutationError,
+        >,
+    ),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -4830,9 +11022,7 @@ fn task_editor_dialog_transition(
         (State::Prompting, Action::Discard) => (State::Closed, Effect::Close),
         (State::Prompting, Action::Save) => (State::SavePending, Effect::DispatchSave),
         (State::Dirty, Action::Save) => (State::SavePending, Effect::DispatchSave),
-        (State::SavePending, Action::DispatchStarted) => {
-            (State::Committing, Effect::DisableClose)
-        }
+        (State::SavePending, Action::DispatchStarted) => (State::Committing, Effect::DisableClose),
         (State::SavePending, Action::CancelBeforeDispatch) => (State::Closed, Effect::Close),
         (State::SavePending, Action::CloseRequest) => (State::SavePending, Effect::BlockClose),
         (State::Committing, Action::CloseRequest | Action::CancelBeforeDispatch) => {
@@ -5073,6 +11263,9 @@ fn connect_task_quick_editor(
     let task_for_save = task.clone();
     let popover_for_save = popover_weak;
     save_button.connect_clicked(move |save_button| {
+        let Some(page) = page_weak.upgrade() else {
+            return;
+        };
         let status = task_status_from_index(status_selector.selected());
         let percent = match status {
             "COMPLETED" => 100,
@@ -5098,7 +11291,7 @@ fn connect_task_quick_editor(
         };
         let source_uid = task_for_save.source_uid();
         let task_uid = task_for_save.id();
-        if !task_source_is_writable_now(&source_uid) {
+        if !task_source_is_writable_on_page(&page, &source_uid) {
             show_toast_for_widget(
                 save_button,
                 "Diese Aufgabenliste ist nicht mehr als schreibfähig bestätigt",
@@ -5128,7 +11321,7 @@ fn connect_task_quick_editor(
 
         let save_button_for_result = save_button.clone();
         let popover_for_result = popover_for_save.clone();
-        let page_weak_for_result = page_weak.clone();
+        let page_weak_for_result = page.downgrade();
         let source_uid_for_result = task_for_save.source_uid();
         let task_uid_for_result = task_for_save.id();
         let task_store_for_result = task_store_for_save.clone();
@@ -5180,7 +11373,9 @@ fn connect_task_quick_editor(
                             page.show_toast(&format!("Aufgabe aktualisiert ({uid})"));
                         }
                     } else if let Some(page) = page_weak_for_result.upgrade() {
-                        page.show_toast("Aufgabe wurde bestätigt, ist aber nicht mehr in dieser Liste geladen");
+                        page.show_toast(
+                            "Aufgabe wurde bestätigt, ist aber nicht mehr in dieser Liste geladen",
+                        );
                     }
                     if let Some(popover) = popover_for_result.upgrade() {
                         popover.popdown();
@@ -5237,8 +11432,7 @@ fn build_task_component_with_dates(
     let (completed_mutation, completed_date) =
         task_date_mutation(&empty_draft.completed, completed, "COMPLETED")?;
     let completion_present = !matches!(completed_mutation, TaskDateMutation::Remove);
-    if (task_date_mutation_changed(dtstart_mutation)
-        || task_date_mutation_changed(due_mutation))
+    if (task_date_mutation_changed(dtstart_mutation) || task_date_mutation_changed(due_mutation))
         && let (Some(start), Some(due)) = (dtstart_date, due_date)
         && due <= start
     {
@@ -5363,8 +11557,7 @@ fn update_task_component_with_dates(
     percent: u8,
 ) -> Result<String, String> {
     let draft = task_editor_draft_from_component(existing);
-    let lifecycle_edits =
-        task_lifecycle_edits_inferred(&draft, status, percent, completed);
+    let lifecycle_edits = task_lifecycle_edits_inferred(&draft, status, percent, completed);
     update_task_component_with_dates_and_lifecycle_edits(
         existing,
         title,
@@ -5417,8 +11610,7 @@ fn update_task_component_with_dates_and_lifecycle_edits(
     let (completed_mutation, completed_date) =
         task_date_mutation(&draft.completed, completed, "COMPLETED")?;
     let completion_present = !matches!(completed_mutation, TaskDateMutation::Remove);
-    if (task_date_mutation_changed(dtstart_mutation)
-        || task_date_mutation_changed(due_mutation))
+    if (task_date_mutation_changed(dtstart_mutation) || task_date_mutation_changed(due_mutation))
         && let (Some(start), Some(due)) = (dtstart_date, due_date)
         && due <= start
     {
@@ -5429,32 +11621,23 @@ fn update_task_component_with_dates_and_lifecycle_edits(
         recurrence,
         !matches!(dtstart_mutation, TaskDateMutation::Remove),
     )?;
-    let status_is_unchanged = status.eq_ignore_ascii_case(draft.status);
-    let percent_is_unchanged = if draft.unsupported_percent.is_some() {
-        percent == draft.percent
-    } else {
-        draft
-            .percent_raw
-            .as_deref()
-            .and_then(parse_task_percent_value)
-            .is_some_and(|value| value == percent)
-    };
-    let preserve_unsupported_status = draft.unsupported_status.is_some() && status_is_unchanged;
-    let preserve_unsupported_percent = draft.unsupported_percent.is_some() && percent_is_unchanged;
-    let preserve_unsupported_lifecycle = preserve_unsupported_status
-        && preserve_unsupported_percent
-        && completed.trim() == draft.completed.input.trim();
-    let lifecycle = if preserve_unsupported_lifecycle {
-        None
-    } else {
-        Some(task_lifecycle_for_date_with_presence(
-            status,
-            percent,
-            completed_date,
-            completion_present,
-            Local::now().date_naive(),
-        )?)
-    };
+    // A VTODO imported from another client can contain extensions or values
+    // the portable lifecycle controls cannot represent.  Retain all three
+    // lifecycle properties until the user changes one of those controls.
+    // Once they do, match Evolution's coupled status/percent/completed
+    // workflow and write a coherent replacement set.
+    let lifecycle =
+        (lifecycle_edits.status || lifecycle_edits.percent || lifecycle_edits.completed)
+            .then(|| {
+                task_lifecycle_for_date_with_presence(
+                    status,
+                    percent,
+                    completed_date,
+                    completion_present,
+                    Local::now().date_naive(),
+                )
+            })
+            .transpose()?;
     let normalized_rdates = if rdates.trim() == draft.rdates.trim() {
         None
     } else {
@@ -5465,8 +11648,10 @@ fn update_task_component_with_dates_and_lifecycle_edits(
     } else {
         Some(normalize_task_date_list(exdates, "EXDATE")?)
     };
-    let attachment_draft = TaskAttachmentDraft::from_component(existing).with_editor_text(attachments);
-    let parsed_attachments = attachment_draft.attachments_changed
+    let attachment_draft =
+        TaskAttachmentDraft::from_component(existing).with_editor_text(attachments);
+    let parsed_attachments = attachment_draft
+        .attachments_changed
         .then(|| parse_task_attachment_input(attachments))
         .transpose()?;
     let alarms_changed = parse_alarms(existing) != alarms;
@@ -5530,26 +11715,21 @@ fn update_task_component_with_dates_and_lifecycle_edits(
     }
 
     if let Some(lifecycle) = lifecycle {
-        if !preserve_unsupported_status {
-            let status_unchanged = draft
-                .status_raw
-                .as_deref()
-                .is_some_and(|raw| raw.trim().eq_ignore_ascii_case(lifecycle.status));
-            if !status_unchanged {
-                component = update_ical_property(&component, "STATUS", Some(lifecycle.status));
-            }
+        let status_unchanged = draft
+            .status_raw
+            .as_deref()
+            .is_some_and(|raw| raw.trim().eq_ignore_ascii_case(lifecycle.status));
+        if !status_unchanged {
+            component = update_ical_property(&component, "STATUS", Some(lifecycle.status));
         }
-        if !preserve_unsupported_percent {
-            let percent_text = lifecycle.percent.to_string();
-            if !draft
-                .percent_raw
-                .as_deref()
-                .and_then(parse_task_percent_value)
-                .is_some_and(|value| value == lifecycle.percent)
-            {
-                component =
-                    update_ical_property(&component, "PERCENT-COMPLETE", Some(&percent_text));
-            }
+        let percent_text = lifecycle.percent.to_string();
+        if !draft
+            .percent_raw
+            .as_deref()
+            .and_then(parse_task_percent_value)
+            .is_some_and(|value| value == lifecycle.percent)
+        {
+            component = update_ical_property(&component, "PERCENT-COMPLETE", Some(&percent_text));
         }
         component = if lifecycle.completion_present {
             match completed_mutation {
@@ -5748,13 +11928,13 @@ fn task_attachment_value_kind(property: &str) -> TaskAttachmentValueKind {
         .skip(1)
         .find_map(|parameter| {
             let (name, value) = parameter.split_once('=')?;
-            name.trim()
-                .eq_ignore_ascii_case("VALUE")
-                .then(|| match value.trim().trim_matches('"').to_ascii_uppercase().as_str() {
+            name.trim().eq_ignore_ascii_case("VALUE").then(|| {
+                match value.trim().trim_matches('"').to_ascii_uppercase().as_str() {
                     "URI" => TaskAttachmentValueKind::Uri,
                     "BINARY" => TaskAttachmentValueKind::Binary,
                     _ => TaskAttachmentValueKind::Other,
-                })
+                }
+            })
         })
         .unwrap_or(TaskAttachmentValueKind::Other)
 }
@@ -5834,14 +12014,12 @@ fn replace_task_attachments_lossless(
         }
 
         let is_top_level_attach = nested_depth == 0
-            && line
-                .split_once(':')
-                .is_some_and(|(property, _)| {
-                    property
-                        .split(';')
-                        .next()
-                        .is_some_and(|name| name.eq_ignore_ascii_case("ATTACH"))
-                });
+            && line.split_once(':').is_some_and(|(property, _)| {
+                property
+                    .split(';')
+                    .next()
+                    .is_some_and(|name| name.eq_ignore_ascii_case("ATTACH"))
+            });
         if is_top_level_attach {
             if !replaced {
                 output.extend(serialized.iter().map(|line| (*line).to_string()));
@@ -5978,6 +12156,1053 @@ mod tests {
             status == "COMPLETED",
             &format!("{}\r\n", lines.join("\r\n")),
         )
+    }
+
+    fn task_selection(source_uid: &str, task_uid: &str) -> TaskSelectionIdentity {
+        TaskSelectionIdentity {
+            source_uid: source_uid.to_string(),
+            task_uid: task_uid.to_string(),
+        }
+    }
+
+    fn export_candidate(source_uid: &str, task_uid: &str, component: &str) -> TaskExportCandidate {
+        TaskExportCandidate {
+            identity: task_selection(source_uid, task_uid),
+            component: component.to_string(),
+        }
+    }
+
+    #[test]
+    fn task_selection_actions_are_sensitive_for_zero_one_and_many() {
+        assert_eq!(
+            task_selection_action_state(0, false, false, false),
+            TaskSelectionActionState {
+                export_enabled: false,
+                single_task_actions_enabled: false,
+                forward_enabled: false,
+                open_url_enabled: false,
+                print_enabled: false,
+            }
+        );
+        assert_eq!(
+            task_selection_action_state(1, true, true, true),
+            TaskSelectionActionState {
+                export_enabled: true,
+                single_task_actions_enabled: true,
+                forward_enabled: true,
+                open_url_enabled: true,
+                print_enabled: true,
+            }
+        );
+        assert_eq!(
+            task_selection_action_state(2, true, true, true),
+            TaskSelectionActionState {
+                export_enabled: true,
+                single_task_actions_enabled: false,
+                forward_enabled: false,
+                open_url_enabled: false,
+                print_enabled: false,
+            }
+        );
+    }
+
+    #[test]
+    fn combined_task_export_contains_exactly_the_selected_vtodos() {
+        let first = task_selection("local-calendar", "first");
+        let second = task_selection("local-calendar", "second");
+        let export = build_selected_task_export(
+            &[first.clone(), second.clone()],
+            &[
+                export_candidate(
+                    "local-calendar",
+                    "first",
+                    "BEGIN:VTODO\r\nUID:first\r\nSUMMARY:First\r\nEND:VTODO\r\n",
+                ),
+                export_candidate(
+                    "local-calendar",
+                    "second",
+                    "BEGIN:VTODO\r\nUID:second\r\nSUMMARY:Second\r\nEND:VTODO\r\n",
+                ),
+                export_candidate(
+                    "local-calendar",
+                    "unselected",
+                    "BEGIN:VTODO\r\nUID:unselected\r\nEND:VTODO\r\n",
+                ),
+            ],
+        )
+        .expect("selected components should export");
+        assert!(export.starts_with("BEGIN:VCALENDAR\r\nVERSION:2.0\r\n"));
+        assert_eq!(export.matches("BEGIN:VTODO").count(), 2);
+        assert!(export.contains("UID:first\r\n"));
+        assert!(export.contains("UID:second\r\n"));
+        assert!(!export.contains("UID:unselected\r\n"));
+        assert!(export.ends_with("END:VCALENDAR\r\n"));
+    }
+
+    #[test]
+    fn stale_or_invalid_task_selection_fails_before_export() {
+        let selected = task_selection("local-calendar", "missing");
+        assert!(build_selected_task_export(&[selected], &[]).is_err());
+
+        let invalid = export_candidate(
+            "local-calendar",
+            "invalid",
+            "BEGIN:VEVENT\r\nUID:invalid\r\nEND:VEVENT\r\n",
+        );
+        assert!(build_selected_task_export(&[invalid.identity.clone()], &[invalid]).is_err());
+        let mismatched = export_candidate(
+            "local-calendar",
+            "selected",
+            "BEGIN:VTODO\r\nUID:other\r\nEND:VTODO\r\n",
+        );
+        assert!(build_selected_task_export(&[mismatched.identity.clone()], &[mismatched]).is_err());
+        let duplicate_uid = export_candidate(
+            "local-calendar",
+            "duplicate",
+            "BEGIN:VTODO\r\nUID:duplicate\r\nUID:duplicate\r\nEND:VTODO\r\n",
+        );
+        assert!(
+            build_selected_task_export(&[duplicate_uid.identity.clone()], &[duplicate_uid])
+                .is_err()
+        );
+        assert!(build_selected_task_export(&[], &[]).is_err());
+    }
+
+    #[test]
+    fn task_clipboard_action_sensitivity_matches_copy_cut_paste_select_all_contract() {
+        let none = task_clipboard_action_state(0, false, false, true, true, false);
+        assert!(!none.copy_enabled && !none.cut_enabled);
+        assert!(none.paste_enabled && none.select_all_enabled);
+
+        let copy_only = task_clipboard_action_state(2, true, false, true, true, false);
+        assert!(copy_only.copy_enabled);
+        assert!(!copy_only.cut_enabled);
+
+        let ready = task_clipboard_action_state(2, true, true, true, true, false);
+        assert!(ready.copy_enabled && ready.cut_enabled && ready.paste_enabled);
+        assert!(ready.select_all_enabled);
+
+        let no_calendar = task_clipboard_action_state(1, true, true, true, false, false);
+        assert!(!no_calendar.paste_enabled);
+
+        let busy = task_clipboard_action_state(1, true, true, true, true, true);
+        assert!(!busy.copy_enabled && !busy.cut_enabled && !busy.paste_enabled);
+        assert!(busy.select_all_enabled);
+    }
+
+    #[test]
+    fn task_clipboard_round_trip_preserves_vtodo_and_rekeys_destination_identity() {
+        let source_first = task_selection("source-a", "first");
+        let source_second = task_selection("source-b", "second");
+        let payload = build_selected_task_export(
+            &[source_first.clone(), source_second.clone()],
+            &[
+                export_candidate(
+                    "source-a",
+                    "first",
+                    concat!(
+                        "BEGIN:VTODO\r\nUID:first\r\nSUMMARY:First\r\nX-KEEP:value\r\n",
+                        "BEGIN:VALARM\r\nACTION:DISPLAY\r\nTRIGGER:-PT5M\r\nEND:VALARM\r\n",
+                        "END:VTODO\r\n"
+                    ),
+                ),
+                export_candidate(
+                    "source-b",
+                    "second",
+                    "BEGIN:VTODO\r\nUID:second\r\nDESCRIPTION:Second\r\nEND:VTODO\r\n",
+                ),
+            ],
+        )
+        .unwrap();
+        let plan = plan_task_clipboard_paste_with_uids(
+            &payload,
+            "local-calendar",
+            &[],
+            &["new-first".to_string(), "new-second".to_string()],
+        )
+        .unwrap();
+        assert_eq!(plan.destination_uid, "local-calendar");
+        assert_eq!(plan.mutations.len(), 2);
+        assert_eq!(
+            plan.mutations[0].identity,
+            task_selection("local-calendar", "new-first")
+        );
+        assert!(plan.mutations[0].component.contains("UID:new-first\r\n"));
+        assert!(plan.mutations[0].component.contains("X-KEEP:value\r\n"));
+        assert!(plan.mutations[0].component.contains("BEGIN:VALARM\r\n"));
+        assert!(plan.mutations[1].component.contains("UID:new-second\r\n"));
+        assert!(!plan.mutations[0].component.contains("UID:first\r\n"));
+
+        assert!(
+            plan_task_clipboard_paste_with_uids(
+                &payload,
+                "local-calendar",
+                &[task_selection("local-calendar", "new-first")],
+                &["new-first".to_string(), "new-second".to_string()],
+            )
+            .is_err()
+        );
+        assert!(plan_task_clipboard_paste_with_uids(
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VTODO\r\nUID:tz\r\nDTSTART;TZID=Europe/Berlin:20260823T120000\r\nEND:VTODO\r\nEND:VCALENDAR\r\n",
+            "local-calendar",
+            &[],
+            &["new-tz".to_string()],
+        )
+        .is_err());
+        let duplicate_source_uid_payload = concat!(
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\n",
+            "BEGIN:VTODO\r\nUID:shared\r\nEND:VTODO\r\n",
+            "BEGIN:VTODO\r\nUID:shared\r\nEND:VTODO\r\n",
+            "END:VCALENDAR\r\n"
+        );
+        let duplicate_source_uids = plan_task_clipboard_paste_with_uids(
+            duplicate_source_uid_payload,
+            "local-calendar",
+            &[],
+            &["fresh-one".to_string(), "fresh-two".to_string()],
+        )
+        .unwrap();
+        assert_eq!(duplicate_source_uids.mutations.len(), 2);
+        assert_eq!(
+            parse_task_clipboard_payload("BEGIN:VTODO\r\nUID:bare\r\nEND:VTODO\r\n").unwrap(),
+            vec!["BEGIN:VTODO\r\nUID:bare\r\nEND:VTODO".to_string()]
+        );
+    }
+
+    #[test]
+    fn task_paste_destination_uses_default_then_confirmed_local_fallback() {
+        let source_uids = vec!["remote".to_string(), "local-calendar".to_string()];
+        let capabilities = HashMap::from([("remote".to_string(), TaskSourceCapability::Unknown)]);
+        assert_eq!(
+            task_paste_destination(&source_uids, &capabilities, true, Some("remote")).unwrap(),
+            "local-calendar"
+        );
+        assert!(
+            task_paste_destination(&source_uids, &capabilities, false, Some("remote")).is_err()
+        );
+    }
+
+    #[test]
+    fn task_paste_reducer_accepts_exact_prefix_and_rejects_partial_stale_results() {
+        let plan = TaskPastePlan {
+            destination_uid: "local-calendar".to_string(),
+            mutations: ["one", "two", "three"]
+                .into_iter()
+                .map(|uid| TaskPasteMutation {
+                    identity: task_selection("local-calendar", uid),
+                    component: format!("BEGIN:VTODO\r\nUID:{uid}\r\nEND:VTODO"),
+                })
+                .collect(),
+        };
+        let partial = reduce_task_paste_worker_result(
+            &plan,
+            &TaskPasteWorkerResult {
+                created: vec![TaskPasteMutation {
+                    component: "BEGIN:VTODO\r\nUID:one\r\nX-NORMALIZED:yes\r\nEND:VTODO"
+                        .to_string(),
+                    ..plan.mutations[0].clone()
+                }],
+                failure: Some((plan.mutations[1].identity.clone(), "failed".to_string())),
+            },
+        );
+        assert_eq!(partial.created.len(), 1);
+        assert_eq!(
+            partial.unattempted,
+            vec![plan.mutations[2].identity.clone()]
+        );
+
+        let stale = reduce_task_paste_worker_result(
+            &plan,
+            &TaskPasteWorkerResult {
+                created: vec![plan.mutations[1].clone()],
+                failure: None,
+            },
+        );
+        assert!(stale.created.is_empty());
+        assert!(stale.failure.is_some());
+        assert_eq!(stale.unattempted.len(), 3);
+        assert!(task_paste_result_is_current(4, 4));
+        assert!(!task_paste_result_is_current(4, 3));
+    }
+
+    #[test]
+    fn task_bulk_edit_transforms_only_opted_in_fields_and_preserves_categories_alarms_unknowns() {
+        let component = concat!(
+            "BEGIN:VTODO\r\nUID:bulk\r\nSUMMARY:Keep\r\nPRIORITY:4\r\n",
+            "CATEGORIES:Research\\,Ops,Old\r\nRRULE:FREQ=DAILY\r\nX-KEEP:value\r\n",
+            "BEGIN:VALARM\r\nACTION:DISPLAY\r\nTRIGGER:-PT5M\r\nEND:VALARM\r\nEND:VTODO\r\n"
+        );
+        let draft = TaskBulkEditDraft {
+            due: Some("2026-08-24".to_string()),
+            priority: Some(String::new()),
+            class: Some("private".to_string()),
+            estimated_duration: Some("PT1H30M".to_string()),
+            categories_add: vec!["New".to_string()],
+            categories_remove: vec!["Old".to_string()],
+            ..TaskBulkEditDraft::default()
+        };
+        let updated =
+            transform_task_bulk_edit_component(&component, &draft, "20260823T120000Z").unwrap();
+        assert!(updated.contains("SUMMARY:Keep\r\n"));
+        assert!(updated.contains("DUE;VALUE=DATE:20260824\r\n"));
+        assert!(!updated.contains("PRIORITY:"));
+        assert!(updated.contains("CLASS:PRIVATE\r\n"));
+        assert!(updated.contains("ESTIMATED-DURATION:PT1H30M\r\n"));
+        assert!(updated.contains("CATEGORIES:Research\\,Ops,New\r\n"));
+        assert!(!updated.contains("CATEGORIES:Research\\,Ops,Old\r\n"));
+        assert!(updated.contains("RRULE:FREQ=DAILY\r\n"));
+        assert!(updated.contains("X-KEEP:value\r\n"));
+        assert!(updated.contains("BEGIN:VALARM\r\n"));
+        let item = task_item_from_confirmed_component("writable", "bulk", &updated).unwrap();
+        assert_eq!(item.due_date(), "2026-08-24");
+        assert_eq!(item.priority(), "normal");
+        for invalid in ["PT", "PP1D", "P1", "P1H", "PT1M1H", "P1D1W", "P1W2D"] {
+            assert!(validate_task_bulk_duration(invalid).is_err(), "{invalid}");
+        }
+    }
+
+    #[test]
+    fn task_bulk_edit_lifecycle_preflight_and_reducer_are_fail_closed() {
+        let identity = task_selection("writable", "bulk");
+        let candidates = vec![export_candidate(
+            "writable",
+            "bulk",
+            "BEGIN:VTODO\r\nUID:bulk\r\nSTATUS:NEEDS-ACTION\r\nX-KEEP:yes\r\nEND:VTODO\r\n",
+        )];
+        let complete = TaskBulkEditDraft {
+            percent: Some("100".to_string()),
+            ..TaskBulkEditDraft::default()
+        };
+        let plan = build_task_bulk_edit_plan(
+            std::slice::from_ref(&identity),
+            &candidates,
+            &task_lifecycle_capabilities(),
+            true,
+            &complete,
+            "20260823T120000Z",
+        )
+        .unwrap();
+        assert!(plan.mutations[0].component.contains("STATUS:COMPLETED\r\n"));
+        assert!(
+            plan.mutations[0]
+                .component
+                .contains("PERCENT-COMPLETE:100\r\n")
+        );
+        assert!(
+            plan.mutations[0]
+                .component
+                .contains("COMPLETED:20260823T120000Z\r\n")
+        );
+        assert!(
+            build_task_bulk_edit_plan(
+                std::slice::from_ref(&identity),
+                &candidates,
+                &HashMap::from([("writable".to_string(), TaskSourceCapability::ReadOnly)]),
+                true,
+                &complete,
+                "20260823T120000Z",
+            )
+            .is_err()
+        );
+        assert!(
+            build_task_bulk_edit_plan(
+                std::slice::from_ref(&identity),
+                &candidates,
+                &task_lifecycle_capabilities(),
+                true,
+                &TaskBulkEditDraft::default(),
+                "20260823T120000Z",
+            )
+            .is_err()
+        );
+        let partial = TaskBulkEditWorkerResult {
+            successes: vec![plan.mutations[0].clone()],
+            failure: None,
+        };
+        let reduction = reduce_task_bulk_edit_result(&plan, &partial);
+        assert_eq!(reduction.successes.len(), 1);
+        assert!(reduction.failure.is_none());
+        assert_eq!(reduction.unattempted, 0);
+        let mut batch_plan = plan.clone();
+        for uid in ["bulk-two", "bulk-three"] {
+            batch_plan.mutations.push(TaskBulkEditMutation {
+                identity: task_selection("writable", uid),
+                component: format!("BEGIN:VTODO\r\nUID:{uid}\r\nEND:VTODO"),
+            });
+        }
+        let reduction = reduce_task_bulk_edit_result(
+            &batch_plan,
+            &TaskBulkEditWorkerResult {
+                successes: vec![batch_plan.mutations[0].clone()],
+                failure: Some((
+                    batch_plan.mutations[1].identity.clone(),
+                    "backend failed".to_string(),
+                )),
+            },
+        );
+        assert!(reduction.failure.is_some());
+        assert_eq!(reduction.unattempted, 1);
+        let stale = TaskBulkEditWorkerResult {
+            successes: vec![TaskBulkEditMutation {
+                identity: task_selection("writable", "other"),
+                component: plan.mutations[0].component.clone(),
+            }],
+            failure: None,
+        };
+        assert!(
+            reduce_task_bulk_edit_result(&plan, &stale)
+                .successes
+                .is_empty()
+        );
+        assert!(task_bulk_edit_result_is_current(2, 2));
+        assert!(!task_bulk_edit_result_is_current(2, 1));
+    }
+
+    #[test]
+    fn multiple_selection_keeps_single_record_actions_disabled() {
+        let actions = task_selection_action_state(3, true, true, true);
+        assert!(actions.export_enabled);
+        assert!(!actions.single_task_actions_enabled);
+        assert!(!actions.forward_enabled && !actions.open_url_enabled && !actions.print_enabled);
+    }
+
+    #[test]
+    fn task_forward_payload_is_exact_and_never_mutates_the_vtodo() {
+        let selected = task_selection("local-calendar", "forward");
+        let component = concat!(
+            "BEGIN:VTODO\r\nUID:forward\r\nSUMMARY:Forward\r\n",
+            "BEGIN:VALARM\r\nACTION:DISPLAY\r\nTRIGGER:-PT5M\r\nEND:VALARM\r\n",
+            "END:VTODO\r\n"
+        );
+        let payload = build_task_forward_payload(
+            std::slice::from_ref(&selected),
+            &[export_candidate("local-calendar", "forward", component)],
+        )
+        .expect("one exact VTODO should forward");
+        assert!(payload.contains("METHOD:PUBLISH\r\n"));
+        assert_eq!(payload.matches("BEGIN:VTODO").count(), 1);
+        assert!(!payload.contains("BEGIN:VALARM"));
+        assert_eq!(component.matches("BEGIN:VALARM").count(), 1);
+        assert!(build_task_forward_payload(&[selected.clone(), selected], &[]).is_err());
+    }
+
+    #[test]
+    fn task_open_url_requires_one_exact_http_vtodo_url() {
+        let selected = task_selection("local-calendar", "url");
+        let candidate = export_candidate(
+            "local-calendar",
+            "url",
+            "BEGIN:VTODO\r\nUID:url\r\nURL:https://example.test/task\r\nEND:VTODO\r\n",
+        );
+        assert_eq!(
+            selected_task_open_url(std::slice::from_ref(&selected), &[candidate]).unwrap(),
+            "https://example.test/task"
+        );
+        for invalid in [
+            "mailto:owner@example.test",
+            "file:///tmp/task",
+            "https://",
+            "https://example.test bad",
+            "https://:443/task",
+            "https://example.test:not-a-port/task",
+        ] {
+            assert!(validate_task_open_url(invalid).is_err(), "{invalid:?}");
+        }
+        assert!(selected_task_open_url(&[selected], &[]).is_err());
+    }
+
+    #[test]
+    fn task_print_document_is_escaped_immutable_and_single_selection_only() {
+        let selected = task_selection("local-calendar", "print");
+        let component = concat!(
+            "BEGIN:VTODO\r\nUID:print\r\nSUMMARY:<script>\r\n",
+            "DESCRIPTION:Line one\\n<script>alert(1)</script>\r\n",
+            "DUE;VALUE=DATE:20260824\r\nEND:VTODO\r\n"
+        );
+        let document = build_task_print_document(
+            std::slice::from_ref(&selected),
+            &[export_candidate("local-calendar", "print", component)],
+        )
+        .expect("exact task should prepare a print document");
+        assert!(document.html.contains("&lt;script&gt;"));
+        assert!(!document.html.contains("<script>"));
+        assert!(document.html.contains("<pre>"));
+        assert!(document.plain_text.contains("Status:"));
+        assert!(
+            document
+                .plain_text
+                .contains("Line one\n<script>alert(1)</script>")
+        );
+        assert_eq!(component.matches("BEGIN:VTODO").count(), 1);
+        assert!(build_task_print_document(&[selected], &[]).is_err());
+        assert!(
+            build_task_print_document(
+                &[task_selection("local-calendar", "print")],
+                &[export_candidate(
+                    "local-calendar",
+                    "print",
+                    "BEGIN:VTODO\r\nUID:stale\r\nEND:VTODO\r\n",
+                )],
+            )
+            .is_err()
+        );
+    }
+
+    fn task_lifecycle_capabilities() -> HashMap<String, TaskSourceCapability> {
+        HashMap::from([("writable".to_string(), TaskSourceCapability::Writable)])
+    }
+
+    #[test]
+    fn task_lifecycle_actions_match_upstream_zero_one_many_and_writable_gating() {
+        let incomplete = task_selection("writable", "incomplete");
+        let complete = task_selection("writable", "complete");
+        let candidates = vec![
+            export_candidate(
+                "writable",
+                "incomplete",
+                "BEGIN:VTODO\r\nUID:incomplete\r\nSTATUS:NEEDS-ACTION\r\nEND:VTODO\r\n",
+            ),
+            export_candidate(
+                "writable",
+                "complete",
+                "BEGIN:VTODO\r\nUID:complete\r\nSTATUS:COMPLETED\r\nCOMPLETED:20260823T120000Z\r\nEND:VTODO\r\n",
+            ),
+        ];
+        let capabilities = task_lifecycle_capabilities();
+        assert_eq!(
+            task_lifecycle_action_state(&[], &candidates, &capabilities, true, false),
+            TaskLifecycleActionState::default()
+        );
+        assert_eq!(
+            task_lifecycle_action_state(
+                std::slice::from_ref(&incomplete),
+                &candidates,
+                &capabilities,
+                true,
+                false,
+            ),
+            TaskLifecycleActionState {
+                complete_enabled: true,
+                incomplete_enabled: false,
+            }
+        );
+        assert_eq!(
+            task_lifecycle_action_state(
+                &[incomplete, complete],
+                &candidates,
+                &capabilities,
+                true,
+                false,
+            ),
+            TaskLifecycleActionState {
+                complete_enabled: true,
+                incomplete_enabled: true,
+            }
+        );
+        assert_eq!(
+            task_lifecycle_action_state(
+                &[task_selection("writable", "incomplete")],
+                &candidates,
+                &HashMap::from([("writable".to_string(), TaskSourceCapability::ReadOnly)]),
+                true,
+                false,
+            ),
+            TaskLifecycleActionState::default()
+        );
+        assert_eq!(
+            task_lifecycle_action_state(
+                &[task_selection("writable", "incomplete")],
+                &candidates,
+                &capabilities,
+                true,
+                true,
+            ),
+            TaskLifecycleActionState::default()
+        );
+    }
+
+    #[test]
+    fn task_lifecycle_plan_is_exact_and_preserves_non_lifecycle_data() {
+        let incomplete = task_selection("writable", "incomplete");
+        let complete = task_selection("writable", "complete");
+        let another_incomplete = task_selection("writable", "another-incomplete");
+        let candidates = vec![
+            export_candidate(
+                "writable",
+                "incomplete",
+                concat!(
+                    "BEGIN:VTODO\r\nUID:incomplete\r\nSTATUS:NEEDS-ACTION\r\n",
+                    "PERCENT-COMPLETE:42\r\nX-KEEP:preserve\r\n",
+                    "BEGIN:VALARM\r\nACTION:AUDIO\r\nTRIGGER:-PT5M\r\nEND:VALARM\r\n",
+                    "END:VTODO\r\n"
+                ),
+            ),
+            export_candidate(
+                "writable",
+                "complete",
+                "BEGIN:VTODO\r\nUID:complete\r\nSTATUS:COMPLETED\r\nCOMPLETED:20260820T010203Z\r\nX-KEEP:done\r\nEND:VTODO\r\n",
+            ),
+            export_candidate(
+                "writable",
+                "another-incomplete",
+                "BEGIN:VTODO\r\nUID:another-incomplete\r\nSTATUS:NEEDS-ACTION\r\nEND:VTODO\r\n",
+            ),
+        ];
+        let plan = build_task_lifecycle_batch_plan(
+            &[
+                incomplete.clone(),
+                complete.clone(),
+                another_incomplete.clone(),
+            ],
+            &candidates,
+            &task_lifecycle_capabilities(),
+            true,
+            TaskLifecycleBatchOperation::Complete,
+            "20260823T120000Z",
+        )
+        .expect("all exact writable selections should plan");
+        assert_eq!(plan.mutations.len(), 3);
+        let newly_complete = &plan.mutations[0].component;
+        assert!(newly_complete.contains("STATUS:COMPLETED\r\n"));
+        assert!(newly_complete.contains("PERCENT-COMPLETE:100\r\n"));
+        assert!(newly_complete.contains("COMPLETED:20260823T120000Z\r\n"));
+        assert!(newly_complete.contains("X-KEEP:preserve\r\n"));
+        assert!(newly_complete.contains("BEGIN:VALARM\r\nACTION:AUDIO\r\n"));
+        let already_complete = &plan.mutations[1].component;
+        assert!(already_complete.contains("PERCENT-COMPLETE:100\r\n"));
+        assert!(already_complete.contains("COMPLETED:20260820T010203Z\r\n"));
+        assert!(!already_complete.contains("COMPLETED:20260823T120000Z\r\n"));
+        assert!(
+            plan.mutations[2]
+                .component
+                .contains("COMPLETED:20260823T120000Z\r\n")
+        );
+
+        let incomplete_plan = build_task_lifecycle_batch_plan(
+            &[incomplete, complete, another_incomplete],
+            &candidates,
+            &task_lifecycle_capabilities(),
+            true,
+            TaskLifecycleBatchOperation::Incomplete,
+            "20260823T120000Z",
+        )
+        .expect("mixed selection should allow mark incomplete");
+        for mutation in incomplete_plan.mutations {
+            assert!(mutation.component.contains("STATUS:NEEDS-ACTION\r\n"));
+            assert!(!mutation.component.contains("PERCENT-COMPLETE:"));
+            assert!(!mutation.component.contains("COMPLETED:"));
+        }
+
+        assert!(
+            build_task_lifecycle_batch_plan(
+                &[task_selection("writable", "missing")],
+                &candidates,
+                &task_lifecycle_capabilities(),
+                true,
+                TaskLifecycleBatchOperation::Complete,
+                "20260823T120000Z",
+            )
+            .is_err()
+        );
+        assert!(
+            build_task_lifecycle_batch_plan(
+                &[task_selection("writable", "incomplete")],
+                &[candidates[0].clone(), candidates[0].clone(),],
+                &task_lifecycle_capabilities(),
+                true,
+                TaskLifecycleBatchOperation::Complete,
+                "20260823T120000Z",
+            )
+            .is_err()
+        );
+        assert!(
+            build_task_lifecycle_batch_plan(
+                &[task_selection("writable", "incomplete")],
+                &[export_candidate(
+                    "writable",
+                    "incomplete",
+                    "BEGIN:VTODO\r\nUID:other\r\nEND:VTODO\r\n",
+                )],
+                &task_lifecycle_capabilities(),
+                true,
+                TaskLifecycleBatchOperation::Complete,
+                "20260823T120000Z",
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn task_lifecycle_reducer_handles_full_partial_failure_and_stale_results() {
+        let plan = TaskLifecycleBatchPlan {
+            operation: TaskLifecycleBatchOperation::Complete,
+            mutations: vec![
+                TaskLifecycleMutation {
+                    identity: task_selection("writable", "first"),
+                    component: "BEGIN:VTODO\r\nUID:first\r\nEND:VTODO\r\n".to_string(),
+                    completed: true,
+                },
+                TaskLifecycleMutation {
+                    identity: task_selection("writable", "second"),
+                    component: "BEGIN:VTODO\r\nUID:second\r\nEND:VTODO\r\n".to_string(),
+                    completed: true,
+                },
+            ],
+        };
+        let full = reduce_task_lifecycle_batch_results(
+            &plan,
+            &[
+                TaskLifecycleDispatchResult::Success(plan.mutations[0].clone()),
+                TaskLifecycleDispatchResult::Success(plan.mutations[1].clone()),
+            ],
+        );
+        assert_eq!(full.successes.len(), 2);
+        assert!(full.failures.is_empty());
+
+        let partial = reduce_task_lifecycle_batch_results(
+            &plan,
+            &[
+                TaskLifecycleDispatchResult::Success(plan.mutations[0].clone()),
+                TaskLifecycleDispatchResult::Failure {
+                    identity: plan.mutations[1].identity.clone(),
+                    error: "provider failure".to_string(),
+                },
+            ],
+        );
+        assert_eq!(partial.successes.len(), 1);
+        assert_eq!(partial.failures.len(), 1);
+
+        let failed = reduce_task_lifecycle_batch_results(
+            &plan,
+            &[
+                TaskLifecycleDispatchResult::Failure {
+                    identity: plan.mutations[0].identity.clone(),
+                    error: "first failed".to_string(),
+                },
+                TaskLifecycleDispatchResult::Failure {
+                    identity: plan.mutations[1].identity.clone(),
+                    error: "second failed".to_string(),
+                },
+            ],
+        );
+        assert!(failed.successes.is_empty());
+        assert_eq!(failed.failures.len(), 2);
+        assert!(task_lifecycle_result_is_current(7, 7));
+        assert!(!task_lifecycle_result_is_current(7, 6));
+    }
+
+    #[test]
+    fn task_delete_selection_requires_exact_writable_zero_one_many_plan() {
+        let first = task_selection("writable", "first");
+        let second = task_selection("writable", "second");
+        let candidates = vec![
+            export_candidate(
+                "writable",
+                "first",
+                "BEGIN:VTODO\r\nUID:first\r\nSUMMARY:First\r\nEND:VTODO\r\n",
+            ),
+            export_candidate(
+                "writable",
+                "second",
+                "BEGIN:VTODO\r\nUID:second\r\nSUMMARY:Second\r\nEND:VTODO\r\n",
+            ),
+        ];
+        let capabilities = task_lifecycle_capabilities();
+        assert!(!task_delete_action_enabled(
+            &[],
+            &candidates,
+            &capabilities,
+            true,
+            false,
+        ));
+        assert!(task_delete_action_enabled(
+            std::slice::from_ref(&first),
+            &candidates,
+            &capabilities,
+            true,
+            false,
+        ));
+        assert!(task_delete_action_enabled(
+            &[first.clone(), second.clone()],
+            &candidates,
+            &capabilities,
+            true,
+            false,
+        ));
+        assert!(!task_delete_action_enabled(
+            std::slice::from_ref(&first),
+            &candidates,
+            &HashMap::from([("writable".to_string(), TaskSourceCapability::ReadOnly)]),
+            true,
+            false,
+        ));
+        assert!(!task_delete_action_enabled(
+            std::slice::from_ref(&first),
+            &candidates,
+            &capabilities,
+            true,
+            true,
+        ));
+        assert!(
+            build_task_delete_plan(
+                &[task_selection("writable", "missing")],
+                &candidates,
+                &capabilities,
+                true,
+            )
+            .is_err()
+        );
+        assert!(
+            build_task_delete_plan(
+                std::slice::from_ref(&first),
+                &[candidates[0].clone(), candidates[0].clone()],
+                &capabilities,
+                true,
+            )
+            .is_err()
+        );
+        assert!(
+            build_task_delete_plan(&[first.clone(), first], &candidates, &capabilities, true,)
+                .is_err()
+        );
+        assert!(
+            build_task_delete_plan(
+                &[second],
+                &[export_candidate(
+                    "writable",
+                    "second",
+                    "BEGIN:VTODO\r\nUID:other\r\nEND:VTODO\r\n",
+                )],
+                &capabilities,
+                true,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn task_purge_plans_all_completed_writable_tasks_without_selection() {
+        let candidates = vec![
+            export_candidate(
+                "writable",
+                "complete-status",
+                "BEGIN:VTODO\r\nUID:complete-status\r\nSUMMARY:Done\r\nSTATUS:COMPLETED\r\nORGANIZER:mailto:owner@example.test\r\nEND:VTODO\r\n",
+            ),
+            export_candidate(
+                "writable",
+                "complete-percent",
+                "BEGIN:VTODO\r\nUID:complete-percent\r\nPERCENT-COMPLETE:100\r\nEND:VTODO\r\n",
+            ),
+            export_candidate(
+                "writable",
+                "open",
+                "BEGIN:VTODO\r\nUID:open\r\nSTATUS:NEEDS-ACTION\r\nEND:VTODO\r\n",
+            ),
+            export_candidate(
+                "readonly",
+                "readonly-complete",
+                "BEGIN:VTODO\r\nUID:readonly-complete\r\nSTATUS:COMPLETED\r\nEND:VTODO\r\n",
+            ),
+        ];
+        let capabilities = HashMap::from([
+            ("writable".to_string(), TaskSourceCapability::Writable),
+            ("readonly".to_string(), TaskSourceCapability::ReadOnly),
+        ]);
+        let plan = build_task_purge_plan(&candidates, &capabilities, true)
+            .expect("completed tasks from writable sources should purge");
+        assert_eq!(
+            plan.mutations
+                .iter()
+                .map(|mutation| mutation.identity.task_uid.as_str())
+                .collect::<Vec<_>>(),
+            vec!["complete-status", "complete-percent"]
+        );
+        assert!(
+            build_task_purge_plan(&candidates[2..], &capabilities, true).is_err(),
+            "open and read-only completed tasks must not create a purge"
+        );
+        assert!(
+            build_task_purge_plan(
+                &[export_candidate(
+                    "writable",
+                    "instance",
+                    "BEGIN:VTODO\r\nUID:instance\r\nRECURRENCE-ID:20260823T120000Z\r\nSTATUS:COMPLETED\r\nEND:VTODO\r\n",
+                )],
+                &capabilities,
+                true,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn task_delete_confirmation_is_named_counted_and_cancelled_without_dispatch() {
+        let named = TaskDeletePlan {
+            mutations: vec![TaskDeleteMutation {
+                identity: task_selection("writable", "named"),
+                summary: "<unsafe & task>".to_string(),
+            }],
+        };
+        let named_prompt = task_delete_confirmation(&named);
+        assert!(named_prompt.title.contains("&lt;unsafe &amp; task&gt;"));
+        assert!(named_prompt.description.contains("unwiderruflich"));
+        let many = TaskDeletePlan {
+            mutations: vec![
+                TaskDeleteMutation {
+                    identity: task_selection("writable", "first"),
+                    summary: "First".to_string(),
+                },
+                TaskDeleteMutation {
+                    identity: task_selection("writable", "second"),
+                    summary: "Second".to_string(),
+                },
+            ],
+        };
+        let count_prompt = task_delete_confirmation(&many);
+        assert!(count_prompt.title.contains("2 Aufgaben"));
+        assert!(count_prompt.description.contains("2 Aufgaben"));
+        assert!(!task_delete_can_dispatch(false));
+        assert!(task_delete_can_dispatch(true));
+        assert!(task_delete_plan_matches_selection(
+            &many,
+            &[
+                task_selection("writable", "first"),
+                task_selection("writable", "second"),
+            ],
+        ));
+        assert!(!task_delete_plan_matches_selection(
+            &many,
+            &[task_selection("writable", "second")],
+        ));
+    }
+
+    #[test]
+    fn task_delete_rejects_recurrence_and_single_assigned_but_allows_multi_assigned() {
+        let capabilities = task_lifecycle_capabilities();
+        let recurrence = export_candidate(
+            "writable",
+            "recurrence",
+            "BEGIN:VTODO\r\nUID:recurrence\r\nRECURRENCE-ID:20260823T120000Z\r\nEND:VTODO\r\n",
+        );
+        assert!(task_delete_action_enabled(
+            std::slice::from_ref(&recurrence.identity),
+            std::slice::from_ref(&recurrence),
+            &capabilities,
+            true,
+            false,
+        ));
+        assert!(
+            build_task_delete_plan(
+                &[recurrence.identity.clone()],
+                &[recurrence],
+                &capabilities,
+                true,
+            )
+            .is_err()
+        );
+        let assigned = export_candidate(
+            "writable",
+            "assigned",
+            "BEGIN:VTODO\r\nUID:assigned\r\nORGANIZER:mailto:owner@example.test\r\nATTENDEE:mailto:user@example.test\r\nEND:VTODO\r\n",
+        );
+        assert!(task_delete_action_enabled(
+            std::slice::from_ref(&assigned.identity),
+            std::slice::from_ref(&assigned),
+            &capabilities,
+            true,
+            false,
+        ));
+        assert!(
+            build_task_delete_plan(
+                std::slice::from_ref(&assigned.identity),
+                std::slice::from_ref(&assigned),
+                &capabilities,
+                true,
+            )
+            .is_err()
+        );
+        let plain = export_candidate(
+            "writable",
+            "plain",
+            "BEGIN:VTODO\r\nUID:plain\r\nEND:VTODO\r\n",
+        );
+        assert!(
+            build_task_delete_plan(
+                &[assigned.identity.clone(), plain.identity.clone()],
+                &[assigned, plain],
+                &capabilities,
+                true,
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn task_delete_reducer_stops_on_first_failure_and_rejects_stale_results() {
+        let plan = TaskDeletePlan {
+            mutations: ["first", "second", "third"]
+                .into_iter()
+                .map(|uid| TaskDeleteMutation {
+                    identity: task_selection("writable", uid),
+                    summary: uid.to_string(),
+                })
+                .collect(),
+        };
+        let full = reduce_task_delete_batch_result(
+            &plan,
+            &TaskDeleteWorkerResult {
+                removed: plan
+                    .mutations
+                    .iter()
+                    .map(|mutation| mutation.identity.clone())
+                    .collect(),
+                failure: None,
+            },
+        );
+        assert_eq!(full.removed.len(), 3);
+        assert!(full.failure.is_none() && full.unattempted.is_empty());
+
+        let partial = reduce_task_delete_batch_result(
+            &plan,
+            &TaskDeleteWorkerResult {
+                removed: vec![plan.mutations[0].identity.clone()],
+                failure: Some((
+                    plan.mutations[1].identity.clone(),
+                    "provider failure".to_string(),
+                )),
+            },
+        );
+        assert_eq!(partial.removed, vec![plan.mutations[0].identity.clone()]);
+        assert!(partial.failure.is_some());
+        assert_eq!(
+            partial.unattempted,
+            vec![plan.mutations[2].identity.clone()]
+        );
+
+        let failed = reduce_task_delete_batch_result(
+            &plan,
+            &TaskDeleteWorkerResult {
+                removed: vec![],
+                failure: Some((plan.mutations[0].identity.clone(), "failed".to_string())),
+            },
+        );
+        assert!(failed.removed.is_empty() && failed.failure.is_some());
+        assert_eq!(failed.unattempted.len(), 2);
+
+        let duplicate = reduce_task_delete_batch_result(
+            &plan,
+            &TaskDeleteWorkerResult {
+                removed: vec![
+                    plan.mutations[0].identity.clone(),
+                    plan.mutations[0].identity.clone(),
+                ],
+                failure: None,
+            },
+        );
+        assert!(duplicate.removed.is_empty() && duplicate.failure.is_some());
+        assert_eq!(duplicate.unattempted.len(), 3);
+        assert!(task_delete_result_is_current(4, 4));
+        assert!(!task_delete_result_is_current(4, 3));
     }
 
     #[test]
@@ -6932,10 +14157,7 @@ mod tests {
     #[test]
     fn task_editor_source_and_generation_guards_block_unavailable_or_stale_work() {
         let capabilities = Rc::new(RefCell::new(HashMap::from([
-            (
-                "live-source".to_string(),
-                TaskSourceCapability::Unknown,
-            ),
+            ("live-source".to_string(), TaskSourceCapability::Unknown),
             (
                 "read-only-source".to_string(),
                 TaskSourceCapability::ReadOnly,
@@ -7145,10 +14367,7 @@ mod tests {
             backend_calls += 1;
         }
         assert_eq!(backend_calls, 0, "cancel-before-dispatch must not mutate");
-        assert_eq!(
-            cancelled.phase(),
-            TaskSavePhase::CancelledBeforeDispatch
-        );
+        assert_eq!(cancelled.phase(), TaskSavePhase::CancelledBeforeDispatch);
         assert_eq!(
             task_close_decision(false, cancelled.phase(), false),
             TaskCloseDecision::Allow
@@ -7209,21 +14428,15 @@ mod tests {
     fn task_editor_requires_a_confirmed_authoritative_component() {
         let confirmed = "BEGIN:VTODO\r\nUID:confirmed\r\nEND:VTODO\r\n";
         assert_eq!(
-            task_authoritative_component(
-                "confirmed",
-                "confirmed",
-                Some(confirmed.to_string())
-            )
-            .unwrap(),
+            task_authoritative_component("confirmed", "confirmed", Some(confirmed.to_string()))
+                .unwrap(),
             confirmed
         );
         assert!(task_authoritative_component("confirmed", "confirmed", None).is_err());
-        assert!(task_authoritative_component(
-            "confirmed",
-            "other",
-            Some(confirmed.to_string())
-        )
-        .is_err());
+        assert!(
+            task_authoritative_component("confirmed", "other", Some(confirmed.to_string()))
+                .is_err()
+        );
     }
 
     #[test]
@@ -7312,7 +14525,10 @@ mod tests {
         let draft = task_editor_draft_from_component(existing);
         assert_eq!(draft.unsupported_status.as_deref(), Some("X-IMPORTED"));
         assert_eq!(draft.unsupported_percent.as_deref(), Some("bogus"));
-        assert_eq!(task_initial_editor_lifecycle(&draft, NaiveDate::from_ymd_opt(2026, 8, 23).unwrap()), (0, "".to_string()));
+        assert_eq!(
+            task_initial_editor_lifecycle(&draft, NaiveDate::from_ymd_opt(2026, 8, 23).unwrap()),
+            (0, "".to_string())
+        );
         let unchanged = update_task_component_with_dates(
             existing,
             "Imported",
@@ -7336,6 +14552,129 @@ mod tests {
     }
 
     #[test]
+    fn task_editor_preserves_each_imported_lifecycle_property_on_unrelated_save() {
+        let unknown_status = concat!(
+            "BEGIN:VTODO\r\nUID:unknown-status\r\nSUMMARY:Imported\r\n",
+            "STATUS:X-IMPORTED\r\nPERCENT-COMPLETE:37\r\n",
+            "X-UNKNOWN:keep\r\nBEGIN:VALARM\r\nACTION:AUDIO\r\n",
+            "TRIGGER:-PT5M\r\nEND:VALARM\r\nEND:VTODO\r\n"
+        );
+        let unknown_percent = concat!(
+            "BEGIN:VTODO\r\nUID:unknown-percent\r\nSUMMARY:Imported\r\n",
+            "STATUS:IN-PROCESS\r\nPERCENT-COMPLETE:bogus\r\n",
+            "ATTACH;VALUE=URI:https://example.test/keep\r\n",
+            "END:VTODO\r\n"
+        );
+
+        for (existing, expected_status, expected_percent, preserved) in [
+            (
+                unknown_status,
+                "STATUS:X-IMPORTED\r\n",
+                "PERCENT-COMPLETE:37\r\n",
+                "X-UNKNOWN:keep\r\n",
+            ),
+            (
+                unknown_percent,
+                "STATUS:IN-PROCESS\r\n",
+                "PERCENT-COMPLETE:bogus\r\n",
+                "ATTACH;VALUE=URI:https://example.test/keep\r\n",
+            ),
+        ] {
+            let draft = task_editor_draft_from_component(existing);
+            let updated = update_task_component_with_dates(
+                existing,
+                "Changed only the title",
+                &draft.dtstart.input,
+                &draft.due.input,
+                &draft.completed.input,
+                &draft.recurrence,
+                &draft.rdates,
+                &draft.exdates,
+                draft.priority,
+                &draft.categories,
+                &parse_alarms(existing),
+                &draft.description,
+                &draft.attachments,
+                draft.status,
+                draft.percent,
+            )
+            .expect("unrelated edit must retain imported lifecycle data");
+            assert!(updated.contains(expected_status));
+            assert!(updated.contains(expected_percent));
+            assert!(updated.contains(preserved));
+        }
+    }
+
+    #[test]
+    fn task_editor_does_not_invent_a_missing_percent_on_unrelated_save() {
+        let existing = concat!(
+            "BEGIN:VTODO\r\nUID:no-percent\r\nSUMMARY:Imported\r\n",
+            "STATUS:NEEDS-ACTION\r\nX-UNKNOWN:keep\r\nEND:VTODO\r\n"
+        );
+        let draft = task_editor_draft_from_component(existing);
+        let updated = update_task_component_with_dates(
+            existing,
+            "Changed only the title",
+            &draft.dtstart.input,
+            &draft.due.input,
+            &draft.completed.input,
+            &draft.recurrence,
+            &draft.rdates,
+            &draft.exdates,
+            draft.priority,
+            &draft.categories,
+            &parse_alarms(existing),
+            &draft.description,
+            &draft.attachments,
+            draft.status,
+            draft.percent,
+        )
+        .expect("unrelated edit must retain an absent lifecycle property");
+        assert!(!updated.contains("PERCENT-COMPLETE:"));
+        assert!(updated.contains("X-UNKNOWN:keep\r\n"));
+    }
+
+    #[test]
+    fn task_editor_replaces_imported_lifecycle_only_after_a_lifecycle_edit() {
+        let existing = concat!(
+            "BEGIN:VTODO\r\nUID:explicit-lifecycle\r\nSUMMARY:Imported\r\n",
+            "STATUS:X-IMPORTED\r\nPERCENT-COMPLETE:bogus\r\n",
+            "ATTACH;X-SAFE=keep;VALUE=URI:https://example.test/keep\r\n",
+            "X-UNKNOWN:keep\r\nBEGIN:VALARM\r\nACTION:EMAIL\r\n",
+            "TRIGGER:-PT5M\r\nEND:VALARM\r\nEND:VTODO\r\n"
+        );
+        let draft = task_editor_draft_from_component(existing);
+        let updated = update_task_component_with_dates_and_lifecycle_edits(
+            existing,
+            "Changed lifecycle",
+            &draft.dtstart.input,
+            &draft.due.input,
+            "",
+            &draft.recurrence,
+            &draft.rdates,
+            &draft.exdates,
+            draft.priority,
+            &draft.categories,
+            &parse_alarms(existing),
+            &draft.description,
+            &draft.attachments,
+            "IN-PROCESS",
+            50,
+            TaskLifecycleEdits {
+                status: true,
+                ..TaskLifecycleEdits::default()
+            },
+        )
+        .expect("an explicit lifecycle edit should normalize its coupled fields");
+        assert!(updated.contains("STATUS:IN-PROCESS\r\n"));
+        assert!(updated.contains("PERCENT-COMPLETE:50\r\n"));
+        assert!(!updated.contains("COMPLETED:"));
+        assert!(updated.contains("ATTACH;X-SAFE=keep;VALUE=URI:https://example.test/keep\r\n"));
+        assert!(updated.contains("X-UNKNOWN:keep\r\n"));
+        assert!(updated.contains("ACTION:EMAIL\r\n"));
+    }
+
+    #[test]
     fn task_editor_attachments_are_lossless_for_noop_and_safe_when_reordered() {
         let existing = concat!(
             "BEGIN:VTODO\r\nUID:attachments\r\nSUMMARY:Attachments\r\n",
@@ -7349,9 +14688,11 @@ mod tests {
         let draft = task_editor_draft_from_component(existing);
         assert!(!draft.attachments_changed);
         assert_eq!(draft.attachment_lines.len(), 2);
-        assert!(draft.attachment_lines[0]
-            .raw
-            .contains("X-PARAM=keep;VALUE=URI"));
+        assert!(
+            draft.attachment_lines[0]
+                .raw
+                .contains("X-PARAM=keep;VALUE=URI")
+        );
         assert_eq!(
             draft.attachment_lines[1].kind,
             TaskAttachmentValueKind::Binary
@@ -7382,16 +14723,18 @@ mod tests {
         assert!(unfold_ical_lines(&unchanged).iter().any(|line| {
             line == "ATTACH;ENCODING=BASE64;FMTTYPE=application/octet-stream;VALUE=BINARY:QUJDRA=="
         }));
-        assert!(unfold_ical_lines(&unchanged).iter().any(|line| {
-            line == "ATTACH;VALUE=URI:https://example.test/alarm.wav"
-        }));
+        assert!(
+            unfold_ical_lines(&unchanged)
+                .iter()
+                .any(|line| { line == "ATTACH;VALUE=URI:https://example.test/alarm.wav" })
+        );
 
         let edited_text = format!(
             "https://example.test/new.pdf\n{}\nATTACH;ENCODING=BASE64;VALUE=BINARY:QkFTRTY0",
             draft.attachment_lines[1].raw
         );
-        let edited_draft = TaskAttachmentDraft::from_component(existing)
-            .with_editor_text(&edited_text);
+        let edited_draft =
+            TaskAttachmentDraft::from_component(existing).with_editor_text(&edited_text);
         assert!(edited_draft.attachments_changed);
         let edited = update_task_component_with_dates(
             existing,
@@ -7422,9 +14765,11 @@ mod tests {
             top_level[2].raw,
             "ATTACH;ENCODING=BASE64;VALUE=BINARY:QkFTRTY0"
         );
-        assert!(unfold_ical_lines(&edited).iter().any(|line| {
-            line == "ATTACH;VALUE=URI:https://example.test/alarm.wav"
-        }));
+        assert!(
+            unfold_ical_lines(&edited)
+                .iter()
+                .any(|line| { line == "ATTACH;VALUE=URI:https://example.test/alarm.wav" })
+        );
     }
 
     #[test]
@@ -7468,6 +14813,492 @@ mod tests {
         assert!(first < second);
         assert!(updated.contains("RRULE:FREQ=DAILY;COUNT=3\r\n"));
         assert!(updated.contains("UID:preserve-all\r\n"));
+    }
+
+    #[test]
+    fn task_list_print_snapshot_keeps_visible_order_and_escapes_all_cells() {
+        let first = TaskSelectionIdentity {
+            source_uid: "source-a".to_string(),
+            task_uid: "first".to_string(),
+        };
+        let second = TaskSelectionIdentity {
+            source_uid: "source-b".to_string(),
+            task_uid: "second".to_string(),
+        };
+        let candidates = vec![
+            TaskExportCandidate {
+                identity: first.clone(),
+                component: concat!(
+                    "BEGIN:VTODO\r\nUID:first\r\nSUMMARY:First\r\n",
+                    "STATUS:NEEDS-ACTION\r\nDUE;VALUE=DATE:20260820\r\n",
+                    "PRIORITY:1\r\nCATEGORIES:Work\r\nEND:VTODO\r\n"
+                )
+                .to_string(),
+            },
+            TaskExportCandidate {
+                identity: second.clone(),
+                component: concat!(
+                    "BEGIN:VTODO\r\nUID:second\r\nSUMMARY:<Second & urgent>\r\n",
+                    "STATUS:COMPLETED\r\nCATEGORIES:Research\r\nEND:VTODO\r\n"
+                )
+                .to_string(),
+            },
+        ];
+        let document =
+            build_task_list_print_document(&[second.clone(), first.clone()], &candidates).unwrap();
+        assert_eq!(document.row_count, 2);
+        assert!(document.html.contains("<title>Print Tasks</title>"));
+        assert!(document.html.contains("&lt;Second &amp; urgent&gt;"));
+        assert!(document.html.contains("<td>source-b</td>"));
+        assert!(
+            document.plain_text.find("<Second & urgent>").unwrap()
+                < document.plain_text.find("First").unwrap()
+        );
+        assert!(document.html.find("source-b").unwrap() < document.html.find("source-a").unwrap());
+    }
+
+    #[test]
+    fn task_list_print_fails_closed_for_empty_duplicate_and_stale_rows() {
+        let identity = TaskSelectionIdentity {
+            source_uid: "source-a".to_string(),
+            task_uid: "print-id".to_string(),
+        };
+        let candidate = TaskExportCandidate {
+            identity: identity.clone(),
+            component: "BEGIN:VTODO\r\nUID:print-id\r\nSUMMARY:Task\r\nEND:VTODO\r\n".to_string(),
+        };
+        assert!(build_task_list_print_document(&[], std::slice::from_ref(&candidate)).is_err());
+        assert!(
+            build_task_list_print_document(
+                &[identity.clone(), identity.clone()],
+                std::slice::from_ref(&candidate)
+            )
+            .is_err()
+        );
+        let stale = TaskExportCandidate {
+            identity: identity.clone(),
+            component: "BEGIN:VTODO\r\nUID:not-print-id\r\nSUMMARY:Task\r\nEND:VTODO\r\n"
+                .to_string(),
+        };
+        assert!(build_task_list_print_document(&[identity], &[stale]).is_err());
+    }
+
+    #[test]
+    fn task_list_print_and_preview_have_distinct_honest_preparation_states() {
+        assert_eq!(
+            TaskListPrintAction::Print.preparing_label(),
+            "Druckliste wird vorbereitet …"
+        );
+        assert_eq!(
+            TaskListPrintAction::Preview.preparing_label(),
+            "Druckvorschau wird vorbereitet …"
+        );
+        assert_eq!(
+            TaskListPrintAction::Print.preparation_label(),
+            "Druckdokument vorbereitet"
+        );
+        assert_eq!(
+            TaskListPrintAction::Preview.preparation_label(),
+            "Druckvorschau vorbereitet"
+        );
+    }
+
+    #[test]
+    fn task_refresh_requires_one_available_supported_primary_source_and_idle_state() {
+        assert!(task_refresh_action_enabled(
+            Some("source-a"),
+            true,
+            false,
+            false,
+            false
+        ));
+        assert!(!task_refresh_action_enabled(
+            None, true, false, false, false
+        ));
+        assert!(!task_refresh_action_enabled(
+            Some("source-a"),
+            false,
+            false,
+            false,
+            false
+        ));
+        assert!(!task_refresh_action_enabled(
+            Some("source-a"),
+            true,
+            true,
+            false,
+            false
+        ));
+        assert!(!task_refresh_action_enabled(
+            Some("source-a"),
+            true,
+            false,
+            true,
+            false
+        ));
+        assert!(!task_refresh_action_enabled(
+            Some("source-a"),
+            true,
+            false,
+            false,
+            true
+        ));
+    }
+
+    #[test]
+    fn task_refresh_result_requires_matching_generation_and_primary_source() {
+        assert!(task_refresh_result_is_current(
+            7,
+            7,
+            Some("source-a"),
+            "source-a"
+        ));
+        assert!(!task_refresh_result_is_current(
+            8,
+            7,
+            Some("source-a"),
+            "source-a"
+        ));
+        assert!(!task_refresh_result_is_current(
+            7,
+            7,
+            Some("source-b"),
+            "source-a"
+        ));
+        assert!(!task_refresh_result_is_current(7, 7, None, "source-a"));
+    }
+
+    #[test]
+    fn exact_ecal_task_source_capabilities_project_writable_readonly_and_unavailable() {
+        let mut source = ECalSourceCapability {
+            source_uid: "tasks-a".to_string(),
+            display_name: "Team Tasks".to_string(),
+            connected: true,
+            available: true,
+            writable: true,
+            source_writable: true,
+            refresh_supported: true,
+            removable: false,
+            remote_deletable: false,
+            in_collection: false,
+            task_assignment_supported: false,
+            task_assignment_conversion_supported: false,
+        };
+        assert_eq!(
+            task_source_capability_from_ecal(&source),
+            TaskSourceCapability::Writable
+        );
+        assert_eq!(task_source_capability_label(&source), "Team Tasks");
+
+        source.writable = false;
+        assert_eq!(
+            task_source_capability_from_ecal(&source),
+            TaskSourceCapability::ReadOnly
+        );
+        assert_eq!(
+            task_source_capability_label(&source),
+            "Team Tasks (schreibgeschützt)"
+        );
+
+        source.connected = false;
+        source.available = false;
+        assert_eq!(
+            task_source_capability_from_ecal(&source),
+            TaskSourceCapability::Unavailable
+        );
+        assert_eq!(
+            task_source_capability_label(&source),
+            "Team Tasks (nicht verfügbar)"
+        );
+    }
+
+    #[test]
+    fn exact_ecal_task_source_label_falls_back_to_stable_uid() {
+        let source = ECalSourceCapability {
+            source_uid: "tasks-a".to_string(),
+            display_name: "  ".to_string(),
+            connected: true,
+            available: true,
+            writable: true,
+            source_writable: true,
+            refresh_supported: false,
+            removable: false,
+            remote_deletable: false,
+            in_collection: false,
+            task_assignment_supported: false,
+            task_assignment_conversion_supported: false,
+        };
+        assert_eq!(task_source_capability_label(&source), "tasks-a");
+    }
+
+    #[test]
+    fn task_source_management_actions_match_upstream_source_metadata_gates() {
+        let source = ECalSourceCapability {
+            source_uid: "tasks-a".to_string(),
+            display_name: "Tasks".to_string(),
+            connected: true,
+            available: true,
+            writable: true,
+            source_writable: true,
+            refresh_supported: false,
+            removable: false,
+            remote_deletable: false,
+            in_collection: false,
+            task_assignment_supported: false,
+            task_assignment_conversion_supported: false,
+        };
+        let mut metadata = HashMap::from([("tasks-a".to_string(), source.clone())]);
+        assert_eq!(
+            task_source_action_state(Some("tasks-a"), &metadata, false),
+            TaskSourceActionState {
+                copy_enabled: true,
+                rename_enabled: true,
+                properties_enabled: true,
+                delete_enabled: false,
+            }
+        );
+
+        // Upstream source actions use ESource:writable, independently of the
+        // connected calendar client's read-only state used for task writes.
+        metadata.get_mut("tasks-a").unwrap().writable = false;
+        assert_eq!(
+            task_source_action_state(Some("tasks-a"), &metadata, false),
+            TaskSourceActionState {
+                copy_enabled: true,
+                rename_enabled: true,
+                properties_enabled: true,
+                delete_enabled: false,
+            }
+        );
+        metadata.get_mut("tasks-a").unwrap().source_writable = false;
+        assert_eq!(
+            task_source_action_state(Some("tasks-a"), &metadata, false),
+            TaskSourceActionState {
+                copy_enabled: true,
+                rename_enabled: false,
+                properties_enabled: false,
+                delete_enabled: false,
+            }
+        );
+        metadata.get_mut("tasks-a").unwrap().source_writable = true;
+
+        metadata.get_mut("tasks-a").unwrap().in_collection = true;
+        metadata.get_mut("tasks-a").unwrap().remote_deletable = true;
+        assert_eq!(
+            task_source_action_state(Some("tasks-a"), &metadata, false),
+            TaskSourceActionState {
+                copy_enabled: true,
+                rename_enabled: false,
+                properties_enabled: true,
+                delete_enabled: true,
+            }
+        );
+        assert_eq!(
+            task_source_action_state(Some("tasks-a"), &metadata, true),
+            TaskSourceActionState {
+                copy_enabled: false,
+                rename_enabled: false,
+                properties_enabled: false,
+                delete_enabled: false,
+            }
+        );
+        assert_eq!(
+            task_source_action_state(None, &metadata, false),
+            TaskSourceActionState {
+                copy_enabled: false,
+                rename_enabled: false,
+                properties_enabled: false,
+                delete_enabled: false,
+            }
+        );
+    }
+
+    #[test]
+    fn task_assignment_action_requires_exact_writable_supported_source_and_selection() {
+        let identity = TaskSelectionIdentity {
+            source_uid: "tasks-a".to_string(),
+            task_uid: "assign-1".to_string(),
+        };
+        let candidate = TaskExportCandidate {
+            identity: identity.clone(),
+            component: "BEGIN:VTODO\r\nUID:assign-1\r\nSUMMARY:Assign\r\nEND:VTODO\r\n".to_string(),
+        };
+        let source = ECalSourceCapability {
+            source_uid: "tasks-a".to_string(),
+            display_name: "Tasks".to_string(),
+            connected: true,
+            available: true,
+            source_writable: true,
+            writable: true,
+            refresh_supported: false,
+            removable: false,
+            remote_deletable: false,
+            in_collection: false,
+            task_assignment_supported: true,
+            task_assignment_conversion_supported: true,
+        };
+        let mut metadata = HashMap::from([("tasks-a".to_string(), source)]);
+        assert!(task_assignment_action_enabled(
+            std::slice::from_ref(&identity),
+            std::slice::from_ref(&candidate),
+            &metadata,
+            false,
+        ));
+        metadata
+            .get_mut("tasks-a")
+            .unwrap()
+            .task_assignment_conversion_supported = false;
+        assert!(!task_assignment_action_enabled(
+            std::slice::from_ref(&identity),
+            std::slice::from_ref(&candidate),
+            &metadata,
+            false,
+        ));
+        metadata
+            .get_mut("tasks-a")
+            .unwrap()
+            .task_assignment_conversion_supported = true;
+        metadata.get_mut("tasks-a").unwrap().writable = false;
+        assert!(!task_assignment_action_enabled(
+            std::slice::from_ref(&identity),
+            std::slice::from_ref(&candidate),
+            &metadata,
+            false,
+        ));
+        assert!(!task_assignment_action_enabled(
+            &[],
+            std::slice::from_ref(&candidate),
+            &metadata,
+            false,
+        ));
+    }
+
+    #[test]
+    fn task_assignment_parser_and_replacement_preserve_unrelated_and_nested_data() {
+        let original = concat!(
+            "BEGIN:VTODO\r\nUID:assign-1\r\nSUMMARY:Assign\r\n",
+            "ORGANIZER;CN=Old:mailto:old@example.org\r\n",
+            "ATTENDEE;ROLE=OPT-PARTICIPANT:mailto:old-attendee@example.org\r\n",
+            "X-EVOLUTION-KEEP:value\r\nBEGIN:VALARM\r\n",
+            "ATTENDEE:mailto:nested@example.org\r\nACTION:DISPLAY\r\nEND:VALARM\r\n",
+            "END:VTODO\r\n"
+        );
+        let unchanged_draft = task_assignment_draft(original);
+        let unchanged =
+            parse_task_assignment_update(&unchanged_draft.organizer, &unchanged_draft.attendees)
+                .unwrap();
+        assert_eq!(
+            replace_task_assignment_properties(original, &unchanged),
+            original
+        );
+
+        let update = parse_task_assignment_update(
+            "owner@example.org",
+            "one@example.org\none@example.org\nATTENDEE;ROLE=CHAIR:mailto:chair@example.org",
+        )
+        .unwrap();
+        let replaced = replace_task_assignment_properties(original, &update);
+        assert_eq!(
+            task_top_level_property_lines(&replaced, "ORGANIZER"),
+            vec!["ORGANIZER:mailto:owner@example.org"]
+        );
+        assert_eq!(
+            task_top_level_property_lines(&replaced, "ATTENDEE").len(),
+            2
+        );
+        assert!(replaced.contains("X-EVOLUTION-KEEP:value"));
+        assert!(replaced.contains("ATTENDEE:mailto:nested@example.org"));
+        let request = build_task_assignment_request(&replaced);
+        assert!(request.contains("METHOD:REQUEST\r\nBEGIN:VTODO"));
+        assert!(request.ends_with("END:VCALENDAR\r\n"));
+        assert!(parse_task_assignment_update("owner@example.org", "").is_err());
+        assert!(parse_task_assignment_update("invalid", "one@example.org").is_err());
+    }
+
+    #[test]
+    fn task_preview_requires_exact_single_current_task_and_renders_safe_metadata() {
+        let identity = TaskSelectionIdentity {
+            source_uid: "source-a".to_string(),
+            task_uid: "preview-1".to_string(),
+        };
+        let component = concat!(
+            "BEGIN:VTODO\r\nUID:preview-1\r\nSUMMARY:Plan\\, review\r\n",
+            "LOCATION:Office\r\nGEO:52.5;13.4\r\nDTSTART;VALUE=DATE:20260820\r\n",
+            "RRULE:FREQ=WEEKLY\r\nDUE;VALUE=DATE:20260821\r\n",
+            "ESTIMATED-DURATION:PT1H\r\nSTATUS:IN-PROCESS\r\n",
+            "CATEGORIES:Work,Research\r\nPRIORITY:3\r\nCLASS:PRIVATE\r\n",
+            "ORGANIZER:mailto:owner@example.test\r\nATTENDEE:mailto:team@example.test\r\n",
+            "URL:https://example.test/task\r\nDESCRIPTION:<img src=remote> safe text\r\n",
+            "X-ALT-DESC:<b>inert</b>\r\n",
+            "ATTACH;VALUE=URI:https://example.test/attachment.pdf\r\nEND:VTODO\r\n"
+        );
+        let candidates = vec![TaskExportCandidate {
+            identity: identity.clone(),
+            component: component.to_string(),
+        }];
+        let document = task_preview_document(std::slice::from_ref(&identity), &candidates).unwrap();
+        assert_eq!(document.identity, identity);
+        assert!(document.text.contains("Zusammenfassung\nPlan, review"));
+        assert!(document.text.contains("Wiederholung\nFREQ=WEEKLY"));
+        assert!(
+            document
+                .text
+                .contains("Beschreibung\n<img src=remote> safe text")
+        );
+        assert!(
+            document
+                .text
+                .contains("URI (nicht geöffnet): https://example.test/attachment.pdf")
+        );
+
+        let stale = TaskSelectionIdentity {
+            source_uid: "source-a".to_string(),
+            task_uid: "other".to_string(),
+        };
+        assert!(task_preview_document(std::slice::from_ref(&stale), &candidates).is_err());
+        assert!(task_preview_document(&[identity, stale], &candidates).is_err());
+    }
+
+    #[test]
+    fn task_preview_find_is_unicode_safe_wraps_and_resets() {
+        let text = "Ärger 😀 Ärger";
+        assert_eq!(
+            task_preview_match_ranges(text, "ärGER"),
+            vec![(0, 5), (8, 13)]
+        );
+        let state = task_preview_find_state(text, "ärger", None);
+        assert_eq!(state.current, Some(0));
+        assert_eq!(task_preview_find_step(&state, true).current, Some(1));
+        assert_eq!(
+            task_preview_find_step(&task_preview_find_step(&state, true), true).current,
+            Some(0)
+        );
+        assert_eq!(
+            task_preview_find_state("Andere Aufgabe", "ärger", None).current,
+            None
+        );
+        assert!(task_preview_find_state(text, "", None).matches.is_empty());
+        assert_eq!(task_preview_match_ranges("İstanbul", "i̇s"), vec![(0, 2)]);
+    }
+
+    #[test]
+    fn task_preview_layout_settings_follow_upstream_classic_and_vertical_modes() {
+        assert_eq!(
+            TaskPreviewOrientation::from_setting("classic"),
+            TaskPreviewOrientation::Classic
+        );
+        assert_eq!(
+            TaskPreviewOrientation::from_setting("vertical"),
+            TaskPreviewOrientation::Vertical
+        );
+        assert_eq!(
+            TaskPreviewOrientation::from_setting("unexpected"),
+            TaskPreviewOrientation::Classic
+        );
+        assert_eq!(TaskPreviewOrientation::Classic.setting_value(), "classic");
+        assert_eq!(TaskPreviewOrientation::Vertical.setting_value(), "vertical");
+        assert_eq!(TaskPreviewOrientation::Classic.index(), 0);
+        assert_eq!(TaskPreviewOrientation::Vertical.index(), 1);
     }
 
     #[test]

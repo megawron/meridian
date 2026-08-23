@@ -7,13 +7,14 @@
 // local placement/deletion without modifying Evolution's mbox/Maildir files
 // or indexes.
 
+use chrono::{DateTime, Local, NaiveDateTime, TimeZone};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-const CURRENT_VERSION: u32 = 7;
+const CURRENT_VERSION: u32 = 8;
 const MIN_SUPPORTED_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -48,6 +49,137 @@ impl MailFollowUpState {
     }
 }
 
+pub const DEFAULT_FOLLOW_UP_TEXT: &str = "Follow Up";
+
+/// The complete Evolution follow-up tag set.  The ordinary star is stored in
+/// `MailMessageState::is_flagged` and must never be inferred from this data.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MailFollowUpMetadata {
+    #[serde(default)]
+    pub state: MailFollowUpState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub due_by: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_on: Option<String>,
+}
+
+impl Default for MailFollowUpMetadata {
+    fn default() -> Self {
+        Self::none()
+    }
+}
+
+impl MailFollowUpMetadata {
+    pub fn none() -> Self {
+        Self {
+            state: MailFollowUpState::None,
+            text: None,
+            due_by: None,
+            completed_on: None,
+        }
+    }
+
+    pub fn pending(text: Option<String>, due_by: Option<String>) -> Self {
+        Self {
+            state: MailFollowUpState::FollowUp,
+            text: normalized_follow_up_text(text),
+            due_by,
+            completed_on: None,
+        }
+    }
+
+    pub fn completed_from(previous: &Self, completed_on: String) -> Self {
+        Self {
+            state: MailFollowUpState::Completed,
+            text: normalized_follow_up_text(previous.text.clone()),
+            due_by: previous.due_by.clone(),
+            completed_on: Some(completed_on),
+        }
+    }
+
+    pub fn normalized(mut self) -> Self {
+        match self.state {
+            MailFollowUpState::None => Self::none(),
+            MailFollowUpState::FollowUp => {
+                self.text = normalized_follow_up_text(self.text);
+                self.completed_on = None;
+                self
+            }
+            MailFollowUpState::Completed => {
+                self.text = normalized_follow_up_text(self.text);
+                self
+            }
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum LegacyFollowUpValue {
+    Metadata(MailFollowUpMetadata),
+    State(MailFollowUpState),
+}
+
+fn deserialize_follow_up<'de, D>(
+    deserializer: D,
+) -> Result<HashMap<String, MailFollowUpMetadata>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let legacy = HashMap::<String, LegacyFollowUpValue>::deserialize(deserializer)?;
+    Ok(legacy
+        .into_iter()
+        .filter_map(|(id, value)| {
+            let metadata = match value {
+                LegacyFollowUpValue::Metadata(metadata) => metadata.normalized(),
+                LegacyFollowUpValue::State(state) => MailFollowUpMetadata {
+                    state,
+                    ..MailFollowUpMetadata::default()
+                }
+                .normalized(),
+            };
+            (metadata.state != MailFollowUpState::None).then_some((id, metadata))
+        })
+        .collect())
+}
+
+fn normalized_follow_up_text(value: Option<String>) -> Option<String> {
+    let value = value.unwrap_or_else(|| DEFAULT_FOLLOW_UP_TEXT.to_string());
+    let value = value.trim();
+    (!value.is_empty() && !value.chars().any(char::is_control)).then(|| value.to_string())
+}
+
+/// Validate the portable editor input and encode it as the RFC 2822 value
+/// stored by Evolution's `due-by` tag.  Empty input explicitly clears a due
+/// date; imported tag strings are retained untouched until editing.
+pub fn parse_follow_up_due_input(value: &str) -> Result<Option<String>, String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Ok(None);
+    }
+    let parsed = NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M")
+        .or_else(|_| NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M"))
+        .map_err(|_| "Fälligkeit muss YYYY-MM-DD HH:MM entsprechen".to_string())?;
+    let Some(local) = Local.from_local_datetime(&parsed).single() else {
+        return Err("Fälligkeit ist wegen der Zeitzone nicht eindeutig".to_string());
+    };
+    Ok(Some(local.to_rfc2822()))
+}
+
+pub fn display_follow_up_due(value: Option<&str>) -> String {
+    value
+        .and_then(|value| DateTime::parse_from_rfc2822(value).ok())
+        .map(|value| {
+            value
+                .with_timezone(&Local)
+                .format("%Y-%m-%d %H:%M")
+                .to_string()
+        })
+        .unwrap_or_default()
+}
+
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct StateFile {
     version: u32,
@@ -61,8 +193,8 @@ struct StateFile {
     copies: HashMap<String, HashSet<String>>,
     #[serde(default)]
     labels: HashMap<String, HashSet<String>>,
-    #[serde(default)]
-    follow_up: HashMap<String, MailFollowUpState>,
+    #[serde(default, deserialize_with = "deserialize_follow_up")]
+    follow_up: HashMap<String, MailFollowUpMetadata>,
     #[serde(default)]
     local_folders: HashSet<String>,
 }
@@ -101,7 +233,7 @@ impl MailMetadataStore {
         self.load_file().labels
     }
 
-    pub fn load_follow_up(&self) -> HashMap<String, MailFollowUpState> {
+    pub fn load_follow_up(&self) -> HashMap<String, MailFollowUpMetadata> {
         self.load_file().follow_up
     }
 
@@ -286,17 +418,18 @@ impl MailMetadataStore {
         self.save_file(&file)
     }
 
-    pub fn set_follow_up(&self, id: &str, state: MailFollowUpState) -> io::Result<()> {
+    pub fn set_follow_up(&self, id: &str, metadata: MailFollowUpMetadata) -> io::Result<()> {
         let id = id.trim();
         if id.is_empty() {
             return Ok(());
         }
 
         let mut file = self.load_file();
-        if state == MailFollowUpState::None {
+        let metadata = metadata.normalized();
+        if metadata.state == MailFollowUpState::None {
             file.follow_up.remove(id);
         } else {
-            file.follow_up.insert(id.to_string(), state);
+            file.follow_up.insert(id.to_string(), metadata);
         }
         self.save_file(&file)
     }
@@ -714,41 +847,68 @@ mod tests {
     }
 
     #[test]
-    fn follow_up_state_roundtrips_independently_and_cycles() {
+    fn follow_up_metadata_roundtrips_and_enum_only_json_migrates() {
         let root = tempfile_dir("metadata-follow-up");
         let path = root.join("state.json");
         let store = MailMetadataStore::new(&path);
 
-        let pending = MailFollowUpState::None.next();
-        assert_eq!(pending, MailFollowUpState::FollowUp);
+        let pending = MailFollowUpMetadata::pending(
+            Some("Reply to Alice".to_string()),
+            Some("Mon, 24 Aug 2026 09:30:00 +0200".to_string()),
+        );
         store
-            .set_follow_up("message-1", pending)
-            .expect("follow-up state should save");
+            .set_follow_up("message-1", pending.clone())
+            .expect("follow-up metadata should save");
         assert_eq!(
             MailMetadataStore::new(&path)
                 .load_follow_up()
                 .get("message-1"),
-            Some(&MailFollowUpState::FollowUp)
+            Some(&pending)
         );
 
-        let completed = pending.next();
-        assert_eq!(completed, MailFollowUpState::Completed);
+        let completed = MailFollowUpMetadata::completed_from(
+            &pending,
+            "Mon, 24 Aug 2026 10:00:00 +0200".to_string(),
+        );
         store
-            .set_follow_up("message-1", completed)
-            .expect("completed state should save");
+            .set_follow_up("message-1", completed.clone())
+            .expect("completed metadata should save");
         assert_eq!(
             MailMetadataStore::new(&path)
                 .load_follow_up()
                 .get("message-1"),
-            Some(&MailFollowUpState::Completed)
+            Some(&completed)
         );
 
         store
-            .set_follow_up("message-1", completed.next())
+            .set_follow_up("message-1", MailFollowUpMetadata::none())
             .expect("follow-up state should clear");
         assert!(MailMetadataStore::new(&path).load_follow_up().is_empty());
 
+        fs::write(
+            &path,
+            br#"{"version":7,"follow_up":{"legacy":"follow-up","done":"completed"}}"#,
+        )
+        .expect("legacy enum-only sidecar should write");
+        let migrated = MailMetadataStore::new(&path).load_follow_up();
+        assert_eq!(migrated["legacy"].state, MailFollowUpState::FollowUp);
+        assert_eq!(
+            migrated["legacy"].text.as_deref(),
+            Some(DEFAULT_FOLLOW_UP_TEXT)
+        );
+        assert_eq!(migrated["done"].state, MailFollowUpState::Completed);
+
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn follow_up_due_input_is_validated_and_roundtrips_for_display() {
+        let due_by = parse_follow_up_due_input("2026-08-24 09:30")
+            .expect("valid editor date should parse")
+            .expect("non-empty editor date should produce a tag value");
+        assert_eq!(display_follow_up_due(Some(&due_by)), "2026-08-24 09:30");
+        assert_eq!(parse_follow_up_due_input(" ").unwrap(), None);
+        assert!(parse_follow_up_due_input("24/08/2026").is_err());
     }
 
     #[test]

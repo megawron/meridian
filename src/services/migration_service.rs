@@ -23,8 +23,8 @@ use super::mail_store_service::MailStoreService;
 use super::settings_service::{
     MAX_TASK_CATEGORY_FILTER_BYTES, normalize_composer_charset,
     normalize_memo_preview_orientation_value, normalize_memo_search_mode_value,
-    normalize_memo_source_filter_value, parse_mail_normal_headers_value,
-    validate_memo_category_filter_value,
+    normalize_memo_source_filter_value, normalize_task_preview_orientation_value,
+    parse_mail_normal_headers_value, validate_memo_category_filter_value,
 };
 use super::signature_store_service::{SignatureProfile, SignatureStore};
 use glib::prelude::StaticVariantType;
@@ -952,6 +952,8 @@ fn canonical_setting(
         "default-folder" if group.contains("mail") => "mail-default-folder",
         "sort-field" if group.contains("mail") => "mail-sort-field",
         "sort-descending" if group.contains("mail") => "mail-sort-descending",
+        "show-task-preview" if group.contains("calendar") => "task-preview-visible",
+        "task-layout" if group.contains("calendar") => "task-preview-orientation",
         "offline-mode" => "offline-mode",
         value if is_supported_migration_key(value) => value,
         _ => return Ok(None),
@@ -991,6 +993,13 @@ fn canonical_setting(
             _ => value,
         };
     }
+    if key == "task-layout" && canonical == "task-preview-orientation" {
+        value = match value.to_ascii_lowercase().as_str() {
+            "0" | "classic" => "classic".to_string(),
+            "1" | "vertical" => "vertical".to_string(),
+            _ => return Err("keine unterstützte Aufgaben-Vorschauausrichtung"),
+        };
+    }
     Ok(Some((canonical.to_string(), value)))
 }
 
@@ -1013,6 +1022,8 @@ fn migration_value_type(key: &str) -> SettingValueType {
             | "mail-sync-interval"
             | "mail-sync-message-limit"
             | "draft-autosave-interval"
+            | "task-hpane-position"
+            | "task-vpane-position"
     ) {
         return SettingValueType::Int32;
     }
@@ -1109,6 +1120,10 @@ fn is_supported_migration_key(key: &str) -> bool {
             | "task-source-filter"
             | "task-sort-field"
             | "task-sort-descending"
+            | "task-preview-visible"
+            | "task-preview-orientation"
+            | "task-hpane-position"
+            | "task-vpane-position"
             | "memo-sort-field"
             | "memo-source-filter"
             | "memo-sort-descending"
@@ -1146,6 +1161,7 @@ fn normalize_imported_setting_value(key: &str, value: &str) -> Result<String, &'
         "mail-sync-interval" => normalize_u32_setting(value, 0, 86_400),
         "mail-sync-message-limit" => normalize_u32_setting(value, 25, 1_000),
         "draft-autosave-interval" => normalize_u32_setting(value, 0, 3_600),
+        "task-hpane-position" | "task-vpane-position" => normalize_i32_setting(value, 80, 4_096),
         "composer-charset" => normalize_composer_charset(value)
             .map(str::to_string)
             .ok_or("keine unterstützte Zeichenkodierung"),
@@ -1260,6 +1276,8 @@ fn normalize_imported_setting_value(key: &str, value: &str) -> Result<String, &'
             "due" | "title" | "priority" => Ok(value.to_ascii_lowercase()),
             _ => Err("kein unterstütztes Aufgaben-Sortierfeld"),
         },
+        "task-preview-orientation" => normalize_task_preview_orientation_value(value)
+            .map_err(|_| "keine unterstützte Aufgaben-Vorschauausrichtung"),
         "memo-search-mode" => {
             normalize_memo_search_mode_value(value).map_err(|_| "kein unterstützter Memo-Suchmodus")
         }
@@ -1340,6 +1358,7 @@ fn is_boolean_migration_key(key: &str) -> bool {
             | "mail-sort-descending"
             | "mail-threading"
             | "task-sort-descending"
+            | "task-preview-visible"
             | "memo-preview-visible"
             | "memo-sort-descending"
     )
@@ -3407,6 +3426,51 @@ task-search-mode='bogus'
                 .iter()
                 .any(|warning| warning.contains("task-search-mode"))
         );
+    }
+
+    #[test]
+    fn migrates_upstream_task_preview_visibility_and_layout() {
+        for key in ["task-preview-visible", "task-preview-orientation"] {
+            assert!(is_supported_migration_key(key), "{key}");
+        }
+
+        let parsed = parse_evolution_settings(
+            r#"
+[org/gnome/evolution/calendar]
+show-task-preview=false
+task-layout=1
+task-hpane-position=275
+task-vpane-position=525
+task-layout=7
+"#,
+            Path::new("evolution-calendar-settings.ini"),
+        );
+
+        assert!(parsed.settings.contains(&ImportedSetting {
+            key: "task-preview-visible".to_string(),
+            value: "false".to_string(),
+        }));
+        assert!(parsed.settings.contains(&ImportedSetting {
+            key: "task-preview-orientation".to_string(),
+            value: "vertical".to_string(),
+        }));
+        assert!(parsed.settings.contains(&ImportedSetting {
+            key: "task-hpane-position".to_string(),
+            value: "275".to_string(),
+        }));
+        assert!(parsed.settings.contains(&ImportedSetting {
+            key: "task-vpane-position".to_string(),
+            value: "525".to_string(),
+        }));
+        assert!(
+            parsed
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("task-layout"))
+        );
+        assert!(normalize_imported_setting_value("task-preview-visible", "maybe").is_err());
+        assert!(normalize_imported_setting_value("task-preview-orientation", "diagonal").is_err());
+        assert!(normalize_imported_setting_value("task-hpane-position", "50").is_err());
     }
 
     #[test]

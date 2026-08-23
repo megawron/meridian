@@ -29,7 +29,7 @@ use crate::services::mail_filter_service::{
     FilterAction, FilterMessageContext, FilterScope, MailFilterRule, MailFilterStore,
 };
 use crate::services::mail_metadata_service::{
-    MailFollowUpState, MailMessageState, MailMetadataStore,
+    MailFollowUpMetadata, MailFollowUpState, MailMessageState, MailMetadataStore,
 };
 use crate::services::mail_thread_service::{
     ThreadIdentity, extract_message_ids, group_messages, normalize_message_id,
@@ -90,6 +90,8 @@ pub struct ParsedMail {
     pub is_flagged: bool,
     pub is_important: bool,
     pub follow_up_state: MailFollowUpState,
+    #[serde(default)]
+    pub follow_up: MailFollowUpMetadata,
     pub labels: Vec<String>,
     pub attachments: Vec<AttachmentInfo>,
 }
@@ -121,6 +123,7 @@ impl ParsedMail {
             is_flagged,
             is_important,
             follow_up_state,
+            follow_up,
             labels,
             backend_location,
             attachments,
@@ -150,6 +153,7 @@ impl ParsedMail {
             is_flagged,
             is_important,
             follow_up_state,
+            follow_up,
             labels,
             backend_location,
             attachments,
@@ -685,7 +689,8 @@ impl MailStoreService {
                 message.labels = sorted_labels(message_labels);
             }
             if let Some(state) = follow_up.get(&message.id) {
-                message.follow_up_state = *state;
+                message.follow_up_state = state.state;
+                message.follow_up = state.clone();
             }
             let effects =
                 apply_client_state(&metadata, &filter_rules, message, Some(&self.metadata));
@@ -747,7 +752,8 @@ impl MailStoreService {
                     copy.labels = sorted_labels(copy_labels);
                 }
                 if let Some(state) = follow_up.get(&copy_id) {
-                    copy.follow_up_state = *state;
+                    copy.follow_up_state = state.state;
+                    copy.follow_up = state.clone();
                 }
                 copied_messages.push(copy);
             }
@@ -968,12 +974,12 @@ impl MailStoreService {
         )
     }
 
-    pub fn persist_follow_up_state(
+    pub fn persist_follow_up(
         &self,
         id: &str,
-        state: MailFollowUpState,
+        metadata: MailFollowUpMetadata,
     ) -> std::io::Result<()> {
-        self.metadata.set_follow_up(id, state)
+        self.metadata.set_follow_up(id, metadata)
     }
 
     /// Apply application-owned read/flag state and local filter rules to
@@ -1920,6 +1926,7 @@ pub(crate) fn parse_rfc822_bytes(
         is_flagged: false,
         is_important: false,
         follow_up_state: MailFollowUpState::None,
+        follow_up: MailFollowUpMetadata::default(),
         labels: Vec::new(),
         attachments: extracted.attachments,
     })
@@ -2170,8 +2177,8 @@ fn extract_mime_content(
         .to_ascii_lowercase();
 
     if media_type.starts_with("multipart/") {
-        let boundary = mime_parameter(content_type, "boundary")
-            .or_else(|| detect_boundary_in_body(body));
+        let boundary =
+            mime_parameter(content_type, "boundary").or_else(|| detect_boundary_in_body(body));
         if let Some(boundary) = boundary {
             let parts = split_multipart_parts(body, &boundary);
             if !parts.is_empty() {
@@ -2589,9 +2596,8 @@ pub(crate) fn decode_mime_header(value: &str) -> String {
 
         let charset = raw_charset.split('*').next().unwrap_or(raw_charset);
         let decoded = match encoding {
-            e if e.eq_ignore_ascii_case("b") => {
-                decode_base64(payload.as_bytes()).map(|bytes| decode_mime_bytes(&bytes, Some(charset)))
-            }
+            e if e.eq_ignore_ascii_case("b") => decode_base64(payload.as_bytes())
+                .map(|bytes| decode_mime_bytes(&bytes, Some(charset))),
             e if e.eq_ignore_ascii_case("q") => {
                 let payload = payload.replace('_', " ");
                 Some(decode_mime_bytes(
@@ -2970,13 +2976,15 @@ mod tests {
 
     #[test]
     fn decodes_complex_rfc2047_subjects_and_adjacent_encoded_words() {
-        let subject = "=?UTF-8?Q?=E2=80=9ESEO-Spezialist=E2=80=9C:_Threesi?= xtymedia – SEO-Spezialist";
+        let subject =
+            "=?UTF-8?Q?=E2=80=9ESEO-Spezialist=E2=80=9C:_Threesi?= xtymedia – SEO-Spezialist";
         assert_eq!(
             decode_mime_header(subject),
             "„SEO-Spezialist“: Threesi xtymedia – SEO-Spezialist"
         );
 
-        let adjacent = "=?UTF-8?B?4oCeU0VPLVNwZXppYWxpc3TigJw6IA==?= =?UTF-8?B?VGhyZWVzaXh0eW1lZGlh?=";
+        let adjacent =
+            "=?UTF-8?B?4oCeU0VPLVNwZXppYWxpc3TigJw6IA==?= =?UTF-8?B?VGhyZWVzaXh0eW1lZGlh?=";
         assert_eq!(
             decode_mime_header(adjacent),
             "„SEO-Spezialist“: Threesixtymedia"
@@ -3009,10 +3017,7 @@ mod tests {
 
         let message = parse_rfc822("linkedin", "inbox", raw, false)
             .expect("linkedin multipart stream should parse");
-        assert_eq!(
-            message.subject,
-            "„SEO-Spezialist“: Threesi xtymedia"
-        );
+        assert_eq!(message.subject, "„SEO-Spezialist“: Threesi xtymedia");
         assert_eq!(
             message.html_body,
             "<html><body><p>Alle Jobs auf LinkedIn anzeigen</p></body></html>"

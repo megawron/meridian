@@ -144,6 +144,20 @@ pub(crate) static GTK_TEST_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new((
 
 #[cfg(test)]
 pub(crate) fn gtk_test_main_context() -> Option<glib::MainContext> {
+    #[cfg(target_os = "macos")]
+    if !gtk::is_initialized() {
+        unsafe extern "C" {
+            fn pthread_main_np() -> std::ffi::c_int;
+        }
+        // GTK4 aborts before returning an error when initialization is
+        // attempted from a Rust test-harness worker on macOS.  Detect that
+        // topology before calling gtk::init(); widget behavior remains covered
+        // on platforms whose test harness can own GTK's process main thread.
+        if unsafe { pthread_main_np() } == 0 {
+            eprintln!("skipping GTK integration test: macOS requires the process main thread");
+            return None;
+        }
+    }
     if !gtk::is_initialized() {
         if gtk::init().is_err() {
             eprintln!("skipping GTK integration test: no display is available");
@@ -1338,6 +1352,7 @@ impl EvolutionWindow {
             "select-all-mail",
             "toggle-flag",
             "toggle-important",
+            "mail-follow-up",
             "edit-labels",
             "move-message",
             "copy-message",
@@ -1350,6 +1365,8 @@ impl EvolutionWindow {
             "search",
             "mail-next",
             "mail-prev",
+            "mail-next-unread",
+            "mail-prev-unread",
         ];
         for name in MAIL_ACTIONS {
             if let Some(action) = self
@@ -1365,6 +1382,43 @@ impl EvolutionWindow {
                     .mail_page()
                     .is_some_and(|mail_page| mail_page.has_selected_message()),
         );
+        self.update_mail_navigation_actions(enabled);
+    }
+
+    fn update_mail_navigation_actions(&self, mail_view_enabled: bool) {
+        let page = self.mail_page();
+        let states = [
+            (
+                "mail-next",
+                mail_view_enabled
+                    && page
+                        .as_ref()
+                        .is_some_and(|page| page.can_select_relative_message(1)),
+            ),
+            (
+                "mail-prev",
+                mail_view_enabled
+                    && page
+                        .as_ref()
+                        .is_some_and(|page| page.can_select_relative_message(-1)),
+            ),
+            (
+                "mail-next-unread",
+                mail_view_enabled && page.as_ref().is_some_and(|page| page.has_messages()),
+            ),
+            (
+                "mail-prev-unread",
+                mail_view_enabled && page.is_some_and(|page| page.has_messages()),
+            ),
+        ];
+        for (name, enabled) in states {
+            if let Some(action) = self
+                .lookup_action(name)
+                .and_then(|action| action.downcast::<gio::SimpleAction>().ok())
+            {
+                action.set_enabled(enabled);
+            }
+        }
     }
 
     fn set_message_actions_enabled(&self, enabled: bool) {
@@ -1382,6 +1436,7 @@ impl EvolutionWindow {
             "mark-read",
             "toggle-flag",
             "toggle-important",
+            "mail-follow-up",
             "edit-labels",
             "move-message",
             "copy-message",
@@ -1958,6 +2013,18 @@ impl EvolutionWindow {
 
         // ─── 4. Nachricht (Message) ────────────────────────────────────────
         let message_menu = gio::Menu::new();
+        let goto_menu = gio::Menu::new();
+        goto_menu.append(Some("Nächste Nachricht"), Some("win.mail-next"));
+        goto_menu.append(
+            Some("Nächste ungelesene Nachricht"),
+            Some("win.mail-next-unread"),
+        );
+        goto_menu.append(Some("Vorherige Nachricht"), Some("win.mail-prev"));
+        goto_menu.append(
+            Some("Vorherige ungelesene Nachricht"),
+            Some("win.mail-prev-unread"),
+        );
+        message_menu.append_submenu(Some("Gehe zu"), &goto_menu);
         message_menu.append(Some("Antworten"), Some("win.reply"));
         message_menu.append(Some("Allen antworten"), Some("win.reply-all"));
         message_menu.append(Some("Weiterleiten"), Some("win.forward"));
@@ -1974,6 +2041,10 @@ impl EvolutionWindow {
         message_menu.append(
             Some("Wichtigkeitsmarkierung umschalten"),
             Some("win.toggle-important"),
+        );
+        message_menu.append(
+            Some("Zur Nachverfolgung markieren…"),
+            Some("win.mail-follow-up"),
         );
         message_menu.append(Some("Labels bearbeiten..."), Some("win.edit-labels"));
         message_menu.append(Some("In Ordner verschieben..."), Some("win.move-message"));
@@ -2579,6 +2650,21 @@ impl EvolutionWindow {
         ));
         self.add_action(&action_toggle_important);
 
+        let action_follow_up = gio::SimpleAction::new("mail-follow-up", None);
+        action_follow_up.connect_activate(glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            move |_, _| {
+                if !win
+                    .mail_page()
+                    .is_some_and(|mail_page| mail_page.edit_selected_follow_up())
+                {
+                    win.add_toast(&adw::Toast::new("Keine Nachricht ausgewählt"));
+                }
+            }
+        ));
+        self.add_action(&action_follow_up);
+
         let action_edit_labels = gio::SimpleAction::new("edit-labels", None);
         action_edit_labels.connect_activate(glib::clone!(
             #[weak(rename_to = win)]
@@ -2905,6 +2991,25 @@ impl EvolutionWindow {
             self.add_action(&action);
         }
 
+        for (action_name, forward) in [("mail-next-unread", true), ("mail-prev-unread", false)] {
+            let action = gio::SimpleAction::new(action_name, None);
+            action.connect_activate(glib::clone!(
+                #[weak(rename_to = window)]
+                self,
+                move |_, _| {
+                    let selected = window
+                        .mail_page()
+                        .is_some_and(|page| page.select_relative_unread_message(forward));
+                    if !selected {
+                        window.add_toast(&adw::Toast::new(
+                            "In diesem Ordner gibt es keine ungelesene Nachricht",
+                        ));
+                    }
+                }
+            ));
+            self.add_action(&action);
+        }
+
         if let Some(view_stack) = self.imp().view_stack.borrow().as_ref() {
             let window = self.downgrade();
             view_stack.connect_visible_child_name_notify(move |stack| {
@@ -2935,6 +3040,7 @@ impl EvolutionWindow {
                         .and_then(|view_stack| view_stack.visible_child_name())
                         .is_some_and(|view_name| view_name == "mail");
                     window.set_message_actions_enabled(is_mail_view && has_selection);
+                    window.update_mail_navigation_actions(is_mail_view);
                 }
             });
         }

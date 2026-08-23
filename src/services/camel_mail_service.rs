@@ -5,13 +5,15 @@
 // Rust records so all GTK work remains on the main thread.
 
 use super::exchange_service::graph_service_for_configured_account_worker;
+#[cfg(any(eds_camel_bridge, test))]
+use super::mail_metadata_service::MailFollowUpMetadata;
 use super::mail_metadata_service::MailFollowUpState;
 use super::mail_store_service::{MailBackendLocation, ParsedMail, assign_thread_metadata};
 use super::mail_transport_service::{MailTransportMode, MailTransportService};
 
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
 static CAMEL_NATIVE_LOCK: Mutex<()> = Mutex::new(());
@@ -1091,7 +1093,9 @@ fn load_messages_native(
     // Passing null filters asks the adapter to load every enabled EDS mail
     // account and selectable folder.  The GTK view supplies source/folder
     // filters after the user selects an account-specific row.
-    let _native_lock = CAMEL_NATIVE_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+    let _native_lock = CAMEL_NATIVE_LOCK
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
     let success = unsafe {
         ffi::evolution_eds_camel_load_messages(
             source_uid_ptr,
@@ -1188,6 +1192,22 @@ fn follow_up_state_from_native(
     }
 }
 
+#[cfg(any(eds_camel_bridge, test))]
+fn follow_up_metadata_from_native(
+    native_status: i32,
+    text: Option<String>,
+    due_by: Option<String>,
+    completed_on: Option<String>,
+) -> MailFollowUpMetadata {
+    MailFollowUpMetadata {
+        state: follow_up_state_from_native(native_status, text.is_some(), completed_on.is_some()),
+        text,
+        due_by,
+        completed_on,
+    }
+    .normalized()
+}
+
 #[cfg(eds_camel_bridge)]
 fn parse_native_messages(
     records: *const ffi::EvolutionEdsCamelMessage,
@@ -1225,11 +1245,13 @@ fn parse_native_messages(
         ) {
             parsed.is_flagged = record.is_flagged != 0;
             parsed.folder_name = folder_name;
-            parsed.follow_up_state = follow_up_state_from_native(
+            parsed.follow_up = follow_up_metadata_from_native(
                 record.follow_up_status,
-                c_string_option(record.follow_up).is_some(),
-                c_string_option(record.completed_on).is_some(),
+                c_string_option(record.follow_up),
+                c_string_option(record.due_by),
+                c_string_option(record.completed_on),
             );
+            parsed.follow_up_state = parsed.follow_up.state;
             let location = MailBackendLocation {
                 source_uid,
                 folder_name: parsed.folder_name.clone(),
@@ -1328,7 +1350,9 @@ fn load_raw_message_native(
     let mut records = std::ptr::null_mut();
     let mut record_count = 0usize;
     let mut error_message: *mut c_char = std::ptr::null_mut();
-    let _native_lock = CAMEL_NATIVE_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+    let _native_lock = CAMEL_NATIVE_LOCK
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
     let success = unsafe {
         ffi::evolution_eds_camel_load_messages_by_uid(
             source_uid.as_ptr(),
@@ -1414,7 +1438,9 @@ fn load_messages_for_uids_native(
     let mut records = std::ptr::null_mut();
     let mut record_count = 0usize;
     let mut error_message: *mut c_char = std::ptr::null_mut();
-    let _native_lock = CAMEL_NATIVE_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+    let _native_lock = CAMEL_NATIVE_LOCK
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
     let success = unsafe {
         ffi::evolution_eds_camel_load_messages_by_uid(
             source_uid.as_ptr(),
@@ -1688,6 +1714,7 @@ mod tests {
             is_flagged: false,
             is_important: false,
             follow_up_state: MailFollowUpState::None,
+            follow_up: MailFollowUpMetadata::default(),
             labels: Vec::new(),
             attachments: Vec::new(),
         }
@@ -1929,6 +1956,35 @@ mod tests {
     }
 
     #[test]
+    fn native_follow_up_metadata_keeps_the_authoritative_tag_values() {
+        let metadata = follow_up_metadata_from_native(
+            2,
+            Some("Reply to Alice".to_string()),
+            Some("Mon, 24 Aug 2026 09:30:00 +0200".to_string()),
+            Some("Mon, 24 Aug 2026 10:00:00 +0200".to_string()),
+        );
+        assert_eq!(metadata.state, MailFollowUpState::Completed);
+        assert_eq!(metadata.text.as_deref(), Some("Reply to Alice"));
+        assert_eq!(
+            metadata.due_by.as_deref(),
+            Some("Mon, 24 Aug 2026 09:30:00 +0200")
+        );
+        assert_eq!(
+            metadata.completed_on.as_deref(),
+            Some("Mon, 24 Aug 2026 10:00:00 +0200")
+        );
+    }
+
+    #[test]
+    fn graph_follow_up_rejects_due_by_instead_of_dropping_it() {
+        assert!(graph_follow_up_due_is_supported(None));
+        assert!(graph_follow_up_due_is_supported(Some("")));
+        assert!(!graph_follow_up_due_is_supported(Some(
+            "Mon, 24 Aug 2026 09:30:00 +0200"
+        )));
+    }
+
+    #[test]
     fn camel_folder_ids_fall_back_to_provider_folder_names() {
         assert_eq!(normalized_camel_folder_id("all", "INBOX"), "inbox");
         assert_eq!(
@@ -1951,7 +2007,8 @@ pub(crate) enum CamelMailOperation {
     SetFollowUp {
         location: MailBackendLocation,
         status: MailFollowUpState,
-        /// `None` preserves an existing `due-by` tag; `Some("")` clears it.
+        /// `Some("")` clears `due-by`; `None` is reserved for legacy callers
+        /// which intentionally preserve it.
         due_by: Option<String>,
     },
     Delete {
@@ -2157,7 +2214,9 @@ fn apply_operation_with_cancellation(
         let cancellation_callback =
             cancelled.map(|_| cancellation_callback as ffi::EvolutionEdsCamelCancellationCallback);
 
-        let _native_lock = CAMEL_NATIVE_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+        let _native_lock = CAMEL_NATIVE_LOCK
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
         let result = unsafe {
             ffi::evolution_eds_camel_apply_operation(
                 &ffi_operation,
@@ -2222,12 +2281,19 @@ pub(crate) fn apply_follow_up_state_with_cancellation(
     if let Some(service) =
         super::exchange_service::graph_service_for_source_worker(&location.source_uid)
     {
+        if !graph_follow_up_due_is_supported(due_by.as_deref()) {
+            return Err("Microsoft Graph unterstützt keine Follow-up-Fälligkeit".to_string());
+        }
         return service
             .with_cancellation_flag(cancelled)
             .set_message_follow_up_state_sync(&location.message_uid, state)
             .map_err(|error| error.to_string());
     }
     apply_follow_up_state_with_cancellation_inner(location, state, due_by, Some(cancelled.as_ref()))
+}
+
+fn graph_follow_up_due_is_supported(due_by: Option<&str>) -> bool {
+    due_by.is_none_or(str::is_empty)
 }
 
 fn apply_follow_up_state_with_cancellation_inner(
@@ -2323,8 +2389,17 @@ fn apply_graph_operation(operation: &CamelMailOperation) -> Option<Result<(), St
     }
     let result = match operation {
         CamelMailOperation::SetFollowUp {
-            location, status, ..
-        } => service.set_message_follow_up_state_sync(&location.message_uid, *status),
+            location,
+            status,
+            due_by,
+        } => {
+            if !graph_follow_up_due_is_supported(due_by.as_deref()) {
+                return Some(Err(
+                    "Microsoft Graph unterstützt keine Follow-up-Fälligkeit".to_string(),
+                ));
+            }
+            service.set_message_follow_up_state_sync(&location.message_uid, *status)
+        }
         CamelMailOperation::SetMessageState {
             location,
             is_unread,
@@ -2434,7 +2509,9 @@ pub(crate) fn send_message_with_cancellation(
 
         let mut sent_message_saved = 0;
         let mut error_message: *mut c_char = std::ptr::null_mut();
-        let _native_lock = CAMEL_NATIVE_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+        let _native_lock = CAMEL_NATIVE_LOCK
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
         let result = unsafe {
             ffi::evolution_eds_camel_send_message(
                 source_uid.as_ptr(),
@@ -2497,7 +2574,9 @@ pub(crate) fn save_message(
                 CamelSaveFolder::Sent => 2,
             };
             let mut error_message: *mut c_char = std::ptr::null_mut();
-            let _native_lock = CAMEL_NATIVE_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+            let _native_lock = CAMEL_NATIVE_LOCK
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
             let result = unsafe {
                 ffi::evolution_eds_camel_save_message(
                     source_uid.as_ptr(),

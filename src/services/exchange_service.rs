@@ -17,7 +17,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
-use super::mail_metadata_service::MailFollowUpState;
+use super::mail_metadata_service::{MailFollowUpMetadata, MailFollowUpState};
 use super::out_of_office_service::OutOfOfficeSettings;
 
 pub use super::mail_metadata_service::MailFollowUpState as ExchangeMailFollowUpState;
@@ -201,6 +201,11 @@ impl ExchangeMailMessage {
             is_flagged: self.is_flagged,
             is_important: self.is_important,
             follow_up_state: self.follow_up_state,
+            follow_up: MailFollowUpMetadata {
+                state: self.follow_up_state,
+                ..MailFollowUpMetadata::default()
+            }
+            .normalized(),
             labels: self.categories,
             attachments: self
                 .attachments

@@ -46,7 +46,7 @@ pub fn show_shortcuts_dialog<W: IsA<gtk::Window>>(parent: &W) {
         .build();
     let s7 = gtk::ShortcutsShortcut::builder()
         .title("Globale lokale Suche")
-        .accelerator("<Control><Shift>f")
+        .accelerator("<Control><Shift>g")
         .build();
 
     let s8 = gtk::ShortcutsShortcut::builder()
@@ -126,6 +126,38 @@ pub fn show_shortcuts_dialog<W: IsA<gtk::Window>>(parent: &W) {
         .title("Filter anwenden")
         .accelerator("<Control>y")
         .build();
+    let m14 = gtk::ShortcutsShortcut::builder()
+        .title("Nächste Nachricht")
+        .accelerator("<Control>Page_Down")
+        .build();
+    let m15 = gtk::ShortcutsShortcut::builder()
+        .title("Vorherige Nachricht")
+        .accelerator("<Control>Page_Up")
+        .build();
+    let m16 = gtk::ShortcutsShortcut::builder()
+        .title("Nächste ungelesene Nachricht")
+        .accelerator("<Control>bracketright")
+        .build();
+    let m17 = gtk::ShortcutsShortcut::builder()
+        .title("Vorherige ungelesene Nachricht")
+        .accelerator("<Control>bracketleft")
+        .build();
+    let m18 = gtk::ShortcutsShortcut::builder()
+        .title("Vorschaufenster ein-/ausblenden")
+        .accelerator("<Control>m")
+        .build();
+    let m19 = gtk::ShortcutsShortcut::builder()
+        .title("Unterhaltungen gruppieren/auflösen")
+        .accelerator("<Control>t")
+        .build();
+    let m20 = gtk::ShortcutsShortcut::builder()
+        .title("Angezeigte Nachricht durchsuchen")
+        .accelerator("<Control><Shift>f")
+        .build();
+    let m21 = gtk::ShortcutsShortcut::builder()
+        .title("Nachricht drucken")
+        .accelerator("<Control>p")
+        .build();
 
     group_mail.append(&m1);
     group_mail.append(&m2);
@@ -140,6 +172,14 @@ pub fn show_shortcuts_dialog<W: IsA<gtk::Window>>(parent: &W) {
     group_mail.append(&m11);
     group_mail.append(&m12);
     group_mail.append(&m13);
+    group_mail.append(&m14);
+    group_mail.append(&m15);
+    group_mail.append(&m16);
+    group_mail.append(&m17);
+    group_mail.append(&m18);
+    group_mail.append(&m19);
+    group_mail.append(&m20);
+    group_mail.append(&m21);
     section.append(&group_mail);
 
     // Group 3: Module navigation

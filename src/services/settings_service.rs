@@ -65,6 +65,14 @@ pub(crate) fn normalize_memo_preview_orientation_value(value: &str) -> Result<St
         .map(|orientation| orientation.setting_value().to_string())
 }
 
+pub(crate) fn normalize_task_preview_orientation_value(value: &str) -> Result<String, String> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "classic" => Ok("classic".to_string()),
+        "vertical" => Ok("vertical".to_string()),
+        _ => Err("Unbekannte Aufgaben-Vorschauausrichtung".to_string()),
+    }
+}
+
 pub(crate) fn validate_memo_category_filter_value(value: &str) -> Result<String, String> {
     let value = value.trim();
     if value.is_empty() {
@@ -1267,6 +1275,43 @@ impl AppSettings {
         self.set_string("memo-preview-orientation", &value);
     }
 
+    pub fn task_preview_visible(&self) -> bool {
+        self.settings.boolean("task-preview-visible")
+    }
+
+    pub fn set_task_preview_visible(&self, value: bool) {
+        self.set_boolean("task-preview-visible", value);
+    }
+
+    pub fn task_preview_orientation(&self) -> String {
+        normalize_task_preview_orientation_value(&self.settings.string("task-preview-orientation"))
+            .unwrap_or_else(|_| "classic".to_string())
+    }
+
+    pub fn set_task_preview_orientation(&self, value: &str) {
+        let value = normalize_task_preview_orientation_value(value)
+            .unwrap_or_else(|_| "classic".to_string());
+        self.set_string("task-preview-orientation", &value);
+    }
+
+    pub fn task_preview_position(&self, orientation: &str) -> i32 {
+        let key = if orientation == "vertical" {
+            "task-hpane-position"
+        } else {
+            "task-vpane-position"
+        };
+        self.settings.int(key).clamp(80, 4_096)
+    }
+
+    pub fn set_task_preview_position(&self, orientation: &str, value: i32) {
+        let key = if orientation == "vertical" {
+            "task-hpane-position"
+        } else {
+            "task-vpane-position"
+        };
+        self.set_int(key, value.clamp(80, 4_096));
+    }
+
     /// Apply one already-normalized, non-secret setting from an explicit
     /// profile migration.  The migration parser only exposes keys from the
     /// installed schema; keeping the final type conversion here makes sure
@@ -1477,6 +1522,21 @@ impl AppSettings {
             "task-sort-descending" => {
                 self.set_task_sort_descending(parse_migrated_bool(key, value)?);
             }
+            "task-preview-visible" => {
+                self.set_task_preview_visible(parse_migrated_bool(key, value)?);
+            }
+            "task-preview-orientation" => {
+                let value = normalize_task_preview_orientation_value(value)?;
+                self.set_string("task-preview-orientation", &value);
+            }
+            "task-hpane-position" => self.set_task_preview_position(
+                "vertical",
+                parse_migrated_i32_in_range(key, value, 80, 4_096)?,
+            ),
+            "task-vpane-position" => self.set_task_preview_position(
+                "classic",
+                parse_migrated_i32_in_range(key, value, 80, 4_096)?,
+            ),
             "memo-sort-field" => self.set_memo_sort_field(value),
             "memo-source-filter" => {
                 let value = normalize_memo_source_filter_value(value)?;
@@ -1592,6 +1652,10 @@ impl AppSettings {
             "task-source-filter",
             "task-sort-field",
             "task-sort-descending",
+            "task-preview-visible",
+            "task-preview-orientation",
+            "task-hpane-position",
+            "task-vpane-position",
             "memo-sort-field",
             "memo-source-filter",
             "memo-sort-descending",
@@ -2080,9 +2144,11 @@ mod tests {
         reloaded.set_task_filter("not-a-filter");
         reloaded.set_task_category_filter("bad\ncategory");
         reloaded.set_task_search_mode("not-a-mode");
+        reloaded.set_task_preview_orientation("diagonal");
         assert_eq!(reloaded.task_filter(), "all");
         assert!(reloaded.task_category_filter().is_empty());
         assert_eq!(reloaded.task_search_mode(), "any-field");
+        assert_eq!(reloaded.task_preview_orientation(), "classic");
 
         assert!(
             reloaded
@@ -2101,15 +2167,45 @@ mod tests {
         reloaded
             .apply_migrated_setting("task-category-filter", "  Finance  ")
             .expect("category filter should migrate");
+        reloaded
+            .apply_migrated_setting("task-preview-visible", "false")
+            .expect("task preview visibility should migrate");
+        reloaded
+            .apply_migrated_setting("task-preview-orientation", "vertical")
+            .expect("task preview orientation should migrate");
+        reloaded
+            .apply_migrated_setting("task-hpane-position", "275")
+            .expect("horizontal task preview position should migrate");
+        reloaded
+            .apply_migrated_setting("task-vpane-position", "525")
+            .expect("vertical task preview position should migrate");
         assert_eq!(reloaded.task_filter(), "next-365");
         assert_eq!(reloaded.task_search_mode(), "description");
         assert_eq!(reloaded.task_category_filter(), "Finance");
+        assert!(!reloaded.task_preview_visible());
+        assert_eq!(reloaded.task_preview_orientation(), "vertical");
+        assert_eq!(reloaded.task_preview_position("vertical"), 275);
+        assert_eq!(reloaded.task_preview_position("classic"), 525);
+        assert!(
+            reloaded
+                .apply_migrated_setting("task-preview-visible", "maybe")
+                .is_err()
+        );
+        assert!(
+            reloaded
+                .apply_migrated_setting("task-preview-orientation", "diagonal")
+                .is_err()
+        );
 
         reloaded.reset_to_defaults();
         let reset = settings_with_backend(&backend);
         assert_eq!(reset.task_filter(), "all");
         assert!(reset.task_category_filter().is_empty());
         assert_eq!(reset.task_search_mode(), "any-field");
+        assert!(reset.task_preview_visible());
+        assert_eq!(reset.task_preview_orientation(), "classic");
+        assert_eq!(reset.task_preview_position("vertical"), 200);
+        assert_eq!(reset.task_preview_position("classic"), 400);
     }
 
     #[test]

@@ -21,6 +21,30 @@ typedef struct {
     char *component;
 } EvolutionEdsECalComponent;
 
+typedef struct {
+    char *source_uid;
+    char *source_display_name;
+    int connected;
+    int source_writable;
+    int writable;
+    int refresh_supported;
+    int removable;
+    int remote_deletable;
+    int in_collection;
+    int task_assignment_supported;
+    int task_assignment_conversion_supported;
+} EvolutionEdsECalSourceCapability;
+
+typedef struct {
+    char *source_uid;
+    char *display_name;
+    char *color;
+    char *custom_file_uri;
+    int custom_file_writable;
+    char *email_address;
+    int is_builtin;
+} EvolutionEdsECalLocalSourceProperties;
+
 typedef enum {
     EVOLUTION_EDS_ECAL_CREATE = 1,
     EVOLUTION_EDS_ECAL_MODIFY = 2,
@@ -73,6 +97,93 @@ int evolution_eds_ecal_apply_operation(
     const char *component_uid,
     char **out_uid,
     char **out_component,
+    char **out_error);
+
+/* Refresh one exact enabled EDS source.  Returns 1 after a confirmed refresh,
+ * 2 when the connected client does not support refresh, and 0 on validation,
+ * connection, authentication, cancellation, or backend failure. */
+int evolution_eds_ecal_refresh_source(
+    const char *source_uid,
+    EvolutionEdsECalSourceType source_type,
+    char **out_error);
+
+/* List exact enabled EDS sources for one component type.  Sources that could
+ * not connect retain source_writable/removal metadata, while
+ * connected/writable/refresh_supported are all false; out_error contains only
+ * the first non-secret backend error. */
+int evolution_eds_ecal_list_source_capabilities(
+    EvolutionEdsECalSourceType source_type,
+    EvolutionEdsECalSourceCapability **out_sources,
+    size_t *out_count,
+    char **out_error);
+
+void evolution_eds_ecal_free_source_capabilities(
+    EvolutionEdsECalSourceCapability *sources,
+    size_t count);
+
+/* Rename one exact EDS source after revalidating its component type and
+ * source-level mutability.  A collection-owned source is never renamed. */
+int evolution_eds_ecal_rename_source(
+    const char *source_uid,
+    EvolutionEdsECalSourceType source_type,
+    const char *display_name,
+    char **out_error);
+
+/* Delete one exact EDS source.  Remote deletion is used only when the source
+ * advertises it; otherwise the source must be locally removable. */
+int evolution_eds_ecal_delete_source(
+    const char *source_uid,
+    EvolutionEdsECalSourceType source_type,
+    char **out_error);
+
+/* Copy every object from one exact enabled EDS source to another.  Existing
+ * destination UIDs are modified; missing UIDs are created after referenced
+ * timezones are copied.  Returns 1 on complete success, 2 after an item
+ * failure (with confirmed counts), and 0 when validation/preflight fails. */
+int evolution_eds_ecal_copy_source(
+    const char *from_source_uid,
+    const char *to_source_uid,
+    EvolutionEdsECalSourceType source_type,
+    size_t *out_copied_count,
+    size_t *out_updated_count,
+    char **out_error);
+
+/* Create a local EDS source of the requested exact component type.  Returns
+ * 1 after commit plus a confirmed client connection, 2 when commit succeeded
+ * but the source is not yet usable (out_warning), or 0 before commit failure. */
+int evolution_eds_ecal_create_local_source(
+    const char *display_name,
+    const char *color,
+    EvolutionEdsECalSourceType source_type,
+    char **out_source_uid,
+    char **out_warning,
+    char **out_error);
+
+/* Read editable properties from one exact local EDS source.  Returns 1 on
+ * success, 2 when the source is not a local backend, or 0 on validation or
+ * registry failure. */
+int evolution_eds_ecal_get_local_source_properties(
+    const char *source_uid,
+    EvolutionEdsECalSourceType source_type,
+    EvolutionEdsECalLocalSourceProperties *out_properties,
+    char **out_error);
+
+void evolution_eds_ecal_clear_local_source_properties(
+    EvolutionEdsECalLocalSourceProperties *properties);
+
+/* Commit editable local EDS properties.  Returns 1 after commit plus a
+ * confirmed client connection, 2 after commit when the source is not yet
+ * reachable (out_warning), 3 for a non-local source, and 0 before-commit
+ * validation/registry failure. */
+int evolution_eds_ecal_update_local_source_properties(
+    const char *source_uid,
+    EvolutionEdsECalSourceType source_type,
+    const char *display_name,
+    const char *color,
+    const char *custom_file_uri,
+    int custom_file_writable,
+    const char *email_address,
+    char **out_warning,
     char **out_error);
 
 void evolution_eds_ecal_free_error(char *error_message);

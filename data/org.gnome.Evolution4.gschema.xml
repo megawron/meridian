@@ -406,5 +406,27 @@
         <choice value='vertical'/>
       </choices>
     </key>
+    <key name="task-preview-visible" type="b">
+      <default>true</default>
+      <summary>Show the task preview</summary>
+    </key>
+    <key name="task-preview-orientation" type="s">
+      <default>'classic'</default>
+      <summary>Task preview orientation</summary>
+      <choices>
+        <choice value='classic'/>
+        <choice value='vertical'/>
+      </choices>
+    </key>
+    <key name="task-hpane-position" type="i">
+      <default>200</default>
+      <range min="80" max="4096"/>
+      <summary>Horizontal task preview divider position</summary>
+    </key>
+    <key name="task-vpane-position" type="i">
+      <default>400</default>
+      <range min="80" max="4096"/>
+      <summary>Vertical task preview divider position</summary>
+    </key>
   </schema>
 </schemalist>

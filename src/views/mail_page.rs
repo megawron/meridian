@@ -34,7 +34,10 @@ use crate::services::itip_service::{
 };
 use crate::services::mail_composer_service::{self, ExportAttachment, ExportMessage};
 use crate::services::mail_filter_service::MailFilterStore;
-use crate::services::mail_metadata_service::MailFollowUpState;
+use crate::services::mail_metadata_service::{
+    DEFAULT_FOLLOW_UP_TEXT, MailFollowUpMetadata, MailFollowUpState, display_follow_up_due,
+    parse_follow_up_due_input,
+};
 use crate::services::mail_operations_service::{
     MailCommand, MailCommandStack, MailOperationCancellation, MailOperationContext,
     MailOperationCoordinator, MailOperationError, MailOperationsService,
@@ -724,6 +727,51 @@ fn unread_badge_state(unread: u32) -> (String, bool) {
         (unread > 0).then(|| unread.to_string()).unwrap_or_default(),
         unread > 0,
     )
+}
+
+fn relative_message_index(
+    item_count: usize,
+    selected: Option<usize>,
+    offset: i32,
+) -> Option<usize> {
+    if item_count == 0 || offset == 0 {
+        return None;
+    }
+    let Some(selected) = selected else {
+        return Some(if offset > 0 { 0 } else { item_count - 1 });
+    };
+    let target = selected as i64 + i64::from(offset);
+    (target >= 0 && target < item_count as i64).then_some(target as usize)
+}
+
+fn matching_message_index(
+    matches: &[bool],
+    selected: Option<usize>,
+    forward: bool,
+) -> Option<usize> {
+    if matches.is_empty() {
+        return None;
+    }
+    if selected.is_none() {
+        return if forward {
+            matches.iter().position(|matches| *matches)
+        } else {
+            matches.iter().rposition(|matches| *matches)
+        };
+    }
+
+    let selected = selected.expect("checked above").min(matches.len() - 1);
+    for distance in 1..=matches.len() {
+        let index = if forward {
+            (selected + distance) % matches.len()
+        } else {
+            (selected + matches.len() - (distance % matches.len())) % matches.len()
+        };
+        if matches[index] {
+            return Some(index);
+        }
+    }
+    None
 }
 
 fn crypto_details_are_visible(details: &crypto_service::MailCryptoDetails) -> bool {
@@ -3693,8 +3741,9 @@ impl MailPage {
                     raw.to_vec()
                 } else if let Some(loc) = location_clone.as_ref() {
                     let cancelled = Arc::new(AtomicBool::new(false));
-                    camel_mail_service::load_raw_message(loc, &cancelled)
-                        .unwrap_or_else(|_| mail_composer_service::build_export_rfc822(&export).unwrap_or_default())
+                    camel_mail_service::load_raw_message(loc, &cancelled).unwrap_or_else(|_| {
+                        mail_composer_service::build_export_rfc822(&export).unwrap_or_default()
+                    })
                 } else {
                     mail_composer_service::build_export_rfc822(&export).unwrap_or_default()
                 };
@@ -3715,9 +3764,8 @@ impl MailPage {
                 if let Some(page) = page_weak.upgrade() {
                     match save_result {
                         Ok(_) => page.show_toast("E-Mail als EML exportiert"),
-                        Err(error) => {
-                            page.show_toast(&format!("EML konnte nicht gespeichert werden: {error}"))
-                        }
+                        Err(error) => page
+                            .show_toast(&format!("EML konnte nicht gespeichert werden: {error}")),
                     }
                 }
             });
@@ -4200,23 +4248,56 @@ impl MailPage {
         true
     }
 
-    pub fn select_relative_message(&self, offset: i32) {
-        let Some(selection) = self.imp().message_selection.borrow().as_ref().cloned() else {
-            return;
-        };
-        let count = selection.n_items();
-        if count == 0 {
-            return;
-        }
+    pub(crate) fn has_messages(&self) -> bool {
+        self.imp()
+            .message_selection
+            .borrow()
+            .as_ref()
+            .is_some_and(|selection| selection.n_items() > 0)
+    }
 
-        let current = selection.selected();
-        let current = if current == gtk::INVALID_LIST_POSITION {
-            0
-        } else {
-            current as i32
+    pub(crate) fn can_select_relative_message(&self, offset: i32) -> bool {
+        let Some(selection) = self.imp().message_selection.borrow().as_ref().cloned() else {
+            return false;
         };
-        let next = (current + offset).clamp(0, count.saturating_sub(1) as i32) as u32;
-        selection.set_selected(next);
+        let selected = (selection.selected() != gtk::INVALID_LIST_POSITION)
+            .then_some(selection.selected() as usize);
+        relative_message_index(selection.n_items() as usize, selected, offset).is_some()
+    }
+
+    pub fn select_relative_message(&self, offset: i32) -> bool {
+        let Some(selection) = self.imp().message_selection.borrow().as_ref().cloned() else {
+            return false;
+        };
+        let selected = (selection.selected() != gtk::INVALID_LIST_POSITION)
+            .then_some(selection.selected() as usize);
+        let Some(target) = relative_message_index(selection.n_items() as usize, selected, offset)
+        else {
+            return false;
+        };
+        selection.set_selected(target as u32);
+        true
+    }
+
+    pub fn select_relative_unread_message(&self, forward: bool) -> bool {
+        let Some(selection) = self.imp().message_selection.borrow().as_ref().cloned() else {
+            return false;
+        };
+        let unread = (0..selection.n_items())
+            .map(|index| {
+                selection
+                    .item(index)
+                    .and_downcast::<MailMessageObject>()
+                    .is_some_and(|message| message.is_unread())
+            })
+            .collect::<Vec<_>>();
+        let selected = (selection.selected() != gtk::INVALID_LIST_POSITION)
+            .then_some(selection.selected() as usize);
+        let Some(target) = matching_message_index(&unread, selected, forward) else {
+            return false;
+        };
+        selection.set_selected(target as u32);
+        true
     }
 
     /// Route destructive actions through the backend service.  Local imports
@@ -4490,18 +4571,158 @@ impl MailPage {
         Ok(true)
     }
 
-    fn set_message_follow_up_state(
+    fn set_message_follow_up(
         &self,
         message: &MailMessageObject,
-        state: MailFollowUpState,
+        metadata: MailFollowUpMetadata,
     ) -> Result<(), MailOperationError> {
         let command = MailCommand::set_follow_up(
             message.id(),
             message.backend_location(),
-            message.follow_up_state(),
-            state,
+            message.follow_up(),
+            metadata,
         );
         self.execute_mail_command(command)
+    }
+
+    /// Present Evolution's explicit follow-up editor for the selected
+    /// message. The ordinary star remains a separate action and column.
+    pub fn edit_selected_follow_up(&self) -> bool {
+        let Some(message) = self.selected_message() else {
+            return false;
+        };
+        self.present_follow_up_editor(&message);
+        true
+    }
+
+    fn present_follow_up_editor(&self, message: &MailMessageObject) {
+        let dialog = adw::Window::builder()
+            .title("Nachverfolgung")
+            .modal(true)
+            .default_width(420)
+            .build();
+        if let Some(root) = self.root().and_downcast::<gtk::Window>() {
+            dialog.set_transient_for(Some(&root));
+        }
+
+        let toolbar = adw::ToolbarView::new();
+        let header = adw::HeaderBar::new();
+        let cancel = gtk::Button::with_label("Abbrechen");
+        let save = gtk::Button::builder()
+            .label("Speichern")
+            .css_classes(vec!["suggested-action"])
+            .build();
+        header.pack_start(&cancel);
+        header.pack_end(&save);
+        toolbar.add_top_bar(&header);
+
+        let content = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(12)
+            .margin_start(20)
+            .margin_end(20)
+            .margin_top(16)
+            .margin_bottom(20)
+            .build();
+        let group = adw::PreferencesGroup::builder()
+            .title("Nachverfolgung")
+            .build();
+        let text = adw::EntryRow::builder().title("Kennzeichnung").build();
+        let due = adw::EntryRow::builder()
+            .title("Fällig (YYYY-MM-DD HH:MM, optional)")
+            .build();
+        let current = message.follow_up();
+        text.set_text(current.text.as_deref().unwrap_or(DEFAULT_FOLLOW_UP_TEXT));
+        due.set_text(&display_follow_up_due(current.due_by.as_deref()));
+        group.add(&text);
+        group.add(&due);
+        content.append(&group);
+
+        let is_graph = message
+            .backend_location()
+            .as_ref()
+            .is_some_and(|location| is_graph_backend_location(Some(location)));
+        if is_graph {
+            due.set_sensitive(false);
+            let warning = gtk::Label::builder()
+                .label("Microsoft Graph unterstützt keine Follow-up-Fälligkeit.")
+                .wrap(true)
+                .halign(gtk::Align::Start)
+                .css_classes(vec!["warning", "dim-label"])
+                .build();
+            content.append(&warning);
+        }
+
+        let actions = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(6)
+            .halign(gtk::Align::End)
+            .build();
+        let clear = gtk::Button::with_label("Entfernen");
+        let complete = gtk::Button::with_label("Als erledigt markieren");
+        complete.set_sensitive(current.state != MailFollowUpState::None);
+        actions.append(&clear);
+        actions.append(&complete);
+        content.append(&actions);
+        toolbar.set_content(Some(&content));
+        dialog.set_content(Some(&toolbar));
+
+        let dialog_for_cancel = dialog.clone();
+        cancel.connect_clicked(move |_| dialog_for_cancel.close());
+        let page = self.downgrade();
+        let message_for_save = message.clone();
+        let dialog_for_save = dialog.clone();
+        save.connect_clicked(move |_| {
+            let due_by = match parse_follow_up_due_input(&due.text()) {
+                Ok(due_by) => due_by,
+                Err(error) => {
+                    if let Some(page) = page.upgrade() {
+                        page.show_toast(&error);
+                    }
+                    return;
+                }
+            };
+            let metadata = MailFollowUpMetadata::pending(Some(text.text().to_string()), due_by);
+            if let Some(page) = page.upgrade() {
+                match page.set_message_follow_up(&message_for_save, metadata) {
+                    Ok(()) => dialog_for_save.close(),
+                    Err(error) => {
+                        page.show_toast(&format!("Nachverfolgung nicht möglich: {error}"))
+                    }
+                }
+            }
+        });
+        let page = self.downgrade();
+        let message_for_clear = message.clone();
+        let dialog_for_clear = dialog.clone();
+        clear.connect_clicked(move |_| {
+            if let Some(page) = page.upgrade() {
+                match page.set_message_follow_up(&message_for_clear, MailFollowUpMetadata::none()) {
+                    Ok(()) => dialog_for_clear.close(),
+                    Err(error) => {
+                        page.show_toast(&format!("Nachverfolgung nicht möglich: {error}"))
+                    }
+                }
+            }
+        });
+        let page = self.downgrade();
+        let message_for_complete = message.clone();
+        let dialog_for_complete = dialog.clone();
+        complete.connect_clicked(move |_| {
+            let metadata = MailFollowUpMetadata::completed_from(
+                &message_for_complete.follow_up(),
+                Utc::now().to_rfc2822(),
+            );
+            if let Some(page) = page.upgrade() {
+                match page.set_message_follow_up(&message_for_complete, metadata) {
+                    Ok(()) => dialog_for_complete.close(),
+                    Err(error) => {
+                        page.show_toast(&format!("Nachverfolgung nicht möglich: {error}"))
+                    }
+                }
+            }
+        });
+        dialog.present();
     }
 
     pub fn toggle_selected_important(&self) -> Result<bool, MailOperationError> {
@@ -7870,8 +8091,7 @@ impl MailPage {
         let date_col_for_motion = date_column.clone();
         date_motion.connect_motion(move |_, x, _| {
             if x <= 8.0 {
-                date_col_for_motion
-                    .set_cursor(gdk::Cursor::from_name("col-resize", None).as_ref());
+                date_col_for_motion.set_cursor(gdk::Cursor::from_name("col-resize", None).as_ref());
             } else {
                 date_col_for_motion.set_cursor(None);
             }
@@ -8319,12 +8539,7 @@ impl MailPage {
                 let Some(page) = page_for_follow_up.upgrade() else {
                     return;
                 };
-                if let Err(error) = page.set_message_follow_up_state(
-                    &message,
-                    message.follow_up_state().next(),
-                ) {
-                    page.show_toast(&format!("Nachverfolgung nicht möglich: {error}"));
-                }
+                page.present_follow_up_editor(&message);
             });
 
             let list_item_for_important = list_item.downgrade();
@@ -14639,6 +14854,7 @@ mod tests {
             false,
             false,
             MailFollowUpState::None,
+            MailFollowUpMetadata::default(),
             Vec::new(),
             None,
             Vec::new(),
@@ -14686,6 +14902,7 @@ mod tests {
             false,
             false,
             MailFollowUpState::None,
+            MailFollowUpMetadata::default(),
             Vec::new(),
             None,
             Vec::new(),
@@ -14727,6 +14944,7 @@ mod tests {
             false,
             false,
             MailFollowUpState::None,
+            MailFollowUpMetadata::default(),
             Vec::new(),
             None,
             Vec::new(),
@@ -14756,6 +14974,7 @@ mod tests {
             false,
             false,
             MailFollowUpState::None,
+            MailFollowUpMetadata::default(),
             Vec::new(),
             Some(MailBackendLocation {
                 source_uid: "source-1".to_string(),
@@ -14860,6 +15079,29 @@ mod tests {
     fn unread_badges_never_fall_back_to_total_counts() {
         assert_eq!(unread_badge_state(0), (String::new(), false));
         assert_eq!(unread_badge_state(7), ("7".to_string(), true));
+    }
+
+    #[test]
+    fn relative_navigation_handles_empty_unselected_and_boundaries() {
+        assert_eq!(relative_message_index(0, None, 1), None);
+        assert_eq!(relative_message_index(3, None, 1), Some(0));
+        assert_eq!(relative_message_index(3, None, -1), Some(2));
+        assert_eq!(relative_message_index(3, Some(0), -1), None);
+        assert_eq!(relative_message_index(3, Some(2), 1), None);
+        assert_eq!(relative_message_index(3, Some(1), 1), Some(2));
+        assert_eq!(relative_message_index(3, Some(1), -1), Some(0));
+    }
+
+    #[test]
+    fn unread_navigation_wraps_and_never_selects_a_read_row() {
+        let unread = [false, true, false, true];
+        assert_eq!(matching_message_index(&unread, None, true), Some(1));
+        assert_eq!(matching_message_index(&unread, None, false), Some(3));
+        assert_eq!(matching_message_index(&unread, Some(1), true), Some(3));
+        assert_eq!(matching_message_index(&unread, Some(3), true), Some(1));
+        assert_eq!(matching_message_index(&unread, Some(1), false), Some(3));
+        assert_eq!(matching_message_index(&[false, false], Some(0), true), None);
+        assert_eq!(matching_message_index(&[], None, true), None);
     }
 
     #[test]

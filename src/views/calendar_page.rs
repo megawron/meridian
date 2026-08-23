@@ -81,6 +81,47 @@ enum CalendarDataState {
     Error,
 }
 
+/// The portable action surface deliberately distinguishes a non-destructive
+/// copy from a move.  A move removes its source only after the destination
+/// has confirmed the copied component.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CalendarTransferKind {
+    Copy,
+    Move,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CalendarRecurringDeleteScope {
+    ThisOccurrence,
+    ThisAndFuture,
+    EntireSeries,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CalendarEventActionState {
+    can_edit: bool,
+    can_delete: bool,
+    can_export: bool,
+    can_copy_to_local: bool,
+    can_move_to_local: bool,
+    recurring: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CalendarTransferPlan {
+    kind: CalendarTransferKind,
+    source_uid: String,
+    source_component_uid: String,
+    destination_uid: String,
+    component: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CalendarDeletePlan {
+    RemoveComponent { source_uid: String, uid: String },
+    UnsupportedOccurrenceScope { scope: CalendarRecurringDeleteScope },
+}
+
 /// A civil-date interval.  `end` is exclusive everywhere in the view layer;
 /// no timestamp or 24-hour arithmetic is used to express a calendar range.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1039,12 +1080,13 @@ impl CalendarPage {
             let _ = unsafe { glib::ffi::g_source_remove(source.as_raw()) };
         }
         let page = self.downgrade();
-        let source = glib::timeout_add_local_once(std::time::Duration::from_millis(300), move || {
-            if let Some(page) = page.upgrade() {
-                page.imp().calendar_reload_debounce.replace(None);
-                page.start_calendar_snapshot_load();
-            }
-        });
+        let source =
+            glib::timeout_add_local_once(std::time::Duration::from_millis(300), move || {
+                if let Some(page) = page.upgrade() {
+                    page.imp().calendar_reload_debounce.replace(None);
+                    page.start_calendar_snapshot_load();
+                }
+            });
         self.imp().calendar_reload_debounce.replace(Some(source));
     }
 
@@ -1064,8 +1106,7 @@ impl CalendarPage {
                 || !local_snapshot.tasks.is_empty()
                 || !local_snapshot.memos.is_empty()
             {
-                let snapshot_index =
-                    Arc::new(CalendarSnapshotIndex::new(Arc::new(local_snapshot)));
+                let snapshot_index = Arc::new(CalendarSnapshotIndex::new(Arc::new(local_snapshot)));
                 self.imp()
                     .calendar_snapshot_index
                     .replace(Some(snapshot_index));
@@ -3926,8 +3967,7 @@ impl CalendarPage {
         let Some(selected) = selected else {
             return;
         };
-        let Some(index) = unique_event_index_for_identity(events, &selected)
-        else {
+        let Some(index) = unique_event_index_for_identity(events, &selected) else {
             return;
         };
         if let Some(row) = event_list.row_at_index(index as i32) {
@@ -4280,6 +4320,119 @@ impl CalendarPage {
                     show_toast_for_widget(
                         &page,
                         &format!("Termin konnte nicht verschoben werden: {error}"),
+                    );
+                    page.reload_calendar_data();
+                }
+            }
+        });
+    }
+
+    fn transfer_event_to_local(
+        &self,
+        event: CalendarEventRecord,
+        kind: CalendarTransferKind,
+        action_button: &gtk::Button,
+    ) {
+        let local_writable = CalendarStoreService::new().is_writable();
+        let plan =
+            match plan_calendar_event_transfer(&event, kind, "local-calendar", local_writable) {
+                Ok(plan) => plan,
+                Err(error) => {
+                    show_toast_for_widget(action_button, &error);
+                    return;
+                }
+            };
+        let Some(identity) = CalendarEventIdentity::from_event(&event) else {
+            show_toast_for_widget(
+                action_button,
+                "Der Termin besitzt keine eindeutige Identität und wurde nicht übertragen",
+            );
+            return;
+        };
+        let mutation_token = self.begin_calendar_mutation(Some(identity));
+        let (sender, receiver) = async_channel::bounded(1);
+        action_button.set_sensitive(false);
+        std::thread::spawn(move || {
+            let service = ECalService::new();
+            let result = service
+                .create_component(
+                    &plan.destination_uid,
+                    ECalComponentType::Event,
+                    &plan.component,
+                )
+                .map(|created| {
+                    let removal = matches!(plan.kind, CalendarTransferKind::Move).then(|| {
+                        service.remove_component(
+                            &plan.source_uid,
+                            ECalComponentType::Event,
+                            &plan.source_component_uid,
+                        )
+                    });
+                    (created, removal)
+                });
+            if let Err(error) = sender.send_blocking(result) {
+                tracing::debug!(%error, "Calendar transfer result was dropped");
+            }
+        });
+
+        let action_button = action_button.clone();
+        let page = self.downgrade();
+        glib::spawn_future_local(async move {
+            let result = receiver.recv().await;
+            let Some(page) = page.upgrade() else {
+                return;
+            };
+            if !page.calendar_event_mutation_is_current(&mutation_token) {
+                action_button.set_sensitive(true);
+                show_toast_for_widget(
+                    &action_button,
+                    "Der Kalenderstand hat sich geändert; der Übertragungsstand wird neu geladen",
+                );
+                page.reload_calendar_data();
+                return;
+            }
+            page.finish_calendar_mutation(&mutation_token);
+            action_button.set_sensitive(true);
+            match result {
+                Ok(Ok((created, None))) => {
+                    show_toast_for_widget(
+                        &action_button,
+                        &format!("Termin nach Lokal kopiert ({})", created.uid),
+                    );
+                    page.reload_calendar_data();
+                }
+                Ok(Ok((created, Some(Ok(removed))))) => {
+                    show_toast_for_widget(
+                        &action_button,
+                        &format!(
+                            "Termin nach Lokal verschoben ({} → {})",
+                            removed.uid, created.uid
+                        ),
+                    );
+                    page.reload_calendar_data();
+                }
+                Ok(Ok((created, Some(Err(error))))) => {
+                    show_toast_for_widget(
+                        &action_button,
+                        &format!(
+                            "Kopie nach Lokal erstellt ({}), Quelle blieb wegen Fehler erhalten: {error}",
+                            created.uid
+                        ),
+                    );
+                    page.reload_calendar_data();
+                }
+                Ok(Err(error)) => {
+                    show_toast_for_widget(
+                        &action_button,
+                        &format!("Termin konnte nicht nach Lokal übertragen werden: {error}"),
+                    );
+                    // Creation failed, so the source was intentionally never removed.
+                    page.reload_calendar_data();
+                }
+                Err(error) => {
+                    show_toast_for_widget(
+                        &action_button,
+                        &format!("Termin-Übertragungskanal wurde beendet: {error}"),
                     );
                     page.reload_calendar_data();
                 }
@@ -5476,6 +5629,85 @@ fn calendar_recurrence_id(event: &CalendarEventRecord) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
+fn calendar_event_is_recurring(event: &CalendarEventRecord) -> bool {
+    calendar_recurrence_id(event).is_some()
+        || ical_property(&event.component, "RRULE").is_some()
+        || ical_property(&event.component, "RDATE").is_some()
+}
+
+fn calendar_event_action_state(
+    event: &CalendarEventRecord,
+    local_calendar_writable: bool,
+) -> CalendarEventActionState {
+    let mutable = event_mutation_error(event).is_none();
+    let transferable = mutable
+        && !event.component.trim().is_empty()
+        && event.source_uid.trim() != "local-calendar"
+        && local_calendar_writable;
+    CalendarEventActionState {
+        can_edit: mutable,
+        can_delete: mutable,
+        can_export: !event.component.trim().is_empty(),
+        can_copy_to_local: transferable,
+        can_move_to_local: transferable,
+        recurring: calendar_event_is_recurring(event),
+    }
+}
+
+fn plan_calendar_event_transfer(
+    event: &CalendarEventRecord,
+    kind: CalendarTransferKind,
+    destination_uid: &str,
+    destination_writable: bool,
+) -> Result<CalendarTransferPlan, String> {
+    if let Some(error) = event_mutation_error(event) {
+        return Err(error.to_string());
+    }
+    if !destination_writable {
+        return Err("Das Ziel ist nicht als schreibfähig bestätigt".to_string());
+    }
+    let destination_uid = destination_uid.trim();
+    if destination_uid.is_empty() {
+        return Err("Für das Ziel fehlt die Kalenderkennung".to_string());
+    }
+    if event.source_uid.trim() == destination_uid {
+        return Err("Quelle und Ziel sind derselbe Kalender".to_string());
+    }
+    if event.component.trim().is_empty() {
+        return Err("Für diesen Termin sind keine iCalendar-Daten verfügbar".to_string());
+    }
+    Ok(CalendarTransferPlan {
+        kind,
+        source_uid: event.source_uid.trim().to_string(),
+        source_component_uid: event.uid.trim().to_string(),
+        destination_uid: destination_uid.to_string(),
+        component: event.component.clone(),
+    })
+}
+
+fn plan_calendar_event_delete(
+    event: &CalendarEventRecord,
+    scope: CalendarRecurringDeleteScope,
+) -> Result<CalendarDeletePlan, String> {
+    if let Some(error) = event_mutation_error(event) {
+        return Err(error.to_string());
+    }
+    if event.source_uid.trim().is_empty() || event.uid.trim().is_empty() {
+        return Err("Der Termin besitzt keine eindeutige Quelle und UID".to_string());
+    }
+    if calendar_event_is_recurring(event)
+        && !matches!(scope, CalendarRecurringDeleteScope::EntireSeries)
+    {
+        // ECalService currently exposes component removal only.  Do not
+        // pretend that it can create a lossless exception or split a series.
+        return Ok(CalendarDeletePlan::UnsupportedOccurrenceScope { scope });
+    }
+    Ok(CalendarDeletePlan::RemoveComponent {
+        source_uid: event.source_uid.trim().to_string(),
+        uid: event.uid.trim().to_string(),
+    })
+}
+
 fn calendar_event_identity_from_parts(
     source_uid: &str,
     uid: &str,
@@ -5961,9 +6193,12 @@ fn append_event_row(
         .valign(gtk::Align::Center)
         .build();
     set_accessible_label(&delete_button, "Termin löschen");
-    let writable = event_mutation_error(&event).is_none();
-    edit_button.set_sensitive(writable);
-    delete_button.set_sensitive(writable);
+    let action_state =
+        calendar_event_action_state(&event, CalendarStoreService::new().is_writable());
+    let writable = action_state.can_edit;
+    let recurring = action_state.recurring;
+    edit_button.set_sensitive(action_state.can_edit);
+    delete_button.set_sensitive(action_state.can_delete);
     let export_button = gtk::Button::builder()
         .icon_name("document-save-symbolic")
         .tooltip_text("Termin als iCalendar exportieren")
@@ -5971,9 +6206,27 @@ fn append_event_row(
         .valign(gtk::Align::Center)
         .build();
     set_accessible_label(&export_button, "Termin als iCalendar exportieren");
-    export_button.set_sensitive(!event.component.trim().is_empty());
+    export_button.set_sensitive(action_state.can_export);
+    let copy_button = gtk::Button::builder()
+        .icon_name("edit-copy-symbolic")
+        .tooltip_text("Termin in lokalen Kalender kopieren")
+        .css_classes(vec!["flat"])
+        .valign(gtk::Align::Center)
+        .sensitive(action_state.can_copy_to_local)
+        .build();
+    set_accessible_label(&copy_button, "Termin in lokalen Kalender kopieren");
+    let move_button = gtk::Button::builder()
+        .icon_name("go-jump-symbolic")
+        .tooltip_text("Termin in lokalen Kalender verschieben")
+        .css_classes(vec!["flat"])
+        .valign(gtk::Align::Center)
+        .sensitive(action_state.can_move_to_local)
+        .build();
+    set_accessible_label(&move_button, "Termin in lokalen Kalender verschieben");
     row.add_suffix(&edit_button);
     row.add_suffix(&export_button);
+    row.add_suffix(&copy_button);
+    row.add_suffix(&move_button);
     row.add_suffix(&delete_button);
 
     let event_identity_for_edit = CalendarEventIdentity::from_event(&event);
@@ -6027,6 +6280,8 @@ fn append_event_row(
 
     let event_for_export = event.clone();
     let export_button_for_context = export_button.clone();
+    let copy_button_for_context = copy_button.clone();
+    let move_button_for_context = move_button.clone();
     let export_button_for_signal = export_button.clone();
     export_button_for_signal.connect_clicked(move |_| {
         if event_for_export.component.trim().is_empty() {
@@ -6073,6 +6328,32 @@ fn append_event_row(
         });
     });
 
+    let event_for_copy = event.clone();
+    let page_weak_for_copy = page.downgrade();
+    let copy_button_for_signal = copy_button.clone();
+    copy_button.connect_clicked(move |_| {
+        if let Some(page) = page_weak_for_copy.upgrade() {
+            page.transfer_event_to_local(
+                event_for_copy.clone(),
+                CalendarTransferKind::Copy,
+                &copy_button_for_signal,
+            );
+        }
+    });
+
+    let event_for_move = event.clone();
+    let page_weak_for_move = page.downgrade();
+    let move_button_for_signal = move_button.clone();
+    move_button.connect_clicked(move |_| {
+        if let Some(page) = page_weak_for_move.upgrade() {
+            page.transfer_event_to_local(
+                event_for_move.clone(),
+                CalendarTransferKind::Move,
+                &move_button_for_signal,
+            );
+        }
+    });
+
     let event_for_delete = event.clone();
     let event_identity_for_delete = CalendarEventIdentity::from_event(&event);
     let event_records_for_delete = Rc::clone(&event_records);
@@ -6080,9 +6361,56 @@ fn append_event_row(
     let page_weak_for_delete = page.downgrade();
     let delete_button_for_context = delete_button.clone();
     let delete_button_for_signal = delete_button.clone();
+    let delete_scope_confirmed = Rc::new(Cell::new(false));
+    let delete_scope_confirmed_for_signal = Rc::clone(&delete_scope_confirmed);
     delete_button_for_signal.connect_clicked(move |_| {
         if let Some(error) = event_mutation_error(&event_for_delete) {
             show_toast_for_widget(&delete_button, error);
+            return;
+        }
+        if recurring && !delete_scope_confirmed_for_signal.replace(false) {
+            let scope_dialog = adw::AlertDialog::new(
+                Some("Wiederkehrenden Termin löschen"),
+                Some("Wählen Sie den Löschumfang. Einzelne Vorkommen und künftige Vorkommen werden erst angeboten, wenn der Backend-Adapter sie ohne Datenverlust als Ausnahme bzw. Serienaufteilung bestätigen kann."),
+            );
+            scope_dialog.add_responses(&[
+                ("cancel", "Abbrechen"),
+                ("this", "Nur diesen Termin"),
+                ("future", "Diesen und künftige"),
+                ("series", "Ganze Serie löschen"),
+            ]);
+            scope_dialog.set_response_appearance("series", adw::ResponseAppearance::Destructive);
+            let event_for_scope = event_for_delete.clone();
+            let delete_button_for_scope = delete_button.clone();
+            let scope_confirmation = Rc::clone(&delete_scope_confirmed_for_signal);
+            scope_dialog.connect_response(None, move |dialog, response| {
+                let scope = match response {
+                    "this" => Some(CalendarRecurringDeleteScope::ThisOccurrence),
+                    "future" => Some(CalendarRecurringDeleteScope::ThisAndFuture),
+                    "series" => Some(CalendarRecurringDeleteScope::EntireSeries),
+                    _ => None,
+                };
+                let Some(scope) = scope else {
+                    return;
+                };
+                match plan_calendar_event_delete(&event_for_scope, scope) {
+                    Ok(CalendarDeletePlan::RemoveComponent { .. }) => {
+                        dialog.close();
+                        scope_confirmation.set(true);
+                        delete_button_for_scope.activate();
+                    }
+                    Ok(CalendarDeletePlan::UnsupportedOccurrenceScope { scope }) => {
+                        let description = match scope {
+                            CalendarRecurringDeleteScope::ThisOccurrence => "Dieses einzelne Vorkommen kann der aktuelle Backend-Adapter noch nicht verlustfrei löschen; die Serie bleibt unverändert.",
+                            CalendarRecurringDeleteScope::ThisAndFuture => "Eine Serienaufteilung ab diesem Vorkommen kann der aktuelle Backend-Adapter noch nicht verlustfrei durchführen; die Serie bleibt unverändert.",
+                            CalendarRecurringDeleteScope::EntireSeries => unreachable!(),
+                        };
+                        show_toast_for_widget(&delete_button_for_scope, description);
+                    }
+                    Err(error) => show_toast_for_widget(&delete_button_for_scope, &error),
+                }
+            });
+            scope_dialog.present(Some(&delete_button));
             return;
         }
         let confirmation_message = if event_for_delete.source_uid == "local-calendar" {
@@ -6278,6 +6606,30 @@ fn append_event_row(
             export_button_for_menu.activate();
         });
         menu_box.append(&export);
+
+        let copy = gtk::Button::with_label("In lokalen Kalender kopieren");
+        copy.set_halign(gtk::Align::Fill);
+        copy.add_css_class("flat");
+        copy.set_sensitive(action_state.can_copy_to_local);
+        let popover_for_copy = popover.clone();
+        let copy_button_for_menu = copy_button_for_context.clone();
+        copy.connect_clicked(move |_| {
+            popover_for_copy.popdown();
+            copy_button_for_menu.activate();
+        });
+        menu_box.append(&copy);
+
+        let move_to_local = gtk::Button::with_label("In lokalen Kalender verschieben");
+        move_to_local.set_halign(gtk::Align::Fill);
+        move_to_local.add_css_class("flat");
+        move_to_local.set_sensitive(action_state.can_move_to_local);
+        let popover_for_move = popover.clone();
+        let move_button_for_menu = move_button_for_context.clone();
+        move_to_local.connect_clicked(move |_| {
+            popover_for_move.popdown();
+            move_button_for_menu.activate();
+        });
+        menu_box.append(&move_to_local);
 
         let delete = gtk::Button::with_label("Termin löschen");
         delete.set_halign(gtk::Align::Fill);
@@ -6880,6 +7232,79 @@ mod tests {
         assert!(gate.cancel(second));
         assert!(!gate.accepts(second, CalendarView::List, 5, 8));
         assert!(!gate.finish(second, CalendarView::List, 5, 8));
+    }
+
+    #[test]
+    fn calendar_action_state_only_offers_local_transfer_when_source_and_target_are_safe() {
+        let remote = all_day_event("remote", "event-1", "2026-08-10", "2026-08-11");
+        let state = calendar_event_action_state(&remote, true);
+        assert!(state.can_edit);
+        assert!(state.can_delete);
+        assert!(state.can_export);
+        assert!(state.can_copy_to_local);
+        assert!(state.can_move_to_local);
+
+        let local = all_day_event("local-calendar", "event-2", "2026-08-10", "2026-08-11");
+        let local_state = calendar_event_action_state(&local, true);
+        assert!(!local_state.can_copy_to_local);
+        assert!(!local_state.can_move_to_local);
+        assert!(
+            plan_calendar_event_transfer(
+                &remote,
+                CalendarTransferKind::Move,
+                "local-calendar",
+                true,
+            )
+            .is_ok()
+        );
+        assert!(
+            plan_calendar_event_transfer(
+                &local,
+                CalendarTransferKind::Copy,
+                "local-calendar",
+                true,
+            )
+            .is_err()
+        );
+        assert!(
+            plan_calendar_event_transfer(
+                &remote,
+                CalendarTransferKind::Copy,
+                "local-calendar",
+                false,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn recurring_delete_scopes_preserve_the_component_until_entire_series_is_confirmed() {
+        let mut recurring = all_day_event("source", "series", "2026-08-10", "2026-08-11");
+        recurring.component = concat!(
+            "BEGIN:VEVENT\r\nUID:series\r\nDTSTART;VALUE=DATE:20260810\r\n",
+            "RRULE:FREQ=WEEKLY;COUNT=3\r\nEND:VEVENT\r\n"
+        )
+        .to_string();
+
+        assert_eq!(
+            plan_calendar_event_delete(&recurring, CalendarRecurringDeleteScope::ThisOccurrence),
+            Ok(CalendarDeletePlan::UnsupportedOccurrenceScope {
+                scope: CalendarRecurringDeleteScope::ThisOccurrence,
+            })
+        );
+        assert_eq!(
+            plan_calendar_event_delete(&recurring, CalendarRecurringDeleteScope::ThisAndFuture),
+            Ok(CalendarDeletePlan::UnsupportedOccurrenceScope {
+                scope: CalendarRecurringDeleteScope::ThisAndFuture,
+            })
+        );
+        assert_eq!(
+            plan_calendar_event_delete(&recurring, CalendarRecurringDeleteScope::EntireSeries),
+            Ok(CalendarDeletePlan::RemoveComponent {
+                source_uid: "source".to_string(),
+                uid: "series".to_string(),
+            })
+        );
     }
 
     #[test]

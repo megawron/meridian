@@ -14,6 +14,8 @@ and updates to the service/settings APIs.
 
 - Use libadwaita dialog and preferences patterns; do not introduce Relm4 or a
   second frontend framework.
+- The shortcuts window mirrors the registered application accelerators and
+  must not advertise a conflicting or stale key binding.
 - Destructive actions require the shared confirmation path and must report
   backend conflicts or read-only limitations.
 - Settings editors must persist values through `AppSettings` and update open

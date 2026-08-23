@@ -23,6 +23,11 @@ accessibility helpers, and view-local GTK state.
   daily state actions, including labels and both junk directions. Core actions
   such as move and copy must remain reachable from menus, shortcuts, and the
   classic toolbar even when the preview pane is hidden.
+- Keep daily mail accelerators conflict-free and aligned with upstream:
+  ordinary and unread next/previous navigation, preview, threading, print,
+  source and in-message find use the same actions exposed by menus and the
+  shortcuts window. Empty, unselected and boundary navigation must not select
+  the wrong row.
 - Keep the selected message body visually primary: the detail header and
   conversation context stay compact, while safe inline mail CSS and intended
   message backgrounds remain intact. Do not flatten provider formatting merely
@@ -72,9 +77,11 @@ accessibility helpers, and view-local GTK state.
   Routine source/load status belongs at the bottom and follows the live,
   persistent status-bar preference.
 - Treat the ordinary star and Evolution follow-up as separate states. The
-  follow-up indicator cycles `None -> FollowUp -> Completed -> None`; pending
-  uses a marker and completed uses a green check. Refresh the row only after
-  the provider or app-owned local store confirms the mutation.
+  selection-sensitive follow-up editor/action exposes text, optional due date,
+  clear, and complete while pending uses a marker and completed a green check.
+  Carry exact metadata through undo/redo, disable unsupported Graph due dates
+  visibly, fail closed for provider fields the bridge cannot write, and refresh
+  only after the provider or app-owned local store confirms the mutation.
 - Use services for data access; do not embed EDS/Camel/ECal/EBook lifecycle or
   GTK types in service code.
 - Run every potentially blocking service mutation off the GTK main thread.
@@ -94,6 +101,9 @@ accessibility helpers, and view-local GTK state.
 - Contact-list editors expose local and external members, preserve list
   metadata and vCard 3/4 representations, mark invalid members, and refresh
   the visible member rows from the pending atomic write model.
+- Contact surfaces retain a real 0/1/n selection. Batch email and a combined
+  all-or-nothing vCard export may use the full selection; edit, merge, copy and
+  delete remain single-contact actions until their backend transaction is atomic.
 - Find-in-message uses Evolution's `Ctrl+Shift+F` path and an in-reader bar.
   WebKit uses its FindController; plaintext fallback offsets are Unicode
   character offsets. Selection, source and render generations invalidate stale
@@ -109,6 +119,123 @@ accessibility helpers, and view-local GTK state.
   one display reminder or silently discard imported AUDIO, EMAIL, PROCEDURE,
   unknown triggers, repeat/duration fields, attachments or safe extension
   properties. Only DISPLAY alarms may reach portable notification delivery.
+- Calendar move/copy creates the destination before removing the source and
+  reloads authoritative data after every partial failure. Recurring occurrence
+  or this-and-future deletion fails closed until the backend can persist a
+  lossless exception or series split.
+- Saving an unrelated task field preserves `STATUS`, `PERCENT-COMPLETE` and
+  `COMPLETED` independently, including absent or unsupported imported values.
+  Only explicit lifecycle-control edits normalize the coupled lifecycle fields.
+- Task surfaces retain a real 0/1/n selection keyed by source plus UID. Combined
+  iCalendar export must resolve every currently selected visible identity
+  exactly once, validate one bare VTODO per item before opening the file chooser,
+  and replace the destination atomically. Batch Complete/Incomplete preflights
+  the entire writable selection, then follows upstream's per-item ECal writes:
+  Complete preserves existing completion times and fills missing ones once per
+  batch; Incomplete removes COMPLETED and PERCENT-COMPLETE. Partial results apply
+  only UID-validated authoritative successes and report failures explicitly.
+  Delete-selection uses one named/count-aware destructive confirmation, rechecks
+  the exact writable selection, then removes sequentially and stops at the first
+  provider error like upstream. Apply only the confirmed prefix; failed and
+  unattempted rows remain. RECURRENCE-ID and the single assigned-task retract path
+  fail closed until MOD_THIS/iTIP are available. Copy/Cut/Paste/Select All share
+  the same visible Source+UID selection and task-list-focus shortcuts. Paste uses
+  the confirmed writable default source, assigns a fresh UID to every VTODO,
+  applies only the authoritative created prefix and reloads on uncertain results;
+  TZID-dependent payloads fail closed until VTIMEZONE provisioning is available.
+  Cut copies before entering the guarded delete path. Edit remains single-task.
+  Bulk Edit remains sensitive for any non-empty selection like upstream and
+  revalidates exact writable Source+UID identities on activation and dispatch.
+  Every field/category change is explicitly opted in; DTSTART/DUE and
+  STATUS/PERCENT-COMPLETE/COMPLETED follow the upstream coupled callbacks while
+  unrelated properties remain intact. Apply sequentially, stop at the first
+  provider error, rebuild visible rows from authoritative components, and reload
+  on channel, reducer, or apply uncertainty. Ctrl+B is task-list-focus only;
+  timezone bulk edits stay disabled until VTIMEZONE provisioning is available.
+- Task Preview follows upstream's single-current-task contract: zero or multiple
+  visible selections clear it, exact Source+UID revalidation precedes rendering,
+  and invalid single components fail visibly. Ctrl+M toggles the persisted pane;
+  Classic places it below and Vertical beside the list; each divider position is
+  persisted independently. Ctrl+Shift+F is available
+  only from task-list focus for one valid current task. Preview search uses Unicode
+  buffer offsets and selection, component, visibility changes clear stale state.
+  Preview content is inert GTK text; it must not load HTML, remote resources, or
+  attachment payloads.
+- Task Purge is selection-independent like upstream Ctrl+E. It confirms the exact
+  current set of completed tasks across writable loaded sources, skips read-only
+  sources, revalidates after confirmation, deletes sequentially, applies only the
+  confirmed prefix, and reloads authoritative state when the result is uncertain.
+  RECURRENCE-ID instances fail closed until native MOD_THIS is available.
+- Task Forward and Open URL are exact single-selection actions. Forward validates
+  the selected VTODO/UID, emits a non-mutating `METHOD:PUBLISH` envelope and
+  strips VALARMs; native iTIP delivery remains a Linux handoff. Open URL reads
+  the exact VTODO URL and accepts only the shared validated HTTP(S) policy before
+  invoking the desktop handler; stale, mismatched and unsupported inputs fail closed.
+- Task Print is an exact single-selection immutable snapshot. Its deterministic
+  HTML/plain-text document escapes all VTODO fields and contains no active or
+  remote content. Preparation, failure and the native GTK print-dialog handoff
+  remain visibly distinct; preparing a document must never be reported as a
+  completed print job.
+- Task-list Print and Print Preview snapshot the actual visible row order after
+  filtering and sorting, independent of selection. Every row is revalidated by
+  exact Source+UID before producing escaped, remote-free HTML/plain table data;
+  empty, duplicate, stale, or malformed rows fail visibly. Ctrl+P belongs only
+  to task-list focus and starts list Print, while selected-task Print remains a
+  separate action without that shortcut. Preparation is never a completed native
+  print/preview job; GTK print dialogs and portals remain Linux acceptance.
+- Task-list Refresh belongs to one exact available primary source; “All task
+  lists” has no refresh target. It must not overlap task mutations. The worker
+  validates the exact source UID and TASK_LIST type, checks native refresh
+  support, completes the provider refresh, and only then reloads authoritative
+  task state. Generation and current-source identity gate every result. A stale,
+  unsupported, authentication, cancellation, or reload failure never reports
+  success or replaces the visible model; local-calendar may honestly reload
+  without claiming a provider refresh.
+- Task source selectors and editor destinations must come from exact native
+  ECal extension discovery (`TASK_LIST` for VTODO), never generic Calendar or
+  GOA account discovery. Preserve each stable source UID and project connected,
+  available, read-only/writable, and refresh-supported independently. A source
+  whose client cannot connect remains visibly unavailable and fail-closed; it
+  must not disappear, become writable by guesswork, or be replaced by a parent
+  account identity.
+- Task-list Copy, Rename and Delete always target one exact primary TASK_LIST
+  ESource. Sensitivity comes from authoritative source-writable,
+  client-writable, removable, remote-deletable and collection-owned metadata;
+  source-level Rename/Properties must not inherit the ECal client's readonly
+  gate used by task-data mutations. Rename and delete re-resolve the UID and
+  revalidate their gates in the native worker. Delete uses remote deletion
+  only when advertised. Copy selects a different exact source, overwrites
+  matching component UIDs, provisions every referenced timezone before create,
+  stops at the first provider error and reports only the confirmed prefix.
+  Every result is generation-gated and followed by authoritative source/data
+  reconciliation. The local New slice creates one exact TASK_LIST below
+  `local-stub`, validates a nonblank name and `#RRGGBB` color, configures the
+  local backend/selectable/local-writable extensions, commits through the EDS
+  registry, and persists a requested default only from the returned UID. A
+  committed source whose first client connection fails remains a successful
+  create with an explicit unavailable warning. Local Properties first reloads
+  that exact source, exposes name/color/default/custom ICS file and its update
+  permission/email, forbids a custom file for the built-in source, commits a
+  scratch ESource, and applies default-setting changes only after commit. Do
+  not represent these local slices as provider-wide New or Properties parity:
+  those require the provider-specific ECalSourceConfig backend surface.
+- Task Assign is exact-single-selection only and fail-closed. Require the
+  current Source+UID VTODO, a connected/client-writable source, and affirmative
+  task-assignment plus conversion capabilities before showing or committing
+  assignment fields; revalidate all of them on confirmation. Require one
+  ORGANIZER and at least one ATTENDEE, preserve valid full parameterized lines,
+  deduplicate short-form addresses, and replace only top-level assignment
+  properties while retaining nested/folded/unknown component data. Apply the
+  mutation only through the exact source worker, require authoritative EDS
+  reload, and generation-gate the result. METHOD:REQUEST preparation is not
+  delivery: keep actual iTIP send, delegation chains, responses and retracts
+  explicitly at the Linux/provider boundary.
+- Memo source selectors and editor destinations follow the same rule with the
+  exact `MEMO_LIST` extension. Connected/available is not equivalent to
+  writable: every remote memo mutation requires the authoritative writable
+  capability, while offline/read-only/unknown sources and preserved unavailable
+  filter or edit identities remain visible but fail closed. Local-calendar is
+  offered only when the app-owned store confirms writability.
 - Treat the currently requested account/folder as authoritative immediately,
   even before its worker returns. Every load, search, paging result and
   incremental model build must be generation-gated; stale results cannot

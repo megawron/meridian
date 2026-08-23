@@ -394,7 +394,10 @@ impl ContactsPage {
         sidebar_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
 
         let contact_list = gtk::ListBox::builder()
-            .selection_mode(gtk::SelectionMode::Single)
+            // Evolution's address-book actions operate on the whole visible
+            // selection.  Keep the detail pane single-contact specific, but
+            // let the list retain a 0/1/n selection for batch-safe actions.
+            .selection_mode(gtk::SelectionMode::Multiple)
             .css_classes(vec!["navigation-sidebar"])
             .build();
         contact_list.set_sort_func(|left, right| unsafe {
@@ -928,22 +931,26 @@ impl ContactsPage {
             .build();
         set_accessible_label(&email_btn, "E-Mail an den Kontakt senden");
 
-        let selected_contact_for_email = Rc::clone(&selected_contact);
+        let contact_list_for_email = contact_list.clone();
         let stored_contacts_for_email = Rc::clone(&stored_contacts);
         email_btn.connect_clicked(glib::clone!(
             #[weak(rename_to = page)]
             self,
             move |_| {
-                let Some(record) = selected_contact_for_email.borrow().clone() else {
-                    page.show_toast("Kein Kontakt ausgewählt");
-                    return;
+                let selected = match selected_contact_records_checked(
+                    &contact_list_for_email,
+                    &stored_contacts_for_email,
+                ) {
+                    Ok(selected) => selected,
+                    Err(error) => {
+                        page.show_toast(&error);
+                        return;
+                    }
                 };
-                let recipient = contact_recipient_text_with_records(
-                    &record.contact,
-                    &stored_contacts_for_email.borrow(),
-                );
+                let recipient =
+                    selected_contact_recipients(&selected, &stored_contacts_for_email.borrow());
                 if recipient.trim().is_empty() {
-                    page.show_toast("Der ausgewählte Kontakt hat keine E-Mail-Adresse");
+                    page.show_toast("Die ausgewählten Kontakte haben keine E-Mail-Adresse");
                     return;
                 }
                 let dialog = crate::dialogs::ComposeDialog::to_recipient(&recipient);
@@ -1241,44 +1248,48 @@ impl ContactsPage {
             .css_classes(vec!["circular"])
             .build();
         set_accessible_label(&export_btn, "Kontakt als vCard exportieren");
-        let selected_contact_for_export = Rc::clone(&selected_contact);
+        let contact_list_for_export = contact_list.clone();
+        let stored_contacts_for_export = Rc::clone(&stored_contacts);
+        let export_btn_for_export = export_btn.clone();
         export_btn.connect_clicked(glib::clone!(
             #[weak(rename_to = page)]
             self,
             move |_| {
-                let Some(record) = selected_contact_for_export.borrow().clone() else {
-                    page.show_toast("Kein Kontakt ausgewählt");
-                    return;
+                let selected = match selected_contact_records_checked(
+                    &contact_list_for_export,
+                    &stored_contacts_for_export,
+                ) {
+                    Ok(selected) => selected,
+                    Err(error) => {
+                        page.show_toast(&error);
+                        return;
+                    }
+                };
+                // Plan the complete output before opening the save dialog.
+                // This prevents a partially valid selection from producing a
+                // partial export if one cached vCard is malformed.
+                let plan = match plan_contact_vcard_export(&selected) {
+                    Ok(plan) => plan,
+                    Err(error) => {
+                        page.show_toast(&error.user_message());
+                        return;
+                    }
                 };
                 let Some(root) = page.root().and_downcast::<gtk::Window>() else {
                     page.show_toast("Kein Fenster für den Export verfügbar");
                     return;
                 };
                 let file_dialog = gtk::FileDialog::builder()
-                    .title("Kontakt als vCard speichern")
-                    .initial_name("kontakt.vcf")
+                    .title("Kontakte als vCard speichern")
+                    .initial_name(&plan.initial_name)
                     .modal(true)
                     .build();
-                let page_weak = page.downgrade();
+                let export_button = export_btn_for_export.clone();
                 file_dialog.save(Some(&root), None::<&gio::Cancellable>, move |result| {
                     let Ok(file) = result else {
                         return;
                     };
-                    let save_result = file.replace_contents(
-                        record.vcard.as_bytes(),
-                        None,
-                        true,
-                        gio::FileCreateFlags::NONE,
-                        None::<&gio::Cancellable>,
-                    );
-                    let Some(page) = page_weak.upgrade() else {
-                        return;
-                    };
-                    match save_result {
-                        Ok(_) => page.show_toast("Kontakt als vCard exportiert"),
-                        Err(error) => page
-                            .show_toast(&format!("vCard konnte nicht gespeichert werden: {error}")),
-                    }
+                    save_contact_vcard_export_async(&export_button, file, plan);
                 });
             }
         ));
@@ -1477,6 +1488,9 @@ impl ContactsPage {
             let Some(row) = contact_list_for_context.row_at_y(y as i32) else {
                 return;
             };
+            // A context menu targets its clicked contact.  Do not leave a
+            // stale multi-selection attached to a menu made for one row.
+            contact_list_for_context.unselect_all();
             contact_list_for_context.select_row(Some(&row));
 
             let popover = gtk::Popover::builder()
@@ -1641,7 +1655,10 @@ impl ContactsPage {
         info_scroll.set_child(Some(&info_box));
         detail_box.append(&info_scroll);
 
-        // Selection connection
+        // The detail pane intentionally describes exactly one contact, while
+        // the surrounding actions retain Evolution's 0/1/n selection model.
+        // Selection changes rather than row-selected are used because GTK
+        // emits row-selected for individual transitions within a multi-select.
         let split_for_selection = split.clone();
         let selected_contact_for_selection = Rc::clone(&selected_contact);
         let stored_contacts_for_selection = Rc::clone(&stored_contacts);
@@ -1652,123 +1669,52 @@ impl ContactsPage {
         let merge_btn_for_selection = merge_btn.clone();
         let delete_btn_for_selection = delete_btn.clone();
         let copy_btn_for_selection = copy_btn1.clone();
-        contact_list.connect_row_selected(glib::clone!(
-            #[weak]
-            detail_avatar,
-            #[weak]
-            detail_name,
-            #[weak]
-            detail_title,
-            #[weak]
-            detail_extra,
-            #[weak]
-            email_row1,
-            #[strong]
-            selected_contact_for_selection,
-            #[strong]
-            split_for_selection,
-            #[strong]
-            stored_contacts_for_selection,
-            #[strong]
-            page_weak_for_selection,
-            #[strong]
-            email_btn_for_selection,
-            #[strong]
-            export_btn_for_selection,
-            #[strong]
-            edit_btn_for_selection,
-            #[strong]
-            merge_btn_for_selection,
-            #[strong]
-            delete_btn_for_selection,
-            #[strong]
-            copy_btn_for_selection,
-            move |_, row| {
-                let Some(row) = row else {
-                    *selected_contact_for_selection.borrow_mut() = None;
-                    if let Some(page) = page_weak_for_selection.upgrade() {
-                        page.imp().selected_identity.replace(None);
-                    }
-                    update_contact_action_sensitivity(
-                        &email_btn_for_selection,
-                        &export_btn_for_selection,
-                        &edit_btn_for_selection,
-                        &merge_btn_for_selection,
-                        &delete_btn_for_selection,
-                        Some(&copy_btn_for_selection),
-                        &selected_contact_for_selection,
-                        &stored_contacts_for_selection,
-                    );
-                    split_for_selection.set_show_content(false);
-                    return;
-                };
-                unsafe {
-                    let read_data =
-                        |key: &str| row.data::<String>(key).map(|value| value.as_ref().clone());
-                    let Some(vcard) = read_data("contact-vcard") else {
-                        return;
-                    };
-                    let Some(contact) = VCardContact::parse_vcard_string(&vcard) else {
-                        return;
-                    };
-                    let record = EBookContactRecord {
-                        source_uid: read_data("contact-source-uid").unwrap_or_default(),
-                        source_display_name: read_data("contact-source-name").unwrap_or_default(),
-                        uid: read_data("contact-id").unwrap_or_default(),
-                        vcard,
-                        contact,
-                    };
-                    if let Some(page) = page_weak_for_selection.upgrade() {
-                        page.imp()
-                            .selected_identity
-                            .replace(Some(ContactIdentity::new(
-                                record.source_uid.clone(),
-                                record.uid.clone(),
-                            )));
-                    }
-                    detail_avatar.set_text(Some(&record.contact.fn_name));
-                    set_avatar_photo(&detail_avatar, record.contact.photo.as_ref());
-                    detail_name.set_label(&record.contact.fn_name);
-                    let email_text = contact_email_text(&record.contact);
-                    let phone_text = contact_phone_text(&record.contact);
-                    email_row1.set_title(if email_text.is_empty() {
-                        "Keine E-Mail-Adresse"
-                    } else {
-                        email_text.as_str()
-                    });
-                    email_row1.set_subtitle(if phone_text.is_empty() {
-                        "Keine Telefonnummer"
-                    } else {
-                        phone_text.as_str()
-                    });
-                    let detail_title_text = contact_detail_title(&record.contact);
-                    detail_title.set_label(&detail_title_text);
-                    detail_extra.set_label(&contact_detail_summary(&record.contact));
-                    *selected_contact_for_selection.borrow_mut() = Some(record);
-                    update_contact_action_sensitivity(
-                        &email_btn_for_selection,
-                        &export_btn_for_selection,
-                        &edit_btn_for_selection,
-                        &merge_btn_for_selection,
-                        &delete_btn_for_selection,
-                        Some(&copy_btn_for_selection),
-                        &selected_contact_for_selection,
-                        &stored_contacts_for_selection,
-                    );
-                    split_for_selection.set_show_content(true);
-                }
-            }
-        ));
+        let detail_avatar_for_selection = detail_avatar.clone();
+        let detail_name_for_selection = detail_name.clone();
+        let detail_title_for_selection = detail_title.clone();
+        let detail_extra_for_selection = detail_extra.clone();
+        let email_row_for_selection = email_row1.clone();
+        contact_list.connect_selected_rows_changed(move |list| {
+            let Some(page) = page_weak_for_selection.upgrade() else {
+                return;
+            };
+            sync_contact_selection(
+                &page,
+                list,
+                &stored_contacts_for_selection,
+                &selected_contact_for_selection,
+                &split_for_selection,
+                &detail_avatar_for_selection,
+                &detail_name_for_selection,
+                &detail_title_for_selection,
+                &detail_extra_for_selection,
+                &email_row_for_selection,
+                &email_btn_for_selection,
+                &export_btn_for_selection,
+                &edit_btn_for_selection,
+                &merge_btn_for_selection,
+                &delete_btn_for_selection,
+                &copy_btn_for_selection,
+            );
+        });
 
-        update_contact_action_sensitivity(
+        sync_contact_selection(
+            self,
+            &contact_list,
+            &stored_contacts,
+            &selected_contact,
+            &split,
+            &detail_avatar,
+            &detail_name,
+            &detail_title,
+            &detail_extra,
+            &email_row1,
             &email_btn,
             &export_btn,
             &edit_btn,
             &merge_btn,
             &delete_btn,
-            Some(&copy_btn1),
-            &selected_contact,
-            &stored_contacts,
+            &copy_btn1,
         );
 
         let edit_btn_for_activate = edit_btn.clone();
@@ -1779,6 +1725,7 @@ impl ContactsPage {
         if let Some((cancel, receiver)) = EBookService::new().start_change_monitor() {
             *self.imp().ebook_monitor_cancel.borrow_mut() = Some(cancel);
             let contact_list_for_monitor = contact_list.clone();
+            let split_for_monitor = split.clone();
             let stored_contacts_for_monitor = Rc::clone(&stored_contacts);
             let empty_state_for_monitor = empty_state.clone();
             let selected_contact_for_monitor = Rc::clone(&selected_contact);
@@ -1847,7 +1794,7 @@ impl ContactsPage {
                                     email_row_for_monitor.set_title("Keine E-Mail-Adresse");
                                     email_row_for_monitor.set_subtitle("Kein Kontakt ausgewählt");
                                     page.imp().selected_identity.replace(None);
-                                    contact_list_for_monitor.select_row(None::<&gtk::ListBoxRow>);
+                                    contact_list_for_monitor.unselect_all();
                                 }
                             }
                             EBookChangeKind::Added | EBookChangeKind::Modified => {
@@ -1892,15 +1839,23 @@ impl ContactsPage {
                             break;
                         }
                     }
-                    update_contact_action_sensitivity(
+                    sync_contact_selection(
+                        &page,
+                        &contact_list_for_monitor,
+                        &stored_contacts_for_monitor,
+                        &selected_contact_for_monitor,
+                        &split_for_monitor,
+                        &detail_avatar_for_monitor,
+                        &detail_name_for_monitor,
+                        &detail_title_for_monitor,
+                        &detail_extra_for_monitor,
+                        &email_row_for_monitor,
                         &email_btn_for_monitor,
                         &export_btn_for_monitor,
                         &edit_btn_for_monitor,
                         &merge_btn_for_monitor,
                         &delete_btn_for_monitor,
-                        Some(&copy_btn_for_monitor),
-                        &selected_contact_for_monitor,
-                        &stored_contacts_for_monitor,
+                        &copy_btn_for_monitor,
                     );
                     empty_state_for_monitor
                         .set_visible(stored_contacts_for_monitor.borrow().is_empty());
@@ -2192,6 +2147,7 @@ fn select_contact_row(contact_list: &gtk::ListBox, source_uid: &str, uid: &str) 
                     .is_some_and(|value| value.as_ref() == uid)
         };
         if matches {
+            contact_list.unselect_all();
             contact_list.select_row(Some(&row));
             return true;
         }
@@ -2207,6 +2163,41 @@ struct ContactActionState {
     merge: bool,
     delete: bool,
     copy: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ContactSelectionActionState {
+    selection_count: usize,
+    email: bool,
+    export: bool,
+    edit: bool,
+    merge: bool,
+    delete: bool,
+    copy: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ContactVCardExportPlan {
+    initial_name: String,
+    payload: Vec<u8>,
+    contact_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ContactVCardExportError {
+    NoSelection,
+    InvalidVCard { contact_name: String },
+}
+
+impl ContactVCardExportError {
+    fn user_message(&self) -> String {
+        match self {
+            Self::NoSelection => "Keine Kontakte ausgewählt".to_string(),
+            Self::InvalidVCard { contact_name } => format!(
+                "vCard-Export nicht gestartet: „{contact_name}“ enthält keine vollständige vCard"
+            ),
+        }
+    }
 }
 
 fn contact_source_is_writable(source_uid: &str) -> bool {
@@ -2262,6 +2253,32 @@ fn context_action_state(
     contact_action_state(selected, contacts)
 }
 
+fn contact_selection_action_state(
+    selected: &[EBookContactRecord],
+    contacts: &[EBookContactRecord],
+) -> ContactSelectionActionState {
+    let selection_count = selected.len();
+    let single = selection_count == 1;
+    let single_state = single.then(|| contact_action_state(selected.first(), contacts));
+    let recipients = selected_contact_recipients(selected, contacts);
+    ContactSelectionActionState {
+        selection_count,
+        email: !recipients.trim().is_empty(),
+        // The export button only becomes enabled once the whole selection has
+        // been validated as one payload.  This is the fail-closed half of the
+        // atomic save contract; the click handler plans it again from the
+        // current selection before the file picker is opened.
+        export: plan_contact_vcard_export(selected).is_ok(),
+        edit: single_state.is_some_and(|state| state.edit),
+        merge: single_state.is_some_and(|state| state.merge),
+        // The existing EBook mutation is intentionally a single-contact
+        // transaction.  Keep multi-delete visibly unavailable until a
+        // backend-atomic batch mutation exists instead of deleting a prefix.
+        delete: single_state.is_some_and(|state| state.delete),
+        copy: single_state.is_some_and(|state| state.copy),
+    }
+}
+
 fn update_contact_action_sensitivity(
     email_button: &gtk::Button,
     export_button: &gtk::Button,
@@ -2303,6 +2320,52 @@ fn apply_contact_action_state(
     if let Some(copy_button) = copy_button {
         copy_button.set_sensitive(state.copy);
     }
+}
+
+fn apply_contact_selection_action_state(
+    state: ContactSelectionActionState,
+    email_button: &gtk::Button,
+    export_button: &gtk::Button,
+    edit_button: &gtk::Button,
+    merge_button: &gtk::Button,
+    delete_button: &gtk::Button,
+    copy_button: &gtk::Button,
+) {
+    email_button.set_sensitive(state.email);
+    export_button.set_sensitive(state.export);
+    edit_button.set_sensitive(state.edit);
+    merge_button.set_sensitive(state.merge);
+    delete_button.set_sensitive(state.delete);
+    copy_button.set_sensitive(state.copy);
+
+    let multiple = state.selection_count > 1;
+    email_button.set_tooltip_text(Some(if state.email {
+        "E-Mail an ausgewählte Kontakte senden"
+    } else {
+        "Die Auswahl enthält keine E-Mail-Adresse"
+    }));
+    export_button.set_tooltip_text(Some(if state.export {
+        "Ausgewählte Kontakte gemeinsam als vCard exportieren"
+    } else if state.selection_count == 0 {
+        "Kein Kontakt ausgewählt"
+    } else {
+        "Die Auswahl enthält keine vollständig exportierbare vCard"
+    }));
+    edit_button.set_tooltip_text(Some(if multiple {
+        "Bearbeiten ist nur für genau einen Kontakt verfügbar"
+    } else {
+        "Kontakt bearbeiten"
+    }));
+    merge_button.set_tooltip_text(Some(if multiple {
+        "Zusammenführen ist nur für genau einen Kontakt verfügbar"
+    } else {
+        "Dubletten derselben Quelle zusammenführen"
+    }));
+    delete_button.set_tooltip_text(Some(if multiple {
+        "Mehrere Kontakte können noch nicht atomar gelöscht werden"
+    } else {
+        "Kontakt löschen"
+    }));
 }
 
 fn set_contact_filter(contact_list: &gtk::ListBox, search_state: Rc<ContactPageSearchState>) {
@@ -2419,8 +2482,250 @@ fn selected_contact_identity(
         .or_else(|| page.imp().selected_identity.borrow().clone())
 }
 
+fn selected_contact_records_checked(
+    contact_list: &gtk::ListBox,
+    stored_contacts: &Rc<RefCell<Vec<EBookContactRecord>>>,
+) -> Result<Vec<EBookContactRecord>, String> {
+    let identities = contact_list
+        .selected_rows()
+        .iter()
+        .filter_map(row_contact_identity)
+        .collect::<Vec<_>>();
+    if identities.is_empty() {
+        return Err("Keine Kontakte ausgewählt".to_string());
+    }
+
+    let records = stored_contacts.borrow();
+    let mut selected = Vec::with_capacity(identities.len());
+    for identity in identities {
+        let matches = records
+            .iter()
+            .filter(|record| record.source_uid == identity.source_uid && record.uid == identity.uid)
+            .collect::<Vec<_>>();
+        match matches.as_slice() {
+            [record] => selected.push((*record).clone()),
+            _ => {
+                return Err(
+                    "Die Kontaktauswahl ist nicht mehr aktuell; bitte neu auswählen".to_string(),
+                );
+            }
+        }
+    }
+    Ok(selected)
+}
+
+fn selected_contact_recipients(
+    selected: &[EBookContactRecord],
+    records: &[EBookContactRecord],
+) -> String {
+    let mut recipients = Vec::new();
+    for record in selected {
+        for recipient in contact_recipient_text_with_records(&record.contact, records).split(',') {
+            push_unique_recipient(&mut recipients, recipient);
+        }
+    }
+    recipients.join(", ")
+}
+
+fn plan_contact_vcard_export(
+    selected: &[EBookContactRecord],
+) -> Result<ContactVCardExportPlan, ContactVCardExportError> {
+    if selected.is_empty() {
+        return Err(ContactVCardExportError::NoSelection);
+    }
+
+    let mut payload = Vec::new();
+    for record in selected {
+        if VCardContact::parse_vcard_string(&record.vcard).is_none() {
+            return Err(ContactVCardExportError::InvalidVCard {
+                contact_name: record.contact.fn_name.clone(),
+            });
+        }
+        // Retain every provider-supplied byte except trailing line-breaks;
+        // one CRLF is then appended so adjacent cards stay distinct without
+        // reserializing vCard 3/4 or extension data through a lossy UI path.
+        let vcard = record.vcard.trim_end_matches(['\r', '\n']);
+        payload.extend_from_slice(vcard.as_bytes());
+        payload.extend_from_slice(b"\r\n");
+    }
+
+    Ok(ContactVCardExportPlan {
+        initial_name: if selected.len() == 1 {
+            "kontakt.vcf".to_string()
+        } else {
+            "kontakte.vcf".to_string()
+        },
+        payload,
+        contact_count: selected.len(),
+    })
+}
+
+fn save_contact_vcard_export_async(
+    button: &gtk::Button,
+    file: gio::File,
+    plan: ContactVCardExportPlan,
+) {
+    let button = button.clone();
+    let contact_count = plan.contact_count;
+    file.replace_contents_async(
+        plan.payload,
+        None,
+        true,
+        gio::FileCreateFlags::NONE,
+        None::<&gio::Cancellable>,
+        move |result| match result {
+            Ok(_) if contact_count == 1 => {
+                show_toast_for_widget(&button, "Kontakt als vCard exportiert")
+            }
+            Ok(_) => show_toast_for_widget(
+                &button,
+                &format!("{contact_count} Kontakte als eine vCard-Datei exportiert"),
+            ),
+            Err((_, error)) => show_toast_for_widget(
+                &button,
+                &format!("vCard konnte nicht gespeichert werden: {error}"),
+            ),
+        },
+    );
+}
+
+fn reset_contact_detail(
+    detail_avatar: &adw::Avatar,
+    detail_name: &gtk::Label,
+    detail_title: &gtk::Label,
+    detail_extra: &gtk::Label,
+    email_row: &adw::ActionRow,
+) {
+    detail_avatar.set_text(Some(""));
+    detail_avatar.set_custom_image(None::<&gdk::Texture>);
+    detail_name.set_label("Kein Kontakt ausgewählt");
+    detail_title.set_label("Adressbuchdaten werden nach der Synchronisation angezeigt");
+    detail_extra.set_label("Keine weiteren Kontaktdaten");
+    email_row.set_title("Keine E-Mail-Adresse");
+    email_row.set_subtitle("Kein Kontakt ausgewählt");
+}
+
+#[allow(clippy::too_many_arguments)]
+fn sync_contact_selection(
+    page: &ContactsPage,
+    contact_list: &gtk::ListBox,
+    stored_contacts: &Rc<RefCell<Vec<EBookContactRecord>>>,
+    selected_contact: &Rc<RefCell<Option<EBookContactRecord>>>,
+    split: &adw::NavigationSplitView,
+    detail_avatar: &adw::Avatar,
+    detail_name: &gtk::Label,
+    detail_title: &gtk::Label,
+    detail_extra: &gtk::Label,
+    email_row: &adw::ActionRow,
+    email_button: &gtk::Button,
+    export_button: &gtk::Button,
+    edit_button: &gtk::Button,
+    merge_button: &gtk::Button,
+    delete_button: &gtk::Button,
+    copy_button: &gtk::Button,
+) {
+    let selected = match selected_contact_records_checked(contact_list, stored_contacts) {
+        Ok(selected) => selected,
+        Err(error) if error == "Keine Kontakte ausgewählt" => Vec::new(),
+        Err(error) => {
+            tracing::warn!(%error, "Contact selection no longer maps to the loaded records");
+            *selected_contact.borrow_mut() = None;
+            page.imp().selected_identity.replace(None);
+            reset_contact_detail(
+                detail_avatar,
+                detail_name,
+                detail_title,
+                detail_extra,
+                email_row,
+            );
+            split.set_show_content(false);
+            apply_contact_selection_action_state(
+                ContactSelectionActionState {
+                    selection_count: 0,
+                    email: false,
+                    export: false,
+                    edit: false,
+                    merge: false,
+                    delete: false,
+                    copy: false,
+                },
+                email_button,
+                export_button,
+                edit_button,
+                merge_button,
+                delete_button,
+                copy_button,
+            );
+            return;
+        }
+    };
+    let state = contact_selection_action_state(&selected, &stored_contacts.borrow());
+
+    match selected.as_slice() {
+        [] => {
+            *selected_contact.borrow_mut() = None;
+            page.imp().selected_identity.replace(None);
+            reset_contact_detail(
+                detail_avatar,
+                detail_name,
+                detail_title,
+                detail_extra,
+                email_row,
+            );
+            split.set_show_content(false);
+        }
+        [record] => {
+            *selected_contact.borrow_mut() = Some(record.clone());
+            page.imp()
+                .selected_identity
+                .replace(Some(ContactIdentity::new(
+                    record.source_uid.clone(),
+                    record.uid.clone(),
+                )));
+            update_contact_detail(
+                record,
+                detail_avatar,
+                detail_name,
+                detail_title,
+                detail_extra,
+                email_row,
+            );
+            split.set_show_content(true);
+        }
+        records => {
+            *selected_contact.borrow_mut() = None;
+            page.imp().selected_identity.replace(None);
+            detail_avatar.set_text(Some(""));
+            detail_avatar.set_custom_image(None::<&gdk::Texture>);
+            detail_name.set_label(&format!("{} Kontakte ausgewählt", records.len()));
+            detail_title.set_label(
+                "E-Mail und vCard-Export verwenden die vollständige Auswahl; Bearbeiten, Zusammenführen und Löschen benötigen genau einen Kontakt.",
+            );
+            email_row.set_title(&format!("{} Kontakte ausgewählt", records.len()));
+            email_row.set_subtitle(if state.email {
+                "E-Mail-Adressen können gemeinsam verwendet werden"
+            } else {
+                "Keine E-Mail-Adressen in der Auswahl"
+            });
+            detail_extra.set_label(
+                "Mehrfachauswahl: Der Export schreibt alle ausgewählten, geprüften vCards in eine Datei. Mehrfaches Löschen ist noch nicht verfügbar.",
+            );
+            split.set_show_content(true);
+        }
+    }
+    apply_contact_selection_action_state(
+        state,
+        email_button,
+        export_button,
+        edit_button,
+        merge_button,
+        delete_button,
+        copy_button,
+    );
+}
+
 fn clear_contact_selection(page: &ContactsPage, contact_list: &gtk::ListBox) {
-    contact_list.select_row(None::<&gtk::ListBoxRow>);
+    contact_list.unselect_all();
     page.imp().selected_identity.replace(None);
 }
 
@@ -3138,12 +3443,13 @@ impl Default for ContactsPage {
 mod tests {
     use super::{
         ContactActionState, ContactIdentity, ContactPageSearchState, ContactSelectionRestore,
-        confirmed_contact_uid, contact_action_state, contact_category_matches,
-        contact_detail_summary, contact_email_text, contact_load_status_message,
-        contact_query_matches, contact_recipient_text, contact_recipient_text_with_records,
-        contact_records_are_duplicates, contact_records_share_duplicate_key, contact_sort_key,
+        ContactVCardExportError, confirmed_contact_uid, contact_action_state,
+        contact_category_matches, contact_detail_summary, contact_email_text,
+        contact_load_status_message, contact_query_matches, contact_recipient_text,
+        contact_recipient_text_with_records, contact_records_are_duplicates,
+        contact_records_share_duplicate_key, contact_selection_action_state, contact_sort_key,
         contact_source_label, contact_status_needs_visibility, context_action_state,
-        should_restore_contact_selection,
+        plan_contact_vcard_export, should_restore_contact_selection,
     };
     use crate::services::contact_search_service::{
         ContactClauseGroup, ContactOuterFilters, ContactSearchClause, ContactSearchField,
@@ -3288,6 +3594,64 @@ mod tests {
         assert!(!state.delete);
         assert!(state.copy);
         assert_eq!(context_state, state);
+    }
+
+    #[test]
+    fn multi_selection_keeps_only_batch_safe_actions_enabled() {
+        let ada = record(
+            "book-a",
+            "ada",
+            VCardContact::new("Ada", "ada@example.test", "", ""),
+        );
+        let grace = record(
+            "book-a",
+            "grace",
+            VCardContact::new("Grace", "grace@example.test", "", ""),
+        );
+        let state = contact_selection_action_state(
+            &[ada.clone(), grace.clone()],
+            &[ada.clone(), grace.clone()],
+        );
+
+        assert_eq!(state.selection_count, 2);
+        assert!(state.email);
+        assert!(state.export);
+        assert!(!state.edit);
+        assert!(!state.merge);
+        assert!(!state.delete);
+        assert!(!state.copy);
+    }
+
+    #[test]
+    fn multi_vcard_export_is_planned_as_one_complete_payload() {
+        let ada = record(
+            "book-a",
+            "ada",
+            VCardContact::new("Ada", "ada@example.test", "", ""),
+        );
+        let grace = record(
+            "book-b",
+            "grace",
+            VCardContact::new("Grace", "grace@example.test", "", ""),
+        );
+        let plan = plan_contact_vcard_export(&[ada.clone(), grace.clone()])
+            .expect("both complete vCards should form one export");
+
+        assert_eq!(plan.initial_name, "kontakte.vcf");
+        assert_eq!(plan.contact_count, 2);
+        let payload = String::from_utf8(plan.payload).expect("vCard output is UTF-8");
+        assert_eq!(payload.matches("BEGIN:VCARD").count(), 2);
+        assert!(payload.contains(&ada.vcard.trim().to_string()));
+        assert!(payload.contains(&grace.vcard.trim().to_string()));
+
+        let mut broken = grace;
+        broken.vcard = "not a vCard".to_string();
+        assert_eq!(
+            plan_contact_vcard_export(&[ada, broken]),
+            Err(ContactVCardExportError::InvalidVCard {
+                contact_name: "Grace".to_string(),
+            })
+        );
     }
 
     #[test]

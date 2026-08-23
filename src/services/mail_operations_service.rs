@@ -19,7 +19,7 @@ use std::collections::HashSet;
 use serde::{Deserialize, Serialize};
 
 use super::camel_mail_service::{self, CamelMailOperation};
-use super::mail_metadata_service::MailFollowUpState;
+use super::mail_metadata_service::{MailFollowUpMetadata, MailFollowUpState};
 use super::mail_store_service::{MailBackendLocation, MailStoreService, MailStoreWorkerConfig};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -287,7 +287,7 @@ pub(crate) enum MailOperation {
     SetFollowUp {
         id: String,
         location: Option<MailBackendLocation>,
-        state: MailFollowUpState,
+        metadata: MailFollowUpMetadata,
     },
     RestoreDeleted {
         id: String,
@@ -339,22 +339,24 @@ impl MailCommand {
     pub(crate) fn set_follow_up(
         id: impl Into<String>,
         location: Option<MailBackendLocation>,
-        before: MailFollowUpState,
-        after: MailFollowUpState,
+        before: MailFollowUpMetadata,
+        after: MailFollowUpMetadata,
     ) -> Self {
         let id = id.into();
+        let before = before.normalized();
+        let after = after.normalized();
         Self {
             forward: MailOperation::SetFollowUp {
                 id: id.clone(),
                 location: location.clone(),
-                state: after,
+                metadata: after.clone(),
             },
             inverse: MailOperation::SetFollowUp {
                 id,
                 location,
-                state: before,
+                metadata: before,
             },
-            description: match after {
+            description: match after.state {
                 MailFollowUpState::None => "Nachverfolgung entfernen",
                 MailFollowUpState::FollowUp => "Zur Nachverfolgung markieren",
                 MailFollowUpState::Completed => "Nachverfolgung abschließen",
@@ -1631,16 +1633,30 @@ impl MailOperationsService {
             MailOperation::SetFollowUp {
                 id,
                 location,
-                state,
+                metadata,
             } => match location {
-                Some(location) => camel_mail_service::set_follow_up_state(location, state, None)
+                Some(location) => {
+                    if metadata.text.as_deref().is_some_and(|text| {
+                        text != super::mail_metadata_service::DEFAULT_FOLLOW_UP_TEXT
+                    }) {
+                        return Err(MailOperationError::Unsupported {
+                            operation: MailOperationKind::SetFollowUp,
+                            backend: "Camel (eigener Follow-up-Text ist noch nicht über die native Brücke verfügbar)",
+                        });
+                    }
+                    camel_mail_service::set_follow_up_state(
+                        location,
+                        metadata.state,
+                        Some(metadata.due_by.unwrap_or_default()),
+                    )
                     .map_err(|message| MailOperationError::Backend {
                         operation: MailOperationKind::SetFollowUp,
                         message,
-                    }),
+                    })
+                }
                 None => self
                     .store
-                    .persist_follow_up_state(&id, state)
+                    .persist_follow_up(&id, metadata)
                     .map_err(Into::into),
             },
             MailOperation::Delete { id, location } => match location {
@@ -1860,16 +1876,28 @@ impl MailOperationsService {
         if let MailOperation::SetFollowUp {
             id,
             location,
-            state,
+            metadata,
         } = operation
         {
             return match location {
-                Some(location) => camel_mail_service::apply_follow_up_state_with_cancellation(
-                    location,
-                    state,
-                    None,
-                    cancellation.requested_handle(),
-                )
+                Some(location) => {
+                    if metadata
+                        .text
+                        .as_deref()
+                        .is_some_and(|text| text != super::mail_metadata_service::DEFAULT_FOLLOW_UP_TEXT)
+                    {
+                        return Err(MailOperationError::Unsupported {
+                            operation: MailOperationKind::SetFollowUp,
+                            backend: "Camel (eigener Follow-up-Text ist noch nicht über die native Brücke verfügbar)",
+                        });
+                    }
+                    camel_mail_service::apply_follow_up_state_with_cancellation(
+                        location,
+                        metadata.state,
+                        Some(metadata.due_by.unwrap_or_default()),
+                        cancellation.requested_handle(),
+                    )
+                }
                 .map(|()| None)
                 .map_err(|message| MailOperationError::Backend {
                     operation: MailOperationKind::SetFollowUp,
@@ -1877,7 +1905,7 @@ impl MailOperationsService {
                 }),
                 None => self
                     .store
-                    .persist_follow_up_state(&id, state)
+                    .persist_follow_up(&id, metadata)
                     .map(|()| None)
                     .map_err(Into::into),
             };
@@ -2108,7 +2136,9 @@ impl Default for MailOperationsService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::services::mail_metadata_service::{MailMessageState, MailMetadataStore};
+    use crate::services::mail_metadata_service::{
+        MailFollowUpMetadata, MailMessageState, MailMetadataStore,
+    };
     use std::fs;
     use std::path::PathBuf;
 
@@ -2350,6 +2380,66 @@ mod tests {
             MailMetadataStore::new(store.metadata_path())
                 .load_labels()
                 .is_empty()
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn local_follow_up_command_restores_exact_prior_due_metadata_on_undo_and_redo() {
+        let root = temporary_directory("operations-follow-up");
+        let mail_dir = root.join("mail");
+        fs::create_dir_all(&mail_dir).expect("mail directory should be created");
+        fs::write(
+            mail_dir.join("message.eml"),
+            "From: Sender <sender@example.org>\nSubject: Test\n\nBody\n",
+        )
+        .expect("mail should be written");
+        let store =
+            MailStoreService::with_mail_dir_and_state_path(&mail_dir, root.join("state.json"));
+        let message_id = store.load_local_records()[0].id.clone();
+        let operations = MailOperationsService::with_store(store.clone());
+        let before = MailFollowUpMetadata::pending(
+            Some("Reply".to_string()),
+            Some("Mon, 24 Aug 2026 09:30:00 +0200".to_string()),
+        );
+        let after = MailFollowUpMetadata::completed_from(
+            &before,
+            "Mon, 24 Aug 2026 10:00:00 +0200".to_string(),
+        );
+        let mut history = MailCommandStack::default();
+
+        history
+            .execute(
+                &operations,
+                MailCommand::set_follow_up(&message_id, None, before.clone(), after.clone()),
+            )
+            .expect("follow-up command should save");
+        assert_eq!(
+            MailMetadataStore::new(store.metadata_path())
+                .load_follow_up()
+                .get(&message_id),
+            Some(&after)
+        );
+        history
+            .undo(&operations)
+            .expect("undo should succeed")
+            .expect("command should be present");
+        assert_eq!(
+            MailMetadataStore::new(store.metadata_path())
+                .load_follow_up()
+                .get(&message_id),
+            Some(&before)
+        );
+        history
+            .redo(&operations)
+            .expect("redo should succeed")
+            .expect("command should be present");
+        assert_eq!(
+            MailMetadataStore::new(store.metadata_path())
+                .load_follow_up()
+                .get(&message_id),
+            Some(&after)
         );
 
         let _ = fs::remove_dir_all(root);

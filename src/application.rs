@@ -21,6 +21,47 @@ use crate::services::reminder_service::{
 use crate::window::EvolutionWindow;
 use crate::{APP_ID, RESOURCE_PATH};
 
+const ACCELERATOR_BINDINGS: &[(&str, &[&str])] = &[
+    ("app.quit", &["<Ctrl>Q"]),
+    ("app.drafts", &["<Ctrl><Shift>D"]),
+    ("app.global-search", &["<Ctrl><Shift>G"]),
+    ("app.preferences", &["<Ctrl>comma"]),
+    ("win.show-help-overlay", &["<Ctrl>question"]),
+    ("win.search", &["<Ctrl>F"]),
+    ("win.refresh-mail", &["F5"]),
+    ("win.mail-send-receive", &["F12"]),
+    ("win.undo", &["<Ctrl>Z"]),
+    ("win.redo", &["<Ctrl><Shift>Z"]),
+    ("win.apply-filters", &["<Ctrl>Y"]),
+    ("win.toggle-sidebar", &["F9"]),
+    ("win.new", &["<Ctrl>N"]),
+    ("win.switch-mail", &["<Ctrl>1"]),
+    ("win.switch-calendar", &["<Ctrl>2"]),
+    ("win.switch-contacts", &["<Ctrl>3"]),
+    ("win.switch-tasks", &["<Ctrl>4"]),
+    ("win.switch-memos", &["<Ctrl>5"]),
+    ("win.mail-next", &["<Ctrl>Page_Down", "J"]),
+    ("win.mail-prev", &["<Ctrl>Page_Up", "K"]),
+    ("win.mail-next-unread", &["<Ctrl>bracketright"]),
+    ("win.mail-prev-unread", &["<Ctrl>bracketleft"]),
+    ("win.toggle-preview", &["<Ctrl>M"]),
+    ("win.toggle-mail-threading", &["<Ctrl>T"]),
+    ("win.reply", &["<Ctrl>R"]),
+    ("win.reply-all", &["<Ctrl><Shift>R"]),
+    ("win.forward", &["<Ctrl>L"]),
+    ("win.export", &["<Ctrl><Shift>S"]),
+    ("win.mail-print", &["<Ctrl>P"]),
+    ("win.view-message-source", &["<Ctrl>U"]),
+    ("win.find-in-message", &["<Ctrl><Shift>F"]),
+    ("win.delete", &["Delete"]),
+    ("win.mark-read", &["<Ctrl>K"]),
+    ("win.mark-unread", &["<Ctrl><Shift>K"]),
+    ("win.toggle-important", &["<Ctrl>I"]),
+    ("win.move-message", &["<Ctrl><Shift>V"]),
+    ("win.copy-message", &["<Ctrl><Shift>C"]),
+    ("win.select-all-mail", &["<Ctrl>A"]),
+];
+
 #[derive(Debug, Clone, Copy)]
 enum ReminderAction {
     Snooze(i64),
@@ -561,44 +602,9 @@ impl EvolutionApplication {
 
     /// Set up keyboard accelerators for actions.
     fn setup_accels(&self) {
-        self.set_accels_for_action("app.quit", &["<Ctrl>Q"]);
-        self.set_accels_for_action("app.drafts", &["<Ctrl><Shift>D"]);
-        self.set_accels_for_action("app.global-search", &["<Ctrl><Shift>F"]);
-        self.set_accels_for_action("app.preferences", &["<Ctrl>comma"]);
-        self.set_accels_for_action("win.show-help-overlay", &["<Ctrl>question"]);
-        self.set_accels_for_action("win.search", &["<Ctrl>F"]);
-        self.set_accels_for_action("win.refresh-mail", &["F5"]);
-        self.set_accels_for_action("win.mail-send-receive", &["F12"]);
-        self.set_accels_for_action("win.undo", &["<Ctrl>Z"]);
-        self.set_accels_for_action("win.redo", &["<Ctrl><Shift>Z"]);
-        self.set_accels_for_action("win.apply-filters", &["<Ctrl>Y"]);
-        self.set_accels_for_action("win.toggle-sidebar", &["F9"]);
-        self.set_accels_for_action("win.new", &["<Ctrl>N"]);
-
-        // Module switching: Ctrl+1…5
-        self.set_accels_for_action("win.switch-mail", &["<Ctrl>1"]);
-        self.set_accels_for_action("win.switch-calendar", &["<Ctrl>2"]);
-        self.set_accels_for_action("win.switch-contacts", &["<Ctrl>3"]);
-        self.set_accels_for_action("win.switch-tasks", &["<Ctrl>4"]);
-        self.set_accels_for_action("win.switch-memos", &["<Ctrl>5"]);
-
-        // Mail navigation (vim-style)
-        self.set_accels_for_action("win.mail-next", &["J"]);
-        self.set_accels_for_action("win.mail-prev", &["K"]);
-        self.set_accels_for_action("win.reply", &["<Ctrl>R"]);
-        self.set_accels_for_action("win.reply-all", &["<Ctrl><Shift>R"]);
-        self.set_accels_for_action("win.forward", &["<Ctrl>L"]);
-        self.set_accels_for_action("win.export", &["<Ctrl><Shift>S"]);
-        self.set_accels_for_action("win.mail-print", &["<Ctrl>P"]);
-        self.set_accels_for_action("win.view-message-source", &["<Ctrl>U"]);
-        self.set_accels_for_action("win.find-in-message", &["<Ctrl><Shift>F"]);
-        self.set_accels_for_action("win.delete", &["Delete"]);
-        self.set_accels_for_action("win.mark-read", &["<Ctrl>K"]);
-        self.set_accels_for_action("win.mark-unread", &["<Ctrl><Shift>K"]);
-        self.set_accels_for_action("win.toggle-important", &["<Ctrl>I"]);
-        self.set_accels_for_action("win.move-message", &["<Ctrl><Shift>V"]);
-        self.set_accels_for_action("win.copy-message", &["<Ctrl><Shift>C"]);
-        self.set_accels_for_action("win.select-all-mail", &["<Ctrl>A"]);
+        for (action, accelerators) in ACCELERATOR_BINDINGS {
+            self.set_accels_for_action(action, accelerators);
+        }
 
         tracing::debug!("Keyboard accelerators registered");
     }
@@ -618,5 +624,52 @@ fn reminder_notification_id(key: &str) -> String {
 impl Default for EvolutionApplication {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use super::ACCELERATOR_BINDINGS;
+
+    #[test]
+    fn accelerator_contract_is_conflict_free() {
+        let mut owners = HashMap::new();
+        for (action, accelerators) in ACCELERATOR_BINDINGS {
+            for accelerator in *accelerators {
+                let normalized = accelerator.to_ascii_lowercase();
+                assert_eq!(
+                    owners.insert(normalized.clone(), *action),
+                    None,
+                    "{normalized} is assigned to more than one action"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn accelerator_contract_keeps_upstream_daily_mail_paths() {
+        let accelerators_for = |wanted: &str| {
+            ACCELERATOR_BINDINGS
+                .iter()
+                .find_map(|(action, accelerators)| (*action == wanted).then_some(*accelerators))
+                .expect("daily action should have an accelerator")
+        };
+
+        assert!(accelerators_for("win.mail-next").contains(&"<Ctrl>Page_Down"));
+        assert!(accelerators_for("win.mail-prev").contains(&"<Ctrl>Page_Up"));
+        assert_eq!(
+            accelerators_for("win.mail-next-unread"),
+            &["<Ctrl>bracketright"]
+        );
+        assert_eq!(
+            accelerators_for("win.mail-prev-unread"),
+            &["<Ctrl>bracketleft"]
+        );
+        assert_eq!(accelerators_for("win.toggle-preview"), &["<Ctrl>M"]);
+        assert_eq!(accelerators_for("win.toggle-mail-threading"), &["<Ctrl>T"]);
+        assert_eq!(accelerators_for("win.mail-print"), &["<Ctrl>P"]);
+        assert_eq!(accelerators_for("win.find-in-message"), &["<Ctrl><Shift>F"]);
     }
 }

@@ -310,7 +310,13 @@ impl ReadOnlyMailMetadata {
             folder_overrides: store.load_folder_overrides(),
             deleted: store.load_deleted(),
             labels: store.load_labels(),
-            follow_up: store.load_follow_up(),
+            // Search filters only inspect the three-state value.  Keep that
+            // view stable while the sidecar retains text and due metadata.
+            follow_up: store
+                .load_follow_up()
+                .into_iter()
+                .map(|(id, metadata)| (id, metadata.state))
+                .collect(),
         }
     }
 }
@@ -1911,6 +1917,7 @@ mod tests {
             is_flagged,
             is_important,
             follow_up_state: crate::services::mail_metadata_service::MailFollowUpState::None,
+            follow_up: crate::services::mail_metadata_service::MailFollowUpMetadata::default(),
             labels: labels.iter().map(|label| (*label).to_string()).collect(),
             attachments,
         }
@@ -2154,6 +2161,7 @@ mod tests {
             is_flagged: false,
             is_important: false,
             follow_up_state: crate::services::mail_metadata_service::MailFollowUpState::None,
+            follow_up: crate::services::mail_metadata_service::MailFollowUpMetadata::default(),
             labels: Vec::new(),
             attachments: Vec::new(),
         }];

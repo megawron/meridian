@@ -13,8 +13,13 @@ Vollständige Architektur-Spezifikation, Feature-Mapping und Entwicklungs-Roadma
 > unabhängigen Reviews sind abgeschlossen; `git diff --check`,
 > `cargo fmt --all -- --check`, strikte Schema-Prüfung, normaler und mit
 > `RUSTFLAGS='--cfg=eds_camel_bridge'` erzwungener Cargo-Check sind grün. Der
-> finale portable/macOS-unsandboxed `cargo test --workspace --locked --no-fail-fast --quiet`-
-> Lauf hat 618/618 Tests bestanden; das ist keine Linux-Abnahme. `P0-MAIL-WORKER-STORE`, `MAIL-TRANSPORT-COMMANDS`, `SET-01`,
+> letzte portable/macOS-unsandboxed `cargo test --workspace --locked --no-fail-fast --quiet`-
+> Vollbaseline hat 746/746 Tests bestanden; die drei neuen Assignment-Tests im
+> aktuellen 749-Test-Workspace sind gezielt grün. Der aktuelle sandboxed
+> Vollauf bestätigt sie innerhalb von 731 grünen Tests und scheitert
+> ausschließlich an 18 gesperrten
+> Graph-Loopback-Binds; eine neue unsandboxed Vollabnahme wurde vom
+> Ausführungslimit abgelehnt. Das ist keine Linux-Abnahme. `P0-MAIL-WORKER-STORE`, `MAIL-TRANSPORT-COMMANDS`, `SET-01`,
 > `GW-CAL-VIEWS-001`, `GW-MEMO-SURFACE-FILTERS`, der eigene atomare
 > `GW-MEMO-EDITOR` und `GW-REMINDER-RUNTIME` sind portabel
 > implementiert und unabhängig reviewt; wegen nativer/provider-/Desktop-Reste
@@ -621,13 +626,14 @@ werden.
   verwenden dieselben zentralen
   Menü-, Detail- und Command-/Undo-Pfade; zusätzliche providerabhängige
   Camel-Aktionen bleiben bis zur Linux-Abnahme offen.
-- [~] Die Nachrichten-Nachverfolgung ist als eigener dreistufiger Zustand
-  getrennt vom normalen Stern modelliert: erster Klick setzt den Marker,
-  zweiter Klick schließt mit grünem Haken ab, dritter Klick entfernt ihn.
-  Lokale Importe speichern den Zustand im app-eigenen Sidecar, Graph verwendet
-  `message.flag.flagStatus`, und Camel verwendet Evolutions `follow-up`-/
-  `completed-on`-/`due-by`-User-Tags. Fälligkeitstermin-Dialog sowie reale
-  Camel-/Graph-Roundtrip-Abnahme bleiben offen.
+- [~] Die Nachrichten-Nachverfolgung ist als eigener Zustand getrennt vom
+  normalen Stern modelliert. Ein selection-sensitiver Editor und die
+  Nachrichten-Menüaktion bearbeiten Kennzeichnung, optionale Fälligkeit,
+  Entfernen und Erledigt; State/Text/Due/Completed round-trippen durch Modell,
+  versioniertes Sidecar und exakte Undo-/Redo-Inversen. Camel liest/schreibt
+  Evolutions User-Tags; Graph-Due und nativer Custom-Text werden fail-closed
+  abgelehnt, wenn der Provider/Bridge sie nicht verlustfrei unterstützt. Reale
+  Camel-/Graph-Roundtrip- und visuelle Linux-Abnahme bleiben offen.
 - [~] Anhang „Speichern unter“ ist für lokal gelesene MIME-Anhänge angebunden;
   ausgewählte Nachrichten können zusätzlich als vollständige EML/RFC822-Datei
   mit Thread-Headern und MIME-Anhängen exportiert werden. Lokale MIME-
@@ -844,8 +850,8 @@ jeweilige negative Fehlerpfad mit direkter Evidenz vorliegen.
   übernimmt Internetkopfzeilen beim Listenabruf, und Backup sowie Migration
   bewahren die Konfiguration; ein gültiger `Face`-Header erscheint als
   kompaktes Absenderbild statt als Base64-Text. Die dreistufige Nachverfolgung
-  ist in Modell, lokaler Persistenz, Graph und Camel angebunden. Offen bleiben
-  der Fälligkeitseditor sowie die reale Linux-Abnahme.
+  samt Text/Fälligkeit/Abschluss ist in Modell, lokaler Persistenz, Menü/Editor,
+  Graph-Capability-Gate und Camel angebunden. Offen bleibt die reale Linux-Abnahme.
   Belege: Der portable Helper-/Workspace-Test ist grün; offen bleiben
   Linux-Referenzvergleich, Icon-Theme und sichtbare Dichte.
 - `P0-MAIL-WORKER-STORE` — S0–S3 sind portabel geschlossen und unabhängig
@@ -880,10 +886,12 @@ cargo test --workspace --locked --no-fail-fast --quiet
 ```
 
 Cargo-Format-/Check-, strikte Schema- und Diff-Prüfung sind für den aktuellen
-Arbeitsstand grün; der finale portable/macOS-unsandboxed Workspace-Lauf hat
-618/618 Tests erfolgreich belegt; das ist keine Linux-Abnahme. Ein früherer sandboxed Lauf konnte 18 Graph-Loopback-
-Mockserver nicht binden und ist nicht der finale Testbeleg. Die unabhängigen
-Reviews sind abgeschlossen.
+Arbeitsstand grün; die letzte portable/macOS-unsandboxed Vollbaseline hat
+746/746 Tests erfolgreich belegt. Die drei danach ergänzten Assignment-Tests
+des aktuellen 749-Test-Workspaces sind gezielt grün; der sandboxed Vollauf
+bestätigt sie innerhalb von 731 grünen Tests und kann ausschließlich 18 Graph-Loopback-
+Mockserver nicht binden. Ein neuer unsandboxed Vollauf wurde vom
+Ausführungslimit abgelehnt. Das ist keine Linux-Abnahme.
 WebKitGTK-Runtime, echte
 EDS/Camel-Flags, Icon-Theme, sichtbare Dichte, rasches Umschalten und bestätigte
 Counter-Aktualisierung bleiben in `ROADMAP_LINUX.md` offen und dürfen hier
@@ -924,10 +932,10 @@ Die Statuswerte sind Quellen-/UI-Belege, keine Laufzeit- oder Providerabnahme:
    bleiben Linux-Rest.
 4. `GW-CAL-VIEWS-001` — `BLOCKED_LINUX`: portabler Schnitt in
    `src/views/calendar_page.rs`, implementiert, getestet und reviewt. Day/
-   Week/WorkWeek/Month42/Agenda90 verwenden halb-offene zivile Bereiche;
+   Week/WorkWeek/Month42/Agenda90/Year/List verwenden halb-offene zivile Bereiche;
    Navigation, immutable Range-Index, Generation/Cancel/Stale sowie
-   DST/Recurrence sind belegt. Year/List, Selection und globale Aktionen
-   bleiben offen; native EDS-Range/Monitor-/Provider-Wirkung und Visuals sind
+   DST/Recurrence sind belegt. Selection und globale Aktionen bleiben offen;
+   native EDS-Range/Monitor-/Provider-Wirkung und Visuals sind
    Linux-Rest.
 5. `GW-MEMO-SURFACE-FILTERS` — `BLOCKED_LINUX`: portabler Schnitt mit
    Source+UID-Multiselect/Action States, Preview/Attachments, strict
@@ -1152,8 +1160,33 @@ Die Statuswerte sind Quellen-/UI-Belege, keine Laufzeit- oder Providerabnahme:
   Navigation. `GW-TASK-FILTERS` ergänzt aktuell den portablen Filter-/Advanced-
   Suchvertrag mit persistierter Quellen-/Kategorienauswahl, validierter
   Migration und DST-Fixtures; beide unabhängigen Reviews sind abgeschlossen
-  und das Paket steht bis zur EDS-/Provider-Abnahme auf `BLOCKED_LINUX`. Eine
-  vollständige Aufgabenlisten- und upstream-Taskpad-Parität fehlt weiterhin.
+  und das Paket steht bis zur EDS-/Provider-Abnahme auf `BLOCKED_LINUX`.
+  `GW-TASK-ACTIONS-BATCH` ergänzt echte Source+UID-basierte 0/1/n-Auswahl und
+  einen vorvalidierten atomaren Mehrfach-VCALENDAR-Export. Complete/Incomplete
+  folgen nun upstreams all-writable Multi-Selection- und Partial-Result-Semantik;
+  Delete-selected nutzt eine Confirmation und stoppt beim ersten Providerfehler,
+  wobei nur bestätigte Löschungen verschwinden. Copy/Cut/Paste/Select All sind
+  selection-sensitiv und per Tasklisten-Fokus erreichbar; Paste re-keyt jeden
+  VTODO in die bestätigte Standardquelle und reduziert Teilfehler sequentiell,
+  während TZID/VTIMEZONE ohne native Provisionierung fail-closed bleibt. Edit
+  bleibt einzeln. Bulk Edit ergänzt Ctrl+B und einzeln aktivierbare Änderungen
+  für Termine, Lifecycle, Priorität, Klassifizierung, geschätzte Dauer sowie
+  tri-state Kategorie-Add/Remove; der Worker stoppt beim ersten Fehler und baut
+  bestätigte Zeilen aus autoritativen VTODOs neu auf. Zeitzonenänderungen bleiben
+  ohne VTIMEZONE-Provisionierung deaktiviert. Der separate Forward-/URL-Slice
+  liefert exakten alarmfreien `METHOD:PUBLISH`-Payload und gehärtetes HTTP(S)-
+  Öffnen. Ein weiterer Slice bereitet ein escaped, remote-freies Task-
+  Druckdokument vor. Task Preview ergänzt eine persistente echte Classic-/
+  Vertical-Pane mit getrennt persistierten Divider-Positionen, exakte
+  Source+UID-Vorschau sowie Ctrl+M und Unicode-sicheres
+  Ctrl+Shift+F; aktive/remote HTML- und Attachment-Inhalte bleiben inert. Purge
+  ergänzt Ctrl+E mit bestätigtem, revalidiertem sequential Delete aller erledigten
+  Aufgaben aus schreibfähigen geladenen Quellen. Listen-Print/Preview ergänzt
+  selection-unabhängige Snapshots der sichtbaren Reihenfolge und Ctrl+P, getrennt
+  vom Single-Task-Print. Capability-gesteuertes Assign mit Organizer/Attendees
+  und METHOD:REQUEST-Handoff ist portabel vorhanden; echte iTIP-Zustellung,
+  Delegate-Ketten, nativer Druck und
+  vollständige upstream-Taskpad-Parität fehlen weiterhin.
   Wenn EDS nicht verfügbar ist, können neue lokale VTODOs und
   VJOURNALs im app-eigenen Kalenderbestand persistent gespeichert werden.
   Standard-Aufgabenliste und Standard-Notizliste werden getrennt von der
@@ -1197,9 +1230,9 @@ Die Statuswerte sind Quellen-/UI-Belege, keine Laufzeit- oder Providerabnahme:
   Konfliktauflösung fehlt noch; die ECal-Signalaktualisierung ist umgesetzt.
 - [~] `GW-CAL-VIEWS-001` ist im exakten Scope `src/views/calendar_page.rs`
   portabel geschlossen, getestet und reviewt: Day/Week/WorkWeek/Month42/
-  Agenda90 verwenden halb-offene zivile Bereiche; Navigation, immutable
+  Agenda90, Year und List verwenden halb-offene zivile Bereiche; Navigation, immutable
   Range-Index, Generation/Cancel/Stale sowie DST-/Recurrence-Regeln sind
-  belegt. Year/List, Selection und globale Aktionen bleiben offen. Native
+  belegt. Selection und globale Aktionen bleiben offen. Native
   EDS-Range-Abfragen, Monitor-/Provider-Refresh, reale Zeitzonen/DST und
   visuelle Linux-Abnahme bleiben Linux-Rest.
 - [~] Lokale VEVENTs unterstützen Wiederholungen und mehrere Alarme; `RDATE`-
@@ -1223,6 +1256,13 @@ Die Statuswerte sind Quellen-/UI-Belege, keine Laufzeit- oder Providerabnahme:
   Anhangsübertragung und Download-/Upload-Abnahme bleiben Linux-only. Der
   Editor erhält beim Ändern bestehende Teilnehmerparameter und alle
   importierten Alarmtypen; unsichere Actions werden dabei nie ausgeführt.
+- [~] Der portable Kalenderaktions-Slice `GW-CAL-ACTIONS-TRANSFER-DELETE` ist
+  getestet: explizites Copy/Move nach Lokal schreibt das Ziel vor dem Entfernen
+  der Quelle und lädt bei jedem Teilfehler den autoritativen Zustand neu.
+  Wiederkehrende Löschungen fragen den Scope ab; nicht verlustfrei darstellbare
+  This-Occurrence-/This-and-Future-Mutationen werden ohne Änderung abgelehnt.
+  Beliebige EDS-Ziele, echte EXDATE-/Serien-Splits und die übrigen
+  Upstream-Aktionen bleiben Parent-/Linux-Rest.
 - [~] VTODO/VJOURNAL-Erstellung, VTODO-Status, Notizbearbeitung/-löschung,
   VTODO-Bearbeitung, Prioritäten, Fälligkeiten und Notizlöschung werden über
   den EDS-Adapter persistiert. ECal-Signalaktualisierung ist angebunden;
@@ -1236,6 +1276,9 @@ Die Statuswerte sind Quellen-/UI-Belege, keine Laufzeit- oder Providerabnahme:
   angezeigt und beim Bearbeiten als RFC5545-CATEGORIES erhalten werden.
   Statuswerte NEEDS-ACTION, IN-PROCESS, COMPLETED und CANCELLED sowie
   PERCENT-COMPLETE werden im portablen Task-Editor bearbeitet und gespeichert.
+  Fremdfeldänderungen erhalten STATUS, PERCENT-COMPLETE und COMPLETED dabei
+  unabhängig, auch wenn ein Wert fehlt oder vom Editor nicht dargestellt wird;
+  nur eine explizite Lifecycle-Änderung normalisiert diese Felder gekoppelt.
   Wiederkehrende Aufgaben können als RFC5545-RRULE eingegeben, geladen und
   geändert werden. Kalender und Aufgaben verwenden dafür denselben portablen
   RRULE-Rechenkern; VTODO-RDATE/EXDATE werden zusätzlich bearbeitet und die
@@ -1297,6 +1340,10 @@ Die Statuswerte sind Quellen-/UI-Belege, keine Laufzeit- oder Providerabnahme:
   Aus dem Kontakt-Detail öffnet die Mailaktion den Composer mit den
   ausgewählten E-Mail-Adressen vorbefüllt; die sichtbaren Adressen können
   außerdem direkt in die Zwischenablage kopiert werden.
+  Die Liste unterstützt portabel echte 0/1/n-Auswahl, Batch-Mail und einen
+  vor dem Dateidialog vollständig validierten, atomar geschriebenen gemeinsamen
+  vCard-Export. Mutierende Mehrfachaktionen bleiben ohne Backend-Transaktion
+  deaktiviert; Transfer, Batch-Delete und Druck bleiben offen.
   EBookClientView-Signale werden
   UID-basiert in die Kontaktliste eingepflegt; der Linux-Laufzeittest und die
   vollständige native vCard-Feldparität fehlen noch. Der portable Pfad kann
@@ -1555,7 +1602,10 @@ Die Statuswerte sind Quellen-/UI-Belege, keine Laufzeit- oder Providerabnahme:
   allein folgt keine Upstream-, Provider- oder Laufzeitparität.
 - [~] Tastaturbedienung besitzt echte globale GTK-Aktionen für Navigation,
   Suche, Synchronisation, Sidebar, Mailaktionen und Modulwechsel; das
-  Shortcuts-Fenster zeigt dieselben Beschleuniger. Die klassische Mailansicht
+  Shortcuts-Fenster zeigt dieselben Beschleuniger. Eine zentrale Tabelle hält
+  die Beschleuniger konfliktfrei und belegt die Upstream-Wege für nächste/
+  vorherige sowie nächste/vorherige ungelesene Mail, Preview, Threading, Find
+  und Print; die globale Suche nutzt konfliktfrei `Ctrl+Shift+G`. Die klassische Mailansicht
   sowie Kalender, Aufgaben, Memos und Kontakte setzen nun für Nachrichten-,
   Termin-, Aufgaben- und Kontaktaktionen Accessible-Labels, einschließlich
   dynamischer Sortier- und Statusaktionen. Lokalisierung, IME, RTL, HiDPI,

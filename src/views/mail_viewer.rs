@@ -1707,9 +1707,7 @@ fn webview_load_is_current(
         return false;
     }
     match (expected_uri, current_uri) {
-        (Some(expected), Some(current)) => {
-            current == expected || current == "about:blank"
-        }
+        (Some(expected), Some(current)) => current == expected || current == "about:blank",
         (Some(_), None) => false,
         (None, None) => true,
         _ => false,

@@ -139,9 +139,29 @@ und erweitert dessen Schreibbereich nur nach dokumentierter Kollisionsprüfung.
 | 26 | `GW-ALARMS` | `P1-CAL-001`, `P1-TASK-001` | `src/services/reminder_service.rs`, `src/dialogs/event_dialog.rs`, `src/views/{tasks,memos}_page.rs` | portable Kalender-/Task-/Memo-Komponenten vorhanden | BLOCKED_LINUX | verlustarmer Multi-VALARM-Editor/Parser und lokaler Snapshot-Kandidatenpfad für Event/Task/Memo reviewed; nur DISPLAY ausführbar, der native EDS-Watcher sowie Provider-/Desktop-Abnahme bleiben offen; das separate `GW-REMINDER-RUNTIME`-Wiring ist portabel abgeschlossen |
 | 27 | `GW-MEMO-EDITOR` | `P1-TASK-001` | `src/services/calendar_store_service.rs`, `src/views/memos_page.rs` (Produktionsscope; `src/views/tasks_page.rs` nur test-only Cross-Surface-RFC5545-Test) | `P1-TASK-001A` und portabler `GW-ALARMS`-Vertrag erfüllt | BLOCKED_LINUX | Der Produktionsscope liefert vollständigen portablen VJOURNAL-Draft, fields/attachments/URL/unknown props/VALARM preservation, atomic/cross-process store, Save/Discard/Cancel, stale/confirmed mutation und Export; der separate test-only Test prüft entfaltete ATTACH-Semantik plus 75-Oktett-Folding; native EDS-Capabilities/ACL/Provider-Attachment-Transfer/Desktop-Aktionen offen |
 | 28 | `GW-REMINDER-RUNTIME` | `GW-ALARMS` | `src/application.rs`, `src/window.rs`, `src/dialogs/{mod.rs,reminder_dialog.rs}`, `src/services/reminder_service.rs` | portabler `GW-ALARMS`-Vertrag erfüllt | BLOCKED_LINUX | Kanonische Event-/Task-/Memo-Deep-Links und Action-Targets, Source-/UID-Routing, kompaktes wiederverwendbares Reminder-Fenster, Open/10m/1h/Dismiss, exact-once Claim-Leases, Replay-/stale-Generationsgates, atomare persistente Snooze-/Dismiss-/Restart-Semantik, Notification-Vertrag und GTK-freie Worker/MainContext-Grenzen portabel implementiert und unabhängig reviewt; EReminderWatcher/EDS-ClientViews, Provider-Alarme, Sleep/Wakeup, Offline und systemweiter Notification-Daemon bleiben Linux |
-| 29 | `GW-CAL-VIEWS-001` | `P1-CAL-001` | `src/views/calendar_page.rs` | `P1-CAL-001A` | BLOCKED_LINUX | Portabler Schnitt geschlossen und reviewt: halb-offene Day/Week/WorkWeek/Month42/Agenda90-Ranges, Navigation, immutable Range-Index, Generation/Cancel/Stale sowie DST/Recurrence; Year/List, Selection, globale Aktionen, native EDS-Range/Monitor/Provider-Wirkung und Visuals bleiben offen |
+| 29 | `GW-CAL-VIEWS-001` | `P1-CAL-001` | `src/views/calendar_page.rs` | `P1-CAL-001A` | BLOCKED_LINUX | Portabler Schnitt geschlossen und reviewt: halb-offene Day/Week/WorkWeek/Month42/Agenda90/Year/List-Ranges, Navigation, immutable Range-Index, Generation/Cancel/Stale sowie DST/Recurrence; Selection, globale Aktionen, native EDS-Range/Monitor/Provider-Wirkung und Visuals bleiben offen |
 | 30 | `GW-MEMO-SURFACE-FILTERS` | `P1-TASK-001` | `src/views/memos_page.rs`, `src/services/memo_filter_service.rs`, `src/services/memo_surface_service.rs`, `src/services/settings_service.rs`, `src/services/migration_service.rs`, `src/services/mod.rs`, `data/org.gnome.Evolution4.gschema.xml`, `src/dialogs/preferences_dialog.rs` (geteilter Memo-/Mail-Scope) | `P1-TASK-001A` | BLOCKED_LINUX | Portabler Schnitt geschlossen und reviewt: Source+UID-Multiselect/Action States, Preview/Attachments, strict Search/Category/Source-Filter, Forward-Payload/Open URL/Print/Save/Multi-Export/Copy-Cut-Paste-Delete sowie persistente Keys/Migration; native EDS-ACL/Provider-Anhänge/Browser/Print/iTIP bleiben offen |
 | 31 | `SET-01` | `P2-MIGRATION-*`, `P3-SETTINGS-*` | `src/services/{backup_service,migration_service,settings_service}.rs`, `data/org.gnome.Evolution4.gschema.xml` | portable Backup-/Migrationsgrundlage erfüllt | BLOCKED_LINUX | Portable Implementierung und unabhängiger Review abgeschlossen: acht Migrationsparser- und drei Backup-Lücken, Version-4-Backcompat, strikte Validierung, Duplicate-Key-/Redaction-/Restore-/Diagnostics-/Rollback-Tests grün; native GSettings-/Preferences-/EDS-/Camel-/GOA-/Secret-Service-Wirkung offen |
+| 32 | `MAIL-ACCELERATOR-CONTRACT` | `P0-MAIL-002` | `src/application.rs`, `src/window.rs`, `src/views/mail_page.rs`, `src/dialogs/shortcuts_dialog.rs` | Mail-Actions vorhanden | BLOCKED_LINUX | konfliktfreie Action-Tabelle, Upstream-Next/Previous/Unread-, Preview-, Thread-, Print- und Find-Bindings, Menü-/Help-Overlay-Parität sowie Empty/Boundary-Tests portabel grün; GTK/IME/Fokus-Abnahme offen |
+| 33 | `GW-CAL-ACTIONS-TRANSFER-DELETE` | `P1-CAL-001` | `src/views/calendar_page.rs` | portabler Kalender-CRUD-Vertrag | BLOCKED_LINUX | Copy/Move nach Lokal ist create-before-remove und lädt bei Teilfehlern neu; Serien-Löschumfang fragt explizit und lehnt nicht verlustfrei unterstützte Scopes ohne Mutation ab; beliebige EDS-Ziele und Occurrence-Mutationen offen |
+| 34 | `GW-CONTACT-ACTIONS-BATCH-EXPORT` | `P1-CONTACT-001` | `src/views/contacts_page.rs` | `P1-CONTACT-001B` | BLOCKED_LINUX | 0/1/n-Auswahl, Batch-Mail, action sensitivity und atomarer gemeinsamer vCard-Export portabel getestet; Batch-Delete/Transfer/Print und EBook-/Desktop-Abnahme offen |
+| 35 | `GW-TASK-EDITOR-LIFECYCLE` | `P1-TASK-001` | `src/views/tasks_page.rs` | portabler VTODO-Editor | BLOCKED_LINUX | Unabhängiger Erhalt von STATUS/PERCENT-COMPLETE/COMPLETED bei Fremdfeldänderungen einschließlich fehlender/unsupported Werte sowie explizite gekoppelte Normalisierung getestet; native EDS-Capabilities/Providerwirkung offen |
+| 36 | `MAIL-FOLLOW-UP-DUE` | `P0-MAIL-002` | `src/services/{mail_metadata_service,mail_store_service,mail_operations_service,camel_mail_service,exchange_service,search_engine}.rs`, `src/models/mail_message.rs`, `src/views/mail_page.rs`, `src/window.rs` | Follow-up-Dreistatus vorhanden | BLOCKED_LINUX | Text/Due/Completed-Metadaten, v7-enum Migration, expliziter Editor/Menüaction, exakte Undo-Inverse, Camel-Parse/Write und Graph-Fail-closed sind portabel getestet; native FFI-/Visualabnahme offen |
+| 37 | `GW-TASK-ACTIONS-BATCH` | `P1-TASK-001` | `src/views/tasks_page.rs` | portabler VTODO-Listen-/Exportvertrag | BLOCKED_LINUX | Echte 0/1/n-Auswahl, Source+UID-Identität, sichtbarkeitsbereinigte Action-Sensitivity und vorvalidierter atomarer gemeinsamer VCALENDAR-Export sind getestet; weitere Batchmutationen, native iTIP-/URL-/Print- und EDS-/Desktop-Abnahme offen |
+| 38 | `GW-TASK-ACTIONS-FORWARD-URL` | `P1-TASK-001` | `src/views/tasks_page.rs` | `GW-TASK-ACTIONS-BATCH` | BLOCKED_LINUX | Exakte Single-Selection, UID-validierter alarmfreier METHOD:PUBLISH-Payload und gehärtete HTTP(S)-URL-Aktion sind portabel getestet; echte iTIP-Zustellung und Desktop-/EDS-Abnahme offen |
+| 39 | `GW-TASK-ACTIONS-PRINT` | `P1-TASK-001` | `src/views/tasks_page.rs` | `GW-TASK-ACTIONS-BATCH` | BLOCKED_LINUX | Exakte Single-Selection und deterministisches, escaped, remote-freies HTML-/Text-Druckdokument mit sichtbarem Preparing/Result/Error-Handoff sind getestet; nativer GTK-Druckdialog/Portal und Jobabschluss offen |
+| 40 | `GW-TASK-ACTIONS-LIFECYCLE-BATCH` | `P1-TASK-001` | `src/views/tasks_page.rs` | `GW-TASK-ACTIONS-BATCH`, `GW-TASK-EDITOR-LIFECYCLE` | BLOCKED_LINUX | Upstream-Sensitivity, all-writable exact preflight, Complete/Incomplete-Transformation, sequentielle ECal-Ergebnisse, partial failure und authoritative success fallback sind portabel getestet; externe EDS-Writability/Monitor-/Providerabnahme offen |
+| 41 | `GW-TASK-ACTIONS-DELETE-BATCH` | `P1-TASK-001` | `src/views/tasks_page.rs` | `GW-TASK-ACTIONS-BATCH` | BLOCKED_LINUX | Exakte all-writable Auswahl, eine named/count Confirmation, Re-Preflight, sequentielles Stop-on-first-error-Delete und bestätigter Prefix/Failure/Unattempted-Reducer sind getestet; RECURRENCE-ID MOD_THIS, Single-Assign-iTIP und Providerabnahme offen |
+| 42 | `GW-TASK-ACTIONS-CLIPBOARD` | `P1-TASK-001` | `src/views/tasks_page.rs` | `GW-TASK-ACTIONS-BATCH`, `GW-TASK-ACTIONS-DELETE-BATCH` | BLOCKED_LINUX | Copy/Cut/Paste/Select All, Tasklisten-Fokusshortcuts, Default-Source-Revalidation, Fresh-UID-Paste und bestätigter Prefix/Failure/Unattempted-Reducer sind getestet; VTIMEZONE/TZID-Provisionierung und externe Providerabnahme offen |
+| 43 | `GW-TASK-ACTIONS-BULK-EDIT` | `P1-TASK-001` | `src/views/tasks_page.rs` | `GW-TASK-ACTIONS-BATCH`, `GW-TASK-EDITOR-LIFECYCLE` | BLOCKED_LINUX | Upstream-sensitive Ctrl+B-Aktion, opt-in Feld-/Kategorieänderungen, Lifecycle-/Datums-Kopplung, sequential stop-first-error und authoritative Prefix/Recovery sind getestet; VTIMEZONE und externe Providerabnahme offen |
+| 44 | `GW-TASK-ACTIONS-FIND-PREVIEW` | `P1-TASK-001` | `src/views/tasks_page.rs`, `src/services/{settings_service,migration_service}.rs`, `data/org.gnome.Evolution4.gschema.xml` | `GW-TASK-ACTIONS-BATCH` | BLOCKED_LINUX | Exakte Single-Selection-Vorschau, persistente Classic/Vertical-Pane samt getrennten Divider-Positionen, Ctrl+M, Ctrl+Shift+F, Unicode-Wrap-Suche, sichere VTODO-/Attachment-Metadaten und Upstream-Settingsmigration sind getestet; HTML-/Attachment-Aktivierung und Linux-Visuals bleiben offen |
+| 45 | `GW-TASK-ACTIONS-PURGE` | `P1-TASK-001` | `src/views/tasks_page.rs` | `GW-TASK-ACTIONS-DELETE-BATCH` | BLOCKED_LINUX | Selection-unabhängiges Ctrl+E, destructive Re-Preflight aller erledigten Tasks in writable Sources, Read-only-Skip, sequential confirmed Prefix und authoritative Channel-Recovery sind getestet; RECURRENCE-ID/MOD_THIS und Providerabnahme offen |
+| 46 | `GW-TASK-ACTIONS-LIST-PRINT` | `P1-TASK-001` | `src/views/tasks_page.rs` | `GW-TASK-ACTIONS-BATCH`, `GW-TASK-ACTIONS-PRINT` | BLOCKED_LINUX | Selection-unabhängige sichtbare Listenreihenfolge, exakte Source+UID-Revalidation, escaped HTML/Text, getrennte Print-/Preview-Preparation und Tasklisten-Fokus-Ctrl+P sind getestet; nativer GTK-Print/Preview-Dialog und Linux-Visuals offen |
+| 47 | `GW-TASK-LIST-REFRESH` | `P1-TASK-001` | `src/views/tasks_page.rs`, `src/services/ecal_service.rs`, `native/eds_ecal_bridge.{h,c}` | exakte primäre Aufgabenlistenquelle | BLOCKED_LINUX | Auswahlgebundene, mutationsgesperrte Aktualisierung prüft exakte Source-UID und TASK_LIST-Typ, EClient-Refresh-Support und bestätigt erst nach Provider-Refresh plus autoritativem Reload; Generation/Quellenwechsel verwerfen stale Ergebnisse, Unsupported und Backendfehler bleiben sichtbar; EDS-Provider-/Auth-/Offline-Abnahme offen |
+| 48 | `GW-TASK-SOURCE-CAPABILITIES` | `P1-TASK-001` | `src/views/tasks_page.rs`, `src/services/ecal_service.rs`, `native/eds_ecal_bridge.{h,c}` | native ECal-Brücke | BLOCKED_LINUX | Exakte enabled TASK_LIST-Enumeration ersetzt generische Calendar-/GOA-Quellen; ECalClient connected/available, readonly/writable und refresh-supported treiben Listen-, Editor-, Row- und Action-Sensitivity, Partial-Connection-Fehler bleiben sichtbar und unavailable Quellen erhalten ihre Identität; Registry-/Provider-/ACL- und Linux-Visualabnahme offen |
+| 49 | `GW-MEMO-SOURCE-CAPABILITIES` | `P1-TASK-001` | `src/views/memos_page.rs` | `GW-TASK-SOURCE-CAPABILITIES` (wiederverwendbare ECal-Discovery) | BLOCKED_LINUX | Exakte enabled MEMO_LIST-UIDs und connected/available/readonly-writable ersetzen generische Calendar-Quellen in Hauptliste und Editor; unbekannte, offline und read-only Quellen mutieren fail-closed, unavailable Filter-/Edit-Identitäten bleiben sichtbar; reale EDS-/ACL-/Provider- und Linux-Visualabnahme offen |
+| 50 | `GW-TASK-LIST-MANAGEMENT` | `P1-TASK-001` | `src/views/tasks_page.rs`, `src/services/ecal_service.rs`, `native/eds_ecal_bridge.{h,c}` | `GW-TASK-SOURCE-CAPABILITIES` | BLOCKED_LINUX | Exakte Primary-Source-Metadaten treiben Copy/Rename/Delete; Rename/Properties verwenden `ESource:writable` getrennt von der Client-Writability für Taskmutationen, Delete wählt remote-delete nur bei Capability, Copy überträgt alle VTODOs samt TZIDs und überschreibt gleiche UIDs mit ehrlichem Partial-Prefix. New erstellt eine lokale TASK_LIST unter `local-stub`; lokale Properties bearbeiten Name/Farbe/Default/ICS-Datei/Writability/E-Mail. Nicht-lokale provider-spezifische New/Properties-Konfigurationsdialoge und reale EDS-Laufzeitabnahme bleiben offen. |
+| 51 | `GW-TASK-ACTIONS-ASSIGN` | `P1-TASK-001` | `src/views/tasks_page.rs`, `src/services/ecal_service.rs`, `native/eds_ecal_bridge.{h,c}` | `GW-TASK-SOURCE-CAPABILITIES`, `GW-TASK-ACTIONS-BATCH` | BLOCKED_LINUX | Exakte Single-Selection plus connected/client-writable und beide ECal-Assignment-Capabilities treiben Assign. Organizer/Attendees werden validiert und ohne Verlust fremder/nested Properties ersetzt, über exact Source+UID gespeichert und autoritativ neu geladen; METHOD:REQUEST wird bereitgestellt. Echter iTIP-Versand, Delegate-Ketten und Provider-/Linux-Abnahme bleiben offen. |
 
 ### Parallelisierungsregeln
 
@@ -609,14 +629,14 @@ oder visuellen Linux-Belege.
 
 - Status: `BLOCKED_LINUX`; der portable Schnitt in
   `src/views/calendar_page.rs` ist geschlossen und reviewt.
-- Belegt: halb-offene Day/Week/WorkWeek/Month42/Agenda90-Ranges,
+- Belegt: halb-offene Day/Week/WorkWeek/Month42/Agenda90/Year/List-Ranges,
   deterministische Navigation, immutable Range-Index, Generation/Cancel/
-  Stale-Gates sowie DTEND-exklusive DST-/Recurrence-Regeln. Das ist keine
-  Behauptung für Year/List, Selection oder globale Aktionen.
+  Stale-Gates sowie DTEND-exklusive DST-/Recurrence-Regeln. Selection und
+  globale Aktionen bleiben außerhalb dieses portablen View-Schnitts.
 - Linux-Handoff: native EDS-Range-Abfragen müssen dieselben Records für die
   halb-offenen Bereiche liefern; danach ECal-Monitor-/Provider-Refresh, reale
-  Zeitzonen/DST/Recurrence, fünf Views und Visuals prüfen. Year/List,
-  Selection und globale Aktionen bleiben separate offene Implementierung.
+  Zeitzonen/DST/Recurrence, sieben Views und Visuals prüfen. Selection und
+  globale Aktionen bleiben separate offene Implementierung.
 
 ### GW-MEMO-SURFACE-FILTERS
 
@@ -765,6 +785,306 @@ oder visuellen Linux-Belege.
 - Linux-Rest: native EDS/VJOURNAL-Capabilities, ACLs, Provider-
   Attachment-Transfer und Desktop-Aktionen (Open URL/Print) bleiben offen.
 
+### MAIL-ACCELERATOR-CONTRACT
+
+- Status: `BLOCKED_LINUX`; der portable Action-/Shortcut-Vertrag ist geschlossen.
+- Portabler Beleg: eine zentrale konfliktfreie Accelerator-Tabelle bindet die
+  Upstream-Wege für nächste/vorherige und nächste/vorherige ungelesene Mail,
+  Preview, Threading, Print, Source und Find. Menü und Shortcuts-Fenster verwenden
+  dieselben Actions; Empty-/No-selection-/Boundary-/Wrap-Fixtures sind grün.
+- Linux-Rest: GTK4-Acceleratoranzeige, IME-/Portal-Fokus und echte Listen-/WebKit-
+  Fokusübergänge mit Tastaturlayouts abnehmen.
+
+### GW-CAL-ACTIONS-TRANSFER-DELETE
+
+- Status: `BLOCKED_LINUX`; portabler Teil des offenen Elternpakets
+  `GW-CAL-ACTIONS` geschlossen.
+- Portabler Beleg: explizites Copy/Move nach Lokal, create-before-remove,
+  authoritative Reload nach jedem Teilfehler sowie Serien-Löschumfang mit
+  fail-closed This-Occurrence-/This-and-Future-Pfaden und Pure-Plan-Tests.
+- Offener Parent-/Linux-Rest: beliebige EDS-Ziele, verlustfreie EXDATE-/Serien-
+  Split-Mutation, Forward/RSVP/Schedule/Purge/Properties/Print und Provider-ACLs.
+
+### GW-CONTACT-ACTIONS-BATCH-EXPORT
+
+- Status: `BLOCKED_LINUX`; portabler Teil des offenen Elternpakets
+  `GW-CONTACT-ACTIONS` geschlossen.
+- Portabler Beleg: echte 0/1/n-Auswahl, Batch-Mail, selection-sensitive Actions,
+  exakte Context-Selection und vor dem FileDialog vollständig validierter,
+  atomar ersetzter gemeinsamer vCard-3/4-Payload. Multi-Delete bleibt mangels
+  Backend-Transaktion explizit deaktiviert.
+- Offener Parent-/Linux-Rest: Batch-Delete/Transfer/Merge-Rollback, Printlayout,
+  File-Portal und reale EBook-/EDS-ACL-/Providerwirkung.
+
+### GW-TASK-EDITOR-LIFECYCLE
+
+- Status: `BLOCKED_LINUX`; portabler Teil des offenen Elternpakets
+  `GW-TASK-EDITOR` geschlossen.
+- Portabler Beleg: Fremdfeldänderungen erhalten `STATUS`, `PERCENT-COMPLETE` und
+  `COMPLETED` unabhängig einschließlich fehlender oder nicht darstellbarer Werte;
+  nur echte Lifecycle-Control-Interaktion normalisiert die gekoppelte Tripel-
+  Semantik. Attachments, unknown properties und geordnete VALARMs bleiben erhalten.
+- Offener Parent-/Linux-Rest: Delegation/Teilnehmer, native Task-Capabilities,
+  Provider-Konflikte und vollständige visuelle Editor-Abnahme.
+
+### GW-TASK-ACTIONS-BATCH
+
+- Status: `BLOCKED_LINUX`; portabler Auswahl-/Save-as-Teil des offenen
+  Elternpakets `GW-TASK-SURFACE` geschlossen.
+- Portabler Beleg: echte 0/1/n-Auswahl anhand Source+UID, Aktualisierung nach
+  Filter/Refresh, selection-sensitive Controls und vor dem FileDialog vollständig
+  validierter gemeinsamer VCALENDAR-Payload mit exakt einem VTODO je Auswahl;
+  das Ziel wird atomar ersetzt. Stale, doppelte oder ungültige Kandidaten brechen
+  ohne Datei- oder Taskmutation ab.
+- Offener Parent-/Linux-Rest: Delegate, Print, echte iTIP-Zustellung und
+  URL-Handler-Abnahme, weitere capability-gesteuerte Batchmutationen, EDS-ACLs sowie
+  Desktop-/File-Portal-Abnahme.
+
+### GW-TASK-ACTIONS-FORWARD-URL
+
+- Status: `BLOCKED_LINUX`; portabler Action-Teil des offenen Elternpakets
+  `GW-TASK-SURFACE` geschlossen.
+- Portabler Beleg: Forward und Open URL sind für exakt eine aktuelle Source+UID-
+  Auswahl sensitiv. Forward validiert genau einen passenden VTODO, entfernt
+  VALARMs wie upstream und stellt ohne Quellmutation einen deterministischen
+  `METHOD:PUBLISH`-Payload bereit. Open URL liest die URL aus demselben exakten
+  VTODO und lässt ausschließlich die gehärtete gemeinsame HTTP(S)-Policy zum
+  Desktop-Handler durch; stale, fehlende, UID-fremde und unsichere Werte brechen ab.
+- Offener Parent-/Linux-Rest: echte Composer-/iTIP-Zustellung statt portabler
+  Payload-Bereitstellung, Desktop-Handler-Abnahme, Delegate,
+  EDS-Capabilities und Providerwirkung; native Printwirkung führt der separate
+  Print-Slice als Linux-Rest.
+
+### GW-TASK-ACTIONS-PRINT
+
+- Status: `BLOCKED_LINUX`; portabler Print-Preparation-Teil des offenen
+  Elternpakets `GW-TASK-SURFACE` geschlossen.
+- Portabler Beleg: Print ist nur für exakt eine aktuelle Source+UID-Auswahl
+  sensitiv, validiert denselben eindeutigen VTODO und erzeugt daraus ein
+  deterministisches unveränderliches HTML-/Text-Dokument. Alle Felder sind
+  escaped, aktive/remote Inhalte fehlen, und Preparing/Result/Error benennen
+  explizit den noch ausstehenden GTK-Druckdialog statt einen Jobabschluss zu melden.
+- Offener Parent-/Linux-Rest: nativer GTK-Druckdialog/Portal, Preview,
+  Seitenlayout/Jobabschluss, EDS-Zeitzone/Locale und visuelle Linux-Abnahme.
+
+### GW-TASK-ACTIONS-LIFECYCLE-BATCH
+
+- Status: `BLOCKED_LINUX`; portabler Complete-/Incomplete-Teil des offenen
+  Elternpakets `GW-TASK-SURFACE` geschlossen.
+- Portabler Beleg: Actions spiegeln upstreams 0/1/n-/mixed-state-Sensitivity,
+  lösen jede Source+UID genau einmal auf und verlangen vor dem ersten Write eine
+  vollständig schreibfähige Auswahl. Complete setzt STATUS/100%, bewahrt vorhandene
+  COMPLETED-Werte und verwendet für fehlende Werte einen Batch-Zeitpunkt;
+  Incomplete setzt NEEDS-ACTION und entfernt COMPLETED/PERCENT-COMPLETE. Die
+  sequentiellen upstream-nahen ECal-Writes laufen außerhalb GTK; nur UID-validierte
+  autoritative Erfolge werden angewendet, Partial-/Channel-Fehler bleiben sichtbar.
+- Offener Parent-/Linux-Rest: bestätigte externe EDS-Writability-Capabilities,
+  reale Provider-Teilfehler/Monitor-Reconciliation, Konflikte, Offline und visuelle
+  Linux-Abnahme; Delegate/iTIP-Delivery und native Delete-Sonderfälle bleiben separate
+  Parent-Reste.
+
+### GW-TASK-ACTIONS-DELETE-BATCH
+
+- Status: `BLOCKED_LINUX`; portabler Delete-selection-Teil des offenen
+  Elternpakets `GW-TASK-SURFACE` geschlossen.
+- Portabler Beleg: 0/1/n-Sensitivity verlangt exakte UID-passende VTODOs und
+  ausschließlich bestätigte writable Sources. Eine named/count-aware destructive
+  Confirmation wird vor Dispatch erneut gegen Auswahl und Capabilities geprüft;
+  Cancel mutiert nichts. Der Worker löscht wie upstream sequentiell und stoppt
+  beim ersten Fehler. Nur der bestätigte Prefix wird entfernt; Failure und
+  unattempted Rest bleiben sichtbar. Toolbar, Row und Context teilen diesen Pfad.
+- Offener Parent-/Linux-Rest: RECURRENCE-ID/MOD_THIS, Single-Assign-iTIP-
+  Retract/Cancel-Notice, externe EDS-Writability, Provider-Teilfehler/Monitor-
+  Reconciliation, Offline und visuelle Linux-Abnahme.
+
+### GW-TASK-ACTIONS-CLIPBOARD
+
+- Status: `BLOCKED_LINUX`; portabler Clipboard-/Select-All-Teil des offenen
+  Elternpakets `GW-TASK-SURFACE` geschlossen.
+- Portabler Beleg: Copy und Cut validieren die vollständige sichtbare
+  Source+UID-Auswahl und erzeugen einen gemeinsamen VTODO-VCALENDAR-Payload;
+  Cut kopiert vor dem zentral bestätigten Delete-Pfad. Paste akzeptiert bare
+  VTODOs oder VCALENDAR, revalidiert die schreibfähige Standardquelle nach dem
+  asynchronen Clipboard-Read und im Worker, vergibt pro Komponente eine neue UID,
+  schreibt sequentiell und wendet nur den autoritativ bestätigten Prefix an.
+  Channel-/Apply-Unsicherheit lädt den Bestand neu. Ctrl+C/X/V/A greift nur bei
+  Tasklisten-Fokus; Select All betrifft die sichtbaren Zeilen.
+- Offener Parent-/Linux-Rest: VTIMEZONE-Provisionierung für TZID-Payloads,
+  externe EDS-Writability/ACLs, Provider-Teilfehler/Monitor-Reconciliation,
+  native Clipboard-Targets und visuelle Linux-Abnahme.
+
+### GW-TASK-ACTIONS-BULK-EDIT
+
+- Status: `BLOCKED_LINUX`; portabler Mehrfachbearbeitungs-Teil des offenen
+  Elternpakets `GW-TASK-SURFACE` geschlossen.
+- Portabler Beleg: Bulk Edit bleibt wie upstream für jede nichtleere Auswahl
+  sensitiv und ist bei Tasklisten-Fokus über Ctrl+B erreichbar; Aktivierung und
+  Dispatch prüfen alle aktuellen Source+UID-Identitäten und writable Sources.
+  DTSTART, DUE, COMPLETED, STATUS, PRIORITY, PERCENT-COMPLETE, CLASS,
+  ESTIMATED-DURATION sowie Kategorie-Add/Remove sind einzeln opt-in. Datums- und
+  Lifecycle-Felder folgen den upstream-Kopplungen, escaped Kategoriekommas sowie
+  unbekannte Properties, Recurrence, Attachments und VALARMs bleiben erhalten.
+  Der Worker schreibt sequentiell, stoppt beim ersten Fehler, baut bestätigte
+  Zeilen aus autoritativen Komponenten neu auf und lädt bei unsicherem Ergebnis.
+- Offener Parent-/Linux-Rest: VTIMEZONE-/TZID-Transformation, native EDS-
+  Capabilities/ACLs, Provider-Teilfehler/Monitor-Reconciliation, Offline und
+  visuelle Linux-Abnahme.
+
+### GW-TASK-ACTIONS-FIND-PREVIEW
+
+- Status: `BLOCKED_LINUX`; portabler Find-/Preview-Teil des offenen
+  Elternpakets `GW-TASK-SURFACE` geschlossen.
+- Portabler Beleg: Genau eine aktuelle Source+UID-Auswahl rendert die sichere,
+  GTK-native VTODO-Vorschau; null/mehrfach/stale leert sie. Ctrl+M schaltet die
+  persistierte Pane; Classic liegt unter und Vertical neben der Liste, mit je
+  eigener persistierter Divider-Position. Das
+  upstream-kompatible Ctrl+Shift+F öffnet nur bei Tasklisten-Fokus und gültiger
+  Einzelauswahl eine Unicode-offset-sichere Vor-/Zurück-Suche mit Wrap und
+  invalidiert Query/Highlights bei Auswahl-, Komponenten- oder Sichtwechsel.
+  Upstream-`show-task-preview`/`task-layout` migrieren strikt in die neuen Keys.
+- Offener Parent-/Linux-Rest: aktive HTML-Darstellung, Attachment-Aktionen,
+  native EDS-Komponentenformatierung, Fokus/IME und visuelle Linux-Abnahme.
+
+### GW-TASK-ACTIONS-PURGE
+
+- Status: `BLOCKED_LINUX`; portabler Purge-Teil des offenen Elternpakets
+  `GW-TASK-SURFACE` geschlossen.
+- Portabler Beleg: Ctrl+E ist auswahlunabhängig, plant alle erledigten Aufgaben
+  aus geladenen schreibfähigen Quellen, überspringt Read-only-Quellen, bestätigt
+  den exakten Count und revalidiert ihn vor Dispatch. Der Worker löscht
+  sequentiell, stoppt beim ersten Fehler, wendet nur den bestätigten Prefix an
+  und lädt bei verlorenem Ergebnis den autoritativen Snapshot neu.
+- Offener Parent-/Linux-Rest: RECURRENCE-ID/MOD_THIS, externe EDS-Writability,
+  Provider-/Monitor-Reconciliation, Offline und visuelle Linux-Abnahme.
+
+### GW-TASK-ACTIONS-LIST-PRINT
+
+- Status: `BLOCKED_LINUX`; portabler Listen-Print-/Preview-Teil des offenen
+  Elternpakets `GW-TASK-SURFACE` geschlossen.
+- Portabler Beleg: Print und Print Preview verwenden selection-unabhängig einen
+  unveränderlichen Snapshot der tatsächlich sichtbaren, gefilterten und
+  sortierten Taskzeilen. Jede Source+UID-Identität wird exakt einmal gegen den
+  aktuellen VTODO-Bestand validiert; empty/duplicate/stale/malformed bricht
+  sichtbar ab. HTML und Text sind deterministisch, alle HTML-Zellen escaped und
+  frei von aktiven/remote Inhalten. Ctrl+P greift nur bei Tasklisten-Fokus und
+  bleibt vom separaten Single-Task-Print getrennt.
+- Offener Parent-/Linux-Rest: nativer GTK-Print-/Preview-Dialog, Portal,
+  Seitenlayout, Jobabschluss, Locale/Zeitzone und visuelle Linux-Abnahme.
+
+### GW-TASK-LIST-REFRESH
+
+- Status: `BLOCKED_LINUX`; der portable/native Contract für Upstreams
+  `task-list-refresh` ist geschlossen, die reale Providerabnahme bleibt offen.
+- Portabler Beleg: Nur eine verfügbare primäre Aufgabenliste kann den Worker
+  starten; „Alle Aufgabenlisten“, fehlende Quellen, Parallelmutationen und
+  bekannte Unsupported-Quellen bleiben gesperrt. Der Linux-Adapter löst die
+  exakte ESource-UID auf, verlangt die TASK_LIST-Extension, verbindet ECalClient,
+  prüft `e_client_check_refresh_supported` und ruft erst dann den synchronen
+  Refresh. Erfolg wird erst nach einem autoritativen Gesamtreload übernommen;
+  Generation und primäre Source-UID verwerfen verspätete Resultate, während die
+  sichtbare Source+UID-Auswahl beim Neuaufbau erhalten oder korrekt bereinigt
+  wird. Lokal wird ehrlich nur neu geladen, ohne Provider-Refresh vorzutäuschen.
+- Offener Parent-/Linux-Rest: Auth-Prompt/Cancel, Offline/Providerfehler,
+  Monitor-Reconciliation und
+  visuelle Linux-Abnahme.
+
+### GW-TASK-SOURCE-CAPABILITIES
+
+- Status: `BLOCKED_LINUX`; die frühere generische Calendar-/GOA-Projektion ist
+  aus der Aufgabenlisten- und Editor-Grenze entfernt.
+- Portabler Beleg: Der native Adapter enumeriert ausschließlich aktivierte
+  Quellen mit der zum Komponententyp passenden Extension, für Aufgaben also
+  `E_SOURCE_EXTENSION_TASK_LIST`. Jede exakte UID behält Anzeigename,
+  Connection-/Availability-, Readonly/Writable- und Refresh-Support-Zustand.
+  Verbindungsfehler behalten die Quelle unavailable in der Liste und liefern
+  eine sichtbare Partial-Warnung, statt fremde Kalenderkonten als Tasklisten zu
+  erfinden. Hauptliste, Editor, Quick Edit, Toggle, Row-Aktivierung,
+  Batch-Sensitivity und Refresh verwenden dieselbe fail-closed Projektion;
+  lokale portable Tasks bleiben ein expliziter separater Source-Typ.
+- Offener Parent-/Linux-Rest: reale Registry mit gemischten Calendar/Task/Memo-
+  Extensions, dynamische Capability-/ACL-Änderung nach Start, Provider-Auth,
+  Offline/Partial-Connect und visuelle Linux-Abnahme.
+
+### GW-MEMO-SOURCE-CAPABILITIES
+
+- Status: `BLOCKED_LINUX`; der Memo-Surface-/Editor-Rest verwendet jetzt die
+  wiederverwendbare exakte ECal-Discovery statt generischer Kalenderkonten.
+- Portabler Beleg: Hauptlistenfilter und Editorziel werden im Worker nur aus
+  `E_SOURCE_EXTENSION_MEMO_LIST`-Quellen aufgebaut. Stabile UID/Anzeige und
+  connected/available/readonly-writable werden getrennt projiziert; blanke und
+  doppelte UIDs werden verworfen, offline und read-only mutieren fail-closed.
+  Ein persistierter Filter oder die Quelle einer geöffneten Notiz bleibt bei
+  Ausfall sichtbar unavailable. `local-calendar` erscheint nur bei bestätigtem
+  schreibfähigem lokalen Store, und ein nach Dialogschluss eintreffendes
+  Discovery-Ergebnis wird verworfen.
+- Offener Parent-/Linux-Rest: reale Memo-Provider-/ACL-Wirkung, dynamische
+  Capability-Änderung, Auth/Offline/Partial-Connect, Provider-Anhänge und
+  visuelle Linux-Abnahme.
+
+### GW-TASK-LIST-MANAGEMENT
+
+- Status: `BLOCKED_LINUX`; Upstreams Primary-Task-List-Aktionen Copy, Rename und
+  Delete sowie die lokalen New-/Properties-Pfade sind über exakte
+  ESource-Identitäten und Metadaten verdrahtet.
+- Portabler Beleg: Source-Discovery liefert zusätzlich source-writable,
+  client-writable, removable, remote-deletable und collection-owned. Die UI
+  verwendet dieselben Gates wie Upstream, hält `ESource:writable` für
+  Rename/Properties getrennt von ECalClient-readonly für Taskmutationen,
+  sperrt parallele Taskmutationen und verwirft stale Generationen. Rename löst
+  die Source erneut auf, verlangt TASK_LIST, aktuelle Source-Writability und
+  keine Collection-Anbindung und schreibt erst dann den Namen. Delete
+  bestätigt destruktiv und verwendet remote delete ausschließlich bei
+  bestätigter Capability, sonst nur removable. Copy wählt eine andere exakte
+  TASK_LIST-Quelle, verbindet beide ECalClients, ersetzt identische UIDs,
+  kopiert sonst alle referenzierten Zeitzonen vor Create und stoppt beim ersten
+  Providerfehler mit exakten bestätigten/aktualisierten Zählern. Erfolg und
+  Teilfehler werden autoritativ neu geladen; Source+UID-Auswahl wird erhalten
+  oder nach Delete bereinigt. New legt nach strikter Name-/`#RRGGBB`-Prüfung
+  eine exakte lokale TASK_LIST unter `local-stub` an, setzt Backend, Farbe und
+  Writability, committed über die EDS-Registry und unterscheidet bestätigte
+  Verfügbarkeit von einem erfolgreichen Commit mit noch nicht erreichbarem
+  Client. Optional wird erst die bestätigte UID als Default gespeichert.
+  Properties lädt vor Anzeige die exakte lokale Source, bearbeitet Name,
+  Farbe, Default, optionale ICS-Datei samt Update-Erlaubnis und E-Mail, sperrt
+  die Dateiauswahl für die eingebaute Quelle und committed eine scratch Source;
+  Commit-Erfolg und nachgelagerte Client-Verfügbarkeit bleiben getrennt.
+- Offener Parent-/Linux-Rest: Upstreams nicht-lokale, provider-spezifische
+  `New Task List` und `Task List Properties` beruhen auf Evolution-internen
+  `ECalSourceConfig`-Backends (Local/CalDAV/WebDAV/Collection usw.), die im
+  GTK4-Port noch nicht vorhanden sind. Außerdem bleiben C-Compile,
+  Registry-/Auth-/Offline-/Providerwirkung, dynamische Capability-Änderungen
+  und visuelle Linux-Abnahme offen.
+
+### GW-TASK-ACTIONS-ASSIGN
+
+- Status: `BLOCKED_LINUX`; portabler Assign-Metadaten-/Handoff-Slice ist
+  geschlossen, echte iTIP-Zustellung bleibt offen.
+- Portabler Beleg: EDS-Discovery projiziert `NO_TASK_ASSIGNMENT` und
+  `NO_CONV_TO_ASSIGN_TASK` unabhängig von Source-/Client-Writability. Die UI
+  aktiviert Assign nur für exakt eine aktuelle Source+UID-Auswahl auf einem
+  connected, client-writable Provider, der beide Operationen unterstützt, und
+  revalidiert Auswahl, Komponente und Capabilities vor der Mutation.
+  ORGANIZER/ATTENDEE akzeptieren sichere E-Mail-Kurzformen oder vollständige
+  iCalendar-Zeilen, verlangen Organizer plus mindestens eine Person, deduplizieren
+  identische Teilnehmende und bewahren fremde sowie nested Properties. Der
+  Worker speichert über exact Source+UID, verlangt anschließend einen
+  autoritativen EDS-Reload und stellt erst dann einen `METHOD:REQUEST`-Payload
+  bereit; stale Generationen und Reload-Unsicherheit werden sichtbar verworfen.
+- Offener Parent-/Linux-Rest: echtes iTIP-Senden/Composer-Handoff,
+  Organizer-Identitäten, Antworten, Delegate-/Delegated-From-/To-Ketten,
+  Provider-ACLs/Servernormalisierung, Delete-Retract und Linux-Visuals.
+
+### MAIL-FOLLOW-UP-DUE
+
+- Status: `BLOCKED_LINUX`; der portable Reader-Aktionsslice ist geschlossen.
+- Portabler Beleg: vollständige Follow-up-Metadaten aus State/Text/Due-by/
+  Completed-on durch Model, versioniertes Sidecar, Command-History und Camel-
+  Parser; expliziter selection-sensitive Editor samt Message-Menü, Clear und
+  Complete; exakte Undo-/Redo-Inverse. Graph-Due und nicht schreibbarer nativer
+  Custom-Text werden ohne Mutation abgelehnt statt still verworfen.
+- Linux-Rest: reale EDS/Camel-Tag-Roundtrips, Graph-/Camel-Providerwirkung,
+  Locale/Zeitzonen- und visuelle Dialogabnahme.
+
 ### Weitere Groupware-/Settings-Lücken aus den Audits
 
 Als weitere disjunkte Folgepakete bleiben:
@@ -903,19 +1223,33 @@ wird ein konkreter Folgepunkt angelegt und der Elternpunkt bleibt offen.
   implementiert, unabhängig reviewt und wegen nativer/provider-/Desktop-Reste
   `BLOCKED_LINUX`. Die zuvor belegten `MAIL-PRINT-ACTION`,
   `COMPOSER-ACTION-SURFACE` und `GW-ALARMS` bleiben ebenfalls `BLOCKED_LINUX`.
+- Neu atomisiert und portabel geschlossen sind `MAIL-ACCELERATOR-CONTRACT`,
+  `GW-CAL-ACTIONS-TRANSFER-DELETE`, `GW-CONTACT-ACTIONS-BATCH-EXPORT` und
+  `GW-TASK-EDITOR-LIFECYCLE`, `GW-TASK-ACTIONS-BATCH` sowie
+  `GW-TASK-ACTIONS-FORWARD-URL`, `GW-TASK-ACTIONS-PRINT` und
+  `GW-TASK-ACTIONS-LIFECYCLE-BATCH`, `GW-TASK-ACTIONS-DELETE-BATCH`,
+  `GW-TASK-ACTIONS-CLIPBOARD`, `GW-TASK-ACTIONS-BULK-EDIT`,
+  `GW-TASK-ACTIONS-FIND-PREVIEW`, `GW-TASK-ACTIONS-PURGE`,
+  `GW-TASK-ACTIONS-LIST-PRINT`, `GW-TASK-LIST-REFRESH`,
+  `GW-TASK-SOURCE-CAPABILITIES`, `GW-MEMO-SOURCE-CAPABILITIES` sowie
+  `MAIL-FOLLOW-UP-DUE`; ihre dokumentierten
+  Parent-/Linux-Reste bleiben offen und verhindern eine Vollparitätsbehauptung.
 - Portable Evidenz: `git diff --check`, `cargo fmt --all -- --check`, strikte
   Schema-Prüfung, normaler `cargo check --workspace --locked` und
   `RUSTFLAGS='--cfg=eds_camel_bridge' cargo check --workspace --locked` sind
-  grün; der finale unsandboxed `cargo test --workspace --locked
-  --no-fail-fast --quiet`-Lauf ist mit portable/macOS-Testevidenz von 618/618
-  Tests grün; das ist keine Linux-Abnahme. Ein früherer sandboxed Lauf konnte
-  18 Loopback-Mockserver nicht binden und ist nicht der
-  finale Testbeleg. Die unabhängigen Reviews sind abgeschlossen.
-- Keine zusätzliche portable Implementierungspriorität ist derzeit atomar
-  `READY`; die geschlossenen Slices sind keine neuen Prioritäten. Vor der
-  nächsten Priorisierung muss das nächste verbleibende Auditpaket frisch
-  atomar zugeschnitten und mit Schreibbereich, Abhängigkeiten, Positiv-/
-  Negativpfad und Linux-Grenze belegt werden.
+  grün. Der letzte unsandboxed `cargo test --workspace --locked
+  --no-fail-fast --quiet`-Vollauf ist mit 746/746 Tests grün; die danach
+  ergänzten drei Assignment-Tests des aktuellen 749-Test-Workspaces sind
+  gezielt grün. Ein aktueller sandboxed Vollauf bestätigt sie innerhalb von
+  731 grünen Tests und scheitert ausschließlich an denselben 18 nicht erlaubten
+  Graph-Loopback-Binds. Das ist weder eine neue 749/749- noch eine
+  Linux-Abnahme; ein weiterer unsandboxed Lauf wurde vom Ausführungslimit
+  abgelehnt.
+- Keine weitere portable Implementierungspriorität ist derzeit atomar `READY`;
+  die achtzehn neuen Teilpakete schließen nur ihren benannten Scope. Vor der nächsten
+  Priorisierung muss der stärkste verbleibende Parent-Rest frisch atomisiert und
+  mit Schreibbereich, Abhängigkeiten, Positiv-/Negativpfad und Linux-Grenze belegt
+  werden.
 - Offene Grenzen: Linux-/visuelle-/EDS-/EBook-/ECal-/Camel-/Provider- und
   Desktop-Abnahme bleibt in `ROADMAP_LINUX.md` offen; kein Slice wird daraus
   als `DONE` oder als Vollparität gemeldet.

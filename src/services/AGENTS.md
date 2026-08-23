@@ -40,12 +40,13 @@ settings persistence.
   Worker results return completed commands to the owning UI thread; worker
   threads never mutate UI-owned history directly.
 - Model the ordinary flagged/starred bit separately from Evolution follow-up.
-  Follow-up has exactly `None`, `FollowUp`, and `Completed`: Camel maps it to
-  the `follow-up`, `completed-on`, and optional `due-by` user tags; Graph maps
-  it to `message.flag.flagStatus` values `notFlagged`, `flagged`, and
-  `complete`. Local/import records persist the same enum in the app sidecar.
-  Provider state remains authoritative and all transitions use the normal
-  cancellable, backend-confirmed command path.
+  Follow-up retains state, text, optional `due-by`, and `completed-on` as one
+  lossless value through model, sidecar, command history, and Camel parsing.
+  Camel writes supported tags through the cancellable command path; Graph maps
+  only the three-state value to `message.flag.flagStatus` and must reject due
+  dates instead of dropping them. Local/import records use the versioned rich
+  sidecar value with backward-compatible enum migration. Provider state remains
+  authoritative and undo restores the exact prior metadata.
 - MIME, vCard, settings, filter, and profile import paths preserve unknown safe
   data where possible. Unsupported values become redacted warnings; credentials
   and secret material must never enter app-owned stores, reports, or logs.
@@ -84,6 +85,18 @@ settings persistence.
 
 - Keep native Linux adapters isolated behind small, tested interfaces.
 - Keep all portable behavior deterministic and covered by unit tests.
+- Keep EDS source-level writability separate from connected ECal-client
+  writability: Rename/Properties use `ESource:writable`; component mutations
+  use the current client's readonly state. Re-resolve exact source UID/type and
+  revalidate the relevant gate inside every native worker.
+- Local ECal source Properties preserve the original local backend surface:
+  name, selectable color, optional custom ICS `GFile`, local writable flag and
+  email address. Built-in sources reject custom files; edit through a scratch
+  ESource and distinguish commit success from post-commit client availability.
+- ECal task-assignment capabilities come from the connected task client, not
+  source writability. Project `NO_TASK_ASSIGNMENT` and
+  `NO_CONV_TO_ASSIGN_TASK` independently and fail closed for disconnected or
+  non-task clients; GTK must not guess provider support from generic writable.
 - Exact message-source adapters return raw bytes without UTF-8 conversion and
   honor the caller's cancellation flag. Do not retain every full MIME body in
   list records solely for source/header display.
