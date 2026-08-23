@@ -35,6 +35,7 @@ use crate::services::reminder_service::{
     ReminderComponentKind, ReminderComponentPresence, ReminderDelivery, ReminderIdentity,
     component_presence, parse_reminder_deep_link,
 };
+use crate::services::search_engine::SearchTarget;
 use crate::views::{CalendarPage, ContactsPage, MailPage, MemosPage, TasksPage};
 use std::time::Instant;
 
@@ -60,6 +61,8 @@ mod imp {
         pub component_open_in_progress: Cell<bool>,
         pub component_open_target: RefCell<Option<ReminderIdentity>>,
         pub last_component_open: RefCell<Option<(ReminderIdentity, Instant)>>,
+        pub(crate) search_route_state: Cell<SearchRouteState>,
+        pub search_route_source: RefCell<Option<glib::SourceId>>,
     }
 
     #[glib::object_subclass]
@@ -134,6 +137,173 @@ glib::wrapper! {
                     gtk::Accessible, gtk::Buildable,
                     gtk::ConstraintTarget, gtk::Native,
                     gtk::Root, gtk::ShortcutManager;
+}
+
+#[cfg(test)]
+pub(crate) static GTK_TEST_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(test)]
+pub(crate) fn gtk_test_main_context() -> Option<glib::MainContext> {
+    if !gtk::is_initialized() {
+        if gtk::init().is_err() {
+            eprintln!("skipping GTK integration test: no display is available");
+            return None;
+        }
+        if gdk::Display::default().is_none() {
+            eprintln!("skipping GTK integration test: no display is available");
+            return None;
+        }
+        if !adw::is_initialized() {
+            let _ = adw::init();
+        }
+    } else if !gtk::is_initialized_main_thread() {
+        eprintln!("skipping GTK integration test: GTK is initialized on another thread");
+        return None;
+    }
+    Some(glib::MainContext::default())
+}
+
+const MAX_SEARCH_ROUTE_ATTEMPTS: u8 = 30;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SearchRoute {
+    Mail,
+    Calendar,
+    Tasks,
+    Memos,
+    Contacts,
+}
+
+impl SearchRoute {
+    fn page_name(self) -> &'static str {
+        match self {
+            Self::Mail => "mail",
+            Self::Calendar => "calendar",
+            Self::Tasks => "tasks",
+            Self::Memos => "memos",
+            Self::Contacts => "contacts",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SearchRouteError {
+    MissingTarget,
+    EmptyMailId,
+    EmptyComponentUid,
+    EmptyContactUid,
+}
+
+fn search_route_for_target(target: Option<&SearchTarget>) -> Result<SearchRoute, SearchRouteError> {
+    match target {
+        None => Err(SearchRouteError::MissingTarget),
+        Some(SearchTarget::Mail { local_id }) if local_id.is_empty() => {
+            Err(SearchRouteError::EmptyMailId)
+        }
+        Some(SearchTarget::Mail { .. }) => Ok(SearchRoute::Mail),
+        Some(SearchTarget::Event { component_uid, .. }) if component_uid.is_empty() => {
+            Err(SearchRouteError::EmptyComponentUid)
+        }
+        Some(SearchTarget::Event { .. }) => Ok(SearchRoute::Calendar),
+        Some(SearchTarget::Task { component_uid, .. }) if component_uid.is_empty() => {
+            Err(SearchRouteError::EmptyComponentUid)
+        }
+        Some(SearchTarget::Task { .. }) => Ok(SearchRoute::Tasks),
+        Some(SearchTarget::Memo { component_uid, .. }) if component_uid.is_empty() => {
+            Err(SearchRouteError::EmptyComponentUid)
+        }
+        Some(SearchTarget::Memo { .. }) => Ok(SearchRoute::Memos),
+        Some(SearchTarget::Contact { contact_uid, .. }) if contact_uid.is_empty() => {
+            Err(SearchRouteError::EmptyContactUid)
+        }
+        Some(SearchTarget::Contact { .. }) => Ok(SearchRoute::Contacts),
+    }
+}
+
+fn search_route_error_message(error: SearchRouteError) -> &'static str {
+    match error {
+        SearchRouteError::MissingTarget => "Globaler Suchtreffer enthält kein Ziel",
+        SearchRouteError::EmptyMailId => "Globaler Mailtreffer enthält keine lokale ID",
+        SearchRouteError::EmptyComponentUid => {
+            "Globaler Kalender-/Aufgaben-/Notiztreffer enthält keine Komponenten-UID"
+        }
+        SearchRouteError::EmptyContactUid => "Globaler Kontakttreffer enthält keine Kontakt-UID",
+    }
+}
+
+fn next_search_route_generation(current_generation: u64) -> u64 {
+    current_generation.wrapping_add(1)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct SearchRouteState {
+    generation: u64,
+    destination: Option<&'static str>,
+}
+
+impl SearchRouteState {
+    fn begin(&mut self, route: SearchRoute) -> u64 {
+        self.generation = next_search_route_generation(self.generation);
+        self.destination = Some(route.page_name());
+        self.generation
+    }
+
+    fn invalidate_for_visible_page(&mut self, visible_page: Option<&str>) -> bool {
+        if self
+            .destination
+            .is_some_and(|destination| visible_page != Some(destination))
+        {
+            self.generation = next_search_route_generation(self.generation);
+            self.destination = None;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn is_current(
+        self,
+        route_generation: u64,
+        route: SearchRoute,
+        visible_page: Option<&str>,
+    ) -> bool {
+        self.generation == route_generation
+            && self.destination == Some(route.page_name())
+            && visible_page == Some(route.page_name())
+    }
+
+    fn complete(&mut self, route_generation: u64) {
+        if self.generation == route_generation {
+            self.destination = None;
+        }
+    }
+}
+
+fn search_route_decision(
+    state: SearchRouteState,
+    route_generation: u64,
+    route: SearchRoute,
+    visible_page: Option<&str>,
+    attempts: u8,
+    found: bool,
+) -> SearchRouteDecision {
+    if !state.is_current(route_generation, route, visible_page) {
+        SearchRouteDecision::RejectStale
+    } else if found {
+        SearchRouteDecision::Complete
+    } else if attempts >= MAX_SEARCH_ROUTE_ATTEMPTS {
+        SearchRouteDecision::Failed
+    } else {
+        SearchRouteDecision::Retry
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SearchRouteDecision {
+    RejectStale,
+    Complete,
+    Retry,
+    Failed,
 }
 
 impl EvolutionWindow {
@@ -817,146 +987,174 @@ impl EvolutionWindow {
         }
     }
 
-    pub(crate) fn show_search_result(
-        &self,
-        domain: crate::services::search_engine::SearchDomain,
-        reference_id: String,
-        query: String,
-    ) {
-        match domain {
-            crate::services::search_engine::SearchDomain::Mail => {
-                self.show_search_result_loaded("mail", reference_id, query);
+    pub(crate) fn show_search_result(&self, target: Option<SearchTarget>) {
+        let route = match search_route_for_target(target.as_ref()) {
+            Ok(route) => route,
+            Err(error) => {
+                self.add_toast(&adw::Toast::new(search_route_error_message(error)));
+                return;
             }
-            crate::services::search_engine::SearchDomain::Contacts => {
-                self.show_search_result_loaded("contacts", reference_id, query);
-            }
-            crate::services::search_engine::SearchDomain::Calendar => {
-                let reference_for_worker = reference_id.clone();
-                let local_calendar_directory =
-                    AppSettings::try_new().map(|settings| settings.local_calendar_directory());
-                let (sender, receiver) = async_channel::bounded(1);
-                std::thread::spawn(move || {
-                    let target = reference_for_worker.split_once(':');
-                    let snapshot = crate::services::reminder_service::calendar_store_for_worker(
-                        local_calendar_directory,
-                    )
-                    .load_snapshot();
-                    let page_name = if target.is_some_and(|(source_uid, uid)| {
-                        snapshot
-                            .tasks
-                            .iter()
-                            .any(|task| task.source_uid == source_uid && task.uid == uid)
-                    }) {
-                        "tasks"
-                    } else if target.is_some_and(|(source_uid, uid)| {
-                        snapshot
-                            .memos
-                            .iter()
-                            .any(|memo| memo.source_uid == source_uid && memo.uid == uid)
-                    }) {
-                        "memos"
-                    } else {
-                        "calendar"
-                    };
-                    let _ = sender.send_blocking(page_name);
-                });
-                let window = self.downgrade();
-                glib::spawn_future_local(async move {
-                    let Ok(page_name) = receiver.recv().await else {
-                        return;
-                    };
-                    if let Some(window) = window.upgrade() {
-                        window.show_search_result_loaded(page_name, reference_id, query);
-                    }
-                });
-            }
-            crate::services::search_engine::SearchDomain::All => {}
-        }
-    }
+        };
 
-    fn show_search_result_loaded(
-        &self,
-        page_name: &'static str,
-        reference_id: String,
-        query: String,
-    ) {
+        let generation = self.begin_search_route(route);
         if let Some(view_stack) = self.imp().view_stack.borrow().as_ref() {
-            view_stack.set_visible_child_name(page_name);
+            view_stack.set_visible_child_name(route.page_name());
         }
+
         let window = self.downgrade();
-        let calendar_target = reference_id
-            .split_once(':')
-            .map(|(source_uid, uid)| (source_uid.to_string(), uid.to_string()));
         let mut attempts = 0u8;
-        let mut query_applied = false;
-        glib::timeout_add_local(std::time::Duration::from_millis(50), move || {
+        let source = glib::timeout_add_local(std::time::Duration::from_millis(50), move || {
             let Some(window) = window.upgrade() else {
                 return glib::ControlFlow::Break;
             };
-            if !query_applied {
-                query_applied = match page_name {
-                    "mail" => window.mail_page().is_some_and(|page| {
-                        page.set_search_query(&query);
-                        true
-                    }),
-                    "calendar" => window.calendar_page().is_some_and(|page| {
-                        page.set_search_query(&query);
-                        true
-                    }),
-                    "contacts" => window.contacts_page().is_some_and(|page| {
-                        page.set_search_query(&query);
-                        true
-                    }),
-                    "tasks" => window.tasks_page().is_some_and(|page| {
-                        page.set_search_query(&query);
-                        true
-                    }),
-                    "memos" => window.memos_page().is_some_and(|page| {
-                        page.set_search_query(&query);
-                        true
-                    }),
-                    _ => true,
-                };
+            if window.search_route_decision(generation, route, attempts, false)
+                == SearchRouteDecision::RejectStale
+            {
+                window.invalidate_search_route_if_current(generation);
+                return glib::ControlFlow::Break;
             }
-            let found = match page_name {
-                "mail" => window.mail_page().is_some_and(|page| {
-                    reference_id.is_empty() || page.select_search_result(&reference_id)
-                }),
-                "calendar" => window.calendar_page().is_some_and(|page| {
-                    calendar_target
-                        .as_ref()
-                        .is_none_or(|(source_uid, uid)| page.open_search_result(source_uid, uid))
-                }),
-                "contacts" => window.contacts_page().is_some_and(|page| {
-                    reference_id.is_empty()
-                        || page.select_search_result("local-addressbook", &reference_id)
-                }),
-                "tasks" => window.tasks_page().is_some_and(|page| {
-                    calendar_target
-                        .as_ref()
-                        .is_none_or(|(source_uid, uid)| page.open_search_result(source_uid, uid))
-                }),
-                "memos" => window.memos_page().is_some_and(|page| {
-                    calendar_target
-                        .as_ref()
-                        .is_none_or(|(source_uid, uid)| page.select_search_result(source_uid, uid))
-                }),
-                _ => true,
-            };
+
+            let found = target
+                .as_ref()
+                .is_some_and(|target| window.open_search_target(route, target));
             attempts = attempts.saturating_add(1);
-            if found || attempts >= 30 {
-                glib::ControlFlow::Break
-            } else {
-                glib::ControlFlow::Continue
+            match window.search_route_decision(generation, route, attempts, found) {
+                SearchRouteDecision::Complete => {
+                    window.finish_search_route(generation);
+                    glib::ControlFlow::Break
+                }
+                SearchRouteDecision::Retry => glib::ControlFlow::Continue,
+                SearchRouteDecision::Failed => {
+                    window.finish_search_route(generation);
+                    window.add_toast(&adw::Toast::new(
+                        "Suchtreffer konnte nach begrenztem Warten nicht geöffnet werden",
+                    ));
+                    glib::ControlFlow::Break
+                }
+                SearchRouteDecision::RejectStale => {
+                    window.invalidate_search_route_if_current(generation);
+                    glib::ControlFlow::Break
+                }
             }
         });
-        self.add_toast(&adw::Toast::new(match page_name {
-            "mail" => "Mailbereich geöffnet",
-            "calendar" => "Kalenderbereich geöffnet und Treffer gesucht",
-            "tasks" => "Aufgabenbereich geöffnet und Treffer gesucht",
-            "memos" => "Notizbereich geöffnet und Treffer gesucht",
-            _ => "Kontaktbereich geöffnet und Treffer gesucht",
+        self.imp().search_route_source.borrow_mut().replace(source);
+        self.add_toast(&adw::Toast::new(match route {
+            SearchRoute::Mail => "Mailbereich geöffnet",
+            SearchRoute::Calendar => "Kalenderbereich geöffnet und Treffer wird gesucht",
+            SearchRoute::Tasks => "Aufgabenbereich geöffnet und Treffer wird gesucht",
+            SearchRoute::Memos => "Notizbereich geöffnet und Treffer wird gesucht",
+            SearchRoute::Contacts => "Kontaktbereich geöffnet und Treffer wird gesucht",
         }));
+    }
+
+    fn begin_search_route(&self, route: SearchRoute) -> u64 {
+        self.cancel_search_route_timer();
+        let mut state = self.imp().search_route_state.get();
+        let generation = state.begin(route);
+        self.imp().search_route_state.set(state);
+        generation
+    }
+
+    fn cancel_search_route_timer(&self) {
+        if let Some(source) = self.imp().search_route_source.borrow_mut().take() {
+            source.remove();
+        }
+    }
+
+    fn invalidate_search_route_for_visible_page(&self, visible_page: Option<&str>) {
+        let mut state = self.imp().search_route_state.get();
+        if state.invalidate_for_visible_page(visible_page) {
+            self.cancel_search_route_timer();
+            self.imp().search_route_state.set(state);
+        }
+    }
+
+    fn invalidate_search_route_if_current(&self, generation: u64) {
+        let mut state = self.imp().search_route_state.get();
+        if state.generation == generation && state.destination.is_some() {
+            state.generation = next_search_route_generation(state.generation);
+            state.destination = None;
+            self.cancel_search_route_timer();
+            self.imp().search_route_state.set(state);
+        }
+    }
+
+    fn finish_search_route(&self, generation: u64) {
+        let mut state = self.imp().search_route_state.get();
+        if state.generation == generation {
+            state.complete(generation);
+            self.imp().search_route_source.borrow_mut().take();
+            self.imp().search_route_state.set(state);
+        }
+    }
+
+    fn search_route_decision(
+        &self,
+        generation: u64,
+        route: SearchRoute,
+        attempts: u8,
+        found: bool,
+    ) -> SearchRouteDecision {
+        let visible_page = self
+            .imp()
+            .view_stack
+            .borrow()
+            .as_ref()
+            .and_then(|view_stack| view_stack.visible_child_name())
+            .map(|name| name.to_string());
+        search_route_decision(
+            self.imp().search_route_state.get(),
+            generation,
+            route,
+            visible_page.as_deref(),
+            attempts,
+            found,
+        )
+    }
+
+    fn open_search_target(&self, route: SearchRoute, target: &SearchTarget) -> bool {
+        match (route, target) {
+            (SearchRoute::Mail, SearchTarget::Mail { local_id }) => self
+                .mail_page()
+                .is_some_and(|page| page.select_search_result(local_id)),
+            (
+                SearchRoute::Calendar,
+                SearchTarget::Event {
+                    source_uid,
+                    component_uid,
+                },
+            ) => self
+                .calendar_page()
+                .is_some_and(|page| page.open_search_result(source_uid, component_uid)),
+            (
+                SearchRoute::Tasks,
+                SearchTarget::Task {
+                    source_uid,
+                    component_uid,
+                },
+            ) => self
+                .tasks_page()
+                .is_some_and(|page| page.open_search_result(source_uid, component_uid)),
+            (
+                SearchRoute::Memos,
+                SearchTarget::Memo {
+                    source_uid,
+                    component_uid,
+                },
+            ) => self
+                .memos_page()
+                .is_some_and(|page| page.select_search_result(source_uid, component_uid)),
+            (
+                SearchRoute::Contacts,
+                SearchTarget::Contact {
+                    source_uid,
+                    contact_uid,
+                },
+            ) => self
+                .contacts_page()
+                .is_some_and(|page| page.select_search_result(source_uid, contact_uid)),
+            _ => false,
+        }
     }
 
     fn focus_active_search(&self) {
@@ -1360,12 +1558,18 @@ impl EvolutionWindow {
         // the placeholder when the user navigates to a module.
         let ensure_module_loaded_for_signal = Rc::clone(&ensure_module_loaded);
         let settings_for_view = AppSettings::try_new();
+        let window_for_search_route = self.downgrade();
         view_stack.connect_visible_child_name_notify(move |stack| {
             if let Some(view_name) = stack.visible_child_name() {
+                if let Some(window) = window_for_search_route.upgrade() {
+                    window.invalidate_search_route_for_visible_page(Some(view_name.as_str()));
+                }
                 ensure_module_loaded_for_signal(view_name.as_str());
                 if let Some(settings) = settings_for_view.as_ref() {
                     settings.set_active_view(view_name.as_str());
                 }
+            } else if let Some(window) = window_for_search_route.upgrade() {
+                window.invalidate_search_route_for_visible_page(None);
             }
         });
 
@@ -2734,5 +2938,401 @@ impl EvolutionWindow {
                 }
             });
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn add_test_page(stack: &adw::ViewStack, name: &str) -> gtk::Box {
+        let page = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        stack.add_named(&page, Some(name));
+        page
+    }
+
+    fn drain_main_context(context: &glib::MainContext) {
+        for _ in 0..32 {
+            if !context.pending() {
+                break;
+            }
+            context.iteration(false);
+        }
+    }
+
+    fn restore_visible_page(stack: &adw::ViewStack, visible_page: Option<&str>) {
+        if let Some(visible_page) = visible_page {
+            stack.set_visible_child_name(visible_page);
+        }
+    }
+
+    fn wait_for_search_route_source_to_clear(
+        context: &glib::MainContext,
+        window: &EvolutionWindow,
+        max_wait: std::time::Duration,
+    ) {
+        let deadline = Instant::now() + max_wait;
+        while window.imp().search_route_source.borrow().is_some() {
+            assert!(
+                Instant::now() < deadline,
+                "search route source did not terminate within the test bound"
+            );
+            if context.pending() {
+                context.iteration(false);
+            } else {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        }
+    }
+
+    #[test]
+    fn search_target_routes_same_uid_by_component_kind_without_parsing_identity() {
+        let source_uid = "source:with&separator".to_string();
+        let component_uid = "uid:with&separator".to_string();
+        let event = SearchTarget::Event {
+            source_uid: source_uid.clone(),
+            component_uid: component_uid.clone(),
+        };
+        let task = SearchTarget::Task {
+            source_uid: source_uid.clone(),
+            component_uid: component_uid.clone(),
+        };
+        let memo = SearchTarget::Memo {
+            source_uid,
+            component_uid,
+        };
+
+        assert_eq!(
+            search_route_for_target(Some(&event)),
+            Ok(SearchRoute::Calendar)
+        );
+        assert_eq!(search_route_for_target(Some(&task)), Ok(SearchRoute::Tasks));
+        assert_eq!(search_route_for_target(Some(&memo)), Ok(SearchRoute::Memos));
+        assert_ne!(event, task);
+        assert_ne!(task, memo);
+    }
+
+    #[test]
+    fn search_target_preserves_contact_source_and_valid_empty_source() {
+        let mail = SearchTarget::Mail {
+            local_id: "local:Inbox&copy".to_string(),
+        };
+        let contact = SearchTarget::Contact {
+            source_uid: "addressbook:primary&shared".to_string(),
+            contact_uid: "contact:1&2".to_string(),
+        };
+        let empty_source_event = SearchTarget::Event {
+            source_uid: String::new(),
+            component_uid: "external-event".to_string(),
+        };
+
+        assert_eq!(search_route_for_target(Some(&mail)), Ok(SearchRoute::Mail));
+        assert_eq!(
+            search_route_for_target(Some(&contact)),
+            Ok(SearchRoute::Contacts)
+        );
+        assert_eq!(
+            search_route_for_target(Some(&empty_source_event)),
+            Ok(SearchRoute::Calendar)
+        );
+        assert_eq!(
+            contact,
+            SearchTarget::Contact {
+                source_uid: "addressbook:primary&shared".to_string(),
+                contact_uid: "contact:1&2".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn missing_and_malformed_search_targets_are_explicitly_rejected() {
+        assert_eq!(
+            search_route_for_target(None),
+            Err(SearchRouteError::MissingTarget)
+        );
+        assert_eq!(
+            search_route_for_target(Some(&SearchTarget::Mail {
+                local_id: String::new(),
+            })),
+            Err(SearchRouteError::EmptyMailId)
+        );
+        assert_eq!(
+            search_route_for_target(Some(&SearchTarget::Task {
+                source_uid: String::new(),
+                component_uid: String::new(),
+            })),
+            Err(SearchRouteError::EmptyComponentUid)
+        );
+        assert_eq!(
+            search_route_for_target(Some(&SearchTarget::Contact {
+                source_uid: "addressbook".to_string(),
+                contact_uid: String::new(),
+            })),
+            Err(SearchRouteError::EmptyContactUid)
+        );
+        assert_eq!(
+            search_route_error_message(SearchRouteError::MissingTarget),
+            "Globaler Suchtreffer enthält kein Ziel"
+        );
+    }
+
+    #[test]
+    fn stale_or_superseded_search_routes_cannot_apply_or_retry() {
+        let first = next_search_route_generation(11);
+        let second = next_search_route_generation(first);
+        assert_eq!(first, 12);
+        assert_eq!(second, 13);
+        assert_ne!(first, second);
+
+        let state = SearchRouteState {
+            generation: second,
+            destination: Some(SearchRoute::Tasks.page_name()),
+        };
+        assert_eq!(
+            search_route_decision(
+                state,
+                first,
+                SearchRoute::Calendar,
+                Some("calendar"),
+                1,
+                true,
+            ),
+            SearchRouteDecision::RejectStale
+        );
+        let state = SearchRouteState {
+            generation: first,
+            destination: Some(SearchRoute::Calendar.page_name()),
+        };
+        assert_eq!(
+            search_route_decision(
+                state,
+                first,
+                SearchRoute::Calendar,
+                Some("calendar"),
+                1,
+                true,
+            ),
+            SearchRouteDecision::Complete
+        );
+        assert_eq!(
+            search_route_decision(
+                state,
+                first,
+                SearchRoute::Calendar,
+                Some("calendar"),
+                1,
+                false,
+            ),
+            SearchRouteDecision::Retry
+        );
+        assert_eq!(
+            search_route_decision(
+                state,
+                first,
+                SearchRoute::Calendar,
+                Some("calendar"),
+                MAX_SEARCH_ROUTE_ATTEMPTS,
+                false,
+            ),
+            SearchRouteDecision::Failed
+        );
+    }
+
+    #[test]
+    fn navigation_away_invalidates_pending_search_route_state() {
+        let mut state = SearchRouteState::default();
+        let generation = state.begin(SearchRoute::Calendar);
+
+        assert!(!state.invalidate_for_visible_page(Some("calendar")));
+        assert!(state.invalidate_for_visible_page(Some("mail")));
+        assert_eq!(state.destination, None);
+        assert_ne!(state.generation, generation);
+        assert_eq!(
+            search_route_decision(
+                state,
+                generation,
+                SearchRoute::Calendar,
+                Some("calendar"),
+                1,
+                false,
+            ),
+            SearchRouteDecision::RejectStale
+        );
+    }
+
+    #[test]
+    fn stale_timer_after_visible_child_change_cannot_retry_or_open() {
+        let mut state = SearchRouteState::default();
+        let generation = state.begin(SearchRoute::Contacts);
+
+        assert_eq!(
+            search_route_decision(
+                state,
+                generation,
+                SearchRoute::Contacts,
+                Some("contacts"),
+                1,
+                false,
+            ),
+            SearchRouteDecision::Retry
+        );
+        assert_eq!(
+            search_route_decision(
+                state,
+                generation,
+                SearchRoute::Contacts,
+                Some("mail"),
+                1,
+                false,
+            ),
+            SearchRouteDecision::RejectStale
+        );
+
+        state.invalidate_for_visible_page(Some("mail"));
+        assert_eq!(
+            search_route_decision(
+                state,
+                generation,
+                SearchRoute::Contacts,
+                Some("contacts"),
+                2,
+                true,
+            ),
+            SearchRouteDecision::RejectStale
+        );
+    }
+
+    #[test]
+    fn gtk_visible_page_change_invalidates_and_removes_pending_search_route_source() {
+        let _gtk_lock = GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(context) = gtk_test_main_context() else {
+            return;
+        };
+        let app = EvolutionApplication::new();
+        let window = EvolutionWindow::new(&app);
+        let stack = window
+            .imp()
+            .view_stack
+            .borrow()
+            .as_ref()
+            .cloned()
+            .expect("window construction must install its view stack");
+        let initial_page = stack.visible_child_name().map(|name| name.to_string());
+        let _test_page = add_test_page(&stack, "gtk-test-hidden");
+
+        window.show_search_result(Some(SearchTarget::Mail {
+            local_id: "gtk-test-search-route-never-matches".to_string(),
+        }));
+        assert!(window.imp().search_route_source.borrow().is_some());
+        assert_eq!(
+            window.imp().search_route_state.get().destination,
+            Some(SearchRoute::Mail.page_name())
+        );
+
+        stack.set_visible_child_name("gtk-test-hidden");
+        drain_main_context(&context);
+
+        assert!(window.imp().search_route_source.borrow().is_none());
+        assert_eq!(window.imp().search_route_state.get().destination, None);
+        assert_eq!(
+            stack.visible_child_name().as_deref(),
+            Some("gtk-test-hidden")
+        );
+
+        restore_visible_page(&stack, initial_page.as_deref());
+        drain_main_context(&context);
+    }
+
+    #[test]
+    fn gtk_hidden_page_callback_rejects_before_selecting_or_opening() {
+        let _gtk_lock = GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(context) = gtk_test_main_context() else {
+            return;
+        };
+        let app = EvolutionApplication::new();
+        let window = EvolutionWindow::new(&app);
+        let stack = window
+            .imp()
+            .view_stack
+            .borrow()
+            .as_ref()
+            .cloned()
+            .expect("window construction must install its view stack");
+        let initial_page = stack.visible_child_name().map(|name| name.to_string());
+        let _test_page = add_test_page(&stack, "gtk-test-hidden");
+
+        window.show_search_result(Some(SearchTarget::Mail {
+            local_id: "gtk-test-hidden-route-never-matches".to_string(),
+        }));
+        assert!(window.imp().search_route_source.borrow().is_some());
+
+        let notifications = stack.freeze_notify();
+        stack.set_visible_child_name("gtk-test-hidden");
+        assert_eq!(
+            stack.visible_child_name().as_deref(),
+            Some("gtk-test-hidden")
+        );
+
+        // Keep the visible-child notification queued so the real timeout
+        // callback must reject the hidden page before calling the page API.
+        wait_for_search_route_source_to_clear(
+            &context,
+            &window,
+            std::time::Duration::from_millis(500),
+        );
+        assert_eq!(window.imp().search_route_state.get().destination, None);
+        drop(notifications);
+
+        restore_visible_page(&stack, initial_page.as_deref());
+        drain_main_context(&context);
+    }
+
+    #[test]
+    fn gtk_search_route_callback_terminates_after_bounded_attempts() {
+        let _gtk_lock = GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(context) = gtk_test_main_context() else {
+            return;
+        };
+        let app = EvolutionApplication::new();
+        let window = EvolutionWindow::new(&app);
+        let stack = window
+            .imp()
+            .view_stack
+            .borrow()
+            .as_ref()
+            .cloned()
+            .expect("window construction must install its view stack");
+        let initial_page = stack.visible_child_name().map(|name| name.to_string());
+
+        window.show_search_result(Some(SearchTarget::Mail {
+            local_id: "gtk-test-bounded-route-never-matches".to_string(),
+        }));
+        assert!(window.imp().search_route_source.borrow().is_some());
+
+        wait_for_search_route_source_to_clear(&context, &window, std::time::Duration::from_secs(3));
+        assert_eq!(window.imp().search_route_state.get().destination, None);
+
+        restore_visible_page(&stack, initial_page.as_deref());
+        drain_main_context(&context);
+    }
+
+    #[test]
+    fn search_routing_production_has_no_lossy_identity_or_calendar_scan() {
+        let source = include_str!("window.rs");
+        let production = source
+            .split("\n#[cfg(test)]\nmod tests {")
+            .next()
+            .unwrap_or(source);
+        assert!(production.contains("fn open_search_target(&self, route: SearchRoute"));
+        assert!(production.contains("SearchTarget::Event"));
+        assert!(production.contains("SearchTarget::Task"));
+        assert!(production.contains("SearchTarget::Memo"));
+        assert!(production.contains("SearchTarget::Contact"));
     }
 }

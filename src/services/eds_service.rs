@@ -99,10 +99,17 @@ impl EdsSourceKind {
                     || interface.contains("Identity")
             }),
             Self::Calendar => interfaces.keys().any(|interface| {
-                interface.as_str() == "org.gnome.evolution.dataserver.Source.Calendar"
+                let interface = interface.as_str();
+                interface.contains("Calendar")
+                    || interface.contains("WebDAV")
+                    || interface.contains("OAuth2")
+                    || interface.contains("CalDAV")
             }),
             Self::AddressBook => interfaces.keys().any(|interface| {
-                interface.as_str() == "org.gnome.evolution.dataserver.Source.AddressBook"
+                let interface = interface.as_str();
+                interface.contains("AddressBook")
+                    || interface.contains("Book")
+                    || interface.contains("CardDAV")
             }),
         }
     }
@@ -447,11 +454,90 @@ async fn get_goa_mail_accounts() -> Result<Vec<EdsSource>, EdsServiceError> {
     Ok(goa_sources)
 }
 
-/// List all calendar sources from EDS.
+/// Query GNOME Online Accounts (GOA) D-Bus interface `org.gnome.OnlineAccounts` for Calendar.
+async fn get_goa_calendar_accounts() -> Result<Vec<EdsSource>, EdsServiceError> {
+    let connection = zbus::Connection::session().await?;
+    let proxy = zbus::fdo::ObjectManagerProxy::builder(&connection)
+        .destination("org.gnome.OnlineAccounts")?
+        .path("/org/gnome/OnlineAccounts")?
+        .build()
+        .await?;
+
+    let managed_objects = match proxy.get_managed_objects().await {
+        Ok(objs) => objs,
+        Err(_) => return Ok(Vec::new()),
+    };
+
+    let mut goa_sources = Vec::new();
+
+    for (path, interfaces) in &managed_objects {
+        let has_cal_interface = interfaces
+            .keys()
+            .any(|interface| interface.as_str() == "org.gnome.OnlineAccounts.Calendar");
+        if has_cal_interface {
+            if let Some(account_props) = interfaces.get("org.gnome.OnlineAccounts.Account") {
+                let uid = path
+                    .as_str()
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or("goa")
+                    .to_string();
+                let identity = account_props
+                    .get("PresentationIdentity")
+                    .and_then(value_to_string)
+                    .or_else(|| account_props.get("Identity").and_then(value_to_string))
+                    .unwrap_or_else(|| "Kalenderkonto".to_string());
+
+                let provider_name = account_props
+                    .get("ProviderName")
+                    .and_then(value_to_string)
+                    .unwrap_or_else(|| "Online-Kalender".to_string());
+
+                let provider_type = account_props
+                    .get("ProviderType")
+                    .and_then(value_to_string)
+                    .unwrap_or_else(|| "caldav".to_string());
+
+                goa_sources.push(EdsSource {
+                    uid: format!("goa-cal-{}", uid),
+                    display_name: format!("{} ({})", identity, provider_name),
+                    backend_name: provider_type,
+                    enabled: true,
+                });
+            }
+        }
+    }
+    Ok(goa_sources)
+}
+
+/// List all calendar sources from EDS (with GOA fallback).
 #[allow(dead_code)]
 pub async fn list_calendar_sources() -> Result<Vec<EdsSource>, EdsServiceError> {
-    tracing::debug!("Listing calendar sources from EDS...");
-    let sources = list_sources(EdsSourceKind::Calendar).await?;
+    tracing::debug!("Listing calendar sources from EDS & GOA...");
+    let (mut sources, registry_error) = match list_sources(EdsSourceKind::Calendar).await {
+        Ok(sources) => (sources, None),
+        Err(error) => (Vec::new(), Some(error)),
+    };
+
+    if sources.is_empty() {
+        if let Ok(goa_calendars) = get_goa_calendar_accounts().await {
+            for goa in goa_calendars {
+                if !sources
+                    .iter()
+                    .any(|s| s.uid == goa.uid || s.display_name == goa.display_name)
+                {
+                    sources.push(goa);
+                }
+            }
+        }
+    }
+
+    sort_sources(&mut sources);
+    if sources.is_empty() {
+        if let Some(error) = registry_error {
+            return Err(error);
+        }
+    }
     tracing::info!("Found {} calendar sources via D-Bus", sources.len());
     Ok(sources)
 }

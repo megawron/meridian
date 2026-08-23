@@ -293,16 +293,17 @@ impl GlobalSearchDialog {
             subtitle.push_str(" · ");
             subtitle.push_str(&snippet);
         }
+        let target = search_result_activation_target(result);
+        if target.is_none() {
+            subtitle.push_str(" · Nicht verfügbar");
+        }
         let row = adw::ActionRow::builder()
             .title(title)
             .subtitle(&subtitle)
-            .activatable(result.domain != SearchDomain::All)
+            .activatable(target.is_some())
             .selectable(false)
             .build();
-        if result.domain != SearchDomain::All {
-            let domain = result.domain;
-            let reference_id = result.reference_id.clone();
-            let result_title = result.title.clone();
+        if let Some(target) = target {
             row.connect_activated(glib::clone!(
                 #[weak(rename_to = dialog)]
                 self,
@@ -312,7 +313,7 @@ impl GlobalSearchDialog {
                     }) else {
                         return;
                     };
-                    parent.show_search_result(domain, reference_id.clone(), result_title.clone());
+                    parent.show_search_result(Some(target.clone()));
                     dialog.close();
                 }
             ));
@@ -345,6 +346,12 @@ fn compact_snippet(value: &str) -> String {
     result
 }
 
+fn search_result_activation_target(
+    result: &SearchResultItem,
+) -> Option<crate::services::search_engine::SearchTarget> {
+    result.target.clone()
+}
+
 fn generation_is_current(current_generation: u64, candidate_generation: u64) -> bool {
     current_generation == candidate_generation
 }
@@ -367,6 +374,12 @@ impl Default for GlobalSearchDialog {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn has_instance_signal_handler(row: &adw::ActionRow, signal_name: &str) -> bool {
+        let signal_id = glib::subclass::SignalId::lookup(signal_name, row.type_())
+            .expect("ActionRow signal must be registered");
+        glib::signal::signal_has_handler_pending(row, signal_id, None, true)
+    }
 
     #[test]
     fn domain_selector_has_stable_backend_mapping() {
@@ -422,5 +435,73 @@ mod tests {
             .find("dialog.imp().debounce_source.borrow_mut().take()")
             .expect("debounce source should be cleared when its generation runs");
         assert!(debounce_generation_check < debounce_source_take);
+    }
+
+    #[test]
+    fn result_rows_forward_typed_targets_without_using_titles_as_identity() {
+        let source = include_str!("global_search_dialog.rs");
+        let production = source
+            .split("#[cfg(test)]")
+            .next()
+            .expect("production source should precede tests");
+        assert!(production.contains("let target = search_result_activation_target(result);"));
+        assert!(production.contains(".activatable(target.is_some())"));
+        assert!(production.contains("if let Some(target) = target"));
+        assert!(production.contains("parent.show_search_result(Some(target.clone()))"));
+    }
+
+    #[test]
+    fn unavailable_result_has_no_activation_target() {
+        let unavailable = SearchResultItem {
+            domain: SearchDomain::All,
+            title: "Unavailable".to_string(),
+            snippet: String::new(),
+            date: String::new(),
+            target: None,
+        };
+        let available = SearchResultItem {
+            domain: SearchDomain::Mail,
+            title: "Mail".to_string(),
+            snippet: String::new(),
+            date: String::new(),
+            target: Some(crate::services::search_engine::SearchTarget::Mail {
+                local_id: "message-1".to_string(),
+            }),
+        };
+
+        assert!(search_result_activation_target(&unavailable).is_none());
+        assert!(search_result_activation_target(&available).is_some());
+    }
+
+    #[test]
+    fn unavailable_result_row_is_non_activatable_without_activation_handler() {
+        let _gtk_lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+        let dialog = GlobalSearchDialog::new();
+        let unavailable = SearchResultItem {
+            domain: SearchDomain::All,
+            title: "Unverfügbarer Treffer".to_string(),
+            snippet: "Keine Zielidentität".to_string(),
+            date: String::new(),
+            target: None,
+        };
+
+        let row = dialog.result_row(&unavailable);
+        assert_eq!(row.title().as_str(), "Unverfügbarer Treffer");
+        assert!(
+            row.subtitle()
+                .is_some_and(|subtitle| subtitle.contains("Nicht verfügbar"))
+        );
+        assert!(!row.is_activatable());
+        assert!(!has_instance_signal_handler(&row, "activated"));
+
+        // Calling the widget's activation entry point must remain a no-op:
+        // there is no dialog callback to fire for a result without a target.
+        adw::prelude::ActionRowExt::activate(&row);
+        assert!(!has_instance_signal_handler(&row, "activated"));
     }
 }

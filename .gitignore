@@ -21,3 +21,6 @@ repo/
 # OS
 .DS_Store
 Thumbs.db
+
+# Upstream Reference
+/evolution-upstream-reference/

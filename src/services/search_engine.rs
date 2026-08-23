@@ -34,6 +34,33 @@ impl Default for SearchDomain {
     }
 }
 
+/// Typed identity carried by a global-search result into the window router.
+/// Source UIDs are intentionally not normalized or encoded; an empty source
+/// UID is valid for read-only imported sources.
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SearchTarget {
+    Mail {
+        local_id: String,
+    },
+    Event {
+        source_uid: String,
+        component_uid: String,
+    },
+    Task {
+        source_uid: String,
+        component_uid: String,
+    },
+    Memo {
+        source_uid: String,
+        component_uid: String,
+    },
+    Contact {
+        source_uid: String,
+        contact_uid: String,
+    },
+}
+
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct SearchResultItem {
@@ -41,8 +68,10 @@ pub struct SearchResultItem {
     pub title: String,
     pub snippet: String,
     pub date: String,
-    pub reference_id: String,
+    pub target: Option<SearchTarget>,
 }
+
+const LOCAL_ADDRESS_BOOK_SOURCE_UID: &str = "local-addressbook";
 
 /// Owned local-store inputs for one global-search worker.
 ///
@@ -470,6 +499,11 @@ impl GlobalSearchEngine {
             contacts: contact_store,
         } = stores;
         let mut documents = Vec::new();
+        let contact_source_uid = if contact_store.is_writable() {
+            LOCAL_ADDRESS_BOOK_SOURCE_UID.to_string()
+        } else {
+            String::new()
+        };
 
         if matches!(domain, SearchDomain::Mail | SearchDomain::All) {
             if cancellation.load(Ordering::Relaxed) {
@@ -500,7 +534,9 @@ impl GlobalSearchEngine {
                         title: message.subject,
                         snippet,
                         date: message.date_str,
-                        reference_id: message.id,
+                        target: Some(SearchTarget::Mail {
+                            local_id: message.id,
+                        }),
                     },
                     searchable_text,
                 )
@@ -529,7 +565,10 @@ impl GlobalSearchEngine {
                         title: title.clone(),
                         snippet: snippet.clone(),
                         date: date.clone(),
-                        reference_id: format!("{}:{}", event.source_uid, event.uid),
+                        target: Some(SearchTarget::Event {
+                            source_uid: event.source_uid,
+                            component_uid: event.uid,
+                        }),
                     },
                     format!("{title} {snippet} {date}"),
                 ));
@@ -550,7 +589,10 @@ impl GlobalSearchEngine {
                         title: title.clone(),
                         snippet: snippet.clone(),
                         date: date.clone(),
-                        reference_id: format!("{}:{}", task.source_uid, task.uid),
+                        target: Some(SearchTarget::Task {
+                            source_uid: task.source_uid,
+                            component_uid: task.uid,
+                        }),
                     },
                     format!("{title} {snippet} {date}"),
                 ));
@@ -571,7 +613,10 @@ impl GlobalSearchEngine {
                         title: title.clone(),
                         snippet: snippet.clone(),
                         date: date.clone(),
-                        reference_id: format!("{}:{}", memo.source_uid, memo.uid),
+                        target: Some(SearchTarget::Memo {
+                            source_uid: memo.source_uid,
+                            component_uid: memo.uid,
+                        }),
                     },
                     format!("{title} {snippet} {date}"),
                 ));
@@ -594,7 +639,10 @@ impl GlobalSearchEngine {
                         title: title.clone(),
                         snippet: snippet.clone(),
                         date: String::new(),
-                        reference_id: record.id,
+                        target: Some(SearchTarget::Contact {
+                            source_uid: contact_source_uid.clone(),
+                            contact_uid: record.id,
+                        }),
                     },
                     format!("{title} {snippet}"),
                 ));
@@ -661,7 +709,9 @@ impl GlobalSearchEngine {
                         title: message.subject.clone(),
                         snippet: snippet.clone(),
                         date: message.date_str.clone(),
-                        reference_id: message.id.clone(),
+                        target: Some(SearchTarget::Mail {
+                            local_id: message.id.clone(),
+                        }),
                     },
                     format!(
                         "{} {} {}",
@@ -1903,10 +1953,54 @@ mod tests {
         ]
     }
 
+    fn target_id(result: &SearchResultItem) -> &str {
+        match result
+            .target
+            .as_ref()
+            .expect("fixture result should have a target")
+        {
+            SearchTarget::Mail { local_id } => local_id,
+            SearchTarget::Event { component_uid, .. }
+            | SearchTarget::Task { component_uid, .. }
+            | SearchTarget::Memo { component_uid, .. } => component_uid,
+            SearchTarget::Contact { contact_uid, .. } => contact_uid,
+        }
+    }
+
     #[test]
     fn empty_global_queries_are_empty() {
         let results = GlobalSearchEngine::query(SearchDomain::All, "");
         assert!(results.is_empty());
+    }
+
+    #[test]
+    fn typed_search_targets_keep_component_kind_and_delimiters() {
+        let source_uid = "source:with&separator".to_string();
+        let component_uid = "uid:with&separator".to_string();
+        let targets = [
+            SearchTarget::Event {
+                source_uid: source_uid.clone(),
+                component_uid: component_uid.clone(),
+            },
+            SearchTarget::Task {
+                source_uid: source_uid.clone(),
+                component_uid: component_uid.clone(),
+            },
+            SearchTarget::Memo {
+                source_uid,
+                component_uid,
+            },
+        ];
+
+        assert_eq!(
+            targets[0].clone(),
+            SearchTarget::Event {
+                source_uid: "source:with&separator".to_string(),
+                component_uid: "uid:with&separator".to_string(),
+            }
+        );
+        assert_ne!(targets[0], targets[1]);
+        assert_ne!(targets[1], targets[2]);
     }
 
     #[test]
@@ -1917,14 +2011,19 @@ mod tests {
                 title: "Team Meeting".to_string(),
                 snippet: "10:00".to_string(),
                 date: "2026-08-10".to_string(),
-                reference_id: "event-1".to_string(),
+                target: Some(SearchTarget::Event {
+                    source_uid: "source".to_string(),
+                    component_uid: "event-1".to_string(),
+                }),
             },
             SearchResultItem {
                 domain: SearchDomain::Mail,
                 title: "Invoice".to_string(),
                 snippet: "Finance".to_string(),
                 date: "2026-08-09".to_string(),
-                reference_id: "message-1".to_string(),
+                target: Some(SearchTarget::Mail {
+                    local_id: "message-1".to_string(),
+                }),
             },
         ];
 
@@ -1942,21 +2041,26 @@ mod tests {
                 title: "Ada Lovelace".to_string(),
                 snippet: "Analytical Engine".to_string(),
                 date: String::new(),
-                reference_id: "contact-1".to_string(),
+                target: Some(SearchTarget::Contact {
+                    source_uid: "source".to_string(),
+                    contact_uid: "contact-1".to_string(),
+                }),
             },
             SearchResultItem {
                 domain: SearchDomain::Mail,
                 title: "Ada".to_string(),
                 snippet: "Lovelace".to_string(),
                 date: String::new(),
-                reference_id: "message-1".to_string(),
+                target: Some(SearchTarget::Mail {
+                    local_id: "message-1".to_string(),
+                }),
             },
         ];
 
         let results =
             GlobalSearchEngine::query_documents(SearchDomain::Contacts, "ada lovelace", &documents);
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].reference_id, "contact-1");
+        assert_eq!(target_id(&results[0]), "contact-1");
     }
 
     #[test]
@@ -1967,36 +2071,41 @@ mod tests {
                 title: "Team Meeting".to_string(),
                 snippet: "Room 1".to_string(),
                 date: "2026-08-10 12:00".to_string(),
-                reference_id: "event-1".to_string(),
+                target: Some(SearchTarget::Event {
+                    source_uid: "source".to_string(),
+                    component_uid: "event-1".to_string(),
+                }),
             },
             SearchResultItem {
                 domain: SearchDomain::Mail,
                 title: "Invoice".to_string(),
                 snippet: "Finance".to_string(),
                 date: "2026-08-11".to_string(),
-                reference_id: "message-1".to_string(),
+                target: Some(SearchTarget::Mail {
+                    local_id: "message-1".to_string(),
+                }),
             },
             SearchResultItem {
                 domain: SearchDomain::Contacts,
                 title: "Ada Lovelace".to_string(),
                 snippet: "Analytical Engine".to_string(),
                 date: String::new(),
-                reference_id: "contact-1".to_string(),
+                target: Some(SearchTarget::Contact {
+                    source_uid: "source".to_string(),
+                    contact_uid: "contact-1".to_string(),
+                }),
             },
         ];
 
         let results =
             GlobalSearchEngine::query_documents(SearchDomain::All, "on:2026-08-10", &documents);
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].reference_id, "event-1");
+        assert_eq!(target_id(&results[0]), "event-1");
 
         let results =
             GlobalSearchEngine::query_documents(SearchDomain::All, "after:2026-08-10", &documents);
         assert_eq!(
-            results
-                .iter()
-                .map(|result| result.reference_id.as_str())
-                .collect::<Vec<_>>(),
+            results.iter().map(target_id).collect::<Vec<_>>(),
             vec!["event-1", "message-1"]
         );
 
@@ -2006,15 +2115,12 @@ mod tests {
             &documents,
         );
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].reference_id, "event-1");
+        assert_eq!(target_id(&results[0]), "event-1");
 
         let results =
             GlobalSearchEngine::query_documents(SearchDomain::All, "-after:2026-08-10", &documents);
         assert_eq!(
-            results
-                .iter()
-                .map(|result| result.reference_id.as_str())
-                .collect::<Vec<_>>(),
+            results.iter().map(target_id).collect::<Vec<_>>(),
             vec!["contact-1"]
         );
     }
@@ -2054,7 +2160,12 @@ mod tests {
 
         let results = GlobalSearchEngine::query_local_mail("project", &messages);
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].reference_id, "local:Inbox#0");
+        assert_eq!(
+            results[0].target,
+            Some(SearchTarget::Mail {
+                local_id: "local:Inbox#0".to_string(),
+            })
+        );
 
         let results = GlobalSearchEngine::query_local_mail("me@example.org is:unread", &messages);
         assert_eq!(results.len(), 1);
@@ -2105,25 +2216,22 @@ mod tests {
         ] {
             let results = GlobalSearchEngine::query_local_mail(query, &messages);
             assert_eq!(
-                results
-                    .iter()
-                    .map(|result| result.reference_id.as_str())
-                    .collect::<Vec<_>>(),
+                results.iter().map(target_id).collect::<Vec<_>>(),
                 vec!["m-inbox"],
                 "query {query:?}"
             );
         }
 
         let results = GlobalSearchEngine::query_local_mail("a:0", &messages);
-        assert_eq!(results[0].reference_id, "m-sent");
+        assert_eq!(target_id(&results[0]), "m-sent");
         let results = GlobalSearchEngine::query_local_mail("flag:Seen", &messages);
-        assert_eq!(results[0].reference_id, "m-sent");
+        assert_eq!(target_id(&results[0]), "m-sent");
         let results = GlobalSearchEngine::query_local_mail("is:sent", &messages);
-        assert_eq!(results[0].reference_id, "m-sent");
+        assert_eq!(target_id(&results[0]), "m-sent");
         let results = GlobalSearchEngine::query_local_mail("is:inbox", &messages);
-        assert_eq!(results[0].reference_id, "m-inbox");
+        assert_eq!(target_id(&results[0]), "m-inbox");
         let results = GlobalSearchEngine::query_local_mail("is:not-important", &messages);
-        assert_eq!(results[0].reference_id, "m-sent");
+        assert_eq!(target_id(&results[0]), "m-sent");
     }
 
     #[test]
@@ -2140,16 +2248,16 @@ mod tests {
             "and:(from:alice@example.org not:(flag:Seen))",
             &messages,
         );
-        assert_eq!(results[0].reference_id, "m-inbox");
+        assert_eq!(target_id(&results[0]), "m-inbox");
 
         let results = GlobalSearchEngine::query_local_mail("not:(flag:Seen)", &messages);
-        assert_eq!(results[0].reference_id, "m-inbox");
+        assert_eq!(target_id(&results[0]), "m-inbox");
 
         let results = GlobalSearchEngine::query_local_mail("-from:alice@example.org", &messages);
-        assert_eq!(results[0].reference_id, "m-sent");
+        assert_eq!(target_id(&results[0]), "m-sent");
 
         let results = GlobalSearchEngine::query_local_mail("not:attachment", &messages);
-        assert_eq!(results[0].reference_id, "m-sent");
+        assert_eq!(target_id(&results[0]), "m-sent");
     }
 
     #[test]
@@ -2157,16 +2265,16 @@ mod tests {
         let messages = fixture_messages();
 
         let results = GlobalSearchEngine::query_local_mail("sent-=:2026-08-10", &messages);
-        assert_eq!(results[0].reference_id, "m-inbox");
+        assert_eq!(target_id(&results[0]), "m-inbox");
 
         let results = GlobalSearchEngine::query_local_mail("sent-<:2026-08-10", &messages);
-        assert_eq!(results[0].reference_id, "m-sent");
+        assert_eq!(target_id(&results[0]), "m-sent");
 
         let results = GlobalSearchEngine::query_local_mail("sent->:2026-08-05", &messages);
-        assert_eq!(results[0].reference_id, "m-inbox");
+        assert_eq!(target_id(&results[0]), "m-inbox");
 
         let results = GlobalSearchEngine::query_local_mail("date:2026-08-10", &messages);
-        assert_eq!(results[0].reference_id, "m-inbox");
+        assert_eq!(target_id(&results[0]), "m-inbox");
 
         let today = Local::now().date_naive();
         let today_query = format!("sent-=:{}", today.format("%Y-%m-%d"));
@@ -2200,7 +2308,9 @@ mod tests {
             title: "Say \"hello\" to the team".to_string(),
             snippet: "alpha beta".to_string(),
             date: String::new(),
-            reference_id: "quoted".to_string(),
+            target: Some(SearchTarget::Mail {
+                local_id: "quoted".to_string(),
+            }),
         }];
 
         for query in ["\"say \\\"hello\\\"\"", "\"say \"\"hello\"\"\""] {
@@ -2214,7 +2324,9 @@ mod tests {
             title: "say hello".to_string(),
             snippet: String::new(),
             date: String::new(),
-            reference_id: "escaped-space".to_string(),
+            target: Some(SearchTarget::Mail {
+                local_id: "escaped-space".to_string(),
+            }),
         }];
         let results =
             GlobalSearchEngine::query_documents(SearchDomain::Mail, r#"say\ hello"#, &documents);
@@ -2225,7 +2337,9 @@ mod tests {
             title: "alpha beta".to_string(),
             snippet: String::new(),
             date: String::new(),
-            reference_id: "phrase".to_string(),
+            target: Some(SearchTarget::Mail {
+                local_id: "phrase".to_string(),
+            }),
         }];
         let results =
             GlobalSearchEngine::query_documents(SearchDomain::Mail, "\"alpha beta\"", &documents);
@@ -2251,7 +2365,9 @@ mod tests {
                 title: query.to_string(),
                 snippet: "one project".to_string(),
                 date: String::new(),
-                reference_id: "must-not-match".to_string(),
+                target: Some(SearchTarget::Mail {
+                    local_id: "must-not-match".to_string(),
+                }),
             }];
             assert!(
                 GlobalSearchEngine::query_documents(SearchDomain::Mail, query, &documents)
@@ -2354,13 +2470,25 @@ mod tests {
             results
                 .iter()
                 .filter(|result| result.domain == SearchDomain::Calendar)
-                .map(|result| result.reference_id.as_str())
+                .map(|result| result.target.clone())
                 .collect::<Vec<_>>(),
             vec![
-                "local-calendar:duplicate-uid",
-                "local-calendar:duplicate-uid",
-                "local-calendar:duplicate-uid",
-                "local-calendar:duplicate-uid"
+                Some(SearchTarget::Event {
+                    source_uid: "local-calendar".to_string(),
+                    component_uid: "duplicate-uid".to_string(),
+                }),
+                Some(SearchTarget::Event {
+                    source_uid: "local-calendar".to_string(),
+                    component_uid: "duplicate-uid".to_string(),
+                }),
+                Some(SearchTarget::Task {
+                    source_uid: "local-calendar".to_string(),
+                    component_uid: "duplicate-uid".to_string(),
+                }),
+                Some(SearchTarget::Memo {
+                    source_uid: "local-calendar".to_string(),
+                    component_uid: "duplicate-uid".to_string(),
+                }),
             ]
         );
         assert!(
@@ -2381,8 +2509,20 @@ mod tests {
         let contact_references = results
             .iter()
             .filter(|result| result.domain == SearchDomain::Contacts)
-            .map(|result| result.reference_id.as_str())
+            .map(target_id)
             .collect::<Vec<_>>();
+        assert!(
+            results
+                .iter()
+                .filter(|result| result.domain == SearchDomain::Contacts)
+                .all(|result| match result.target.as_ref() {
+                    Some(SearchTarget::Contact {
+                        source_uid,
+                        contact_uid,
+                    }) => source_uid.is_empty() && contact_uid == target_id(result),
+                    _ => false,
+                })
+        );
         assert_eq!(
             contact_references
                 .iter()
@@ -2433,7 +2573,13 @@ mod tests {
         );
 
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].reference_id, ":external-event");
+        assert_eq!(
+            results[0].target,
+            Some(SearchTarget::Event {
+                source_uid: String::new(),
+                component_uid: "external-event".to_string(),
+            })
+        );
         assert!(!results[0].snippet.contains("Lokaler Kalender"));
         assert!(!calendar.is_writable());
         assert_eq!(calendar.calendar_dir(), root.as_path());
@@ -2558,7 +2704,7 @@ mod tests {
         assert!(
             results
                 .iter()
-                .any(|result| result.reference_id.ends_with("::copy::archive"))
+                .any(|result| target_id(result).ends_with("::copy::archive"))
         );
         assert!(!state_path.exists(), "search must not create a sidecar");
         assert!(mail_path.exists(), "search must not rewrite source mail");

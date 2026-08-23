@@ -91,7 +91,7 @@ load_source (ECalLoadContext *context,
     context->configured_sources++;
     display_name = e_source_get_display_name (source);
     client = E_CAL_CLIENT (e_cal_client_connect_sync (
-        source, (ECalClientSourceType) source_type, 15, NULL, &error));
+        source, (ECalClientSourceType) source_type, 3, NULL, &error));
     if (!client) {
         context->failed_sources++;
         remember_error (context, display_name, error);
@@ -129,6 +129,7 @@ evolution_eds_ecal_load_components (
     char **out_error)
 {
     ESourceRegistry *registry = NULL;
+    ESourceCredentialsProvider *credentials_provider = NULL;
     GList *sources = NULL;
     GList *link;
     GError *error = NULL;
@@ -168,6 +169,7 @@ evolution_eds_ecal_load_components (
         g_clear_error (&error);
         return 0;
     }
+    credentials_provider = e_source_credentials_provider_new (registry);
 
     sources = e_source_registry_list_enabled (registry, extension_name);
     for (link = sources; link != NULL; link = link->next)
@@ -211,6 +213,8 @@ evolution_eds_ecal_load_components (
     }
 
     g_list_free_full (sources, g_object_unref);
+    if (credentials_provider)
+        g_object_unref (credentials_provider);
     g_object_unref (registry);
     g_free (context.first_error);
     evolution_eds_ecal_free_components (context.components, context.count);

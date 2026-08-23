@@ -7,6 +7,7 @@ use adw::subclass::prelude::*;
 use chrono::{Datelike, Duration, Local, NaiveDate, NaiveDateTime, Timelike, Utc, Weekday};
 use gtk::{gdk, gio, glib};
 use std::cell::{Cell, RefCell};
+use std::cmp::Ordering as CompareOrdering;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -19,8 +20,8 @@ use crate::services::calendar_store_service::{
     update_ical_property,
 };
 use crate::services::ecal_service::{
-    CalendarDataOrigin, ECalChangeKind, ECalComponentType, ECalMutationResult, ECalRecord,
-    ECalService, ECalSyncEvent, load_snapshot_prefer_eds, parse_change_record,
+    CalendarDataOrigin, ECalComponentType, ECalMutationResult, ECalService, ECalSyncEvent,
+    load_snapshot_prefer_eds,
 };
 use crate::services::eds_service;
 use crate::services::ical_time_service::{
@@ -42,10 +43,43 @@ pub(crate) enum CalendarView {
     WorkWeek,
     Month,
     Agenda,
+    Year,
+    List,
 }
 
 const AGENDA_VISIBLE_DAYS: i64 = 90;
 const MONTH_GRID_CELLS: i64 = 42;
+const YEAR_MONTH_COUNT: u32 = 12;
+const PROJECTION_APPLY_CHUNK_SIZE: usize = 24;
+
+/// Stable identity for a calendar component.  A UID is only unique inside
+/// one source, and a recurring exception has the same UID as its master, so
+/// every view carries the canonical source/object key and RECURRENCE-ID.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub(crate) struct CalendarEventIdentity {
+    pub(crate) source_object_key: String,
+    pub(crate) source_uid: String,
+    pub(crate) uid: String,
+    pub(crate) recurrence_id: Option<String>,
+}
+
+impl CalendarEventIdentity {
+    fn from_event(event: &CalendarEventRecord) -> Option<Self> {
+        Some(Self {
+            source_object_key: canonical_calendar_source_object_key(event),
+            source_uid: event.source_uid.trim().to_string(),
+            uid: canonical_calendar_uid(event),
+            recurrence_id: calendar_recurrence_id(event),
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CalendarDataState {
+    Loading,
+    Ready,
+    Error,
+}
 
 /// A civil-date interval.  `end` is exclusive everywhere in the view layer;
 /// no timestamp or 24-hour arithmetic is used to express a calendar range.
@@ -129,6 +163,12 @@ impl CalendarViewport {
                 )
             }
             CalendarView::Agenda => CalendarDateRange::from_days(anchor_date, AGENDA_VISIBLE_DAYS),
+            CalendarView::Year => calendar_year_range_option(anchor_date.year())
+                .unwrap_or_else(|| CalendarDateRange::single(anchor_date)),
+            // List is intentionally not range-driven.  Keep a valid civil
+            // range in the shared viewport contract for labels and settings,
+            // while list queries use every loaded snapshot record.
+            CalendarView::List => CalendarDateRange::single(anchor_date),
         };
         Self {
             view,
@@ -146,6 +186,8 @@ pub(crate) struct CalendarViewState {
     pub(crate) visible_range: CalendarDateRange,
     pub(crate) load_generation: u64,
     pub(crate) selected_range: Option<CalendarDateRange>,
+    pub(crate) selected_event: Option<CalendarEventIdentity>,
+    pub(crate) selected_event_index: Option<usize>,
 }
 
 impl CalendarViewState {
@@ -157,6 +199,8 @@ impl CalendarViewState {
             visible_range: viewport.visible_range,
             load_generation: 0,
             selected_range: None,
+            selected_event: None,
+            selected_event_index: None,
         }
     }
 
@@ -183,7 +227,33 @@ impl CalendarViewState {
         self.selected_range = selected_range;
     }
 
+    pub(crate) fn select_event(
+        &mut self,
+        identity: Option<CalendarEventIdentity>,
+        index: Option<usize>,
+    ) {
+        self.selected_event = identity;
+        self.selected_event_index = index;
+    }
+
+    pub(crate) fn reconcile_event_selection(&mut self, ordered_events: &[CalendarEventRecord]) {
+        let (selected_event, selected_event_index) = reconcile_event_selection(
+            self.selected_event.clone(),
+            self.selected_event_index,
+            ordered_events,
+        );
+        self.selected_event = selected_event;
+        self.selected_event_index = selected_event_index;
+    }
+
+    pub(crate) fn select_civil_day(&mut self, date: NaiveDate) {
+        self.selected_range = Some(CalendarDateRange::single(date));
+    }
+
     pub(crate) fn navigate(&mut self, direction: i32, first_weekday: Weekday) {
+        if self.view == CalendarView::List {
+            return;
+        }
         let direction = i64::from(direction.signum());
         if direction == 0 {
             return;
@@ -204,6 +274,8 @@ impl CalendarViewState {
                 .start
                 .checked_add_signed(Duration::days(direction * AGENDA_VISIBLE_DAYS))
                 .expect("agenda navigation overflow"),
+            CalendarView::Year => shift_year(self.anchor_date, direction as i32),
+            CalendarView::List => unreachable!("list navigation is handled above"),
         };
         self.anchor_date = next_anchor;
         self.selected_range = None;
@@ -211,6 +283,9 @@ impl CalendarViewState {
     }
 
     pub(crate) fn today(&mut self, today: NaiveDate, first_weekday: Weekday) {
+        if self.view == CalendarView::List {
+            return;
+        }
         self.anchor_date = today;
         self.selected_range = None;
         self.recompute_range(first_weekday);
@@ -268,6 +343,149 @@ impl CalendarLoadGate {
     }
 }
 
+/// Latest-wins gate for the immutable Year/List projection workers.  The
+/// revision ties a result to the authoritative in-memory snapshot, while the
+/// view and load generation prevent a plan for another surface or snapshot
+/// from being applied after a navigation/reload.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+struct CalendarProjectionGate {
+    generation: u64,
+    revision: u64,
+    load_generation: u64,
+    view: Option<CalendarView>,
+    active: bool,
+}
+
+impl CalendarProjectionGate {
+    fn begin(&mut self, view: CalendarView, revision: u64, load_generation: u64) -> u64 {
+        self.generation = advance_calendar_generation(self.generation);
+        self.revision = revision;
+        self.load_generation = load_generation;
+        self.view = Some(view);
+        self.active = true;
+        self.generation
+    }
+
+    fn accepts(
+        &self,
+        generation: u64,
+        view: CalendarView,
+        revision: u64,
+        load_generation: u64,
+    ) -> bool {
+        self.active
+            && self.generation == generation
+            && self.view == Some(view)
+            && self.revision == revision
+            && self.load_generation == load_generation
+    }
+
+    fn finish(
+        &mut self,
+        generation: u64,
+        view: CalendarView,
+        revision: u64,
+        load_generation: u64,
+    ) -> bool {
+        if !self.accepts(generation, view, revision, load_generation) {
+            return false;
+        }
+        self.active = false;
+        true
+    }
+
+    fn cancel(&mut self, generation: u64) -> bool {
+        if !self.active || self.generation != generation {
+            return false;
+        }
+        self.active = false;
+        true
+    }
+}
+
+/// The sidebar rows are applied after the authoritative snapshot has already
+/// been installed.  Keep the snapshot/load generation and the model revision
+/// together: a time-display refresh can clear and rebuild the rows while an
+/// older chunk callback is still queued on the main context.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CalendarSidebarApplyToken {
+    load_generation: u64,
+    model_revision: u64,
+}
+
+/// A separate latest-wins gate for backend mutations.  A callback is valid
+/// only while it is the current mutation and the authoritative model revision
+/// has not changed underneath it (for example because a monitor reload won).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+struct CalendarMutationGate {
+    generation: u64,
+    model_revision: u64,
+    load_generation: u64,
+    identity: Option<CalendarEventIdentity>,
+    active: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CalendarMutationToken {
+    generation: u64,
+    model_revision: u64,
+    load_generation: u64,
+    identity: Option<CalendarEventIdentity>,
+}
+
+impl CalendarMutationGate {
+    fn begin(
+        &mut self,
+        model_revision: u64,
+        load_generation: u64,
+        identity: Option<CalendarEventIdentity>,
+    ) -> CalendarMutationToken {
+        self.generation = advance_calendar_generation(self.generation);
+        self.model_revision = model_revision;
+        self.load_generation = load_generation;
+        self.identity = identity.clone();
+        self.active = true;
+        CalendarMutationToken {
+            generation: self.generation,
+            model_revision,
+            load_generation,
+            identity,
+        }
+    }
+
+    fn accepts(&self, token: &CalendarMutationToken) -> bool {
+        self.active
+            && self.generation == token.generation
+            && self.model_revision == token.model_revision
+            && self.load_generation == token.load_generation
+            && self.identity == token.identity
+    }
+
+    fn finish(&mut self, token: &CalendarMutationToken) -> bool {
+        if !self.accepts(token) {
+            return false;
+        }
+        self.active = false;
+        true
+    }
+
+    fn invalidate(&mut self) {
+        self.generation = advance_calendar_generation(self.generation);
+        self.active = false;
+        self.identity = None;
+    }
+}
+
+fn projection_chunk_ranges(item_count: usize, chunk_size: usize) -> Vec<(usize, usize)> {
+    if item_count == 0 || chunk_size == 0 {
+        return Vec::new();
+    }
+    (0..item_count)
+        .step_by(chunk_size)
+        .map(|start| (start, (start + chunk_size).min(item_count)))
+        .collect()
+}
+
 /// Immutable, local candidate index for one calendar snapshot.  Non-recurring
 /// events are put into civil-date buckets; recurring events are kept in one
 /// small side list and expanded only once per requested range.  This keeps an
@@ -278,6 +496,7 @@ struct CalendarSnapshotIndex {
     date_buckets: BTreeMap<NaiveDate, Vec<usize>>,
     recurring_events: Vec<usize>,
     long_events: Vec<(usize, CalendarDateRange)>,
+    all_event_indices: Vec<usize>,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -295,9 +514,11 @@ impl CalendarSnapshotIndex {
             date_buckets: BTreeMap::new(),
             recurring_events: Vec::new(),
             long_events: Vec::new(),
+            all_event_indices: Vec::new(),
         };
 
         for (event_index, event) in index.snapshot.events.iter().enumerate() {
+            index.all_event_indices.push(event_index);
             let recurring = ical_property(&event.component, "RRULE").is_some()
                 || ical_property(&event.component, "RDATE").is_some();
             let Some(range) = record_display_range(event) else {
@@ -323,6 +544,14 @@ impl CalendarSnapshotIndex {
                 index.long_events.push((event_index, range));
             }
         }
+
+        index.all_event_indices.sort_by(|left, right| {
+            compare_event_list_order(
+                &index.snapshot.events[*left],
+                &index.snapshot.events[*right],
+            )
+            .then_with(|| left.cmp(right))
+        });
 
         index
     }
@@ -358,14 +587,132 @@ impl CalendarSnapshotIndex {
         indices.sort_by(|left, right| {
             let left_event = &self.snapshot.events[*left];
             let right_event = &self.snapshot.events[*right];
-            left_event
-                .source_uid
-                .cmp(&right_event.source_uid)
-                .then_with(|| left_event.uid.cmp(&right_event.uid))
+            CalendarEventIdentity::from_event(left_event)
+                .cmp(&CalendarEventIdentity::from_event(right_event))
                 .then_with(|| left.cmp(right))
         });
         (indices, stats)
     }
+
+    fn all_event_indices(&self) -> Vec<usize> {
+        self.all_event_indices.clone()
+    }
+}
+
+#[derive(Debug, Clone)]
+struct YearDayProjection {
+    date: NaiveDate,
+    event_count: usize,
+}
+
+#[derive(Debug, Clone)]
+struct YearMonthProjection {
+    month: u32,
+    cells: Vec<Option<YearDayProjection>>,
+}
+
+#[derive(Debug, Clone)]
+struct YearProjectionPlan {
+    year: i32,
+    selected_day: NaiveDate,
+    today: NaiveDate,
+    months: Vec<YearMonthProjection>,
+    selected_events: Vec<CalendarEventRecord>,
+}
+
+#[derive(Debug, Clone)]
+struct ListProjectionPlan {
+    events: Vec<CalendarEventRecord>,
+}
+
+#[derive(Debug, Clone)]
+enum CalendarProjectionPlan {
+    Year(YearProjectionPlan),
+    List(ListProjectionPlan),
+}
+
+#[derive(Debug)]
+struct CalendarProjectionLoad {
+    generation: u64,
+    revision: u64,
+    load_generation: u64,
+    view: CalendarView,
+    cancellation: Arc<AtomicBool>,
+    result: Result<CalendarProjectionPlan, String>,
+}
+
+fn build_year_projection_plan(
+    index: &CalendarSnapshotIndex,
+    year: i32,
+    selected_day: NaiveDate,
+    today: NaiveDate,
+    first_weekday: Weekday,
+    search_query: &str,
+    category_filter: Option<&str>,
+    hidden_sources: &HashSet<String>,
+) -> Result<YearProjectionPlan, String> {
+    let year_range = calendar_year_range_option(year).ok_or_else(|| {
+        "Das ausgewählte Kalenderjahr liegt außerhalb des unterstützten Datumsbereichs".to_string()
+    })?;
+    let markers = indexed_event_day_markers(
+        index,
+        year_range,
+        search_query,
+        category_filter,
+        hidden_sources,
+    );
+    let selected_events = indexed_events_by_date(
+        index,
+        CalendarDateRange::single(selected_day),
+        search_query,
+        category_filter,
+        hidden_sources,
+    )
+    .remove(&selected_day)
+    .unwrap_or_default();
+
+    let mut months = Vec::with_capacity(YEAR_MONTH_COUNT as usize);
+    for month in 1..=YEAR_MONTH_COUNT {
+        let Some(month_start) = NaiveDate::from_ymd_opt(year, month, 1) else {
+            continue;
+        };
+        let grid_start = week_start_for(month_start, first_weekday);
+        let cells = (0..MONTH_GRID_CELLS)
+            .filter_map(|offset| {
+                let date = grid_start.checked_add_signed(Duration::days(offset))?;
+                if date.month() != month {
+                    return Some(None);
+                }
+                Some(Some(YearDayProjection {
+                    date,
+                    event_count: markers.get(&date).copied().unwrap_or(0),
+                }))
+            })
+            .collect::<Vec<_>>();
+        months.push(YearMonthProjection { month, cells });
+    }
+
+    Ok(YearProjectionPlan {
+        year,
+        selected_day,
+        today,
+        months,
+        selected_events,
+    })
+}
+
+fn build_list_projection_plan(
+    index: &CalendarSnapshotIndex,
+    search_query: &str,
+    category_filter: Option<&str>,
+    hidden_sources: &HashSet<String>,
+) -> ListProjectionPlan {
+    let events =
+        filtered_sorted_event_indices(index, search_query, category_filter, hidden_sources)
+            .into_iter()
+            .filter_map(|event_index| index.snapshot.events.get(event_index).cloned())
+            .collect();
+    ListProjectionPlan { events }
 }
 
 fn calendar_view_from_name(value: &str) -> CalendarView {
@@ -374,6 +721,8 @@ fn calendar_view_from_name(value: &str) -> CalendarView {
         "week" => CalendarView::Week,
         "workweek" => CalendarView::WorkWeek,
         "agenda" => CalendarView::Agenda,
+        "year" => CalendarView::Year,
+        "list" => CalendarView::List,
         _ => CalendarView::Month,
     }
 }
@@ -385,6 +734,64 @@ fn calendar_view_name(view: CalendarView) -> &'static str {
         CalendarView::WorkWeek => "workweek",
         CalendarView::Month => "month",
         CalendarView::Agenda => "agenda",
+        CalendarView::Year => "year",
+        CalendarView::List => "list",
+    }
+}
+
+fn application_settings_schema() -> Option<gio::SettingsSchema> {
+    let installed_source = gio::SettingsSchemaSource::default();
+    installed_source
+        .as_ref()
+        .and_then(|source| source.lookup(crate::APP_ID, true))
+        .or_else(|| {
+            let directory = option_env!("EVOLUTION_GTK4_SCHEMA_DIR")?;
+            let source = gio::SettingsSchemaSource::from_directory(
+                directory,
+                installed_source.as_ref(),
+                true,
+            )
+            .ok()?;
+            source.lookup(crate::APP_ID, true)
+        })
+}
+
+/// AppSettings intentionally normalizes the original five values for its
+/// preferences/migration contract.  Year and List use the same GSettings key
+/// through this narrow view-local bridge so selecting either view survives a
+/// page rebuild without changing any other settings surface.
+fn raw_calendar_view_setting() -> Option<String> {
+    let schema = application_settings_schema()?;
+    let settings = gio::Settings::new_full(&schema, None::<&gio::SettingsBackend>, None);
+    let value = settings.string("calendar-view").to_string();
+    matches!(
+        value.as_str(),
+        "day" | "week" | "workweek" | "month" | "agenda" | "year" | "list"
+    )
+    .then_some(value)
+}
+
+fn persisted_calendar_view_name(settings: Option<&AppSettings>) -> String {
+    raw_calendar_view_setting()
+        .or_else(|| settings.map(|settings| settings.calendar_view()))
+        .unwrap_or_else(|| "month".to_string())
+}
+
+fn persist_calendar_view(view: CalendarView, settings: Option<&AppSettings>) {
+    let value = calendar_view_name(view);
+    if !matches!(view, CalendarView::Year | CalendarView::List) {
+        if let Some(settings) = settings {
+            settings.set_calendar_view(value);
+            return;
+        }
+    }
+
+    let Some(schema) = application_settings_schema() else {
+        return;
+    };
+    let settings = gio::Settings::new_full(&schema, None::<&gio::SettingsBackend>, None);
+    if let Err(error) = settings.set_string("calendar-view", value) {
+        tracing::warn!(%error, "Could not persist calendar view");
     }
 }
 
@@ -402,6 +809,9 @@ mod imp {
         pub settings: RefCell<Option<AppSettings>>,
         pub calendar_stack: RefCell<Option<adw::ViewStack>>,
         pub calendar_view_buttons: RefCell<Option<Vec<gtk::ToggleButton>>>,
+        pub calendar_prev_button: RefCell<Option<gtk::Button>>,
+        pub calendar_next_button: RefCell<Option<gtk::Button>>,
+        pub calendar_today_button: RefCell<Option<gtk::Button>>,
         pub new_event_button: RefCell<Option<gtk::Button>>,
         pub syncing_calendar_view: Cell<bool>,
         pub month_grid: RefCell<Option<gtk::Grid>>,
@@ -410,6 +820,8 @@ mod imp {
         pub week_view: RefCell<Option<gtk::Box>>,
         pub workweek_view: RefCell<Option<gtk::Box>>,
         pub agenda_view: RefCell<Option<gtk::Box>>,
+        pub year_view: RefCell<Option<gtk::Box>>,
+        pub list_view: RefCell<Option<gtk::Box>>,
         pub event_records: RefCell<Option<Rc<RefCell<Vec<CalendarEventRecord>>>>>,
         pub event_list: RefCell<Option<gtk::ListBox>>,
         pub calendar_data_state: RefCell<Option<gtk::Label>>,
@@ -428,7 +840,15 @@ mod imp {
         pub(super) calendar_load_cancel: RefCell<Option<Arc<AtomicBool>>>,
         pub(super) calendar_load_gate: RefCell<CalendarLoadGate>,
         pub(super) calendar_loading: Cell<bool>,
+        pub(super) calendar_load_error: RefCell<Option<String>>,
         pub(super) calendar_snapshot_index: RefCell<Option<Arc<CalendarSnapshotIndex>>>,
+        pub(super) calendar_revision: Cell<u64>,
+        pub(super) calendar_monitor_generation: Cell<u64>,
+        pub(super) calendar_projection_cancel: RefCell<Option<Arc<AtomicBool>>>,
+        pub(super) calendar_projection_gate: RefCell<CalendarProjectionGate>,
+        pub(super) calendar_mutation_gate: RefCell<CalendarMutationGate>,
+        pub(super) calendar_list_projection_count: Cell<Option<usize>>,
+        pub(super) calendar_reload_debounce: RefCell<Option<glib::SourceId>>,
     }
 
     impl Default for CalendarPage {
@@ -445,6 +865,9 @@ mod imp {
                 settings: RefCell::new(None),
                 calendar_stack: RefCell::new(None),
                 calendar_view_buttons: RefCell::new(None),
+                calendar_prev_button: RefCell::new(None),
+                calendar_next_button: RefCell::new(None),
+                calendar_today_button: RefCell::new(None),
                 new_event_button: RefCell::new(None),
                 syncing_calendar_view: Cell::new(false),
                 month_grid: RefCell::new(None),
@@ -453,6 +876,8 @@ mod imp {
                 week_view: RefCell::new(None),
                 workweek_view: RefCell::new(None),
                 agenda_view: RefCell::new(None),
+                year_view: RefCell::new(None),
+                list_view: RefCell::new(None),
                 event_records: RefCell::new(None),
                 event_list: RefCell::new(None),
                 calendar_data_state: RefCell::new(None),
@@ -471,7 +896,15 @@ mod imp {
                 calendar_load_cancel: RefCell::new(None),
                 calendar_load_gate: RefCell::new(CalendarLoadGate::default()),
                 calendar_loading: Cell::new(false),
+                calendar_load_error: RefCell::new(None),
                 calendar_snapshot_index: RefCell::new(None),
+                calendar_revision: Cell::new(0),
+                calendar_monitor_generation: Cell::new(0),
+                calendar_projection_cancel: RefCell::new(None),
+                calendar_projection_gate: RefCell::new(CalendarProjectionGate::default()),
+                calendar_mutation_gate: RefCell::new(CalendarMutationGate::default()),
+                calendar_list_projection_count: Cell::new(None),
+                calendar_reload_debounce: RefCell::new(None),
             }
         }
     }
@@ -497,8 +930,15 @@ mod imp {
             if let Some(cancel) = self.calendar_load_cancel.borrow_mut().take() {
                 cancel.store(true, Ordering::Release);
             }
+            if let Some(cancel) = self.calendar_projection_cancel.borrow_mut().take() {
+                cancel.store(true, Ordering::Release);
+            }
             let generation = self.calendar_load_gate.borrow().generation;
             self.calendar_load_gate.borrow_mut().cancel(generation);
+            let projection_generation = self.calendar_projection_gate.borrow().generation;
+            self.calendar_projection_gate
+                .borrow_mut()
+                .cancel(projection_generation);
             self.calendar_loading.set(false);
             if let Some(cancel) = self.ecal_monitor_cancel.borrow_mut().take() {
                 cancel.store(true, Ordering::Relaxed);
@@ -576,16 +1016,16 @@ impl CalendarPage {
         let Some(records) = self.imp().event_records.borrow().as_ref().cloned() else {
             return false;
         };
-        let Some(event) = records
-            .borrow()
-            .iter()
-            .find(|event| event.source_uid == source_uid && event.uid == uid)
-            .cloned()
+        let Some(event) = unique_event_for_legacy_identity(&records.borrow(), source_uid, uid)
         else {
             return false;
         };
         open_event_editor_for_widget(self, &event);
         true
+    }
+
+    pub(crate) fn open_search_result_identity(&self, identity: &CalendarEventIdentity) -> bool {
+        self.open_event_editor_for_identity(self, identity)
     }
 
     /// Reload the portable/EDS calendar snapshot after a dialog operation.
@@ -595,15 +1035,47 @@ impl CalendarPage {
     /// portable local store and also makes the UI deterministic when a
     /// backend emits its signal late or not at all.
     pub(crate) fn reload_calendar_data(&self) {
-        self.start_calendar_snapshot_load();
+        if let Some(source) = self.imp().calendar_reload_debounce.borrow_mut().take() {
+            let _ = unsafe { glib::ffi::g_source_remove(source.as_raw()) };
+        }
+        let page = self.downgrade();
+        let source = glib::timeout_add_local_once(std::time::Duration::from_millis(300), move || {
+            if let Some(page) = page.upgrade() {
+                page.imp().calendar_reload_debounce.replace(None);
+                page.start_calendar_snapshot_load();
+            }
+        });
+        self.imp().calendar_reload_debounce.replace(Some(source));
     }
 
     fn start_calendar_snapshot_load(&self) {
         self.cancel_calendar_snapshot_load();
+        self.cancel_calendar_projection();
+        self.invalidate_calendar_mutation();
 
         let generation = self.imp().calendar_load_gate.borrow_mut().begin();
+        self.bump_calendar_revision();
         self.imp().view_state.borrow_mut().load_generation = generation;
+        self.imp().calendar_load_error.replace(None);
+        if self.imp().calendar_snapshot_index.borrow().is_none() {
+            let local_service = CalendarStoreService::new();
+            let local_snapshot = local_service.load_snapshot();
+            if !local_snapshot.events.is_empty()
+                || !local_snapshot.tasks.is_empty()
+                || !local_snapshot.memos.is_empty()
+            {
+                let snapshot_index =
+                    Arc::new(CalendarSnapshotIndex::new(Arc::new(local_snapshot)));
+                self.imp()
+                    .calendar_snapshot_index
+                    .replace(Some(snapshot_index));
+            }
+        }
         self.set_calendar_loading_status(true, "Kalender werden geladen …");
+        self.imp().calendar_list_projection_count.set(None);
+        self.refresh_task_sidebar();
+        self.refresh_event_list_visibility();
+        self.refresh_calendar_views();
 
         let cancellation = Arc::new(AtomicBool::new(false));
         self.imp()
@@ -655,10 +1127,12 @@ impl CalendarPage {
                         && page
                             .finish_calendar_snapshot_load(generation, &cancellation_for_receiver)
                     {
+                        page.set_calendar_load_error("Kalender konnten nicht geladen werden");
                         page.set_calendar_loading_status(
                             false,
                             "Kalender konnten nicht geladen werden",
                         );
+                        page.refresh_calendar_views();
                     }
                 }
             }
@@ -697,30 +1171,41 @@ impl CalendarPage {
             Ok(result) => result,
             Err(error) => {
                 if self.finish_calendar_snapshot_load(generation, &cancellation) {
+                    self.set_calendar_load_error(&format!(
+                        "Kalender konnten nicht geladen werden: {error}"
+                    ));
                     self.set_calendar_loading_status(
                         false,
                         &format!("Kalender konnten nicht geladen werden: {error}"),
                     );
+                    self.refresh_calendar_views();
                 }
                 return;
             }
         };
+        self.imp().calendar_load_error.replace(None);
 
         let Some(event_list) = self.imp().event_list.borrow().as_ref().cloned() else {
             if self.finish_calendar_snapshot_load(generation, &cancellation) {
+                self.set_calendar_load_error("Kalenderansicht nicht verfügbar");
                 self.set_calendar_loading_status(false, "Kalenderansicht nicht verfügbar");
+                self.refresh_calendar_views();
             }
             return;
         };
         let Some(event_records) = self.imp().event_records.borrow().as_ref().cloned() else {
             if self.finish_calendar_snapshot_load(generation, &cancellation) {
+                self.set_calendar_load_error("Kalenderdaten nicht verfügbar");
                 self.set_calendar_loading_status(false, "Kalenderdaten nicht verfügbar");
+                self.refresh_calendar_views();
             }
             return;
         };
         let Some(task_records) = self.imp().task_records.borrow().as_ref().cloned() else {
             if self.finish_calendar_snapshot_load(generation, &cancellation) {
+                self.set_calendar_load_error("Aufgabendaten nicht verfügbar");
                 self.set_calendar_loading_status(false, "Aufgabendaten nicht verfügbar");
+                self.refresh_calendar_views();
             }
             return;
         };
@@ -740,6 +1225,14 @@ impl CalendarPage {
 
         let count = snapshot_index.snapshot.events.len();
         let state_label = self.imp().calendar_data_state.borrow().as_ref().cloned();
+        let sidebar_token = CalendarSidebarApplyToken {
+            load_generation: generation,
+            model_revision: self.imp().calendar_revision.get(),
+        };
+        if !self.finish_calendar_snapshot_load(generation, &cancellation) {
+            return;
+        }
+        self.set_calendar_loading_status(false, "");
         if count == 0 {
             event_list.set_visible(false);
             if let Some(state_label) = state_label {
@@ -753,9 +1246,6 @@ impl CalendarPage {
                     CalendarDataOrigin::Local => state_label
                         .set_label("Keine Termine aus dem lokalen Kalenderbestand gefunden"),
                 }
-            }
-            if self.finish_calendar_snapshot_load(generation, &cancellation) {
-                self.set_calendar_loading_status(false, "");
             }
         } else {
             event_list.set_visible(false);
@@ -781,12 +1271,13 @@ impl CalendarPage {
                     let Some(page) = page_weak.upgrade() else {
                         return;
                     };
-                    if !page.calendar_load_is_current(generation, &cancellation) {
+                    if !page.calendar_sidebar_apply_is_current(sidebar_token, &cancellation) {
                         return;
                     }
                     let end = (index + chunk_size).min(events.len());
                     for event in &events[index..end] {
                         append_event_row(
+                            &page,
                             &event_list_clone,
                             Rc::clone(&event_records_clone),
                             event.clone(),
@@ -802,13 +1293,9 @@ impl CalendarPage {
                     }
                 }
                 if let Some(page) = page_weak.upgrade() {
-                    if !page.calendar_load_is_current(generation, &cancellation) {
+                    if !page.calendar_sidebar_apply_is_current(sidebar_token, &cancellation) {
                         return;
                     }
-                    if !page.finish_calendar_snapshot_load(generation, &cancellation) {
-                        return;
-                    }
-                    page.set_calendar_loading_status(false, "");
                     page.refresh_task_sidebar();
                     page.refresh_calendar_views();
                     page.refresh_event_list_visibility();
@@ -848,12 +1335,413 @@ impl CalendarPage {
             && !cancellation.load(Ordering::Acquire)
     }
 
+    fn calendar_sidebar_apply_is_current(
+        &self,
+        token: CalendarSidebarApplyToken,
+        cancellation: &Arc<AtomicBool>,
+    ) -> bool {
+        self.calendar_data_state() == CalendarDataState::Ready
+            && self.imp().view_state.borrow().load_generation == token.load_generation
+            && self.imp().calendar_revision.get() == token.model_revision
+            && !cancellation.load(Ordering::Acquire)
+    }
+
     fn set_calendar_loading_status(&self, loading: bool, status: &str) {
         self.imp().calendar_loading.set(loading);
         if !status.is_empty() {
             if let Some(label) = self.imp().calendar_data_state.borrow().as_ref() {
                 label.set_label(status);
             }
+        }
+    }
+
+    fn set_calendar_load_error(&self, error: &str) {
+        self.imp()
+            .calendar_load_error
+            .replace(Some(error.to_string()));
+    }
+
+    fn calendar_data_state(&self) -> CalendarDataState {
+        if self.imp().calendar_snapshot_index.borrow().is_some() {
+            CalendarDataState::Ready
+        } else if self.imp().calendar_loading.get() {
+            CalendarDataState::Loading
+        } else if self.imp().calendar_load_error.borrow().is_some() {
+            CalendarDataState::Error
+        } else {
+            CalendarDataState::Ready
+        }
+    }
+
+    fn calendar_state_row(&self) -> adw::ActionRow {
+        let (title, subtitle) = match self.calendar_data_state() {
+            CalendarDataState::Loading => (
+                "Kalender werden geladen …".to_string(),
+                "Diese Ansicht wird nach dem bestätigten Snapshot aktualisiert.".to_string(),
+            ),
+            CalendarDataState::Error => (
+                "Kalender konnten nicht geladen werden".to_string(),
+                self.imp()
+                    .calendar_load_error
+                    .borrow()
+                    .as_deref()
+                    .unwrap_or("Der zuletzt bestätigte Kalenderstand ist nicht verfügbar.")
+                    .to_string(),
+            ),
+            CalendarDataState::Ready => (
+                "Kalenderansicht".to_string(),
+                "Noch keine bestätigten Kalenderdaten verfügbar.".to_string(),
+            ),
+        };
+        adw::ActionRow::builder()
+            .title(&title)
+            .subtitle(&subtitle)
+            .build()
+    }
+
+    fn append_calendar_state_to_box(&self, container: &gtk::Box) -> bool {
+        if self.calendar_data_state() == CalendarDataState::Ready {
+            return false;
+        }
+        container.append(&self.calendar_state_row());
+        true
+    }
+
+    fn attach_calendar_state_to_grid(&self, grid: &gtk::Grid) -> bool {
+        if self.calendar_data_state() == CalendarDataState::Ready {
+            return false;
+        }
+        let row = self.calendar_state_row();
+        grid.attach(&row, 0, 0, 7, 1);
+        true
+    }
+
+    fn bump_calendar_revision(&self) -> u64 {
+        let next = advance_calendar_generation(self.imp().calendar_revision.get());
+        self.imp().calendar_revision.set(next);
+        next
+    }
+
+    fn begin_calendar_mutation(
+        &self,
+        identity: Option<CalendarEventIdentity>,
+    ) -> CalendarMutationToken {
+        let model_revision = self.imp().calendar_revision.get();
+        let load_generation = self.imp().view_state.borrow().load_generation;
+        self.imp().calendar_mutation_gate.borrow_mut().begin(
+            model_revision,
+            load_generation,
+            identity,
+        )
+    }
+
+    fn unique_loaded_calendar_event(
+        &self,
+        identity: &CalendarEventIdentity,
+    ) -> Option<CalendarEventRecord> {
+        self.imp()
+            .event_records
+            .borrow()
+            .as_ref()
+            .and_then(|records| unique_event_for_identity(&records.borrow(), identity))
+    }
+
+    fn open_event_editor_for_identity<W: IsA<gtk::Widget>>(
+        &self,
+        widget: &W,
+        identity: &CalendarEventIdentity,
+    ) -> bool {
+        let Some(event) = self.unique_loaded_calendar_event(identity) else {
+            return false;
+        };
+        open_event_editor_for_widget(widget, &event);
+        true
+    }
+
+    fn calendar_mutation_is_current(&self, token: &CalendarMutationToken) -> bool {
+        self.imp().calendar_mutation_gate.borrow().accepts(token)
+            && self.imp().calendar_revision.get() == token.model_revision
+            && self.imp().view_state.borrow().load_generation == token.load_generation
+    }
+
+    fn calendar_event_identity_is_loaded(&self, identity: &CalendarEventIdentity) -> bool {
+        self.imp()
+            .event_records
+            .borrow()
+            .as_ref()
+            .is_some_and(|records| unique_event_for_identity(&records.borrow(), identity).is_some())
+    }
+
+    fn calendar_event_mutation_is_current(&self, token: &CalendarMutationToken) -> bool {
+        self.calendar_mutation_is_current(token)
+            && token
+                .identity
+                .as_ref()
+                .is_some_and(|identity| self.calendar_event_identity_is_loaded(identity))
+    }
+
+    fn finish_calendar_mutation(&self, token: &CalendarMutationToken) -> bool {
+        self.imp().calendar_mutation_gate.borrow_mut().finish(token)
+    }
+
+    fn invalidate_calendar_mutation(&self) {
+        self.imp().calendar_mutation_gate.borrow_mut().invalidate();
+    }
+
+    fn calendar_monitor_is_current(&self, generation: u64) -> bool {
+        self.imp().calendar_monitor_generation.get() == generation
+    }
+
+    fn calendar_monitor_revision_is_current(&self, generation: u64, revision: u64) -> bool {
+        self.calendar_monitor_is_current(generation)
+            && self.imp().calendar_revision.get() == revision
+    }
+
+    fn report_calendar_monitor_failure(&self, error: &str) {
+        self.invalidate_calendar_mutation();
+        self.cancel_calendar_snapshot_load();
+        self.cancel_calendar_projection();
+        let message = format!("Kalender-Synchronisierung fehlgeschlagen: {error}");
+        self.set_calendar_load_error(&message);
+        self.set_calendar_loading_status(false, &message);
+        self.refresh_task_sidebar();
+        self.refresh_calendar_views();
+        self.refresh_event_list_visibility();
+    }
+
+    fn cancel_calendar_projection(&self) {
+        if let Some(cancel) = self.imp().calendar_projection_cancel.borrow_mut().take() {
+            cancel.store(true, Ordering::Release);
+        }
+        let generation = self.imp().calendar_projection_gate.borrow().generation;
+        self.imp()
+            .calendar_projection_gate
+            .borrow_mut()
+            .cancel(generation);
+    }
+
+    fn start_calendar_projection(
+        &self,
+        view: CalendarView,
+        year: Option<i32>,
+        selected_day: Option<NaiveDate>,
+    ) {
+        self.cancel_calendar_projection();
+        let Some(index) = self
+            .imp()
+            .calendar_snapshot_index
+            .borrow()
+            .as_ref()
+            .cloned()
+        else {
+            return;
+        };
+        let revision = self.imp().calendar_revision.get();
+        let load_generation = self.imp().view_state.borrow().load_generation;
+        let generation =
+            self.imp()
+                .calendar_projection_gate
+                .borrow_mut()
+                .begin(view, revision, load_generation);
+        let cancellation = Arc::new(AtomicBool::new(false));
+        self.imp()
+            .calendar_projection_cancel
+            .replace(Some(Arc::clone(&cancellation)));
+
+        let search_query = self.imp().calendar_search_query.borrow().clone();
+        let category_filter = self.imp().calendar_category_filter.borrow().clone();
+        let hidden_sources = self.imp().hidden_calendar_sources.borrow().clone();
+        let first_weekday = configured_first_weekday();
+        let today = Local::now().date_naive();
+        let page = self.downgrade();
+        let (sender, receiver) = async_channel::bounded(1);
+        std::thread::spawn({
+            let cancellation = Arc::clone(&cancellation);
+            move || {
+                if cancellation.load(Ordering::Acquire) {
+                    return;
+                }
+                let result = std::panic::catch_unwind(|| match view {
+                    CalendarView::Year => {
+                        let year =
+                            year.ok_or_else(|| "Jahresansicht ist nicht verfügbar".to_string())?;
+                        let selected_day = selected_day.ok_or_else(|| {
+                            "Kein ausgewählter Tag für die Jahresansicht".to_string()
+                        })?;
+                        build_year_projection_plan(
+                            &index,
+                            year,
+                            selected_day,
+                            today,
+                            first_weekday,
+                            &search_query,
+                            category_filter.as_deref(),
+                            &hidden_sources,
+                        )
+                        .map(CalendarProjectionPlan::Year)
+                    }
+                    CalendarView::List => {
+                        Ok(CalendarProjectionPlan::List(build_list_projection_plan(
+                            &index,
+                            &search_query,
+                            category_filter.as_deref(),
+                            &hidden_sources,
+                        )))
+                    }
+                    _ => Err("Für diese Ansicht gibt es keinen Projektion-Worker".to_string()),
+                })
+                .unwrap_or_else(|_| {
+                    Err("Die Kalenderansicht konnte nicht vorbereitet werden".to_string())
+                });
+                if cancellation.load(Ordering::Acquire) {
+                    return;
+                }
+                let load = CalendarProjectionLoad {
+                    generation,
+                    revision,
+                    load_generation,
+                    view,
+                    cancellation,
+                    result,
+                };
+                if let Err(error) = sender.send_blocking(load) {
+                    tracing::debug!(%error, "Calendar projection result was dropped");
+                }
+            }
+        });
+        let cancellation_for_receiver = Arc::clone(&cancellation);
+        glib::spawn_future_local(async move {
+            match receiver.recv().await {
+                Ok(load) => {
+                    if let Some(page) = page.upgrade() {
+                        page.apply_calendar_projection_load(load);
+                    }
+                }
+                Err(error) => {
+                    if let Some(page) = page.upgrade()
+                        && page.finish_calendar_projection_token(
+                            generation,
+                            view,
+                            revision,
+                            load_generation,
+                            &cancellation_for_receiver,
+                        )
+                    {
+                        page.show_calendar_projection_error(
+                            view,
+                            &format!("Der Projektion-Worker/kanal wurde beendet: {error}"),
+                        );
+                    }
+                }
+            }
+        });
+    }
+
+    fn calendar_projection_is_current(&self, load: &CalendarProjectionLoad) -> bool {
+        self.calendar_projection_token_is_current(
+            load.generation,
+            load.view,
+            load.revision,
+            load.load_generation,
+            &load.cancellation,
+        )
+    }
+
+    fn finish_calendar_projection(&self, load: &CalendarProjectionLoad) -> bool {
+        self.finish_calendar_projection_token(
+            load.generation,
+            load.view,
+            load.revision,
+            load.load_generation,
+            &load.cancellation,
+        )
+    }
+
+    fn calendar_projection_token_is_current(
+        &self,
+        generation: u64,
+        view: CalendarView,
+        revision: u64,
+        load_generation: u64,
+        cancellation: &Arc<AtomicBool>,
+    ) -> bool {
+        self.calendar_data_state() == CalendarDataState::Ready
+            && *self.imp().current_view.borrow() == view
+            && self.imp().calendar_revision.get() == revision
+            && self.imp().view_state.borrow().load_generation == load_generation
+            && !cancellation.load(Ordering::Acquire)
+            && self.imp().calendar_projection_gate.borrow().accepts(
+                generation,
+                view,
+                revision,
+                load_generation,
+            )
+    }
+
+    fn finish_calendar_projection_token(
+        &self,
+        generation: u64,
+        view: CalendarView,
+        revision: u64,
+        load_generation: u64,
+        cancellation: &Arc<AtomicBool>,
+    ) -> bool {
+        if !self.calendar_projection_token_is_current(
+            generation,
+            view,
+            revision,
+            load_generation,
+            cancellation,
+        ) {
+            return false;
+        }
+        if !self.imp().calendar_projection_gate.borrow_mut().finish(
+            generation,
+            view,
+            revision,
+            load_generation,
+        ) {
+            return false;
+        }
+        self.imp().calendar_projection_cancel.borrow_mut().take();
+        true
+    }
+
+    fn apply_calendar_projection_load(&self, load: CalendarProjectionLoad) {
+        if !self.calendar_projection_is_current(&load) {
+            return;
+        }
+        let plan = match load.result.clone() {
+            Ok(plan) => plan,
+            Err(error) => {
+                if self.finish_calendar_projection(&load) {
+                    self.show_calendar_projection_error(load.view, &error);
+                }
+                return;
+            }
+        };
+        match plan {
+            CalendarProjectionPlan::Year(plan) => self.apply_year_projection_plan(load, plan),
+            CalendarProjectionPlan::List(plan) => self.apply_list_projection_plan(load, plan),
+        }
+    }
+
+    fn show_calendar_projection_error(&self, view: CalendarView, error: &str) {
+        let message = format!("Kalenderansicht konnte nicht aufgebaut werden: {error}");
+        match view {
+            CalendarView::Year => {
+                if let Some(container) = self.imp().year_view.borrow().as_ref() {
+                    clear_box(container);
+                    container.append(&empty_period_row("Jahresansicht nicht verfügbar", &message));
+                }
+            }
+            CalendarView::List => {
+                if let Some(container) = self.imp().list_view.borrow().as_ref() {
+                    clear_box(container);
+                    container.append(&empty_period_row("Listenansicht nicht verfügbar", &message));
+                }
+            }
+            _ => {}
         }
     }
 
@@ -1029,26 +1917,30 @@ impl CalendarPage {
 
         if let Some((cancel, receiver)) = ECalService::new().start_change_monitor() {
             *self.imp().ecal_monitor_cancel.borrow_mut() = Some(cancel);
-            let event_list_for_monitor = event_list.clone();
-            let event_records_for_monitor = Rc::clone(&event_records);
-            let task_records_for_monitor = Rc::clone(&task_records);
-            let local_item_state_for_monitor = local_item_state.clone();
+            let monitor_generation =
+                advance_calendar_generation(self.imp().calendar_monitor_generation.get());
+            self.imp()
+                .calendar_monitor_generation
+                .set(monitor_generation);
             let page_for_monitor = self.downgrade();
             glib::spawn_future_local(async move {
-                while let Ok(event) = receiver.recv().await {
-                    if matches!(&event, ECalSyncEvent::Change(_))
-                        && page_for_monitor
-                            .upgrade()
-                            .is_some_and(|page| page.imp().calendar_loading.get())
-                    {
-                        if let Some(page) = page_for_monitor.upgrade() {
-                            // A snapshot or its bounded GTK build owns the
-                            // current list.  Re-query after the monitor event
-                            // instead of letting a live delta race stale rows
-                            // into that build.
-                            page.reload_calendar_data();
+                loop {
+                    let event = match receiver.recv().await {
+                        Ok(event) => event,
+                        Err(error) => {
+                            if let Some(page) = page_for_monitor.upgrade()
+                                && page.calendar_monitor_is_current(monitor_generation)
+                            {
+                                page.report_calendar_monitor_failure(&error.to_string());
+                            }
+                            break;
                         }
-                        continue;
+                    };
+                    let Some(page) = page_for_monitor.upgrade() else {
+                        return;
+                    };
+                    if !page.calendar_monitor_is_current(monitor_generation) {
+                        return;
                     }
                     match event {
                         ECalSyncEvent::Ready(status) => {
@@ -1062,58 +1954,23 @@ impl CalendarPage {
                                 );
                             }
                         }
-                        ECalSyncEvent::Change(change) => match change.kind {
-                            ECalChangeKind::Removed => {
-                                if change.source_type == ECalComponentType::Task {
-                                    remove_task_record(
-                                        Rc::clone(&task_records_for_monitor),
-                                        &change.source_uid,
-                                        &change.uid,
-                                    );
-                                } else if change.source_type == ECalComponentType::Event {
-                                    remove_event_row(
-                                        &event_list_for_monitor,
-                                        Rc::clone(&event_records_for_monitor),
-                                        &change.source_uid,
-                                        &change.uid,
-                                    );
-                                }
+                        ECalSyncEvent::Change(_change) => {
+                            let revision = page.imp().calendar_revision.get();
+                            if page
+                                .calendar_monitor_revision_is_current(monitor_generation, revision)
+                            {
+                                // The next authoritative snapshot owns all
+                                // seven views.  Do not merge a monitor delta
+                                // into a list that a newer snapshot may be
+                                // building.
+                                page.reload_calendar_data();
                             }
-                            ECalChangeKind::Added | ECalChangeKind::Modified => {
-                                match parse_change_record(&change) {
-                                    Some(ECalRecord::Event(event)) => {
-                                        upsert_event_row(
-                                            &event_list_for_monitor,
-                                            Rc::clone(&event_records_for_monitor),
-                                            event,
-                                        );
-                                    }
-                                    Some(ECalRecord::Task(task)) => {
-                                        upsert_task_record(
-                                            Rc::clone(&task_records_for_monitor),
-                                            task,
-                                        );
-                                    }
-                                    Some(ECalRecord::Memo(_)) | None => {}
-                                }
-                            }
-                        },
+                        }
                         ECalSyncEvent::Error(error) => {
                             tracing::warn!(%error, "ECal signal monitor stopped");
+                            page.report_calendar_monitor_failure(&error);
                             break;
                         }
-                    }
-                    let count = event_records_for_monitor.borrow().len();
-                    event_list_for_monitor.set_visible(count > 0);
-                    if count > 0 {
-                        local_item_state_for_monitor
-                            .set_label(&format!("{count} Termin(e) synchronisiert."));
-                    }
-                    if let Some(page) = page_for_monitor.upgrade() {
-                        page.rebuild_calendar_index_from_records();
-                        page.refresh_task_sidebar();
-                        page.refresh_calendar_views();
-                        page.refresh_event_list_visibility();
                     }
                 }
             });
@@ -1175,6 +2032,12 @@ impl CalendarPage {
                     page.refresh_calendar_views();
                     page.refresh_event_list_visibility();
                 });
+                let color = calendar_source_color(&source.uid, &source.display_name);
+                let color_dot = gtk::Label::new(None);
+                color_dot.set_markup(&format!("<span foreground=\"{color}\">●</span>"));
+                color_dot.set_margin_start(4);
+                color_dot.set_margin_end(2);
+                row.add_prefix(&color_dot);
                 row.add_prefix(&check);
                 source_list_for_load.append(&row);
                 displayed_sources += 1;
@@ -1210,6 +2073,12 @@ impl CalendarPage {
                     page.refresh_calendar_views();
                     page.refresh_event_list_visibility();
                 });
+                let color = calendar_source_color("local-calendar", "Lokaler Kalender");
+                let color_dot = gtk::Label::new(None);
+                color_dot.set_markup(&format!("<span foreground=\"{color}\">●</span>"));
+                color_dot.set_margin_start(4);
+                color_dot.set_margin_end(2);
+                row.add_prefix(&color_dot);
                 row.add_prefix(&check);
                 source_list_for_load.append(&row);
                 displayed_sources += 1;
@@ -1326,6 +2195,15 @@ impl CalendarPage {
             .tooltip_text("Nächster Zeitraum")
             .build();
         set_accessible_label(&next_btn, "Nächsten Kalenderzeitraum anzeigen");
+        self.imp()
+            .calendar_prev_button
+            .replace(Some(prev_btn.clone()));
+        self.imp()
+            .calendar_next_button
+            .replace(Some(next_btn.clone()));
+        self.imp()
+            .calendar_today_button
+            .replace(Some(today_btn.clone()));
 
         let date_label = gtk::Label::builder()
             .label("")
@@ -1396,8 +2274,8 @@ impl CalendarPage {
 
         let initial_view = settings
             .as_ref()
-            .map(|settings| settings.calendar_view())
-            .unwrap_or_else(|| "month".to_string());
+            .map(|settings| persisted_calendar_view_name(Some(settings)))
+            .unwrap_or_else(|| persisted_calendar_view_name(None));
         let initial_calendar_view = calendar_view_from_name(&initial_view);
         *self.imp().current_view.borrow_mut() = initial_calendar_view;
         self.imp()
@@ -1429,12 +2307,24 @@ impl CalendarPage {
             .group(&day_btn)
             .active(initial_calendar_view == CalendarView::Agenda)
             .build();
+        let year_btn = gtk::ToggleButton::builder()
+            .label("Jahr")
+            .group(&day_btn)
+            .active(initial_calendar_view == CalendarView::Year)
+            .build();
+        let list_btn = gtk::ToggleButton::builder()
+            .label("Liste")
+            .group(&day_btn)
+            .active(initial_calendar_view == CalendarView::List)
+            .build();
 
         view_toggle.append(&day_btn);
         view_toggle.append(&week_btn);
         view_toggle.append(&workweek_btn);
         view_toggle.append(&month_btn);
         view_toggle.append(&agenda_btn);
+        view_toggle.append(&year_btn);
+        view_toggle.append(&list_btn);
 
         view_toolbar.append(&prev_btn);
         view_toolbar.append(&today_btn);
@@ -1449,7 +2339,7 @@ impl CalendarPage {
         content_box.append(&view_toolbar);
         content_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
 
-        // View Stack for Day/Week/Month/Agenda view switching
+        // View Stack for all portable calendar surfaces.
         let calendar_stack = adw::ViewStack::new();
 
         // 1. Month Grid View
@@ -1549,12 +2439,49 @@ impl CalendarPage {
 
         calendar_stack.add_titled(&agenda_scroll, Some("agenda"), "Agenda");
 
+        // 6. Year View: twelve compact civil-date month grids plus the
+        // selected-day event list, mirroring Evolution's Year surface.
+        let year_view = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .margin_start(12)
+            .margin_end(12)
+            .margin_top(12)
+            .margin_bottom(12)
+            .spacing(8)
+            .build();
+        self.imp().year_view.replace(Some(year_view.clone()));
+        let year_scroll = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .child(&year_view)
+            .build();
+        calendar_stack.add_titled(&year_scroll, Some("year"), "Jahr");
+
+        // 7. List View: one stable, filtered row per loaded component.
+        let list_view = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .margin_start(16)
+            .margin_end(16)
+            .margin_top(16)
+            .margin_bottom(16)
+            .spacing(8)
+            .build();
+        self.imp().list_view.replace(Some(list_view.clone()));
+        let list_scroll = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .child(&list_view)
+            .build();
+        calendar_stack.add_titled(&list_scroll, Some("list"), "Liste");
+
         calendar_stack.set_visible_child_name(match initial_calendar_view {
             CalendarView::Day => "day",
             CalendarView::Week => "week",
             CalendarView::WorkWeek => "workweek",
             CalendarView::Month => "month",
             CalendarView::Agenda => "agenda",
+            CalendarView::Year => "year",
+            CalendarView::List => "list",
         });
         self.imp()
             .calendar_stack
@@ -1565,6 +2492,8 @@ impl CalendarPage {
             workweek_btn.clone(),
             month_btn.clone(),
             agenda_btn.clone(),
+            year_btn.clone(),
+            list_btn.clone(),
         ]));
 
         // View toggle handler
@@ -1610,6 +2539,24 @@ impl CalendarPage {
             move |btn| {
                 if btn.is_active() {
                     page.select_calendar_view(CalendarView::Agenda);
+                }
+            }
+        ));
+        year_btn.connect_toggled(glib::clone!(
+            #[weak(rename_to = page)]
+            self,
+            move |btn| {
+                if btn.is_active() {
+                    page.select_calendar_view(CalendarView::Year);
+                }
+            }
+        ));
+        list_btn.connect_toggled(glib::clone!(
+            #[weak(rename_to = page)]
+            self,
+            move |btn| {
+                if btn.is_active() {
+                    page.select_calendar_view(CalendarView::List);
                 }
             }
         ));
@@ -1680,6 +2627,9 @@ impl CalendarPage {
             #[weak(rename_to = page)]
             self,
             move |_| {
+                if *page.imp().current_view.borrow() == CalendarView::List {
+                    return;
+                }
                 let today = Local::now().date_naive();
                 page.imp()
                     .view_state
@@ -1735,8 +2685,11 @@ impl CalendarPage {
             stack.set_visible_child_name(calendar_view_name(view));
         }
         if let Some(settings) = self.imp().settings.borrow().as_ref() {
-            settings.set_calendar_view(calendar_view_name(view));
+            persist_calendar_view(view, Some(settings));
+        } else {
+            persist_calendar_view(view, None);
         }
+        self.update_calendar_navigation_controls();
         self.refresh_calendar_views();
     }
 
@@ -1746,7 +2699,7 @@ impl CalendarPage {
             .settings
             .borrow()
             .as_ref()
-            .map(|settings| calendar_view_from_name(&settings.calendar_view()))
+            .map(|settings| calendar_view_from_name(&persisted_calendar_view_name(Some(settings))))
             .unwrap_or_else(|| *self.imp().current_view.borrow());
 
         self.imp().syncing_calendar_view.set(true);
@@ -1765,12 +2718,28 @@ impl CalendarPage {
                 CalendarView::WorkWeek,
                 CalendarView::Month,
                 CalendarView::Agenda,
+                CalendarView::Year,
+                CalendarView::List,
             ]) {
                 button.set_active(candidate == view);
             }
         }
         self.imp().syncing_calendar_view.set(false);
+        self.update_calendar_navigation_controls();
         self.refresh_calendar_views();
+    }
+
+    fn update_calendar_navigation_controls(&self) {
+        let enabled = *self.imp().current_view.borrow() != CalendarView::List;
+        if let Some(button) = self.imp().calendar_prev_button.borrow().as_ref() {
+            button.set_sensitive(enabled);
+        }
+        if let Some(button) = self.imp().calendar_next_button.borrow().as_ref() {
+            button.set_sensitive(enabled);
+        }
+        if let Some(button) = self.imp().calendar_today_button.borrow().as_ref() {
+            button.set_sensitive(enabled);
+        }
     }
 
     fn refresh_hidden_calendar_sources(&self) {
@@ -1796,6 +2765,32 @@ impl CalendarPage {
 
         while let Some(child) = task_list.first_child() {
             task_list.remove(&child);
+        }
+
+        match self.calendar_data_state() {
+            CalendarDataState::Loading => {
+                task_list.set_visible(false);
+                if let Some(state) = self.imp().task_state.borrow().as_ref() {
+                    state.set_visible(true);
+                    state.set_label("Aufgaben werden zusammen mit dem Kalender-Snapshot geladen …");
+                }
+                return;
+            }
+            CalendarDataState::Error => {
+                task_list.set_visible(false);
+                if let Some(state) = self.imp().task_state.borrow().as_ref() {
+                    state.set_visible(true);
+                    state.set_label(
+                        self.imp()
+                            .calendar_load_error
+                            .borrow()
+                            .as_deref()
+                            .unwrap_or("Aufgaben konnten nicht geladen werden"),
+                    );
+                }
+                return;
+            }
+            CalendarDataState::Ready => {}
         }
 
         let all_count = records.borrow().len();
@@ -1838,6 +2833,9 @@ impl CalendarPage {
     }
 
     fn shift_period(&self, direction: i32) {
+        if *self.imp().current_view.borrow() == CalendarView::List {
+            return;
+        }
         self.imp()
             .view_state
             .borrow_mut()
@@ -1873,6 +2871,9 @@ impl CalendarPage {
             .view_state
             .borrow_mut()
             .set_anchor(date, configured_first_weekday());
+        if *self.imp().current_view.borrow() == CalendarView::Year {
+            self.imp().view_state.borrow_mut().select_civil_day(date);
+        }
     }
 
     fn current_calendar_viewport(&self) -> CalendarViewport {
@@ -1909,15 +2910,27 @@ impl CalendarPage {
             .view_state
             .borrow_mut()
             .set_anchor(current_date, configured_first_weekday());
+        if !matches!(current_view, CalendarView::Year | CalendarView::List) {
+            let list_events = self.filtered_sorted_events();
+            self.imp()
+                .view_state
+                .borrow_mut()
+                .reconcile_event_selection(&list_events);
+        } else {
+            self.cancel_calendar_projection();
+        }
         self.refresh_task_sidebar();
         self.refresh_calendar_category_model();
-        match *self.imp().current_view.borrow() {
+        match current_view {
             CalendarView::Month => self.refresh_month_grid(),
             CalendarView::Day => self.refresh_day_view(),
             CalendarView::Week => self.refresh_week_view(),
             CalendarView::WorkWeek => self.refresh_workweek_view(),
             CalendarView::Agenda => self.refresh_agenda_view(),
+            CalendarView::Year => self.refresh_year_view(),
+            CalendarView::List => self.refresh_list_view(),
         }
+        self.update_calendar_navigation_controls();
         self.refresh_period_label();
     }
 
@@ -1940,10 +2953,11 @@ impl CalendarPage {
                     event_list.remove(&child);
                 }
                 for event in records.borrow().iter().cloned() {
-                    append_event_row(&event_list, Rc::clone(&records), event);
+                    append_event_row(self, &event_list, Rc::clone(&records), event);
                 }
             }
             self.rebuild_calendar_index_from_records();
+            self.bump_calendar_revision();
         }
         self.refresh_calendar_views();
         self.refresh_event_list_visibility();
@@ -2013,6 +3027,25 @@ impl CalendarPage {
         let Some(event_list) = self.imp().event_list.borrow().as_ref().cloned() else {
             return;
         };
+        if self.calendar_data_state() != CalendarDataState::Ready {
+            event_list.set_visible(false);
+            if let Some(label) = self.imp().calendar_data_state.borrow().as_ref() {
+                match self.calendar_data_state() {
+                    CalendarDataState::Loading => {
+                        label.set_label("Kalender werden geladen …");
+                    }
+                    CalendarDataState::Error => label.set_label(
+                        self.imp()
+                            .calendar_load_error
+                            .borrow()
+                            .as_deref()
+                            .unwrap_or("Kalender konnten nicht geladen werden"),
+                    ),
+                    CalendarDataState::Ready => {}
+                }
+            }
+            return;
+        }
         let mut visible_count = 0usize;
         let mut child = event_list.first_child();
         while let Some(widget) = child {
@@ -2086,6 +3119,13 @@ impl CalendarPage {
                 format!("{} {}", Self::month_name(date.month()), date.year())
             }
             CalendarView::Agenda => format!("Agenda ab {}", format_date(date)),
+            CalendarView::Year => format!("Jahr {}", date.year()),
+            CalendarView::List => self
+                .imp()
+                .calendar_list_projection_count
+                .get()
+                .map(|count| format!("Alle Termine ({count})"))
+                .unwrap_or_else(|| "Alle Termine".to_string()),
         };
         label.set_label(&text);
     }
@@ -2095,6 +3135,9 @@ impl CalendarPage {
             return;
         };
         clear_box(&view);
+        if self.append_calendar_state_to_box(&view) {
+            return;
+        }
         let date = self.current_calendar_viewport().visible_range.start;
         let heading = gtk::Label::builder()
             .label(&format_date(date))
@@ -2126,7 +3169,7 @@ impl CalendarPage {
             ));
         } else {
             for event in events {
-                list.append(&calendar_event_row(&event));
+                list.append(&calendar_event_row(self, &event));
             }
         }
         view.append(&list);
@@ -2137,6 +3180,9 @@ impl CalendarPage {
             return;
         };
         clear_box(&view);
+        if self.append_calendar_state_to_box(&view) {
+            return;
+        }
         let week_start = self.current_calendar_viewport().visible_range.start;
         let week_number = AppSettings::try_new()
             .filter(|settings| settings.calendar_show_week_numbers())
@@ -2184,7 +3230,7 @@ impl CalendarPage {
                 list.append(&empty_period_row("Keine Termine", ""));
             } else {
                 for event in events {
-                    list.append(&calendar_event_row(&event));
+                    list.append(&calendar_event_row(self, &event));
                 }
             }
             day_box.append(&list);
@@ -2197,6 +3243,9 @@ impl CalendarPage {
             return;
         };
         clear_box(&view);
+        if self.append_calendar_state_to_box(&view) {
+            return;
+        }
 
         let viewport = self.current_calendar_viewport();
         let start_date = viewport.visible_range.start;
@@ -2308,7 +3357,7 @@ impl CalendarPage {
             events.sort_by_key(event_start_datetime);
             for event in events {
                 if event.all_day {
-                    all_day_cells[day_index].append(&calendar_event_row(&event));
+                    all_day_cells[day_index].append(&calendar_event_row(self, &event));
                     continue;
                 }
 
@@ -2345,14 +3394,21 @@ impl CalendarPage {
                     .margin_bottom(3)
                     .build();
                 event_label.set_markup(&calendar_event_markup(
-                    &event.component,
+                    &event,
                     &format!("{} · {}", event_time_text(&event), title),
                 ));
                 event_button.set_child(Some(&event_label));
                 set_accessible_label(&event_button, &format!("Termin öffnen: {title}"));
-                let event_for_click = event.clone();
+                let event_identity_for_click = CalendarEventIdentity::from_event(&event);
+                let page_weak_for_click = self.downgrade();
                 event_button.connect_clicked(move |button| {
-                    open_event_editor_for_widget(button, &event_for_click);
+                    let (Some(page), Some(identity)) = (
+                        page_weak_for_click.upgrade(),
+                        event_identity_for_click.as_ref(),
+                    ) else {
+                        return;
+                    };
+                    page.open_event_editor_for_identity(button, identity);
                 });
                 install_event_drag_source(&event_button, &event, *day);
                 cells[day_index][slot as usize].append(&event_button);
@@ -2367,6 +3423,9 @@ impl CalendarPage {
             return;
         };
         clear_box(&view);
+        if self.append_calendar_state_to_box(&view) {
+            return;
+        }
 
         let visible_range = self.current_calendar_viewport().visible_range;
         let start_date = visible_range.start;
@@ -2417,7 +3476,7 @@ impl CalendarPage {
                     .margin_bottom(4)
                     .build();
                 for event in events {
-                    list.append(&calendar_event_row(&event));
+                    list.append(&calendar_event_row(self, &event));
                 }
                 date_box.append(&list);
                 view.append(&date_box);
@@ -2432,11 +3491,454 @@ impl CalendarPage {
         }
     }
 
-    fn events_by_date(
+    fn refresh_year_view(&self) {
+        let Some(view) = self.imp().year_view.borrow().as_ref().cloned() else {
+            return;
+        };
+        clear_box(&view);
+
+        if self.append_calendar_state_to_box(&view) {
+            return;
+        }
+
+        let year = self.current_calendar_viewport().anchor_date.year();
+        let Some(year_range) = calendar_year_range_option(year) else {
+            view.append(&empty_period_row(
+                "Jahresansicht nicht verfügbar",
+                "Das ausgewählte Kalenderjahr liegt außerhalb des unterstützten Datumsbereichs.",
+            ));
+            return;
+        };
+        let selected_day = self
+            .imp()
+            .view_state
+            .borrow()
+            .selected_range
+            .filter(|range| range.start.year() == year)
+            .map(|range| range.start)
+            .unwrap_or_else(|| {
+                self.current_calendar_viewport()
+                    .anchor_date
+                    .max(year_range.start)
+                    .min(year_range.last_inclusive())
+            });
+
+        if self.imp().calendar_snapshot_index.borrow().is_none() {
+            view.append(&empty_period_row(
+                "Keine Kalenderdaten bestätigt",
+                "Die Jahresansicht wartet auf einen bestätigten Snapshot.",
+            ));
+            return;
+        }
+        view.append(&empty_period_row(
+            "Jahresansicht wird vorbereitet …",
+            "Die Jahresprojektion wird außerhalb des GTK-Hauptlaufs berechnet.",
+        ));
+        self.start_calendar_projection(CalendarView::Year, Some(year), Some(selected_day));
+        return;
+    }
+
+    fn refresh_list_view(&self) {
+        let Some(view) = self.imp().list_view.borrow().as_ref().cloned() else {
+            return;
+        };
+        clear_box(&view);
+        self.imp().calendar_list_projection_count.set(None);
+        if self.append_calendar_state_to_box(&view) {
+            return;
+        }
+        if self.imp().calendar_snapshot_index.borrow().is_none() {
+            view.append(&empty_period_row(
+                "Keine Kalenderdaten bestätigt",
+                "Die Listenansicht wartet auf einen bestätigten Snapshot.",
+            ));
+            return;
+        }
+        view.append(&empty_period_row(
+            "Liste wird vorbereitet …",
+            "Die gefilterte Projektion wird außerhalb des GTK-Hauptlaufs berechnet.",
+        ));
+        self.start_calendar_projection(CalendarView::List, None, None);
+    }
+
+    fn apply_year_projection_plan(&self, load: CalendarProjectionLoad, plan: YearProjectionPlan) {
+        let Some(view) = self.imp().year_view.borrow().as_ref().cloned() else {
+            return;
+        };
+        if !self.calendar_projection_is_current(&load) {
+            return;
+        }
+        clear_box(&view);
+        let year_grid = gtk::Grid::builder()
+            .column_homogeneous(true)
+            .row_homogeneous(true)
+            .column_spacing(10)
+            .row_spacing(10)
+            .hexpand(true)
+            .build();
+        view.append(&year_grid);
+        let weekday_names = configured_weekday_names();
+        let page_weak = self.downgrade();
+        glib::spawn_future_local(async move {
+            for (month_index, month) in plan.months.iter().enumerate() {
+                let Some(page) = page_weak.upgrade() else {
+                    return;
+                };
+                if !page.calendar_projection_is_current(&load) {
+                    return;
+                }
+                let month_box = gtk::Box::builder()
+                    .orientation(gtk::Orientation::Vertical)
+                    .spacing(4)
+                    .margin_start(4)
+                    .margin_end(4)
+                    .margin_top(4)
+                    .margin_bottom(4)
+                    .build();
+                month_box.add_css_class("card");
+                month_box.append(
+                    &gtk::Label::builder()
+                        .label(Self::month_name(month.month))
+                        .css_classes(vec!["title-4"])
+                        .halign(gtk::Align::Center)
+                        .build(),
+                );
+                let month_grid = gtk::Grid::builder()
+                    .column_homogeneous(true)
+                    .row_spacing(1)
+                    .column_spacing(1)
+                    .hexpand(true)
+                    .build();
+                for (column, weekday) in weekday_names.iter().enumerate() {
+                    month_grid.attach(
+                        &gtk::Label::builder()
+                            .label(*weekday)
+                            .css_classes(vec!["caption", "dim-label"])
+                            .halign(gtk::Align::Center)
+                            .build(),
+                        column as i32,
+                        0,
+                        1,
+                        1,
+                    );
+                }
+                for (start, end) in
+                    projection_chunk_ranges(month.cells.len(), PROJECTION_APPLY_CHUNK_SIZE)
+                {
+                    let Some(page) = page_weak.upgrade() else {
+                        return;
+                    };
+                    if !page.calendar_projection_is_current(&load) {
+                        return;
+                    }
+                    for (cell_index, cell) in month.cells[start..end].iter().enumerate() {
+                        let cell_index = start + cell_index;
+                        let row = (cell_index / 7) as i32 + 1;
+                        let column = (cell_index % 7) as i32;
+                        let Some(cell) = cell else {
+                            month_grid.attach(&gtk::Label::new(None), column, row, 1, 1);
+                            continue;
+                        };
+                        let date = cell.date;
+                        let event_count = cell.event_count;
+                        let label = if event_count == 0 {
+                            date.day().to_string()
+                        } else {
+                            format!("{}\n• {}", date.day(), event_count)
+                        };
+                        let day_button = gtk::Button::builder()
+                            .label(&label)
+                            .css_classes(vec!["flat", "caption"])
+                            .hexpand(true)
+                            .vexpand(true)
+                            .build();
+                        let tooltip = if event_count == 0 {
+                            format_date(date)
+                        } else if event_count == 1 {
+                            format!("{} · 1 Termin", format_date(date))
+                        } else {
+                            format!("{} · {} Termine", format_date(date), event_count)
+                        };
+                        day_button.set_tooltip_text(Some(&tooltip));
+                        if event_count > 0 {
+                            day_button.add_css_class("calendar-event-day");
+                        }
+                        if date == plan.selected_day {
+                            day_button.add_css_class("accent");
+                        }
+                        if date == plan.today {
+                            day_button.add_css_class("title-4");
+                        }
+                        set_accessible_label(
+                            &day_button,
+                            &format!(
+                                "{}{}",
+                                format_date(date),
+                                if event_count == 0 {
+                                    String::new()
+                                } else {
+                                    format!("; {} Termine", event_count)
+                                }
+                            ),
+                        );
+                        let page_for_click = page_weak.clone();
+                        day_button.connect_clicked(move |_| {
+                            if let Some(page) = page_for_click.upgrade() {
+                                page.select_calendar_day(date);
+                            }
+                        });
+                        month_grid.attach(&day_button, column, row, 1, 1);
+                    }
+                    if end < month.cells.len() {
+                        glib::timeout_future_with_priority(
+                            glib::Priority::LOW,
+                            std::time::Duration::from_millis(1),
+                        )
+                        .await;
+                    }
+                }
+                month_box.append(&month_grid);
+                year_grid.attach(
+                    &month_box,
+                    (month.month.saturating_sub(1) % 3) as i32,
+                    (month.month.saturating_sub(1) / 3) as i32,
+                    1,
+                    1,
+                );
+                if month_index + 1 < plan.months.len() {
+                    glib::timeout_future_with_priority(
+                        glib::Priority::LOW,
+                        std::time::Duration::from_millis(1),
+                    )
+                    .await;
+                }
+            }
+
+            let Some(page) = page_weak.upgrade() else {
+                return;
+            };
+            if !page.calendar_projection_is_current(&load) {
+                return;
+            }
+            page.imp()
+                .view_state
+                .borrow_mut()
+                .reconcile_event_selection(&plan.selected_events);
+            view.append(
+                &gtk::Label::builder()
+                    .label(&format!("Termine für {}", format_date(plan.selected_day)))
+                    .css_classes(vec!["title-3"])
+                    .halign(gtk::Align::Start)
+                    .margin_top(8)
+                    .build(),
+            );
+            let event_list = gtk::ListBox::builder()
+                .selection_mode(gtk::SelectionMode::Single)
+                .css_classes(vec!["boxed-list"])
+                .build();
+            page.connect_calendar_event_selection(&event_list);
+            if plan.selected_events.is_empty() {
+                event_list.append(&empty_period_row(
+                    "Keine passenden Termine",
+                    "Für den ausgewählten zivilen Tag sind keine gefilterten VEVENTs geladen.",
+                ));
+            } else {
+                for (start, end) in
+                    projection_chunk_ranges(plan.selected_events.len(), PROJECTION_APPLY_CHUNK_SIZE)
+                {
+                    let Some(page) = page_weak.upgrade() else {
+                        return;
+                    };
+                    if !page.calendar_projection_is_current(&load) {
+                        return;
+                    }
+                    for event in &plan.selected_events[start..end] {
+                        page.append_calendar_event_action_row(&event_list, event);
+                    }
+                    if end < plan.selected_events.len() {
+                        glib::timeout_future_with_priority(
+                            glib::Priority::LOW,
+                            std::time::Duration::from_millis(1),
+                        )
+                        .await;
+                    }
+                }
+                page.restore_calendar_event_selection(&event_list, &plan.selected_events);
+            }
+            view.append(&event_list);
+            if page.finish_calendar_projection(&load) {
+                page.refresh_period_label();
+            }
+        });
+    }
+
+    fn apply_list_projection_plan(&self, load: CalendarProjectionLoad, plan: ListProjectionPlan) {
+        let Some(view) = self.imp().list_view.borrow().as_ref().cloned() else {
+            return;
+        };
+        if !self.calendar_projection_is_current(&load) {
+            return;
+        }
+        clear_box(&view);
+        let events = plan.events;
+        self.imp()
+            .view_state
+            .borrow_mut()
+            .reconcile_event_selection(&events);
+        self.imp()
+            .calendar_list_projection_count
+            .set(Some(events.len()));
+        let count_label = if events.is_empty() {
+            "Keine passenden Termine".to_string()
+        } else if events.len() == 1 {
+            "1 gefilterter Termin".to_string()
+        } else {
+            format!("{} gefilterte Termine", events.len())
+        };
+        view.append(
+            &gtk::Label::builder()
+                .label(&count_label)
+                .css_classes(vec!["title-3", "dim-label"])
+                .halign(gtk::Align::Start)
+                .build(),
+        );
+        if events.is_empty() {
+            let all_count = self
+                .imp()
+                .calendar_snapshot_index
+                .borrow()
+                .as_ref()
+                .map(|index| index.snapshot.events.len())
+                .unwrap_or(0);
+            view.append(&empty_period_row(
+                if all_count == 0 {
+                    "Keine Termine geladen"
+                } else {
+                    "Keine Termine entsprechen den Filtern"
+                },
+                "Die Listenansicht ist unabhängig vom aktuellen Datumsanker.",
+            ));
+            if self.finish_calendar_projection(&load) {
+                self.refresh_period_label();
+            }
+            return;
+        }
+        let event_list = gtk::ListBox::builder()
+            .selection_mode(gtk::SelectionMode::Single)
+            .css_classes(vec!["boxed-list"])
+            .build();
+        self.connect_calendar_event_selection(&event_list);
+        view.append(&event_list);
+        let page_weak = self.downgrade();
+        glib::spawn_future_local(async move {
+            for (start, end) in projection_chunk_ranges(events.len(), PROJECTION_APPLY_CHUNK_SIZE) {
+                let Some(page) = page_weak.upgrade() else {
+                    return;
+                };
+                if !page.calendar_projection_is_current(&load) {
+                    return;
+                }
+                for event in &events[start..end] {
+                    page.append_calendar_event_action_row(&event_list, event);
+                }
+                if end < events.len() {
+                    glib::timeout_future_with_priority(
+                        glib::Priority::LOW,
+                        std::time::Duration::from_millis(1),
+                    )
+                    .await;
+                }
+            }
+            let Some(page) = page_weak.upgrade() else {
+                return;
+            };
+            if !page.calendar_projection_is_current(&load) {
+                return;
+            }
+            page.restore_calendar_event_selection(&event_list, &events);
+            if page.finish_calendar_projection(&load) {
+                page.refresh_period_label();
+            }
+        });
+    }
+
+    fn append_calendar_event_action_row(
         &self,
-        range: CalendarDateRange,
-    ) -> BTreeMap<NaiveDate, Vec<CalendarEventRecord>> {
-        let mut grouped = BTreeMap::<NaiveDate, Vec<CalendarEventRecord>>::new();
+        event_list: &gtk::ListBox,
+        event: &CalendarEventRecord,
+    ) {
+        if let Some(records) = self.imp().event_records.borrow().as_ref().cloned() {
+            append_event_row(self, event_list, records, event.clone());
+        } else {
+            event_list.append(&calendar_event_row(self, event));
+        }
+    }
+
+    fn select_calendar_day(&self, date: NaiveDate) {
+        if *self.imp().current_view.borrow() != CalendarView::Year {
+            return;
+        }
+        if date.year() != self.current_calendar_viewport().anchor_date.year() {
+            return;
+        }
+        *self.imp().current_date.borrow_mut() = date;
+        self.imp()
+            .view_state
+            .borrow_mut()
+            .set_anchor(date, configured_first_weekday());
+        self.imp().view_state.borrow_mut().select_civil_day(date);
+        self.refresh_calendar_views();
+    }
+
+    fn connect_calendar_event_selection(&self, event_list: &gtk::ListBox) {
+        let page_weak = self.downgrade();
+        event_list.connect_row_selected(move |_, row| {
+            let Some(page) = page_weak.upgrade() else {
+                return;
+            };
+            let identity = row.and_then(calendar_event_identity_from_list_row);
+            page.select_calendar_event_identity(identity);
+        });
+    }
+
+    fn select_calendar_event_identity(&self, identity: Option<CalendarEventIdentity>) {
+        let events = self.filtered_sorted_events();
+        let Some(identity) = identity else {
+            self.imp().view_state.borrow_mut().select_event(None, None);
+            return;
+        };
+        let Some(index) = unique_event_index_for_identity(&events, &identity) else {
+            self.imp().view_state.borrow_mut().select_event(None, None);
+            return;
+        };
+        self.imp()
+            .view_state
+            .borrow_mut()
+            .select_event(Some(identity), Some(index));
+    }
+
+    fn restore_calendar_event_selection(
+        &self,
+        event_list: &gtk::ListBox,
+        events: &[CalendarEventRecord],
+    ) {
+        let selected = self.imp().view_state.borrow().selected_event.clone();
+        let Some(selected) = selected else {
+            return;
+        };
+        let Some(index) = unique_event_index_for_identity(events, &selected)
+        else {
+            return;
+        };
+        if let Some(row) = event_list.row_at_index(index as i32) {
+            event_list.select_row(Some(&row));
+        }
+    }
+
+    fn filtered_sorted_events(&self) -> Vec<CalendarEventRecord> {
+        let query = self.imp().calendar_search_query.borrow().clone();
+        let category = self.imp().calendar_category_filter.borrow().clone();
+        let hidden_sources = self.imp().hidden_calendar_sources.borrow().clone();
         if let Some(index) = self
             .imp()
             .calendar_snapshot_index
@@ -2444,21 +3946,65 @@ impl CalendarPage {
             .as_ref()
             .cloned()
         {
-            for event_index in index.candidate_event_indices(range) {
-                let Some(event) = index.snapshot.events.get(event_index) else {
-                    continue;
-                };
-                if !self.event_is_visible(event) {
-                    continue;
-                }
-                for date in event_occurrence_dates_in_range(event, range) {
-                    grouped.entry(date).or_default().push(event.clone());
-                }
-            }
-        } else if let Some(records) = self.imp().event_records.borrow().as_ref().cloned() {
+            return filtered_sorted_event_indices(
+                &index,
+                &query,
+                category.as_deref(),
+                &hidden_sources,
+            )
+            .into_iter()
+            .filter_map(|event_index| index.snapshot.events.get(event_index).cloned())
+            .collect();
+        }
+
+        let mut events = self
+            .imp()
+            .event_records
+            .borrow()
+            .as_ref()
+            .map(|records| records.borrow().clone())
+            .unwrap_or_default();
+        events.retain(|event| {
+            event_matches_calendar_filter(event, &query, category.as_deref(), &hidden_sources)
+        });
+        events.sort_by(compare_event_list_order);
+        events
+    }
+
+    fn events_by_date(
+        &self,
+        range: CalendarDateRange,
+    ) -> BTreeMap<NaiveDate, Vec<CalendarEventRecord>> {
+        let query = self.imp().calendar_search_query.borrow().clone();
+        let category = self.imp().calendar_category_filter.borrow().clone();
+        let hidden_sources = self.imp().hidden_calendar_sources.borrow().clone();
+        if let Some(index) = self
+            .imp()
+            .calendar_snapshot_index
+            .borrow()
+            .as_ref()
+            .cloned()
+        {
+            return indexed_events_by_date(
+                &index,
+                range,
+                &query,
+                category.as_deref(),
+                &hidden_sources,
+            );
+        }
+
+        let mut grouped = BTreeMap::<NaiveDate, Vec<CalendarEventRecord>>::new();
+        if let Some(records) = self.imp().event_records.borrow().as_ref().cloned() {
             for date in range.dates() {
                 for event in records.borrow().iter() {
-                    if self.event_is_visible(event) && event_occurs_on(event, date) {
+                    if event_matches_calendar_filter(
+                        event,
+                        &query,
+                        category.as_deref(),
+                        &hidden_sources,
+                    ) && event_occurs_on(event, date)
+                    {
                         grouped.entry(date).or_default().push(event.clone());
                     }
                 }
@@ -2466,14 +4012,13 @@ impl CalendarPage {
         }
 
         for events in grouped.values_mut() {
-            events.sort_by(|left, right| {
-                event_start_datetime(left)
-                    .cmp(&event_start_datetime(right))
-                    .then_with(|| left.source_uid.cmp(&right.source_uid))
-                    .then_with(|| left.uid.cmp(&right.uid))
-            });
+            events.sort_by(compare_event_date_order);
             let mut seen = BTreeSet::new();
-            events.retain(|event| seen.insert((event.source_uid.clone(), event.uid.clone())));
+            events.retain(|event| {
+                CalendarEventIdentity::from_event(event)
+                    .map(|identity| seen.insert(identity))
+                    .unwrap_or(true)
+            });
         }
         grouped
     }
@@ -2503,18 +4048,14 @@ impl CalendarPage {
         query.is_empty() || search_text.contains(query.as_str())
     }
 
-    fn event_is_visible(&self, event: &CalendarEventRecord) -> bool {
-        self.calendar_source_is_visible(&event.source_uid)
-            && self.calendar_search_matches(&calendar_event_search_text(event))
-            && self.calendar_category_matches(
-                &category_names_from_ical_component(&event.component).join("\u{1f}"),
-            )
-    }
-
     fn refresh_month_grid(&self) {
         let Some(grid) = self.imp().month_grid.borrow().as_ref().cloned() else {
             return;
         };
+        clear_grid(&grid);
+        if self.attach_calendar_state_to_grid(&grid) {
+            return;
+        }
         let viewport = self.current_calendar_viewport();
         let current_date = viewport.anchor_date;
         let year = current_date.year();
@@ -2527,9 +4068,6 @@ impl CalendarPage {
             .map(|settings| settings.calendar_show_week_numbers())
             .unwrap_or(false);
         let column_offset = if show_week_numbers { 1 } else { 0 };
-        while let Some(child) = grid.first_child() {
-            grid.remove(&child);
-        }
         let events_by_date = self.events_by_date(viewport.visible_range);
 
         for (column, weekday) in configured_weekday_names().iter().enumerate() {
@@ -2588,7 +4126,7 @@ impl CalendarPage {
                     .xalign(0.0)
                     .hexpand(true)
                     .build();
-                event_label.set_markup(&calendar_event_markup(&event.component, &event.summary));
+                event_label.set_markup(&calendar_event_markup(event, &event.summary));
                 let event_button = gtk::Button::builder()
                     .halign(gtk::Align::Fill)
                     .hexpand(true)
@@ -2596,9 +4134,16 @@ impl CalendarPage {
                     .child(&event_label)
                     .build();
                 set_accessible_label(&event_button, &format!("Termin öffnen: {}", event.summary));
-                let event_for_click = event.clone();
+                let event_identity_for_click = CalendarEventIdentity::from_event(event);
+                let page_weak_for_click = self.downgrade();
                 event_button.connect_clicked(move |button| {
-                    open_event_editor_for_widget(button, &event_for_click);
+                    let (Some(page), Some(identity)) = (
+                        page_weak_for_click.upgrade(),
+                        event_identity_for_click.as_ref(),
+                    ) else {
+                        return;
+                    };
+                    page.open_event_editor_for_identity(button, identity);
                 });
                 install_event_drag_source(&event_button, event, date);
                 cell_box.append(&event_button);
@@ -2649,6 +4194,8 @@ impl CalendarPage {
                 return;
             }
         };
+        let mutation_token =
+            self.begin_calendar_mutation(CalendarEventIdentity::from_event(&event));
         let source_uid = event.source_uid.clone();
         let uid = event.uid.clone();
         let (sender, receiver) = async_channel::bounded(1);
@@ -2666,18 +4213,38 @@ impl CalendarPage {
 
         let page_weak = self.downgrade();
         glib::spawn_future_local(async move {
-            let Ok(result) = receiver.recv().await else {
-                return;
-            };
+            let result = receiver.recv().await;
             let Some(page) = page_weak.upgrade() else {
                 return;
+            };
+            if !page.calendar_event_mutation_is_current(&mutation_token) {
+                show_toast_for_widget(
+                    &page,
+                    "Der Kalenderstand hat sich geändert; die Terminverschiebung wurde verworfen",
+                );
+                page.reload_calendar_data();
+                return;
+            }
+            let result = match result {
+                Ok(result) => result,
+                Err(error) => {
+                    page.finish_calendar_mutation(&mutation_token);
+                    show_toast_for_widget(
+                        &page,
+                        &format!("Terminverschiebung konnte nicht bestätigt werden: {error}"),
+                    );
+                    page.reload_calendar_data();
+                    return;
+                }
             };
             match result {
                 Ok(result) => {
                     let component = match validated_event_mutation_component(&event, &result) {
                         Ok(component) => component,
                         Err(error) => {
+                            page.finish_calendar_mutation(&mutation_token);
                             show_toast_for_widget(&page, &error);
+                            page.reload_calendar_data();
                             return;
                         }
                     };
@@ -2692,25 +4259,29 @@ impl CalendarPage {
                     let records = page.imp().event_records.borrow().as_ref().cloned();
                     if let Some(records) = records {
                         let mut records = records.borrow_mut();
-                        if let Some(existing) = records.iter_mut().find(|existing| {
-                            same_event_identity(
-                                existing,
-                                &updated_event.source_uid,
-                                &updated_event.uid,
-                            )
-                        }) {
+                        if let Some(existing) = records
+                            .iter_mut()
+                            .find(|existing| same_calendar_event_identity(existing, &updated_event))
+                        {
                             *existing = updated_event;
                         }
                     }
+                    if !page.finish_calendar_mutation(&mutation_token) {
+                        page.reload_calendar_data();
+                        return;
+                    }
+                    page.bump_calendar_revision();
                     page.rebuild_calendar_index_from_records();
                     page.refresh_calendar_views();
                     show_toast_for_widget(&page, &format!("Termin verschoben ({})", result.uid));
                 }
                 Err(error) => {
+                    page.finish_calendar_mutation(&mutation_token);
                     show_toast_for_widget(
                         &page,
                         &format!("Termin konnte nicht verschoben werden: {error}"),
                     );
+                    page.reload_calendar_data();
                 }
             }
         });
@@ -2722,13 +4293,18 @@ fn install_event_drag_source<W: IsA<gtk::Widget>>(
     event: &CalendarEventRecord,
     occurrence_date: NaiveDate,
 ) {
-    if event.source_uid.trim().is_empty() || event.uid.trim().is_empty() {
+    if event.source_uid.trim().is_empty()
+        || event.uid.trim().is_empty()
+        || event_mutation_error(event).is_some()
+    {
         return;
     }
+    let recurrence_id = calendar_recurrence_id(event).unwrap_or_default();
     let payload = format!(
-        "{}\n{}\n{}",
+        "{}\n{}\n{}\n{}",
         event.source_uid,
         event.uid,
+        recurrence_id,
         occurrence_date.format("%Y-%m-%d")
     );
     let drag_source = gtk::DragSource::new();
@@ -2749,13 +4325,17 @@ fn install_day_drop_target<W: IsA<gtk::Widget>>(
         let Ok(payload) = value.get::<String>() else {
             return false;
         };
-        let mut payload_parts = payload.splitn(3, '\n');
+        let mut payload_parts = payload.splitn(4, '\n');
         let Some(source_uid) = payload_parts.next() else {
             return false;
         };
         let Some(uid) = payload_parts.next() else {
             return false;
         };
+        let recurrence_id = payload_parts
+            .next()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
         let occurrence_date = payload_parts
             .next()
             .and_then(|value| NaiveDate::parse_from_str(value, "%Y-%m-%d").ok());
@@ -2764,11 +4344,9 @@ fn install_day_drop_target<W: IsA<gtk::Widget>>(
         };
         let records = page.imp().event_records.borrow().as_ref().cloned();
         let Some(event) = records.and_then(|records| {
-            records
-                .borrow()
-                .iter()
-                .find(|event| event.source_uid == source_uid && event.uid == uid)
-                .cloned()
+            let target_identity =
+                calendar_event_identity_from_parts(source_uid, uid, recurrence_id);
+            unique_event_for_identity(&records.borrow(), &target_identity)
         }) else {
             show_toast_for_widget(&page, "Der gezogene Termin ist nicht mehr geladen");
             return false;
@@ -2787,9 +4365,15 @@ fn shift_event_component(raw: &str, delta_days: i64) -> Result<String, String> {
     if raw.trim().is_empty() {
         return Err("Der Termin enthält keine iCalendar-Daten".to_string());
     }
+    if ical_property(raw, "RECURRENCE-ID").is_some() {
+        return Err(
+            "Serienausnahmen mit RECURRENCE-ID können nicht per Ziehen verschoben werden; der Kalenderdienst kann die Ausnahme nicht eindeutig adressieren"
+                .to_string(),
+        );
+    }
 
     let mut updated = raw.to_string();
-    for property_name in ["DTSTART", "DTEND", "RECURRENCE-ID"] {
+    for property_name in ["DTSTART", "DTEND"] {
         let Some(value) = ical_property(&updated, property_name) else {
             continue;
         };
@@ -3003,6 +4587,42 @@ fn week_start_for(date: NaiveDate, first_weekday: Weekday) -> NaiveDate {
     date - Duration::days((current - first).rem_euclid(7))
 }
 
+fn calendar_year_range_option(year: i32) -> Option<CalendarDateRange> {
+    let start = NaiveDate::from_ymd_opt(year, 1, 1)?;
+    // `NaiveDate` has no representable exclusive end after its maximum date.
+    // Clip the final civil year to that boundary instead of panicking while
+    // constructing a viewport at `NaiveDate::MAX`.
+    let end = year
+        .checked_add(1)
+        .and_then(|next_year| NaiveDate::from_ymd_opt(next_year, 1, 1))
+        .unwrap_or(NaiveDate::MAX);
+    if start >= end {
+        return None;
+    }
+    Some(CalendarDateRange::new(start, end))
+}
+
+fn calendar_year_range(year: i32) -> CalendarDateRange {
+    calendar_year_range_option(year).unwrap_or_else(|| {
+        NaiveDate::from_ymd_opt(year, 1, 1)
+            .map(CalendarDateRange::single)
+            .unwrap_or_else(|| CalendarDateRange::single(NaiveDate::MIN))
+    })
+}
+
+fn shift_year(date: NaiveDate, direction: i32) -> NaiveDate {
+    let Some(year) = date.year().checked_add(direction) else {
+        return date;
+    };
+    NaiveDate::from_ymd_opt(year, date.month(), date.day())
+        .or_else(|| {
+            (28..=31)
+                .rev()
+                .find_map(|day| NaiveDate::from_ymd_opt(year, date.month(), day))
+        })
+        .unwrap_or(date)
+}
+
 fn configured_first_weekday() -> Weekday {
     AppSettings::try_new()
         .map(|settings| settings.calendar_week_start())
@@ -3187,6 +4807,12 @@ fn clear_box(container: &gtk::Box) {
     }
 }
 
+fn clear_grid(container: &gtk::Grid) {
+    while let Some(child) = container.first_child() {
+        container.remove(&child);
+    }
+}
+
 fn empty_period_row(title: &str, subtitle: &str) -> adw::ActionRow {
     adw::ActionRow::builder()
         .title(title)
@@ -3284,7 +4910,11 @@ fn append_calendar_task_row(page: &CalendarPage, task_list: &gtk::ListBox, task:
     }
 
     let page_weak = page.downgrade();
+    let page_weak_for_toggle = page_weak.clone();
     check.connect_toggled(move |check| {
+        let Some(page) = page_weak_for_toggle.upgrade() else {
+            return;
+        };
         let completed = check.is_active();
         let task = task.clone();
         if completed == task.completed {
@@ -3293,6 +4923,7 @@ fn append_calendar_task_row(page: &CalendarPage, task_list: &gtk::ListBox, task:
         let source_uid = task.source_uid.clone();
         let uid = task.uid.clone();
         let updated_component = set_task_completion_component(&task.component, completed);
+        let mutation_token = page.begin_calendar_mutation(None);
         let (sender, receiver) = async_channel::bounded(1);
         let component_for_worker = updated_component.clone();
         std::thread::spawn(move || {
@@ -3309,25 +4940,70 @@ fn append_calendar_task_row(page: &CalendarPage, task_list: &gtk::ListBox, task:
 
         check.set_sensitive(false);
         let check_for_result = check.clone();
-        let page_weak = page_weak.clone();
+        let page_weak = page.downgrade();
         glib::spawn_future_local(async move {
-            let Ok(result) = receiver.recv().await else {
-                return;
-            };
+            let result = receiver.recv().await;
             let Some(page) = page_weak.upgrade() else {
                 return;
+            };
+            if !page.calendar_mutation_is_current(&mutation_token) {
+                check_for_result.set_active(task.completed);
+                check_for_result.set_sensitive(true);
+                show_toast_for_widget(
+                    &page,
+                    "Der Kalenderstand hat sich geändert; die Aufgabenänderung wurde verworfen",
+                );
+                page.reload_calendar_data();
+                return;
+            }
+            let result = match result {
+                Ok(result) => result,
+                Err(error) => {
+                    page.finish_calendar_mutation(&mutation_token);
+                    check_for_result.set_active(task.completed);
+                    check_for_result.set_sensitive(true);
+                    show_toast_for_widget(
+                        &page,
+                        &format!("Aufgabenänderung konnte nicht bestätigt werden: {error}"),
+                    );
+                    page.reload_calendar_data();
+                    return;
+                }
             };
             match result {
                 Ok(result) => {
                     let component = result.component.unwrap_or(updated_component);
-                    if let Some(records) = page.imp().task_records.borrow().as_ref().cloned() {
-                        if let Some(existing) = records.borrow_mut().iter_mut().find(|existing| {
-                            existing.source_uid == task.source_uid && existing.uid == task.uid
-                        }) {
-                            existing.component = component;
-                            existing.completed = completed;
-                        }
+                    let Some(records) = page.imp().task_records.borrow().as_ref().cloned() else {
+                        page.finish_calendar_mutation(&mutation_token);
+                        check_for_result.set_active(task.completed);
+                        check_for_result.set_sensitive(true);
+                        show_toast_for_widget(&page, "Aufgabendaten sind nicht mehr verfügbar");
+                        page.reload_calendar_data();
+                        return;
+                    };
+                    let mut records = records.borrow_mut();
+                    let Some(existing) = records.iter_mut().find(|existing| {
+                        existing.source_uid == task.source_uid && existing.uid == task.uid
+                    }) else {
+                        drop(records);
+                        page.finish_calendar_mutation(&mutation_token);
+                        check_for_result.set_active(task.completed);
+                        check_for_result.set_sensitive(true);
+                        show_toast_for_widget(
+                            &page,
+                            "Die bestätigte Aufgabe ist nicht mehr geladen; die Ansicht wird neu geladen",
+                        );
+                        page.reload_calendar_data();
+                        return;
+                    };
+                    existing.component = component;
+                    existing.completed = completed;
+                    drop(records);
+                    if !page.finish_calendar_mutation(&mutation_token) {
+                        page.reload_calendar_data();
+                        return;
                     }
+                    page.bump_calendar_revision();
                     check_for_result.set_sensitive(true);
                     page.refresh_task_sidebar();
                     show_toast_for_widget(
@@ -3340,12 +5016,14 @@ fn append_calendar_task_row(page: &CalendarPage, task_list: &gtk::ListBox, task:
                     );
                 }
                 Err(error) => {
+                    page.finish_calendar_mutation(&mutation_token);
                     check_for_result.set_active(task.completed);
                     check_for_result.set_sensitive(true);
                     show_toast_for_widget(
                         &page,
                         &format!("Aufgabe konnte nicht geändert werden: {error}"),
                     );
+                    page.reload_calendar_data();
                 }
             }
         });
@@ -3378,7 +5056,25 @@ fn calendar_event_search_text(event: &CalendarEventRecord) -> String {
     .to_lowercase()
 }
 
-fn calendar_event_row(event: &CalendarEventRecord) -> adw::ActionRow {
+fn set_calendar_event_row_identity(row: &adw::ActionRow, event: &CalendarEventRecord) {
+    let Some(identity) = CalendarEventIdentity::from_event(event) else {
+        return;
+    };
+    unsafe {
+        row.set_data("event-id", identity.uid.clone());
+        row.set_data("event-source-uid", identity.source_uid.clone());
+        row.set_data(
+            "event-source-object-key",
+            identity.source_object_key.clone(),
+        );
+        row.set_data(
+            "event-recurrence-id",
+            identity.recurrence_id.clone().unwrap_or_default(),
+        );
+    }
+}
+
+fn calendar_event_row(page: &CalendarPage, event: &CalendarEventRecord) -> adw::ActionRow {
     let mut details = vec![event_time_text(event)];
     if !event.location.trim().is_empty() {
         details.push(event.location.trim().to_string());
@@ -3399,15 +5095,26 @@ fn calendar_event_row(event: &CalendarEventRecord) -> adw::ActionRow {
         .use_markup(true)
         .activatable(true)
         .build();
-    if let Some(color) = category_color_for_component(&event.component) {
-        let category_dot = gtk::Label::new(None);
-        category_dot.set_markup(&format!("<span foreground=\"{color}\">●</span>"));
-        category_dot.set_tooltip_text(Some("Kalenderkategorie"));
-        row.add_prefix(&category_dot);
-    }
-    let event_for_activation = event.clone();
+    set_calendar_event_row_identity(&row, event);
+    let color = event_color_for_record(event);
+    let category_dot = gtk::Label::new(None);
+    category_dot.set_markup(&format!("<span foreground=\"{color}\">●</span>"));
+    category_dot.set_tooltip_text(Some(if !event.source_display_name.is_empty() {
+        event.source_display_name.as_str()
+    } else {
+        "Kalender"
+    }));
+    row.add_prefix(&category_dot);
+    let event_identity_for_activation = CalendarEventIdentity::from_event(event);
+    let page_weak_for_activation = page.downgrade();
     row.connect_activated(move |row| {
-        open_event_editor_for_widget(row, &event_for_activation);
+        let (Some(page), Some(identity)) = (
+            page_weak_for_activation.upgrade(),
+            event_identity_for_activation.as_ref(),
+        ) else {
+            return;
+        };
+        page.open_event_editor_for_identity(row, identity);
     });
     row
 }
@@ -3460,12 +5167,53 @@ fn event_time_text(event: &CalendarEventRecord) -> String {
     }
 }
 
-fn calendar_event_markup(component: &str, text: &str) -> String {
-    let escaped_text = glib::markup_escape_text(text);
-    match category_color_for_component(component) {
-        Some(color) => format!("<span foreground=\"{color}\">●</span> {escaped_text}"),
-        None => escaped_text.to_string(),
+pub(crate) fn calendar_source_color(source_uid: &str, source_display_name: &str) -> String {
+    const CALENDAR_PALETTE: &[&str] = &[
+        "#1a73e8", // Google Blue
+        "#0d904f", // Google Green
+        "#e37400", // Google Orange
+        "#d93025", // Google Red
+        "#8430ce", // Google Purple
+        "#007b83", // Google Teal
+        "#b06000", // Google Ochre
+        "#188038", // Forest Green
+        "#c5221f", // Crimson
+        "#681da8", // Deep Purple
+        "#e91e63", // Pink
+        "#3f51b5", // Indigo
+    ];
+    let key = if !source_display_name.trim().is_empty() {
+        source_display_name.trim()
+    } else {
+        source_uid.trim()
+    };
+    if key.eq_ignore_ascii_case("feiertage")
+        || key.to_lowercase().contains("holiday")
+        || key.to_lowercase().contains("feiertag")
+    {
+        return "#0d904f".to_string();
     }
+    if key.to_lowercase().contains("geburtstag") || key.to_lowercase().contains("birthday") {
+        return "#8430ce".to_string();
+    }
+    let mut hash = 0u64;
+    for byte in key.bytes() {
+        hash = hash.wrapping_mul(37).wrapping_add(byte as u64);
+    }
+    CALENDAR_PALETTE[(hash as usize) % CALENDAR_PALETTE.len()].to_string()
+}
+
+pub(crate) fn event_color_for_record(event: &CalendarEventRecord) -> String {
+    if let Some(color) = category_color_for_component(&event.component) {
+        return color;
+    }
+    calendar_source_color(&event.source_uid, &event.source_display_name)
+}
+
+fn calendar_event_markup(event: &CalendarEventRecord, text: &str) -> String {
+    let escaped_text = glib::markup_escape_text(text);
+    let color = event_color_for_record(event);
+    format!("<span foreground=\"{color}\">●</span> {escaped_text}")
 }
 
 fn category_color_for_component(component: &str) -> Option<String> {
@@ -3674,11 +5422,355 @@ fn event_occurrence_start_is_on(
         .is_some_and(|rule| recurrence_rule_occurs_on(rule, initial_start, date, excluded_dates))
 }
 
+fn stable_calendar_identity_digest(value: &str) -> String {
+    let mut hash = 0xcbf29ce484222325_u64;
+    for byte in value.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("{hash:016x}")
+}
+
+fn calendar_identity_material(event: &CalendarEventRecord) -> String {
+    format!(
+        "{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}",
+        event.source_display_name.trim(),
+        event.component,
+        event.summary,
+        event.location,
+        event.description,
+        event.all_day,
+    )
+}
+
+fn canonical_calendar_source_object_key_for_uid(source_uid: &str) -> String {
+    let source_uid = source_uid.trim();
+    if !source_uid.is_empty() {
+        return format!("source:{source_uid}");
+    }
+    let source_material = "source-less-import";
+    format!(
+        "{}:{}",
+        source_material,
+        stable_calendar_identity_digest(&source_material)
+    )
+}
+
+fn canonical_calendar_source_object_key(event: &CalendarEventRecord) -> String {
+    canonical_calendar_source_object_key_for_uid(&event.source_uid)
+}
+
+fn canonical_calendar_uid(event: &CalendarEventRecord) -> String {
+    if !event.uid.trim().is_empty() {
+        return event.uid.trim().to_string();
+    }
+    format!(
+        "imported-uid:{}",
+        stable_calendar_identity_digest(&calendar_identity_material(event))
+    )
+}
+
+fn calendar_recurrence_id(event: &CalendarEventRecord) -> Option<String> {
+    ical_property(&event.component, "RECURRENCE-ID")
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn calendar_event_identity_from_parts(
+    source_uid: &str,
+    uid: &str,
+    recurrence_id: Option<&str>,
+) -> CalendarEventIdentity {
+    let source_uid = source_uid.trim().to_string();
+    let uid = uid.trim().to_string();
+    let source_object_key = canonical_calendar_source_object_key_for_uid(&source_uid);
+    CalendarEventIdentity {
+        source_object_key,
+        source_uid,
+        uid,
+        recurrence_id: recurrence_id
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned),
+    }
+}
+
+fn unique_event_index_for_identity(
+    events: &[CalendarEventRecord],
+    identity: &CalendarEventIdentity,
+) -> Option<usize> {
+    let mut match_index = None;
+    for (index, event) in events.iter().enumerate() {
+        if CalendarEventIdentity::from_event(event).as_ref() != Some(identity) {
+            continue;
+        }
+        if match_index.is_some() {
+            return None;
+        }
+        match_index = Some(index);
+    }
+    match_index
+}
+
+fn unique_event_for_identity(
+    events: &[CalendarEventRecord],
+    identity: &CalendarEventIdentity,
+) -> Option<CalendarEventRecord> {
+    unique_event_index_for_identity(events, identity).map(|index| events[index].clone())
+}
+
+fn remove_unique_event_for_identity(
+    events: &mut Vec<CalendarEventRecord>,
+    identity: &CalendarEventIdentity,
+) -> Option<CalendarEventRecord> {
+    let index = unique_event_index_for_identity(events, identity)?;
+    Some(events.remove(index))
+}
+
+fn same_calendar_event_identity(left: &CalendarEventRecord, right: &CalendarEventRecord) -> bool {
+    CalendarEventIdentity::from_event(left) == CalendarEventIdentity::from_event(right)
+}
+
 fn same_event_identity(event: &CalendarEventRecord, source_uid: &str, uid: &str) -> bool {
-    event.source_uid == source_uid && event.uid == uid
+    CalendarEventIdentity::from_event(event).is_some_and(|identity| {
+        identity.source_uid == source_uid.trim()
+            && identity.uid == uid.trim()
+            && identity.recurrence_id.is_none()
+    })
+}
+
+fn unique_event_for_legacy_identity(
+    events: &[CalendarEventRecord],
+    source_uid: &str,
+    uid: &str,
+) -> Option<CalendarEventRecord> {
+    let uid = uid.trim();
+    if uid.is_empty() {
+        return None;
+    }
+    let identity = calendar_event_identity_from_parts(source_uid, uid, None);
+    unique_event_for_identity(events, &identity)
+}
+
+fn reconcile_event_selection(
+    selected_event: Option<CalendarEventIdentity>,
+    selected_event_index: Option<usize>,
+    ordered_events: &[CalendarEventRecord],
+) -> (Option<CalendarEventIdentity>, Option<usize>) {
+    let Some(selected_event) = selected_event else {
+        return (None, None);
+    };
+    if let Some(index) = unique_event_index_for_identity(ordered_events, &selected_event) {
+        return (Some(selected_event), Some(index));
+    }
+
+    let Some(index) = selected_event_index else {
+        return (None, None);
+    };
+    let Some(fallback) = ordered_events.get(index.min(ordered_events.len().saturating_sub(1)))
+    else {
+        return (None, None);
+    };
+    let Some(identity) = CalendarEventIdentity::from_event(fallback) else {
+        return (None, None);
+    };
+    let Some(fallback_index) = unique_event_index_for_identity(ordered_events, &identity) else {
+        return (None, None);
+    };
+    (Some(identity), Some(fallback_index))
+}
+
+fn compare_event_list_order(
+    left: &CalendarEventRecord,
+    right: &CalendarEventRecord,
+) -> CompareOrdering {
+    // List sorting is also used while the immutable snapshot index is built
+    // on the worker.  Use the already-normalized record strings here instead
+    // of component-aware timezone conversion, which may consult settings.
+    compare_optional_order(
+        displayed_event_datetime(&left.start),
+        displayed_event_datetime(&right.start),
+    )
+    .then_with(|| {
+        compare_optional_order(
+            displayed_event_datetime(&left.end),
+            displayed_event_datetime(&right.end),
+        )
+    })
+    .then_with(|| {
+        left.summary
+            .to_lowercase()
+            .cmp(&right.summary.to_lowercase())
+    })
+    .then_with(|| left.summary.cmp(&right.summary))
+    .then_with(|| left.source_uid.cmp(&right.source_uid))
+    .then_with(|| left.uid.cmp(&right.uid))
+    .then_with(|| {
+        CalendarEventIdentity::from_event(left).cmp(&CalendarEventIdentity::from_event(right))
+    })
+    .then_with(|| left.source_display_name.cmp(&right.source_display_name))
+    .then_with(|| left.component.cmp(&right.component))
+}
+
+fn compare_event_date_order(
+    left: &CalendarEventRecord,
+    right: &CalendarEventRecord,
+) -> CompareOrdering {
+    event_start_datetime(left)
+        .cmp(&event_start_datetime(right))
+        .then_with(|| left.source_uid.cmp(&right.source_uid))
+        .then_with(|| left.uid.cmp(&right.uid))
+}
+
+fn compare_optional_order<T: Ord>(left: Option<T>, right: Option<T>) -> CompareOrdering {
+    match (left, right) {
+        (Some(left), Some(right)) => left.cmp(&right),
+        (Some(_), None) => CompareOrdering::Less,
+        (None, Some(_)) => CompareOrdering::Greater,
+        (None, None) => CompareOrdering::Equal,
+    }
+}
+
+fn event_matches_calendar_filter(
+    event: &CalendarEventRecord,
+    search_query: &str,
+    category_filter: Option<&str>,
+    hidden_sources: &HashSet<String>,
+) -> bool {
+    if hidden_sources.contains(&event.source_uid) {
+        return false;
+    }
+    let search_query = search_query.trim().to_lowercase();
+    if !search_query.is_empty() && !calendar_event_search_text(event).contains(&search_query) {
+        return false;
+    }
+    category_filter.is_none_or(|filter| {
+        category_names_from_ical_component(&event.component)
+            .iter()
+            .any(|category| category.eq_ignore_ascii_case(filter))
+    })
+}
+
+fn filtered_sorted_event_indices(
+    index: &CalendarSnapshotIndex,
+    search_query: &str,
+    category_filter: Option<&str>,
+    hidden_sources: &HashSet<String>,
+) -> Vec<usize> {
+    let mut indices = index
+        .all_event_indices()
+        .into_iter()
+        .filter(|event_index| {
+            index
+                .snapshot
+                .events
+                .get(*event_index)
+                .is_some_and(|event| {
+                    event_matches_calendar_filter(
+                        event,
+                        search_query,
+                        category_filter,
+                        hidden_sources,
+                    )
+                })
+        })
+        .collect::<Vec<_>>();
+    indices.sort_by(|left, right| {
+        compare_event_list_order(
+            &index.snapshot.events[*left],
+            &index.snapshot.events[*right],
+        )
+        .then_with(|| left.cmp(right))
+    });
+    indices
+}
+
+fn indexed_events_by_date(
+    index: &CalendarSnapshotIndex,
+    range: CalendarDateRange,
+    search_query: &str,
+    category_filter: Option<&str>,
+    hidden_sources: &HashSet<String>,
+) -> BTreeMap<NaiveDate, Vec<CalendarEventRecord>> {
+    let mut grouped = BTreeMap::<NaiveDate, Vec<CalendarEventRecord>>::new();
+    for event_index in index.candidate_event_indices(range) {
+        let Some(event) = index.snapshot.events.get(event_index) else {
+            continue;
+        };
+        if !event_matches_calendar_filter(event, search_query, category_filter, hidden_sources) {
+            continue;
+        }
+        for date in event_occurrence_dates_in_range(event, range) {
+            grouped.entry(date).or_default().push(event.clone());
+        }
+    }
+
+    for events in grouped.values_mut() {
+        events.sort_by(compare_event_date_order);
+        let mut seen = BTreeSet::new();
+        events.retain(|event| {
+            CalendarEventIdentity::from_event(event)
+                .map(|identity| seen.insert(identity))
+                .unwrap_or(true)
+        });
+    }
+    grouped
+}
+
+fn indexed_event_day_markers(
+    index: &CalendarSnapshotIndex,
+    range: CalendarDateRange,
+    search_query: &str,
+    category_filter: Option<&str>,
+    hidden_sources: &HashSet<String>,
+) -> BTreeMap<NaiveDate, usize> {
+    indexed_events_by_date(index, range, search_query, category_filter, hidden_sources)
+        .into_iter()
+        .map(|(date, events)| (date, events.len()))
+        .collect()
+}
+
+fn calendar_event_identity_from_list_row(row: &gtk::ListBoxRow) -> Option<CalendarEventIdentity> {
+    let event_row = row.child()?.downcast::<adw::ActionRow>().ok()?;
+    calendar_event_identity_from_action_row(&event_row)
+}
+
+fn calendar_event_identity_from_action_row(
+    event_row: &adw::ActionRow,
+) -> Option<CalendarEventIdentity> {
+    unsafe {
+        let source_uid = event_row
+            .data::<String>("event-source-uid")
+            .map(|value| value.as_ref().clone())
+            .unwrap_or_default();
+        let source_object_key = event_row
+            .data::<String>("event-source-object-key")
+            .map(|value| value.as_ref().clone())
+            .unwrap_or_else(|| {
+                calendar_event_identity_from_parts(&source_uid, "", None).source_object_key
+            });
+        let uid = event_row
+            .data::<String>("event-id")
+            .map(|value| value.as_ref().clone())?;
+        let recurrence_id = event_row
+            .data::<String>("event-recurrence-id")
+            .map(|value| value.as_ref().clone())
+            .filter(|value| !value.is_empty());
+        Some(CalendarEventIdentity {
+            source_object_key,
+            source_uid,
+            uid,
+            recurrence_id,
+        })
+    }
 }
 
 fn event_mutation_error(event: &CalendarEventRecord) -> Option<&'static str> {
+    if calendar_recurrence_id(event).is_some() {
+        return Some(
+            "Serienausnahmen mit RECURRENCE-ID können über die verfügbare Kalender-API nicht sicher geändert werden",
+        );
+    }
     if event.source_uid.trim().is_empty() {
         return Some("Dieser Termin stammt aus einer schreibgeschützten importierten Quelle");
     }
@@ -3716,6 +5808,15 @@ fn validated_event_mutation_component(
     if ical_property(&component, "UID").as_deref() != Some(event.uid.as_str()) {
         return Err(
             "Der Kalenderdienst lieferte eine iCalendar-Komponente mit anderer UID zurück; die Ansicht wurde nicht geändert"
+                .to_string(),
+        );
+    }
+    let returned_recurrence_id = ical_property(&component, "RECURRENCE-ID")
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    if returned_recurrence_id != calendar_recurrence_id(event) {
+        return Err(
+            "Der Kalenderdienst lieferte eine andere Serienausnahme zurück; die Ansicht wurde nicht geändert"
                 .to_string(),
         );
     }
@@ -3762,6 +5863,7 @@ fn unescape_ical_text(value: &str) -> String {
 }
 
 fn upsert_event_row(
+    page: &CalendarPage,
     event_list: &gtk::ListBox,
     event_records: Rc<RefCell<Vec<CalendarEventRecord>>>,
     event: CalendarEventRecord,
@@ -3769,13 +5871,16 @@ fn upsert_event_row(
     let existing_index = event_records
         .borrow()
         .iter()
-        .position(|existing| same_event_identity(existing, &event.source_uid, &event.uid));
+        .position(|existing| same_calendar_event_identity(existing, &event));
     if let Some(index) = existing_index {
+        let existing = event_records.borrow()[index].clone();
         event_records.borrow_mut().remove(index);
-        remove_event_list_row(event_list, &event.source_uid, &event.uid);
+        if let Some(identity) = CalendarEventIdentity::from_event(&existing) {
+            remove_event_list_row_by_identity(event_list, &identity);
+        }
     }
     event_records.borrow_mut().push(event.clone());
-    append_event_row(event_list, event_records, event);
+    append_event_row(page, event_list, event_records, event);
 }
 
 fn remove_event_row(
@@ -3796,6 +5901,7 @@ fn remove_event_row(
 }
 
 fn append_event_row(
+    page: &CalendarPage,
     event_list: &gtk::ListBox,
     event_records: Rc<RefCell<Vec<CalendarEventRecord>>>,
     event: CalendarEventRecord,
@@ -3821,18 +5927,24 @@ fn append_event_row(
         .use_markup(true)
         .activatable(true)
         .build();
+    set_calendar_event_row_identity(&row, &event);
     unsafe {
-        row.set_data("event-id", event.uid.clone());
-        row.set_data("event-source-uid", event.source_uid.clone());
         row.set_data(
             "event-categories",
             category_names_from_ical_component(&event.component).join("\u{1f}"),
         );
         row.set_data("event-search", calendar_event_search_text(&event));
     }
-    let event_for_activation = event.clone();
+    let event_identity_for_activation = CalendarEventIdentity::from_event(&event);
+    let page_weak_for_activation = page.downgrade();
     row.connect_activated(move |row| {
-        open_event_editor_for_widget(row, &event_for_activation);
+        let (Some(page), Some(identity)) = (
+            page_weak_for_activation.upgrade(),
+            event_identity_for_activation.as_ref(),
+        ) else {
+            return;
+        };
+        page.open_event_editor_for_identity(row, identity);
     });
 
     let edit_button = gtk::Button::builder()
@@ -3849,6 +5961,9 @@ fn append_event_row(
         .valign(gtk::Align::Center)
         .build();
     set_accessible_label(&delete_button, "Termin löschen");
+    let writable = event_mutation_error(&event).is_none();
+    edit_button.set_sensitive(writable);
+    delete_button.set_sensitive(writable);
     let export_button = gtk::Button::builder()
         .icon_name("document-save-symbolic")
         .tooltip_text("Termin als iCalendar exportieren")
@@ -3856,15 +5971,34 @@ fn append_event_row(
         .valign(gtk::Align::Center)
         .build();
     set_accessible_label(&export_button, "Termin als iCalendar exportieren");
+    export_button.set_sensitive(!event.component.trim().is_empty());
     row.add_suffix(&edit_button);
     row.add_suffix(&export_button);
     row.add_suffix(&delete_button);
 
-    let event_for_edit = event.clone();
+    let event_identity_for_edit = CalendarEventIdentity::from_event(&event);
+    let page_weak_for_edit = page.downgrade();
     let edit_button_for_context = edit_button.clone();
     let edit_button_for_signal = edit_button.clone();
     let edit_button_for_click = edit_button.clone();
     edit_button_for_signal.connect_clicked(move |_| {
+        let Some(page) = page_weak_for_edit.upgrade() else {
+            return;
+        };
+        let Some(identity) = event_identity_for_edit.as_ref() else {
+            show_toast_for_widget(
+                &edit_button_for_click,
+                "Der Termin besitzt keine eindeutige Identität und wurde nicht geöffnet",
+            );
+            return;
+        };
+        let Some(event_for_edit) = page.unique_loaded_calendar_event(identity) else {
+            show_toast_for_widget(
+                &edit_button_for_click,
+                "Der Termin ist nicht eindeutig geladen und wurde nicht geöffnet",
+            );
+            return;
+        };
         if let Some(error) = event_mutation_error(&event_for_edit) {
             show_toast_for_widget(&edit_button_for_click, error);
             return;
@@ -3940,8 +6074,10 @@ fn append_event_row(
     });
 
     let event_for_delete = event.clone();
+    let event_identity_for_delete = CalendarEventIdentity::from_event(&event);
     let event_records_for_delete = Rc::clone(&event_records);
     let event_list_for_delete = event_list.clone();
+    let page_weak_for_delete = page.downgrade();
     let delete_button_for_context = delete_button.clone();
     let delete_button_for_signal = delete_button.clone();
     delete_button_for_signal.connect_clicked(move |_| {
@@ -3954,18 +6090,42 @@ fn append_event_row(
         } else {
             "Der Termin wird dauerhaft aus dem synchronisierten Kalender entfernt."
         };
-        let event_for_action = event_for_delete.clone();
         let event_records_for_action = Rc::clone(&event_records_for_delete);
         let event_list_for_action = event_list_for_delete.clone();
         let delete_button_for_action = delete_button.clone();
+        let page_weak_for_action = page_weak_for_delete.clone();
+        let event_identity_for_action = event_identity_for_delete.clone();
         crate::dialogs::run_destructive_action(
             &delete_button,
             "Termin löschen?",
             confirmation_message,
             "Löschen",
             move || {
+                let Some(page) = page_weak_for_action.upgrade() else {
+                    return;
+                };
+                let Some(identity) = event_identity_for_action.clone() else {
+                    show_toast_for_widget(
+                        &delete_button_for_action,
+                        "Der Termin besitzt keine eindeutige Identität und wurde nicht gelöscht",
+                    );
+                    return;
+                };
+                let Some(event_for_action) = page.unique_loaded_calendar_event(&identity) else {
+                    show_toast_for_widget(
+                        &delete_button_for_action,
+                        "Der Termin ist nicht eindeutig geladen und wurde nicht gelöscht",
+                    );
+                    page.reload_calendar_data();
+                    return;
+                };
+                if let Some(error) = event_mutation_error(&event_for_action) {
+                    show_toast_for_widget(&delete_button_for_action, error);
+                    return;
+                }
+                let mutation_token =
+                    page.begin_calendar_mutation(Some(identity.clone()));
                 let source_uid = event_for_action.source_uid.clone();
-                let source_uid_for_result = source_uid.clone();
                 let uid = event_for_action.uid.clone();
                 let uid_for_result = uid.clone();
                 let (sender, receiver) = async_channel::bounded(1);
@@ -3984,22 +6144,41 @@ fn append_event_row(
                 let event_records_for_result = Rc::clone(&event_records_for_action);
                 let event_list_for_result = event_list_for_action.clone();
                 let delete_button_for_result = delete_button_for_action.clone();
+                let page_weak_for_result = page.downgrade();
+                let event_identity_for_result = event_identity_for_action.clone();
                 glib::spawn_future_local(async move {
-                    match receiver.recv().await {
+                    let result = receiver.recv().await;
+                    let Some(page) = page_weak_for_result.upgrade() else {
+                        return;
+                    };
+                    if !page.calendar_event_mutation_is_current(&mutation_token) {
+                        delete_button_for_result.set_sensitive(true);
+                        show_toast_for_widget(
+                            &delete_button_for_result,
+                            "Der Kalenderstand hat sich geändert; das Löschergebnis wurde verworfen",
+                        );
+                        page.reload_calendar_data();
+                        return;
+                    }
+                    match result {
                         Ok(Ok(result)) if result.uid == uid_for_result => {
-                            if let Some(row) = delete_button_for_result
-                                .ancestor(gtk::ListBoxRow::static_type())
-                                .and_downcast::<gtk::ListBoxRow>()
-                            {
-                                event_list_for_result.remove(&row);
+                            let Some(identity) = event_identity_for_result.as_ref() else {
+                                delete_button_for_result.set_sensitive(true);
+                                page.reload_calendar_data();
+                                return;
+                            };
+                            if !page.finish_calendar_mutation(&mutation_token) {
+                                delete_button_for_result.set_sensitive(true);
+                                page.reload_calendar_data();
+                                return;
                             }
-            event_records_for_result.borrow_mut().retain(|event| {
-                                !same_event_identity(
-                                    event,
-                                    &source_uid_for_result,
-                                    &uid_for_result,
-                                )
+                            remove_event_list_row_by_identity(&event_list_for_result, identity);
+                            event_records_for_result.borrow_mut().retain(|event| {
+                                CalendarEventIdentity::from_event(event).as_ref() != Some(identity)
                             });
+                            page.bump_calendar_revision();
+                            page.rebuild_calendar_index_from_records();
+                            page.refresh_calendar_views();
                             show_toast_for_widget(
                                 &delete_button_for_result,
                                 &format!("Termin gelöscht ({})", result.uid),
@@ -4012,6 +6191,7 @@ fn append_event_row(
                             }
                         }
                         Ok(Ok(result)) => {
+                            page.finish_calendar_mutation(&mutation_token);
                             delete_button_for_result.set_sensitive(true);
                             show_toast_for_widget(
                                 &delete_button_for_result,
@@ -4020,17 +6200,25 @@ fn append_event_row(
                                     result.uid
                                 ),
                             );
+                            page.reload_calendar_data();
                         }
                         Ok(Err(error)) => {
+                            page.finish_calendar_mutation(&mutation_token);
                             delete_button_for_result.set_sensitive(true);
                             show_toast_for_widget(
                                 &delete_button_for_result,
                                 &format!("Termin konnte nicht gelöscht werden: {error}"),
                             );
+                            page.reload_calendar_data();
                         }
                         Err(error) => {
+                            page.finish_calendar_mutation(&mutation_token);
                             delete_button_for_result.set_sensitive(true);
-                            tracing::debug!(%error, "Event deletion channel closed");
+                            show_toast_for_widget(
+                                &delete_button_for_result,
+                                &format!("Termin-Löschkanal wurde beendet: {error}"),
+                            );
+                            page.reload_calendar_data();
                         }
                     }
                 });
@@ -4044,10 +6232,16 @@ fn append_event_row(
     // identical for both interaction paths.
     let context_click = gtk::GestureClick::builder().button(3).build();
     let row_weak_for_context = row.downgrade();
+    let page_weak_for_context = page.downgrade();
     context_click.connect_pressed(move |_, _, x, y| {
         let Some(row_for_context) = row_weak_for_context.upgrade() else {
             return;
         };
+        if let Some(page) = page_weak_for_context.upgrade() {
+            page.select_calendar_event_identity(calendar_event_identity_from_action_row(
+                &row_for_context,
+            ));
+        }
         let popover = gtk::Popover::builder()
             .has_arrow(false)
             .pointing_to(&gtk::gdk::Rectangle::new(x as i32, y as i32, 1, 1))
@@ -4064,6 +6258,7 @@ fn append_event_row(
         let edit = gtk::Button::with_label("Termin bearbeiten");
         edit.set_halign(gtk::Align::Fill);
         edit.add_css_class("flat");
+        edit.set_sensitive(writable);
         let popover_for_edit = popover.clone();
         let edit_button_for_menu = edit_button_for_context.clone();
         edit.connect_clicked(move |_| {
@@ -4075,6 +6270,7 @@ fn append_event_row(
         let export = gtk::Button::with_label("Als iCalendar exportieren");
         export.set_halign(gtk::Align::Fill);
         export.add_css_class("flat");
+        export.set_sensitive(!event.component.trim().is_empty());
         let popover_for_export = popover.clone();
         let export_button_for_menu = export_button_for_context.clone();
         export.connect_clicked(move |_| {
@@ -4087,6 +6283,7 @@ fn append_event_row(
         delete.set_halign(gtk::Align::Fill);
         delete.add_css_class("flat");
         delete.add_css_class("destructive-action");
+        delete.set_sensitive(writable);
         let popover_for_delete = popover.clone();
         let delete_button_for_menu = delete_button_for_context.clone();
         delete.connect_clicked(move |_| {
@@ -4121,6 +6318,11 @@ fn append_event_row(
 }
 
 fn remove_event_list_row(event_list: &gtk::ListBox, source_uid: &str, uid: &str) {
+    let identity = calendar_event_identity_from_parts(source_uid, uid, None);
+    remove_event_list_row_by_identity(event_list, &identity);
+}
+
+fn remove_event_list_row_by_identity(event_list: &gtk::ListBox, identity: &CalendarEventIdentity) {
     let mut child = event_list.first_child();
     while let Some(widget) = child {
         child = widget.next_sibling();
@@ -4138,11 +6340,22 @@ fn remove_event_list_row(event_list: &gtk::ListBox, source_uid: &str, uid: &str)
                 .data::<String>("event-source-uid")
                 .map(|value| value.as_ref().clone())
                 .unwrap_or_default();
+            let row_source_object_key = event_row
+                .data::<String>("event-source-object-key")
+                .map(|value| value.as_ref().clone())
+                .unwrap_or_default();
             let row_uid = event_row
                 .data::<String>("event-id")
                 .map(|value| value.as_ref().clone())
                 .unwrap_or_default();
-            row_source_uid == source_uid && row_uid == uid
+            let row_recurrence_id = event_row
+                .data::<String>("event-recurrence-id")
+                .map(|value| value.as_ref().clone())
+                .filter(|value| !value.is_empty());
+            row_source_object_key == identity.source_object_key
+                && row_source_uid == identity.source_uid
+                && row_uid == identity.uid
+                && row_recurrence_id == identity.recurrence_id
         };
         if matches {
             event_list.remove(&row);
@@ -4572,6 +6785,69 @@ mod tests {
     }
 
     #[test]
+    fn recurrence_safe_identity_keeps_master_and_exception_separate() {
+        let mut master = all_day_event("source", "series", "2026-08-03", "2026-08-04");
+        master.component = concat!(
+            "BEGIN:VEVENT\r\nUID:series\r\n",
+            "DTSTART;VALUE=DATE:20260803\r\n",
+            "DTEND;VALUE=DATE:20260804\r\n",
+            "RRULE:FREQ=WEEKLY;COUNT=3\r\nEND:VEVENT\r\n"
+        )
+        .to_string();
+        let mut exception = all_day_event("source", "series", "2026-08-10", "2026-08-11");
+        exception.component = concat!(
+            "BEGIN:VEVENT\r\nUID:series\r\n",
+            "RECURRENCE-ID;VALUE=DATE:20260810\r\n",
+            "DTSTART;VALUE=DATE:20260810\r\n",
+            "DTEND;VALUE=DATE:20260811\r\nEND:VEVENT\r\n"
+        )
+        .to_string();
+
+        let master_identity = CalendarEventIdentity::from_event(&master).unwrap();
+        let exception_identity = CalendarEventIdentity::from_event(&exception).unwrap();
+        assert_ne!(master_identity, exception_identity);
+        assert_eq!(master_identity.source_object_key, "source:source");
+        assert_eq!(
+            exception_identity.recurrence_id.as_deref(),
+            Some("20260810")
+        );
+        assert!(same_event_identity(&master, "source", "series"));
+        assert!(!same_event_identity(&exception, "source", "series"));
+
+        let index = CalendarSnapshotIndex::new(Arc::new(CalendarSnapshot {
+            events: vec![master, exception],
+            tasks: Vec::new(),
+            memos: Vec::new(),
+        }));
+        let grouped = indexed_events_by_date(
+            &index,
+            CalendarDateRange::single(date("2026-08-10")),
+            "",
+            None,
+            &HashSet::new(),
+        );
+        assert_eq!(grouped.get(&date("2026-08-10")).map(Vec::len), Some(2));
+    }
+
+    #[test]
+    fn source_less_import_identity_is_stable_but_remains_read_only() {
+        let mut imported = event_with_start("2026-08-10");
+        imported.source_uid.clear();
+        imported.source_display_name = "Importierte ICS-Datei".to_string();
+        imported.component =
+            "BEGIN:VEVENT\r\nUID:event-1\r\nDTSTART;VALUE=DATE:20260810\r\nEND:VEVENT\r\n"
+                .to_string();
+
+        let first = CalendarEventIdentity::from_event(&imported).unwrap();
+        let second = CalendarEventIdentity::from_event(&imported).unwrap();
+        assert_eq!(first, second);
+        assert!(!first.source_object_key.is_empty());
+        assert_eq!(first.source_uid, "");
+        assert_eq!(first.uid, "event-1");
+        assert!(event_mutation_error(&imported).is_some());
+    }
+
+    #[test]
     fn stale_slow_load_cannot_finish_fast_newer_load() {
         let mut gate = CalendarLoadGate::default();
         let slow_a = gate.begin();
@@ -4591,6 +6867,46 @@ mod tests {
         assert!(gate.cancel(generation));
         assert!(!gate.loading);
         assert!(!gate.finish(generation));
+    }
+
+    #[test]
+    fn stale_or_cancelled_projection_plans_are_rejected() {
+        let mut gate = CalendarProjectionGate::default();
+        let first = gate.begin(CalendarView::Year, 4, 8);
+        assert!(gate.accepts(first, CalendarView::Year, 4, 8));
+        let second = gate.begin(CalendarView::List, 5, 8);
+        assert!(!gate.accepts(first, CalendarView::Year, 4, 8));
+        assert!(gate.accepts(second, CalendarView::List, 5, 8));
+        assert!(gate.cancel(second));
+        assert!(!gate.accepts(second, CalendarView::List, 5, 8));
+        assert!(!gate.finish(second, CalendarView::List, 5, 8));
+    }
+
+    #[test]
+    fn projection_application_ranges_are_bounded() {
+        let ranges = projection_chunk_ranges(59, PROJECTION_APPLY_CHUNK_SIZE);
+        assert_eq!(ranges.first(), Some(&(0, PROJECTION_APPLY_CHUNK_SIZE)));
+        assert_eq!(ranges.last(), Some(&(48, 59)));
+        assert_eq!(
+            ranges.iter().map(|(start, end)| end - start).sum::<usize>(),
+            59
+        );
+        assert!(
+            ranges
+                .iter()
+                .all(|(start, end)| end > start && end - start <= PROJECTION_APPLY_CHUNK_SIZE)
+        );
+    }
+
+    #[test]
+    fn mutation_revision_rejects_callbacks_after_authoritative_reload() {
+        let mut gate = CalendarMutationGate::default();
+        let first = gate.begin(10, 1, None);
+        assert!(gate.accepts(&first));
+        let second = gate.begin(11, 1, None);
+        assert!(!gate.accepts(&first));
+        assert!(gate.accepts(&second));
+        assert!(gate.finish(&second));
     }
 
     #[test]
@@ -4924,6 +7240,217 @@ mod tests {
             &event,
             NaiveDate::from_ymd_opt(2026, 8, 20).unwrap()
         ));
+    }
+
+    #[test]
+    fn year_viewport_is_exactly_the_civil_year_and_leap_navigation_is_clamped() {
+        let leap = CalendarViewport::for_view(CalendarView::Year, date("2024-02-29"), Weekday::Mon);
+        assert_eq!(leap.visible_range.start, date("2024-01-01"));
+        assert_eq!(leap.visible_range.end, date("2025-01-01"));
+        assert_eq!(leap.visible_range.len_days(), 366);
+        assert!(!leap.visible_range.contains(date("2025-01-01")));
+
+        let mut state =
+            CalendarViewState::new(CalendarView::Year, date("2024-02-29"), Weekday::Mon);
+        state.navigate(1, Weekday::Mon);
+        assert_eq!(state.anchor_date, date("2025-02-28"));
+        assert_eq!(state.visible_range, calendar_year_range(2025));
+        state.navigate(-1, Weekday::Mon);
+        assert_eq!(state.anchor_date, date("2024-02-28"));
+        assert_eq!(state.visible_range, calendar_year_range(2024));
+    }
+
+    #[test]
+    fn year_navigation_at_chrono_boundary_is_checked_and_non_panicking() {
+        let mut state = CalendarViewState::new(CalendarView::Year, NaiveDate::MAX, Weekday::Mon);
+        let before = state.anchor_date;
+        state.navigate(1, Weekday::Mon);
+        assert_eq!(state.anchor_date, before);
+        state.navigate(-1, Weekday::Mon);
+        assert!(state.anchor_date < before);
+    }
+
+    #[test]
+    fn year_markers_expand_recurrence_rdate_exdate_and_multiday_spans() {
+        let mut recurring = all_day_event("source-a", "series", "2024-02-28", "2024-02-29");
+        recurring.component = concat!(
+            "BEGIN:VEVENT\r\nUID:series\r\n",
+            "DTSTART;VALUE=DATE:20240228\r\n",
+            "DTEND;VALUE=DATE:20240229\r\n",
+            "RRULE:FREQ=DAILY;COUNT=3\r\n",
+            "RDATE;VALUE=DATE:20240305\r\n",
+            "EXDATE;VALUE=DATE:20240229\r\nEND:VEVENT\r\n"
+        )
+        .to_string();
+        let multi_day = all_day_event("source-b", "multi", "2024-03-10", "2024-03-12");
+        let index = CalendarSnapshotIndex::new(Arc::new(CalendarSnapshot {
+            events: vec![recurring, multi_day],
+            tasks: Vec::new(),
+            memos: Vec::new(),
+        }));
+        let markers =
+            indexed_event_day_markers(&index, calendar_year_range(2024), "", None, &HashSet::new());
+
+        assert_eq!(markers.get(&date("2024-02-28")), Some(&1));
+        assert_eq!(markers.get(&date("2024-02-29")), None);
+        assert_eq!(markers.get(&date("2024-03-01")), Some(&1));
+        assert_eq!(markers.get(&date("2024-03-05")), Some(&1));
+        assert_eq!(markers.get(&date("2024-03-10")), Some(&1));
+        assert_eq!(markers.get(&date("2024-03-11")), Some(&1));
+        assert_eq!(markers.get(&date("2024-03-12")), None);
+
+        let mut hidden_sources = HashSet::new();
+        hidden_sources.insert("source-b".to_string());
+        let filtered_markers =
+            indexed_event_day_markers(&index, calendar_year_range(2024), "", None, &hidden_sources);
+        assert_eq!(filtered_markers.get(&date("2024-03-10")), None);
+        assert_eq!(filtered_markers.get(&date("2024-03-05")), Some(&1));
+    }
+
+    #[test]
+    fn list_index_keeps_duplicate_uids_filters_and_out_of_anchor_events() {
+        let mut source_a = all_day_event("source-a", "same", "2027-01-02", "2027-01-03");
+        source_a.summary = "Alpha".to_string();
+        source_a.component = source_a
+            .component
+            .replace("END:VEVENT", "CATEGORIES:Work\r\nEND:VEVENT");
+        let mut source_b = all_day_event("source-b", "same", "2025-12-30", "2025-12-31");
+        source_b.summary = "Beta".to_string();
+        source_b.component = source_b
+            .component
+            .replace("END:VEVENT", "CATEGORIES:Personal\r\nEND:VEVENT");
+        let mut same_start = all_day_event("source-c", "later", "2027-01-02", "2027-01-03");
+        same_start.summary = "Zulu".to_string();
+
+        let index = CalendarSnapshotIndex::new(Arc::new(CalendarSnapshot {
+            events: vec![source_a, source_b, same_start],
+            tasks: Vec::new(),
+            memos: Vec::new(),
+        }));
+        let all = filtered_sorted_event_indices(&index, "", None, &HashSet::new());
+        let identities = all
+            .iter()
+            .map(|event_index| {
+                let event = &index.snapshot.events[*event_index];
+                (event.source_uid.as_str(), event.uid.as_str())
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            identities,
+            vec![
+                ("source-b", "same"),
+                ("source-a", "same"),
+                ("source-c", "later")
+            ]
+        );
+
+        let anchor_range = CalendarDateRange::from_days(date("2026-06-01"), 7);
+        assert!(index.candidate_event_indices(anchor_range).is_empty());
+        assert_eq!(all.len(), 3, "List must not inherit the anchor range");
+
+        let mut hidden = HashSet::new();
+        hidden.insert("source-b".to_string());
+        let filtered = filtered_sorted_event_indices(&index, "", Some("Work"), &hidden);
+        assert_eq!(filtered, vec![0]);
+        let searched = filtered_sorted_event_indices(&index, "zulu", None, &HashSet::new());
+        assert_eq!(searched, vec![2]);
+    }
+
+    #[test]
+    fn malformed_identity_date_and_recurrence_are_safe_and_list_visible() {
+        let mut malformed_date = event_with_start("not-a-date");
+        malformed_date.uid = "bad-date".to_string();
+        malformed_date.source_uid = "source".to_string();
+        let mut malformed_identity = event_with_start("2026-01-01");
+        malformed_identity.uid.clear();
+        let mut malformed_recurrence = event_with_start("2026-08-03");
+        malformed_recurrence.uid = "bad-rule".to_string();
+        malformed_recurrence.all_day = true;
+        malformed_recurrence.component = concat!(
+            "BEGIN:VEVENT\r\nUID:bad-rule\r\nDTSTART;VALUE=DATE:20260803\r\n",
+            "RRULE:FREQ=DAILY;COUNT=not-a-number\r\nEND:VEVENT\r\n"
+        )
+        .to_string();
+        let index = CalendarSnapshotIndex::new(Arc::new(CalendarSnapshot {
+            events: vec![
+                malformed_date.clone(),
+                malformed_identity.clone(),
+                malformed_recurrence.clone(),
+            ],
+            tasks: Vec::new(),
+            memos: Vec::new(),
+        }));
+
+        assert_eq!(
+            CalendarEventIdentity::from_event(&malformed_date)
+                .unwrap()
+                .uid,
+            "bad-date"
+        );
+        let malformed_identity = CalendarEventIdentity::from_event(&malformed_identity)
+            .expect("source-less or UID-less rows still need a stable identity");
+        assert!(malformed_identity.uid.starts_with("imported-uid:"));
+        assert!(filtered_sorted_event_indices(&index, "", None, &HashSet::new()).contains(&0));
+        assert!(
+            event_occurrence_dates_in_range(&malformed_recurrence, calendar_year_range(2026))
+                .contains(&date("2026-08-03"))
+        );
+        assert!(
+            !event_occurrence_dates_in_range(&malformed_recurrence, calendar_year_range(2026))
+                .contains(&date("2026-08-04"))
+        );
+    }
+
+    #[test]
+    fn selection_is_preserved_by_identity_and_moves_to_the_same_index_on_removal() {
+        let first = all_day_event("source-a", "first", "2026-01-01", "2026-01-02");
+        let selected = all_day_event("source-a", "selected", "2026-01-02", "2026-01-03");
+        let last = all_day_event("source-b", "last", "2026-01-03", "2026-01-04");
+        let selected_identity = CalendarEventIdentity::from_event(&selected).unwrap();
+        let mut state =
+            CalendarViewState::new(CalendarView::Year, date("2026-01-02"), Weekday::Mon);
+        state.select_event(Some(selected_identity), Some(1));
+        state.reconcile_event_selection(&[first.clone(), selected.clone(), last.clone()]);
+        assert_eq!(state.selected_event_index, Some(1));
+
+        state.reconcile_event_selection(&[first.clone(), last.clone()]);
+        assert_eq!(
+            state.selected_event,
+            CalendarEventIdentity::from_event(&last)
+        );
+        assert_eq!(state.selected_event_index, Some(1));
+
+        state.reconcile_event_selection(std::slice::from_ref(&first));
+        assert_eq!(
+            state.selected_event,
+            CalendarEventIdentity::from_event(&first)
+        );
+        assert_eq!(state.selected_event_index, Some(0));
+        state.reconcile_event_selection(&[]);
+        assert_eq!(state.selected_event, None);
+        assert_eq!(state.selected_event_index, None);
+    }
+
+    #[test]
+    fn year_to_list_preserves_selection_and_list_navigation_is_a_noop() {
+        let selected = all_day_event("source", "selected", "2026-08-10", "2026-08-11");
+        let identity = CalendarEventIdentity::from_event(&selected).unwrap();
+        let mut state =
+            CalendarViewState::new(CalendarView::Year, date("2026-08-10"), Weekday::Mon);
+        state.select_event(Some(identity.clone()), Some(0));
+        state.select_civil_day(date("2026-08-10"));
+        state.set_view(CalendarView::List, Weekday::Mon);
+        let before = state.clone();
+        state.navigate(1, Weekday::Mon);
+        state.today(date("2027-01-01"), Weekday::Mon);
+        assert_eq!(state.anchor_date, before.anchor_date);
+        assert_eq!(state.visible_range, before.visible_range);
+        assert_eq!(state.selected_event, Some(identity));
+        assert_eq!(state.selected_range, before.selected_range);
+        assert_eq!(calendar_view_from_name("year"), CalendarView::Year);
+        assert_eq!(calendar_view_from_name("list"), CalendarView::List);
+        assert_eq!(calendar_view_name(CalendarView::Year), "year");
+        assert_eq!(calendar_view_name(CalendarView::List), "list");
     }
 
     #[test]

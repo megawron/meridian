@@ -17,6 +17,7 @@
 #include <libedataserver/e-source-authentication.h>
 #include <libedataserver/e-source-backend.h>
 #include <libedataserver/e-source-camel.h>
+#include <libedataserver/e-source-collection.h>
 #include <libedataserver/e-source-credentials-provider.h>
 #include <libedataserver/e-source-goa.h>
 #include <libedataserver/e-source-mail-account.h>
@@ -64,6 +65,11 @@ struct _EdsCamelSessionClass {
 };
 
 G_DEFINE_TYPE (EdsCamelSession, eds_camel_session, CAMEL_TYPE_SESSION)
+
+static ESource *
+eds_camel_session_ref_ancestor_with_extension (EdsCamelSession *session,
+                                               ESource *source,
+                                               const gchar *extension_name);
 
 static ESource *
 eds_camel_session_ref_source (EdsCamelSession *session,
@@ -181,6 +187,7 @@ eds_camel_session_get_oauth2_access_token_sync
 {
     EdsCamelSession *session = (EdsCamelSession *) base_session;
     ESource *source;
+    ESource *cred_source = NULL;
     ESource *current;
     GError *first_error = NULL;
     gboolean success = FALSE;
@@ -193,10 +200,30 @@ eds_camel_session_get_oauth2_access_token_sync
         return FALSE;
     }
 
-    /* Mail account sources commonly inherit their OAuth2 extension from a
-     * GOA/provider parent.  Ask the concrete source first, then walk the
-     * complete ESource ancestry instead of assuming the account is the token
-     * owner itself. */
+    /* 1. In EDS, OAuth2 tokens for collection accounts (e.g. Google, Office 365)
+     * are stored on the collection parent source rather than the child IMAP account. */
+    cred_source = e_source_registry_find_extension (
+        session->registry, source, E_SOURCE_EXTENSION_COLLECTION);
+    if (cred_source) {
+        GError *local_error = NULL;
+        if (e_source_get_oauth2_access_token_sync (
+                cred_source, cancellable, out_access_token, out_expires_in,
+                &local_error)) {
+            g_printerr ("[EDS] Obtained OAuth2 token via Collection source for %s\n",
+                        camel_service_get_uid (service));
+            g_clear_error (&local_error);
+            g_object_unref (cred_source);
+            g_object_unref (source);
+            return TRUE;
+        }
+        if (!first_error && local_error)
+            first_error = local_error;
+        else
+            g_clear_error (&local_error);
+        g_clear_object (&cred_source);
+    }
+
+    /* 2. Try the concrete source directly, then walk the complete ancestry. */
     current = g_object_ref (source);
     while (current) {
         GError *local_error = NULL;
@@ -204,6 +231,8 @@ eds_camel_session_get_oauth2_access_token_sync
         if (e_source_get_oauth2_access_token_sync (
                 current, cancellable, out_access_token, out_expires_in,
                 &local_error)) {
+            g_printerr ("[EDS] Obtained OAuth2 token via source ancestry (%s) for %s\n",
+                        e_source_get_uid (current), camel_service_get_uid (service));
             g_clear_error (&local_error);
             success = TRUE;
             break;
@@ -222,6 +251,53 @@ eds_camel_session_get_oauth2_access_token_sync
         current = parent;
     }
     g_clear_object (&current);
+
+    /* 3. Direct GNOME Online Accounts fallback via D-Bus session bus */
+    if (!success) {
+        ESource *goa_source = eds_camel_session_ref_ancestor_with_extension (
+            session, source, "GNOME Online Accounts");
+        if (goa_source) {
+            ESourceExtension *goa_ext = e_source_get_extension (
+                goa_source, "GNOME Online Accounts");
+            const gchar *account_id = goa_ext
+                ? e_source_goa_get_account_id (E_SOURCE_GOA (goa_ext))
+                : NULL;
+            if (account_id && *account_id) {
+                GDBusConnection *bus = g_bus_get_sync (G_BUS_TYPE_SESSION, NULL, NULL);
+                if (bus) {
+                    gchar *obj_path = g_strdup_printf (
+                        "/org/gnome/OnlineAccounts/Accounts/%s", account_id);
+                    GError *dbus_error = NULL;
+                    GVariant *reply = g_dbus_connection_call_sync (
+                        bus, "org.gnome.OnlineAccounts", obj_path,
+                        "org.gnome.OnlineAccounts.OAuth2Based", "GetAccessToken",
+                        NULL, G_VARIANT_TYPE ("(si)"), G_DBUS_CALL_FLAGS_NONE,
+                        5000, NULL, &dbus_error);
+                    if (reply) {
+                        const gchar *token_str = NULL;
+                        gint exp_in = 0;
+                        g_variant_get (reply, "(&si)", &token_str, &exp_in);
+                        if (token_str && *token_str) {
+                            if (out_access_token)
+                                *out_access_token = g_strdup (token_str);
+                            if (out_expires_in)
+                                *out_expires_in = exp_in;
+                            g_printerr ("[EDS] Obtained OAuth2 token via direct GOA D-Bus for %s\n", account_id);
+                            success = TRUE;
+                        }
+                        g_variant_unref (reply);
+                    } else {
+                        g_printerr ("[EDS] Direct GOA D-Bus token call failed: %s\n",
+                                    dbus_error ? dbus_error->message : "unknown");
+                        g_clear_error (&dbus_error);
+                    }
+                    g_free (obj_path);
+                    g_object_unref (bus);
+                }
+            }
+            g_object_unref (goa_source);
+        }
+    }
 
     if (!success && error && first_error) {
         *error = first_error;
@@ -329,17 +405,31 @@ eds_camel_session_configure_service_for_source (EdsCamelSession *session,
                                                 ESource *source,
                                                 CamelService *service)
 {
-    GPtrArray *ancestry;
-    ESource *current;
-
     if (!session || !session->registry || !source || !service)
         return;
 
-    /* Apply configuration from the oldest ancestor to the concrete source.
+    /* 1. Look for extension source matching this provider's settings type */
+    if (CAMEL_IS_SERVICE (service)) {
+        CamelProvider *provider = camel_service_get_provider (service);
+        if (provider && provider->protocol) {
+            const gchar *ext_name = e_source_camel_get_extension_name (
+                provider->protocol);
+            if (ext_name) {
+                ESource *ext_source = e_source_registry_find_extension (
+                    session->registry, source, ext_name);
+                if (ext_source) {
+                    e_source_camel_configure_service (ext_source, service);
+                    g_object_unref (ext_source);
+                }
+            }
+        }
+    }
+
+    /* 2. Apply configuration from the oldest ancestor to the concrete source.
      * Identity, GOA/provider and mail-account extensions may each live on a
      * different ESource in the same hierarchy. */
-    ancestry = g_ptr_array_new_with_free_func (g_object_unref);
-    current = g_object_ref (source);
+    GPtrArray *ancestry = g_ptr_array_new_with_free_func (g_object_unref);
+    ESource *current = g_object_ref (source);
     while (current) {
         g_ptr_array_add (ancestry, current);
 
@@ -762,11 +852,18 @@ load_folder (LoadContext *context,
                 source_uid, source_display_name, current->full_name);
         }
 
-        if (is_mail_folder (current) &&
-            (current->flags & CAMEL_FOLDER_NOSELECT) == 0 &&
-            (!folder_name ||
-             (current->full_name &&
-              g_str_equal (current->full_name, folder_name)))) {
+        gboolean should_load_messages = FALSE;
+        if (is_mail_folder (current) && (current->flags & CAMEL_FOLDER_NOSELECT) == 0) {
+            if (folder_name && current->full_name) {
+                should_load_messages = g_str_equal (current->full_name, folder_name);
+            } else if (!folder_name) {
+                should_load_messages = ((current->flags & CAMEL_FOLDER_TYPE_MASK) == CAMEL_FOLDER_TYPE_INBOX) ||
+                    (current->full_name && (g_ascii_strcasecmp (current->full_name, "INBOX") == 0 ||
+                                            g_ascii_strcasecmp (current->full_name, "Inbox") == 0));
+            }
+        }
+
+        if (should_load_messages) {
             folder = camel_store_get_folder_sync (
                 store, current->full_name, CAMEL_STORE_FOLDER_NONE,
                 cancellable, &error);
@@ -1006,18 +1103,24 @@ open_store_for_source (EdsCamelSession *session,
         }
     }
 
-    if (!camel_service_connect_sync (service, cancellable, error)) {
-        g_object_unref (service);
-        return NULL;
-    }
-
     if (CAMEL_IS_OFFLINE_STORE (service)) {
+        GError *offline_err = NULL;
         if (!camel_offline_store_set_online_sync (
-                CAMEL_OFFLINE_STORE (service), TRUE, cancellable, NULL)) {
-            g_printerr ("[EDS] Failed to set CamelOfflineStore online for %s\n", source_uid);
+                CAMEL_OFFLINE_STORE (service), TRUE, cancellable, &offline_err)) {
+            g_printerr ("[EDS] Failed to set CamelOfflineStore online for %s: %s\n",
+                        source_uid, offline_err ? offline_err->message : "unknown");
+            g_clear_error (&offline_err);
         } else {
             g_printerr ("[EDS] Successfully set CamelOfflineStore online for %s\n", source_uid);
         }
+    }
+
+    if (!camel_service_connect_sync (service, cancellable, error)) {
+        g_printerr ("[EDS] camel_service_connect_sync failed for %s (%s): %s\n",
+                    source_uid, backend_name,
+                    error && *error ? (*error)->message : "unknown error");
+        g_object_unref (service);
+        return NULL;
     }
 
     if (!CAMEL_IS_STORE (service)) {
@@ -1060,7 +1163,8 @@ load_source (LoadContext *context,
         g_str_equal (backend_name, "mbox") ||
         g_str_equal (backend_name, "mh") ||
         g_str_equal (backend_name, "spool") ||
-        g_str_equal (backend_name, "vfolder"))
+        g_str_equal (backend_name, "vfolder") ||
+        g_str_equal (backend_name, "rss"))
         return FALSE;
 
     if (load_cancelled (context))

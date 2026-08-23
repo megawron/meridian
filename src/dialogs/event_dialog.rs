@@ -259,7 +259,7 @@ impl EventDialog {
         group_time.add(&row_end);
 
         let group_recurrence = adw::PreferencesGroup::builder()
-            .title("Wiederholung & Teilnehmer")
+            .title("Wiederholung und Teilnehmer")
             .description("RFC5545-Werte werden unverändert an den Kalenderdienst weitergegeben")
             .build();
         let row_recurrence = adw::EntryRow::builder()
@@ -433,7 +433,7 @@ impl EventDialog {
 
         // Description
         let group_desc = adw::PreferencesGroup::builder()
-            .title("Beschreibung & Notizen")
+            .title("Beschreibung und Notizen")
             .build();
 
         let text_desc = gtk::TextView::builder()
@@ -485,9 +485,7 @@ impl EventDialog {
                     }
                 })
                 .collect();
-            let mut uids = calendar_source_uids_for_load.borrow_mut();
-            uids.clear();
-            uids.extend(active_sources.into_iter().map(|source| source.uid));
+            let mut uids: Vec<String> = active_sources.into_iter().map(|source| source.uid).collect();
             let preserved_source_uid = edit_source_uid_for_load
                 .as_deref()
                 .or(preferred_source_uid.as_deref())
@@ -511,6 +509,10 @@ impl EventDialog {
             }
             let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
             calendar_model_for_load.splice(0, calendar_model_for_load.n_items(), &name_refs);
+
+            // Replace the stored uids completely so no borrow is open during set_selected
+            calendar_source_uids_for_load.replace(uids.clone());
+
             if let Some(edit_source_uid) = edit_source_uid_for_load.as_deref() {
                 if let Some(index) = uids.iter().position(|uid| uid == edit_source_uid) {
                     row_calendar_for_load.set_selected(index as u32);

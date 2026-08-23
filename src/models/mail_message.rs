@@ -171,7 +171,7 @@ impl MailMessageObject {
         *imp.recipient_cc.borrow_mut() = recipient_cc.to_string();
         *imp.recipient_bcc.borrow_mut() = recipient_bcc.to_string();
         *imp.reply_to.borrow_mut() = reply_to.to_string();
-        *imp.subject.borrow_mut() = subject.to_string();
+        *imp.subject.borrow_mut() = crate::services::mail_store_service::decode_mime_header(subject);
         *imp.message_id.borrow_mut() = message_id;
         *imp.in_reply_to.borrow_mut() = in_reply_to;
         *imp.references.borrow_mut() = references;

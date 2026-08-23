@@ -837,7 +837,13 @@ struct NativeTypeLoad {
 }
 
 #[cfg(all(target_os = "linux", eds_ecal_bridge))]
+static ECAL_NATIVE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(all(target_os = "linux", eds_ecal_bridge))]
 fn load_snapshot_native() -> Result<CalendarSnapshot, ECalServiceError> {
+    let _guard = ECAL_NATIVE_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut snapshot = CalendarSnapshot::default();
     let mut warnings = Vec::new();
     let mut native_successes = 0;

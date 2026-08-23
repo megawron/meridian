@@ -1871,6 +1871,8 @@ pub(crate) fn parse_rfc822_bytes(
     let plain_body = extracted.plain_body.unwrap_or_default();
     let body_html = if let Some(html_body) = extracted.html_body {
         html_body
+    } else if looks_like_html(&plain_body) {
+        plain_body.clone()
     } else if !plain_body.trim().is_empty() {
         format!("<pre>{}</pre>", escape_html(plain_body.trim()))
     } else if let Some(html_fallback) = extracted.html_fallback {
@@ -2137,6 +2139,20 @@ fn trim_mime_line_ending(mut value: &[u8]) -> &[u8] {
     value
 }
 
+fn detect_boundary_in_body(body: &[u8]) -> Option<String> {
+    let text = String::from_utf8_lossy(body);
+    for line in text.lines().take(60) {
+        let trimmed = line.trim();
+        if trimmed.starts_with("--") && trimmed.len() > 6 && !trimmed.ends_with("--") {
+            let candidate = &trimmed[2..];
+            if !candidate.contains(' ') && !candidate.contains(':') {
+                return Some(candidate.to_string());
+            }
+        }
+    }
+    None
+}
+
 fn extract_mime_content(
     headers: &HashMap<String, String>,
     body: &[u8],
@@ -2154,15 +2170,35 @@ fn extract_mime_content(
         .to_ascii_lowercase();
 
     if media_type.starts_with("multipart/") {
-        if let Some(boundary) = mime_parameter(content_type, "boundary") {
-            for part in split_multipart_parts(body, &boundary) {
-                let (part_header_bytes, part_body) = split_mime_headers_and_body(part);
-                let part_header_text = String::from_utf8_lossy(part_header_bytes);
-                let part_headers = parse_headers(&part_header_text);
-                extract_mime_content(&part_headers, part_body, extracted);
+        let boundary = mime_parameter(content_type, "boundary")
+            .or_else(|| detect_boundary_in_body(body));
+        if let Some(boundary) = boundary {
+            let parts = split_multipart_parts(body, &boundary);
+            if !parts.is_empty() {
+                for part in parts {
+                    let (part_header_bytes, part_body) = split_mime_headers_and_body(part);
+                    let part_header_text = String::from_utf8_lossy(part_header_bytes);
+                    let part_headers = parse_headers(&part_header_text);
+                    extract_mime_content(&part_headers, part_body, extracted);
+                }
+                return;
             }
         }
-        return;
+    }
+
+    if media_type.starts_with("text/") || media_type.is_empty() {
+        if let Some(boundary) = detect_boundary_in_body(body) {
+            let parts = split_multipart_parts(body, &boundary);
+            if parts.len() > 1 {
+                for part in parts {
+                    let (part_header_bytes, part_body) = split_mime_headers_and_body(part);
+                    let part_header_text = String::from_utf8_lossy(part_header_bytes);
+                    let part_headers = parse_headers(&part_header_text);
+                    extract_mime_content(&part_headers, part_body, extracted);
+                }
+                return;
+            }
+        }
     }
 
     let decoded = decode_transfer_encoding(
@@ -2261,6 +2297,20 @@ fn is_usable_html(value: &str) -> bool {
     ["<img", "<br", "<hr", "<table", "<video", "<audio"]
         .iter()
         .any(|marker| lower.contains(marker))
+}
+
+fn looks_like_html(value: &str) -> bool {
+    let lower = value.to_ascii_lowercase();
+    let trimmed = lower.trim_start();
+    trimmed.starts_with("<!doctype")
+        || trimmed.starts_with("<html")
+        || trimmed.starts_with("<head")
+        || trimmed.starts_with("<body")
+        || trimmed.starts_with("<style")
+        || trimmed.starts_with("<table")
+        || trimmed.starts_with("<div")
+        || (trimmed.contains("<p>") && trimmed.contains("</p>"))
+        || (trimmed.contains("<br>") || trimmed.contains("<br/>") || trimmed.contains("<br />"))
 }
 
 fn mime_parameter(value: &str, parameter: &str) -> Option<String> {
@@ -2499,33 +2549,54 @@ fn hex_value(value: u8) -> Option<u8> {
     }
 }
 
-fn decode_mime_header(value: &str) -> String {
+fn parse_rfc2047_word(encoded: &str) -> Option<(&str, &str, &str, usize)> {
+    if !encoded.starts_with("=?") {
+        return None;
+    }
+    let rest = &encoded[2..];
+    let charset_end = rest.find('?')?;
+    let charset = &rest[..charset_end];
+    let rest = &rest[charset_end + 1..];
+
+    let encoding_end = rest.find('?')?;
+    let encoding = &rest[..encoding_end];
+    let rest = &rest[encoding_end + 1..];
+
+    let payload_end = rest.find("?=")?;
+    let payload = &rest[..payload_end];
+
+    let total_len = 2 + charset_end + 1 + encoding_end + 1 + payload_end + 2;
+    Some((charset, encoding, payload, total_len))
+}
+
+pub(crate) fn decode_mime_header(value: &str) -> String {
     let mut result = String::new();
     let mut rest = value;
+    let mut last_was_encoded = false;
 
     while let Some(start) = rest.find("=?") {
-        result.push_str(&rest[..start]);
-        let encoded = &rest[start..];
-        let Some(end) = encoded.find("?=") else {
-            result.push_str(encoded);
-            rest = "";
-            break;
+        let prefix = &rest[..start];
+        if !last_was_encoded || !prefix.chars().all(|c| c.is_ascii_whitespace()) {
+            result.push_str(prefix);
+        }
+        let candidate = &rest[start..];
+        let Some((raw_charset, encoding, payload, word_len)) = parse_rfc2047_word(candidate) else {
+            result.push_str("=?");
+            rest = &candidate[2..];
+            last_was_encoded = false;
+            continue;
         };
-        let word = &encoded[2..end];
-        let mut fields = word.splitn(3, '?');
-        let charset = fields.next();
-        let encoding = fields.next();
-        let payload = fields.next();
 
-        let decoded = match (encoding, payload) {
-            (Some(encoding), Some(payload)) if encoding.eq_ignore_ascii_case("b") => {
-                decode_base64(payload.as_bytes()).map(|bytes| decode_mime_bytes(&bytes, charset))
+        let charset = raw_charset.split('*').next().unwrap_or(raw_charset);
+        let decoded = match encoding {
+            e if e.eq_ignore_ascii_case("b") => {
+                decode_base64(payload.as_bytes()).map(|bytes| decode_mime_bytes(&bytes, Some(charset)))
             }
-            (Some(encoding), Some(payload)) if encoding.eq_ignore_ascii_case("q") => {
+            e if e.eq_ignore_ascii_case("q") => {
                 let payload = payload.replace('_', " ");
                 Some(decode_mime_bytes(
                     &decode_quoted_printable(payload.as_bytes()),
-                    charset,
+                    Some(charset),
                 ))
             }
             _ => None,
@@ -2533,10 +2604,12 @@ fn decode_mime_header(value: &str) -> String {
 
         if let Some(decoded) = decoded {
             result.push_str(&decoded);
+            last_was_encoded = true;
         } else {
-            result.push_str(&encoded[..end + 2]);
+            result.push_str(&candidate[..word_len]);
+            last_was_encoded = false;
         }
-        rest = &encoded[end + 2..];
+        rest = &candidate[word_len..];
     }
 
     result.push_str(rest);
@@ -2655,26 +2728,16 @@ fn escape_html(value: &str) -> String {
 }
 
 fn text_preview(value: &str) -> String {
-    let mut text = String::new();
-    let mut inside_tag = false;
-
-    for character in value.chars() {
-        match character {
-            '<' => inside_tag = true,
-            '>' => inside_tag = false,
-            _ if inside_tag => {}
-            character if character.is_whitespace() => {
-                if !text.ends_with(' ') {
-                    text.push(' ');
-                }
-            }
-            character => text.push(character),
+    let clean = crate::services::html_sanitizer::html_to_plain_text(value);
+    let mut collapsed = String::with_capacity(clean.len());
+    for word in clean.split_whitespace() {
+        if !collapsed.is_empty() {
+            collapsed.push(' ');
         }
+        collapsed.push_str(word);
     }
-
-    let text = text.trim();
-    let preview: String = text.chars().take(120).collect();
-    if text.chars().count() > 120 {
+    let preview: String = collapsed.chars().take(120).collect();
+    if collapsed.chars().count() > 120 {
         format!("{preview}…")
     } else {
         preview
@@ -2903,6 +2966,59 @@ mod tests {
         assert_eq!(message.attachments[0].content.as_ref(), b"PNG");
         assert_eq!(message.attachments[1].filename, "payload.bin");
         assert_eq!(message.attachments[1].content.as_ref(), [1, 2, 3]);
+    }
+
+    #[test]
+    fn decodes_complex_rfc2047_subjects_and_adjacent_encoded_words() {
+        let subject = "=?UTF-8?Q?=E2=80=9ESEO-Spezialist=E2=80=9C:_Threesi?= xtymedia – SEO-Spezialist";
+        assert_eq!(
+            decode_mime_header(subject),
+            "„SEO-Spezialist“: Threesi xtymedia – SEO-Spezialist"
+        );
+
+        let adjacent = "=?UTF-8?B?4oCeU0VPLVNwZXppYWxpc3TigJw6IA==?= =?UTF-8?B?VGhyZWVzaXh0eW1lZGlh?=";
+        assert_eq!(
+            decode_mime_header(adjacent),
+            "„SEO-Spezialist“: Threesixtymedia"
+        );
+    }
+
+    #[test]
+    fn strips_css_style_blocks_from_preview_snippet() {
+        let html = "<html><head><style>* { font-family: 'Glassdoor Sans', sans-serif; }</style></head><body><p>Echte Gehälter ansehen</p></body></html>";
+        assert_eq!(text_preview(html), "Echte Gehälter ansehen");
+    }
+
+    #[test]
+    fn handles_mislabeled_or_nested_multipart_streams_without_leaking_boundaries() {
+        let raw = concat!(
+            "From: LinkedIn <jobalerts-noreply@linkedin.com>\n",
+            "Subject: =?UTF-8?Q?=E2=80=9ESEO-Spezialist=E2=80=9C:_Threesi?= xtymedia\n",
+            "Content-Type: text/plain; charset=UTF-8\n",
+            "\n",
+            "------=_Part_10938037_701289309\n",
+            "Content-Type: text/plain; charset=UTF-8\n",
+            "\n",
+            "Alle Jobs auf LinkedIn anzeigen\n",
+            "------=_Part_10938037_701289309\n",
+            "Content-Type: text/html; charset=UTF-8\n",
+            "\n",
+            "<html><body><p>Alle Jobs auf LinkedIn anzeigen</p></body></html>\n",
+            "------=_Part_10938037_701289309--\n"
+        );
+
+        let message = parse_rfc822("linkedin", "inbox", raw, false)
+            .expect("linkedin multipart stream should parse");
+        assert_eq!(
+            message.subject,
+            "„SEO-Spezialist“: Threesi xtymedia"
+        );
+        assert_eq!(
+            message.html_body,
+            "<html><body><p>Alle Jobs auf LinkedIn anzeigen</p></body></html>"
+        );
+        assert!(!message.html_body.contains("------=_Part"));
+        assert_eq!(message.preview_snippet, "Alle Jobs auf LinkedIn anzeigen");
     }
 
     #[test]

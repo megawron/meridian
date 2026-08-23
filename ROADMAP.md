@@ -14,8 +14,9 @@ Vollständige Architektur-Spezifikation, Feature-Mapping und Entwicklungs-Roadma
 > `cargo fmt --all -- --check`, strikte Schema-Prüfung, normaler und mit
 > `RUSTFLAGS='--cfg=eds_camel_bridge'` erzwungener Cargo-Check sind grün. Der
 > finale portable/macOS-unsandboxed `cargo test --workspace --locked --no-fail-fast --quiet`-
-> Lauf hat 564/564 Tests bestanden; das ist keine Linux-Abnahme. `MAIL-TRANSPORT-COMMANDS`, `SET-01`, der
-> eigene atomare `GW-MEMO-EDITOR` und `GW-REMINDER-RUNTIME` sind portabel
+> Lauf hat 618/618 Tests bestanden; das ist keine Linux-Abnahme. `P0-MAIL-WORKER-STORE`, `MAIL-TRANSPORT-COMMANDS`, `SET-01`,
+> `GW-CAL-VIEWS-001`, `GW-MEMO-SURFACE-FILTERS`, der eigene atomare
+> `GW-MEMO-EDITOR` und `GW-REMINDER-RUNTIME` sind portabel
 > implementiert und unabhängig reviewt; wegen nativer/provider-/Desktop-Reste
 > stehen sie auf `BLOCKED_LINUX`, nicht auf `DONE` oder Vollparität. Der
 > Reminder-Runtime-Schnitt umfasst kanonische Event-/Task-/Memo-Deep-Links und
@@ -762,7 +763,7 @@ jeweilige negative Fehlerpfad mit direkter Evidenz vorliegen.
   oder entschlüsselte Inhalte invalidieren den Cache und lösen eine
   Filterneubewertung aus; Crypto-Ergebnisse werden zusätzlich durch Request-
   Generation und Identität gegen stale Zustände geschützt. Die portablen
-  Gates sind im aktuellen portable/macOS-Teststand (564/564 Tests; keine
+  Gates sind im aktuellen portable/macOS-Teststand (618/618 Tests; keine
   Linux-Abnahme) einmal vollständig
   grün belegt; beide unabhängigen Reviews sind abgeschlossen. Das Paket steht auf
   `BLOCKED_LINUX`; Provider-Body-Suche, Linux-Churn und EDS/Camel-Abnahme
@@ -774,7 +775,7 @@ jeweilige negative Fehlerpfad mit direkter Evidenz vorliegen.
   Start-/Fälligkeits- und Attachment-Prädikate; Migrationen normalisieren
   Aliaswerte und ungültige Eingaben fallen sicher zurück. Deterministische
   Datums-/DST-Fixtures, Live-Neuberechnung und GSettings-Roundtrip sind im
-  aktuellen portable/macOS-Teststand (564/564; keine Linux-Abnahme) belegt; beide unabhängigen Reviews sind
+  aktuellen portable/macOS-Teststand (618/618; keine Linux-Abnahme) belegt; beide unabhängigen Reviews sind
   abgeschlossen. Das Paket steht auf `BLOCKED_LINUX`; EDS-Query-Semantik und
   Providergrenzen bleiben offen. Die weitere upstream-Taskpad-Fläche wird in
   separaten Groupware-Paketen verfolgt.
@@ -785,7 +786,7 @@ jeweilige negative Fehlerpfad mit direkter Evidenz vorliegen.
   unerkannte sichere Listeneigenschaften; die Dialog-UI schreibt Mitglieder
   über einen atomaren Storepfad und verhindert stille Teilverluste. vCard-3/4-
   Roundtrip-, invalid-member- und Member-UI-Tests sind im portable/macOS-
-  Teststand (564/564; keine Linux-Abnahme)
+  Teststand (618/618; keine Linux-Abnahme)
   enthalten; beide unabhängigen Reviews sind abgeschlossen. Das Paket steht
   auf `BLOCKED_LINUX`; EBook-Listenfähigkeiten, ACLs und native
   Provider-/Linux-Abnahme bleiben offen.
@@ -847,25 +848,22 @@ jeweilige negative Fehlerpfad mit direkter Evidenz vorliegen.
   der Fälligkeitseditor sowie die reale Linux-Abnahme.
   Belege: Der portable Helper-/Workspace-Test ist grün; offen bleiben
   Linux-Referenzvergleich, Icon-Theme und sichtbare Dichte.
-- `P0-MAIL-002A-WORKER-SETTINGS` — der dokumentierte Load-Worker-Handoff ist
-  portabel geschlossen: Der MainThread besitzt einen Snapshot aus Request,
-  Offline-Modus, lokalem Mailverzeichnis, Environment-Overrides, State-Pfad
-  und App-Data-Root. Load, Refresh und Load-more lesen im Worker weder
-  `AppSettings`/GSettings/GTK/GObject noch die Umgebung erneut; der
-  worker-sichere Store bewahrt Environment-, Read-only-, App-owned-, Default-
-  und State-Semantik. Generation-, Progress- und Result-Gates bleiben
-  unverändert. Das schließt nur diesen portablen Handoff, nicht
-  `P0-MAIL-002A`, Linux/Visuals oder die Großpostfach-/Paging-Abnahme.
-- Offenes Folgepaket, nicht durch den Load-Handoff erledigt:
-  `P0-MAIL-002A-WORKER-STORE-CALLERS` für weiterhin in Workerpfaden erzeugte
-  `MailStoreService::new()`-Instanzen außerhalb von Load/Refresh/Load-more:
-  `src/views/mail_page.rs::empty_trash_async`, `apply_filters`,
-  `execute_mail_command`, `execute_mail_batch` und `execute_history_action`,
-  `src/dialogs/preferences_dialog.rs` für den manuellen Filterlauf,
-  `src/services/mail_operations_service.rs::MailOperationsService::new` und
-  `src/services/search_engine.rs::GlobalSearchEngine::query_cancelable` für
-  die globale Suche. Dieser Folgepunkt bleibt offen und muss vor einer
-  `READY`-Markierung erst atomar zugeschnitten und auditiert werden.
+- `P0-MAIL-WORKER-STORE` — S0–S3 sind portabel geschlossen und unabhängig
+  reviewt. S0 injiziert den Filter-Store; S1 deckt MailPage und MailOperations
+  ab; S2 snapshot-t den Preferences-Manual-Filterlauf; S3 snapshot-t die
+  Global-Search-Stores vor dem Worker und setzt Cancel-/Generation-/Stale-
+  Gates. Exakter Produktionsscope: S0
+  `src/services/mail_store_service.rs`; S1 `src/views/mail_page.rs` und
+  `src/services/mail_operations_service.rs`; S2
+  `src/dialogs/preferences_dialog.rs`; S3 `src/services/search_engine.rs`
+  und `src/dialogs/global_search_dialog.rs`. Der frühere
+  Load/Refresh/Load-more-Handoff ist enthalten; Worker lesen GTK/GObject,
+  GSettings/AppSettings, Environment oder mutablen globalen Storezustand
+  nicht erneut.
+- `P0-MAIL-002A` bleibt offen wegen nativer, Performance-, Visual- und
+  Großpostfach-Abnahme sowie ausdrücklich Sidecar-Writer-Serialisierung,
+  nativer Expunge-/Filterwirkung, Graph-/Account-Environment und type-aware
+  Global-Search-Aktivierungsidentität.
 - `[~]` `P0-MAIL-002B` — lesbare Schrift- und Anzeigepräferenzen: 16-Pixel-
   Mailbasis, persistente optionale Sicherheitsdetails sowie live wirksame
   Spalten-/Dichte-/Layoutwerte. Schema-Default/Reset/Roundtrip, sofortige
@@ -883,7 +881,7 @@ cargo test --workspace --locked --no-fail-fast --quiet
 
 Cargo-Format-/Check-, strikte Schema- und Diff-Prüfung sind für den aktuellen
 Arbeitsstand grün; der finale portable/macOS-unsandboxed Workspace-Lauf hat
-564/564 Tests erfolgreich belegt; das ist keine Linux-Abnahme. Ein früherer sandboxed Lauf konnte 18 Graph-Loopback-
+618/618 Tests erfolgreich belegt; das ist keine Linux-Abnahme. Ein früherer sandboxed Lauf konnte 18 Graph-Loopback-
 Mockserver nicht binden und ist nicht der finale Testbeleg. Die unabhängigen
 Reviews sind abgeschlossen.
 WebKitGTK-Runtime, echte
@@ -893,14 +891,13 @@ nicht vorweggenommen werden.
 
 #### Aus den Upstream-Audits übernommene nächste atomare Pakete
 
-Die drei statischen Audits sind jetzt DOX-indexiert und speisen die nächste
-Warteschlange. Die folgende Liste ist ein Statusinventar, keine zusätzliche
-Startreihenfolge; operativ maßgeblich ist `ROADMAP_EXECUTION.md`. Nach dem
-Abschluss des portablen Reminder-Runtime-Handoffs ist kein nächstes Paket als
-atomar `READY` belegt. Vor einer neuen portablen Implementierungspriorität muss
-deshalb zuerst das nächste Auditpaket atomar zugeschnitten und mit direkter
-Abnahme versehen werden; das offene `P0-MAIL-002A-WORKER-STORE-CALLERS`-
-Folgepaket ist dafür ein konkreter Kandidat, aber noch keine `READY`-Markierung.
+Die drei statischen Audits sind jetzt DOX-indexiert und speisen das
+Statusinventar. Es ist keine zusätzliche Startreihenfolge; operativ maßgeblich
+ist `ROADMAP_EXECUTION.md`. Die abgeschlossenen portablen Slices sind keine
+neuen Prioritäten. Vor der nächsten Priorisierung muss das nächste verbleibende
+Auditpaket frisch atomar zugeschnitten und mit Schreibbereich, Abhängigkeiten,
+Positiv-/Negativpfad und Linux-Grenze belegt werden; derzeit wird kein weiteres
+Paket als `READY` behauptet.
 Die Statuswerte sind Quellen-/UI-Belege, keine Laufzeit- oder Providerabnahme:
 
 1. `MAIL-TRANSPORT-COMMANDS` — `BLOCKED_LINUX`: portable Implementierung und
@@ -925,7 +922,21 @@ Die Statuswerte sind Quellen-/UI-Belege, keine Laufzeit- oder Providerabnahme:
    Save/Discard/Cancel, stale/confirmed mutation und Export sind belegt.
    Native EDS-Capabilities/ACL/Provider-Attachment-Transfer/Desktop-Aktionen
    bleiben Linux-Rest.
-4. `GW-REMINDER-RUNTIME` — `BLOCKED_LINUX`: kanonische Event-/Task-/Memo-
+4. `GW-CAL-VIEWS-001` — `BLOCKED_LINUX`: portabler Schnitt in
+   `src/views/calendar_page.rs`, implementiert, getestet und reviewt. Day/
+   Week/WorkWeek/Month42/Agenda90 verwenden halb-offene zivile Bereiche;
+   Navigation, immutable Range-Index, Generation/Cancel/Stale sowie
+   DST/Recurrence sind belegt. Year/List, Selection und globale Aktionen
+   bleiben offen; native EDS-Range/Monitor-/Provider-Wirkung und Visuals sind
+   Linux-Rest.
+5. `GW-MEMO-SURFACE-FILTERS` — `BLOCKED_LINUX`: portabler Schnitt mit
+   Source+UID-Multiselect/Action States, Preview/Attachments, strict
+   Summary/Description/Any/Advanced- sowie Category/Source-Filtern,
+   Forward-Payload/Open URL/Print/Save/Multi-Export/Copy-Cut-Paste-Delete
+   und persistenten Keys/Migration ist implementiert, getestet und reviewt.
+   Native EDS-ACL/Capabilities, Provider-Anhänge, Browser/Print/iTIP und
+   echte Source-/UID-Wirkung bleiben Linux-Rest.
+6. `GW-REMINDER-RUNTIME` — `BLOCKED_LINUX`: kanonische Event-/Task-/Memo-
    Deep-Links und Action-Targets, Source-/UID-Routing, kompaktes wiederver-
    wendbares Reminder-Fenster, Open/10m/1h/Dismiss, exact-once Claim-Leases,
    Replay-/stale-Generationsgates, atomare persistente Snooze-/Dismiss-/
@@ -933,18 +944,18 @@ Die Statuswerte sind Quellen-/UI-Belege, keine Laufzeit- oder Providerabnahme:
    Grenzen sind portabel implementiert und unabhängig reviewt. EReminderWatcher,
    EDS-ClientViews, Provider-Alarme, Sleep/Wakeup, Offline und systemweiter
    Notification-Daemon bleiben Linux-Rest.
-5. `MAIL-PRINT-ACTION`, `COMPOSER-ACTION-SURFACE` und `GW-ALARMS` sind portabel
+7. `MAIL-PRINT-ACTION`, `COMPOSER-ACTION-SURFACE` und `GW-ALARMS` sind portabel
    abgeschlossen und `BLOCKED_LINUX`; sie bleiben Linux-Handoffs, nicht erneut
    startbare portable Pakete.
-6. Weitere Groupware-Lücken — nach den aktuellen Paketen folgen
-   `GW-CAL-VIEWS`/`GW-CAL-SHELL`/`GW-CAL-ACTIONS`,
+8. Weitere Groupware-Lücken — nach den aktuellen Paketen folgen
+   `GW-CAL-SHELL`/`GW-CAL-ACTIONS`,
    `GW-EVENT-EDITOR`, `GW-TASK-SURFACE`/`GW-TASK-EDITOR`,
    `GW-CONTACT-ACTIONS`/`GW-CONTACT-SEARCH`,
    `GW-SOURCE-SELECTOR`/`GW-SOURCE-MGMT`, `GW-IMPORT-FRAMEWORK` und
    `GW-EXPORT-PRINT`;
    jeweils mit portablem Daten-/UI-Vertrag und separatem
    ECal/EBook-/Provider-/Desktop-Rest.
-7. Weitere Settings-Slices aus dem Audit (`MAIL-01..03`, `COMP-01`,
+9. Weitere Settings-Slices aus dem Audit (`MAIL-01..03`, `COMP-01`,
    `GROUP-01`, `CONTACT-01`, `ACCOUNT-01`, `NET-01`, `CRYPTO-01`,
    `PLUGIN-01`) werden erst nach atomarem Zuschnitt und belegter
    Abhängigkeitsprüfung in die startbare Queue übernommen.
@@ -1164,6 +1175,19 @@ Die Statuswerte sind Quellen-/UI-Belege, keine Laufzeit- oder Providerabnahme:
   Generation, bestätigte Mutation und Export. Native EDS-Capabilities/ACL,
   Provider-Attachment-Transfer und Desktop-Aktionen (Open URL/Print) bleiben
   Linux; die übrige Memo-Surface wird nicht als vollständige Parität gezählt.
+- [~] `GW-MEMO-SURFACE-FILTERS` ist als eigener portabler Schnitt geschlossen,
+  getestet und reviewt: Source+UID-Multiselect und Action States,
+  Preview/Attachments, strict Summary/Description/Any/Advanced- sowie
+  Kategorie-/Source-Filter, Forward-Payload, Open URL, Print, Save,
+  Multi-Export, Copy/Cut/Paste/Delete und persistente Keys/Migration sind
+  belegt. Der exakte Produktionsscope umfasst
+  `src/views/memos_page.rs`, `src/services/memo_filter_service.rs`,
+  `src/services/memo_surface_service.rs`, `src/services/settings_service.rs`,
+  `src/services/migration_service.rs`, `src/services/mod.rs`,
+  `data/org.gnome.Evolution4.gschema.xml` und den geteilten Memo-/Mail-
+  Preferences-Scope in `src/dialogs/preferences_dialog.rs`. Native
+  EDS-ACL/Capabilities, Provider-Attachments, Browser/Print/iTIP und echte
+  Source-/UID-Wirkung bleiben Linux-Rest.
 - [~] EDS-Source-Registry und ESource-basierte Kalenderauswahl werden dynamisch
   angezeigt; Kalender-, Aufgaben- und Memo-Quellen werden per
   e_cal_client_connect_sync() gelesen, inklusive Quellidentität und
@@ -1171,15 +1195,13 @@ Die Statuswerte sind Quellen-/UI-Belege, keine Laufzeit- oder Providerabnahme:
   Operationen mit Konfliktstatus; UI-seitige Bearbeiten-/Löschen-Flows sind für
   Termine, Aufgaben und Notizen angebunden. Eine vollständige
   Konfliktauflösung fehlt noch; die ECal-Signalaktualisierung ist umgesetzt.
-- [~] Tag-/Woche-/Monat-Ansichten mit echten VEVENTs sind im GTK4-rs-Frontend
-  vorhanden; Wochenbeginn und ISO-Kalenderwochen sind konfigurierbar. Die
-  portable Agenda und die Arbeitswochen-Zeitachse sind als eigene, persistente
-  View-Modi ergänzt; die Zeitachse nutzt die konfigurierbare Arbeitszeit und
-  trennt Ganztages- von zeitgebundenen Terminen. Einfaches Drag-and-drop für
-  Einzeltermine und geladene Serien ist in Monats- und Arbeitswochenansicht
-  vorhanden; die portable UTC-/TZID-Umrechnung ist für Anzeige und
-  Tageszuordnung vorhanden, die Serien-DST-Umrechnung und Linux-Laufzeitprüfung
-  stehen noch aus.
+- [~] `GW-CAL-VIEWS-001` ist im exakten Scope `src/views/calendar_page.rs`
+  portabel geschlossen, getestet und reviewt: Day/Week/WorkWeek/Month42/
+  Agenda90 verwenden halb-offene zivile Bereiche; Navigation, immutable
+  Range-Index, Generation/Cancel/Stale sowie DST-/Recurrence-Regeln sind
+  belegt. Year/List, Selection und globale Aktionen bleiben offen. Native
+  EDS-Range-Abfragen, Monitor-/Provider-Refresh, reale Zeitzonen/DST und
+  visuelle Linux-Abnahme bleiben Linux-Rest.
 - [~] Lokale VEVENTs unterstützen Wiederholungen und mehrere Alarme; `RDATE`-
   Einzeltermine werden zusätzlich zu `RRULE` und `EXDATE` in den portablen
   Kalenderansichten und lokalen Erinnerungen ausgewertet. Termin-, VTODO- und

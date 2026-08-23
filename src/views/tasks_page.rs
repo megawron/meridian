@@ -10,7 +10,10 @@
 use chrono::{Duration, Local, NaiveDate, NaiveDateTime, Utc};
 use gtk::{gio, glib};
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::Arc;
 
 use crate::dialogs::event_dialog::AlarmEditor;
 use crate::models::task_item::TaskItemObject;
@@ -18,16 +21,17 @@ use crate::services::calendar_category_service::{
     CalendarCategory, CalendarCategoryStore, category_names_from_ical_component,
 };
 use crate::services::calendar_store_service::{
-    CalendarStoreService, TaskRecord, export_ical_component, replace_ical_attachments,
-    serialize_ical_attachment_value, update_ical_property,
+    CalendarStoreService, TaskRecord, export_ical_component, serialize_ical_attachment_value,
+    update_ical_property,
 };
 use crate::services::ecal_service::{
-    CalendarDataOrigin, ECalChangeKind, ECalComponentType, ECalRecord, ECalService, ECalSyncEvent,
-    load_snapshot_prefer_eds, parse_change_record,
+    CalendarDataOrigin, ECalChangeKind, ECalComponentType, ECalMutationError, ECalMutationResult,
+    ECalRecord, ECalService, ECalSyncEvent, load_snapshot_prefer_eds, parse_change_record,
 };
 use crate::services::eds_service;
 use crate::services::ical_time_service::{
-    property_local_date, property_local_dates, property_local_datetime, property_local_timestamp,
+    property_local_date, property_local_dates, property_local_datetime, property_local_display,
+    property_local_timestamp,
 };
 use crate::services::recurrence_service::{
     next_recurrence_date, parse_ical_date, parse_recurrence_rule,
@@ -588,6 +592,653 @@ struct TaskQuickEditValues {
     categories: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TaskDateValueKind {
+    DateOnly,
+    DateTime,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TaskAttachmentValueKind {
+    Uri,
+    Binary,
+    Other,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TaskAttachmentLine {
+    /// The unfolded logical line, including every parameter and the original
+    /// value.  Keeping this separate from the editor text prevents a no-op
+    /// edit from going through a URI-only serializer.
+    raw: String,
+    property: String,
+    value: String,
+    kind: TaskAttachmentValueKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TaskAttachmentDraft {
+    lines: Vec<TaskAttachmentLine>,
+    editor_text: String,
+    attachments_changed: bool,
+}
+
+impl TaskAttachmentDraft {
+    fn empty() -> Self {
+        Self {
+            lines: Vec::new(),
+            editor_text: String::new(),
+            attachments_changed: false,
+        }
+    }
+
+    fn from_component(component: &str) -> Self {
+        let lines = task_top_level_attachment_lines(component);
+        let editor_text = lines
+            .iter()
+            .map(|line| line.raw.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        Self {
+            lines,
+            editor_text,
+            attachments_changed: false,
+        }
+    }
+
+    fn with_editor_text(&self, editor_text: &str) -> Self {
+        let mut draft = self.clone();
+        draft.attachments_changed = editor_text != self.editor_text;
+        draft.editor_text = editor_text.to_string();
+        draft
+    }
+}
+
+/// The editor displays date-only input, but keeps the original logical
+/// property around so an imported date-time is not rewritten merely because
+/// the task was opened and saved.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TaskDateDraft {
+    input: String,
+    original_line: Option<String>,
+    original_date: Option<NaiveDate>,
+    original_kind: Option<TaskDateValueKind>,
+}
+
+impl TaskDateDraft {
+    fn empty() -> Self {
+        Self {
+            input: String::new(),
+            original_line: None,
+            original_date: None,
+            original_kind: None,
+        }
+    }
+
+    fn from_component(component: &str, property_name: &str) -> Self {
+        let Some((property, value)) = ical_property_with_parameters(component, property_name)
+        else {
+            return Self::empty();
+        };
+
+        let parsed = parse_task_date_property(&property, &value).ok();
+        let (input, original_kind, original_date) = match parsed {
+            Some((kind, date)) => {
+                let display_date = if kind == TaskDateValueKind::DateTime {
+                    property_local_date(component, property_name, false).unwrap_or(date)
+                } else {
+                    date
+                };
+                (display_date.format("%Y-%m-%d").to_string(), Some(kind), Some(display_date))
+            }
+            None => (value.clone(), None, None),
+        };
+
+        Self {
+            input,
+            original_line: Some(format!("{property}:{value}")),
+            original_date,
+            original_kind,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TaskDateMutation {
+    Preserve,
+    Remove,
+    Set(NaiveDate),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TaskLifecycleValues {
+    status: &'static str,
+    percent: u8,
+    completed: Option<NaiveDate>,
+    completion_present: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct TaskLifecycleEdits {
+    status: bool,
+    percent: bool,
+    completed: bool,
+}
+
+#[derive(Debug, Clone)]
+struct TaskEditorDraft {
+    uid: String,
+    summary: String,
+    dtstart: TaskDateDraft,
+    due: TaskDateDraft,
+    completed: TaskDateDraft,
+    recurrence: String,
+    rdates: String,
+    exdates: String,
+    priority: u8,
+    categories: String,
+    description: String,
+    attachments: String,
+    attachment_lines: Vec<TaskAttachmentLine>,
+    attachments_changed: bool,
+    status: &'static str,
+    status_raw: Option<String>,
+    unsupported_status: Option<String>,
+    percent: u8,
+    percent_raw: Option<String>,
+    unsupported_percent: Option<String>,
+}
+
+impl TaskEditorDraft {
+    fn default_for_new() -> Self {
+        Self {
+            uid: String::new(),
+            summary: String::new(),
+            dtstart: TaskDateDraft::empty(),
+            due: TaskDateDraft::empty(),
+            completed: TaskDateDraft::empty(),
+            recurrence: String::new(),
+            rdates: String::new(),
+            exdates: String::new(),
+            priority: 0,
+            categories: String::new(),
+            description: String::new(),
+            attachments: String::new(),
+            attachment_lines: Vec::new(),
+            attachments_changed: false,
+            status: "NEEDS-ACTION",
+            status_raw: None,
+            unsupported_status: None,
+            percent: 0,
+            percent_raw: None,
+            unsupported_percent: None,
+        }
+    }
+}
+
+fn task_editor_draft_from_component(component: &str) -> TaskEditorDraft {
+    let status_raw = ical_property(component, "STATUS");
+    let percent_raw = ical_property(component, "PERCENT-COMPLETE");
+    let attachment_draft = TaskAttachmentDraft::from_component(component);
+    TaskEditorDraft {
+        uid: ical_property(component, "UID").unwrap_or_default(),
+        summary: ical_property(component, "SUMMARY").unwrap_or_default(),
+        dtstart: TaskDateDraft::from_component(component, "DTSTART"),
+        due: TaskDateDraft::from_component(component, "DUE"),
+        completed: TaskDateDraft::from_component(component, "COMPLETED"),
+        recurrence: ical_property(component, "RRULE").unwrap_or_default(),
+        rdates: ical_properties(component, "RDATE").join(","),
+        exdates: ical_properties(component, "EXDATE").join(","),
+        priority: task_priority_value(&ical_property(component, "PRIORITY").unwrap_or_default()),
+        categories: ical_property(component, "CATEGORIES").unwrap_or_default(),
+        description: ical_property(component, "DESCRIPTION").unwrap_or_default(),
+        attachments: attachment_draft.editor_text,
+        attachment_lines: attachment_draft.lines,
+        attachments_changed: attachment_draft.attachments_changed,
+        status: task_status_value(component),
+        unsupported_status: status_raw
+            .as_deref()
+            .filter(|value| normalize_task_status(value).is_err())
+            .map(ToOwned::to_owned),
+        status_raw,
+        percent: parse_task_percent(component),
+        unsupported_percent: percent_raw
+            .as_deref()
+            .filter(|value| parse_task_percent_value(value).is_none())
+            .map(ToOwned::to_owned),
+        percent_raw,
+    }
+}
+
+fn task_lifecycle_edits_inferred(
+    draft: &TaskEditorDraft,
+    status: &str,
+    percent: u8,
+    completed: &str,
+) -> TaskLifecycleEdits {
+    TaskLifecycleEdits {
+        status: draft.unsupported_status.is_none()
+            && !draft.status.eq_ignore_ascii_case(status),
+        percent: draft.unsupported_percent.is_none()
+            && !draft
+                .percent_raw
+                .as_deref()
+                .and_then(parse_task_percent_value)
+                .is_some_and(|value| value == percent),
+        completed: completed.trim() != draft.completed.input.trim(),
+    }
+}
+
+fn parse_task_date_property(
+    property: &str,
+    value: &str,
+) -> Result<(TaskDateValueKind, NaiveDate), String> {
+    let value = value.trim();
+    let declared_type = property.split(';').skip(1).find_map(|parameter| {
+        let (name, value) = parameter.split_once('=')?;
+        name.trim()
+            .eq_ignore_ascii_case("VALUE")
+            .then(|| value.trim().trim_matches('"').to_ascii_uppercase())
+    });
+
+    match declared_type.as_deref() {
+        Some("DATE") => {
+            if value.len() != 8 || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+                return Err("Der iCalendar-Wert ist kein gültiges Datum".to_string());
+            }
+            NaiveDate::parse_from_str(value, "%Y%m%d")
+                .map(|date| (TaskDateValueKind::DateOnly, date))
+                .map_err(|_| "Der iCalendar-Wert ist kein gültiges Datum".to_string())
+        }
+        Some("DATE-TIME") => parse_task_datetime_date(value)
+            .map(|date| (TaskDateValueKind::DateTime, date))
+            .ok_or_else(|| "Der iCalendar-Wert ist kein gültiger Zeitstempel".to_string()),
+        Some(_) => Err("Der iCalendar-Wert hat einen nicht unterstützten Typ".to_string()),
+        None if value.len() == 8 && value.bytes().all(|byte| byte.is_ascii_digit()) => {
+            NaiveDate::parse_from_str(value, "%Y%m%d")
+                .map(|date| (TaskDateValueKind::DateOnly, date))
+                .map_err(|_| "Der iCalendar-Wert ist kein gültiges Datum".to_string())
+        }
+        None => parse_task_datetime_date(value)
+            .map(|date| (TaskDateValueKind::DateTime, date))
+            .ok_or_else(|| {
+                "Der iCalendar-Wert ist kein gültiges Datum oder Zeitstempel".to_string()
+            }),
+    }
+}
+
+fn parse_task_datetime_date(value: &str) -> Option<NaiveDate> {
+    let value = value.trim();
+    let value_without_utc = value.strip_suffix('Z').unwrap_or(value);
+    (value_without_utc.len() == 15 && value_without_utc.as_bytes().get(8) == Some(&b'T'))
+        .then_some(())?;
+    NaiveDateTime::parse_from_str(value_without_utc, "%Y%m%dT%H%M%S")
+        .ok()
+        .map(|datetime| datetime.date())
+}
+
+fn parse_task_date_only_input(value: &str, field: &str) -> Result<NaiveDate, String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err(format!("{field} darf nicht leer sein"));
+    }
+    if value.chars().any(|character| character.is_control()) {
+        return Err(format!("{field} enthält ungültige Steuerzeichen"));
+    }
+    if value.len() != 10
+        || value.as_bytes().get(4) != Some(&b'-')
+        || value.as_bytes().get(7) != Some(&b'-')
+    {
+        return Err(format!("{field} muss YYYY-MM-DD entsprechen"));
+    }
+    NaiveDate::parse_from_str(value, "%Y-%m-%d")
+        .map_err(|_| format!("{field} muss ein gültiges Datum enthalten"))
+}
+
+fn task_date_mutation(
+    draft: &TaskDateDraft,
+    input: &str,
+    field: &str,
+) -> Result<(TaskDateMutation, Option<NaiveDate>), String> {
+    let input = input.trim();
+    if input.is_empty() {
+        return Ok((TaskDateMutation::Remove, None));
+    }
+
+    if draft.original_line.is_some() && input == draft.input.trim() {
+        return Ok((TaskDateMutation::Preserve, draft.original_date));
+    }
+
+    let date = parse_task_date_only_input(input, field)?;
+    Ok((TaskDateMutation::Set(date), Some(date)))
+}
+
+fn task_lifecycle_for_date(
+    status: &str,
+    percent: u8,
+    completed: Option<NaiveDate>,
+    today: NaiveDate,
+) -> Result<TaskLifecycleValues, String> {
+    task_lifecycle_for_date_with_presence(status, percent, completed, completed.is_some(), today)
+}
+
+fn task_lifecycle_for_date_with_presence(
+    status: &str,
+    percent: u8,
+    completed: Option<NaiveDate>,
+    completion_present: bool,
+    today: NaiveDate,
+) -> Result<TaskLifecycleValues, String> {
+    let status = normalize_task_status(status)?;
+    if completed.is_some_and(|date| date > today) {
+        return Err("Das Abschlussdatum darf nicht in der Zukunft liegen".to_string());
+    }
+
+    match status {
+        "NEEDS-ACTION" => Ok(TaskLifecycleValues {
+            status,
+            percent: 0,
+            completed: None,
+            completion_present: false,
+        }),
+        "IN-PROCESS" => Ok(TaskLifecycleValues {
+            status,
+            percent: if (1..=99).contains(&percent) {
+                percent
+            } else {
+                50
+            },
+            completed: None,
+            completion_present: false,
+        }),
+        "COMPLETED" => Ok(TaskLifecycleValues {
+            status,
+            percent: 100,
+            completed: if completion_present {
+                completed
+            } else {
+                return Err("Erledigte Aufgaben benötigen ein Abschlussdatum".to_string());
+            },
+            completion_present: true,
+        }),
+        // CANCELLED is retained for imported tasks.  It is not one of the
+        // GTK3 lifecycle triplet, but a cancelled task must not retain a
+        // contradictory completion marker.
+        "CANCELLED" => Ok(TaskLifecycleValues {
+            status,
+            percent: 0,
+            completed: None,
+            completion_present: false,
+        }),
+        _ => unreachable!("normalize_task_status returned an unknown value"),
+    }
+}
+
+fn task_initial_editor_lifecycle(
+    draft: &TaskEditorDraft,
+    today: NaiveDate,
+) -> (u8, String) {
+    // Unsupported imported values are deliberately displayed as-is (with a
+    // warning in the dialog) until the user explicitly changes the field.
+    if draft.unsupported_status.is_some() || draft.unsupported_percent.is_some() {
+        return (draft.percent, draft.completed.input.clone());
+    }
+    match draft.status {
+        "NEEDS-ACTION" | "CANCELLED" => (0, String::new()),
+        "IN-PROCESS" => (
+            if (1..=99).contains(&draft.percent) {
+                draft.percent
+            } else {
+                50
+            },
+            String::new(),
+        ),
+        "COMPLETED" => (
+            100,
+            if draft.completed.input.trim().is_empty() {
+                today.format("%Y-%m-%d").to_string()
+            } else {
+                draft.completed.input.clone()
+            },
+        ),
+        _ => (draft.percent, draft.completed.input.clone()),
+    }
+}
+
+fn task_recurrence_is_unchanged(existing: &str, recurrence: &str) -> bool {
+    ical_property(existing, "RRULE").is_some_and(|value| value.trim() == recurrence.trim())
+}
+
+fn validate_task_recurrence(
+    existing: &str,
+    recurrence: &str,
+    has_start: bool,
+) -> Result<(), String> {
+    let recurrence = recurrence.trim();
+    if recurrence.is_empty() {
+        return Ok(());
+    }
+    if !has_start {
+        return Err("Wiederkehrende Aufgaben benötigen ein DTSTART".to_string());
+    }
+    if recurrence
+        .chars()
+        .any(|character| character == '\r' || character == '\n' || character.is_control())
+    {
+        return Err("Die Wiederholungsregel enthält ungültige Zeichen".to_string());
+    }
+    if task_recurrence_is_unchanged(existing, recurrence) {
+        return Ok(());
+    }
+
+    let mut frequency = None;
+    for part in recurrence.split(';') {
+        let Some((key, value)) = part.split_once('=') else {
+            return Err("Die Wiederholungsregel hat eine ungültige Syntax".to_string());
+        };
+        if key.trim().is_empty() || value.trim().is_empty() {
+            return Err("Die Wiederholungsregel hat eine ungültige Syntax".to_string());
+        }
+        if key.trim().eq_ignore_ascii_case("FREQ") {
+            frequency = Some(value.trim().to_ascii_uppercase());
+        }
+    }
+    let Some(frequency) = frequency else {
+        return Err("Die Wiederholungsregel benötigt FREQ".to_string());
+    };
+    if !matches!(
+        frequency.as_str(),
+        "DAILY" | "WEEKLY" | "MONTHLY" | "YEARLY"
+    ) || parse_recurrence_rule(recurrence).is_none()
+    {
+        return Err("Die Wiederholungsregel ist ungültig".to_string());
+    }
+    Ok(())
+}
+
+fn apply_task_date_mutation(
+    component: &str,
+    property_name: &str,
+    mutation: TaskDateMutation,
+) -> String {
+    match mutation {
+        TaskDateMutation::Preserve => component.to_string(),
+        TaskDateMutation::Remove => update_ical_property(component, property_name, None),
+        TaskDateMutation::Set(date) => {
+            let component = update_ical_property(component, property_name, None);
+            update_ical_property(
+                &component,
+                &format!("{property_name};VALUE=DATE"),
+                Some(&date.format("%Y%m%d").to_string()),
+            )
+        }
+    }
+}
+
+fn task_date_mutation_changed(mutation: TaskDateMutation) -> bool {
+    !matches!(mutation, TaskDateMutation::Preserve)
+}
+
+fn task_date_mutation_date(mutation: TaskDateMutation) -> Option<NaiveDate> {
+    match mutation {
+        TaskDateMutation::Set(date) => Some(date),
+        TaskDateMutation::Preserve | TaskDateMutation::Remove => None,
+    }
+}
+
+/// DTSTART and DUE follow Evolution's GTK3 policy: once both values exist,
+/// editing one establishes the value type for the other.  If a field is being
+/// added, its type is derived from the existing peer; editing both date-only
+/// fields keeps the portable editor's date-only representation.
+fn task_date_pair_kind(
+    dtstart: &TaskDateDraft,
+    due: &TaskDateDraft,
+    dtstart_mutation: TaskDateMutation,
+    due_mutation: TaskDateMutation,
+) -> Option<TaskDateValueKind> {
+    let dtstart_changed = task_date_mutation_changed(dtstart_mutation);
+    let due_changed = task_date_mutation_changed(due_mutation);
+    if !dtstart_changed && !due_changed {
+        return None;
+    }
+
+    if dtstart_changed && !due_changed {
+        return Some(
+            dtstart
+                .original_kind
+                .or(due.original_kind)
+                .unwrap_or(TaskDateValueKind::DateOnly),
+        );
+    }
+    if due_changed && !dtstart_changed {
+        return Some(
+            due.original_kind
+                .or(dtstart.original_kind)
+                .unwrap_or(TaskDateValueKind::DateOnly),
+        );
+    }
+
+    match (dtstart.original_kind, due.original_kind) {
+        (Some(left), Some(right)) if left == right => Some(left),
+        _ => Some(TaskDateValueKind::DateOnly),
+    }
+}
+
+fn task_date_property_prefix(
+    property_name: &str,
+    kind: TaskDateValueKind,
+    template: Option<&TaskDateDraft>,
+) -> String {
+    let Some(original_line) = template.and_then(|draft| draft.original_line.as_deref()) else {
+        return match kind {
+            TaskDateValueKind::DateOnly => format!("{property_name};VALUE=DATE"),
+            TaskDateValueKind::DateTime => property_name.to_string(),
+        };
+    };
+    let Some((property, _)) = original_line.split_once(':') else {
+        return property_name.to_string();
+    };
+    let mut parameters = property
+        .split(';')
+        .skip(1)
+        .filter(|parameter| {
+            let name = parameter.split_once('=').map_or(*parameter, |(name, _)| name);
+            !name.eq_ignore_ascii_case("VALUE")
+                && !(kind == TaskDateValueKind::DateOnly
+                    && name.eq_ignore_ascii_case("TZID"))
+        })
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    let value_parameter = match kind {
+        TaskDateValueKind::DateOnly => Some("VALUE=DATE".to_string()),
+        TaskDateValueKind::DateTime => None,
+    };
+    if let Some(value_parameter) = value_parameter {
+        parameters.insert(0, value_parameter);
+    }
+    if parameters.is_empty() {
+        property_name.to_string()
+    } else {
+        format!("{property_name};{}", parameters.join(";"))
+    }
+}
+
+fn task_date_datetime_value(date: NaiveDate, template: Option<&TaskDateDraft>) -> String {
+    let Some(original_line) = template.and_then(|draft| draft.original_line.as_deref()) else {
+        return format!("{}T000000", date.format("%Y%m%d"));
+    };
+    let Some((_, value)) = original_line.split_once(':') else {
+        return format!("{}T000000", date.format("%Y%m%d"));
+    };
+    let value = value.trim();
+    let suffix = if value.len() >= 15 && value.as_bytes().get(8) == Some(&b'T') {
+        &value[8..]
+    } else {
+        "T000000"
+    };
+    format!("{}{}", date.format("%Y%m%d"), suffix)
+}
+
+fn set_task_date_property(
+    component: &str,
+    property_name: &str,
+    date: NaiveDate,
+    kind: TaskDateValueKind,
+    template: Option<&TaskDateDraft>,
+) -> String {
+    let prefix = task_date_property_prefix(property_name, kind, template);
+    let value = match kind {
+        TaskDateValueKind::DateOnly => date.format("%Y%m%d").to_string(),
+        TaskDateValueKind::DateTime => task_date_datetime_value(date, template),
+    };
+    let component = update_ical_property(component, property_name, None);
+    update_ical_property(&component, &prefix, Some(&value))
+}
+
+fn apply_task_date_pair_mutations(
+    existing: &str,
+    dtstart: &TaskDateDraft,
+    due: &TaskDateDraft,
+    dtstart_mutation: TaskDateMutation,
+    due_mutation: TaskDateMutation,
+) -> String {
+    let Some(pair_kind) = task_date_pair_kind(dtstart, due, dtstart_mutation, due_mutation)
+    else {
+        return existing.to_string();
+    };
+
+    let dtstart_date = task_date_mutation_date(dtstart_mutation).or(dtstart.original_date);
+    let due_date = task_date_mutation_date(due_mutation).or(due.original_date);
+    let mut component = match dtstart_mutation {
+        TaskDateMutation::Remove => update_ical_property(existing, "DTSTART", None),
+        TaskDateMutation::Set(date) => {
+            set_task_date_property(existing, "DTSTART", date, pair_kind, Some(dtstart))
+        }
+        TaskDateMutation::Preserve if dtstart.original_kind == Some(pair_kind) => {
+            existing.to_string()
+        }
+        TaskDateMutation::Preserve => dtstart_date.map_or_else(
+            || existing.to_string(),
+            |date| set_task_date_property(existing, "DTSTART", date, pair_kind, Some(dtstart)),
+        ),
+    };
+    component = match due_mutation {
+        TaskDateMutation::Remove => update_ical_property(&component, "DUE", None),
+        TaskDateMutation::Set(date) => {
+            set_task_date_property(&component, "DUE", date, pair_kind, Some(due))
+        }
+        TaskDateMutation::Preserve if due.original_kind == Some(pair_kind) => component,
+        TaskDateMutation::Preserve => {
+            if let Some(date) = due_date {
+                set_task_date_property(&component, "DUE", date, pair_kind, Some(due))
+            } else {
+                component
+            }
+        }
+    };
+    component
+}
+
 fn task_priority_value(raw: &str) -> u8 {
     raw.trim().parse::<u8>().unwrap_or(0).min(9)
 }
@@ -598,8 +1249,9 @@ fn task_is_completed(task: &TaskItemObject) -> bool {
 
 fn task_quick_edit_values(task: &TaskItemObject) -> TaskQuickEditValues {
     let component = task.component();
+    let draft = task_editor_draft_from_component(&component);
     TaskQuickEditValues {
-        due: task.due_date(),
+        due: draft.due.input,
         priority: task_priority_value(&task.priority()),
         status: task_status_value(&component),
         percent: parse_task_percent(&component),
@@ -616,10 +1268,18 @@ fn update_task_quick_fields(
     percent: u8,
 ) -> Result<String, String> {
     let component = task.component();
-    update_task_component(
+    let draft = task_editor_draft_from_component(&component);
+    let completed = if status == "COMPLETED" && draft.completed.input.trim().is_empty() {
+        Local::now().date_naive().format("%Y-%m-%d").to_string()
+    } else {
+        draft.completed.input.clone()
+    };
+    update_task_component_with_dates(
         &component,
         &task.title(),
+        &draft.dtstart.input,
         due,
+        &completed,
         &ical_property(&component, "RRULE").unwrap_or_default(),
         &ical_properties(&component, "RDATE").join(","),
         &ical_properties(&component, "EXDATE").join(","),
@@ -627,7 +1287,7 @@ fn update_task_quick_fields(
         categories,
         &parse_alarms(&component),
         &ical_property(&component, "DESCRIPTION").unwrap_or_default(),
-        &ical_properties(&component, "ATTACH").join("\n"),
+        &draft.attachments,
         status,
         percent,
     )
@@ -728,9 +1388,9 @@ impl TasksPage {
             };
             if matches {
                 task_list.select_row(Some(&row));
-                if source_uid.is_empty() {
+                if !task_source_is_writable_now(&source_uid) {
                     self.show_toast(
-                        "Diese Aufgabe stammt aus einer schreibgeschützten importierten Quelle",
+                        "Diese Aufgabenliste ist nicht als schreibfähig bestätigt",
                     );
                     return true;
                 }
@@ -1076,9 +1736,9 @@ impl TasksPage {
             let Some(page) = page_weak_for_activation.upgrade() else {
                 return;
             };
-            if source_uid.is_empty() {
+            if !task_source_is_writable_now(&source_uid) {
                 page.show_toast(
-                    "Diese Aufgabe stammt aus einer schreibgeschützten importierten Quelle",
+                    "Diese Aufgabenliste ist nicht als schreibfähig bestätigt",
                 );
                 return;
             }
@@ -1673,7 +2333,22 @@ impl TasksPage {
         empty_tasks: gtk::Label,
         task_to_edit: Option<TaskItemObject>,
     ) {
-        let dialog_title = if task_to_edit.is_some() {
+        let editing = task_to_edit.is_some();
+        let initial_component = task_to_edit
+            .as_ref()
+            .map(TaskItemObject::component)
+            .unwrap_or_default();
+        let initial_draft = task_editor_draft_from_component(&initial_component);
+        let dirty = Rc::new(Cell::new(false));
+        let dialog_state = Rc::new(Cell::new(TaskEditorDialogState::Clean));
+        let save_control = TaskSaveControl::new();
+        let request_generation = Rc::new(Cell::new(0_u64));
+        let close_confirmed = Rc::new(Cell::new(false));
+        let close_prompt_open = Rc::new(Cell::new(false));
+        let source_capabilities =
+            Rc::new(RefCell::new(HashMap::<String, TaskSourceCapability>::new()));
+
+        let dialog_title = if editing {
             "Aufgabe bearbeiten"
         } else {
             "Neue Aufgabe"
@@ -1692,6 +2367,8 @@ impl TasksPage {
 
         let toolbar_view = adw::ToolbarView::new();
         let header_bar = adw::HeaderBar::new();
+        let cancel_button = gtk::Button::with_label("Abbrechen");
+        header_bar.pack_start(&cancel_button);
         let save_button = gtk::Button::builder()
             .label("Speichern")
             .css_classes(vec!["suggested-action"])
@@ -1714,13 +2391,12 @@ impl TasksPage {
             .title("Aufgabenliste")
             .model(&source_model)
             .build();
-        source_row.set_sensitive(task_to_edit.is_none());
+        source_row.set_sensitive(!editing);
         let settings_for_default_task = AppSettings::try_new();
         let source_uids_for_selection = Rc::clone(&source_uids);
+        let source_capabilities_for_selection = Rc::clone(&source_capabilities);
+        let save_button_for_selection = save_button.clone();
         source_row.connect_selected_notify(move |row| {
-            let Some(settings) = settings_for_default_task.as_ref() else {
-                return;
-            };
             let Some(source_uid) = source_uids_for_selection
                 .borrow()
                 .get(row.selected() as usize)
@@ -1728,17 +2404,45 @@ impl TasksPage {
             else {
                 return;
             };
-            settings.set_default_task_source_uid(&source_uid);
+            let writable = task_source_is_writable(
+                &source_uid,
+                &source_capabilities_for_selection,
+            );
+            if writable {
+                if let Some(settings) = settings_for_default_task.as_ref() {
+                    settings.set_default_task_source_uid(&source_uid);
+                }
+            }
+            if !editing {
+                save_button_for_selection.set_sensitive(writable);
+            }
         });
         let details = adw::PreferencesGroup::builder().title("Details").build();
         details.add(&source_row);
 
         let title_entry = adw::EntryRow::builder().title("Titel").build();
         details.add(&title_entry);
+        let dtstart_entry = adw::EntryRow::builder()
+            .title("Beginn (YYYY-MM-DD, optional)")
+            .build();
+        dtstart_entry.set_tooltip_text(Some(
+            "Neue Werte sind date-only. Importierte date-time-Werte bleiben unverändert, solange sie nicht bearbeitet werden.",
+        ));
+        details.add(&dtstart_entry);
         let due_entry = adw::EntryRow::builder()
             .title("Fällig am (YYYY-MM-DD, optional)")
             .build();
+        due_entry.set_tooltip_text(Some(
+            "Neue Werte sind date-only. Importierte date-time-Werte bleiben unverändert, solange sie nicht bearbeitet werden.",
+        ));
         details.add(&due_entry);
+        let completed_entry = adw::EntryRow::builder()
+            .title("Abgeschlossen am (YYYY-MM-DD, optional)")
+            .build();
+        completed_entry.set_tooltip_text(Some(
+            "Ein Abschlussdatum ist nur für den Status Erledigt zulässig und darf nicht in der Zukunft liegen.",
+        ));
+        details.add(&completed_entry);
         let recurrence_entry = adw::EntryRow::builder()
             .title("Wiederholung (RRULE, optional)")
             .build();
@@ -1774,7 +2478,7 @@ impl TasksPage {
             ]))
             .build();
         details.add(&status_row);
-        let percent_row = adw::SpinRow::with_range(0.0, 100.0, 5.0);
+        let percent_row = adw::SpinRow::with_range(0.0, 100.0, 1.0);
         percent_row.set_title("Fortschritt (Prozent)");
         percent_row.set_digits(0);
         percent_row.set_snap_to_ticks(true);
@@ -1815,7 +2519,7 @@ impl TasksPage {
             .margin_top(6)
             .build();
         let attachment_title = gtk::Label::builder()
-            .label("Anhänge (eine URI oder Datei pro Zeile)")
+            .label("Anhänge (URI- oder vollständige ATTACH-Zeile pro Zeile)")
             .halign(gtk::Align::Start)
             .hexpand(true)
             .build();
@@ -1827,8 +2531,18 @@ impl TasksPage {
         attachment_box.append(&attachment_header);
         attachment_box.append(&attachment_scroll);
         details.add(&attachment_box);
-        let alarm_component = task_to_edit.as_ref().map(|task| task.component());
-        let alarm_editor = AlarmEditor::new(alarm_component.as_deref(), &title_entry.text());
+        let alarm_editor = AlarmEditor::new(
+            (!initial_component.trim().is_empty()).then_some(initial_component.as_str()),
+            &initial_draft.summary,
+        );
+        let alarm_dirty_gesture = gtk::GestureClick::new();
+        let dirty_for_alarm = Rc::clone(&dirty);
+        let dialog_state_for_alarm = Rc::clone(&dialog_state);
+        alarm_dirty_gesture.connect_pressed(move |_, _, _, _| {
+            dirty_for_alarm.set(true);
+            dialog_state_for_alarm.set(TaskEditorDialogState::Dirty);
+        });
+        alarm_editor.widget().add_controller(alarm_dirty_gesture);
         details.add(alarm_editor.widget());
         content_box.append(&details);
 
@@ -1894,26 +2608,188 @@ impl TasksPage {
 
         let edit_source_uid = task_to_edit
             .as_ref()
-            .map(|task| task.source_uid())
+            .map(TaskItemObject::source_uid)
             .filter(|uid| !uid.is_empty());
-        if let Some(task) = task_to_edit.as_ref() {
-            title_entry.set_text(&task.title());
-            due_entry.set_text(&task.due_date());
-            recurrence_entry
-                .set_text(&ical_property(&task.component(), "RRULE").unwrap_or_default());
-            rdate_entry.set_text(&ical_properties(&task.component(), "RDATE").join(","));
-            exdate_entry.set_text(&ical_properties(&task.component(), "EXDATE").join(","));
-            let priority = task.priority().parse::<f64>().unwrap_or(0.0);
-            priority_spin.set_value(priority);
-            status_row.set_selected(task_status_index(&task.component()));
-            percent_row.set_value(parse_task_percent(&task.component()) as f64);
-            categories_entry
-                .set_text(&ical_property(&task.component(), "CATEGORIES").unwrap_or_default());
-            attachment_buffer.set_text(&ical_properties(&task.component(), "ATTACH").join("\n"));
-            description_view
-                .buffer()
-                .set_text(&ical_property(&task.component(), "DESCRIPTION").unwrap_or_default());
+        let title = task_to_edit
+            .as_ref()
+            .map(TaskItemObject::title)
+            .filter(|title| !title.is_empty())
+            .unwrap_or_else(|| initial_draft.summary.clone());
+        let (initial_percent, initial_completed) =
+            task_initial_editor_lifecycle(&initial_draft, Local::now().date_naive());
+        title_entry.set_text(&title);
+        dtstart_entry.set_text(&initial_draft.dtstart.input);
+        due_entry.set_text(&initial_draft.due.input);
+        completed_entry.set_text(&initial_completed);
+        recurrence_entry.set_text(&initial_draft.recurrence);
+        rdate_entry.set_text(&initial_draft.rdates);
+        exdate_entry.set_text(&initial_draft.exdates);
+        priority_spin.set_value(initial_draft.priority as f64);
+        status_row.set_selected(task_status_index(&initial_component));
+        percent_row.set_value(initial_percent as f64);
+        categories_entry.set_text(&initial_draft.categories);
+        attachment_buffer.set_text(&initial_draft.attachments);
+        description_view
+            .buffer()
+            .set_text(&initial_draft.description);
+        if initial_draft.unsupported_status.is_some() || initial_draft.unsupported_percent.is_some() {
+            let mut imported = Vec::new();
+            if let Some(status) = initial_draft.unsupported_status.as_deref() {
+                imported.push(format!("STATUS={status}"));
+            }
+            if let Some(percent) = initial_draft.unsupported_percent.as_deref() {
+                imported.push(format!("PERCENT-COMPLETE={percent}"));
+            }
+            let imported_label = gtk::Label::builder()
+                .label(format!(
+                    "Importierte Werte werden unverändert bewahrt, bis sie bearbeitet werden: {}",
+                    imported.join(", ")
+                ))
+                .wrap(true)
+                .halign(gtk::Align::Start)
+                .css_classes(vec!["warning", "dim-label"])
+                .build();
+            details.add(&imported_label);
+            status_row.set_tooltip_text(Some("Importierter, nicht unterstützter STATUS-Wert; unverändert bewahrt"));
+            percent_row.set_tooltip_text(Some("Importierter, nicht unterstützter PERCENT-COMPLETE-Wert; unverändert bewahrt"));
         }
+        let percent_adjustment = percent_row.adjustment();
+
+        for entry in [
+            title_entry.clone(),
+            dtstart_entry.clone(),
+            due_entry.clone(),
+            completed_entry.clone(),
+            recurrence_entry.clone(),
+            rdate_entry.clone(),
+            exdate_entry.clone(),
+            categories_entry.clone(),
+        ] {
+            let dirty_for_entry = Rc::clone(&dirty);
+            let dialog_state_for_entry = Rc::clone(&dialog_state);
+            entry.connect_changed(move |_| {
+                dirty_for_entry.set(true);
+                dialog_state_for_entry.set(TaskEditorDialogState::Dirty);
+            });
+        }
+        let dirty_for_priority = Rc::clone(&dirty);
+        let dialog_state_for_priority = Rc::clone(&dialog_state);
+        priority_spin.connect_value_changed(move |_| {
+            dirty_for_priority.set(true);
+            dialog_state_for_priority.set(TaskEditorDialogState::Dirty);
+        });
+        let dirty_for_status = Rc::clone(&dirty);
+        let dialog_state_for_status = Rc::clone(&dialog_state);
+        status_row.connect_selected_notify(move |_| {
+            dirty_for_status.set(true);
+            dialog_state_for_status.set(TaskEditorDialogState::Dirty);
+        });
+        let dirty_for_percent = Rc::clone(&dirty);
+        let dialog_state_for_percent = Rc::clone(&dialog_state);
+        percent_adjustment.connect_value_changed(move |_| {
+            dirty_for_percent.set(true);
+            dialog_state_for_percent.set(TaskEditorDialogState::Dirty);
+        });
+        let dirty_for_description = Rc::clone(&dirty);
+        let dialog_state_for_description = Rc::clone(&dialog_state);
+        description_view
+            .buffer()
+            .connect_changed(move |_| {
+                dirty_for_description.set(true);
+                dialog_state_for_description.set(TaskEditorDialogState::Dirty);
+            });
+        let dirty_for_attachments = Rc::clone(&dirty);
+        let dialog_state_for_attachments = Rc::clone(&dialog_state);
+        attachment_buffer.connect_changed(move |_| {
+            dirty_for_attachments.set(true);
+            dialog_state_for_attachments.set(TaskEditorDialogState::Dirty);
+        });
+
+        // Keep the GTK3 lifecycle invariants synchronized while the user is
+        // editing. The save validator repeats these checks as a final gate.
+        let lifecycle_syncing = Rc::new(Cell::new(false));
+        let syncing_for_status = Rc::clone(&lifecycle_syncing);
+        let status_for_status = status_row.clone();
+        let percent_for_status = percent_row.clone();
+        let completed_for_status = completed_entry.clone();
+        status_row.connect_selected_notify(move |_| {
+            if syncing_for_status.get() {
+                return;
+            }
+            syncing_for_status.set(true);
+            match task_status_from_index(status_for_status.selected()) {
+                "NEEDS-ACTION" => {
+                    percent_for_status.set_value(0.0);
+                    completed_for_status.set_text("");
+                }
+                "IN-PROCESS" => {
+                    let percent = percent_for_status.value().round() as u8;
+                    if !(1..=99).contains(&percent) {
+                        percent_for_status.set_value(50.0);
+                    }
+                    completed_for_status.set_text("");
+                }
+                "COMPLETED" => {
+                    percent_for_status.set_value(100.0);
+                    if completed_for_status.text().trim().is_empty() {
+                        completed_for_status
+                            .set_text(&Local::now().date_naive().format("%Y-%m-%d").to_string());
+                    }
+                }
+                "CANCELLED" => {
+                    percent_for_status.set_value(0.0);
+                    completed_for_status.set_text("");
+                }
+                _ => {}
+            }
+            syncing_for_status.set(false);
+        });
+
+        let syncing_for_percent = Rc::clone(&lifecycle_syncing);
+        let status_for_percent = status_row.clone();
+        let completed_for_percent = completed_entry.clone();
+        let percent_adjustment_for_sync = percent_adjustment.clone();
+        percent_adjustment_for_sync.connect_value_changed(move |adjustment| {
+            if syncing_for_percent.get() {
+                return;
+            }
+            syncing_for_percent.set(true);
+            let percent = adjustment.value().round().clamp(0.0, 100.0) as u8;
+            if percent == 0 {
+                status_for_percent.set_selected(0);
+                completed_for_percent.set_text("");
+            } else if percent == 100 {
+                status_for_percent.set_selected(2);
+                if completed_for_percent.text().trim().is_empty() {
+                    completed_for_percent
+                        .set_text(&Local::now().date_naive().format("%Y-%m-%d").to_string());
+                }
+            } else {
+                status_for_percent.set_selected(1);
+                completed_for_percent.set_text("");
+            }
+            syncing_for_percent.set(false);
+        });
+
+        let syncing_for_completed = Rc::clone(&lifecycle_syncing);
+        let status_for_completed = status_row.clone();
+        let percent_for_completed = percent_row.clone();
+        completed_entry.connect_changed(move |entry| {
+            if syncing_for_completed.get() {
+                return;
+            }
+            syncing_for_completed.set(true);
+            if entry.text().trim().is_empty() {
+                if status_for_completed.selected() == 2 {
+                    status_for_completed.set_selected(0);
+                    percent_for_completed.set_value(0.0);
+                }
+            } else {
+                status_for_completed.set_selected(2);
+                percent_for_completed.set_value(100.0);
+            }
+            syncing_for_completed.set(false);
+        });
 
         let source_model_for_load = source_model.clone();
         let source_uids_for_load = Rc::clone(&source_uids);
@@ -1923,9 +2799,25 @@ impl TasksPage {
         let preferred_source_uid = AppSettings::try_new()
             .map(|settings| settings.default_task_source_uid())
             .filter(|uid| !uid.trim().is_empty());
+        let source_capabilities_for_load = Rc::clone(&source_capabilities);
+        let save_button_for_load = save_button.clone();
+        let dialog_weak_for_load = dialog.downgrade();
+        let request_generation_for_load = Rc::clone(&request_generation);
+        let source_load_generation = request_generation.get();
+        save_button.set_sensitive(false);
         glib::spawn_future_local(async move {
             let discovery =
                 eds_service::discover_sources(eds_service::EdsSourceKind::Calendar).await;
+            let Some(dialog) = dialog_weak_for_load.upgrade() else {
+                return;
+            };
+            if !task_editor_result_is_current(
+                request_generation_for_load.get(),
+                source_load_generation,
+                dialog.is_visible(),
+            ) {
+                return;
+            }
             if let Some(error) = discovery.error.as_deref() {
                 tracing::warn!(%error, "Could not reach EDS task lists for task dialog");
             }
@@ -1934,26 +2826,58 @@ impl TasksPage {
                 .into_iter()
                 .filter(|source| source.enabled)
                 .collect();
-            let mut names: Vec<String> = active_sources
-                .iter()
-                .map(|source| source.display_name.clone())
-                .collect();
+            let source_capability = if matches!(
+                discovery.origin,
+                eds_service::EdsSourceOrigin::Live
+            ) {
+                // EdsSource currently carries no can-write capability.  A
+                // live registry entry is therefore known to exist, but its
+                // mutation capability is unknown and must fail closed.
+                TaskSourceCapability::Unknown
+            } else {
+                TaskSourceCapability::Unavailable
+            };
+            let mut names = Vec::new();
+            let mut capabilities = HashMap::new();
             let mut uids = source_uids_for_load.borrow_mut();
             uids.clear();
-            uids.extend(active_sources.into_iter().map(|source| source.uid));
-            let preserved_source_uid = edit_source_uid_for_load
-                .as_deref()
-                .or(preferred_source_uid.as_deref())
-                .filter(|uid| {
-                    *uid != "local-calendar" && !uids.iter().any(|candidate| candidate == uid)
-                });
+            for source in active_sources {
+                let uid = source.uid;
+                let name = match source_capability {
+                    TaskSourceCapability::Unknown => {
+                        format!("{} (Schreibfähigkeit unbekannt)", source.display_name)
+                    }
+                    TaskSourceCapability::ReadOnly => {
+                        format!("{} (schreibgeschützt)", source.display_name)
+                    }
+                    TaskSourceCapability::Unavailable => {
+                        format!("{} (nicht verfügbar)", source.display_name)
+                    }
+                    TaskSourceCapability::Writable => source.display_name,
+                };
+                names.push(name);
+                capabilities.insert(uid.clone(), source_capability);
+                uids.push(uid);
+            }
+            let preserved_source_uid = edit_source_uid_for_load.as_deref().filter(|uid| {
+                *uid != "local-calendar" && !uids.iter().any(|candidate| candidate == uid)
+            });
             if let Some(uid) = preserved_source_uid {
                 names.push(format!("Nicht verfügbare Quelle · {uid}"));
                 uids.push(uid.to_string());
+                capabilities.insert(uid.to_string(), TaskSourceCapability::Unavailable);
             }
             if local_calendar_available {
                 names.push("Lokale Aufgabenliste".to_string());
                 uids.push("local-calendar".to_string());
+                capabilities.insert("local-calendar".to_string(), TaskSourceCapability::Writable);
+            } else if edit_source_uid_for_load.as_deref() == Some("local-calendar") {
+                names.push("Nicht verfügbare Quelle · local-calendar".to_string());
+                uids.push("local-calendar".to_string());
+                capabilities.insert(
+                    "local-calendar".to_string(),
+                    TaskSourceCapability::Unavailable,
+                );
             }
             if names.is_empty() {
                 names.push(if discovery.error.is_some() {
@@ -1964,26 +2888,45 @@ impl TasksPage {
             }
             let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
             source_model_for_load.splice(0, source_model_for_load.n_items(), &name_refs);
-            let selected_index = edit_source_uid_for_load
-                .as_deref()
-                .or(preferred_source_uid.as_deref())
-                .and_then(|uid| uids.iter().position(|candidate| candidate == uid));
+            let selected_index = task_default_source_index(
+                &uids,
+                preferred_source_uid.as_deref(),
+                edit_source_uid_for_load.as_deref(),
+                &capabilities,
+                local_calendar_available,
+            );
+            let selected_uid = selected_index.and_then(|index| uids.get(index).cloned());
             drop(uids);
+            source_capabilities_for_load.replace(capabilities);
             if let Some(index) = selected_index {
                 source_row_for_load.set_selected(index as u32);
             }
+            let writable = selected_uid.as_deref().is_some_and(|uid| {
+                task_source_is_writable(uid, &source_capabilities_for_load)
+            });
+            save_button_for_load.set_sensitive(writable);
         });
 
         let dialog_weak = dialog.downgrade();
         let page_weak = self.downgrade();
         let source_uids_for_save = Rc::clone(&source_uids);
         let task_to_edit_for_save = task_to_edit.clone();
+        let source_capabilities_for_save = Rc::clone(&source_capabilities);
+        let save_control_for_save = Arc::clone(&save_control);
+        let request_generation_for_save = Rc::clone(&request_generation);
+        let dirty_for_save = Rc::clone(&dirty);
+        let dialog_state_for_save = Rc::clone(&dialog_state);
+        let close_confirmed_for_save = Rc::clone(&close_confirmed);
         let save_button_for_signal = save_button.clone();
         let save_button_for_closure = save_button.clone();
+        let cancel_button_for_save = cancel_button.clone();
         save_button_for_signal.connect_clicked(move |_| {
             let Some(dialog) = dialog_weak.upgrade() else {
                 return;
             };
+            if save_control_for_save.phase() != TaskSavePhase::Editing {
+                return;
+            }
             let source_uid = if let Some(task) = task_to_edit_for_save.as_ref() {
                 task.source_uid()
             } else {
@@ -1994,13 +2937,16 @@ impl TasksPage {
                 };
                 source_uid
             };
-            if source_uid.is_empty() {
+            if !task_source_is_writable(&source_uid, &source_capabilities_for_save) {
                 show_toast_for_widget(
                     &dialog,
-                    "Lokale Aufgaben können ohne aktive Aufgabenliste nicht geändert werden",
+                    "Die ausgewählte Aufgabenliste ist nicht schreibfähig oder nicht verfügbar",
                 );
                 return;
             };
+            // A save attempt is a dirty transaction until the backend has
+            // confirmed it. This also keeps a failed no-op save reopenable.
+            dirty_for_save.set(true);
             let description = description_view.buffer().text(
                 &description_view.buffer().start_iter(),
                 &description_view.buffer().end_iter(),
@@ -2019,16 +2965,14 @@ impl TasksPage {
             alarm_editor.set_summary(&title_entry.text());
             let alarms = alarm_editor.alarms();
             let status = task_status_from_index(status_row.selected());
-            let percent = match status {
-                "COMPLETED" => 100,
-                "NEEDS-ACTION" => 0,
-                _ => percent_row.value().round().clamp(0.0, 100.0) as u8,
-            };
+            let percent = percent_row.value().round().clamp(0.0, 100.0) as u8;
             let component_result = match task_to_edit_for_save.as_ref() {
-                Some(task) => update_task_component(
+                Some(task) => update_task_component_with_dates(
                     &task.component(),
                     &title_entry.text(),
+                    &dtstart_entry.text(),
                     &due_entry.text(),
+                    &completed_entry.text(),
                     &recurrence,
                     &rdates,
                     &exdates,
@@ -2040,9 +2984,11 @@ impl TasksPage {
                     status,
                     percent,
                 ),
-                None => build_task_component(
+                None => build_task_component_with_dates(
                     &title_entry.text(),
+                    &dtstart_entry.text(),
                     &due_entry.text(),
+                    &completed_entry.text(),
                     &recurrence,
                     &rdates,
                     &exdates,
@@ -2062,21 +3008,59 @@ impl TasksPage {
                     return;
                 }
             };
-            let component_for_model = component.clone();
-            let title_for_model = title_entry.text().trim().to_string();
-            let due_for_model = due_entry.text().trim().to_string();
-            let priority_for_model = if priority == 0 {
-                "normal".to_string()
-            } else {
-                priority.to_string()
-            };
-            let completed = status == "COMPLETED";
+            // Discovery can become stale while the user edits.  This is the
+            // final capability gate immediately before arming the save.
+            if !task_source_is_writable(&source_uid, &source_capabilities_for_save) {
+                show_toast_for_widget(
+                    &dialog,
+                    "Die Aufgabenliste ist nicht mehr schreibfähig oder nicht verfügbar",
+                );
+                return;
+            }
             let source_uid_for_model = source_uid.clone();
             let operation_uid = task_to_edit_for_save.as_ref().map(TaskItemObject::id);
+            let expected_uid = operation_uid.clone();
             let task_to_edit_for_result = task_to_edit_for_save.clone();
-            let (sender, receiver) = async_channel::bounded(1);
+            let generation = request_generation_for_save.get().wrapping_add(1);
+            request_generation_for_save.set(generation);
+            if !save_control_for_save.arm() {
+                return;
+            }
+            dialog_state_for_save.set(TaskEditorDialogState::SavePending);
+            let (sender, receiver) = async_channel::bounded(3);
             save_button_for_closure.set_sensitive(false);
+            cancel_button_for_save.set_sensitive(true);
+            let source_capabilities_for_worker = source_capabilities_for_save.borrow().clone();
+            let save_control_for_worker = Arc::clone(&save_control_for_save);
             std::thread::spawn(move || {
+                let local_writable = CalendarStoreService::new().is_writable();
+                if task_source_capability(
+                    &source_uid,
+                    &source_capabilities_for_worker,
+                    local_writable,
+                ) != TaskSourceCapability::Writable
+                {
+                    if let Err(error) = sender.send_blocking(TaskSaveWorkerMessage::Finished(Err(
+                        crate::services::ecal_service::ECalMutationError::Backend(
+                            "Die Aufgabenliste ist unmittelbar vor dem Speichern nicht mehr schreibfähig".to_string(),
+                        ),
+                    ))) {
+                        tracing::debug!(%error, "Capability failure result was dropped");
+                    }
+                    return;
+                }
+                if !save_control_for_worker.begin_dispatch() {
+                    if let Err(error) = sender.send_blocking(
+                        TaskSaveWorkerMessage::CancelledBeforeDispatch,
+                    ) {
+                        tracing::debug!(%error, "Cancelled task mutation result was dropped");
+                    }
+                    return;
+                }
+                if let Err(error) = sender.send_blocking(TaskSaveWorkerMessage::Committing) {
+                    tracing::debug!(%error, "Task commit state was dropped");
+                    return;
+                }
                 let service = ECalService::new();
                 let result = match operation_uid.as_deref() {
                     Some(uid) => service.modify_component(
@@ -2089,7 +3073,32 @@ impl TasksPage {
                         service.create_component(&source_uid, ECalComponentType::Task, &component)
                     }
                 };
-                if let Err(error) = sender.send_blocking(result) {
+                let result = result.and_then(|mut result| {
+                    if result
+                        .component
+                        .as_deref()
+                        .is_some_and(|component| !component.trim().is_empty())
+                    {
+                        return Ok(result);
+                    }
+                    let uid = result.uid.clone();
+                    let authoritative = load_snapshot_prefer_eds()
+                        .snapshot
+                        .tasks
+                        .into_iter()
+                        .find(|task| task.source_uid == source_uid && task.uid == uid)
+                        .map(|task| task.component);
+                    if let Some(component) = authoritative {
+                        result.component = Some(component);
+                        Ok(result)
+                    } else {
+                        Err(crate::services::ecal_service::ECalMutationError::Backend(
+                            "Backend bestätigte keine autoritative VTODO-Komponente; bitte neu laden"
+                                .to_string(),
+                        ))
+                    }
+                });
+                if let Err(error) = sender.send_blocking(TaskSaveWorkerMessage::Finished(result)) {
                     tracing::debug!(%error, "Task mutation result was dropped");
                 }
             });
@@ -2100,79 +3109,305 @@ impl TasksPage {
             let task_list_for_result = task_list.clone();
             let empty_tasks_for_result = empty_tasks.clone();
             let save_button_for_result = save_button_for_closure.clone();
+            let cancel_button_for_result = cancel_button_for_save.clone();
+            let save_control_for_result = Arc::clone(&save_control_for_save);
+            let dialog_state_for_result = Rc::clone(&dialog_state_for_save);
+            let request_generation_for_result = Rc::clone(&request_generation_for_save);
+            let dirty_for_result = Rc::clone(&dirty_for_save);
+            let close_confirmed_for_result = Rc::clone(&close_confirmed_for_save);
             glib::spawn_future_local(async move {
-                let Ok(result) = receiver.recv().await else {
-                    save_button_for_result.set_sensitive(true);
-                    return;
+                let result = loop {
+                    match receiver.recv().await {
+                        Ok(TaskSaveWorkerMessage::Committing) => {
+                            dialog_state_for_result.set(TaskEditorDialogState::Committing);
+                            cancel_button_for_result.set_sensitive(false);
+                        }
+                        Ok(TaskSaveWorkerMessage::CancelledBeforeDispatch) => break None,
+                        Ok(TaskSaveWorkerMessage::Finished(result)) => break Some(result),
+                        Err(error) => {
+                            tracing::debug!(%error, "Task mutation channel closed");
+                            break None;
+                        }
+                    }
                 };
                 let Some(dialog) = dialog_weak_for_result.upgrade() else {
-                    save_button_for_result.set_sensitive(true);
                     return;
                 };
-                match result {
-                    Ok(result) => {
-                        let uid = result.uid;
-                        let component = result.component.unwrap_or(component_for_model.clone());
-                        if let Some(existing) = task_to_edit_for_result.as_ref() {
-                            let mut store_index = None;
-                            for index in 0..task_store_for_result.n_items() {
-                                if task_store_for_result
-                                    .item(index)
-                                    .and_downcast::<TaskItemObject>()
-                                    .is_some_and(|task| {
-                                        task.id() == existing.id()
-                                            && task.source_uid() == existing.source_uid()
-                                    })
-                                {
-                                    store_index = Some(index);
-                                    break;
-                                }
-                            }
-                            if let Some(index) = store_index {
-                                task_store_for_result.remove(index);
-                            }
-                            remove_task_row(
-                                &task_list_for_result,
-                                &existing.source_uid(),
-                                &existing.id(),
-                            );
-                        }
-                        let task = TaskItemObject::new(
-                            &source_uid_for_model,
-                            &uid,
-                            &title_for_model,
-                            &due_for_model,
-                            &priority_for_model,
-                            completed,
-                            &component,
-                        );
-                        task_store_for_result.append(&task);
-                        if let Some(page) = page_weak_for_result.upgrade() {
-                            render_task_rows(
-                                &page,
-                                &task_list_for_result,
-                                &task_store_for_result,
-                                &empty_tasks_for_result,
-                            );
-                            let message = if task_to_edit_for_result.is_some() {
-                                format!("Aufgabe aktualisiert ({uid})")
-                            } else {
-                                format!("Aufgabe gespeichert ({uid})")
-                            };
-                            page.show_toast(&message);
-                        }
-                        dialog.close();
-                    }
-                    Err(error) => {
+                let Some(result) = result else {
+                    if task_editor_result_is_current(
+                        request_generation_for_result.get(),
+                        generation,
+                        dialog.is_visible(),
+                    ) {
+                        save_control_for_result.reset_after_failure();
+                        dialog_state_for_result.set(TaskEditorDialogState::Dirty);
                         save_button_for_result.set_sensitive(true);
-                        show_toast_for_widget(
+                        cancel_button_for_result.set_sensitive(true);
+                    }
+                    return;
+                };
+                let result_is_current = task_editor_result_is_current(
+                    request_generation_for_result.get(),
+                    generation,
+                    dialog.is_visible(),
+                );
+                if !result_is_current {
+                    return;
+                }
+                let backend_succeeded = result.is_ok();
+                save_control_for_result.finish(backend_succeeded);
+                let result_state = task_editor_result_state(
+                    result_is_current,
+                    backend_succeeded,
+                    dirty_for_result.get(),
+                );
+                if !result_state.apply_row {
+                    save_control_for_result.reset_after_failure();
+                    dialog_state_for_result.set(TaskEditorDialogState::Dirty);
+                    save_button_for_result.set_sensitive(true);
+                    cancel_button_for_result.set_sensitive(true);
+                    dirty_for_result.set(result_state.dirty);
+                    match result {
+                        Err(error) => show_toast_for_widget(
                             &dialog,
                             &format!("Aufgabe konnte nicht gespeichert werden: {error}"),
+                        ),
+                        Ok(_) => unreachable!("successful results must update the row"),
+                    }
+                    return;
+                }
+                let Ok(result) = result else {
+                    unreachable!("successful result state must contain a backend result");
+                };
+                if expected_uid
+                    .as_deref()
+                    .is_some_and(|expected| expected != result.uid)
+                {
+                    save_control_for_result.reset_after_failure();
+                    dialog_state_for_result.set(TaskEditorDialogState::Dirty);
+                    save_button_for_result.set_sensitive(true);
+                    cancel_button_for_result.set_sensitive(true);
+                    show_toast_for_widget(
+                        &dialog,
+                        "Das bestätigte Aufgaben-Ergebnis gehört zu einer anderen UID",
+                    );
+                    return;
+                }
+                let uid = if result.uid.trim().is_empty() {
+                    expected_uid.clone().unwrap_or_default()
+                } else {
+                    result.uid
+                };
+                if uid.trim().is_empty() {
+                    save_control_for_result.reset_after_failure();
+                    dialog_state_for_result.set(TaskEditorDialogState::Dirty);
+                    save_button_for_result.set_sensitive(true);
+                    cancel_button_for_result.set_sensitive(true);
+                    show_toast_for_widget(&dialog, "ECal lieferte keine gültige Aufgaben-UID");
+                    return;
+                }
+                let Some(component) = result
+                    .component
+                    .filter(|component| !component.trim().is_empty())
+                else {
+                    save_control_for_result.reset_after_failure();
+                    dialog_state_for_result.set(TaskEditorDialogState::Dirty);
+                    save_button_for_result.set_sensitive(true);
+                    cancel_button_for_result.set_sensitive(true);
+                    show_toast_for_widget(
+                        &dialog,
+                        "Backend bestätigte keine autoritative Aufgabe; bitte neu laden",
+                    );
+                    return;
+                };
+                let task = match task_item_from_confirmed_component(
+                    &source_uid_for_model,
+                    &uid,
+                    &component,
+                ) {
+                    Ok(task) => task,
+                    Err(error) => {
+                        save_control_for_result.reset_after_failure();
+                        dialog_state_for_result.set(TaskEditorDialogState::Dirty);
+                        save_button_for_result.set_sensitive(true);
+                        cancel_button_for_result.set_sensitive(true);
+                        show_toast_for_widget(
+                            &dialog,
+                            &format!("Bestätigte Aufgabe ist ungültig: {error}"),
+                        );
+                        return;
+                    }
+                };
+                if let Some(existing) = task_to_edit_for_result.as_ref() {
+                    let mut store_index = None;
+                    for index in 0..task_store_for_result.n_items() {
+                        if task_store_for_result
+                            .item(index)
+                            .and_downcast::<TaskItemObject>()
+                            .is_some_and(|task| {
+                                task.id() == existing.id()
+                                    && task.source_uid() == existing.source_uid()
+                            })
+                        {
+                            store_index = Some(index);
+                            break;
+                        }
+                    }
+                    if let Some(index) = store_index {
+                        task_store_for_result.remove(index);
+                    }
+                    remove_task_row(
+                        &task_list_for_result,
+                        &existing.source_uid(),
+                        &existing.id(),
+                    );
+                }
+                task_store_for_result.append(&task);
+                if let Some(page) = page_weak_for_result.upgrade() {
+                    render_task_rows(
+                        &page,
+                        &task_list_for_result,
+                        &task_store_for_result,
+                        &empty_tasks_for_result,
+                    );
+                    let message = if task_to_edit_for_result.is_some() {
+                        format!("Aufgabe aktualisiert ({uid})")
+                    } else {
+                        format!("Aufgabe gespeichert ({uid})")
+                    };
+                    page.show_toast(&message);
+                }
+                dirty_for_result.set(result_state.dirty);
+                dialog_state_for_result.set(TaskEditorDialogState::Closed);
+                close_confirmed_for_result.set(true);
+                dialog.close();
+            });
+        });
+
+        let dialog_weak_for_close = dialog.downgrade();
+        let close_confirmed_for_close = Rc::clone(&close_confirmed);
+        let close_prompt_open_for_close = Rc::clone(&close_prompt_open);
+        let dirty_for_close = Rc::clone(&dirty);
+        let save_control_for_close = Arc::clone(&save_control);
+        let dialog_state_for_close = Rc::clone(&dialog_state);
+        let request_generation_for_close = Rc::clone(&request_generation);
+        let save_button_for_close = save_button.clone();
+        dialog.connect_close_request(move |_| {
+            if close_confirmed_for_close.replace(false) {
+                return glib::Propagation::Proceed;
+            }
+            match task_close_decision(
+                dirty_for_close.get(),
+                save_control_for_close.phase(),
+                close_prompt_open_for_close.get(),
+            ) {
+                TaskCloseDecision::Allow => return glib::Propagation::Proceed,
+                TaskCloseDecision::BlockSave => {
+                    if let Some(dialog) = dialog_weak_for_close.upgrade() {
+                        show_toast_for_widget(&dialog, "Speichern läuft noch; bitte kurz warten");
+                    }
+                    return glib::Propagation::Stop;
+                }
+                TaskCloseDecision::BlockCommit => {
+                    if let Some(dialog) = dialog_weak_for_close.upgrade() {
+                        show_toast_for_widget(
+                            &dialog,
+                            "Speichern wird gerade verbindlich ausgeführt; Schließen ist nicht verfügbar",
+                        );
+                    }
+                    return glib::Propagation::Stop;
+                }
+                TaskCloseDecision::KeepPrompt => return glib::Propagation::Stop,
+                TaskCloseDecision::Prompt => close_prompt_open_for_close.set(true),
+            }
+            let confirmation = adw::AlertDialog::new(
+                Some("Ungespeicherte Aufgabenänderungen"),
+                Some("Die Aufgabe wurde seit dem letzten bestätigten Speichern geändert."),
+            );
+            confirmation.add_responses(&[
+                ("continue", "Weiter bearbeiten"),
+                ("save", "Speichern"),
+                ("discard", "Verwerfen"),
+            ]);
+            confirmation.set_response_appearance("discard", adw::ResponseAppearance::Destructive);
+            let dialog_weak_for_response = dialog_weak_for_close.clone();
+            let close_confirmed_for_response = Rc::clone(&close_confirmed_for_close);
+            let close_prompt_open_for_response = Rc::clone(&close_prompt_open_for_close);
+            let request_generation_for_response = Rc::clone(&request_generation_for_close);
+            let dialog_state_for_response = Rc::clone(&dialog_state_for_close);
+            let save_button_for_response = save_button_for_close.clone();
+            confirmation.connect_response(None, move |alert, response| {
+                alert.close();
+                close_prompt_open_for_response.set(false);
+                let Some(dialog) = dialog_weak_for_response.upgrade() else {
+                    return;
+                };
+                match response {
+                    "discard" => {
+                        request_generation_for_response
+                            .set(request_generation_for_response.get().wrapping_add(1));
+                        dialog_state_for_response.set(TaskEditorDialogState::Closed);
+                        close_confirmed_for_response.set(true);
+                        dialog.close();
+                    }
+                    "save" => save_button_for_response.emit_clicked(),
+                    _ => dialog_state_for_response.set(TaskEditorDialogState::Dirty),
+                }
+            });
+            if let Some(dialog) = dialog_weak_for_close.upgrade() {
+                confirmation.present(Some(&dialog));
+            } else {
+                close_prompt_open_for_close.set(false);
+            }
+            glib::Propagation::Stop
+        });
+
+        let dialog_weak_for_cancel = dialog.downgrade();
+        let save_control_for_cancel = Arc::clone(&save_control);
+        let dialog_state_for_cancel = Rc::clone(&dialog_state);
+        let request_generation_for_cancel = Rc::clone(&request_generation);
+        let close_confirmed_for_cancel = Rc::clone(&close_confirmed);
+        cancel_button.connect_clicked(move |_| {
+            match save_control_for_cancel.phase() {
+                TaskSavePhase::DispatchPending => {
+                    match save_control_for_cancel.cancel_before_dispatch() {
+                        TaskCancelResult::CancelledBeforeDispatch => {
+                            request_generation_for_cancel
+                                .set(request_generation_for_cancel.get().wrapping_add(1));
+                            dialog_state_for_cancel.set(TaskEditorDialogState::Closed);
+                            close_confirmed_for_cancel.set(true);
+                            if let Some(dialog) = dialog_weak_for_cancel.upgrade() {
+                                dialog.close();
+                            }
+                        }
+                        TaskCancelResult::Committing | TaskCancelResult::DispatchRace => {
+                            if let Some(dialog) = dialog_weak_for_cancel.upgrade() {
+                                show_toast_for_widget(
+                                    &dialog,
+                                    "Speichern wird gerade verbindlich ausgeführt; Abbrechen ist nicht verfügbar",
+                                );
+                            }
+                        }
+                        TaskCancelResult::NotCancelable => {}
+                    }
+                }
+                TaskSavePhase::Committing => {
+                    if let Some(dialog) = dialog_weak_for_cancel.upgrade() {
+                        show_toast_for_widget(
+                            &dialog,
+                            "Speichern wird gerade verbindlich ausgeführt; Abbrechen ist nicht verfügbar",
                         );
                     }
                 }
-                save_button_for_result.set_sensitive(true);
-            });
+                TaskSavePhase::Editing | TaskSavePhase::Failed => {
+                    dialog_state_for_cancel.set(TaskEditorDialogState::Closed);
+                    close_confirmed_for_cancel.set(true);
+                    if let Some(dialog) = dialog_weak_for_cancel.upgrade() {
+                        dialog.close();
+                    }
+                }
+                TaskSavePhase::CancelledBeforeDispatch | TaskSavePhase::Completed => {}
+            }
         });
 
         dialog.present();
@@ -2662,6 +3897,12 @@ fn task_status_from_index(index: u32) -> &'static str {
 }
 
 fn task_status_label(raw: &str) -> &'static str {
+    if ical_property(raw, "STATUS")
+        .as_deref()
+        .is_some_and(|status| normalize_task_status(status).is_err())
+    {
+        return "Importierter Status";
+    }
     match task_status_value(raw) {
         "IN-PROCESS" => "In Bearbeitung",
         "COMPLETED" => "Erledigt",
@@ -2675,9 +3916,14 @@ fn parse_task_percent(raw: &str) -> u8 {
         .then_some(100)
         .unwrap_or(0);
     ical_property(raw, "PERCENT-COMPLETE")
-        .and_then(|value| value.parse::<u8>().ok())
+        .and_then(|value| parse_task_percent_value(&value))
         .unwrap_or(default)
-        .min(100)
+}
+
+fn parse_task_percent_value(value: &str) -> Option<u8> {
+    let value = value.trim();
+    let percent = value.parse::<u8>().ok()?;
+    (percent <= 100).then_some(percent)
 }
 
 fn normalize_task_status(value: &str) -> Result<&'static str, String> {
@@ -2824,13 +4070,13 @@ fn append_task_row(
             return;
         }
         let completed = button.is_active();
-        if source_uid.is_empty() {
+        if !task_source_is_writable_now(&source_uid) {
             updating_for_callback.set(true);
             button.set_active(!completed);
             updating_for_callback.set(false);
             show_toast_for_widget(
                 button,
-                "Diese Aufgabe stammt aus einer schreibgeschützten importierten Quelle",
+                "Diese Aufgabenliste ist nicht als schreibfähig bestätigt",
             );
             return;
         }
@@ -2840,6 +4086,16 @@ fn append_task_row(
         } else {
             "NEEDS-ACTION"
         };
+        if !task_source_is_writable_now(&source_uid) {
+            updating_for_callback.set(true);
+            button.set_active(!completed);
+            updating_for_callback.set(false);
+            show_toast_for_widget(
+                button,
+                "Diese Aufgabenliste ist nicht mehr als schreibfähig bestätigt",
+            );
+            return;
+        }
         let percent = if completed { "100" } else { "0" };
         let mut component = update_ical_property(&task_clone.component(), "STATUS", Some(status));
         component = update_ical_property(&component, "PERCENT-COMPLETE", Some(percent));
@@ -2852,8 +4108,8 @@ fn append_task_row(
         } else {
             update_ical_property(&component, "COMPLETED", None)
         };
-        let component_for_result = component.clone();
         let uid = task_clone.id();
+        let uid_for_worker = uid.clone();
         let source_uid_for_worker = source_uid.clone();
         button.set_sensitive(false);
         let (sender, receiver) = async_channel::bounded(1);
@@ -2861,7 +4117,7 @@ fn append_task_row(
             let result = ECalService::new().modify_component(
                 &source_uid_for_worker,
                 ECalComponentType::Task,
-                &uid,
+                &uid_for_worker,
                 &component,
             );
             if let Err(error) = sender.send_blocking(result) {
@@ -2891,8 +4147,22 @@ fn append_task_row(
             };
             match result {
                 Ok(result) => {
+                    let component = match task_authoritative_component(
+                        &uid,
+                        &result.uid,
+                        result.component,
+                    ) {
+                        Ok(component) => component,
+                        Err(error) => {
+                            updating_for_result.set(true);
+                            button_for_result.set_active(!completed);
+                            updating_for_result.set(false);
+                            show_toast_for_widget(&button_for_result, &error);
+                            return;
+                        }
+                    };
                     task_for_result.set_completed(completed);
-                    task_for_result.set_component(result.component.unwrap_or(component_for_result));
+                    task_for_result.set_component(component);
                     if let Some(page) = page_for_result.upgrade() {
                         render_task_rows(
                             &page,
@@ -2922,7 +4192,7 @@ fn append_task_row(
         .tooltip_text("Status, Priorität, Fälligkeit und Kategorien schnell bearbeiten")
         .css_classes(vec!["flat"])
         .valign(gtk::Align::Center)
-        .sensitive(!task.source_uid().is_empty())
+        .sensitive(task_source_is_writable_now(&task.source_uid()))
         .build();
     set_accessible_label(
         &quick_edit_button,
@@ -2954,10 +4224,10 @@ fn append_task_row(
     let edit_button_for_signal = edit_button.clone();
     let edit_button_for_closure = edit_button.clone();
     edit_button_for_signal.connect_clicked(move |_| {
-        if task_for_edit.source_uid().is_empty() {
+        if !task_source_is_writable_now(&task_for_edit.source_uid()) {
             show_toast_for_widget(
                 &edit_button_for_closure,
-                "Diese Aufgabe stammt aus einer schreibgeschützten importierten Quelle",
+                "Diese Aufgabenliste ist nicht als schreibfähig bestätigt",
             );
             return;
         }
@@ -3042,10 +4312,10 @@ fn append_task_row(
     let page_weak_for_delete = page.downgrade();
     delete_button_for_signal.connect_clicked(move |_| {
         let source_uid = task_for_delete.source_uid();
-        if source_uid.is_empty() {
+        if !task_source_is_writable_now(&source_uid) {
             show_toast_for_widget(
                 &delete_button,
-                "Diese Aufgabe stammt aus einer schreibgeschützten importierten Quelle",
+                "Diese Aufgabenliste ist nicht als schreibfähig bestätigt",
             );
             return;
         }
@@ -3067,6 +4337,13 @@ fn append_task_row(
             "Löschen",
             move || {
                 let source_uid = task_for_action.source_uid();
+                if !task_source_is_writable_now(&source_uid) {
+                    show_toast_for_widget(
+                        &delete_button_for_action,
+                        "Diese Aufgabenliste ist nicht mehr als schreibfähig bestätigt",
+                    );
+                    return;
+                }
                 let source_uid_for_result = source_uid.clone();
                 let uid = task_for_action.id();
                 let (sender, receiver) = async_channel::bounded(1);
@@ -3299,6 +4576,398 @@ fn show_toast_for_widget<W: IsA<gtk::Widget>>(widget: &W, message: &str) {
     tracing::warn!(%message, "Task UI result");
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TaskSourceCapability {
+    Writable,
+    ReadOnly,
+    Unavailable,
+    Unknown,
+}
+
+fn task_source_capability(
+    source_uid: &str,
+    capabilities: &HashMap<String, TaskSourceCapability>,
+    local_writable: bool,
+) -> TaskSourceCapability {
+    if source_uid.trim().is_empty() {
+        return TaskSourceCapability::Unavailable;
+    }
+    if source_uid == "local-calendar" {
+        return if local_writable {
+            TaskSourceCapability::Writable
+        } else {
+            TaskSourceCapability::Unavailable
+        };
+    }
+    capabilities
+        .get(source_uid)
+        .copied()
+        .unwrap_or(TaskSourceCapability::Unknown)
+}
+
+fn task_source_is_writable_with_local(
+    source_uid: &str,
+    capabilities: &Rc<RefCell<HashMap<String, TaskSourceCapability>>>,
+    local_writable: bool,
+) -> bool {
+    task_source_capability(source_uid, &capabilities.borrow(), local_writable)
+        == TaskSourceCapability::Writable
+}
+
+fn task_source_is_writable(
+    source_uid: &str,
+    capabilities: &Rc<RefCell<HashMap<String, TaskSourceCapability>>>,
+) -> bool {
+    task_source_is_writable_with_local(
+        source_uid,
+        capabilities,
+        CalendarStoreService::new().is_writable(),
+    )
+}
+
+fn task_source_is_writable_now(source_uid: &str) -> bool {
+    if source_uid == "local-calendar" {
+        CalendarStoreService::new().is_writable()
+    } else {
+        // Row actions do not have a fresh EDS capability snapshot.  Unknown
+        // external capabilities fail closed instead of being guessed from a
+        // live source listing.
+        false
+    }
+}
+
+fn task_default_source_index(
+    source_uids: &[String],
+    preferred_source_uid: Option<&str>,
+    edit_source_uid: Option<&str>,
+    capabilities: &HashMap<String, TaskSourceCapability>,
+    local_writable: bool,
+) -> Option<usize> {
+    if let Some(edit_source_uid) = edit_source_uid {
+        return source_uids
+            .iter()
+            .position(|source_uid| source_uid == edit_source_uid);
+    }
+    preferred_source_uid
+        .and_then(|preferred| {
+            source_uids.iter().position(|source_uid| {
+                source_uid == preferred
+                    && task_source_capability(source_uid, capabilities, local_writable)
+                        == TaskSourceCapability::Writable
+            })
+        })
+        .or_else(|| {
+            source_uids.iter().position(|source_uid| {
+                task_source_capability(source_uid, capabilities, local_writable)
+                    == TaskSourceCapability::Writable
+            })
+        })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+enum TaskSavePhase {
+    Editing = 0,
+    DispatchPending = 1,
+    Committing = 2,
+    CancelledBeforeDispatch = 3,
+    Completed = 4,
+    Failed = 5,
+}
+
+impl TaskSavePhase {
+    fn from_atomic(value: u8) -> Self {
+        match value {
+            1 => Self::DispatchPending,
+            2 => Self::Committing,
+            3 => Self::CancelledBeforeDispatch,
+            4 => Self::Completed,
+            5 => Self::Failed,
+            _ => Self::Editing,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct TaskSaveControl {
+    phase: AtomicU8,
+}
+
+impl TaskSaveControl {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            phase: AtomicU8::new(TaskSavePhase::Editing as u8),
+        })
+    }
+
+    fn phase(&self) -> TaskSavePhase {
+        TaskSavePhase::from_atomic(self.phase.load(Ordering::Acquire))
+    }
+
+    fn arm(&self) -> bool {
+        self.phase
+            .compare_exchange(
+                TaskSavePhase::Editing as u8,
+                TaskSavePhase::DispatchPending as u8,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+    }
+
+    /// This compare-and-exchange is the cancellation boundary.  If it wins,
+    /// the worker's dispatch CAS cannot start the synchronous backend call.
+    fn cancel_before_dispatch(&self) -> TaskCancelResult {
+        match self.phase.compare_exchange(
+            TaskSavePhase::DispatchPending as u8,
+            TaskSavePhase::CancelledBeforeDispatch as u8,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => TaskCancelResult::CancelledBeforeDispatch,
+            Err(value) if TaskSavePhase::from_atomic(value) == TaskSavePhase::Committing => {
+                TaskCancelResult::Committing
+            }
+            Err(value) if TaskSavePhase::from_atomic(value) == TaskSavePhase::DispatchPending => {
+                TaskCancelResult::DispatchRace
+            }
+            Err(_) => TaskCancelResult::NotCancelable,
+        }
+    }
+
+    fn begin_dispatch(&self) -> bool {
+        self.phase
+            .compare_exchange(
+                TaskSavePhase::DispatchPending as u8,
+                TaskSavePhase::Committing as u8,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+    }
+
+    fn finish(&self, success: bool) {
+        self.phase.store(
+            if success {
+                TaskSavePhase::Completed as u8
+            } else {
+                TaskSavePhase::Failed as u8
+            },
+            Ordering::Release,
+        );
+    }
+
+    fn reset_after_failure(&self) {
+        self.phase
+            .store(TaskSavePhase::Editing as u8, Ordering::Release);
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TaskCancelResult {
+    CancelledBeforeDispatch,
+    Committing,
+    DispatchRace,
+    NotCancelable,
+}
+
+#[derive(Debug)]
+enum TaskSaveWorkerMessage {
+    Committing,
+    CancelledBeforeDispatch,
+    Finished(Result<crate::services::ecal_service::ECalMutationResult, crate::services::ecal_service::ECalMutationError>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TaskEditorDialogState {
+    Clean,
+    Dirty,
+    Prompting,
+    SavePending,
+    Committing,
+    Closed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TaskEditorDialogAction {
+    Edit,
+    CloseRequest,
+    Save,
+    Discard,
+    ContinueEditing,
+    CancelBeforeDispatch,
+    DispatchStarted,
+    BackendSuccess,
+    BackendFailure,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TaskEditorDialogEffect {
+    None,
+    ShowPrompt,
+    DispatchSave,
+    Close,
+    BlockClose,
+    DisableClose,
+}
+
+/// Pure boundary for the GTK dialog.  The callbacks below only perform the
+/// effect selected here; no backend result or widget is allowed to decide
+/// whether a pending edit was discarded.
+fn task_editor_dialog_transition(
+    state: TaskEditorDialogState,
+    action: TaskEditorDialogAction,
+) -> (TaskEditorDialogState, TaskEditorDialogEffect) {
+    use TaskEditorDialogAction as Action;
+    use TaskEditorDialogEffect as Effect;
+    use TaskEditorDialogState as State;
+
+    match (state, action) {
+        (State::Clean, Action::Edit) => (State::Dirty, Effect::None),
+        (State::Clean, Action::CloseRequest) => (State::Closed, Effect::Close),
+        (State::Dirty, Action::CloseRequest) => (State::Prompting, Effect::ShowPrompt),
+        (State::Prompting, Action::ContinueEditing) => (State::Dirty, Effect::None),
+        (State::Prompting, Action::Discard) => (State::Closed, Effect::Close),
+        (State::Prompting, Action::Save) => (State::SavePending, Effect::DispatchSave),
+        (State::Dirty, Action::Save) => (State::SavePending, Effect::DispatchSave),
+        (State::SavePending, Action::DispatchStarted) => {
+            (State::Committing, Effect::DisableClose)
+        }
+        (State::SavePending, Action::CancelBeforeDispatch) => (State::Closed, Effect::Close),
+        (State::SavePending, Action::CloseRequest) => (State::SavePending, Effect::BlockClose),
+        (State::Committing, Action::CloseRequest | Action::CancelBeforeDispatch) => {
+            (State::Committing, Effect::BlockClose)
+        }
+        (State::Committing, Action::BackendSuccess) => (State::Closed, Effect::Close),
+        (State::Committing, Action::BackendFailure) => (State::Dirty, Effect::None),
+        (State::SavePending, Action::BackendFailure) => (State::Dirty, Effect::None),
+        (State::Closed, _) => (State::Closed, Effect::None),
+        (current, _) => (current, Effect::None),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TaskCloseDecision {
+    Allow,
+    Prompt,
+    KeepPrompt,
+    BlockSave,
+    BlockCommit,
+}
+
+fn task_close_decision(
+    dirty: bool,
+    save_phase: TaskSavePhase,
+    prompt_open: bool,
+) -> TaskCloseDecision {
+    match save_phase {
+        TaskSavePhase::Committing => TaskCloseDecision::BlockCommit,
+        TaskSavePhase::DispatchPending => TaskCloseDecision::BlockSave,
+        TaskSavePhase::CancelledBeforeDispatch
+        | TaskSavePhase::Completed
+        | TaskSavePhase::Failed
+        | TaskSavePhase::Editing => {
+            if !dirty {
+                TaskCloseDecision::Allow
+            } else if prompt_open {
+                TaskCloseDecision::KeepPrompt
+            } else {
+                TaskCloseDecision::Prompt
+            }
+        }
+    }
+}
+
+fn task_editor_result_is_current(
+    current_generation: u64,
+    expected_generation: u64,
+    dialog_visible: bool,
+) -> bool {
+    current_generation == expected_generation && dialog_visible
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TaskEditorResultState {
+    apply_row: bool,
+    dirty: bool,
+}
+
+fn task_editor_result_state(
+    current: bool,
+    backend_succeeded: bool,
+    dirty_before: bool,
+) -> TaskEditorResultState {
+    if current && backend_succeeded {
+        TaskEditorResultState {
+            apply_row: true,
+            dirty: false,
+        }
+    } else {
+        TaskEditorResultState {
+            apply_row: false,
+            dirty: if current { true } else { dirty_before },
+        }
+    }
+}
+
+fn task_item_from_confirmed_component(
+    source_uid: &str,
+    uid: &str,
+    component: &str,
+) -> Result<TaskItemObject, String> {
+    if !unfold_ical_lines(component)
+        .iter()
+        .any(|line| line.eq_ignore_ascii_case("BEGIN:VTODO"))
+    {
+        return Err("Die Komponente ist kein VTODO".to_string());
+    }
+    if let Some(component_uid) = ical_property(component, "UID")
+        && component_uid != uid
+    {
+        return Err("Die bestätigte Komponente enthält eine andere UID".to_string());
+    }
+    let draft = task_editor_draft_from_component(component);
+    let due = match draft.due.original_kind {
+        Some(TaskDateValueKind::DateOnly) => draft.due.input.clone(),
+        Some(TaskDateValueKind::DateTime) => property_local_display(component, "DUE", false)
+            .unwrap_or_else(|| draft.due.input.clone()),
+        None => String::new(),
+    };
+    let priority = if draft.priority == 0 {
+        "normal".to_string()
+    } else {
+        draft.priority.to_string()
+    };
+    Ok(TaskItemObject::new(
+        source_uid,
+        uid,
+        &draft.summary,
+        &due,
+        &priority,
+        draft.status == "COMPLETED",
+        component,
+    ))
+}
+
+fn task_authoritative_component(
+    expected_uid: &str,
+    returned_uid: &str,
+    component: Option<String>,
+) -> Result<String, String> {
+    if !returned_uid.trim().is_empty() && returned_uid != expected_uid {
+        return Err("Das bestätigte Aufgaben-Ergebnis gehört zu einer anderen UID".to_string());
+    }
+    let component = component
+        .filter(|component| !component.trim().is_empty())
+        .ok_or_else(|| {
+            "Backend bestätigte keine autoritative Aufgabe; bitte neu laden".to_string()
+        })?;
+    if ical_property(&component, "UID").is_some_and(|uid| uid != expected_uid) {
+        return Err("Die bestätigte Komponente enthält eine andere UID".to_string());
+    }
+    Ok(component)
+}
+
 fn connect_task_quick_editor(
     page: &TasksPage,
     button: &gtk::Button,
@@ -3427,9 +5096,15 @@ fn connect_task_quick_editor(
                 return;
             }
         };
-        let component_for_result = component.clone();
         let source_uid = task_for_save.source_uid();
         let task_uid = task_for_save.id();
+        if !task_source_is_writable_now(&source_uid) {
+            show_toast_for_widget(
+                save_button,
+                "Diese Aufgabenliste ist nicht mehr als schreibfähig bestätigt",
+            );
+            return;
+        }
         let title = task_for_save.title();
         let priority_for_model = if priority == 0 {
             "normal".to_string()
@@ -3462,8 +5137,18 @@ fn connect_task_quick_editor(
         glib::spawn_future_local(async move {
             match receiver.recv().await {
                 Ok(Ok(result)) => {
-                    let component = result.component.unwrap_or(component_for_result);
                     let uid = result.uid;
+                    let component = match task_authoritative_component(
+                        &task_uid_for_result,
+                        &uid,
+                        result.component,
+                    ) {
+                        Ok(component) => component,
+                        Err(error) => {
+                            show_toast_for_widget(&save_button_for_result, &error);
+                            return;
+                        }
+                    };
                     let mut updated = false;
                     for index in 0..task_store_for_result.n_items() {
                         let Some(existing) = task_store_for_result
@@ -3484,25 +5169,18 @@ fn connect_task_quick_editor(
                             break;
                         }
                     }
-                    if !updated {
-                        task_store_for_result.append(&TaskItemObject::new(
-                            &source_uid_for_result,
-                            &task_uid_for_result,
-                            &title,
-                            &due,
-                            &priority_for_model,
-                            completed,
-                            &component,
-                        ));
-                    }
-                    if let Some(page) = page_weak_for_result.upgrade() {
-                        render_task_rows(
-                            &page,
-                            &task_list_for_result,
-                            &task_store_for_result,
-                            &empty_tasks_for_result,
-                        );
-                        page.show_toast(&format!("Aufgabe aktualisiert ({uid})"));
+                    if updated {
+                        if let Some(page) = page_weak_for_result.upgrade() {
+                            render_task_rows(
+                                &page,
+                                &task_list_for_result,
+                                &task_store_for_result,
+                                &empty_tasks_for_result,
+                            );
+                            page.show_toast(&format!("Aufgabe aktualisiert ({uid})"));
+                        }
+                    } else if let Some(page) = page_weak_for_result.upgrade() {
+                        page.show_toast("Aufgabe wurde bestätigt, ist aber nicht mehr in dieser Liste geladen");
                     }
                     if let Some(popover) = popover_for_result.upgrade() {
                         popover.popdown();
@@ -3527,9 +5205,11 @@ fn connect_task_quick_editor(
     });
 }
 
-fn build_task_component(
+fn build_task_component_with_dates(
     title: &str,
+    dtstart: &str,
     due: &str,
+    completed: &str,
     recurrence: &str,
     rdates: &str,
     exdates: &str,
@@ -3545,39 +5225,53 @@ fn build_task_component(
     if title.is_empty() {
         return Err("Eine Aufgabe benötigt einen Titel".to_string());
     }
-    let due = due.trim();
-    if !due.is_empty() {
-        chrono::NaiveDate::parse_from_str(due, "%Y-%m-%d")
-            .map_err(|_| "Das Fälligkeitsdatum muss YYYY-MM-DD entsprechen".to_string())?;
-    }
-    if recurrence
-        .chars()
-        .any(|character| character == '\r' || character == '\n')
-    {
-        return Err("Die Wiederholungsregel enthält ungültige Zeilenumbrüche".to_string());
-    }
-    let rdates = normalize_task_date_list(rdates, "RDATE")?;
-    let exdates = normalize_task_date_list(exdates, "EXDATE")?;
     if priority > 9 {
         return Err("Die Priorität muss zwischen 0 und 9 liegen".to_string());
     }
-    let status = normalize_task_status(status)?;
-    let percent = match status {
-        "COMPLETED" => 100,
-        "NEEDS-ACTION" => 0,
-        _ => percent.min(100),
-    };
+
+    let attachment_lines = parse_task_attachment_input(attachments)?;
+    let empty_draft = TaskEditorDraft::default_for_new();
+    let (dtstart_mutation, dtstart_date) =
+        task_date_mutation(&empty_draft.dtstart, dtstart, "DTSTART")?;
+    let (due_mutation, due_date) = task_date_mutation(&empty_draft.due, due, "DUE")?;
+    let (completed_mutation, completed_date) =
+        task_date_mutation(&empty_draft.completed, completed, "COMPLETED")?;
+    let completion_present = !matches!(completed_mutation, TaskDateMutation::Remove);
+    if (task_date_mutation_changed(dtstart_mutation)
+        || task_date_mutation_changed(due_mutation))
+        && let (Some(start), Some(due)) = (dtstart_date, due_date)
+        && due <= start
+    {
+        return Err("Das Fälligkeitsdatum muss nach dem Beginn liegen".to_string());
+    }
+    validate_task_recurrence(
+        "",
+        recurrence,
+        !matches!(dtstart_mutation, TaskDateMutation::Remove),
+    )?;
+    let lifecycle = task_lifecycle_for_date_with_presence(
+        status,
+        percent,
+        completed_date,
+        completion_present,
+        Local::now().date_naive(),
+    )?;
+    let rdates = normalize_task_date_list(rdates, "RDATE")?;
+    let exdates = normalize_task_date_list(exdates, "EXDATE")?;
 
     let mut component = vec![
         "BEGIN:VTODO".to_string(),
         format!("UID:evolution-gtk4-{}", uuid::Uuid::new_v4()),
         format!("DTSTAMP:{}", Utc::now().format("%Y%m%dT%H%M%SZ")),
-        format!("STATUS:{status}"),
-        format!("PERCENT-COMPLETE:{percent}"),
+        format!("STATUS:{}", lifecycle.status),
+        format!("PERCENT-COMPLETE:{}", lifecycle.percent),
         format!("SUMMARY:{}", escape_ical_text(title)),
     ];
-    if !due.is_empty() {
-        component.push(format!("DUE;VALUE=DATE:{}", due.replace('-', "")));
+    if let TaskDateMutation::Set(date) = dtstart_mutation {
+        component.push(format!("DTSTART;VALUE=DATE:{}", date.format("%Y%m%d")));
+    }
+    if let TaskDateMutation::Set(date) = due_mutation {
+        component.push(format!("DUE;VALUE=DATE:{}", date.format("%Y%m%d")));
     }
     if !recurrence.trim().is_empty() {
         component.push(format!("RRULE:{}", recurrence.trim()));
@@ -3596,14 +5290,9 @@ fn build_task_component(
         component.push(format!("CATEGORIES:{categories}"));
     }
     component.extend(
-        parse_attachments(attachments)
-            .into_iter()
-            .map(|attachment| {
-                format!(
-                    "ATTACH;VALUE=URI:{}",
-                    serialize_ical_attachment_value(&attachment)
-                )
-            }),
+        attachment_lines
+            .iter()
+            .map(|attachment| attachment.raw.clone()),
     );
     if !description.trim().is_empty() {
         component.push(format!(
@@ -3611,13 +5300,273 @@ fn build_task_component(
             escape_ical_text(description.trim())
         ));
     }
-    if status == "COMPLETED" {
-        component.push(format!("COMPLETED:{}", Utc::now().format("%Y%m%dT%H%M%SZ")));
+    if lifecycle.completion_present {
+        let Some(date) = lifecycle.completed else {
+            return Err("Erledigte Aufgaben benötigen ein gültiges Abschlussdatum".to_string());
+        };
+        component.push(format!("COMPLETED;VALUE=DATE:{}", date.format("%Y%m%d")));
     }
     component.push("END:VTODO".to_string());
-    Ok(replace_component_alarms(
+    Ok(fold_task_ical_component(&replace_component_alarms(
         &format!("{}\r\n", component.join("\r\n")),
         alarms,
+    )))
+}
+
+fn build_task_component(
+    title: &str,
+    due: &str,
+    recurrence: &str,
+    rdates: &str,
+    exdates: &str,
+    priority: u8,
+    categories: &str,
+    alarms: &[Alarm],
+    description: &str,
+    attachments: &str,
+    status: &str,
+    percent: u8,
+) -> Result<String, String> {
+    build_task_component_with_dates(
+        title,
+        "",
+        due,
+        "",
+        recurrence,
+        rdates,
+        exdates,
+        priority,
+        categories,
+        alarms,
+        description,
+        attachments,
+        status,
+        percent,
+    )
+}
+
+fn update_task_component_with_dates(
+    existing: &str,
+    title: &str,
+    dtstart: &str,
+    due: &str,
+    completed: &str,
+    recurrence: &str,
+    rdates: &str,
+    exdates: &str,
+    priority: u8,
+    categories: &str,
+    alarms: &[Alarm],
+    description: &str,
+    attachments: &str,
+    status: &str,
+    percent: u8,
+) -> Result<String, String> {
+    let draft = task_editor_draft_from_component(existing);
+    let lifecycle_edits =
+        task_lifecycle_edits_inferred(&draft, status, percent, completed);
+    update_task_component_with_dates_and_lifecycle_edits(
+        existing,
+        title,
+        dtstart,
+        due,
+        completed,
+        recurrence,
+        rdates,
+        exdates,
+        priority,
+        categories,
+        alarms,
+        description,
+        attachments,
+        status,
+        percent,
+        lifecycle_edits,
+    )
+}
+
+fn update_task_component_with_dates_and_lifecycle_edits(
+    existing: &str,
+    title: &str,
+    dtstart: &str,
+    due: &str,
+    completed: &str,
+    recurrence: &str,
+    rdates: &str,
+    exdates: &str,
+    priority: u8,
+    categories: &str,
+    alarms: &[Alarm],
+    description: &str,
+    attachments: &str,
+    status: &str,
+    percent: u8,
+    lifecycle_edits: TaskLifecycleEdits,
+) -> Result<String, String> {
+    let title = title.trim();
+    if title.is_empty() {
+        return Err("Eine Aufgabe benötigt einen Titel".to_string());
+    }
+    if priority > 9 {
+        return Err("Die Priorität muss zwischen 0 und 9 liegen".to_string());
+    }
+
+    let draft = task_editor_draft_from_component(existing);
+    let (dtstart_mutation, dtstart_date) = task_date_mutation(&draft.dtstart, dtstart, "DTSTART")?;
+    let (due_mutation, due_date) = task_date_mutation(&draft.due, due, "DUE")?;
+    let (completed_mutation, completed_date) =
+        task_date_mutation(&draft.completed, completed, "COMPLETED")?;
+    let completion_present = !matches!(completed_mutation, TaskDateMutation::Remove);
+    if (task_date_mutation_changed(dtstart_mutation)
+        || task_date_mutation_changed(due_mutation))
+        && let (Some(start), Some(due)) = (dtstart_date, due_date)
+        && due <= start
+    {
+        return Err("Das Fälligkeitsdatum muss nach dem Beginn liegen".to_string());
+    }
+    validate_task_recurrence(
+        existing,
+        recurrence,
+        !matches!(dtstart_mutation, TaskDateMutation::Remove),
+    )?;
+    let status_is_unchanged = status.eq_ignore_ascii_case(draft.status);
+    let percent_is_unchanged = if draft.unsupported_percent.is_some() {
+        percent == draft.percent
+    } else {
+        draft
+            .percent_raw
+            .as_deref()
+            .and_then(parse_task_percent_value)
+            .is_some_and(|value| value == percent)
+    };
+    let preserve_unsupported_status = draft.unsupported_status.is_some() && status_is_unchanged;
+    let preserve_unsupported_percent = draft.unsupported_percent.is_some() && percent_is_unchanged;
+    let preserve_unsupported_lifecycle = preserve_unsupported_status
+        && preserve_unsupported_percent
+        && completed.trim() == draft.completed.input.trim();
+    let lifecycle = if preserve_unsupported_lifecycle {
+        None
+    } else {
+        Some(task_lifecycle_for_date_with_presence(
+            status,
+            percent,
+            completed_date,
+            completion_present,
+            Local::now().date_naive(),
+        )?)
+    };
+    let normalized_rdates = if rdates.trim() == draft.rdates.trim() {
+        None
+    } else {
+        Some(normalize_task_date_list(rdates, "RDATE")?)
+    };
+    let normalized_exdates = if exdates.trim() == draft.exdates.trim() {
+        None
+    } else {
+        Some(normalize_task_date_list(exdates, "EXDATE")?)
+    };
+    let attachment_draft = TaskAttachmentDraft::from_component(existing).with_editor_text(attachments);
+    let parsed_attachments = attachment_draft.attachments_changed
+        .then(|| parse_task_attachment_input(attachments))
+        .transpose()?;
+    let alarms_changed = parse_alarms(existing) != alarms;
+
+    let mut component = update_ical_property(existing, "SUMMARY", Some(&escape_ical_text(title)));
+    component = apply_task_date_pair_mutations(
+        &component,
+        &draft.dtstart,
+        &draft.due,
+        dtstart_mutation,
+        due_mutation,
+    );
+    if recurrence.trim() != draft.recurrence.trim() {
+        component = update_ical_property(
+            &component,
+            "RRULE",
+            (!recurrence.trim().is_empty()).then_some(recurrence.trim()),
+        );
+    }
+    if let Some(rdates) = normalized_rdates.as_deref() {
+        component = update_ical_property(
+            &component,
+            "RDATE;VALUE=DATE",
+            (!rdates.is_empty()).then_some(rdates),
+        );
+    }
+    if let Some(exdates) = normalized_exdates.as_deref() {
+        component = update_ical_property(
+            &component,
+            "EXDATE;VALUE=DATE",
+            (!exdates.is_empty()).then_some(exdates),
+        );
+    }
+    component = if priority == 0 {
+        update_ical_property(&component, "PRIORITY", None)
+    } else {
+        update_ical_property(&component, "PRIORITY", Some(&priority.to_string()))
+    };
+    let categories = serialize_categories(categories);
+    component = if categories.is_empty() {
+        update_ical_property(&component, "CATEGORIES", None)
+    } else {
+        update_ical_property(&component, "CATEGORIES", Some(&categories))
+    };
+    if let Some(parsed_attachments) = parsed_attachments.as_deref() {
+        component = replace_task_attachments_lossless(&component, parsed_attachments);
+    }
+    if alarms_changed {
+        component = replace_component_alarms(&component, alarms);
+    }
+    if description.trim() != draft.description.trim() {
+        component = if description.trim().is_empty() {
+            update_ical_property(&component, "DESCRIPTION", None)
+        } else {
+            update_ical_property(
+                &component,
+                "DESCRIPTION",
+                Some(&escape_ical_text(description.trim())),
+            )
+        };
+    }
+
+    if let Some(lifecycle) = lifecycle {
+        if !preserve_unsupported_status {
+            let status_unchanged = draft
+                .status_raw
+                .as_deref()
+                .is_some_and(|raw| raw.trim().eq_ignore_ascii_case(lifecycle.status));
+            if !status_unchanged {
+                component = update_ical_property(&component, "STATUS", Some(lifecycle.status));
+            }
+        }
+        if !preserve_unsupported_percent {
+            let percent_text = lifecycle.percent.to_string();
+            if !draft
+                .percent_raw
+                .as_deref()
+                .and_then(parse_task_percent_value)
+                .is_some_and(|value| value == lifecycle.percent)
+            {
+                component =
+                    update_ical_property(&component, "PERCENT-COMPLETE", Some(&percent_text));
+            }
+        }
+        component = if lifecycle.completion_present {
+            match completed_mutation {
+                TaskDateMutation::Preserve => component,
+                TaskDateMutation::Set(date) => {
+                    apply_task_date_mutation(&component, "COMPLETED", TaskDateMutation::Set(date))
+                }
+                TaskDateMutation::Remove => update_ical_property(&component, "COMPLETED", None),
+            }
+        } else {
+            update_ical_property(&component, "COMPLETED", None)
+        };
+    }
+    Ok(update_ical_property(
+        &component,
+        "DTSTAMP",
+        Some(&Utc::now().format("%Y%m%dT%H%M%SZ").to_string()),
     ))
 }
 
@@ -3636,92 +5585,54 @@ fn update_task_component(
     status: &str,
     percent: u8,
 ) -> Result<String, String> {
-    let title = title.trim();
-    if title.is_empty() {
-        return Err("Eine Aufgabe benötigt einen Titel".to_string());
-    }
-    let due = due.trim();
-    if !due.is_empty() {
-        chrono::NaiveDate::parse_from_str(due, "%Y-%m-%d")
-            .map_err(|_| "Das Fälligkeitsdatum muss YYYY-MM-DD entsprechen".to_string())?;
-    }
-    if recurrence
-        .chars()
-        .any(|character| character == '\r' || character == '\n')
-    {
-        return Err("Die Wiederholungsregel enthält ungültige Zeilenumbrüche".to_string());
-    }
-    let rdates = normalize_task_date_list(rdates, "RDATE")?;
-    let exdates = normalize_task_date_list(exdates, "EXDATE")?;
-    if priority > 9 {
-        return Err("Die Priorität muss zwischen 0 und 9 liegen".to_string());
-    }
-    let status = normalize_task_status(status)?;
-    let percent = match status {
-        "COMPLETED" => 100,
-        "NEEDS-ACTION" => 0,
-        _ => percent.min(100),
-    };
+    let draft = task_editor_draft_from_component(existing);
+    update_task_component_with_dates(
+        existing,
+        title,
+        &draft.dtstart.input,
+        due,
+        &draft.completed.input,
+        recurrence,
+        rdates,
+        exdates,
+        priority,
+        categories,
+        alarms,
+        description,
+        attachments,
+        status,
+        percent,
+    )
+}
 
-    let mut component = update_ical_property(existing, "SUMMARY", Some(&escape_ical_text(title)));
-    component = if due.is_empty() {
-        update_ical_property(&component, "DUE", None)
-    } else {
-        update_ical_property(&component, "DUE;VALUE=DATE", Some(&due.replace('-', "")))
-    };
-    component = update_ical_property(
-        &component,
-        "RRULE",
-        (!recurrence.trim().is_empty()).then_some(recurrence.trim()),
-    );
-    component = update_ical_property(
-        &component,
-        "RDATE;VALUE=DATE",
-        (!rdates.is_empty()).then_some(rdates.as_str()),
-    );
-    component = update_ical_property(
-        &component,
-        "EXDATE;VALUE=DATE",
-        (!exdates.is_empty()).then_some(exdates.as_str()),
-    );
-    component = if priority == 0 {
-        update_ical_property(&component, "PRIORITY", None)
-    } else {
-        update_ical_property(&component, "PRIORITY", Some(&priority.to_string()))
-    };
-    let categories = serialize_categories(categories);
-    component = if categories.is_empty() {
-        update_ical_property(&component, "CATEGORIES", None)
-    } else {
-        update_ical_property(&component, "CATEGORIES", Some(&categories))
-    };
-    component = replace_ical_attachments(&component, &parse_attachments(attachments));
-    component = replace_component_alarms(&component, alarms);
-    component = if description.trim().is_empty() {
-        update_ical_property(&component, "DESCRIPTION", None)
-    } else {
-        update_ical_property(
-            &component,
-            "DESCRIPTION",
-            Some(&escape_ical_text(description.trim())),
-        )
-    };
-    component = update_ical_property(&component, "STATUS", Some(status));
-    component = update_ical_property(&component, "PERCENT-COMPLETE", Some(&percent.to_string()));
-    component = if status == "COMPLETED" {
-        update_ical_property(
-            &component,
-            "COMPLETED",
-            Some(&Utc::now().format("%Y%m%dT%H%M%SZ").to_string()),
-        )
-    } else {
-        update_ical_property(&component, "COMPLETED", None)
-    };
-    Ok(update_ical_property(
-        &component,
-        "DTSTAMP",
-        Some(&Utc::now().format("%Y%m%dT%H%M%SZ").to_string()),
-    ))
+fn fold_task_ical_component(raw: &str) -> String {
+    let mut folded = String::new();
+    for line in unfold_ical_lines(raw) {
+        if line.len() <= 75 {
+            folded.push_str(&line);
+            folded.push_str("\r\n");
+            continue;
+        }
+
+        let mut current = String::new();
+        let mut first = true;
+        for character in line.chars() {
+            let limit = if first { 75 } else { 74 };
+            if current.len() + character.len_utf8() > limit && !current.is_empty() {
+                folded.push_str(&current);
+                folded.push_str("\r\n");
+                current.clear();
+                first = false;
+                current.push(' ');
+            }
+            current.push(character);
+        }
+        if !current.is_empty() {
+            folded.push_str(&current);
+            folded.push_str("\r\n");
+        }
+    }
+    folded
 }
 
 fn ical_property(raw: &str, property_name: &str) -> Option<String> {
@@ -3788,13 +5699,185 @@ fn ical_properties(raw: &str, property_name: &str) -> Vec<String> {
         .collect()
 }
 
-fn parse_attachments(value: &str) -> Vec<String> {
+fn task_attachment_line_from_logical(line: &str) -> Option<TaskAttachmentLine> {
+    let (property, value) = line.split_once(':')?;
+    let name = property.split(';').next().unwrap_or(property).trim();
+    if !name.eq_ignore_ascii_case("ATTACH") {
+        return None;
+    }
+    Some(TaskAttachmentLine {
+        raw: line.to_string(),
+        property: property.to_string(),
+        value: value.to_string(),
+        kind: task_attachment_value_kind(property),
+    })
+}
+
+fn task_top_level_attachment_lines(component: &str) -> Vec<TaskAttachmentLine> {
+    let mut primary_seen = false;
+    let mut nested_depth = 0usize;
+    let mut attachments = Vec::new();
+    for line in unfold_ical_lines(component) {
+        if !primary_seen {
+            primary_seen = line.eq_ignore_ascii_case("BEGIN:VTODO");
+            continue;
+        }
+        if nested_depth == 0 {
+            if let Some(attachment) = task_attachment_line_from_logical(&line) {
+                attachments.push(attachment);
+            }
+        }
+        if line
+            .get(..6)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("BEGIN:"))
+        {
+            nested_depth = nested_depth.saturating_add(1);
+        } else if line
+            .get(..4)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("END:"))
+        {
+            nested_depth = nested_depth.saturating_sub(1);
+        }
+    }
+    attachments
+}
+
+fn task_attachment_value_kind(property: &str) -> TaskAttachmentValueKind {
+    property
+        .split(';')
+        .skip(1)
+        .find_map(|parameter| {
+            let (name, value) = parameter.split_once('=')?;
+            name.trim()
+                .eq_ignore_ascii_case("VALUE")
+                .then(|| match value.trim().trim_matches('"').to_ascii_uppercase().as_str() {
+                    "URI" => TaskAttachmentValueKind::Uri,
+                    "BINARY" => TaskAttachmentValueKind::Binary,
+                    _ => TaskAttachmentValueKind::Other,
+                })
+        })
+        .unwrap_or(TaskAttachmentValueKind::Other)
+}
+
+fn parse_task_attachment_input(value: &str) -> Result<Vec<TaskAttachmentLine>, String> {
     value
         .lines()
         .map(str::trim)
-        .filter(|attachment| !attachment.is_empty())
-        .map(ToOwned::to_owned)
+        .filter(|line| !line.is_empty())
+        .map(|line| {
+            if line
+                .chars()
+                .any(|character| character == '\r' || character == '\n' || character.is_control())
+            {
+                return Err("Anhänge enthalten ungültige Steuerzeichen".to_string());
+            }
+            let (property, value) = line
+                .split_once(':')
+                .filter(|(property, _)| {
+                    property
+                        .split(';')
+                        .next()
+                        .is_some_and(|name| name.eq_ignore_ascii_case("ATTACH"))
+                })
+                .unwrap_or(("ATTACH;VALUE=URI", line));
+            if property
+                .chars()
+                .any(|character| character == '\r' || character == '\n' || character == ':')
+            {
+                return Err("Die ATTACH-Eigenschaft ist ungültig".to_string());
+            }
+            let safe_value = serialize_ical_attachment_value(value.trim());
+            if safe_value.is_empty() {
+                return Err("Ein Anhang benötigt einen URI- oder BINARY-Wert".to_string());
+            }
+            Ok(TaskAttachmentLine {
+                raw: format!("{property}:{safe_value}"),
+                property: property.to_string(),
+                value: safe_value,
+                kind: task_attachment_value_kind(property),
+            })
+        })
         .collect()
+}
+
+fn replace_task_attachments_lossless(
+    component: &str,
+    attachments: &[TaskAttachmentLine],
+) -> String {
+    let existing = TaskAttachmentDraft::from_component(component).lines;
+    let serialized = attachments
+        .iter()
+        .map(|attachment| {
+            existing
+                .iter()
+                .find(|current| {
+                    current.raw == attachment.raw
+                        || (attachment.kind == TaskAttachmentValueKind::Uri
+                            && current.kind == TaskAttachmentValueKind::Uri
+                            && current.value == attachment.value)
+                })
+                .map_or(attachment.raw.as_str(), |current| current.raw.as_str())
+        })
+        .collect::<Vec<_>>();
+    let mut output = Vec::new();
+    let mut primary_seen = false;
+    let mut nested_depth = 0usize;
+    let mut replaced = false;
+
+    for line in unfold_ical_lines(component) {
+        if !primary_seen {
+            output.push(line.clone());
+            if line.eq_ignore_ascii_case("BEGIN:VTODO") {
+                primary_seen = true;
+            }
+            continue;
+        }
+
+        let is_top_level_attach = nested_depth == 0
+            && line
+                .split_once(':')
+                .is_some_and(|(property, _)| {
+                    property
+                        .split(';')
+                        .next()
+                        .is_some_and(|name| name.eq_ignore_ascii_case("ATTACH"))
+                });
+        if is_top_level_attach {
+            if !replaced {
+                output.extend(serialized.iter().map(|line| (*line).to_string()));
+                replaced = true;
+            }
+            continue;
+        }
+
+        if nested_depth == 0 && line.eq_ignore_ascii_case("END:VTODO") {
+            if !replaced {
+                output.extend(serialized.iter().map(|line| (*line).to_string()));
+                replaced = true;
+            }
+            output.push(line);
+            continue;
+        }
+
+        if line
+            .get(..6)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("BEGIN:"))
+        {
+            nested_depth = nested_depth.saturating_add(1);
+        }
+        output.push(line.clone());
+        if line
+            .get(..4)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("END:"))
+        {
+            nested_depth = nested_depth.saturating_sub(1);
+        }
+    }
+
+    if !replaced {
+        output.extend(serialized.iter().map(|line| (*line).to_string()));
+    }
+    fold_task_ical_component(&format!("{}\r\n", output.join("\r\n")))
 }
 
 fn unescape_ical_text(value: &str) -> String {
@@ -3899,9 +5982,11 @@ mod tests {
 
     #[test]
     fn task_component_serialization_validates_and_escapes_fields() {
-        let component = build_task_component(
+        let component = build_task_component_with_dates(
             "Prepare, report; Q4",
+            "2026-08-10",
             "2026-08-11",
+            "",
             "FREQ=WEEKLY;BYDAY=MO;COUNT=4",
             "2026-08-12,20260819",
             "2026-08-15",
@@ -3992,6 +6077,7 @@ mod tests {
             "BEGIN:VTODO\r\n",
             "UID:task-1\r\n",
             "DTSTAMP:20260810T090000Z\r\n",
+            "DTSTART;VALUE=DATE:20260810\r\n",
             "STATUS:NEEDS-ACTION\r\n",
             "SUMMARY:Old title\r\n",
             "DUE;VALUE=DATE:20260811\r\n",
@@ -4216,6 +6302,7 @@ mod tests {
             concat!(
                 "BEGIN:VTODO\r\nUID:task-quick-edit\r\n",
                 "SUMMARY:Prepare report\r\nDUE;VALUE=DATE:20260811\r\n",
+                "DTSTART;VALUE=DATE:20260810\r\n",
                 "STATUS:IN-PROCESS\r\nPERCENT-COMPLETE:45\r\nPRIORITY:2\r\n",
                 "CATEGORIES:Work,Finance\r\nRRULE:FREQ=WEEKLY;COUNT=4\r\n",
                 "ATTACH;VALUE=URI:https://files.example.test/report.pdf\r\n",
@@ -4594,6 +6681,857 @@ mod tests {
             &TaskQuery::default(),
             context,
         ));
+    }
+
+    #[test]
+    fn task_editor_draft_preserves_date_only_and_unsupported_datetime_values() {
+        let existing = concat!(
+            "BEGIN:VTODO\r\n",
+            "UID:task-date-types\r\n",
+            "DTSTART;VALUE=DATE:20260810\r\n",
+            "DUE;TZID=Europe/Berlin:20260811T120000\r\n",
+            "COMPLETED:20260809T120000Z\r\n",
+            "STATUS:COMPLETED\r\n",
+            "PERCENT-COMPLETE:100\r\n",
+            "RRULE:FREQ=WEEKLY;COUNT=2\r\n",
+            "X-KEEP:one\r\n",
+            "BEGIN:VALARM\r\n",
+            "ACTION:DISPLAY\r\n",
+            "TRIGGER:-PT15M\r\n",
+            "END:VALARM\r\n",
+            "END:VTODO\r\n"
+        );
+        let draft = task_editor_draft_from_component(existing);
+        assert_eq!(draft.uid, "task-date-types");
+        assert_eq!(draft.dtstart.input, "2026-08-10");
+        assert_eq!(draft.due.input, "2026-08-11");
+        assert_eq!(draft.completed.input, "2026-08-09");
+        assert_eq!(draft.due.original_kind, Some(TaskDateValueKind::DateTime));
+        assert_eq!(
+            draft.completed.original_kind,
+            Some(TaskDateValueKind::DateTime)
+        );
+
+        let updated = update_task_component_with_dates(
+            existing,
+            "Renamed task",
+            &draft.dtstart.input,
+            &draft.due.input,
+            &draft.completed.input,
+            &draft.recurrence,
+            &draft.rdates,
+            &draft.exdates,
+            draft.priority,
+            &draft.categories,
+            &parse_alarms(existing),
+            &draft.description,
+            &draft.attachments,
+            "COMPLETED",
+            100,
+        )
+        .expect("unchanged imported dates should be accepted");
+        assert!(updated.contains("DTSTART;VALUE=DATE:20260810\r\n"));
+        assert!(updated.contains("DUE;TZID=Europe/Berlin:20260811T120000\r\n"));
+        assert!(updated.contains("COMPLETED:20260809T120000Z\r\n"));
+        assert!(updated.contains("UID:task-date-types\r\n"));
+        assert!(updated.contains("X-KEEP:one\r\n"));
+        assert!(updated.contains("RRULE:FREQ=WEEKLY;COUNT=2\r\n"));
+
+        let unsupported = existing.replace(
+            "DUE;TZID=Europe/Berlin:20260811T120000",
+            "DUE;TZID=Europe/Berlin:20260811T120000.000",
+        );
+        let unsupported_draft = task_editor_draft_from_component(&unsupported);
+        let preserved_unsupported = update_task_component_with_dates(
+            &unsupported,
+            "Renamed task",
+            &unsupported_draft.dtstart.input,
+            &unsupported_draft.due.input,
+            &unsupported_draft.completed.input,
+            &unsupported_draft.recurrence,
+            &unsupported_draft.rdates,
+            &unsupported_draft.exdates,
+            unsupported_draft.priority,
+            &unsupported_draft.categories,
+            &parse_alarms(&unsupported),
+            &unsupported_draft.description,
+            &unsupported_draft.attachments,
+            "COMPLETED",
+            100,
+        )
+        .expect("unchanged unsupported date-time values should be preserved");
+        assert!(preserved_unsupported.contains("DUE;TZID=Europe/Berlin:20260811T120000.000\r\n"));
+
+        let deliberately_edited = update_task_component_with_dates(
+            existing,
+            "Renamed task",
+            "2026-08-12",
+            "2026-08-13",
+            "2026-08-08",
+            &draft.recurrence,
+            &draft.rdates,
+            &draft.exdates,
+            draft.priority,
+            &draft.categories,
+            &parse_alarms(existing),
+            &draft.description,
+            &draft.attachments,
+            "COMPLETED",
+            100,
+        )
+        .expect("deliberately edited date-time values should become date-only");
+        assert!(deliberately_edited.contains("DTSTART;VALUE=DATE:20260812\r\n"));
+        assert!(deliberately_edited.contains("DUE;VALUE=DATE:20260813\r\n"));
+        assert!(deliberately_edited.contains("COMPLETED;VALUE=DATE:20260808\r\n"));
+        assert!(!deliberately_edited.contains("DUE;TZID=Europe/Berlin:20260811T120000\r\n"));
+        assert!(!deliberately_edited.contains("COMPLETED:20260809T120000Z\r\n"));
+    }
+
+    #[test]
+    fn task_editor_rejects_invalid_mixed_and_out_of_order_dates() {
+        assert!(
+            build_task_component_with_dates(
+                "Task",
+                "2026-02-30",
+                "",
+                "",
+                "",
+                "",
+                "",
+                0,
+                "",
+                &[],
+                "",
+                "",
+                "NEEDS-ACTION",
+                0,
+            )
+            .is_err()
+        );
+        assert!(
+            build_task_component_with_dates(
+                "Task",
+                "2026-08-10",
+                "20260811",
+                "",
+                "",
+                "",
+                "",
+                0,
+                "",
+                &[],
+                "",
+                "",
+                "NEEDS-ACTION",
+                0,
+            )
+            .is_err()
+        );
+        assert!(
+            build_task_component_with_dates(
+                "Task",
+                "2026-08-11",
+                "2026-08-10",
+                "",
+                "",
+                "",
+                "",
+                0,
+                "",
+                &[],
+                "",
+                "",
+                "NEEDS-ACTION",
+                0,
+            )
+            .is_err()
+        );
+        assert!(parse_task_date_property("DTSTART;VALUE=DATE", "20260810T120000Z").is_err());
+        assert!(parse_task_date_property("DUE;VALUE=DATE-TIME", "20260810").is_err());
+    }
+
+    #[test]
+    fn task_editor_requires_start_for_recurrence() {
+        let result = build_task_component_with_dates(
+            "Recurring task",
+            "",
+            "",
+            "",
+            "FREQ=WEEKLY;COUNT=2",
+            "",
+            "",
+            0,
+            "",
+            &[],
+            "",
+            "",
+            "NEEDS-ACTION",
+            0,
+        );
+        assert!(
+            result
+                .expect_err("recurrence without DTSTART must fail")
+                .contains("DTSTART")
+        );
+    }
+
+    #[test]
+    fn task_editor_lifecycle_transitions_enforce_gtk3_invariants() {
+        let today = NaiveDate::from_ymd_opt(2026, 8, 23).unwrap();
+        let needs_action =
+            task_lifecycle_for_date("NEEDS-ACTION", 72, Some(today.pred_opt().unwrap()), today)
+                .unwrap();
+        assert_eq!(needs_action.percent, 0);
+        assert_eq!(needs_action.completed, None);
+
+        let in_process = task_lifecycle_for_date("IN-PROCESS", 0, None, today).unwrap();
+        assert_eq!(in_process.percent, 50);
+        assert_eq!(in_process.completed, None);
+        let in_process_100 = task_lifecycle_for_date("IN-PROCESS", 100, None, today).unwrap();
+        assert_eq!(in_process_100.percent, 50);
+
+        let completed =
+            task_lifecycle_for_date("COMPLETED", 25, Some(today.pred_opt().unwrap()), today)
+                .unwrap();
+        assert_eq!(completed.percent, 100);
+        assert!(completed.completed.is_some());
+        assert!(task_lifecycle_for_date("COMPLETED", 100, None, today).is_err());
+        assert!(
+            task_lifecycle_for_date("COMPLETED", 100, Some(today.succ_opt().unwrap()), today)
+                .is_err()
+        );
+
+        let completed_component = concat!(
+            "BEGIN:VTODO\r\nUID:lifecycle\r\nSUMMARY:Lifecycle\r\n",
+            "STATUS:COMPLETED\r\nPERCENT-COMPLETE:100\r\n",
+            "COMPLETED;VALUE=DATE:20260820\r\nEND:VTODO\r\n"
+        );
+        let reopened = update_task_component_with_dates(
+            completed_component,
+            "Lifecycle",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            0,
+            "",
+            &[],
+            "",
+            "",
+            "NEEDS-ACTION",
+            100,
+        )
+        .unwrap();
+        assert!(reopened.contains("STATUS:NEEDS-ACTION\r\n"));
+        assert!(reopened.contains("PERCENT-COMPLETE:0\r\n"));
+        assert!(!reopened.contains("COMPLETED:"));
+    }
+
+    #[test]
+    fn task_editor_source_and_generation_guards_block_unavailable_or_stale_work() {
+        let capabilities = Rc::new(RefCell::new(HashMap::from([
+            (
+                "live-source".to_string(),
+                TaskSourceCapability::Unknown,
+            ),
+            (
+                "read-only-source".to_string(),
+                TaskSourceCapability::ReadOnly,
+            ),
+            (
+                "cached-source".to_string(),
+                TaskSourceCapability::Unavailable,
+            ),
+            (
+                "writable-source".to_string(),
+                TaskSourceCapability::Writable,
+            ),
+        ])));
+        assert!(!task_source_is_writable_with_local(
+            "live-source",
+            &capabilities,
+            false
+        ));
+        assert!(!task_source_is_writable_with_local(
+            "read-only-source",
+            &capabilities,
+            false
+        ));
+        assert!(!task_source_is_writable_with_local(
+            "cached-source",
+            &capabilities,
+            true
+        ));
+        assert!(task_source_is_writable_with_local(
+            "writable-source",
+            &capabilities,
+            false
+        ));
+        assert!(task_source_is_writable_with_local(
+            "local-calendar",
+            &capabilities,
+            true
+        ));
+        assert!(!task_source_is_writable_with_local(
+            "local-calendar",
+            &capabilities,
+            false
+        ));
+        assert!(!task_source_is_writable_with_local(
+            "missing-source",
+            &capabilities,
+            true
+        ));
+
+        let source_uids = vec![
+            "placeholder".to_string(),
+            "read-only-source".to_string(),
+            "live-source".to_string(),
+            "local-calendar".to_string(),
+            "writable-source".to_string(),
+        ];
+        assert_eq!(
+            task_default_source_index(
+                &source_uids,
+                Some("read-only-source"),
+                None,
+                &capabilities.borrow(),
+                true,
+            ),
+            Some(3),
+            "a new task must fall back to the first confirmed writable source"
+        );
+        assert_eq!(
+            task_default_source_index(
+                &source_uids,
+                Some("writable-source"),
+                None,
+                &capabilities.borrow(),
+                true,
+            ),
+            Some(4)
+        );
+        assert_eq!(
+            task_default_source_index(
+                &source_uids,
+                None,
+                Some("read-only-source"),
+                &capabilities.borrow(),
+                true,
+            ),
+            Some(1),
+            "an edit stays on its original source and is rejected as read-only"
+        );
+
+        assert_eq!(
+            task_close_decision(false, TaskSavePhase::Editing, false),
+            TaskCloseDecision::Allow
+        );
+        assert_eq!(
+            task_close_decision(true, TaskSavePhase::Editing, false),
+            TaskCloseDecision::Prompt
+        );
+        assert_eq!(
+            task_close_decision(true, TaskSavePhase::Editing, true),
+            TaskCloseDecision::KeepPrompt
+        );
+        assert_eq!(
+            task_close_decision(true, TaskSavePhase::DispatchPending, false),
+            TaskCloseDecision::BlockSave
+        );
+        assert_eq!(
+            task_close_decision(true, TaskSavePhase::Committing, false),
+            TaskCloseDecision::BlockCommit
+        );
+        assert!(task_editor_result_is_current(7, 7, true));
+        assert!(!task_editor_result_is_current(8, 7, true));
+        assert!(!task_editor_result_is_current(7, 7, false));
+
+        let failed = task_editor_result_state(true, false, false);
+        assert_eq!(failed.apply_row, false);
+        assert!(failed.dirty);
+        let successful = task_editor_result_state(true, true, true);
+        assert!(successful.apply_row);
+        assert!(!successful.dirty);
+        let stale = task_editor_result_state(false, true, true);
+        assert!(!stale.apply_row);
+        assert!(stale.dirty);
+    }
+
+    #[test]
+    fn task_editor_dialog_boundary_covers_save_discard_continue_and_commit() {
+        assert_eq!(
+            task_editor_dialog_transition(
+                TaskEditorDialogState::Dirty,
+                TaskEditorDialogAction::CloseRequest,
+            ),
+            (
+                TaskEditorDialogState::Prompting,
+                TaskEditorDialogEffect::ShowPrompt
+            )
+        );
+        assert_eq!(
+            task_editor_dialog_transition(
+                TaskEditorDialogState::Prompting,
+                TaskEditorDialogAction::ContinueEditing,
+            ),
+            (TaskEditorDialogState::Dirty, TaskEditorDialogEffect::None)
+        );
+        assert_eq!(
+            task_editor_dialog_transition(
+                TaskEditorDialogState::Prompting,
+                TaskEditorDialogAction::Discard,
+            ),
+            (TaskEditorDialogState::Closed, TaskEditorDialogEffect::Close)
+        );
+        assert_eq!(
+            task_editor_dialog_transition(
+                TaskEditorDialogState::Prompting,
+                TaskEditorDialogAction::Save,
+            ),
+            (
+                TaskEditorDialogState::SavePending,
+                TaskEditorDialogEffect::DispatchSave
+            )
+        );
+        assert_eq!(
+            task_editor_dialog_transition(
+                TaskEditorDialogState::SavePending,
+                TaskEditorDialogAction::DispatchStarted,
+            ),
+            (
+                TaskEditorDialogState::Committing,
+                TaskEditorDialogEffect::DisableClose
+            )
+        );
+        assert_eq!(
+            task_editor_dialog_transition(
+                TaskEditorDialogState::SavePending,
+                TaskEditorDialogAction::CancelBeforeDispatch,
+            ),
+            (TaskEditorDialogState::Closed, TaskEditorDialogEffect::Close)
+        );
+        assert_eq!(
+            task_editor_dialog_transition(
+                TaskEditorDialogState::Committing,
+                TaskEditorDialogAction::CloseRequest,
+            ),
+            (
+                TaskEditorDialogState::Committing,
+                TaskEditorDialogEffect::BlockClose
+            )
+        );
+        assert_eq!(
+            task_editor_dialog_transition(
+                TaskEditorDialogState::Committing,
+                TaskEditorDialogAction::BackendFailure,
+            ),
+            (TaskEditorDialogState::Dirty, TaskEditorDialogEffect::None)
+        );
+    }
+
+    #[test]
+    fn task_save_cancel_is_honest_at_the_synchronous_dispatch_boundary() {
+        let cancelled = TaskSaveControl::new();
+        assert!(cancelled.arm());
+        assert_eq!(
+            cancelled.cancel_before_dispatch(),
+            TaskCancelResult::CancelledBeforeDispatch
+        );
+        let mut backend_calls = 0;
+        if cancelled.begin_dispatch() {
+            backend_calls += 1;
+        }
+        assert_eq!(backend_calls, 0, "cancel-before-dispatch must not mutate");
+        assert_eq!(
+            cancelled.phase(),
+            TaskSavePhase::CancelledBeforeDispatch
+        );
+        assert_eq!(
+            task_close_decision(false, cancelled.phase(), false),
+            TaskCloseDecision::Allow
+        );
+
+        let committing = TaskSaveControl::new();
+        assert!(committing.arm());
+        assert!(committing.begin_dispatch());
+        assert_eq!(committing.phase(), TaskSavePhase::Committing);
+        assert_eq!(
+            committing.cancel_before_dispatch(),
+            TaskCancelResult::Committing
+        );
+        assert_eq!(
+            task_close_decision(true, committing.phase(), false),
+            TaskCloseDecision::BlockCommit
+        );
+        assert_eq!(
+            task_editor_dialog_transition(
+                TaskEditorDialogState::Committing,
+                TaskEditorDialogAction::CancelBeforeDispatch,
+            ),
+            (
+                TaskEditorDialogState::Committing,
+                TaskEditorDialogEffect::BlockClose
+            )
+        );
+    }
+
+    #[test]
+    fn task_editor_result_generation_is_stale_a_b_and_failure_is_non_optimistic() {
+        let current_generation = 12;
+        let generation_a = 11;
+        let generation_b = 12;
+        assert!(!task_editor_result_is_current(
+            current_generation,
+            generation_a,
+            true
+        ));
+        assert!(task_editor_result_is_current(
+            current_generation,
+            generation_b,
+            true
+        ));
+
+        let failed = task_editor_result_state(true, false, false);
+        assert!(!failed.apply_row);
+        assert!(failed.dirty);
+        let success = task_editor_result_state(true, true, true);
+        assert!(success.apply_row);
+        assert!(!success.dirty);
+        let stale_success = task_editor_result_state(false, true, true);
+        assert!(!stale_success.apply_row);
+        assert!(stale_success.dirty);
+    }
+
+    #[test]
+    fn task_editor_requires_a_confirmed_authoritative_component() {
+        let confirmed = "BEGIN:VTODO\r\nUID:confirmed\r\nEND:VTODO\r\n";
+        assert_eq!(
+            task_authoritative_component(
+                "confirmed",
+                "confirmed",
+                Some(confirmed.to_string())
+            )
+            .unwrap(),
+            confirmed
+        );
+        assert!(task_authoritative_component("confirmed", "confirmed", None).is_err());
+        assert!(task_authoritative_component(
+            "confirmed",
+            "other",
+            Some(confirmed.to_string())
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn task_editor_displays_local_and_utc_dates_without_rewriting_unchanged_values() {
+        let floating = concat!(
+            "BEGIN:VTODO\r\nUID:floating\r\n",
+            "DUE:20260810T120000\r\nEND:VTODO\r\n"
+        );
+        let floating_draft = task_editor_draft_from_component(floating);
+        assert_eq!(floating_draft.due.input, "2026-08-10");
+
+        let utc = concat!(
+            "BEGIN:VTODO\r\nUID:utc\r\n",
+            "DUE:20260810T233000Z\r\nEND:VTODO\r\n"
+        );
+        let utc_draft = task_editor_draft_from_component(utc);
+        assert_eq!(
+            utc_draft.due.input,
+            property_local_date(utc, "DUE", false)
+                .unwrap()
+                .format("%Y-%m-%d")
+                .to_string()
+        );
+        let unchanged = update_task_component_with_dates(
+            utc,
+            "UTC",
+            "",
+            &utc_draft.due.input,
+            "",
+            "",
+            "",
+            "",
+            0,
+            "",
+            &[],
+            "",
+            &utc_draft.attachments,
+            "NEEDS-ACTION",
+            0,
+        )
+        .unwrap();
+        assert!(unchanged.contains("DUE:20260810T233000Z\r\n"));
+    }
+
+    #[test]
+    fn task_editor_pairs_date_and_datetime_fields_when_one_is_edited() {
+        let existing = concat!(
+            "BEGIN:VTODO\r\nUID:paired\r\n",
+            "DTSTART;VALUE=DATE:20260810\r\n",
+            "DUE;TZID=Europe/Berlin:20260811T120000\r\n",
+            "STATUS:NEEDS-ACTION\r\nPERCENT-COMPLETE:0\r\n",
+            "END:VTODO\r\n"
+        );
+        let draft = task_editor_draft_from_component(existing);
+        let edited = update_task_component_with_dates(
+            existing,
+            "Paired",
+            &draft.dtstart.input,
+            "2026-08-12",
+            "",
+            "",
+            "",
+            "",
+            0,
+            "",
+            &[],
+            "",
+            &draft.attachments,
+            "NEEDS-ACTION",
+            0,
+        )
+        .unwrap();
+        assert!(edited.contains("DTSTART:20260810T000000\r\n"));
+        assert!(edited.contains("DUE;TZID=Europe/Berlin:20260812T120000\r\n"));
+        assert!(!edited.contains("DTSTART;VALUE=DATE:20260810\r\n"));
+        assert!(!edited.contains("DUE;VALUE=DATE:20260812\r\n"));
+    }
+
+    #[test]
+    fn task_editor_preserves_unsupported_imported_lifecycle_until_explicit_change() {
+        let existing = concat!(
+            "BEGIN:VTODO\r\nUID:unsupported-lifecycle\r\nSUMMARY:Imported\r\n",
+            "STATUS:X-IMPORTED\r\nPERCENT-COMPLETE:bogus\r\n",
+            "END:VTODO\r\n"
+        );
+        let draft = task_editor_draft_from_component(existing);
+        assert_eq!(draft.unsupported_status.as_deref(), Some("X-IMPORTED"));
+        assert_eq!(draft.unsupported_percent.as_deref(), Some("bogus"));
+        assert_eq!(task_initial_editor_lifecycle(&draft, NaiveDate::from_ymd_opt(2026, 8, 23).unwrap()), (0, "".to_string()));
+        let unchanged = update_task_component_with_dates(
+            existing,
+            "Imported",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            0,
+            "",
+            &[],
+            "",
+            &draft.attachments,
+            draft.status,
+            draft.percent,
+        )
+        .unwrap();
+        assert!(unchanged.contains("STATUS:X-IMPORTED\r\n"));
+        assert!(unchanged.contains("PERCENT-COMPLETE:bogus\r\n"));
+    }
+
+    #[test]
+    fn task_editor_attachments_are_lossless_for_noop_and_safe_when_reordered() {
+        let existing = concat!(
+            "BEGIN:VTODO\r\nUID:attachments\r\nSUMMARY:Attachments\r\n",
+            "STATUS:NEEDS-ACTION\r\nPERCENT-COMPLETE:0\r\n",
+            "ATTACH;FMTTYPE=application/pdf;X-PARAM=keep;VALUE=URI:https://example.test/a.pdf\r\n",
+            "ATTACH;ENCODING=BASE64;FMTTYPE=application/octet-stream;VALUE=BINARY:QUJDRA==\r\n",
+            "BEGIN:VALARM\r\nACTION:AUDIO\r\n",
+            "ATTACH;VALUE=URI:https://example.test/alarm.wav\r\n",
+            "END:VALARM\r\nEND:VTODO\r\n"
+        );
+        let draft = task_editor_draft_from_component(existing);
+        assert!(!draft.attachments_changed);
+        assert_eq!(draft.attachment_lines.len(), 2);
+        assert!(draft.attachment_lines[0]
+            .raw
+            .contains("X-PARAM=keep;VALUE=URI"));
+        assert_eq!(
+            draft.attachment_lines[1].kind,
+            TaskAttachmentValueKind::Binary
+        );
+        assert!(!draft.attachments.contains("alarm.wav"));
+
+        let unchanged = update_task_component_with_dates(
+            existing,
+            "Attachments edited elsewhere",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            0,
+            "",
+            &parse_alarms(existing),
+            "",
+            &draft.attachments,
+            "NEEDS-ACTION",
+            0,
+        )
+        .unwrap();
+        assert!(unfold_ical_lines(&unchanged).iter().any(|line| {
+            line == "ATTACH;FMTTYPE=application/pdf;X-PARAM=keep;VALUE=URI:https://example.test/a.pdf"
+        }));
+        assert!(unfold_ical_lines(&unchanged).iter().any(|line| {
+            line == "ATTACH;ENCODING=BASE64;FMTTYPE=application/octet-stream;VALUE=BINARY:QUJDRA=="
+        }));
+        assert!(unfold_ical_lines(&unchanged).iter().any(|line| {
+            line == "ATTACH;VALUE=URI:https://example.test/alarm.wav"
+        }));
+
+        let edited_text = format!(
+            "https://example.test/new.pdf\n{}\nATTACH;ENCODING=BASE64;VALUE=BINARY:QkFTRTY0",
+            draft.attachment_lines[1].raw
+        );
+        let edited_draft = TaskAttachmentDraft::from_component(existing)
+            .with_editor_text(&edited_text);
+        assert!(edited_draft.attachments_changed);
+        let edited = update_task_component_with_dates(
+            existing,
+            "Attachments reordered",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            0,
+            "",
+            &parse_alarms(existing),
+            "",
+            &edited_draft.editor_text,
+            "NEEDS-ACTION",
+            0,
+        )
+        .unwrap();
+        let top_level = task_top_level_attachment_lines(&edited);
+        assert_eq!(top_level.len(), 3);
+        assert_eq!(top_level[0].value, "https://example.test/new.pdf");
+        assert_eq!(
+            top_level[1].raw,
+            "ATTACH;ENCODING=BASE64;FMTTYPE=application/octet-stream;VALUE=BINARY:QUJDRA=="
+        );
+        assert_eq!(
+            top_level[2].raw,
+            "ATTACH;ENCODING=BASE64;VALUE=BINARY:QkFTRTY0"
+        );
+        assert!(unfold_ical_lines(&edited).iter().any(|line| {
+            line == "ATTACH;VALUE=URI:https://example.test/alarm.wav"
+        }));
+    }
+
+    #[test]
+    fn task_editor_preserves_ordered_alarms_attachment_parameters_and_unknown_properties() {
+        let existing = concat!(
+            "BEGIN:VTODO\r\nUID:preserve-all\r\n",
+            "DTSTART;VALUE=DATE:20260810\r\nDUE;VALUE=DATE:20260811\r\n",
+            "STATUS:NEEDS-ACTION\r\nPERCENT-COMPLETE:0\r\n",
+            "RRULE:FREQ=DAILY;COUNT=3\r\n",
+            "ATTACH;FMTTYPE=application/pdf;X-SAFE=keep;VALUE=URI:https://example.test/a.pdf\r\n",
+            "X-UNKNOWN:keep\r\n",
+            "BEGIN:VALARM\r\nACTION:AUDIO\r\nTRIGGER:-PT5M\r\nX-ALARM:FIRST\r\nEND:VALARM\r\n",
+            "BEGIN:VALARM\r\nACTION:DISPLAY\r\nTRIGGER:-PT10M\r\nX-ALARM:SECOND\r\nEND:VALARM\r\n",
+            "END:VTODO\r\n"
+        );
+        let draft = task_editor_draft_from_component(existing);
+        let updated = update_task_component_with_dates(
+            existing,
+            "Changed title",
+            &draft.dtstart.input,
+            &draft.due.input,
+            &draft.completed.input,
+            &draft.recurrence,
+            &draft.rdates,
+            &draft.exdates,
+            draft.priority,
+            &draft.categories,
+            &parse_alarms(existing),
+            &draft.description,
+            &draft.attachments,
+            "NEEDS-ACTION",
+            0,
+        )
+        .unwrap();
+        assert!(unfold_ical_lines(&updated).iter().any(|line| {
+            line == "ATTACH;FMTTYPE=application/pdf;X-SAFE=keep;VALUE=URI:https://example.test/a.pdf"
+        }));
+        assert!(updated.contains("X-UNKNOWN:keep\r\n"));
+        let first = updated.find("X-ALARM:FIRST").unwrap();
+        let second = updated.find("X-ALARM:SECOND").unwrap();
+        assert!(first < second);
+        assert!(updated.contains("RRULE:FREQ=DAILY;COUNT=3\r\n"));
+        assert!(updated.contains("UID:preserve-all\r\n"));
+    }
+
+    #[test]
+    fn local_task_create_edit_and_reload_roundtrip_is_authoritative() {
+        let directory = std::env::temp_dir().join(format!(
+            "evolution-gtk4-task-editor-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let service = CalendarStoreService::with_writable_calendar_dir(&directory);
+        let created_component = build_task_component_with_dates(
+            "Local task",
+            "2026-08-10",
+            "2026-08-11",
+            "",
+            "FREQ=DAILY;COUNT=2",
+            "",
+            "",
+            1,
+            "Work",
+            &[],
+            "Description",
+            "",
+            "NEEDS-ACTION",
+            0,
+        )
+        .unwrap();
+        let (uid, _) = service.create_component(&created_component).unwrap();
+        let snapshot = service.load_snapshot();
+        let record = snapshot
+            .tasks
+            .iter()
+            .find(|task| task.uid == uid)
+            .expect("created task should reload");
+        let updated_component = update_task_component_with_dates(
+            &record.component,
+            "Edited local task",
+            "2026-08-10",
+            "2026-08-12",
+            "",
+            &ical_property(&record.component, "RRULE").unwrap_or_default(),
+            "",
+            "",
+            2,
+            "Work,Home",
+            &[],
+            "Edited description",
+            "",
+            "NEEDS-ACTION",
+            0,
+        )
+        .unwrap();
+        service.modify_component(&uid, &updated_component).unwrap();
+        let reloaded = service.load_snapshot();
+        let edited = reloaded
+            .tasks
+            .iter()
+            .find(|task| task.uid == uid)
+            .expect("edited task should reload");
+        assert_eq!(edited.summary, "Edited local task");
+        assert_eq!(edited.due, "2026-08-12");
+        assert!(edited.component.contains("DTSTART;VALUE=DATE:20260810\r\n"));
+        assert!(edited.component.contains("RRULE:FREQ=DAILY;COUNT=2\r\n"));
+        assert!(edited.component.contains("CATEGORIES:Work,Home\r\n"));
+        let _ = std::fs::remove_dir_all(&directory);
     }
 }
 

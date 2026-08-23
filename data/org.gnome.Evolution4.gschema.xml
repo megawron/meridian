@@ -263,7 +263,7 @@
       <summary>Optional S/MIME trust store certificate bundle path</summary>
     </key>
     <key name="mail-sync-interval" type="i">
-      <default>30</default>
+      <default>300</default>
       <summary>Mail synchronization interval in seconds (0 disables automatic synchronization)</summary>
     </key>
     <key name="mail-sync-message-limit" type="i">

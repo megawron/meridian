@@ -10,9 +10,11 @@ use super::mail_store_service::{MailBackendLocation, ParsedMail, assign_thread_m
 use super::mail_transport_service::{MailTransportMode, MailTransportService};
 
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 use uuid::Uuid;
+
+static CAMEL_NATIVE_LOCK: Mutex<()> = Mutex::new(());
 
 const DEFAULT_MAIL_PAGE_SIZE: usize = 100;
 const MAX_MAIL_PAGE_SIZE: usize = 1_000;
@@ -1089,6 +1091,7 @@ fn load_messages_native(
     // Passing null filters asks the adapter to load every enabled EDS mail
     // account and selectable folder.  The GTK view supplies source/folder
     // filters after the user selects an account-specific row.
+    let _native_lock = CAMEL_NATIVE_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
     let success = unsafe {
         ffi::evolution_eds_camel_load_messages(
             source_uid_ptr,
@@ -1325,6 +1328,7 @@ fn load_raw_message_native(
     let mut records = std::ptr::null_mut();
     let mut record_count = 0usize;
     let mut error_message: *mut c_char = std::ptr::null_mut();
+    let _native_lock = CAMEL_NATIVE_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
     let success = unsafe {
         ffi::evolution_eds_camel_load_messages_by_uid(
             source_uid.as_ptr(),
@@ -1410,6 +1414,7 @@ fn load_messages_for_uids_native(
     let mut records = std::ptr::null_mut();
     let mut record_count = 0usize;
     let mut error_message: *mut c_char = std::ptr::null_mut();
+    let _native_lock = CAMEL_NATIVE_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
     let success = unsafe {
         ffi::evolution_eds_camel_load_messages_by_uid(
             source_uid.as_ptr(),
@@ -2152,6 +2157,7 @@ fn apply_operation_with_cancellation(
         let cancellation_callback =
             cancelled.map(|_| cancellation_callback as ffi::EvolutionEdsCamelCancellationCallback);
 
+        let _native_lock = CAMEL_NATIVE_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
         let result = unsafe {
             ffi::evolution_eds_camel_apply_operation(
                 &ffi_operation,
@@ -2428,6 +2434,7 @@ pub(crate) fn send_message_with_cancellation(
 
         let mut sent_message_saved = 0;
         let mut error_message: *mut c_char = std::ptr::null_mut();
+        let _native_lock = CAMEL_NATIVE_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
         let result = unsafe {
             ffi::evolution_eds_camel_send_message(
                 source_uid.as_ptr(),
@@ -2490,6 +2497,7 @@ pub(crate) fn save_message(
                 CamelSaveFolder::Sent => 2,
             };
             let mut error_message: *mut c_char = std::ptr::null_mut();
+            let _native_lock = CAMEL_NATIVE_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
             let result = unsafe {
                 ffi::evolution_eds_camel_save_message(
                     source_uid.as_ptr(),

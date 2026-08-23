@@ -1269,7 +1269,7 @@ impl MailViewer {
                     webview.set_opacity(0.0);
                     viewer.show_renderer_loading();
                 }
-                webkit6::LoadEvent::Finished => {
+                webkit6::LoadEvent::Finished | webkit6::LoadEvent::Committed => {
                     viewer.imp().webview_ready.set(true);
                     webview.set_opacity(1.0);
                     viewer.show_renderer_ready();
@@ -1703,9 +1703,17 @@ fn webview_load_is_current(
     expected_uri: Option<&str>,
     current_uri: Option<&str>,
 ) -> bool {
-    active_webview_generation == render_generation
-        && expected_uri.is_some()
-        && expected_uri == current_uri
+    if active_webview_generation != render_generation {
+        return false;
+    }
+    match (expected_uri, current_uri) {
+        (Some(expected), Some(current)) => {
+            current == expected || current == "about:blank"
+        }
+        (Some(_), None) => false,
+        (None, None) => true,
+        _ => false,
+    }
 }
 
 fn cached_plan_bytes(plan: &PreparedMailBody) -> usize {

@@ -6,8 +6,16 @@ use adw::prelude::*;
 use adw::subclass::prelude::*;
 use gtk::{gdk, gio, glib};
 use std::cell::{Cell, RefCell};
+use std::collections::HashSet;
 use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
+use crate::services::contact_search_service::{
+    ContactIdentity, ContactOuterFilters, ContactSearchEvaluation, ContactSearchField,
+    ContactSearchQuery, ContactSearchSnapshot, LastValidContactSearch, LatestContactSearchWorker,
+    LatestGenerationEvaluator, field_values,
+};
 use crate::services::ebook_service::{
     EBookChangeKind, EBookContactRecord, EBookDataOrigin, EBookService, EBookSyncEvent,
     load_contacts_prefer_eds, parse_change_record,
@@ -19,6 +27,54 @@ use crate::views::accessibility::set_accessible_label;
 
 const LOCAL_ADDRESS_BOOK_SOURCE_UID: &str = "local-addressbook";
 
+#[derive(Debug)]
+struct ContactPageSearchState {
+    visible_identities: RefCell<HashSet<ContactIdentity>>,
+    active_query: RefCell<ContactSearchQuery>,
+    last_valid: RefCell<LastValidContactSearch>,
+    generations: LatestGenerationEvaluator,
+    worker: LatestContactSearchWorker,
+    quick_field: Cell<ContactSearchField>,
+}
+
+impl Default for ContactPageSearchState {
+    fn default() -> Self {
+        Self {
+            visible_identities: RefCell::new(HashSet::new()),
+            active_query: RefCell::new(ContactSearchQuery::all()),
+            last_valid: RefCell::new(LastValidContactSearch::default()),
+            generations: LatestGenerationEvaluator::default(),
+            worker: LatestContactSearchWorker::default(),
+            quick_field: Cell::new(ContactSearchField::AnyField),
+        }
+    }
+}
+
+impl ContactPageSearchState {
+    fn quick_field(&self) -> ContactSearchField {
+        self.quick_field.get()
+    }
+
+    fn set_quick_field(&self, field: ContactSearchField) {
+        self.quick_field.set(field);
+    }
+
+    fn active_query(&self) -> ContactSearchQuery {
+        self.active_query.borrow().clone()
+    }
+
+    fn set_active_query(&self, query: ContactSearchQuery) {
+        self.active_query.replace(query);
+    }
+
+    fn active_query_with_filters(&self, filters: ContactOuterFilters) -> ContactSearchQuery {
+        let mut query = self.active_query();
+        query.filters = filters;
+        self.set_active_query(query.clone());
+        query
+    }
+}
+
 // ─── GObject Subclass ───────────────────────────────────────────────────────
 
 mod imp {
@@ -27,6 +83,12 @@ mod imp {
     #[derive(Debug, Default)]
     pub struct ContactsPage {
         pub ebook_monitor_cancel: RefCell<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>>,
+        pub contact_search_cancel: RefCell<Option<Arc<AtomicBool>>>,
+        pub contact_search_field: Cell<ContactSearchField>,
+        pub contact_search_status: RefCell<Option<gtk::Label>>,
+        pub contact_search_spinner: RefCell<Option<gtk::Spinner>>,
+        pub disposed: Cell<bool>,
+        pub selected_identity: RefCell<Option<ContactIdentity>>,
         pub new_contact_button: RefCell<Option<gtk::Button>>,
         pub contact_list: RefCell<Option<gtk::ListBox>>,
         pub search_entry: RefCell<Option<gtk::SearchEntry>>,
@@ -50,8 +112,11 @@ mod imp {
         }
 
         fn dispose(&self) {
+            self.disposed.set(true);
             if let Some(cancel) = self.ebook_monitor_cancel.borrow_mut().take() {
-                use std::sync::atomic::Ordering;
+                cancel.store(true, Ordering::Relaxed);
+            }
+            if let Some(cancel) = self.contact_search_cancel.borrow_mut().take() {
                 cancel.store(true, Ordering::Relaxed);
             }
             if let Some(child) = self.obj().first_child() {
@@ -97,6 +162,13 @@ impl ContactsPage {
     }
 
     pub(crate) fn set_search_query(&self, query: &str) {
+        // Global search has an explicit, typed mapping in the service layer:
+        // Any Field contains.  Reset the page-local quick mode before setting
+        // the entry so a previous Name/Phone quick mode cannot reinterpret a
+        // cross-component result.
+        self.imp()
+            .contact_search_field
+            .set(ContactSearchField::AnyField);
         if let Some(entry) = self.imp().search_entry.borrow().as_ref() {
             entry.set_text(query);
             entry.grab_focus();
@@ -133,6 +205,33 @@ impl ContactsPage {
             .build();
         self.imp().search_entry.replace(Some(search_entry.clone()));
         sidebar_box.append(&search_entry);
+
+        let quick_mode = gtk::DropDown::new(
+            Some(gtk::StringList::new(&[
+                "Alle Felder",
+                "Name",
+                "E-Mail",
+                "Telefon",
+                "Kategorie",
+            ])),
+            None::<&gtk::Expression>,
+        );
+        quick_mode.set_tooltip_text(Some("Schnellsuchfeld auswählen"));
+        quick_mode.set_margin_start(8);
+        quick_mode.set_margin_end(8);
+        quick_mode.set_margin_bottom(4);
+        sidebar_box.append(&quick_mode);
+
+        let advanced_search_button = gtk::Button::builder()
+            .label("Erweiterte Suche…")
+            .icon_name("system-search-symbolic")
+            .halign(gtk::Align::Start)
+            .margin_start(8)
+            .margin_end(8)
+            .margin_bottom(6)
+            .css_classes(vec!["flat"])
+            .build();
+        sidebar_box.append(&advanced_search_button);
 
         let book_model = gtk::StringList::new(&["Alle Kontakte"]);
         let book_selector = gtk::DropDown::new(Some(book_model.clone()), None::<&gtk::Expression>);
@@ -179,11 +278,11 @@ impl ContactsPage {
         category_selector.set_margin_bottom(8);
         sidebar_box.append(&category_selector);
 
-        let search_query = Rc::new(RefCell::new(String::new()));
         let selected_book = Rc::new(RefCell::new(String::new()));
         let book_source_uids = Rc::new(RefCell::new(vec![String::new()]));
         let selected_category = Rc::new(RefCell::new(String::new()));
         let duplicate_only = Rc::new(Cell::new(false));
+        let unmatched_category = Rc::new(Cell::new(false));
 
         let duplicate_filter_row = gtk::CheckButton::builder()
             .label("Nur Dubletten")
@@ -195,6 +294,16 @@ impl ContactsPage {
             .build();
         sidebar_box.append(&duplicate_filter_row);
 
+        let unmatched_category_row = gtk::CheckButton::builder()
+            .label("Nur ohne Kategorie")
+            .tooltip_text("Kontakte ohne jegliche Kategorie anzeigen")
+            .halign(gtk::Align::Start)
+            .margin_start(8)
+            .margin_end(8)
+            .margin_bottom(4)
+            .build();
+        sidebar_box.append(&unmatched_category_row);
+
         let empty_state = gtk::Label::builder()
             .label("Noch kein synchronisiertes Adressbuch geladen")
             .css_classes(vec!["dim-label"])
@@ -204,7 +313,18 @@ impl ContactsPage {
             .margin_top(6)
             .margin_bottom(6)
             .build();
+        let search_spinner = gtk::Spinner::new();
+        search_spinner.set_visible(false);
+        search_spinner.set_halign(gtk::Align::Start);
+        search_spinner.set_margin_start(8);
+        sidebar_box.append(&search_spinner);
         sidebar_box.append(&empty_state);
+        self.imp()
+            .contact_search_status
+            .replace(Some(empty_state.clone()));
+        self.imp()
+            .contact_search_spinner
+            .replace(Some(search_spinner.clone()));
 
         let book_model_for_load = book_model.clone();
         let book_source_uids_for_load = Rc::clone(&book_source_uids);
@@ -297,14 +417,12 @@ impl ContactsPage {
         let stored_contacts = Rc::new(RefCell::new(Vec::<EBookContactRecord>::new()));
         let selected_contact = Rc::new(RefCell::new(None::<EBookContactRecord>));
         let refresh_generation = Rc::new(Cell::new(0u64));
+        let search_state = Rc::new(ContactPageSearchState::default());
+        self.imp()
+            .contact_search_field
+            .set(ContactSearchField::AnyField);
 
-        set_contact_filter(
-            &contact_list,
-            Rc::clone(&search_query),
-            Rc::clone(&selected_book),
-            Rc::clone(&selected_category),
-            Rc::clone(&duplicate_only),
-        );
+        set_contact_filter(&contact_list, Rc::clone(&search_state));
 
         refresh_contacts(
             contact_list.clone(),
@@ -315,60 +433,114 @@ impl ContactsPage {
             category_selector.clone(),
             Rc::clone(&selected_category),
             Rc::clone(&refresh_generation),
+            self.downgrade(),
+            Rc::clone(&search_state),
         );
 
-        let search_query_for_filter = Rc::clone(&search_query);
+        let search_state_for_search = Rc::clone(&search_state);
+        let stored_contacts_for_search = Rc::clone(&stored_contacts);
+        let page_weak_for_search = self.downgrade();
         let selected_book_for_search = Rc::clone(&selected_book);
         let selected_category_for_search = Rc::clone(&selected_category);
         let duplicate_only_for_search = Rc::clone(&duplicate_only);
+        let unmatched_category_for_search = Rc::clone(&unmatched_category);
         search_entry.connect_search_changed(glib::clone!(
-            #[weak]
-            contact_list,
+            #[strong]
+            search_state_for_search,
+            #[strong]
+            stored_contacts_for_search,
+            #[strong]
+            page_weak_for_search,
             move |entry| {
-                *search_query_for_filter.borrow_mut() = normalize_contact_query(&entry.text());
-                set_contact_filter(
-                    &contact_list,
-                    Rc::clone(&search_query_for_filter),
-                    Rc::clone(&selected_book_for_search),
-                    Rc::clone(&selected_category_for_search),
-                    Rc::clone(&duplicate_only_for_search),
+                let quick_field = page_weak_for_search
+                    .upgrade()
+                    .map(|page| page.imp().contact_search_field.get())
+                    .unwrap_or_else(|| search_state_for_search.quick_field());
+                search_state_for_search.set_quick_field(quick_field);
+                let query =
+                    quick_query(search_state_for_search.quick_field(), entry.text().as_str());
+                let query = with_contact_outer_filters(
+                    query,
+                    &selected_book_for_search,
+                    &selected_category_for_search,
+                    unmatched_category_for_search.get(),
+                    duplicate_only_for_search.get(),
+                );
+                start_contact_search(
+                    page_weak_for_search.clone(),
+                    query,
+                    Rc::clone(&search_state_for_search),
+                    Rc::clone(&stored_contacts_for_search),
                 );
             }
         ));
 
+        let search_entry_for_quick_mode = search_entry.clone();
+        let search_state_for_quick_mode = Rc::clone(&search_state);
+        let stored_contacts_for_quick_mode = Rc::clone(&stored_contacts);
+        let page_weak_for_quick_mode = self.downgrade();
+        let selected_book_for_quick_mode = Rc::clone(&selected_book);
+        let selected_category_for_quick_mode = Rc::clone(&selected_category);
+        let duplicate_only_for_quick_mode = Rc::clone(&duplicate_only);
+        let unmatched_category_for_quick_mode = Rc::clone(&unmatched_category);
+        quick_mode.connect_selected_notify(move |mode| {
+            let field = quick_field_for_index(mode.selected());
+            if let Some(page) = page_weak_for_quick_mode.upgrade() {
+                page.imp().contact_search_field.set(field);
+            }
+            search_state_for_quick_mode.set_quick_field(field);
+            let query = quick_query(field, search_entry_for_quick_mode.text().as_str());
+            let query = with_contact_outer_filters(
+                query,
+                &selected_book_for_quick_mode,
+                &selected_category_for_quick_mode,
+                unmatched_category_for_quick_mode.get(),
+                duplicate_only_for_quick_mode.get(),
+            );
+            start_contact_search(
+                page_weak_for_quick_mode.clone(),
+                query,
+                Rc::clone(&search_state_for_quick_mode),
+                Rc::clone(&stored_contacts_for_quick_mode),
+            );
+        });
+
         let selected_book_for_filter = Rc::clone(&selected_book);
-        let search_query_for_book = Rc::clone(&search_query);
         let selected_category_for_book = Rc::clone(&selected_category);
         let duplicate_only_for_book = Rc::clone(&duplicate_only);
+        let unmatched_category_for_book = Rc::clone(&unmatched_category);
         let book_source_uids_for_filter = Rc::clone(&book_source_uids);
         let book_source_list_for_filter = book_source_list.clone();
-        book_selector.connect_selected_notify(glib::clone!(
-            #[weak]
-            contact_list,
-            move |selector| {
-                let selected = book_source_uids_for_filter
-                    .borrow()
-                    .get(selector.selected() as usize)
-                    .cloned()
-                    .unwrap_or_default();
-                *selected_book_for_filter.borrow_mut() = selected.clone();
-                if let Some(settings) = AppSettings::try_new() {
-                    settings.set_default_address_book_source_uid(&selected);
-                }
-                if let Some(row) =
-                    book_source_list_for_filter.row_at_index(selector.selected() as i32)
-                {
-                    book_source_list_for_filter.select_row(Some(&row));
-                }
-                set_contact_filter(
-                    &contact_list,
-                    Rc::clone(&search_query_for_book),
-                    Rc::clone(&selected_book_for_filter),
-                    Rc::clone(&selected_category_for_book),
-                    Rc::clone(&duplicate_only_for_book),
-                );
+        let search_state_for_book = Rc::clone(&search_state);
+        let stored_contacts_for_book = Rc::clone(&stored_contacts);
+        let page_weak_for_book = self.downgrade();
+        book_selector.connect_selected_notify(move |selector| {
+            let selected = book_source_uids_for_filter
+                .borrow()
+                .get(selector.selected() as usize)
+                .cloned()
+                .unwrap_or_default();
+            *selected_book_for_filter.borrow_mut() = selected.clone();
+            if let Some(settings) = AppSettings::try_new() {
+                settings.set_default_address_book_source_uid(&selected);
             }
-        ));
+            if let Some(row) = book_source_list_for_filter.row_at_index(selector.selected() as i32)
+            {
+                book_source_list_for_filter.select_row(Some(&row));
+            }
+            let query = search_state_for_book.active_query_with_filters(current_outer_filters(
+                &selected_book_for_filter,
+                &selected_category_for_book,
+                unmatched_category_for_book.get(),
+                duplicate_only_for_book.get(),
+            ));
+            start_contact_search(
+                page_weak_for_book.clone(),
+                query,
+                Rc::clone(&search_state_for_book),
+                Rc::clone(&stored_contacts_for_book),
+            );
+        });
 
         if let Some(settings) = AppSettings::try_new() {
             let book_selector_for_settings = book_selector.clone();
@@ -386,50 +558,131 @@ impl ContactsPage {
             });
         }
 
-        let search_query_for_duplicates = Rc::clone(&search_query);
         let selected_book_for_duplicates = Rc::clone(&selected_book);
         let selected_category_for_duplicates = Rc::clone(&selected_category);
         let duplicate_only_for_duplicates = Rc::clone(&duplicate_only);
-        duplicate_filter_row.connect_active_notify(glib::clone!(
-            #[weak]
-            contact_list,
-            move |row| {
-                duplicate_only_for_duplicates.set(row.is_active());
-                set_contact_filter(
-                    &contact_list,
-                    Rc::clone(&search_query_for_duplicates),
-                    Rc::clone(&selected_book_for_duplicates),
-                    Rc::clone(&selected_category_for_duplicates),
-                    Rc::clone(&duplicate_only_for_duplicates),
-                );
-            }
-        ));
+        let unmatched_category_for_duplicates = Rc::clone(&unmatched_category);
+        let search_state_for_duplicates = Rc::clone(&search_state);
+        let stored_contacts_for_duplicates = Rc::clone(&stored_contacts);
+        let page_weak_for_duplicates = self.downgrade();
+        duplicate_filter_row.connect_active_notify(move |row| {
+            duplicate_only_for_duplicates.set(row.is_active());
+            let query =
+                search_state_for_duplicates.active_query_with_filters(current_outer_filters(
+                    &selected_book_for_duplicates,
+                    &selected_category_for_duplicates,
+                    unmatched_category_for_duplicates.get(),
+                    duplicate_only_for_duplicates.get(),
+                ));
+            start_contact_search(
+                page_weak_for_duplicates.clone(),
+                query,
+                Rc::clone(&search_state_for_duplicates),
+                Rc::clone(&stored_contacts_for_duplicates),
+            );
+        });
+
+        let selected_book_for_unmatched = Rc::clone(&selected_book);
+        let selected_category_for_unmatched = Rc::clone(&selected_category);
+        let duplicate_only_for_unmatched = Rc::clone(&duplicate_only);
+        let unmatched_category_for_filter = Rc::clone(&unmatched_category);
+        let search_state_for_unmatched = Rc::clone(&search_state);
+        let stored_contacts_for_unmatched = Rc::clone(&stored_contacts);
+        let page_weak_for_unmatched = self.downgrade();
+        unmatched_category_row.connect_active_notify(move |row| {
+            unmatched_category_for_filter.set(row.is_active());
+            let query =
+                search_state_for_unmatched.active_query_with_filters(current_outer_filters(
+                    &selected_book_for_unmatched,
+                    &selected_category_for_unmatched,
+                    unmatched_category_for_filter.get(),
+                    duplicate_only_for_unmatched.get(),
+                ));
+            start_contact_search(
+                page_weak_for_unmatched.clone(),
+                query,
+                Rc::clone(&search_state_for_unmatched),
+                Rc::clone(&stored_contacts_for_unmatched),
+            );
+        });
 
         let selected_category_for_selector = Rc::clone(&selected_category);
-        let search_query_for_category = Rc::clone(&search_query);
         let selected_book_for_category = Rc::clone(&selected_book);
         let duplicate_only_for_category = Rc::clone(&duplicate_only);
+        let unmatched_category_for_category = Rc::clone(&unmatched_category);
         let category_model_for_selector = category_model.clone();
-        category_selector.connect_selected_notify(glib::clone!(
-            #[weak]
-            contact_list,
-            move |selector| {
-                let category = if selector.selected() == 0 {
-                    String::new()
-                } else {
-                    category_model_for_selector
-                        .string(selector.selected())
-                        .map(|value| value.to_string())
-                        .unwrap_or_default()
-                };
-                selected_category_for_selector.replace(category);
-                set_contact_filter(
-                    &contact_list,
-                    Rc::clone(&search_query_for_category),
-                    Rc::clone(&selected_book_for_category),
-                    Rc::clone(&selected_category_for_selector),
-                    Rc::clone(&duplicate_only_for_category),
+        let search_state_for_category = Rc::clone(&search_state);
+        let stored_contacts_for_category = Rc::clone(&stored_contacts);
+        let page_weak_for_category = self.downgrade();
+        category_selector.connect_selected_notify(move |selector| {
+            let category = if selector.selected() == 0 {
+                String::new()
+            } else {
+                category_model_for_selector
+                    .string(selector.selected())
+                    .map(|value| value.to_string())
+                    .unwrap_or_default()
+            };
+            selected_category_for_selector.replace(category);
+            let query = search_state_for_category.active_query_with_filters(current_outer_filters(
+                &selected_book_for_category,
+                &selected_category_for_selector,
+                unmatched_category_for_category.get(),
+                duplicate_only_for_category.get(),
+            ));
+            start_contact_search(
+                page_weak_for_category.clone(),
+                query,
+                Rc::clone(&search_state_for_category),
+                Rc::clone(&stored_contacts_for_category),
+            );
+        });
+
+        let search_state_for_advanced = Rc::clone(&search_state);
+        let stored_contacts_for_advanced = Rc::clone(&stored_contacts);
+        let page_weak_for_advanced = self.downgrade();
+        let selected_book_for_advanced = Rc::clone(&selected_book);
+        let selected_category_for_advanced = Rc::clone(&selected_category);
+        let unmatched_category_for_advanced = Rc::clone(&unmatched_category);
+        let duplicate_only_for_advanced = Rc::clone(&duplicate_only);
+        advanced_search_button.connect_clicked(glib::clone!(
+            #[weak(rename_to = page)]
+            self,
+            move |_| {
+                let initial = crate::dialogs::contact_search_dialog::seed_query_for_reopen(
+                    &search_state_for_advanced.active_query_with_filters(current_outer_filters(
+                        &selected_book_for_advanced,
+                        &selected_category_for_advanced,
+                        unmatched_category_for_advanced.get(),
+                        duplicate_only_for_advanced.get(),
+                    )),
                 );
+                let state_for_apply = Rc::clone(&search_state_for_advanced);
+                let contacts_for_apply = Rc::clone(&stored_contacts_for_advanced);
+                let page_for_apply = page_weak_for_advanced.clone();
+                let selected_book_for_apply = Rc::clone(&selected_book_for_advanced);
+                let selected_category_for_apply = Rc::clone(&selected_category_for_advanced);
+                let unmatched_category_for_apply = Rc::clone(&unmatched_category_for_advanced);
+                let duplicate_only_for_apply = Rc::clone(&duplicate_only_for_advanced);
+                let dialog =
+                    crate::dialogs::ContactSearchDialog::with_query(initial, move |query| {
+                        let query = query.with_filters(current_outer_filters(
+                            &selected_book_for_apply,
+                            &selected_category_for_apply,
+                            unmatched_category_for_apply.get(),
+                            duplicate_only_for_apply.get(),
+                        ));
+                        start_contact_search(
+                            page_for_apply.clone(),
+                            query,
+                            Rc::clone(&state_for_apply),
+                            Rc::clone(&contacts_for_apply),
+                        );
+                    });
+                if let Some(window) = page.root().and_downcast::<gtk::Window>() {
+                    dialog.set_transient_for(Some(&window));
+                }
+                dialog.present();
             }
         ));
 
@@ -465,6 +718,8 @@ impl ContactsPage {
         let category_model_for_new = category_model.clone();
         let category_selector_for_new = category_selector.clone();
         let selected_category_for_new = Rc::clone(&selected_category);
+        let search_state_for_new = Rc::clone(&search_state);
+        let page_weak_for_new_refresh = self.downgrade();
         new_contact_btn.connect_clicked(glib::clone!(
             #[weak(rename_to = page)]
             self,
@@ -482,6 +737,8 @@ impl ContactsPage {
                 let category_selector_for_close = category_selector_for_new.clone();
                 let selected_category_for_close = Rc::clone(&selected_category_for_new);
                 let refresh_generation_for_close = Rc::clone(&refresh_generation_for_new);
+                let search_state_for_close = Rc::clone(&search_state_for_new);
+                let page_weak_for_close = page_weak_for_new_refresh.clone();
                 dialog.connect_close_request(move |_| {
                     refresh_contacts(
                         contact_list_for_close.clone(),
@@ -492,6 +749,8 @@ impl ContactsPage {
                         category_selector_for_close.clone(),
                         Rc::clone(&selected_category_for_close),
                         Rc::clone(&refresh_generation_for_close),
+                        page_weak_for_close.clone(),
+                        Rc::clone(&search_state_for_close),
                     );
                     glib::Propagation::Proceed
                 });
@@ -518,6 +777,8 @@ impl ContactsPage {
         let category_model_for_new_list = category_model.clone();
         let category_selector_for_new_list = category_selector.clone();
         let selected_category_for_new_list = Rc::clone(&selected_category);
+        let search_state_for_new_list = Rc::clone(&search_state);
+        let page_weak_for_new_list_refresh = self.downgrade();
         new_list_btn.connect_clicked(glib::clone!(
             #[weak(rename_to = page)]
             self,
@@ -535,6 +796,8 @@ impl ContactsPage {
                 let category_selector_for_close = category_selector_for_new_list.clone();
                 let selected_category_for_close = Rc::clone(&selected_category_for_new_list);
                 let refresh_generation_for_close = Rc::clone(&refresh_generation_for_new_list);
+                let search_state_for_close = Rc::clone(&search_state_for_new_list);
+                let page_weak_for_close = page_weak_for_new_list_refresh.clone();
                 dialog.connect_close_request(move |_| {
                     refresh_contacts(
                         contact_list_for_close.clone(),
@@ -545,6 +808,8 @@ impl ContactsPage {
                         category_selector_for_close.clone(),
                         Rc::clone(&selected_category_for_close),
                         Rc::clone(&refresh_generation_for_close),
+                        page_weak_for_close.clone(),
+                        Rc::clone(&search_state_for_close),
                     );
                     glib::Propagation::Proceed
                 });
@@ -705,6 +970,8 @@ impl ContactsPage {
         let category_selector_for_edit = category_selector.clone();
         let selected_category_for_edit = Rc::clone(&selected_category);
         let refresh_generation_for_edit = Rc::clone(&refresh_generation);
+        let search_state_for_edit = Rc::clone(&search_state);
+        let page_weak_for_edit_refresh = self.downgrade();
         edit_btn.connect_clicked(glib::clone!(
             #[weak(rename_to = page)]
             self,
@@ -713,7 +980,7 @@ impl ContactsPage {
                     page.show_toast("Kein Kontakt ausgewählt");
                     return;
                 };
-                if record.source_uid.is_empty() {
+                if !contact_source_is_writable(&record.source_uid) {
                     page.show_toast(
                         "Dieser Kontakt stammt aus einer schreibgeschützten importierten Quelle",
                     );
@@ -732,6 +999,8 @@ impl ContactsPage {
                 let category_selector_for_close = category_selector_for_edit.clone();
                 let selected_category_for_close = Rc::clone(&selected_category_for_edit);
                 let refresh_generation_for_close = Rc::clone(&refresh_generation_for_edit);
+                let search_state_for_close = Rc::clone(&search_state_for_edit);
+                let page_weak_for_close = page_weak_for_edit_refresh.clone();
                 dialog.connect_close_request(move |_| {
                     refresh_contacts(
                         contact_list_for_close.clone(),
@@ -742,6 +1011,8 @@ impl ContactsPage {
                         category_selector_for_close.clone(),
                         Rc::clone(&selected_category_for_close),
                         Rc::clone(&refresh_generation_for_close),
+                        page_weak_for_close.clone(),
+                        Rc::clone(&search_state_for_close),
                     );
                     glib::Propagation::Proceed
                 });
@@ -768,6 +1039,7 @@ impl ContactsPage {
         let category_model_for_merge = category_model.clone();
         let category_selector_for_merge = category_selector.clone();
         let selected_category_for_merge = Rc::clone(&selected_category);
+        let search_state_for_merge = Rc::clone(&search_state);
         let merge_btn_for_result = merge_btn.clone();
         merge_btn.connect_clicked(glib::clone!(
             #[weak(rename_to = page)]
@@ -777,7 +1049,7 @@ impl ContactsPage {
                     page.show_toast("Kein Kontakt ausgewählt");
                     return;
                 };
-                if primary.source_uid.is_empty() {
+                if !contact_source_is_writable(&primary.source_uid) {
                     page.show_toast(
                         "Dieser Kontakt stammt aus einer schreibgeschützten importierten Quelle",
                     );
@@ -816,6 +1088,7 @@ impl ContactsPage {
                 let selected_category_for_action = Rc::clone(&selected_category_for_merge);
                 let merge_btn_for_action = merge_btn_for_result.clone();
                 let page_weak_for_action = page.downgrade();
+                let search_state_for_action = Rc::clone(&search_state_for_merge);
                 crate::dialogs::run_destructive_action(
                     &detail_name_for_merge,
                     "Dubletten zusammenführen?",
@@ -865,6 +1138,13 @@ impl ContactsPage {
                                         vcard,
                                         contact,
                                     };
+                                    if let Some(page) = page_weak_for_result.upgrade() {
+                                        // Remove any automatic GTK row selection before
+                                        // rebuilding the primary row.  Otherwise ListBox can
+                                        // select an unrelated neighbour and the search
+                                        // generation would restore that contact instead.
+                                        clear_contact_selection(&page, &contact_list_for_action);
+                                    }
                                     remove_contact_list_row(
                                         &contact_list_for_action,
                                         &primary_for_action.source_uid,
@@ -909,6 +1189,14 @@ impl ContactsPage {
                                         &email_row_for_action,
                                     );
                                     *selected_contact_for_action.borrow_mut() = Some(merged.clone());
+                                    if let Some(page) = page_weak_for_result.upgrade() {
+                                        page.imp().selected_identity.replace(Some(
+                                            ContactIdentity::new(
+                                                merged.source_uid.clone(),
+                                                merged.uid.clone(),
+                                            ),
+                                        ));
+                                    }
                                     merge_btn_for_action.set_sensitive(
                                         contact_has_mergeable_duplicate(
                                             &merged,
@@ -916,6 +1204,11 @@ impl ContactsPage {
                                         ),
                                     );
                                     if let Some(page) = page_weak_for_result.upgrade() {
+                                        reapply_active_contact_search(
+                                            page.downgrade(),
+                                            Rc::clone(&search_state_for_action),
+                                            Rc::clone(&stored_contacts_for_action),
+                                        );
                                         page.show_toast(&format!(
                                             "{} Dublette(n) in „{}“ zusammengeführt",
                                             duplicates_for_action.len(),
@@ -1001,6 +1294,12 @@ impl ContactsPage {
         let category_model_for_delete = category_model.clone();
         let category_selector_for_delete = category_selector.clone();
         let selected_category_for_delete = Rc::clone(&selected_category);
+        let email_btn_for_delete = email_btn.clone();
+        let export_btn_for_delete = export_btn.clone();
+        let edit_btn_for_delete = edit_btn.clone();
+        let merge_btn_for_delete = merge_btn.clone();
+        let delete_btn_for_delete = delete_btn.clone();
+        let search_state_for_delete = Rc::clone(&search_state);
         delete_btn.connect_clicked(glib::clone!(
             #[weak(rename_to = page)]
             self,
@@ -1009,7 +1308,7 @@ impl ContactsPage {
                     page.show_toast("Kein Kontakt ausgewählt");
                     return;
                 };
-                if contact.source_uid.is_empty() {
+                if !contact_source_is_writable(&contact.source_uid) {
                     page.show_toast(
                         "Dieser Kontakt stammt aus einer schreibgeschützten importierten Quelle",
                     );
@@ -1041,7 +1340,13 @@ impl ContactsPage {
                 let category_model_for_action = category_model_for_delete.clone();
                 let category_selector_for_action = category_selector_for_delete.clone();
                 let selected_category_for_action = Rc::clone(&selected_category_for_delete);
+                let email_btn_for_action = email_btn_for_delete.clone();
+                let export_btn_for_action = export_btn_for_delete.clone();
+                let edit_btn_for_action = edit_btn_for_delete.clone();
+                let merge_btn_for_action = merge_btn_for_delete.clone();
+                let delete_btn_for_action = delete_btn_for_delete.clone();
                 let page_weak_for_action = page.downgrade();
+                let search_state_for_action = Rc::clone(&search_state_for_delete);
                 crate::dialogs::run_destructive_action(
                     &detail_name_for_delete,
                     "Kontakt löschen?",
@@ -1074,6 +1379,9 @@ impl ContactsPage {
                                     let uid = result.uid;
                                     let uid = confirmed_contact_uid(&uid, &contact_for_result.uid);
                                     let key = (contact_for_result.source_uid.clone(), uid.clone());
+                                    if let Some(page) = page_weak_for_result.upgrade() {
+                                        clear_contact_selection(&page, &contact_list_for_result);
+                                    }
                                     if let Some(index) = stored_contacts_for_result
                                         .borrow()
                                         .iter()
@@ -1115,7 +1423,22 @@ impl ContactsPage {
                                     );
                                     detail_extra_for_result
                                         .set_label("Keine weiteren Kontaktdaten");
+                                    update_contact_action_sensitivity(
+                                        &email_btn_for_action,
+                                        &export_btn_for_action,
+                                        &edit_btn_for_action,
+                                        &merge_btn_for_action,
+                                        &delete_btn_for_action,
+                                        None,
+                                        &selected_contact_for_result,
+                                        &stored_contacts_for_result,
+                                    );
                                     if let Some(page) = page_weak_for_result.upgrade() {
+                                        reapply_active_contact_search(
+                                            page.downgrade(),
+                                            Rc::clone(&search_state_for_action),
+                                            Rc::clone(&stored_contacts_for_result),
+                                        );
                                         page.show_toast(&format!("Kontakt gelöscht ({uid})"));
                                     }
                                 }
@@ -1143,6 +1466,8 @@ impl ContactsPage {
         let export_btn_for_context = export_btn.clone();
         let merge_btn_for_context = merge_btn.clone();
         let delete_btn_for_context = delete_btn.clone();
+        let selected_contact_for_context = Rc::clone(&selected_contact);
+        let stored_contacts_for_context = Rc::clone(&stored_contacts);
         let context_click = gtk::GestureClick::builder().button(3).build();
         let contact_list_weak_for_context = contact_list.downgrade();
         context_click.connect_pressed(move |_, _, x, y| {
@@ -1222,6 +1547,16 @@ impl ContactsPage {
                 delete_button_for_menu.activate();
             });
             menu_box.append(&delete);
+
+            // Context actions use the same selection/source capability
+            // calculation as the header.  This is deliberately applied only
+            // after the row was selected, so imported/read-only records fail
+            // closed in both action surfaces.
+            let action_state = context_action_state(
+                selected_contact_for_context.borrow().as_ref(),
+                &stored_contacts_for_context.borrow(),
+            );
+            apply_contact_action_state(action_state, &email, &export, &edit, &merge, &delete, None);
 
             popover.set_child(Some(&menu_box));
             popover.set_parent(&contact_list_for_context);
@@ -1310,6 +1645,13 @@ impl ContactsPage {
         let split_for_selection = split.clone();
         let selected_contact_for_selection = Rc::clone(&selected_contact);
         let stored_contacts_for_selection = Rc::clone(&stored_contacts);
+        let page_weak_for_selection = self.downgrade();
+        let email_btn_for_selection = email_btn.clone();
+        let export_btn_for_selection = export_btn.clone();
+        let edit_btn_for_selection = edit_btn.clone();
+        let merge_btn_for_selection = merge_btn.clone();
+        let delete_btn_for_selection = delete_btn.clone();
+        let copy_btn_for_selection = copy_btn1.clone();
         contact_list.connect_row_selected(glib::clone!(
             #[weak]
             detail_avatar,
@@ -1321,18 +1663,42 @@ impl ContactsPage {
             detail_extra,
             #[weak]
             email_row1,
-            #[weak]
-            merge_btn,
             #[strong]
             selected_contact_for_selection,
             #[strong]
             split_for_selection,
             #[strong]
             stored_contacts_for_selection,
+            #[strong]
+            page_weak_for_selection,
+            #[strong]
+            email_btn_for_selection,
+            #[strong]
+            export_btn_for_selection,
+            #[strong]
+            edit_btn_for_selection,
+            #[strong]
+            merge_btn_for_selection,
+            #[strong]
+            delete_btn_for_selection,
+            #[strong]
+            copy_btn_for_selection,
             move |_, row| {
                 let Some(row) = row else {
                     *selected_contact_for_selection.borrow_mut() = None;
-                    merge_btn.set_sensitive(false);
+                    if let Some(page) = page_weak_for_selection.upgrade() {
+                        page.imp().selected_identity.replace(None);
+                    }
+                    update_contact_action_sensitivity(
+                        &email_btn_for_selection,
+                        &export_btn_for_selection,
+                        &edit_btn_for_selection,
+                        &merge_btn_for_selection,
+                        &delete_btn_for_selection,
+                        Some(&copy_btn_for_selection),
+                        &selected_contact_for_selection,
+                        &stored_contacts_for_selection,
+                    );
                     split_for_selection.set_show_content(false);
                     return;
                 };
@@ -1352,6 +1718,14 @@ impl ContactsPage {
                         vcard,
                         contact,
                     };
+                    if let Some(page) = page_weak_for_selection.upgrade() {
+                        page.imp()
+                            .selected_identity
+                            .replace(Some(ContactIdentity::new(
+                                record.source_uid.clone(),
+                                record.uid.clone(),
+                            )));
+                    }
                     detail_avatar.set_text(Some(&record.contact.fn_name));
                     set_avatar_photo(&detail_avatar, record.contact.photo.as_ref());
                     detail_name.set_label(&record.contact.fn_name);
@@ -1370,18 +1744,32 @@ impl ContactsPage {
                     let detail_title_text = contact_detail_title(&record.contact);
                     detail_title.set_label(&detail_title_text);
                     detail_extra.set_label(&contact_detail_summary(&record.contact));
-                    merge_btn.set_sensitive(
-                        !record.source_uid.is_empty()
-                            && contact_has_mergeable_duplicate(
-                                &record,
-                                &stored_contacts_for_selection.borrow(),
-                            ),
-                    );
                     *selected_contact_for_selection.borrow_mut() = Some(record);
+                    update_contact_action_sensitivity(
+                        &email_btn_for_selection,
+                        &export_btn_for_selection,
+                        &edit_btn_for_selection,
+                        &merge_btn_for_selection,
+                        &delete_btn_for_selection,
+                        Some(&copy_btn_for_selection),
+                        &selected_contact_for_selection,
+                        &stored_contacts_for_selection,
+                    );
                     split_for_selection.set_show_content(true);
                 }
             }
         ));
+
+        update_contact_action_sensitivity(
+            &email_btn,
+            &export_btn,
+            &edit_btn,
+            &merge_btn,
+            &delete_btn,
+            Some(&copy_btn1),
+            &selected_contact,
+            &stored_contacts,
+        );
 
         let edit_btn_for_activate = edit_btn.clone();
         contact_list.connect_row_activated(move |_, _| {
@@ -1402,8 +1790,22 @@ impl ContactsPage {
             let category_model_for_monitor = category_model.clone();
             let category_selector_for_monitor = category_selector.clone();
             let selected_category_for_monitor = Rc::clone(&selected_category);
+            let search_state_for_monitor = Rc::clone(&search_state);
+            let page_weak_for_monitor = self.downgrade();
+            let email_btn_for_monitor = email_btn.clone();
+            let export_btn_for_monitor = export_btn.clone();
+            let edit_btn_for_monitor = edit_btn.clone();
+            let merge_btn_for_monitor = merge_btn.clone();
+            let delete_btn_for_monitor = delete_btn.clone();
+            let copy_btn_for_monitor = copy_btn1.clone();
             glib::spawn_future_local(async move {
                 while let Ok(event) = receiver.recv().await {
+                    let Some(page) = page_weak_for_monitor.upgrade() else {
+                        break;
+                    };
+                    if page.imp().disposed.get() {
+                        break;
+                    }
                     match event {
                         EBookSyncEvent::Ready(status) => {
                             if let Some(warning) = status.warning {
@@ -1444,6 +1846,8 @@ impl ContactsPage {
                                         .set_label("Keine weiteren Kontaktdaten");
                                     email_row_for_monitor.set_title("Keine E-Mail-Adresse");
                                     email_row_for_monitor.set_subtitle("Kein Kontakt ausgewählt");
+                                    page.imp().selected_identity.replace(None);
+                                    contact_list_for_monitor.select_row(None::<&gtk::ListBoxRow>);
                                 }
                             }
                             EBookChangeKind::Added | EBookChangeKind::Modified => {
@@ -1488,6 +1892,16 @@ impl ContactsPage {
                             break;
                         }
                     }
+                    update_contact_action_sensitivity(
+                        &email_btn_for_monitor,
+                        &export_btn_for_monitor,
+                        &edit_btn_for_monitor,
+                        &merge_btn_for_monitor,
+                        &delete_btn_for_monitor,
+                        Some(&copy_btn_for_monitor),
+                        &selected_contact_for_monitor,
+                        &stored_contacts_for_monitor,
+                    );
                     empty_state_for_monitor
                         .set_visible(stored_contacts_for_monitor.borrow().is_empty());
                     refresh_contact_category_model(
@@ -1495,6 +1909,12 @@ impl ContactsPage {
                         &category_selector_for_monitor,
                         &stored_contacts_for_monitor,
                         &selected_category_for_monitor,
+                    );
+                    start_contact_search(
+                        page_weak_for_monitor.clone(),
+                        search_state_for_monitor.active_query(),
+                        Rc::clone(&search_state_for_monitor),
+                        Rc::clone(&stored_contacts_for_monitor),
                     );
                 }
             });
@@ -1546,6 +1966,8 @@ fn refresh_contacts(
     category_selector: gtk::DropDown,
     selected_category: Rc<RefCell<String>>,
     refresh_generation: Rc<Cell<u64>>,
+    page_weak: glib::WeakRef<ContactsPage>,
+    search_state: Rc<ContactPageSearchState>,
 ) {
     let generation = refresh_generation.get().wrapping_add(1);
     refresh_generation.set(generation);
@@ -1557,9 +1979,26 @@ fn refresh_contacts(
         contact_list.remove(&row);
     }
     stored_contacts.borrow_mut().clear();
+    search_state.visible_identities.borrow_mut().clear();
     *selected_contact.borrow_mut() = None;
     empty_state.set_label("Kontakte werden geladen…");
     empty_state.set_visible(true);
+    if let Some(page) = page_weak.upgrade() {
+        if page.imp().disposed.get() {
+            return;
+        }
+        page.imp().selected_identity.replace(None);
+        let request = search_state.generations.begin();
+        page.imp()
+            .contact_search_cancel
+            .replace(Some(request.cancellation()));
+        if let Some(spinner) = page.imp().contact_search_spinner.borrow().as_ref() {
+            spinner.start();
+            spinner.set_visible(true);
+        }
+    } else {
+        return;
+    }
 
     let (sender, receiver) = async_channel::bounded(1);
     std::thread::spawn(move || {
@@ -1570,9 +2009,14 @@ fn refresh_contacts(
     });
     glib::spawn_future_local(async move {
         let is_current = || refresh_generation.get() == generation;
+        let page_is_alive = || {
+            page_weak
+                .upgrade()
+                .is_some_and(|page| !page.imp().disposed.get())
+        };
         match receiver.recv().await {
             Ok(result) => {
-                if !is_current() {
+                if !is_current() || !page_is_alive() {
                     return;
                 }
                 let warning = result.warning.as_deref();
@@ -1587,6 +2031,12 @@ fn refresh_contacts(
                         &category_selector,
                         &stored_contacts,
                         &selected_category,
+                    );
+                    start_contact_search(
+                        page_weak.clone(),
+                        search_state.active_query(),
+                        Rc::clone(&search_state),
+                        Rc::clone(&stored_contacts),
                     );
                     return;
                 }
@@ -1604,7 +2054,7 @@ fn refresh_contacts(
                 let chunk_size = 40;
                 let mut index = 0;
                 while index < contacts.len() {
-                    if !is_current() {
+                    if !is_current() || !page_is_alive() {
                         return;
                     }
                     let end = (index + chunk_size).min(contacts.len());
@@ -1621,7 +2071,7 @@ fn refresh_contacts(
                             std::time::Duration::from_millis(5),
                         )
                         .await;
-                        if !is_current() {
+                        if !is_current() || !page_is_alive() {
                             return;
                         }
                     }
@@ -1636,8 +2086,17 @@ fn refresh_contacts(
                 if let Some((source_uid, uid)) = selected_identity.as_ref() {
                     select_contact_row(&contact_list, source_uid, uid);
                 }
+                start_contact_search(
+                    page_weak.clone(),
+                    search_state.active_query(),
+                    Rc::clone(&search_state),
+                    Rc::clone(&stored_contacts),
+                );
             }
             Err(error) => {
+                if !page_is_alive() {
+                    return;
+                }
                 empty_state.set_label(&format!("Kontakte konnten nicht geladen werden: {error}"));
                 refresh_contact_category_model(
                     &category_model,
@@ -1645,6 +2104,12 @@ fn refresh_contacts(
                     &stored_contacts,
                     &selected_category,
                 );
+                if let Some(page) = page_weak.upgrade() {
+                    if let Some(spinner) = page.imp().contact_search_spinner.borrow().as_ref() {
+                        spinner.stop();
+                        spinner.set_visible(false);
+                    }
+                }
             }
         }
     });
@@ -1734,37 +2199,412 @@ fn select_contact_row(contact_list: &gtk::ListBox, source_uid: &str, uid: &str) 
     false
 }
 
-fn set_contact_filter(
-    contact_list: &gtk::ListBox,
-    search_query: Rc<RefCell<String>>,
-    selected_book: Rc<RefCell<String>>,
-    selected_category: Rc<RefCell<String>>,
-    duplicate_only: Rc<Cell<bool>>,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ContactActionState {
+    email: bool,
+    export: bool,
+    edit: bool,
+    merge: bool,
+    delete: bool,
+    copy: bool,
+}
+
+fn contact_source_is_writable(source_uid: &str) -> bool {
+    let source_uid = source_uid.trim();
+    if source_uid.is_empty() {
+        return false;
+    }
+    if source_uid == LOCAL_ADDRESS_BOOK_SOURCE_UID {
+        return crate::services::contact_store_service::ContactStoreService::new().is_writable();
+    }
+    // EBookContactRecord does not carry a fabricated read-only flag.  A
+    // non-empty source UID is the capability metadata supplied by the EBook
+    // layer for an address-book-backed record; imported records have no UID
+    // and remain explicitly read-only.
+    true
+}
+
+fn contact_action_state(
+    selected: Option<&EBookContactRecord>,
+    contacts: &[EBookContactRecord],
+) -> ContactActionState {
+    let Some(record) = selected else {
+        return ContactActionState {
+            email: false,
+            export: false,
+            edit: false,
+            merge: false,
+            delete: false,
+            copy: false,
+        };
+    };
+    let recipient = contact_recipient_text_with_records(&record.contact, contacts);
+    let copyable = if record.contact.is_list {
+        record.contact.list_show_addresses && !recipient.trim().is_empty()
+    } else {
+        !contact_email_text(&record.contact).trim().is_empty()
+    };
+    let writable = contact_source_is_writable(&record.source_uid);
+    ContactActionState {
+        email: !recipient.trim().is_empty(),
+        export: true,
+        edit: writable,
+        merge: writable && contact_has_mergeable_duplicate(record, contacts),
+        delete: writable,
+        copy: copyable,
+    }
+}
+
+fn context_action_state(
+    selected: Option<&EBookContactRecord>,
+    contacts: &[EBookContactRecord],
+) -> ContactActionState {
+    contact_action_state(selected, contacts)
+}
+
+fn update_contact_action_sensitivity(
+    email_button: &gtk::Button,
+    export_button: &gtk::Button,
+    edit_button: &gtk::Button,
+    merge_button: &gtk::Button,
+    delete_button: &gtk::Button,
+    copy_button: Option<&gtk::Button>,
+    selected: &Rc<RefCell<Option<EBookContactRecord>>>,
+    contacts: &Rc<RefCell<Vec<EBookContactRecord>>>,
 ) {
+    let selected = selected.borrow();
+    let contacts = contacts.borrow();
+    let state = contact_action_state(selected.as_ref(), &contacts);
+    apply_contact_action_state(
+        state,
+        email_button,
+        export_button,
+        edit_button,
+        merge_button,
+        delete_button,
+        copy_button,
+    );
+}
+
+fn apply_contact_action_state(
+    state: ContactActionState,
+    email_button: &gtk::Button,
+    export_button: &gtk::Button,
+    edit_button: &gtk::Button,
+    merge_button: &gtk::Button,
+    delete_button: &gtk::Button,
+    copy_button: Option<&gtk::Button>,
+) {
+    email_button.set_sensitive(state.email);
+    export_button.set_sensitive(state.export);
+    edit_button.set_sensitive(state.edit);
+    merge_button.set_sensitive(state.merge);
+    delete_button.set_sensitive(state.delete);
+    if let Some(copy_button) = copy_button {
+        copy_button.set_sensitive(state.copy);
+    }
+}
+
+fn set_contact_filter(contact_list: &gtk::ListBox, search_state: Rc<ContactPageSearchState>) {
     contact_list.set_filter_func(move |row| unsafe {
-        let source_filter = selected_book.borrow().clone();
-        let category_filter = selected_category.borrow().clone();
-        let query = search_query.borrow().clone();
-        let source_matches = source_filter.is_empty()
-            || row
-                .data::<String>("contact-source-uid")
-                .is_some_and(|value| value.as_ref().as_str() == source_filter.as_str());
-        let search_matches = query.is_empty()
-            || row
-                .data::<String>("contact-search")
-                .is_some_and(|value| contact_query_matches(value.as_ref(), &query));
-        let category_matches = category_filter.is_empty()
-            || row
-                .data::<String>("contact-categories")
-                .is_some_and(|value| {
-                    contact_category_matches(value.as_ref(), category_filter.as_str())
-                });
-        let duplicate_matches = !duplicate_only.get()
-            || row
-                .data::<bool>("contact-duplicate")
-                .is_some_and(|value| *value.as_ref());
-        source_matches && search_matches && category_matches && duplicate_matches
+        let source_uid = row
+            .data::<String>("contact-source-uid")
+            .map(|value| value.as_ref().clone())
+            .unwrap_or_default();
+        let uid = row
+            .data::<String>("contact-id")
+            .map(|value| value.as_ref().clone())
+            .unwrap_or_default();
+        search_state
+            .visible_identities
+            .borrow()
+            .contains(&ContactIdentity::new(source_uid, uid))
     });
+}
+
+fn quick_field_for_index(index: u32) -> ContactSearchField {
+    match index {
+        1 => ContactSearchField::Name,
+        2 => ContactSearchField::Email,
+        3 => ContactSearchField::Phone,
+        4 => ContactSearchField::Category,
+        _ => ContactSearchField::AnyField,
+    }
+}
+
+fn quick_query(field: ContactSearchField, text: &str) -> ContactSearchQuery {
+    if text.trim().is_empty() {
+        ContactSearchQuery::all()
+    } else if field == ContactSearchField::AnyField {
+        ContactSearchQuery::global_search(text)
+    } else {
+        ContactSearchQuery::contains(field, text)
+    }
+}
+
+fn current_outer_filters(
+    selected_book: &Rc<RefCell<String>>,
+    selected_category: &Rc<RefCell<String>>,
+    unmatched_category: bool,
+    duplicate_only: bool,
+) -> crate::services::contact_search_service::ContactOuterFilters {
+    let source_uid = selected_book.borrow().trim().to_string();
+    let category = selected_category.borrow().trim().to_string();
+    crate::services::contact_search_service::ContactOuterFilters {
+        source_uid: (!source_uid.is_empty()).then_some(source_uid),
+        category: (!category.is_empty()).then_some(category),
+        unmatched_category,
+        duplicate_only,
+    }
+}
+
+fn with_contact_outer_filters(
+    mut query: ContactSearchQuery,
+    selected_book: &Rc<RefCell<String>>,
+    selected_category: &Rc<RefCell<String>>,
+    unmatched_category: bool,
+    duplicate_only: bool,
+) -> ContactSearchQuery {
+    query.filters = current_outer_filters(
+        selected_book,
+        selected_category,
+        unmatched_category,
+        duplicate_only,
+    );
+    query
+}
+
+fn snapshot_records_cancelable(
+    records: &[EBookContactRecord],
+    cancellation: &AtomicBool,
+) -> Option<Vec<ContactSearchSnapshot>> {
+    let mut snapshots = Vec::with_capacity(records.len());
+    for (index, record) in records.iter().enumerate() {
+        if index % 16 == 0 && cancellation.load(Ordering::Relaxed) {
+            return None;
+        }
+        snapshots.push(ContactSearchSnapshot::with_source_display_name(
+            record.source_uid.clone(),
+            record.uid.clone(),
+            record.source_display_name.clone(),
+            record.contact.clone(),
+        ));
+    }
+    Some(snapshots)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ContactSelectionRestore {
+    generation: u64,
+    identity: ContactIdentity,
+}
+
+fn row_contact_identity(row: &gtk::ListBoxRow) -> Option<ContactIdentity> {
+    unsafe {
+        Some(ContactIdentity::new(
+            row.data::<String>("contact-source-uid")?.as_ref().clone(),
+            row.data::<String>("contact-id")?.as_ref().clone(),
+        ))
+    }
+}
+
+fn selected_contact_identity(
+    page: &ContactsPage,
+    contact_list: &gtk::ListBox,
+) -> Option<ContactIdentity> {
+    contact_list
+        .selected_row()
+        .as_ref()
+        .and_then(row_contact_identity)
+        .or_else(|| page.imp().selected_identity.borrow().clone())
+}
+
+fn clear_contact_selection(page: &ContactsPage, contact_list: &gtk::ListBox) {
+    contact_list.select_row(None::<&gtk::ListBoxRow>);
+    page.imp().selected_identity.replace(None);
+}
+
+fn should_restore_contact_selection(
+    selection_restore: Option<&ContactSelectionRestore>,
+    current_identity: &ContactIdentity,
+    generation: u64,
+) -> bool {
+    selection_restore.is_some_and(|target| {
+        target.generation == generation && target.identity == *current_identity
+    })
+}
+
+fn apply_contact_search_selection(
+    page: &ContactsPage,
+    contact_list: &gtk::ListBox,
+    selection_restore: Option<&ContactSelectionRestore>,
+    identities: &[ContactIdentity],
+    generation: u64,
+) {
+    let selection_before_apply = selected_contact_identity(page, contact_list);
+    contact_list.invalidate_filter();
+
+    let Some(current_identity) = selection_before_apply else {
+        return;
+    };
+    if !identities.contains(&current_identity) {
+        clear_contact_selection(page, contact_list);
+        return;
+    }
+
+    if should_restore_contact_selection(selection_restore, &current_identity, generation) {
+        let restored = select_contact_row(
+            contact_list,
+            &current_identity.source_uid,
+            &current_identity.uid,
+        );
+        if !restored {
+            clear_contact_selection(page, contact_list);
+        }
+    }
+}
+
+fn start_contact_search(
+    page_weak: glib::WeakRef<ContactsPage>,
+    query: ContactSearchQuery,
+    search_state: Rc<ContactPageSearchState>,
+    stored_contacts: Rc<RefCell<Vec<EBookContactRecord>>>,
+) {
+    let Some(page) = page_weak.upgrade() else {
+        return;
+    };
+    if page.imp().disposed.get() {
+        return;
+    }
+
+    // Invalidate the previous generation before validating the new input.
+    // Unsupported/invalid input therefore cannot let an older worker publish
+    // after the user has already moved on, while the last valid result stays
+    // visible below the status message.
+    let request = search_state.generations.begin();
+    let generation = request.generation();
+    page.imp()
+        .contact_search_cancel
+        .replace(Some(request.cancellation()));
+
+    if let Err(error) = query.validate() {
+        if let Some(status) = page.imp().contact_search_status.borrow().as_ref() {
+            status.set_text(&format!("Suche nicht angewendet: {error}"));
+            status.set_visible(true);
+        }
+        if let Some(spinner) = page.imp().contact_search_spinner.borrow().as_ref() {
+            spinner.stop();
+            spinner.set_visible(false);
+        }
+        return;
+    }
+    search_state.set_active_query(query.clone());
+
+    let selection_restore = page
+        .imp()
+        .contact_list
+        .borrow()
+        .as_ref()
+        .and_then(|contact_list| {
+            selected_contact_identity(&page, contact_list).map(|identity| ContactSelectionRestore {
+                generation,
+                identity,
+            })
+        });
+    if let Some(status) = page.imp().contact_search_status.borrow().as_ref() {
+        status.set_text("Kontakte werden gesucht…");
+        status.set_visible(true);
+    }
+    if let Some(spinner) = page.imp().contact_search_spinner.borrow().as_ref() {
+        spinner.start();
+        spinner.set_visible(true);
+    }
+
+    let snapshots = {
+        let contacts = stored_contacts.borrow();
+        let Some(snapshots) = snapshot_records_cancelable(&contacts, &request.cancellation())
+        else {
+            return;
+        };
+        snapshots
+    };
+    let receiver = search_state.worker.submit(
+        search_state.generations.clone(),
+        request.clone(),
+        query.clone(),
+        snapshots,
+    );
+
+    glib::spawn_future_local(async move {
+        let Ok(result) = receiver.recv().await else {
+            return;
+        };
+        let Some(page) = page_weak.upgrade() else {
+            return;
+        };
+        if page.imp().disposed.get()
+            || search_state.generations.current_generation() != generation
+            || !request.is_current()
+        {
+            return;
+        }
+        let evaluation = match result {
+            Ok(evaluation) => evaluation,
+            Err(error) => {
+                if let Some(status) = page.imp().contact_search_status.borrow().as_ref() {
+                    status.set_text(&format!("Suche nicht angewendet: {error}"));
+                    status.set_visible(true);
+                }
+                if let Some(spinner) = page.imp().contact_search_spinner.borrow().as_ref() {
+                    spinner.stop();
+                    spinner.set_visible(false);
+                }
+                page.imp().contact_search_cancel.borrow_mut().take();
+                return;
+            }
+        };
+        let ContactSearchEvaluation::Results { identities, .. } = evaluation else {
+            return;
+        };
+        let identity_set = identities.iter().cloned().collect::<HashSet<_>>();
+        search_state.visible_identities.replace(identity_set);
+        search_state
+            .last_valid
+            .borrow_mut()
+            .accept_results(query, identities.clone());
+
+        if let Some(contact_list) = page.imp().contact_list.borrow().as_ref() {
+            apply_contact_search_selection(
+                &page,
+                contact_list,
+                selection_restore.as_ref(),
+                &identities,
+                generation,
+            );
+        }
+        if let Some(status) = page.imp().contact_search_status.borrow().as_ref() {
+            if identities.is_empty() {
+                status.set_text("Keine Kontakte entsprechen der Suche");
+                status.set_visible(true);
+            } else {
+                status.set_visible(false);
+            }
+        }
+        if let Some(spinner) = page.imp().contact_search_spinner.borrow().as_ref() {
+            spinner.stop();
+            spinner.set_visible(false);
+        }
+        page.imp().contact_search_cancel.borrow_mut().take();
+    });
+}
+
+fn reapply_active_contact_search(
+    page_weak: glib::WeakRef<ContactsPage>,
+    search_state: Rc<ContactPageSearchState>,
+    stored_contacts: Rc<RefCell<Vec<EBookContactRecord>>>,
+) {
+    let query = search_state.active_query();
+    start_contact_search(page_weak, query, search_state, stored_contacts);
 }
 
 fn contact_category_matches(categories: &str, filter: &str) -> bool {
@@ -1778,11 +2618,7 @@ fn contact_category_matches(categories: &str, filter: &str) -> bool {
 }
 
 fn normalize_contact_query(value: &str) -> String {
-    value
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .to_lowercase()
+    crate::services::contact_search_service::normalize_search_text(value)
 }
 
 fn contact_query_matches(search_text: &str, query: &str) -> bool {
@@ -2077,12 +2913,7 @@ fn append_contact_row(contact_list: &gtk::ListBox, record: &EBookContactRecord) 
 }
 
 fn contact_record_search_text(record: &EBookContactRecord) -> String {
-    normalize_contact_query(&format!(
-        "{} {} {}",
-        record.source_display_name,
-        record.contact.searchable_text(),
-        record.vcard
-    ))
+    normalize_contact_query(&field_values(&record.contact, ContactSearchField::AnyField).join(" "))
 }
 
 fn contact_sort_key(contact: &VCardContact) -> String {
@@ -2306,11 +3137,17 @@ impl Default for ContactsPage {
 #[cfg(test)]
 mod tests {
     use super::{
-        confirmed_contact_uid, contact_category_matches, contact_detail_summary,
-        contact_email_text, contact_load_status_message, contact_query_matches,
-        contact_recipient_text, contact_recipient_text_with_records,
+        ContactActionState, ContactIdentity, ContactPageSearchState, ContactSelectionRestore,
+        confirmed_contact_uid, contact_action_state, contact_category_matches,
+        contact_detail_summary, contact_email_text, contact_load_status_message,
+        contact_query_matches, contact_recipient_text, contact_recipient_text_with_records,
         contact_records_are_duplicates, contact_records_share_duplicate_key, contact_sort_key,
-        contact_source_label, contact_status_needs_visibility,
+        contact_source_label, contact_status_needs_visibility, context_action_state,
+        should_restore_contact_selection,
+    };
+    use crate::services::contact_search_service::{
+        ContactClauseGroup, ContactOuterFilters, ContactSearchClause, ContactSearchField,
+        ContactSearchOperator, ContactSearchQuery,
     };
     use crate::services::ebook_service::{EBookContactRecord, EBookDataOrigin};
     use crate::services::vcard_service::VCardContact;
@@ -2359,6 +3196,98 @@ mod tests {
         ));
         assert!(!contact_query_matches(search_text, "Ada nicht-vorhanden"));
         assert!(contact_query_matches(search_text, ""));
+    }
+
+    #[test]
+    fn outer_filters_change_only_the_active_query_filters() {
+        let state = ContactPageSearchState::default();
+        let advanced = ContactSearchQuery::new(
+            ContactClauseGroup::Any,
+            vec![
+                ContactSearchClause::new(
+                    ContactSearchField::Name,
+                    ContactSearchOperator::Contains,
+                    "Ada",
+                ),
+                ContactSearchClause::new(
+                    ContactSearchField::AnyField,
+                    ContactSearchOperator::Contains,
+                    "example.test",
+                ),
+            ],
+        );
+        state.set_active_query(advanced.clone());
+        let updated = state.active_query_with_filters(
+            ContactOuterFilters::default()
+                .source("book-a")
+                .category("Work")
+                .unmatched_category(true)
+                .duplicate_only(true),
+        );
+
+        assert_eq!(updated.group, advanced.group);
+        assert_eq!(updated.clauses, advanced.clauses);
+        assert_eq!(
+            updated.filters,
+            ContactOuterFilters {
+                source_uid: Some("book-a".to_string()),
+                category: Some("Work".to_string()),
+                unmatched_category: true,
+                duplicate_only: true,
+            }
+        );
+        assert_eq!(state.active_query(), updated);
+    }
+
+    #[test]
+    fn selection_restoration_is_scoped_to_the_search_generation() {
+        let identity = ContactIdentity::new("book-a", "ada");
+        let target = ContactSelectionRestore {
+            generation: 7,
+            identity: identity.clone(),
+        };
+
+        assert!(should_restore_contact_selection(
+            Some(&target),
+            &identity,
+            7
+        ));
+        assert!(!should_restore_contact_selection(
+            Some(&target),
+            &identity,
+            8
+        ));
+        assert!(!should_restore_contact_selection(None, &identity, 7));
+    }
+
+    #[test]
+    fn zero_selection_disables_every_selection_action_and_imports_are_read_only() {
+        assert_eq!(
+            contact_action_state(None, &[]),
+            ContactActionState {
+                email: false,
+                export: false,
+                edit: false,
+                merge: false,
+                delete: false,
+                copy: false,
+            }
+        );
+
+        let imported = record(
+            "",
+            "imported",
+            VCardContact::new("Ada", "ada@example.test", "", ""),
+        );
+        let state = contact_action_state(Some(&imported), std::slice::from_ref(&imported));
+        let context_state = context_action_state(Some(&imported), std::slice::from_ref(&imported));
+        assert!(state.email);
+        assert!(state.export);
+        assert!(!state.edit);
+        assert!(!state.merge);
+        assert!(!state.delete);
+        assert!(state.copy);
+        assert_eq!(context_state, state);
     }
 
     #[test]

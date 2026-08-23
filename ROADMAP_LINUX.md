@@ -29,15 +29,17 @@ markieren. Ein Linux-Agent beginnt mit dem ersten offenen P0-Handoff, dessen
 zugehöriger portabler Punkt vorbereitet ist. Vor jedem Lauf sind Commit,
 Distribution, Bibliotheksversionen und Kontotyp zu protokollieren.
 
-Der aktuelle uncommitted Arbeitsstand umfasst `MAIL-TRANSPORT-COMMANDS`,
-`SET-01`, den eigenen atomaren `GW-MEMO-EDITOR` und `GW-REMINDER-RUNTIME`;
-alle vier portablen Implementierungen sind unabhängig reviewt und stehen wegen
-des nativen/provider-/Desktop-Rests auf `BLOCKED_LINUX`. Der
-`P0-MAIL-002A-WORKER-SETTINGS`-Handoff ist portabel geschlossen; das schließt
-weder `P0-MAIL-002A` noch Linux-, Visual- oder Großpostfach-Abnahme. Cargo-
+Der aktuelle uncommitted Arbeitsstand umfasst `P0-MAIL-WORKER-STORE`,
+`MAIL-TRANSPORT-COMMANDS`, `SET-01`, `GW-CAL-VIEWS-001`,
+`GW-MEMO-SURFACE-FILTERS`, den eigenen atomaren `GW-MEMO-EDITOR` und
+`GW-REMINDER-RUNTIME`; alle portablen Implementierungen sind unabhängig reviewt
+und stehen wegen
+des nativen/provider-/Desktop-Rests auf `BLOCKED_LINUX`. `P0-MAIL-WORKER-STORE`
+ist mit S0–S3 portabel geschlossen; das schließt weder `P0-MAIL-002A` noch
+Linux-, Visual- oder Großpostfach-Abnahme. Cargo-
 Format-/Check-, strikte Schema- und Diff-Prüfung, normaler und
 `eds_camel_bridge`-Cargo-Check sind grün; der finale unsandboxed
-portable/macOS-Workspace-Testlauf hat 564/564 Tests bestanden; das ist keine
+portable/macOS-Workspace-Testlauf hat 618/618 Tests bestanden; das ist keine
 Linux-Abnahme.
 Ein früherer sandboxed Lauf konnte 18 Graph-Loopback-Mockserver nicht binden
 und ist nicht der finale Testbeleg. Das ist nur eine portable Vorbedingung.
@@ -74,6 +76,22 @@ als `[x]` geführt.
   Open-URL-/Print-/Desktop-Aktionen prüfen; Save/Discard/Cancel, stale/confirmed
   mutation, Export und der 75-Oktett-/unfolded-ATTACH-Vertrag werden nicht
   erneut portabel gebaut.
+- `[ ]` `GW-CAL-VIEWS-001`: Der portable Schnitt in
+  `src/views/calendar_page.rs` ist geschlossen und reviewt. Unter Linux die
+  native EDS-Range-Abfrage gegen die halb-offenen Day/Week/WorkWeek/Month42/
+  Agenda90-Bereiche vergleichen; danach ECal-Monitor-/Provider-Refresh,
+  reale Zeitzonen/DST/Recurrence und visuelle Dichte für alle fünf Views
+  prüfen. Navigation, immutable Range-Index und Generation/Cancel/Stale sind
+  portable belegt. Year/List, Selection und globale Aktionen gehören zu
+  separater offener Arbeit und dürfen nicht aus diesem Slice abgeleitet werden.
+- `[ ]` `GW-MEMO-SURFACE-FILTERS`: Der portable Scope ist geschlossen und
+  reviewt. Unter Linux Source+UID-Multiselect und Action States, Preview/
+  Attachments, strict Summary/Description/Any/Advanced- sowie Kategorie-/
+  Source-Filter, Forward-Payload, Open URL, Print, Save, Multi-Export,
+  Copy/Cut/Paste/Delete und persistente Keys gegen echte EDS-Quellen prüfen.
+  Zusätzlich EDS-ACL/Capabilities, Provider-Attachment-Transfer,
+  Browser/Print/iTIP und Source-/UID-Mutationswirkung abnehmen. Der portable
+  Filter-/Surface-/Migrationstest ist dafür nur Vorbedingung.
 - `[ ]` `GW-REMINDER-RUNTIME`: der portable Runtime-Schnitt ist implementiert
   und unabhängig reviewt, aber nicht Linux-abgenommen. Unter GNOME/Wayland
   mit echten EDS-Quellen `EReminderWatcher` und EDS-`ClientView` anschließen;
@@ -107,7 +125,7 @@ als `[x]` geführt.
   `P0-SYNC-001A`-Stand mit begrenzten Page-Windows, opaken Graph-NextLink-
   Cursorn, UID-Deduplizierung, generationensicheren Modellen und normalisierten
   Camel-Events. Der aktuelle uncommitted portable Verification-Snapshot umfasst
-  zusätzlich den einmal vollständigen 564/564-Testlauf; keine dieser Angaben
+  zusätzlich den einmal vollständigen 618/618-Testlauf; keine dieser Angaben
   ersetzt die folgende Linux-Abnahme.
 - Vorbereitung: vollständiger portabler Testlauf grün; ein EDS-Testkonto mit
   bekannten Plaintext-, HTML-, CID-, Remote-Bild- und Anhangsnachrichten.
@@ -155,12 +173,17 @@ als `[x]` geführt.
   `ROADMAP_EXECUTION.md`.
 - Status: `[ ]`; dieser Punkt darf weder aus einem macOS-Build noch aus einem
   einzelnen Rust-Unit-Test auf `[x]` gesetzt werden.
-- Der portable Handoff `P0-MAIL-002A-WORKER-SETTINGS` ist geschlossen:
-  Request/Offline/lokales Mailverzeichnis/Environment-Overrides/State-Pfad/
-  App-Data-Root werden vor dem Worker erfasst. Das ist kein Beleg für die
-  Linux-, Visual- oder Großpostfach-Abnahme; weitere `MailStoreService::new()`-
-  Workeraufrufe außerhalb Load/Refresh/Load-more bleiben im separaten
-  `P0-MAIL-002A-WORKER-STORE-CALLERS`-Folgepaket offen.
+- `P0-MAIL-WORKER-STORE` ist mit S0–S3 portabel geschlossen und reviewt:
+  S0 `src/services/mail_store_service.rs`; S1
+  `src/views/mail_page.rs` plus `src/services/mail_operations_service.rs`;
+  S2 `src/dialogs/preferences_dialog.rs`; S3
+  `src/services/search_engine.rs` plus
+  `src/dialogs/global_search_dialog.rs`. Der frühere
+  Load/Refresh/Load-more-Handoff ist enthalten. Das ist kein Beleg für die
+  Linux-, Visual- oder Großpostfach-Abnahme. `P0-MAIL-002A` bleibt ausdrücklich
+  offen für native/performance/visual/large-mailbox sowie Sidecar-Writer-
+  Serialisierung, native Expunge/Filter, Graph/account environment und
+  type-aware Global-Search-Aktivierungsidentität.
 - Voraussetzung: ein gebauter Commit mit den portablen Gates aus der
   Ausführungsroadmap und ein inhaltsneutrales Testkonto. Das Testkorpus soll
   mindestens 20 Nachrichten enthalten, darunter drei HTML-Nachrichten über
@@ -765,7 +788,7 @@ Mit einem Testkonto ohne produktive Empfänger prüfen:
 - Portable Basis: Historischer Commit `d6e7dcc` vereinheitlicht
   Kalenderansichten über RRULE/RDATE/EXDATE, Mehrtagstermine, exklusive
   DTEND-Grenzen und validierte Zeitzonen/Quellen; der aktuelle uncommitted
-  Verification-Snapshot umfasst den einmal vollständigen 564/564-Testlauf;
+  Verification-Snapshot umfasst den einmal vollständigen 618/618-Testlauf;
   `GW-TASK-FILTERS` ergänzt
   Filter-/Advanced-/Persistenzverträge. Aufgaben bieten kompaktes Quick-Edit
   für Status, Priorität, Fälligkeit und Kategorien. Native ECal-Wirkung bleibt
@@ -783,6 +806,19 @@ Mit einem Testkonto ohne produktive Empfänger prüfen:
   physische Zeilen mit höchstens 75 Oktetten. Die folgenden Linux-Punkte prüfen
   ausschließlich EDS-Capabilities/ACL, Provider-Attachment-Transfer,
   Change-Monitor/Factory-Restart und Desktop-Aktionen wie Open URL/Print.
+
+- `[~]` `GW-CAL-VIEWS-001` ist portabel geschlossen und reviewt: halb-offene
+  Day/Week/WorkWeek/Month42/Agenda90-Ranges, Navigation, immutable
+  Range-Index, Generation/Cancel/Stale sowie DST-/Recurrence-Regeln sind
+  belegt. Unter Linux bleiben native EDS-Range-/Monitor-/Provider-Abfragen,
+  reale Zeitzonen/DST/Recurrence und visuelle Abnahme offen; Year/List,
+  Selection und globale Aktionen sind separate Lücken.
+- `[~]` `GW-MEMO-SURFACE-FILTERS` ist portabel geschlossen und reviewt:
+  Source+UID-Multiselect/Action States, Preview/Attachments, strict
+  Search/Category/Source-Filter, Forward-Payload/Open URL/Print/Save/
+  Multi-Export/Copy-Cut-Paste-Delete und persistente Keys/Migration sind
+  belegt. Die Linux-Abnahme umfasst native EDS-ACL/Capabilities,
+  Provider-Attachments, Browser/Print/iTIP und echte Source-/UID-Wirkung.
 
 - `[~]` Native ECal-Brücke auf Linux gegen echte Kalender-, Aufgaben- und
   Memo-Quellen kompilieren und verbinden.
@@ -803,7 +839,7 @@ Mit einem Testkonto ohne produktive Empfänger prüfen:
   und attachment müssen dieselben Records wie Evolution liefern. EDS-Query-
   Grenzen, Serverfehler, Zeitzone/DST, Monitor-Refresh und die persistierte
   Quellen-/Kategorienauswahl sind getrennt zu protokollieren; der portable
-  Query-AST, zwei abgeschlossene unabhängige Reviews und der 564/564-Testlauf
+  Query-AST, zwei abgeschlossene unabhängige Reviews und der 618/618-Testlauf
   sind dafür nur Vorbereitung.
 - `[ ]` Wiederholungen, Zeitzonen, Teilnehmer, iTIP/iMIP, freie Zeit,
   Einladungsantworten, private Termine, Kategorien, Anhänge und Alarme mit
@@ -847,7 +883,7 @@ Mit einem Testkonto ohne produktive Empfänger prüfen:
 - Portable Basis: Historischer Commit `d6e7dcc` liefert kompakte
   quellenneutrale Liste/Detailansicht, Mehrwortsuche, Kategorien und eine
   begrenzte Dublettenerkennung; der aktuelle uncommitted Verification-Snapshot
-  umfasst den einmal vollständigen 564/564-Testlauf und `GW-CONTACT-LISTS`
+  umfasst den einmal vollständigen 618/618-Testlauf und `GW-CONTACT-LISTS`
   ergänzt portable vCard-3/4-
   Listen mit Member-UI. Echte EBook-/GAL-Identität und Mutationen bleiben
   offen.
@@ -864,7 +900,7 @@ Mit einem Testkonto ohne produktive Empfänger prüfen:
   abnehmen: vCard-3-Evolution-Listen und vCard-4-`KIND:group`/`MEMBER`, lokale,
   externe und verschachtelte Mitglieder, ungültige Member, Anzeigenamen,
   Member-UID-Auflösung, ACLs und parallele Änderungen prüfen. Atomare portable
-  Store-Tests, zwei abgeschlossene unabhängige Reviews und der 564/564-Testlauf
+  Store-Tests, zwei abgeschlossene unabhängige Reviews und der 618/618-Testlauf
   ersetzen weder EBook-Capabilities noch Provider-/Linux-Visualabnahme.
 - `[ ]` Native EBook-Feldabdeckung prüfen: mehrere Namen, E-Mail-Adressen,
   Telefone, Adressen, Organisation, Kategorien, Notizen, Fotos, Geburtstage,
@@ -1171,10 +1207,11 @@ Kontotyp und Authentifizierung: EDS/Camel-Smoke-Konto; GOA-/Passwortpfad
   teilweise verifiziert, Ablauf-/Fehlerfälle bleiben offen
 Portable Vorbedingung: aktuelle uncommitted Verification-Runde; Cargo-Format-/
   Check-, strikte Schema- und git-diff-Prüfung grün; portable/macOS-
-  Workspace-Testevidenz: 564/564 Tests im finalen unsandboxed Lauf vollständig
+  Workspace-Testevidenz: 618/618 Tests im finalen unsandboxed Lauf vollständig
   erfolgreich; das ist keine Linux-Abnahme. Ein früherer sandboxed Lauf konnte
   18 Graph-Loopback-Mockserver nicht binden; unabhängige Reviews abgeschlossen;
-  `MAIL-TRANSPORT-COMMANDS`, `SET-01` und `GW-MEMO-EDITOR` sowie
+  `P0-MAIL-WORKER-STORE`, `MAIL-TRANSPORT-COMMANDS`, `SET-01`,
+  `GW-CAL-VIEWS-001`, `GW-MEMO-SURFACE-FILTERS` und `GW-MEMO-EDITOR` sowie
   `MAIL-PRINT-ACTION`, `COMPOSER-ACTION-SURFACE`, `GW-ALARMS` und
   `GW-REMINDER-RUNTIME` stehen auf `BLOCKED_LINUX`.
 Commit für den konkreten Linux-Lauf: vor dem Lauf eintragen; dieser
