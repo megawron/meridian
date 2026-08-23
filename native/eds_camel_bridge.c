@@ -400,6 +400,39 @@ eds_camel_session_new (ESourceRegistry *registry)
     return session;
 }
 
+static GMutex global_session_lock;
+static ESourceRegistry *global_registry = NULL;
+static EdsCamelSession *global_session = NULL;
+
+static ESourceRegistry *
+eds_camel_ref_registry (GError **error)
+{
+    ESourceRegistry *res;
+
+    g_mutex_lock (&global_session_lock);
+    if (!global_registry) {
+        camel_provider_init ();
+        global_registry = e_source_registry_new_sync (NULL, error);
+    }
+    res = global_registry ? g_object_ref (global_registry) : NULL;
+    g_mutex_unlock (&global_session_lock);
+    return res;
+}
+
+static EdsCamelSession *
+eds_camel_ref_session (ESourceRegistry *registry)
+{
+    EdsCamelSession *res;
+
+    g_mutex_lock (&global_session_lock);
+    if (!global_session && registry) {
+        global_session = eds_camel_session_new (registry);
+    }
+    res = global_session ? g_object_ref (global_session) : NULL;
+    g_mutex_unlock (&global_session_lock);
+    return res;
+}
+
 static void
 eds_camel_session_configure_service_for_source (EdsCamelSession *session,
                                                 ESource *source,
@@ -971,15 +1004,20 @@ open_store_for_source (EdsCamelSession *session,
         return NULL;
     }
 
-    service = camel_session_add_service (
-        CAMEL_SESSION (session), source_uid, backend_name,
-        CAMEL_PROVIDER_STORE, error);
+    service = camel_session_ref_service (CAMEL_SESSION (session), source_uid);
+    if (!service) {
+        service = camel_session_add_service (
+            CAMEL_SESSION (session), source_uid, backend_name,
+            CAMEL_PROVIDER_STORE, error);
+    }
     if (!service)
         return NULL;
 
     {
-        ESource *parent = e_source_registry_ref_source (
-            session->registry, e_source_get_parent (source));
+        const gchar *parent_uid = e_source_get_parent (source);
+        ESource *parent = (parent_uid && *parent_uid)
+            ? e_source_registry_ref_source (session->registry, parent_uid)
+            : NULL;
         g_printerr ("[EDS-DEBUG] Source '%s' (%s), parent='%s'\n",
                     e_source_get_display_name (source), source_uid,
                     parent ? e_source_get_display_name (parent) : "NULL");
@@ -1104,23 +1142,27 @@ open_store_for_source (EdsCamelSession *session,
     }
 
     if (CAMEL_IS_OFFLINE_STORE (service)) {
-        GError *offline_err = NULL;
-        if (!camel_offline_store_set_online_sync (
-                CAMEL_OFFLINE_STORE (service), TRUE, cancellable, &offline_err)) {
-            g_printerr ("[EDS] Failed to set CamelOfflineStore online for %s: %s\n",
-                        source_uid, offline_err ? offline_err->message : "unknown");
-            g_clear_error (&offline_err);
-        } else {
-            g_printerr ("[EDS] Successfully set CamelOfflineStore online for %s\n", source_uid);
+        if (!camel_offline_store_get_online (CAMEL_OFFLINE_STORE (service))) {
+            GError *offline_err = NULL;
+            if (!camel_offline_store_set_online_sync (
+                    CAMEL_OFFLINE_STORE (service), TRUE, cancellable, &offline_err)) {
+                g_printerr ("[EDS] Failed to set CamelOfflineStore online for %s: %s\n",
+                            source_uid, offline_err ? offline_err->message : "unknown");
+                g_clear_error (&offline_err);
+            } else {
+                g_printerr ("[EDS] Successfully set CamelOfflineStore online for %s\n", source_uid);
+            }
         }
     }
 
-    if (!camel_service_connect_sync (service, cancellable, error)) {
-        g_printerr ("[EDS] camel_service_connect_sync failed for %s (%s): %s\n",
-                    source_uid, backend_name,
-                    error && *error ? (*error)->message : "unknown error");
-        g_object_unref (service);
-        return NULL;
+    if (camel_service_get_connection_status (service) != CAMEL_SERVICE_CONNECTED) {
+        if (!camel_service_connect_sync (service, cancellable, error)) {
+            g_printerr ("[EDS] camel_service_connect_sync failed for %s (%s): %s\n",
+                        source_uid, backend_name,
+                        error && *error ? (*error)->message : "unknown error");
+            g_object_unref (service);
+            return NULL;
+        }
     }
 
     if (!CAMEL_IS_STORE (service)) {
@@ -1286,7 +1328,7 @@ evolution_eds_camel_load_messages (const char *source_uid,
 
     camel_provider_init ();
 
-    registry = e_source_registry_new_sync (NULL, &error);
+    registry = eds_camel_ref_registry (&error);
     if (!registry) {
         emit_progress (
             &context, EVOLUTION_EDS_CAMEL_SYNC_FAILED, NULL, NULL, NULL);
@@ -1296,7 +1338,7 @@ evolution_eds_camel_load_messages (const char *source_uid,
         return 0;
     }
 
-    session = eds_camel_session_new (registry);
+    session = eds_camel_ref_session (registry);
     cancellable = g_cancellable_new ();
     cancellation_monitor = cancellation_monitor_start (
         cancellable, cancellation_callback, cancellation_user_data);
@@ -1459,7 +1501,7 @@ evolution_eds_camel_load_messages_by_uid (
     context.cancellation_user_data = cancellation_user_data;
     camel_provider_init ();
 
-    registry = e_source_registry_new_sync (NULL, &error);
+    registry = eds_camel_ref_registry (&error);
     if (!registry)
         goto finish;
 
@@ -1477,7 +1519,7 @@ evolution_eds_camel_load_messages_by_uid (
         goto finish;
     }
 
-    session = eds_camel_session_new (registry);
+    session = eds_camel_ref_session (registry);
     cancellable = g_cancellable_new ();
     cancellation_monitor = cancellation_monitor_start (
         cancellable, cancellation_callback, cancellation_user_data);
@@ -1973,7 +2015,7 @@ evolution_eds_camel_watcher_new (const char *source_uid,
     watcher->stores = g_ptr_array_new_with_free_func (
         (GDestroyNotify) g_object_unref);
 
-    watcher->registry = e_source_registry_new_sync (NULL, &error);
+    watcher->registry = eds_camel_ref_registry (&error);
     if (!watcher->registry) {
         if (out_error && error)
             *out_error = g_strdup (error->message);
@@ -1982,7 +2024,7 @@ evolution_eds_camel_watcher_new (const char *source_uid,
         return 0;
     }
 
-    watcher->session = eds_camel_session_new (watcher->registry);
+    watcher->session = eds_camel_ref_session (watcher->registry);
     cancellable = g_cancellable_new ();
     sources = e_source_registry_list_enabled (
         watcher->registry, E_SOURCE_EXTENSION_MAIL_ACCOUNT);
@@ -2144,16 +2186,15 @@ evolution_eds_camel_watcher_free (EvolutionEdsCamelWatcher *watcher)
         g_cond_wait (&watcher->condition, &watcher->lock);
     g_mutex_unlock (&watcher->lock);
 
-    g_ptr_array_set_size (watcher->folders, 0);
-    g_ptr_array_set_size (watcher->stores, 0);
+    while (!g_queue_is_empty (watcher->events)) {
+        CamelWatcherEvent *queued_event = g_queue_pop_head (watcher->events);
+        free_watcher_event (queued_event);
+    }
+    g_queue_free (watcher->events);
+    g_ptr_array_free (watcher->folders, TRUE);
+    g_ptr_array_free (watcher->stores, TRUE);
     g_clear_object (&watcher->session);
     g_clear_object (&watcher->registry);
-
-    while (!g_queue_is_empty (watcher->events))
-        free_watcher_event (g_queue_pop_head (watcher->events));
-    g_queue_free (watcher->events);
-    g_ptr_array_unref (watcher->folders);
-    g_ptr_array_unref (watcher->stores);
     g_cond_clear (&watcher->condition);
     g_mutex_clear (&watcher->lock);
     g_free (watcher);
@@ -2614,7 +2655,7 @@ evolution_eds_camel_apply_operation (
     message_uid = operation->message_uid;
 
     camel_provider_init ();
-    registry = e_source_registry_new_sync (NULL, &error);
+    registry = eds_camel_ref_registry (&error);
     if (!registry)
         goto finish;
 
@@ -2633,7 +2674,7 @@ evolution_eds_camel_apply_operation (
         goto finish;
     }
 
-    session = eds_camel_session_new (registry);
+    session = eds_camel_ref_session (registry);
     cancellable = g_cancellable_new ();
     cancellation_monitor = cancellation_monitor_start (
         cancellable, cancellation_callback, cancellation_user_data);
@@ -3109,7 +3150,7 @@ evolution_eds_camel_save_message (
     drafts = folder == EVOLUTION_EDS_CAMEL_SAVE_DRAFT;
 
     camel_provider_init ();
-    registry = e_source_registry_new_sync (NULL, &error);
+    registry = eds_camel_ref_registry (&error);
     if (!registry)
         goto finish;
     source = e_source_registry_ref_source (registry, source_uid);
@@ -3145,7 +3186,7 @@ evolution_eds_camel_save_message (
         goto finish;
     }
 
-    session = eds_camel_session_new (registry);
+    session = eds_camel_ref_session (registry);
     cancellable = g_cancellable_new ();
     store = open_store_for_source (session, source, cancellable, &error);
     if (!store)
@@ -3324,18 +3365,24 @@ evolution_eds_camel_send_message (
         goto finish;
     }
 
-    session = eds_camel_session_new (registry);
+    session = eds_camel_ref_session (registry);
     cancellable = g_cancellable_new ();
-    transport_service = camel_session_add_service (
-        CAMEL_SESSION (session), transport_uid, backend_name,
-        CAMEL_PROVIDER_TRANSPORT, &error);
+    transport_service = camel_session_ref_service (
+        CAMEL_SESSION (session), transport_uid);
+    if (!transport_service) {
+        transport_service = camel_session_add_service (
+            CAMEL_SESSION (session), transport_uid, backend_name,
+            CAMEL_PROVIDER_TRANSPORT, &error);
+    }
     if (!transport_service)
         goto finish;
 
     e_source_camel_configure_service (transport_source, transport_service);
-    if (!camel_service_connect_sync (
-            transport_service, cancellable, &error))
-        goto finish;
+    if (camel_service_get_connection_status (transport_service) != CAMEL_SERVICE_CONNECTED) {
+        if (!camel_service_connect_sync (
+                transport_service, cancellable, &error))
+            goto finish;
+    }
     if (!CAMEL_IS_TRANSPORT (transport_service)) {
         g_set_error_literal (
             &error, G_IO_ERROR, G_IO_ERROR_NOT_SUPPORTED,
