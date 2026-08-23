@@ -628,6 +628,42 @@ impl MailStoreService {
         self.metadata.set_deleted_many(ids, true)
     }
 
+    /// Mark all messages in the local junk/spam folder as deleted in the app sidecar.
+    pub fn empty_local_junk(&self) -> std::io::Result<usize> {
+        let cancelled = AtomicBool::new(false);
+        let overrides = self.metadata.load_folder_overrides();
+        let already_deleted = self.metadata.load_deleted();
+        let copies = self.metadata.load_copies();
+        let messages = self.load_raw_local_records_cancelable(&cancelled);
+        let mut ids = Vec::new();
+
+        for message in messages {
+            let folder_id = overrides
+                .get(&message.id)
+                .map(String::as_str)
+                .unwrap_or(message.folder_id.as_str());
+            if (folder_id == "junk" || folder_id == "spam" || folder_id.starts_with("junk/"))
+                && !already_deleted.contains(&message.id)
+            {
+                ids.push(message.id);
+            }
+        }
+
+        for (message_id, folder_ids) in copies {
+            for folder_id in folder_ids {
+                if folder_id != "junk" && folder_id != "spam" && !folder_id.starts_with("junk/") {
+                    continue;
+                }
+                let copy_id = local_copy_id(&message_id, &folder_id);
+                if !already_deleted.contains(&copy_id) {
+                    ids.push(copy_id);
+                }
+            }
+        }
+
+        self.metadata.set_deleted_many(ids, true)
+    }
+
     /// Read all discoverable local messages in a deterministic order.
     ///
     /// This method is synchronous by design so that it can also be used by

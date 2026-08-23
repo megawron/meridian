@@ -4911,6 +4911,89 @@ impl MailPage {
         });
     }
 
+    pub(crate) fn empty_junk_async(&self, success_label: &str) {
+        let selection = self
+            .imp()
+            .folder_selection
+            .borrow()
+            .as_ref()
+            .map(|selection| selection.borrow().clone())
+            .unwrap_or_default();
+        let active_request = self.imp().active_request.borrow().clone();
+        let has_remote_selection = selection.is_remote()
+            || active_request
+                .as_ref()
+                .is_some_and(|request| request.source_uid.is_some());
+        let has_loaded_remote_junk =
+            self.imp()
+                .message_store
+                .borrow()
+                .as_ref()
+                .is_some_and(|store| {
+                    (0..store.n_items()).any(|index| {
+                        store
+                            .item(index)
+                            .and_downcast::<MailMessageObject>()
+                            .is_some_and(|message| {
+                                message.backend_location().is_some() && message_is_junk(&message)
+                            })
+                    })
+                });
+        if has_remote_selection || has_loaded_remote_junk {
+            self.show_toast(
+                "Dieser Kontoordner benötigt zum endgültigen Leeren den Linux-Expunge-Pfad; der lokale Bestand wurde nicht verändert.",
+            );
+            return;
+        }
+
+        let worker_scope = self.mail_worker_ui_scope();
+        let store_config = mail_store_worker_config_from_main_thread();
+        let success_label = success_label.to_string();
+        let (sender, receiver) = async_channel::bounded(1);
+        std::thread::spawn(move || {
+            let result = MailStoreService::new_worker_safe(store_config)
+                .empty_local_junk()
+                .map_err(MailOperationError::from);
+            let _ = sender.send_blocking(result);
+        });
+
+        let page = self.downgrade();
+        glib::spawn_future_local(async move {
+            let result = receiver.recv().await.unwrap_or_else(|_| {
+                Err(MailOperationError::Backend {
+                    operation: crate::services::mail_operations_service::MailOperationKind::Delete,
+                    message: "Spam-Vorgang wurde abgebrochen".to_string(),
+                })
+            });
+            let Some(page) = page.upgrade() else {
+                return;
+            };
+            if !page.mail_worker_ui_scope_is_current(&worker_scope) {
+                tracing::debug!("Ignoring stale empty-junk result for a replaced mail scope");
+                return;
+            }
+            match result {
+                Ok(count) => {
+                    page.clear_batch_selection();
+                    if count > 0 {
+                        page.refresh_mail();
+                        if let Some(state) = page.imp().message_state.borrow().as_ref() {
+                            state.set_label(&format!(
+                                "{count} lokale Nachricht(en) aus dem Spam-Ordner entfernt"
+                            ));
+                        }
+                        page.show_toast(&format!("{success_label}: {count} Nachricht(en)"));
+                    } else {
+                        page.show_toast("Spam-Ordner ist bereits leer");
+                    }
+                }
+                Err(error) => {
+                    page.show_toast(&format!("Spam-Ordner konnte nicht geleert werden: {error}"))
+                }
+            }
+        });
+    }
+
     fn load_mail_history_async(&self) {
         let generation = self.imp().mail_history_generation.get();
         let history_path = MailCommandStack::capture_persistent_path();
@@ -6782,7 +6865,8 @@ impl MailPage {
             action_section.append(Some("Alle als gelesen markieren"), Some("win.mark-all-read"));
             action_section.append(Some("Nächster ungelesener Ordner"), Some("win.next-unread-folder"));
             action_section.append(Some("Ordner aktualisieren"), Some("win.refresh-mail"));
-            action_section.append(Some("Mülleimer leeren"), Some("win.empty-trash"));
+            action_section.append(Some("Papierkorb leeren"), Some("win.empty-trash"));
+            action_section.append(Some("Spam-Ordner leeren"), Some("win.empty-junk"));
             action_section.append(Some("Endgültig löschen (Expunge)"), Some("win.expunge"));
             folder_menu.append_section(None, &action_section);
 
@@ -6938,7 +7022,8 @@ impl MailPage {
             action_section.append(Some("Alle als gelesen markieren"), Some("win.mark-all-read"));
             action_section.append(Some("Nächster ungelesener Ordner"), Some("win.next-unread-folder"));
             action_section.append(Some("Ordner aktualisieren"), Some("win.refresh-mail"));
-            action_section.append(Some("Mülleimer leeren"), Some("win.empty-trash"));
+            action_section.append(Some("Papierkorb leeren"), Some("win.empty-trash"));
+            action_section.append(Some("Spam-Ordner leeren"), Some("win.empty-junk"));
             action_section.append(Some("Endgültig löschen (Expunge)"), Some("win.expunge"));
             folder_menu.append_section(None, &action_section);
 

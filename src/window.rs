@@ -1367,6 +1367,7 @@ impl EvolutionWindow {
             "folder-properties",
             "folder-subscriptions",
             "empty-trash",
+            "empty-junk",
             "expunge",
             "search",
             "zoom-in",
@@ -2115,7 +2116,8 @@ impl EvolutionWindow {
             Some("win.next-unread-folder"),
         );
         folder_menu.append(Some("Ordner aktualisieren"), Some("win.refresh-mail"));
-        folder_menu.append(Some("Mülleimer leeren"), Some("win.empty-trash"));
+        folder_menu.append(Some("Papierkorb leeren"), Some("win.empty-trash"));
+        folder_menu.append(Some("Spam-Ordner leeren"), Some("win.empty-junk"));
         folder_menu.append(Some("Endgültig löschen (Expunge)"), Some("win.expunge"));
         folder_menu.append(
             Some("Abonnements verwalten..."),
@@ -3204,6 +3206,12 @@ impl EvolutionWindow {
                 "Papierkorb geleert",
             ),
             (
+                "empty-junk",
+                "Spam-Ordner leeren?",
+                "Alle lokalen Nachrichten im Spam-Ordner werden unwiderruflich gelöscht.",
+                "Spam-Ordner geleert",
+            ),
+            (
                 "expunge",
                 "Papierkorb endgültig leeren?",
                 "Der lokale app-eigene Papierkorb wird geleert. Für synchronisierte Ordner ist der Linux-Pfad erforderlich.",
@@ -3220,6 +3228,7 @@ impl EvolutionWindow {
                 move |_, _| {
                     let win_for_action = win.clone();
                     let success = success.clone();
+                    let action_key = action_name.to_string();
                     crate::dialogs::run_destructive_action(
                         &win,
                         &heading,
@@ -3227,7 +3236,11 @@ impl EvolutionWindow {
                         "Leeren",
                         move || {
                             if let Some(mail_page) = win_for_action.mail_page() {
-                                mail_page.empty_trash_async(&success);
+                                if action_key == "empty-junk" {
+                                    mail_page.empty_junk_async(&success);
+                                } else {
+                                    mail_page.empty_trash_async(&success);
+                                }
                             } else {
                                 win_for_action
                                     .add_toast(&adw::Toast::new("Mailansicht ist nicht verfügbar"));
