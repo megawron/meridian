@@ -2653,7 +2653,16 @@ fn decode_mime_bytes(bytes: &[u8], charset: Option<&str>) -> String {
                 }
             })
             .collect(),
-        _ => String::from_utf8_lossy(bytes).into_owned(),
+        _ => {
+            if let Ok(valid) = std::str::from_utf8(bytes) {
+                valid.to_string()
+            } else {
+                bytes
+                    .iter()
+                    .map(|byte| decode_windows_1252_byte(*byte))
+                    .collect()
+            }
+        }
     };
     normalize_mime_text(decoded)
 }

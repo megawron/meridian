@@ -265,6 +265,27 @@ impl HtmlEditor {
             .css_classes(vec!["flat"])
             .build();
 
+        let btn_strikethrough = gtk::Button::builder()
+            .icon_name("format-text-strikethrough-symbolic")
+            .tooltip_text("Durchgestrichen")
+            .css_classes(vec!["flat"])
+            .build();
+
+        let btn_clear = gtk::Button::builder()
+            .icon_name("edit-clear-symbolic")
+            .tooltip_text("Formatierung entfernen")
+            .css_classes(vec!["flat"])
+            .build();
+
+        let dropdown_format = gtk::DropDown::from_strings(&[
+            "Normal",
+            "Überschrift 1",
+            "Überschrift 2",
+            "Überschrift 3",
+            "Vorformatiert",
+        ]);
+        dropdown_format.set_valign(gtk::Align::Center);
+
         let btn_list = gtk::Button::builder()
             .icon_name("format-list-bulleted-symbolic")
             .tooltip_text("Aufzählung")
@@ -295,9 +316,13 @@ impl HtmlEditor {
             .css_classes(vec!["flat"])
             .build();
 
+        toolbar.append(&dropdown_format);
+        toolbar.append(&gtk::Separator::new(gtk::Orientation::Vertical));
         toolbar.append(&btn_bold);
         toolbar.append(&btn_italic);
         toolbar.append(&btn_underline);
+        toolbar.append(&btn_strikethrough);
+        toolbar.append(&btn_clear);
         toolbar.append(&gtk::Separator::new(gtk::Orientation::Vertical));
         toolbar.append(&btn_list);
         toolbar.append(&btn_ordered_list);
@@ -400,6 +425,56 @@ impl HtmlEditor {
             move |_| {
                 web_view.evaluate_javascript(
                     "document.execCommand('underline', false, null);",
+                    None,
+                    None,
+                    None::<&gio::Cancellable>,
+                    |_| {},
+                );
+            }
+        ));
+
+        btn_strikethrough.connect_clicked(glib::clone!(
+            #[weak]
+            web_view,
+            move |_| {
+                web_view.evaluate_javascript(
+                    "document.execCommand('strikethrough', false, null);",
+                    None,
+                    None,
+                    None::<&gio::Cancellable>,
+                    |_| {},
+                );
+            }
+        ));
+
+        btn_clear.connect_clicked(glib::clone!(
+            #[weak]
+            web_view,
+            move |_| {
+                web_view.evaluate_javascript(
+                    "document.execCommand('removeFormat', false, null);",
+                    None,
+                    None,
+                    None::<&gio::Cancellable>,
+                    |_| {},
+                );
+            }
+        ));
+
+        dropdown_format.connect_selected_notify(glib::clone!(
+            #[weak]
+            web_view,
+            move |dropdown| {
+                let tag = match dropdown.selected() {
+                    1 => "h1",
+                    2 => "h2",
+                    3 => "h3",
+                    4 => "pre",
+                    _ => "p",
+                };
+                let script = format!("document.execCommand('formatBlock', false, '{tag}');");
+                web_view.evaluate_javascript(
+                    &script,
                     None,
                     None,
                     None::<&gio::Cancellable>,
