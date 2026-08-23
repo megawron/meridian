@@ -634,6 +634,14 @@ impl AppSettings {
         self.set_boolean("mark-read-on-selection", value);
     }
 
+    pub fn mark_read_timeout(&self) -> i32 {
+        self.settings.int("mark-read-timeout")
+    }
+
+    pub fn set_mark_read_timeout(&self, value: i32) {
+        self.set_int("mark-read-timeout", value.clamp(0, 30_000));
+    }
+
     pub fn show_message_preview(&self) -> bool {
         self.settings.boolean("show-message-preview")
     }

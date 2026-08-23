@@ -133,6 +133,10 @@
       <default>true</default>
       <summary>Mark a message as read when it is selected</summary>
     </key>
+    <key name="mark-read-timeout" type="i">
+      <default>1500</default>
+      <summary>Delay in milliseconds before automatically marking a selected message as read</summary>
+    </key>
     <key name="show-message-preview" type="b">
       <default>true</default>
       <summary>Show the selected message preview pane</summary>

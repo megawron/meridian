@@ -1369,6 +1369,13 @@ impl EvolutionWindow {
             "empty-trash",
             "expunge",
             "search",
+            "zoom-in",
+            "zoom-out",
+            "zoom-reset",
+            "expand-all-threads",
+            "collapse-all-threads",
+            "mark-thread-read",
+            "delete-thread",
             "mail-next",
             "mail-prev",
             "mail-next-unread",
@@ -2020,6 +2027,26 @@ impl EvolutionWindow {
         density_menu.append(Some("Standard"), Some("win.mail-density-normal"));
         density_menu.append(Some("Geräumig"), Some("win.mail-density-spacious"));
         view_menu.append_submenu(Some("Nachrichtendichte"), &density_menu);
+        view_menu.append(
+            Some("Schrift vergrößern"),
+            Some("win.zoom-in"),
+        );
+        view_menu.append(
+            Some("Schrift verkleinern"),
+            Some("win.zoom-out"),
+        );
+        view_menu.append(
+            Some("Normale Schriftgröße"),
+            Some("win.zoom-reset"),
+        );
+        view_menu.append(
+            Some("Alle Unterhaltungen aufklappen"),
+            Some("win.expand-all-threads"),
+        );
+        view_menu.append(
+            Some("Alle Unterhaltungen einklappen"),
+            Some("win.collapse-all-threads"),
+        );
         menu.append_submenu(Some("Ansicht"), &view_menu);
 
         // ─── 4. Nachricht (Message) ────────────────────────────────────────
@@ -2048,6 +2075,14 @@ impl EvolutionWindow {
         );
         message_menu.append(Some("Als gelesen markieren"), Some("win.mark-read"));
         message_menu.append(Some("Als ungelesen markieren"), Some("win.mark-unread"));
+        message_menu.append(
+            Some("Unterhaltung als gelesen markieren"),
+            Some("win.mark-thread-read"),
+        );
+        message_menu.append(
+            Some("Unterhaltung löschen"),
+            Some("win.delete-thread"),
+        );
         message_menu.append(Some("Markierung umschalten"), Some("win.toggle-flag"));
         message_menu.append(
             Some("Wichtigkeitsmarkierung umschalten"),
@@ -3056,6 +3091,110 @@ impl EvolutionWindow {
             }
         ));
         self.add_action(&action_purge_calendar);
+
+        let action_zoom_in = gio::SimpleAction::new("zoom-in", None);
+        action_zoom_in.connect_activate(glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            move |_, _| {
+                if let Some(mail_page) = win.mail_page() {
+                    mail_page.zoom_in();
+                }
+            }
+        ));
+        self.add_action(&action_zoom_in);
+
+        let action_zoom_out = gio::SimpleAction::new("zoom-out", None);
+        action_zoom_out.connect_activate(glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            move |_, _| {
+                if let Some(mail_page) = win.mail_page() {
+                    mail_page.zoom_out();
+                }
+            }
+        ));
+        self.add_action(&action_zoom_out);
+
+        let action_zoom_reset = gio::SimpleAction::new("zoom-reset", None);
+        action_zoom_reset.connect_activate(glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            move |_, _| {
+                if let Some(mail_page) = win.mail_page() {
+                    mail_page.zoom_reset();
+                }
+            }
+        ));
+        self.add_action(&action_zoom_reset);
+
+        let action_expand_threads = gio::SimpleAction::new("expand-all-threads", None);
+        action_expand_threads.connect_activate(glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            move |_, _| {
+                if let Some(mail_page) = win.mail_page() {
+                    mail_page.expand_all_threads();
+                }
+            }
+        ));
+        self.add_action(&action_expand_threads);
+
+        let action_collapse_threads = gio::SimpleAction::new("collapse-all-threads", None);
+        action_collapse_threads.connect_activate(glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            move |_, _| {
+                if let Some(mail_page) = win.mail_page() {
+                    mail_page.collapse_all_threads();
+                }
+            }
+        ));
+        self.add_action(&action_collapse_threads);
+
+        let action_mark_thread_read = gio::SimpleAction::new("mark-thread-read", None);
+        action_mark_thread_read.connect_activate(glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            move |_, _| {
+                if let Some(mail_page) = win.mail_page() {
+                    match mail_page.mark_selected_thread_read() {
+                        Ok(count) => {
+                            if count > 0 {
+                                win.add_toast(&adw::Toast::new(&format!("{count} Nachricht(en) der Konversation als gelesen markiert")));
+                            } else {
+                                win.add_toast(&adw::Toast::new("Keine ungelesenen Nachrichten in der Konversation"));
+                            }
+                        }
+                        Err(error) => {
+                            win.add_toast(&adw::Toast::new(&format!("Fehler beim Markieren der Konversation: {error}")));
+                        }
+                    }
+                }
+            }
+        ));
+        self.add_action(&action_mark_thread_read);
+
+        let action_delete_thread = gio::SimpleAction::new("delete-thread", None);
+        action_delete_thread.connect_activate(glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            move |_, _| {
+                if let Some(mail_page) = win.mail_page() {
+                    match mail_page.delete_selected_thread() {
+                        Ok(count) => {
+                            if count > 0 {
+                                win.add_toast(&adw::Toast::new(&format!("{count} Nachricht(en) der Konversation gelöscht")));
+                            }
+                        }
+                        Err(error) => {
+                            win.add_toast(&adw::Toast::new(&format!("Fehler beim Löschen der Konversation: {error}")));
+                        }
+                    }
+                }
+            }
+        ));
+        self.add_action(&action_delete_thread);
 
         for (action_name, heading, body, success) in [
             (

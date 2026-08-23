@@ -1953,6 +1953,43 @@ impl PreferencesDialog {
         }
         group_reading.add(&row_mark_read);
 
+        let timeout_options = gtk::DropDown::from_strings(&[
+            "Sofort",
+            "Nach 0,5 Sekunden",
+            "Nach 1,5 Sekunden (Standard)",
+            "Nach 3 Sekunden",
+            "Nach 5 Sekunden",
+        ]);
+        timeout_options.set_valign(gtk::Align::Center);
+        let row_mark_read_timeout = adw::ActionRow::builder()
+            .title("Verzögerung vor Gelesen-Markierung")
+            .subtitle("Verhindert vorzeitiges Markieren beim schnellen Durchblättern")
+            .build();
+        row_mark_read_timeout.add_suffix(&timeout_options);
+
+        if let Some(settings) = settings.clone() {
+            let timeout_ms = settings.mark_read_timeout();
+            let selected_idx = match timeout_ms {
+                t if t <= 0 => 0,
+                t if t <= 800 => 1,
+                t if t <= 2000 => 2,
+                t if t <= 4000 => 3,
+                _ => 4,
+            };
+            timeout_options.set_selected(selected_idx);
+            timeout_options.connect_selected_notify(move |dropdown| {
+                let ms = match dropdown.selected() {
+                    0 => 0,
+                    1 => 500,
+                    2 => 1500,
+                    3 => 3000,
+                    _ => 5000,
+                };
+                settings.set_mark_read_timeout(ms);
+            });
+        }
+        group_reading.add(&row_mark_read_timeout);
+
         let row_message_preview = adw::SwitchRow::builder()
             .title("Mail-Vorschaufenster anzeigen")
             .subtitle("Zeigt die ausgewählte Nachricht neben der Nachrichtenliste an")

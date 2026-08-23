@@ -2593,6 +2593,7 @@ mod imp {
         pub mail_load_cancellation: RefCell<Option<Arc<AtomicBool>>>,
         pub mail_search_cancellation: RefCell<Option<Arc<AtomicBool>>>,
         pub search_debounce_source: RefCell<Option<glib::SourceId>>,
+        pub mark_read_timeout_source: RefCell<Option<glib::SourceId>>,
         pub search_generation: Cell<u64>,
         pub graph_backend_active: Cell<bool>,
         pub remote_search_applied: Cell<bool>,
@@ -2777,6 +2778,9 @@ mod imp {
                 cancelled.store(true, Ordering::Relaxed);
             }
             if let Some(source) = self.search_debounce_source.borrow_mut().take() {
+                source.remove();
+            }
+            if let Some(source) = self.mark_read_timeout_source.borrow_mut().take() {
                 source.remove();
             }
             if let Some(cancelled) = self.mail_incremental_cancellation.borrow().as_ref() {
@@ -4431,6 +4435,128 @@ impl MailPage {
             None => self.execute_mail_command(MailCommand::delete_local(message.id())),
         };
         result.map(|()| true)
+    }
+
+    /// Increase zoom level in the message viewer.
+    pub fn zoom_in(&self) {
+        if let Some(ref viewer) = *self.imp().mail_viewer.borrow() {
+            viewer.zoom_in();
+        }
+    }
+
+    /// Decrease zoom level in the message viewer.
+    pub fn zoom_out(&self) {
+        if let Some(ref viewer) = *self.imp().mail_viewer.borrow() {
+            viewer.zoom_out();
+        }
+    }
+
+    /// Reset zoom level in the message viewer.
+    pub fn zoom_reset(&self) {
+        if let Some(ref viewer) = *self.imp().mail_viewer.borrow() {
+            viewer.zoom_reset();
+        }
+    }
+
+    /// Expand all message threads in the thread tree.
+    pub fn expand_all_threads(&self) {
+        let Some(selection) = self.imp().thread_selection.borrow().as_ref().cloned() else {
+            return;
+        };
+        for index in 0..selection.n_items() {
+            if let Some(row) = selection.item(index).and_downcast::<gtk::TreeListRow>() {
+                if row.is_expandable() {
+                    row.set_expanded(true);
+                }
+            }
+        }
+    }
+
+    /// Collapse all message threads in the thread tree.
+    pub fn collapse_all_threads(&self) {
+        let Some(selection) = self.imp().thread_selection.borrow().as_ref().cloned() else {
+            return;
+        };
+        for index in 0..selection.n_items() {
+            if let Some(row) = selection.item(index).and_downcast::<gtk::TreeListRow>() {
+                if row.is_expandable() {
+                    row.set_expanded(false);
+                }
+            }
+        }
+    }
+
+    /// Mark all messages belonging to the currently selected thread as read.
+    pub fn mark_selected_thread_read(&self) -> Result<usize, MailOperationError> {
+        let Some(selection) = self.imp().message_selection.borrow().as_ref().cloned() else {
+            return Ok(0);
+        };
+        let Some(selected_msg) = selected_mail_message(&selection) else {
+            return Ok(0);
+        };
+        let thread_id = selected_msg.thread_id();
+        let Some(store) = self.imp().message_store.borrow().as_ref().cloned() else {
+            return Ok(0);
+        };
+
+        let mut commands = Vec::new();
+        for index in 0..store.n_items() {
+            if let Some(msg) = store.item(index).and_downcast::<MailMessageObject>() {
+                if msg.thread_id() == thread_id && msg.is_unread() {
+                    commands.push(MailCommand::set_message_state(
+                        msg.id(),
+                        msg.backend_location(),
+                        true,
+                        msg.is_flagged(),
+                        false,
+                        msg.is_flagged(),
+                    ));
+                }
+            }
+        }
+
+        if commands.is_empty() {
+            return Ok(0);
+        }
+
+        let count = commands.len();
+        self.execute_mail_batch(commands, "Konversation als gelesen markieren")?;
+        Ok(count)
+    }
+
+    /// Delete all messages belonging to the currently selected thread.
+    pub fn delete_selected_thread(&self) -> Result<usize, MailOperationError> {
+        let Some(selection) = self.imp().message_selection.borrow().as_ref().cloned() else {
+            return Ok(0);
+        };
+        let Some(selected_msg) = selected_mail_message(&selection) else {
+            return Ok(0);
+        };
+        let thread_id = selected_msg.thread_id();
+        let Some(store) = self.imp().message_store.borrow().as_ref().cloned() else {
+            return Ok(0);
+        };
+
+        let mut commands = Vec::new();
+        for index in 0..store.n_items() {
+            if let Some(msg) = store.item(index).and_downcast::<MailMessageObject>() {
+                if msg.thread_id() == thread_id {
+                    let cmd = match msg.backend_location() {
+                        Some(loc) => MailCommand::delete(msg.id(), loc),
+                        None => MailCommand::delete_local(msg.id()),
+                    };
+                    commands.push(cmd);
+                }
+            }
+        }
+
+        if commands.is_empty() {
+            return Ok(0);
+        }
+
+        let count = commands.len();
+        self.execute_mail_batch(commands, "Konversation löschen")?;
+        Ok(count)
     }
 
     /// Open the same local-folder editor used by the sidebar's folder button.
@@ -11289,25 +11415,69 @@ impl MailPage {
                 if let Some(page) = page_for_read.upgrade() {
                     page.reset_displayed_message_search_for_selection();
                 }
+                if let Some(source) = page_for_read.upgrade().and_then(|p| p.imp().mark_read_timeout_source.borrow_mut().take()) {
+                    source.remove();
+                }
                 let msg_option = selected_mail_message(sel);
                 if let Some(msg) = msg_option {
                     let was_unread = msg.is_unread();
-                    let mark_read_on_selection = AppSettings::try_new()
-                        .map(|settings| settings.mark_read_on_selection())
+                    let settings = AppSettings::try_new();
+                    let mark_read_on_selection = settings
+                        .as_ref()
+                        .map(|s| s.mark_read_on_selection())
                         .unwrap_or(true);
+                    let timeout_ms = settings
+                        .as_ref()
+                        .map(|s| s.mark_read_timeout())
+                        .unwrap_or(1500);
+
                     if was_unread && mark_read_on_selection {
-                        let command = MailCommand::set_message_state(
-                            msg.id(),
-                            msg.backend_location(),
-                            msg.is_unread(),
-                            msg.is_flagged(),
-                            false,
-                            msg.is_flagged(),
-                        );
-                        if let Some(page) = page_for_read.upgrade() {
-                            if let Err(error) = page.execute_mail_command(command) {
-                                tracing::error!(%error, "Could not queue read-state mutation");
+                        let msg_id = msg.id().to_string();
+                        let backend_location = msg.backend_location();
+                        let is_flagged = msg.is_flagged();
+
+                        if timeout_ms <= 0 {
+                            let command = MailCommand::set_message_state(
+                                &msg_id,
+                                backend_location,
+                                true,
+                                is_flagged,
+                                false,
+                                is_flagged,
+                            );
+                            if let Some(page) = page_for_read.upgrade() {
+                                if let Err(error) = page.execute_mail_command(command) {
+                                    tracing::error!(%error, "Could not queue read-state mutation");
+                                }
                             }
+                        } else if let Some(page) = page_for_read.upgrade() {
+                            let page_weak = page.downgrade();
+                            let timeout_source = glib::timeout_add_local_once(
+                                std::time::Duration::from_millis(timeout_ms as u64),
+                                move || {
+                                    if let Some(page) = page_weak.upgrade() {
+                                        page.imp().mark_read_timeout_source.replace(None);
+                                        if let Some(sel) = page.imp().message_selection.borrow().as_ref() {
+                                            if let Some(current_msg) = selected_mail_message(sel) {
+                                                if current_msg.id() == msg_id && current_msg.is_unread() {
+                                                    let command = MailCommand::set_message_state(
+                                                        &msg_id,
+                                                        backend_location,
+                                                        true,
+                                                        is_flagged,
+                                                        false,
+                                                        is_flagged,
+                                                    );
+                                                    if let Err(error) = page.execute_mail_command(command) {
+                                                        tracing::error!(%error, "Could not queue delayed read-state mutation");
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                },
+                            );
+                            page.imp().mark_read_timeout_source.replace(Some(timeout_source));
                         }
                     }
                     if let Some(page) = page_for_read.upgrade() {
@@ -11505,6 +11675,38 @@ impl MailPage {
             attachment_bar.set_visible(false);
         } else {
             attachment_bar.set_visible(true);
+            if attachments.len() > 1 {
+                let btn_save_all = gtk::Button::builder()
+                    .label("Alle speichern…")
+                    .icon_name("document-save-symbolic")
+                    .css_classes(vec!["flat", "suggested-action"])
+                    .valign(gtk::Align::Center)
+                    .build();
+                let attachments_for_all = attachments.clone();
+                let parent = attachment_bar.root().and_downcast::<gtk::Window>();
+                btn_save_all.connect_clicked(move |_| {
+                    let Some(parent) = parent.as_ref() else {
+                        return;
+                    };
+                    let folder_dialog = gtk::FileDialog::builder()
+                        .title("Ordner für alle Anhänge auswählen")
+                        .modal(true)
+                        .build();
+                    let attachments_to_save = attachments_for_all.clone();
+                    folder_dialog.select_folder(Some(parent), None::<&gio::Cancellable>, move |result| {
+                        if let Ok(folder) = result {
+                            if let Some(folder_path) = folder.path() {
+                                for att in &attachments_to_save {
+                                    let target_path = folder_path.join(&att.filename);
+                                    let _ = fs::write(&target_path, att.content.as_ref());
+                                }
+                            }
+                        }
+                    });
+                });
+                attachment_bar.append(&btn_save_all);
+            }
+
             for attachment in attachments {
                 let chip = gtk::Box::builder()
                     .orientation(gtk::Orientation::Horizontal)
@@ -11514,12 +11716,19 @@ impl MailPage {
                     .margin_bottom(4)
                     .build();
 
+                let icon_name = match attachment.mime_type.as_str() {
+                    m if m.starts_with("image/") => "image-x-generic-symbolic",
+                    m if m.contains("pdf") => "x-office-document-symbolic",
+                    m if m.contains("zip") || m.contains("tar") || m.contains("compressed") => {
+                        "package-x-generic-symbolic"
+                    }
+                    m if m.starts_with("audio/") => "audio-x-generic-symbolic",
+                    m if m.starts_with("video/") => "video-x-generic-symbolic",
+                    m if m.contains("text/") => "text-x-generic-symbolic",
+                    _ => "mail-attachment-symbolic",
+                };
                 let icon = gtk::Image::new();
-                set_image_icon_with_fallback(
-                    &icon,
-                    "mail-attachment-symbolic",
-                    "insert-object-symbolic",
-                );
+                set_image_icon_with_fallback(&icon, icon_name, "mail-attachment-symbolic");
                 let text = gtk::Label::builder()
                     .label(&format!(
                         "{} ({})",
@@ -11527,6 +11736,27 @@ impl MailPage {
                     ))
                     .css_classes(vec!["caption"])
                     .build();
+
+                let btn_open = gtk::Button::builder()
+                    .icon_name("document-open-symbolic")
+                    .tooltip_text("Anhang öffnen")
+                    .css_classes(vec!["flat", "circular"])
+                    .valign(gtk::Align::Center)
+                    .build();
+                let filename_for_open = attachment.filename.clone();
+                let content_for_open = attachment.content.clone();
+                btn_open.connect_clicked(move |_| {
+                    let temp_dir = std::env::temp_dir().join("evolution4-attachments");
+                    let _ = fs::create_dir_all(&temp_dir);
+                    let temp_path = temp_dir.join(&filename_for_open);
+                    if fs::write(&temp_path, content_for_open.as_ref()).is_ok() {
+                        let uri = format!("file://{}", temp_path.to_string_lossy());
+                        let _ = gio::AppInfo::launch_default_for_uri(
+                            &uri,
+                            None::<&gio::AppLaunchContext>,
+                        );
+                    }
+                });
 
                 let btn_save = gtk::Button::builder()
                     .icon_name("document-save-symbolic")
@@ -11580,6 +11810,7 @@ impl MailPage {
 
                 chip.append(&icon);
                 chip.append(&text);
+                chip.append(&btn_open);
                 chip.append(&btn_save);
                 attachment_bar.append(&chip);
             }

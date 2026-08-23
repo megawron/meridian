@@ -803,6 +803,43 @@ impl MailViewer {
         "Natives GTK/WebKit-Drucken ist in diesem Build nur unter Linux verfügbar"
     }
 
+    /// Increase text/content zoom level in the viewer.
+    pub fn zoom_in(&self) {
+        #[cfg(target_os = "linux")]
+        if let Some(ref webview) = *self.imp().webview.borrow() {
+            let current = webview.zoom_level();
+            let new_level = (current + 0.1).min(3.0);
+            webview.set_zoom_level(new_level);
+        }
+    }
+
+    /// Decrease text/content zoom level in the viewer.
+    pub fn zoom_out(&self) {
+        #[cfg(target_os = "linux")]
+        if let Some(ref webview) = *self.imp().webview.borrow() {
+            let current = webview.zoom_level();
+            let new_level = (current - 0.1).max(0.5);
+            webview.set_zoom_level(new_level);
+        }
+    }
+
+    /// Reset zoom level in the viewer to 100%.
+    pub fn zoom_reset(&self) {
+        #[cfg(target_os = "linux")]
+        if let Some(ref webview) = *self.imp().webview.borrow() {
+            webview.set_zoom_level(1.0);
+        }
+    }
+
+    /// Return the current zoom level.
+    pub fn zoom_level(&self) -> f64 {
+        #[cfg(target_os = "linux")]
+        if let Some(ref webview) = *self.imp().webview.borrow() {
+            return webview.zoom_level();
+        }
+        1.0
+    }
+
     /// Allow remote image loading for the current email.
     pub fn allow_remote_images(&self) {
         if let Some(message_id) = self.imp().current_message_id.borrow().as_deref() {
@@ -1903,7 +1940,7 @@ fn compose_sanitized_mail_document(
         .replace("__FONT_FAMILY__", &mail_font_family)
         .replace("__FONT_SIZE__", &mail_font_size.to_string());
     let style_tag = format!(
-        "<style>{} img {{ max-width: 100%; height: auto; }} body > table, body > div, body > center, body > article, body > main {{ max-width: 100%; }}{}</style>",
+        "<style>{} pre {{ white-space: pre-wrap; word-wrap: break-word; font-family: inherit; font-size: inherit; margin: 0; }} blockquote {{ border-left: 3px solid #888a85; margin: 8px 0; padding-left: 12px; opacity: 0.85; }} a {{ color: #3584e4; text-decoration: underline; }} table {{ max-width: 100%; border-collapse: collapse; }} img {{ max-width: 100%; height: auto; }} body > table, body > div, body > center, body > article, body > main {{ max-width: 100%; }}{}</style>",
         body_css,
         if remote_images_allowed {
             ""
