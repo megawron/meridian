@@ -378,5 +378,33 @@
       <default>true</default>
       <summary>Sort memos in descending order</summary>
     </key>
+    <key name="memo-search-mode" type="s">
+      <default>'any-field'</default>
+      <summary>Memo search mode (summary, description, any field, or advanced)</summary>
+      <description>Advanced memo search accepts only field:value terms joined by AND. Supported fields are summary, description, category, source, and url.</description>
+      <choices>
+        <choice value='summary'/>
+        <choice value='description'/>
+        <choice value='any-field'/>
+        <choice value='advanced'/>
+      </choices>
+    </key>
+    <key name="memo-category-filter" type="s">
+      <default>'any'</default>
+      <summary>Memo category filter</summary>
+      <description>Use any, without, or a validated category name.</description>
+    </key>
+    <key name="memo-preview-visible" type="b">
+      <default>true</default>
+      <summary>Show the memo preview</summary>
+    </key>
+    <key name="memo-preview-orientation" type="s">
+      <default>'classic'</default>
+      <summary>Memo preview orientation</summary>
+      <choices>
+        <choice value='classic'/>
+        <choice value='vertical'/>
+      </choices>
+    </key>
   </schema>
 </schemalist>

@@ -14,6 +14,11 @@ use gtk::glib;
 use gtk::glib::prelude::{StaticVariantType, ToVariant};
 use std::collections::HashSet;
 
+use super::memo_filter_service::{
+    MemoCategoryFilter, MemoSearchMode, validate_category_name, validate_source_filter,
+};
+use super::memo_surface_service::MemoPreviewOrientation;
+
 #[derive(Clone, Debug)]
 pub struct AppSettings {
     settings: gio::Settings,
@@ -41,6 +46,39 @@ fn normalized_task_search_mode(value: &str) -> &str {
         "any-field" | "summary" | "description" | "advanced" => value,
         _ => "any-field",
     }
+}
+
+pub(crate) fn normalize_memo_search_mode_value(value: &str) -> Result<String, String> {
+    MemoSearchMode::parse_setting(value).map(|mode| mode.setting_value().to_string())
+}
+
+pub(crate) fn normalize_memo_category_filter_value(value: &str) -> Result<String, String> {
+    MemoCategoryFilter::parse_setting(value).map(|filter| filter.setting_value())
+}
+
+pub(crate) fn normalize_memo_source_filter_value(value: &str) -> Result<String, String> {
+    validate_source_filter(value)
+}
+
+pub(crate) fn normalize_memo_preview_orientation_value(value: &str) -> Result<String, String> {
+    MemoPreviewOrientation::parse_setting(value)
+        .map(|orientation| orientation.setting_value().to_string())
+}
+
+pub(crate) fn validate_memo_category_filter_value(value: &str) -> Result<String, String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err(
+            "Der Memo-Kategoriefilter darf bei einer Migration nicht leer sein".to_string(),
+        );
+    }
+    if value.eq_ignore_ascii_case("any")
+        || value.eq_ignore_ascii_case("without")
+        || value.eq_ignore_ascii_case("without-category")
+    {
+        return normalize_memo_category_filter_value(value);
+    }
+    validate_category_name(value).map(|value| value)
 }
 
 fn normalized_switcher_location(value: &str) -> &'static str {
@@ -1159,11 +1197,16 @@ impl AppSettings {
     }
 
     pub fn memo_source_filter(&self) -> String {
-        self.settings.string("memo-source-filter").to_string()
+        normalize_memo_source_filter_value(&self.settings.string("memo-source-filter"))
+            .unwrap_or_default()
     }
 
     pub fn set_memo_source_filter(&self, value: &str) {
-        if let Err(error) = self.settings.set_string("memo-source-filter", value.trim()) {
+        let Ok(value) = normalize_memo_source_filter_value(value) else {
+            tracing::warn!("Refusing invalid memo source filter");
+            return;
+        };
+        if let Err(error) = self.settings.set_string("memo-source-filter", &value) {
             tracing::warn!(%error, "Could not persist memo source filter");
         }
     }
@@ -1174,6 +1217,54 @@ impl AppSettings {
 
     pub fn set_memo_sort_descending(&self, value: bool) {
         self.set_boolean("memo-sort-descending", value);
+    }
+
+    pub fn memo_search_mode(&self) -> String {
+        normalize_memo_search_mode_value(&self.settings.string("memo-search-mode"))
+            .unwrap_or_else(|_| MemoSearchMode::default().setting_value().to_string())
+    }
+
+    pub fn set_memo_search_mode(&self, value: &str) {
+        let value = normalize_memo_search_mode_value(value)
+            .unwrap_or_else(|_| MemoSearchMode::default().setting_value().to_string());
+        self.set_string("memo-search-mode", &value);
+    }
+
+    pub fn memo_category_filter(&self) -> String {
+        normalize_memo_category_filter_value(&self.settings.string("memo-category-filter"))
+            .unwrap_or_else(|_| MemoCategoryFilter::default().setting_value())
+    }
+
+    pub fn set_memo_category_filter(&self, value: &str) {
+        let value = normalize_memo_category_filter_value(value)
+            .unwrap_or_else(|_| MemoCategoryFilter::default().setting_value());
+        self.set_string("memo-category-filter", &value);
+    }
+
+    pub fn memo_preview_visible(&self) -> bool {
+        self.settings.boolean("memo-preview-visible")
+    }
+
+    pub fn set_memo_preview_visible(&self, value: bool) {
+        self.set_boolean("memo-preview-visible", value);
+    }
+
+    pub fn memo_preview_orientation(&self) -> String {
+        normalize_memo_preview_orientation_value(&self.settings.string("memo-preview-orientation"))
+            .unwrap_or_else(|_| {
+                MemoPreviewOrientation::default()
+                    .setting_value()
+                    .to_string()
+            })
+    }
+
+    pub fn set_memo_preview_orientation(&self, value: &str) {
+        let value = normalize_memo_preview_orientation_value(value).unwrap_or_else(|_| {
+            MemoPreviewOrientation::default()
+                .setting_value()
+                .to_string()
+        });
+        self.set_string("memo-preview-orientation", &value);
     }
 
     /// Apply one already-normalized, non-secret setting from an explicit
@@ -1387,9 +1478,27 @@ impl AppSettings {
                 self.set_task_sort_descending(parse_migrated_bool(key, value)?);
             }
             "memo-sort-field" => self.set_memo_sort_field(value),
-            "memo-source-filter" => self.set_memo_source_filter(value),
+            "memo-source-filter" => {
+                let value = normalize_memo_source_filter_value(value)?;
+                self.set_string("memo-source-filter", &value);
+            }
             "memo-sort-descending" => {
                 self.set_memo_sort_descending(parse_migrated_bool(key, value)?);
+            }
+            "memo-search-mode" => {
+                let value = normalize_memo_search_mode_value(value)?;
+                self.set_string("memo-search-mode", &value);
+            }
+            "memo-category-filter" => {
+                let value = validate_memo_category_filter_value(value)?;
+                self.set_string("memo-category-filter", &value);
+            }
+            "memo-preview-visible" => {
+                self.set_memo_preview_visible(parse_migrated_bool(key, value)?);
+            }
+            "memo-preview-orientation" => {
+                let value = normalize_memo_preview_orientation_value(value)?;
+                self.set_string("memo-preview-orientation", &value);
             }
             _ => return Err(format!("unbekannter Migrationsschlüssel „{key}“")),
         }
@@ -1486,6 +1595,10 @@ impl AppSettings {
             "memo-sort-field",
             "memo-source-filter",
             "memo-sort-descending",
+            "memo-search-mode",
+            "memo-category-filter",
+            "memo-preview-visible",
+            "memo-preview-orientation",
         ] {
             self.settings.reset(key);
         }
@@ -1997,5 +2110,57 @@ mod tests {
         assert_eq!(reset.task_filter(), "all");
         assert!(reset.task_category_filter().is_empty());
         assert_eq!(reset.task_search_mode(), "any-field");
+    }
+
+    #[test]
+    fn memo_surface_settings_round_trip_migrate_and_reset_strictly() {
+        let backend = gio::memory_settings_backend_new();
+        let settings = settings_with_backend(&backend);
+
+        settings
+            .apply_migrated_setting("memo-search-mode", "description")
+            .expect("memo search mode should migrate");
+        settings
+            .apply_migrated_setting("memo-category-filter", "  Work Team  ")
+            .expect("memo category should migrate");
+        settings
+            .apply_migrated_setting("memo-source-filter", "  source-a  ")
+            .expect("memo source should migrate");
+        settings
+            .apply_migrated_setting("memo-preview-visible", "false")
+            .expect("memo preview visibility should migrate");
+        settings
+            .apply_migrated_setting("memo-preview-orientation", "vertical")
+            .expect("memo preview orientation should migrate");
+
+        let reloaded = settings_with_backend(&backend);
+        assert_eq!(reloaded.memo_search_mode(), "description");
+        assert_eq!(reloaded.memo_category_filter(), "Work Team");
+        assert_eq!(reloaded.memo_source_filter(), "source-a");
+        assert!(!reloaded.memo_preview_visible());
+        assert_eq!(reloaded.memo_preview_orientation(), "vertical");
+
+        for (key, value) in [
+            ("memo-search-mode", "unknown"),
+            ("memo-category-filter", "\"quoted\""),
+            ("memo-category-filter", ""),
+            ("memo-source-filter", "source a"),
+            ("memo-source-filter", "source\"a"),
+            ("memo-preview-visible", "maybe"),
+            ("memo-preview-orientation", "diagonal"),
+        ] {
+            assert!(
+                reloaded.apply_migrated_setting(key, value).is_err(),
+                "{key} should reject invalid migration values"
+            );
+        }
+
+        reloaded.reset_to_defaults();
+        let reset = settings_with_backend(&backend);
+        assert_eq!(reset.memo_search_mode(), "any-field");
+        assert_eq!(reset.memo_category_filter(), "any");
+        assert_eq!(reset.memo_source_filter(), "");
+        assert!(reset.memo_preview_visible());
+        assert_eq!(reset.memo_preview_orientation(), "classic");
     }
 }

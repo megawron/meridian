@@ -21,7 +21,10 @@ use super::mail_filter_service::{
 };
 use super::mail_store_service::MailStoreService;
 use super::settings_service::{
-    MAX_TASK_CATEGORY_FILTER_BYTES, normalize_composer_charset, parse_mail_normal_headers_value,
+    MAX_TASK_CATEGORY_FILTER_BYTES, normalize_composer_charset,
+    normalize_memo_preview_orientation_value, normalize_memo_search_mode_value,
+    normalize_memo_source_filter_value, parse_mail_normal_headers_value,
+    validate_memo_category_filter_value,
 };
 use super::signature_store_service::{SignatureProfile, SignatureStore};
 use glib::prelude::StaticVariantType;
@@ -1109,6 +1112,10 @@ fn is_supported_migration_key(key: &str) -> bool {
             | "memo-sort-field"
             | "memo-source-filter"
             | "memo-sort-descending"
+            | "memo-search-mode"
+            | "memo-category-filter"
+            | "memo-preview-visible"
+            | "memo-preview-orientation"
             | "offline-mode"
     )
 }
@@ -1253,10 +1260,20 @@ fn normalize_imported_setting_value(key: &str, value: &str) -> Result<String, &'
             "due" | "title" | "priority" => Ok(value.to_ascii_lowercase()),
             _ => Err("kein unterstütztes Aufgaben-Sortierfeld"),
         },
+        "memo-search-mode" => {
+            normalize_memo_search_mode_value(value).map_err(|_| "kein unterstützter Memo-Suchmodus")
+        }
+        "memo-category-filter" => validate_memo_category_filter_value(value)
+            .map_err(|_| "ungültiger Memo-Kategoriefilter"),
+        "memo-source-filter" => {
+            normalize_memo_source_filter_value(value).map_err(|_| "ungültiger Memo-Quellenfilter")
+        }
         "memo-sort-field" => match value.to_ascii_lowercase().as_str() {
             "updated" | "title" | "source" => Ok(value.to_ascii_lowercase()),
             _ => Err("kein unterstütztes Memo-Sortierfeld"),
         },
+        "memo-preview-orientation" => normalize_memo_preview_orientation_value(value)
+            .map_err(|_| "keine unterstützte Memo-Vorschauausrichtung"),
         "mail-font-family" => {
             if value.is_empty()
                 || value.len() > 120
@@ -1323,6 +1340,7 @@ fn is_boolean_migration_key(key: &str) -> bool {
             | "mail-sort-descending"
             | "mail-threading"
             | "task-sort-descending"
+            | "memo-preview-visible"
             | "memo-sort-descending"
     )
 }
@@ -3389,6 +3407,39 @@ task-search-mode='bogus'
                 .iter()
                 .any(|warning| warning.contains("task-search-mode"))
         );
+    }
+
+    #[test]
+    fn memo_surface_migration_values_are_strict_and_canonical() {
+        for key in [
+            "memo-search-mode",
+            "memo-category-filter",
+            "memo-source-filter",
+            "memo-preview-visible",
+            "memo-preview-orientation",
+        ] {
+            assert!(is_supported_migration_key(key), "{key}");
+        }
+        assert_eq!(
+            normalize_imported_setting_value("memo-search-mode", " DESCRIPTION ").unwrap(),
+            "description"
+        );
+        assert_eq!(
+            normalize_imported_setting_value("memo-category-filter", " without ").unwrap(),
+            "without"
+        );
+        assert_eq!(
+            normalize_imported_setting_value("memo-source-filter", " source-a ").unwrap(),
+            "source-a"
+        );
+        assert_eq!(
+            normalize_imported_setting_value("memo-preview-orientation", "VERTICAL").unwrap(),
+            "vertical"
+        );
+        assert!(normalize_imported_setting_value("memo-category-filter", "").is_err());
+        assert!(normalize_imported_setting_value("memo-category-filter", "\"quoted\"").is_err());
+        assert!(normalize_imported_setting_value("memo-source-filter", "source a").is_err());
+        assert!(normalize_imported_setting_value("memo-preview-visible", "maybe").is_err());
     }
 
     #[test]
