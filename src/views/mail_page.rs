@@ -42,7 +42,7 @@ use crate::services::mail_print_service::{
     self, MailPrintAction, MailPrintAttachment, MailPrintJobState, MailPrintSnapshot,
 };
 use crate::services::mail_store_service::{
-    MailBackendLocation, MailStoreService, ParsedMail, parse_rfc822_bytes,
+    MailBackendLocation, MailStoreService, MailStoreWorkerConfig, ParsedMail, parse_rfc822_bytes,
     parse_rfc822_header_fields,
 };
 use crate::services::search_folder_service::SearchFolderService;
@@ -1500,6 +1500,64 @@ impl MailLoadRequest {
     }
 }
 
+/// Owned, framework-neutral input for one mail load worker.
+///
+/// This value is captured on the GTK thread before the worker is spawned.  It
+/// deliberately contains only the request and settings values needed by the
+/// backend; no `AppSettings`, GSettings, GTK, or GObject handle may cross this
+/// boundary.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct MailLoadWorkerInput {
+    request: MailLoadRequest,
+    offline_mode: bool,
+    store_config: MailStoreWorkerConfig,
+}
+
+/// The small settings value needed by a mail load is converted to owned Rust
+/// data before the store/environment snapshot is captured.  Keeping this
+/// separate makes it explicit that no GObject-backed settings handle is part
+/// of a worker input.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct MailLoadSettingsSnapshot {
+    offline_mode: bool,
+    local_mail_directory: Option<String>,
+}
+
+impl MailLoadSettingsSnapshot {
+    fn from_main_thread() -> Self {
+        let settings = AppSettings::try_new();
+        let (offline_mode, local_mail_directory) = settings
+            .map(|settings| {
+                let offline_mode = settings.offline_mode();
+                let local_mail_directory = settings.local_mail_directory();
+                (offline_mode, Some(local_mail_directory))
+            })
+            .unwrap_or((false, None));
+
+        Self {
+            offline_mode,
+            local_mail_directory,
+        }
+    }
+}
+
+impl MailLoadWorkerInput {
+    fn from_main_thread(request: MailLoadRequest) -> Self {
+        Self::from_settings_snapshot(request, MailLoadSettingsSnapshot::from_main_thread())
+    }
+
+    fn from_settings_snapshot(
+        request: MailLoadRequest,
+        settings: MailLoadSettingsSnapshot,
+    ) -> Self {
+        Self {
+            request,
+            offline_mode: settings.offline_mode,
+            store_config: MailStoreWorkerConfig::capture(settings.local_mail_directory),
+        }
+    }
+}
+
 enum MailPageLoadResult {
     Camel {
         camel: CamelMailLoad,
@@ -2042,11 +2100,15 @@ impl PendingMailApply {
 }
 
 fn load_mail_backend(
-    request: &MailLoadRequest,
+    input: MailLoadWorkerInput,
     cancelled: &Arc<AtomicBool>,
     progress_sender: Option<&async_channel::Sender<camel_mail_service::CamelSyncProgress>>,
-    offline_mode: bool,
 ) -> MailPageLoadResult {
+    let MailLoadWorkerInput {
+        request,
+        offline_mode,
+        store_config,
+    } = input;
     let started = Instant::now();
     tracing::debug!(
         source_uid = ?request.source_uid,
@@ -2056,7 +2118,7 @@ fn load_mail_backend(
         "Mail backend load started"
     );
     if offline_mode {
-        let store = crate::services::MailStoreService::new();
+        let store = crate::services::MailStoreService::new_worker_safe(store_config.clone());
         let messages = store.load_local_records_cancelable(cancelled);
         let searchable_body_texts = match prepare_searchable_body_texts(&messages, cancelled) {
             Ok(texts) => texts,
@@ -2121,7 +2183,7 @@ fn load_mail_backend(
                 || !camel.messages.is_empty()
                 || !camel.folders.is_empty() =>
         {
-            let store = crate::services::MailStoreService::new();
+            let store = crate::services::MailStoreService::new_worker_safe(store_config.clone());
             let local_folders = store.local_folder_definitions();
             let local_messages = store.load_local_records_cancelable(cancelled);
             let mut searchable_body_texts =
@@ -2163,7 +2225,7 @@ fn load_mail_backend(
             ) {
                 return prepared_camel_result(graph, cancelled);
             }
-            let store = crate::services::MailStoreService::new();
+            let store = crate::services::MailStoreService::new_worker_safe(store_config.clone());
             let messages = store.load_local_records_cancelable(cancelled);
             let searchable_body_texts = match prepare_searchable_body_texts(&messages, cancelled) {
                 Ok(texts) => texts,
@@ -2187,7 +2249,7 @@ fn load_mail_backend(
             ) {
                 return prepared_camel_result(graph, cancelled);
             }
-            let store = crate::services::MailStoreService::new();
+            let store = crate::services::MailStoreService::new_worker_safe(store_config);
             let messages = store.load_local_records_cancelable(cancelled);
             let searchable_body_texts = match prepare_searchable_body_texts(&messages, cancelled) {
                 Ok(texts) => texts,
@@ -11553,17 +11615,14 @@ impl MailPage {
         self.imp()
             .mail_load_cancellation
             .replace(Some(cancellation.clone()));
-        let request_for_worker = request.clone();
         let progress_sender_for_worker = progress_sender.clone();
+        let worker_input = MailLoadWorkerInput::from_main_thread(request.clone());
         std::thread::spawn(move || {
             let started = Instant::now();
             let result = load_mail_backend(
-                &request_for_worker,
+                worker_input,
                 &cancellation,
                 Some(&progress_sender_for_worker),
-                AppSettings::try_new()
-                    .map(|settings| settings.offline_mode())
-                    .unwrap_or(false),
             );
             tracing::debug!(
                 elapsed_ms = started.elapsed().as_millis() as u64,
@@ -13095,6 +13154,231 @@ mod tests {
     use super::*;
     use crate::services::crypto_service::CryptoService;
 
+    fn skip_rust_trivia(source: &str, mut index: usize) -> usize {
+        let bytes = source.as_bytes();
+        loop {
+            while index < bytes.len() && bytes[index].is_ascii_whitespace() {
+                index += 1;
+            }
+            if index + 1 < bytes.len() && bytes[index] == b'/' && bytes[index + 1] == b'/' {
+                index += 2;
+                while index < bytes.len() && bytes[index] != b'\n' {
+                    index += 1;
+                }
+                continue;
+            }
+            if index + 1 < bytes.len() && bytes[index] == b'/' && bytes[index + 1] == b'*' {
+                index += 2;
+                let mut depth = 1;
+                while index < bytes.len() && depth > 0 {
+                    if index + 1 < bytes.len() && bytes[index] == b'/' && bytes[index + 1] == b'*' {
+                        depth += 1;
+                        index += 2;
+                    } else if index + 1 < bytes.len()
+                        && bytes[index] == b'*'
+                        && bytes[index + 1] == b'/'
+                    {
+                        depth -= 1;
+                        index += 2;
+                    } else {
+                        index += 1;
+                    }
+                }
+                continue;
+            }
+            return index;
+        }
+    }
+
+    fn skip_rust_literal(source: &str, index: usize) -> Option<usize> {
+        let bytes = source.as_bytes();
+        if index >= bytes.len() {
+            return None;
+        }
+
+        if bytes[index] == b'"' {
+            let mut cursor = index + 1;
+            while cursor < bytes.len() {
+                if bytes[cursor] == b'\\' {
+                    cursor = (cursor + 2).min(bytes.len());
+                } else if bytes[cursor] == b'"' {
+                    return Some(cursor + 1);
+                } else {
+                    cursor += 1;
+                }
+            }
+            return Some(bytes.len());
+        }
+
+        if bytes[index] == b'r' {
+            let mut cursor = index + 1;
+            while cursor < bytes.len() && bytes[cursor] == b'#' {
+                cursor += 1;
+            }
+            if cursor < bytes.len() && bytes[cursor] == b'"' {
+                let hashes = cursor - (index + 1);
+                let mut end = cursor + 1;
+                while end < bytes.len() {
+                    if bytes[end] == b'"'
+                        && end + 1 + hashes <= bytes.len()
+                        && bytes[end + 1..end + 1 + hashes]
+                            .iter()
+                            .all(|byte| *byte == b'#')
+                    {
+                        return Some(end + 1 + hashes);
+                    }
+                    end += 1;
+                }
+                return Some(bytes.len());
+            }
+        }
+
+        // Treat character literals as literals, but leave Rust lifetimes
+        // (`'static`, `'a`) in the token stream.
+        if bytes[index] == b'\'' {
+            if index + 2 < bytes.len() && bytes[index + 2] == b'\'' {
+                return Some(index + 3);
+            }
+            if index + 1 < bytes.len() && bytes[index + 1] == b'\\' {
+                let mut cursor = index + 2;
+                while cursor < bytes.len() {
+                    if bytes[cursor] == b'\\' {
+                        cursor = (cursor + 2).min(bytes.len());
+                    } else if bytes[cursor] == b'\'' {
+                        return Some(cursor + 1);
+                    } else {
+                        cursor += 1;
+                    }
+                }
+                return Some(bytes.len());
+            }
+        }
+
+        None
+    }
+
+    fn rust_identifier_start(byte: u8) -> bool {
+        byte == b'_' || byte.is_ascii_alphabetic()
+    }
+
+    fn rust_identifier_continue(byte: u8) -> bool {
+        rust_identifier_start(byte) || byte.is_ascii_digit()
+    }
+
+    fn next_rust_identifier(source: &str, mut index: usize) -> Option<(usize, usize)> {
+        let bytes = source.as_bytes();
+        while index < bytes.len() {
+            index = skip_rust_trivia(source, index);
+            if index >= bytes.len() {
+                return None;
+            }
+            if let Some(next) = skip_rust_literal(source, index) {
+                index = next;
+                continue;
+            }
+            if rust_identifier_start(bytes[index]) {
+                let start = index;
+                index += 1;
+                while index < bytes.len() && rust_identifier_continue(bytes[index]) {
+                    index += 1;
+                }
+                return Some((start, index));
+            }
+            index += 1;
+        }
+        None
+    }
+
+    fn next_rust_char(source: &str, mut index: usize, wanted: u8) -> Option<usize> {
+        let bytes = source.as_bytes();
+        while index < bytes.len() {
+            index = skip_rust_trivia(source, index);
+            if index >= bytes.len() {
+                return None;
+            }
+            if let Some(next) = skip_rust_literal(source, index) {
+                index = next;
+                continue;
+            }
+            if bytes[index] == wanted {
+                return Some(index);
+            }
+            index += 1;
+        }
+        None
+    }
+
+    fn matching_rust_brace(source: &str, open: usize) -> Option<usize> {
+        let bytes = source.as_bytes();
+        let mut index = open;
+        let mut depth = 0usize;
+        while index < bytes.len() {
+            index = skip_rust_trivia(source, index);
+            if index >= bytes.len() {
+                return None;
+            }
+            if let Some(next) = skip_rust_literal(source, index) {
+                index = next;
+                continue;
+            }
+            match bytes[index] {
+                b'{' => depth += 1,
+                b'}' => {
+                    depth = depth.checked_sub(1)?;
+                    if depth == 0 {
+                        return Some(index);
+                    }
+                }
+                _ => {}
+            }
+            index += 1;
+        }
+        None
+    }
+
+    fn rust_function_body<'a>(source: &'a str, name: &str) -> &'a str {
+        let mut cursor = 0;
+        while let Some((token_start, token_end)) = next_rust_identifier(source, cursor) {
+            if &source[token_start..token_end] == "fn" {
+                let Some((name_start, name_end)) = next_rust_identifier(source, token_end) else {
+                    break;
+                };
+                if &source[name_start..name_end] == name {
+                    let open = next_rust_char(source, name_end, b'{')
+                        .expect("function should have a body");
+                    let close = matching_rust_brace(source, open)
+                        .expect("function body should have balanced braces");
+                    return &source[token_start..=close];
+                }
+                cursor = name_end;
+            } else {
+                cursor = token_end;
+            }
+        }
+        panic!("function {name} should exist in source");
+    }
+
+    fn spawned_closure_body<'a>(source: &'a str, call_name: &str) -> &'a str {
+        let call_start = source
+            .find(call_name)
+            .expect("worker call should exist in spawn closure");
+        let spawn_start = source[..call_start]
+            .rfind("std::thread::spawn")
+            .expect("worker call should be owned by a thread spawn");
+        let open =
+            next_rust_char(source, spawn_start, b'{').expect("spawn closure should have a body");
+        let close =
+            matching_rust_brace(source, open).expect("spawn closure should have balanced braces");
+        &source[spawn_start..=close]
+    }
+
+    fn compact_rust(source: &str) -> String {
+        source
+            .chars()
+            .filter(|character| !character.is_whitespace())
+            .collect()
+    }
+
     #[test]
     fn removed_selection_uses_next_item_then_previous_item() {
         assert_eq!(fallback_selection_index(4, Some(2)), Some(2));
@@ -13109,6 +13393,178 @@ mod tests {
         assert!(generation_is_current(7, 7));
         assert!(!generation_is_current(8, 7));
         assert!(!generation_is_current(7, 8));
+    }
+
+    #[test]
+    fn mail_load_worker_input_is_owned_send_sync_plain_rust_and_job_local() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        fn assert_static<T: 'static>() {}
+
+        assert_send_sync::<MailLoadWorkerInput>();
+        assert_send_sync::<MailLoadSettingsSnapshot>();
+        assert_send_sync::<MailStoreWorkerConfig>();
+        assert_static::<MailLoadWorkerInput>();
+        assert_static::<MailLoadSettingsSnapshot>();
+        assert_static::<MailStoreWorkerConfig>();
+
+        let request = MailLoadRequest {
+            source_uid: Some("account-a".to_string()),
+            folder_name: Some("INBOX".to_string()),
+            offset: 32,
+            max_messages_per_folder: 64,
+            graph_cursors: HashMap::from([("INBOX".to_string(), "cursor-a".to_string())]),
+        };
+        let first_job = MailLoadWorkerInput::from_settings_snapshot(
+            request.clone(),
+            MailLoadSettingsSnapshot {
+                offline_mode: true,
+                local_mail_directory: Some("/first/mail".to_string()),
+            },
+        );
+        // Model a settings change before the next job is created.  The first
+        // input must retain the old values even after this second snapshot.
+        let second_job = MailLoadWorkerInput::from_settings_snapshot(
+            request,
+            MailLoadSettingsSnapshot {
+                offline_mode: false,
+                local_mail_directory: Some("/second/mail".to_string()),
+            },
+        );
+
+        let first_returned = std::thread::spawn(move || first_job)
+            .join()
+            .expect("owned worker input should cross the thread boundary");
+        assert!(first_returned.offline_mode);
+        assert_eq!(
+            first_returned.store_config.local_mail_directory.as_deref(),
+            Some("/first/mail")
+        );
+        assert!(!second_job.offline_mode);
+        assert_eq!(
+            second_job.store_config.local_mail_directory.as_deref(),
+            Some("/second/mail")
+        );
+        assert_ne!(first_returned, second_job);
+    }
+
+    #[test]
+    fn mail_load_worker_boundary_has_no_settings_or_ui_handles() {
+        let source = include_str!("mail_page.rs");
+        let worker_source = rust_function_body(source, "load_mail_backend");
+
+        for forbidden in [
+            "AppSettings",
+            "gio::",
+            "gtk::",
+            "glib::",
+            "adw::",
+            "GObject",
+            "MainContext",
+            "thread_default",
+        ] {
+            assert!(
+                !worker_source.contains(forbidden),
+                "load worker must stay framework-neutral: found {forbidden}"
+            );
+        }
+        assert!(
+            !compact_rust(worker_source).contains("MailStoreService::new("),
+            "normal load callgraph must not resolve settings through MailStoreService::new"
+        );
+
+        let start_source = rust_function_body(source, "start_mail_load");
+        let input_capture = compact_rust(start_source)
+            .find("worker_input=MailLoadWorkerInput::from_main_thread(request.clone())")
+            .expect("load worker input must be captured by the main-thread start path");
+        let spawn_source = spawned_closure_body(start_source, "load_mail_backend");
+        assert!(
+            input_capture
+                < compact_rust(start_source)
+                    .find("std::thread::spawn")
+                    .expect("load worker should be spawned after input capture"),
+            "worker input must be captured before spawning the worker"
+        );
+        for forbidden in [
+            "AppSettings",
+            "gio::",
+            "gtk::",
+            "glib::",
+            "adw::",
+            "GObject",
+            "MainContext",
+            "thread_default",
+        ] {
+            assert!(
+                !spawn_source.contains(forbidden),
+                "load worker closure must not capture framework handles: found {forbidden}"
+            );
+        }
+        assert!(
+            !compact_rust(spawn_source).contains("MailStoreService::new("),
+            "load worker closure must not call the settings-backed constructor"
+        );
+
+        let store_source = include_str!("../services/mail_store_service.rs");
+        let compact_store_source = compact_rust(store_source);
+        assert!(
+            compact_store_source.contains("pub(crate)fnnew_worker_safe("),
+            "the worker-safe constructor must remain crate-local"
+        );
+        assert!(
+            !compact_store_source.contains("pubfnnew_worker_safe("),
+            "the worker-safe constructor must not become a global API"
+        );
+        for constructor in ["new_worker_safe", "new_worker_safe_with_paths"] {
+            let constructor_source = rust_function_body(store_source, constructor);
+            for forbidden in [
+                "AppSettings",
+                "gio::",
+                "gtk::",
+                "glib::",
+                "adw::",
+                "GObject",
+                "std::env::",
+                "app_data_dir(",
+            ] {
+                assert!(
+                    !constructor_source.contains(forbidden),
+                    "worker-safe store constructor must not resolve framework/global state: {}",
+                    forbidden
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn stale_mail_progress_and_result_apply_are_rejected_by_generation_gate() {
+        for (current, result, accepted) in [(7, 7, true), (8, 7, false), (7, 8, false)] {
+            assert_eq!(
+                generation_is_current(current, result),
+                accepted,
+                "progress and result gates must share latest-request semantics"
+            );
+        }
+
+        let source = include_str!("mail_page.rs");
+        let start_source = compact_rust(rust_function_body(source, "start_mail_load"));
+        let gate = "generation_is_current(page.imp().load_generation.get(),generation)";
+        assert_eq!(
+            start_source.matches(gate).count(),
+            2,
+            "the current-generation gate must protect both progress and result delivery"
+        );
+        assert!(
+            start_source.contains(
+                "ifgeneration_is_current(page.imp().load_generation.get(),generation){page.update_camel_sync_progress(&progress);"
+            ),
+            "stale progress must be rejected before the GTK status update"
+        );
+        assert!(
+            start_source.contains(
+                "if!generation_is_current(page.imp().load_generation.get(),generation){return;}page.apply_mail_load(request,result,replace);"
+            ),
+            "stale results must be rejected before the GTK model apply"
+        );
     }
 
     #[test]

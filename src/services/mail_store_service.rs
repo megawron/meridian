@@ -180,6 +180,32 @@ pub struct MailStoreService {
     writable: bool,
 }
 
+/// Plain, owned inputs needed to construct a local store on a worker.
+///
+/// Environment values are captured together with the settings value before a
+/// worker starts.  Keeping the raw overrides here (including an explicitly
+/// empty value) preserves the constructor's existing precedence rules without
+/// making the worker consult process-global state again.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct MailStoreWorkerConfig {
+    pub(crate) mail_dir_override: Option<PathBuf>,
+    pub(crate) local_mail_directory: Option<String>,
+    pub(crate) metadata_path_override: Option<PathBuf>,
+    pub(crate) app_data_directory: PathBuf,
+}
+
+impl MailStoreWorkerConfig {
+    pub(crate) fn capture(local_mail_directory: Option<String>) -> Self {
+        Self {
+            mail_dir_override: std::env::var_os("EVOLUTION_GTK4_MAIL_DIR").map(PathBuf::from),
+            local_mail_directory,
+            metadata_path_override: std::env::var_os("EVOLUTION_GTK4_MAIL_STATE_FILE")
+                .map(PathBuf::from),
+            app_data_directory: crate::services::app_data_dir(),
+        }
+    }
+}
+
 impl MailStoreService {
     /// Create a service pointing at the configured local store.
     ///
@@ -189,25 +215,57 @@ impl MailStoreService {
     /// no sample data is written.  The optional `EVOLUTION_GTK4_MAIL_DIR`
     /// override is useful for tests and for inspecting another mailbox.
     pub fn new() -> Self {
-        let (mail_dir, writable) =
-            if let Some(path) = std::env::var_os("EVOLUTION_GTK4_MAIL_DIR").map(PathBuf::from) {
-                (path, false)
-            } else if let Some(path) = crate::services::settings_service::AppSettings::try_new()
+        let mail_dir_override = std::env::var_os("EVOLUTION_GTK4_MAIL_DIR").map(PathBuf::from);
+        let local_mail_directory = if mail_dir_override.is_none() {
+            crate::services::settings_service::AppSettings::try_new()
                 .map(|settings| settings.local_mail_directory())
-                .filter(|path| !path.trim().is_empty())
-                .map(PathBuf::from)
-            {
-                let writable = crate::services::is_app_owned_store_path(&path);
-                (path, writable)
-            } else {
-                // With no installed schema there is no persistent external-path
-                // setting. Keep the development fallback app-owned so imports do
-                // not silently target the user's Evolution directory.
-                (crate::services::app_data_dir().join("mail"), true)
-            };
-        let metadata_path = std::env::var_os("EVOLUTION_GTK4_MAIL_STATE_FILE")
+        } else {
+            None
+        };
+        let config = MailStoreWorkerConfig {
+            mail_dir_override,
+            local_mail_directory,
+            metadata_path_override: std::env::var_os("EVOLUTION_GTK4_MAIL_STATE_FILE")
+                .map(PathBuf::from),
+            app_data_directory: crate::services::app_data_dir(),
+        };
+        Self::new_worker_safe(config)
+    }
+
+    /// Construct a service from settings already captured before entering a
+    /// worker.  This path is deliberately limited to environment and plain
+    /// filesystem policy; it must never resolve GSettings or GTK state.
+    pub(crate) fn new_worker_safe(config: MailStoreWorkerConfig) -> Self {
+        Self::new_worker_safe_with_paths(
+            config.mail_dir_override,
+            config.local_mail_directory,
+            config.metadata_path_override,
+            config.app_data_directory,
+        )
+    }
+
+    fn new_worker_safe_with_paths(
+        mail_dir_override: Option<PathBuf>,
+        local_mail_directory: Option<String>,
+        metadata_path_override: Option<PathBuf>,
+        app_data_directory: PathBuf,
+    ) -> Self {
+        let (mail_dir, writable) = if let Some(path) = mail_dir_override {
+            (path, false)
+        } else if let Some(path) = local_mail_directory
+            .filter(|path| !path.trim().is_empty())
             .map(PathBuf::from)
-            .unwrap_or_else(|| crate::services::app_data_dir().join("mail-state.json"));
+        {
+            let writable = path.starts_with(&app_data_directory);
+            (path, writable)
+        } else {
+            // With no installed schema there is no persistent external-path
+            // setting. Keep the development fallback app-owned so imports do
+            // not silently target the user's Evolution directory.
+            (app_data_directory.join("mail"), true)
+        };
+        let metadata_path =
+            metadata_path_override.unwrap_or_else(|| app_data_directory.join("mail-state.json"));
 
         Self {
             mail_dir,
@@ -2977,6 +3035,89 @@ mod tests {
             std::env::temp_dir().join("evolution-gtk4-nonexistent-mailbox"),
         );
         assert!(service.load_local_messages().is_empty());
+    }
+
+    #[test]
+    fn worker_safe_constructor_preserves_env_settings_default_and_state_policy() {
+        let root = temporary_directory("worker-safe-constructor");
+        let env_mail_dir = root.join("env-mail");
+        let app_data = crate::services::app_data_dir();
+        let external_settings_dir = app_data
+            .with_file_name("evolution-gtk4-external")
+            .join("mail");
+        let app_owned_settings_dir = app_data.join("worker-safe-owned");
+        let state_path = root.join("mail-state.json");
+
+        let env_store = MailStoreService::new_worker_safe(MailStoreWorkerConfig {
+            mail_dir_override: Some(env_mail_dir.clone()),
+            local_mail_directory: Some(external_settings_dir.to_string_lossy().into_owned()),
+            metadata_path_override: Some(state_path.clone()),
+            app_data_directory: app_data.clone(),
+        });
+        assert_eq!(env_store.mail_dir, env_mail_dir);
+        assert!(!env_store.writable);
+        assert_eq!(env_store.metadata_path(), state_path);
+
+        // Preserve the old `var_os(...).map(...)` behavior: even an
+        // explicitly empty environment override still wins over settings.
+        let empty_env_store = MailStoreService::new_worker_safe(MailStoreWorkerConfig {
+            mail_dir_override: Some(PathBuf::new()),
+            local_mail_directory: Some(app_owned_settings_dir.to_string_lossy().into_owned()),
+            metadata_path_override: None,
+            app_data_directory: app_data.clone(),
+        });
+        assert_eq!(empty_env_store.mail_dir, PathBuf::new());
+        assert!(!empty_env_store.writable);
+
+        let external_store = MailStoreService::new_worker_safe(MailStoreWorkerConfig {
+            mail_dir_override: None,
+            local_mail_directory: Some(external_settings_dir.to_string_lossy().into_owned()),
+            metadata_path_override: None,
+            app_data_directory: app_data.clone(),
+        });
+        assert_eq!(external_store.mail_dir, external_settings_dir);
+        assert!(!external_store.writable);
+        assert_eq!(external_store.import_destination(), app_data.join("mail"));
+
+        let empty_setting_store = MailStoreService::new_worker_safe(MailStoreWorkerConfig {
+            mail_dir_override: None,
+            local_mail_directory: Some("  ".to_string()),
+            metadata_path_override: None,
+            app_data_directory: app_data.clone(),
+        });
+        assert_eq!(
+            empty_setting_store.mail_dir,
+            crate::services::app_data_dir().join("mail")
+        );
+        assert!(empty_setting_store.writable);
+
+        let app_owned_store = MailStoreService::new_worker_safe(MailStoreWorkerConfig {
+            mail_dir_override: None,
+            local_mail_directory: Some(app_owned_settings_dir.to_string_lossy().into_owned()),
+            metadata_path_override: None,
+            app_data_directory: app_data.clone(),
+        });
+        assert_eq!(app_owned_store.mail_dir, app_owned_settings_dir);
+        assert!(app_owned_store.writable);
+        assert_eq!(app_owned_store.import_destination(), app_owned_settings_dir);
+
+        let default_store = MailStoreService::new_worker_safe(MailStoreWorkerConfig {
+            mail_dir_override: None,
+            local_mail_directory: None,
+            metadata_path_override: None,
+            app_data_directory: app_data.clone(),
+        });
+        assert_eq!(
+            default_store.mail_dir,
+            crate::services::app_data_dir().join("mail")
+        );
+        assert!(default_store.writable);
+        assert_eq!(
+            default_store.metadata_path(),
+            crate::services::app_data_dir().join("mail-state.json")
+        );
+
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
