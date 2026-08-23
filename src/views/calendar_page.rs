@@ -2059,15 +2059,17 @@ impl CalendarPage {
                     let Some(page) = page_weak_for_toggle.upgrade() else {
                         return;
                     };
-                    let mut hidden_sources = page.imp().hidden_calendar_sources.borrow_mut();
-                    if check.is_active() {
-                        hidden_sources.remove(&source_uid_for_toggle);
-                    } else {
-                        hidden_sources.insert(source_uid_for_toggle.clone());
-                    }
-                    let hidden_sources = hidden_sources.iter().cloned().collect::<Vec<_>>();
+                    let hidden_sources_vec = {
+                        let mut hidden_sources = page.imp().hidden_calendar_sources.borrow_mut();
+                        if check.is_active() {
+                            hidden_sources.remove(&source_uid_for_toggle);
+                        } else {
+                            hidden_sources.insert(source_uid_for_toggle.clone());
+                        }
+                        hidden_sources.iter().cloned().collect::<Vec<_>>()
+                    };
                     if let Some(settings) = AppSettings::try_new() {
-                        settings.set_calendar_hidden_sources(&hidden_sources);
+                        settings.set_calendar_hidden_sources(&hidden_sources_vec);
                     }
                     page.refresh_task_sidebar();
                     page.refresh_calendar_views();
@@ -2100,15 +2102,17 @@ impl CalendarPage {
                     let Some(page) = page_weak_for_toggle.upgrade() else {
                         return;
                     };
-                    let mut hidden_sources = page.imp().hidden_calendar_sources.borrow_mut();
-                    if check.is_active() {
-                        hidden_sources.remove("local-calendar");
-                    } else {
-                        hidden_sources.insert("local-calendar".to_string());
-                    }
-                    let hidden_sources = hidden_sources.iter().cloned().collect::<Vec<_>>();
+                    let hidden_sources_vec = {
+                        let mut hidden_sources = page.imp().hidden_calendar_sources.borrow_mut();
+                        if check.is_active() {
+                            hidden_sources.remove("local-calendar");
+                        } else {
+                            hidden_sources.insert("local-calendar".to_string());
+                        }
+                        hidden_sources.iter().cloned().collect::<Vec<_>>()
+                    };
                     if let Some(settings) = AppSettings::try_new() {
-                        settings.set_calendar_hidden_sources(&hidden_sources);
+                        settings.set_calendar_hidden_sources(&hidden_sources_vec);
                     }
                     page.refresh_task_sidebar();
                     page.refresh_calendar_views();

@@ -588,6 +588,7 @@ evolution_eds_ecal_refresh_source (
 {
     ESourceRegistry *registry = NULL;
     ESource *source = NULL;
+    ECalClient *client = NULL;
     GError *error = NULL;
     const gchar *extension_name;
     int result = 0;

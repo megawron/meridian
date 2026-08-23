@@ -288,6 +288,64 @@ fn renamed_folder_path(folder_name: &str, old_name: &str, new_name: &str) -> Opt
         .map(|suffix| format!("{new_name}{suffix}"))
 }
 
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+pub enum QuickSearchField {
+    #[default]
+    AllFields,
+    Subject,
+    Sender,
+    Recipient,
+    Body,
+}
+
+impl QuickSearchField {
+    fn from_selector_index(index: u32) -> Self {
+        match index {
+            1 => Self::Subject,
+            2 => Self::Sender,
+            3 => Self::Recipient,
+            4 => Self::Body,
+            _ => Self::AllFields,
+        }
+    }
+
+    fn selector_index(self) -> u32 {
+        match self {
+            Self::AllFields => 0,
+            Self::Subject => 1,
+            Self::Sender => 2,
+            Self::Recipient => 3,
+            Self::Body => 4,
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+pub enum QuickSearchScope {
+    #[default]
+    CurrentFolder,
+    CurrentAccount,
+    AllAccounts,
+}
+
+impl QuickSearchScope {
+    fn from_selector_index(index: u32) -> Self {
+        match index {
+            1 => Self::CurrentAccount,
+            2 => Self::AllAccounts,
+            _ => Self::CurrentFolder,
+        }
+    }
+
+    fn selector_index(self) -> u32 {
+        match self {
+            Self::CurrentFolder => 0,
+            Self::CurrentAccount => 1,
+            Self::AllAccounts => 2,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum MessageSearchField {
     From,
@@ -329,11 +387,31 @@ struct MessageSearchQuery {
 
 impl MessageSearchQuery {
     fn parse(input: &str) -> Self {
+        Self::parse_with_field_scope(input, QuickSearchField::AllFields)
+    }
+
+    fn parse_with_field_scope(input: &str, field_scope: QuickSearchField) -> Self {
         let mut query = Self::default();
         for raw_token in search_tokens(input) {
             let (negated, token) = split_search_negation(&raw_token);
             let Some((raw_key, raw_value)) = token.split_once(':') else {
-                query.push_text(token, negated);
+                match field_scope {
+                    QuickSearchField::Subject => {
+                        query.push_field(MessageSearchField::Subject, token.to_lowercase(), negated);
+                    }
+                    QuickSearchField::Sender => {
+                        query.push_field(MessageSearchField::From, token.to_lowercase(), negated);
+                    }
+                    QuickSearchField::Recipient => {
+                        query.push_field(MessageSearchField::To, token.to_lowercase(), negated);
+                    }
+                    QuickSearchField::Body => {
+                        query.push_field(MessageSearchField::Body, token.to_lowercase(), negated);
+                    }
+                    QuickSearchField::AllFields => {
+                        query.push_text(token, negated);
+                    }
+                }
                 continue;
             };
             let raw_value = raw_value.trim();
@@ -349,8 +427,8 @@ impl MessageSearchQuery {
                 .unwrap_or((raw_key.as_str(), false));
             let negated = negated ^ key_negated;
             match key {
-                "from" => query.push_field(MessageSearchField::From, value, negated),
-                "to" => query.push_field(MessageSearchField::To, value, negated),
+                "from" | "sender" => query.push_field(MessageSearchField::From, value, negated),
+                "to" | "recipient" => query.push_field(MessageSearchField::To, value, negated),
                 "cc" => query.push_field(MessageSearchField::Cc, value, negated),
                 "bcc" => query.push_field(MessageSearchField::Bcc, value, negated),
                 "subject" => query.push_field(MessageSearchField::Subject, value, negated),
@@ -821,6 +899,7 @@ fn message_matches_filter(
     query: &MessageSearchQuery,
     filter: MessageFilter,
     folder_selection: &FolderSelection,
+    search_scope: QuickSearchScope,
 ) -> bool {
     let state_matches = match filter {
         MessageFilter::All => true,
@@ -831,6 +910,25 @@ fn message_matches_filter(
     };
     if query.is_empty() {
         return state_matches && folder_selection.matches(message);
+    }
+
+    let scope_matches = match search_scope {
+        QuickSearchScope::AllAccounts => true,
+        QuickSearchScope::CurrentAccount => {
+            if let Some(source_uid) = folder_selection.source_uid.as_deref() {
+                message
+                    .backend_location()
+                    .map(|loc| loc.source_uid == source_uid)
+                    .unwrap_or(false)
+            } else {
+                message.backend_location().is_none()
+            }
+        }
+        QuickSearchScope::CurrentFolder => folder_selection.matches(message),
+    };
+
+    if !scope_matches || !state_matches {
+        return false;
     }
 
     let subject = message.subject().to_lowercase();
@@ -2470,6 +2568,10 @@ mod imp {
         pub source_state: RefCell<Option<gtk::Label>>,
         pub source_status_area: RefCell<Option<gtk::Box>>,
         pub search_list: RefCell<Option<gtk::ListBox>>,
+        pub search_field_scope: Cell<QuickSearchField>,
+        pub search_scope: Cell<QuickSearchScope>,
+        pub search_field_selector: RefCell<Option<gtk::DropDown>>,
+        pub search_scope_selector: RefCell<Option<gtk::DropDown>>,
         pub quick_filter: RefCell<Option<gtk::DropDown>>,
         pub message_state: RefCell<Option<gtk::Label>>,
         pub message_status_area: RefCell<Option<gtk::Box>>,
@@ -4124,7 +4226,13 @@ impl MailPage {
             let query = MessageSearchQuery::parse(&query);
             let mut unread = 0u32;
             for message in &messages {
-                if message_matches_filter(message, &query, MessageFilter::All, &all_messages) {
+                if message_matches_filter(
+                    message,
+                    &query,
+                    MessageFilter::All,
+                    &all_messages,
+                    QuickSearchScope::CurrentFolder,
+                ) {
                     if message.is_unread() {
                         unread = unread.saturating_add(1);
                     }
@@ -4330,6 +4438,264 @@ impl MailPage {
     /// New → Folder action and the sidebar affordance share one behavior.
     pub(crate) fn present_new_local_folder_dialog(&self) {
         self.present_local_folder_dialog(None);
+    }
+
+    /// Present a dialog to rename the currently selected folder.
+    pub(crate) fn present_rename_selected_folder(&self) {
+        let selection = self
+            .imp()
+            .folder_selection
+            .borrow()
+            .as_ref()
+            .map(|selection| selection.borrow().clone())
+            .unwrap_or_default();
+        if selection.folder_id.starts_with("custom:") {
+            self.present_local_folder_dialog(Some(&selection.folder_id));
+        } else if selection.is_remote() {
+            self.show_toast(
+                "Das Umbenennen von IMAP-/Exchange-Ordnern wird über den Linux-Camel-Pfad synchronisiert.",
+            );
+        } else {
+            self.show_toast("Standard-Ordner wie Posteingang oder Papierkorb können nicht umbenannt werden.");
+        }
+    }
+
+    /// Delete the currently selected folder with confirmation if valid and empty.
+    pub(crate) fn present_delete_selected_folder(&self) {
+        let selection = self
+            .imp()
+            .folder_selection
+            .borrow()
+            .as_ref()
+            .map(|selection| selection.borrow().clone())
+            .unwrap_or_default();
+        if selection.folder_id.starts_with("custom:") {
+            let folder_id = selection.folder_id.clone();
+            let folder_name = selection.folder_name.clone().unwrap_or_else(|| {
+                folder_id.strip_prefix("custom:").unwrap_or(&folder_id).to_string()
+            });
+            let page = self.downgrade();
+            let heading = format!("Ordner „{}“ löschen?", folder_name);
+            let body = "Der lokale Ordner und seine Zuordnung werden entfernt. Der Ordner muss leer sein.";
+            if let Some(root) = self.root().and_downcast::<gtk::Window>() {
+                crate::dialogs::run_destructive_action(
+                    &root,
+                    &heading,
+                    body,
+                    "Löschen",
+                    move || {
+                        let result = crate::services::MailStoreService::new().delete_local_folder(&folder_id);
+                        if let Some(page) = page.upgrade() {
+                            match result {
+                                Ok(()) => {
+                                    page.show_toast(&format!("Ordner „{}“ gelöscht", folder_name));
+                                    page.refresh_mail();
+                                }
+                                Err(error) => {
+                                    page.show_toast(&format!("Ordner konnte nicht gelöscht werden: {error}"));
+                                }
+                            }
+                        }
+                    },
+                );
+            }
+        } else if selection.is_remote() {
+            self.show_toast(
+                "Das Löschen von synchronisierten IMAP-/Exchange-Ordnern wird über den Linux-Camel-Pfad ausgeführt.",
+            );
+        } else {
+            self.show_toast("Standard-Ordner können nicht gelöscht werden.");
+        }
+    }
+
+    /// Mark all unread messages in the currently selected folder as read.
+    pub fn mark_all_read_in_selected_folder(&self) -> Result<usize, MailOperationError> {
+        let Some(store) = self.imp().message_store.borrow().as_ref().cloned() else {
+            return Ok(0);
+        };
+        let selection = self
+            .imp()
+            .folder_selection
+            .borrow()
+            .as_ref()
+            .map(|s| s.borrow().clone())
+            .unwrap_or_default();
+        
+        let mut commands = Vec::new();
+        for index in 0..store.n_items() {
+            let Some(message) = store.item(index).and_downcast::<MailMessageObject>() else {
+                continue;
+            };
+            if selection.matches(&message) && message.is_unread() {
+                commands.push(MailCommand::set_message_state(
+                    message.id(),
+                    message.backend_location(),
+                    true,
+                    message.is_flagged(),
+                    false,
+                    message.is_flagged(),
+                ));
+            }
+        }
+
+        if commands.is_empty() {
+            return Ok(0);
+        }
+
+        let count = commands.len();
+        self.execute_mail_batch(commands, "Alle als gelesen markieren")?;
+        Ok(count)
+    }
+
+    /// Select the next folder containing unread messages.
+    pub fn select_next_unread_folder(&self) -> bool {
+        // First check dynamic folder selection
+        if let Some(selection) = self.imp().dynamic_folder_selection.borrow().as_ref() {
+            let n_items = selection.model().map(|m| m.n_items()).unwrap_or(0);
+            let current = selection.selected();
+            for offset in 1..=n_items {
+                let index = (current.saturating_add(offset)) % n_items;
+                if let Some(row) = selection.model().and_then(|m| m.item(index)).and_downcast::<gtk::TreeListRow>() {
+                    if let Some(folder) = row.item().and_downcast::<FolderObject>() {
+                        if folder.selectable() && folder.unread_count() > 0 {
+                            selection.set_selected(index);
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Then check local folder counts
+        let local_counts = self.current_local_folder_counts();
+        for (folder_id, (unread, _)) in &local_counts {
+            if *unread > 0 {
+                self.select_folder_row(&FolderSelection::from_folder_id(folder_id));
+                return true;
+            }
+        }
+        
+        false
+    }
+
+    /// Present the folder properties dialog for the currently selected folder.
+    pub(crate) fn present_folder_properties_dialog(&self) {
+        let selection = self
+            .imp()
+            .folder_selection
+            .borrow()
+            .as_ref()
+            .map(|s| s.borrow().clone())
+            .unwrap_or_default();
+        
+        let (folder_name, account_name, folder_path, is_remote) = if let Some(ref source_uid) = selection.source_uid {
+            let name = selection.folder_name.clone().unwrap_or_else(|| "Posteingang".to_string());
+            let account = self.imp().source_selection.borrow().as_ref().and_then(|sel| {
+                sel.model().and_then(|model| {
+                    (0..model.n_items()).find_map(|idx| {
+                        model.item(idx).and_downcast::<EdsSourceObject>().filter(|s| s.uid() == *source_uid).map(|s| s.display_name())
+                    })
+                })
+            }).unwrap_or_else(|| "Synchronisiertes Konto".to_string());
+            let path = format!("camel://{source_uid}/{name}");
+            (name, account, path, true)
+        } else {
+            let name = match selection.folder_id.as_str() {
+                "all" => "Alle Nachrichten".to_string(),
+                "inbox" => "Posteingang".to_string(),
+                "sent" => "Gesendet".to_string(),
+                "drafts" => "Entwürfe".to_string(),
+                "trash" => "Papierkorb".to_string(),
+                "archive" => "Archiv".to_string(),
+                "spam" => "Spam".to_string(),
+                custom if custom.starts_with("custom:") => custom.strip_prefix("custom:").unwrap_or(custom).to_string(),
+                other => other.to_string(),
+            };
+            let path = format!("local://{}", selection.folder_id);
+            (name, "Lokale Ordner".to_string(), path, false)
+        };
+
+        let counts = self.current_local_folder_counts();
+        let (unread_count, total_count) = counts.get(&selection.folder_id).copied().unwrap_or((0, 0));
+
+        let dialog = crate::dialogs::FolderPropertiesDialog::new(
+            &folder_name,
+            &account_name,
+            &folder_path,
+            total_count,
+            unread_count,
+            is_remote,
+        );
+        if let Some(root) = self.root().and_downcast::<gtk::Window>() {
+            dialog.set_transient_for(Some(&root));
+        }
+        dialog.present();
+    }
+
+    /// Present the folder subscriptions dialog for remote folders.
+    pub(crate) fn present_folder_subscriptions_dialog(&self) {
+        let selection = self
+            .imp()
+            .folder_selection
+            .borrow()
+            .as_ref()
+            .map(|s| s.borrow().clone())
+            .unwrap_or_default();
+        
+        let (account_name, source_uid) = if let Some(ref source_uid) = selection.source_uid {
+            let account = self.imp().source_selection.borrow().as_ref().and_then(|sel| {
+                sel.model().and_then(|model| {
+                    (0..model.n_items()).find_map(|idx| {
+                        model.item(idx).and_downcast::<EdsSourceObject>().filter(|s| s.uid() == *source_uid).map(|s| s.display_name())
+                    })
+                })
+            }).unwrap_or_else(|| "Konto".to_string());
+            (account, Some(source_uid.as_str()))
+        } else {
+            ("Lokale Ordner".to_string(), None)
+        };
+
+        let mut available_folders = Vec::new();
+        if let Some(store) = self.imp().dynamic_folder_store.borrow().as_ref() {
+            for idx in 0..store.n_items() {
+                if let Some(folder) = store.item(idx).and_downcast::<FolderObject>() {
+                    if folder.selectable() {
+                        available_folders.push(crate::dialogs::SubscribedFolderItem {
+                            name: folder.name(),
+                            path: folder.folder_name().unwrap_or_else(|| folder.id()),
+                            is_subscribed: true,
+                        });
+                    }
+                }
+            }
+        }
+
+        if available_folders.is_empty() {
+            for (id, _, label, _) in [
+                ("inbox", "", "Posteingang", ""),
+                ("sent", "", "Gesendet", ""),
+                ("drafts", "", "Entwürfe", ""),
+                ("trash", "", "Papierkorb", ""),
+                ("archive", "", "Archiv", ""),
+                ("spam", "", "Spam", ""),
+            ] {
+                available_folders.push(crate::dialogs::SubscribedFolderItem {
+                    name: label.to_string(),
+                    path: id.to_string(),
+                    is_subscribed: true,
+                });
+            }
+        }
+
+        let dialog = crate::dialogs::FolderSubscriptionsDialog::new(
+            &account_name,
+            source_uid,
+            available_folders,
+        );
+        if let Some(root) = self.root().and_downcast::<gtk::Window>() {
+            dialog.set_transient_for(Some(&root));
+        }
+        dialog.present();
     }
 
     /// Empty the portable app-owned trash without blocking GTK.  Imported
@@ -5578,12 +5944,19 @@ impl MailPage {
             .map(|filter| filter.get())
             .unwrap_or(MessageFilter::All);
 
+        let search_scope = self.imp().search_scope.get();
         let mut batch_selection = self.imp().batch_selection.borrow_mut();
         for index in 0..store.n_items() {
             let Some(message) = store.item(index).and_downcast::<MailMessageObject>() else {
                 continue;
             };
-            if message_matches_filter(&message, &query, message_filter, &folder_selection) {
+            if message_matches_filter(
+                &message,
+                &query,
+                message_filter,
+                &folder_selection,
+                search_scope,
+            ) {
                 batch_selection.insert(message.id());
             }
         }
@@ -6266,6 +6639,48 @@ impl MailPage {
             folder_list.append(&row);
         }
 
+        let local_folder_click = gtk::GestureClick::builder().button(3).build();
+        let list_weak = folder_list.downgrade();
+        local_folder_click.connect_pressed(move |_, _, x, y| {
+            let Some(list) = list_weak.upgrade() else {
+                return;
+            };
+            let folder_menu = gio::Menu::new();
+            let new_section = gio::Menu::new();
+            new_section.append(Some("Neuer Ordner..."), Some("win.new-folder"));
+            new_section.append(Some("Ordner umbenennen..."), Some("win.rename-folder"));
+            new_section.append(Some("Ordner löschen..."), Some("win.delete-folder"));
+            folder_menu.append_section(None, &new_section);
+
+            let action_section = gio::Menu::new();
+            action_section.append(Some("Alle als gelesen markieren"), Some("win.mark-all-read"));
+            action_section.append(Some("Nächster ungelesener Ordner"), Some("win.next-unread-folder"));
+            action_section.append(Some("Ordner aktualisieren"), Some("win.refresh-mail"));
+            action_section.append(Some("Mülleimer leeren"), Some("win.empty-trash"));
+            action_section.append(Some("Endgültig löschen (Expunge)"), Some("win.expunge"));
+            folder_menu.append_section(None, &action_section);
+
+            let props_section = gio::Menu::new();
+            props_section.append(Some("Abonnements verwalten..."), Some("win.folder-subscriptions"));
+            props_section.append(Some("Eigenschaften..."), Some("win.folder-properties"));
+            folder_menu.append_section(None, &props_section);
+
+            let popover = gtk::PopoverMenu::builder()
+                .menu_model(&folder_menu)
+                .has_arrow(false)
+                .pointing_to(&gtk::gdk::Rectangle::new(x as i32, y as i32, 1, 1))
+                .build();
+            popover.set_parent(&list);
+            let popover_weak = popover.downgrade();
+            popover.connect_closed(move |_| {
+                if let Some(popover) = popover_weak.upgrade() {
+                    popover.unparent();
+                }
+            });
+            popover.popup();
+        });
+        folder_list.add_controller(local_folder_click);
+
         let dynamic_folder_store = gio::ListStore::new::<FolderObject>();
         let dynamic_folder_children =
             Rc::new(RefCell::new(HashMap::<String, gio::ListStore>::new()));
@@ -6387,9 +6802,25 @@ impl MailPage {
                 return;
             };
             let folder_menu = gio::Menu::new();
-            folder_menu.append(Some("Mülleimer leeren"), Some("win.empty-trash"));
-            folder_menu.append(Some("Endgültig löschen (Expunge)"), Some("win.expunge"));
-            folder_menu.append(Some("Ordner aktualisieren"), Some("win.refresh-mail"));
+            let new_section = gio::Menu::new();
+            new_section.append(Some("Neuer Ordner..."), Some("win.new-folder"));
+            new_section.append(Some("Ordner umbenennen..."), Some("win.rename-folder"));
+            new_section.append(Some("Ordner löschen..."), Some("win.delete-folder"));
+            folder_menu.append_section(None, &new_section);
+
+            let action_section = gio::Menu::new();
+            action_section.append(Some("Alle als gelesen markieren"), Some("win.mark-all-read"));
+            action_section.append(Some("Nächster ungelesener Ordner"), Some("win.next-unread-folder"));
+            action_section.append(Some("Ordner aktualisieren"), Some("win.refresh-mail"));
+            action_section.append(Some("Mülleimer leeren"), Some("win.empty-trash"));
+            action_section.append(Some("Endgültig löschen (Expunge)"), Some("win.expunge"));
+            folder_menu.append_section(None, &action_section);
+
+            let props_section = gio::Menu::new();
+            props_section.append(Some("Abonnements verwalten..."), Some("win.folder-subscriptions"));
+            props_section.append(Some("Eigenschaften..."), Some("win.folder-properties"));
+            folder_menu.append_section(None, &props_section);
+
             let popover = gtk::PopoverMenu::builder()
                 .menu_model(&folder_menu)
                 .has_arrow(false)
@@ -8228,9 +8659,11 @@ impl MailPage {
         let query = Rc::new(RefCell::new(MessageSearchQuery::default()));
         let message_filter = Rc::new(Cell::new(MessageFilter::All));
         let folder_selection = Rc::new(RefCell::new(FolderSelection::all()));
+        let search_scope = Rc::new(Cell::new(QuickSearchScope::CurrentFolder));
         let query_for_filter = Rc::clone(&query);
         let message_filter_for_filter = Rc::clone(&message_filter);
         let folder_selection_for_filter = Rc::clone(&folder_selection);
+        let search_scope_for_filter = Rc::clone(&search_scope);
         let custom_filter = gtk::CustomFilter::new(move |obj| {
             let Some(msg) = obj.downcast_ref::<MailMessageObject>() else {
                 return false;
@@ -8243,6 +8676,7 @@ impl MailPage {
                 &query,
                 message_filter_for_filter.get(),
                 &selected_folder,
+                search_scope_for_filter.get(),
             )
         });
         let filter_model =
@@ -8256,6 +8690,7 @@ impl MailPage {
         let query_for_thread_filter = Rc::clone(&query);
         let message_filter_for_thread_filter = Rc::clone(&message_filter);
         let folder_selection_for_thread_filter = Rc::clone(&folder_selection);
+        let search_scope_for_thread_filter = Rc::clone(&search_scope);
         let thread_members_for_filter = Rc::clone(&thread_members);
         let thread_filter = gtk::CustomFilter::new(move |obj| {
             let Some(root) = obj.downcast_ref::<MailMessageObject>() else {
@@ -8264,6 +8699,7 @@ impl MailPage {
             let query = query_for_thread_filter.borrow();
             let selected_folder = folder_selection_for_thread_filter.borrow();
             let members = thread_members_for_filter.borrow();
+            let scope = search_scope_for_thread_filter.get();
             members
                 .get(&root.thread_id())
                 .map(|messages| {
@@ -8273,6 +8709,7 @@ impl MailPage {
                             &query,
                             message_filter_for_thread_filter.get(),
                             &selected_folder,
+                            scope,
                         )
                     })
                 })
@@ -8282,6 +8719,7 @@ impl MailPage {
                         &query,
                         message_filter_for_thread_filter.get(),
                         &selected_folder,
+                        scope,
                     )
                 })
         });
@@ -9163,12 +9601,79 @@ impl MailPage {
             dialog.present();
         });
 
+        let search_field_model = gtk::StringList::new(&[
+            "Alle Felder",
+            "Betreff",
+            "Absender",
+            "Empfänger",
+            "Nachrichtentext",
+        ]);
+        let search_field_selector =
+            gtk::DropDown::new(Some(search_field_model), None::<&gtk::Expression>);
+        search_field_selector.set_tooltip_text(Some("Zu durchsuchendes Feld"));
+        set_accessible_label(&search_field_selector, "Suchfeld");
+        search_field_selector.set_selected(self.imp().search_field_scope.get().selector_index());
+        self.imp()
+            .search_field_selector
+            .replace(Some(search_field_selector.clone()));
+
+        let search_scope_model = gtk::StringList::new(&[
+            "Aktueller Ordner",
+            "Aktuelles Konto",
+            "Alle Konten",
+        ]);
+        let search_scope_selector =
+            gtk::DropDown::new(Some(search_scope_model), None::<&gtk::Expression>);
+        search_scope_selector.set_tooltip_text(Some("Suchbereich"));
+        set_accessible_label(&search_scope_selector, "Suchbereich");
+        search_scope_selector.set_selected(self.imp().search_scope.get().selector_index());
+        self.imp()
+            .search_scope_selector
+            .replace(Some(search_scope_selector.clone()));
+
+        let search_scope_for_scope_change = Rc::clone(&search_scope);
+        let filter_for_scope_change = custom_filter.clone();
+        let thread_filter_for_scope_change = thread_filter.clone();
+        let page_for_scope_change = self.downgrade();
+        search_scope_selector.connect_selected_notify(move |selector| {
+            let scope = QuickSearchScope::from_selector_index(selector.selected());
+            search_scope_for_scope_change.set(scope);
+            filter_for_scope_change.changed(gtk::FilterChange::Different);
+            thread_filter_for_scope_change.changed(gtk::FilterChange::Different);
+            if let Some(page) = page_for_scope_change.upgrade() {
+                page.imp().search_scope.set(scope);
+            }
+        });
+
+        let search_field_for_field_change = self.downgrade();
+        let query_for_field_change = Rc::clone(&query);
+        let filter_for_field_change = custom_filter.clone();
+        let thread_filter_for_field_change = thread_filter.clone();
+        let search_entry_for_field_change = search_entry.clone();
+        search_field_selector.connect_selected_notify(move |selector| {
+            let field_scope = QuickSearchField::from_selector_index(selector.selected());
+            let text = search_entry_for_field_change.text();
+            *query_for_field_change.borrow_mut() =
+                MessageSearchQuery::parse_with_field_scope(text.as_str(), field_scope);
+            filter_for_field_change.changed(gtk::FilterChange::Different);
+            thread_filter_for_field_change.changed(gtk::FilterChange::Different);
+            if let Some(page) = search_field_for_field_change.upgrade() {
+                page.imp().search_field_scope.set(field_scope);
+                page.handle_search_changed(text.as_str());
+            }
+        });
+
         let query_for_search = Rc::clone(&query);
         let filter_for_search = custom_filter.clone();
         let thread_filter_for_search = thread_filter.clone();
         let page_for_search = self.downgrade();
         search_entry.connect_search_changed(move |entry| {
-            *query_for_search.borrow_mut() = MessageSearchQuery::parse(entry.text().as_str());
+            let field_scope = page_for_search
+                .upgrade()
+                .map(|p| p.imp().search_field_scope.get())
+                .unwrap_or_default();
+            *query_for_search.borrow_mut() =
+                MessageSearchQuery::parse_with_field_scope(entry.text().as_str(), field_scope);
             filter_for_search.changed(gtk::FilterChange::Different);
             thread_filter_for_search.changed(gtk::FilterChange::Different);
             if let Some(page) = page_for_search.upgrade() {
@@ -9364,6 +9869,8 @@ impl MailPage {
         set_accessible_label(&columns_button, "Mailspalten konfigurieren");
 
         search_box.append(&search_entry);
+        search_box.append(&search_field_selector);
+        search_box.append(&search_scope_selector);
         search_box.append(&quick_filter);
         search_box.append(&columns_button);
         search_box.append(&save_search_button);
@@ -14866,6 +15373,7 @@ mod tests {
             &query,
             MessageFilter::All,
             &FolderSelection::all(),
+            QuickSearchScope::CurrentFolder,
         ));
 
         message.set_searchable_body_text(Arc::from("prepared later"));
@@ -14874,6 +15382,7 @@ mod tests {
             &query,
             MessageFilter::All,
             &FolderSelection::all(),
+            QuickSearchScope::CurrentFolder,
         ));
     }
 
@@ -14916,7 +15425,41 @@ mod tests {
             &query,
             MessageFilter::All,
             &FolderSelection::all(),
+            QuickSearchScope::CurrentFolder,
         ));
+    }
+
+    #[test]
+    fn message_search_query_supports_quick_search_field_and_scope() {
+        let subject_query =
+            MessageSearchQuery::parse_with_field_scope("Meeting", QuickSearchField::Subject);
+        assert_eq!(subject_query.subject.as_deref(), Some("meeting"));
+        assert!(subject_query.text_terms.is_empty());
+
+        let sender_query =
+            MessageSearchQuery::parse_with_field_scope("Alice", QuickSearchField::Sender);
+        assert_eq!(sender_query.from.as_deref(), Some("alice"));
+        assert!(sender_query.text_terms.is_empty());
+
+        let recipient_query =
+            MessageSearchQuery::parse_with_field_scope("Bob", QuickSearchField::Recipient);
+        assert_eq!(recipient_query.to.as_deref(), Some("bob"));
+        assert!(recipient_query.text_terms.is_empty());
+
+        let body_query =
+            MessageSearchQuery::parse_with_field_scope("Secret", QuickSearchField::Body);
+        assert_eq!(body_query.body.as_deref(), Some("secret"));
+        assert!(body_query.text_terms.is_empty());
+
+        assert_eq!(QuickSearchField::from_selector_index(0), QuickSearchField::AllFields);
+        assert_eq!(QuickSearchField::from_selector_index(1), QuickSearchField::Subject);
+        assert_eq!(QuickSearchField::from_selector_index(2), QuickSearchField::Sender);
+        assert_eq!(QuickSearchField::from_selector_index(3), QuickSearchField::Recipient);
+        assert_eq!(QuickSearchField::from_selector_index(4), QuickSearchField::Body);
+
+        assert_eq!(QuickSearchScope::from_selector_index(0), QuickSearchScope::CurrentFolder);
+        assert_eq!(QuickSearchScope::from_selector_index(1), QuickSearchScope::CurrentAccount);
+        assert_eq!(QuickSearchScope::from_selector_index(2), QuickSearchScope::AllAccounts);
     }
 
     #[test]

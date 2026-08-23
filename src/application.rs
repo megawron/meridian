@@ -56,6 +56,7 @@ const ACCELERATOR_BINDINGS: &[(&str, &[&str])] = &[
     ("win.delete", &["Delete"]),
     ("win.mark-read", &["<Ctrl>K"]),
     ("win.mark-unread", &["<Ctrl><Shift>K"]),
+    ("win.mark-all-read", &["<Ctrl><Shift>M"]),
     ("win.toggle-important", &["<Ctrl>I"]),
     ("win.move-message", &["<Ctrl><Shift>V"]),
     ("win.copy-message", &["<Ctrl><Shift>C"]),
@@ -671,5 +672,6 @@ mod tests {
         assert_eq!(accelerators_for("win.toggle-mail-threading"), &["<Ctrl>T"]);
         assert_eq!(accelerators_for("win.mail-print"), &["<Ctrl>P"]);
         assert_eq!(accelerators_for("win.find-in-message"), &["<Ctrl><Shift>F"]);
+        assert_eq!(accelerators_for("win.mark-all-read"), &["<Ctrl><Shift>M"]);
     }
 }

@@ -1360,6 +1360,12 @@ impl EvolutionWindow {
             "mark-junk",
             "mark-not-junk",
             "new-folder",
+            "rename-folder",
+            "delete-folder",
+            "mark-all-read",
+            "next-unread-folder",
+            "folder-properties",
+            "folder-subscriptions",
             "empty-trash",
             "expunge",
             "search",
@@ -2058,8 +2064,27 @@ impl EvolutionWindow {
         // ─── 5. Ordner (Folder) ────────────────────────────────────────────
         let folder_menu = gio::Menu::new();
         folder_menu.append(Some("Neuer Ordner..."), Some("win.new-folder"));
+        folder_menu.append(Some("Ordner umbenennen..."), Some("win.rename-folder"));
+        folder_menu.append(Some("Ordner löschen..."), Some("win.delete-folder"));
+        folder_menu.append(
+            Some("Alle als gelesen markieren"),
+            Some("win.mark-all-read"),
+        );
+        folder_menu.append(
+            Some("Nächster ungelesener Ordner"),
+            Some("win.next-unread-folder"),
+        );
+        folder_menu.append(Some("Ordner aktualisieren"), Some("win.refresh-mail"));
         folder_menu.append(Some("Mülleimer leeren"), Some("win.empty-trash"));
         folder_menu.append(Some("Endgültig löschen (Expunge)"), Some("win.expunge"));
+        folder_menu.append(
+            Some("Abonnements verwalten..."),
+            Some("win.folder-subscriptions"),
+        );
+        folder_menu.append(
+            Some("Eigenschaften des Ordners..."),
+            Some("win.folder-properties"),
+        );
         menu.append_submenu(Some("Ordner"), &folder_menu);
 
         // ─── 6. Extras (Tools) ─────────────────────────────────────────────
@@ -2901,6 +2926,103 @@ impl EvolutionWindow {
             }
         ));
         self.add_action(&action_new_folder);
+
+        let action_rename_folder = gio::SimpleAction::new("rename-folder", None);
+        action_rename_folder.connect_activate(glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            move |_, _| {
+                if let Some(mail_page) = win.mail_page() {
+                    mail_page.present_rename_selected_folder();
+                } else {
+                    win.add_toast(&adw::Toast::new("Mailansicht ist nicht verfügbar"));
+                }
+            }
+        ));
+        self.add_action(&action_rename_folder);
+
+        let action_delete_folder = gio::SimpleAction::new("delete-folder", None);
+        action_delete_folder.connect_activate(glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            move |_, _| {
+                if let Some(mail_page) = win.mail_page() {
+                    mail_page.present_delete_selected_folder();
+                } else {
+                    win.add_toast(&adw::Toast::new("Mailansicht ist nicht verfügbar"));
+                }
+            }
+        ));
+        self.add_action(&action_delete_folder);
+
+        let action_mark_all_read = gio::SimpleAction::new("mark-all-read", None);
+        action_mark_all_read.connect_activate(glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            move |_, _| {
+                if let Some(mail_page) = win.mail_page() {
+                    match mail_page.mark_all_read_in_selected_folder() {
+                        Ok(count) => {
+                            if count > 0 {
+                                win.add_toast(&adw::Toast::new(&format!("{count} Nachricht(en) als gelesen markiert")));
+                            } else {
+                                win.add_toast(&adw::Toast::new("Keine ungelesenen Nachrichten im Ordner"));
+                            }
+                        }
+                        Err(error) => {
+                            win.add_toast(&adw::Toast::new(&format!("Fehler beim Markieren: {error}")));
+                        }
+                    }
+                } else {
+                    win.add_toast(&adw::Toast::new("Mailansicht ist nicht verfügbar"));
+                }
+            }
+        ));
+        self.add_action(&action_mark_all_read);
+
+        let action_next_unread_folder = gio::SimpleAction::new("next-unread-folder", None);
+        action_next_unread_folder.connect_activate(glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            move |_, _| {
+                if let Some(mail_page) = win.mail_page() {
+                    if !mail_page.select_next_unread_folder() {
+                        win.add_toast(&adw::Toast::new("Keine weiteren ungelesenen Ordner vorhanden"));
+                    }
+                } else {
+                    win.add_toast(&adw::Toast::new("Mailansicht ist nicht verfügbar"));
+                }
+            }
+        ));
+        self.add_action(&action_next_unread_folder);
+
+        let action_folder_properties = gio::SimpleAction::new("folder-properties", None);
+        action_folder_properties.connect_activate(glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            move |_, _| {
+                if let Some(mail_page) = win.mail_page() {
+                    mail_page.present_folder_properties_dialog();
+                } else {
+                    win.add_toast(&adw::Toast::new("Mailansicht ist nicht verfügbar"));
+                }
+            }
+        ));
+        self.add_action(&action_folder_properties);
+
+        let action_folder_subscriptions = gio::SimpleAction::new("folder-subscriptions", None);
+        action_folder_subscriptions.connect_activate(glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            move |_, _| {
+                if let Some(mail_page) = win.mail_page() {
+                    mail_page.present_folder_subscriptions_dialog();
+                } else {
+                    win.add_toast(&adw::Toast::new("Mailansicht ist nicht verfügbar"));
+                }
+            }
+        ));
+        self.add_action(&action_folder_subscriptions);
 
         for (action_name, heading, body, success) in [
             (

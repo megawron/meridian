@@ -1215,7 +1215,7 @@ impl ECalService {
         }
         let parsed = unsafe {
             if sources.is_null() {
-                Vec::new()
+                Ok(Vec::new())
             } else {
                 std::slice::from_raw_parts(sources, count)
                     .iter()
