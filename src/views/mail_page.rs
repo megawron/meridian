@@ -11348,6 +11348,46 @@ impl MailPage {
         mail_viewer.set_vexpand(true);
         detail_view.set_vexpand(true);
 
+        let page_for_trash_restore = self.downgrade();
+        mail_viewer.connect_trash_restore(move || {
+            if let Some(page) = page_for_trash_restore.upgrade() {
+                if let Some(message) = page.selected_message() {
+                    let source_uid = message
+                        .backend_location()
+                        .map(|loc| loc.source_uid)
+                        .unwrap_or_default();
+                    match page.move_selected_to(&source_uid, "inbox") {
+                        Ok(true) => {
+                            page.show_toast("Nachricht in den Posteingang wiederhergestellt");
+                            if let Some(viewer) = page.imp().mail_viewer.borrow().as_ref() {
+                                viewer.set_trash_banner_visible(false);
+                            }
+                        }
+                        Ok(false) => {}
+                        Err(err) => {
+                            page.show_toast(&format!("Wiederherstellen fehlgeschlagen: {err}"))
+                        }
+                    }
+                }
+            }
+        });
+
+        let page_for_junk_restore = self.downgrade();
+        mail_viewer.connect_junk_restore(move || {
+            if let Some(page) = page_for_junk_restore.upgrade() {
+                match page.mark_selected_not_junk() {
+                    Ok(true) => {
+                        page.show_toast("Nachricht als kein Spam markiert");
+                        if let Some(viewer) = page.imp().mail_viewer.borrow().as_ref() {
+                            viewer.set_junk_banner_visible(false);
+                        }
+                    }
+                    Ok(false) => {}
+                    Err(err) => page.show_toast(&format!("Aktion fehlgeschlagen: {err}")),
+                }
+            }
+        });
+
         detail_view.append(&header_box);
         detail_view.append(&header_separator);
         detail_view.append(&thread_context);
@@ -11610,6 +11650,8 @@ impl MailPage {
                         attachment_bar.remove(&child);
                     }
                     attachment_bar.set_visible(false);
+                    mail_viewer.set_trash_banner_visible(false);
+                    mail_viewer.set_junk_banner_visible(false);
                     mail_viewer.load_html_for_message(None, "", None);
                     if let Some(page) = page_for_read.upgrade() {
                         page.set_crypto_status_routine(true);
@@ -11671,6 +11713,10 @@ impl MailPage {
             None,
             Some(&preview),
         );
+        let is_trash = message_is_trash(message);
+        let is_junk = message_is_junk(message);
+        mail_viewer.set_trash_banner_visible(is_trash);
+        mail_viewer.set_junk_banner_visible(!is_trash && is_junk);
         if attachments.is_empty() {
             attachment_bar.set_visible(false);
         } else {

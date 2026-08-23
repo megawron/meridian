@@ -45,6 +45,8 @@ mod imp {
     #[derive(Debug, Default)]
     pub struct MailViewer {
         pub banner: adw::Banner,
+        pub trash_banner: adw::Banner,
+        pub junk_banner: adw::Banner,
         #[cfg(target_os = "linux")]
         pub webview: RefCell<Option<webkit6::WebView>>,
         #[cfg(target_os = "linux")]
@@ -153,6 +155,22 @@ impl MailViewer {
         ));
 
         box_container.append(&banner);
+
+        // ── 2. Trash Banner ────────────────────────────────────────────────
+        let trash_banner = adw::Banner::builder()
+            .title("Diese Nachricht befindet sich im Papierkorb.")
+            .button_label("Wiederherstellen")
+            .revealed(false)
+            .build();
+        box_container.append(&trash_banner);
+
+        // ── 3. Junk Banner ─────────────────────────────────────────────────
+        let junk_banner = adw::Banner::builder()
+            .title("Diese Nachricht wurde als unerwünschte Werbung (Spam) eingestuft.")
+            .button_label("Kein Spam")
+            .revealed(false)
+            .build();
+        box_container.append(&junk_banner);
 
         let fallback_view = gtk::TextView::builder()
             .editable(false)
@@ -838,6 +856,26 @@ impl MailViewer {
             return webview.zoom_level();
         }
         1.0
+    }
+
+    pub fn set_trash_banner_visible(&self, visible: bool) {
+        self.imp().trash_banner.set_revealed(visible);
+    }
+
+    pub fn set_junk_banner_visible(&self, visible: bool) {
+        self.imp().junk_banner.set_revealed(visible);
+    }
+
+    pub fn connect_trash_restore<F: Fn() + 'static>(&self, callback: F) {
+        self.imp().trash_banner.connect_button_clicked(move |_| {
+            callback();
+        });
+    }
+
+    pub fn connect_junk_restore<F: Fn() + 'static>(&self, callback: F) {
+        self.imp().junk_banner.connect_button_clicked(move |_| {
+            callback();
+        });
     }
 
     /// Allow remote image loading for the current email.
