@@ -2947,6 +2947,18 @@ impl ComposeDialog {
             return;
         };
 
+        let icon_name = match attachment.mime_type.as_str() {
+            m if m.starts_with("image/") => "image-x-generic-symbolic",
+            m if m.contains("pdf") => "x-office-document-symbolic",
+            m if m.contains("zip") || m.contains("tar") || m.contains("compressed") => {
+                "package-x-generic-symbolic"
+            }
+            m if m.starts_with("audio/") => "audio-x-generic-symbolic",
+            m if m.starts_with("video/") => "video-x-generic-symbolic",
+            m if m.contains("text/") => "text-x-generic-symbolic",
+            _ => "mail-attachment-symbolic",
+        };
+        let icon = gtk::Image::from_icon_name(icon_name);
         let row = adw::ActionRow::builder()
             .title(&attachment.filename)
             .subtitle(&format!(
@@ -2955,6 +2967,7 @@ impl ComposeDialog {
                 format_size(attachment.size)
             ))
             .build();
+        row.add_prefix(&icon);
         let remove_button = gtk::Button::builder()
             .icon_name("window-close-symbolic")
             .tooltip_text("Anhang entfernen")

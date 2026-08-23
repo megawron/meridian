@@ -304,6 +304,50 @@ impl HtmlEditor {
             .css_classes(vec!["flat"])
             .build();
 
+        let link_popover_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(6)
+            .margin_start(10)
+            .margin_end(10)
+            .margin_top(8)
+            .margin_bottom(8)
+            .width_request(260)
+            .build();
+        link_popover_box.append(
+            &gtk::Label::builder()
+                .label("Hyperlink einfügen")
+                .halign(gtk::Align::Start)
+                .css_classes(vec!["heading"])
+                .build(),
+        );
+        let entry_url = gtk::Entry::builder()
+            .placeholder_text("https://example.com")
+            .build();
+        let entry_label = gtk::Entry::builder()
+            .placeholder_text("Link-Text (optional)")
+            .build();
+        let btn_insert_link_confirm = gtk::Button::builder()
+            .label("Einfügen")
+            .css_classes(vec!["suggested-action"])
+            .build();
+        link_popover_box.append(&entry_url);
+        link_popover_box.append(&entry_label);
+        link_popover_box.append(&btn_insert_link_confirm);
+
+        let link_popover = gtk::Popover::builder().child(&link_popover_box).build();
+        let btn_link = gtk::MenuButton::builder()
+            .icon_name("insert-link-symbolic")
+            .tooltip_text("Hyperlink einfügen")
+            .popover(&link_popover)
+            .css_classes(vec!["flat"])
+            .build();
+
+        let btn_rule = gtk::Button::builder()
+            .icon_name("insert-object-symbolic")
+            .tooltip_text("Horizontale Linie einfügen")
+            .css_classes(vec!["flat"])
+            .build();
+
         let btn_undo = gtk::Button::builder()
             .icon_name("edit-undo-symbolic")
             .tooltip_text("Rückgängig (Ctrl+Z)")
@@ -327,6 +371,9 @@ impl HtmlEditor {
         toolbar.append(&btn_list);
         toolbar.append(&btn_ordered_list);
         toolbar.append(&btn_blockquote);
+        toolbar.append(&gtk::Separator::new(gtk::Orientation::Vertical));
+        toolbar.append(&btn_link);
+        toolbar.append(&btn_rule);
         toolbar.append(&gtk::Separator::new(gtk::Orientation::Vertical));
         toolbar.append(&btn_undo);
         toolbar.append(&btn_redo);
@@ -517,6 +564,44 @@ impl HtmlEditor {
             move |_| {
                 web_view.evaluate_javascript(
                     "document.execCommand('formatBlock', false, 'blockquote');",
+                    None,
+                    None,
+                    None::<&gio::Cancellable>,
+                    |_| {},
+                );
+            }
+        ));
+
+        let web_view_for_link = web_view.clone();
+        let link_popover_weak = link_popover.downgrade();
+        let entry_url_weak = entry_url.downgrade();
+        let entry_label_weak = entry_label.downgrade();
+        btn_insert_link_confirm.connect_clicked(move |_| {
+            let Some(entry_url) = entry_url_weak.upgrade() else { return; };
+            let Some(entry_label) = entry_label_weak.upgrade() else { return; };
+            let url = entry_url.text().trim().to_string();
+            let label = entry_label.text().trim().to_string();
+            if !url.is_empty() {
+                let js = if label.is_empty() {
+                    format!("document.execCommand('createLink', false, '{}');", url.replace('\'', "\\'"))
+                } else {
+                    format!("document.execCommand('insertHTML', false, '<a href=\"{}\">{}</a>');", url.replace('\"', "\\\""), label.replace('<', "&lt;").replace('>', "&gt;"))
+                };
+                web_view_for_link.evaluate_javascript(&js, None, None, None::<&gio::Cancellable>, |_| {});
+                entry_url.set_text("");
+                entry_label.set_text("");
+            }
+            if let Some(popover) = link_popover_weak.upgrade() {
+                popover.popdown();
+            }
+        });
+
+        btn_rule.connect_clicked(glib::clone!(
+            #[weak]
+            web_view,
+            move |_| {
+                web_view.evaluate_javascript(
+                    "document.execCommand('insertHorizontalRule', false, null);",
                     None,
                     None,
                     None::<&gio::Cancellable>,
