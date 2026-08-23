@@ -9992,7 +9992,77 @@ impl MailPage {
             "view-list-symbolic",
             "open-menu-symbolic",
         ));
-        set_accessible_label(&columns_button, "Mailspalten konfigurieren");
+        let syntax_popover_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(4)
+            .margin_start(10)
+            .margin_end(10)
+            .margin_top(8)
+            .margin_bottom(8)
+            .width_request(300)
+            .build();
+        syntax_popover_box.append(
+            &gtk::Label::builder()
+                .label("Suchsyntax-Operatoren")
+                .halign(gtk::Align::Start)
+                .css_classes(vec!["heading"])
+                .margin_bottom(4)
+                .build(),
+        );
+        let syntax_items = [
+            ("from:", "Absender (z.B. from:alice)"),
+            ("to:", "Empfänger (z.B. to:bob)"),
+            ("subject:", "Betreffzeile"),
+            ("body:", "Nachrichtentext"),
+            ("is:unread", "Ungelesene Mails"),
+            ("is:flagged", "Markierte Mails"),
+            ("has:attachment", "Mails mit Anhang"),
+            ("in:", "Ordner (z.B. in:sent, in:drafts)"),
+            ("on:", "Datum (z.B. on:2026-08-11)"),
+            ("after:", "Nach Datum (after:2026-01-01)"),
+            ("before:", "Vor Datum (before:2026-12-31)"),
+            ("not:", "Begriff ausschließen"),
+        ];
+        let search_entry_for_syntax = search_entry.clone();
+        for (token, desc) in syntax_items {
+            let row = gtk::Box::builder()
+                .orientation(gtk::Orientation::Horizontal)
+                .spacing(6)
+                .build();
+            let btn_token = gtk::Button::builder()
+                .label(token)
+                .css_classes(vec!["flat", "caption"])
+                .build();
+            let lbl_desc = gtk::Label::builder()
+                .label(desc)
+                .halign(gtk::Align::Start)
+                .hexpand(true)
+                .css_classes(vec!["caption", "dim-label"])
+                .build();
+            let search_entry_clone = search_entry_for_syntax.clone();
+            let token_str = token.to_string();
+            btn_token.connect_clicked(move |_| {
+                let current = search_entry_clone.text();
+                let new_text = if current.trim().is_empty() {
+                    token_str.clone()
+                } else {
+                    format!("{} {}", current.trim(), token_str)
+                };
+                search_entry_clone.set_text(&new_text);
+                search_entry_clone.set_position(-1);
+            });
+            row.append(&btn_token);
+            row.append(&lbl_desc);
+            syntax_popover_box.append(&row);
+        }
+        let syntax_popover = gtk::Popover::builder().child(&syntax_popover_box).build();
+        let syntax_help_button = gtk::MenuButton::builder()
+            .icon_name("help-about-symbolic")
+            .tooltip_text("Suchsyntax-Operatoren anzeigen")
+            .popover(&syntax_popover)
+            .css_classes(vec!["flat", "circular"])
+            .build();
+        set_accessible_label(&syntax_help_button, "Suchsyntax-Hilfe");
 
         search_box.append(&search_entry);
         search_box.append(&search_field_selector);
@@ -10000,6 +10070,7 @@ impl MailPage {
         search_box.append(&quick_filter);
         search_box.append(&columns_button);
         search_box.append(&save_search_button);
+        search_box.append(&syntax_help_button);
         self.imp().search_entry.replace(Some(search_entry.clone()));
 
         let list_container = gtk::Box::builder()
