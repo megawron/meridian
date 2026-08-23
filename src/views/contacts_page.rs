@@ -1294,6 +1294,96 @@ impl ContactsPage {
             }
         ));
 
+        let call_btn = gtk::Button::builder()
+            .icon_name("call-start-symbolic")
+            .tooltip_text("Telefonnummer anrufen")
+            .css_classes(vec!["circular"])
+            .build();
+        set_accessible_label(&call_btn, "Telefonnummer anrufen");
+        let selected_contact_for_call = Rc::clone(&selected_contact);
+        call_btn.connect_clicked(glib::clone!(
+            #[weak(rename_to = page)]
+            self,
+            move |_| {
+                if let Some(record) = selected_contact_for_call.borrow().as_ref() {
+                    let phone = contact_phone_text(&record.contact);
+                    let first_phone = phone.split(',').next().unwrap_or("").trim();
+                    if !first_phone.is_empty() {
+                        let uri = format!("tel:{}", first_phone.replace(' ', ""));
+                        let _ = gio::AppInfo::launch_default_for_uri(
+                            &uri,
+                            None::<&gio::AppLaunchContext>,
+                        );
+                    } else {
+                        page.show_toast("Keine Telefonnummer hinterlegt");
+                    }
+                }
+            }
+        ));
+
+        let map_btn = gtk::Button::builder()
+            .icon_name("mark-location-symbolic")
+            .tooltip_text("Adresse in OpenStreetMap anzeigen")
+            .css_classes(vec!["circular"])
+            .build();
+        set_accessible_label(&map_btn, "Adresse in OpenStreetMap anzeigen");
+        let selected_contact_for_map = Rc::clone(&selected_contact);
+        map_btn.connect_clicked(glib::clone!(
+            #[weak(rename_to = page)]
+            self,
+            move |_| {
+                if let Some(record) = selected_contact_for_map.borrow().as_ref() {
+                    let addr = record.contact.addresses.first().map(|s| s.as_str()).unwrap_or("");
+                    if !addr.is_empty() {
+                        let encoded: String = addr
+                            .chars()
+                            .map(|c| if c.is_alphanumeric() || c == ' ' { c } else { '+' })
+                            .collect();
+                        let uri = format!(
+                            "https://www.openstreetmap.org/search?query={}",
+                            encoded.replace(' ', "+")
+                        );
+                        let _ = gio::AppInfo::launch_default_for_uri(
+                            &uri,
+                            None::<&gio::AppLaunchContext>,
+                        );
+                    } else {
+                        page.show_toast("Keine Adresse hinterlegt");
+                    }
+                }
+            }
+        ));
+
+        let web_btn = gtk::Button::builder()
+            .icon_name("web-browser-symbolic")
+            .tooltip_text("Website im Browser öffnen")
+            .css_classes(vec!["circular"])
+            .build();
+        set_accessible_label(&web_btn, "Website im Browser öffnen");
+        let selected_contact_for_web = Rc::clone(&selected_contact);
+        web_btn.connect_clicked(glib::clone!(
+            #[weak(rename_to = page)]
+            self,
+            move |_| {
+                if let Some(record) = selected_contact_for_web.borrow().as_ref() {
+                    let url = record.contact.urls.first().map(|s| s.as_str()).unwrap_or("");
+                    if !url.is_empty() {
+                        let uri = if url.starts_with("http://") || url.starts_with("https://") {
+                            url.to_string()
+                        } else {
+                            format!("https://{url}")
+                        };
+                        let _ = gio::AppInfo::launch_default_for_uri(
+                            &uri,
+                            None::<&gio::AppLaunchContext>,
+                        );
+                    } else {
+                        page.show_toast("Keine Website hinterlegt");
+                    }
+                }
+            }
+        ));
+
         let selected_contact_for_delete = Rc::clone(&selected_contact);
         let stored_contacts_for_delete = Rc::clone(&stored_contacts);
         let contact_list_for_delete = contact_list.clone();
@@ -1585,6 +1675,9 @@ impl ContactsPage {
         contact_list.add_controller(context_click);
 
         actions_box.append(&email_btn);
+        actions_box.append(&call_btn);
+        actions_box.append(&map_btn);
+        actions_box.append(&web_btn);
         actions_box.append(&export_btn);
         actions_box.append(&edit_btn);
         actions_box.append(&merge_btn);

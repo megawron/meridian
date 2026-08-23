@@ -48,6 +48,7 @@ pub use preferences_dialog::PreferencesDialog;
 pub use reminder_dialog::{ReminderDialog, ReminderDialogAction};
 pub use search_folder_dialog::SearchFolderDialog;
 pub use shortcuts_dialog::show_shortcuts_dialog;
+#[allow(unused_imports)]
 pub use source_properties_dialog::SourcePropertiesDialog;
 
 /// Run a destructive operation immediately when confirmations are disabled;
