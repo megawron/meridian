@@ -11,7 +11,10 @@
 use adw::prelude::*;
 use adw::subclass::prelude::*;
 use gtk::{gio, glib};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
+use std::fs;
+use std::io;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use crate::services::AppSettings;
@@ -26,12 +29,174 @@ use crate::services::crypto_service::{self, OpenPgpKey};
 use crate::services::eds_service::{self, EdsSourceKind};
 use crate::services::eds_source_cache_service::EdsSourceCache;
 use crate::services::mail_filter_service::{
-    FilterAction, FilterField, FilterOperator, MailFilterStore,
+    FilterAction, FilterField, FilterOperator, MailFilterRule, MailFilterStore,
 };
-use crate::services::mail_store_service::MailStoreService;
+use crate::services::mail_store_service::{
+    LocalFilterRunReport, MailStoreService, MailStoreWorkerConfig,
+};
 use crate::services::migration_service;
 use crate::services::settings_service::validate_mail_normal_header_name;
 use crate::services::signature_store_service::SignatureStore;
+
+/// Owned, framework-neutral inputs for one manual filter worker.
+///
+/// The selected rule is materialized into a private, one-rule store before
+/// the worker starts.  This is necessary because the service API accepts a
+/// rule ID and otherwise reads the mutable filter file again on the worker.
+/// The worker therefore receives only owned values and cannot observe later
+/// settings, environment, or filter-file changes.
+#[derive(Debug)]
+struct ManualFilterRunSnapshot {
+    rule_id: String,
+    rule: MailFilterRule,
+    store_config: MailStoreWorkerConfig,
+    filter_store: MailFilterStore,
+}
+
+#[derive(Debug)]
+enum ManualFilterSnapshotError {
+    MissingRule,
+    InvalidRule(String),
+    Io(io::Error),
+}
+
+impl ManualFilterSnapshotError {
+    fn toast_message(&self) -> String {
+        match self {
+            Self::MissingRule => "Filterregel wurde nicht gefunden".to_string(),
+            Self::InvalidRule(error) => {
+                format!("Lokaler Filterlauf fehlgeschlagen: Ungültige Filterregel: {error}")
+            }
+            Self::Io(error) => format!(
+                "Lokaler Filterlauf fehlgeschlagen: Filterregel-Snapshot konnte nicht vorbereitet werden: {error}"
+            ),
+        }
+    }
+}
+
+fn manual_filter_snapshot_path() -> PathBuf {
+    std::env::temp_dir().join(format!(
+        "evolution-gtk4-manual-filter-{}.json",
+        uuid::Uuid::new_v4()
+    ))
+}
+
+fn cleanup_manual_filter_snapshot(path: &Path) {
+    let temporary_path = path.with_extension("json.tmp");
+    for candidate in [path, temporary_path.as_path()] {
+        match fs::remove_file(candidate) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => tracing::debug!(
+                path = %candidate.display(),
+                %error,
+                "Could not remove manual filter snapshot"
+            ),
+        }
+    }
+}
+
+struct ManualFilterSnapshotCleanup {
+    path: PathBuf,
+}
+
+impl Drop for ManualFilterSnapshotCleanup {
+    fn drop(&mut self) {
+        cleanup_manual_filter_snapshot(&self.path);
+    }
+}
+
+impl ManualFilterRunSnapshot {
+    fn capture(
+        rule_id: impl Into<String>,
+        rule: MailFilterRule,
+        store_config: MailStoreWorkerConfig,
+        source_filter_store: MailFilterStore,
+    ) -> Result<Self, ManualFilterSnapshotError> {
+        let rule_id = rule_id.into();
+        if rule.id != rule_id {
+            return Err(ManualFilterSnapshotError::InvalidRule(
+                "Die ausgewählte Regel-ID stimmt nicht mit dem Regel-Snapshot überein".to_string(),
+            ));
+        }
+        if !source_filter_store
+            .load()
+            .into_iter()
+            .any(|candidate| candidate.id == rule_id)
+        {
+            return Err(ManualFilterSnapshotError::MissingRule);
+        }
+        rule.validate()
+            .map_err(ManualFilterSnapshotError::InvalidRule)?;
+
+        let filter_store = MailFilterStore::new(manual_filter_snapshot_path());
+        if let Err(error) = filter_store.save(std::slice::from_ref(&rule)) {
+            cleanup_manual_filter_snapshot(filter_store.path());
+            return Err(ManualFilterSnapshotError::Io(error));
+        }
+
+        Ok(Self {
+            rule_id,
+            rule,
+            store_config,
+            filter_store,
+        })
+    }
+
+    fn run_on_worker(self) -> std::io::Result<Option<LocalFilterRunReport>> {
+        let _cleanup = ManualFilterSnapshotCleanup {
+            path: self.filter_store.path().to_path_buf(),
+        };
+        let Self {
+            rule_id,
+            rule,
+            store_config,
+            filter_store,
+        } = self;
+
+        // MailFilterStore::load intentionally turns malformed/unreadable
+        // files into an empty rule list.  Reject a missing or changed private
+        // snapshot here so the UI cannot report a misleading zero-match
+        // success.
+        let Some(snapshot_rule) = filter_store
+            .load()
+            .into_iter()
+            .find(|candidate| candidate.id == rule_id)
+        else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Der Regel-Snapshot fehlt oder ist nicht lesbar",
+            ));
+        };
+        if snapshot_rule != rule {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Der Regel-Snapshot wurde verändert",
+            ));
+        }
+
+        MailStoreService::new_worker_safe(store_config)
+            .run_filter_rule_with_store(&rule_id, &filter_store)
+    }
+}
+
+fn manual_filter_result_toast(
+    result: &Result<io::Result<Option<LocalFilterRunReport>>, async_channel::RecvError>,
+) -> String {
+    match result {
+        Ok(Ok(Some(report))) => format!(
+            "{} Treffer · {} geändert · {} verschoben · {} kopiert · {} gelöscht",
+            report.matched_messages,
+            report.changed_messages,
+            report.moved_messages,
+            report.copied_messages,
+            report.deleted_messages,
+        ),
+        Ok(Ok(None)) => "Filterregel wurde nicht gefunden".to_string(),
+        Ok(Err(error)) => format!("Lokaler Filterlauf fehlgeschlagen: {error}"),
+        Err(error) => format!("Lokaler Filterlauf abgebrochen: {error}"),
+    }
+}
 
 mod imp {
     use super::*;
@@ -463,52 +628,74 @@ impl PreferencesDialog {
                 .valign(gtk::Align::Center)
                 .build();
             let rule_id_for_run = rule.id.clone();
+            let rule_for_run = rule.clone();
             let dialog_weak_for_run = self.downgrade();
             let run_button_for_result = run_button.clone();
+            let settings_for_run = settings.clone();
             run_button.connect_clicked(move |_| {
                 let Some(dialog) = dialog_weak_for_run.upgrade() else {
                     return;
                 };
                 run_button_for_result.set_sensitive(false);
                 let (sender, receiver) = async_channel::bounded(1);
-                let rule_id = rule_id_for_run.clone();
-                std::thread::spawn(move || {
-                    let result = MailStoreService::new().run_filter_rule(&rule_id);
-                    if let Err(error) = sender.send_blocking(result) {
-                        tracing::debug!(%error, "Manual filter result was dropped");
+                let local_mail_directory = settings_for_run
+                    .as_ref()
+                    .map(|settings| settings.local_mail_directory());
+                let snapshot = match ManualFilterRunSnapshot::capture(
+                    rule_id_for_run.clone(),
+                    rule_for_run.clone(),
+                    MailStoreWorkerConfig::capture(local_mail_directory),
+                    MailFilterStore::from_environment(),
+                ) {
+                    Ok(snapshot) => snapshot,
+                    Err(error) => {
+                        run_button_for_result.set_sensitive(true);
+                        dialog.show_toast(&error.toast_message());
+                        return;
                     }
+                };
+                let snapshot_path = snapshot.filter_store.path().to_path_buf();
+                let completion_allowed = Rc::new(Cell::new(true));
+                let completion_allowed_for_close = Rc::clone(&completion_allowed);
+                dialog.connect_closed(move |_| {
+                    completion_allowed_for_close.set(false);
                 });
+                let worker_result = std::thread::Builder::new()
+                    .name("manual-mail-filter".to_string())
+                    .spawn(move || {
+                        let result = snapshot.run_on_worker();
+                        if let Err(error) = sender.send_blocking(result) {
+                            tracing::debug!(%error, "Manual filter result was dropped");
+                        }
+                    });
+                if let Err(error) = worker_result {
+                    cleanup_manual_filter_snapshot(&snapshot_path);
+                    run_button_for_result.set_sensitive(true);
+                    dialog.show_toast(&format!(
+                        "Lokaler Filterlauf fehlgeschlagen: Worker konnte nicht gestartet werden: {error}"
+                    ));
+                    return;
+                }
                 let dialog_weak = dialog.downgrade();
                 let run_button = run_button_for_result.clone();
                 glib::spawn_future_local(async move {
                     let result = receiver.recv().await;
-                    run_button.set_sensitive(true);
+                    if !completion_allowed.get() {
+                        return;
+                    }
                     let Some(dialog) = dialog_weak.upgrade() else {
                         return;
                     };
-                    match result {
-                        Ok(Ok(Some(report))) => {
-                            if let Some(window) = dialog
-                                .root()
-                                .and_downcast::<crate::window::EvolutionWindow>()
-                            {
-                                window.refresh_mail_page();
-                            }
-                            dialog.show_toast(&format!(
-                                "{} Treffer · {} geändert · {} verschoben · {} kopiert · {} gelöscht",
-                                report.matched_messages,
-                                report.changed_messages,
-                                report.moved_messages,
-                                report.copied_messages,
-                                report.deleted_messages,
-                            ));
+                    run_button.set_sensitive(true);
+                    if matches!(&result, Ok(Ok(Some(_)))) {
+                        if let Some(window) = dialog
+                            .root()
+                            .and_downcast::<crate::window::EvolutionWindow>()
+                        {
+                            window.refresh_mail_page();
                         }
-                        Ok(Ok(None)) => dialog.show_toast("Filterregel wurde nicht gefunden"),
-                        Ok(Err(error)) => dialog
-                            .show_toast(&format!("Lokaler Filterlauf fehlgeschlagen: {error}")),
-                        Err(error) => dialog
-                            .show_toast(&format!("Lokaler Filterlauf abgebrochen: {error}")),
                     }
+                    dialog.show_toast(&manual_filter_result_toast(&result));
                 });
             });
             row.add_suffix(&run_button);
@@ -3825,8 +4012,56 @@ impl Default for PreferencesDialog {
 
 #[cfg(test)]
 mod tests {
-    use super::{default_mail_normal_headers_for_editor, validate_new_mail_normal_header};
-    use std::{cell::RefCell, rc::Rc};
+    use super::{
+        ManualFilterRunSnapshot, ManualFilterSnapshotError, default_mail_normal_headers_for_editor,
+        manual_filter_result_toast, validate_new_mail_normal_header,
+    };
+    use crate::services::mail_filter_service::{
+        FilterAction, FilterCondition, FilterField, FilterOperator, FilterScope, MailFilterRule,
+        MailFilterStore,
+    };
+    use crate::services::mail_store_service::{LocalFilterRunReport, MailStoreWorkerConfig};
+    use std::{
+        cell::RefCell,
+        fs,
+        io::ErrorKind,
+        path::{Path, PathBuf},
+        rc::Rc,
+    };
+
+    fn temporary_directory(label: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "evolution-gtk4-preferences-{label}-{}",
+            uuid::Uuid::new_v4()
+        ))
+    }
+
+    fn manual_worker_config(root: &Path, mail_dir: &Path) -> MailStoreWorkerConfig {
+        MailStoreWorkerConfig {
+            mail_dir_override: Some(mail_dir.to_path_buf()),
+            local_mail_directory: None,
+            metadata_path_override: Some(root.join("mail-state.json")),
+            app_data_directory: root.join("app-data"),
+        }
+    }
+
+    fn manual_rule(id: &str, action: FilterAction) -> MailFilterRule {
+        MailFilterRule {
+            id: id.to_string(),
+            name: id.to_string(),
+            enabled: true,
+            scope: FilterScope::Manual,
+            condition: FilterCondition {
+                field: FilterField::Subject,
+                value: "invoice".to_string(),
+                operator: FilterOperator::Contains,
+            },
+            action: action.clone(),
+            conditions: Vec::new(),
+            actions: vec![action],
+            match_all: true,
+        }
+    }
 
     #[test]
     fn normal_header_editor_uses_evolution_default_order() {
@@ -3853,5 +4088,238 @@ mod tests {
         assert!(validate_new_mail_normal_header("  X-Trace  ", &state).is_ok());
         assert!(validate_new_mail_normal_header("subject", &state).is_err());
         assert!(validate_new_mail_normal_header("X-Bad: value", &state).is_err());
+    }
+
+    #[test]
+    fn manual_filter_worker_boundary_captures_inputs_before_spawn() {
+        let source = include_str!("preferences_dialog.rs");
+        let manual_section_start = source
+            .find("tooltip_text(\"Regel jetzt im lokalen Mailbestand ausführen\")")
+            .expect("manual filter row should exist");
+        let manual_section = &source[manual_section_start..];
+        let spawn = manual_section
+            .find("std::thread::Builder::new()")
+            .expect("manual filter should use a worker");
+        let before_spawn = &manual_section[..spawn];
+        let future_start = manual_section
+            .find("let dialog_weak = dialog.downgrade()")
+            .expect("manual filter result future should remain on GTK");
+        let worker = &manual_section[spawn..future_start];
+
+        assert!(before_spawn.contains("MailStoreWorkerConfig::capture"));
+        assert!(before_spawn.contains("MailFilterStore::from_environment()"));
+        assert!(before_spawn.contains("rule_id_for_run.clone()"));
+        assert!(before_spawn.contains("rule_for_run.clone()"));
+        assert!(before_spawn.contains("ManualFilterRunSnapshot::capture"));
+        assert!(worker.contains("snapshot.run_on_worker()"));
+        for forbidden in [
+            "AppSettings",
+            "gio::",
+            "gtk::",
+            "glib::",
+            "adw::",
+            "GObject",
+            "std::env::",
+            "app_data_dir(",
+        ] {
+            assert!(
+                !worker.contains(forbidden),
+                "manual filter worker must stay framework/global-state free: {forbidden}"
+            );
+        }
+
+        // The result handling is deliberately kept in the GTK future: the
+        // worker boundary must not absorb UI state or change user feedback.
+        for marker in [
+            "run_button_for_result.set_sensitive(false)",
+            "run_button.set_sensitive(true)",
+            "if !completion_allowed.get()",
+            "connect_closed",
+            "manual_filter_result_toast",
+        ] {
+            assert!(
+                manual_section.contains(marker),
+                "manual filter UI path lost {marker}"
+            );
+        }
+    }
+
+    #[test]
+    fn manual_filter_snapshot_is_owned_and_keeps_the_selected_rule_exact() {
+        fn assert_send_sync_static<T: Send + Sync + 'static>() {}
+
+        assert_send_sync_static::<ManualFilterRunSnapshot>();
+
+        let root = temporary_directory("snapshot");
+        let mail_dir = root.join("mail");
+        fs::create_dir_all(&mail_dir).expect("mail directory should be created");
+        fs::write(
+            mail_dir.join("invoice.eml"),
+            "From: Billing <billing@example.org>\nSubject: Invoice\n\nBody\n",
+        )
+        .expect("mail should be written");
+
+        let filter_path = root.join("mail-filters.json");
+        let source_store = MailFilterStore::new(&filter_path);
+        let selected_rule = manual_rule("late-rule", FilterAction::MarkRead);
+        source_store
+            .upsert(selected_rule.clone())
+            .expect("selected rule should be written");
+        let snapshot = ManualFilterRunSnapshot::capture(
+            "late-rule",
+            selected_rule.clone(),
+            manual_worker_config(&root, &mail_dir),
+            source_store.clone(),
+        )
+        .expect("selected rule should be captured");
+        let snapshot_path = snapshot.filter_store.path().to_path_buf();
+        assert_eq!(snapshot.rule_id, "late-rule");
+        assert_eq!(snapshot.rule, selected_rule);
+        assert_eq!(
+            snapshot.store_config.mail_dir_override.as_deref(),
+            Some(mail_dir.as_path())
+        );
+        assert_eq!(snapshot.filter_store.load(), vec![snapshot.rule.clone()]);
+
+        // A later edit of the source store must not change the rule selected
+        // by the already captured row.
+        source_store
+            .upsert(manual_rule("late-rule", FilterAction::Delete))
+            .expect("later source edit should be written");
+
+        let result = std::thread::spawn(move || snapshot.run_on_worker())
+            .join()
+            .expect("manual filter worker should return");
+
+        let report = result
+            .expect("manual filter should not fail")
+            .expect("captured rule should be available");
+        assert_eq!(report.matched_messages, 1);
+        assert_eq!(report.deleted_messages, 0);
+        assert!(
+            !snapshot_path.exists(),
+            "worker must clean its private store"
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn manual_filter_invalid_missing_and_io_errors_never_look_like_success() {
+        let root = temporary_directory("errors");
+        let mail_dir = root.join("mail");
+        fs::create_dir_all(&mail_dir).expect("mail directory should be created");
+        fs::write(
+            mail_dir.join("invoice.eml"),
+            "From: Billing <billing@example.org>\nSubject: Invoice\n\nBody\n",
+        )
+        .expect("mail should be written");
+
+        let filter_path = root.join("mail-filters.json");
+        let filter_store = MailFilterStore::new(filter_path.as_path());
+        let missing = ManualFilterRunSnapshot::capture(
+            "missing",
+            manual_rule("missing", FilterAction::MarkRead),
+            manual_worker_config(&root, &mail_dir),
+            filter_store.clone(),
+        )
+        .expect_err("missing rule must stop before the worker");
+        assert!(matches!(missing, ManualFilterSnapshotError::MissingRule));
+        assert_eq!(missing.toast_message(), "Filterregel wurde nicht gefunden");
+
+        let invalid_rule = MailFilterRule {
+            id: "invalid".to_string(),
+            name: "Invalid".to_string(),
+            enabled: true,
+            scope: FilterScope::Manual,
+            condition: FilterCondition {
+                field: FilterField::Subject,
+                value: String::new(),
+                operator: FilterOperator::Contains,
+            },
+            action: FilterAction::MoveToFolder(String::new()),
+            conditions: Vec::new(),
+            actions: Vec::new(),
+            match_all: true,
+        };
+        filter_store
+            .save(std::slice::from_ref(&invalid_rule))
+            .expect("invalid fixture should be persisted for boundary validation");
+        let invalid = ManualFilterRunSnapshot::capture(
+            "invalid",
+            invalid_rule,
+            manual_worker_config(&root, &mail_dir),
+            filter_store.clone(),
+        )
+        .expect_err("invalid rule must stop before the worker");
+        assert!(matches!(invalid, ManualFilterSnapshotError::InvalidRule(_)));
+        assert!(invalid.toast_message().contains("fehlgeschlagen"));
+        assert!(!invalid.toast_message().contains("Treffer"));
+
+        let valid_rule = manual_rule("broken-state", FilterAction::MarkRead);
+        filter_store
+            .upsert(valid_rule.clone())
+            .expect("valid error-path rule should be written");
+        let broken_state = root.join("state-directory");
+        fs::create_dir(&broken_state).expect("broken state directory should be created");
+        let mut error_config = manual_worker_config(&root, &mail_dir);
+        error_config.metadata_path_override = Some(broken_state);
+        let snapshot = ManualFilterRunSnapshot::capture(
+            "broken-state",
+            valid_rule,
+            error_config,
+            filter_store,
+        )
+        .expect("valid rule should be captured");
+        let snapshot_path = snapshot.filter_store.path().to_path_buf();
+        let worker_error = snapshot
+            .run_on_worker()
+            .expect_err("metadata write failure must reach the GTK result path");
+        assert!(!worker_error.to_string().is_empty());
+        assert!(
+            !snapshot_path.exists(),
+            "failed workers must clean snapshots"
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn manual_filter_result_toasts_cover_success_missing_error_and_cancel() {
+        let success = Ok(Ok(Some(LocalFilterRunReport {
+            matched_messages: 2,
+            changed_messages: 1,
+            moved_messages: 1,
+            copied_messages: 0,
+            deleted_messages: 0,
+        })));
+        assert_eq!(
+            manual_filter_result_toast(&success),
+            "2 Treffer · 1 geändert · 1 verschoben · 0 kopiert · 0 gelöscht"
+        );
+
+        let missing = Ok(Ok(None));
+        assert_eq!(
+            manual_filter_result_toast(&missing),
+            "Filterregel wurde nicht gefunden"
+        );
+
+        let worker_error = Ok(Err(std::io::Error::new(
+            ErrorKind::PermissionDenied,
+            "state unavailable",
+        )));
+        assert_eq!(
+            manual_filter_result_toast(&worker_error),
+            "Lokaler Filterlauf fehlgeschlagen: state unavailable"
+        );
+
+        let cancelled: Result<
+            std::io::Result<Option<LocalFilterRunReport>>,
+            async_channel::RecvError,
+        > = Err(async_channel::RecvError);
+        assert_eq!(
+            manual_filter_result_toast(&cancelled),
+            "Lokaler Filterlauf abgebrochen: receiving from an empty and closed channel"
+        );
     }
 }

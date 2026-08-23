@@ -4,9 +4,20 @@
 
 use chrono::{DateTime, Local, NaiveDate, NaiveDateTime};
 use std::borrow::Cow;
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use crate::services::calendar_store_service::CalendarStoreService;
+use crate::services::contact_store_service::ContactStoreService;
 use crate::services::html_sanitizer::html_to_plain_text;
+use crate::services::mail_filter_service::{
+    FilterAction, FilterMessageContext, FilterScope, MailFilterRule, MailFilterStore,
+};
+use crate::services::mail_metadata_service::{
+    MailFollowUpState, MailMessageState, MailMetadataStore,
+};
+use crate::services::mail_store_service::{MailStoreService, ParsedMail};
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31,6 +42,316 @@ pub struct SearchResultItem {
     pub snippet: String,
     pub date: String,
     pub reference_id: String,
+}
+
+/// Owned local-store inputs for one global-search worker.
+///
+/// The value is captured on the GTK main thread before a worker is spawned.
+/// The service objects are plain, owned Rust values; no GTK/GObject/AppSettings
+/// handle or process-global lookup is part of this boundary.
+#[derive(Debug, Clone)]
+pub struct SearchStoreSnapshot {
+    mail: MailStoreService,
+    mail_metadata: MailMetadataStore,
+    filter_store: MailFilterStore,
+    filter_rules: Vec<MailFilterRule>,
+    raw_mail_filter_store: MailFilterStore,
+    calendar: CalendarStoreService,
+    contacts: ContactStoreService,
+}
+
+impl SearchStoreSnapshot {
+    /// Capture all local search inputs before entering a worker thread.
+    ///
+    /// This function must run on the GTK main thread, where settings-backed
+    /// constructors and environment/app-data resolution are allowed.  The
+    /// returned value is plain Rust data and can be moved to a worker.
+    pub fn capture_on_main_thread() -> Self {
+        let mail = MailStoreService::new();
+        let mail_metadata = MailMetadataStore::new(mail.metadata_path());
+        let filter_store = MailFilterStore::default();
+        let filter_rules = filter_store.load();
+
+        // MailStoreService's local loader accepts a filter store, but applying
+        // incoming actions through that API also persists those actions to the
+        // app-owned mail sidecar.  Global search is read-only, so this captured
+        // empty store deliberately gives the loader only its raw/state-loading
+        // path.  The real rules above are applied to owned ParsedMail values
+        // below without any filesystem mutation.
+        let raw_mail_filter_store = MailFilterStore::new(PathBuf::new());
+
+        let calendar = CalendarStoreService::new();
+        let contacts = ContactStoreService::new();
+
+        Self {
+            mail,
+            mail_metadata,
+            filter_store,
+            filter_rules,
+            raw_mail_filter_store,
+            calendar,
+            contacts,
+        }
+    }
+}
+
+/// Apply incoming local rules as a read-only projection for global search.
+///
+/// `MailStoreService::load_local_records_cancelable_with_store` is also used
+/// by mutation/import workflows and therefore persists filter actions through
+/// its metadata sidecar.  Search must not turn a read into a write.  Loading
+/// with the captured empty filter store above gives us the raw records plus
+/// already-persisted client state; this function then applies the captured
+/// rules only to owned values.  Copy actions produce virtual records, while
+/// the source mailbox and sidecar remain untouched.
+fn apply_read_only_mail_filters(
+    messages: Vec<ParsedMail>,
+    rules: &[MailFilterRule],
+    metadata_store: &MailMetadataStore,
+    cancellation: &AtomicBool,
+) -> Option<Vec<ParsedMail>> {
+    let metadata = ReadOnlyMailMetadata::load(metadata_store);
+    let mut source_messages = Vec::with_capacity(messages.len());
+    let mut persisted_copies = BTreeMap::<String, Vec<ParsedMail>>::new();
+    for message in messages {
+        if let Some((source_id, _)) = local_copy_parts(&message.id) {
+            persisted_copies
+                .entry(source_id.to_string())
+                .or_default()
+                .push(message);
+        } else {
+            source_messages.push(message);
+        }
+    }
+
+    let mut visible_messages = Vec::with_capacity(source_messages.len());
+    let mut copied_messages = Vec::new();
+
+    for mut message in source_messages {
+        if cancellation.load(Ordering::Relaxed) {
+            return None;
+        }
+
+        let mut deleted = false;
+        let mut copy_folders = BTreeSet::new();
+        // Persisted logical copies are created after incoming rules in the
+        // service loader.  Do not run the same incoming rules a second time on
+        // those records.
+        if !message.id.contains("::copy::") {
+            for rule in rules {
+                if rule.scope != FilterScope::Incoming || !mail_filter_matches(rule, &message) {
+                    continue;
+                }
+
+                let mut stop_processing = false;
+                for action in rule.effective_actions() {
+                    match action {
+                        FilterAction::MarkRead => message.is_unread = false,
+                        FilterAction::MarkUnread => message.is_unread = true,
+                        FilterAction::SetFlagged => message.is_flagged = true,
+                        FilterAction::ClearFlagged => message.is_flagged = false,
+                        FilterAction::SetImportant => message.is_important = true,
+                        FilterAction::ClearImportant => message.is_important = false,
+                        FilterAction::MoveToFolder(folder) => {
+                            message.folder_id = local_filter_folder_id(folder);
+                        }
+                        FilterAction::SetJunk => {
+                            message.folder_id = local_filter_folder_id("junk");
+                        }
+                        FilterAction::ClearJunk => {
+                            message.folder_id = local_filter_folder_id("inbox");
+                        }
+                        FilterAction::CopyToFolder(folder) => {
+                            copy_folders.insert(local_filter_folder_id(folder));
+                        }
+                        FilterAction::Delete => deleted = true,
+                        FilterAction::StopProcessing => {
+                            stop_processing = true;
+                            break;
+                        }
+                        FilterAction::SetLabel(label) => {
+                            let label = label.trim();
+                            if !label.is_empty()
+                                && !message
+                                    .labels
+                                    .iter()
+                                    .any(|candidate| candidate.eq_ignore_ascii_case(label))
+                            {
+                                message.labels.push(label.to_string());
+                                message
+                                    .labels
+                                    .sort_by_key(|value| value.to_ascii_lowercase());
+                            }
+                        }
+                        FilterAction::ClearLabel(label) => {
+                            let label = label.trim();
+                            message
+                                .labels
+                                .retain(|candidate| !candidate.eq_ignore_ascii_case(label));
+                        }
+                    }
+                }
+                if stop_processing {
+                    break;
+                }
+            }
+        }
+
+        if deleted {
+            continue;
+        }
+
+        let source_id = message.id.clone();
+        let mut copy_records = BTreeMap::<String, ParsedMail>::new();
+        for raw_copy in persisted_copies.remove(&source_id).unwrap_or_default() {
+            if cancellation.load(Ordering::Relaxed) {
+                return None;
+            }
+            let copy_id = raw_copy.id.clone();
+            let Some((_, target_folder)) = local_copy_parts(&copy_id) else {
+                continue;
+            };
+            if metadata.deleted.contains(&copy_id) || target_folder == message.folder_id {
+                continue;
+            }
+
+            let mut copy = message.clone();
+            copy.id = copy_id.clone();
+            copy.folder_id = metadata
+                .folder_overrides
+                .get(&copy_id)
+                .cloned()
+                .unwrap_or_else(|| target_folder.to_string());
+            copy.folder_name = copy.folder_id.clone();
+            copy.backend_location = None;
+            if let Some(state) = metadata.states.get(&copy_id) {
+                copy.is_unread = state.is_unread;
+                copy.is_flagged = state.is_flagged;
+                copy.is_important = state.is_important;
+            }
+            if let Some(labels) = metadata.labels.get(&copy_id) {
+                copy.labels = sorted_read_only_labels(labels);
+            }
+            if let Some(follow_up) = metadata.follow_up.get(&copy_id) {
+                copy.follow_up_state = *follow_up;
+            }
+            copy_records.insert(copy_id, copy);
+        }
+
+        if !copy_folders.is_empty() {
+            for folder_id in copy_folders {
+                if cancellation.load(Ordering::Relaxed) {
+                    return None;
+                }
+                if folder_id == message.folder_id {
+                    continue;
+                }
+                let mut copy = message.clone();
+                copy.id = format!("{source_id}::copy::{folder_id}");
+                if metadata.deleted.contains(&copy.id) || copy_records.contains_key(&copy.id) {
+                    continue;
+                }
+                copy.folder_id = folder_id.clone();
+                copy.folder_name = folder_id;
+                copy.backend_location = None;
+                copy_records.insert(copy.id.clone(), copy);
+            }
+        }
+        visible_messages.push(message);
+        copied_messages.extend(copy_records.into_values());
+    }
+
+    visible_messages.extend(copied_messages);
+    Some(visible_messages)
+}
+
+#[derive(Debug, Default)]
+struct ReadOnlyMailMetadata {
+    states: HashMap<String, MailMessageState>,
+    folder_overrides: HashMap<String, String>,
+    deleted: HashSet<String>,
+    labels: HashMap<String, HashSet<String>>,
+    follow_up: HashMap<String, MailFollowUpState>,
+}
+
+impl ReadOnlyMailMetadata {
+    fn load(store: &MailMetadataStore) -> Self {
+        Self {
+            states: store.load(),
+            folder_overrides: store.load_folder_overrides(),
+            deleted: store.load_deleted(),
+            labels: store.load_labels(),
+            follow_up: store.load_follow_up(),
+        }
+    }
+}
+
+fn local_copy_parts(id: &str) -> Option<(&str, &str)> {
+    let (source_id, folder_id) = id.split_once("::copy::")?;
+    (!source_id.is_empty() && !folder_id.is_empty()).then_some((source_id, folder_id))
+}
+
+fn sorted_read_only_labels(labels: &HashSet<String>) -> Vec<String> {
+    let mut labels = labels.iter().cloned().collect::<Vec<_>>();
+    labels.sort_by_key(|value| value.to_ascii_lowercase());
+    labels
+}
+
+fn mail_filter_matches(rule: &MailFilterRule, message: &ParsedMail) -> bool {
+    let body = format!(
+        "{} {}",
+        message.preview_snippet,
+        html_to_plain_text(&message.html_body)
+    );
+    let sender = format!("{} <{}>", message.sender_name, message.sender_email);
+    let recipient = format!(
+        "{} {} {}",
+        message.recipient_to, message.recipient_cc, message.recipient_bcc
+    );
+    let headers = format!(
+        "From: {}\nTo: {}\nCc: {}\nBcc: {}\nReply-To: {}\nSubject: {}\nMessage-ID: {}\nIn-Reply-To: {}\nReferences: {}",
+        sender,
+        message.recipient_to,
+        message.recipient_cc,
+        message.recipient_bcc,
+        message.reply_to,
+        message.subject,
+        message.message_id.as_deref().unwrap_or_default(),
+        message.in_reply_to.join(" "),
+        message.references.join(" "),
+    );
+
+    rule.matches_with_context(
+        &message.subject,
+        &sender,
+        &recipient,
+        &body,
+        &headers,
+        &message.labels,
+        FilterMessageContext {
+            date: &message.date_str,
+            folder: &message.folder_id,
+            is_unread: message.is_unread,
+            is_flagged: message.is_flagged,
+            is_important: message.is_important,
+            is_junk: message.folder_id == "junk" || message.folder_id.starts_with("junk/"),
+            has_attachment: !message.attachments.is_empty(),
+        },
+    )
+}
+
+fn local_filter_folder_id(folder: &str) -> String {
+    let normalized = folder.trim().trim_start_matches('.');
+    match normalized.to_ascii_lowercase().as_str() {
+        "inbox" => "inbox".to_string(),
+        "sent" | "sent-mail" => "sent".to_string(),
+        "draft" | "drafts" => "drafts".to_string(),
+        "trash" | "deleted" => "trash".to_string(),
+        "archive" | "all-mail" => "archive".to_string(),
+        "junk" | "spam" => "junk".to_string(),
+        _ if normalized.starts_with("custom:") => normalized.to_string(),
+        _ => format!("custom:{normalized}"),
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -102,66 +423,107 @@ impl GlobalSearchEngine {
         Self::query_cancelable(domain, query_str, &cancellation)
     }
 
-    /// Query local stores while allowing a UI worker to abandon an obsolete
-    /// scan.  The cancellation flag is checked between stores and during the
-    /// potentially large local-mail load; no GTK objects are created here.
+    /// Synchronous convenience query which captures local-store inputs on the
+    /// calling thread.  UI workers must capture a [`SearchStoreSnapshot`] on
+    /// the main thread and call [`Self::query_cancelable_with_stores`] instead.
+    /// The cancellation flag is checked between stores and during the
+    /// potentially large local-mail load.
     pub fn query_cancelable(
         domain: SearchDomain,
         query_str: &str,
         cancellation: &AtomicBool,
     ) -> Vec<SearchResultItem> {
+        if !matches!(parse_search_query(query_str), Ok(Some(_))) {
+            return Vec::new();
+        }
+        let stores = SearchStoreSnapshot::capture_on_main_thread();
+        Self::query_cancelable_with_stores(domain, query_str, cancellation, stores)
+    }
+
+    /// Query explicit local-store inputs while allowing a UI worker to
+    /// abandon an obsolete scan.
+    ///
+    /// The caller owns the snapshot/configuration and must capture it before
+    /// spawning the worker.  This function intentionally does not construct
+    /// any settings-backed store and does not resolve environment or
+    /// application-data paths.  All local data loads remain here so large
+    /// mailboxes and filesystem-backed calendar/contact stores stay off the
+    /// GTK main loop; the captured stores retain their original writeability
+    /// and path/source semantics.
+    pub fn query_cancelable_with_stores(
+        domain: SearchDomain,
+        query_str: &str,
+        cancellation: &AtomicBool,
+        stores: SearchStoreSnapshot,
+    ) -> Vec<SearchResultItem> {
         let Ok(Some(query)) = parse_search_query(query_str) else {
             return Vec::new();
         };
 
+        let SearchStoreSnapshot {
+            mail,
+            mail_metadata,
+            filter_store: _filter_store,
+            filter_rules,
+            raw_mail_filter_store,
+            calendar: calendar_store,
+            contacts: contact_store,
+        } = stores;
         let mut documents = Vec::new();
 
         if matches!(domain, SearchDomain::Mail | SearchDomain::All) {
             if cancellation.load(Ordering::Relaxed) {
                 return Vec::new();
             }
-            documents.extend(
-                crate::services::mail_store_service::MailStoreService::new()
-                    .load_local_records_cancelable(cancellation)
-                    .into_iter()
-                    .map(|message| {
-                        let snippet = local_mail_search_text(&message);
-                        let searchable_text = format!(
-                            "{} {} {}",
-                            local_mail_search_index(&message),
-                            message.subject,
-                            message.date_str
-                        );
-                        let fields = local_mail_search_fields(&message);
-                        SearchDocument::new(
-                            SearchResultItem {
-                                domain: SearchDomain::Mail,
-                                title: message.subject,
-                                snippet,
-                                date: message.date_str,
-                                reference_id: message.id,
-                            },
-                            searchable_text,
-                        )
-                        .with_fields(fields)
-                    }),
-            );
+            let messages =
+                mail.load_local_records_cancelable_with_store(cancellation, &raw_mail_filter_store);
+            if cancellation.load(Ordering::Relaxed) {
+                return Vec::new();
+            }
+            let Some(messages) =
+                apply_read_only_mail_filters(messages, &filter_rules, &mail_metadata, cancellation)
+            else {
+                return Vec::new();
+            };
+            documents.extend(messages.into_iter().map(|message| {
+                let snippet = local_mail_search_text(&message);
+                let searchable_text = format!(
+                    "{} {} {}",
+                    local_mail_search_index(&message),
+                    message.subject,
+                    message.date_str
+                );
+                let fields = local_mail_search_fields(&message);
+                SearchDocument::new(
+                    SearchResultItem {
+                        domain: SearchDomain::Mail,
+                        title: message.subject,
+                        snippet,
+                        date: message.date_str,
+                        reference_id: message.id,
+                    },
+                    searchable_text,
+                )
+                .with_fields(fields)
+            }));
         }
 
         if matches!(domain, SearchDomain::Calendar | SearchDomain::All) {
             if cancellation.load(Ordering::Relaxed) {
                 return Vec::new();
             }
-            let snapshot = crate::services::calendar_store_service::CalendarStoreService::new()
-                .load_snapshot();
-            documents.extend(snapshot.events.into_iter().map(|event| {
+            let calendar_snapshot = calendar_store.load_snapshot();
+            for event in calendar_snapshot.events {
+                if cancellation.load(Ordering::Relaxed) {
+                    return Vec::new();
+                }
                 let title = event.summary;
                 let snippet = format!(
                     "{} {} {} {}",
                     event.location, event.description, event.source_display_name, event.component
                 );
                 let date = event.start;
-                SearchDocument::new(
+                documents.push(SearchDocument::new(
                     SearchResultItem {
                         domain: SearchDomain::Calendar,
                         title: title.clone(),
@@ -170,16 +532,19 @@ impl GlobalSearchEngine {
                         reference_id: format!("{}:{}", event.source_uid, event.uid),
                     },
                     format!("{title} {snippet} {date}"),
-                )
-            }));
-            documents.extend(snapshot.tasks.into_iter().map(|task| {
+                ));
+            }
+            for task in calendar_snapshot.tasks {
+                if cancellation.load(Ordering::Relaxed) {
+                    return Vec::new();
+                }
                 let title = task.summary;
                 let snippet = format!(
                     "Aufgabe {} Priorität {} {} {}",
                     task.source_display_name, task.priority, task.due, task.component
                 );
                 let date = task.due;
-                SearchDocument::new(
+                documents.push(SearchDocument::new(
                     SearchResultItem {
                         domain: SearchDomain::Calendar,
                         title: title.clone(),
@@ -188,16 +553,19 @@ impl GlobalSearchEngine {
                         reference_id: format!("{}:{}", task.source_uid, task.uid),
                     },
                     format!("{title} {snippet} {date}"),
-                )
-            }));
-            documents.extend(snapshot.memos.into_iter().map(|memo| {
+                ));
+            }
+            for memo in calendar_snapshot.memos {
+                if cancellation.load(Ordering::Relaxed) {
+                    return Vec::new();
+                }
                 let title = memo.summary;
                 let snippet = format!(
                     "{} {} {}",
                     memo.description, memo.source_display_name, memo.component
                 );
                 let date = memo.updated;
-                SearchDocument::new(
+                documents.push(SearchDocument::new(
                     SearchResultItem {
                         domain: SearchDomain::Calendar,
                         title: title.clone(),
@@ -206,40 +574,43 @@ impl GlobalSearchEngine {
                         reference_id: format!("{}:{}", memo.source_uid, memo.uid),
                     },
                     format!("{title} {snippet} {date}"),
-                )
-            }));
+                ));
+            }
         }
 
         if matches!(domain, SearchDomain::Contacts | SearchDomain::All) {
             if cancellation.load(Ordering::Relaxed) {
                 return Vec::new();
             }
-            documents.extend(
-                crate::services::contact_store_service::ContactStoreService::new()
-                    .load_contacts()
-                    .into_iter()
-                    .map(|record| {
-                        let title = record.contact.fn_name.clone();
-                        let snippet = record.contact.searchable_text();
-                        SearchDocument::new(
-                            SearchResultItem {
-                                domain: SearchDomain::Contacts,
-                                title: title.clone(),
-                                snippet: snippet.clone(),
-                                date: String::new(),
-                                reference_id: record.id,
-                            },
-                            format!("{title} {snippet}"),
-                        )
-                    }),
-            );
+            for record in contact_store.load_contacts() {
+                if cancellation.load(Ordering::Relaxed) {
+                    return Vec::new();
+                }
+                let title = record.contact.fn_name.clone();
+                let snippet = record.contact.searchable_text();
+                documents.push(SearchDocument::new(
+                    SearchResultItem {
+                        domain: SearchDomain::Contacts,
+                        title: title.clone(),
+                        snippet: snippet.clone(),
+                        date: String::new(),
+                        reference_id: record.id,
+                    },
+                    format!("{title} {snippet}"),
+                ));
+            }
         }
 
         if cancellation.load(Ordering::Relaxed) {
             return Vec::new();
         }
 
-        Self::query_search_documents_with_query(domain, &query, &documents)
+        let results = Self::query_search_documents_with_query(domain, &query, &documents);
+        if cancellation.load(Ordering::Relaxed) {
+            Vec::new()
+        } else {
+            results
+        }
     }
 
     /// Search an explicit repository snapshot.  This is the backend-neutral
@@ -1393,6 +1764,48 @@ fn local_mail_state_terms(message: &crate::services::mail_store_service::ParsedM
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::path::PathBuf;
+
+    fn snapshot_with_stores(
+        mail: MailStoreService,
+        filter_store: MailFilterStore,
+        calendar: CalendarStoreService,
+        contacts: ContactStoreService,
+    ) -> SearchStoreSnapshot {
+        let filter_rules = filter_store.load();
+        let mail_metadata = MailMetadataStore::new(mail.metadata_path());
+        SearchStoreSnapshot {
+            mail,
+            mail_metadata,
+            filter_store,
+            filter_rules,
+            raw_mail_filter_store: MailFilterStore::new(PathBuf::new()),
+            calendar,
+            contacts,
+        }
+    }
+
+    fn test_store_snapshot(
+        calendar: CalendarStoreService,
+        contacts: ContactStoreService,
+    ) -> SearchStoreSnapshot {
+        snapshot_with_stores(
+            MailStoreService::with_mail_dir_and_state_path(PathBuf::new(), PathBuf::new()),
+            MailFilterStore::new(PathBuf::new()),
+            calendar,
+            contacts,
+        )
+    }
+
+    fn temporary_directory(label: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "evolution-gtk4-search-{label}-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&path).expect("temporary search directory should be created");
+        path
+    }
 
     fn fixture_mail(
         id: &str,
@@ -1864,6 +2277,406 @@ mod tests {
                 parse_search_query(query),
                 Err(SearchQueryParseError::UnsupportedOperator(_))
             ));
+        }
+    }
+
+    #[test]
+    fn search_store_snapshot_is_send_sync_and_keeps_calendar_and_contact_identity() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        fn assert_static<T: 'static>() {}
+
+        assert_send_sync::<SearchStoreSnapshot>();
+        assert_send_sync::<MailStoreService>();
+        assert_send_sync::<MailMetadataStore>();
+        assert_send_sync::<MailFilterStore>();
+        assert_send_sync::<MailFilterRule>();
+        assert_send_sync::<CalendarStoreService>();
+        assert_send_sync::<ContactStoreService>();
+        assert_static::<SearchStoreSnapshot>();
+
+        let root = temporary_directory("store-config");
+        let calendar_dir = root.join("calendar");
+        let contact_dir = root.join("contacts");
+        fs::create_dir_all(&calendar_dir).expect("calendar directory should be created");
+        fs::create_dir_all(&contact_dir).expect("contact directory should be created");
+        fs::write(
+            calendar_dir.join("calendar.ics"),
+            concat!(
+                "BEGIN:VCALENDAR\r\nVERSION:2.0\r\n",
+                "BEGIN:VEVENT\r\nUID:duplicate-uid\r\nSUMMARY:Shared planning local one\r\n",
+                "DTSTART:20260823T100000Z\r\nEND:VEVENT\r\n",
+                "BEGIN:VEVENT\r\nUID:duplicate-uid\r\nSUMMARY:Shared planning local two\r\n",
+                "DTSTART:20260824T100000Z\r\nEND:VEVENT\r\n",
+                "BEGIN:VTODO\r\nUID:duplicate-uid\r\nSUMMARY:Shared planning task\r\n",
+                "DUE:20260825T100000Z\r\nEND:VTODO\r\n",
+                "BEGIN:VJOURNAL\r\nUID:duplicate-uid\r\nSUMMARY:Shared planning memo\r\n",
+                "DESCRIPTION:shared planning note\r\nEND:VJOURNAL\r\n",
+                "END:VCALENDAR\r\n"
+            ),
+        )
+        .expect("calendar should be written");
+        fs::write(
+            contact_dir.join("contacts.vcf"),
+            concat!(
+                "BEGIN:VCARD\r\nVERSION:3.0\r\nUID:shared-uid\r\nFN:Ada shared one\r\n",
+                "END:VCARD\r\n",
+                "BEGIN:VCARD\r\nVERSION:3.0\r\nUID:shared-uid\r\nFN:Ada shared two\r\n",
+                "END:VCARD\r\n",
+                "BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Ada shared path\r\nEND:VCARD\r\n"
+            ),
+        )
+        .expect("contacts should be written");
+
+        let stores = test_store_snapshot(
+            CalendarStoreService::with_writable_calendar_dir(&calendar_dir),
+            ContactStoreService::with_contact_dir(&contact_dir),
+        );
+        let isolated_copy = stores.clone();
+        fs::write(
+            calendar_dir.join("after-capture.ics"),
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:new\r\nSUMMARY:changed after capture\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n",
+        )
+        .expect("post-capture calendar should be writable");
+
+        let cancellation = AtomicBool::new(false);
+        let results = std::thread::spawn(move || {
+            GlobalSearchEngine::query_cancelable_with_stores(
+                SearchDomain::All,
+                "shared",
+                &cancellation,
+                stores,
+            )
+        })
+        .join()
+        .expect("search snapshot should cross the worker boundary");
+
+        assert_eq!(
+            results
+                .iter()
+                .filter(|result| result.domain == SearchDomain::Calendar)
+                .map(|result| result.reference_id.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "local-calendar:duplicate-uid",
+                "local-calendar:duplicate-uid",
+                "local-calendar:duplicate-uid",
+                "local-calendar:duplicate-uid"
+            ]
+        );
+        assert!(
+            results
+                .iter()
+                .any(|result| result.title == "Shared planning task")
+        );
+        assert!(
+            results
+                .iter()
+                .any(|result| result.title == "Shared planning memo")
+        );
+        assert!(
+            results
+                .iter()
+                .any(|result| result.snippet.contains("Lokaler Kalender"))
+        );
+        let contact_references = results
+            .iter()
+            .filter(|result| result.domain == SearchDomain::Contacts)
+            .map(|result| result.reference_id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            contact_references
+                .iter()
+                .filter(|reference| **reference == "shared-uid")
+                .count(),
+            2
+        );
+        let uidless_reference = format!(
+            "local:{}#2",
+            contact_dir.join("contacts.vcf").to_string_lossy()
+        );
+        assert!(
+            contact_references
+                .iter()
+                .any(|reference| *reference == uidless_reference)
+        );
+        assert!(isolated_copy.calendar.is_writable());
+        assert_eq!(isolated_copy.calendar.calendar_dir(), &calendar_dir);
+        assert_eq!(isolated_copy.contacts.contact_dir(), &contact_dir);
+        assert!(!isolated_copy.contacts.is_writable());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn read_only_calendar_snapshot_preserves_source_semantics() {
+        let root = temporary_directory("read-only-calendar-source");
+        fs::write(
+            root.join("external.ics"),
+            concat!(
+                "BEGIN:VCALENDAR\r\nVERSION:2.0\r\n",
+                "BEGIN:VEVENT\r\nUID:external-event\r\nSUMMARY:External shared source\r\n",
+                "DTSTART:20260823T100000Z\r\nEND:VEVENT\r\n",
+                "END:VCALENDAR\r\n"
+            ),
+        )
+        .expect("external calendar should be written");
+        let calendar = CalendarStoreService::with_calendar_dir(&root);
+        let stores = test_store_snapshot(
+            calendar.clone(),
+            ContactStoreService::with_contact_dir(root.join("contacts")),
+        );
+        let results = GlobalSearchEngine::query_cancelable_with_stores(
+            SearchDomain::Calendar,
+            "external",
+            &AtomicBool::new(false),
+            stores,
+        );
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].reference_id, ":external-event");
+        assert!(!results[0].snippet.contains("Lokaler Kalender"));
+        assert!(!calendar.is_writable());
+        assert_eq!(calendar.calendar_dir(), root.as_path());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn explicit_filter_store_is_injected_into_worker_search() {
+        let root = temporary_directory("explicit-filter");
+        let mail_dir = root.join("mail");
+        fs::create_dir_all(&mail_dir).expect("mail directory should be created");
+        fs::write(
+            mail_dir.join("invoice.eml"),
+            "From: Billing <billing@example.org>\nSubject: Invoice\n\nPayable\n",
+        )
+        .expect("mail should be written");
+        let mail_path = mail_dir.join("invoice.eml");
+        let mail_before = fs::read(&mail_path).expect("mail should be readable");
+        let state_path = root.join("mail-state.json");
+        fs::write(&state_path, b"read-only-search-sentinel")
+            .expect("sidecar sentinel should be written");
+        let state_before = fs::read(&state_path).expect("sidecar should be readable");
+
+        let filter_path = root.join("filters.json");
+        let filters = MailFilterStore::new(&filter_path);
+        filters
+            .upsert(crate::services::mail_filter_service::MailFilterRule {
+                id: "delete-invoice".to_string(),
+                name: "Delete invoice".to_string(),
+                enabled: true,
+                scope: crate::services::mail_filter_service::FilterScope::Incoming,
+                condition: crate::services::mail_filter_service::FilterCondition {
+                    field: crate::services::mail_filter_service::FilterField::Subject,
+                    value: "invoice".to_string(),
+                    operator: crate::services::mail_filter_service::FilterOperator::Contains,
+                },
+                action: crate::services::mail_filter_service::FilterAction::Delete,
+                conditions: Vec::new(),
+                actions: Vec::new(),
+                match_all: true,
+            })
+            .expect("explicit filter should be persisted");
+
+        let stores = snapshot_with_stores(
+            MailStoreService::with_mail_dir_and_state_path(mail_dir, &state_path),
+            filters,
+            CalendarStoreService::with_calendar_dir(root.join("calendar")),
+            ContactStoreService::with_contact_dir(root.join("contacts")),
+        );
+        fs::write(&filter_path, br#"{"version":1,"rules":[]}"#)
+            .expect("post-capture filter update should be writable");
+        let results = GlobalSearchEngine::query_cancelable_with_stores(
+            SearchDomain::Mail,
+            "invoice",
+            &AtomicBool::new(false),
+            stores,
+        );
+        assert!(results.is_empty());
+        assert_eq!(
+            fs::read(&mail_path).expect("mail should remain readable"),
+            mail_before
+        );
+        assert_eq!(
+            fs::read(&state_path).expect("sidecar should remain readable"),
+            state_before
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn read_only_mail_filter_projection_does_not_persist_state_actions() {
+        let root = temporary_directory("read-only-filter-projection");
+        let mail_dir = root.join("mail");
+        fs::create_dir_all(&mail_dir).expect("mail directory should be created");
+        let mail_path = mail_dir.join("invoice.eml");
+        fs::write(
+            &mail_path,
+            "From: Billing <billing@example.org>\nSubject: Invoice\n\nPayable\n",
+        )
+        .expect("mail should be written");
+        let state_path = root.join("mail-state.json");
+
+        let filter_store = MailFilterStore::new(root.join("filters.json"));
+        filter_store
+            .upsert(crate::services::mail_filter_service::MailFilterRule {
+                id: "mark-read-invoice".to_string(),
+                name: "Mark invoice read".to_string(),
+                enabled: true,
+                scope: crate::services::mail_filter_service::FilterScope::Incoming,
+                condition: crate::services::mail_filter_service::FilterCondition {
+                    field: crate::services::mail_filter_service::FilterField::Subject,
+                    value: "invoice".to_string(),
+                    operator: crate::services::mail_filter_service::FilterOperator::Contains,
+                },
+                action: crate::services::mail_filter_service::FilterAction::MarkRead,
+                conditions: Vec::new(),
+                actions: vec![
+                    crate::services::mail_filter_service::FilterAction::MarkRead,
+                    crate::services::mail_filter_service::FilterAction::CopyToFolder(
+                        "archive".to_string(),
+                    ),
+                ],
+                match_all: true,
+            })
+            .expect("read-only filter should be persisted");
+        let stores = snapshot_with_stores(
+            MailStoreService::with_mail_dir_and_state_path(mail_dir, &state_path),
+            filter_store,
+            CalendarStoreService::with_calendar_dir(root.join("calendar")),
+            ContactStoreService::with_contact_dir(root.join("contacts")),
+        );
+
+        let results = GlobalSearchEngine::query_cancelable_with_stores(
+            SearchDomain::Mail,
+            "invoice is:read",
+            &AtomicBool::new(false),
+            stores,
+        );
+        assert_eq!(results.len(), 2);
+        assert!(
+            results
+                .iter()
+                .any(|result| result.reference_id.ends_with("::copy::archive"))
+        );
+        assert!(!state_path.exists(), "search must not create a sidecar");
+        assert!(mail_path.exists(), "search must not rewrite source mail");
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn read_only_delete_filter_drops_persisted_copies_of_deleted_source() {
+        let root = temporary_directory("read-only-filter-copy-delete");
+        let mail_dir = root.join("mail");
+        fs::create_dir_all(&mail_dir).expect("mail directory should be created");
+        fs::write(
+            mail_dir.join("invoice.eml"),
+            "From: Billing <billing@example.org>\nSubject: Invoice\n\nPayable\n",
+        )
+        .expect("mail should be written");
+        let state_path = root.join("mail-state.json");
+        let mail = MailStoreService::with_mail_dir_and_state_path(&mail_dir, &state_path);
+        let source_id = mail
+            .load_local_records()
+            .into_iter()
+            .next()
+            .expect("source mail should parse")
+            .id;
+        MailMetadataStore::new(&state_path)
+            .set_copy(&source_id, "archive", true)
+            .expect("copy should be persisted");
+        let state_before = fs::read(&state_path).expect("sidecar should be readable");
+
+        let filter_store = MailFilterStore::new(root.join("filters.json"));
+        filter_store
+            .upsert(crate::services::mail_filter_service::MailFilterRule {
+                id: "delete-invoice-with-copy".to_string(),
+                name: "Delete invoice with copy".to_string(),
+                enabled: true,
+                scope: crate::services::mail_filter_service::FilterScope::Incoming,
+                condition: crate::services::mail_filter_service::FilterCondition {
+                    field: crate::services::mail_filter_service::FilterField::Subject,
+                    value: "invoice".to_string(),
+                    operator: crate::services::mail_filter_service::FilterOperator::Contains,
+                },
+                action: crate::services::mail_filter_service::FilterAction::Delete,
+                conditions: Vec::new(),
+                actions: Vec::new(),
+                match_all: true,
+            })
+            .expect("delete filter should be persisted");
+
+        let stores = snapshot_with_stores(
+            mail,
+            filter_store,
+            CalendarStoreService::with_calendar_dir(root.join("calendar")),
+            ContactStoreService::with_contact_dir(root.join("contacts")),
+        );
+        let results = GlobalSearchEngine::query_cancelable_with_stores(
+            SearchDomain::Mail,
+            "invoice",
+            &AtomicBool::new(false),
+            stores,
+        );
+        assert!(results.is_empty());
+        assert_eq!(
+            fs::read(&state_path).expect("sidecar should remain readable"),
+            state_before
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn cancelled_snapshot_query_returns_no_partial_results() {
+        let stores = test_store_snapshot(
+            CalendarStoreService::with_calendar_dir(PathBuf::new()),
+            ContactStoreService::with_contact_dir(PathBuf::new()),
+        );
+        let cancellation = AtomicBool::new(true);
+        let results = GlobalSearchEngine::query_cancelable_with_stores(
+            SearchDomain::Calendar,
+            "cancel",
+            &cancellation,
+            stores,
+        );
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn search_worker_boundary_does_not_resolve_framework_or_global_state() {
+        let source = include_str!("search_engine.rs");
+        let start = source
+            .find("pub fn query_cancelable_with_stores(")
+            .expect("explicit search worker API should exist");
+        let end = source[start..]
+            .find("    /// Search an explicit repository snapshot.")
+            .map(|offset| start + offset)
+            .expect("search worker API should have a bounded source section");
+        let worker = &source[start..end];
+
+        assert!(worker.contains("load_local_records_cancelable_with_store"));
+        assert!(worker.contains("raw_mail_filter_store"));
+        assert!(worker.contains("filter_rules"));
+        for forbidden in [
+            "MailStoreService::new(",
+            "MailStoreService::new_worker_safe(",
+            "CalendarStoreService::new(",
+            "ContactStoreService::new(",
+            "AppSettings",
+            "GSettings",
+            "gtk::",
+            "glib::",
+            "GObject",
+            "std::env::",
+            "app_data_dir(",
+        ] {
+            assert!(
+                !worker.contains(forbidden),
+                "worker boundary found {forbidden}"
+            );
         }
     }
 }

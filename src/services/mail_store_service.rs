@@ -651,12 +651,28 @@ impl MailStoreService {
     /// no longer needed.  The parser returns records collected before the
     /// cancellation was observed and never mutates the source mailbox.
     pub fn load_local_records_cancelable(&self, cancelled: &AtomicBool) -> Vec<ParsedMail> {
+        let filter_store = MailFilterStore::default();
+        self.load_local_records_cancelable_with_store(cancelled, &filter_store)
+    }
+
+    /// Load local messages with an explicitly captured filter store.
+    ///
+    /// This is the worker-safe variant: the caller owns the filter-store path
+    /// and no environment, app-data, settings, GTK, or GObject state is
+    /// resolved here.  The explicit store is the complete source of incoming
+    /// filter rules; there is no fallback to process-global filter
+    /// configuration.
+    pub fn load_local_records_cancelable_with_store(
+        &self,
+        cancelled: &AtomicBool,
+        filter_store: &MailFilterStore,
+    ) -> Vec<ParsedMail> {
         let mut metadata = self.metadata.load();
         let folder_overrides = self.metadata.load_folder_overrides();
         let deleted = self.metadata.load_deleted();
         let labels = self.metadata.load_labels();
         let follow_up = self.metadata.load_follow_up();
-        let filter_rules = MailFilterStore::default().load();
+        let filter_rules = filter_store.load();
         let mut messages = self.load_raw_local_records_cancelable(cancelled);
 
         messages.retain(|message| !deleted.contains(&message.id));
@@ -965,8 +981,23 @@ impl MailStoreService {
     #[cfg(eds_camel_bridge)]
     #[allow(dead_code)]
     pub(crate) fn apply_client_state(&self, messages: &mut [ParsedMail]) {
+        let filter_store = MailFilterStore::default();
+        self.apply_client_state_with_store(messages, &filter_store);
+    }
+
+    /// Apply client state and incoming rules using an explicitly captured
+    /// filter store.  This path is safe to call from a worker because it only
+    /// consumes the supplied store and service sidecar; it does not resolve
+    /// process-global or GTK-backed configuration.
+    #[cfg(eds_camel_bridge)]
+    #[allow(dead_code)]
+    pub(crate) fn apply_client_state_with_store(
+        &self,
+        messages: &mut [ParsedMail],
+        filter_store: &MailFilterStore,
+    ) {
         let metadata = self.metadata.load();
-        let filter_rules = MailFilterStore::default().load();
+        let filter_rules = filter_store.load();
 
         for message in messages {
             let _ = apply_client_state(&metadata, &filter_rules, message, None);
@@ -978,7 +1009,20 @@ impl MailStoreService {
     /// overwritten by a stale client sidecar after a successful Camel
     /// mutation.
     pub(crate) fn apply_backend_filters(&self, messages: &mut [ParsedMail]) {
-        let filter_rules = MailFilterStore::default().load();
+        let filter_store = MailFilterStore::default();
+        self.apply_backend_filters_with_store(messages, &filter_store);
+    }
+
+    /// Apply incoming rules to backend-owned messages using an explicitly
+    /// captured filter store.  The backend state remains authoritative; only
+    /// the supplied incoming rules are evaluated and no global configuration
+    /// is resolved on this path.
+    pub(crate) fn apply_backend_filters_with_store(
+        &self,
+        messages: &mut [ParsedMail],
+        filter_store: &MailFilterStore,
+    ) {
+        let filter_rules = filter_store.load();
 
         for message in messages {
             let _ = apply_local_filters(&filter_rules, message, None);
@@ -3884,6 +3928,141 @@ mod tests {
 
         assert!(records.is_empty());
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn explicit_filter_store_controls_local_incoming_rules_and_order() {
+        let root = temporary_directory("explicit-filter-store");
+        let mail_dir = root.join("mail");
+        fs::create_dir_all(&mail_dir).expect("mail directory should be created");
+        fs::write(
+            mail_dir.join("invoice.eml"),
+            "From: Billing <billing@example.org>\nSubject: Invoice\n\nBody\n",
+        )
+        .expect("mail should be written");
+
+        // A different candidate represents a changed environment/default
+        // source.  The explicit worker path must not inspect it.
+        let default_candidate = MailFilterStore::new(root.join("default-filters.json"));
+        default_candidate
+            .upsert(MailFilterRule {
+                id: "default-delete".to_string(),
+                name: "Default delete".to_string(),
+                enabled: true,
+                scope: FilterScope::Incoming,
+                condition: FilterCondition {
+                    field: FilterField::Subject,
+                    value: "invoice".to_string(),
+                    operator: FilterOperator::Contains,
+                },
+                action: FilterAction::Delete,
+                conditions: Vec::new(),
+                actions: Vec::new(),
+                match_all: true,
+            })
+            .expect("default candidate rule should persist");
+
+        let filter_store = MailFilterStore::new(root.join("explicit-filters.json"));
+        filter_store
+            .upsert(MailFilterRule {
+                id: "move-and-read".to_string(),
+                name: "Move and mark invoice".to_string(),
+                enabled: true,
+                scope: FilterScope::Incoming,
+                condition: FilterCondition {
+                    field: FilterField::Subject,
+                    value: "invoice".to_string(),
+                    operator: FilterOperator::Contains,
+                },
+                action: FilterAction::MoveToFolder("archive".to_string()),
+                conditions: Vec::new(),
+                actions: vec![
+                    FilterAction::MarkRead,
+                    FilterAction::MoveToFolder("archive".to_string()),
+                ],
+                match_all: true,
+            })
+            .expect("first explicit rule should persist");
+        filter_store
+            .upsert(MailFilterRule {
+                id: "flag-archive".to_string(),
+                name: "Flag archived invoice".to_string(),
+                enabled: true,
+                scope: FilterScope::Incoming,
+                condition: FilterCondition {
+                    field: FilterField::Folder,
+                    value: "archive".to_string(),
+                    operator: FilterOperator::Equals,
+                },
+                action: FilterAction::SetFlagged,
+                conditions: Vec::new(),
+                actions: Vec::new(),
+                match_all: true,
+            })
+            .expect("second explicit rule should persist");
+
+        let store =
+            MailStoreService::with_mail_dir_and_state_path(&mail_dir, root.join("mail-state.json"));
+        let records =
+            store.load_local_records_cancelable_with_store(&AtomicBool::new(false), &filter_store);
+
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].folder_id, "archive");
+        assert!(!records[0].is_unread);
+        assert!(records[0].is_flagged);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn explicit_filter_store_preserves_cancellation_and_backend_incoming_effects() {
+        let root = temporary_directory("explicit-backend-filter-store");
+        let filter_store = MailFilterStore::new(root.join("explicit-filters.json"));
+        filter_store
+            .upsert(MailFilterRule {
+                id: "mark-read".to_string(),
+                name: "Mark invoice read".to_string(),
+                enabled: true,
+                scope: FilterScope::Incoming,
+                condition: FilterCondition {
+                    field: FilterField::Subject,
+                    value: "invoice".to_string(),
+                    operator: FilterOperator::Contains,
+                },
+                action: FilterAction::MarkRead,
+                conditions: Vec::new(),
+                actions: Vec::new(),
+                match_all: true,
+            })
+            .expect("explicit backend rule should persist");
+
+        let store = MailStoreService::with_mail_dir_and_state_path(
+            root.join("mail"),
+            root.join("mail-state.json"),
+        );
+        let mut message = parse_rfc822(
+            "backend-filter",
+            "inbox",
+            "From: Billing <billing@example.org>\nSubject: Invoice\n\nBody",
+            true,
+        )
+        .expect("message should parse");
+        store.apply_backend_filters_with_store(std::slice::from_mut(&mut message), &filter_store);
+        assert!(!message.is_unread);
+
+        let cancelled = AtomicBool::new(true);
+        let records = store.load_local_records_cancelable_with_store(&cancelled, &filter_store);
+        assert!(records.is_empty());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn explicit_filter_store_is_send_and_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+
+        assert_send_sync::<MailFilterStore>();
+        assert_send_sync::<MailStoreService>();
     }
 
     #[test]

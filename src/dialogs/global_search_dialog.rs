@@ -14,7 +14,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use crate::services::search_engine::{GlobalSearchEngine, SearchDomain, SearchResultItem};
+use crate::services::search_engine::{
+    GlobalSearchEngine, SearchDomain, SearchResultItem, SearchStoreSnapshot,
+};
 
 mod imp {
     use super::*;
@@ -193,6 +195,9 @@ impl GlobalSearchDialog {
             let Some(dialog) = dialog.upgrade() else {
                 return;
             };
+            if !generation_is_current(dialog.imp().query_generation.get(), generation) {
+                return;
+            }
             dialog.imp().debounce_source.borrow_mut().take();
             dialog.start_query(query, domain, generation);
         });
@@ -200,7 +205,7 @@ impl GlobalSearchDialog {
     }
 
     fn start_query(&self, query: String, domain: SearchDomain, generation: u64) {
-        if generation != self.imp().query_generation.get() {
+        if !generation_is_current(self.imp().query_generation.get(), generation) {
             return;
         }
 
@@ -209,15 +214,23 @@ impl GlobalSearchDialog {
             .query_cancellation
             .replace(Some(cancellation.clone()));
         let (sender, receiver) = async_channel::bounded(1);
+        let stores = SearchStoreSnapshot::capture_on_main_thread();
         let query_for_worker = query.clone();
+        let cancellation_for_result = cancellation.clone();
         std::thread::spawn(move || {
             if cancellation.load(Ordering::Relaxed) {
                 return;
             }
-            let results =
-                GlobalSearchEngine::query_cancelable(domain, &query_for_worker, &cancellation);
-            if let Err(error) = sender.send_blocking(results) {
-                tracing::debug!(%error, "Global search result was dropped");
+            let results = GlobalSearchEngine::query_cancelable_with_stores(
+                domain,
+                &query_for_worker,
+                &cancellation,
+                stores,
+            );
+            if !cancellation.load(Ordering::Relaxed) {
+                if let Err(error) = sender.send_blocking(results) {
+                    tracing::debug!(%error, "Global search result was dropped");
+                }
             }
         });
 
@@ -229,7 +242,11 @@ impl GlobalSearchDialog {
             let Some(dialog) = dialog.upgrade() else {
                 return;
             };
-            if dialog.imp().query_generation.get() != generation {
+            if !query_result_is_current(
+                dialog.imp().query_generation.get(),
+                generation,
+                &cancellation_for_result,
+            ) {
                 return;
             }
             dialog.imp().query_cancellation.borrow_mut().take();
@@ -328,6 +345,19 @@ fn compact_snippet(value: &str) -> String {
     result
 }
 
+fn generation_is_current(current_generation: u64, candidate_generation: u64) -> bool {
+    current_generation == candidate_generation
+}
+
+fn query_result_is_current(
+    current_generation: u64,
+    result_generation: u64,
+    cancellation: &AtomicBool,
+) -> bool {
+    generation_is_current(current_generation, result_generation)
+        && !cancellation.load(Ordering::Relaxed)
+}
+
 impl Default for GlobalSearchDialog {
     fn default() -> Self {
         Self::new()
@@ -345,5 +375,52 @@ mod tests {
         assert_eq!(search_domain_for_index(2), SearchDomain::Calendar);
         assert_eq!(search_domain_for_index(3), SearchDomain::Contacts);
         assert_eq!(search_domain_for_index(99), SearchDomain::All);
+    }
+
+    #[test]
+    fn stale_or_cancelled_query_results_are_rejected() {
+        let cancellation = AtomicBool::new(false);
+        assert!(generation_is_current(7, 7));
+        assert!(!generation_is_current(8, 7));
+        assert!(query_result_is_current(7, 7, &cancellation));
+        assert!(!query_result_is_current(8, 7, &cancellation));
+        assert!(!query_result_is_current(7, 8, &cancellation));
+
+        cancellation.store(true, Ordering::Relaxed);
+        assert!(!query_result_is_current(7, 7, &cancellation));
+    }
+
+    #[test]
+    fn worker_receives_store_snapshot_before_spawn() {
+        let source = include_str!("global_search_dialog.rs");
+        let production = source
+            .split("#[cfg(test)]")
+            .next()
+            .expect("production source should precede tests");
+        let capture = production
+            .find("SearchStoreSnapshot::capture_on_main_thread()")
+            .expect("the main thread must capture search stores");
+        let spawn = production
+            .find("std::thread::spawn(move ||")
+            .expect("the search worker must be spawned");
+        assert!(capture < spawn);
+        assert!(production.contains("query_cancelable_with_stores("));
+
+        let worker = &production[spawn..];
+        assert!(!worker.contains("MailStoreService::new("));
+        assert!(!worker.contains("CalendarStoreService::new("));
+        assert!(!worker.contains("ContactStoreService::new("));
+        assert!(!worker.contains("AppSettings"));
+        assert!(!worker.contains("GSettings"));
+        assert!(!worker.contains("std::env::"));
+        assert!(!worker.contains("app_data_dir("));
+
+        let debounce_generation_check = production
+            .find("generation_is_current(dialog.imp().query_generation.get(), generation)")
+            .expect("debounce must reject stale generations before starting a query");
+        let debounce_source_take = production
+            .find("dialog.imp().debounce_source.borrow_mut().take()")
+            .expect("debounce source should be cleared when its generation runs");
+        assert!(debounce_generation_check < debounce_source_take);
     }
 }

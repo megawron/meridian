@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 
 use super::camel_mail_service::{self, CamelMailOperation};
 use super::mail_metadata_service::MailFollowUpState;
-use super::mail_store_service::{MailBackendLocation, MailStoreService};
+use super::mail_store_service::{MailBackendLocation, MailStoreService, MailStoreWorkerConfig};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MailOperationKind {
@@ -1116,6 +1116,21 @@ impl MailCommandStack {
         Self::load_from(Self::persistent_path())
     }
 
+    /// Capture the history path before starting a worker.  The returned path
+    /// is plain owned data; the worker must load it with
+    /// [`Self::load_persistent_from_path`] instead of resolving environment or
+    /// app-data state itself.
+    pub(crate) fn capture_persistent_path() -> PathBuf {
+        Self::persistent_path()
+    }
+
+    /// Load a history snapshot from a path that was already captured by the
+    /// owning thread.  This performs only filesystem work and does not resolve
+    /// process-global configuration.
+    pub(crate) fn load_persistent_from_path(path: PathBuf) -> Self {
+        Self::load_from(path)
+    }
+
     fn persistent_path() -> PathBuf {
         std::env::var_os("EVOLUTION_GTK4_MAIL_UNDO_FILE")
             .map(PathBuf::from)
@@ -1574,6 +1589,15 @@ impl MailOperationsService {
     pub fn new() -> Self {
         Self {
             store: MailStoreService::new(),
+        }
+    }
+
+    /// Construct the operation service from settings already captured by the
+    /// owning main-thread caller.  Worker code must not resolve environment,
+    /// app-data or GTK-backed settings through [`Self::new`].
+    pub(crate) fn new_worker_safe(config: MailStoreWorkerConfig) -> Self {
+        Self {
+            store: MailStoreService::new_worker_safe(config),
         }
     }
 
@@ -2581,6 +2605,153 @@ mod tests {
         assert_eq!(completed.commit(&mut history), 1);
         assert!(history.can_undo());
         assert!(!history.can_redo());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn worker_safe_constructor_isolated_configs_keep_sidecar_operations_local() {
+        let first_root = temporary_directory("operations-worker-config-first");
+        let second_root = temporary_directory("operations-worker-config-second");
+        let first_mail_dir = first_root.join("mail");
+        let second_mail_dir = second_root.join("mail");
+        fs::create_dir_all(&first_mail_dir).expect("first mail directory should be created");
+        fs::create_dir_all(&second_mail_dir).expect("second mail directory should be created");
+        fs::write(
+            first_mail_dir.join("message.eml"),
+            "From: First <first@example.org>\nSubject: First\n\nBody\n",
+        )
+        .expect("first mail should be written");
+        fs::write(
+            second_mail_dir.join("message.eml"),
+            "From: Second <second@example.org>\nSubject: Second\n\nBody\n",
+        )
+        .expect("second mail should be written");
+
+        let first_store = MailStoreService::with_mail_dir_and_state_path(
+            &first_mail_dir,
+            first_root.join("state.json"),
+        );
+        let first_id = first_store
+            .load_local_records()
+            .first()
+            .expect("first message should parse")
+            .id
+            .clone();
+        let second_store = MailStoreService::with_mail_dir_and_state_path(
+            &second_mail_dir,
+            second_root.join("state.json"),
+        );
+        let second_id = second_store
+            .load_local_records()
+            .first()
+            .expect("second message should parse")
+            .id
+            .clone();
+
+        let first_config = MailStoreWorkerConfig {
+            mail_dir_override: Some(first_mail_dir.clone()),
+            local_mail_directory: None,
+            metadata_path_override: Some(first_root.join("state.json")),
+            app_data_directory: first_root.clone(),
+        };
+        let second_config = MailStoreWorkerConfig {
+            mail_dir_override: Some(second_mail_dir.clone()),
+            local_mail_directory: None,
+            metadata_path_override: Some(second_root.join("state.json")),
+            app_data_directory: second_root.clone(),
+        };
+
+        let first_id_for_worker = first_id.clone();
+        let second_id_for_worker = second_id.clone();
+        let first_worker = std::thread::spawn(move || {
+            MailOperationsService::new_worker_safe(first_config).delete(&first_id_for_worker)
+        });
+        let second_worker = std::thread::spawn(move || {
+            MailOperationsService::new_worker_safe(second_config).delete(&second_id_for_worker)
+        });
+        first_worker
+            .join()
+            .expect("first worker should finish")
+            .expect("first sidecar operation should succeed");
+        second_worker
+            .join()
+            .expect("second worker should finish")
+            .expect("second sidecar operation should succeed");
+
+        assert!(
+            MailMetadataStore::new(first_store.metadata_path())
+                .load_deleted()
+                .contains(&first_id)
+        );
+        assert!(
+            MailMetadataStore::new(second_store.metadata_path())
+                .load_deleted()
+                .contains(&second_id)
+        );
+        assert!(first_mail_dir.join("message.eml").is_file());
+        assert!(second_mail_dir.join("message.eml").is_file());
+
+        let _ = fs::remove_dir_all(first_root);
+        let _ = fs::remove_dir_all(second_root);
+    }
+
+    #[test]
+    fn worker_empty_trash_uses_bulk_sidecar_without_rewriting_source_bytes() {
+        let root = temporary_directory("operations-worker-empty-trash");
+        let mail_dir = root.join("mail");
+        let trash_file = mail_dir.join("Trash/deleted.eml");
+        let inbox_file = mail_dir.join("inbox.eml");
+        let trash_bytes = b"From: Trash <trash@example.org>\nSubject: Deleted\n\nBody\n";
+        let inbox_bytes = b"From: Inbox <inbox@example.org>\nSubject: Inbox\n\nBody\n";
+        fs::create_dir_all(mail_dir.join("Trash")).expect("trash directory should be created");
+        fs::write(&trash_file, trash_bytes).expect("trash mail should be written");
+        fs::write(&inbox_file, inbox_bytes).expect("inbox mail should be written");
+
+        let state_path = root.join("state.json");
+        let store = MailStoreService::with_mail_dir_and_state_path(&mail_dir, &state_path);
+        let records = store.load_local_records();
+        let trash_id = records
+            .iter()
+            .find(|message| message.folder_id.eq_ignore_ascii_case("trash"))
+            .expect("trash message should parse")
+            .id
+            .clone();
+        let inbox_id = records
+            .iter()
+            .find(|message| message.folder_id.eq_ignore_ascii_case("inbox"))
+            .expect("inbox message should parse")
+            .id
+            .clone();
+        MailMetadataStore::new(&state_path)
+            .set_copy(&inbox_id, "trash", true)
+            .expect("trash copy should persist");
+
+        let config = MailStoreWorkerConfig {
+            mail_dir_override: Some(mail_dir.clone()),
+            local_mail_directory: None,
+            metadata_path_override: Some(state_path.clone()),
+            app_data_directory: root.clone(),
+        };
+        let count = std::thread::spawn(move || {
+            MailStoreService::new_worker_safe(config).empty_local_trash()
+        })
+        .join()
+        .expect("empty-trash worker should finish")
+        .expect("empty-trash worker should succeed");
+
+        assert_eq!(count, 2);
+        let deleted = MailMetadataStore::new(&state_path).load_deleted();
+        assert!(deleted.contains(&trash_id));
+        assert!(deleted.contains(&format!("{inbox_id}::copy::trash")));
+        assert_eq!(
+            fs::read(&trash_file).expect("trash source should remain"),
+            trash_bytes
+        );
+        assert_eq!(
+            fs::read(&inbox_file).expect("inbox source should remain"),
+            inbox_bytes
+        );
 
         let _ = fs::remove_dir_all(root);
     }

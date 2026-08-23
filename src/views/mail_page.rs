@@ -33,6 +33,7 @@ use crate::services::itip_service::{
     parse_invitation,
 };
 use crate::services::mail_composer_service::{self, ExportAttachment, ExportMessage};
+use crate::services::mail_filter_service::MailFilterStore;
 use crate::services::mail_metadata_service::MailFollowUpState;
 use crate::services::mail_operations_service::{
     MailCommand, MailCommandStack, MailOperationCancellation, MailOperationContext,
@@ -1500,6 +1501,28 @@ impl MailLoadRequest {
     }
 }
 
+/// Immutable UI identity captured before a mail-side worker starts.  A
+/// completed operation may still commit confirmed backend/history state, but
+/// it may only refresh or report through the UI while this folder/load
+/// identity is still current.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct MailWorkerUiScope {
+    load_generation: u64,
+    folder_selection: FolderSelection,
+    active_request: Option<MailLoadRequest>,
+}
+
+fn mail_worker_scope_is_current(
+    expected: &MailWorkerUiScope,
+    current_generation: u64,
+    current_folder_selection: &FolderSelection,
+    current_request: Option<&MailLoadRequest>,
+) -> bool {
+    expected.load_generation == current_generation
+        && expected.folder_selection == *current_folder_selection
+        && expected.active_request.as_ref() == current_request
+}
+
 /// Owned, framework-neutral input for one mail load worker.
 ///
 /// This value is captured on the GTK thread before the worker is spawned.  It
@@ -1556,6 +1579,16 @@ impl MailLoadWorkerInput {
             store_config: MailStoreWorkerConfig::capture(settings.local_mail_directory),
         }
     }
+}
+
+/// Capture the complete store policy on the GTK/main thread before a caller
+/// starts a worker.  The returned value is plain owned data; worker closures
+/// must pass it to `MailStoreService::new_worker_safe` and never resolve the
+/// settings-backed constructor themselves.
+fn mail_store_worker_config_from_main_thread() -> MailStoreWorkerConfig {
+    let local_mail_directory =
+        AppSettings::try_new().map(|settings| settings.local_mail_directory());
+    MailStoreWorkerConfig::capture(local_mail_directory)
 }
 
 enum MailPageLoadResult {
@@ -4065,6 +4098,37 @@ impl MailPage {
             .and_then(selected_mail_message)
     }
 
+    fn mail_worker_ui_scope(&self) -> MailWorkerUiScope {
+        let folder_selection = self
+            .imp()
+            .folder_selection
+            .borrow()
+            .as_ref()
+            .map(|selection| selection.borrow().clone())
+            .unwrap_or_default();
+        MailWorkerUiScope {
+            load_generation: self.imp().load_generation.get(),
+            folder_selection,
+            active_request: self.imp().active_request.borrow().clone(),
+        }
+    }
+
+    fn mail_worker_ui_scope_is_current(&self, expected: &MailWorkerUiScope) -> bool {
+        let current_folder_selection = self
+            .imp()
+            .folder_selection
+            .borrow()
+            .as_ref()
+            .map(|selection| selection.borrow().clone())
+            .unwrap_or_default();
+        mail_worker_scope_is_current(
+            expected,
+            self.imp().load_generation.get(),
+            &current_folder_selection,
+            self.imp().active_request.borrow().as_ref(),
+        )
+    }
+
     pub fn has_selected_message(&self) -> bool {
         self.selected_message().is_some()
     }
@@ -4186,10 +4250,12 @@ impl MailPage {
             return;
         }
 
+        let worker_scope = self.mail_worker_ui_scope();
+        let store_config = mail_store_worker_config_from_main_thread();
         let success_label = success_label.to_string();
         let (sender, receiver) = async_channel::bounded(1);
         std::thread::spawn(move || {
-            let result = MailStoreService::new()
+            let result = MailStoreService::new_worker_safe(store_config)
                 .empty_local_trash()
                 .map_err(MailOperationError::from);
             let _ = sender.send_blocking(result);
@@ -4206,6 +4272,10 @@ impl MailPage {
             let Some(page) = page.upgrade() else {
                 return;
             };
+            if !page.mail_worker_ui_scope_is_current(&worker_scope) {
+                tracing::debug!("Ignoring stale empty-trash result for a replaced mail scope");
+                return;
+            }
             match result {
                 Ok(count) => {
                     page.clear_batch_selection();
@@ -4230,6 +4300,7 @@ impl MailPage {
 
     fn load_mail_history_async(&self) {
         let generation = self.imp().mail_history_generation.get();
+        let history_path = MailCommandStack::capture_persistent_path();
         let cancellation = Arc::new(AtomicBool::new(false));
         self.imp()
             .mail_history_load_cancellation
@@ -4238,7 +4309,7 @@ impl MailPage {
         let (sender, receiver) = async_channel::bounded(1);
         let worker_cancellation = cancellation.clone();
         std::thread::spawn(move || {
-            let history = MailCommandStack::persistent();
+            let history = MailCommandStack::load_persistent_from_path(history_path);
             if !worker_cancellation.load(Ordering::Relaxed) {
                 let _ = sender.send_blocking(history);
             }
@@ -4775,9 +4846,13 @@ impl MailPage {
     }
 
     pub fn apply_filters(&self) {
+        let worker_scope = self.mail_worker_ui_scope();
+        let store_config = mail_store_worker_config_from_main_thread();
+        let filter_store = MailFilterStore::default();
         let (sender, receiver) = async_channel::bounded(1);
         std::thread::spawn(move || {
-            let result = MailStoreService::new().run_all_active_filters();
+            let result = MailStoreService::new_worker_safe(store_config)
+                .run_all_active_filters_with_store(&filter_store);
             if let Err(error) = sender.send_blocking(result) {
                 tracing::debug!(%error, "Apply filters result channel dropped");
             }
@@ -4789,6 +4864,10 @@ impl MailPage {
             let Some(page) = page_weak.upgrade() else {
                 return;
             };
+            if !page.mail_worker_ui_scope_is_current(&worker_scope) {
+                tracing::debug!("Ignoring stale apply-filters result for a replaced mail scope");
+                return;
+            }
             match result {
                 Ok(Ok(report)) => {
                     page.refresh_mail();
@@ -4929,9 +5008,11 @@ impl MailPage {
             state.set_label(&format!("{description} …"));
         }
 
+        let worker_scope = self.mail_worker_ui_scope();
         let (sender, receiver) = async_channel::bounded(1);
+        let store_config = mail_store_worker_config_from_main_thread();
         std::thread::spawn(move || {
-            let operations = MailOperationsService::new();
+            let operations = MailOperationsService::new_worker_safe(store_config);
             let result = prepared.run(&operations);
             let _ = sender.send_blocking(result);
         });
@@ -4950,6 +5031,8 @@ impl MailPage {
                 .mail_operations_active
                 .set(page.imp().mail_operations_active.get().saturating_sub(1));
 
+            let scope_is_current = page.mail_worker_ui_scope_is_current(&worker_scope);
+
             match result {
                 Ok(Ok(completed)) => {
                     let cancellation_requested = completed.cancellation_requested();
@@ -4958,31 +5041,37 @@ impl MailPage {
                         .mail_history_generation
                         .set(page.imp().mail_history_generation.get().saturating_add(1));
                     page.persist_mail_history_async();
-                    page.clear_operation_error();
-                    page.refresh_mail();
-                    if let Some(state) = page.imp().message_state.borrow().as_ref() {
-                        let status = if cancellation_requested {
-                            "Vorgang wurde bereits serverseitig abgeschlossen".to_string()
-                        } else {
-                            format!("{description} abgeschlossen")
-                        };
-                        state.set_label(&status);
+                    if scope_is_current {
+                        page.clear_operation_error();
+                        page.refresh_mail();
+                        if let Some(state) = page.imp().message_state.borrow().as_ref() {
+                            let status = if cancellation_requested {
+                                "Vorgang wurde bereits serverseitig abgeschlossen".to_string()
+                            } else {
+                                format!("{description} abgeschlossen")
+                            };
+                            state.set_label(&status);
+                        }
                     }
                 }
                 Ok(Err(error)) => {
-                    page.report_operation_error(&description, &error);
-                    page.show_toast(&format!("{description} nicht möglich: {error}"));
-                    // Existing callers may still apply a short-lived local UI
-                    // preview. Reloading here reconciles it after any failure.
-                    page.refresh_mail();
+                    if scope_is_current {
+                        page.report_operation_error(&description, &error);
+                        page.show_toast(&format!("{description} nicht möglich: {error}"));
+                        // Existing callers may still apply a short-lived local UI
+                        // preview. Reloading here reconciles it after any failure.
+                        page.refresh_mail();
+                    }
                 }
                 Err(_) => {
                     let error = MailOperationError::Io(std::io::Error::other(
                         "Mail-Worker wurde unerwartet beendet",
                     ));
-                    page.report_operation_error(&description, &error);
-                    page.show_toast(&format!("{description} nicht möglich: {error}"));
-                    page.refresh_mail();
+                    if scope_is_current {
+                        page.report_operation_error(&description, &error);
+                        page.show_toast(&format!("{description} nicht möglich: {error}"));
+                        page.refresh_mail();
+                    }
                 }
             }
         });
@@ -5018,9 +5107,11 @@ impl MailPage {
             state.set_label(&format!("{description} …"));
         }
 
+        let worker_scope = self.mail_worker_ui_scope();
         let (sender, receiver) = async_channel::bounded(1);
+        let store_config = mail_store_worker_config_from_main_thread();
         std::thread::spawn(move || {
-            let operations = MailOperationsService::new();
+            let operations = MailOperationsService::new_worker_safe(store_config);
             let result =
                 MailCommandStack::execute_batch_for_worker(&operations, commands, &context);
             let _ = sender.send_blocking(result);
@@ -5039,6 +5130,8 @@ impl MailPage {
                 .borrow_mut()
                 .remove(&operation_id);
 
+            let scope_is_current = page.mail_worker_ui_scope_is_current(&worker_scope);
+
             match result {
                 Ok(Ok(completed)) => {
                     let applied = completed.len();
@@ -5047,25 +5140,31 @@ impl MailPage {
                         .mail_history_generation
                         .set(page.imp().mail_history_generation.get().saturating_add(1));
                     page.persist_mail_history_async();
-                    page.clear_operation_error();
-                    page.clear_batch_selection();
-                    page.refresh_mail();
-                    if let Some(state) = page.imp().message_state.borrow().as_ref() {
-                        state.set_label(&format!("{description}: {applied} abgeschlossen"));
+                    if scope_is_current {
+                        page.clear_operation_error();
+                        page.clear_batch_selection();
+                        page.refresh_mail();
+                        if let Some(state) = page.imp().message_state.borrow().as_ref() {
+                            state.set_label(&format!("{description}: {applied} abgeschlossen"));
+                        }
                     }
                 }
                 Ok(Err(error)) => {
-                    page.report_operation_error(&description, &error);
-                    page.show_toast(&format!("{description} nicht möglich: {error}"));
-                    page.refresh_mail();
+                    if scope_is_current {
+                        page.report_operation_error(&description, &error);
+                        page.show_toast(&format!("{description} nicht möglich: {error}"));
+                        page.refresh_mail();
+                    }
                 }
                 Err(_) => {
                     let error = MailOperationError::Io(std::io::Error::other(
                         "Mail-Batch-Worker wurde unerwartet beendet",
                     ));
-                    page.report_operation_error(&description, &error);
-                    page.show_toast(&format!("{description} nicht möglich: {error}"));
-                    page.refresh_mail();
+                    if scope_is_current {
+                        page.report_operation_error(&description, &error);
+                        page.show_toast(&format!("{description} nicht möglich: {error}"));
+                        page.refresh_mail();
+                    }
                 }
             }
         });
@@ -5098,9 +5197,11 @@ impl MailPage {
             state.set_label(&format!("{description} …"));
         }
 
+        let worker_scope = self.mail_worker_ui_scope();
         let (sender, receiver) = async_channel::bounded(1);
+        let store_config = mail_store_worker_config_from_main_thread();
         std::thread::spawn(move || {
-            let operations = MailOperationsService::new();
+            let operations = MailOperationsService::new_worker_safe(store_config);
             let result = MailCommandStack::execute_history_action_for_worker(
                 history,
                 &operations,
@@ -5128,6 +5229,8 @@ impl MailPage {
                 .borrow_mut()
                 .remove(&operation_id);
 
+            let scope_is_current = page.mail_worker_ui_scope_is_current(&worker_scope);
+
             match result {
                 Ok(Ok((history, Some(command)))) => {
                     page.imp().mail_commands.replace(history);
@@ -5139,30 +5242,38 @@ impl MailPage {
                         undo,
                         "Mail history action confirmed"
                     );
-                    page.clear_operation_error();
-                    page.refresh_mail();
-                    if let Some(state) = page.imp().message_state.borrow().as_ref() {
-                        state.set_label(&format!("{description} abgeschlossen"));
+                    if scope_is_current {
+                        page.clear_operation_error();
+                        page.refresh_mail();
+                        if let Some(state) = page.imp().message_state.borrow().as_ref() {
+                            state.set_label(&format!("{description} abgeschlossen"));
+                        }
                     }
                 }
                 Ok(Ok((history, None))) => {
                     page.imp().mail_commands.replace(history);
-                    if let Some(state) = page.imp().message_state.borrow().as_ref() {
-                        state.set_label(&format!("Nichts zum {description}"));
+                    if scope_is_current {
+                        if let Some(state) = page.imp().message_state.borrow().as_ref() {
+                            state.set_label(&format!("Nichts zum {description}"));
+                        }
                     }
                 }
                 Ok(Err(error)) => {
-                    page.report_operation_error(description, &error);
-                    page.show_toast(&format!("{description} nicht möglich: {error}"));
-                    page.refresh_mail();
+                    if scope_is_current {
+                        page.report_operation_error(description, &error);
+                        page.show_toast(&format!("{description} nicht möglich: {error}"));
+                        page.refresh_mail();
+                    }
                 }
                 Err(_) => {
                     let error = MailOperationError::Io(std::io::Error::other(
                         "Mail-Historien-Worker wurde unerwartet beendet",
                     ));
-                    page.report_operation_error(description, &error);
-                    page.show_toast(&format!("{description} nicht möglich: {error}"));
-                    page.refresh_mail();
+                    if scope_is_current {
+                        page.report_operation_error(description, &error);
+                        page.show_toast(&format!("{description} nicht möglich: {error}"));
+                        page.refresh_mail();
+                    }
                 }
             }
         });
@@ -13403,9 +13514,11 @@ mod tests {
         assert_send_sync::<MailLoadWorkerInput>();
         assert_send_sync::<MailLoadSettingsSnapshot>();
         assert_send_sync::<MailStoreWorkerConfig>();
+        assert_send_sync::<MailWorkerUiScope>();
         assert_static::<MailLoadWorkerInput>();
         assert_static::<MailLoadSettingsSnapshot>();
         assert_static::<MailStoreWorkerConfig>();
+        assert_static::<MailWorkerUiScope>();
 
         let request = MailLoadRequest {
             source_uid: Some("account-a".to_string()),
@@ -13445,6 +13558,62 @@ mod tests {
             Some("/second/mail")
         );
         assert_ne!(first_returned, second_job);
+    }
+
+    #[test]
+    fn mail_worker_scope_rejects_stale_generation_folder_and_request() {
+        let first_folder = FolderSelection {
+            folder_id: "account-a/inbox".to_string(),
+            source_uid: Some("account-a".to_string()),
+            folder_name: Some("Inbox".to_string()),
+        };
+        let second_folder = FolderSelection {
+            folder_id: "account-b/inbox".to_string(),
+            source_uid: Some("account-b".to_string()),
+            folder_name: Some("Inbox".to_string()),
+        };
+        let first_request = MailLoadRequest {
+            source_uid: first_folder.source_uid.clone(),
+            folder_name: first_folder.folder_name.clone(),
+            offset: 0,
+            max_messages_per_folder: 32,
+            graph_cursors: HashMap::new(),
+        };
+        let second_request = MailLoadRequest {
+            source_uid: second_folder.source_uid.clone(),
+            folder_name: second_folder.folder_name.clone(),
+            ..first_request.clone()
+        };
+        let scope = MailWorkerUiScope {
+            load_generation: 7,
+            folder_selection: first_folder.clone(),
+            active_request: Some(first_request.clone()),
+        };
+
+        assert!(mail_worker_scope_is_current(
+            &scope,
+            7,
+            &first_folder,
+            Some(&first_request)
+        ));
+        assert!(!mail_worker_scope_is_current(
+            &scope,
+            8,
+            &first_folder,
+            Some(&first_request)
+        ));
+        assert!(!mail_worker_scope_is_current(
+            &scope,
+            7,
+            &second_folder,
+            Some(&second_request)
+        ));
+        assert!(!mail_worker_scope_is_current(
+            &scope,
+            7,
+            &first_folder,
+            Some(&second_request)
+        ));
     }
 
     #[test]
@@ -13533,6 +13702,199 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn mail_store_operation_workers_capture_plain_config_before_spawn() {
+        let source = include_str!("mail_page.rs");
+        let workers = [
+            ("empty_trash_async", "MailStoreService::new_worker_safe"),
+            ("apply_filters", "MailStoreService::new_worker_safe"),
+            (
+                "execute_mail_command",
+                "MailOperationsService::new_worker_safe",
+            ),
+            (
+                "execute_mail_batch",
+                "MailOperationsService::new_worker_safe",
+            ),
+            (
+                "execute_history_action",
+                "MailOperationsService::new_worker_safe",
+            ),
+        ];
+
+        for (function_name, constructor) in workers {
+            let function_source = rust_function_body(source, function_name);
+            let compact = compact_rust(function_source);
+            let config_capture = compact
+                .find("mail_store_worker_config_from_main_thread()")
+                .expect("mail worker must capture a store config on the main thread");
+            let spawn = compact
+                .find("std::thread::spawn")
+                .expect("mail worker should be spawned");
+            assert!(
+                config_capture < spawn,
+                "{function_name} must capture its config before spawning"
+            );
+
+            let worker_source = compact_rust(spawned_closure_body(function_source, constructor));
+            assert!(
+                worker_source.contains("new_worker_safe(store_config)"),
+                "{function_name} must use the worker-safe constructor"
+            );
+            for forbidden in [
+                "AppSettings",
+                "GSettings",
+                "std::env::",
+                "app_data_dir(",
+                "AppData",
+                "gio::",
+                "gtk::",
+                "glib::",
+                "adw::",
+                "GObject",
+                "MainContext",
+                "thread_default",
+            ] {
+                assert!(
+                    !worker_source.contains(forbidden),
+                    "{function_name} worker must stay framework/global-state free: found {forbidden}"
+                );
+            }
+            assert!(!worker_source.contains("MailStoreService::new("));
+            assert!(!worker_source.contains("MailOperationsService::new()"));
+
+            let scope_capture = compact
+                .find("mail_worker_ui_scope()")
+                .expect("mail worker must capture its UI scope before spawning");
+            assert!(
+                scope_capture < spawn,
+                "{function_name} must capture its UI scope before spawning"
+            );
+            assert!(
+                compact.contains("mail_worker_ui_scope_is_current(&worker_scope)"),
+                "{function_name} must gate UI delivery by the captured scope"
+            );
+
+            if constructor == "MailOperationsService::new_worker_safe" {
+                let confirmed_commit = if function_name == "execute_history_action" {
+                    compact
+                        .find("page.imp().mail_commands.replace(history)")
+                        .expect("confirmed history action must still replace its history")
+                } else {
+                    compact
+                        .find("completed.commit")
+                        .expect("confirmed operation must still commit its result")
+                };
+                let ui_gate = compact
+                    .find("ifscope_is_current")
+                    .expect("confirmed operation must gate UI delivery");
+                assert!(
+                    confirmed_commit < ui_gate,
+                    "{function_name} must commit confirmed success before stale UI gating"
+                );
+            }
+        }
+
+        let filter_source = compact_rust(rust_function_body(source, "apply_filters"));
+        let filter_capture = filter_source
+            .find("MailFilterStore::default()")
+            .expect("Apply Filters must capture its filter store before spawning");
+        let filter_spawn = filter_source
+            .find("std::thread::spawn")
+            .expect("Apply Filters should be spawned");
+        assert!(
+            filter_capture < filter_spawn,
+            "Apply Filters must capture MailFilterStore before spawning"
+        );
+        assert!(filter_source.contains("run_all_active_filters_with_store(&filter_store)"));
+        assert!(!filter_source.contains("run_all_active_filters()"));
+        let filter_worker = compact_rust(spawned_closure_body(
+            rust_function_body(source, "apply_filters"),
+            "MailStoreService::new_worker_safe",
+        ));
+        assert!(!filter_worker.contains("MailFilterStore::default()"));
+    }
+
+    #[test]
+    fn history_workers_capture_path_before_spawn_and_keep_global_state_out() {
+        let source = include_str!("mail_page.rs");
+        let history_source = rust_function_body(source, "load_mail_history_async");
+        let compact_history = compact_rust(history_source);
+        let path_capture = compact_history
+            .find("MailCommandStack::capture_persistent_path()")
+            .expect("history path must be captured before spawning");
+        let spawn = compact_history
+            .find("std::thread::spawn")
+            .expect("history load should be spawned");
+        assert!(path_capture < spawn);
+
+        let history_worker = compact_rust(spawned_closure_body(
+            history_source,
+            "MailCommandStack::load_persistent_from_path",
+        ));
+        for forbidden in [
+            "AppSettings",
+            "GSettings",
+            "std::env::",
+            "app_data_dir(",
+            "AppData",
+            "gio::",
+            "gtk::",
+            "glib::",
+            "adw::",
+            "GObject",
+            "MainContext",
+            "thread_default",
+        ] {
+            assert!(
+                !history_worker.contains(forbidden),
+                "history load worker must stay global-state free: found {forbidden}"
+            );
+        }
+        assert!(!history_worker.contains("MailCommandStack::persistent()"));
+
+        let persist_source = rust_function_body(source, "persist_mail_history_async");
+        let persist_worker = compact_rust(spawned_closure_body(persist_source, "persist_snapshot"));
+        assert!(!persist_worker.contains("std::env::"));
+        assert!(!persist_worker.contains("app_data_dir("));
+    }
+
+    #[test]
+    fn replacing_load_claims_folder_before_worker_and_stale_status_is_rejected() {
+        let source = include_str!("mail_page.rs");
+        let start_source = compact_rust(rust_function_body(source, "start_mail_load"));
+        let request_claim = start_source
+            .find("self.imp().active_request.replace(Some(request.clone()))")
+            .expect("a replacing load must claim the requested folder immediately");
+        let spawn = start_source
+            .find("std::thread::spawn")
+            .expect("mail load should be spawned");
+        assert!(request_claim < spawn);
+
+        for (function_name, status_fragment) in [
+            ("empty_trash_async", "page.refresh_mail()"),
+            ("apply_filters", "page.refresh_mail()"),
+            ("execute_mail_command", "page.refresh_mail()"),
+            ("execute_mail_batch", "page.refresh_mail()"),
+            ("execute_history_action", "page.refresh_mail()"),
+        ] {
+            let function_source = compact_rust(rust_function_body(source, function_name));
+            assert!(
+                function_source.contains(status_fragment),
+                "{function_name} must reconcile the current folder after completion"
+            );
+            assert!(
+                function_source.contains("mail_worker_ui_scope_is_current"),
+                "{function_name} must reject stale folder/generation results before UI mutation"
+            );
+        }
+
+        let camel_status = compact_rust(rust_function_body(source, "format_camel_status"));
+        assert!(camel_status.contains("successful_sources"));
+        assert!(camel_status.contains("failed_sources"));
+        assert!(camel_status.contains("warning"));
     }
 
     #[test]
