@@ -74,24 +74,34 @@
   color: @accent_color;
 }
 
-.message-list .mail-follow-up.follow-up-pending {
-  color: @accent_color;
+.message-list .mail-follow-up.follow-up-pending,
+.message-list .mail-follow-up.follow-up-pending image {
+  color: #ff7800;
 }
 
-.message-list .mail-follow-up.follow-up-completed {
-  color: @success_color;
+.message-list .mail-follow-up.follow-up-completed,
+.message-list .mail-follow-up.follow-up-completed image {
+  color: #2ec27e;
 }
+
+.message-list .mail-star.starred,
+.message-list .mail-star.starred image {
+  color: #e5a50a;
+}
+
 
 .message-list .heading,
 .message-list .title {
   font-size: 1rem;
   line-height: 1.05;
+  font-weight: 400;
 }
 
 .message-list .body,
 .message-list .subtitle {
   font-size: 1rem;
   line-height: 1.05;
+  font-weight: 400;
 }
 
 .message-list .caption {
@@ -99,7 +109,10 @@
   line-height: 1.05;
 }
 
-.message-list .unread-heading {
+.message-list .unread-heading,
+.message-list .heading.unread-heading,
+.message-list .body.unread-heading,
+.message-list label.unread-heading {
   font-weight: 700;
 }
 

@@ -1390,12 +1390,7 @@ impl EvolutionWindow {
                 action.set_enabled(enabled);
             }
         }
-        self.set_message_actions_enabled(
-            enabled
-                && self
-                    .mail_page()
-                    .is_some_and(|mail_page| mail_page.has_selected_message()),
-        );
+        self.set_message_actions_enabled(enabled);
         self.update_mail_navigation_actions(enabled);
     }
 
@@ -1513,10 +1508,7 @@ impl EvolutionWindow {
             .as_ref()
             .and_then(|view_stack| view_stack.visible_child_name())
             .is_some_and(|view_name| view_name == "mail");
-        let has_selection = self
-            .mail_page()
-            .is_some_and(|mail_page| mail_page.has_selected_message());
-        self.set_message_actions_enabled(is_mail_view && has_selection);
+        self.set_message_actions_enabled(is_mail_view);
     }
 
     fn setup_layout(&self) {
@@ -3346,7 +3338,7 @@ impl EvolutionWindow {
                         .as_ref()
                         .and_then(|view_stack| view_stack.visible_child_name())
                         .is_some_and(|view_name| view_name == "mail");
-                    window.set_message_actions_enabled(is_mail_view && has_selection);
+                    window.set_message_actions_enabled(is_mail_view);
                     window.update_mail_navigation_actions(is_mail_view);
                 }
             });

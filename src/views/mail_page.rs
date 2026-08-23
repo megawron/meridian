@@ -765,8 +765,16 @@ fn themed_icon_name<W: IsA<gtk::Widget>>(widget: &W, preferred: &str, fallback: 
         preferred.to_string()
     } else if theme.has_icon(fallback) {
         fallback.to_string()
+    } else if theme.has_icon("emblem-important-symbolic") {
+        "emblem-important-symbolic".to_string()
+    } else if theme.has_icon("bookmark-symbolic") {
+        "bookmark-symbolic".to_string()
+    } else if theme.has_icon("starred-symbolic") {
+        "starred-symbolic".to_string()
+    } else if theme.has_icon("tag-symbolic") {
+        "tag-symbolic".to_string()
     } else {
-        "image-missing-symbolic".to_string()
+        preferred.to_string()
     }
 }
 
@@ -3818,31 +3826,55 @@ impl MailPage {
     /// retained in the exported headers and MIME parts.
     pub fn export_selected(&self) -> bool {
         let Some(message) = self.selected_message() else {
+            tracing::warn!("export_selected: no message currently selected");
             return false;
         };
+        self.export_message(&message)
+    }
+
+    pub fn export_message(&self, message: &MailMessageObject) -> bool {
         let subject = message.subject();
         let location = message.backend_location();
         let raw_mime = message.raw_mime();
-        let export = export_message_from(&message);
+        let export = export_message_from(message);
+        let filename = export_filename(&subject);
+        tracing::info!(subject = %subject, filename = %filename, "Opening EML save dialog");
 
-        let root = self.root().and_downcast::<gtk::Window>();
+        let root = self
+            .root()
+            .and_downcast::<gtk::Window>()
+            .or_else(|| self.native().and_downcast::<gtk::Window>());
         let file_dialog = gtk::FileDialog::builder()
             .title("E-Mail als EML speichern")
-            .initial_name(export_filename(&subject))
+            .accept_label("Speichern")
+            .initial_name(&filename)
             .modal(true)
             .build();
         let filter = gtk::FileFilter::new();
         filter.set_name(Some("EML-Dateien (*.eml)"));
         filter.add_pattern("*.eml");
+        filter.add_pattern("*.EML");
         filter.add_mime_type("message/rfc822");
         let filters = gio::ListStore::new::<gtk::FileFilter>();
         filters.append(&filter);
         file_dialog.set_filters(Some(&filters));
+        file_dialog.set_default_filter(Some(&filter));
 
         let page = self.downgrade();
         file_dialog.save(root.as_ref(), None::<&gio::Cancellable>, move |result| {
-            let Ok(file) = result else {
-                return;
+            let file = match result {
+                Ok(file) => file,
+                Err(error) => {
+                    tracing::warn!(%error, "FileDialog save failed or cancelled");
+                    if let Some(page) = page.upgrade() {
+                        if !error.matches(gio::IOErrorEnum::Cancelled)
+                            && !error.matches(gtk::DialogError::Dismissed)
+                        {
+                            page.show_toast(&format!("Speicherdialog-Fehler: {error}"));
+                        }
+                    }
+                    return;
+                }
             };
             let (sender, receiver) = async_channel::bounded(1);
             let location_clone = location.clone();
@@ -3865,18 +3897,30 @@ impl MailPage {
                 let Ok(raw_bytes) = receiver.recv().await else {
                     return;
                 };
-                let save_result = file.replace_contents(
-                    &raw_bytes,
-                    None,
-                    true,
-                    gio::FileCreateFlags::NONE,
-                    None::<&gio::Cancellable>,
-                );
+                let save_result = if let Some(path) = file.path() {
+                    std::fs::write(&path, &raw_bytes).map_err(|e| {
+                        glib::Error::new(gio::IOErrorEnum::Failed, &e.to_string())
+                    })
+                } else {
+                    file.replace_contents(
+                        &raw_bytes,
+                        None,
+                        true,
+                        gio::FileCreateFlags::NONE,
+                        None::<&gio::Cancellable>,
+                    )
+                    .map(|_| ())
+                };
                 if let Some(page) = page_weak.upgrade() {
                     match save_result {
-                        Ok(_) => page.show_toast("E-Mail als EML exportiert"),
-                        Err(error) => page
-                            .show_toast(&format!("EML konnte nicht gespeichert werden: {error}")),
+                        Ok(_) => {
+                            tracing::info!("E-Mail als EML exportiert");
+                            page.show_toast("E-Mail als EML exportiert");
+                        }
+                        Err(error) => {
+                            tracing::error!(%error, "EML konnte nicht gespeichert werden");
+                            page.show_toast(&format!("EML konnte nicht gespeichert werden: {error}"));
+                        }
                     }
                 }
             });
@@ -4297,13 +4341,13 @@ impl MailPage {
 
     fn selected_message(&self) -> Option<MailMessageObject> {
         self.imp()
-            .message_selection
+            .thread_selection
             .borrow()
             .as_ref()
             .and_then(selected_mail_message)
             .or_else(|| {
                 self.imp()
-                    .thread_selection
+                    .message_selection
                     .borrow()
                     .as_ref()
                     .and_then(selected_mail_message)
@@ -4393,16 +4437,31 @@ impl MailPage {
         true
     }
 
+    fn active_selection(&self) -> Option<gtk::SingleSelection> {
+        if self.imp().mail_threading.get() {
+            self.imp()
+                .thread_selection
+                .borrow()
+                .as_ref()
+                .cloned()
+                .or_else(|| self.imp().message_selection.borrow().as_ref().cloned())
+        } else {
+            self.imp()
+                .message_selection
+                .borrow()
+                .as_ref()
+                .cloned()
+                .or_else(|| self.imp().thread_selection.borrow().as_ref().cloned())
+        }
+    }
+
     pub(crate) fn has_messages(&self) -> bool {
-        self.imp()
-            .message_selection
-            .borrow()
-            .as_ref()
+        self.active_selection()
             .is_some_and(|selection| selection.n_items() > 0)
     }
 
     pub(crate) fn can_select_relative_message(&self, offset: i32) -> bool {
-        let Some(selection) = self.imp().message_selection.borrow().as_ref().cloned() else {
+        let Some(selection) = self.active_selection() else {
             return false;
         };
         let selected = (selection.selected() != gtk::INVALID_LIST_POSITION)
@@ -4411,7 +4470,7 @@ impl MailPage {
     }
 
     pub fn select_relative_message(&self, offset: i32) -> bool {
-        let Some(selection) = self.imp().message_selection.borrow().as_ref().cloned() else {
+        let Some(selection) = self.active_selection() else {
             return false;
         };
         let selected = (selection.selected() != gtk::INVALID_LIST_POSITION)
@@ -4425,7 +4484,7 @@ impl MailPage {
     }
 
     pub fn select_relative_unread_message(&self, forward: bool) -> bool {
-        let Some(selection) = self.imp().message_selection.borrow().as_ref().cloned() else {
+        let Some(selection) = self.active_selection() else {
             return false;
         };
         let unread = (0..selection.n_items())
@@ -4433,6 +4492,13 @@ impl MailPage {
                 selection
                     .item(index)
                     .and_downcast::<MailMessageObject>()
+                    .or_else(|| {
+                        selection
+                            .item(index)
+                            .and_downcast::<gtk::TreeListRow>()
+                            .and_then(|row| row.item())
+                            .and_downcast::<MailMessageObject>()
+                    })
                     .is_some_and(|message| message.is_unread())
             })
             .collect::<Vec<_>>();
@@ -4449,15 +4515,7 @@ impl MailPage {
     /// remain untouched; local deletion is represented by the app-owned
     /// sidecar until a writable Camel backend is available.
     pub fn delete_selected(&self) -> Result<bool, MailOperationError> {
-        let selected = self
-            .imp()
-            .message_selection
-            .borrow()
-            .as_ref()
-            .and_then(|selection| selection.selected_item())
-            .and_then(|item| item.downcast::<MailMessageObject>().ok());
-
-        let Some(message) = selected else {
+        let Some(message) = self.selected_message() else {
             return Ok(false);
         };
 
@@ -5111,27 +5169,21 @@ impl MailPage {
     }
 
     pub fn mark_selected_unread(&self) -> Result<bool, MailOperationError> {
-        let selected = self
-            .imp()
-            .message_selection
-            .borrow()
-            .as_ref()
-            .and_then(|selection| selection.selected_item())
-            .and_then(|item| item.downcast::<MailMessageObject>().ok());
-
-        let Some(message) = selected else {
+        let Some(message) = self.selected_message() else {
             return Ok(false);
         };
+        message.set_unread(true);
 
         let command = MailCommand::set_message_state(
             message.id(),
             message.backend_location(),
-            message.is_unread(),
+            false,
             message.is_flagged(),
             true,
             message.is_flagged(),
         );
         self.execute_mail_command(command)?;
+        self.refresh_unread_counters();
         Ok(true)
     }
 
@@ -5139,15 +5191,18 @@ impl MailPage {
         let Some(message) = self.selected_message() else {
             return Ok(false);
         };
+        message.set_unread(false);
+
         let command = MailCommand::set_message_state(
             message.id(),
             message.backend_location(),
-            message.is_unread(),
+            true,
             message.is_flagged(),
             false,
             message.is_flagged(),
         );
         self.execute_mail_command(command)?;
+        self.refresh_unread_counters();
         Ok(true)
     }
 
@@ -6914,11 +6969,11 @@ impl MailPage {
                 .pointing_to(&gtk::gdk::Rectangle::new(x as i32, y as i32, 1, 1))
                 .build();
             popover.set_parent(&list);
-            let popover_weak = popover.downgrade();
-            popover.connect_closed(move |_| {
-                if let Some(popover) = popover_weak.upgrade() {
+            popover.connect_closed(|popover| {
+                let popover = popover.clone();
+                glib::idle_add_local_once(move || {
                     popover.unparent();
-                }
+                });
             });
             popover.popup();
         });
@@ -7071,11 +7126,11 @@ impl MailPage {
                 .pointing_to(&gtk::gdk::Rectangle::new(x as i32, y as i32, 1, 1))
                 .build();
             popover.set_parent(&view);
-            let popover_weak = popover.downgrade();
-            popover.connect_closed(move |_| {
-                if let Some(popover) = popover_weak.upgrade() {
+            popover.connect_closed(|popover| {
+                let popover = popover.clone();
+                glib::idle_add_local_once(move || {
                     popover.unparent();
-                }
+                });
             });
             popover.popup();
         });
@@ -8172,7 +8227,7 @@ impl MailPage {
                 "document-print-symbolic" => "document-save-symbolic",
                 "document-print-preview-symbolic" => "document-print-symbolic",
                 "mail-read-symbolic" | "mail-unread-symbolic" => "mail-message-new-symbolic",
-                "starred-symbolic" => "bookmark-new-symbolic",
+                "starred-symbolic" => "starred-symbolic",
                 "mail-mark-important-symbolic" => "dialog-warning-symbolic",
                 "mail-mark-junk-symbolic" => "dialog-warning-symbolic",
                 "folder-symbolic" => "folder-symbolic",
@@ -9130,30 +9185,54 @@ impl MailPage {
             let btn_star = gtk::Button::builder()
                 .width_request(MAIL_INDICATOR_COLUMN_WIDTH)
                 .icon_name("non-starred-symbolic")
-                .css_classes(vec!["flat", "circular"])
+                .css_classes(vec!["flat", "circular", "mail-star"])
                 .valign(gtk::Align::Center)
                 .tooltip_text("Markieren / Sternchen setzen")
                 .build();
             set_button_icon_with_fallback(
                 &btn_star,
                 "non-starred-symbolic",
-                "bookmark-new-symbolic",
+                "starred-symbolic",
             );
+            btn_star.set_opacity(0.35);
             set_accessible_label(&btn_star, "Nachricht markieren");
 
             let btn_follow_up = gtk::Button::builder()
                 .width_request(MAIL_INDICATOR_COLUMN_WIDTH)
-                .icon_name("flag-symbolic")
+                .icon_name("emblem-important-symbolic")
                 .css_classes(vec!["flat", "circular", "mail-follow-up"])
                 .valign(gtk::Align::Center)
-                .tooltip_text("Nachverfolgung setzen")
+                .tooltip_text("Nachverfolgung setzen (Rechtsklick für Optionen)")
                 .build();
             set_button_icon_with_fallback(
                 &btn_follow_up,
-                "flag-symbolic",
-                "bookmark-new-symbolic",
+                "emblem-important-symbolic",
+                "bookmark-symbolic",
             );
+            btn_follow_up.set_opacity(0.24);
             set_accessible_label(&btn_follow_up, "Nachverfolgung setzen");
+
+            // Right click on follow-up button opens the modal dialog:
+            let right_click_follow_up = gtk::GestureClick::builder().button(3).build();
+            let list_item_for_fu_modal = list_item.downgrade();
+            let page_for_fu_modal = page_for_row_actions.clone();
+            right_click_follow_up.connect_pressed(move |gesture, _, _, _| {
+                let (Some(page), Some(list_item)) = (
+                    page_for_fu_modal.upgrade(),
+                    list_item_for_fu_modal.upgrade(),
+                ) else {
+                    return;
+                };
+                let Some(tree_row) = list_item.item().and_downcast::<gtk::TreeListRow>() else {
+                    return;
+                };
+                let Some(message) = tree_row.item().and_downcast::<MailMessageObject>() else {
+                    return;
+                };
+                gesture.set_state(gtk::EventSequenceState::Claimed);
+                page.present_follow_up_editor(&message);
+            });
+            btn_follow_up.add_controller(right_click_follow_up);
 
             let btn_important = gtk::Button::builder()
                 .width_request(MAIL_INDICATOR_COLUMN_WIDTH)
@@ -9171,6 +9250,7 @@ impl MailPage {
 
             let list_item_for_star = list_item.downgrade();
             let page_for_star = page_for_row_actions.clone();
+            let btn_star_clone = btn_star.clone();
             btn_star.connect_clicked(move |_| {
                 let Some(list_item) = list_item_for_star.upgrade() else {
                     return;
@@ -9183,6 +9263,33 @@ impl MailPage {
                 };
                 let current = message.is_flagged();
                 let next_flagged = !current;
+
+                // Optimistically mutate model immediately:
+                message.set_flagged(next_flagged);
+
+                // Optimistically update button icon immediately (0ms delay):
+                if next_flagged {
+                    btn_star_clone.add_css_class("starred");
+                    btn_star_clone.set_opacity(1.0);
+                    set_button_icon_with_fallback(
+                        &btn_star_clone,
+                        "starred-symbolic",
+                        "starred-symbolic",
+                    );
+                    btn_star_clone.set_tooltip_text(Some("Markierung entfernen"));
+                    set_accessible_label(&btn_star_clone, "Markierung entfernen");
+                } else {
+                    btn_star_clone.remove_css_class("starred");
+                    btn_star_clone.set_opacity(0.35);
+                    set_button_icon_with_fallback(
+                        &btn_star_clone,
+                        "non-starred-symbolic",
+                        "starred-symbolic",
+                    );
+                    btn_star_clone.set_tooltip_text(Some("Markieren / Sternchen setzen"));
+                    set_accessible_label(&btn_star_clone, "Nachricht markieren");
+                }
+
                 let command = MailCommand::set_message_state(
                     message.id(),
                     message.backend_location(),
@@ -9206,8 +9313,10 @@ impl MailPage {
                 }
             });
 
+            // Left click on follow-up button cycles states directly: None -> FollowUp -> Completed -> None
             let list_item_for_follow_up = list_item.downgrade();
             let page_for_follow_up = page_for_row_actions.clone();
+            let btn_follow_up_clone = btn_follow_up.clone();
             btn_follow_up.connect_clicked(move |_| {
                 let Some(list_item) = list_item_for_follow_up.upgrade() else {
                     return;
@@ -9221,7 +9330,68 @@ impl MailPage {
                 let Some(page) = page_for_follow_up.upgrade() else {
                     return;
                 };
-                page.present_follow_up_editor(&message);
+
+                let current_state = message.follow_up_state();
+                let next_metadata = match current_state {
+                    MailFollowUpState::None => {
+                        MailFollowUpMetadata::pending(Some(DEFAULT_FOLLOW_UP_TEXT.to_string()), None)
+                    }
+                    MailFollowUpState::FollowUp => {
+                        MailFollowUpMetadata::completed_from(
+                            &message.follow_up(),
+                            Utc::now().to_rfc2822(),
+                        )
+                    }
+                    MailFollowUpState::Completed => {
+                        MailFollowUpMetadata::none()
+                    }
+                };
+
+                // Optimistically update model:
+                message.set_follow_up(next_metadata.clone());
+
+                // Optimistically update UI button:
+                btn_follow_up_clone.remove_css_class("follow-up-pending");
+                btn_follow_up_clone.remove_css_class("follow-up-completed");
+                match next_metadata.state {
+                    MailFollowUpState::None => {
+                        set_button_icon_with_fallback(
+                            &btn_follow_up_clone,
+                            "emblem-important-symbolic",
+                            "bookmark-symbolic",
+                        );
+                        btn_follow_up_clone.set_opacity(0.24);
+                        btn_follow_up_clone.set_tooltip_text(Some("Nachverfolgung setzen (Rechtsklick für Optionen)"));
+                        set_accessible_label(&btn_follow_up_clone, "Nachverfolgung setzen");
+                    }
+                    MailFollowUpState::FollowUp => {
+                        set_button_icon_with_fallback(
+                            &btn_follow_up_clone,
+                            "emblem-important-symbolic",
+                            "bookmark-symbolic",
+                        );
+                        btn_follow_up_clone.set_opacity(1.0);
+                        btn_follow_up_clone.add_css_class("follow-up-pending");
+                        btn_follow_up_clone.set_tooltip_text(Some("Als erledigt markieren (Rechtsklick für Optionen)"));
+                        set_accessible_label(&btn_follow_up_clone, "Nachverfolgung als erledigt markieren");
+                    }
+                    MailFollowUpState::Completed => {
+                        set_button_icon_with_fallback(
+                            &btn_follow_up_clone,
+                            "emblem-ok-symbolic",
+                            "object-select-symbolic",
+                        );
+                        btn_follow_up_clone.set_opacity(1.0);
+                        btn_follow_up_clone.add_css_class("follow-up-completed");
+                        btn_follow_up_clone.set_tooltip_text(Some("Nachverfolgung entfernen (Rechtsklick für Optionen)"));
+                        set_accessible_label(&btn_follow_up_clone, "Nachverfolgung entfernen");
+                    }
+                }
+
+                if let Err(error) = page.set_message_follow_up(&message, next_metadata) {
+                    tracing::error!(%error, "Could not persist message follow-up");
+                    page.show_toast(&format!("Nachverfolgung nicht möglich: {error}"));
+                }
             });
 
             let list_item_for_important = list_item.downgrade();
@@ -9380,19 +9550,34 @@ impl MailPage {
                     return;
                 };
                 let position = list_item.position();
-                if position != gtk::INVALID_LIST_POSITION {
-                    if let Some(selection) = page.imp().thread_selection.borrow().as_ref() {
-                        selection.set_selected(position);
+                if let Some(selection) = page.imp().thread_selection.borrow().as_ref() {
+                    let mut target_pos = if position != gtk::INVALID_LIST_POSITION {
+                        Some(position)
+                    } else {
+                        None
+                    };
+                    if target_pos.is_none() {
+                        if let Some(target_item) = list_item.item() {
+                            for idx in 0..selection.n_items() {
+                                if selection.item(idx).as_ref() == Some(&target_item) {
+                                    target_pos = Some(idx);
+                                    break;
+                                }
+                            }
+                        }
                     }
-                    if let Some(tree_row) = list_item.item().and_downcast::<gtk::TreeListRow>() {
-                        if let Some(msg) = tree_row.item().and_downcast::<MailMessageObject>() {
-                            if let Some(flat_sel) = page.imp().message_selection.borrow().as_ref() {
-                                for i in 0..flat_sel.n_items() {
-                                    if let Some(cand) = flat_sel.item(i).and_downcast::<MailMessageObject>() {
-                                        if cand.id() == msg.id() {
-                                            flat_sel.set_selected(i);
-                                            break;
-                                        }
+                    if let Some(pos) = target_pos {
+                        selection.set_selected(pos);
+                    }
+                }
+                if let Some(tree_row) = list_item.item().and_downcast::<gtk::TreeListRow>() {
+                    if let Some(msg) = tree_row.item().and_downcast::<MailMessageObject>() {
+                        if let Some(flat_sel) = page.imp().message_selection.borrow().as_ref() {
+                            for i in 0..flat_sel.n_items() {
+                                if let Some(cand) = flat_sel.item(i).and_downcast::<MailMessageObject>() {
+                                    if cand.id() == msg.id() {
+                                        flat_sel.set_selected(i);
+                                        break;
                                     }
                                 }
                             }
@@ -9407,15 +9592,68 @@ impl MailPage {
                     .pointing_to(&gtk::gdk::Rectangle::new(x as i32, y as i32, 1, 1))
                     .build();
                 popover.set_parent(&outer);
-                let popover_weak = popover.downgrade();
-                popover.connect_closed(move |_| {
-                    if let Some(popover) = popover_weak.upgrade() {
+                popover.connect_closed(|popover| {
+                    let popover = popover.clone();
+                    glib::idle_add_local_once(move || {
                         popover.unparent();
-                    }
+                    });
                 });
                 popover.popup();
             });
             outer.add_controller(right_click);
+
+            let drag_source = gtk::DragSource::new();
+            drag_source.set_actions(gtk::gdk::DragAction::COPY);
+            let list_item_for_drag = list_item.downgrade();
+            drag_source.connect_prepare(move |_, _, _| {
+                let Some(list_item) = list_item_for_drag.upgrade() else {
+                    return None;
+                };
+                let Some(tree_row) = list_item.item().and_downcast::<gtk::TreeListRow>() else {
+                    return None;
+                };
+                let Some(message) = tree_row.item().and_downcast::<MailMessageObject>() else {
+                    return None;
+                };
+                let subject = message.subject();
+                let location = message.backend_location();
+                let raw_mime = message.raw_mime();
+                let export = export_message_from(&message);
+                let filename = export_filename(&subject);
+
+                let raw_bytes = if let Some(raw) = raw_mime {
+                    raw.to_vec()
+                } else if let Some(loc) = location.as_ref() {
+                    let cancelled = Arc::new(AtomicBool::new(false));
+                    camel_mail_service::load_raw_message(loc, &cancelled).unwrap_or_else(|_| {
+                        mail_composer_service::build_export_rfc822(&export).unwrap_or_default()
+                    })
+                } else {
+                    mail_composer_service::build_export_rfc822(&export).unwrap_or_default()
+                };
+
+                let drag_dir = std::env::temp_dir().join("evolution-gtk4-drag");
+                let _ = std::fs::create_dir_all(&drag_dir);
+                let target_file_path = drag_dir.join(&filename);
+                if let Err(err) = std::fs::write(&target_file_path, &raw_bytes) {
+                    tracing::warn!(%err, "Could not write drag temp file");
+                    return None;
+                }
+
+                let gio_file = gio::File::for_path(&target_file_path);
+                let uri = gio_file.uri();
+                let uri_list_bytes = glib::Bytes::from(format!("{}\r\n", uri).as_bytes());
+
+                let provider_file = gtk::gdk::ContentProvider::for_value(&gio_file.to_value());
+                let provider_uri = gtk::gdk::ContentProvider::for_bytes("text/uri-list", &uri_list_bytes);
+                let provider_mime = gtk::gdk::ContentProvider::for_bytes("message/rfc822", &glib::Bytes::from(&raw_bytes));
+                Some(gtk::gdk::ContentProvider::new_union(&[
+                    provider_file,
+                    provider_uri,
+                    provider_mime,
+                ]))
+            });
+            outer.add_controller(drag_source);
         });
 
         let page_for_bind = self.downgrade();
@@ -9641,22 +9879,22 @@ impl MailPage {
                     MailFollowUpState::None => {
                         set_button_icon_with_fallback(
                             &button,
-                            "flag-symbolic",
-                            "bookmark-new-symbolic",
+                            "emblem-important-symbolic",
+                            "bookmark-symbolic",
                         );
                         button.set_opacity(0.24);
-                        button.set_tooltip_text(Some("Nachverfolgung setzen"));
+                        button.set_tooltip_text(Some("Nachverfolgung setzen (Rechtsklick für Optionen)"));
                         set_accessible_label(&button, "Nachverfolgung setzen");
                     }
                     MailFollowUpState::FollowUp => {
                         set_button_icon_with_fallback(
                             &button,
-                            "flag-symbolic",
-                            "bookmark-new-symbolic",
+                            "emblem-important-symbolic",
+                            "bookmark-symbolic",
                         );
                         button.set_opacity(1.0);
                         button.add_css_class("follow-up-pending");
-                        button.set_tooltip_text(Some("Als erledigt markieren"));
+                        button.set_tooltip_text(Some("Als erledigt markieren (Rechtsklick für Optionen)"));
                         set_accessible_label(&button, "Nachverfolgung als erledigt markieren");
                     }
                     MailFollowUpState::Completed => {
@@ -9667,7 +9905,7 @@ impl MailPage {
                         );
                         button.set_opacity(1.0);
                         button.add_css_class("follow-up-completed");
-                        button.set_tooltip_text(Some("Nachverfolgung entfernen"));
+                        button.set_tooltip_text(Some("Nachverfolgung entfernen (Rechtsklick für Optionen)"));
                         set_accessible_label(&button, "Nachverfolgung entfernen");
                     }
                 }
@@ -9689,17 +9927,21 @@ impl MailPage {
                     btn_star.set_tooltip_text(Some("Markieren / Sternchen setzen"));
                 }
                 if msg.is_flagged() {
+                    btn_star.add_css_class("starred");
+                    btn_star.set_opacity(1.0);
                     set_button_icon_with_fallback(
                         &btn_star,
                         "starred-symbolic",
-                        "bookmark-new-symbolic",
+                        "starred-symbolic",
                     );
                     set_accessible_label(&btn_star, "Markierung entfernen");
                 } else {
+                    btn_star.remove_css_class("starred");
+                    btn_star.set_opacity(0.35);
                     set_button_icon_with_fallback(
                         &btn_star,
                         "non-starred-symbolic",
-                        "bookmark-new-symbolic",
+                        "starred-symbolic",
                     );
                     set_accessible_label(&btn_star, "Nachricht markieren");
                 }
@@ -9739,6 +9981,11 @@ impl MailPage {
                     subject_text.push_str(&format!("  ·  [{}]", labels.join(", ")));
                 }
                 subject.set_label(&subject_text);
+                if msg.is_unread() {
+                    subject.add_css_class("unread-heading");
+                } else {
+                    subject.remove_css_class("unread-heading");
+                }
             }
 
             if let Some(preview) =
@@ -10917,7 +11164,7 @@ impl MailPage {
             .build();
 
         let label_btn = gtk::Button::builder()
-            .icon_name("bookmark-new-symbolic")
+            .icon_name("tag-symbolic")
             .tooltip_text("Label setzen oder entfernen")
             .css_classes(vec!["flat"])
             .build();
@@ -11027,7 +11274,7 @@ impl MailPage {
                 "mail-message-new-symbolic",
             ),
             (&read_btn, "mail-read-symbolic", "mail-message-new-symbolic"),
-            (&flag_btn, "starred-symbolic", "bookmark-new-symbolic"),
+            (&flag_btn, "starred-symbolic", "starred-symbolic"),
             (
                 &important_btn,
                 "mail-mark-important-symbolic",
@@ -11679,6 +11926,7 @@ impl MailPage {
                         let is_flagged = msg.is_flagged();
 
                         if timeout_ms <= 0 {
+                            msg.set_unread(false);
                             let command = MailCommand::set_message_state(
                                 &msg_id,
                                 backend_location,
@@ -11691,6 +11939,7 @@ impl MailPage {
                                 if let Err(error) = page.execute_mail_command(command) {
                                     tracing::error!(%error, "Could not queue read-state mutation");
                                 }
+                                page.refresh_unread_counters();
                             }
                         } else if let Some(page) = page_for_read.upgrade() {
                             let page_weak = page.downgrade();
@@ -11699,21 +11948,21 @@ impl MailPage {
                                 move || {
                                     if let Some(page) = page_weak.upgrade() {
                                         page.imp().mark_read_timeout_source.replace(None);
-                                        if let Some(sel) = page.imp().message_selection.borrow().as_ref() {
-                                            if let Some(current_msg) = selected_mail_message(sel) {
-                                                if current_msg.id() == msg_id && current_msg.is_unread() {
-                                                    let command = MailCommand::set_message_state(
-                                                        &msg_id,
-                                                        backend_location,
-                                                        true,
-                                                        is_flagged,
-                                                        false,
-                                                        is_flagged,
-                                                    );
-                                                    if let Err(error) = page.execute_mail_command(command) {
-                                                        tracing::error!(%error, "Could not queue delayed read-state mutation");
-                                                    }
+                                        if let Some(current_msg) = page.selected_message() {
+                                            if current_msg.id() == msg_id && current_msg.is_unread() {
+                                                current_msg.set_unread(false);
+                                                let command = MailCommand::set_message_state(
+                                                    &msg_id,
+                                                    backend_location,
+                                                    true,
+                                                    is_flagged,
+                                                    false,
+                                                    is_flagged,
+                                                );
+                                                if let Err(error) = page.execute_mail_command(command) {
+                                                    tracing::error!(%error, "Could not queue delayed read-state mutation");
                                                 }
+                                                page.refresh_unread_counters();
                                             }
                                         }
                                     }
