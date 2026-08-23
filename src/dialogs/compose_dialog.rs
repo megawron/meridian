@@ -524,6 +524,69 @@ impl ComposeDialog {
             .build();
         header_bar.pack_start(&btn_save_snippet);
 
+        let btn_signature = gtk::MenuButton::builder()
+            .icon_name("mail-mark-unread-symbolic")
+            .tooltip_text("Signatur einfügen oder wechseln")
+            .css_classes(vec!["flat"])
+            .build();
+
+        let sig_store = SignatureStore::from_environment();
+        let signatures = sig_store.load();
+
+        let sig_popover = gtk::Popover::new();
+        let sig_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(4)
+            .margin_start(8)
+            .margin_end(8)
+            .margin_top(8)
+            .margin_bottom(8)
+            .build();
+
+        let lbl_sig = gtk::Label::builder()
+            .label("Signatur einfügen")
+            .css_classes(vec!["heading", "caption"])
+            .halign(gtk::Align::Start)
+            .build();
+        sig_box.append(&lbl_sig);
+
+        if signatures.is_empty() {
+            let lbl_empty = gtk::Label::builder()
+                .label("Keine Signaturen konfiguriert\n(in Einstellungen anlegen)")
+                .css_classes(vec!["dim-label", "caption"])
+                .build();
+            sig_box.append(&lbl_empty);
+        } else {
+            for sig in signatures {
+                let btn_sig_item = gtk::Button::builder()
+                    .label(&sig.name)
+                    .css_classes(vec!["flat"])
+                    .halign(gtk::Align::Fill)
+                    .build();
+                let sig_text = sig.text.clone();
+                let sig_format = sig.format.clone();
+                let dialog_weak = self.downgrade();
+                let popover_weak = sig_popover.downgrade();
+                btn_sig_item.connect_clicked(move |_| {
+                    if let Some(popover) = popover_weak.upgrade() {
+                        popover.popdown();
+                    }
+                    if let Some(dialog) = dialog_weak.upgrade() {
+                        let html = if sig_format.to_ascii_lowercase().contains("html") {
+                            crate::services::html_sanitizer::sanitize_html(sig_text.trim_end())
+                        } else {
+                            html_escape(sig_text.trim_end()).replace('\n', "<br>")
+                        };
+                        dialog.insert_html_fragment(&format!("<p><br></p><p>--<br>{}</p>", html));
+                    }
+                });
+                sig_box.append(&btn_sig_item);
+            }
+        }
+        sig_popover.set_child(Some(&sig_box));
+        btn_signature.set_popover(Some(&sig_popover));
+        header_bar.pack_start(&btn_signature);
+
         let sign_by_default = AppSettings::try_new()
             .map(|settings| settings.sign_new_messages())
             .unwrap_or(false);
@@ -2424,6 +2487,13 @@ impl ComposeDialog {
         }
         if let Some(editor) = self.imp().html_editor.borrow().as_ref() {
             editor.set_html(&signature);
+        }
+    }
+
+    /// Insert an HTML fragment at the current cursor position.
+    pub fn insert_html_fragment(&self, html: &str) {
+        if let Some(editor) = self.imp().html_editor.borrow().as_ref() {
+            editor.insert_html(html);
         }
     }
 
