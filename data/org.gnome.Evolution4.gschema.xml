@@ -226,6 +226,11 @@
       <range min="80" max="360"/>
       <summary>Width of the sender column in the mail list</summary>
     </key>
+    <key name="mail-date-column-width" type="i">
+      <default>130</default>
+      <range min="60" max="300"/>
+      <summary>Width of the date column in the mail list</summary>
+    </key>
     <key name="color-scheme" type="s">
       <default>'system'</default>
       <summary>Application color scheme (system, light, or dark)</summary>

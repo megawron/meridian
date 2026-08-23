@@ -802,11 +802,11 @@ fn compact_folder_indent(depth: usize) -> i32 {
     1 + (depth as i32).saturating_mul(12)
 }
 
-const MAIL_THREAD_COLUMN_WIDTH: i32 = 18;
-const MAIL_INDICATOR_COLUMN_WIDTH: i32 = 22;
+const MAIL_THREAD_COLUMN_WIDTH: i32 = 24;
+const MAIL_INDICATOR_COLUMN_WIDTH: i32 = 24;
 const MAIL_AVATAR_COLUMN_WIDTH: i32 = 28;
 const MAIL_PREVIEW_COLUMN_WIDTH: i32 = 160;
-const MAIL_DATE_COLUMN_WIDTH: i32 = 126;
+const MAIL_DATE_COLUMN_WIDTH: i32 = 130;
 
 fn unread_badge_state(unread: u32) -> (String, bool) {
     (
@@ -2530,6 +2530,7 @@ mod imp {
         pub outer_paned: gtk::Paned,
         pub inner_paned: gtk::Paned,
         pub preview_widget: RefCell<Option<gtk::Widget>>,
+        pub last_export_folder: RefCell<Option<gio::File>>,
         pub message_selection: RefCell<Option<gtk::SingleSelection>>,
         pub message_store: RefCell<Option<gio::ListStore>>,
         pub message_filter: RefCell<Option<gtk::CustomFilter>>,
@@ -2630,11 +2631,13 @@ mod imp {
         pub mail_sort_direction_button: RefCell<Option<gtk::Button>>,
         pub drawer_header_title: RefCell<Option<gtk::Label>>,
         pub drawer_header_icon: RefCell<Option<gtk::Image>>,
+        pub thread_size_group: RefCell<Option<gtk::SizeGroup>>,
         pub status_size_group: RefCell<Option<gtk::SizeGroup>>,
         pub attachment_size_group: RefCell<Option<gtk::SizeGroup>>,
         pub follow_up_size_group: RefCell<Option<gtk::SizeGroup>>,
         pub star_size_group: RefCell<Option<gtk::SizeGroup>>,
         pub important_size_group: RefCell<Option<gtk::SizeGroup>>,
+        pub avatar_size_group: RefCell<Option<gtk::SizeGroup>>,
         pub sender_size_group: RefCell<Option<gtk::SizeGroup>>,
         pub preview_size_group: RefCell<Option<gtk::SizeGroup>>,
         pub date_size_group: RefCell<Option<gtk::SizeGroup>>,
@@ -3850,6 +3853,9 @@ impl MailPage {
             .initial_name(&filename)
             .modal(true)
             .build();
+        if let Some(folder) = self.imp().last_export_folder.borrow().as_ref() {
+            file_dialog.set_initial_folder(Some(folder));
+        }
         let filter = gtk::FileFilter::new();
         filter.set_name(Some("EML-Dateien (*.eml)"));
         filter.add_pattern("*.eml");
@@ -3863,7 +3869,14 @@ impl MailPage {
         let page = self.downgrade();
         file_dialog.save(root.as_ref(), None::<&gio::Cancellable>, move |result| {
             let file = match result {
-                Ok(file) => file,
+                Ok(file) => {
+                    if let Some(parent) = file.parent() {
+                        if let Some(page) = page.upgrade() {
+                            page.imp().last_export_folder.replace(Some(parent));
+                        }
+                    }
+                    file
+                }
                 Err(error) => {
                     tracing::warn!(%error, "FileDialog save failed or cancelled");
                     if let Some(page) = page.upgrade() {
@@ -8446,8 +8459,13 @@ impl MailPage {
         if let Some(preview) = Self::mail_header_child(&header, 9) {
             preview.set_visible(show_preview);
         }
+        let date_width = settings
+            .as_ref()
+            .map(AppSettings::mail_date_column_width)
+            .unwrap_or(MAIL_DATE_COLUMN_WIDTH);
         if let Some(date) = Self::mail_header_child(&header, 10) {
             date.set_visible(show_date);
+            date.set_width_request(date_width);
             if let Some(lbl) = Self::cell_label(&date) {
                 lbl.set_label(&self.mail_header_sort_label("Datum", MailSortField::Date));
             }
@@ -8456,6 +8474,10 @@ impl MailPage {
 
     fn ensure_size_groups(&self) {
         let imp = self.imp();
+        if imp.thread_size_group.borrow().is_none() {
+            imp.thread_size_group
+                .replace(Some(gtk::SizeGroup::new(gtk::SizeGroupMode::Horizontal)));
+        }
         if imp.status_size_group.borrow().is_none() {
             imp.status_size_group
                 .replace(Some(gtk::SizeGroup::new(gtk::SizeGroupMode::Horizontal)));
@@ -8474,6 +8496,10 @@ impl MailPage {
         }
         if imp.important_size_group.borrow().is_none() {
             imp.important_size_group
+                .replace(Some(gtk::SizeGroup::new(gtk::SizeGroupMode::Horizontal)));
+        }
+        if imp.avatar_size_group.borrow().is_none() {
+            imp.avatar_size_group
                 .replace(Some(gtk::SizeGroup::new(gtk::SizeGroupMode::Horizontal)));
         }
         if imp.sender_size_group.borrow().is_none() {
@@ -8497,12 +8523,18 @@ impl MailPage {
             .as_ref()
             .map(AppSettings::mail_sender_column_width)
             .unwrap_or(180);
+        let date_width = settings
+            .as_ref()
+            .map(AppSettings::mail_date_column_width)
+            .unwrap_or(MAIL_DATE_COLUMN_WIDTH);
 
         let header = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(0)
-            .margin_start(4)
-            .margin_end(4)
+            .hexpand(true)
+            .halign(gtk::Align::Fill)
+            .margin_start(0)
+            .margin_end(0)
             .margin_top(0)
             .margin_bottom(0)
             .css_classes(vec!["mail-column-header"])
@@ -8555,14 +8587,15 @@ impl MailPage {
 
         let date_column = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
-            .width_request(MAIL_DATE_COLUMN_WIDTH)
+            .width_request(date_width)
             .halign(gtk::Align::Fill)
-            .css_classes(vec!["mail-column-header-cell"])
+            .hexpand(false)
+            .css_classes(vec!["mail-column-header-cell", "date-cell"])
             .build();
         let date_label = gtk::Label::builder()
             .label("Datum")
-            .halign(gtk::Align::Start)
-            .xalign(0.0)
+            .halign(gtk::Align::End)
+            .xalign(1.0)
             .hexpand(true)
             .ellipsize(pango::EllipsizeMode::End)
             .width_chars(1)
@@ -8681,6 +8714,9 @@ impl MailPage {
             .build();
         preview_column.append(&preview_label);
 
+        if let Some(group) = self.imp().thread_size_group.borrow().as_ref() {
+            group.add_widget(&thread_spacer);
+        }
         if let Some(group) = self.imp().status_size_group.borrow().as_ref() {
             group.add_widget(&status_column);
         }
@@ -8695,6 +8731,9 @@ impl MailPage {
         }
         if let Some(group) = self.imp().important_size_group.borrow().as_ref() {
             group.add_widget(&important_column);
+        }
+        if let Some(group) = self.imp().avatar_size_group.borrow().as_ref() {
+            group.add_widget(&avatar_spacer);
         }
         if let Some(group) = self.imp().sender_size_group.borrow().as_ref() {
             group.add_widget(&sender_column);
@@ -8870,8 +8909,16 @@ impl MailPage {
         });
 
         let is_date_resizing_for_end = Rc::clone(&is_date_resizing);
+        let settings_for_date_resize = settings.clone();
+        let current_date_width_for_end = Rc::clone(&date_current_width);
         date_drag_gesture.connect_drag_end(move |_, _, _| {
-            is_date_resizing_for_end.set(false);
+            if is_date_resizing_for_end.get() {
+                is_date_resizing_for_end.set(false);
+                let width = current_date_width_for_end.get().clamp(60, 300);
+                if let Some(settings) = settings_for_date_resize.as_ref() {
+                    settings.set_mail_date_column_width(width);
+                }
+            }
         });
         date_column.add_controller(date_drag_gesture);
 
@@ -9131,11 +9178,6 @@ impl MailPage {
             let sender_box = gtk::Box::builder()
                 .orientation(gtk::Orientation::Horizontal)
                 .spacing(4)
-                .width_request(
-                    AppSettings::try_new()
-                        .map(|settings| settings.mail_sender_column_width())
-                        .unwrap_or(180),
-                )
                 .hexpand(false)
                 .halign(gtk::Align::Start)
                 .overflow(gtk::Overflow::Hidden)
@@ -9160,10 +9202,9 @@ impl MailPage {
                 .build();
 
             let date = gtk::Label::builder()
-                .css_classes(vec!["caption", "dim-label"])
-                .halign(gtk::Align::Start)
-                .xalign(0.0)
-                .width_request(MAIL_DATE_COLUMN_WIDTH)
+                .css_classes(vec!["caption", "dim-label", "mail-date-label"])
+                .halign(gtk::Align::End)
+                .xalign(1.0)
                 .ellipsize(pango::EllipsizeMode::End)
                 .lines(1)
                 .width_chars(1)
@@ -9486,6 +9527,9 @@ impl MailPage {
 
             if let Some(page) = page_for_row_actions.upgrade() {
                 page.ensure_size_groups();
+                if let Some(group) = page.imp().thread_size_group.borrow().as_ref() {
+                    group.add_widget(&thread_button);
+                }
                 if let Some(group) = page.imp().status_size_group.borrow().as_ref() {
                     group.add_widget(&status);
                 }
@@ -9500,6 +9544,9 @@ impl MailPage {
                 }
                 if let Some(group) = page.imp().important_size_group.borrow().as_ref() {
                     group.add_widget(&btn_important);
+                }
+                if let Some(group) = page.imp().avatar_size_group.borrow().as_ref() {
+                    group.add_widget(&avatar);
                 }
                 if let Some(group) = page.imp().sender_size_group.borrow().as_ref() {
                     group.add_widget(&sender_box);
@@ -9812,12 +9859,6 @@ impl MailPage {
             if let Some(sender_box) =
                 Self::mail_header_child(&header_box, 7).and_downcast::<gtk::Box>()
             {
-                sender_box.set_width_request(
-                    settings
-                        .as_ref()
-                        .map(AppSettings::mail_sender_column_width)
-                        .unwrap_or(180),
-                );
                 sender_box.set_visible(show_sender || show_recipient);
                 if let Some(sender) = sender_box.first_child().and_downcast::<gtk::Label>() {
                     sender.set_visible(show_sender);

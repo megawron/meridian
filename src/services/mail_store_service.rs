@@ -2095,13 +2095,19 @@ struct MimeExtraction {
 }
 
 fn split_mime_headers_and_body(raw: &[u8]) -> (&[u8], &[u8]) {
+    let mut earliest: Option<(usize, usize)> = None;
     for separator in [b"\r\n\r\n".as_slice(), b"\n\n", b"\r\r"] {
         if let Some(index) = raw
             .windows(separator.len())
             .position(|candidate| candidate == separator)
         {
-            return (&raw[..index], &raw[index + separator.len()..]);
+            if earliest.map_or(true, |(earliest_idx, _)| index < earliest_idx) {
+                earliest = Some((index, separator.len()));
+            }
         }
+    }
+    if let Some((index, sep_len)) = earliest {
+        return (&raw[..index], &raw[index + sep_len..]);
     }
 
     // A malformed child without a blank line is still more useful as a
@@ -4267,6 +4273,33 @@ mod tests {
         assert_eq!(report.moved_messages, 1);
 
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn test_parse_user_provided_emls() {
+        let files = [
+            "/tmp/meridian-test/sample-promo.eml",
+            "/tmp/meridian-test/sample-order.eml",
+            "/tmp/meridian-test/sample-job.eml",
+        ];
+        for path in files {
+            if let Ok(bytes) = fs::read(path) {
+                let parsed = parse_rfc822_bytes("test-id", "inbox", &bytes, false)
+                    .expect("EML message should parse successfully");
+                assert!(!parsed.subject.is_empty());
+                assert!(parsed.html_body.len() > 1000);
+                let sanitized = crate::services::html_sanitizer::sanitize_html(&parsed.html_body);
+                assert!(sanitized.len() > 1000);
+            }
+        }
+    }
+
+    #[test]
+    fn test_split_mime_headers_earliest_separator() {
+        let raw = b"From: test@example.org\nSubject: Test\n\nHello\r\n\r\nWorld";
+        let (headers, body) = split_mime_headers_and_body(raw);
+        assert_eq!(headers, b"From: test@example.org\nSubject: Test");
+        assert_eq!(body, b"Hello\r\n\r\nWorld");
     }
 
     fn temporary_directory(label: &str) -> std::path::PathBuf {

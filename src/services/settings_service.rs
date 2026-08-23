@@ -1125,6 +1125,19 @@ impl AppSettings {
         self.set_int("mail-sender-column-width", value.clamp(80, 360));
     }
 
+    pub fn mail_date_column_width(&self) -> i32 {
+        let val = self.settings.int("mail-date-column-width");
+        if val <= 0 {
+            130
+        } else {
+            val.clamp(60, 300)
+        }
+    }
+
+    pub fn set_mail_date_column_width(&self, value: i32) {
+        self.set_int("mail-date-column-width", value.clamp(60, 300));
+    }
+
     pub fn task_filter(&self) -> String {
         normalized_task_filter(&self.settings.string("task-filter")).to_string()
     }

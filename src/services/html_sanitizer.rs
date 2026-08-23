@@ -8,9 +8,12 @@
 
 const ALLOWED_TAGS: &[&str] = &[
     "a",
+    "abbr",
+    "address",
     "article",
     "b",
     "blockquote",
+    "body",
     "br",
     "caption",
     "center",
@@ -44,10 +47,14 @@ const ALLOWED_TAGS: &[&str] = &[
     "mark",
     "ol",
     "p",
+    "picture",
     "pre",
+    "s",
     "section",
     "small",
+    "source",
     "span",
+    "strike",
     "strong",
     "sub",
     "summary",
@@ -62,12 +69,12 @@ const ALLOWED_TAGS: &[&str] = &[
     "tr",
     "u",
     "ul",
-    "body",
+    "wbr",
 ];
 
 const BLOCKED_TAGS: &[&str] = &[
     "applet", "audio", "base", "canvas", "embed", "form", "iframe", "link", "math", "meta",
-    "object", "portal", "script", "source", "style", "svg", "template", "track", "video",
+    "noembed", "noscript", "object", "portal", "script", "style", "svg", "template", "track", "video", "xml",
 ];
 
 const ALLOWED_CSS_AT_RULES: &[&str] = &[
@@ -152,15 +159,16 @@ pub fn sanitize_html(input: &str) -> String {
                     | "form"
                     | "iframe"
                     | "math"
+                    | "noembed"
+                    | "noscript"
                     | "object"
                     | "portal"
                     | "script"
-                    | "source"
                     | "style"
                     | "svg"
                     | "template"
-                    | "track"
                     | "video"
+                    | "xml"
             );
             if !closing && is_container {
                 cursor = find_block_end(input, end + 1, &tag_name).unwrap_or(input.len());
@@ -469,7 +477,7 @@ fn sanitize_tag(raw_tag: &str, closing: bool, tag_name: &str) -> Option<String> 
         }
     }
 
-    let tag_suffix = if self_closing || matches!(tag_name, "br" | "hr" | "img" | "col") {
+    let tag_suffix = if self_closing || matches!(tag_name, "br" | "hr" | "img" | "col" | "source" | "wbr" | "track") {
         "/>"
     } else {
         ">"
@@ -1192,7 +1200,7 @@ fn is_uri_attribute(attribute_name: &str) -> bool {
 fn is_safe_uri(value: &str, tag_name: &str, attribute_name: &str) -> bool {
     let is_allowed_target = match attribute_name {
         "href" => tag_name == "a",
-        "src" | "xlink:href" => tag_name == "img",
+        "src" | "xlink:href" | "srcset" => tag_name == "img" || tag_name == "source",
         // Forms are blocked as containers, so keeping an action URI would
         // only create an unnecessary future bypass if another form-like tag
         // is ever admitted.
@@ -1539,5 +1547,24 @@ mod tests {
         assert!(!sanitized.contains("stylesheet"));
         assert!(!sanitized.contains("lowsrc"));
         assert!(!sanitized.contains("imagesrcset"));
+    }
+
+    #[test]
+    fn preserves_picture_and_source_tags_without_truncating_on_void_elements() {
+        let html = r#"<picture><source srcset="https://cdn.example/image.webp"><img src="https://cdn.example/image.png"></picture><p>Remaining text</p>"#;
+        let sanitized = sanitize_html(html);
+        assert!(sanitized.contains("<picture>"));
+        assert!(sanitized.contains("<source"));
+        assert!(sanitized.contains("<img"));
+        assert!(sanitized.contains("<p>Remaining text</p>"));
+    }
+
+    #[test]
+    fn strips_xml_and_noscript_blocks_without_leaking_internal_text() {
+        let html = r#"<head><xml><o:OfficeDocumentSettings>Settings 1</o:OfficeDocumentSettings></xml><noscript>Enable JS</noscript></head><body><p>Visible Content</p></body>"#;
+        let sanitized = sanitize_html(html);
+        assert!(!sanitized.contains("Settings 1"));
+        assert!(!sanitized.contains("Enable JS"));
+        assert!(sanitized.contains("<p>Visible Content</p>"));
     }
 }
