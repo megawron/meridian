@@ -11,41 +11,237 @@
 use chrono::{Duration, Local, LocalResult, NaiveDate, NaiveDateTime, TimeZone};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs;
+use std::fs::{self, File, OpenOptions};
 use std::io;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{
-    Arc,
+    Arc, Mutex, OnceLock,
     atomic::{AtomicI64, Ordering},
 };
 
-use super::calendar_store_service::{CalendarEventRecord, CalendarSnapshot, TaskRecord};
+use super::calendar_store_service::{
+    CalendarEventRecord, CalendarSnapshot, CalendarStoreService, TaskRecord,
+};
 use super::ical_time_service::{property_local_datetime, property_local_timestamp};
 use super::recurrence_service::{
     parse_ical_date as parse_shared_ical_date, parse_recurrence_rule, recurrence_occurs_on,
 };
 
-const CURRENT_VERSION: u32 = 1;
+const CURRENT_VERSION: u32 = 2;
 const DEFAULT_ALL_DAY_HOUR: u32 = 9;
 const MAX_LATE_SECONDS: i64 = 7 * 24 * 60 * 60;
 const MAX_COMPONENT_SCAN_LINES: usize = 20_000;
 const MAX_ALARM_REPETITIONS: u32 = 4_096;
+const MAX_REMINDER_URI_BYTES: usize = 2_048;
+const MAX_REMINDER_UID_BYTES: usize = 256;
+const MAX_REMINDER_KEY_BYTES: usize = 4_096;
+const MAX_ACTION_TARGET_BYTES: usize = 8_192;
+const MAX_CLAIM_TOKEN_BYTES: usize = 128;
+const MAX_CLAIM_SECONDS: i64 = 5 * 60;
+
+static REMINDER_STATE_LOCK: Mutex<()> = Mutex::new(());
+static REMINDER_SEQUENCE: AtomicI64 = AtomicI64::new(0);
+static REMINDER_PROCESS_NONCE: OnceLock<u128> = OnceLock::new();
+
+fn reminder_process_nonce() -> u128 {
+    *REMINDER_PROCESS_NONCE.get_or_init(|| {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_default()
+    })
+}
+
+/// Capture settings on the GTK thread, then construct the calendar backend
+/// from plain values inside a worker.  `CalendarStoreService::new()` resolves
+/// GSettings for legacy callers; reminder runtime workers must not do that.
+pub(crate) fn calendar_store_for_worker(
+    local_calendar_directory: Option<String>,
+) -> CalendarStoreService {
+    if let Some(path) = std::env::var_os("EVOLUTION_GTK4_ICAL_DIR") {
+        return CalendarStoreService::with_calendar_dir(path);
+    }
+    if let Some(path) = local_calendar_directory
+        .filter(|path| !path.trim().is_empty())
+        .map(PathBuf::from)
+    {
+        return if super::is_app_owned_store_path(&path) {
+            CalendarStoreService::with_writable_calendar_dir(path)
+        } else {
+            CalendarStoreService::with_calendar_dir(path)
+        };
+    }
+    CalendarStoreService::with_writable_calendar_dir(super::app_data_dir().join("ical"))
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ReminderKind {
     Event,
     Task,
+    Memo,
 }
 
-/// The component kind is kept separately from `ReminderKind` for backwards
-/// compatibility with the application notification action.  Memos use the
-/// same safe desktop notification path until that action can accept a third
-/// visible body label, while their deep link remains unambiguous.
+/// The component kind is kept separately from `ReminderKind` so the URI
+/// contract can distinguish the three Evolution component types even when a
+/// caller only needs the notification category.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ReminderComponentKind {
     Event,
     Task,
     Memo,
+}
+
+impl ReminderComponentKind {
+    pub fn scheme(self) -> &'static str {
+        match self {
+            Self::Event => "calendar",
+            Self::Task => "task",
+            Self::Memo => "memo",
+        }
+    }
+
+    fn from_scheme(value: &str) -> Option<Self> {
+        match value {
+            "calendar" => Some(Self::Event),
+            "task" => Some(Self::Task),
+            "memo" => Some(Self::Memo),
+            _ => None,
+        }
+    }
+}
+
+impl From<ReminderComponentKind> for ReminderKind {
+    fn from(value: ReminderComponentKind) -> Self {
+        match value {
+            ReminderComponentKind::Event => Self::Event,
+            ReminderComponentKind::Task => Self::Task,
+            ReminderComponentKind::Memo => Self::Memo,
+        }
+    }
+}
+
+/// A validated, source-scoped component identity.  It is deliberately a
+/// value type so notification actions, command-line opening and page routing
+/// all consume exactly the same contract.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReminderIdentity {
+    pub kind: ReminderComponentKind,
+    pub source_uid: String,
+    pub component_uid: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReminderIdentityError {
+    MalformedUri,
+    UnknownScheme,
+    MissingParameter,
+    DuplicateParameter,
+    UnknownParameter,
+    EmptyValue,
+    InvalidPercentEncoding,
+    InvalidUtf8,
+    NonCanonicalEncoding,
+    ControlCharacter,
+    Traversal,
+    Oversized,
+    InvalidActionTarget,
+    InvalidReminderKey,
+    StaleAction,
+}
+
+impl std::fmt::Display for ReminderIdentityError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let message = match self {
+            Self::MalformedUri => "ungültige Reminder-URI",
+            Self::UnknownScheme => "unbekanntes Reminder-Schema",
+            Self::MissingParameter => "erforderlicher URI-Parameter fehlt",
+            Self::DuplicateParameter => "URI-Parameter doppelt vorhanden",
+            Self::UnknownParameter => "unbekannter URI-Parameter",
+            Self::EmptyValue => "leere Reminder-Identität",
+            Self::InvalidPercentEncoding => "ungültige Percent-Kodierung",
+            Self::InvalidUtf8 => "ungültige UTF-8-Kodierung",
+            Self::NonCanonicalEncoding => "nicht-kanonische Percent-Kodierung",
+            Self::ControlCharacter => "Steuerzeichen in Reminder-Identität",
+            Self::Traversal => "Traversal in Reminder-Identität",
+            Self::Oversized => "Reminder-Identität ist zu groß",
+            Self::InvalidActionTarget => "ungültiges Reminder-Aktionsziel",
+            Self::InvalidReminderKey => "ungültiger Reminder-Schlüssel",
+            Self::StaleAction => "veraltete Reminder-Aktion",
+        };
+        formatter.write_str(message)
+    }
+}
+
+impl std::error::Error for ReminderIdentityError {}
+
+impl ReminderIdentity {
+    pub fn new(
+        kind: ReminderComponentKind,
+        source_uid: impl Into<String>,
+        component_uid: impl Into<String>,
+    ) -> Result<Self, ReminderIdentityError> {
+        let source_uid = source_uid.into();
+        let component_uid = component_uid.into();
+        validate_reminder_uid(&source_uid)?;
+        validate_reminder_uid(&component_uid)?;
+        Ok(Self {
+            kind,
+            source_uid,
+            component_uid,
+        })
+    }
+
+    pub fn parse(uri: &str) -> Result<Self, ReminderIdentityError> {
+        parse_reminder_deep_link(uri)
+    }
+
+    pub fn to_uri(&self) -> String {
+        let uri = format!(
+            "{}:///?source-uid={}&comp-uid={}",
+            self.kind.scheme(),
+            percent_encode(&self.source_uid),
+            percent_encode(&self.component_uid),
+        );
+        debug_assert!(uri.len() <= MAX_REMINDER_URI_BYTES);
+        uri
+    }
+}
+
+fn validate_reminder_uid(value: &str) -> Result<(), ReminderIdentityError> {
+    if value.is_empty() {
+        return Err(ReminderIdentityError::EmptyValue);
+    }
+    if value.len() > MAX_REMINDER_UID_BYTES {
+        return Err(ReminderIdentityError::Oversized);
+    }
+    if value != value.trim()
+        || value
+            .chars()
+            .any(|character| character.is_control() || character == '\u{7f}')
+    {
+        return Err(ReminderIdentityError::ControlCharacter);
+    }
+    if value
+        .split(['/', '\\'])
+        .any(|segment| segment == "." || segment == "..")
+    {
+        return Err(ReminderIdentityError::Traversal);
+    }
+    Ok(())
+}
+
+fn validate_claim_token(value: &str) -> Result<(), ReminderIdentityError> {
+    if value.is_empty() || value.len() > MAX_CLAIM_TOKEN_BYTES {
+        return Err(ReminderIdentityError::InvalidActionTarget);
+    }
+    if !value
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+    {
+        return Err(ReminderIdentityError::InvalidActionTarget);
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -953,27 +1149,78 @@ fn fold_ical_line(line: &str) -> Vec<String> {
     result
 }
 
-/// Stable `memo:///` deep-link contract shared by reminder tests and future
-/// notification activation code.  Only URI-unreserved characters stay raw.
+/// Return a canonical deep link when the input is a valid identity.
+///
+/// The string-returning form is kept for existing editor/test callers.  New
+/// runtime code uses `try_reminder_deep_link` so malformed identities are
+/// rejected without manufacturing a target or panicking on untrusted input.
 pub fn reminder_deep_link(
     kind: ReminderComponentKind,
     source_uid: &str,
     component_uid: &str,
 ) -> String {
-    let scheme = match kind {
-        ReminderComponentKind::Event => "calendar",
-        ReminderComponentKind::Task => "task",
-        ReminderComponentKind::Memo => "memo",
-    };
-    format!(
-        "{scheme}:///?source-uid={}&comp-uid={}",
-        percent_encode(source_uid),
-        percent_encode(component_uid)
-    )
+    try_reminder_deep_link(kind, source_uid, component_uid).unwrap_or_default()
 }
 
 pub fn memo_deep_link(source_uid: &str, component_uid: &str) -> String {
     reminder_deep_link(ReminderComponentKind::Memo, source_uid, component_uid)
+}
+
+pub fn try_reminder_deep_link(
+    kind: ReminderComponentKind,
+    source_uid: &str,
+    component_uid: &str,
+) -> Result<String, ReminderIdentityError> {
+    ReminderIdentity::new(kind, source_uid, component_uid).map(|identity| identity.to_uri())
+}
+
+pub fn parse_reminder_deep_link(uri: &str) -> Result<ReminderIdentity, ReminderIdentityError> {
+    if uri.len() > MAX_REMINDER_URI_BYTES {
+        return Err(ReminderIdentityError::Oversized);
+    }
+    let Some((scheme, query)) = uri.split_once(":///?") else {
+        return Err(ReminderIdentityError::MalformedUri);
+    };
+    let Some(kind) = ReminderComponentKind::from_scheme(scheme) else {
+        return if scheme.is_empty() {
+            Err(ReminderIdentityError::MalformedUri)
+        } else {
+            Err(ReminderIdentityError::UnknownScheme)
+        };
+    };
+    let mut source_uid = None;
+    let mut component_uid = None;
+    let parameters = query.split('&').collect::<Vec<_>>();
+    if parameters.len() != 2 {
+        return Err(ReminderIdentityError::MalformedUri);
+    }
+    for parameter in parameters {
+        let Some((name, value)) = parameter.split_once('=') else {
+            return Err(ReminderIdentityError::MalformedUri);
+        };
+        if value.contains('=') {
+            return Err(ReminderIdentityError::MalformedUri);
+        }
+        let target = match name {
+            "source-uid" => &mut source_uid,
+            "comp-uid" => &mut component_uid,
+            _ if name.is_empty() => return Err(ReminderIdentityError::MalformedUri),
+            _ => return Err(ReminderIdentityError::UnknownParameter),
+        };
+        if target.is_some() {
+            return Err(ReminderIdentityError::DuplicateParameter);
+        }
+        *target = Some(percent_decode_uid(value)?);
+    }
+    let identity = ReminderIdentity::new(
+        kind,
+        source_uid.ok_or(ReminderIdentityError::MissingParameter)?,
+        component_uid.ok_or(ReminderIdentityError::MissingParameter)?,
+    )?;
+    if identity.to_uri() != uri {
+        return Err(ReminderIdentityError::NonCanonicalEncoding);
+    }
+    Ok(identity)
 }
 
 fn percent_encode(value: &str) -> String {
@@ -988,6 +1235,155 @@ fn percent_encode(value: &str) -> String {
     encoded
 }
 
+fn percent_decode_value(value: &str) -> Result<String, ReminderIdentityError> {
+    if value.is_empty() {
+        return Err(ReminderIdentityError::EmptyValue);
+    }
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'%' => {
+                if index + 2 >= bytes.len() {
+                    return Err(ReminderIdentityError::InvalidPercentEncoding);
+                }
+                let high = hex_value(bytes[index + 1])
+                    .ok_or(ReminderIdentityError::InvalidPercentEncoding)?;
+                let low = hex_value(bytes[index + 2])
+                    .ok_or(ReminderIdentityError::InvalidPercentEncoding)?;
+                decoded.push((high << 4) | low);
+                index += 3;
+            }
+            byte if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') => {
+                decoded.push(byte);
+                index += 1;
+            }
+            _ => return Err(ReminderIdentityError::InvalidPercentEncoding),
+        }
+    }
+    let decoded = String::from_utf8(decoded).map_err(|_| ReminderIdentityError::InvalidUtf8)?;
+    if percent_encode(&decoded) != value {
+        return Err(ReminderIdentityError::NonCanonicalEncoding);
+    }
+    Ok(decoded)
+}
+
+fn percent_decode_uid(value: &str) -> Result<String, ReminderIdentityError> {
+    let decoded = percent_decode_value(value)?;
+    validate_reminder_uid(&decoded)?;
+    Ok(decoded)
+}
+
+fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReminderComponentPresence {
+    Found,
+    MissingSource,
+    MissingComponent,
+}
+
+/// Resolve an identity against an immutable snapshot without touching GTK or
+/// any backend connection.  The UI uses the same distinction for visible
+/// stale-source/component errors after an asynchronous page load misses.
+pub fn component_presence(
+    snapshot: &CalendarSnapshot,
+    identity: &ReminderIdentity,
+) -> ReminderComponentPresence {
+    let found = match identity.kind {
+        ReminderComponentKind::Event => snapshot.events.iter().any(|event| {
+            event.source_uid == identity.source_uid && event.uid == identity.component_uid
+        }),
+        ReminderComponentKind::Task => snapshot.tasks.iter().any(|task| {
+            task.source_uid == identity.source_uid && task.uid == identity.component_uid
+        }),
+        ReminderComponentKind::Memo => snapshot.memos.iter().any(|memo| {
+            memo.source_uid == identity.source_uid && memo.uid == identity.component_uid
+        }),
+    };
+    let source_exists = match identity.kind {
+        ReminderComponentKind::Event => snapshot
+            .events
+            .iter()
+            .any(|event| event.source_uid == identity.source_uid),
+        ReminderComponentKind::Task => snapshot
+            .tasks
+            .iter()
+            .any(|task| task.source_uid == identity.source_uid),
+        ReminderComponentKind::Memo => snapshot
+            .memos
+            .iter()
+            .any(|memo| memo.source_uid == identity.source_uid),
+    };
+    if found {
+        ReminderComponentPresence::Found
+    } else if source_exists {
+        ReminderComponentPresence::MissingComponent
+    } else {
+        ReminderComponentPresence::MissingSource
+    }
+}
+
+fn reminder_key(
+    identity: &ReminderIdentity,
+    occurrence_id: &str,
+    alarm_index: usize,
+    repeat_index: u32,
+    due_at: i64,
+) -> String {
+    format!(
+        "v1:{}:{}:{}:{}:{}:{}:{}",
+        identity.kind.scheme(),
+        percent_encode(&identity.source_uid),
+        percent_encode(&identity.component_uid),
+        percent_encode(occurrence_id),
+        alarm_index,
+        repeat_index,
+        due_at,
+    )
+}
+
+fn identity_from_reminder_key(key: &str) -> Result<ReminderIdentity, ReminderIdentityError> {
+    if key.len() > MAX_REMINDER_KEY_BYTES {
+        return Err(ReminderIdentityError::Oversized);
+    }
+    let parts = key.split(':').collect::<Vec<_>>();
+    if parts.len() != 8 || parts[0] != "v1" {
+        return Err(ReminderIdentityError::InvalidReminderKey);
+    }
+    let Some(kind) = ReminderComponentKind::from_scheme(parts[1]) else {
+        return Err(ReminderIdentityError::InvalidReminderKey);
+    };
+    let source_uid = percent_decode_uid(parts[2])?;
+    let component_uid = percent_decode_uid(parts[3])?;
+    let occurrence_id = percent_decode_uid(parts[4])?;
+    let Ok(alarm_index) = parts[5].parse::<usize>() else {
+        return Err(ReminderIdentityError::InvalidReminderKey);
+    };
+    let Ok(repeat_index) = parts[6].parse::<u32>() else {
+        return Err(ReminderIdentityError::InvalidReminderKey);
+    };
+    let Ok(due_at) = parts[7].parse::<i64>() else {
+        return Err(ReminderIdentityError::InvalidReminderKey);
+    };
+    if occurrence_id.is_empty()
+        || parts[5] != alarm_index.to_string()
+        || parts[6] != repeat_index.to_string()
+        || parts[7] != due_at.to_string()
+    {
+        return Err(ReminderIdentityError::InvalidReminderKey);
+    }
+    ReminderIdentity::new(kind, source_uid, component_uid)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReminderCandidate {
     pub key: String,
@@ -996,8 +1392,102 @@ pub struct ReminderCandidate {
     pub kind: ReminderKind,
 }
 
+impl ReminderCandidate {
+    pub fn identity(&self) -> Result<ReminderIdentity, ReminderIdentityError> {
+        let identity = identity_from_reminder_key(&self.key)?;
+        if self.kind != identity.kind.into() {
+            return Err(ReminderIdentityError::InvalidReminderKey);
+        }
+        Ok(identity)
+    }
+
+    pub fn deep_link(&self) -> Result<String, ReminderIdentityError> {
+        self.identity().map(|identity| identity.to_uri())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReminderDelivery {
+    pub candidate: ReminderCandidate,
+    pub claim_token: String,
+}
+
+impl ReminderDelivery {
+    pub fn identity(&self) -> Result<ReminderIdentity, ReminderIdentityError> {
+        self.candidate.identity()
+    }
+
+    pub fn action_target(&self) -> Result<String, ReminderIdentityError> {
+        let identity = self.identity()?;
+        validate_claim_token(&self.claim_token)?;
+        let target = format!(
+            "v1|{}|{}|{}",
+            identity.to_uri(),
+            percent_encode(&self.candidate.key),
+            percent_encode(&self.claim_token),
+        );
+        if target.len() > MAX_ACTION_TARGET_BYTES {
+            return Err(ReminderIdentityError::Oversized);
+        }
+        Ok(target)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReminderActionTarget {
+    pub identity: ReminderIdentity,
+    pub key: String,
+    pub claim_token: String,
+}
+
+pub fn parse_reminder_action_target(
+    target: &str,
+) -> Result<ReminderActionTarget, ReminderIdentityError> {
+    if target.len() > MAX_ACTION_TARGET_BYTES {
+        return Err(ReminderIdentityError::Oversized);
+    }
+    let parts = target.split('|').collect::<Vec<_>>();
+    if parts.len() != 4 || parts[0] != "v1" {
+        return Err(ReminderIdentityError::InvalidActionTarget);
+    }
+    let identity = parse_reminder_deep_link(parts[1])?;
+    let key = percent_decode_value(parts[2])?;
+    if key.len() > MAX_REMINDER_KEY_BYTES {
+        return Err(ReminderIdentityError::Oversized);
+    }
+    let claim_token = percent_decode_value(parts[3])?;
+    validate_claim_token(&claim_token)?;
+    let key_identity = identity_from_reminder_key(&key)?;
+    if key_identity != identity {
+        return Err(ReminderIdentityError::InvalidActionTarget);
+    }
+    Ok(ReminderActionTarget {
+        identity,
+        key,
+        claim_token,
+    })
+}
+
+pub fn deduplicate_deliveries(deliveries: &[ReminderDelivery]) -> Vec<ReminderDelivery> {
+    let mut seen = BTreeSet::new();
+    deliveries
+        .iter()
+        .filter(|delivery| seen.insert(delivery.candidate.key.clone()))
+        .cloned()
+        .collect()
+}
+
 pub trait ReminderClock: Clone {
     fn now(&self) -> i64;
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SystemClock;
+
+impl ReminderClock for SystemClock {
+    fn now(&self) -> i64 {
+        chrono::Utc::now().timestamp()
+    }
 }
 
 /// A deterministic clock for scheduler tests and portable replay.  Production
@@ -1051,6 +1541,14 @@ impl<C: ReminderClock> ReminderScheduler<C> {
         store.due_reminders(candidates, self.clock.now())
     }
 
+    pub fn claim_due_reminders(
+        &self,
+        store: &mut ReminderStore,
+        candidates: &[ReminderCandidate],
+    ) -> io::Result<Vec<ReminderDelivery>> {
+        store.claim_due_reminders(candidates, self.clock.now())
+    }
+
     pub fn snooze_for(&self, store: &mut ReminderStore, key: &str, seconds: i64) -> io::Result<()> {
         store.snooze_until(key, self.clock.now().saturating_add(seconds.max(0)))
     }
@@ -1071,6 +1569,65 @@ struct ReminderState {
     snoozed_until: BTreeMap<String, i64>,
     #[serde(default)]
     delivered: BTreeSet<String>,
+    #[serde(default)]
+    pending: BTreeMap<String, PendingDeliveryState>,
+    #[serde(default)]
+    delivery_tokens: BTreeMap<String, String>,
+    #[serde(default)]
+    delivery_completed_at: BTreeMap<String, i64>,
+    #[serde(default)]
+    delivery_actions: BTreeMap<String, DeliveryAction>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct PendingDeliveryState {
+    token: String,
+    claimed_at: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+enum DeliveryAction {
+    Delivered,
+    Snoozed,
+    Dismissed,
+}
+
+fn current_reminder_time() -> i64 {
+    chrono::Utc::now().timestamp()
+}
+
+fn claim_is_current(claim: &PendingDeliveryState, token: &str, now: i64) -> bool {
+    claim.token == token && claim.claimed_at > now.saturating_sub(MAX_CLAIM_SECONDS)
+}
+
+fn completed_delivery_is_current(state: &ReminderState, key: &str, token: &str, now: i64) -> bool {
+    state
+        .delivery_tokens
+        .get(key)
+        .is_some_and(|stored| stored == token)
+        && state
+            .delivery_completed_at
+            .get(key)
+            // State written by the pre-lease implementation has no
+            // completion timestamp.  It is deliberately not actionable:
+            // without an age there is no safe way to distinguish a live
+            // notification from a stale one after restart.
+            .is_some_and(|completed_at| *completed_at > now.saturating_sub(MAX_CLAIM_SECONDS))
+}
+
+fn completed_delivery_action(state: &ReminderState, key: &str) -> Option<DeliveryAction> {
+    state.delivery_actions.get(key).copied().or_else(|| {
+        // Older state files did not record which action completed a claim.
+        // Treat their delivered bit as a notification handoff so the valid
+        // snooze button remains usable during the compatibility window.
+        if state.snoozed_until.contains_key(key) {
+            Some(DeliveryAction::Snoozed)
+        } else if state.delivered.contains(key) {
+            Some(DeliveryAction::Delivered)
+        } else {
+            None
+        }
+    })
 }
 
 impl Default for ReminderState {
@@ -1079,8 +1636,104 @@ impl Default for ReminderState {
             version: CURRENT_VERSION,
             snoozed_until: BTreeMap::new(),
             delivered: BTreeSet::new(),
+            pending: BTreeMap::new(),
+            delivery_tokens: BTreeMap::new(),
+            delivery_completed_at: BTreeMap::new(),
+            delivery_actions: BTreeMap::new(),
         }
     }
+}
+
+fn load_reminder_state(path: &Path) -> io::Result<ReminderState> {
+    match fs::read(path) {
+        Ok(raw) => {
+            let state = serde_json::from_slice::<ReminderState>(&raw)
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+            if state.version == 0 || state.version > CURRENT_VERSION {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "Nicht unterstützte Reminder-Version: {} (erwartet {})",
+                        state.version, CURRENT_VERSION
+                    ),
+                ));
+            }
+            Ok(ReminderState {
+                version: CURRENT_VERSION,
+                ..state
+            })
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(ReminderState::default()),
+        Err(error) => Err(error),
+    }
+}
+
+fn save_reminder_state(path: &Path, state: &ReminderState) -> io::Result<()> {
+    let raw = serde_json::to_vec_pretty(state)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent)?;
+    let file_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("reminders.json");
+    let sequence = REMINDER_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let temporary = parent.join(format!(
+        ".{file_name}.tmp-{}-{sequence}",
+        std::process::id()
+    ));
+    let result = (|| {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)?;
+        file.write_all(&raw)?;
+        file.sync_all()?;
+        fs::rename(&temporary, path)?;
+        if let Ok(directory) = File::open(parent) {
+            let _ = directory.sync_all();
+        }
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
+}
+
+fn due_reminders_from_state(
+    state: &ReminderState,
+    candidates: &[ReminderCandidate],
+    now: i64,
+) -> Vec<ReminderCandidate> {
+    let mut due = candidates
+        .iter()
+        .filter(|candidate| {
+            candidate.identity().is_ok()
+                && candidate.due_at <= now
+                && candidate.due_at >= now - MAX_LATE_SECONDS
+                && !state.delivered.contains(&candidate.key)
+                && !state
+                    .pending
+                    .get(&candidate.key)
+                    .is_some_and(|claim| claim.claimed_at > now.saturating_sub(MAX_CLAIM_SECONDS))
+                && state
+                    .snoozed_until
+                    .get(&candidate.key)
+                    .is_none_or(|until| *until <= now)
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    due.sort_by(|left, right| {
+        left.due_at
+            .cmp(&right.due_at)
+            .then_with(|| left.key.cmp(&right.key))
+    });
+    due.dedup_by(|left, right| left.key == right.key);
+    due
 }
 
 #[derive(Debug, Clone)]
@@ -1099,27 +1752,7 @@ impl ReminderStore {
 
     pub fn with_path(path: impl Into<PathBuf>) -> io::Result<Self> {
         let path = path.into();
-        let state = match fs::read(&path) {
-            Ok(raw) => {
-                let state = serde_json::from_slice::<ReminderState>(&raw)
-                    .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-                if state.version == 0 || state.version > CURRENT_VERSION {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!(
-                            "Nicht unterstützte Reminder-Version: {} (erwartet {})",
-                            state.version, CURRENT_VERSION
-                        ),
-                    ));
-                }
-                ReminderState {
-                    version: CURRENT_VERSION,
-                    ..state
-                }
-            }
-            Err(error) if error.kind() == io::ErrorKind::NotFound => ReminderState::default(),
-            Err(error) => return Err(error),
-        };
+        let state = load_reminder_state(&path)?;
         Ok(Self { path, state })
     }
 
@@ -1139,52 +1772,228 @@ impl ReminderStore {
         self.state
             .snoozed_until
             .retain(|_, until| *until > now - MAX_LATE_SECONDS);
+        due_reminders_from_state(&self.state, candidates, now)
+    }
 
-        let mut due = candidates
-            .iter()
-            .filter(|candidate| {
-                candidate.due_at <= now
-                    && candidate.due_at >= now - MAX_LATE_SECONDS
-                    && !self.state.delivered.contains(&candidate.key)
-                    && self
-                        .state
-                        .snoozed_until
-                        .get(&candidate.key)
-                        .map_or(true, |until| *until <= now)
-            })
-            .cloned()
-            .collect::<Vec<_>>();
-        due.sort_by(|left, right| {
-            left.due_at
-                .cmp(&right.due_at)
-                .then_with(|| left.key.cmp(&right.key))
-        });
-        due
+    /// Atomically claim each due, valid candidate before handing it to a
+    /// notification adapter.  A claim is persisted separately from delivery;
+    /// an interrupted adapter can therefore reclaim it after a short lease.
+    pub fn claim_due_reminders(
+        &mut self,
+        candidates: &[ReminderCandidate],
+        now: i64,
+    ) -> io::Result<Vec<ReminderDelivery>> {
+        self.update_state(|state| {
+            let before = state.clone();
+            state
+                .snoozed_until
+                .retain(|_, until| *until > now - MAX_LATE_SECONDS);
+            state
+                .pending
+                .retain(|_, claim| claim.claimed_at > now.saturating_sub(MAX_CLAIM_SECONDS));
+            let mut deliveries = Vec::new();
+            for candidate in due_reminders_from_state(state, candidates, now) {
+                if candidate.identity().is_err() {
+                    continue;
+                }
+                let sequence = REMINDER_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+                let claim_token = format!(
+                    "{}-{}-{}-{sequence}",
+                    now,
+                    std::process::id(),
+                    reminder_process_nonce(),
+                );
+                state.pending.insert(
+                    candidate.key.clone(),
+                    PendingDeliveryState {
+                        token: claim_token.clone(),
+                        claimed_at: now,
+                    },
+                );
+                state.delivered.remove(&candidate.key);
+                state.delivery_tokens.remove(&candidate.key);
+                state.delivery_completed_at.remove(&candidate.key);
+                state.delivery_actions.remove(&candidate.key);
+                deliveries.push(ReminderDelivery {
+                    candidate,
+                    claim_token,
+                });
+            }
+            Ok((state != &before, deliveries))
+        })
     }
 
     pub fn mark_delivered(&mut self, key: &str) -> io::Result<()> {
-        self.state.snoozed_until.remove(key);
-        self.state.delivered.insert(key.to_string());
-        self.save()
+        self.update_state(|state| {
+            let mut changed = false;
+            changed |= state.snoozed_until.remove(key).is_some();
+            changed |= state.pending.remove(key).is_some();
+            changed |= state.delivered.insert(key.to_string());
+            changed |= state.delivery_tokens.remove(key).is_some();
+            changed |= state.delivery_completed_at.remove(key).is_some();
+            changed |= state.delivery_actions.remove(key).is_some();
+            Ok((changed, ()))
+        })
     }
 
     pub fn snooze_until(&mut self, key: &str, until: i64) -> io::Result<()> {
-        self.state.delivered.remove(key);
-        self.state.snoozed_until.insert(key.to_string(), until);
-        self.save()
+        self.update_state(|state| {
+            let mut changed = false;
+            changed |= state.delivered.remove(key);
+            changed |= state.pending.remove(key).is_some();
+            changed |= state.snoozed_until.insert(key.to_string(), until) != Some(until);
+            changed |= state.delivery_tokens.remove(key).is_some();
+            changed |= state.delivery_completed_at.remove(key).is_some();
+            changed |= state.delivery_actions.remove(key).is_some();
+            Ok((changed, ()))
+        })
     }
 
     pub fn dismiss(&mut self, key: &str) -> io::Result<()> {
         self.mark_delivered(key)
     }
 
+    pub fn snooze_if_current(
+        &mut self,
+        key: &str,
+        claim_token: &str,
+        until: i64,
+    ) -> io::Result<bool> {
+        self.snooze_if_current_at(key, claim_token, until, current_reminder_time())
+    }
+
+    pub fn snooze_if_current_at(
+        &mut self,
+        key: &str,
+        claim_token: &str,
+        until: i64,
+        now: i64,
+    ) -> io::Result<bool> {
+        if identity_from_reminder_key(key).is_err() || validate_claim_token(claim_token).is_err() {
+            return Ok(false);
+        }
+        self.update_state(|state| {
+            let pending_matches = state
+                .pending
+                .get(key)
+                .is_some_and(|claim| claim_is_current(claim, claim_token, now));
+            let completed_matches = completed_delivery_is_current(state, key, claim_token, now);
+            if !pending_matches && !completed_matches {
+                return Ok((false, false));
+            }
+            if !pending_matches {
+                match completed_delivery_action(state, key) {
+                    Some(DeliveryAction::Snoozed) => return Ok((false, true)),
+                    Some(DeliveryAction::Delivered) => {}
+                    Some(DeliveryAction::Dismissed) | None => return Ok((false, false)),
+                }
+            }
+            state.pending.remove(key);
+            state.delivered.remove(key);
+            state.snoozed_until.insert(key.to_string(), until);
+            state
+                .delivery_tokens
+                .insert(key.to_string(), claim_token.to_string());
+            state.delivery_completed_at.insert(key.to_string(), now);
+            state
+                .delivery_actions
+                .insert(key.to_string(), DeliveryAction::Snoozed);
+            Ok((true, true))
+        })
+    }
+
+    pub fn dismiss_if_current(&mut self, key: &str, claim_token: &str) -> io::Result<bool> {
+        self.dismiss_if_current_at(key, claim_token, current_reminder_time())
+    }
+
+    pub fn dismiss_if_current_at(
+        &mut self,
+        key: &str,
+        claim_token: &str,
+        now: i64,
+    ) -> io::Result<bool> {
+        if identity_from_reminder_key(key).is_err() || validate_claim_token(claim_token).is_err() {
+            return Ok(false);
+        }
+        self.update_state(|state| {
+            let pending_matches = state
+                .pending
+                .get(key)
+                .is_some_and(|claim| claim_is_current(claim, claim_token, now));
+            let completed_matches = completed_delivery_is_current(state, key, claim_token, now);
+            if !pending_matches && !completed_matches {
+                return Ok((false, false));
+            }
+            if !pending_matches {
+                match completed_delivery_action(state, key) {
+                    Some(DeliveryAction::Dismissed) => return Ok((false, true)),
+                    Some(DeliveryAction::Delivered) => {}
+                    Some(DeliveryAction::Snoozed) | None => return Ok((false, false)),
+                }
+            }
+            state.pending.remove(key);
+            state.snoozed_until.remove(key);
+            state.delivered.insert(key.to_string());
+            state
+                .delivery_tokens
+                .insert(key.to_string(), claim_token.to_string());
+            state.delivery_completed_at.insert(key.to_string(), now);
+            state
+                .delivery_actions
+                .insert(key.to_string(), DeliveryAction::Dismissed);
+            Ok((true, true))
+        })
+    }
+
+    pub fn mark_delivered_if_claimed(&mut self, key: &str, claim_token: &str) -> io::Result<bool> {
+        self.mark_delivered_if_claimed_at(key, claim_token, current_reminder_time())
+    }
+
+    pub fn mark_delivered_if_claimed_at(
+        &mut self,
+        key: &str,
+        claim_token: &str,
+        now: i64,
+    ) -> io::Result<bool> {
+        if identity_from_reminder_key(key).is_err() || validate_claim_token(claim_token).is_err() {
+            return Ok(false);
+        }
+        self.update_state(|state| {
+            if !state
+                .pending
+                .get(key)
+                .is_some_and(|claim| claim_is_current(claim, claim_token, now))
+            {
+                return Ok((false, false));
+            }
+            state.pending.remove(key);
+            state.snoozed_until.remove(key);
+            state.delivered.insert(key.to_string());
+            state
+                .delivery_tokens
+                .insert(key.to_string(), claim_token.to_string());
+            state.delivery_completed_at.insert(key.to_string(), now);
+            state
+                .delivery_actions
+                .insert(key.to_string(), DeliveryAction::Delivered);
+            Ok((true, true))
+        })
+    }
+
     /// Make a previously delivered alarm eligible again.  This is the
     /// explicit restart operation used by deterministic scheduler tests and
     /// is persisted so a process restart cannot silently change the state.
     pub fn restart(&mut self, key: &str) -> io::Result<()> {
-        self.state.snoozed_until.remove(key);
-        self.state.delivered.remove(key);
-        self.save()
+        self.update_state(|state| {
+            let mut changed = false;
+            changed |= state.snoozed_until.remove(key).is_some();
+            changed |= state.pending.remove(key).is_some();
+            changed |= state.delivered.remove(key);
+            changed |= state.delivery_tokens.remove(key).is_some();
+            changed |= state.delivery_completed_at.remove(key).is_some();
+            changed |= state.delivery_actions.remove(key).is_some();
+            Ok((changed, ()))
+        })
     }
 
     #[allow(dead_code)]
@@ -1192,15 +2001,20 @@ impl ReminderStore {
         self.state.delivered.contains(key)
     }
 
-    fn save(&self) -> io::Result<()> {
-        let raw = serde_json::to_vec_pretty(&self.state)
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-        if let Some(parent) = self.path.parent() {
-            fs::create_dir_all(parent)?;
+    fn update_state<T, F>(&mut self, update: F) -> io::Result<T>
+    where
+        F: FnOnce(&mut ReminderState) -> io::Result<(bool, T)>,
+    {
+        let _guard = REMINDER_STATE_LOCK
+            .lock()
+            .map_err(|_| io::Error::other("Reminder-State-Sperre ist beschädigt"))?;
+        let mut state = load_reminder_state(&self.path)?;
+        let (changed, result) = update(&mut state)?;
+        if changed {
+            save_reminder_state(&self.path, &state)?;
         }
-        let temporary = self.path.with_extension("json.tmp");
-        fs::write(&temporary, raw)?;
-        fs::rename(temporary, &self.path)
+        self.state = state;
+        Ok(result)
     }
 }
 
@@ -1349,11 +2163,15 @@ fn alarm_candidates_from_specs(
     occurrence_id: &str,
     include_absolute: bool,
 ) -> Vec<ReminderCandidate> {
+    let Ok(identity) = ReminderIdentity::new(component_kind, source_uid, uid) else {
+        return Vec::new();
+    };
     alarms
         .iter()
         .into_iter()
         .enumerate()
-        .flat_map(|(index, alarm)| {
+        .flat_map(move |(index, alarm)| {
+            let identity = identity.clone();
             if !alarm.is_safe_to_notify()
                 || (!include_absolute && !matches!(alarm.trigger, AlarmTrigger::Relative { .. }))
             {
@@ -1380,27 +2198,9 @@ fn alarm_candidates_from_specs(
                         let step = repeat_step?;
                         initial_due_at.checked_add(step.checked_mul(i64::from(repeat_index))?)?
                     };
-                    let kind = match component_kind {
-                        ReminderComponentKind::Task => ReminderKind::Task,
-                        ReminderComponentKind::Event | ReminderComponentKind::Memo => {
-                            ReminderKind::Event
-                        }
-                    };
+                    let kind = identity.kind.into();
                     Some(ReminderCandidate {
-                        key: format!(
-                            "{}:{}:{}:{}:{}:{}:{}",
-                            match component_kind {
-                                ReminderComponentKind::Event => "event",
-                                ReminderComponentKind::Task => "task",
-                                ReminderComponentKind::Memo => "memo",
-                            },
-                            source_uid,
-                            uid,
-                            occurrence_id,
-                            index,
-                            repeat_index,
-                            due_at
-                        ),
+                        key: reminder_key(&identity, occurrence_id, index, repeat_index, due_at),
                         title: alarm
                             .message
                             .as_deref()
@@ -1859,7 +2659,7 @@ mod tests {
         let path = temporary_path("reminders");
         let mut store = ReminderStore::with_path(&path).expect("store should load");
         let candidate = ReminderCandidate {
-            key: "event:event-1:0:100".to_string(),
+            key: test_candidate(ReminderComponentKind::Event, 100).key,
             title: "Meeting".to_string(),
             due_at: 100,
             kind: ReminderKind::Event,
@@ -1895,6 +2695,553 @@ mod tests {
                 .is_empty()
         );
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn reminder_identity_roundtrips_all_types_and_reserved_values() {
+        for kind in [
+            ReminderComponentKind::Event,
+            ReminderComponentKind::Task,
+            ReminderComponentKind::Memo,
+        ] {
+            let identity =
+                ReminderIdentity::new(kind, "source uid:ä?&/calendar", "component uid:ä?&=")
+                    .expect("identity should validate");
+            let uri = identity.to_uri();
+            assert!(uri.contains("%20"));
+            assert!(uri.contains("%2F"));
+            assert_eq!(ReminderIdentity::parse(&uri), Ok(identity));
+        }
+    }
+
+    #[test]
+    fn reminder_identity_rejects_malformed_unknown_empty_control_traversal_and_oversize() {
+        let invalid = [
+            "calendar:///?source-uid=a&comp-uid=b&extra=c",
+            "calendar:///?source-uid=a&source-uid=b",
+            "calendar:///?source-uid=a&unknown=b",
+            "calendar:///?source-uid=%&comp-uid=b",
+            "calendar:///?source-uid=%2f&comp-uid=b",
+            "calendar:///?source-uid=a%00b&comp-uid=b",
+            "calendar:///?source-uid=a%2F..%2Fb&comp-uid=b",
+            "http:///?source-uid=a&comp-uid=b",
+            "calendar:///?source-uid=&comp-uid=b",
+            "calendar:///?source-uid=a&comp-uid=.",
+            "calendar:/?source-uid=a&comp-uid=b",
+        ];
+        for uri in invalid {
+            assert!(
+                ReminderIdentity::parse(uri).is_err(),
+                "URI should be rejected: {uri}"
+            );
+        }
+        let oversized = format!(
+            "calendar:///?source-uid={}&comp-uid=b",
+            "x".repeat(MAX_REMINDER_UID_BYTES + 1)
+        );
+        assert_eq!(
+            ReminderIdentity::parse(&oversized),
+            Err(ReminderIdentityError::Oversized)
+        );
+        assert!(ReminderIdentity::new(ReminderComponentKind::Event, "a\n", "b").is_err());
+        assert!(ReminderIdentity::new(ReminderComponentKind::Event, "..", "b").is_err());
+    }
+
+    #[test]
+    fn reminder_uri_is_canonical_and_decodes_percent_once() {
+        let identity = ReminderIdentity::new(
+            ReminderComponentKind::Event,
+            "literal %2F and unicode ä",
+            "component",
+        )
+        .unwrap();
+        let uri = identity.to_uri();
+        assert_eq!(ReminderIdentity::parse(&uri), Ok(identity.clone()));
+
+        let double_encoded = "calendar:///?source-uid=a%252Fb&comp-uid=b";
+        let parsed = ReminderIdentity::parse(double_encoded).unwrap();
+        assert_eq!(parsed.source_uid, "a%2Fb");
+        assert_eq!(parsed.to_uri(), double_encoded);
+
+        for uri in [
+            "calendar:///?source-uid=%c3%a4&comp-uid=b",
+            "calendar:///?source-uid=%C3%28&comp-uid=b",
+            "calendar:///?source-uid=%C3&comp-uid=b",
+            "calendar:///?source-uid=%00&comp-uid=b",
+            "calendar:///?source-uid=%2E%2E%2Fentry&comp-uid=b",
+            "calendar:///?source-uid=a&comp-uid=b&source-uid=c",
+        ] {
+            assert!(
+                ReminderIdentity::parse(uri).is_err(),
+                "non-canonical or unsafe URI should be rejected: {uri}"
+            );
+        }
+    }
+
+    #[test]
+    fn component_presence_distinguishes_source_component_and_type() {
+        let snapshot = CalendarSnapshot {
+            events: vec![CalendarEventRecord {
+                uid: "event-1".to_string(),
+                source_uid: "source-1".to_string(),
+                source_display_name: "Source".to_string(),
+                component: "BEGIN:VEVENT\r\nEND:VEVENT\r\n".to_string(),
+                summary: "Event".to_string(),
+                start: String::new(),
+                end: String::new(),
+                location: String::new(),
+                description: String::new(),
+                all_day: false,
+            }],
+            tasks: vec![TaskRecord {
+                uid: "task-1".to_string(),
+                source_uid: "source-1".to_string(),
+                source_display_name: "Source".to_string(),
+                component: "BEGIN:VTODO\r\nEND:VTODO\r\n".to_string(),
+                summary: "Task".to_string(),
+                due: String::new(),
+                priority: 0,
+                completed: false,
+            }],
+            memos: vec![super::super::calendar_store_service::MemoRecord {
+                uid: "memo-1".to_string(),
+                source_uid: "source-1".to_string(),
+                source_display_name: "Source".to_string(),
+                component: "BEGIN:VJOURNAL\r\nEND:VJOURNAL\r\n".to_string(),
+                summary: "Memo".to_string(),
+                description: String::new(),
+                updated: String::new(),
+            }],
+        };
+        assert_eq!(
+            component_presence(
+                &snapshot,
+                &ReminderIdentity::new(ReminderComponentKind::Event, "source-1", "event-1")
+                    .unwrap()
+            ),
+            ReminderComponentPresence::Found
+        );
+        assert_eq!(
+            component_presence(
+                &snapshot,
+                &ReminderIdentity::new(ReminderComponentKind::Memo, "source-1", "memo-1").unwrap()
+            ),
+            ReminderComponentPresence::Found
+        );
+        assert_eq!(
+            component_presence(
+                &snapshot,
+                &ReminderIdentity::new(ReminderComponentKind::Event, "source-1", "missing")
+                    .unwrap()
+            ),
+            ReminderComponentPresence::MissingComponent
+        );
+        assert_eq!(
+            component_presence(
+                &snapshot,
+                &ReminderIdentity::new(ReminderComponentKind::Memo, "missing", "memo-1").unwrap()
+            ),
+            ReminderComponentPresence::MissingSource
+        );
+
+        let task_only = CalendarSnapshot {
+            tasks: snapshot.tasks.clone(),
+            ..CalendarSnapshot::default()
+        };
+        assert_eq!(
+            component_presence(
+                &task_only,
+                &ReminderIdentity::new(ReminderComponentKind::Event, "source-1", "event-1")
+                    .unwrap()
+            ),
+            ReminderComponentPresence::MissingSource
+        );
+    }
+
+    #[test]
+    fn reminder_action_targets_roundtrip_and_deduplicate_repeated_activation() {
+        let candidate = test_candidate(ReminderComponentKind::Task, 100);
+        let delivery = ReminderDelivery {
+            candidate,
+            claim_token: "100-42-1".to_string(),
+        };
+        let target = delivery.action_target().expect("target should validate");
+        let parsed = parse_reminder_action_target(&target).expect("target should parse");
+        assert_eq!(parsed.identity, delivery.identity().unwrap());
+        assert_eq!(parsed.key, delivery.candidate.key);
+        assert_eq!(
+            deduplicate_deliveries(&[delivery.clone(), delivery.clone()]),
+            vec![delivery.clone()]
+        );
+        assert!(parse_reminder_action_target("v1|calendar:///bad|bad|bad").is_err());
+        assert!(parse_reminder_action_target(&target.replacen("%3A", "%3a", 1)).is_err());
+        assert!(
+            ReminderDelivery {
+                candidate: delivery.candidate.clone(),
+                claim_token: "token/with-slash".to_string(),
+            }
+            .action_target()
+            .is_err()
+        );
+
+        let long_identity = ReminderIdentity::new(
+            ReminderComponentKind::Event,
+            "s".repeat(MAX_REMINDER_UID_BYTES),
+            "c".repeat(MAX_REMINDER_UID_BYTES),
+        )
+        .unwrap();
+        let long_candidate = ReminderCandidate {
+            key: reminder_key(
+                &long_identity,
+                &"o".repeat(MAX_REMINDER_UID_BYTES),
+                0,
+                0,
+                100,
+            ),
+            title: "Long reminder".to_string(),
+            due_at: 100,
+            kind: ReminderKind::Event,
+        };
+        let long_delivery = ReminderDelivery {
+            candidate: long_candidate,
+            claim_token: "100-42-1".to_string(),
+        };
+        let long_target = long_delivery.action_target().unwrap();
+        assert_eq!(
+            parse_reminder_action_target(&long_target).unwrap().identity,
+            long_identity
+        );
+    }
+
+    #[test]
+    fn reminder_claim_delivery_is_exactly_once_and_stale_claim_is_ignored() {
+        let path = temporary_path("claim");
+        let candidate = test_candidate(ReminderComponentKind::Event, 100);
+        let mut first = ReminderStore::with_path(&path).unwrap();
+        let claimed = first
+            .claim_due_reminders(std::slice::from_ref(&candidate), 100)
+            .unwrap();
+        assert_eq!(claimed.len(), 1);
+        let token = claimed[0].claim_token.clone();
+
+        let mut second = ReminderStore::with_path(&path).unwrap();
+        assert!(
+            second
+                .claim_due_reminders(std::slice::from_ref(&candidate), 100)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            second
+                .mark_delivered_if_claimed_at(&candidate.key, "stale-token", 100)
+                .unwrap()
+                == false
+        );
+        assert!(
+            second
+                .mark_delivered_if_claimed_at(&candidate.key, &token, 100)
+                .unwrap()
+        );
+        assert!(
+            second
+                .snooze_if_current_at(&candidate.key, &token, 200, 101)
+                .unwrap()
+        );
+        assert!(
+            !second
+                .dismiss_if_current_at(&candidate.key, &token, 101)
+                .unwrap()
+        );
+        drop(second);
+
+        let mut reopened = ReminderStore::with_path(&path).unwrap();
+        assert!(
+            reopened
+                .claim_due_reminders(std::slice::from_ref(&candidate), 101)
+                .unwrap()
+                .is_empty()
+        );
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn concurrent_claimers_produce_one_delivery() {
+        let path = temporary_path("concurrent-claim");
+        let candidate = test_candidate(ReminderComponentKind::Event, 100);
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let mut handles = Vec::new();
+        for _ in 0..2 {
+            let path = path.clone();
+            let candidate = candidate.clone();
+            let barrier = Arc::clone(&barrier);
+            handles.push(std::thread::spawn(move || {
+                barrier.wait();
+                ReminderStore::with_path(path)
+                    .unwrap()
+                    .claim_due_reminders(std::slice::from_ref(&candidate), 100)
+                    .unwrap()
+                    .len()
+            }));
+        }
+        let claimed: usize = handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .sum();
+        assert_eq!(claimed, 1);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn reminder_scheduler_claim_uses_deterministic_clock_and_store_contract() {
+        let path = temporary_path("scheduler-claim");
+        let clock = FakeClock::new(100);
+        let scheduler = ReminderScheduler::new(clock.clone());
+        let candidate = test_candidate(ReminderComponentKind::Task, 100);
+        let mut store = ReminderStore::with_path(&path).unwrap();
+
+        assert_eq!(
+            scheduler
+                .claim_due_reminders(&mut store, std::slice::from_ref(&candidate))
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(
+            scheduler
+                .claim_due_reminders(&mut store, std::slice::from_ref(&candidate))
+                .unwrap()
+                .is_empty()
+        );
+        clock.advance(MAX_CLAIM_SECONDS);
+        assert_eq!(
+            scheduler
+                .claim_due_reminders(&mut store, std::slice::from_ref(&candidate))
+                .unwrap()
+                .len(),
+            1
+        );
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn reminder_snooze_dismiss_and_restart_survive_restart() {
+        let path = temporary_path("restart");
+        let candidate = test_candidate(ReminderComponentKind::Memo, 100);
+        let mut store = ReminderStore::with_path(&path).unwrap();
+        let delivery = store
+            .claim_due_reminders(std::slice::from_ref(&candidate), 100)
+            .unwrap()
+            .pop()
+            .unwrap();
+        assert!(
+            store
+                .snooze_if_current_at(&candidate.key, &delivery.claim_token, 200, 100)
+                .unwrap()
+        );
+        drop(store);
+
+        let mut snoozed = ReminderStore::with_path(&path).unwrap();
+        assert!(
+            snoozed
+                .claim_due_reminders(std::slice::from_ref(&candidate), 199)
+                .unwrap()
+                .is_empty()
+        );
+        let replacement = snoozed
+            .claim_due_reminders(std::slice::from_ref(&candidate), 200)
+            .unwrap()
+            .pop()
+            .unwrap();
+        assert!(
+            !snoozed
+                .dismiss_if_current_at(&candidate.key, &delivery.claim_token, 200)
+                .unwrap()
+        );
+        assert!(
+            snoozed
+                .dismiss_if_current_at(&candidate.key, &replacement.claim_token, 200)
+                .unwrap()
+        );
+        drop(snoozed);
+
+        let mut dismissed = ReminderStore::with_path(&path).unwrap();
+        assert!(
+            dismissed
+                .claim_due_reminders(std::slice::from_ref(&candidate), 300)
+                .unwrap()
+                .is_empty()
+        );
+        dismissed.restart(&candidate.key).unwrap();
+        assert_eq!(
+            dismissed
+                .claim_due_reminders(std::slice::from_ref(&candidate), 300)
+                .unwrap()
+                .len(),
+            1
+        );
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn expired_and_crossed_reminder_actions_are_rejected() {
+        let path = temporary_path("stale-action");
+        let candidate = test_candidate(ReminderComponentKind::Event, 100);
+        let mut store = ReminderStore::with_path(&path).unwrap();
+        let first = store
+            .claim_due_reminders(std::slice::from_ref(&candidate), 100)
+            .unwrap()
+            .pop()
+            .unwrap();
+
+        assert!(
+            !store
+                .dismiss_if_current_at(&candidate.key, &first.claim_token, 400)
+                .unwrap()
+        );
+        let replacement = store
+            .claim_due_reminders(std::slice::from_ref(&candidate), 400)
+            .unwrap()
+            .pop()
+            .unwrap();
+        assert_ne!(first.claim_token, replacement.claim_token);
+        assert!(
+            !store
+                .dismiss_if_current_at(&candidate.key, &first.claim_token, 400)
+                .unwrap()
+        );
+
+        assert!(
+            store
+                .snooze_if_current_at(&candidate.key, &replacement.claim_token, 500, 400)
+                .unwrap()
+        );
+        // A retry of the same snooze is idempotent, while a different stale
+        // operation cannot turn the snooze into a dismissal.
+        assert!(
+            store
+                .snooze_if_current_at(&candidate.key, &replacement.claim_token, 500, 401)
+                .unwrap()
+        );
+        assert!(
+            !store
+                .dismiss_if_current_at(&candidate.key, &replacement.claim_token, 401)
+                .unwrap()
+        );
+        drop(store);
+
+        let mut reopened = ReminderStore::with_path(&path).unwrap();
+        assert!(
+            reopened
+                .claim_due_reminders(std::slice::from_ref(&candidate), 499)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            reopened
+                .claim_due_reminders(std::slice::from_ref(&candidate), 500)
+                .unwrap()
+                .len(),
+            1
+        );
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn legacy_completion_without_timestamp_is_not_actionable() {
+        let path = temporary_path("legacy-completion");
+        let candidate = test_candidate(ReminderComponentKind::Event, 100);
+        let token = "100-legacy-claim".to_string();
+        let mut state = ReminderState::default();
+        state.delivered.insert(candidate.key.clone());
+        state
+            .delivery_tokens
+            .insert(candidate.key.clone(), token.clone());
+        save_reminder_state(&path, &state).unwrap();
+
+        let mut store = ReminderStore::with_path(&path).unwrap();
+        assert!(
+            !store
+                .dismiss_if_current_at(&candidate.key, &token, 400)
+                .unwrap()
+        );
+        assert!(
+            store
+                .claim_due_reminders(std::slice::from_ref(&candidate), 400)
+                .unwrap()
+                .is_empty()
+        );
+        let _ = fs::remove_file(path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn failed_state_write_keeps_previous_state_and_does_not_claim() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let parent = std::env::temp_dir().join(format!(
+            "evolution-gtk4-failed-write-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&parent);
+        fs::create_dir(&parent).unwrap();
+        let path = parent.join("reminders.json");
+        let candidate = test_candidate(ReminderComponentKind::Event, 100);
+        let mut store = ReminderStore::with_path(&path).unwrap();
+        store.snooze_until(&candidate.key, 200).unwrap();
+        let before = fs::read(&path).unwrap();
+        fs::set_permissions(&parent, fs::Permissions::from_mode(0o500)).unwrap();
+        let result = store.restart(&candidate.key);
+        fs::set_permissions(&parent, fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(result.is_err());
+        assert_eq!(fs::read(&path).unwrap(), before);
+        let mut reopened = ReminderStore::with_path(&path).unwrap();
+        assert!(
+            reopened
+                .claim_due_reminders(std::slice::from_ref(&candidate), 100)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            reopened
+                .claim_due_reminders(std::slice::from_ref(&candidate), 200)
+                .unwrap()
+                .len(),
+            1
+        );
+        let _ = fs::remove_dir_all(parent);
+    }
+
+    #[test]
+    fn failed_atomic_save_cleans_temp_and_preserves_destination() {
+        let parent = std::env::temp_dir().join(format!(
+            "evolution-gtk4-reminder-atomic-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&parent);
+        fs::create_dir(&parent).unwrap();
+        let destination = parent.join("occupied.json");
+        fs::create_dir(&destination).unwrap();
+
+        assert!(save_reminder_state(&destination, &ReminderState::default()).is_err());
+        assert!(destination.is_dir());
+        let prefix = ".occupied.json.tmp-";
+        assert!(
+            !fs::read_dir(&parent)
+                .unwrap()
+                .filter_map(Result::ok)
+                .any(|entry| entry.file_name().to_string_lossy().starts_with(prefix))
+        );
+        let _ = fs::remove_dir_all(parent);
+    }
+
+    fn test_candidate(kind: ReminderComponentKind, due_at: i64) -> ReminderCandidate {
+        let identity = ReminderIdentity::new(kind, "source-1", "component-1").unwrap();
+        ReminderCandidate {
+            key: reminder_key(&identity, "single", 0, 0, due_at),
+            title: "Test reminder".to_string(),
+            due_at,
+            kind: kind.into(),
+        }
     }
 
     #[test]

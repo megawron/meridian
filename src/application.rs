@@ -14,10 +14,18 @@ use glib::prelude::ToVariant;
 use gtk::{gdk, gio, glib};
 
 use crate::services::AppSettings;
-use crate::services::calendar_store_service::CalendarStoreService;
-use crate::services::reminder_service::{self, ReminderKind, ReminderStore};
+use crate::services::reminder_service::{
+    self, ReminderComponentKind, ReminderIdentity, ReminderKind, ReminderScheduler, ReminderStore,
+    SystemClock, parse_reminder_action_target, parse_reminder_deep_link,
+};
 use crate::window::EvolutionWindow;
 use crate::{APP_ID, RESOURCE_PATH};
+
+#[derive(Debug, Clone, Copy)]
+enum ReminderAction {
+    Snooze(i64),
+    Dismiss,
+}
 
 // ─── GObject Subclass Boilerplate ───────────────────────────────────────────
 
@@ -30,6 +38,7 @@ mod imp {
     pub struct EvolutionApplication {
         pub reminder_source: RefCell<Option<glib::SourceId>>,
         pub reminder_check_in_progress: Cell<bool>,
+        pub reminder_action_in_progress: Cell<bool>,
     }
 
     #[glib::object_subclass]
@@ -68,16 +77,20 @@ mod imp {
 
             // GTK4-rs/libadwaita is the single production frontend.  EDS and
             // Camel services remain independent of this widget layer.
-            let window = if let Some(window) = app.active_window() {
-                window
-            } else {
-                let window = EvolutionWindow::new(&app);
-                window.upcast()
-            };
+            let window = app.main_window();
 
             tracing::debug!("Presenting main window after synchronous UI construction");
             window.present();
+            window.present_existing_reminders();
             tracing::debug!("Main window presented");
+        }
+
+        fn open(&self, files: &[gio::File], hint: &str) {
+            self.parent_open(files, hint);
+            let app = self.obj();
+            for file in files {
+                app.route_component_uri(&file.uri().to_string(), None);
+            }
         }
     }
 
@@ -225,15 +238,27 @@ impl EvolutionApplication {
             #[weak(rename_to = app)]
             self,
             move |_, parameter| {
-                let Some(key) = parameter.and_then(|value| value.str()).map(str::to_owned) else {
+                let Some(target) = parameter.and_then(|value| value.str()) else {
                     return;
                 };
-                if let Ok(mut store) = ReminderStore::new() {
-                    if let Err(error) = store.dismiss(&key) {
-                        tracing::warn!(%error, "Could not persist dismissed reminder");
-                    }
-                }
-                app.withdraw_notification(&reminder_notification_id(&key));
+                app.apply_reminder_action(target, ReminderAction::Dismiss);
+            }
+        ));
+        self.add_action(&action);
+
+        let action = gio::SimpleAction::new("open-reminder", Some(glib::VariantTy::STRING));
+        action.connect_activate(glib::clone!(
+            #[weak(rename_to = app)]
+            self,
+            move |_, parameter| {
+                let Some(target) = parameter.and_then(|value| value.str()) else {
+                    return;
+                };
+                let Ok(target) = parse_reminder_action_target(target) else {
+                    app.show_reminder_error("Ungültiges Reminder-Aktionsziel");
+                    return;
+                };
+                app.route_component_identity(target.identity, None);
             }
         ));
         self.add_action(&action);
@@ -245,19 +270,165 @@ impl EvolutionApplication {
             #[weak(rename_to = app)]
             self,
             move |_, parameter| {
-                let Some(key) = parameter.and_then(|value| value.str()).map(str::to_owned) else {
+                let Some(target) = parameter.and_then(|value| value.str()) else {
                     return;
                 };
-                let until = chrono::Utc::now().timestamp().saturating_add(seconds);
-                if let Ok(mut store) = ReminderStore::new() {
-                    if let Err(error) = store.snooze_until(&key, until) {
-                        tracing::warn!(%error, "Could not persist snoozed reminder");
-                    }
-                }
-                app.withdraw_notification(&reminder_notification_id(&key));
+                app.apply_reminder_action(target, ReminderAction::Snooze(seconds));
             }
         ));
         self.add_action(&action);
+    }
+
+    fn main_window(&self) -> EvolutionWindow {
+        if let Some(window) = self
+            .active_window()
+            .and_then(|window| window.downcast::<EvolutionWindow>().ok())
+        {
+            return window;
+        }
+        self.windows()
+            .into_iter()
+            .find_map(|window| window.downcast::<EvolutionWindow>().ok())
+            .unwrap_or_else(|| EvolutionWindow::new(self))
+    }
+
+    fn show_reminder_error(&self, message: &str) {
+        let window = self.main_window();
+        window.present();
+        window.add_toast(&adw::Toast::new(message));
+    }
+
+    fn route_component_uri(&self, uri: &str, expected_kind: Option<ReminderComponentKind>) -> bool {
+        let identity = match parse_reminder_deep_link(uri) {
+            Ok(identity) => identity,
+            Err(error) => {
+                self.show_reminder_error(&format!("Reminder-Link nicht geöffnet: {error}"));
+                return false;
+            }
+        };
+        self.route_component_identity(identity, expected_kind)
+    }
+
+    fn route_component_identity(
+        &self,
+        identity: ReminderIdentity,
+        expected_kind: Option<ReminderComponentKind>,
+    ) -> bool {
+        if expected_kind.is_some_and(|kind| identity.kind != kind) {
+            self.show_reminder_error("Reminder-Link passt nicht zur angeforderten Komponente");
+            return false;
+        }
+        let window = self.main_window();
+        window.present();
+        window.open_component(identity)
+    }
+
+    fn set_reminder_action_sensitivity(&self, enabled: bool) {
+        for name in [
+            "snooze-reminder-10m",
+            "snooze-reminder-1h",
+            "dismiss-reminder",
+        ] {
+            if let Some(action) = self
+                .lookup_action(name)
+                .and_then(|action| action.downcast::<gio::SimpleAction>().ok())
+            {
+                action.set_enabled(enabled);
+            }
+        }
+    }
+
+    fn apply_reminder_action(&self, target: &str, action: ReminderAction) -> bool {
+        let raw_target = target.to_owned();
+        let target = match parse_reminder_action_target(target) {
+            Ok(target) => target,
+            Err(error) => {
+                self.show_reminder_error(&format!("Reminder-Aktion abgewiesen: {error}"));
+                return false;
+            }
+        };
+        if self.imp().reminder_action_in_progress.replace(true) {
+            return false;
+        }
+        self.set_reminder_action_sensitivity(false);
+
+        let key = target.key.clone();
+        let claim_token = target.claim_token.clone();
+        let (sender, receiver) = async_channel::bounded(1);
+        std::thread::spawn(move || {
+            let now = chrono::Utc::now().timestamp();
+            let result = ReminderStore::new().and_then(|mut store| match action {
+                ReminderAction::Snooze(seconds) => store
+                    .snooze_if_current_at(
+                        &key,
+                        &claim_token,
+                        now.saturating_add(seconds.max(0)),
+                        now,
+                    )
+                    .map(|applied| {
+                        if applied {
+                            Ok(())
+                        } else {
+                            Err(std::io::Error::new(
+                                std::io::ErrorKind::Other,
+                                "Reminder-Aktion ist veraltet",
+                            ))
+                        }
+                    })?,
+                ReminderAction::Dismiss => store
+                    .dismiss_if_current_at(&key, &claim_token, now)
+                    .map(|applied| {
+                        if applied {
+                            Ok(())
+                        } else {
+                            Err(std::io::Error::new(
+                                std::io::ErrorKind::Other,
+                                "Reminder-Aktion ist veraltet",
+                            ))
+                        }
+                    })?,
+            });
+            let _ = sender.send_blocking(result);
+        });
+
+        let app = self.downgrade();
+        glib::spawn_future_local(async move {
+            let result = receiver.recv().await;
+            let Some(app) = app.upgrade() else {
+                return;
+            };
+            app.imp().reminder_action_in_progress.set(false);
+            app.set_reminder_action_sensitivity(true);
+            let window = app.main_window();
+            match result {
+                Ok(Ok(())) => {
+                    window.finish_reminder_action(&raw_target, true, None);
+                    app.withdraw_notification(&reminder_notification_id(&target.key));
+                }
+                Ok(Err(error)) => {
+                    let message = error.to_string();
+                    window.finish_reminder_action(&raw_target, false, Some(message));
+                }
+                Err(error) => {
+                    let message = format!("Reminder-Aktion abgebrochen: {error}");
+                    window.finish_reminder_action(&raw_target, false, Some(message));
+                }
+            }
+        });
+        true
+    }
+
+    pub(crate) fn apply_reminder_action_from_dialog(
+        &self,
+        target: &str,
+        snooze_seconds: Option<i64>,
+    ) -> bool {
+        self.apply_reminder_action(
+            target,
+            snooze_seconds
+                .map(ReminderAction::Snooze)
+                .unwrap_or(ReminderAction::Dismiss),
+        )
     }
 
     fn setup_reminder_scheduler(&self) {
@@ -286,46 +457,64 @@ impl EvolutionApplication {
         if self.imp().reminder_check_in_progress.replace(true) {
             return;
         }
-        let now = chrono::Utc::now().timestamp();
+        let local_calendar_directory =
+            AppSettings::try_new().map(|settings| settings.local_calendar_directory());
         let (sender, receiver) = async_channel::bounded(1);
         std::thread::spawn(move || {
             // Calendar files and reminder state can be large and are not part
             // of the first GTK frame.  Keep all filesystem/parsing work off
             // the main context; only the final desktop notifications return
             // to GTK below.
-            let snapshot = CalendarStoreService::new().load_snapshot();
+            let scheduler = ReminderScheduler::new(SystemClock);
+            let now = scheduler.now();
+            let snapshot = reminder_service::calendar_store_for_worker(local_calendar_directory)
+                .load_snapshot();
             let candidates = reminder_service::candidates_from_snapshot(&snapshot, now);
-            let Ok(mut store) = ReminderStore::new() else {
-                tracing::debug!("Portable reminder state is unavailable");
-                let _ = sender.send_blocking(Vec::new());
-                return;
-            };
-            let due = store.due_reminders(&candidates, now);
-            // Delivery is marked only after the GTK notification has been
-            // handed to the desktop, so a failed startup cannot silently
-            // consume a reminder.
-            drop(store);
-            if let Err(error) = sender.send_blocking(due) {
+            let result = ReminderStore::new()
+                .and_then(|mut store| scheduler.claim_due_reminders(&mut store, &candidates));
+            if let Err(error) = sender.send_blocking(result) {
                 tracing::debug!(%error, "Reminder result was dropped before delivery");
             }
         });
 
         let app = self.downgrade();
         glib::spawn_future_local(async move {
-            let due = receiver.recv().await.unwrap_or_default();
             let Some(app) = app.upgrade() else {
                 return;
             };
             app.imp().reminder_check_in_progress.set(false);
-            let mut delivered_keys = Vec::with_capacity(due.len());
-            for candidate in due {
-                let notification = gio::Notification::new(&candidate.title);
-                let body = match candidate.kind {
+            let due = match receiver.recv().await {
+                Ok(Ok(due)) => due,
+                Ok(Err(error)) => {
+                    app.show_reminder_error(&format!(
+                        "Reminder-Zustand nicht gespeichert: {error}"
+                    ));
+                    return;
+                }
+                Err(error) => {
+                    tracing::debug!(%error, "Reminder result channel closed");
+                    return;
+                }
+            };
+            let mut delivered = Vec::with_capacity(due.len());
+            for delivery in due {
+                let Ok(target) = delivery.action_target() else {
+                    tracing::warn!(key = %delivery.candidate.key, "Skipping reminder with invalid action target");
+                    continue;
+                };
+                let notification = gio::Notification::new(&delivery.candidate.title);
+                let body = match delivery.candidate.kind {
                     ReminderKind::Event => "Kalendertermin ist fällig",
                     ReminderKind::Task => "Aufgabe ist fällig",
+                    ReminderKind::Memo => "Notiz ist fällig",
                 };
                 notification.set_body(Some(body));
-                let target = candidate.key.to_variant();
+                let target = target.to_variant();
+                notification.add_button_with_target_value(
+                    "Öffnen",
+                    "app.open-reminder",
+                    Some(&target),
+                );
                 notification.add_button_with_target_value(
                     "10 Minuten snoozen",
                     "app.snooze-reminder-10m",
@@ -342,19 +531,26 @@ impl EvolutionApplication {
                     Some(&target),
                 );
                 notification
-                    .set_default_action_and_target_value("app.dismiss-reminder", Some(&target));
-                let notification_id = reminder_notification_id(&candidate.key);
+                    .set_default_action_and_target_value("app.open-reminder", Some(&target));
+                let notification_id = reminder_notification_id(&delivery.candidate.key);
                 app.send_notification(Some(&notification_id), &notification);
-                delivered_keys.push(candidate.key);
+                delivered.push(delivery);
             }
-            if !delivered_keys.is_empty() {
+            if !delivered.is_empty() {
+                let window = app.main_window();
+                window.present_reminders(delivered.clone());
                 std::thread::spawn(move || {
                     let Ok(mut store) = ReminderStore::new() else {
                         tracing::debug!("Portable reminder state is unavailable after delivery");
                         return;
                     };
-                    for key in delivered_keys {
-                        if let Err(error) = store.mark_delivered(&key) {
+                    let now = chrono::Utc::now().timestamp();
+                    for delivery in delivered {
+                        if let Err(error) = store.mark_delivered_if_claimed_at(
+                            &delivery.candidate.key,
+                            &delivery.claim_token,
+                            now,
+                        ) {
                             tracing::warn!(%error, "Could not persist delivered reminder");
                         }
                     }

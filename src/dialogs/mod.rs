@@ -19,6 +19,7 @@ pub mod filter_editor_dialog;
 pub mod global_search_dialog;
 pub mod oof_dialog;
 pub mod preferences_dialog;
+pub mod reminder_dialog;
 pub mod search_folder_dialog;
 pub mod shortcuts_dialog;
 
@@ -33,6 +34,7 @@ pub use filter_editor_dialog::FilterEditorDialog;
 pub use global_search_dialog::GlobalSearchDialog;
 pub use oof_dialog::OutOfOfficeDialog;
 pub use preferences_dialog::PreferencesDialog;
+pub use reminder_dialog::{ReminderDialog, ReminderDialogAction};
 pub use search_folder_dialog::SearchFolderDialog;
 pub use shortcuts_dialog::show_shortcuts_dialog;
 

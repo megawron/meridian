@@ -23,6 +23,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use crate::application::EvolutionApplication;
+use crate::dialogs::{ReminderDialog, ReminderDialogAction};
 use crate::services::AppSettings;
 use crate::services::mail_print_service::MailPrintAction;
 use crate::services::mail_transport_service::{
@@ -30,7 +31,12 @@ use crate::services::mail_transport_service::{
     MailTransportService, MailTransportSnapshot, MailTransportStartError, MailTransportState,
     WORK_OFFLINE_ACTION_ID, WORK_ONLINE_ACTION_ID,
 };
+use crate::services::reminder_service::{
+    ReminderComponentKind, ReminderComponentPresence, ReminderDelivery, ReminderIdentity,
+    component_presence, parse_reminder_deep_link,
+};
 use crate::views::{CalendarPage, ContactsPage, MailPage, MemosPage, TasksPage};
+use std::time::Instant;
 
 // ─── GObject Subclass ───────────────────────────────────────────────────────
 
@@ -38,7 +44,7 @@ mod imp {
     use super::*;
     use std::cell::RefCell;
 
-    #[derive(Debug, Default)]
+    #[derive(Default)]
     pub struct EvolutionWindow {
         pub view_stack: RefCell<Option<adw::ViewStack>>,
         pub toast_overlay: adw::ToastOverlay,
@@ -49,6 +55,11 @@ mod imp {
         pub transport_generation: Cell<u64>,
         pub transport_queued_items: Cell<usize>,
         pub transport_status_source: RefCell<Option<glib::SourceId>>,
+        pub reminder_dialog: RefCell<Option<ReminderDialog>>,
+        pub component_open_generation: Cell<u64>,
+        pub component_open_in_progress: Cell<bool>,
+        pub component_open_target: RefCell<Option<ReminderIdentity>>,
+        pub last_component_open: RefCell<Option<(ReminderIdentity, Instant)>>,
     }
 
     #[glib::object_subclass]
@@ -141,6 +152,252 @@ impl EvolutionWindow {
         }
         if let Some(settings) = AppSettings::try_new() {
             settings.set_active_view(view_name);
+        }
+    }
+
+    pub(crate) fn present_reminders(&self, deliveries: Vec<ReminderDelivery>) {
+        let dialog = if let Some(dialog) = self.imp().reminder_dialog.borrow().as_ref() {
+            dialog.clone()
+        } else {
+            let window_for_open = self.downgrade();
+            let window_for_action = self.downgrade();
+            let dialog = ReminderDialog::new(
+                Some(self),
+                move |delivery| {
+                    let Some(window) = window_for_open.upgrade() else {
+                        return false;
+                    };
+                    let Ok(identity) = delivery.identity() else {
+                        return false;
+                    };
+                    window.open_component(identity)
+                },
+                move |delivery, action| {
+                    let Some(window) = window_for_action.upgrade() else {
+                        return false;
+                    };
+                    let Some(application) = window.application().and_then(|application| {
+                        application.downcast::<EvolutionApplication>().ok()
+                    }) else {
+                        return false;
+                    };
+                    let Ok(target) = delivery.action_target() else {
+                        return false;
+                    };
+                    match action {
+                        ReminderDialogAction::Snooze(seconds) => {
+                            application.apply_reminder_action_from_dialog(&target, Some(seconds))
+                        }
+                        ReminderDialogAction::Dismiss => {
+                            application.apply_reminder_action_from_dialog(&target, None)
+                        }
+                    }
+                },
+            );
+            self.imp().reminder_dialog.replace(Some(dialog.clone()));
+            dialog
+        };
+        dialog.present_deliveries(&deliveries);
+    }
+
+    pub(crate) fn present_existing_reminders(&self) {
+        if let Some(dialog) = self.imp().reminder_dialog.borrow().as_ref() {
+            dialog.present_existing();
+        }
+    }
+
+    pub(crate) fn finish_reminder_action(
+        &self,
+        target: &str,
+        success: bool,
+        error: Option<String>,
+    ) {
+        if let Some(dialog) = self.imp().reminder_dialog.borrow().as_ref() {
+            dialog.finish_action(target, success, error.as_deref());
+        }
+        if !success {
+            if let Some(error) = error {
+                self.add_toast(&adw::Toast::new(&error));
+            }
+        }
+    }
+
+    fn set_component_open_action_sensitivity(&self, enabled: bool) {
+        for name in ["open-event", "open-task", "open-memo"] {
+            if let Some(action) = self
+                .lookup_action(name)
+                .and_then(|action| action.downcast::<gio::SimpleAction>().ok())
+            {
+                action.set_enabled(enabled);
+            }
+        }
+    }
+
+    pub(crate) fn open_component(&self, identity: ReminderIdentity) -> bool {
+        if self
+            .imp()
+            .component_open_target
+            .borrow()
+            .as_ref()
+            .is_some_and(|target| {
+                *target == identity && self.imp().component_open_in_progress.get()
+            })
+        {
+            return true;
+        }
+        if self
+            .imp()
+            .last_component_open
+            .borrow()
+            .as_ref()
+            .is_some_and(|(target, opened_at)| {
+                *target == identity && opened_at.elapsed() < std::time::Duration::from_millis(750)
+            })
+        {
+            self.finish_reminder_open(identity, true, None);
+            return true;
+        }
+
+        if self.imp().component_open_in_progress.get() {
+            let superseded = self.imp().component_open_target.borrow_mut().take();
+            if let Some(superseded) = superseded {
+                self.finish_reminder_open(
+                    superseded,
+                    false,
+                    Some("Öffnen durch eine neuere Reminder-Aktion ersetzt".to_string()),
+                );
+            }
+        }
+
+        let page_name = match identity.kind {
+            ReminderComponentKind::Event => "calendar",
+            ReminderComponentKind::Task => "tasks",
+            ReminderComponentKind::Memo => "memos",
+        };
+        let generation = self.imp().component_open_generation.get().wrapping_add(1);
+        self.imp().component_open_generation.set(generation);
+        self.imp().component_open_in_progress.set(true);
+        self.imp()
+            .component_open_target
+            .replace(Some(identity.clone()));
+        self.set_component_open_action_sensitivity(false);
+        if let Some(view_stack) = self.imp().view_stack.borrow().as_ref() {
+            view_stack.set_visible_child_name(page_name);
+        }
+
+        let window = self.downgrade();
+        let mut attempts = 0u8;
+        glib::timeout_add_local(std::time::Duration::from_millis(50), move || {
+            let Some(window) = window.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
+            if window.imp().component_open_generation.get() != generation {
+                return glib::ControlFlow::Break;
+            }
+            let found = match identity.kind {
+                ReminderComponentKind::Event => window.calendar_page().is_some_and(|page| {
+                    page.open_search_result(&identity.source_uid, &identity.component_uid)
+                }),
+                ReminderComponentKind::Task => window.tasks_page().is_some_and(|page| {
+                    page.open_search_result(&identity.source_uid, &identity.component_uid)
+                }),
+                ReminderComponentKind::Memo => window.memos_page().is_some_and(|page| {
+                    page.select_search_result(&identity.source_uid, &identity.component_uid)
+                }),
+            };
+            if found {
+                window.imp().component_open_in_progress.set(false);
+                window.imp().component_open_target.replace(None);
+                window
+                    .imp()
+                    .last_component_open
+                    .replace(Some((identity.clone(), Instant::now())));
+                window.set_component_open_action_sensitivity(true);
+                window.finish_reminder_open(identity.clone(), true, None);
+                return glib::ControlFlow::Break;
+            }
+
+            attempts = attempts.saturating_add(1);
+            if attempts >= 40 {
+                window.imp().component_open_in_progress.set(false);
+                window.imp().component_open_target.replace(None);
+                window.set_component_open_action_sensitivity(true);
+                window.report_component_open_failure(identity.clone(), generation);
+                glib::ControlFlow::Break
+            } else {
+                glib::ControlFlow::Continue
+            }
+        });
+        true
+    }
+
+    fn report_component_open_failure(&self, identity: ReminderIdentity, generation: u64) {
+        let identity_for_worker = identity.clone();
+        let local_calendar_directory =
+            AppSettings::try_new().map(|settings| settings.local_calendar_directory());
+        let (sender, receiver) = async_channel::bounded(1);
+        std::thread::spawn(move || {
+            let snapshot = crate::services::reminder_service::calendar_store_for_worker(
+                local_calendar_directory,
+            )
+            .load_snapshot();
+            let status = component_presence(&snapshot, &identity_for_worker);
+            let _ = sender.send_blocking(status);
+        });
+        let window = self.downgrade();
+        glib::spawn_future_local(async move {
+            let status = match receiver.recv().await {
+                Ok(status) => status,
+                Err(error) => {
+                    if let Some(window) = window.upgrade() {
+                        if window.imp().component_open_generation.get() != generation {
+                            return;
+                        }
+                        window.finish_reminder_open(
+                            identity.clone(),
+                            false,
+                            Some(format!(
+                                "Reminder-Quelle konnte nicht geprüft werden: {error}"
+                            )),
+                        );
+                    }
+                    return;
+                }
+            };
+            let Some(window) = window.upgrade() else {
+                return;
+            };
+            if window.imp().component_open_generation.get() != generation {
+                return;
+            }
+            let message = match status {
+                ReminderComponentPresence::MissingSource => {
+                    "Reminder-Quelle ist nicht verfügbar oder wurde entfernt"
+                }
+                ReminderComponentPresence::MissingComponent => {
+                    "Reminder-Komponente ist nicht verfügbar oder wurde geändert"
+                }
+                ReminderComponentPresence::Found => {
+                    "Komponente konnte nach dem Laden nicht geöffnet werden"
+                }
+            };
+            window.finish_reminder_open(identity, false, Some(message.to_string()));
+        });
+    }
+
+    fn finish_reminder_open(
+        &self,
+        identity: ReminderIdentity,
+        success: bool,
+        error: Option<String>,
+    ) {
+        if let Some(dialog) = self.imp().reminder_dialog.borrow().as_ref() {
+            dialog.finish_open(&identity, success, error.as_deref());
+        }
+        if !success {
+            if let Some(error) = error {
+                self.add_toast(&adw::Toast::new(&error));
+            }
         }
     }
 
@@ -566,34 +823,63 @@ impl EvolutionWindow {
         reference_id: String,
         query: String,
     ) {
-        let page_name = match domain {
-            crate::services::search_engine::SearchDomain::Mail => "mail",
-            crate::services::search_engine::SearchDomain::Calendar => {
-                let target = reference_id.split_once(':');
-                let target = target.map(|(source_uid, uid)| (source_uid, uid));
-                let snapshot = crate::services::calendar_store_service::CalendarStoreService::new()
-                    .load_snapshot();
-                if target.is_some_and(|(source_uid, uid)| {
-                    snapshot
-                        .tasks
-                        .iter()
-                        .any(|task| task.source_uid == source_uid && task.uid == uid)
-                }) {
-                    "tasks"
-                } else if target.is_some_and(|(source_uid, uid)| {
-                    snapshot
-                        .memos
-                        .iter()
-                        .any(|memo| memo.source_uid == source_uid && memo.uid == uid)
-                }) {
-                    "memos"
-                } else {
-                    "calendar"
-                }
+        match domain {
+            crate::services::search_engine::SearchDomain::Mail => {
+                self.show_search_result_loaded("mail", reference_id, query);
             }
-            crate::services::search_engine::SearchDomain::Contacts => "contacts",
-            crate::services::search_engine::SearchDomain::All => return,
-        };
+            crate::services::search_engine::SearchDomain::Contacts => {
+                self.show_search_result_loaded("contacts", reference_id, query);
+            }
+            crate::services::search_engine::SearchDomain::Calendar => {
+                let reference_for_worker = reference_id.clone();
+                let local_calendar_directory =
+                    AppSettings::try_new().map(|settings| settings.local_calendar_directory());
+                let (sender, receiver) = async_channel::bounded(1);
+                std::thread::spawn(move || {
+                    let target = reference_for_worker.split_once(':');
+                    let snapshot = crate::services::reminder_service::calendar_store_for_worker(
+                        local_calendar_directory,
+                    )
+                    .load_snapshot();
+                    let page_name = if target.is_some_and(|(source_uid, uid)| {
+                        snapshot
+                            .tasks
+                            .iter()
+                            .any(|task| task.source_uid == source_uid && task.uid == uid)
+                    }) {
+                        "tasks"
+                    } else if target.is_some_and(|(source_uid, uid)| {
+                        snapshot
+                            .memos
+                            .iter()
+                            .any(|memo| memo.source_uid == source_uid && memo.uid == uid)
+                    }) {
+                        "memos"
+                    } else {
+                        "calendar"
+                    };
+                    let _ = sender.send_blocking(page_name);
+                });
+                let window = self.downgrade();
+                glib::spawn_future_local(async move {
+                    let Ok(page_name) = receiver.recv().await else {
+                        return;
+                    };
+                    if let Some(window) = window.upgrade() {
+                        window.show_search_result_loaded(page_name, reference_id, query);
+                    }
+                });
+            }
+            crate::services::search_engine::SearchDomain::All => {}
+        }
+    }
+
+    fn show_search_result_loaded(
+        &self,
+        page_name: &'static str,
+        reference_id: String,
+        query: String,
+    ) {
         if let Some(view_stack) = self.imp().view_stack.borrow().as_ref() {
             view_stack.set_visible_child_name(page_name);
         }
@@ -2282,6 +2568,35 @@ impl EvolutionWindow {
             move |_, _| win.present_new_memo()
         ));
         self.add_action(&action_new_memo);
+
+        for (name, kind) in [
+            ("open-event", ReminderComponentKind::Event),
+            ("open-task", ReminderComponentKind::Task),
+            ("open-memo", ReminderComponentKind::Memo),
+        ] {
+            let action = gio::SimpleAction::new(name, Some(glib::VariantTy::STRING));
+            action.connect_activate(glib::clone!(
+                #[weak(rename_to = win)]
+                self,
+                move |_, parameter| {
+                    let Some(uri) = parameter.and_then(|value| value.str()) else {
+                        return;
+                    };
+                    let Ok(identity) = parse_reminder_deep_link(uri) else {
+                        win.add_toast(&adw::Toast::new("Ungültiger Reminder-Link"));
+                        return;
+                    };
+                    if identity.kind != kind {
+                        win.add_toast(&adw::Toast::new(
+                            "Reminder-Link passt nicht zur angeforderten Komponente",
+                        ));
+                        return;
+                    }
+                    win.open_component(identity);
+                }
+            ));
+            self.add_action(&action);
+        }
 
         let action_new_folder = gio::SimpleAction::new("new-folder", None);
         action_new_folder.connect_activate(glib::clone!(
