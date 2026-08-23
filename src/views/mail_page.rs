@@ -3825,17 +3825,22 @@ impl MailPage {
         let raw_mime = message.raw_mime();
         let export = export_message_from(&message);
 
-        let Some(root) = self.root().and_downcast::<gtk::Window>() else {
-            self.show_toast("Kein Fenster für den E-Mail-Export verfügbar");
-            return true;
-        };
+        let root = self.root().and_downcast::<gtk::Window>();
         let file_dialog = gtk::FileDialog::builder()
             .title("E-Mail als EML speichern")
             .initial_name(export_filename(&subject))
             .modal(true)
             .build();
+        let filter = gtk::FileFilter::new();
+        filter.set_name(Some("EML-Dateien (*.eml)"));
+        filter.add_pattern("*.eml");
+        filter.add_mime_type("message/rfc822");
+        let filters = gio::ListStore::new::<gtk::FileFilter>();
+        filters.append(&filter);
+        file_dialog.set_filters(Some(&filters));
+
         let page = self.downgrade();
-        file_dialog.save(Some(&root), None::<&gio::Cancellable>, move |result| {
+        file_dialog.save(root.as_ref(), None::<&gio::Cancellable>, move |result| {
             let Ok(file) = result else {
                 return;
             };
@@ -4296,6 +4301,13 @@ impl MailPage {
             .borrow()
             .as_ref()
             .and_then(selected_mail_message)
+            .or_else(|| {
+                self.imp()
+                    .thread_selection
+                    .borrow()
+                    .as_ref()
+                    .and_then(selected_mail_message)
+            })
     }
 
     fn mail_worker_ui_scope(&self) -> MailWorkerUiScope {
@@ -4340,14 +4352,35 @@ impl MailPage {
     where
         F: Fn(bool) + 'static,
     {
-        let Some(selection) = self.imp().message_selection.borrow().as_ref().cloned() else {
-            callback(false);
-            return;
+        let cb = Rc::new(callback);
+        let page = self.downgrade();
+
+        let notify = {
+            let cb = Rc::clone(&cb);
+            let page = page.clone();
+            move || {
+                if let Some(page) = page.upgrade() {
+                    let has_sel = page.has_selected_message();
+                    cb(has_sel);
+                }
+            }
         };
-        callback(selected_mail_message(&selection).is_some());
-        selection.connect_selected_item_notify(move |selection| {
-            callback(selected_mail_message(selection).is_some());
-        });
+
+        notify();
+
+        if let Some(selection) = self.imp().message_selection.borrow().as_ref().cloned() {
+            let notify = notify.clone();
+            selection.connect_selected_item_notify(move |_| {
+                notify();
+            });
+        }
+
+        if let Some(thread_selection) = self.imp().thread_selection.borrow().as_ref().cloned() {
+            let notify = notify.clone();
+            thread_selection.connect_selected_item_notify(move |_| {
+                notify();
+            });
+        }
     }
 
     fn present_composer(&self, dialog: crate::dialogs::ComposeDialog) -> bool {
@@ -9347,11 +9380,24 @@ impl MailPage {
                     return;
                 };
                 let position = list_item.position();
-                if position == gtk::INVALID_LIST_POSITION {
-                    return;
-                }
-                if let Some(selection) = page.imp().thread_selection.borrow().as_ref() {
-                    selection.set_selected(position);
+                if position != gtk::INVALID_LIST_POSITION {
+                    if let Some(selection) = page.imp().thread_selection.borrow().as_ref() {
+                        selection.set_selected(position);
+                    }
+                    if let Some(tree_row) = list_item.item().and_downcast::<gtk::TreeListRow>() {
+                        if let Some(msg) = tree_row.item().and_downcast::<MailMessageObject>() {
+                            if let Some(flat_sel) = page.imp().message_selection.borrow().as_ref() {
+                                for i in 0..flat_sel.n_items() {
+                                    if let Some(cand) = flat_sel.item(i).and_downcast::<MailMessageObject>() {
+                                        if cand.id() == msg.id() {
+                                            flat_sel.set_selected(i);
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
                 gesture.set_state(gtk::EventSequenceState::Claimed);
 
