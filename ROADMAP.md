@@ -9,19 +9,23 @@ Vollständige Architektur-Spezifikation, Feature-Mapping und Entwicklungs-Roadma
 > [Linux-/EDS-Roadmap](ROADMAP_LINUX.md). Der Produktumfang darf aus keiner
 > dieser Sichten verkleinert werden.
 
-> **Arbeitsstand 2026-08-22 (aktuelle uncommitted verification round):** Die
+> **Arbeitsstand 2026-08-23 (aktuelle uncommitted verification round):** Die
 > unabhängigen Reviews sind abgeschlossen; `git diff --check`,
 > `cargo fmt --all -- --check`, strikte Schema-Prüfung, normaler und mit
 > `RUSTFLAGS='--cfg=eds_camel_bridge'` erzwungener Cargo-Check sind grün. Der
-> finale unsandboxed `cargo test --workspace --locked --no-fail-fast --quiet`-
-> Lauf hat 547/547 Tests bestanden. `MAIL-TRANSPORT-COMMANDS`, `SET-01` und der
-> eigene atomare `GW-MEMO-EDITOR` sind portabel implementiert/reviewt, stehen
-> wegen nativer/provider-/Desktop-Reste aber auf `BLOCKED_LINUX`, nicht auf
-> `DONE` oder Vollparität. `GW-REMINDER-RUNTIME` ist jetzt die nächste
-> portable kritische Priorität; sein App-/Window-Schreibscope ist frei. Native
-> WebKitGTK-, visuelle, EDS/Camel/ECal-, Provider- und Desktop-Abnahme bleibt
-> ausdrücklich in `ROADMAP_LINUX.md` offen. Dieser Dokumentationslauf erzeugt
-> keinen Commit und keinen Push.
+> finale portable/macOS-unsandboxed `cargo test --workspace --locked --no-fail-fast --quiet`-
+> Lauf hat 564/564 Tests bestanden; das ist keine Linux-Abnahme. `MAIL-TRANSPORT-COMMANDS`, `SET-01`, der
+> eigene atomare `GW-MEMO-EDITOR` und `GW-REMINDER-RUNTIME` sind portabel
+> implementiert und unabhängig reviewt; wegen nativer/provider-/Desktop-Reste
+> stehen sie auf `BLOCKED_LINUX`, nicht auf `DONE` oder Vollparität. Der
+> Reminder-Runtime-Schnitt umfasst kanonische Event-/Task-/Memo-Deep-Links und
+> Action-Targets mit Source-/UID-Routing, ein kompaktes wiederverwendbares
+> Reminder-Fenster, Open/10m/1h/Dismiss, Claim-Leases, Replay-/stale-Generations-
+> gates, atomare persistente Snooze-/Dismiss-/Restart-Semantik, den
+> Notification-Vertrag sowie GTK-freie Worker/MainContext-Grenzen. Offen bleiben
+> EReminderWatcher/EDS-ClientViews, Provider-Alarme, Sleep/Wakeup, Offline und
+> der systemweite Notification-Daemon unter Linux. Dieser Dokumentationslauf
+> erzeugt keinen Commit und keinen Push.
 
 ---
 
@@ -758,7 +762,8 @@ jeweilige negative Fehlerpfad mit direkter Evidenz vorliegen.
   oder entschlüsselte Inhalte invalidieren den Cache und lösen eine
   Filterneubewertung aus; Crypto-Ergebnisse werden zusätzlich durch Request-
   Generation und Identität gegen stale Zustände geschützt. Die portablen
-  Gates sind im aktuellen Arbeitsstand mit 547/547 Tests einmal vollständig
+  Gates sind im aktuellen portable/macOS-Teststand (564/564 Tests; keine
+  Linux-Abnahme) einmal vollständig
   grün belegt; beide unabhängigen Reviews sind abgeschlossen. Das Paket steht auf
   `BLOCKED_LINUX`; Provider-Body-Suche, Linux-Churn und EDS/Camel-Abnahme
   bleiben in `ROADMAP_LINUX.md` offen.
@@ -769,7 +774,7 @@ jeweilige negative Fehlerpfad mit direkter Evidenz vorliegen.
   Start-/Fälligkeits- und Attachment-Prädikate; Migrationen normalisieren
   Aliaswerte und ungültige Eingaben fallen sicher zurück. Deterministische
   Datums-/DST-Fixtures, Live-Neuberechnung und GSettings-Roundtrip sind im
-  aktuellen 547/547-Teststand belegt; beide unabhängigen Reviews sind
+  aktuellen portable/macOS-Teststand (564/564; keine Linux-Abnahme) belegt; beide unabhängigen Reviews sind
   abgeschlossen. Das Paket steht auf `BLOCKED_LINUX`; EDS-Query-Semantik und
   Providergrenzen bleiben offen. Die weitere upstream-Taskpad-Fläche wird in
   separaten Groupware-Paketen verfolgt.
@@ -779,7 +784,8 @@ jeweilige negative Fehlerpfad mit direkter Evidenz vorliegen.
   Adressen und sichtbare Validierungsfehler. Parser/Serializer bewahren
   unerkannte sichere Listeneigenschaften; die Dialog-UI schreibt Mitglieder
   über einen atomaren Storepfad und verhindert stille Teilverluste. vCard-3/4-
-  Roundtrip-, invalid-member- und Member-UI-Tests sind im 547/547-Stand
+  Roundtrip-, invalid-member- und Member-UI-Tests sind im portable/macOS-
+  Teststand (564/564; keine Linux-Abnahme)
   enthalten; beide unabhängigen Reviews sind abgeschlossen. Das Paket steht
   auf `BLOCKED_LINUX`; EBook-Listenfähigkeiten, ACLs und native
   Provider-/Linux-Abnahme bleiben offen.
@@ -807,8 +813,8 @@ jeweilige negative Fehlerpfad mit direkter Evidenz vorliegen.
   VJOURNAL ab. Nur `DISPLAY` darf portabel eine Benachrichtigung auslösen;
   `AUDIO`, `EMAIL`, `PROCEDURE` und unbekannte Actions bleiben inert. Das
   reviewed Paket steht wegen des nativen EDS-Watchers auf `BLOCKED_LINUX`.
-  Application-Deep-Link- und Reminder-Fenster-Wiring gehören nicht zu diesem
-  Paket und sind als `GW-REMINDER-RUNTIME` separat `READY`.
+  Das separate `GW-REMINDER-RUNTIME`-Paket ist portabel implementiert und
+  unabhängig reviewt; sein Linux-Rest bleibt auf `BLOCKED_LINUX`.
 - `[~]` `P0-MAIL-002A` — klassische, kompakte Mail-Liste und Sidebar: Spalten-
   und Statusindikatoren links, einzeilige Nachrichtenzellen ohne permanente
   Checkboxen, feste gemeinsame Kopf-/Zeilenbreiten, Sortierpfeile direkt im
@@ -841,6 +847,25 @@ jeweilige negative Fehlerpfad mit direkter Evidenz vorliegen.
   der Fälligkeitseditor sowie die reale Linux-Abnahme.
   Belege: Der portable Helper-/Workspace-Test ist grün; offen bleiben
   Linux-Referenzvergleich, Icon-Theme und sichtbare Dichte.
+- `P0-MAIL-002A-WORKER-SETTINGS` — der dokumentierte Load-Worker-Handoff ist
+  portabel geschlossen: Der MainThread besitzt einen Snapshot aus Request,
+  Offline-Modus, lokalem Mailverzeichnis, Environment-Overrides, State-Pfad
+  und App-Data-Root. Load, Refresh und Load-more lesen im Worker weder
+  `AppSettings`/GSettings/GTK/GObject noch die Umgebung erneut; der
+  worker-sichere Store bewahrt Environment-, Read-only-, App-owned-, Default-
+  und State-Semantik. Generation-, Progress- und Result-Gates bleiben
+  unverändert. Das schließt nur diesen portablen Handoff, nicht
+  `P0-MAIL-002A`, Linux/Visuals oder die Großpostfach-/Paging-Abnahme.
+- Offenes Folgepaket, nicht durch den Load-Handoff erledigt:
+  `P0-MAIL-002A-WORKER-STORE-CALLERS` für weiterhin in Workerpfaden erzeugte
+  `MailStoreService::new()`-Instanzen außerhalb von Load/Refresh/Load-more:
+  `src/views/mail_page.rs::empty_trash_async`, `apply_filters`,
+  `execute_mail_command`, `execute_mail_batch` und `execute_history_action`,
+  `src/dialogs/preferences_dialog.rs` für den manuellen Filterlauf,
+  `src/services/mail_operations_service.rs::MailOperationsService::new` und
+  `src/services/search_engine.rs::GlobalSearchEngine::query_cancelable` für
+  die globale Suche. Dieser Folgepunkt bleibt offen und muss vor einer
+  `READY`-Markierung erst atomar zugeschnitten und auditiert werden.
 - `[~]` `P0-MAIL-002B` — lesbare Schrift- und Anzeigepräferenzen: 16-Pixel-
   Mailbasis, persistente optionale Sicherheitsdetails sowie live wirksame
   Spalten-/Dichte-/Layoutwerte. Schema-Default/Reset/Roundtrip, sofortige
@@ -857,8 +882,8 @@ cargo test --workspace --locked --no-fail-fast --quiet
 ```
 
 Cargo-Format-/Check-, strikte Schema- und Diff-Prüfung sind für den aktuellen
-Arbeitsstand grün; der finale unsandboxed Workspace-Lauf hat 547/547 Tests
-erfolgreich belegt. Ein früherer sandboxed Lauf konnte 18 Graph-Loopback-
+Arbeitsstand grün; der finale portable/macOS-unsandboxed Workspace-Lauf hat
+564/564 Tests erfolgreich belegt; das ist keine Linux-Abnahme. Ein früherer sandboxed Lauf konnte 18 Graph-Loopback-
 Mockserver nicht binden und ist nicht der finale Testbeleg. Die unabhängigen
 Reviews sind abgeschlossen.
 WebKitGTK-Runtime, echte
@@ -870,10 +895,13 @@ nicht vorweggenommen werden.
 
 Die drei statischen Audits sind jetzt DOX-indexiert und speisen die nächste
 Warteschlange. Die folgende Liste ist ein Statusinventar, keine zusätzliche
-Startreihenfolge; operativ maßgeblich ist `ROADMAP_EXECUTION.md`. Dort bleibt
-`GW-REMINDER-RUNTIME` nach den abgeschlossenen portablen Slices die nächste
-startbare `READY`-Priorität. Die Statuswerte sind Quellen-/UI-Belege, keine
-Laufzeit- oder Providerabnahme:
+Startreihenfolge; operativ maßgeblich ist `ROADMAP_EXECUTION.md`. Nach dem
+Abschluss des portablen Reminder-Runtime-Handoffs ist kein nächstes Paket als
+atomar `READY` belegt. Vor einer neuen portablen Implementierungspriorität muss
+deshalb zuerst das nächste Auditpaket atomar zugeschnitten und mit direkter
+Abnahme versehen werden; das offene `P0-MAIL-002A-WORKER-STORE-CALLERS`-
+Folgepaket ist dafür ein konkreter Kandidat, aber noch keine `READY`-Markierung.
+Die Statuswerte sind Quellen-/UI-Belege, keine Laufzeit- oder Providerabnahme:
 
 1. `MAIL-TRANSPORT-COMMANDS` — `BLOCKED_LINUX`: portable Implementierung und
    unabhängiger Review abgeschlossen; getrennte Send-/Receive-/All-/Stop- und
@@ -897,10 +925,14 @@ Laufzeit- oder Providerabnahme:
    Save/Discard/Cancel, stale/confirmed mutation und Export sind belegt.
    Native EDS-Capabilities/ACL/Provider-Attachment-Transfer/Desktop-Aktionen
    bleiben Linux-Rest.
-4. `GW-REMINDER-RUNTIME` — `READY` und jetzt nächste portable kritische
-   Priorität: vorhandene sichere Reminder-Deep-Links in Application-/Window-
-   Routing und ein Reminder-Fenster mit Snooze/Erledigt verdrahten; der native
-   EDS-Watcher bleibt Linux-Rest. Der App-/Window-Schreibscope ist frei.
+4. `GW-REMINDER-RUNTIME` — `BLOCKED_LINUX`: kanonische Event-/Task-/Memo-
+   Deep-Links und Action-Targets, Source-/UID-Routing, kompaktes wiederver-
+   wendbares Reminder-Fenster, Open/10m/1h/Dismiss, exact-once Claim-Leases,
+   Replay-/stale-Generationsgates, atomare persistente Snooze-/Dismiss-/
+   Restart-Semantik, Notification-Vertrag sowie GTK-freie Worker/MainContext-
+   Grenzen sind portabel implementiert und unabhängig reviewt. EReminderWatcher,
+   EDS-ClientViews, Provider-Alarme, Sleep/Wakeup, Offline und systemweiter
+   Notification-Daemon bleiben Linux-Rest.
 5. `MAIL-PRINT-ACTION`, `COMPOSER-ACTION-SURFACE` und `GW-ALARMS` sind portabel
    abgeschlossen und `BLOCKED_LINUX`; sie bleiben Linux-Handoffs, nicht erneut
    startbare portable Pakete.
@@ -1076,8 +1108,9 @@ Laufzeit- oder Providerabnahme:
   werden atomar gespeichert; Desktop-Benachrichtigungen lassen sich persistent
   deaktivieren und werden vom Scheduler respektiert. Nur `DISPLAY` wird
   ausgeführt. Der native EDS-Watcher und die Linux-Laufzeitabnahme bleiben
-  offen; Application-Deep-Link-/Reminder-Fenster-Wiring ist als
-  `GW-REMINDER-RUNTIME` separat `READY`. Beim portablen Terminbearbeiten bleiben
+  offen; Application-Deep-Link-/Reminder-Fenster-Wiring ist im separaten
+  `GW-REMINDER-RUNTIME`-Handoff portabel implementiert und `BLOCKED_LINUX`.
+  Beim portablen Terminbearbeiten bleiben
   bestehende ATTENDEE-Parameter und sämtliche VALARM-Typen verlustarm erhalten
   und als geordnete Liste editierbar. Die
   portable Kalenderansicht bietet zusätzlich eine lokale Freie-Zeiten-Abfrage
@@ -1161,7 +1194,8 @@ Laufzeit- oder Providerabnahme:
   serverseitige Teilnehmerstatus bleibt für die Linux-Abnahme zuständig. Der
   portable Reminder-Service wertet nur sichere `DISPLAY`-Actions aus und
   persistiert Zustellung/Snooze; EDS-Watcher und Linux-Abnahme bleiben offen,
-  während App-Routing/Reminder-Fenster `GW-REMINDER-RUNTIME` bilden. Portable
+  während das App-Routing/Reminder-Fenster im separaten
+  `GW-REMINDER-RUNTIME`-Handoff portabel implementiert ist. Portable
   Datei-/URI-Anhänge werden im Editor gespeichert und beim Ändern
   für unveränderte URIs mit ihren bestehenden Parametern bewahrt; native EDS-/Camel-
   Anhangsübertragung und Download-/Upload-Abnahme bleiben Linux-only. Der
@@ -1201,9 +1235,10 @@ Laufzeit- oder Providerabnahme:
   Bearbeiten erhalten. Native EDS-Anhangsübertragung und Linux-Abnahme bleiben
   offen. Der portable Reminder-Service wertet diese Alarme aus, persistiert
   Zustellung/Snooze und stellt 10-Minuten-/1-Stunden-Snooze sowie Erledigt-
-  Aktionen bereit. App-Deep-Link-/Reminder-Fenster-Wiring, native EDS-
-  Aufgabenlisten-Watcher und weitere Evolution-Aufgabenlistenfunktionen fehlen
-  noch; nicht-`DISPLAY`-Actions bleiben bewusst inert.
+  Aktionen bereit. Das App-Deep-Link-/Reminder-Fenster-Wiring ist im separaten
+  `GW-REMINDER-RUNTIME`-Handoff portabel implementiert und `BLOCKED_LINUX`;
+  native EDS-Aufgabenlisten-Watcher und weitere Evolution-Aufgabenlisten-
+  funktionen fehlen noch. Nicht-`DISPLAY`-Actions bleiben bewusst inert.
   Termin-, Aufgaben- und Notizeditoren verwenden für ihre Quellenauswahl
   ebenfalls die cachefähige EDS-Entdeckung und zeigen bei EDS-Ausfall den
   geheimnisfreien importierten Quellenstand als Offline-Hinweis.

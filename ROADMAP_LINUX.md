@@ -30,11 +30,15 @@ zugehöriger portabler Punkt vorbereitet ist. Vor jedem Lauf sind Commit,
 Distribution, Bibliotheksversionen und Kontotyp zu protokollieren.
 
 Der aktuelle uncommitted Arbeitsstand umfasst `MAIL-TRANSPORT-COMMANDS`,
-`SET-01` und den eigenen atomaren `GW-MEMO-EDITOR`; alle drei portablen
-Implementierungen sind unabhängig reviewt und stehen wegen des nativen/
-provider-/Desktop-Rests auf `BLOCKED_LINUX`. Cargo-Format-/Check-, strikte
-Schema- und Diff-Prüfung, normaler und `eds_camel_bridge`-Cargo-Check sind
-grün; der finale unsandboxed Workspace-Testlauf hat 547/547 Tests bestanden.
+`SET-01`, den eigenen atomaren `GW-MEMO-EDITOR` und `GW-REMINDER-RUNTIME`;
+alle vier portablen Implementierungen sind unabhängig reviewt und stehen wegen
+des nativen/provider-/Desktop-Rests auf `BLOCKED_LINUX`. Der
+`P0-MAIL-002A-WORKER-SETTINGS`-Handoff ist portabel geschlossen; das schließt
+weder `P0-MAIL-002A` noch Linux-, Visual- oder Großpostfach-Abnahme. Cargo-
+Format-/Check-, strikte Schema- und Diff-Prüfung, normaler und
+`eds_camel_bridge`-Cargo-Check sind grün; der finale unsandboxed
+portable/macOS-Workspace-Testlauf hat 564/564 Tests bestanden; das ist keine
+Linux-Abnahme.
 Ein früherer sandboxed Lauf konnte 18 Graph-Loopback-Mockserver nicht binden
 und ist nicht der finale Testbeleg. Das ist nur eine portable Vorbedingung.
 Kein Audit-Slice, kein visueller Befund und kein EDS-/Provider-Rest wird deshalb
@@ -70,9 +74,17 @@ als `[x]` geführt.
   Open-URL-/Print-/Desktop-Aktionen prüfen; Save/Discard/Cancel, stale/confirmed
   mutation, Export und der 75-Oktett-/unfolded-ATTACH-Vertrag werden nicht
   erneut portabel gebaut.
-- `[ ]` `GW-REMINDER-RUNTIME`: als nächste portable kritische Priorität die
-  Desktop-Notification-Actions, Deep-Link-Aktivierung und Fensterfokus unter
-  GNOME/Wayland prüfen; dies ersetzt den separaten EDS-Watcher-Test nicht.
+- `[ ]` `GW-REMINDER-RUNTIME`: der portable Runtime-Schnitt ist implementiert
+  und unabhängig reviewt, aber nicht Linux-abgenommen. Unter GNOME/Wayland
+  mit echten EDS-Quellen `EReminderWatcher` und EDS-`ClientView` anschließen;
+  Event/Task/Memo-Source-/UID-Routing, providerseitige Alarme, Notification-
+  Actions, Fensterfokus und die Wiederverwendung des Reminder-Fensters prüfen.
+  Zusätzlich Sleep/Wakeup, Offline-Wiederaufnahme, EDS-Factory-Neustart,
+  doppelte/verspätete Source-Signale und den systemweiten Notification-Daemon
+  testen. Erwartet werden genau-einmalige Zustellung, gültige Open/10m/1h/
+  Dismiss-Aktionen, sichtbare Fehler bei fehlender Quelle/Komponente und kein
+  stale Öffnen nach einer neueren Generation; der portable Teststand ersetzt
+  diese Linux-Abnahme nicht.
 - `[ ]` `SET-01`: Der portable Backup-/Migrationsschnitt ist abgeschlossen und
   unabhängig reviewt. Unter Linux Restore-/Preferences-Wirkung, native
   GSettings-Werte und bewusste EDS/Camel/GOA-/Secret-Service-Ausschlüsse
@@ -95,7 +107,7 @@ als `[x]` geführt.
   `P0-SYNC-001A`-Stand mit begrenzten Page-Windows, opaken Graph-NextLink-
   Cursorn, UID-Deduplizierung, generationensicheren Modellen und normalisierten
   Camel-Events. Der aktuelle uncommitted portable Verification-Snapshot umfasst
-  zusätzlich den einmal vollständigen 547/547-Testlauf; keine dieser Angaben
+  zusätzlich den einmal vollständigen 564/564-Testlauf; keine dieser Angaben
   ersetzt die folgende Linux-Abnahme.
 - Vorbereitung: vollständiger portabler Testlauf grün; ein EDS-Testkonto mit
   bekannten Plaintext-, HTML-, CID-, Remote-Bild- und Anhangsnachrichten.
@@ -143,6 +155,12 @@ als `[x]` geführt.
   `ROADMAP_EXECUTION.md`.
 - Status: `[ ]`; dieser Punkt darf weder aus einem macOS-Build noch aus einem
   einzelnen Rust-Unit-Test auf `[x]` gesetzt werden.
+- Der portable Handoff `P0-MAIL-002A-WORKER-SETTINGS` ist geschlossen:
+  Request/Offline/lokales Mailverzeichnis/Environment-Overrides/State-Pfad/
+  App-Data-Root werden vor dem Worker erfasst. Das ist kein Beleg für die
+  Linux-, Visual- oder Großpostfach-Abnahme; weitere `MailStoreService::new()`-
+  Workeraufrufe außerhalb Load/Refresh/Load-more bleiben im separaten
+  `P0-MAIL-002A-WORKER-STORE-CALLERS`-Folgepaket offen.
 - Voraussetzung: ein gebauter Commit mit den portablen Gates aus der
   Ausführungsroadmap und ein inhaltsneutrales Testkonto. Das Testkorpus soll
   mindestens 20 Nachrichten enthalten, darunter drei HTML-Nachrichten über
@@ -747,7 +765,7 @@ Mit einem Testkonto ohne produktive Empfänger prüfen:
 - Portable Basis: Historischer Commit `d6e7dcc` vereinheitlicht
   Kalenderansichten über RRULE/RDATE/EXDATE, Mehrtagstermine, exklusive
   DTEND-Grenzen und validierte Zeitzonen/Quellen; der aktuelle uncommitted
-  Verification-Snapshot umfasst den einmal vollständigen 547/547-Testlauf;
+  Verification-Snapshot umfasst den einmal vollständigen 564/564-Testlauf;
   `GW-TASK-FILTERS` ergänzt
   Filter-/Advanced-/Persistenzverträge. Aufgaben bieten kompaktes Quick-Edit
   für Status, Priorität, Fälligkeit und Kategorien. Native ECal-Wirkung bleibt
@@ -785,7 +803,7 @@ Mit einem Testkonto ohne produktive Empfänger prüfen:
   und attachment müssen dieselben Records wie Evolution liefern. EDS-Query-
   Grenzen, Serverfehler, Zeitzone/DST, Monitor-Refresh und die persistierte
   Quellen-/Kategorienauswahl sind getrennt zu protokollieren; der portable
-  Query-AST, zwei abgeschlossene unabhängige Reviews und der 547/547-Testlauf
+  Query-AST, zwei abgeschlossene unabhängige Reviews und der 564/564-Testlauf
   sind dafür nur Vorbereitung.
 - `[ ]` Wiederholungen, Zeitzonen, Teilnehmer, iTIP/iMIP, freie Zeit,
   Einladungsantworten, private Termine, Kategorien, Anhänge und Alarme mit
@@ -809,8 +827,10 @@ Mit einem Testkonto ohne produktive Empfänger prüfen:
   relative Trigger, `RELATED=END`, REPEAT/DURATION, wiederkehrende Komponenten,
   Quelländerungen, Zeitzonen/DST und EDS-Factory-Neustarts sind zu
   verifizieren. AUDIO/EMAIL/PROCEDURE/Unknown bleiben inert; lokale
-  Fallback-Tests ersetzen diese Linux-Abnahme nicht. Desktop-Deep-Link- und
-  Fensteraktionen werden erst nach dem portablen `GW-REMINDER-RUNTIME`-Paket
+  Fallback-Tests ersetzen diese Linux-Abnahme nicht. Das separate portable
+  `GW-REMINDER-RUNTIME`-Wiring ist bereits implementiert und unabhängig
+  reviewt; seine Desktop-Deep-Link- und Fensteraktionen werden hier gegen
+  EReminderWatcher, EDS-ClientViews und den systemweiten Notification-Daemon
   abgenommen.
 - `[~]` Native Datenpfade speisen Tages-, Wochen-, Monats- und die portable
   Agendaansicht; die Linux-Laufzeitprüfung gegen Zeitzonenwechsel, DST-Grenzen
@@ -818,14 +838,16 @@ Mit einem Testkonto ohne produktive Empfänger prüfen:
   aus.
 - `[ ]` Offline-/Online-Wiederaufnahme des Erinnerungsdienstes testen,
   inklusive Neustart der EDS-Kalenderfactory, mehrfach gestarteter App,
-  doppelter EDS-Signale und sicherem Zurückziehen zugestellter Notifications.
+  doppelter EDS-Signale, Sleep/Wakeup und sicherem Zurückziehen zugestellter
+  Notifications; der portable Restart-/Claim-State ist dafür nur die
+  Vorbedingung.
 
 ## 7. EBook: Kontakte, GAL und Adressbücher
 
 - Portable Basis: Historischer Commit `d6e7dcc` liefert kompakte
   quellenneutrale Liste/Detailansicht, Mehrwortsuche, Kategorien und eine
   begrenzte Dublettenerkennung; der aktuelle uncommitted Verification-Snapshot
-  umfasst den einmal vollständigen 547/547-Testlauf und `GW-CONTACT-LISTS`
+  umfasst den einmal vollständigen 564/564-Testlauf und `GW-CONTACT-LISTS`
   ergänzt portable vCard-3/4-
   Listen mit Member-UI. Echte EBook-/GAL-Identität und Mutationen bleiben
   offen.
@@ -842,7 +864,7 @@ Mit einem Testkonto ohne produktive Empfänger prüfen:
   abnehmen: vCard-3-Evolution-Listen und vCard-4-`KIND:group`/`MEMBER`, lokale,
   externe und verschachtelte Mitglieder, ungültige Member, Anzeigenamen,
   Member-UID-Auflösung, ACLs und parallele Änderungen prüfen. Atomare portable
-  Store-Tests, zwei abgeschlossene unabhängige Reviews und der 547/547-Testlauf
+  Store-Tests, zwei abgeschlossene unabhängige Reviews und der 564/564-Testlauf
   ersetzen weder EBook-Capabilities noch Provider-/Linux-Visualabnahme.
 - `[ ]` Native EBook-Feldabdeckung prüfen: mehrere Namen, E-Mail-Adressen,
   Telefone, Adressen, Organisation, Kategorien, Notizen, Fotos, Geburtstage,
@@ -1148,12 +1170,13 @@ Camel: 3.60.2
 Kontotyp und Authentifizierung: EDS/Camel-Smoke-Konto; GOA-/Passwortpfad
   teilweise verifiziert, Ablauf-/Fehlerfälle bleiben offen
 Portable Vorbedingung: aktuelle uncommitted Verification-Runde; Cargo-Format-/
-  Check-, strikte Schema- und git-diff-Prüfung grün; 547/547 Workspace-Tests
-  im finalen unsandboxed Lauf vollständig erfolgreich; ein früherer sandboxed
-  Lauf konnte 18 Graph-Loopback-Mockserver nicht binden; unabhängige Reviews
-  abgeschlossen; `MAIL-TRANSPORT-COMMANDS`, `SET-01` und `GW-MEMO-EDITOR`
-  sowie `MAIL-PRINT-ACTION`, `COMPOSER-ACTION-SURFACE` und `GW-ALARMS` stehen
-  auf `BLOCKED_LINUX`.
+  Check-, strikte Schema- und git-diff-Prüfung grün; portable/macOS-
+  Workspace-Testevidenz: 564/564 Tests im finalen unsandboxed Lauf vollständig
+  erfolgreich; das ist keine Linux-Abnahme. Ein früherer sandboxed Lauf konnte
+  18 Graph-Loopback-Mockserver nicht binden; unabhängige Reviews abgeschlossen;
+  `MAIL-TRANSPORT-COMMANDS`, `SET-01` und `GW-MEMO-EDITOR` sowie
+  `MAIL-PRINT-ACTION`, `COMPOSER-ACTION-SURFACE`, `GW-ALARMS` und
+  `GW-REMINDER-RUNTIME` stehen auf `BLOCKED_LINUX`.
 Commit für den konkreten Linux-Lauf: vor dem Lauf eintragen; dieser
   Roadmap-/Auditlauf hat keinen Commit und keinen Push erzeugt
 Build-Befehl: cargo check --workspace && cargo test --workspace
