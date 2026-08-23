@@ -348,6 +348,12 @@ impl HtmlEditor {
             .css_classes(vec!["flat"])
             .build();
 
+        let btn_image = gtk::Button::builder()
+            .icon_name("insert-image-symbolic")
+            .tooltip_text("Bild einfügen")
+            .css_classes(vec!["flat"])
+            .build();
+
         let btn_undo = gtk::Button::builder()
             .icon_name("edit-undo-symbolic")
             .tooltip_text("Rückgängig (Ctrl+Z)")
@@ -373,6 +379,7 @@ impl HtmlEditor {
         toolbar.append(&btn_blockquote);
         toolbar.append(&gtk::Separator::new(gtk::Orientation::Vertical));
         toolbar.append(&btn_link);
+        toolbar.append(&btn_image);
         toolbar.append(&btn_rule);
         toolbar.append(&gtk::Separator::new(gtk::Orientation::Vertical));
         toolbar.append(&btn_undo);
@@ -610,6 +617,63 @@ impl HtmlEditor {
             }
         ));
 
+        let web_view_for_image = web_view.clone();
+        let editor_for_image = self.downgrade();
+        btn_image.connect_clicked(move |_| {
+            let Some(editor) = editor_for_image.upgrade() else { return; };
+            let parent = editor.root().and_downcast::<gtk::Window>();
+            let file_dialog = gtk::FileDialog::builder()
+                .title("Bild zum Einfügen auswählen")
+                .modal(true)
+                .build();
+            let filter = gtk::FileFilter::new();
+            filter.set_name(Some("Bilder (*.png, *.jpg, *.jpeg, *.gif, *.svg, *.webp)"));
+            filter.add_mime_type("image/png");
+            filter.add_mime_type("image/jpeg");
+            filter.add_mime_type("image/gif");
+            filter.add_mime_type("image/svg+xml");
+            filter.add_mime_type("image/webp");
+            let filters = gio::ListStore::new::<gtk::FileFilter>();
+            filters.append(&filter);
+            file_dialog.set_filters(Some(&filters));
+
+            let web_view = web_view_for_image.clone();
+            file_dialog.open(parent.as_ref(), None::<&gio::Cancellable>, move |result| {
+                if let Ok(file) = result {
+                    if let Some(path) = file.path() {
+                        if let Ok(bytes) = std::fs::read(&path) {
+                            let mime = match path
+                                .extension()
+                                .and_then(|ext| ext.to_str())
+                                .unwrap_or("")
+                                .to_ascii_lowercase()
+                                .as_str()
+                            {
+                                "png" => "image/png",
+                                "jpg" | "jpeg" => "image/jpeg",
+                                "gif" => "image/gif",
+                                "svg" => "image/svg+xml",
+                                "webp" => "image/webp",
+                                _ => "image/png",
+                            };
+                            let b64 = encode_base64(&bytes);
+                            let data_uri = format!("data:{mime};base64,{b64}");
+                            let js = format!(
+                                "document.execCommand('insertImage', false, '{data_uri}');"
+                            );
+                            web_view.evaluate_javascript(
+                                &js,
+                                None,
+                                None,
+                                None::<&gio::Cancellable>,
+                                |_| {},
+                            );
+                        }
+                    }
+                }
+            });
+        });
+
         btn_undo.connect_clicked(glib::clone!(
             #[weak]
             web_view,
@@ -644,4 +708,25 @@ impl Default for HtmlEditor {
     fn default() -> Self {
         Self::new()
     }
+}
+
+fn encode_base64(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut encoded = String::with_capacity(bytes.len().div_ceil(3) * 4);
+
+    for chunk in bytes.chunks(3) {
+        let first = chunk[0];
+        let second = chunk.get(1).copied();
+        let third = chunk.get(2).copied();
+        encoded.push(TABLE[(first >> 2) as usize] as char);
+        encoded.push(
+            TABLE[(((first & 0x03) << 4) | second.map_or(0, |value| value >> 4)) as usize] as char,
+        );
+        encoded.push(second.map_or('=', |value| {
+            TABLE[(((value & 0x0f) << 2) | third.map_or(0, |third| third >> 6)) as usize] as char
+        }));
+        encoded.push(third.map_or('=', |value| TABLE[(value & 0x3f) as usize] as char));
+    }
+
+    encoded
 }
