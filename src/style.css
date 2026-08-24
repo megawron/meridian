@@ -57,6 +57,14 @@
   background-color: alpha(@accent_bg_color, 0.09);
 }
 
+/* Evolution keeps deleted messages in their original folder when the View
+ * toggle is enabled; distinguish them without making their recovery state
+ * look like a move to Trash. */
+.message-list .deleted label {
+  text-decoration-line: line-through;
+  opacity: 0.65;
+}
+
 .message-list button,
 .message-list checkbutton {
   min-width: 24px;

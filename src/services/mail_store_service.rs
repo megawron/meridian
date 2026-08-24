@@ -82,6 +82,8 @@ pub struct ParsedMail {
     pub thread_size: usize,
     pub thread_position: usize,
     pub date_str: String,
+    #[serde(default)]
+    pub message_size: usize,
     pub preview_snippet: String,
     pub html_body: String,
     pub(crate) raw_headers: Option<Vec<u8>>,
@@ -115,6 +117,7 @@ impl ParsedMail {
             thread_size,
             thread_position,
             date_str,
+            message_size,
             preview_snippet,
             html_body,
             raw_headers,
@@ -147,6 +150,7 @@ impl ParsedMail {
             thread_size,
             thread_position,
             &date_str,
+            message_size,
             &preview_snippet,
             &html_body,
             is_unread,
@@ -695,6 +699,22 @@ impl MailStoreService {
         self.load_local_records_cancelable_with_store(cancelled, &filter_store)
     }
 
+    /// Load local records and, when requested, the sidecar-deleted rows that
+    /// are normally hidden.  The returned IDs identify only those additional
+    /// local rows; callers must never infer deletion for Camel/Graph records.
+    pub(crate) fn load_local_records_with_deleted_cancelable(
+        &self,
+        cancelled: &AtomicBool,
+        include_deleted: bool,
+    ) -> (Vec<ParsedMail>, HashSet<String>) {
+        let filter_store = MailFilterStore::default();
+        self.load_local_records_with_deleted_cancelable_with_store(
+            cancelled,
+            &filter_store,
+            include_deleted,
+        )
+    }
+
     /// Load local messages with an explicitly captured filter store.
     ///
     /// This is the worker-safe variant: the caller owns the filter-store path
@@ -707,13 +727,28 @@ impl MailStoreService {
         cancelled: &AtomicBool,
         filter_store: &MailFilterStore,
     ) -> Vec<ParsedMail> {
+        self.load_local_records_with_deleted_cancelable_with_store(cancelled, filter_store, false)
+            .0
+    }
+
+    /// Worker-safe local load with an explicit deleted-row visibility mode.
+    /// Deleted records are materialised separately after the normal pipeline,
+    /// so exposing them can never rerun incoming rules or alter hidden-mode
+    /// behavior.
+    pub(crate) fn load_local_records_with_deleted_cancelable_with_store(
+        &self,
+        cancelled: &AtomicBool,
+        filter_store: &MailFilterStore,
+        include_deleted: bool,
+    ) -> (Vec<ParsedMail>, HashSet<String>) {
         let mut metadata = self.metadata.load();
         let folder_overrides = self.metadata.load_folder_overrides();
         let deleted = self.metadata.load_deleted();
         let labels = self.metadata.load_labels();
         let follow_up = self.metadata.load_follow_up();
         let filter_rules = filter_store.load();
-        let mut messages = self.load_raw_local_records_cancelable(cancelled);
+        let raw_messages = self.load_raw_local_records_cancelable(cancelled);
+        let mut messages = raw_messages.clone();
 
         messages.retain(|message| !deleted.contains(&message.id));
         let mut filtered_out = std::collections::HashSet::new();
@@ -796,9 +831,66 @@ impl MailStoreService {
         }
         messages.extend(copied_messages);
 
+        let mut deleted_ids = HashSet::new();
+        if include_deleted {
+            let mut deleted_messages = raw_messages
+                .iter()
+                .filter(|message| deleted.contains(&message.id))
+                .cloned()
+                .collect::<Vec<_>>();
+
+            for message in &mut deleted_messages {
+                apply_persisted_local_metadata(
+                    message,
+                    &metadata,
+                    &folder_overrides,
+                    &labels,
+                    &follow_up,
+                );
+                deleted_ids.insert(message.id.clone());
+            }
+
+            // A copied row has its own sidecar ID and state.  Build it from
+            // the source record directly so a deleted source does not hide an
+            // independently deleted copy, while preserving the current normal
+            // (hidden) copy pipeline above unchanged.
+            for source in &raw_messages {
+                let Some(copy_folders) = copies.get(&source.id) else {
+                    continue;
+                };
+                for folder_id in copy_folders {
+                    if folder_id == &source.folder_id {
+                        continue;
+                    }
+                    let copy_id = local_copy_id(&source.id, folder_id);
+                    if !deleted.contains(&copy_id) {
+                        continue;
+                    }
+                    let mut copy = source.clone();
+                    copy.id = copy_id.clone();
+                    copy.folder_id = folder_overrides
+                        .get(&copy_id)
+                        .cloned()
+                        .unwrap_or_else(|| folder_id.clone());
+                    copy.folder_name = copy.folder_id.clone();
+                    copy.backend_location = None;
+                    apply_persisted_local_metadata(
+                        &mut copy,
+                        &metadata,
+                        &folder_overrides,
+                        &labels,
+                        &follow_up,
+                    );
+                    deleted_ids.insert(copy_id);
+                    deleted_messages.push(copy);
+                }
+            }
+            messages.extend(deleted_messages);
+        }
+
         assign_thread_metadata(&mut messages);
 
-        messages
+        (messages, deleted_ids)
     }
 
     /// Apply one saved rule to the app-owned local mailbox.
@@ -1199,6 +1291,34 @@ fn apply_client_state(
     }
 
     apply_local_filter_effects(filter_rules, message, sidecar)
+}
+
+/// Apply only persisted sidecar data.  This is deliberately separate from
+/// [`apply_client_state`]: visible deleted rows must never be fed back through
+/// incoming rules merely because the View toggle changed.
+fn apply_persisted_local_metadata(
+    message: &mut ParsedMail,
+    metadata: &HashMap<String, MailMessageState>,
+    folder_overrides: &HashMap<String, String>,
+    labels: &HashMap<String, std::collections::HashSet<String>>,
+    follow_up: &HashMap<String, MailFollowUpMetadata>,
+) {
+    if let Some(folder_id) = folder_overrides.get(&message.id) {
+        message.folder_id = folder_id.clone();
+        message.folder_name = message.folder_id.clone();
+    }
+    if let Some(state) = metadata.get(&message.id) {
+        message.is_unread = state.is_unread;
+        message.is_flagged = state.is_flagged;
+        message.is_important = state.is_important;
+    }
+    if let Some(message_labels) = labels.get(&message.id) {
+        message.labels = sorted_labels(message_labels);
+    }
+    if let Some(state) = follow_up.get(&message.id) {
+        message.follow_up_state = state.state;
+        message.follow_up = state.clone();
+    }
 }
 
 #[derive(Debug, Default)]
@@ -1954,6 +2074,7 @@ pub(crate) fn parse_rfc822_bytes(
         thread_size: 1,
         thread_position: 0,
         date_str: date,
+        message_size: raw.len(),
         preview_snippet: preview,
         html_body: body_html,
         raw_headers: (!header_bytes.is_empty()).then(|| header_bytes.to_vec()),
@@ -2875,6 +2996,16 @@ mod tests {
             ordinary.raw_headers.as_deref(),
             Some(b"Content-Type: text/plain".as_slice())
         );
+    }
+
+    #[test]
+    fn mail_list_metadata_columns_keep_exact_rfc822_size_without_retaining_body() {
+        let raw = b"From: sender@example.test\r\nSubject: Size\r\n\r\nBody\r\n";
+        let message = parse_rfc822_bytes("sized", "inbox", raw, false)
+            .expect("ordinary message should parse");
+
+        assert_eq!(message.message_size, raw.len());
+        assert!(message.raw_mime.is_none());
     }
 
     #[test]
@@ -3989,6 +4120,175 @@ mod tests {
                 .any(|record| record.folder_id == "archive" && record.id.contains("::copy::"))
         );
         assert!(mail_dir.join("message.eml").is_file());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn show_deleted_materializes_source_and_copy_without_changing_hidden_records() {
+        let root = temporary_directory("show-deleted-local-copy-records");
+        let mail_dir = root.join("mail");
+        fs::create_dir_all(&mail_dir).expect("mail directory should be created");
+        fs::write(
+            mail_dir.join("message.eml"),
+            "From: Sender <sender@example.org>\nSubject: Test\n\nBody\n",
+        )
+        .expect("mail should be written");
+        let store =
+            MailStoreService::with_mail_dir_and_state_path(&mail_dir, root.join("state.json"));
+        let source = store
+            .load_local_records()
+            .into_iter()
+            .next()
+            .expect("message should parse");
+        let metadata = MailMetadataStore::new(store.metadata_path());
+        metadata
+            .set_copy(&source.id, "archive", true)
+            .expect("copy should persist");
+        let copy_id = local_copy_id(&source.id, "archive");
+        metadata
+            .set_deleted(&source.id, true)
+            .expect("source deletion should persist");
+        metadata
+            .set_deleted(&copy_id, true)
+            .expect("copy deletion should persist");
+        metadata
+            .set_folder_override(&source.id, Some("custom:Recovered"))
+            .expect("source placement should persist");
+
+        // The established hidden path remains exactly as before: deleted
+        // sources (and therefore their copies) are absent.
+        assert!(store.load_local_records().is_empty());
+
+        let (shown, deleted_ids) =
+            store.load_local_records_with_deleted_cancelable(&AtomicBool::new(false), true);
+        assert_eq!(shown.len(), 2);
+        assert_eq!(deleted_ids.len(), 2);
+        assert_eq!(
+            shown
+                .iter()
+                .find(|message| message.id == source.id)
+                .expect("deleted source should be materialized")
+                .folder_id,
+            "custom:Recovered"
+        );
+        assert_eq!(
+            shown
+                .iter()
+                .find(|message| message.id == copy_id)
+                .expect("deleted copy should be materialized")
+                .folder_id,
+            "archive"
+        );
+        assert!(deleted_ids.contains(&source.id));
+        assert!(deleted_ids.contains(&copy_id));
+        assert!(mail_dir.join("message.eml").is_file());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn deleted_copy_is_independent_from_a_visible_source() {
+        let root = temporary_directory("show-deleted-copy-independence");
+        let mail_dir = root.join("mail");
+        fs::create_dir_all(&mail_dir).expect("mail directory should be created");
+        fs::write(
+            mail_dir.join("message.eml"),
+            "From: Sender <sender@example.org>\nSubject: Test\n\nBody\n",
+        )
+        .expect("mail should be written");
+        let store =
+            MailStoreService::with_mail_dir_and_state_path(&mail_dir, root.join("state.json"));
+        let source = store
+            .load_local_records()
+            .into_iter()
+            .next()
+            .expect("message should parse");
+        let metadata = MailMetadataStore::new(store.metadata_path());
+        metadata
+            .set_copy(&source.id, "archive", true)
+            .expect("copy should persist");
+        let copy_id = local_copy_id(&source.id, "archive");
+        metadata
+            .set_deleted(&copy_id, true)
+            .expect("copy deletion should persist");
+
+        let hidden = store.load_local_records();
+        assert_eq!(hidden.len(), 1);
+        assert_eq!(hidden[0].id, source.id);
+
+        let (shown, deleted_ids) =
+            store.load_local_records_with_deleted_cancelable(&AtomicBool::new(false), true);
+        assert_eq!(shown.len(), 2);
+        assert!(shown.iter().any(|message| message.id == source.id));
+        assert!(shown.iter().any(|message| message.id == copy_id));
+        assert_eq!(deleted_ids, HashSet::from([copy_id]));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn showing_deleted_source_does_not_rerun_matching_filter_actions() {
+        let root = temporary_directory("show-deleted-does-not-rerun-filters");
+        let mail_dir = root.join("mail");
+        fs::create_dir_all(&mail_dir).expect("mail directory should be created");
+        fs::write(
+            mail_dir.join("message.eml"),
+            "From: Sender <sender@example.org>\nSubject: Test\n\nBody\n",
+        )
+        .expect("mail should be written");
+        let store =
+            MailStoreService::with_mail_dir_and_state_path(&mail_dir, root.join("state.json"));
+        let source = store
+            .load_local_records()
+            .into_iter()
+            .next()
+            .expect("message should parse");
+        let metadata = MailMetadataStore::new(store.metadata_path());
+        metadata
+            .set_deleted(&source.id, true)
+            .expect("source deletion should persist");
+        metadata
+            .set_folder_override(&source.id, Some("custom:Stored"))
+            .expect("stored folder should persist");
+
+        let filter_store = MailFilterStore::new(root.join("filters.json"));
+        filter_store
+            .upsert(MailFilterRule {
+                id: "must-not-run".to_string(),
+                name: "Must not run on deleted rows".to_string(),
+                enabled: true,
+                scope: FilterScope::Incoming,
+                condition: FilterCondition {
+                    field: FilterField::Subject,
+                    value: "test".to_string(),
+                    operator: FilterOperator::Contains,
+                },
+                action: FilterAction::Delete,
+                conditions: Vec::new(),
+                actions: vec![
+                    FilterAction::MoveToFolder("archive".to_string()),
+                    FilterAction::CopyToFolder("sent".to_string()),
+                ],
+                match_all: true,
+            })
+            .expect("filter should persist");
+
+        let (shown, deleted_ids) = store.load_local_records_with_deleted_cancelable_with_store(
+            &AtomicBool::new(false),
+            &filter_store,
+            true,
+        );
+        assert_eq!(shown.len(), 1);
+        assert_eq!(shown[0].id, source.id);
+        assert_eq!(shown[0].folder_id, "custom:Stored");
+        assert_eq!(deleted_ids, HashSet::from([source.id.clone()]));
+        assert_eq!(
+            metadata.load_folder_overrides().get(&source.id),
+            Some(&"custom:Stored".to_string())
+        );
+        assert!(metadata.load_copies().is_empty());
+        assert_eq!(metadata.load_deleted(), HashSet::from([source.id]));
 
         let _ = fs::remove_dir_all(root);
     }

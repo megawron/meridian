@@ -113,6 +113,7 @@ pub(crate) struct ExportMessage {
 pub(crate) struct ExportAttachment {
     pub(crate) filename: String,
     pub(crate) mime_type: String,
+    pub(crate) content_id: Option<String>,
     pub(crate) content: Arc<[u8]>,
 }
 
@@ -498,38 +499,120 @@ fn load_attachments(attachments: &[DraftAttachment]) -> Result<Vec<ExportAttachm
             validate_attachment_filename(&attachment.filename)?;
             validate_mime_type(&attachment.mime_type)?;
 
-            if attachment.path.trim().is_empty() {
+            let content = if !attachment.embedded_content_base64.is_empty() {
+                let content = decode_embedded_attachment(&attachment.embedded_content_base64)?;
+                if content.len() as u64 != attachment.size {
+                    return Err(format!(
+                        "Eingebetteter Anhang hat eine ungültige Größe: {}",
+                        attachment.filename
+                    ));
+                }
+                content
+            } else if attachment.path.trim().is_empty() {
                 return Err(format!(
                     "Anhang konnte nicht gelesen werden ({}): Pfad ist leer",
                     attachment.filename
                 ));
-            }
-            let path = Path::new(&attachment.path);
-            let metadata = fs::metadata(path).map_err(|error| {
-                format!(
-                    "Anhang konnte nicht gelesen werden ({}): {error}",
-                    attachment.filename
-                )
-            })?;
-            if !metadata.is_file() {
-                return Err(format!(
-                    "Anhang ist keine reguläre Datei: {}",
-                    attachment.filename
-                ));
-            }
-            let content = fs::read(path).map_err(|error| {
-                format!(
-                    "Anhang konnte nicht gelesen werden ({}): {error}",
-                    attachment.filename
-                )
-            })?;
+            } else {
+                let path = Path::new(&attachment.path);
+                let metadata = fs::metadata(path).map_err(|error| {
+                    format!(
+                        "Anhang konnte nicht gelesen werden ({}): {error}",
+                        attachment.filename
+                    )
+                })?;
+                if !metadata.is_file() {
+                    return Err(format!(
+                        "Anhang ist keine reguläre Datei: {}",
+                        attachment.filename
+                    ));
+                }
+                fs::read(path).map_err(|error| {
+                    format!(
+                        "Anhang konnte nicht gelesen werden ({}): {error}",
+                        attachment.filename
+                    )
+                })?
+            };
             Ok(ExportAttachment {
                 filename: attachment.filename.clone(),
                 mime_type: attachment.mime_type.clone(),
+                content_id: attachment.content_id.clone(),
                 content: content.into(),
             })
         })
         .collect()
+}
+
+pub(crate) fn embedded_draft_attachment(
+    filename: &str,
+    mime_type: &str,
+    content: &[u8],
+) -> Result<DraftAttachment, String> {
+    validate_attachment_filename(filename)?;
+    validate_mime_type(mime_type)?;
+    if content.is_empty() {
+        return Err("Eingebetteter Anhang ist leer".to_string());
+    }
+    Ok(DraftAttachment {
+        path: format!("embedded:{}", uuid::Uuid::new_v4()),
+        filename: filename.to_string(),
+        mime_type: mime_type.to_string(),
+        size: content.len() as u64,
+        content_id: None,
+        embedded_content_base64: base64_with_crlf(content).replace(['\r', '\n'], ""),
+    })
+}
+
+pub(crate) fn embedded_draft_attachment_with_content_id(
+    filename: &str,
+    mime_type: &str,
+    content_id: Option<&str>,
+    content: &[u8],
+) -> Result<DraftAttachment, String> {
+    let mut attachment = embedded_draft_attachment(filename, mime_type, content)?;
+    if let Some(content_id) = content_id {
+        validate_message_id("Content-ID", content_id)?;
+        attachment.content_id = Some(content_id.trim().to_string());
+    }
+    Ok(attachment)
+}
+
+fn decode_embedded_attachment(value: &str) -> Result<Vec<u8>, String> {
+    let mut sextets = Vec::with_capacity(value.len());
+    let mut padding = 0usize;
+    for byte in value.bytes() {
+        let decoded = match byte {
+            b'A'..=b'Z' => byte - b'A',
+            b'a'..=b'z' => byte - b'a' + 26,
+            b'0'..=b'9' => byte - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            b'=' => {
+                padding += 1;
+                0
+            }
+            _ => return Err("Eingebetteter Anhang ist nicht gültig Base64-kodiert".to_string()),
+        };
+        if padding > 0 && byte != b'=' {
+            return Err("Eingebetteter Anhang enthält ungültiges Base64-Padding".to_string());
+        }
+        sextets.push(decoded);
+    }
+    if sextets.is_empty() {
+        return Ok(Vec::new());
+    }
+    if sextets.len() % 4 != 0 || padding > 2 {
+        return Err("Eingebetteter Anhang enthält ungültiges Base64-Padding".to_string());
+    }
+    let mut decoded = Vec::with_capacity(sextets.len() / 4 * 3);
+    for chunk in sextets.chunks_exact(4) {
+        decoded.push((chunk[0] << 2) | (chunk[1] >> 4));
+        decoded.push((chunk[1] << 4) | (chunk[2] >> 2));
+        decoded.push((chunk[2] << 6) | chunk[3]);
+    }
+    decoded.truncate(decoded.len().saturating_sub(padding));
+    Ok(decoded)
 }
 
 fn validate_export_attachment(attachment: &ExportAttachment) -> Result<(), String> {
@@ -752,7 +835,16 @@ fn append_attachment_part(
     raw.push_str(&mime_type);
     append_mime_parameter(raw, "name", &attachment.filename)?;
     raw.push_str("\r\nContent-Transfer-Encoding: base64\r\n");
-    raw.push_str("Content-Disposition: attachment");
+    if let Some(content_id) = attachment.content_id.as_deref() {
+        raw.push_str("Content-ID: ");
+        raw.push_str(&format_message_id("Content-ID", content_id)?);
+        raw.push_str("\r\n");
+    }
+    raw.push_str(if attachment.content_id.is_some() {
+        "Content-Disposition: inline"
+    } else {
+        "Content-Disposition: attachment"
+    });
     append_mime_parameter(raw, "filename", &attachment.filename)?;
     raw.push_str("\r\n\r\n");
     raw.push_str(&base64_with_crlf(&attachment.content));
@@ -1419,6 +1511,8 @@ mod tests {
                 filename: "hello.txt".to_string(),
                 mime_type: "text/plain".to_string(),
                 size: 5,
+                content_id: None,
+                embedded_content_base64: String::new(),
             }],
             calendar_method: None,
             calendar_component: None,
@@ -1439,6 +1533,73 @@ mod tests {
     }
 
     #[test]
+    fn embedded_rfc822_attachment_survives_draft_and_mime_build_without_a_path() {
+        let original = b"From: sender@example.org\r\nSubject: Original\r\n\r\nBody\r\n";
+        let attachment = embedded_draft_attachment("Original.eml", "message/rfc822", original)
+            .expect("RFC822 payload should embed");
+        assert!(attachment.path.starts_with("embedded:"));
+        assert!(!attachment.embedded_content_base64.is_empty());
+
+        let serialized = serde_json::to_string(&attachment).expect("attachment should serialize");
+        let restored: DraftAttachment =
+            serde_json::from_str(&serialized).expect("attachment should deserialize");
+        assert_eq!(restored, attachment);
+
+        let raw = build_rfc822(&outgoing_with_attachments(vec![restored]))
+            .expect("embedded attachment should build without filesystem access");
+        let text = String::from_utf8(raw).expect("message should be UTF-8");
+        assert!(text.contains("Content-Type: message/rfc822"));
+        assert!(text.contains("RnJvbTogc2VuZGVyQGV4YW1wbGUub3Jn"));
+    }
+
+    #[test]
+    fn embedded_inline_attachment_preserves_content_id_through_draft_and_mime() {
+        let attachment = embedded_draft_attachment_with_content_id(
+            "logo.png",
+            "image/png",
+            Some("<logo@example.org>"),
+            b"png-data",
+        )
+        .expect("inline payload should embed");
+        let serialized = serde_json::to_string(&attachment).expect("attachment should serialize");
+        let restored: DraftAttachment =
+            serde_json::from_str(&serialized).expect("attachment should deserialize");
+        assert_eq!(restored.content_id.as_deref(), Some("<logo@example.org>"));
+
+        let raw = build_rfc822(&outgoing_with_attachments(vec![restored]))
+            .expect("inline attachment should build");
+        let text = String::from_utf8(raw).expect("message should be UTF-8");
+        assert!(text.contains("Content-ID: <logo@example.org>\r\n"));
+        assert!(text.contains("Content-Disposition: inline; filename=\"logo.png\""));
+    }
+
+    #[test]
+    fn embedded_attachment_rejects_empty_corrupt_and_size_mismatched_payloads() {
+        assert!(
+            embedded_draft_attachment("Original.eml", "message/rfc822", b"")
+                .expect_err("empty embedded payload must fail")
+                .contains("leer")
+        );
+        let mut corrupt = embedded_draft_attachment("Original.eml", "message/rfc822", b"message")
+            .expect("fixture should embed");
+        corrupt.embedded_content_base64 = "%%%=".to_string();
+        assert!(
+            build_rfc822(&outgoing_with_attachments(vec![corrupt]))
+                .expect_err("corrupt Base64 must fail")
+                .contains("Base64")
+        );
+        let mut mismatched =
+            embedded_draft_attachment("Original.eml", "message/rfc822", b"message")
+                .expect("fixture should embed");
+        mismatched.size += 1;
+        assert!(
+            build_rfc822(&outgoing_with_attachments(vec![mismatched]))
+                .expect_err("size mismatch must fail")
+                .contains("Größe")
+        );
+    }
+
+    #[test]
     fn exports_message_headers_thread_and_attachment() {
         let raw = build_export_rfc822(&ExportMessage {
             from: "Sender <sender@example.org>".to_string(),
@@ -1455,6 +1616,7 @@ mod tests {
             attachments: vec![ExportAttachment {
                 filename: "note.txt".to_string(),
                 mime_type: "text/plain".to_string(),
+                content_id: None,
                 content: b"note".to_vec().into(),
             }],
         })
@@ -1715,6 +1877,8 @@ mod tests {
             filename: "Résumé 2026.pdf".to_string(),
             mime_type: "application/pdf".to_string(),
             size: 7,
+            content_id: None,
+            embedded_content_base64: String::new(),
         }]);
         let raw = build_rfc822(&message).expect("unicode attachment should build");
         let text = String::from_utf8(raw).expect("message should be UTF-8");
@@ -1751,6 +1915,8 @@ mod tests {
             filename: "directory".to_string(),
             mime_type: "application/octet-stream".to_string(),
             size: 0,
+            content_id: None,
+            embedded_content_base64: String::new(),
         }]);
         assert!(
             build_rfc822(&message)

@@ -11,7 +11,7 @@ use chrono::Utc;
 use glib::{Checksum, ChecksumType};
 use serde::de::{DeserializeSeed, Deserializer, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::fmt;
 use std::fs;
 use std::io::{self, Write};
@@ -41,6 +41,10 @@ fn default_calendar_hidden_sources() -> String {
 
 fn default_mail_sort_field() -> String {
     "date".to_string()
+}
+
+fn default_mail_folder_sort_order() -> String {
+    "{}".to_string()
 }
 
 fn default_calendar_time_zone() -> String {
@@ -200,6 +204,12 @@ struct BackupSettings {
     mail_show_preview_text: bool,
     #[serde(default = "default_mail_show_labels")]
     mail_show_labels: bool,
+    #[serde(default)]
+    mail_show_size: bool,
+    #[serde(default)]
+    mail_show_follow_up_due: bool,
+    #[serde(default)]
+    mail_show_location: bool,
     #[serde(default = "default_mail_sender_column_width")]
     mail_sender_column_width: i32,
     #[serde(default = "default_color_scheme")]
@@ -273,6 +283,8 @@ struct BackupSettings {
     mail_sort_descending: bool,
     #[serde(default = "default_mail_threading")]
     mail_threading: bool,
+    #[serde(default = "default_mail_folder_sort_order")]
+    mail_folder_sort_order: String,
     #[serde(default = "default_calendar_time_zone")]
     calendar_time_zone: String,
     #[serde(default = "default_task_filter")]
@@ -536,6 +548,9 @@ impl BackupSettings {
             mail_show_attachment: settings.mail_show_attachment(),
             mail_show_preview_text: settings.mail_show_preview_text(),
             mail_show_labels: settings.mail_show_labels(),
+            mail_show_size: settings.mail_show_size(),
+            mail_show_follow_up_due: settings.mail_show_follow_up_due(),
+            mail_show_location: settings.mail_show_location(),
             mail_sender_column_width: settings.mail_sender_column_width(),
             color_scheme: settings.color_scheme(),
             switcher_location: settings.switcher_location(),
@@ -571,6 +586,7 @@ impl BackupSettings {
             mail_sort_field: settings.mail_sort_field(),
             mail_sort_descending: settings.mail_sort_descending(),
             mail_threading: settings.mail_threading(),
+            mail_folder_sort_order: settings.mail_folder_sort_order(),
             calendar_time_zone: settings.calendar_time_zone(),
             task_filter: settings.task_filter(),
             task_category_filter: settings.task_category_filter(),
@@ -625,6 +641,9 @@ impl BackupSettings {
         settings.set_mail_show_attachment(self.mail_show_attachment);
         settings.set_mail_show_preview_text(self.mail_show_preview_text);
         settings.set_mail_show_labels(self.mail_show_labels);
+        settings.set_mail_show_size(self.mail_show_size);
+        settings.set_mail_show_follow_up_due(self.mail_show_follow_up_due);
+        settings.set_mail_show_location(self.mail_show_location);
         settings.set_mail_sender_column_width(self.mail_sender_column_width);
         settings.set_color_scheme(&self.color_scheme);
         settings.set_switcher_location(&self.switcher_location);
@@ -673,6 +692,7 @@ impl BackupSettings {
         settings.set_mail_sort_field(&self.mail_sort_field);
         settings.set_mail_sort_descending(self.mail_sort_descending);
         settings.set_mail_threading(self.mail_threading);
+        settings.set_mail_folder_sort_order(&self.mail_folder_sort_order);
         settings.set_calendar_time_zone(&self.calendar_time_zone);
         settings.set_task_filter(&self.task_filter);
         settings.set_task_category_filter(&self.task_category_filter);
@@ -791,6 +811,19 @@ impl BackupSettings {
                 "attachments",
             ],
         )?;
+        let folder_sort_order = serde_json::from_str::<BTreeMap<String, u32>>(
+            &self.mail_folder_sort_order,
+        )
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "ungültige Ordnersortierung"))?;
+        if folder_sort_order
+            .iter()
+            .any(|(folder_id, rank)| folder_id.trim().is_empty() || *rank == 0)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "ungültige Ordnersortierung",
+            ));
+        }
         validate_choice("mail_layout", &self.mail_layout, &["classic", "modern"])?;
         validate_choice(
             "mail_row_density",
@@ -1143,6 +1176,9 @@ const BACKUP_SETTINGS_FIELDS: &[&str] = &[
     "mail_show_attachment",
     "mail_show_preview_text",
     "mail_show_labels",
+    "mail_show_size",
+    "mail_show_follow_up_due",
+    "mail_show_location",
     "mail_sender_column_width",
     "color_scheme",
     "switcher_location",
@@ -1177,6 +1213,7 @@ const BACKUP_SETTINGS_FIELDS: &[&str] = &[
     "mail_sort_field",
     "mail_sort_descending",
     "mail_threading",
+    "mail_folder_sort_order",
     "calendar_time_zone",
     "task_filter",
     "task_category_filter",
@@ -2039,7 +2076,10 @@ mod tests {
                 "composer_charset": "ISO-8859-15",
                 "switcher_location": "top",
                 "mail_sync_message_limit": 250,
-                "mail_sidebar_position": 240
+                "mail_sidebar_position": 240,
+                "mail_show_size": true,
+                "mail_show_follow_up_due": true,
+                "mail_show_location": true
             },
             "files": []
         }))
@@ -2055,6 +2095,9 @@ mod tests {
         assert_eq!(settings.switcher_location, "top");
         assert_eq!(settings.mail_sync_message_limit, 250);
         assert_eq!(settings.mail_sidebar_position, 240);
+        assert!(settings.mail_show_size);
+        assert!(settings.mail_show_follow_up_due);
+        assert!(settings.mail_show_location);
         validate_bundle(&bundle).expect("current fixture should validate");
 
         let encoded = serde_json::to_vec(&bundle).expect("current fixture should round-trip");
@@ -2578,11 +2621,15 @@ mod tests {
         assert!(settings.mail_show_attachment);
         assert!(!settings.mail_show_preview_text);
         assert!(settings.mail_show_labels);
+        assert!(!settings.mail_show_size);
+        assert!(!settings.mail_show_follow_up_due);
+        assert!(!settings.mail_show_location);
         assert!(!settings.calendar_show_week_numbers);
         assert!(settings.calendar_hidden_sources.is_empty());
         assert_eq!(settings.mail_sort_field, "date");
         assert!(settings.mail_sort_descending);
         assert!(settings.mail_threading);
+        assert_eq!(settings.mail_folder_sort_order, "{}");
         assert!(settings.task_source_filter.is_empty());
         assert!(settings.task_sort_descending);
         assert_eq!(settings.task_filter, "all");
@@ -2638,6 +2685,25 @@ mod tests {
         assert_eq!(restored.task_filter, "next-30");
         assert_eq!(restored.task_category_filter, "Work Team");
         assert_eq!(restored.task_search_mode, "advanced");
+    }
+
+    #[test]
+    fn folder_sort_order_settings_survive_backup_json_roundtrip() {
+        let settings: BackupSettings = serde_json::from_value(serde_json::json!({
+            "mail_folder_sort_order": "{\"custom:Projects\":1,\"account\\u0000Archive\":2}"
+        }))
+        .expect("folder sort order should parse");
+        settings
+            .validate()
+            .expect("folder sort order should validate");
+        let raw = serde_json::to_vec(&settings).expect("settings should serialize");
+        let restored: BackupSettings =
+            serde_json::from_slice(&raw).expect("settings should round-trip");
+        assert_eq!(
+            restored.mail_folder_sort_order,
+            settings.mail_folder_sort_order
+        );
+        assert!(BACKUP_SETTINGS_FIELDS.contains(&"mail_folder_sort_order"));
     }
 
     #[test]

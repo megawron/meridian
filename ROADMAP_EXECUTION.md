@@ -122,7 +122,10 @@ und erweitert dessen Schreibbereich nur nach dokumentierter Kollisionsprüfung.
 | 12 | `P0-MAIL-002A` | `P0-MAIL-002` | `src/views/mail_page.rs`, `src/style.css` | `P0-STAB-001B` | IN PROGRESS | kompakter Evolution-Ordnerbaum ohne Kontoicon, lesbare Tabellenschrift, Icon-Fallbacks und dezente Unread-Zähler |
 | 12a | `P0-MAIL-002A-SOURCE` | `P0-MAIL-002A` | `src/views/mail_page.rs`, `src/window.rs`, `src/application.rs`, `src/services/{camel_mail_service,exchange_service}.rs` | `P0-MAIL-002A` | BLOCKED_LINUX | `Ctrl+U`/Menüs, exakter Worker-Abruf, sofortiges wiederverwendbares Lade-/Fehlerfenster sowie Abbruch- und Request-Identitätsgates portabel grün; Byte-/Fenster-Laufzeitabnahme offen |
 | 12b | `P0-MAIL-002A-HEADERS` | `P0-MAIL-002A` | `src/views/mail_page.rs`, `src/dialogs/preferences_dialog.rs`, `src/services/{camel_mail_service,exchange_service,mail_store_service,settings_service,backup_service,migration_service,vcard_service}.rs`, `data/org.gnome.Evolution4.gschema.xml` | `P0-MAIL-002A-SOURCE` | BLOCKED_LINUX | vollständige und normale Kopfzeilenansicht, Evolution-`show-headers`-Editor, `Face`-Bild, Graph-Headerübernahme, Persistenz/Migration/Backup und portable Gates grün; Provider-/Dichte-Abnahme offen |
-| 12c | `P0-MAIL-WORKER-STORE` | `P0-MAIL-002A` | S0 `src/services/mail_store_service.rs`; S1 `src/views/mail_page.rs`, `src/services/mail_operations_service.rs`; S2 `src/dialogs/preferences_dialog.rs`; S3 `src/services/search_engine.rs`, `src/dialogs/global_search_dialog.rs` | `P0-MAIL-002A` | PORTABLE_CLOSED | S0–S3 portabel geschlossen und reviewt: expliziter Filter-Store, MailPage/Operations-Worker, Preferences-Manual-Filter-Snapshot und Global-Search-Store-Snapshots; der frühere Load/Refresh/Load-more-Handoff ist enthalten; Parent bleibt wegen nativer/performance-/visueller/Großpostfach-, Sidecar-Writer-, Expunge-/Filter-, Graph-/Account-Env- und type-aware-Global-Search-Identity-Resten offen |
+| 12c | `P0-MAIL-WORKER-STORE` | `P0-MAIL-002A` | S0 `src/services/mail_store_service.rs`; S1 `src/views/mail_page.rs`, `src/services/mail_operations_service.rs`; S2 `src/dialogs/preferences_dialog.rs`; S3 `src/services/search_engine.rs`, `src/dialogs/global_search_dialog.rs` | `P0-MAIL-002A` | PORTABLE_CLOSED | S0–S3 portabel geschlossen und reviewt: expliziter Filter-Store, MailPage/Operations-Worker, Preferences-Manual-Filter-Snapshot und Global-Search-Store-Snapshots; der frühere Load/Refresh/Load-more-Handoff ist enthalten; Parent bleibt wegen nativer/performance-/visueller/Großpostfach-, Expunge-/Filter- und Graph-/Account-Env-Reste offen |
+| 12d | `P0-MAIL-SIDECAR-SERIALIZATION` | `P0-MAIL-002A` | `src/services/mail_metadata_service.rs` | keine | DONE | Mailmetadaten und Remote-Freigaben serialisieren vollständige RMW-Transaktionen pro Sidecar; konkurrierende Writer, Revocation und Lesefehler getestet |
+| 12e | `MAIL-DELETE-RECOVERY` | `P0-MAIL-002` | `src/application.rs`, `src/window.rs`, `src/views/mail_page.rs`, `src/services/mail_operations_service.rs` | `P0-STAB-001B` | BLOCKED_LINUX | `Ctrl+Shift+D` stellt nur einen bestätigten Delete-History-Head wieder her; unrelated/busy paths und lokale Trash-Route portabel getestet, native Providerabnahme offen |
+| 12f | `FOLDER-CONTEXT-TARGET` | `P0-MAIL-002A` | `src/views/mail_page.rs` | vorhandene Ordneraktionen | BLOCKED_LINUX | Sekundärklick bindet den exakten Folder-Target ohne Navigation; Allowlist, Stale-Clear und ungeladener Mark-All-Pfad getestet, GTK-/HiDPI-Abnahme offen |
 | 13 | `P0-MAIL-002B` | `P0-MAIL-002` | `src/views/mail_page.rs`, `src/services/settings_service.rs`, `src/dialogs/preferences_dialog.rs`, `data/org.gnome.Evolution4.gschema.xml` | `P0-MAIL-002A` | BLOCKED_LINUX | Defaults/Roundtrip/Reset und Live-Bindings portabel grün; sichtbare Linux-Abnahme offen |
 | 14 | `P0-SYNC-001A` | `P0-SYNC-001` | `src/views/mail_page.rs`, `src/services/camel_mail_service.rs`, `src/services/exchange_service.rs`, `src/models/mail_message.rs` | `P0-STAB-001B` | BLOCKED_LINUX | Portable Paging-, Watcher-, Auswahl-, Sortier- und echter Graph-Abbruchvertrag grün; Camel-Abnahme offen |
 | 15 | `P0-COMP-001B` | `P0-COMP-001` | `src/dialogs/compose_dialog.rs`, `src/services/draft_store_service.rs` | `P0-COMP-001A` | DONE | Autosave, Recovery, pro-Draft-Sendelock und revisionssicheres Cleanup integriert |
@@ -162,6 +165,16 @@ und erweitert dessen Schreibbereich nur nach dokumentierter Kollisionsprüfung.
 | 49 | `GW-MEMO-SOURCE-CAPABILITIES` | `P1-TASK-001` | `src/views/memos_page.rs` | `GW-TASK-SOURCE-CAPABILITIES` (wiederverwendbare ECal-Discovery) | BLOCKED_LINUX | Exakte enabled MEMO_LIST-UIDs und connected/available/readonly-writable ersetzen generische Calendar-Quellen in Hauptliste und Editor; unbekannte, offline und read-only Quellen mutieren fail-closed, unavailable Filter-/Edit-Identitäten bleiben sichtbar; reale EDS-/ACL-/Provider- und Linux-Visualabnahme offen |
 | 50 | `GW-TASK-LIST-MANAGEMENT` | `P1-TASK-001` | `src/views/tasks_page.rs`, `src/services/ecal_service.rs`, `native/eds_ecal_bridge.{h,c}` | `GW-TASK-SOURCE-CAPABILITIES` | BLOCKED_LINUX | Exakte Primary-Source-Metadaten treiben Copy/Rename/Delete; Rename/Properties verwenden `ESource:writable` getrennt von der Client-Writability für Taskmutationen, Delete wählt remote-delete nur bei Capability, Copy überträgt alle VTODOs samt TZIDs und überschreibt gleiche UIDs mit ehrlichem Partial-Prefix. New erstellt eine lokale TASK_LIST unter `local-stub`; lokale Properties bearbeiten Name/Farbe/Default/ICS-Datei/Writability/E-Mail. Nicht-lokale provider-spezifische New/Properties-Konfigurationsdialoge und reale EDS-Laufzeitabnahme bleiben offen. |
 | 51 | `GW-TASK-ACTIONS-ASSIGN` | `P1-TASK-001` | `src/views/tasks_page.rs`, `src/services/ecal_service.rs`, `native/eds_ecal_bridge.{h,c}` | `GW-TASK-SOURCE-CAPABILITIES`, `GW-TASK-ACTIONS-BATCH` | BLOCKED_LINUX | Exakte Single-Selection plus connected/client-writable und beide ECal-Assignment-Capabilities treiben Assign. Organizer/Attendees werden validiert und ohne Verlust fremder/nested Properties ersetzt, über exact Source+UID gespeichert und autoritativ neu geladen; METHOD:REQUEST wird bereitgestellt. Echter iTIP-Versand, Delegate-Ketten und Provider-/Linux-Abnahme bleiben offen. |
+| 52 | `COMPOSER-PRINT-LIFECYCLE` | `P0-COMP-001` | `src/dialogs/compose_dialog.rs`, `src/views/{mod.rs,mail_viewer.rs}`, `src/services/mail_print_service.rs` | `MAIL-PRINT-ACTION`, `COMPOSER-ACTION-SURFACE` | BLOCKED_LINUX | Composer Print/Preview erfassen Header, HTML/plain und Anlagenmetadaten unveränderlich auf GTK, bereiten das remote-freie Dokument abbrechbar im Worker vor, sperren kollidierende Composer-Aktionen und verwerfen stale/teardown callbacks. Preview verwendet den isolierten Viewer, Print den nativen WebKit-Dialog; Linux-/Portal-/PDF-Visualabnahme offen. |
+| 53 | `MAIL-CAMEL-FOLDER-MUTATIONS` | `P0-MAIL-002` | `native/eds_camel_bridge.{h,c}`, `src/services/camel_mail_service.rs`, `src/views/mail_page.rs`, `src/window.rs` | `FOLDER-CONTEXT-TARGET` | BLOCKED_LINUX | Exakte native Camel-Folder-Capabilities treiben CreateChild/Rename/Delete/Refresh. UI-Worker sind teardown-abbrechbar, Provider-Ergebnis wird durch frische Hierarchie verifiziert und aktive Rename/Delete-Ziele werden erst danach reconciled. Graph, Top-Level-Create, geschützte/unsafe Targets sowie nicht-atomare Copy/Move bleiben fail-closed; reale Providerabnahme offen. |
+| 54 | `LOCAL-ACCOUNT-ORDER-DEFAULT` | `P0-COMP-001` | `src/services/account_config_service.rs`, `src/dialogs/{preferences,compose}_dialog.rs` | app-eigene lokale Profile | DONE | Persistente Up/Down-Reihenfolge, sichtbarer Default, Default-Reparatur nach Disable/Delete und Composer-Fallback sind getestet. Externe EDS-Defaults bleiben unberührt; gecachte EDS-Zeilen sind factual read-only. EDS-/GOA-Service-Mutation bleibt native Folgearbeit. |
+| 55 | `MAIL-LIST-METADATA-COLUMNS` | `P0-MAIL-001` | Schema/Settings/Backup, `src/models/mail_message.rs`, `src/services/{mail_store,exchange}_service.rs`, `src/dialogs/preferences_dialog.rs`, `src/views/mail_page.rs` | Nachrichtenliste mit Follow-up- und Backend-Metadaten | DONE | Optionale Size-/Due-/Location-Spalten sind live schaltbar und sortierbar. Exakte RFC822-/Graph-Größe, Follow-up-Due und Konto/Vollordner-Location fließen durch Modell, Migration/Reset und Backup. Der bestehende Follow-up-Sortselector-Versatz ist behoben; freie Spaltenreihenfolge/Ansichtsprofile bleiben offen. |
+| 56 | `MAIL-PREVIEW-TOOLBAR-COMMON` | `P0-MAIL-001` | `src/views/mail_page.rs` | verdrahtete Reader- und Navigationsaktionen | DONE | Reader Common-Actions Delete/Junk/Not-Junk/Archive und Previous/Next werden tatsächlich angezeigt; Classic Toolbar enthält ebenfalls Previous/Next. Zustandsbindung nutzt die vorhandenen Window-Actions bzw. echten Reader-Operationen. Overflow-/Theme-Abnahme bleibt visuell. |
+| 57 | `READER-REPLY-FORWARD-VARIANTS` | `P0-MAIL-001` | `src/dialogs/compose_dialog.rs`, `src/views/mail_page.rs`, `src/window.rs` | bestehende Reply-/Forward-Composerpfade | DONE | `List-Post`-gebundenes Listen-Reply sowie echte Inline- und `>`-zitierte Forward-Modi sind in Message-/Kontextmenü und zentraler Action-Sensitivity verdrahtet. Ohne echte Nachricht sind Reader-Aktionen deaktiviert; NO/malformed/injection List-Post bleibt fail-closed. Alternative-Reply-Dialog und Attached-Forward bleiben getrennte Folgepakete. |
+| 58 | `READER-ALTERNATIVE-REPLY` | `P0-MAIL-001` | `src/dialogs/compose_dialog.rs`, `src/views/mail_page.rs`, `src/window.rs` | `READER-REPLY-FORWARD-VARIANTS` | DONE | Alternative Reply bietet Sender, validierte Mailingliste oder All sowie Default-, Outlook-Inline-, `>`-Zitat- und No-Quote-Stil. Die Auswahl gilt nur für den neuen Composer; der upstream Attachment-Stil ist sichtbar, aber bis zu einem draft-sicheren RFC822-Anhangspeicher explizit deaktiviert. |
+| 59 | `READER-ATTACHED-FORWARD` | `P0-MAIL-001` | `src/services/{draft_store,mail_composer}_service.rs`, `src/dialogs/compose_dialog.rs`, `src/views/mail_page.rs`, `src/window.rs` | exakter RFC822-Exportpfad | DONE | Attached Forward lädt vorhandene lokale/native/Graph-RFC822-Bytes asynchron und fällt nur auf den bestehenden verlustarmen Exportbuilder zurück. Der `message/rfc822`-Payload liegt Base64-kodiert im DraftAttachment, überlebt Autosave/Reopen und wird vor MIME-Bau strikt auf Encoding und Größe geprüft; Attached Reply bleibt offen. |
+| 60 | `READER-ATTACHED-REPLY` | `P0-MAIL-001` | `src/dialogs/compose_dialog.rs`, `src/views/mail_page.rs` | `READER-ALTERNATIVE-REPLY`, `READER-ATTACHED-FORWARD` | DONE | Der Alternative-Reply-Attachment-Stil ist für Sender, validierte Liste und All aktiv. Er teilt den asynchronen exact-RFC822-/Fallback-Loader und das draft-sichere Embedded-Attachment mit Attached Forward; der Composer setzt Reply-Empfänger/Cc/Betreff und hängt das Original ohne temporäre Datei an. |
+| 61 | `READER-DAILY-ACTIONS` | `P0-MAIL-001` | `src/dialogs/{compose,contact}_dialog.rs`, `src/services/{draft_store,mail_composer}_service.rs`, `src/views/mail_page.rs`, `src/window.rs` | geladene exakte Nachrichtenmetadaten | DONE | Copy Message Link kopiert einen validierten `mid:`-URI; Containing Folder wechselt aus Aggregat/Suchordner zum exakten lokalen oder geladenen Providerordner und selektiert dieselbe Nachricht; Add Sender öffnet den echten vorbefüllten EBook-/Lokal-Kontakteditor; Edit as New übernimmt Empfänger, Betreff, Body und eingebettete Anhänge. MIME Content-ID bleibt dabei draft- und versandsicher erhalten, sodass `cid:`-Inlinebilder nicht still beschädigt werden. |
 
 ### Parallelisierungsregeln
 
@@ -339,9 +352,9 @@ und erweitert dessen Schreibbereich nur nach dokumentierter Kollisionsprüfung.
   GTK/GObject-, GSettings/AppSettings-, Environment- oder mutablen globalen
   Storezustände erneut.
 - `P0-MAIL-002A` bleibt offen für native, Performance-, Visual- und
-  Großpostfach-Abnahme sowie ausdrücklich Sidecar-Writer-Serialisierung,
-  native Expunge-/Filterwirkung, Graph-/Account-Environment und type-aware
-  Global-Search-Aktivierungsidentität.
+  Großpostfach-Abnahme sowie native Expunge-/Filterwirkung und
+  Graph-/Account-Environment. Die Sidecar-Writer-Serialisierung und die
+  typisierte Global-Search-Aktivierungsidentität sind portabel geschlossen.
 - Quelle: `ROADMAP.md`, Phase 1 „Adaptives Layout“, „Mail-Liste“ und
   „Werkzeugleiste“
 - Lieferumfang:
@@ -621,9 +634,114 @@ oder visuellen Linux-Belege.
   von GTK/GObject, GSettings/AppSettings, Environment und mutablen globalen
   Stores; Generation/Cancel/Stale bleiben wirksam.
 - Parent-Rest: `P0-MAIL-002A` bleibt offen wegen native/performance/visual/
-  large-mailbox acceptance sowie ausdrücklich Sidecar-Writer-Serialisierung,
-  native Expunge/Filter, Graph/account environment und type-aware Global-
-  Search activation identity.
+  large-mailbox acceptance, native Expunge/Filter und Graph/account
+  environment. Sidecar-Writer-Serialisierung und type-aware Global-Search-
+  activation identity sind portabel geschlossen.
+
+### P0-MAIL-SIDECAR-SERIALIZATION
+
+- Status: `DONE`; Produktionsscope ausschließlich
+  `src/services/mail_metadata_service.rs`.
+- Mailmetadaten und Freigaben externer Inhalte halten jetzt eine gemeinsame,
+  crash-freigegebene Geschwister-Lockdatei über die vollständige
+  Read-Modify-Write-Transaktion. Der vorhandene atomare Temp+Rename-Ersatz der
+  Datendatei bleibt erhalten; ein Prozess-Mutex schließt zusätzlich
+  plattformabhängige Advisory-Lock-Lücken zwischen Store-Instanzen.
+- Belegt: konkurrierende unabhängige Writer verlieren weder disjunkte
+  Nachrichtenstände noch Remote-Freigaben oder eine gleichzeitige
+  Widerrufung. Nicht-`NotFound`-Lesefehler brechen ohne Ersatz der Zieldatei
+  ab. Der fokussierte Service-Lauf ist 15/15 grün; der aktuelle vollständige
+  portable Workspace-Lauf ist 796/796 grün.
+
+### MAIL-DELETE-RECOVERY
+
+- Status: `BLOCKED_LINUX`; der app-eigene lokale Wiederherstellungspfad ist
+  implementiert und getestet.
+- `Ctrl+Shift+D`, Edit-/Message-Menü und Nachrichtenkontext verwenden
+  `win.undelete`. Die persistente View-Option materialisiert nur lokal im
+  Sidecar gelöschte Nachrichten in ihrem ursprünglichen logischen Ordner,
+  kennzeichnet sie durchgestrichen und zählt sie nicht als ungelesen. Das
+  Anzeigen führt diese Zeilen ausdrücklich nicht erneut durch Incoming-Filter.
+- Eine ausgewählte lokale gelöschte Einzel- oder Mehrfachauswahl wird über
+  eine neue exakte reversible Restore/Delete-Operation wiederhergestellt. Ohne
+  solche Auswahl und ohne expliziten Batch bleibt der Fallback auf einen
+  bestätigten Delete-History-Head begrenzt; laufende Mailoperationen sperren
+  die Action. Lokales Trash-Routing stellt explizit zur Quelle `local` wieder
+  her.
+- Grenze: Native Camel-/Graph-Deleted-Flags, auswählbare Providerzeilen,
+  Provider-Wiederherstellung, Expunge-Wechselwirkung und sichtbare Linux-
+  Abnahme bleiben offen.
+
+### FOLDER-CONTEXT-TARGET
+
+- Status: `BLOCKED_LINUX`; der portable Target-Vertrag ist implementiert und
+  getestet.
+- Ein Sekundärklick bindet den exakten Ordner nur für die Lebensdauer des
+  Popovers, ohne aktive Leser-/Load-Auswahl zu ändern. Leeraum,
+  nicht-selektierbare Zeilen und Account-Wurzeln retargeten nicht. Das Popup
+  enthält nur Aktionen, die diesen Target-Vertrag bereits sicher verwenden:
+  Umbenennen, Löschen, Alle-gelesen und Eigenschaften.
+- Ungeladene Ordner werden beim popup-spezifischen Alle-gelesen explizit
+  abgelehnt statt als erfolgreicher Null-Lauf gemeldet. Offen bleiben reale
+  GTK4-/HiDPI-Gesture-Abnahme und providerneutrale Copy/Move/Refresh/
+  Subscription-Mutationen.
+
+### MAIL-FOLDER-SORT-ORDER
+
+- Status: `BLOCKED_LINUX`; der portable Sortiervertrag ist implementiert und
+  getestet.
+- Ein persistenter, validierter JSON-GSettings-Vertrag ordnet nur Geschwister.
+  Die lokale oberste Ebene umfasst Standard- und Custom-Ordner; das Aggregat
+  „Alle Nachrichten“ bleibt fest. Geladene Kontoordner verwenden stabile
+  Source-/Folder-Identitäten. Standardmäßig bleibt Inbox zuerst, explizite
+  Ränge dürfen dies wie upstream überschreiben.
+- Der GTK4-Dialog verschiebt innerhalb genau einer Ebene und setzt entweder
+  diese Ebene oder alle Ebenen zurück. Sidebar-Rebuild und Auswahlrestoration
+  starten keinen Mail-Load und mutieren keinen Provider. Migration, Reset und
+  Backup-Roundtrip sind abgedeckt; offen bleibt die Linux-/HiDPI-Interaktion.
+
+### MAIL-FOLDER-PROPERTIES-SNAPSHOT
+
+- Status: `BLOCKED_LINUX`; der factual read-only Snapshot ist portabel
+  implementiert und getestet.
+- Nur echte geladene lokale Ordner oder exakt passende selektierbare
+  `CamelFolderSummary`-Einträge liefern Eigenschaften. Counts, Accountname und
+  menschlicher Ordnerpfad stammen aus diesem Snapshot; Aggregat-/Suchordner,
+  Account-Wurzeln und ungeladene Remote-Ziele bleiben deaktiviert. Das
+  rechtsgeklickte Popup-Ziel gilt nur für dessen Lebensdauer.
+- Die frühere synthetische Abonnementliste mit verworfenen Checkbox-Änderungen
+  ist entfernt. Offen bleiben native Quota-/per-Folder-Properties; reale
+  Abonnements sind im getrennten Paket `MAIL-CAMEL-SUBSCRIPTIONS` belegt.
+
+### MAIL-CAMEL-SUBSCRIPTIONS
+
+- Status: `BLOCKED_LINUX`; Bridge und GTK4-Vertrag sind implementiert und
+  getestet.
+- Ein exakter geladener nativer Camel-Source-UID wird auf
+  `CamelSubscribable` geprüft. Die rekursive `SUBSCRIPTION_LIST` liefert
+  Providername, vollständigen Ordnernamen, Parent, Counts, `NOSELECT` und den
+  autoritativen Abonnementstatus; Nicht-Unterstützung bleibt von List-/Netz-
+  und Authentifizierungsfehlern unterscheidbar.
+- Dialog-Laden, Refresh, Mutation und Cancel laufen außerhalb des GTK-Kontexts
+  und sind serialisiert sowie generationsgesichert. Checkboxen zeigen während
+  einer Mutation weiterhin den bestätigten Zustand; erst ein erfolgreicher
+  Subscribe/Unsubscribe-Aufruf plus frische Providerliste aktualisiert Dialog
+  und Sidebar. Graph/lokale Stores erhalten keinen Fallback.
+- Linux-Rest: Live-IMAP-/NNTP-Konten, Auth-/Offline-/Cancel-Verhalten,
+  Sidebar-Reconciliation und GTK4-/HiDPI-Visuals.
+
+### MAIL-THREAD-CONTEXT-CACHE
+
+- Status: `BLOCKED_LINUX`; der portable Auswahl-/Cache-Vertrag ist
+  implementiert und getestet.
+- Der Reader rendert den kompakten Konversationskontext aus der bereits
+  geordneten `thread_members`-Map der aktuell publizierten Load-Generation.
+  Während eines Threadmodell-Neuaufbaus bleibt der Kontext verborgen; erst
+  nach atomarem Ersatz der Membership-/Children-Maps wird die Generation
+  freigegeben und eine erhaltene GTK-Auswahl ausdrücklich aktualisiert.
+- Der Auswahlpfad scannt oder sortiert den flachen Nachrichtenstore nicht
+  mehr. Offen bleiben WebKitGTK-/GTK4-Visuals, reale Großpostfächer und der
+  Vergleich der kompakten Platzierung mit Evolution auf Linux.
 
 ### GW-CAL-VIEWS-001
 
@@ -1234,17 +1352,13 @@ wird ein konkreter Folgepunkt angelegt und der Elternpunkt bleibt offen.
   `GW-TASK-SOURCE-CAPABILITIES`, `GW-MEMO-SOURCE-CAPABILITIES` sowie
   `MAIL-FOLLOW-UP-DUE`; ihre dokumentierten
   Parent-/Linux-Reste bleiben offen und verhindern eine Vollparitätsbehauptung.
-- Portable Evidenz: `git diff --check`, `cargo fmt --all -- --check`, strikte
+- Portable Evidenz: `git diff --check`, gezieltes Rustfmt, strikte
   Schema-Prüfung, normaler `cargo check --workspace --locked` und
   `RUSTFLAGS='--cfg=eds_camel_bridge' cargo check --workspace --locked` sind
-  grün. Der letzte unsandboxed `cargo test --workspace --locked
-  --no-fail-fast --quiet`-Vollauf ist mit 746/746 Tests grün; die danach
-  ergänzten drei Assignment-Tests des aktuellen 749-Test-Workspaces sind
-  gezielt grün. Ein aktueller sandboxed Vollauf bestätigt sie innerhalb von
-  731 grünen Tests und scheitert ausschließlich an denselben 18 nicht erlaubten
-  Graph-Loopback-Binds. Das ist weder eine neue 749/749- noch eine
-  Linux-Abnahme; ein weiterer unsandboxed Lauf wurde vom Ausführungslimit
-  abgelehnt.
+  grün. `cargo test --workspace --locked --no-fail-fast --quiet` ist mit
+  800/800 Tests grün; der erzwungene Camel-Service-Lauf ist 17/17 grün. Der
+  globale Format-Check bleibt wegen vorbestehender Drift offen. Das ist keine
+  Linux-Abnahme.
 - Keine weitere portable Implementierungspriorität ist derzeit atomar `READY`;
   die achtzehn neuen Teilpakete schließen nur ihren benannten Scope. Vor der nächsten
   Priorisierung muss der stärkste verbleibende Parent-Rest frisch atomisiert und

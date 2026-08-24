@@ -104,6 +104,8 @@ pub struct ExchangeMailMessage {
     pub reply_to: Vec<ExchangeEmailAddress>,
     pub received_date_time: String,
     pub sent_date_time: String,
+    #[serde(default)]
+    pub size: usize,
     pub body_preview: String,
     pub body_html: String,
     pub body_text: String,
@@ -193,6 +195,7 @@ impl ExchangeMailMessage {
             } else {
                 self.received_date_time
             },
+            message_size: self.size,
             preview_snippet: preview,
             html_body: body_html,
             raw_headers,
@@ -1338,7 +1341,7 @@ impl ExchangeService {
         let params = vec![
             (
                 "$select".to_string(),
-                "id,parentFolderId,internetMessageId,subject,sender,from,toRecipients,ccRecipients,bccRecipients,replyTo,receivedDateTime,sentDateTime,body,bodyPreview,hasAttachments,isRead,flag,importance,categories,internetMessageHeaders"
+                "id,parentFolderId,internetMessageId,subject,sender,from,toRecipients,ccRecipients,bccRecipients,replyTo,receivedDateTime,sentDateTime,size,body,bodyPreview,hasAttachments,isRead,flag,importance,categories,internetMessageHeaders"
                     .to_string(),
             ),
             ("$orderby".to_string(), "receivedDateTime desc".to_string()),
@@ -1399,7 +1402,7 @@ impl ExchangeService {
         let params = vec![
             (
                 "$select".to_string(),
-                "id,parentFolderId,internetMessageId,subject,sender,from,toRecipients,ccRecipients,bccRecipients,replyTo,receivedDateTime,sentDateTime,body,bodyPreview,hasAttachments,isRead,flag,importance,categories,internetMessageHeaders"
+                "id,parentFolderId,internetMessageId,subject,sender,from,toRecipients,ccRecipients,bccRecipients,replyTo,receivedDateTime,sentDateTime,size,body,bodyPreview,hasAttachments,isRead,flag,importance,categories,internetMessageHeaders"
                     .to_string(),
             ),
             ("$orderby".to_string(), "receivedDateTime desc".to_string()),
@@ -1452,7 +1455,7 @@ impl ExchangeService {
         let params = vec![
             (
                 "$select".to_string(),
-                "id,parentFolderId,internetMessageId,subject,sender,from,toRecipients,ccRecipients,bccRecipients,replyTo,receivedDateTime,sentDateTime,body,bodyPreview,hasAttachments,isRead,flag,importance,categories,internetMessageHeaders"
+                "id,parentFolderId,internetMessageId,subject,sender,from,toRecipients,ccRecipients,bccRecipients,replyTo,receivedDateTime,sentDateTime,size,body,bodyPreview,hasAttachments,isRead,flag,importance,categories,internetMessageHeaders"
                     .to_string(),
             ),
             ("$search".to_string(), search),
@@ -2490,6 +2493,8 @@ struct GraphMessage {
     #[serde(rename = "sentDateTime", default)]
     sent_date_time: String,
     #[serde(default)]
+    size: usize,
+    #[serde(default)]
     body: GraphItemBody,
     #[serde(rename = "bodyPreview", default)]
     body_preview: String,
@@ -2548,6 +2553,7 @@ impl GraphMessage {
                 .collect(),
             received_date_time: self.received_date_time,
             sent_date_time: self.sent_date_time,
+            size: self.size,
             body_preview: self.body_preview,
             body_html,
             body_text,
@@ -3296,6 +3302,7 @@ mod tests {
         let message: GraphMessage = serde_json::from_value(serde_json::json!({
             "id": "message-id",
             "subject": "Roadmap",
+            "size": 4096,
             "internetMessageHeaders": [
                 {"name": "Subject", "value": "Roadmap"},
                 {"name": "X-Project", "value": "Evolution GTK4"}
@@ -3310,6 +3317,7 @@ mod tests {
             parsed.raw_headers.as_deref(),
             Some(b"Subject: Roadmap\r\nX-Project: Evolution GTK4\r\n".as_slice())
         );
+        assert_eq!(parsed.message_size, 4096);
     }
 
     #[test]
@@ -3669,7 +3677,7 @@ mod tests {
         let mail_response = concat!(
             "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n",
             "Connection: close\r\n\r\n",
-            "{\"value\":[{\"id\":\"message-id\",\"parentFolderId\":\"folder-id\",\"internetMessageId\":\"<m@example.org>\",\"subject\":\"Hello\",\"sender\":{\"emailAddress\":{\"name\":\"Ada\",\"address\":\"ada@example.org\"}},\"from\":{\"emailAddress\":{\"name\":\"Ada\",\"address\":\"ada@example.org\"}},\"toRecipients\":[{\"emailAddress\":{\"name\":\"User\",\"address\":\"user@example.org\"}}],\"body\":{\"contentType\":\"html\",\"content\":\"<p>Safe</p><script>bad()</script>\"},\"bodyPreview\":\"Safe\",\"isRead\":false,\"flag\":{\"flagStatus\":\"flagged\"},\"importance\":\"high\",\"categories\":[\"Work\"]}]}"
+            "{\"value\":[{\"id\":\"message-id\",\"parentFolderId\":\"folder-id\",\"internetMessageId\":\"<m@example.org>\",\"subject\":\"Hello\",\"sender\":{\"emailAddress\":{\"name\":\"Ada\",\"address\":\"ada@example.org\"}},\"from\":{\"emailAddress\":{\"name\":\"Ada\",\"address\":\"ada@example.org\"}},\"toRecipients\":[{\"emailAddress\":{\"name\":\"User\",\"address\":\"user@example.org\"}}],\"size\":8192,\"body\":{\"contentType\":\"html\",\"content\":\"<p>Safe</p><script>bad()</script>\"},\"bodyPreview\":\"Safe\",\"isRead\":false,\"flag\":{\"flagStatus\":\"flagged\"},\"importance\":\"high\",\"categories\":[\"Work\"]}]}"
         );
         let (base_url, requests, handle) = mock_server(mail_response);
         let service = ExchangeService::graph("user@example.org", "token");
@@ -3688,6 +3696,7 @@ mod tests {
             .expect("one Graph message expected");
         assert!(request.contains("GET /v1.0/me/mailFolders/folder-id/messages?"));
         assert!(request.contains("internetMessageHeaders"));
+        assert!(request.contains("size"));
         assert_eq!(parsed.folder_id, "folder-id");
         let parsed_mail = parsed.into_parsed_mail("account-id", "Inbox");
         assert_eq!(parsed_mail.sender_email, "ada@example.org");
@@ -3700,6 +3709,7 @@ mod tests {
             ExchangeMailFollowUpState::FollowUp
         );
         assert!(parsed_mail.is_important);
+        assert_eq!(parsed_mail.message_size, 8192);
 
         let contact = ExchangeContact {
             id: "contact-id".to_string(),

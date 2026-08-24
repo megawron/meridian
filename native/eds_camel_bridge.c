@@ -1665,6 +1665,799 @@ evolution_eds_camel_free_folders (EvolutionEdsCamelFolder *folders,
 }
 
 typedef struct {
+    EvolutionEdsCamelSubscriptionFolder *folders;
+    size_t count;
+    size_t capacity;
+} SubscriptionFolderContext;
+
+static gboolean
+ensure_subscription_folder_capacity (SubscriptionFolderContext *context)
+{
+    size_t new_capacity;
+
+    if (context->count < context->capacity)
+        return TRUE;
+
+    new_capacity = context->capacity ? context->capacity * 2 : 32;
+    context->folders = g_realloc_n (
+        context->folders, new_capacity, sizeof (*context->folders));
+    context->capacity = new_capacity;
+
+    return TRUE;
+}
+
+static void
+append_subscription_folder_tree (SubscriptionFolderContext *context,
+                                 const gchar *source_uid,
+                                 const gchar *source_display_name,
+                                 CamelFolderInfo *folder_info,
+                                 const gchar *parent_folder_name)
+{
+    CamelFolderInfo *current;
+
+    for (current = folder_info; current != NULL; current = current->next) {
+        EvolutionEdsCamelSubscriptionFolder *record;
+
+        if (is_mail_folder (current) &&
+            current->full_name && *current->full_name) {
+            ensure_subscription_folder_capacity (context);
+            record = &context->folders[context->count++];
+            record->source_uid = g_strdup (source_uid);
+            record->source_display_name = g_strdup (
+                source_display_name && *source_display_name
+                    ? source_display_name
+                    : source_uid);
+            record->folder_name = g_strdup (current->full_name);
+            record->parent_folder_name = parent_folder_name
+                ? g_strdup (parent_folder_name)
+                : NULL;
+            record->display_name = g_strdup (
+                current->display_name ?: current->full_name);
+            record->unread_count = current->unread > 0
+                ? (guint32) current->unread
+                : 0;
+            record->total_count = current->total > 0
+                ? (guint32) current->total
+                : 0;
+            record->is_selectable =
+                (current->flags & CAMEL_FOLDER_NOSELECT) == 0;
+            record->is_subscribed =
+                (current->flags & CAMEL_FOLDER_SUBSCRIBED) != 0;
+        }
+
+        if (current->child) {
+            append_subscription_folder_tree (
+                context, source_uid, source_display_name, current->child,
+                current->full_name && *current->full_name
+                    ? current->full_name
+                    : parent_folder_name);
+        }
+    }
+}
+
+void
+evolution_eds_camel_free_subscription_folders (
+    EvolutionEdsCamelSubscriptionFolder *folders,
+    size_t count)
+{
+    size_t ii;
+
+    if (!folders)
+        return;
+
+    for (ii = 0; ii < count; ii++) {
+        g_free (folders[ii].source_uid);
+        g_free (folders[ii].source_display_name);
+        g_free (folders[ii].folder_name);
+        g_free (folders[ii].parent_folder_name);
+        g_free (folders[ii].display_name);
+    }
+
+    g_free (folders);
+}
+
+int
+evolution_eds_camel_load_subscription_folders (
+    const char *source_uid,
+    EvolutionEdsCamelSubscriptionFolder **out_folders,
+    size_t *out_folder_count,
+    int *out_is_subscribable,
+    char **out_error,
+    EvolutionEdsCamelCancellationCallback cancellation_callback,
+    void *cancellation_user_data)
+{
+    ESourceRegistry *registry = NULL;
+    EdsCamelSession *session = NULL;
+    ESource *source = NULL;
+    CamelStore *store = NULL;
+    CamelFolderInfo *folder_info = NULL;
+    GCancellable *cancellable = NULL;
+    CancellationMonitor *cancellation_monitor = NULL;
+    SubscriptionFolderContext context = { 0 };
+    GError *error = NULL;
+    gboolean success = FALSE;
+
+    if (out_folders)
+        *out_folders = NULL;
+    if (out_folder_count)
+        *out_folder_count = 0;
+    if (out_is_subscribable)
+        *out_is_subscribable = 0;
+    if (out_error)
+        *out_error = NULL;
+
+    if (!source_uid || !*source_uid) {
+        if (out_error)
+            *out_error = g_strdup (
+                "Camel-Abonnements benötigen eine genaue EDS-Quellen-ID");
+        return 0;
+    }
+    if (cancellation_requested (cancellation_callback, cancellation_user_data)) {
+        if (out_error)
+            *out_error = g_strdup ("Camel-Abonnements wurden abgebrochen");
+        return 0;
+    }
+
+    camel_provider_init ();
+    registry = eds_camel_ref_registry (&error);
+    if (!registry)
+        goto finish;
+
+    source = e_source_registry_ref_source (registry, source_uid);
+    if (!source) {
+        g_set_error_literal (
+            &error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
+            "Die EDS-Mailquelle für Abonnements existiert nicht mehr");
+        goto finish;
+    }
+    if (!e_source_get_enabled (source)) {
+        g_set_error_literal (
+            &error, G_IO_ERROR, G_IO_ERROR_FAILED,
+            "Die EDS-Mailquelle für Abonnements ist deaktiviert");
+        goto finish;
+    }
+
+    session = eds_camel_ref_session (registry);
+    cancellable = g_cancellable_new ();
+    cancellation_monitor = cancellation_monitor_start (
+        cancellable, cancellation_callback, cancellation_user_data);
+    store = open_store_for_source (session, source, cancellable, &error);
+    if (!store)
+        goto finish;
+
+    if (!CAMEL_IS_SUBSCRIBABLE (store)) {
+        /* A successful capability probe is intentionally distinct from a
+         * mutation.  Callers get an explicit false capability and cannot
+         * mistake an empty regular-folder list for subscription support. */
+        success = TRUE;
+        goto finish;
+    }
+    if (out_is_subscribable)
+        *out_is_subscribable = 1;
+
+    folder_info = camel_store_get_folder_info_sync (
+        store, NULL,
+        CAMEL_STORE_FOLDER_INFO_RECURSIVE |
+        CAMEL_STORE_FOLDER_INFO_NO_VIRTUAL |
+        CAMEL_STORE_FOLDER_INFO_SUBSCRIPTION_LIST,
+        cancellable, &error);
+    if (!folder_info)
+        goto finish;
+
+    if (cancellation_requested (cancellation_callback, cancellation_user_data)) {
+        set_cancelled_error (&error);
+        goto finish;
+    }
+
+    append_subscription_folder_tree (
+        &context, source_uid, e_source_get_display_name (source),
+        folder_info, NULL);
+    success = TRUE;
+
+finish:
+    if (!success && out_error) {
+        *out_error = g_strdup (error
+            ? error->message
+            : "Camel-Abonnementsliste konnte nicht geladen werden");
+    }
+    if (success) {
+        if (out_folders) {
+            *out_folders = context.folders;
+            if (out_folder_count)
+                *out_folder_count = context.count;
+            context.folders = NULL;
+            context.count = 0;
+        }
+    }
+
+    evolution_eds_camel_free_subscription_folders (
+        context.folders, context.count);
+    camel_folder_info_free (folder_info);
+    g_clear_error (&error);
+    cancellation_monitor_free (cancellation_monitor);
+    g_clear_object (&cancellable);
+    g_clear_object (&store);
+    g_clear_object (&session);
+    g_clear_object (&source);
+    g_clear_object (&registry);
+
+    return success ? 1 : 0;
+}
+
+int
+evolution_eds_camel_set_folder_subscription (
+    const char *source_uid,
+    const char *folder_name,
+    int subscribed,
+    char **out_error,
+    EvolutionEdsCamelCancellationCallback cancellation_callback,
+    void *cancellation_user_data)
+{
+    ESourceRegistry *registry = NULL;
+    EdsCamelSession *session = NULL;
+    ESource *source = NULL;
+    CamelStore *store = NULL;
+    CamelFolderInfo *folder_info = NULL;
+    CamelFolderInfo *matching_folder = NULL;
+    GCancellable *cancellable = NULL;
+    CancellationMonitor *cancellation_monitor = NULL;
+    GError *error = NULL;
+    gboolean desired_subscribed = subscribed != 0;
+    gboolean success = FALSE;
+
+    if (out_error)
+        *out_error = NULL;
+    if (!source_uid || !*source_uid || !folder_name || !*folder_name) {
+        if (out_error)
+            *out_error = g_strdup (
+                "Camel-Abonnements benötigen eine genaue Quelle und einen Ordnernamen");
+        return 0;
+    }
+    if (cancellation_requested (cancellation_callback, cancellation_user_data)) {
+        if (out_error)
+            *out_error = g_strdup ("Camel-Abonnementänderung wurde abgebrochen");
+        return 0;
+    }
+
+    camel_provider_init ();
+    registry = eds_camel_ref_registry (&error);
+    if (!registry)
+        goto finish;
+
+    source = e_source_registry_ref_source (registry, source_uid);
+    if (!source) {
+        g_set_error_literal (
+            &error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
+            "Die EDS-Mailquelle für Abonnements existiert nicht mehr");
+        goto finish;
+    }
+    if (!e_source_get_enabled (source)) {
+        g_set_error_literal (
+            &error, G_IO_ERROR, G_IO_ERROR_FAILED,
+            "Die EDS-Mailquelle für Abonnements ist deaktiviert");
+        goto finish;
+    }
+
+    session = eds_camel_ref_session (registry);
+    cancellable = g_cancellable_new ();
+    cancellation_monitor = cancellation_monitor_start (
+        cancellable, cancellation_callback, cancellation_user_data);
+    store = open_store_for_source (session, source, cancellable, &error);
+    if (!store)
+        goto finish;
+    if (!CAMEL_IS_SUBSCRIBABLE (store)) {
+        g_set_error_literal (
+            &error, G_IO_ERROR, G_IO_ERROR_NOT_SUPPORTED,
+            "Diese Camel-Mailquelle unterstützt keine Ordner-Abonnements");
+        goto finish;
+    }
+
+    folder_info = camel_store_get_folder_info_sync (
+        store, NULL,
+        CAMEL_STORE_FOLDER_INFO_RECURSIVE |
+        CAMEL_STORE_FOLDER_INFO_NO_VIRTUAL |
+        CAMEL_STORE_FOLDER_INFO_SUBSCRIPTION_LIST,
+        cancellable, &error);
+    if (!folder_info)
+        goto finish;
+    matching_folder = find_folder_info_by_name (folder_info, folder_name);
+    if (!matching_folder || !is_mail_folder (matching_folder)) {
+        g_set_error_literal (
+            &error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
+            "Der abonnierbare Camel-Ordner wurde nicht gefunden");
+        goto finish;
+    }
+    if ((matching_folder->flags & CAMEL_FOLDER_NOSELECT) != 0) {
+        g_set_error_literal (
+            &error, G_IO_ERROR, G_IO_ERROR_NOT_SUPPORTED,
+            "Dieser Camel-Ordner ist nicht abonnierbar");
+        goto finish;
+    }
+
+    if (((matching_folder->flags & CAMEL_FOLDER_SUBSCRIBED) != 0) !=
+        desired_subscribed) {
+        if (desired_subscribed) {
+            if (!camel_subscribable_subscribe_folder_sync (
+                    CAMEL_SUBSCRIBABLE (store), folder_name,
+                    cancellable, &error))
+                goto finish;
+        } else if (!camel_subscribable_unsubscribe_folder_sync (
+                       CAMEL_SUBSCRIBABLE (store), folder_name,
+                       cancellable, &error)) {
+            goto finish;
+        }
+    }
+
+    camel_folder_info_free (folder_info);
+    folder_info = camel_store_get_folder_info_sync (
+        store, NULL,
+        CAMEL_STORE_FOLDER_INFO_RECURSIVE |
+        CAMEL_STORE_FOLDER_INFO_NO_VIRTUAL |
+        CAMEL_STORE_FOLDER_INFO_SUBSCRIPTION_LIST,
+        cancellable, &error);
+    if (!folder_info)
+        goto finish;
+    matching_folder = find_folder_info_by_name (folder_info, folder_name);
+    if (!matching_folder ||
+        (((matching_folder->flags & CAMEL_FOLDER_SUBSCRIBED) != 0) !=
+         desired_subscribed)) {
+        g_set_error_literal (
+            &error, G_IO_ERROR, G_IO_ERROR_FAILED,
+            "Der Camel-Server hat die angeforderte Abonnementänderung nicht bestätigt");
+        goto finish;
+    }
+    if (cancellation_requested (cancellation_callback, cancellation_user_data)) {
+        set_cancelled_error (&error);
+        goto finish;
+    }
+    success = TRUE;
+
+finish:
+    if (!success && out_error) {
+        *out_error = g_strdup (error
+            ? error->message
+            : "Camel-Abonnementänderung konnte nicht bestätigt werden");
+    }
+    camel_folder_info_free (folder_info);
+    g_clear_error (&error);
+    cancellation_monitor_free (cancellation_monitor);
+    g_clear_object (&cancellable);
+    g_clear_object (&store);
+    g_clear_object (&session);
+    g_clear_object (&source);
+    g_clear_object (&registry);
+
+    return success ? 1 : 0;
+}
+
+static CamelFolderInfo *
+load_folder_mutation_tree (CamelStore *store,
+                           GCancellable *cancellable,
+                           GError **error)
+{
+    return camel_store_get_folder_info_sync (
+        store, NULL,
+        CAMEL_STORE_FOLDER_INFO_RECURSIVE |
+        CAMEL_STORE_FOLDER_INFO_NO_VIRTUAL |
+        CAMEL_STORE_FOLDER_INFO_REFRESH,
+        cancellable, error);
+}
+
+static gboolean
+folder_is_protected_for_mutation (CamelFolderInfo *folder_info)
+{
+    CamelFolderInfoFlags flags;
+
+    if (!folder_info)
+        return TRUE;
+
+    flags = folder_info->flags;
+    return (flags & (CAMEL_FOLDER_SYSTEM |
+                     CAMEL_FOLDER_VIRTUAL |
+                     CAMEL_FOLDER_VTRASH |
+                     CAMEL_FOLDER_READONLY)) != 0;
+}
+
+static gboolean
+folder_can_refresh (CamelFolderInfo *folder_info)
+{
+    return is_mail_folder (folder_info) &&
+        folder_info->full_name && *folder_info->full_name &&
+        (folder_info->flags & (CAMEL_FOLDER_NOSELECT |
+                               CAMEL_FOLDER_VIRTUAL |
+                               CAMEL_FOLDER_VTRASH)) == 0;
+}
+
+static gboolean
+folder_can_edit (CamelStore *store,
+                 CamelFolderInfo *folder_info)
+{
+    return folder_can_refresh (folder_info) &&
+        !folder_is_protected_for_mutation (folder_info) &&
+        (camel_store_get_flags (store) & CAMEL_STORE_CAN_EDIT_FOLDERS) != 0;
+}
+
+static void
+set_folder_mutation_capabilities (CamelStore *store,
+                                  CamelFolderInfo *folder_info,
+                                  EvolutionEdsCamelFolderMutationCapabilities *capabilities)
+{
+    gboolean editable;
+
+    memset (capabilities, 0, sizeof (*capabilities));
+    if (!folder_info)
+        return;
+
+    editable = folder_can_edit (store, folder_info);
+    capabilities->can_create_child = editable &&
+        (folder_info->flags & CAMEL_FOLDER_NOINFERIORS) == 0;
+    capabilities->can_rename = editable;
+    capabilities->can_delete = editable &&
+        (!folder_info->child ||
+         (camel_store_get_flags (store) &
+          CAMEL_STORE_CAN_DELETE_FOLDERS_AT_ONCE) != 0);
+    /* Refreshing an Inbox or other system folder is safe and follows the
+     * original folder action; editing it remains disabled above. */
+    capabilities->can_refresh = folder_can_refresh (folder_info);
+    /* Camel exposes message transfer, not an atomic folder copy/move API.
+     * Do not claim recursive folder transfer support here. */
+    capabilities->can_copy = 0;
+    capabilities->can_move = 0;
+}
+
+static gboolean
+folder_mutation_target_is_leaf (const gchar *target_name)
+{
+    return target_name && *target_name &&
+        !strchr (target_name, '/') &&
+        strcmp (target_name, ".") != 0 &&
+        strcmp (target_name, "..") != 0;
+}
+
+static gchar *
+folder_mutation_child_name (const gchar *folder_name,
+                            const gchar *target_name)
+{
+    const gchar *separator;
+
+    separator = strrchr (folder_name, '/');
+    if (!separator)
+        return g_strdup (target_name);
+
+    return g_strdup_printf (
+        "%.*s%s", (gint) (separator - folder_name + 1),
+        folder_name, target_name);
+}
+
+int
+evolution_eds_camel_get_folder_mutation_capabilities (
+    const char *source_uid,
+    const char *folder_name,
+    EvolutionEdsCamelFolderMutationCapabilities *out_capabilities,
+    char **out_error,
+    EvolutionEdsCamelCancellationCallback cancellation_callback,
+    void *cancellation_user_data)
+{
+    ESourceRegistry *registry = NULL;
+    EdsCamelSession *session = NULL;
+    ESource *source = NULL;
+    CamelStore *store = NULL;
+    CamelFolderInfo *folder_info = NULL;
+    CamelFolderInfo *matching_folder = NULL;
+    GCancellable *cancellable = NULL;
+    CancellationMonitor *cancellation_monitor = NULL;
+    GError *error = NULL;
+    gboolean success = FALSE;
+
+    if (out_capabilities)
+        memset (out_capabilities, 0, sizeof (*out_capabilities));
+    if (out_error)
+        *out_error = NULL;
+    if (!out_capabilities || !source_uid || !*source_uid ||
+        !folder_name || !*folder_name) {
+        if (out_error)
+            *out_error = g_strdup (
+                "Camel-Ordneraktionen benötigen eine genaue Quelle und einen Ordnernamen");
+        return 0;
+    }
+    if (cancellation_requested (cancellation_callback, cancellation_user_data)) {
+        if (out_error)
+            *out_error = g_strdup ("Camel-Ordneraktionen wurden abgebrochen");
+        return 0;
+    }
+
+    camel_provider_init ();
+    registry = eds_camel_ref_registry (&error);
+    if (!registry)
+        goto finish;
+    source = e_source_registry_ref_source (registry, source_uid);
+    if (!source) {
+        g_set_error_literal (&error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
+            "Die EDS-Mailquelle für Ordneraktionen existiert nicht mehr");
+        goto finish;
+    }
+    if (!e_source_get_enabled (source)) {
+        g_set_error_literal (&error, G_IO_ERROR, G_IO_ERROR_FAILED,
+            "Die EDS-Mailquelle für Ordneraktionen ist deaktiviert");
+        goto finish;
+    }
+    session = eds_camel_ref_session (registry);
+    cancellable = g_cancellable_new ();
+    cancellation_monitor = cancellation_monitor_start (
+        cancellable, cancellation_callback, cancellation_user_data);
+    store = open_store_for_source (session, source, cancellable, &error);
+    if (!store)
+        goto finish;
+    folder_info = load_folder_mutation_tree (store, cancellable, &error);
+    if (!folder_info)
+        goto finish;
+    matching_folder = find_folder_info_by_name (folder_info, folder_name);
+    if (!matching_folder) {
+        g_set_error_literal (&error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
+            "Der genaue Camel-Ordner für die Aktion wurde nicht gefunden");
+        goto finish;
+    }
+    if (cancellation_requested (cancellation_callback, cancellation_user_data)) {
+        set_cancelled_error (&error);
+        goto finish;
+    }
+    set_folder_mutation_capabilities (store, matching_folder, out_capabilities);
+    success = TRUE;
+
+finish:
+    if (!success && out_error) {
+        *out_error = g_strdup (error
+            ? error->message
+            : "Camel-Ordneraktionen konnten nicht geprüft werden");
+    }
+    camel_folder_info_free (folder_info);
+    g_clear_error (&error);
+    cancellation_monitor_free (cancellation_monitor);
+    g_clear_object (&cancellable);
+    g_clear_object (&store);
+    g_clear_object (&session);
+    g_clear_object (&source);
+    g_clear_object (&registry);
+
+    return success ? 1 : 0;
+}
+
+int
+evolution_eds_camel_apply_folder_mutation (
+    EvolutionEdsCamelFolderMutationKind kind,
+    const char *source_uid,
+    const char *folder_name,
+    const char *target_name,
+    char **out_error,
+    EvolutionEdsCamelCancellationCallback cancellation_callback,
+    void *cancellation_user_data)
+{
+    ESourceRegistry *registry = NULL;
+    EdsCamelSession *session = NULL;
+    ESource *source = NULL;
+    CamelStore *store = NULL;
+    CamelFolder *folder = NULL;
+    CamelFolderInfo *folder_info = NULL;
+    CamelFolderInfo *subscription_info = NULL;
+    CamelFolderInfo *matching_folder = NULL;
+    CamelFolderInfo *verified_folder = NULL;
+    GCancellable *cancellable = NULL;
+    CancellationMonitor *cancellation_monitor = NULL;
+    EvolutionEdsCamelFolderMutationCapabilities capabilities;
+    gchar *expected_name = NULL;
+    GError *error = NULL;
+    gboolean success = FALSE;
+
+    if (out_error)
+        *out_error = NULL;
+    if (!source_uid || !*source_uid || !folder_name || !*folder_name) {
+        if (out_error)
+            *out_error = g_strdup (
+                "Camel-Ordneraktionen benötigen eine genaue Quelle und einen Ordnernamen");
+        return 0;
+    }
+    if ((kind == EVOLUTION_EDS_CAMEL_FOLDER_CREATE_CHILD ||
+         kind == EVOLUTION_EDS_CAMEL_FOLDER_RENAME) &&
+        !folder_mutation_target_is_leaf (target_name)) {
+        if (out_error)
+            *out_error = g_strdup (
+                "Camel-Ordnernamen müssen ein einzelnes nicht-leeres Segment sein");
+        return 0;
+    }
+    if (kind != EVOLUTION_EDS_CAMEL_FOLDER_CREATE_CHILD &&
+        kind != EVOLUTION_EDS_CAMEL_FOLDER_RENAME &&
+        kind != EVOLUTION_EDS_CAMEL_FOLDER_DELETE &&
+        kind != EVOLUTION_EDS_CAMEL_FOLDER_REFRESH) {
+        if (out_error)
+            *out_error = g_strdup (
+                "Camel bietet keine sichere atomare Ordner-Kopier- oder Verschiebeoperation");
+        return 0;
+    }
+    if (cancellation_requested (cancellation_callback, cancellation_user_data)) {
+        if (out_error)
+            *out_error = g_strdup ("Camel-Ordneraktion wurde abgebrochen");
+        return 0;
+    }
+
+    camel_provider_init ();
+    registry = eds_camel_ref_registry (&error);
+    if (!registry)
+        goto finish;
+    source = e_source_registry_ref_source (registry, source_uid);
+    if (!source) {
+        g_set_error_literal (&error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
+            "Die EDS-Mailquelle für Ordneraktionen existiert nicht mehr");
+        goto finish;
+    }
+    if (!e_source_get_enabled (source)) {
+        g_set_error_literal (&error, G_IO_ERROR, G_IO_ERROR_FAILED,
+            "Die EDS-Mailquelle für Ordneraktionen ist deaktiviert");
+        goto finish;
+    }
+    session = eds_camel_ref_session (registry);
+    cancellable = g_cancellable_new ();
+    cancellation_monitor = cancellation_monitor_start (
+        cancellable, cancellation_callback, cancellation_user_data);
+    store = open_store_for_source (session, source, cancellable, &error);
+    if (!store)
+        goto finish;
+    folder_info = load_folder_mutation_tree (store, cancellable, &error);
+    if (!folder_info)
+        goto finish;
+    matching_folder = find_folder_info_by_name (folder_info, folder_name);
+    if (!matching_folder) {
+        g_set_error_literal (&error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
+            "Der genaue Camel-Ordner für die Aktion wurde nicht gefunden");
+        goto finish;
+    }
+    set_folder_mutation_capabilities (store, matching_folder, &capabilities);
+
+    switch (kind) {
+    case EVOLUTION_EDS_CAMEL_FOLDER_CREATE_CHILD:
+        if (!capabilities.can_create_child) {
+            g_set_error_literal (&error, G_IO_ERROR, G_IO_ERROR_NOT_SUPPORTED,
+                "Dieser Camel-Ordner unterstützt kein Erstellen von Unterordnern");
+            goto finish;
+        }
+        expected_name = g_strdup_printf ("%s/%s", folder_name, target_name);
+        if (find_folder_info_by_name (folder_info, expected_name)) {
+            g_set_error_literal (&error, G_IO_ERROR, G_IO_ERROR_EXISTS,
+                "Ein Camel-Ordner mit diesem Namen existiert bereits");
+            goto finish;
+        }
+        verified_folder = camel_store_create_folder_sync (
+            store, folder_name, target_name, cancellable, &error);
+        if (!verified_folder)
+            goto finish;
+        camel_folder_info_free (verified_folder);
+        verified_folder = NULL;
+        if (CAMEL_IS_SUBSCRIBABLE (store) &&
+            !camel_subscribable_subscribe_folder_sync (
+                CAMEL_SUBSCRIBABLE (store), expected_name,
+                cancellable, &error))
+            goto finish;
+        break;
+    case EVOLUTION_EDS_CAMEL_FOLDER_RENAME:
+        if (!capabilities.can_rename) {
+            g_set_error_literal (&error, G_IO_ERROR, G_IO_ERROR_NOT_SUPPORTED,
+                "Dieser Camel-Ordner unterstützt kein Umbenennen");
+            goto finish;
+        }
+        expected_name = folder_mutation_child_name (folder_name, target_name);
+        if (g_str_equal (expected_name, folder_name)) {
+            g_set_error_literal (&error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
+                "Der neue Camel-Ordnername unterscheidet sich nicht vom bestehenden Namen");
+            goto finish;
+        }
+        if (find_folder_info_by_name (folder_info, expected_name)) {
+            g_set_error_literal (&error, G_IO_ERROR, G_IO_ERROR_EXISTS,
+                "Ein Camel-Ordner mit diesem Namen existiert bereits");
+            goto finish;
+        }
+        if (!camel_store_rename_folder_sync (
+                store, folder_name, expected_name, cancellable, &error))
+            goto finish;
+        break;
+    case EVOLUTION_EDS_CAMEL_FOLDER_DELETE:
+        if (!capabilities.can_delete) {
+            g_set_error_literal (&error, G_IO_ERROR, G_IO_ERROR_NOT_SUPPORTED,
+                "Dieser Camel-Ordner unterstützt kein sicheres Löschen");
+            goto finish;
+        }
+        if (!camel_store_delete_folder_sync (
+                store, folder_name, cancellable, &error))
+            goto finish;
+        break;
+    case EVOLUTION_EDS_CAMEL_FOLDER_REFRESH:
+        if (!capabilities.can_refresh) {
+            g_set_error_literal (&error, G_IO_ERROR, G_IO_ERROR_NOT_SUPPORTED,
+                "Dieser Camel-Ordner unterstützt keine Aktualisierung");
+            goto finish;
+        }
+        folder = camel_store_get_folder_sync (
+            store, folder_name, CAMEL_STORE_FOLDER_NONE, cancellable, &error);
+        if (!folder)
+            goto finish;
+        if (!camel_folder_refresh_info_sync (folder, cancellable, &error))
+            goto finish;
+        expected_name = g_strdup (folder_name);
+        break;
+    default:
+        g_assert_not_reached ();
+    }
+
+    camel_folder_info_free (folder_info);
+    folder_info = load_folder_mutation_tree (store, cancellable, &error);
+    if (!folder_info)
+        goto finish;
+    if (kind == EVOLUTION_EDS_CAMEL_FOLDER_DELETE) {
+        if (find_folder_info_by_name (folder_info, folder_name)) {
+            g_set_error_literal (&error, G_IO_ERROR, G_IO_ERROR_FAILED,
+                "Der Camel-Server hat das Löschen des Ordners nicht bestätigt");
+            goto finish;
+        }
+    } else {
+        verified_folder = find_folder_info_by_name (folder_info, expected_name);
+        if (!verified_folder) {
+            g_set_error_literal (&error, G_IO_ERROR, G_IO_ERROR_FAILED,
+                "Der Camel-Server hat die Ordneränderung nicht bestätigt");
+            goto finish;
+        }
+        if (kind == EVOLUTION_EDS_CAMEL_FOLDER_RENAME &&
+            find_folder_info_by_name (folder_info, folder_name)) {
+            g_set_error_literal (&error, G_IO_ERROR, G_IO_ERROR_FAILED,
+                "Der Camel-Server hat das Umbenennen des Ordners nicht bestätigt");
+            goto finish;
+        }
+    }
+    if (kind == EVOLUTION_EDS_CAMEL_FOLDER_CREATE_CHILD &&
+        CAMEL_IS_SUBSCRIBABLE (store)) {
+        subscription_info = camel_store_get_folder_info_sync (
+            store, NULL,
+            CAMEL_STORE_FOLDER_INFO_RECURSIVE |
+            CAMEL_STORE_FOLDER_INFO_NO_VIRTUAL |
+            CAMEL_STORE_FOLDER_INFO_REFRESH |
+            CAMEL_STORE_FOLDER_INFO_SUBSCRIPTION_LIST,
+            cancellable, &error);
+        if (!subscription_info)
+            goto finish;
+        verified_folder = find_folder_info_by_name (
+            subscription_info, expected_name);
+        if (!verified_folder ||
+            (verified_folder->flags & CAMEL_FOLDER_SUBSCRIBED) == 0) {
+            g_set_error_literal (&error, G_IO_ERROR, G_IO_ERROR_FAILED,
+                "Der Camel-Server hat das Abonnieren des neuen Ordners nicht bestätigt");
+            goto finish;
+        }
+    }
+    if (cancellation_requested (cancellation_callback, cancellation_user_data)) {
+        set_cancelled_error (&error);
+        goto finish;
+    }
+    success = TRUE;
+
+finish:
+    if (!success && out_error) {
+        *out_error = g_strdup (error
+            ? error->message
+            : "Camel-Ordneraktion konnte nicht bestätigt werden");
+    }
+    g_free (expected_name);
+    camel_folder_info_free (subscription_info);
+    camel_folder_info_free (folder_info);
+    g_clear_object (&folder);
+    g_clear_error (&error);
+    cancellation_monitor_free (cancellation_monitor);
+    g_clear_object (&cancellable);
+    g_clear_object (&store);
+    g_clear_object (&session);
+    g_clear_object (&source);
+    g_clear_object (&registry);
+
+    return success ? 1 : 0;
+}
+
+typedef struct {
     EvolutionEdsCamelWatcher *watcher;
     CamelFolder *folder;
     gulong changed_id;

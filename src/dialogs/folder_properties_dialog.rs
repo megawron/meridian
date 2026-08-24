@@ -7,6 +7,16 @@ use adw::subclass::prelude::*;
 use gtk::glib;
 use std::cell::RefCell;
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FolderPropertiesSnapshot {
+    pub folder_name: String,
+    pub account_name: String,
+    pub folder_path: String,
+    pub total_count: u32,
+    pub unread_count: u32,
+    pub is_remote: bool,
+}
+
 mod imp {
     use super::*;
 
@@ -45,24 +55,12 @@ mod imp {
 
         fn set_property(&self, _id: usize, value: &glib::Value, pspec: &glib::ParamSpec) {
             match pspec.name() {
-                "folder-name" => {
-                    *self.folder_name.borrow_mut() = value.get().unwrap_or_default()
-                }
-                "account-name" => {
-                    *self.account_name.borrow_mut() = value.get().unwrap_or_default()
-                }
-                "folder-path" => {
-                    *self.folder_path.borrow_mut() = value.get().unwrap_or_default()
-                }
-                "total-count" => {
-                    *self.total_count.borrow_mut() = value.get().unwrap_or_default()
-                }
-                "unread-count" => {
-                    *self.unread_count.borrow_mut() = value.get().unwrap_or_default()
-                }
-                "is-remote" => {
-                    *self.is_remote.borrow_mut() = value.get().unwrap_or_default()
-                }
+                "folder-name" => *self.folder_name.borrow_mut() = value.get().unwrap_or_default(),
+                "account-name" => *self.account_name.borrow_mut() = value.get().unwrap_or_default(),
+                "folder-path" => *self.folder_path.borrow_mut() = value.get().unwrap_or_default(),
+                "total-count" => *self.total_count.borrow_mut() = value.get().unwrap_or_default(),
+                "unread-count" => *self.unread_count.borrow_mut() = value.get().unwrap_or_default(),
+                "is-remote" => *self.is_remote.borrow_mut() = value.get().unwrap_or_default(),
                 _ => {}
             }
         }
@@ -98,25 +96,18 @@ glib::wrapper! {
 }
 
 impl FolderPropertiesDialog {
-    pub fn new(
-        folder_name: &str,
-        account_name: &str,
-        folder_path: &str,
-        total_count: u32,
-        unread_count: u32,
-        is_remote: bool,
-    ) -> Self {
+    pub fn new(snapshot: FolderPropertiesSnapshot) -> Self {
         glib::Object::builder()
-            .property("title", &format!("Eigenschaften: {folder_name}"))
+            .property("title", format!("Eigenschaften: {}", snapshot.folder_name))
             .property("modal", true)
             .property("default-width", 480)
-            .property("default-height", 340)
-            .property("folder-name", folder_name)
-            .property("account-name", account_name)
-            .property("folder-path", folder_path)
-            .property("total-count", total_count)
-            .property("unread-count", unread_count)
-            .property("is-remote", is_remote)
+            .property("default-height", 400)
+            .property("folder-name", snapshot.folder_name)
+            .property("account-name", snapshot.account_name)
+            .property("folder-path", snapshot.folder_path)
+            .property("total-count", snapshot.total_count)
+            .property("unread-count", snapshot.unread_count)
+            .property("is-remote", snapshot.is_remote)
             .build()
     }
 
@@ -135,7 +126,8 @@ impl FolderPropertiesDialog {
             .build();
 
         let general_group = adw::PreferencesGroup::builder()
-            .title("Allgemeine Informationen")
+            .title("Schreibgeschützte Momentaufnahme")
+            .description("Diese Angaben stammen aus dem aktuell geladenen Ordnerstand.")
             .build();
 
         let folder_name_row = adw::ActionRow::builder()
@@ -151,7 +143,7 @@ impl FolderPropertiesDialog {
         general_group.add(&account_row);
 
         let type_label = if *self.imp().is_remote.borrow() {
-            "Synchronisierter Remote-Ordner (IMAP/Exchange)"
+            "Synchronisierter Kontoordner"
         } else {
             "Lokaler app-eigener Ordner"
         };
@@ -162,7 +154,7 @@ impl FolderPropertiesDialog {
         general_group.add(&type_row);
 
         let path_row = adw::ActionRow::builder()
-            .title("Speicherpfad / URI")
+            .title("Ordnerpfad")
             .subtitle(self.imp().folder_path.borrow().as_str())
             .build();
 
@@ -203,6 +195,14 @@ impl FolderPropertiesDialog {
 
         content.append(&general_group);
         content.append(&metrics_group);
+        content.append(
+            &adw::PreferencesGroup::builder()
+                .title("Nicht verfügbar")
+                .description(
+                    "Speicherquote und erweiterte Einstellungen des Mail-Anbieters sind in dieser GTK4-Ansicht nicht verfügbar.",
+                )
+                .build(),
+        );
 
         let scrolled = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
@@ -221,5 +221,18 @@ impl FolderPropertiesDialog {
             }
         }
         tracing::info!(%message, "FolderPropertiesDialog toast");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn dialog_copy_is_explicitly_a_read_only_snapshot() {
+        let source = include_str!("folder_properties_dialog.rs");
+        let production = source.split("\n#[cfg(test)]").next().unwrap_or(source);
+        assert!(production.contains("Schreibgeschützte Momentaufnahme"));
+        assert!(production.contains("Speicherquote und erweiterte Einstellungen"));
+        assert!(production.contains("Synchronisierter Kontoordner"));
+        assert!(!production.contains("IMAP/Exchange"));
     }
 }

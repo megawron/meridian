@@ -233,6 +233,28 @@ impl AccountConfigStore {
         Ok(true)
     }
 
+    /// Move one app-owned profile by one or more positions without changing
+    /// any account fields. A boundary move is a successful no-op; a missing
+    /// profile returns `false` and never rewrites the file.
+    pub fn move_profile(&self, id: &str, delta: i32) -> io::Result<bool> {
+        let mut accounts = self.load();
+        let Some(index) = accounts.iter().position(|account| account.id == id) else {
+            return Ok(false);
+        };
+        if accounts.len() < 2 || delta == 0 {
+            return Ok(true);
+        }
+        let target = (index as i64 + delta as i64).clamp(0, accounts.len().saturating_sub(1) as i64)
+            as usize;
+        if target == index {
+            return Ok(true);
+        }
+        let profile = accounts.remove(index);
+        accounts.insert(target, profile);
+        self.save(&accounts)?;
+        Ok(true)
+    }
+
     fn save(&self, accounts: &[AccountProfile]) -> io::Result<()> {
         if let Some(parent) = self.path.parent() {
             fs::create_dir_all(parent)?;
@@ -247,6 +269,29 @@ impl AccountConfigStore {
         fs::write(&temporary_path, encoded)?;
         fs::rename(temporary_path, &self.path)
     }
+}
+
+/// Repair an app-owned default only when the profile just mutated owns that
+/// exact ID. External EDS/GOA defaults are opaque here and must remain intact.
+pub fn reconciled_local_default_account(
+    current_default: &str,
+    affected_local_id: &str,
+    profiles: &[AccountProfile],
+) -> String {
+    if current_default.trim() != affected_local_id.trim() {
+        return current_default.trim().to_string();
+    }
+    if profiles
+        .iter()
+        .any(|profile| profile.id == affected_local_id && profile.enabled)
+    {
+        return current_default.trim().to_string();
+    }
+    profiles
+        .iter()
+        .find(|profile| profile.enabled)
+        .map(|profile| profile.id.clone())
+        .unwrap_or_default()
 }
 
 impl Default for AccountConfigStore {
@@ -360,6 +405,80 @@ mod tests {
         profile.email = "test@example.org".to_string();
         profile.smtp_host.clear();
         assert!(profile.validate().is_err());
+    }
+
+    #[test]
+    fn profile_order_moves_are_bounded_and_persisted() {
+        let root = temporary_directory("accounts-order");
+        let store = AccountConfigStore::new(root.join("accounts.json"));
+        for (id, name) in [("a", "Alpha"), ("b", "Beta"), ("c", "Gamma")] {
+            store
+                .upsert(test_profile(id, name, true))
+                .expect("profile should persist");
+        }
+        assert!(store.move_profile("b", -1).unwrap());
+        assert_eq!(profile_ids(&store.load()), vec!["b", "a", "c"]);
+        assert!(store.move_profile("b", -20).unwrap());
+        assert_eq!(profile_ids(&store.load()), vec!["b", "a", "c"]);
+        assert!(store.move_profile("a", 20).unwrap());
+        assert_eq!(profile_ids(&store.load()), vec!["b", "c", "a"]);
+        assert!(!store.move_profile("missing", 1).unwrap());
+        assert_eq!(profile_ids(&store.load()), vec!["b", "c", "a"]);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn local_default_reconciliation_never_replaces_external_defaults() {
+        let profiles = vec![
+            test_profile("disabled", "Disabled", false),
+            test_profile("enabled", "Enabled", true),
+        ];
+        assert_eq!(
+            reconciled_local_default_account("disabled", "disabled", &profiles),
+            "enabled"
+        );
+        assert_eq!(
+            reconciled_local_default_account("external-eds", "disabled", &profiles),
+            "external-eds"
+        );
+        assert_eq!(
+            reconciled_local_default_account("enabled", "enabled", &profiles),
+            "enabled"
+        );
+        assert_eq!(
+            reconciled_local_default_account("disabled", "disabled", &[]),
+            ""
+        );
+    }
+
+    fn profile_ids(profiles: &[AccountProfile]) -> Vec<&str> {
+        profiles.iter().map(|profile| profile.id.as_str()).collect()
+    }
+
+    fn test_profile(id: &str, display_name: &str, enabled: bool) -> AccountProfile {
+        AccountProfile {
+            id: id.to_string(),
+            display_name: display_name.to_string(),
+            email: format!("{id}@example.org"),
+            protocol: AccountProtocol::ImapSmtp,
+            imap_host: "imap.example.org".to_string(),
+            smtp_host: "smtp.example.org".to_string(),
+            tls_mode: "tls".to_string(),
+            username: id.to_string(),
+            imap_port: 993,
+            smtp_port: 465,
+            auth_method: "password".to_string(),
+            reply_to: String::new(),
+            organization: String::new(),
+            aliases: Vec::new(),
+            inbox_folder: String::new(),
+            drafts_folder: String::new(),
+            sent_folder: String::new(),
+            archive_folder: String::new(),
+            trash_folder: String::new(),
+            junk_folder: String::new(),
+            enabled,
+        }
     }
 
     fn temporary_directory(label: &str) -> PathBuf {

@@ -15,9 +15,17 @@ accessibility helpers, and view-local GTK state.
   behavior, context menus, and configurable classic/modern mail arrangement.
 - Keep mail-account roots and their folder trees in the compact sidebar; backend
   implementation names must not appear in visible navigation or status labels.
+- A folder context menu targets the exact selectable row under the secondary
+  click without changing the active reader folder or starting a load. Keep the
+  target only for that popover lifetime, reject whitespace/account roots, and
+  expose only actions that can safely use the transient target.
 - Keep message rows single-line with selection-independent actions aligned at
   the trailing edge, and cap conversation context so it cannot displace the
   message body.
+- Render conversation context only from the ordered `thread_members` map
+  published for the current mail-load generation. Invalidate context while a
+  replacement thread model is pending, refresh it after publication, and never
+  scan or sort the flat message store on selection.
 - A secondary click on a mail row must select that exact row before opening
   its context menu. The menu and the main Message menu must expose the same
   daily state actions, including labels and both junk directions. Core actions
@@ -82,6 +90,25 @@ accessibility helpers, and view-local GTK state.
   Carry exact metadata through undo/redo, disable unsupported Graph due dates
   visibly, fail closed for provider fields the bridge cannot write, and refresh
   only after the provider or app-owned local store confirms the mutation.
+- The portable `mail-show-deleted` model materializes only app-owned local
+  sidecar-deleted rows, leaves them in their logical folder, excludes them from
+  unread counts, and never reruns incoming filters merely to display them.
+  `Ctrl+Shift+D` restores selected local deleted rows (including an explicit
+  batch) as an exact reversible command. With no deleted selection or explicit
+  batch it may recover only a confirmed Delete history head. Never turn this
+  into generic undo or claim provider/native deleted-row support.
+- Folder ordering is a persisted presentation preference, never a provider
+  mutation. Apply explicit ranks only among siblings, keep `All Messages`
+  outside the real-folder level, preserve the active reader selection, and
+  support reset for the current level and all levels.
+- Folder Properties may use only an exact loaded local folder or exact loaded
+  provider summary. Show factual counts and a human path as a read-only
+  snapshot; never invent provider types, URIs, quotas, or mutable capabilities.
+  Folder subscriptions target one exact loaded native Camel source. Preserve
+  provider hierarchy, `NOSELECT`, loading/error/unsupported states and the
+  authoritative subscribed bit; run list/mutation work off GTK, serialize it,
+  and refresh only after Camel confirms the requested state. Graph and local
+  mail have no subscription fallback, and no synthetic checkbox UI is allowed.
 - Use services for data access; do not embed EDS/Camel/ECal/EBook lifecycle or
   GTK types in service code.
 - Run every potentially blocking service mutation off the GTK main thread.

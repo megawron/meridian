@@ -38,6 +38,25 @@ typedef struct {
     int is_selectable;
 } EvolutionEdsCamelFolder;
 
+/*
+ * A subscription-list snapshot for one exact Camel store.  The entries are
+ * owned by the caller and must be released with
+ * evolution_eds_camel_free_subscription_folders().  `parent_folder_name` is
+ * NULL for a root entry; `is_subscribed` reflects Camel's authoritative
+ * CAMEL_FOLDER_SUBSCRIBED flag from a SUBSCRIPTION_LIST refresh.
+ */
+typedef struct {
+    char *source_uid;
+    char *source_display_name;
+    char *folder_name;
+    char *parent_folder_name;
+    char *display_name;
+    uint32_t unread_count;
+    uint32_t total_count;
+    int is_selectable;
+    int is_subscribed;
+} EvolutionEdsCamelSubscriptionFolder;
+
 typedef enum {
     EVOLUTION_EDS_CAMEL_SET_MESSAGE_STATE = 1,
     EVOLUTION_EDS_CAMEL_DELETE_MESSAGE = 2,
@@ -175,6 +194,89 @@ void evolution_eds_camel_free_messages(
 void evolution_eds_camel_free_folders(
     EvolutionEdsCamelFolder *folders,
     size_t count);
+
+/*
+ * Inspect one enabled EDS mail-account source.  On success,
+ * `out_is_subscribable` reports whether the exact Camel store implements
+ * CamelSubscribable.  Unsupported stores return success with zero snapshots;
+ * source lookup, connection, list and cancellation failures return 0 with an
+ * error.  The list is recursive and never includes virtual folders.
+ */
+int evolution_eds_camel_load_subscription_folders(
+    const char *source_uid,
+    EvolutionEdsCamelSubscriptionFolder **out_folders,
+    size_t *out_folder_count,
+    int *out_is_subscribable,
+    char **out_error,
+    EvolutionEdsCamelCancellationCallback cancellation_callback,
+    void *cancellation_user_data);
+
+void evolution_eds_camel_free_subscription_folders(
+    EvolutionEdsCamelSubscriptionFolder *folders,
+    size_t count);
+
+/*
+ * Set one exact selectable folder's subscription state.  The operation is
+ * rejected for disabled, unavailable and non-CamelSubscribable sources.  A
+ * successful return means a fresh SUBSCRIPTION_LIST snapshot confirmed the
+ * requested state; it is never an optimistic acknowledgement.
+ */
+int evolution_eds_camel_set_folder_subscription(
+    const char *source_uid,
+    const char *folder_name,
+    int subscribed,
+    char **out_error,
+    EvolutionEdsCamelCancellationCallback cancellation_callback,
+    void *cancellation_user_data);
+
+/* Folder-menu operations are intentionally exact-source and exact-folder.
+ * `target_name` is a single child/display segment for CREATE_CHILD and
+ * RENAME; it must not contain '/'.  Camel provides no atomic folder copy or
+ * move primitive, so those operation kinds are kept explicit and fail
+ * closed rather than attempting an unsafe recursive transfer. */
+typedef enum {
+    EVOLUTION_EDS_CAMEL_FOLDER_CREATE_CHILD = 1,
+    EVOLUTION_EDS_CAMEL_FOLDER_RENAME = 2,
+    EVOLUTION_EDS_CAMEL_FOLDER_DELETE = 3,
+    EVOLUTION_EDS_CAMEL_FOLDER_REFRESH = 4,
+    EVOLUTION_EDS_CAMEL_FOLDER_COPY = 5,
+    EVOLUTION_EDS_CAMEL_FOLDER_MOVE = 6,
+} EvolutionEdsCamelFolderMutationKind;
+
+typedef struct {
+    int can_create_child;
+    int can_rename;
+    int can_delete;
+    int can_refresh;
+    int can_copy;
+    int can_move;
+} EvolutionEdsCamelFolderMutationCapabilities;
+
+/* Query the provider-derived action sensitivity for one exact existing
+ * folder.  A valid but protected, non-selectable or unsupported folder
+ * returns success with the respective capability set to zero. */
+int evolution_eds_camel_get_folder_mutation_capabilities(
+    const char *source_uid,
+    const char *folder_name,
+    EvolutionEdsCamelFolderMutationCapabilities *out_capabilities,
+    char **out_error,
+    EvolutionEdsCamelCancellationCallback cancellation_callback,
+    void *cancellation_user_data);
+
+/* Execute a direct Camel folder operation.  CREATE_CHILD, RENAME and DELETE
+ * require CAMEL_STORE_CAN_EDIT_FOLDERS and reject account roots, NOSELECT,
+ * protected/system/virtual/read-only folders and unsupported providers.
+ * REFRESH requires a selectable non-virtual folder.  Every success is
+ * followed by a recursive provider REFRESH that verifies the expected folder
+ * state. */
+int evolution_eds_camel_apply_folder_mutation(
+    EvolutionEdsCamelFolderMutationKind kind,
+    const char *source_uid,
+    const char *folder_name,
+    const char *target_name,
+    char **out_error,
+    EvolutionEdsCamelCancellationCallback cancellation_callback,
+    void *cancellation_user_data);
 
 int evolution_eds_camel_apply_operation(
     const EvolutionEdsCamelOperation *operation,

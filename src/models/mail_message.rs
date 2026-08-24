@@ -99,12 +99,16 @@ mod imp {
         pub thread_size: RefCell<usize>,
         pub thread_position: RefCell<usize>,
         pub date_str: RefCell<String>,
+        pub message_size: RefCell<usize>,
         pub preview_snippet: RefCell<String>,
         pub html_body: RefCell<String>,
         pub searchable_body_text: RefCell<Option<Arc<str>>>,
         pub is_unread: RefCell<bool>,
         pub is_flagged: RefCell<bool>,
         pub is_important: RefCell<bool>,
+        /// Local sidecar deletion is intentionally independent from a folder:
+        /// a visible deleted row remains in its original logical folder.
+        pub is_deleted: RefCell<bool>,
         pub follow_up_state: RefCell<MailFollowUpState>,
         pub follow_up: RefCell<MailFollowUpMetadata>,
         pub labels: RefCell<Vec<String>>,
@@ -152,6 +156,7 @@ impl MailMessageObject {
         thread_size: usize,
         thread_position: usize,
         date_str: &str,
+        message_size: usize,
         preview_snippet: &str,
         html_body: &str,
         is_unread: bool,
@@ -182,6 +187,7 @@ impl MailMessageObject {
         *imp.thread_size.borrow_mut() = thread_size.max(1);
         *imp.thread_position.borrow_mut() = thread_position;
         *imp.date_str.borrow_mut() = date_str.to_string();
+        *imp.message_size.borrow_mut() = message_size;
         *imp.preview_snippet.borrow_mut() = preview_snippet.to_string();
         *imp.html_body.borrow_mut() = html_body.to_string();
         *imp.is_unread.borrow_mut() = is_unread;
@@ -201,6 +207,10 @@ impl MailMessageObject {
 
     pub fn folder_id(&self) -> String {
         self.imp().folder_id.borrow().clone()
+    }
+
+    pub fn message_size(&self) -> usize {
+        *self.imp().message_size.borrow()
     }
 
     pub fn sender_name(&self) -> String {
@@ -338,6 +348,14 @@ impl MailMessageObject {
 
     pub fn set_important(&self, important: bool) {
         *self.imp().is_important.borrow_mut() = important;
+    }
+
+    pub(crate) fn is_deleted(&self) -> bool {
+        *self.imp().is_deleted.borrow()
+    }
+
+    pub(crate) fn set_deleted(&self, deleted: bool) {
+        *self.imp().is_deleted.borrow_mut() = deleted;
     }
 
     pub fn follow_up_state(&self) -> MailFollowUpState {
@@ -506,6 +524,7 @@ mod tests {
             1,
             0,
             "",
+            0,
             "",
             "",
             false,

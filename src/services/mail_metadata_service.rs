@@ -13,9 +13,15 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, MutexGuard};
 
 const CURRENT_VERSION: u32 = 8;
 const MIN_SUPPORTED_VERSION: u32 = 1;
+
+// `File::lock` serializes independent processes. The process-wide guard also
+// makes that guarantee explicit for independent store instances in one
+// process, whose operating-system advisory lock semantics may differ.
+static APP_SIDECAR_MUTATION_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MailMessageState {
@@ -250,13 +256,14 @@ impl MailMetadataStore {
             ));
         }
 
-        let mut file = self.load_file();
-        if present {
-            file.local_folders.insert(folder_id.to_string());
-        } else {
-            file.local_folders.remove(folder_id);
-        }
-        self.save_file(&file)
+        self.mutate(|file| {
+            if present {
+                file.local_folders.insert(folder_id.to_string());
+            } else {
+                file.local_folders.remove(folder_id);
+            }
+            Ok(((), true))
+        })
     }
 
     pub fn rename_local_folder(
@@ -274,28 +281,28 @@ impl MailMetadataStore {
             ));
         }
 
-        let mut file = self.load_file();
-        file.local_folders = file
-            .local_folders
-            .into_iter()
-            .map(|folder_id| rename_folder_tree_id(&folder_id, from, to))
-            .collect();
-
-        for (message_id, folder_id) in message_targets {
-            file.folder_overrides
-                .insert(message_id.clone(), folder_id.clone());
-        }
-        for folder_id in file.folder_overrides.values_mut() {
-            *folder_id = rename_folder_tree_id(folder_id, from, to);
-        }
-        for folders in file.copies.values_mut() {
-            *folders = folders
+        self.mutate(|file| {
+            file.local_folders = file
+                .local_folders
                 .drain()
                 .map(|folder_id| rename_folder_tree_id(&folder_id, from, to))
                 .collect();
-        }
 
-        self.save_file(&file)
+            for (message_id, folder_id) in message_targets {
+                file.folder_overrides
+                    .insert(message_id.clone(), folder_id.clone());
+            }
+            for folder_id in file.folder_overrides.values_mut() {
+                *folder_id = rename_folder_tree_id(folder_id, from, to);
+            }
+            for folders in file.copies.values_mut() {
+                *folders = folders
+                    .drain()
+                    .map(|folder_id| rename_folder_tree_id(&folder_id, from, to))
+                    .collect();
+            }
+            Ok(((), true))
+        })
     }
 
     pub fn remove_local_folder_tree(&self, folder_id: &str) -> io::Result<()> {
@@ -307,37 +314,40 @@ impl MailMetadataStore {
             ));
         }
 
-        let mut file = self.load_file();
-        file.local_folders
-            .retain(|candidate| !is_folder_tree_id(candidate, folder_id));
-        file.folder_overrides
-            .retain(|_, candidate| !is_folder_tree_id(candidate, folder_id));
-        file.copies.retain(|_, folders| {
-            folders.retain(|candidate| !is_folder_tree_id(candidate, folder_id));
-            !folders.is_empty()
-        });
-        self.save_file(&file)
+        self.mutate(|file| {
+            file.local_folders
+                .retain(|candidate| !is_folder_tree_id(candidate, folder_id));
+            file.folder_overrides
+                .retain(|_, candidate| !is_folder_tree_id(candidate, folder_id));
+            file.copies.retain(|_, folders| {
+                folders.retain(|candidate| !is_folder_tree_id(candidate, folder_id));
+                !folders.is_empty()
+            });
+            Ok(((), true))
+        })
     }
 
     pub fn set_folder_override(&self, id: &str, folder_id: Option<&str>) -> io::Result<()> {
-        let mut file = self.load_file();
-        if let Some(folder_id) = folder_id.filter(|folder_id| !folder_id.trim().is_empty()) {
-            file.folder_overrides
-                .insert(id.to_string(), folder_id.to_string());
-        } else {
-            file.folder_overrides.remove(id);
-        }
-        self.save_file(&file)
+        self.mutate(|file| {
+            if let Some(folder_id) = folder_id.filter(|folder_id| !folder_id.trim().is_empty()) {
+                file.folder_overrides
+                    .insert(id.to_string(), folder_id.to_string());
+            } else {
+                file.folder_overrides.remove(id);
+            }
+            Ok(((), true))
+        })
     }
 
     pub fn set_deleted(&self, id: &str, deleted: bool) -> io::Result<()> {
-        let mut file = self.load_file();
-        if deleted {
-            file.deleted.insert(id.to_string());
-        } else {
-            file.deleted.remove(id);
-        }
-        self.save_file(&file)
+        self.mutate(|file| {
+            if deleted {
+                file.deleted.insert(id.to_string());
+            } else {
+                file.deleted.remove(id);
+            }
+            Ok(((), true))
+        })
     }
 
     /// Mark several messages deleted in one metadata transaction.
@@ -357,40 +367,39 @@ impl MailMetadataStore {
         ids.sort();
         ids.dedup();
 
-        let mut file = self.load_file();
-        let mut changed = 0;
-        for id in ids {
-            let changed_id = if deleted {
-                file.deleted.insert(id)
-            } else {
-                file.deleted.remove(&id)
-            };
-            changed += usize::from(changed_id);
-        }
-        if changed > 0 {
-            self.save_file(&file)?;
-        }
-        Ok(changed)
+        self.mutate(|file| {
+            let mut changed = 0;
+            for id in ids {
+                let changed_id = if deleted {
+                    file.deleted.insert(id)
+                } else {
+                    file.deleted.remove(&id)
+                };
+                changed += usize::from(changed_id);
+            }
+            Ok((changed, changed > 0))
+        })
     }
 
     pub fn set_copy(&self, id: &str, folder_id: &str, copied: bool) -> io::Result<()> {
-        let mut file = self.load_file();
         let folder_id = folder_id.trim();
         if folder_id.is_empty() {
             return Ok(());
         }
-        if copied {
-            file.copies
-                .entry(id.to_string())
-                .or_default()
-                .insert(folder_id.to_string());
-        } else if let Some(folders) = file.copies.get_mut(id) {
-            folders.remove(folder_id);
-            if folders.is_empty() {
-                file.copies.remove(id);
+        self.mutate(|file| {
+            if copied {
+                file.copies
+                    .entry(id.to_string())
+                    .or_default()
+                    .insert(folder_id.to_string());
+            } else if let Some(folders) = file.copies.get_mut(id) {
+                folders.remove(folder_id);
+                if folders.is_empty() {
+                    file.copies.remove(id);
+                }
             }
-        }
-        self.save_file(&file)
+            Ok(((), true))
+        })
     }
 
     pub fn set_label(&self, id: &str, label: &str, labeled: bool) -> io::Result<()> {
@@ -400,22 +409,23 @@ impl MailMetadataStore {
             return Ok(());
         }
 
-        let mut file = self.load_file();
-        if labeled {
-            let labels = file.labels.entry(id.to_string()).or_default();
-            if !labels
-                .iter()
-                .any(|candidate| candidate.eq_ignore_ascii_case(label))
-            {
-                labels.insert(label.to_string());
+        self.mutate(|file| {
+            if labeled {
+                let labels = file.labels.entry(id.to_string()).or_default();
+                if !labels
+                    .iter()
+                    .any(|candidate| candidate.eq_ignore_ascii_case(label))
+                {
+                    labels.insert(label.to_string());
+                }
+            } else if let Some(labels) = file.labels.get_mut(id) {
+                labels.retain(|candidate| !candidate.eq_ignore_ascii_case(label));
+                if labels.is_empty() {
+                    file.labels.remove(id);
+                }
             }
-        } else if let Some(labels) = file.labels.get_mut(id) {
-            labels.retain(|candidate| !candidate.eq_ignore_ascii_case(label));
-            if labels.is_empty() {
-                file.labels.remove(id);
-            }
-        }
-        self.save_file(&file)
+            Ok(((), true))
+        })
     }
 
     pub fn set_follow_up(&self, id: &str, metadata: MailFollowUpMetadata) -> io::Result<()> {
@@ -424,36 +434,63 @@ impl MailMetadataStore {
             return Ok(());
         }
 
-        let mut file = self.load_file();
         let metadata = metadata.normalized();
-        if metadata.state == MailFollowUpState::None {
-            file.follow_up.remove(id);
-        } else {
-            file.follow_up.insert(id.to_string(), metadata);
-        }
-        self.save_file(&file)
+        self.mutate(|file| {
+            if metadata.state == MailFollowUpState::None {
+                file.follow_up.remove(id);
+            } else {
+                file.follow_up.insert(id.to_string(), metadata);
+            }
+            Ok(((), true))
+        })
     }
 
     pub fn update(&self, id: &str, state: MailMessageState) -> io::Result<()> {
-        let mut file = self.load_file();
-        file.messages.insert(id.to_string(), state);
-        self.save_file(&file)
+        self.mutate(|file| {
+            file.messages.insert(id.to_string(), state);
+            Ok(((), true))
+        })
+    }
+
+    /// Serialize the full read-modify-write transaction, including across
+    /// separate service instances and processes sharing this app-owned file.
+    /// Keeping the lock around both operations prevents a later writer from
+    /// atomically replacing a sidecar based on a stale snapshot.
+    fn mutate<T>(
+        &self,
+        mutation: impl FnOnce(&mut StateFile) -> io::Result<(T, bool)>,
+    ) -> io::Result<T> {
+        let _lock = AppSidecarFileLock::acquire(&self.path)?;
+        let mut file = self.load_file_for_update()?;
+        let (result, changed) = mutation(&mut file)?;
+        if changed {
+            self.save_file(&file)?;
+        }
+        Ok(result)
     }
 
     fn load_file(&self) -> StateFile {
         let Ok(raw) = fs::read(&self.path) else {
-            return StateFile {
-                version: CURRENT_VERSION,
-                ..StateFile::default()
-            };
+            return empty_state_file();
         };
 
+        self.decode_file(&raw)
+    }
+
+    /// Read state for a mutation without converting an I/O failure into an
+    /// empty sidecar that could overwrite the unreadable original.
+    fn load_file_for_update(&self) -> io::Result<StateFile> {
+        match fs::read(&self.path) {
+            Ok(raw) => Ok(self.decode_file(&raw)),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(empty_state_file()),
+            Err(error) => Err(error),
+        }
+    }
+
+    fn decode_file(&self, raw: &[u8]) -> StateFile {
         let Ok(file) = serde_json::from_slice::<StateFile>(&raw) else {
             tracing::warn!(path = %self.path.display(), "Ignoring invalid mail metadata file");
-            return StateFile {
-                version: CURRENT_VERSION,
-                ..StateFile::default()
-            };
+            return empty_state_file();
         };
 
         if !(MIN_SUPPORTED_VERSION..=CURRENT_VERSION).contains(&file.version) {
@@ -464,10 +501,7 @@ impl MailMetadataStore {
                 expected = CURRENT_VERSION,
                 "Ignoring unsupported mail metadata version"
             );
-            return StateFile {
-                version: CURRENT_VERSION,
-                ..StateFile::default()
-            };
+            return empty_state_file();
         }
         file
     }
@@ -493,6 +527,50 @@ impl MailMetadataStore {
         let temporary_path = self.path.with_extension("json.tmp");
         fs::write(&temporary_path, encoded)?;
         fs::rename(temporary_path, &self.path)
+    }
+}
+
+fn empty_state_file() -> StateFile {
+    StateFile {
+        version: CURRENT_VERSION,
+        ..StateFile::default()
+    }
+}
+
+/// A persistent sibling lock file stays valid after `save_file` atomically
+/// replaces the data file, while its OS-managed advisory lock is released if a
+/// process crashes. Locking the data file itself would only protect the old
+/// inode after replacement.
+struct AppSidecarFileLock {
+    _file: fs::File,
+    _process_guard: MutexGuard<'static, ()>,
+}
+
+impl AppSidecarFileLock {
+    fn acquire(path: &Path) -> io::Result<Self> {
+        let process_guard = APP_SIDECAR_MUTATION_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let parent = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        fs::create_dir_all(parent)?;
+        let basename = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("mail-metadata");
+        let lock_path = parent.join(format!(".{basename}.lock"));
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .open(lock_path)?;
+        file.lock()?;
+        Ok(Self {
+            _file: file,
+            _process_guard: process_guard,
+        })
     }
 }
 
@@ -593,7 +671,8 @@ impl RemoteContentStore {
         if message_id.trim().is_empty() {
             return Ok(());
         }
-        let mut file = self.load_file();
+        let _lock = AppSidecarFileLock::acquire(&self.path)?;
+        let mut file = self.load_file_for_update()?;
         if allowed {
             file.allowed_message_ids.insert(message_id.to_string());
         } else {
@@ -612,12 +691,34 @@ impl RemoteContentStore {
     fn load_file(&self) -> RemoteContentFile {
         fs::read(&self.path)
             .ok()
-            .and_then(|raw| serde_json::from_slice::<RemoteContentFile>(&raw).ok())
+            .map(|raw| self.decode_file(&raw))
+            .unwrap_or_else(empty_remote_content_file)
+    }
+
+    /// Preserve the permissive read defaults for viewers, but prevent a
+    /// mutator from replacing an app-owned sidecar it could not read.
+    fn load_file_for_update(&self) -> io::Result<RemoteContentFile> {
+        match fs::read(&self.path) {
+            Ok(raw) => Ok(self.decode_file(&raw)),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                Ok(empty_remote_content_file())
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    fn decode_file(&self, raw: &[u8]) -> RemoteContentFile {
+        serde_json::from_slice::<RemoteContentFile>(raw)
+            .ok()
             .filter(|file| file.version == REMOTE_CONTENT_VERSION)
-            .unwrap_or_else(|| RemoteContentFile {
-                version: REMOTE_CONTENT_VERSION,
-                allowed_message_ids: HashSet::new(),
-            })
+            .unwrap_or_else(empty_remote_content_file)
+    }
+}
+
+fn empty_remote_content_file() -> RemoteContentFile {
+    RemoteContentFile {
+        version: REMOTE_CONTENT_VERSION,
+        allowed_message_ids: HashSet::new(),
     }
 }
 
@@ -801,6 +902,80 @@ mod tests {
             2
         );
         assert!(store.load_deleted().is_empty());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn independent_metadata_stores_keep_concurrent_disjoint_updates() {
+        use std::sync::{Arc, Barrier};
+
+        let root = tempfile_dir("metadata-concurrent-writers");
+        let path = root.join("state.json");
+        let writer_count = 24;
+        let barrier = Arc::new(Barrier::new(writer_count));
+        let mut writers = Vec::new();
+
+        for index in 0..writer_count {
+            let path = path.clone();
+            let barrier = Arc::clone(&barrier);
+            writers.push(std::thread::spawn(move || {
+                let store = MailMetadataStore::new(path);
+                barrier.wait();
+                store
+                    .update(
+                        &format!("message-{index}"),
+                        MailMessageState {
+                            is_unread: index % 2 == 0,
+                            is_flagged: index % 3 == 0,
+                            is_important: index % 5 == 0,
+                        },
+                    )
+                    .expect("concurrent sidecar update should save");
+            }));
+        }
+
+        for writer in writers {
+            writer.join().expect("concurrent writer should not panic");
+        }
+
+        let messages = MailMetadataStore::new(&path).load();
+        assert_eq!(messages.len(), writer_count);
+        for index in 0..writer_count {
+            assert_eq!(
+                messages.get(&format!("message-{index}")),
+                Some(&MailMessageState {
+                    is_unread: index % 2 == 0,
+                    is_flagged: index % 3 == 0,
+                    is_important: index % 5 == 0,
+                })
+            );
+        }
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn mutations_return_sidecar_read_errors_without_replacing_the_target() {
+        let root = tempfile_dir("metadata-sidecar-read-error");
+        let path = root.join("state.json");
+        fs::create_dir(&path).expect("test sidecar directory should be created");
+        let preserved = path.join("prior-state");
+        fs::write(&preserved, b"must not be replaced")
+            .expect("test sidecar contents should be created");
+
+        let error = MailMetadataStore::new(&path)
+            .set_deleted("message-1", true)
+            .expect_err("a sidecar read error must be returned to the caller");
+        assert_eq!(error.kind(), io::ErrorKind::IsADirectory);
+        assert!(
+            path.is_dir(),
+            "the unreadable sidecar target must remain intact"
+        );
+        assert_eq!(
+            fs::read(&preserved).expect("prior sidecar contents should remain readable"),
+            b"must not be replaced"
+        );
 
         let _ = fs::remove_dir_all(root);
     }
@@ -1000,6 +1175,74 @@ mod tests {
             .set_allowed("message-1", false)
             .expect("remote content approval should be revocable");
         assert!(!RemoteContentStore::new(&path).is_allowed("message-1"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn independent_remote_content_stores_keep_approvals_and_revocations() {
+        use std::sync::{Arc, Barrier};
+
+        let root = tempfile_dir("remote-content-concurrent-writers");
+        let path = root.join("remote-content.json");
+        RemoteContentStore::new(&path)
+            .set_allowed("revoked-message", true)
+            .expect("initial approval should save");
+
+        let writer_count = 16;
+        let barrier = Arc::new(Barrier::new(writer_count + 1));
+        let mut writers = Vec::new();
+        {
+            let path = path.clone();
+            let barrier = Arc::clone(&barrier);
+            writers.push(std::thread::spawn(move || {
+                barrier.wait();
+                RemoteContentStore::new(path)
+                    .set_allowed("revoked-message", false)
+                    .expect("concurrent revocation should save");
+            }));
+        }
+        for index in 0..writer_count {
+            let path = path.clone();
+            let barrier = Arc::clone(&barrier);
+            writers.push(std::thread::spawn(move || {
+                barrier.wait();
+                RemoteContentStore::new(path)
+                    .set_allowed(&format!("approved-message-{index}"), true)
+                    .expect("concurrent approval should save");
+            }));
+        }
+
+        for writer in writers {
+            writer.join().expect("concurrent writer should not panic");
+        }
+
+        let reloaded = RemoteContentStore::new(&path);
+        assert!(!reloaded.is_allowed("revoked-message"));
+        for index in 0..writer_count {
+            assert!(reloaded.is_allowed(&format!("approved-message-{index}")));
+        }
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn remote_content_mutations_return_read_errors_without_replacing_the_target() {
+        let root = tempfile_dir("remote-content-read-error");
+        let path = root.join("remote-content.json");
+        fs::create_dir(&path).expect("test sidecar directory should be created");
+        let preserved = path.join("prior-state");
+        fs::write(&preserved, b"must not be replaced")
+            .expect("test sidecar contents should be created");
+
+        let error = RemoteContentStore::new(&path)
+            .set_allowed("message-1", true)
+            .expect_err("a sidecar read error must be returned to the caller");
+        assert_eq!(error.kind(), io::ErrorKind::IsADirectory);
+        assert_eq!(
+            fs::read(&preserved).expect("prior sidecar contents should remain readable"),
+            b"must not be replaced"
+        );
+
         let _ = fs::remove_dir_all(root);
     }
 

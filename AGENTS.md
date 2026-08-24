@@ -81,12 +81,16 @@ When the user requests a durable behavior change, record it here or in the relev
 - GTK4-rs/libadwaita is the only production frontend. Reproduce the original
   Evolution application as closely as possible in window structure,
   navigation, layout, actions, and settings. Use the clean upstream checkout
-  at `/Users/martin/Documents/Projects/evolution-gtk4/evolution-upstream-reference`
+  co-located at `../evolution` when available, otherwise the checkout at
+  `/Users/martin/Documents/Projects/evolution-gtk4/evolution-upstream-reference`,
   as the read-only authority for original action names, menus, shortcuts,
-  settings and behavior; never edit or commit in that reference clone while
-  implementing this project. Keep the original EDS/Camel/ECal/EBook services
-  authoritative and make portable UI choices persistent where the original
-  application exposes them.
+  settings and behavior. Never edit or commit in a reference clone while
+  implementing this project. Use `../lookout` only as a technical GTK4/
+  libadwaita reference; never inherit its product design, scope, behavior, or
+  reduced feature set. Inspect reference repositories selectively and retain
+  established findings instead of repeatedly rescanning them. Keep the
+  original EDS/Camel/ECal/EBook services authoritative and make portable UI
+  choices persistent where the original application exposes them.
 - Prioritize daily mail workflows, responsiveness, data integrity, recovery,
   and stability before secondary parity work. A visible control is not a
   feature until its operation, persistence, error path, and tests are wired.
@@ -111,10 +115,11 @@ When the user requests a durable behavior change, record it here or in the relev
   verification. Agent worktrees are temporary implementation machinery, not
   additional product branches; `main` remains the only maintained branch.
 - The agent-manager workflow is explicit: the main agent coordinates the queue,
-  assigns Luna-Max subagents disjoint implementation paths, reviews each
-  report and diff, runs the relevant verification, and is the only agent that
-  integrates, commits, or pushes. Luna-Max subagents stay within their assigned
-  paths and do not edit roadmaps/DOX files or commit/push on their own.
+  delegates to Terra-High only when bounded, disjoint work materially reduces
+  total completion time, reviews each report and diff, runs the relevant
+  verification, and is the only agent that integrates, commits, or pushes.
+  Subagents stay within their assigned paths and do not edit roadmaps/DOX files
+  or commit/push on their own.
 - A portable green test run is evidence for the portable slice only. Keep
   independent review, Linux, visual, EDS, provider, and desktop acceptance
   visibly open until their direct evidence exists; do not convert these rests

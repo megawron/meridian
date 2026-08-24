@@ -9,17 +9,14 @@ Vollständige Architektur-Spezifikation, Feature-Mapping und Entwicklungs-Roadma
 > [Linux-/EDS-Roadmap](ROADMAP_LINUX.md). Der Produktumfang darf aus keiner
 > dieser Sichten verkleinert werden.
 
-> **Arbeitsstand 2026-08-23 (aktuelle uncommitted verification round):** Die
-> unabhängigen Reviews sind abgeschlossen; `git diff --check`,
-> `cargo fmt --all -- --check`, strikte Schema-Prüfung, normaler und mit
-> `RUSTFLAGS='--cfg=eds_camel_bridge'` erzwungener Cargo-Check sind grün. Der
-> letzte portable/macOS-unsandboxed `cargo test --workspace --locked --no-fail-fast --quiet`-
-> Vollbaseline hat 746/746 Tests bestanden; die drei neuen Assignment-Tests im
-> aktuellen 749-Test-Workspace sind gezielt grün. Der aktuelle sandboxed
-> Vollauf bestätigt sie innerhalb von 731 grünen Tests und scheitert
-> ausschließlich an 18 gesperrten
-> Graph-Loopback-Binds; eine neue unsandboxed Vollabnahme wurde vom
-> Ausführungslimit abgelehnt. Das ist keine Linux-Abnahme. `P0-MAIL-WORKER-STORE`, `MAIL-TRANSPORT-COMMANDS`, `SET-01`,
+> **Arbeitsstand 2026-08-24 (aktuelle uncommitted verification round):**
+> `git diff --check`, strikte Schema-Prüfung, normaler sowie mit
+> `RUSTFLAGS='--cfg=eds_camel_bridge'` erzwungener Cargo-Check sind grün; der
+> vollständige portable Workspace-Lauf hat 800/800 Tests bestanden und der
+> erzwungene Camel-Service-Lauf 17/17. Gezieltes Rustfmt ist grün; der globale
+> Fmt-Check bleibt wegen vorbestehender Drift außerhalb der aktuellen Pakete
+> offen. Das ist keine reale EDS-/Camel-/WebKit-Linux-Abnahme.
+> `P0-MAIL-WORKER-STORE`, `MAIL-TRANSPORT-COMMANDS`, `SET-01`,
 > `GW-CAL-VIEWS-001`, `GW-MEMO-SURFACE-FILTERS`, der eigene atomare
 > `GW-MEMO-EDITOR` und `GW-REMINDER-RUNTIME` sind portabel
 > implementiert und unabhängig reviewt; wegen nativer/provider-/Desktop-Reste
@@ -866,10 +863,42 @@ jeweilige negative Fehlerpfad mit direkter Evidenz vorliegen.
   Load/Refresh/Load-more-Handoff ist enthalten; Worker lesen GTK/GObject,
   GSettings/AppSettings, Environment oder mutablen globalen Storezustand
   nicht erneut.
+- `P0-MAIL-SIDECAR-SERIALIZATION` ist portabel geschlossen: Mailmetadaten und
+  Remote-Content-Freigaben serialisieren die vollständige Read-Modify-Write-
+  Transaktion über eine crash-freigegebene Geschwister-Lockdatei; konkurrierende
+  Writer, Widerrufungen und Lesefehler sind getestet.
+- `MAIL-DELETE-RECOVERY` ergänzt die persistente Ansicht lokal gelöschter
+  Sidecar-Nachrichten im ursprünglichen logischen Ordner. `Ctrl+Shift+D`
+  stellt die ausgewählte lokale Einzel-/Mehrfachauswahl als neue reversible
+  Operation wieder her; ohne solche Auswahl bleibt der sichere Fallback auf
+  einen bestätigten Delete-History-Head begrenzt. Native Camel-/Graph-
+  Deleted-Flags, Provider-Wiederherstellung und Linux-Visualabnahme bleiben
+  offen.
+- `FOLDER-CONTEXT-TARGET` bindet Ordner-Popups an die tatsächlich
+  rechtsgeklickte Zeile, ohne den Reader zu navigieren; Leeraum und
+  Account-Wurzeln werden abgelehnt, und nur target-sichere Aktionen erscheinen.
+- `MAIL-FOLDER-SORT-ORDER` speichert explizite sibling-only Reihenfolgen für
+  lokale Standard-/Custom-Ordner und geladene Kontoordner, bietet Reset pro
+  Ebene bzw. global und baut die Sidebar ohne Reader-Navigation oder Provider-
+  Mutation neu auf. Backup/Migration/Reset bewahren den portablen Zustand.
+- `MAIL-FOLDER-PROPERTIES-SNAPSHOT` ersetzt erfundene URIs und Remote-`0/0`
+  durch exakte geladene lokale bzw. Provider-Snapshots. Aggregat-, Such-,
+  Account-Root- und ungeladene Ziele werden abgelehnt. Die zuvor synthetische,
+  nicht persistente Abonnement-UI ist entfernt.
+- `MAIL-CAMEL-SUBSCRIPTIONS` ersetzt diese Attrappe durch einen nativen,
+  capability-gesteuerten `CamelSubscribable`-Pfad. Rekursive Providerzeilen,
+  `NOSELECT`, Filter/Refresh/Cancel und bestätigte Subscribe-/Unsubscribe-
+  Mutationen sind verdrahtet; Graph/lokale Mail bleiben ehrlich ohne Fallback.
+  Live-Provider- und Visualabnahme bleiben Linux-Arbeit.
+- `MAIL-THREAD-CONTEXT-CACHE` rendert den Reader-Kontext nur aus der geordneten,
+  für die aktuelle Load-Generation publizierten Thread-Membership. Pending
+  Generationen bleiben verborgen; der Auswahlpfad scannt und sortiert den
+  flachen Nachrichtenstore nicht mehr. Großpostfach- und Visualabnahme bleiben
+  Linux-Arbeit.
 - `P0-MAIL-002A` bleibt offen wegen nativer, Performance-, Visual- und
-  Großpostfach-Abnahme sowie ausdrücklich Sidecar-Writer-Serialisierung,
-  nativer Expunge-/Filterwirkung, Graph-/Account-Environment und type-aware
-  Global-Search-Aktivierungsidentität.
+  Großpostfach-Abnahme, nativer Expunge-/Filterwirkung und
+  Graph-/Account-Environment. Sidecar-Writer-Serialisierung und type-aware
+  Global-Search-Aktivierungsidentität sind portabel geschlossen.
 - `[~]` `P0-MAIL-002B` — lesbare Schrift- und Anzeigepräferenzen: 16-Pixel-
   Mailbasis, persistente optionale Sicherheitsdetails sowie live wirksame
   Spalten-/Dichte-/Layoutwerte. Schema-Default/Reset/Roundtrip, sofortige
@@ -885,13 +914,11 @@ cargo check --workspace --locked
 cargo test --workspace --locked --no-fail-fast --quiet
 ```
 
-Cargo-Format-/Check-, strikte Schema- und Diff-Prüfung sind für den aktuellen
-Arbeitsstand grün; die letzte portable/macOS-unsandboxed Vollbaseline hat
-746/746 Tests erfolgreich belegt. Die drei danach ergänzten Assignment-Tests
-des aktuellen 749-Test-Workspaces sind gezielt grün; der sandboxed Vollauf
-bestätigt sie innerhalb von 731 grünen Tests und kann ausschließlich 18 Graph-Loopback-
-Mockserver nicht binden. Ein neuer unsandboxed Vollauf wurde vom
-Ausführungslimit abgelehnt. Das ist keine Linux-Abnahme.
+Cargo-Check, strikte Schema- und Diff-Prüfung sind für den aktuellen
+Arbeitsstand grün; der vollständige portable Workspace-Lauf hat 800/800 Tests
+bestanden, der erzwungene Camel-Service-Lauf 17/17. Gezieltes Rustfmt ist grün;
+der globale Format-Check bleibt wegen vorbestehender Drift offen. Das ist keine
+Linux-Abnahme.
 WebKitGTK-Runtime, echte
 EDS/Camel-Flags, Icon-Theme, sichtbare Dichte, rasches Umschalten und bestätigte
 Counter-Aktualisierung bleiben in `ROADMAP_LINUX.md` offen und dürfen hier
@@ -1022,7 +1049,14 @@ Die Statuswerte sind Quellen-/UI-Belege, keine Laufzeit- oder Providerabnahme:
   Anhänge sowie HTML- und Nur-Text-Entwürfe, kann Entwürfe wieder aufnehmen und erzeugt
   Reply-/Forward-Vorbelegungen. Reply-All nutzt jetzt Reply-To, To und Cc,
   dedupliziert Empfänger und übernimmt den Originaltext als sicheres Zitat;
-  Weiterleiten übernimmt die Originalkopfzeilen und den Nachrichtentext. Ein
+  Listen-Reply verwendet eine validierte `List-Post: mailto:`-Adresse. Inline-
+  und `>`-zitiertes Weiterleiten sind als getrennte Reader-Aktionen erreichbar;
+  der Defaultpfad übernimmt weiterhin Originalkopfzeilen und Nachrichtentext.
+  Alternative Reply bietet Sender/Liste/Alle und Default-/Inline-/Zitat-/No-
+  Quote-Stile. Attached Reply und Forward bewahren die Originalnachricht
+  draft-sicher als eingebetteten `message/rfc822`-Anhang. Copy Message Link,
+  Containing Folder, Add Sender und Edit as New sind ebenfalls echt verdrahtet;
+  letzteres bewahrt eingebettete Anhänge einschließlich MIME Content-ID. Ein
   getesteter RFC822/MIME-Builder und die native CamelTransport-Aufrufstrecke
   sowie EDS-Drafts/Sent-Fallback sind angeschlossen; die Composer-Quellenliste
   verwendet ebenfalls die live-/cachefähige EDS-Entdeckung und kennzeichnet

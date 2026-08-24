@@ -21,6 +21,8 @@ pub use contacts_page::ContactsPage;
 pub use html_editor::EditorContent;
 pub use html_editor::HtmlEditor;
 pub use mail_page::MailPage;
+#[cfg(target_os = "linux")]
+pub(crate) use mail_viewer::MailPrintDialogResult;
 pub use mail_viewer::MailViewer;
 pub(crate) use mail_viewer::{MessageSearchResult, MessageSearchStatus};
 pub use memos_page::MemosPage;

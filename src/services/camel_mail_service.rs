@@ -127,6 +127,167 @@ pub(crate) struct CamelFolderSummary {
     pub(crate) is_selectable: bool,
 }
 
+/// One immutable row from Camel's authoritative subscription-list response.
+/// This record exists only for a source that implements `CamelSubscribable`;
+/// Graph and the app-owned local fallback never manufacture this capability.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(crate) struct CamelSubscriptionFolder {
+    pub(crate) source_uid: String,
+    pub(crate) source_display_name: String,
+    pub(crate) folder_name: String,
+    pub(crate) parent_folder_name: Option<String>,
+    pub(crate) display_name: String,
+    pub(crate) unread_count: u32,
+    pub(crate) total_count: u32,
+    pub(crate) is_selectable: bool,
+    pub(crate) is_subscribed: bool,
+}
+
+/// Exact-source subscription capability plus its latest recursive snapshot.
+/// `is_subscribable == false` is a successful Camel capability probe, not an
+/// empty subscription result and never authorizes a mutation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(crate) struct CamelSubscriptionSnapshot {
+    pub(crate) source_uid: String,
+    pub(crate) is_subscribable: bool,
+    pub(crate) folders: Vec<CamelSubscriptionFolder>,
+}
+
+/// Provider-derived availability for one exact Camel folder.  Copy and move
+/// stay explicit false because Camel has no atomic folder-transfer primitive;
+/// callers must not turn that absence into a local or Graph fallback.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(crate) struct CamelFolderMutationCapabilities {
+    pub(crate) source_uid: String,
+    pub(crate) folder_name: String,
+    pub(crate) can_create_child: bool,
+    pub(crate) can_rename: bool,
+    pub(crate) can_delete: bool,
+    pub(crate) can_refresh: bool,
+    pub(crate) can_copy: bool,
+    pub(crate) can_move: bool,
+}
+
+/// Direct Camel operations supported by the native bridge.  Copy and move
+/// deliberately remain representable so callers receive an explicit native
+/// unsupported error instead of silently emulating a folder transfer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(crate) enum CamelFolderMutationKind {
+    CreateChild,
+    Rename,
+    Delete,
+    Refresh,
+    Copy,
+    Move,
+}
+
+impl CamelFolderMutationKind {
+    fn ffi_code(self) -> i32 {
+        match self {
+            Self::CreateChild => 1,
+            Self::Rename => 2,
+            Self::Delete => 3,
+            Self::Refresh => 4,
+            Self::Copy => 5,
+            Self::Move => 6,
+        }
+    }
+
+    fn requires_target_name(self) -> bool {
+        matches!(self, Self::CreateChild | Self::Rename)
+    }
+}
+
+fn normalize_folder_mutation_capabilities(
+    source_uid: &str,
+    folder_name: &str,
+    can_create_child: bool,
+    can_rename: bool,
+    can_delete: bool,
+    can_refresh: bool,
+    can_copy: bool,
+    can_move: bool,
+) -> Result<CamelFolderMutationCapabilities, String> {
+    let source_uid = source_uid.trim();
+    let folder_name = folder_name.trim();
+    if source_uid.is_empty() || folder_name.is_empty() {
+        return Err(
+            "Camel-Ordneraktionen benötigen eine genaue Quelle und einen Ordnernamen".to_string(),
+        );
+    }
+    if can_copy || can_move {
+        return Err(
+            "Die Camel-Bridge darf keine nicht-atomare Ordner-Kopier- oder Verschiebefähigkeit behaupten"
+                .to_string(),
+        );
+    }
+    Ok(CamelFolderMutationCapabilities {
+        source_uid: source_uid.to_string(),
+        folder_name: folder_name.to_string(),
+        can_create_child,
+        can_rename,
+        can_delete,
+        can_refresh,
+        can_copy: false,
+        can_move: false,
+    })
+}
+
+#[allow(dead_code)]
+fn normalize_subscription_snapshot(
+    source_uid: &str,
+    is_subscribable: bool,
+    mut folders: Vec<CamelSubscriptionFolder>,
+) -> Result<CamelSubscriptionSnapshot, String> {
+    let source_uid = source_uid.trim();
+    if source_uid.is_empty() {
+        return Err("Camel-Abonnements benötigen eine genaue EDS-Quellen-ID".to_string());
+    }
+    if !is_subscribable {
+        if !folders.is_empty() {
+            return Err(
+                "Eine nicht abonnierbare Camel-Quelle lieferte Abonnementordner".to_string(),
+            );
+        }
+        return Ok(CamelSubscriptionSnapshot {
+            source_uid: source_uid.to_string(),
+            is_subscribable: false,
+            folders,
+        });
+    }
+
+    let mut seen = HashSet::new();
+    for folder in &mut folders {
+        if folder.source_uid != source_uid
+            || folder.folder_name.trim().is_empty()
+            || folder.display_name.trim().is_empty()
+            || !seen.insert(folder.folder_name.clone())
+        {
+            return Err(
+                "Camel-Abonnementsliste enthält keine eindeutigen genauen Ordneridentitäten"
+                    .to_string(),
+            );
+        }
+        if let Some(parent) = folder.parent_folder_name.as_deref() {
+            if parent.trim().is_empty() || parent == folder.folder_name {
+                return Err(
+                    "Camel-Abonnementsliste enthält eine ungültige Ordnerhierarchie".to_string(),
+                );
+            }
+        }
+    }
+
+    Ok(CamelSubscriptionSnapshot {
+        source_uid: source_uid.to_string(),
+        is_subscribable: true,
+        folders,
+    })
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct CamelMailLoad {
     pub(crate) messages: Vec<ParsedMail>,
@@ -706,6 +867,31 @@ mod ffi {
     }
 
     #[repr(C)]
+    #[allow(dead_code)]
+    pub(super) struct EvolutionEdsCamelSubscriptionFolder {
+        pub(super) source_uid: *mut c_char,
+        pub(super) source_display_name: *mut c_char,
+        pub(super) folder_name: *mut c_char,
+        pub(super) parent_folder_name: *mut c_char,
+        pub(super) display_name: *mut c_char,
+        pub(super) unread_count: u32,
+        pub(super) total_count: u32,
+        pub(super) is_selectable: i32,
+        pub(super) is_subscribed: i32,
+    }
+
+    #[repr(C)]
+    #[allow(dead_code)]
+    pub(super) struct EvolutionEdsCamelFolderMutationCapabilities {
+        pub(super) can_create_child: i32,
+        pub(super) can_rename: i32,
+        pub(super) can_delete: i32,
+        pub(super) can_refresh: i32,
+        pub(super) can_copy: i32,
+        pub(super) can_move: i32,
+    }
+
+    #[repr(C)]
     pub(super) struct EvolutionEdsCamelOperation {
         pub(super) kind: i32,
         pub(super) source_uid: *const c_char,
@@ -804,6 +990,54 @@ mod ffi {
             folders: *mut EvolutionEdsCamelFolder,
             count: usize,
         );
+
+        #[allow(dead_code)]
+        pub(super) fn evolution_eds_camel_load_subscription_folders(
+            source_uid: *const c_char,
+            out_folders: *mut *mut EvolutionEdsCamelSubscriptionFolder,
+            out_folder_count: *mut usize,
+            out_is_subscribable: *mut i32,
+            out_error: *mut *mut c_char,
+            cancellation_callback: Option<EvolutionEdsCamelCancellationCallback>,
+            cancellation_user_data: *mut c_void,
+        ) -> i32;
+
+        #[allow(dead_code)]
+        pub(super) fn evolution_eds_camel_free_subscription_folders(
+            folders: *mut EvolutionEdsCamelSubscriptionFolder,
+            count: usize,
+        );
+
+        #[allow(dead_code)]
+        pub(super) fn evolution_eds_camel_set_folder_subscription(
+            source_uid: *const c_char,
+            folder_name: *const c_char,
+            subscribed: i32,
+            out_error: *mut *mut c_char,
+            cancellation_callback: Option<EvolutionEdsCamelCancellationCallback>,
+            cancellation_user_data: *mut c_void,
+        ) -> i32;
+
+        #[allow(dead_code)]
+        pub(super) fn evolution_eds_camel_get_folder_mutation_capabilities(
+            source_uid: *const c_char,
+            folder_name: *const c_char,
+            out_capabilities: *mut EvolutionEdsCamelFolderMutationCapabilities,
+            out_error: *mut *mut c_char,
+            cancellation_callback: Option<EvolutionEdsCamelCancellationCallback>,
+            cancellation_user_data: *mut c_void,
+        ) -> i32;
+
+        #[allow(dead_code)]
+        pub(super) fn evolution_eds_camel_apply_folder_mutation(
+            kind: i32,
+            source_uid: *const c_char,
+            folder_name: *const c_char,
+            target_name: *const c_char,
+            out_error: *mut *mut c_char,
+            cancellation_callback: Option<EvolutionEdsCamelCancellationCallback>,
+            cancellation_user_data: *mut c_void,
+        ) -> i32;
 
         pub(super) fn evolution_eds_camel_apply_operation(
             operation: *const EvolutionEdsCamelOperation,
@@ -1169,6 +1403,377 @@ fn load_messages_native(
         search_query: None,
         graph_next_links: HashMap::new(),
     })
+}
+
+/// Read the recursive subscription hierarchy for one exact EDS/Camel source.
+/// This intentionally never falls through to Graph or a local mail store:
+/// they do not expose Camel's subscription contract.
+#[allow(dead_code)]
+pub(crate) fn load_subscription_folders_with_cancellation(
+    source_uid: &str,
+    cancelled: Option<&AtomicBool>,
+) -> Result<CamelSubscriptionSnapshot, String> {
+    let source_uid = source_uid.trim();
+    if source_uid.is_empty() {
+        return Err("Camel-Abonnements benötigen eine genaue EDS-Quellen-ID".to_string());
+    }
+    if let Some(cancelled) = cancelled {
+        cancellation_error(cancelled, "Camel-Abonnementsliste")?;
+    }
+
+    #[cfg(eds_camel_bridge)]
+    {
+        use std::ffi::{CStr, CString, c_char, c_void};
+
+        unsafe extern "C" fn cancellation_callback(user_data: *mut c_void) -> i32 {
+            if user_data.is_null() {
+                return 0;
+            }
+            let cancelled = unsafe { &*(user_data as *const AtomicBool) };
+            cancelled.load(Ordering::Relaxed) as i32
+        }
+
+        let source_uid_c = CString::new(source_uid)
+            .map_err(|_| "EDS-Quellen-ID enthält ein ungültiges NUL-Byte".to_string())?;
+        let mut records = std::ptr::null_mut();
+        let mut record_count = 0usize;
+        let mut is_subscribable = 0;
+        let mut error_message: *mut c_char = std::ptr::null_mut();
+        let cancellation_user_data = cancelled.map_or(std::ptr::null_mut(), |cancelled| {
+            cancelled as *const AtomicBool as *mut c_void
+        });
+        let cancellation_callback =
+            cancelled.map(|_| cancellation_callback as ffi::EvolutionEdsCamelCancellationCallback);
+        let _native_lock = CAMEL_NATIVE_LOCK
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let success = unsafe {
+            ffi::evolution_eds_camel_load_subscription_folders(
+                source_uid_c.as_ptr(),
+                &mut records,
+                &mut record_count,
+                &mut is_subscribable,
+                &mut error_message,
+                cancellation_callback,
+                cancellation_user_data,
+            ) != 0
+        };
+        let error = (!error_message.is_null()).then(|| unsafe {
+            let message = CStr::from_ptr(error_message).to_string_lossy().into_owned();
+            ffi::evolution_eds_camel_free_error(error_message);
+            message
+        });
+
+        if !success {
+            if !records.is_null() {
+                unsafe {
+                    ffi::evolution_eds_camel_free_subscription_folders(records, record_count)
+                };
+            }
+            return Err(error.unwrap_or_else(|| {
+                "Camel-Abonnementsliste konnte nicht geladen werden".to_string()
+            }));
+        }
+
+        let mut folders = Vec::with_capacity(record_count);
+        if !records.is_null() {
+            let records_slice = unsafe { std::slice::from_raw_parts(records, record_count) };
+            for record in records_slice {
+                folders.push(CamelSubscriptionFolder {
+                    source_uid: c_string(record.source_uid),
+                    source_display_name: c_string(record.source_display_name),
+                    folder_name: c_string(record.folder_name),
+                    parent_folder_name: c_string_option(record.parent_folder_name),
+                    display_name: c_string(record.display_name),
+                    unread_count: record.unread_count,
+                    total_count: record.total_count,
+                    is_selectable: record.is_selectable != 0,
+                    is_subscribed: record.is_subscribed != 0,
+                });
+            }
+            unsafe { ffi::evolution_eds_camel_free_subscription_folders(records, record_count) };
+        }
+        if let Some(cancelled) = cancelled {
+            cancellation_error(cancelled, "Camel-Abonnementsliste")?;
+        }
+        normalize_subscription_snapshot(source_uid, is_subscribable != 0, folders)
+    }
+
+    #[cfg(not(eds_camel_bridge))]
+    {
+        let _ = cancelled;
+        Err("native EDS/Camel adapter is not available in this build".to_string())
+    }
+}
+
+/// Confirm one exact Camel folder subscription mutation.  The bridge only
+/// returns success after it re-reads the subscription list and observes the
+/// requested bit, so callers may refresh their sidebar without optimistic
+/// state changes.
+#[allow(dead_code)]
+pub(crate) fn set_folder_subscription_with_cancellation(
+    source_uid: &str,
+    folder_name: &str,
+    subscribed: bool,
+    cancelled: Option<&AtomicBool>,
+) -> Result<(), String> {
+    let source_uid = source_uid.trim();
+    let folder_name = folder_name.trim();
+    if source_uid.is_empty() || folder_name.is_empty() {
+        return Err(
+            "Camel-Abonnements benötigen eine genaue Quelle und einen Ordnernamen".to_string(),
+        );
+    }
+    if let Some(cancelled) = cancelled {
+        cancellation_error(cancelled, "Camel-Abonnementänderung")?;
+    }
+
+    #[cfg(eds_camel_bridge)]
+    {
+        use std::ffi::{CStr, CString, c_char, c_void};
+
+        unsafe extern "C" fn cancellation_callback(user_data: *mut c_void) -> i32 {
+            if user_data.is_null() {
+                return 0;
+            }
+            let cancelled = unsafe { &*(user_data as *const AtomicBool) };
+            cancelled.load(Ordering::Relaxed) as i32
+        }
+
+        let source_uid = CString::new(source_uid)
+            .map_err(|_| "EDS-Quellen-ID enthält ein ungültiges NUL-Byte".to_string())?;
+        let folder_name = CString::new(folder_name)
+            .map_err(|_| "Camel-Ordnername enthält ein ungültiges NUL-Byte".to_string())?;
+        let mut error_message: *mut c_char = std::ptr::null_mut();
+        let cancellation_user_data = cancelled.map_or(std::ptr::null_mut(), |cancelled| {
+            cancelled as *const AtomicBool as *mut c_void
+        });
+        let cancellation_callback =
+            cancelled.map(|_| cancellation_callback as ffi::EvolutionEdsCamelCancellationCallback);
+        let _native_lock = CAMEL_NATIVE_LOCK
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let success = unsafe {
+            ffi::evolution_eds_camel_set_folder_subscription(
+                source_uid.as_ptr(),
+                folder_name.as_ptr(),
+                subscribed as i32,
+                &mut error_message,
+                cancellation_callback,
+                cancellation_user_data,
+            ) != 0
+        };
+        let error = (!error_message.is_null()).then(|| unsafe {
+            let message = CStr::from_ptr(error_message).to_string_lossy().into_owned();
+            ffi::evolution_eds_camel_free_error(error_message);
+            message
+        });
+        if success {
+            Ok(())
+        } else {
+            Err(error.unwrap_or_else(|| {
+                "Camel-Abonnementänderung konnte nicht bestätigt werden".to_string()
+            }))
+        }
+    }
+
+    #[cfg(not(eds_camel_bridge))]
+    {
+        let _ = (subscribed, cancelled);
+        Err("native EDS/Camel adapter is not available in this build".to_string())
+    }
+}
+
+/// Get exact provider-derived Folder-menu availability.  This deliberately
+/// has no Graph or local fallback because those backends cannot establish the
+/// Camel store/folder capability contract.
+#[allow(dead_code)]
+pub(crate) fn folder_mutation_capabilities_with_cancellation(
+    source_uid: &str,
+    folder_name: &str,
+    cancelled: Option<&AtomicBool>,
+) -> Result<CamelFolderMutationCapabilities, String> {
+    let source_uid = source_uid.trim();
+    let folder_name = folder_name.trim();
+    if source_uid.is_empty() || folder_name.is_empty() {
+        return Err(
+            "Camel-Ordneraktionen benötigen eine genaue Quelle und einen Ordnernamen".to_string(),
+        );
+    }
+    if let Some(cancelled) = cancelled {
+        cancellation_error(cancelled, "Camel-Ordneraktionen")?;
+    }
+
+    #[cfg(eds_camel_bridge)]
+    {
+        use std::ffi::{CStr, CString, c_char, c_void};
+
+        unsafe extern "C" fn cancellation_callback(user_data: *mut c_void) -> i32 {
+            if user_data.is_null() {
+                return 0;
+            }
+            let cancelled = unsafe { &*(user_data as *const AtomicBool) };
+            cancelled.load(Ordering::Relaxed) as i32
+        }
+
+        let source_uid = CString::new(source_uid)
+            .map_err(|_| "EDS-Quellen-ID enthält ein ungültiges NUL-Byte".to_string())?;
+        let folder_name = CString::new(folder_name)
+            .map_err(|_| "Camel-Ordnername enthält ein ungültiges NUL-Byte".to_string())?;
+        let mut capabilities = ffi::EvolutionEdsCamelFolderMutationCapabilities {
+            can_create_child: 0,
+            can_rename: 0,
+            can_delete: 0,
+            can_refresh: 0,
+            can_copy: 0,
+            can_move: 0,
+        };
+        let mut error_message: *mut c_char = std::ptr::null_mut();
+        let cancellation_user_data = cancelled.map_or(std::ptr::null_mut(), |cancelled| {
+            cancelled as *const AtomicBool as *mut c_void
+        });
+        let cancellation_callback =
+            cancelled.map(|_| cancellation_callback as ffi::EvolutionEdsCamelCancellationCallback);
+        let _native_lock = CAMEL_NATIVE_LOCK
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let success = unsafe {
+            ffi::evolution_eds_camel_get_folder_mutation_capabilities(
+                source_uid.as_ptr(),
+                folder_name.as_ptr(),
+                &mut capabilities,
+                &mut error_message,
+                cancellation_callback,
+                cancellation_user_data,
+            ) != 0
+        };
+        let error = (!error_message.is_null()).then(|| unsafe {
+            let message = CStr::from_ptr(error_message).to_string_lossy().into_owned();
+            ffi::evolution_eds_camel_free_error(error_message);
+            message
+        });
+        if !success {
+            return Err(error.unwrap_or_else(|| {
+                "Camel-Ordneraktionen konnten nicht geprüft werden".to_string()
+            }));
+        }
+        if let Some(cancelled) = cancelled {
+            cancellation_error(cancelled, "Camel-Ordneraktionen")?;
+        }
+        normalize_folder_mutation_capabilities(
+            source_uid.to_str().unwrap_or_default(),
+            folder_name.to_str().unwrap_or_default(),
+            capabilities.can_create_child != 0,
+            capabilities.can_rename != 0,
+            capabilities.can_delete != 0,
+            capabilities.can_refresh != 0,
+            capabilities.can_copy != 0,
+            capabilities.can_move != 0,
+        )
+    }
+
+    #[cfg(not(eds_camel_bridge))]
+    {
+        let _ = cancelled;
+        Err("native EDS/Camel adapter is not available in this build".to_string())
+    }
+}
+
+/// Execute a confirmed direct Camel folder operation.  Success means the C
+/// bridge refreshed the hierarchy and verified the provider's resulting
+/// state; this facade never performs optimistic Graph/local emulation.
+#[allow(dead_code)]
+pub(crate) fn apply_folder_mutation_with_cancellation(
+    kind: CamelFolderMutationKind,
+    source_uid: &str,
+    folder_name: &str,
+    target_name: Option<&str>,
+    cancelled: Option<&AtomicBool>,
+) -> Result<(), String> {
+    let source_uid = source_uid.trim();
+    let folder_name = folder_name.trim();
+    let target_name = target_name.map(str::trim).filter(|name| !name.is_empty());
+    if source_uid.is_empty() || folder_name.is_empty() {
+        return Err(
+            "Camel-Ordneraktionen benötigen eine genaue Quelle und einen Ordnernamen".to_string(),
+        );
+    }
+    if kind.requires_target_name() != target_name.is_some() {
+        return Err(
+            "Diese Camel-Ordneraktion benötigt genau dann einen neuen Namen, wenn sie erstellt oder umbenennt"
+                .to_string(),
+        );
+    }
+    if target_name.is_some_and(|name| name.contains('/')) {
+        return Err("Camel-Ordnernamen dürfen kein '/' enthalten".to_string());
+    }
+    if let Some(cancelled) = cancelled {
+        cancellation_error(cancelled, "Camel-Ordneraktion")?;
+    }
+
+    #[cfg(eds_camel_bridge)]
+    {
+        use std::ffi::{CStr, CString, c_char, c_void};
+
+        unsafe extern "C" fn cancellation_callback(user_data: *mut c_void) -> i32 {
+            if user_data.is_null() {
+                return 0;
+            }
+            let cancelled = unsafe { &*(user_data as *const AtomicBool) };
+            cancelled.load(Ordering::Relaxed) as i32
+        }
+
+        let source_uid = CString::new(source_uid)
+            .map_err(|_| "EDS-Quellen-ID enthält ein ungültiges NUL-Byte".to_string())?;
+        let folder_name = CString::new(folder_name)
+            .map_err(|_| "Camel-Ordnername enthält ein ungültiges NUL-Byte".to_string())?;
+        let target_name = target_name
+            .map(CString::new)
+            .transpose()
+            .map_err(|_| "Neuer Camel-Ordnername enthält ein ungültiges NUL-Byte".to_string())?;
+        let mut error_message: *mut c_char = std::ptr::null_mut();
+        let cancellation_user_data = cancelled.map_or(std::ptr::null_mut(), |cancelled| {
+            cancelled as *const AtomicBool as *mut c_void
+        });
+        let cancellation_callback =
+            cancelled.map(|_| cancellation_callback as ffi::EvolutionEdsCamelCancellationCallback);
+        let _native_lock = CAMEL_NATIVE_LOCK
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let success = unsafe {
+            ffi::evolution_eds_camel_apply_folder_mutation(
+                kind.ffi_code(),
+                source_uid.as_ptr(),
+                folder_name.as_ptr(),
+                target_name
+                    .as_ref()
+                    .map_or(std::ptr::null(), |name| name.as_ptr()),
+                &mut error_message,
+                cancellation_callback,
+                cancellation_user_data,
+            ) != 0
+        };
+        let error = (!error_message.is_null()).then(|| unsafe {
+            let message = CStr::from_ptr(error_message).to_string_lossy().into_owned();
+            ffi::evolution_eds_camel_free_error(error_message);
+            message
+        });
+        if success {
+            if let Some(cancelled) = cancelled {
+                cancellation_error(cancelled, "Camel-Ordneraktion")?;
+            }
+            Ok(())
+        } else {
+            Err(error
+                .unwrap_or_else(|| "Camel-Ordneraktion konnte nicht bestätigt werden".to_string()))
+        }
+    }
+
+    #[cfg(not(eds_camel_bridge))]
+    {
+        let _ = (kind, target_name, cancelled);
+        Err("native EDS/Camel adapter is not available in this build".to_string())
+    }
 }
 
 #[cfg(any(eds_camel_bridge, test))]
@@ -1706,6 +2311,7 @@ mod tests {
             thread_size: 1,
             thread_position: 0,
             date_str: String::new(),
+            message_size: 0,
             preview_snippet: String::new(),
             html_body: String::new(),
             raw_headers: None,
@@ -1718,6 +2324,181 @@ mod tests {
             labels: Vec::new(),
             attachments: Vec::new(),
         }
+    }
+
+    fn subscription_folder(
+        folder_name: &str,
+        parent_folder_name: Option<&str>,
+        is_subscribed: bool,
+    ) -> CamelSubscriptionFolder {
+        CamelSubscriptionFolder {
+            source_uid: "account-a".to_string(),
+            source_display_name: "Account A".to_string(),
+            folder_name: folder_name.to_string(),
+            parent_folder_name: parent_folder_name.map(str::to_string),
+            display_name: folder_name
+                .rsplit('/')
+                .next()
+                .unwrap_or(folder_name)
+                .to_string(),
+            unread_count: 2,
+            total_count: 5,
+            is_selectable: true,
+            is_subscribed,
+        }
+    }
+
+    #[test]
+    fn subscription_snapshot_keeps_exact_source_hierarchy_and_state() {
+        let snapshot = normalize_subscription_snapshot(
+            " account-a ",
+            true,
+            vec![
+                subscription_folder("Projects", None, false),
+                subscription_folder("Projects/2026", Some("Projects"), true),
+            ],
+        )
+        .expect("authoritative subscription rows should normalize");
+
+        assert_eq!(snapshot.source_uid, "account-a");
+        assert!(snapshot.is_subscribable);
+        assert_eq!(snapshot.folders[1].folder_name, "Projects/2026");
+        assert_eq!(
+            snapshot.folders[1].parent_folder_name.as_deref(),
+            Some("Projects")
+        );
+        assert!(snapshot.folders[1].is_subscribed);
+    }
+
+    #[test]
+    fn subscription_snapshot_fails_closed_for_invalid_capability_or_identity() {
+        assert!(
+            normalize_subscription_snapshot(
+                "account-a",
+                false,
+                vec![subscription_folder("Projects", None, false)],
+            )
+            .is_err()
+        );
+        assert!(
+            normalize_subscription_snapshot(
+                "account-a",
+                true,
+                vec![
+                    subscription_folder("Projects", None, false),
+                    subscription_folder("Projects", None, true),
+                ],
+            )
+            .is_err()
+        );
+        assert!(
+            normalize_subscription_snapshot(
+                "account-a",
+                true,
+                vec![subscription_folder("Projects", Some("Projects"), false)],
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn subscription_ffi_contract_names_exact_native_snapshot_and_confirmation_calls() {
+        let header = include_str!("../../native/eds_camel_bridge.h");
+        let native = include_str!("../../native/eds_camel_bridge.c");
+        let rust = include_str!("camel_mail_service.rs");
+
+        for field in ["parent_folder_name", "is_selectable", "is_subscribed"] {
+            assert!(header.contains(field), "header misses {field}");
+        }
+        for symbol in [
+            "evolution_eds_camel_load_subscription_folders",
+            "evolution_eds_camel_set_folder_subscription",
+            "evolution_eds_camel_free_subscription_folders",
+        ] {
+            assert!(header.contains(symbol), "header misses {symbol}");
+            assert!(rust.contains(symbol), "Rust FFI misses {symbol}");
+        }
+        assert!(native.contains("CAMEL_STORE_FOLDER_INFO_SUBSCRIPTION_LIST"));
+        assert!(native.contains("CAMEL_IS_SUBSCRIBABLE (store)"));
+        assert!(native.contains("camel_subscribable_subscribe_folder_sync"));
+        assert!(native.contains("camel_subscribable_unsubscribe_folder_sync"));
+        assert!(native.contains("hat die angeforderte Abonnementänderung nicht bestätigt"));
+    }
+
+    #[test]
+    fn folder_mutation_capabilities_preserve_verified_subset_and_reject_transfer_claims() {
+        let capabilities = normalize_folder_mutation_capabilities(
+            " account-a ",
+            " Projects ",
+            true,
+            true,
+            false,
+            true,
+            false,
+            false,
+        )
+        .expect("direct Camel capabilities should normalize");
+        assert_eq!(capabilities.source_uid, "account-a");
+        assert_eq!(capabilities.folder_name, "Projects");
+        assert!(capabilities.can_create_child);
+        assert!(capabilities.can_rename);
+        assert!(!capabilities.can_delete);
+        assert!(capabilities.can_refresh);
+        assert!(!capabilities.can_copy);
+        assert!(!capabilities.can_move);
+
+        assert!(
+            normalize_folder_mutation_capabilities(
+                "account-a",
+                "Projects",
+                false,
+                false,
+                false,
+                false,
+                true,
+                false,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn folder_mutation_kinds_have_stable_native_codes_and_target_rules() {
+        assert_eq!(CamelFolderMutationKind::CreateChild.ffi_code(), 1);
+        assert_eq!(CamelFolderMutationKind::Rename.ffi_code(), 2);
+        assert_eq!(CamelFolderMutationKind::Delete.ffi_code(), 3);
+        assert_eq!(CamelFolderMutationKind::Refresh.ffi_code(), 4);
+        assert_eq!(CamelFolderMutationKind::Copy.ffi_code(), 5);
+        assert_eq!(CamelFolderMutationKind::Move.ffi_code(), 6);
+        assert!(CamelFolderMutationKind::CreateChild.requires_target_name());
+        assert!(CamelFolderMutationKind::Rename.requires_target_name());
+        assert!(!CamelFolderMutationKind::Delete.requires_target_name());
+        assert!(!CamelFolderMutationKind::Refresh.requires_target_name());
+    }
+
+    #[test]
+    fn folder_mutation_ffi_contract_requires_provider_verification_and_no_transfer_fallback() {
+        let header = include_str!("../../native/eds_camel_bridge.h");
+        let native = include_str!("../../native/eds_camel_bridge.c");
+        let rust = include_str!("camel_mail_service.rs");
+
+        for symbol in [
+            "evolution_eds_camel_get_folder_mutation_capabilities",
+            "evolution_eds_camel_apply_folder_mutation",
+            "EVOLUTION_EDS_CAMEL_FOLDER_CREATE_CHILD",
+            "EVOLUTION_EDS_CAMEL_FOLDER_REFRESH",
+        ] {
+            assert!(header.contains(symbol), "header misses {symbol}");
+            assert!(rust.contains(symbol), "Rust FFI misses {symbol}");
+        }
+        assert!(native.contains("CAMEL_STORE_CAN_EDIT_FOLDERS"));
+        assert!(native.contains("CAMEL_FOLDER_SYSTEM"));
+        assert!(native.contains("camel_store_create_folder_sync"));
+        assert!(native.contains("camel_store_rename_folder_sync"));
+        assert!(native.contains("camel_store_delete_folder_sync"));
+        assert!(native.contains("camel_folder_refresh_info_sync"));
+        assert!(native.contains("load_folder_mutation_tree"));
+        assert!(native.contains("keine sichere atomare Ordner-Kopier- oder Verschiebeoperation"));
     }
 
     #[test]

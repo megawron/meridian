@@ -590,6 +590,21 @@ impl MailCommand {
         }
     }
 
+    /// Restore one visible local sidecar-deleted record.  Unlike undoing a
+    /// historical delete, this is a new reversible command so selecting an
+    /// older deleted row cannot undo an unrelated action.
+    pub(crate) fn restore_deleted_local(id: impl Into<String>) -> Self {
+        let id = id.into();
+        Self {
+            forward: MailOperation::RestoreDeleted {
+                id: id.clone(),
+                location: None,
+            },
+            inverse: MailOperation::Delete { id, location: None },
+            description: "Nachricht wiederherstellen".to_string(),
+        }
+    }
+
     pub(crate) fn archive(id: impl Into<String>, location: MailBackendLocation) -> Self {
         let id = id.into();
         Self {
@@ -1558,6 +1573,13 @@ impl MailCommandStack {
 
     pub(crate) fn can_undo(&self) -> bool {
         !self.undo.is_empty()
+    }
+
+    /// The bounded reader recovery action must never undo an unrelated mail
+    /// mutation.  It is available only while the current undo head is a
+    /// delete command, whose inverse retains the original backend location.
+    pub(crate) fn can_undo_delete(&self) -> bool {
+        self.undo_operation_kind() == Some(MailOperationKind::Delete)
     }
 
     pub(crate) fn can_redo(&self) -> bool {
@@ -2893,6 +2915,39 @@ mod tests {
         assert!(!reloaded.can_redo());
 
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn undelete_is_available_only_when_delete_is_the_undo_head() {
+        let mut history = MailCommandStack::default();
+        history
+            .undo
+            .push(MailCommand::delete_local("deleted-message"));
+        assert!(history.can_undo_delete());
+
+        history.undo.push(MailCommand::set_message_state(
+            "read-message",
+            None,
+            true,
+            false,
+            false,
+            false,
+        ));
+        assert!(!history.can_undo_delete());
+    }
+
+    #[test]
+    fn direct_local_restore_is_a_reversible_command_not_history_alias() {
+        let command = MailCommand::restore_deleted_local("deleted-message");
+        assert!(matches!(
+            command.forward,
+            MailOperation::RestoreDeleted { ref id, location: None } if id == "deleted-message"
+        ));
+        assert!(matches!(
+            command.inverse,
+            MailOperation::Delete { ref id, location: None } if id == "deleted-message"
+        ));
+        assert_eq!(command.description(), "Nachricht wiederherstellen");
     }
 
     #[test]

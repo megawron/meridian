@@ -91,6 +91,14 @@ pub struct DraftAttachment {
     pub mime_type: String,
     #[serde(default)]
     pub size: u64,
+    /// Preserved MIME Content-ID for inline resources referenced by `cid:`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_id: Option<String>,
+    /// Base64-encoded application-owned payload. Ordinary user-selected files
+    /// keep this empty and continue to use `path`; embedded RFC822 attachments
+    /// survive autosave/reopen without relying on a temporary file.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub embedded_content_base64: String,
 }
 
 /// Composer-only metadata kept in the recovery draft.

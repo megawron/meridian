@@ -23,7 +23,6 @@ use crate::{APP_ID, RESOURCE_PATH};
 
 const ACCELERATOR_BINDINGS: &[(&str, &[&str])] = &[
     ("app.quit", &["<Ctrl>Q"]),
-    ("app.drafts", &["<Ctrl><Shift>D"]),
     ("app.global-search", &["<Ctrl><Shift>G"]),
     ("app.preferences", &["<Ctrl>comma"]),
     ("win.show-help-overlay", &["<Ctrl>question"]),
@@ -32,6 +31,7 @@ const ACCELERATOR_BINDINGS: &[(&str, &[&str])] = &[
     ("win.mail-send-receive", &["F12"]),
     ("win.undo", &["<Ctrl>Z"]),
     ("win.redo", &["<Ctrl><Shift>Z"]),
+    ("win.undelete", &["<Ctrl><Shift>D"]),
     ("win.apply-filters", &["<Ctrl>Y"]),
     ("win.toggle-sidebar", &["F9"]),
     ("win.new", &["<Ctrl>N"]),
@@ -681,6 +681,7 @@ mod tests {
         assert_eq!(accelerators_for("win.toggle-mail-threading"), &["<Ctrl>T"]);
         assert_eq!(accelerators_for("win.mail-print"), &["<Ctrl>P"]);
         assert_eq!(accelerators_for("win.find-in-message"), &["<Ctrl><Shift>F"]);
+        assert_eq!(accelerators_for("win.undelete"), &["<Ctrl><Shift>D"]);
         assert_eq!(accelerators_for("win.mark-all-read"), &["<Ctrl><Shift>M"]);
     }
 }

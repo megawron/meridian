@@ -16,6 +16,11 @@ settings persistence.
 - EDS/Camel/ECal/EBook are authoritative for synchronized Linux data.
 - Portable stores are explicit fallback/import paths and must preserve source
   identity and user data without pretending to be live EDS synchronization.
+- App-owned mail metadata and remote-content sidecar mutations serialize the
+  complete read-modify-write transaction across service instances and
+  processes with a crash-released sibling-file lock. Preserve atomic data-file
+  replacement, and fail without overwriting when the existing target cannot
+  be read.
 - Do not depend on GTK widgets or libadwaita types.
 - Expose cancellation, warnings, conflicts, and backend-unavailable states so
   views can present honest status instead of hanging.
@@ -34,6 +39,11 @@ settings persistence.
   a full event queue, unknown event, or malformed identifier must never stop a
   watcher silently. Preserve rename aliases for subsequent folder-scoped UID
   events until Linux can provide a stable native folder identity.
+- Camel subscription APIs are exact-source and native-only. A capability probe
+  distinguishes a real non-subscribable store from a failed list, recursive
+  snapshots preserve parent/`NOSELECT`/subscribed state, and subscribe or
+  unsubscribe returns success only after a fresh provider list confirms it.
+  Never route Graph or the app-owned local store through this contract.
 - Mail mutations expose a one-shot lifecycle and cooperative cancellation.
   Record undo/redo only after confirmed backend success, serialize conflicting
   work for the same message, and surface failed batch rollback explicitly.

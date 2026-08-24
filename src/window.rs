@@ -1321,6 +1321,7 @@ impl EvolutionWindow {
             "toggle-preview",
             "toggle-all-headers",
             "toggle-mail-threading",
+            "toggle-mail-show-deleted",
             "toggle-mail-preview-text",
             "toggle-mail-avatar",
             "toggle-mail-sender",
@@ -1338,13 +1339,23 @@ impl EvolutionWindow {
             "refresh-mail",
             "undo",
             "redo",
+            "undelete",
             "reply",
             "reply-all",
+            "reply-list",
+            "reply-alternative",
             "forward",
+            "forward-inline",
+            "forward-quoted",
+            "forward-attached",
             "export",
             "mail-print",
             "mail-print-preview",
             "view-message-source",
+            "copy-message-link",
+            "goto-containing-folder",
+            "add-sender-contact",
+            "edit-as-new",
             "find-in-message",
             "delete",
             "mark-unread",
@@ -1362,10 +1373,10 @@ impl EvolutionWindow {
             "new-folder",
             "rename-folder",
             "delete-folder",
+            "refresh-folder",
             "mark-all-read",
             "next-unread-folder",
-            "folder-properties",
-            "folder-subscriptions",
+            "folder-edit-sort-order",
             "empty-trash",
             "empty-junk",
             "expunge",
@@ -1391,7 +1402,111 @@ impl EvolutionWindow {
             }
         }
         self.set_message_actions_enabled(enabled);
+        self.update_mail_undelete_action(enabled);
+        self.update_folder_properties_action(enabled);
+        self.update_folder_subscriptions_action(enabled);
+        self.update_folder_sort_order_action(enabled);
         self.update_mail_navigation_actions(enabled);
+    }
+
+    fn update_folder_sort_order_action(&self, mail_view_enabled: bool) {
+        let enabled = mail_view_enabled
+            && self
+                .mail_page()
+                .is_some_and(|mail_page| mail_page.can_edit_folder_sort_order());
+        if let Some(action) = self
+            .lookup_action("folder-edit-sort-order")
+            .and_then(|action| action.downcast::<gio::SimpleAction>().ok())
+        {
+            action.set_enabled(enabled);
+        }
+    }
+
+    fn update_folder_properties_action(&self, mail_view_enabled: bool) {
+        let enabled = mail_view_enabled
+            && self
+                .mail_page()
+                .is_some_and(|mail_page| mail_page.can_present_folder_properties());
+        self.set_folder_properties_action_enabled(enabled);
+    }
+
+    pub(crate) fn set_folder_properties_action_enabled(&self, enabled: bool) {
+        if let Some(action) = self
+            .lookup_action("folder-properties")
+            .and_then(|action| action.downcast::<gio::SimpleAction>().ok())
+        {
+            action.set_enabled(enabled);
+        }
+    }
+
+    pub(crate) fn update_folder_properties_action_for_current_view(&self) {
+        let is_mail_view = self
+            .imp()
+            .view_stack
+            .borrow()
+            .as_ref()
+            .and_then(|view_stack| view_stack.visible_child_name())
+            .is_some_and(|view_name| view_name == "mail");
+        self.update_folder_properties_action(is_mail_view);
+    }
+
+    fn update_folder_subscriptions_action(&self, mail_view_enabled: bool) {
+        let enabled = mail_view_enabled
+            && self
+                .mail_page()
+                .is_some_and(|mail_page| mail_page.can_present_folder_subscriptions());
+        if let Some(action) = self
+            .lookup_action("folder-subscriptions")
+            .and_then(|action| action.downcast::<gio::SimpleAction>().ok())
+        {
+            action.set_enabled(enabled);
+        }
+    }
+
+    pub(crate) fn update_folder_subscriptions_action_for_current_view(&self) {
+        let is_mail_view = self
+            .imp()
+            .view_stack
+            .borrow()
+            .as_ref()
+            .and_then(|view_stack| view_stack.visible_child_name())
+            .is_some_and(|view_name| view_name == "mail");
+        self.update_folder_subscriptions_action(is_mail_view);
+    }
+
+    pub(crate) fn update_folder_sort_order_action_for_current_view(&self) {
+        let is_mail_view = self
+            .imp()
+            .view_stack
+            .borrow()
+            .as_ref()
+            .and_then(|view_stack| view_stack.visible_child_name())
+            .is_some_and(|view_name| view_name == "mail");
+        self.update_folder_sort_order_action(is_mail_view);
+    }
+
+    fn update_mail_undelete_action(&self, mail_view_enabled: bool) {
+        let enabled = mail_view_enabled
+            && self
+                .mail_page()
+                .is_some_and(|mail_page| mail_page.can_undelete());
+        if let Some(action) = self
+            .lookup_action("undelete")
+            .and_then(|action| action.downcast::<gio::SimpleAction>().ok())
+        {
+            action.set_enabled(enabled);
+        }
+    }
+
+    pub(crate) fn update_mail_undelete_action_for_current_view(&self) {
+        let is_mail_view = self
+            .imp()
+            .view_stack
+            .borrow()
+            .as_ref()
+            .and_then(|view_stack| view_stack.visible_child_name())
+            .is_some_and(|view_name| view_name == "mail");
+        self.update_mail_undelete_action(is_mail_view);
     }
 
     fn update_mail_navigation_actions(&self, mail_view_enabled: bool) {
@@ -1431,14 +1546,27 @@ impl EvolutionWindow {
     }
 
     fn set_message_actions_enabled(&self, enabled: bool) {
+        let enabled = enabled
+            && self
+                .mail_page()
+                .is_some_and(|mail_page| mail_page.has_selected_message());
         const MESSAGE_ACTIONS: &[&str] = &[
             "reply",
             "reply-all",
+            "reply-list",
+            "reply-alternative",
             "forward",
+            "forward-inline",
+            "forward-quoted",
+            "forward-attached",
             "export",
             "mail-print",
             "mail-print-preview",
             "view-message-source",
+            "copy-message-link",
+            "goto-containing-folder",
+            "add-sender-contact",
+            "edit-as-new",
             "find-in-message",
             "delete",
             "mark-unread",
@@ -1460,6 +1588,50 @@ impl EvolutionWindow {
             {
                 action.set_enabled(enabled);
             }
+        }
+        if let Some(action) = self
+            .lookup_action("reply-list")
+            .and_then(|action| action.downcast::<gio::SimpleAction>().ok())
+        {
+            action.set_enabled(
+                enabled
+                    && self
+                        .mail_page()
+                        .is_some_and(|mail_page| mail_page.can_reply_list()),
+            );
+        }
+        if let Some(action) = self
+            .lookup_action("copy-message-link")
+            .and_then(|action| action.downcast::<gio::SimpleAction>().ok())
+        {
+            action.set_enabled(
+                enabled
+                    && self
+                        .mail_page()
+                        .is_some_and(|mail_page| mail_page.can_copy_message_link()),
+            );
+        }
+        if let Some(action) = self
+            .lookup_action("goto-containing-folder")
+            .and_then(|action| action.downcast::<gio::SimpleAction>().ok())
+        {
+            action.set_enabled(
+                enabled
+                    && self
+                        .mail_page()
+                        .is_some_and(|mail_page| mail_page.can_goto_containing_folder()),
+            );
+        }
+        if let Some(action) = self
+            .lookup_action("add-sender-contact")
+            .and_then(|action| action.downcast::<gio::SimpleAction>().ok())
+        {
+            action.set_enabled(
+                enabled
+                    && self
+                        .mail_page()
+                        .is_some_and(|mail_page| mail_page.can_add_selected_sender()),
+            );
         }
         let print_enabled = enabled
             && self
@@ -1498,6 +1670,17 @@ impl EvolutionWindow {
                         .is_some_and(|mail_page| mail_page.print_cancel_enabled()),
             );
         }
+    }
+
+    pub(crate) fn update_message_actions_for_current_view(&self) {
+        let is_mail_view = self
+            .imp()
+            .view_stack
+            .borrow()
+            .as_ref()
+            .and_then(|view_stack| view_stack.visible_child_name())
+            .is_some_and(|view_name| view_name == "mail");
+        self.set_message_actions_enabled(is_mail_view);
     }
 
     pub(crate) fn update_mail_print_actions(&self) {
@@ -1920,6 +2103,7 @@ impl EvolutionWindow {
         let edit_menu = gio::Menu::new();
         edit_menu.append(Some("Rückgängig"), Some("win.undo"));
         edit_menu.append(Some("Wiederholen"), Some("win.redo"));
+        edit_menu.append(Some("Löschen rückgängig machen"), Some("win.undelete"));
         edit_menu.append(Some("E-Mail suchen"), Some("win.search"));
         edit_menu.append(
             Some("In angezeigter Nachricht suchen…"),
@@ -1988,6 +2172,10 @@ impl EvolutionWindow {
             Some("win.toggle-mail-threading"),
         );
         view_menu.append(
+            Some("Gelöschte Nachrichten anzeigen"),
+            Some("win.toggle-mail-show-deleted"),
+        );
+        view_menu.append(
             Some("Vorschautext in Nachrichtenzeilen ein-/ausblenden"),
             Some("win.toggle-mail-preview-text"),
         );
@@ -2020,18 +2208,9 @@ impl EvolutionWindow {
         density_menu.append(Some("Standard"), Some("win.mail-density-normal"));
         density_menu.append(Some("Geräumig"), Some("win.mail-density-spacious"));
         view_menu.append_submenu(Some("Nachrichtendichte"), &density_menu);
-        view_menu.append(
-            Some("Schrift vergrößern"),
-            Some("win.zoom-in"),
-        );
-        view_menu.append(
-            Some("Schrift verkleinern"),
-            Some("win.zoom-out"),
-        );
-        view_menu.append(
-            Some("Normale Schriftgröße"),
-            Some("win.zoom-reset"),
-        );
+        view_menu.append(Some("Schrift vergrößern"), Some("win.zoom-in"));
+        view_menu.append(Some("Schrift verkleinern"), Some("win.zoom-out"));
+        view_menu.append(Some("Normale Schriftgröße"), Some("win.zoom-reset"));
         view_menu.append(
             Some("Alle Unterhaltungen aufklappen"),
             Some("win.expand-all-threads"),
@@ -2055,13 +2234,39 @@ impl EvolutionWindow {
             Some("Vorherige ungelesene Nachricht"),
             Some("win.mail-prev-unread"),
         );
+        goto_menu.append(
+            Some("Enthaltender Ordner"),
+            Some("win.goto-containing-folder"),
+        );
         message_menu.append_submenu(Some("Gehe zu"), &goto_menu);
         message_menu.append(Some("Antworten"), Some("win.reply"));
         message_menu.append(Some("Allen antworten"), Some("win.reply-all"));
-        message_menu.append(Some("Weiterleiten"), Some("win.forward"));
+        message_menu.append(Some("An Liste antworten"), Some("win.reply-list"));
+        message_menu.append(Some("Alternativ antworten…"), Some("win.reply-alternative"));
+        let forward_menu = gio::Menu::new();
+        forward_menu.append(Some("Weiterleiten"), Some("win.forward"));
+        forward_menu.append(Some("Inline weiterleiten"), Some("win.forward-inline"));
+        forward_menu.append(Some("Zitiert weiterleiten"), Some("win.forward-quoted"));
+        forward_menu.append(
+            Some("Als Anhang weiterleiten"),
+            Some("win.forward-attached"),
+        );
+        message_menu.append_submenu(Some("Weiterleiten"), &forward_menu);
         message_menu.append(Some("Als EML speichern..."), Some("win.export"));
         message_menu.append(Some("Drucken…"), Some("win.mail-print"));
         message_menu.append(Some("Druckvorschau…"), Some("win.mail-print-preview"));
+        message_menu.append(
+            Some("Nachrichtenlink kopieren"),
+            Some("win.copy-message-link"),
+        );
+        message_menu.append(
+            Some("Absender zum Adressbuch hinzufügen"),
+            Some("win.add-sender-contact"),
+        );
+        message_menu.append(
+            Some("Als neue Nachricht bearbeiten…"),
+            Some("win.edit-as-new"),
+        );
         message_menu.append(
             Some("Alle sichtbaren Nachrichten auswählen"),
             Some("win.select-all-mail"),
@@ -2072,10 +2277,7 @@ impl EvolutionWindow {
             Some("Unterhaltung als gelesen markieren"),
             Some("win.mark-thread-read"),
         );
-        message_menu.append(
-            Some("Unterhaltung löschen"),
-            Some("win.delete-thread"),
-        );
+        message_menu.append(Some("Unterhaltung löschen"), Some("win.delete-thread"));
         message_menu.append(Some("Markierung umschalten"), Some("win.toggle-flag"));
         message_menu.append(
             Some("Wichtigkeitsmarkierung umschalten"),
@@ -2092,6 +2294,7 @@ impl EvolutionWindow {
         message_menu.append(Some("Als Spam markieren"), Some("win.mark-junk"));
         message_menu.append(Some("Als Nicht-Spam markieren"), Some("win.mark-not-junk"));
         message_menu.append(Some("Löschen"), Some("win.delete"));
+        message_menu.append(Some("Löschen rückgängig machen"), Some("win.undelete"));
         menu.append_submenu(Some("Nachricht"), &message_menu);
 
         // ─── 5. Ordner (Folder) ────────────────────────────────────────────
@@ -2099,6 +2302,7 @@ impl EvolutionWindow {
         folder_menu.append(Some("Neuer Ordner..."), Some("win.new-folder"));
         folder_menu.append(Some("Ordner umbenennen..."), Some("win.rename-folder"));
         folder_menu.append(Some("Ordner löschen..."), Some("win.delete-folder"));
+        folder_menu.append(Some("Ordner aktualisieren"), Some("win.refresh-folder"));
         folder_menu.append(
             Some("Alle als gelesen markieren"),
             Some("win.mark-all-read"),
@@ -2114,6 +2318,10 @@ impl EvolutionWindow {
         folder_menu.append(
             Some("Abonnements verwalten..."),
             Some("win.folder-subscriptions"),
+        );
+        folder_menu.append(
+            Some("Sortierreihenfolge bearbeiten..."),
+            Some("win.folder-edit-sort-order"),
         );
         folder_menu.append(
             Some("Eigenschaften des Ordners..."),
@@ -2255,6 +2463,12 @@ impl EvolutionWindow {
             AppSettings::set_mail_threading,
         );
         self.add_boolean_setting_action(
+            "toggle-mail-show-deleted",
+            "mail-show-deleted",
+            AppSettings::mail_show_deleted,
+            AppSettings::set_mail_show_deleted,
+        );
+        self.add_boolean_setting_action(
             "toggle-mail-preview-text",
             "mail-show-preview-text",
             AppSettings::mail_show_preview_text,
@@ -2387,6 +2601,27 @@ impl EvolutionWindow {
         ));
         self.add_action(&action_undo);
 
+        let action_undelete = gio::SimpleAction::new("undelete", None);
+        action_undelete.connect_activate(glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            move |_, _| {
+                let result = win.mail_page().map(|mail_page| mail_page.undelete());
+                let message = match result {
+                    Some(Ok(true)) => "Wiederherstellung wird ausgeführt".to_string(),
+                    Some(Ok(false)) => "Kein Löschen zum Rückgängigmachen".to_string(),
+                    Some(Err(error)) => {
+                        tracing::warn!(%error, "Mail undelete operation was not applied");
+                        format!("Wiederherstellen nicht möglich: {error}")
+                    }
+                    None => "Mailansicht ist nicht verfügbar".to_string(),
+                };
+                win.add_toast(&adw::Toast::new(&message));
+                win.update_mail_undelete_action_for_current_view();
+            }
+        ));
+        self.add_action(&action_undelete);
+
         let action_redo = gio::SimpleAction::new("redo", None);
         action_redo.connect_activate(glib::clone!(
             #[weak(rename_to = win)]
@@ -2468,6 +2703,36 @@ impl EvolutionWindow {
         ));
         self.add_action(&action_reply_all);
 
+        let action_reply_list = gio::SimpleAction::new("reply-list", None);
+        action_reply_list.connect_activate(glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            move |_, _| {
+                if let Some(mail_page) = win.mail_page() {
+                    if !mail_page.reply_list_selected() {
+                        tracing::debug!("Reply-list action ignored without a list recipient");
+                    }
+                }
+            }
+        ));
+        self.add_action(&action_reply_list);
+
+        let action_reply_alternative = gio::SimpleAction::new("reply-alternative", None);
+        action_reply_alternative.connect_activate(glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            move |_, _| {
+                if let Some(mail_page) = win.mail_page() {
+                    if !mail_page.reply_alternative_selected() {
+                        tracing::debug!(
+                            "Alternative-reply action ignored without a selected message"
+                        );
+                    }
+                }
+            }
+        ));
+        self.add_action(&action_reply_alternative);
+
         let action_forward = gio::SimpleAction::new("forward", None);
         action_forward.connect_activate(glib::clone!(
             #[weak(rename_to = win)]
@@ -2481,6 +2746,116 @@ impl EvolutionWindow {
             }
         ));
         self.add_action(&action_forward);
+
+        let action_forward_inline = gio::SimpleAction::new("forward-inline", None);
+        action_forward_inline.connect_activate(glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            move |_, _| {
+                if let Some(mail_page) = win.mail_page() {
+                    if !mail_page.forward_inline_selected() {
+                        tracing::debug!("Forward-inline action ignored without a selected message");
+                    }
+                }
+            }
+        ));
+        self.add_action(&action_forward_inline);
+
+        let action_forward_quoted = gio::SimpleAction::new("forward-quoted", None);
+        action_forward_quoted.connect_activate(glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            move |_, _| {
+                if let Some(mail_page) = win.mail_page() {
+                    if !mail_page.forward_quoted_selected() {
+                        tracing::debug!("Forward-quoted action ignored without a selected message");
+                    }
+                }
+            }
+        ));
+        self.add_action(&action_forward_quoted);
+
+        let action_forward_attached = gio::SimpleAction::new("forward-attached", None);
+        action_forward_attached.connect_activate(glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            move |_, _| {
+                if let Some(mail_page) = win.mail_page() {
+                    if !mail_page.forward_attached_selected() {
+                        tracing::debug!(
+                            "Forward-attached action ignored without a selected message"
+                        );
+                    }
+                }
+            }
+        ));
+        self.add_action(&action_forward_attached);
+
+        let action_copy_message_link = gio::SimpleAction::new("copy-message-link", None);
+        action_copy_message_link.connect_activate(glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            move |_, _| {
+                let copied = win
+                    .mail_page()
+                    .is_some_and(|mail_page| mail_page.copy_selected_message_link());
+                if !copied {
+                    win.add_toast(&adw::Toast::new(
+                        "Die ausgewählte Nachricht besitzt keine gültige Message-ID",
+                    ));
+                }
+            }
+        ));
+        self.add_action(&action_copy_message_link);
+
+        let action_goto_containing_folder = gio::SimpleAction::new("goto-containing-folder", None);
+        action_goto_containing_folder.connect_activate(glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            move |_, _| {
+                let navigated = win
+                    .mail_page()
+                    .is_some_and(|mail_page| mail_page.goto_selected_message_folder());
+                if !navigated {
+                    win.add_toast(&adw::Toast::new(
+                        "Der Ursprungsordner dieser Nachricht ist nicht verfügbar",
+                    ));
+                }
+            }
+        ));
+        self.add_action(&action_goto_containing_folder);
+
+        let action_add_sender_contact = gio::SimpleAction::new("add-sender-contact", None);
+        action_add_sender_contact.connect_activate(glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            move |_, _| {
+                let presented = win
+                    .mail_page()
+                    .is_some_and(|mail_page| mail_page.present_add_selected_sender());
+                if !presented {
+                    win.add_toast(&adw::Toast::new(
+                        "Die ausgewählte Nachricht besitzt keine gültige Absenderadresse",
+                    ));
+                }
+            }
+        ));
+        self.add_action(&action_add_sender_contact);
+
+        let action_edit_as_new = gio::SimpleAction::new("edit-as-new", None);
+        action_edit_as_new.connect_activate(glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            move |_, _| {
+                let presented = win
+                    .mail_page()
+                    .is_some_and(|mail_page| mail_page.edit_selected_as_new());
+                if !presented {
+                    tracing::debug!("Edit-as-new action could not open a complete composer");
+                }
+            }
+        ));
+        self.add_action(&action_edit_as_new);
 
         let action_export = gio::SimpleAction::new("export", None);
         action_export.connect_activate(glib::clone!(
@@ -2953,7 +3328,7 @@ impl EvolutionWindow {
             self,
             move |_, _| {
                 if let Some(mail_page) = win.mail_page() {
-                    mail_page.present_new_local_folder_dialog();
+                    mail_page.present_new_folder_dialog();
                 } else {
                     win.add_toast(&adw::Toast::new("Mailansicht ist nicht verfügbar"));
                 }
@@ -2989,6 +3364,20 @@ impl EvolutionWindow {
         ));
         self.add_action(&action_delete_folder);
 
+        let action_refresh_folder = gio::SimpleAction::new("refresh-folder", None);
+        action_refresh_folder.connect_activate(glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            move |_, _| {
+                if let Some(mail_page) = win.mail_page() {
+                    mail_page.refresh_selected_folder();
+                } else {
+                    win.add_toast(&adw::Toast::new("Mailansicht ist nicht verfügbar"));
+                }
+            }
+        ));
+        self.add_action(&action_refresh_folder);
+
         let action_mark_all_read = gio::SimpleAction::new("mark-all-read", None);
         action_mark_all_read.connect_activate(glib::clone!(
             #[weak(rename_to = win)]
@@ -2998,13 +3387,19 @@ impl EvolutionWindow {
                     match mail_page.mark_all_read_in_selected_folder() {
                         Ok(count) => {
                             if count > 0 {
-                                win.add_toast(&adw::Toast::new(&format!("{count} Nachricht(en) als gelesen markiert")));
+                                win.add_toast(&adw::Toast::new(&format!(
+                                    "{count} Nachricht(en) als gelesen markiert"
+                                )));
                             } else {
-                                win.add_toast(&adw::Toast::new("Keine ungelesenen Nachrichten im Ordner"));
+                                win.add_toast(&adw::Toast::new(
+                                    "Keine ungelesenen Nachrichten im Ordner",
+                                ));
                             }
                         }
                         Err(error) => {
-                            win.add_toast(&adw::Toast::new(&format!("Fehler beim Markieren: {error}")));
+                            win.add_toast(&adw::Toast::new(&format!(
+                                "Fehler beim Markieren: {error}"
+                            )));
                         }
                     }
                 } else {
@@ -3021,7 +3416,9 @@ impl EvolutionWindow {
             move |_, _| {
                 if let Some(mail_page) = win.mail_page() {
                     if !mail_page.select_next_unread_folder() {
-                        win.add_toast(&adw::Toast::new("Keine weiteren ungelesenen Ordner vorhanden"));
+                        win.add_toast(&adw::Toast::new(
+                            "Keine weiteren ungelesenen Ordner vorhanden",
+                        ));
                     }
                 } else {
                     win.add_toast(&adw::Toast::new("Mailansicht ist nicht verfügbar"));
@@ -3042,6 +3439,7 @@ impl EvolutionWindow {
                 }
             }
         ));
+        action_folder_properties.set_enabled(false);
         self.add_action(&action_folder_properties);
 
         let action_folder_subscriptions = gio::SimpleAction::new("folder-subscriptions", None);
@@ -3056,7 +3454,23 @@ impl EvolutionWindow {
                 }
             }
         ));
+        action_folder_subscriptions.set_enabled(false);
         self.add_action(&action_folder_subscriptions);
+
+        let action_folder_edit_sort_order = gio::SimpleAction::new("folder-edit-sort-order", None);
+        action_folder_edit_sort_order.connect_activate(glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            move |_, _| {
+                if let Some(mail_page) = win.mail_page() {
+                    mail_page.present_folder_sort_order_dialog();
+                } else {
+                    win.add_toast(&adw::Toast::new("Mailansicht ist nicht verfügbar"));
+                }
+            }
+        ));
+        action_folder_edit_sort_order.set_enabled(false);
+        self.add_action(&action_folder_edit_sort_order);
 
         let action_import = gio::SimpleAction::new("import", None);
         action_import.connect_activate(glib::clone!(
@@ -3155,13 +3569,19 @@ impl EvolutionWindow {
                     match mail_page.mark_selected_thread_read() {
                         Ok(count) => {
                             if count > 0 {
-                                win.add_toast(&adw::Toast::new(&format!("{count} Nachricht(en) der Konversation als gelesen markiert")));
+                                win.add_toast(&adw::Toast::new(&format!(
+                                    "{count} Nachricht(en) der Konversation als gelesen markiert"
+                                )));
                             } else {
-                                win.add_toast(&adw::Toast::new("Keine ungelesenen Nachrichten in der Konversation"));
+                                win.add_toast(&adw::Toast::new(
+                                    "Keine ungelesenen Nachrichten in der Konversation",
+                                ));
                             }
                         }
                         Err(error) => {
-                            win.add_toast(&adw::Toast::new(&format!("Fehler beim Markieren der Konversation: {error}")));
+                            win.add_toast(&adw::Toast::new(&format!(
+                                "Fehler beim Markieren der Konversation: {error}"
+                            )));
                         }
                     }
                 }
@@ -3178,11 +3598,15 @@ impl EvolutionWindow {
                     match mail_page.delete_selected_thread() {
                         Ok(count) => {
                             if count > 0 {
-                                win.add_toast(&adw::Toast::new(&format!("{count} Nachricht(en) der Konversation gelöscht")));
+                                win.add_toast(&adw::Toast::new(&format!(
+                                    "{count} Nachricht(en) der Konversation gelöscht"
+                                )));
                             }
                         }
                         Err(error) => {
-                            win.add_toast(&adw::Toast::new(&format!("Fehler beim Löschen der Konversation: {error}")));
+                            win.add_toast(&adw::Toast::new(&format!(
+                                "Fehler beim Löschen der Konversation: {error}"
+                            )));
                         }
                     }
                 }
@@ -3329,7 +3753,7 @@ impl EvolutionWindow {
 
         if let Some(mail_page) = self.mail_page() {
             let window = self.downgrade();
-            mail_page.connect_selected_message_notify(move |has_selection| {
+            mail_page.connect_selected_message_notify(move |_has_selection| {
                 if let Some(window) = window.upgrade() {
                     let is_mail_view = window
                         .imp()
@@ -3340,6 +3764,7 @@ impl EvolutionWindow {
                         .is_some_and(|view_name| view_name == "mail");
                     window.set_message_actions_enabled(is_mail_view);
                     window.update_mail_navigation_actions(is_mail_view);
+                    window.update_mail_undelete_action(is_mail_view);
                 }
             });
         }
@@ -3739,5 +4164,48 @@ mod tests {
         assert!(production.contains("SearchTarget::Task"));
         assert!(production.contains("SearchTarget::Memo"));
         assert!(production.contains("SearchTarget::Contact"));
+    }
+
+    #[test]
+    fn undelete_recovery_is_exposed_without_aliasing_generic_undo() {
+        let source = include_str!("window.rs");
+        assert!(source.contains(
+            "edit_menu.append(Some(\"Löschen rückgängig machen\"), Some(\"win.undelete\"));"
+        ));
+        assert!(source.contains(
+            "message_menu.append(Some(\"Löschen rückgängig machen\"), Some(\"win.undelete\"));"
+        ));
+        assert!(
+            source.contains("let action_undelete = gio::SimpleAction::new(\"undelete\", None);")
+        );
+        assert!(source.contains("mail_page.undelete()"));
+        assert!(source.contains("mail_page.can_undelete()"));
+        assert!(source.contains("win.toggle-mail-show-deleted"));
+        assert!(source.contains("mail-show-deleted"));
+    }
+
+    #[test]
+    fn folder_sort_order_action_is_in_the_folder_menu_and_uses_page_sensitivity() {
+        let source = include_str!("window.rs");
+        assert!(source.contains("Some(\"win.folder-edit-sort-order\")"));
+        assert!(source.contains(
+            "let action_folder_edit_sort_order = gio::SimpleAction::new(\"folder-edit-sort-order\", None);"
+        ));
+        assert!(source.contains("mail_page.can_edit_folder_sort_order()"));
+        assert!(source.contains("mail_page.present_folder_sort_order_dialog()"));
+    }
+
+    #[test]
+    fn folder_properties_and_native_subscriptions_are_independently_gated() {
+        let source = include_str!("window.rs");
+        assert!(source.contains("mail_page.can_present_folder_properties()"));
+        assert!(
+            source.contains(
+                "root.set_folder_properties_action_enabled(target_has_properties_snapshot)"
+            )
+        );
+        assert!(source.contains("action_folder_subscriptions.set_enabled(false)"));
+        assert!(source.contains("mail_page.can_present_folder_subscriptions()"));
+        assert!(source.contains("mail_page.present_folder_subscriptions_dialog()"));
     }
 }

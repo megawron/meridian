@@ -12,7 +12,7 @@ use gtk::gio;
 use gtk::gio::prelude::*;
 use gtk::glib;
 use gtk::glib::prelude::{StaticVariantType, ToVariant};
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 
 use super::memo_filter_service::{
     MemoCategoryFilter, MemoSearchMode, validate_category_name, validate_source_filter,
@@ -29,6 +29,18 @@ fn normalized_mail_sort_field(value: &str) -> &str {
         "subject" | "sender" | "date" | "unread" | "flagged" | "important" | "attachments" => value,
         _ => "date",
     }
+}
+
+fn normalize_mail_folder_sort_order(value: &str) -> Result<String, String> {
+    let order = serde_json::from_str::<BTreeMap<String, u32>>(value)
+        .map_err(|_| "ungültige Ordnersortierung".to_string())?;
+    if order
+        .iter()
+        .any(|(folder_id, rank)| folder_id.trim().is_empty() || *rank == 0)
+    {
+        return Err("ungültige Ordnersortierung".to_string());
+    }
+    serde_json::to_string(&order).map_err(|_| "ungültige Ordnersortierung".to_string())
 }
 
 fn normalized_task_filter(value: &str) -> &str {
@@ -1061,6 +1073,31 @@ impl AppSettings {
         self.set_boolean("mail-threading", value);
     }
 
+    /// Persisted explicit folder ordinals.  The sidebar validates and applies
+    /// this portable JSON map because only it knows which folder identities
+    /// are currently loaded and which ones are siblings.
+    pub fn mail_folder_sort_order(&self) -> String {
+        self.settings.string("mail-folder-sort-order").to_string()
+    }
+
+    pub fn set_mail_folder_sort_order(&self, value: &str) {
+        let Ok(value) = normalize_mail_folder_sort_order(value) else {
+            tracing::warn!("Could not persist invalid folder sort order");
+            return;
+        };
+        if let Err(error) = self.settings.set_string("mail-folder-sort-order", &value) {
+            tracing::warn!(%error, "Could not persist folder sort order");
+        }
+    }
+
+    pub fn mail_show_deleted(&self) -> bool {
+        self.settings.boolean("mail-show-deleted")
+    }
+
+    pub fn set_mail_show_deleted(&self, value: bool) {
+        self.set_boolean("mail-show-deleted", value);
+    }
+
     pub fn mail_show_avatar(&self) -> bool {
         self.settings.boolean("mail-show-avatar")
     }
@@ -1117,6 +1154,30 @@ impl AppSettings {
         self.set_boolean("mail-show-labels", value);
     }
 
+    pub fn mail_show_size(&self) -> bool {
+        self.settings.boolean("mail-show-size")
+    }
+
+    pub fn set_mail_show_size(&self, value: bool) {
+        self.set_boolean("mail-show-size", value);
+    }
+
+    pub fn mail_show_follow_up_due(&self) -> bool {
+        self.settings.boolean("mail-show-follow-up-due")
+    }
+
+    pub fn set_mail_show_follow_up_due(&self, value: bool) {
+        self.set_boolean("mail-show-follow-up-due", value);
+    }
+
+    pub fn mail_show_location(&self) -> bool {
+        self.settings.boolean("mail-show-location")
+    }
+
+    pub fn set_mail_show_location(&self, value: bool) {
+        self.set_boolean("mail-show-location", value);
+    }
+
     pub fn mail_sender_column_width(&self) -> i32 {
         self.settings.int("mail-sender-column-width").clamp(80, 360)
     }
@@ -1127,11 +1188,7 @@ impl AppSettings {
 
     pub fn mail_date_column_width(&self) -> i32 {
         let val = self.settings.int("mail-date-column-width");
-        if val <= 0 {
-            130
-        } else {
-            val.clamp(60, 300)
-        }
+        if val <= 0 { 130 } else { val.clamp(60, 300) }
     }
 
     pub fn set_mail_date_column_width(&self, value: i32) {
@@ -1478,6 +1535,11 @@ impl AppSettings {
                 self.set_mail_show_preview_text(parse_migrated_bool(key, value)?);
             }
             "mail-show-labels" => self.set_mail_show_labels(parse_migrated_bool(key, value)?),
+            "mail-show-size" => self.set_mail_show_size(parse_migrated_bool(key, value)?),
+            "mail-show-follow-up-due" => {
+                self.set_mail_show_follow_up_due(parse_migrated_bool(key, value)?);
+            }
+            "mail-show-location" => self.set_mail_show_location(parse_migrated_bool(key, value)?),
             "mail-sender-column-width" => {
                 let value = parse_migrated_i32_in_range(key, value, 80, 360)?;
                 self.set_mail_sender_column_width(value);
@@ -1535,6 +1597,11 @@ impl AppSettings {
                 self.set_mail_sort_descending(parse_migrated_bool(key, value)?);
             }
             "mail-threading" => self.set_mail_threading(parse_migrated_bool(key, value)?),
+            "mail-folder-sort-order" => {
+                let value = normalize_mail_folder_sort_order(value)?;
+                self.set_mail_folder_sort_order(&value);
+            }
+            "mail-show-deleted" => self.set_mail_show_deleted(parse_migrated_bool(key, value)?),
             "task-filter" => self.set_task_filter(value),
             "task-category-filter" => self.set_task_category_filter(value),
             "task-search-mode" => self.set_task_search_mode(value),
@@ -1645,6 +1712,9 @@ impl AppSettings {
             "mail-show-attachment",
             "mail-show-preview-text",
             "mail-show-labels",
+            "mail-show-size",
+            "mail-show-follow-up-due",
+            "mail-show-location",
             "mail-sender-column-width",
             "color-scheme",
             "sign-new-messages",
@@ -1667,6 +1737,8 @@ impl AppSettings {
             "mail-sort-field",
             "mail-sort-descending",
             "mail-threading",
+            "mail-folder-sort-order",
+            "mail-show-deleted",
             "task-filter",
             "task-category-filter",
             "task-search-mode",
@@ -1885,6 +1957,35 @@ mod tests {
     }
 
     #[test]
+    fn mail_folder_sort_order_round_trips_as_portable_text() {
+        let backend = gio::memory_settings_backend_new();
+        let settings = settings_with_backend(&backend);
+        assert_eq!(settings.mail_folder_sort_order(), "{}");
+        settings.set_mail_folder_sort_order(r#"{"account\u0000Inbox":1}"#);
+        assert_eq!(
+            settings_with_backend(&backend).mail_folder_sort_order(),
+            r#"{"account\u0000Inbox":1}"#
+        );
+        settings_with_backend(&backend)
+            .apply_migrated_setting("mail-folder-sort-order", r#"{"custom:Projects":2}"#)
+            .expect("valid folder order should migrate");
+        assert_eq!(
+            settings_with_backend(&backend).mail_folder_sort_order(),
+            r#"{"custom:Projects":2}"#
+        );
+        assert!(
+            settings_with_backend(&backend)
+                .apply_migrated_setting("mail-folder-sort-order", "not-json")
+                .is_err()
+        );
+        settings_with_backend(&backend).reset_to_defaults();
+        assert_eq!(
+            settings_with_backend(&backend).mail_folder_sort_order(),
+            "{}"
+        );
+    }
+
+    #[test]
     fn mail_sync_message_limit_is_bounded_for_safe_page_sizes() {
         assert_eq!(clamp_mail_sync_message_limit(0), 25);
         assert_eq!(clamp_mail_sync_message_limit(100), 100);
@@ -2003,8 +2104,38 @@ mod tests {
 
         assert!(!settings.mail_show_security_details());
         assert!(!settings.mail_show_all_headers());
+        assert!(!settings.mail_show_deleted());
         assert!(settings.mail_show_statusbar());
         assert_eq!(settings.mail_font_size(), 16);
+    }
+
+    #[test]
+    fn mail_list_metadata_column_settings_migrate_and_reset() {
+        let backend = gio::memory_settings_backend_new();
+        let settings = settings_with_backend(&backend);
+
+        assert!(!settings.mail_show_size());
+        assert!(!settings.mail_show_follow_up_due());
+        assert!(!settings.mail_show_location());
+
+        for key in [
+            "mail-show-size",
+            "mail-show-follow-up-due",
+            "mail-show-location",
+        ] {
+            settings
+                .apply_migrated_setting(key, "true")
+                .expect("metadata column setting should migrate");
+        }
+        assert!(settings.mail_show_size());
+        assert!(settings.mail_show_follow_up_due());
+        assert!(settings.mail_show_location());
+
+        settings.reset_to_defaults();
+        let reset = settings_with_backend(&backend);
+        assert!(!reset.mail_show_size());
+        assert!(!reset.mail_show_follow_up_due());
+        assert!(!reset.mail_show_location());
     }
 
     #[test]
@@ -2013,22 +2144,26 @@ mod tests {
         let settings = settings_with_backend(&backend);
         settings.set_mail_show_security_details(true);
         settings.set_mail_show_all_headers(true);
+        settings.set_mail_show_deleted(true);
         settings.set_mail_show_statusbar(false);
         settings.set_mail_font_size(23);
 
         let reloaded = settings_with_backend(&backend);
         assert!(reloaded.mail_show_security_details());
         assert!(reloaded.mail_show_all_headers());
+        assert!(reloaded.mail_show_deleted());
         assert!(!reloaded.mail_show_statusbar());
         assert_eq!(reloaded.mail_font_size(), 23);
 
         reloaded.set_mail_show_security_details(false);
         reloaded.set_mail_show_all_headers(false);
+        reloaded.set_mail_show_deleted(false);
         reloaded.set_mail_show_statusbar(true);
         reloaded.set_mail_font_size(11);
         let updated = settings_with_backend(&backend);
         assert!(!updated.mail_show_security_details());
         assert!(!updated.mail_show_all_headers());
+        assert!(!updated.mail_show_deleted());
         assert!(updated.mail_show_statusbar());
         assert_eq!(updated.mail_font_size(), 11);
 
@@ -2036,6 +2171,7 @@ mod tests {
         let reset = settings_with_backend(&backend);
         assert!(!reset.mail_show_security_details());
         assert!(!reset.mail_show_all_headers());
+        assert!(!reset.mail_show_deleted());
         assert!(reset.mail_show_statusbar());
         assert_eq!(reset.mail_font_size(), 16);
     }

@@ -18,9 +18,12 @@ use gtk::glib::prelude::{StaticVariantType, ToVariant};
 use std::cell::{Cell, RefCell};
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::services::AppSettings;
-use crate::services::account_config_service::{AccountConfigStore, AccountProfile};
+use crate::services::account_config_service::{
+    AccountConfigStore, AccountProfile, reconciled_local_default_account,
+};
 use crate::services::camel_mail_service;
 use crate::services::contact_store_service::ContactStoreService;
 use crate::services::crypto_service::SmimeOptions;
@@ -31,9 +34,13 @@ use crate::services::eds_service::{self, EdsSourceKind, EdsSourceOrigin};
 use crate::services::exchange_service::{GalContact, graph_service_for_source};
 use crate::services::html_sanitizer::sanitize_html;
 use crate::services::mail_composer_service::{self, CancellationToken, OutgoingMessage};
+use crate::services::mail_print_service::{
+    self, MailPrintAction, MailPrintAttachment, MailPrintJobState, MailPrintSnapshot,
+};
 use crate::services::signature_store_service::SignatureStore;
 use crate::services::snippet_store_service::{MailSnippet, SnippetStore};
 use crate::services::template_store_service::{MailTemplate, TemplateStore};
+use crate::views::MailViewer;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct RecipientSuggestion {
@@ -91,14 +98,6 @@ enum EmlWorkerEvent {
     Finished(Result<(), String>),
 }
 
-/// The print package owns the actual portal/preview implementation. The
-/// composer deliberately exposes no print button until that package provides
-/// the capability; this hook documents the hand-off without adding a dead UI
-/// control or duplicating window-level print actions.
-#[allow(dead_code)]
-pub(crate) const COMPOSER_PRINT_CAPABILITY_HOOK: &str =
-    "print-package: compose RFC822 snapshot; no composer print control yet";
-
 const COMPOSER_ACTION_SHORTCUTS: &[(&str, &str)] = &[
     ("send", "<Control>Return"),
     ("save-draft", "<Control>s"),
@@ -107,12 +106,15 @@ const COMPOSER_ACTION_SHORTCUTS: &[(&str, &str)] = &[
     ("close", "Escape"),
     ("new-message", "<Control>n"),
     ("attach", "<Control>m"),
+    ("print", "<Control>p"),
 ];
 
 const COMPOSER_OPERATION_ACTIONS: &[&str] = &[
     "send",
     "save-draft",
     "save-as-eml",
+    "print",
+    "print-preview",
     "close",
     "new-message",
     "attach",
@@ -178,6 +180,12 @@ mod imp {
         pub operation_row: RefCell<Option<gtk::Box>>,
         pub operation_spinner: RefCell<Option<gtk::Spinner>>,
         pub operation_status: RefCell<Option<gtk::Label>>,
+        pub print_preview_window: RefCell<Option<gtk::Window>>,
+        pub print_viewer: RefCell<Option<MailViewer>>,
+        pub print_cancellation: RefCell<Option<Arc<AtomicBool>>>,
+        pub print_generation: Cell<u64>,
+        pub print_state: Cell<MailPrintJobState>,
+        pub print_message_key: RefCell<String>,
         pub settings: RefCell<Option<AppSettings>>,
     }
 
@@ -201,6 +209,7 @@ mod imp {
             if let Some(cancel) = self.operation_cancel.borrow_mut().take() {
                 let _ = cancel.request_cancel();
             }
+            self.obj().shutdown_print();
         }
     }
 
@@ -253,6 +262,28 @@ impl ComposeDialog {
         subject: &str,
         original_html: &str,
     ) -> Self {
+        Self::reply_to_message_with_style(
+            sender,
+            reply_to,
+            "",
+            "",
+            "",
+            subject,
+            original_html,
+            "default",
+        )
+    }
+
+    pub fn reply_to_message_with_style(
+        sender: &str,
+        reply_to: &str,
+        original_to: &str,
+        original_cc: &str,
+        date: &str,
+        subject: &str,
+        original_html: &str,
+        style: &str,
+    ) -> Self {
         let dialog = Self::new();
         dialog.set_title(Some(&format!("Antworten: {subject}")));
         let recipient = if reply_to.trim().is_empty() {
@@ -267,7 +298,14 @@ impl ComposeDialog {
             entry.set_text(&reply_subject(subject));
         }
         if let Some(editor) = dialog.imp().html_editor.borrow().as_ref() {
-            editor.set_html(&reply_body_html(sender, original_html));
+            editor.set_html(&reply_body_html_with_style(
+                sender,
+                original_to,
+                original_cc,
+                date,
+                original_html,
+                style,
+            ));
         }
         dialog
     }
@@ -285,18 +323,174 @@ impl ComposeDialog {
         date: &str,
         original_html: &str,
     ) -> Self {
+        Self::forward_message_with_style(
+            subject,
+            sender,
+            recipient_to,
+            recipient_cc,
+            date,
+            original_html,
+            default_quote_style(),
+        )
+    }
+
+    pub fn forward_inline_message(
+        subject: &str,
+        sender: &str,
+        recipient_to: &str,
+        recipient_cc: &str,
+        date: &str,
+        original_html: &str,
+    ) -> Self {
+        Self::forward_message_with_style(
+            subject,
+            sender,
+            recipient_to,
+            recipient_cc,
+            date,
+            original_html,
+            "inline",
+        )
+    }
+
+    pub fn forward_quoted_message(
+        subject: &str,
+        sender: &str,
+        recipient_to: &str,
+        recipient_cc: &str,
+        date: &str,
+        original_html: &str,
+    ) -> Self {
+        Self::forward_message_with_style(
+            subject,
+            sender,
+            recipient_to,
+            recipient_cc,
+            date,
+            original_html,
+            "prefix",
+        )
+    }
+
+    pub fn forward_attached_message(
+        subject: &str,
+        filename: &str,
+        raw_message: &[u8],
+    ) -> Result<Self, String> {
+        let attachment = mail_composer_service::embedded_draft_attachment(
+            filename,
+            "message/rfc822",
+            raw_message,
+        )?;
         let dialog = Self::new();
         dialog.set_title(Some(&format!("Weiterleiten: {subject}")));
         if let Some(entry) = dialog.imp().entry_subject.borrow().as_ref() {
             entry.set_text(&forward_subject(subject));
         }
         if let Some(editor) = dialog.imp().html_editor.borrow().as_ref() {
-            editor.set_html(&forward_body_html(
+            editor.set_html(&signature_prefix_html());
+        }
+        dialog.add_attachment(attachment);
+        Ok(dialog)
+    }
+
+    pub fn edit_as_new_message(
+        recipient_to: &str,
+        recipient_cc: &str,
+        recipient_bcc: &str,
+        subject: &str,
+        html_body: &str,
+        attachments: Vec<DraftAttachment>,
+    ) -> Self {
+        let dialog = Self::new();
+        dialog.set_title(Some(&format!("Als neue Nachricht bearbeiten: {subject}")));
+        if let Some(entry) = dialog.imp().entry_to.borrow().as_ref() {
+            entry.set_text(recipient_to);
+        }
+        if let Some(entry) = dialog.imp().entry_cc.borrow().as_ref() {
+            entry.set_text(recipient_cc);
+        }
+        if let Some(entry) = dialog.imp().entry_bcc.borrow().as_ref() {
+            entry.set_text(recipient_bcc);
+        }
+        if let Some(entry) = dialog.imp().entry_subject.borrow().as_ref() {
+            entry.set_text(subject);
+        }
+        if let Some(editor) = dialog.imp().html_editor.borrow().as_ref() {
+            editor.set_html(&sanitize_html(html_body));
+        }
+        for attachment in attachments {
+            dialog.add_attachment(attachment);
+        }
+        dialog
+    }
+
+    pub fn reply_to_attached_message(
+        sender: &str,
+        reply_to: &str,
+        subject: &str,
+        filename: &str,
+        raw_message: &[u8],
+    ) -> Result<Self, String> {
+        let dialog =
+            Self::reply_to_message_with_style(sender, reply_to, "", "", "", subject, "", "none");
+        dialog.add_attachment(mail_composer_service::embedded_draft_attachment(
+            filename,
+            "message/rfc822",
+            raw_message,
+        )?);
+        Ok(dialog)
+    }
+
+    pub fn reply_all_attached_message(
+        sender: &str,
+        reply_to: &str,
+        original_to: &str,
+        original_cc: &str,
+        subject: &str,
+        filename: &str,
+        raw_message: &[u8],
+    ) -> Result<Self, String> {
+        let dialog = Self::reply_all_message_with_style(
+            sender,
+            reply_to,
+            original_to,
+            original_cc,
+            "",
+            subject,
+            "",
+            "none",
+        );
+        dialog.add_attachment(mail_composer_service::embedded_draft_attachment(
+            filename,
+            "message/rfc822",
+            raw_message,
+        )?);
+        Ok(dialog)
+    }
+
+    fn forward_message_with_style(
+        subject: &str,
+        sender: &str,
+        recipient_to: &str,
+        recipient_cc: &str,
+        date: &str,
+        original_html: &str,
+        quote_style: &str,
+    ) -> Self {
+        let dialog = Self::new();
+        dialog.set_title(Some(&format!("Weiterleiten: {subject}")));
+        if let Some(entry) = dialog.imp().entry_subject.borrow().as_ref() {
+            entry.set_text(&forward_subject(subject));
+        }
+        if let Some(editor) = dialog.imp().html_editor.borrow().as_ref() {
+            editor.set_html(&forward_body_html_with_style(
                 sender,
                 recipient_to,
                 recipient_cc,
                 date,
                 original_html,
+                quote_style,
             ));
         }
         dialog
@@ -313,7 +507,38 @@ impl ComposeDialog {
         subject: &str,
         original_html: &str,
     ) -> Self {
-        let dialog = Self::reply_to_message(sender, reply_to, subject, original_html);
+        Self::reply_all_message_with_style(
+            sender,
+            reply_to,
+            original_to,
+            original_cc,
+            "",
+            subject,
+            original_html,
+            "default",
+        )
+    }
+
+    pub fn reply_all_message_with_style(
+        sender: &str,
+        reply_to: &str,
+        original_to: &str,
+        original_cc: &str,
+        date: &str,
+        subject: &str,
+        original_html: &str,
+        style: &str,
+    ) -> Self {
+        let dialog = Self::reply_to_message_with_style(
+            sender,
+            reply_to,
+            original_to,
+            original_cc,
+            date,
+            subject,
+            original_html,
+            style,
+        );
         let primary = if reply_to.trim().is_empty() {
             sender.trim()
         } else {
@@ -1629,9 +1854,7 @@ impl ComposeDialog {
             if let Some(dialog) = dialog_for_source_load.upgrade() {
                 let requested_uid = dialog.imp().requested_source_uid.borrow().clone();
                 let requested_from = dialog.imp().requested_from.borrow().clone();
-                let preferred_uid = AppSettings::try_new()
-                    .map(|settings| settings.default_account_id())
-                    .filter(|uid| !uid.trim().is_empty());
+                let preferred_uid = preferred_composer_account_id();
                 let mut source_uids = dialog.imp().source_uids.borrow_mut();
                 source_uids.clear();
                 source_uids.extend(
@@ -2005,6 +2228,23 @@ impl ComposeDialog {
         });
         group.add_action(&action_save_as_eml);
 
+        for (name, print_action) in [
+            ("print", MailPrintAction::Print),
+            ("print-preview", MailPrintAction::Preview),
+        ] {
+            let action = gio::SimpleAction::new(name, None);
+            let dialog = self.downgrade();
+            action.connect_activate(move |_, _| {
+                if let Some(dialog) = dialog.upgrade() {
+                    dialog.start_print(print_action);
+                }
+            });
+            if matches!(print_action, MailPrintAction::Print) && !cfg!(target_os = "linux") {
+                action.set_enabled(false);
+            }
+            group.add_action(&action);
+        }
+
         let action_close = gio::SimpleAction::new("close", None);
         let dialog_for_close = self.downgrade();
         action_close.connect_activate(move |_, _| {
@@ -2100,6 +2340,8 @@ impl ComposeDialog {
         file_menu.append(Some("Senden"), Some("compose.send"));
         file_menu.append(Some("Entwurf speichern"), Some("compose.save-draft"));
         file_menu.append(Some("Als EML speichern…"), Some("compose.save-as-eml"));
+        file_menu.append(Some("Druckvorschau"), Some("compose.print-preview"));
+        file_menu.append(Some("Drucken…"), Some("compose.print"));
         file_menu.append(Some("Neue leere Nachricht"), Some("compose.new-message"));
         file_menu.append(Some("Schließen"), Some("compose.close"));
 
@@ -2202,6 +2444,12 @@ impl ComposeDialog {
             self.show_toast("Automatisches Speichern läuft noch; bitte kurz warten");
             return true;
         }
+        if self.imp().print_state.get().is_running() {
+            self.show_toast(
+                "Der Composer verarbeitet noch einen Druckvorgang; bitte warten oder abbrechen",
+            );
+            return true;
+        }
         if self.imp().close_confirmed.replace(false) {
             return false;
         }
@@ -2302,6 +2550,303 @@ impl ComposeDialog {
             pgp_key: self.pgp_key_for_message(),
             smime_options: self.smime_options_for_message(),
         })
+    }
+
+    fn start_print(&self, action: MailPrintAction) -> bool {
+        if self.imp().operation.get() != ComposeOperation::Idle
+            || self.imp().print_state.get().is_running()
+        {
+            self.show_toast("Ein anderer Composer-Vorgang läuft bereits");
+            return false;
+        }
+        #[cfg(not(target_os = "linux"))]
+        if matches!(action, MailPrintAction::Print) {
+            self.show_toast(MailViewer::native_print_unavailable());
+            return false;
+        }
+        let Some(editor) = self.imp().html_editor.borrow().as_ref().cloned() else {
+            self.show_toast("Drucken nicht möglich: Nachrichtentext ist nicht verfügbar");
+            return false;
+        };
+
+        let generation = next_generation(self.imp().print_generation.get());
+        self.imp().print_generation.set(generation);
+        let cancellation = Arc::new(AtomicBool::new(false));
+        self.imp()
+            .print_cancellation
+            .replace(Some(Arc::clone(&cancellation)));
+        self.set_print_state(
+            MailPrintJobState::Preparing,
+            if action.is_preview() {
+                "Druckvorschau wird vorbereitet…"
+            } else {
+                "Druck wird vorbereitet…"
+            },
+        );
+
+        let dialog = self.downgrade();
+        editor.read_content(move |result| {
+            let Some(dialog) = dialog.upgrade() else {
+                return;
+            };
+            if dialog.imp().print_generation.get() != generation {
+                return;
+            }
+            let content = match result {
+                Ok(content) => content,
+                Err(error) => {
+                    dialog.finish_print_error(
+                        generation,
+                        format!("Nachrichtentext konnte nicht gelesen werden: {error}"),
+                    );
+                    return;
+                }
+            };
+            let outgoing = match dialog.current_outgoing_message(content.body, content.plain_text) {
+                Ok(outgoing) => outgoing,
+                Err(error) => {
+                    dialog.finish_print_error(generation, error);
+                    return;
+                }
+            };
+            let message_key = {
+                let mut key = dialog.imp().print_message_key.borrow_mut();
+                if key.is_empty() {
+                    *key = format!("composer:{}", uuid::Uuid::new_v4());
+                }
+                key.clone()
+            };
+            let snapshot = composer_print_snapshot(&message_key, &outgoing);
+            let (sender, receiver) = async_channel::bounded(1);
+            let worker_cancellation = Arc::clone(&cancellation);
+            let worker = std::thread::Builder::new()
+                .name("composer-print-preparation".to_string())
+                .spawn(move || {
+                    let result =
+                        mail_print_service::prepare_print_document(&snapshot, &worker_cancellation);
+                    if let Err(error) = sender.send_blocking(result) {
+                        tracing::debug!(%error, "Composer print result was dropped");
+                    }
+                });
+            if let Err(error) = worker {
+                drop(receiver);
+                dialog.finish_print_error(
+                    generation,
+                    format!("Druckvorbereitung konnte nicht gestartet werden: {error}"),
+                );
+                return;
+            }
+
+            let dialog = dialog.downgrade();
+            glib::spawn_future_local(async move {
+                let result = receiver.recv().await.unwrap_or_else(|_| {
+                    Err(mail_print_service::MailPrintDocumentError::WorkerDisconnected)
+                });
+                let Some(dialog) = dialog.upgrade() else {
+                    return;
+                };
+                if dialog.imp().print_generation.get() != generation {
+                    return;
+                }
+                match result {
+                    Ok(document) if action.is_preview() => {
+                        dialog.set_print_state(
+                            MailPrintJobState::Previewing,
+                            "Druckvorschau wird geöffnet…",
+                        );
+                        if let Err(error) = dialog.present_print_preview(document) {
+                            dialog.finish_print_error(generation, error);
+                        } else {
+                            dialog.finish_print_state(
+                                generation,
+                                MailPrintJobState::Idle,
+                                "Druckvorschau geöffnet",
+                            );
+                        }
+                    }
+                    Ok(document) => dialog.start_native_print(generation, document),
+                    Err(mail_print_service::MailPrintDocumentError::Cancelled) => {
+                        dialog.finish_print_state(
+                            generation,
+                            MailPrintJobState::Cancelled,
+                            "Druckvorbereitung abgebrochen",
+                        );
+                    }
+                    Err(error) => dialog.finish_print_error(generation, error.to_string()),
+                }
+            });
+        });
+        true
+    }
+
+    fn set_print_state(&self, state: MailPrintJobState, status: &str) {
+        self.imp().print_state.set(state);
+        let running = state.is_running();
+        if let Some(button) = self.imp().send_button.borrow().as_ref() {
+            button.set_sensitive(!running);
+        }
+        if let Some(button) = self.imp().save_draft_button.borrow().as_ref() {
+            button.set_sensitive(!running);
+        }
+        for &action in COMPOSER_OPERATION_ACTIONS {
+            let enabled = !running && (action != "print" || cfg!(target_os = "linux"));
+            self.set_action_enabled(action, enabled);
+        }
+        for control in self.imp().compose_controls.borrow().iter() {
+            control.set_sensitive(!running);
+        }
+        if let Some(row) = self.imp().operation_row.borrow().as_ref() {
+            row.set_visible(running);
+        }
+        if let Some(label) = self.imp().operation_status.borrow().as_ref() {
+            label.set_text(status);
+        }
+        if let Some(spinner) = self.imp().operation_spinner.borrow().as_ref() {
+            spinner.set_visible(running);
+            if running {
+                spinner.start();
+            } else {
+                spinner.stop();
+            }
+        }
+        if let Some(button) = self.imp().cancel_operation_button.borrow().as_ref() {
+            button.set_visible(state.is_cancellable());
+            button.set_sensitive(state.is_cancellable());
+        }
+        if !running && let Some(combo) = self.imp().combo_from.borrow().as_ref() {
+            self.update_sender_dependent_controls(combo.selected());
+        }
+    }
+
+    fn finish_print_state(&self, generation: u64, state: MailPrintJobState, message: &str) {
+        if self.imp().print_generation.get() != generation {
+            return;
+        }
+        self.imp().print_cancellation.borrow_mut().take();
+        self.set_print_state(state, message);
+        self.show_toast(message);
+    }
+
+    fn finish_print_error(&self, generation: u64, error: impl Into<String>) {
+        if self.imp().print_generation.get() != generation {
+            return;
+        }
+        let message = format!("Drucken nicht möglich: {}", error.into());
+        self.finish_print_state(generation, MailPrintJobState::Error, &message);
+    }
+
+    fn cancel_print(&self) -> bool {
+        if !self.imp().print_state.get().is_cancellable() {
+            return false;
+        }
+        if let Some(cancellation) = self.imp().print_cancellation.borrow_mut().take() {
+            cancellation.store(true, Ordering::Release);
+        }
+        self.imp()
+            .print_generation
+            .set(next_generation(self.imp().print_generation.get()));
+        self.set_print_state(
+            MailPrintJobState::Cancelled,
+            "Druckvorbereitung abgebrochen",
+        );
+        self.show_toast("Druckvorbereitung abgebrochen");
+        true
+    }
+
+    fn shutdown_print(&self) {
+        self.imp()
+            .print_generation
+            .set(next_generation(self.imp().print_generation.get()));
+        if let Some(cancellation) = self.imp().print_cancellation.borrow_mut().take() {
+            cancellation.store(true, Ordering::Release);
+        }
+        if let Some(window) = self.imp().print_preview_window.borrow_mut().take() {
+            window.close();
+        }
+        self.imp().print_viewer.borrow_mut().take();
+        self.imp().print_state.set(MailPrintJobState::Cancelled);
+    }
+
+    fn present_print_preview(
+        &self,
+        document: mail_print_service::MailPrintDocument,
+    ) -> Result<(), String> {
+        if let Some(window) = self.imp().print_preview_window.borrow_mut().take() {
+            window.close();
+        }
+        let viewer = MailViewer::new();
+        viewer.load_print_document(&document)?;
+        let window = gtk::Window::builder()
+            .title("Druckvorschau")
+            .default_width(900)
+            .default_height(700)
+            .transient_for(self)
+            .build();
+        let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        content.append(&gtk::HeaderBar::new());
+        content.append(&viewer);
+        window.set_child(Some(&content));
+        let dialog = self.downgrade();
+        window.connect_close_request(move |window| {
+            if let Some(dialog) = dialog.upgrade()
+                && dialog
+                    .imp()
+                    .print_preview_window
+                    .borrow()
+                    .as_ref()
+                    .is_some_and(|current| current == window)
+            {
+                dialog.imp().print_preview_window.borrow_mut().take();
+                dialog.imp().print_viewer.borrow_mut().take();
+            }
+            glib::Propagation::Proceed
+        });
+        self.imp().print_viewer.replace(Some(viewer));
+        self.imp()
+            .print_preview_window
+            .replace(Some(window.clone()));
+        window.present();
+        Ok(())
+    }
+
+    fn start_native_print(&self, generation: u64, document: mail_print_service::MailPrintDocument) {
+        if self.imp().print_generation.get() != generation {
+            return;
+        }
+        self.imp().print_cancellation.borrow_mut().take();
+        self.set_print_state(MailPrintJobState::Printing, "Druckdialog wird geöffnet…");
+        #[cfg(target_os = "linux")]
+        {
+            let viewer = MailViewer::new();
+            self.imp().print_viewer.replace(Some(viewer.clone()));
+            let dialog = self.downgrade();
+            let parent: gtk::Window = self.clone().upcast();
+            viewer.print_document(&document, &parent, move |result| {
+                let Some(dialog) = dialog.upgrade() else {
+                    return;
+                };
+                dialog.imp().print_viewer.borrow_mut().take();
+                match result {
+                    Ok(crate::views::MailPrintDialogResult::Printed) => dialog.finish_print_state(
+                        generation,
+                        MailPrintJobState::Idle,
+                        "Druckauftrag wurde an das System übergeben",
+                    ),
+                    Ok(crate::views::MailPrintDialogResult::Cancelled) => dialog
+                        .finish_print_state(
+                            generation,
+                            MailPrintJobState::Cancelled,
+                            "Druckdialog abgebrochen",
+                        ),
+                    Err(error) => dialog.finish_print_error(generation, error),
+                }
+            });
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = document;
+            self.finish_print_error(generation, MailViewer::native_print_unavailable());
+        }
     }
 
     fn request_read_receipt_for_message(&self) -> bool {
@@ -2690,7 +3235,7 @@ impl ComposeDialog {
         operation: ComposeOperation,
     ) -> Option<(u64, Arc<CancellationToken>)> {
         let imp = self.imp();
-        if !compose_operation_can_start(imp.operation.get()) {
+        if !compose_operation_can_start(imp.operation.get()) || imp.print_state.get().is_running() {
             return None;
         }
         let operation_id = imp.operation_id.get().wrapping_add(1).max(1);
@@ -2762,6 +3307,7 @@ impl ComposeDialog {
     fn request_operation_cancel(&self) {
         let imp = self.imp();
         if imp.operation.get() == ComposeOperation::Idle {
+            self.cancel_print();
             return;
         }
         if imp.transport_started.get()
@@ -2804,7 +3350,7 @@ impl ComposeDialog {
             button.set_sensitive(true);
         }
         for &action in COMPOSER_OPERATION_ACTIONS {
-            self.set_action_enabled(action, true);
+            self.set_action_enabled(action, action != "print" || cfg!(target_os = "linux"));
         }
         for control in imp.compose_controls.borrow().iter() {
             control.set_sensitive(true);
@@ -2927,6 +3473,8 @@ impl ComposeDialog {
             size: std::fs::metadata(path)
                 .map(|metadata| metadata.len())
                 .unwrap_or(0),
+            content_id: None,
+            embedded_content_base64: String::new(),
         };
         self.add_attachment(attachment);
     }
@@ -3036,6 +3584,30 @@ fn local_account_choices() -> Vec<ComposeIdentity> {
         .collect()
 }
 
+fn preferred_composer_account_id() -> Option<String> {
+    let current = AppSettings::try_new()?.default_account_id();
+    if current.trim().is_empty() {
+        return None;
+    }
+    let profiles = AccountConfigStore::default().load();
+    let preferred = reconciled_composer_default_account(&current, &profiles);
+    (!preferred.trim().is_empty()).then_some(preferred)
+}
+
+fn reconciled_composer_default_account(current: &str, profiles: &[AccountProfile]) -> String {
+    if profiles.iter().any(|profile| profile.id == current) {
+        reconciled_local_default_account(current, current, profiles)
+    } else if current.starts_with("account:") {
+        profiles
+            .iter()
+            .find(|profile| profile.enabled)
+            .map(|profile| profile.id.clone())
+            .unwrap_or_default()
+    } else {
+        current.to_string()
+    }
+}
+
 fn compose_identities_for_profile(profile: AccountProfile) -> Vec<ComposeIdentity> {
     let source_uid = profile.id;
     let display_name = profile.display_name.trim().to_string();
@@ -3120,15 +3692,57 @@ fn html_escape(value: &str) -> String {
         .replace('\'', "&#39;")
 }
 
-fn reply_body_html(sender: &str, original_html: &str) -> String {
+fn reply_body_html_with_style(
+    sender: &str,
+    original_to: &str,
+    original_cc: &str,
+    date: &str,
+    original_html: &str,
+    style: &str,
+) -> String {
+    let style = if style == "default" {
+        default_quote_style()
+    } else {
+        style
+    };
+    let prefix = signature_prefix_html();
+    if style == "none" {
+        return prefix;
+    }
+
     let attribution = if sender.trim().is_empty() {
         "der ursprünglichen Nachricht".to_string()
     } else {
         format!("{} schrieb", html_escape(sender.trim()))
     };
     let quoted = quote_as_safe_text(original_html);
-    let quoted = format_quoted_body(&quoted, default_quote_style());
-    let prefix = signature_prefix_html();
+    if style == "inline" {
+        let mut headers = Vec::new();
+        if !sender.trim().is_empty() {
+            headers.push(format!("Von: {}", html_escape(sender.trim())));
+        }
+        if !date.trim().is_empty() {
+            headers.push(format!("Datum: {}", html_escape(date.trim())));
+        }
+        if !original_to.trim().is_empty() {
+            headers.push(format!("An: {}", html_escape(original_to.trim())));
+        }
+        if !original_cc.trim().is_empty() {
+            headers.push(format!("Cc: {}", html_escape(original_cc.trim())));
+        }
+        let header_block = if headers.is_empty() {
+            "Ursprüngliche Nachricht:".to_string()
+        } else {
+            format!("Ursprüngliche Nachricht:<br>{}", headers.join("<br>"))
+        };
+        return if quoted.trim().is_empty() {
+            prefix
+        } else {
+            format!("{prefix}<p>{header_block}</p><pre>{quoted}</pre>")
+        };
+    }
+
+    let quoted = format_quoted_body(&quoted, style);
     if quoted.is_empty() {
         prefix
     } else {
@@ -3136,12 +3750,13 @@ fn reply_body_html(sender: &str, original_html: &str) -> String {
     }
 }
 
-fn forward_body_html(
+fn forward_body_html_with_style(
     sender: &str,
     recipient_to: &str,
     recipient_cc: &str,
     date: &str,
     original_html: &str,
+    quote_style: &str,
 ) -> String {
     let mut headers = Vec::new();
     if !sender.trim().is_empty() {
@@ -3163,7 +3778,13 @@ fn forward_body_html(
         format!("Weitergeleitete Nachricht:<br>{}", headers.join("<br>"))
     };
     let quoted = quote_as_safe_text(original_html);
-    let quoted = format_quoted_body(&quoted, default_quote_style());
+    let quoted = if quote_style == "inline" {
+        (!quoted.trim().is_empty())
+            .then(|| format!("<pre>{quoted}</pre>"))
+            .unwrap_or_default()
+    } else {
+        format_quoted_body(&quoted, quote_style)
+    };
     let prefix = signature_prefix_html();
     if quoted.is_empty() {
         prefix
@@ -3777,6 +4398,47 @@ fn format_size(size: u64) -> String {
     format!("{:.1} GiB", size as f64 / (1024.0 * 1024.0 * 1024.0))
 }
 
+fn next_generation(current: u64) -> u64 {
+    current.wrapping_add(1).max(1)
+}
+
+fn composer_print_snapshot(message_key: &str, message: &OutgoingMessage) -> MailPrintSnapshot {
+    let fallback_text = message
+        .plain_text
+        .then(|| message.html_body.clone())
+        .unwrap_or_default();
+    let html_body = if message.plain_text {
+        format!(
+            "<pre class=\"mail-composer-plain-text\">{}</pre>",
+            html_escape(&message.html_body)
+        )
+    } else {
+        message.html_body.clone()
+    };
+    MailPrintSnapshot {
+        message_key: message_key.to_string(),
+        sender: message.from.clone(),
+        reply_to: message.reply_to.clone(),
+        to: message.to.clone(),
+        cc: message.cc.clone(),
+        bcc: message.bcc.clone(),
+        subject: message.subject.clone(),
+        date: Utc::now().to_rfc2822(),
+        html_body,
+        fallback_text,
+        inline_images: Vec::new(),
+        attachments: message
+            .attachments
+            .iter()
+            .map(|attachment| MailPrintAttachment {
+                filename: attachment.filename.clone(),
+                mime_type: attachment.mime_type.clone(),
+                size_formatted: format_size(attachment.size),
+            })
+            .collect(),
+    }
+}
+
 fn draft_has_user_content(draft: &DraftMessage) -> bool {
     draft.from.trim().chars().next().is_some()
         || draft.source_uid.trim().chars().next().is_some()
@@ -3872,7 +4534,52 @@ mod tests {
                 .count(),
             2
         );
-        assert!(COMPOSER_PRINT_CAPABILITY_HOOK.contains("print-package"));
+        assert!(COMPOSER_OPERATION_ACTIONS.contains(&"print"));
+        assert!(COMPOSER_OPERATION_ACTIONS.contains(&"print-preview"));
+    }
+
+    #[test]
+    fn composer_print_snapshot_preserves_headers_body_and_attachment_metadata() {
+        let message = OutgoingMessage {
+            source_uid: "source".to_string(),
+            from: "Alice <alice@example.test>".to_string(),
+            reply_to: "reply@example.test".to_string(),
+            request_read_receipt: false,
+            to: "bob@example.test".to_string(),
+            cc: "carol@example.test".to_string(),
+            bcc: "archive@example.test".to_string(),
+            subject: "Quarterly <report>".to_string(),
+            html_body: "Hello <team>".to_string(),
+            plain_text: true,
+            priority: false,
+            charset: "UTF-8".to_string(),
+            attachments: vec![DraftAttachment {
+                path: "/tmp/report.pdf".to_string(),
+                filename: "report.pdf".to_string(),
+                mime_type: "application/pdf".to_string(),
+                size: 1024,
+                content_id: None,
+                embedded_content_base64: String::new(),
+            }],
+            calendar_method: None,
+            calendar_component: None,
+            pgp_sign: false,
+            pgp_encrypt: false,
+            pgp_key: String::new(),
+            smime_options: None,
+        };
+
+        let snapshot = composer_print_snapshot("composer:test", &message);
+        assert_eq!(snapshot.message_key, "composer:test");
+        assert_eq!(snapshot.sender, message.from);
+        assert_eq!(snapshot.to, message.to);
+        assert_eq!(snapshot.subject, message.subject);
+        assert!(snapshot.html_body.contains("Hello &lt;team&gt;"));
+        assert_eq!(snapshot.fallback_text, "Hello <team>");
+        assert_eq!(snapshot.attachments.len(), 1);
+        assert_eq!(snapshot.attachments[0].filename, "report.pdf");
+        assert_eq!(snapshot.attachments[0].mime_type, "application/pdf");
+        assert_eq!(snapshot.attachments[0].size_formatted, "1.0 KiB");
     }
 
     #[test]
@@ -4009,6 +4716,68 @@ mod tests {
     }
 
     #[test]
+    fn forward_variants_keep_inline_and_quoted_bodies_distinct() {
+        let inline = forward_body_html_with_style(
+            "Ada <ada@example.test>",
+            "team@example.test",
+            "",
+            "2026-08-24",
+            "<p>Hello<br>World</p>",
+            "inline",
+        );
+        let quoted = forward_body_html_with_style(
+            "Ada <ada@example.test>",
+            "team@example.test",
+            "",
+            "2026-08-24",
+            "<p>Hello<br>World</p>",
+            "prefix",
+        );
+
+        assert!(inline.contains("<pre>Hello\nWorld</pre>"));
+        assert!(!inline.contains("&gt; Hello"));
+        assert!(quoted.contains("&gt; Hello<br>&gt; World"));
+        assert!(inline.contains("Weitergeleitete Nachricht:"));
+        assert!(quoted.contains("Weitergeleitete Nachricht:"));
+    }
+
+    #[test]
+    fn alternative_reply_styles_keep_inline_quote_and_no_quote_distinct() {
+        let inline = reply_body_html_with_style(
+            "Ada <ada@example.test>",
+            "team@example.test",
+            "copy@example.test",
+            "2026-08-24",
+            "<p>Hello<br>World</p>",
+            "inline",
+        );
+        let quoted = reply_body_html_with_style(
+            "Ada <ada@example.test>",
+            "team@example.test",
+            "copy@example.test",
+            "2026-08-24",
+            "<p>Hello<br>World</p>",
+            "prefix",
+        );
+        let no_quote = reply_body_html_with_style(
+            "Ada <ada@example.test>",
+            "team@example.test",
+            "copy@example.test",
+            "2026-08-24",
+            "<p>Hello<br>World</p>",
+            "none",
+        );
+
+        assert!(inline.contains("Ursprüngliche Nachricht:"));
+        assert!(inline.contains("Von: Ada &lt;ada@example.test&gt;"));
+        assert!(inline.contains("<pre>Hello\nWorld</pre>"));
+        assert!(quoted.contains("Ada &lt;ada@example.test&gt; schrieb"));
+        assert!(quoted.contains("&gt; Hello<br>&gt; World"));
+        assert!(!no_quote.contains("Hello"));
+        assert!(!no_quote.contains("Ada"));
+    }
+
+    #[test]
     fn attachment_metadata_uses_safe_fallbacks() {
         assert_eq!(
             mime_type_for_path(Path::new("report.pdf")),
@@ -4046,7 +4815,7 @@ mod tests {
             junk_folder: String::new(),
             enabled: true,
         };
-        let identities = compose_identities_for_profile(profile);
+        let identities = compose_identities_for_profile(profile.clone());
         assert_eq!(identities.len(), 2);
         assert_eq!(identities[0].from, "Person <person@example.org>");
         assert_eq!(identities[1].from, "Person <alias@example.org>");
@@ -4060,6 +4829,27 @@ mod tests {
                 .label
                 .to_ascii_lowercase()
                 .contains("password")
+        );
+
+        let mut disabled = profile.clone();
+        disabled.id = "account:disabled".to_string();
+        disabled.enabled = false;
+        let mut enabled = profile;
+        enabled.id = "account:enabled".to_string();
+        assert_eq!(
+            reconciled_composer_default_account(
+                "account:disabled",
+                &[disabled.clone(), enabled.clone()]
+            ),
+            "account:enabled"
+        );
+        assert_eq!(
+            reconciled_composer_default_account("account:deleted", &[enabled]),
+            "account:enabled"
+        );
+        assert_eq!(
+            reconciled_composer_default_account("external-eds", &[disabled]),
+            "external-eds"
         );
     }
 }

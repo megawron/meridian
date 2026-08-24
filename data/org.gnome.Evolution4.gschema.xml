@@ -221,6 +221,18 @@
       <default>true</default>
       <summary>Show app-owned labels in the mail list</summary>
     </key>
+    <key name="mail-show-size" type="b">
+      <default>false</default>
+      <summary>Show message sizes in the mail list</summary>
+    </key>
+    <key name="mail-show-follow-up-due" type="b">
+      <default>false</default>
+      <summary>Show follow-up due dates in the mail list</summary>
+    </key>
+    <key name="mail-show-location" type="b">
+      <default>false</default>
+      <summary>Show message locations in the mail list</summary>
+    </key>
     <key name="mail-sender-column-width" type="i">
       <default>180</default>
       <range min="80" max="360"/>
@@ -323,6 +335,15 @@
     <key name="mail-threading" type="b">
       <default>true</default>
       <summary>Group related messages into conversations</summary>
+    </key>
+    <key name="mail-folder-sort-order" type="s">
+      <default>'{}'</default>
+      <summary>Portable custom folder sibling sort order</summary>
+      <description>JSON map of stable local or loaded remote folder identifiers to their explicit sibling order.</description>
+    </key>
+    <key name="mail-show-deleted" type="b">
+      <default>false</default>
+      <summary>Show locally deleted messages with a line through them</summary>
     </key>
     <key name="task-filter" type="s">
       <default>'all'</default>

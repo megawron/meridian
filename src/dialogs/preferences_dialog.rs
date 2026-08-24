@@ -19,7 +19,7 @@ use std::rc::Rc;
 
 use crate::services::AppSettings;
 use crate::services::account_config_service::{
-    AccountConfigStore, AccountProfile, AccountProtocol,
+    AccountConfigStore, reconciled_local_default_account,
 };
 use crate::services::backup_service;
 use crate::services::calendar_category_service::{CalendarCategory, CalendarCategoryStore};
@@ -202,7 +202,10 @@ mod imp {
     use super::*;
 
     #[derive(Debug, Default)]
-    pub struct PreferencesDialog;
+    pub struct PreferencesDialog {
+        pub local_profile_group: RefCell<Option<adw::PreferencesGroup>>,
+        pub local_profile_rows: RefCell<Vec<adw::PreferencesRow>>,
+    }
 
     #[glib::object_subclass]
     impl ObjectSubclass for PreferencesDialog {
@@ -242,6 +245,7 @@ impl PreferencesDialog {
         let page = self.downgrade();
         dialog.connect_close_request(move |_| {
             if let Some(page) = page.upgrade() {
+                page.refresh_local_profile_rows();
                 if let Some(window) = page.root().and_downcast::<crate::window::EvolutionWindow>() {
                     window.refresh_mail_page();
                 }
@@ -249,6 +253,211 @@ impl PreferencesDialog {
             glib::Propagation::Proceed
         });
         dialog.present();
+    }
+
+    fn reconcile_local_default(&self, affected_local_id: &str) {
+        let Some(settings) = AppSettings::try_new() else {
+            return;
+        };
+        let current = settings.default_account_id();
+        let profiles = AccountConfigStore::default().load();
+        let reconciled = reconciled_local_default_account(&current, affected_local_id, &profiles);
+        if reconciled != current {
+            settings.set_default_account_id(&reconciled);
+        }
+    }
+
+    fn refresh_local_profile_rows(&self) {
+        let Some(group) = self.imp().local_profile_group.borrow().as_ref().cloned() else {
+            return;
+        };
+        for row in self.imp().local_profile_rows.borrow_mut().drain(..) {
+            group.remove(&row);
+        }
+
+        let profiles = AccountConfigStore::default().load();
+        let default_id = AppSettings::try_new()
+            .map(|settings| settings.default_account_id())
+            .unwrap_or_default();
+        if profiles.is_empty() {
+            let row = adw::ActionRow::builder()
+                .title("Keine lokalen Kontoprofile")
+                .subtitle("Über „Neues Konto hinzufügen…“ ein Profil anlegen")
+                .build();
+            group.add(&row);
+            self.imp()
+                .local_profile_rows
+                .borrow_mut()
+                .push(row.upcast());
+            return;
+        }
+
+        let profile_count = profiles.len();
+        for (index, profile) in profiles.into_iter().enumerate() {
+            let is_default = profile.enabled && profile.id == default_id;
+            let subtitle = format!(
+                "{} · {}{}",
+                profile.email,
+                profile.protocol.as_str(),
+                if is_default { " · Standardkonto" } else { "" }
+            );
+            let row = adw::ActionRow::builder()
+                .title(&profile.display_name)
+                .subtitle(&subtitle)
+                .activatable(true)
+                .build();
+            let profile_for_edit = profile.clone();
+            row.connect_activated(glib::clone!(
+                #[weak(rename_to = page)]
+                self,
+                move |_| {
+                    page.present_account_dialog(crate::dialogs::AccountSetupDialog::new_for_edit(
+                        &profile_for_edit,
+                    ));
+                }
+            ));
+
+            let move_up = gtk::Button::builder()
+                .icon_name("go-up-symbolic")
+                .tooltip_text("Profil nach oben verschieben")
+                .css_classes(vec!["flat"])
+                .valign(gtk::Align::Center)
+                .sensitive(index > 0)
+                .build();
+            let profile_id = profile.id.clone();
+            let page = self.downgrade();
+            move_up.connect_clicked(move |_| {
+                let result = AccountConfigStore::default().move_profile(&profile_id, -1);
+                if let Some(page) = page.upgrade() {
+                    match result {
+                        Ok(true) => page.refresh_local_profile_rows(),
+                        Ok(false) => page.show_toast("Kontoprofil wurde nicht gefunden"),
+                        Err(error) => page.show_toast(&format!(
+                            "Kontoreihenfolge konnte nicht gespeichert werden: {error}"
+                        )),
+                    }
+                }
+            });
+            row.add_suffix(&move_up);
+
+            let move_down = gtk::Button::builder()
+                .icon_name("go-down-symbolic")
+                .tooltip_text("Profil nach unten verschieben")
+                .css_classes(vec!["flat"])
+                .valign(gtk::Align::Center)
+                .sensitive(index + 1 < profile_count)
+                .build();
+            let profile_id = profile.id.clone();
+            let page = self.downgrade();
+            move_down.connect_clicked(move |_| {
+                let result = AccountConfigStore::default().move_profile(&profile_id, 1);
+                if let Some(page) = page.upgrade() {
+                    match result {
+                        Ok(true) => page.refresh_local_profile_rows(),
+                        Ok(false) => page.show_toast("Kontoprofil wurde nicht gefunden"),
+                        Err(error) => page.show_toast(&format!(
+                            "Kontoreihenfolge konnte nicht gespeichert werden: {error}"
+                        )),
+                    }
+                }
+            });
+            row.add_suffix(&move_down);
+
+            let enabled = gtk::Switch::builder()
+                .active(profile.enabled)
+                .valign(gtk::Align::Center)
+                .tooltip_text("Profil aktivieren/deaktivieren")
+                .build();
+            let profile_id = profile.id.clone();
+            let page = self.downgrade();
+            enabled.connect_active_notify(move |switch| {
+                let result =
+                    AccountConfigStore::default().set_enabled(&profile_id, switch.is_active());
+                if let Some(page) = page.upgrade() {
+                    match result {
+                        Ok(true) => {
+                            page.reconcile_local_default(&profile_id);
+                            page.refresh_local_profile_rows();
+                        }
+                        Ok(false) => page.show_toast("Kontoprofil wurde nicht gefunden"),
+                        Err(error) => page.show_toast(&format!(
+                            "Kontoprofil konnte nicht aktualisiert werden: {error}"
+                        )),
+                    }
+                }
+            });
+            row.add_suffix(&enabled);
+
+            let default_button = gtk::Button::builder()
+                .icon_name(if is_default {
+                    "starred-symbolic"
+                } else {
+                    "non-starred-symbolic"
+                })
+                .tooltip_text(if is_default {
+                    "Aktuelles Standardkonto"
+                } else {
+                    "Als Standardkonto für neue Nachrichten verwenden"
+                })
+                .css_classes(vec!["flat"])
+                .valign(gtk::Align::Center)
+                .sensitive(profile.enabled)
+                .build();
+            let profile_id = profile.id.clone();
+            let page = self.downgrade();
+            default_button.connect_clicked(move |_| {
+                if let Some(settings) = AppSettings::try_new() {
+                    settings.set_default_account_id(&profile_id);
+                }
+                if let Some(page) = page.upgrade() {
+                    page.show_toast("Standardkonto gespeichert");
+                    page.refresh_local_profile_rows();
+                }
+            });
+            row.add_suffix(&default_button);
+
+            let delete_button = gtk::Button::builder()
+                .icon_name("user-trash-symbolic")
+                .tooltip_text("Lokales Profil entfernen")
+                .css_classes(vec!["flat", "error"])
+                .valign(gtk::Align::Center)
+                .build();
+            row.add_suffix(&delete_button);
+            let page = self.downgrade();
+            let profile_id = profile.id.clone();
+            delete_button.connect_clicked(move |_| {
+                let Some(page) = page.upgrade() else {
+                    return;
+                };
+                let page_for_action = page.clone();
+                let profile_id = profile_id.clone();
+                crate::dialogs::run_destructive_action(
+                    &page,
+                    "Lokales Kontoprofil entfernen?",
+                    "Nur das app-eigene, geheimnisfreie Profil wird entfernt. Konten und sichere Zugangsdaten bleiben unverändert.",
+                    "Entfernen",
+                    move || match AccountConfigStore::default().delete(&profile_id) {
+                        Ok(true) => {
+                            page_for_action.reconcile_local_default(&profile_id);
+                            page_for_action.refresh_local_profile_rows();
+                            page_for_action.show_toast("Lokales Kontoprofil entfernt");
+                        }
+                        Ok(false) => {
+                            page_for_action.show_toast("Lokales Kontoprofil wurde nicht gefunden")
+                        }
+                        Err(error) => page_for_action.show_toast(&format!(
+                            "Kontoprofil konnte nicht entfernt werden: {error}"
+                        )),
+                    },
+                );
+            });
+
+            group.add(&row);
+            self.imp()
+                .local_profile_rows
+                .borrow_mut()
+                .push(row.upcast());
+        }
     }
 
     fn build_ui(&self) {
@@ -331,53 +540,24 @@ impl PreferencesDialog {
             group_accounts.add(&no_accounts);
         } else {
             for source in eds_sources {
+                let backend = if source.backend_name.trim().is_empty() {
+                    "unbekannter Backendtyp"
+                } else {
+                    source.backend_name.trim()
+                };
+                let state = if source.enabled {
+                    "aktiv"
+                } else {
+                    "deaktiviert"
+                };
                 let row = adw::ActionRow::builder()
                     .title(&source.display_name)
-                    .subtitle("Mailkonto")
-                    .activatable(true)
+                    .subtitle(format!(
+                        "{backend} · {state} · schreibgeschützte EDS-Entdeckung"
+                    ))
                     .build();
                 let icon_mail = gtk::Image::from_icon_name("mail-read-symbolic");
                 row.add_prefix(&icon_mail);
-
-                let edit_btn = gtk::Button::builder()
-                    .label("Bearbeiten…")
-                    .css_classes(vec!["flat"])
-                    .valign(gtk::Align::Center)
-                    .build();
-                let source_name_for_edit = source.display_name.clone();
-                let source_uid_for_edit = source.uid.clone();
-                let dialog_weak_for_edit = self.downgrade();
-                edit_btn.connect_clicked(move |_| {
-                    let dummy_profile = AccountProfile {
-                        id: source_uid_for_edit.clone(),
-                        display_name: source_name_for_edit.clone(),
-                        email: source_name_for_edit.clone(),
-                        protocol: AccountProtocol::ImapSmtp,
-                        imap_host: String::new(),
-                        smtp_host: String::new(),
-                        tls_mode: "starttls".to_string(),
-                        username: source_name_for_edit.clone(),
-                        imap_port: 993,
-                        smtp_port: 587,
-                        auth_method: "password".to_string(),
-                        reply_to: String::new(),
-                        organization: String::new(),
-                        aliases: Vec::new(),
-                        inbox_folder: String::new(),
-                        drafts_folder: String::new(),
-                        sent_folder: String::new(),
-                        archive_folder: String::new(),
-                        trash_folder: String::new(),
-                        junk_folder: String::new(),
-                        enabled: true,
-                    };
-                    if let Some(pref_dialog) = dialog_weak_for_edit.upgrade() {
-                        pref_dialog.present_account_dialog(
-                            crate::dialogs::AccountSetupDialog::new_for_edit(&dummy_profile),
-                        );
-                    }
-                });
-                row.add_suffix(&edit_btn);
                 group_accounts.add(&row);
             }
         }
@@ -390,107 +570,10 @@ impl PreferencesDialog {
                 "Nicht-geheime Profile für die spätere Kontosynchronisation; Passwörter werden nicht gespeichert",
             )
             .build();
-        let profiles = AccountConfigStore::default().load();
-        if profiles.is_empty() {
-            group_profiles.add(
-                &adw::ActionRow::builder()
-                    .title("Keine lokalen Kontoprofile")
-                    .subtitle("Über „Neues Konto hinzufügen…“ ein Profil anlegen")
-                    .build(),
-            );
-        } else {
-            for profile in profiles {
-                let subtitle = format!("{} · {}", profile.email, profile.protocol.as_str());
-                let row = adw::ActionRow::builder()
-                    .title(&profile.display_name)
-                    .subtitle(&subtitle)
-                    .activatable(true)
-                    .build();
-                let profile_for_edit = profile.clone();
-                row.connect_activated(glib::clone!(
-                    #[weak(rename_to = page)]
-                    self,
-                    move |_| {
-                        page.present_account_dialog(
-                            crate::dialogs::AccountSetupDialog::new_for_edit(&profile_for_edit),
-                        );
-                    }
-                ));
-                let enabled = gtk::Switch::builder()
-                    .active(profile.enabled)
-                    .valign(gtk::Align::Center)
-                    .tooltip_text("Profil aktivieren/deaktivieren")
-                    .build();
-                let profile_id = profile.id.clone();
-                enabled.connect_active_notify(move |switch| {
-                    if let Err(error) =
-                        AccountConfigStore::default().set_enabled(&profile_id, switch.is_active())
-                    {
-                        tracing::warn!(%error, "Could not update local account profile state");
-                    }
-                });
-                row.add_suffix(&enabled);
-
-                let default_button = gtk::Button::builder()
-                    .icon_name("starred-symbolic")
-                    .tooltip_text("Als Standardkonto für neue Nachrichten verwenden")
-                    .css_classes(vec!["flat"])
-                    .valign(gtk::Align::Center)
-                    .build();
-                let profile_id_for_default = profile.id.clone();
-                let settings_for_default = settings.clone();
-                let dialog_weak_for_default = self.downgrade();
-                default_button.connect_clicked(move |_| {
-                    let Some(settings) = settings_for_default.as_ref() else {
-                        return;
-                    };
-                    settings.set_default_account_id(&profile_id_for_default);
-                    if let Some(dialog) = dialog_weak_for_default.upgrade() {
-                        dialog.show_toast("Standardkonto gespeichert");
-                    }
-                });
-                row.add_suffix(&default_button);
-
-                let delete_button = gtk::Button::builder()
-                    .icon_name("user-trash-symbolic")
-                    .tooltip_text("Lokales Profil entfernen")
-                    .css_classes(vec!["flat", "error"])
-                    .valign(gtk::Align::Center)
-                    .build();
-                row.add_suffix(&delete_button);
-                let dialog_weak_for_delete = self.downgrade();
-                let row_for_delete = row.clone();
-                let profile_id_for_delete = profile.id.clone();
-                delete_button.connect_clicked(move |_| {
-                    let Some(dialog) = dialog_weak_for_delete.upgrade() else {
-                        return;
-                    };
-                    let row = row_for_delete.clone();
-                    let profile_id = profile_id_for_delete.clone();
-                    let dialog_for_action = dialog.clone();
-                    crate::dialogs::run_destructive_action(
-                        &dialog,
-                        "Lokales Kontoprofil entfernen?",
-                        "Nur das app-eigene, geheimnisfreie Profil wird entfernt. Konten und sichere Zugangsdaten bleiben unverändert.",
-                        "Entfernen",
-                        move || match AccountConfigStore::default().delete(&profile_id) {
-                            Ok(true) => {
-                                row.set_visible(false);
-                                dialog_for_action.show_toast("Lokales Kontoprofil entfernt");
-                            }
-                            Ok(false) => {
-                                dialog_for_action
-                                    .show_toast("Lokales Kontoprofil wurde nicht gefunden")
-                            }
-                            Err(error) => dialog_for_action.show_toast(&format!(
-                                "Kontoprofil konnte nicht entfernt werden: {error}"
-                            )),
-                        },
-                    );
-                });
-                group_profiles.add(&row);
-            }
-        }
+        self.imp()
+            .local_profile_group
+            .replace(Some(group_profiles.clone()));
+        self.refresh_local_profile_rows();
         page_accounts.add(&group_profiles);
 
         // Filter Rules Section
@@ -2222,8 +2305,12 @@ impl PreferencesDialog {
                 "Absender",
                 "Ungelesen-Status",
                 "Markierung",
+                "Nachverfolgung",
                 "Wichtigkeit",
                 "Anhänge",
+                "Größe",
+                "Fällig am",
+                "Ort",
             ]))
             .build();
         if let Some(settings) = settings.clone() {
@@ -2232,8 +2319,12 @@ impl PreferencesDialog {
                 "sender" => 2,
                 "unread" => 3,
                 "flagged" => 4,
-                "important" => 5,
-                "attachments" => 6,
+                "follow-up" => 5,
+                "important" => 6,
+                "attachments" => 7,
+                "size" => 8,
+                "follow-up-due" => 9,
+                "location" => 10,
                 _ => 0,
             });
             row_mail_sort.connect_selected_notify(move |row| {
@@ -2242,8 +2333,12 @@ impl PreferencesDialog {
                     2 => "sender",
                     3 => "unread",
                     4 => "flagged",
-                    5 => "important",
-                    6 => "attachments",
+                    5 => "follow-up",
+                    6 => "important",
+                    7 => "attachments",
+                    8 => "size",
+                    9 => "follow-up-due",
+                    10 => "location",
                     _ => "date",
                 });
             });
@@ -2370,6 +2465,45 @@ impl PreferencesDialog {
             });
         }
         group_mail_columns.add(&row_mail_show_labels);
+
+        let row_mail_show_size = adw::SwitchRow::builder()
+            .title("Größe anzeigen")
+            .subtitle("Zeigt die vom Mailanbieter gemeldete Nachrichtengröße")
+            .active(false)
+            .build();
+        if let Some(settings) = settings.clone() {
+            row_mail_show_size.set_active(settings.mail_show_size());
+            row_mail_show_size.connect_active_notify(move |row| {
+                settings.set_mail_show_size(row.is_active());
+            });
+        }
+        group_mail_columns.add(&row_mail_show_size);
+
+        let row_mail_show_follow_up_due = adw::SwitchRow::builder()
+            .title("Fälligkeit anzeigen")
+            .subtitle("Zeigt das Fälligkeitsdatum einer Nachverfolgung")
+            .active(false)
+            .build();
+        if let Some(settings) = settings.clone() {
+            row_mail_show_follow_up_due.set_active(settings.mail_show_follow_up_due());
+            row_mail_show_follow_up_due.connect_active_notify(move |row| {
+                settings.set_mail_show_follow_up_due(row.is_active());
+            });
+        }
+        group_mail_columns.add(&row_mail_show_follow_up_due);
+
+        let row_mail_show_location = adw::SwitchRow::builder()
+            .title("Ort anzeigen")
+            .subtitle("Zeigt Konto und Ordner der Nachricht")
+            .active(false)
+            .build();
+        if let Some(settings) = settings.clone() {
+            row_mail_show_location.set_active(settings.mail_show_location());
+            row_mail_show_location.connect_active_notify(move |row| {
+                settings.set_mail_show_location(row.is_active());
+            });
+        }
+        group_mail_columns.add(&row_mail_show_location);
 
         let group_mail_normal_headers = adw::PreferencesGroup::builder()
             .title("Normale Nachrichtenkopfzeilen")
@@ -4125,6 +4259,20 @@ mod tests {
         assert!(validate_new_mail_normal_header("  X-Trace  ", &state).is_ok());
         assert!(validate_new_mail_normal_header("subject", &state).is_err());
         assert!(validate_new_mail_normal_header("X-Bad: value", &state).is_err());
+    }
+
+    #[test]
+    fn local_account_rows_reorder_reconcile_defaults_and_keep_eds_read_only() {
+        let source = include_str!("preferences_dialog.rs");
+        assert!(source.contains("move_profile(&profile_id, -1)"));
+        assert!(source.contains("move_profile(&profile_id, 1)"));
+        assert!(source.contains("reconcile_local_default(&profile_id)"));
+        assert!(source.contains("Standardkonto"));
+        assert!(source.contains("schreibgeschützte EDS-Entdeckung"));
+        assert!(!source.contains(concat!(
+            "AccountSetupDialog::new_for_edit(&dummy_",
+            "profile)"
+        )));
     }
 
     #[test]

@@ -129,6 +129,17 @@ impl ContactDialog {
             .build()
     }
 
+    pub(crate) fn new_for_email(name: &str, email: &str) -> Self {
+        let seed = VCardContact::new(name.trim(), email.trim(), "", "").to_vcard_string();
+        glib::Object::builder()
+            .property("title", "Absender zum Adressbuch hinzufügen")
+            .property("modal", true)
+            .property("default-width", 560)
+            .property("default-height", 560)
+            .property("edit-vcard", seed)
+            .build()
+    }
+
     fn build_ui(&self) {
         if self.imp().list_mode.get() {
             self.build_list_ui();
@@ -623,7 +634,7 @@ impl ContactDialog {
             let source_uid_for_worker = source_uid.clone();
             let operation_uid = edit_uid_for_save.clone();
             let vcard_for_worker = vcard.clone();
-            let was_edit = edit_vcard_for_save.is_some();
+            let was_edit = edit_uid_for_save.is_some();
             let (sender, receiver) = async_channel::bounded(1);
             dialog.imp().save_in_progress.set(true);
             save_button_for_closure.set_sensitive(false);

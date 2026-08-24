@@ -19,6 +19,7 @@ pub mod drafts_dialog;
 pub mod event_dialog;
 pub mod filter_editor_dialog;
 pub mod folder_properties_dialog;
+pub mod folder_sort_order_dialog;
 pub mod folder_subscriptions_dialog;
 pub mod global_search_dialog;
 pub mod import_dialog;
@@ -39,8 +40,11 @@ pub use contact_search_dialog::ContactSearchDialog;
 pub use drafts_dialog::DraftsDialog;
 pub use event_dialog::EventDialog;
 pub use filter_editor_dialog::FilterEditorDialog;
-pub use folder_properties_dialog::FolderPropertiesDialog;
-pub use folder_subscriptions_dialog::{FolderSubscriptionsDialog, SubscribedFolderItem};
+pub use folder_properties_dialog::{FolderPropertiesDialog, FolderPropertiesSnapshot};
+pub use folder_sort_order_dialog::{
+    FolderSortOrderDialog, FolderSortOrderItem, FolderSortOrderOutcome,
+};
+pub use folder_subscriptions_dialog::FolderSubscriptionsDialog;
 pub use global_search_dialog::GlobalSearchDialog;
 pub use import_dialog::ImportDialog;
 pub use oof_dialog::OutOfOfficeDialog;
