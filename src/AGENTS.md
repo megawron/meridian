@@ -25,6 +25,10 @@ service coordination for the Evolution replacement.
   results into GTK models on the main context in bounded chunks when needed.
 - Durable user-visible behavior belongs in `ROADMAP.md`; Linux-only build and
   runtime acceptance belongs in `ROADMAP_LINUX.md`.
+- User-visible shell actions, primary/transport menu entries, prerequisite
+  scopes, and shortcut-help metadata share `action_contract.rs`. Accelerator
+  bindings remain executable application data and every documented shortcut
+  must resolve through that table; do not add parallel menu/help-only IDs.
 
 ## Work Guidance
 

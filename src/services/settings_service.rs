@@ -31,6 +31,75 @@ fn normalized_mail_sort_field(value: &str) -> &str {
     }
 }
 
+pub(crate) const MAIL_LIST_COLUMN_IDS: [&str; 14] = [
+    "status",
+    "attachment",
+    "flagged",
+    "sender",
+    "subject",
+    "date",
+    "follow-up",
+    "important",
+    "avatar",
+    "preview",
+    "size",
+    "follow-up-due",
+    "location",
+    "messages",
+];
+
+const MAIL_LIST_WIDE_COLUMN_IDS: [&str; 14] = [
+    "status",
+    "flagged",
+    "messages",
+    "attachment",
+    "date",
+    "follow-up",
+    "important",
+    "avatar",
+    "preview",
+    "size",
+    "follow-up-due",
+    "location",
+    "sender",
+    "subject",
+];
+
+pub(crate) fn normalized_mail_list_view_profile(value: &str) -> &'static str {
+    match value {
+        "wide" => "wide",
+        "custom" => "custom",
+        _ => "messages",
+    }
+}
+
+pub(crate) fn mail_list_profile_column_order(profile: &str) -> Vec<String> {
+    let columns = if normalized_mail_list_view_profile(profile) == "wide" {
+        &MAIL_LIST_WIDE_COLUMN_IDS
+    } else {
+        &MAIL_LIST_COLUMN_IDS
+    };
+    columns.iter().map(|column| (*column).to_string()).collect()
+}
+
+pub(crate) fn normalize_mail_list_column_order(value: &str) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut order = value
+        .split(',')
+        .map(str::trim)
+        .filter(|column| MAIL_LIST_COLUMN_IDS.contains(column))
+        .filter(|column| seen.insert((*column).to_string()))
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    order.extend(
+        MAIL_LIST_COLUMN_IDS
+            .iter()
+            .filter(|column| seen.insert((**column).to_string()))
+            .map(|column| (*column).to_string()),
+    );
+    order
+}
+
 fn normalize_mail_folder_sort_order(value: &str) -> Result<String, String> {
     let order = serde_json::from_str::<BTreeMap<String, u32>>(value)
         .map_err(|_| "ungültige Ordnersortierung".to_string())?;
@@ -266,6 +335,27 @@ impl AppSettings {
             })?;
         Some(Self {
             settings: gio::Settings::new_full(&schema, None::<&gio::SettingsBackend>, None),
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn try_new_with_backend(backend: &gio::SettingsBackend) -> Option<Self> {
+        let installed_source = gio::SettingsSchemaSource::default();
+        let schema = installed_source
+            .as_ref()
+            .and_then(|source| source.lookup(crate::APP_ID, true))
+            .or_else(|| {
+                let directory = option_env!("EVOLUTION_GTK4_SCHEMA_DIR")?;
+                let source = gio::SettingsSchemaSource::from_directory(
+                    directory,
+                    installed_source.as_ref(),
+                    true,
+                )
+                .ok()?;
+                source.lookup(crate::APP_ID, true)
+            })?;
+        Some(Self {
+            settings: gio::Settings::new_full(&schema, Some(backend), None),
         })
     }
 
@@ -1195,6 +1285,28 @@ impl AppSettings {
         self.set_int("mail-date-column-width", value.clamp(60, 300));
     }
 
+    pub fn mail_list_view_profile(&self) -> String {
+        normalized_mail_list_view_profile(&self.settings.string("mail-list-view-profile"))
+            .to_string()
+    }
+
+    pub fn mail_list_column_order(&self) -> Vec<String> {
+        normalize_mail_list_column_order(&self.settings.string("mail-list-column-order"))
+    }
+
+    pub fn set_mail_list_column_order(&self, order: &[String]) {
+        let normalized = normalize_mail_list_column_order(&order.join(","));
+        self.set_string("mail-list-column-order", &normalized.join(","));
+        self.set_string("mail-list-view-profile", "custom");
+    }
+
+    pub fn apply_mail_list_view_profile(&self, profile: &str) {
+        let profile = normalized_mail_list_view_profile(profile);
+        let order = mail_list_profile_column_order(profile);
+        self.set_string("mail-list-column-order", &order.join(","));
+        self.set_string("mail-list-view-profile", profile);
+    }
+
     pub fn task_filter(&self) -> String {
         normalized_task_filter(&self.settings.string("task-filter")).to_string()
     }
@@ -1543,6 +1655,24 @@ impl AppSettings {
             "mail-sender-column-width" => {
                 let value = parse_migrated_i32_in_range(key, value, 80, 360)?;
                 self.set_mail_sender_column_width(value);
+            }
+            "mail-date-column-width" => {
+                let value = parse_migrated_i32_in_range(key, value, 60, 300)?;
+                self.set_mail_date_column_width(value);
+            }
+            "mail-list-view-profile" => {
+                if !matches!(value, "messages" | "wide" | "custom") {
+                    return Err(format!("ungültiges Mail-Ansichtsprofil für „{key}“"));
+                }
+                if value == "custom" {
+                    self.set_string("mail-list-view-profile", value);
+                } else {
+                    self.apply_mail_list_view_profile(value);
+                }
+            }
+            "mail-list-column-order" => {
+                let order = normalize_mail_list_column_order(value);
+                self.set_mail_list_column_order(&order);
             }
             "color-scheme" => self.set_color_scheme(value),
             "sign-new-messages" => self.set_sign_new_messages(parse_migrated_bool(key, value)?),
@@ -1898,9 +2028,11 @@ fn sanitize_calendar_workdays(value: &str) -> String {
 mod tests {
     use super::{
         AppSettings, DEFAULT_MAIL_NORMAL_HEADERS, MAX_MAIL_NORMAL_HEADERS,
-        clamp_mail_sync_message_limit, default_mail_normal_headers, normalize_composer_charset,
-        normalized_mail_sort_field, normalized_switcher_location, sanitize_calendar_workdays,
-        sanitize_spellcheck_languages, validate_mail_normal_header_name,
+        clamp_mail_sync_message_limit, default_mail_normal_headers, mail_list_profile_column_order,
+        normalize_composer_charset, normalize_mail_list_column_order,
+        normalized_mail_list_view_profile, normalized_mail_sort_field,
+        normalized_switcher_location, sanitize_calendar_workdays, sanitize_spellcheck_languages,
+        validate_mail_normal_header_name,
     };
     use gtk::gio;
     use gtk::gio::prelude::*;
@@ -1927,6 +2059,69 @@ mod tests {
         AppSettings {
             settings: gio::Settings::new_full(&settings_schema(), Some(backend), None),
         }
+    }
+
+    #[test]
+    fn mail_list_profiles_and_corrupt_orders_normalize_without_losing_columns() {
+        let messages = mail_list_profile_column_order("messages");
+        assert_eq!(
+            &messages[..6],
+            &[
+                "status",
+                "attachment",
+                "flagged",
+                "sender",
+                "subject",
+                "date"
+            ]
+        );
+        let wide = mail_list_profile_column_order("wide");
+        assert_eq!(&wide[..3], &["status", "flagged", "messages"]);
+        assert_eq!(normalized_mail_list_view_profile("unknown"), "messages");
+
+        let normalized = normalize_mail_list_column_order("date,subject,date,unknown,status");
+        assert_eq!(&normalized[..3], &["date", "subject", "status"]);
+        assert_eq!(normalized.len(), super::MAIL_LIST_COLUMN_IDS.len());
+        for column in super::MAIL_LIST_COLUMN_IDS {
+            assert_eq!(
+                normalized.iter().filter(|value| *value == column).count(),
+                1
+            );
+        }
+    }
+
+    #[test]
+    fn mail_list_profile_order_and_both_widths_round_trip_and_migrate() {
+        let backend = gio::memory_settings_backend_new();
+        let settings = settings_with_backend(&backend);
+        settings.apply_mail_list_view_profile("wide");
+        settings.set_mail_sender_column_width(245);
+        settings.set_mail_date_column_width(175);
+        assert_eq!(settings.mail_list_view_profile(), "wide");
+        assert_eq!(
+            settings.mail_list_column_order(),
+            mail_list_profile_column_order("wide")
+        );
+        assert_eq!(settings.mail_sender_column_width(), 245);
+        assert_eq!(settings.mail_date_column_width(), 175);
+
+        settings
+            .apply_migrated_setting("mail-list-column-order", "subject,date,status")
+            .unwrap();
+        assert_eq!(settings.mail_list_view_profile(), "custom");
+        assert_eq!(
+            &settings.mail_list_column_order()[..3],
+            &["subject", "date", "status"]
+        );
+        settings
+            .apply_migrated_setting("mail-date-column-width", "190")
+            .unwrap();
+        assert_eq!(settings.mail_date_column_width(), 190);
+        assert!(
+            settings
+                .apply_migrated_setting("mail-list-view-profile", "invalid")
+                .is_err()
+        );
     }
 
     #[test]

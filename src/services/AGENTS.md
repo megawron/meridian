@@ -86,6 +86,17 @@ settings persistence.
   data. Stable deep links are service output, while application routing and a
   reminder window belong to `GW-REMINDER-RUNTIME`; native EDS watchers remain
   Linux acceptance.
+- Portable calendar purge mutates only the app-owned writable calendar, uses
+  the upstream 0..1000-day instant cutoff, rewrites each backing file once,
+  and reports confirmed partial progress. Preserve events at the cutoff and
+  fail closed for recurrence masters, detached instances, duplicate UIDs,
+  durations, or unparseable bounds until native ECal can evaluate instances
+  and remove by UID plus recurrence scope.
+- Mail-list profiles and column order are one canonical settings contract:
+  accept only known IDs, remove duplicates, append every missing column in a
+  deterministic order, and mark manual reordering as `custom`. Backup and
+  migration must preserve profile, exact normalized order, sender width and
+  date width; legacy backups receive the installed safe defaults.
 - A schema key alone is not settings parity. For each settings package record
   schema/default, preference surface, live use, backup and migration evidence
   separately, preserve deliberate secret exclusions, and report unsupported

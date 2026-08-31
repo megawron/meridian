@@ -655,6 +655,7 @@ impl ComposeDialog {
                 *stored_id = uuid::Uuid::new_v4().to_string();
             }
         }
+        self.set_default_size(860, 680);
         let toolbar_view = adw::ToolbarView::new();
 
         // ── Header bar ──────────────────────────────────────────────────────
@@ -676,9 +677,8 @@ impl ComposeDialog {
         header_bar.pack_end(&btn_send);
 
         let btn_save_draft = gtk::Button::builder()
-            .label("Entwurf speichern")
             .icon_name("document-save-symbolic")
-            .tooltip_text("Entwurf lokal speichern")
+            .tooltip_text("Entwurf speichern (Ctrl+S)")
             .css_classes(vec!["flat"])
             .build();
         header_bar.pack_end(&btn_save_draft);
@@ -1829,7 +1829,9 @@ impl ComposeDialog {
             let mut identities: Vec<ComposeIdentity> = active_sources
                 .iter()
                 .map(|source| {
-                    let label = if source.backend_name.is_empty() {
+                    let label = if source.backend_name.is_empty()
+                        || source.display_name.contains('@')
+                    {
                         format!("{}{}", source.display_name, cache_suffix)
                     } else {
                         format!(
@@ -1839,6 +1841,7 @@ impl ComposeDialog {
                     };
                     ComposeIdentity {
                         source_uid: source.uid.clone(),
+                        from: source.display_name.clone(),
                         label,
                         ..ComposeIdentity::default()
                     }

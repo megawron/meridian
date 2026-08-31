@@ -1092,7 +1092,16 @@ impl CalendarPage {
 
     /// Present the calendar purge dialog to purge past events.
     pub fn present_calendar_purge_dialog(&self) {
-        let dialog = crate::dialogs::CalendarPurgeDialog::new();
+        let page = self.downgrade();
+        let dialog = crate::dialogs::CalendarPurgeDialog::with_finished_handler(move |outcome| {
+            let Some(page) = page.upgrade() else {
+                return;
+            };
+            if outcome.changed() {
+                page.reload_calendar_data();
+            }
+            show_toast_for_widget(&page, &outcome.message());
+        });
         if let Some(root) = self.root().and_downcast::<gtk::Window>() {
             dialog.set_transient_for(Some(&root));
         }
@@ -2195,7 +2204,6 @@ impl CalendarPage {
 
         let sidebar_outer_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
-            .width_request(240)
             .css_classes(vec!["evolution-sidebar-drawer"])
             .build();
         sidebar_outer_box.append(&drawer_header);
@@ -2208,7 +2216,6 @@ impl CalendarPage {
         let sidebar_page = adw::NavigationPage::builder()
             .title("Kalender")
             .child(&sidebar_outer_box)
-            .width_request(240)
             .css_classes(vec!["evolution-sidebar-drawer"])
             .build();
         split.set_sidebar(Some(&sidebar_page));

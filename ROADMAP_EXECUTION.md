@@ -168,13 +168,17 @@ und erweitert dessen Schreibbereich nur nach dokumentierter Kollisionsprüfung.
 | 52 | `COMPOSER-PRINT-LIFECYCLE` | `P0-COMP-001` | `src/dialogs/compose_dialog.rs`, `src/views/{mod.rs,mail_viewer.rs}`, `src/services/mail_print_service.rs` | `MAIL-PRINT-ACTION`, `COMPOSER-ACTION-SURFACE` | BLOCKED_LINUX | Composer Print/Preview erfassen Header, HTML/plain und Anlagenmetadaten unveränderlich auf GTK, bereiten das remote-freie Dokument abbrechbar im Worker vor, sperren kollidierende Composer-Aktionen und verwerfen stale/teardown callbacks. Preview verwendet den isolierten Viewer, Print den nativen WebKit-Dialog; Linux-/Portal-/PDF-Visualabnahme offen. |
 | 53 | `MAIL-CAMEL-FOLDER-MUTATIONS` | `P0-MAIL-002` | `native/eds_camel_bridge.{h,c}`, `src/services/camel_mail_service.rs`, `src/views/mail_page.rs`, `src/window.rs` | `FOLDER-CONTEXT-TARGET` | BLOCKED_LINUX | Exakte native Camel-Folder-Capabilities treiben CreateChild/Rename/Delete/Refresh. UI-Worker sind teardown-abbrechbar, Provider-Ergebnis wird durch frische Hierarchie verifiziert und aktive Rename/Delete-Ziele werden erst danach reconciled. Graph, Top-Level-Create, geschützte/unsafe Targets sowie nicht-atomare Copy/Move bleiben fail-closed; reale Providerabnahme offen. |
 | 54 | `LOCAL-ACCOUNT-ORDER-DEFAULT` | `P0-COMP-001` | `src/services/account_config_service.rs`, `src/dialogs/{preferences,compose}_dialog.rs` | app-eigene lokale Profile | DONE | Persistente Up/Down-Reihenfolge, sichtbarer Default, Default-Reparatur nach Disable/Delete und Composer-Fallback sind getestet. Externe EDS-Defaults bleiben unberührt; gecachte EDS-Zeilen sind factual read-only. EDS-/GOA-Service-Mutation bleibt native Folgearbeit. |
-| 55 | `MAIL-LIST-METADATA-COLUMNS` | `P0-MAIL-001` | Schema/Settings/Backup, `src/models/mail_message.rs`, `src/services/{mail_store,exchange}_service.rs`, `src/dialogs/preferences_dialog.rs`, `src/views/mail_page.rs` | Nachrichtenliste mit Follow-up- und Backend-Metadaten | DONE | Optionale Size-/Due-/Location-Spalten sind live schaltbar und sortierbar. Exakte RFC822-/Graph-Größe, Follow-up-Due und Konto/Vollordner-Location fließen durch Modell, Migration/Reset und Backup. Der bestehende Follow-up-Sortselector-Versatz ist behoben; freie Spaltenreihenfolge/Ansichtsprofile bleiben offen. |
+| 55 | `MAIL-LIST-METADATA-COLUMNS` | `P0-MAIL-001` | Schema/Settings/Backup, `src/models/mail_message.rs`, `src/services/{mail_store,exchange}_service.rs`, `src/dialogs/preferences_dialog.rs`, `src/views/mail_page.rs` | Nachrichtenliste mit Follow-up- und Backend-Metadaten | DONE | Optionale Size-/Due-/Location-Spalten sind live schaltbar und sortierbar. Exakte RFC822-/Graph-Größe, Follow-up-Due und Konto/Vollordner-Location fließen durch Modell, Migration/Reset und Backup. Der bestehende Follow-up-Sortselector-Versatz ist behoben; Reihenfolge und Ansichtsprofile schließt Paket 63. |
 | 56 | `MAIL-PREVIEW-TOOLBAR-COMMON` | `P0-MAIL-001` | `src/views/mail_page.rs` | verdrahtete Reader- und Navigationsaktionen | DONE | Reader Common-Actions Delete/Junk/Not-Junk/Archive und Previous/Next werden tatsächlich angezeigt; Classic Toolbar enthält ebenfalls Previous/Next. Zustandsbindung nutzt die vorhandenen Window-Actions bzw. echten Reader-Operationen. Overflow-/Theme-Abnahme bleibt visuell. |
 | 57 | `READER-REPLY-FORWARD-VARIANTS` | `P0-MAIL-001` | `src/dialogs/compose_dialog.rs`, `src/views/mail_page.rs`, `src/window.rs` | bestehende Reply-/Forward-Composerpfade | DONE | `List-Post`-gebundenes Listen-Reply sowie echte Inline- und `>`-zitierte Forward-Modi sind in Message-/Kontextmenü und zentraler Action-Sensitivity verdrahtet. Ohne echte Nachricht sind Reader-Aktionen deaktiviert; NO/malformed/injection List-Post bleibt fail-closed. Alternative-Reply-Dialog und Attached-Forward bleiben getrennte Folgepakete. |
 | 58 | `READER-ALTERNATIVE-REPLY` | `P0-MAIL-001` | `src/dialogs/compose_dialog.rs`, `src/views/mail_page.rs`, `src/window.rs` | `READER-REPLY-FORWARD-VARIANTS` | DONE | Alternative Reply bietet Sender, validierte Mailingliste oder All sowie Default-, Outlook-Inline-, `>`-Zitat- und No-Quote-Stil. Die Auswahl gilt nur für den neuen Composer; der upstream Attachment-Stil ist sichtbar, aber bis zu einem draft-sicheren RFC822-Anhangspeicher explizit deaktiviert. |
 | 59 | `READER-ATTACHED-FORWARD` | `P0-MAIL-001` | `src/services/{draft_store,mail_composer}_service.rs`, `src/dialogs/compose_dialog.rs`, `src/views/mail_page.rs`, `src/window.rs` | exakter RFC822-Exportpfad | DONE | Attached Forward lädt vorhandene lokale/native/Graph-RFC822-Bytes asynchron und fällt nur auf den bestehenden verlustarmen Exportbuilder zurück. Der `message/rfc822`-Payload liegt Base64-kodiert im DraftAttachment, überlebt Autosave/Reopen und wird vor MIME-Bau strikt auf Encoding und Größe geprüft; Attached Reply bleibt offen. |
 | 60 | `READER-ATTACHED-REPLY` | `P0-MAIL-001` | `src/dialogs/compose_dialog.rs`, `src/views/mail_page.rs` | `READER-ALTERNATIVE-REPLY`, `READER-ATTACHED-FORWARD` | DONE | Der Alternative-Reply-Attachment-Stil ist für Sender, validierte Liste und All aktiv. Er teilt den asynchronen exact-RFC822-/Fallback-Loader und das draft-sichere Embedded-Attachment mit Attached Forward; der Composer setzt Reply-Empfänger/Cc/Betreff und hängt das Original ohne temporäre Datei an. |
 | 61 | `READER-DAILY-ACTIONS` | `P0-MAIL-001` | `src/dialogs/{compose,contact}_dialog.rs`, `src/services/{draft_store,mail_composer}_service.rs`, `src/views/mail_page.rs`, `src/window.rs` | geladene exakte Nachrichtenmetadaten | DONE | Copy Message Link kopiert einen validierten `mid:`-URI; Containing Folder wechselt aus Aggregat/Suchordner zum exakten lokalen oder geladenen Providerordner und selektiert dieselbe Nachricht; Add Sender öffnet den echten vorbefüllten EBook-/Lokal-Kontakteditor; Edit as New übernimmt Empfänger, Betreff, Body und eingebettete Anhänge. MIME Content-ID bleibt dabei draft- und versandsicher erhalten, sodass `cid:`-Inlinebilder nicht still beschädigt werden. |
+| 62 | `GW-CAL-ACTIONS-PURGE-LOCAL` | `P1-CAL-001` | `src/services/calendar_store_service.rs`, `src/dialogs/calendar_purge_dialog.rs`, `src/views/calendar_page.rs`, `src/{application,window}.rs` | app-eigener lokaler Kalender | BLOCKED_LINUX | `Ctrl+E` ist kalendergebunden; 60-Tage-Default/0..1000-Cutoff, Worker/Cancel/Doppelstart, einmaliger atomarer Dateirewrite, autoritativer Reload und sichtbare Resultate sind portabel getestet. Serien/RECURRENCE-ID/Duplicate-UID/DURATION/ungültige Grenzen bleiben fail-closed; aktive ECal-Clients und Provider-Purge bleiben Linux. |
+| 63 | `MAIL-LIST-VIEW-CONTRACT` | `P0-MAIL-002A` | `data/org.gnome.Evolution4.gschema.xml`, `src/services/{settings,backup}_service.rs`, `src/dialogs/preferences_dialog.rs`, `src/views/mail_page.rs` | bestehende Mail-Spalten und Live-Settings | BLOCKED_LINUX | Evolutions Messages-/Wide-Profile, vollständige eindeutige benutzerdefinierte Reihenfolge, gemeinsame stabile Header-/Zeilen-IDs, Live-Neuaufbau ohne Provider-Reload sowie Sender-/Datumsbreite in Migration und Backup sind portabel getestet. Drag-and-drop, HiDPI-/Theme-/A11y- und Großpostfach-Abnahme bleiben Linux. |
+| 64 | `MENU-ACTION-MAP` | `P0-MAIL-002A` | `src/action_contract.rs`, `src/{application,window}.rs`, `src/dialogs/shortcuts_dialog.rs` | vorhandene Shell-/Reader-/Folder-Actions und Accelerator-Tabelle | BLOCKED_LINUX | Ein eindeutiger Vertrag treibt File/Edit/View/Message/Folder/Tools/Help, Transport und Shortcut-Hilfe samt Zustandsvoraussetzungen. Menü-/Shortcut-IDs, Registrierungen, Platzierungen, Accelerator-Mirror und Nullauswahl sind portabel getestet; Popup-Vollabgleich, GTK/IME/Fokus, Theme/A11y und reale Providerzustände bleiben Linux. |
+| 65 | `MAIL-SEARCH-CONTRACT` | `P1-SEARCH-001` | `src/services/{search_engine,search_folder}_service.rs`, `src/views/mail_page.rs` | `P1-SEARCH-001A`, `P0-MAIL-WORKER-STORE` | IN PROGRESS | Kanonische Syntaxvalidierung für neue Saved Searches, fail-closed Unknown-State-Negation, exakte CurrentFolder/CurrentAccount/AllAccounts-Scopes sowie geschützte Saved-Search-Mutationen (corrupt/unsupported/duplicate, eindeutige temporäre Dateien, atomare Writes und process-lokale RMW-Serialisierung) sind portabel belegt. Offen bleiben MailPage-Doppelparser, acht Upstream-Modi, vierter Subfolder-Scope, AST/Graph-Fail-Closed, Saved-v2 Scope/AST sowie Linux-/Provider-Abnahme; gezielte Parser-, Negations-, Scope- und Saved-Search-Mutationstests sind vorhanden. |
 
 ### Parallelisierungsregeln
 
@@ -454,6 +458,54 @@ und erweitert dessen Schreibbereich nur nach dokumentierter Kollisionsprüfung.
   Das ausführbare Referenzinventar liegt in
   `docs/MAIL_UI_PARITY_INVENTORY.md`; Icon-/Dichte-Vergleich und reale
   Counter-Abnahme fehlen weiterhin, deshalb bleibt der Punkt `IN PROGRESS`.
+
+### MAIL-LIST-VIEW-CONTRACT — Evolutions Listenprofile und Spaltenordnung
+
+- Status: `BLOCKED_LINUX`; der portable Vertrag ist geschlossen.
+- `Messages` beginnt wie die Originalansicht mit Status, Anhang, Markierung,
+  Absender, Betreff und Datum. `Wide` beginnt mit Status, Markierung und einer
+  zweizeiligen Nachrichtenzelle aus Absender und Betreff.
+- Jede gespeicherte Reihenfolge wird auf bekannte, eindeutige und vollständige
+  Spalten normalisiert. Manuelles Verschieben erzeugt das Profil `custom`;
+  Profilwechsel stellt die deterministische Originalreihenfolge wieder her.
+- Kopf und Datenzeile werden aus derselben ID-Reihenfolge gebaut. Änderungen
+  ordnen den vorhandenen Kopf neu und erzeugen nur Listenzellen neu; Mail-
+  Provider, Filter, Paging und Auswahl werden nicht neu geladen.
+- Profil, Reihenfolge sowie Absender- und Datumsbreite sind in Schema,
+  Preferences, Spalten-Popover, Migration und Backup/Restore enthalten.
+- Linux-Abnahme: Header-/Zeilenausrichtung, Resize/Restart, Tastatur/A11y,
+  Drag-and-drop und große Threads/Postfächer; siehe `ROADMAP_LINUX.md`.
+
+### MENU-ACTION-MAP — gemeinsamer Shell-Aktionsvertrag
+
+- Status: `BLOCKED_LINUX`; Menü-, Shortcut- und Zustandsvertrag sind portabel
+  geschlossen.
+- `action_contract.rs` ist die eindeutige Liste user-sichtbarer täglicher
+  `app.*`-/`win.*`-Actions mit Scope. Das primäre File/Edit/View/Message/
+  Folder/Tools/Help-Menü und das Transportmenü werden daraus aufgebaut.
+- Die Shortcut-Hilfe enthält nur Vertragseinträge und bezieht den sichtbaren
+  Accelerator direkt aus der tatsächlich registrierten Anwendungstabelle.
+- Tests verwerfen unbekannte oder doppelte IDs/Platzierungen, fehlende
+  Accelerators und fehlende App-/Window-Registrierungen. Bei leerer
+  Nachrichtenauswahl werden alle Message-Scopes deaktiviert, ohne Suche,
+  Modulwechsel oder New zu sperren.
+- Linux-Abnahme: Popup-Vollabgleich, GTK-/IME-/Fokusdispatch, Theme/A11y und
+  reale Provider-/Folder-Capabilities.
+
+### MAIL-SEARCH-CONTRACT — kanonische Suchsyntax und Saved Searches
+
+- Status: `IN PROGRESS` / `partial`.
+- Abgeschlossen sind die strikte kanonische Syntaxvalidierung neuer Saved
+  Searches, die fail-closed Unknown-State-Negation sowie die geschützten
+  Saved-Search-Mutationen gegen korrupte/unsupported/duplizierte Dateien mit
+  eindeutigen temporären Dateien, atomaren Writes und process-lokaler
+  RMW-Serialisierung sowie exakte CurrentFolder/CurrentAccount/AllAccounts-
+  Scopes auch bei leerer Suchabfrage.
+- Offen bleiben die Ablösung des MailPage-Doppelparsers, acht Upstream-Modi,
+  der vierte Subfolder-Scope, AST/Graph-Fail-Closed, Saved-v2 Scope/AST und
+  die Linux-/Provider-Abnahme. Gezielte Parser-, Negations- und
+  Saved-Search-Mutationstests begleiten den Slice; eine Gesamt-Testzahl wird
+  hier nicht behauptet.
 
 ### P0-MAIL-002B — Mailpräferenzen persistent und live wirksam machen
 
@@ -921,7 +973,23 @@ oder visuellen Linux-Belege.
   authoritative Reload nach jedem Teilfehler sowie Serien-Löschumfang mit
   fail-closed This-Occurrence-/This-and-Future-Pfaden und Pure-Plan-Tests.
 - Offener Parent-/Linux-Rest: beliebige EDS-Ziele, verlustfreie EXDATE-/Serien-
-  Split-Mutation, Forward/RSVP/Schedule/Purge/Properties/Print und Provider-ACLs.
+  Split-Mutation, Forward/RSVP/Schedule/Properties/Print und Provider-ACLs.
+
+### GW-CAL-ACTIONS-PURGE-LOCAL
+
+- Status: `BLOCKED_LINUX`; der app-eigene portable Teil des offenen Parents
+  `GW-CAL-ACTIONS` ist geschlossen.
+- Portabler Beleg: kalendergebundenes `Ctrl+E`, upstream-identischer
+  60-Tage-Default und 0..1000-Tage-Instant-Cutoff, destruktiver Dialog mit
+  Worker-/Cancel-/Doppelstart-Gates, einmaliger atomarer Rewrite pro lokaler
+  Datei, bestätigte Partial-Ergebnisse, Toast und autoritativer Reload. Nur
+  eindeutig nicht-serielle VEVENTs mit Ende vor dem Cutoff werden entfernt;
+  Serien, Detached Instances, Duplicate UIDs, DURATION und ungültige Grenzen
+  bleiben sichtbar gezählt und unverändert.
+- Linux-Rest: Upstreams aktuell aktive, nicht-read-only ECal-Clients exakt
+  snapshotten, vollständige Instanzen gegen den Cutoff auswerten, mit korrektem
+  MOD_THIS/MOD_ALL-Scope sequentiell entfernen und Cancel/Providerfehler samt
+  bestätigtem Prefix und ECal-Monitor-Reload abnehmen. Refresh ist kein Purge.
 
 ### GW-CONTACT-ACTIONS-BATCH-EXPORT
 
@@ -1356,7 +1424,7 @@ wird ein konkreter Folgepunkt angelegt und der Elternpunkt bleibt offen.
   Schema-Prüfung, normaler `cargo check --workspace --locked` und
   `RUSTFLAGS='--cfg=eds_camel_bridge' cargo check --workspace --locked` sind
   grün. `cargo test --workspace --locked --no-fail-fast --quiet` ist mit
-  800/800 Tests grün; der erzwungene Camel-Service-Lauf ist 17/17 grün. Der
+  835/835 Tests grün; der erzwungene Camel-Service-Lauf ist 17/17 grün. Der
   globale Format-Check bleibt wegen vorbestehender Drift offen. Das ist keine
   Linux-Abnahme.
 - Keine weitere portable Implementierungspriorität ist derzeit atomar `READY`;

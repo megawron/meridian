@@ -1,22 +1,69 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// CalendarPurgeDialog — Purge past calendar events up to a chosen cutoff date.
+// CalendarPurgeDialog — fail-closed portable purge for the app-owned calendar.
 
 use adw::prelude::*;
 use adw::subclass::prelude::*;
-use chrono::{Local, NaiveDate};
+use chrono::Local;
 use gtk::glib;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::services::calendar_store_service::CalendarStoreService;
-use crate::services::ecal_service::{ECalComponentType, ECalService};
+use crate::services::calendar_store_service::{CalendarPurgeResult, CalendarStoreService};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CalendarPurgeOutcome {
+    pub(crate) confirmed: CalendarPurgeResult,
+    pub(crate) error: Option<String>,
+    pub(crate) cancelled: bool,
+}
+
+impl CalendarPurgeOutcome {
+    pub(crate) fn changed(&self) -> bool {
+        self.confirmed.removed_count > 0
+    }
+
+    pub(crate) fn message(&self) -> String {
+        let mut parts = vec![match self.confirmed.removed_count {
+            0 => "Keine alten lokalen Termine gelöscht".to_string(),
+            1 => "Ein alter lokaler Termin wurde gelöscht".to_string(),
+            count => format!("{count} alte lokale Termine wurden gelöscht"),
+        }];
+        if self.confirmed.skipped_recurring_count > 0 {
+            parts.push(format!(
+                "{} Serien/Instanzen oder mehrdeutige UIDs wurden sicherheitshalber beibehalten",
+                self.confirmed.skipped_recurring_count
+            ));
+        }
+        if self.confirmed.skipped_invalid_count > 0 {
+            parts.push(format!(
+                "{} Termine ohne sicher auswertbares Ende wurden beibehalten",
+                self.confirmed.skipped_invalid_count
+            ));
+        }
+        if self.cancelled {
+            parts.push("Bereinigung wurde abgebrochen".to_string());
+        } else if let Some(error) = self.error.as_deref() {
+            parts.push(format!("Fehler: {error}"));
+        }
+        parts.join(". ")
+    }
+}
+
+type FinishedHandler = Box<dyn Fn(CalendarPurgeOutcome) + 'static>;
 
 mod imp {
     use super::*;
 
-    #[derive(Debug, Default)]
+    #[derive(Default)]
     pub struct CalendarPurgeDialog {
-        pub cutoff_date: RefCell<NaiveDate>,
+        pub(super) running: Cell<bool>,
+        pub(super) cancellation: RefCell<Option<Arc<AtomicBool>>>,
+        pub(super) purge_button: RefCell<Option<gtk::Button>>,
+        pub(super) cancel_button: RefCell<Option<gtk::Button>>,
+        pub(super) status: RefCell<Option<gtk::Label>>,
+        pub(super) on_finished: RefCell<Option<FinishedHandler>>,
     }
 
     #[glib::object_subclass]
@@ -47,21 +94,28 @@ glib::wrapper! {
 
 impl CalendarPurgeDialog {
     pub fn new() -> Self {
-        let obj: Self = glib::Object::builder().build();
-        let default_cutoff = Local::now().date_naive().checked_sub_signed(chrono::Duration::days(90))
-            .unwrap_or_else(|| Local::now().date_naive());
-        *obj.imp().cutoff_date.borrow_mut() = default_cutoff;
-        obj
+        glib::Object::builder().build()
+    }
+
+    pub(crate) fn with_finished_handler<F>(on_finished: F) -> Self
+    where
+        F: Fn(CalendarPurgeOutcome) + 'static,
+    {
+        let dialog = Self::new();
+        dialog
+            .imp()
+            .on_finished
+            .replace(Some(Box::new(on_finished)));
+        dialog
     }
 
     fn build_ui(&self) {
         self.set_title(Some("Vergangene Termine löschen"));
-        self.set_default_size(460, 380);
+        self.set_default_size(460, 360);
         self.set_modal(true);
 
         let toolbar = adw::ToolbarView::new();
-        let header = adw::HeaderBar::new();
-        toolbar.add_top_bar(&header);
+        toolbar.add_top_bar(&adw::HeaderBar::new());
 
         let main_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
@@ -71,169 +125,197 @@ impl CalendarPurgeDialog {
             .margin_top(16)
             .margin_bottom(20)
             .build();
+        main_box.append(
+            &gtk::Image::builder()
+                .icon_name("user-trash-symbolic")
+                .pixel_size(48)
+                .css_classes(vec!["warning", "dim-label"])
+                .halign(gtk::Align::Center)
+                .build(),
+        );
+        main_box.append(
+            &gtk::Label::builder()
+                .label("Vergangene Termine bereinigen")
+                .css_classes(vec!["title-2"])
+                .halign(gtk::Align::Center)
+                .build(),
+        );
+        main_box.append(
+            &gtk::Label::builder()
+                .label("Diese Aktion löscht endgültig alte Einzeltermine aus dem app-eigenen lokalen Kalender. Synchronisierte Kalender und Terminserien werden in diesem portablen Pfad nicht verändert.")
+                .wrap(true)
+                .justify(gtk::Justification::Center)
+                .css_classes(vec!["dim-label"])
+                .halign(gtk::Align::Center)
+                .build(),
+        );
 
-        let icon = gtk::Image::builder()
-            .icon_name("user-trash-symbolic")
-            .pixel_size(48)
-            .css_classes(vec!["warning", "dim-label"])
-            .halign(gtk::Align::Center)
+        let days = gtk::SpinButton::with_range(0.0, 1000.0, 1.0);
+        days.set_value(60.0);
+        let days_row = adw::ActionRow::builder()
+            .title("Termine löschen, die älter sind als")
+            .subtitle("Tage")
             .build();
-        main_box.append(&icon);
-
-        let title = gtk::Label::builder()
-            .label("Vergangene Termine bereinigen")
-            .css_classes(vec!["title-2"])
-            .halign(gtk::Align::Center)
-            .build();
-        main_box.append(&title);
-
-        let description = gtk::Label::builder()
-            .label("Löscht alle Termine aus schreibbaren Kalendern, deren Enddatum vor dem gewählten Stichtag liegt.")
-            .wrap(true)
-            .justify(gtk::Justification::Center)
-            .css_classes(vec!["dim-label"])
-            .halign(gtk::Align::Center)
-            .build();
-        main_box.append(&description);
-
-        let group = adw::PreferencesGroup::builder()
-            .title("Stichtag für Bereinigung")
-            .build();
-
-        let cutoff_entry = adw::EntryRow::builder()
-            .title("Stichtag (JJJJ-MM-TT)")
-            .text(&self.imp().cutoff_date.borrow().format("%Y-%m-%d").to_string())
-            .build();
-        group.add(&cutoff_entry);
-
-        let quick_options = gtk::DropDown::from_strings(&[
-            "Älter als 30 Tage",
-            "Älter als 90 Tage",
-            "Älter als 180 Tage",
-            "Älter als 1 Jahr",
-        ]);
-        quick_options.set_selected(1);
-        let cutoff_entry_weak = cutoff_entry.downgrade();
-        let dialog_weak = self.downgrade();
-        quick_options.connect_selected_notify(move |dropdown| {
-            let today = Local::now().date_naive();
-            let days = match dropdown.selected() {
-                0 => 30,
-                1 => 90,
-                2 => 180,
-                _ => 365,
-            };
-            if let Some(target) = today.checked_sub_signed(chrono::Duration::days(days)) {
-                if let Some(entry) = cutoff_entry_weak.upgrade() {
-                    entry.set_text(&target.format("%Y-%m-%d").to_string());
-                }
-                if let Some(dialog) = dialog_weak.upgrade() {
-                    *dialog.imp().cutoff_date.borrow_mut() = target;
-                }
-            }
-        });
-
-        let quick_row = adw::ActionRow::builder()
-            .title("Schnellauswahl")
-            .build();
-        quick_row.add_suffix(&quick_options);
-        group.add(&quick_row);
-
+        days_row.add_suffix(&days);
+        let group = adw::PreferencesGroup::new();
+        group.add(&days_row);
         main_box.append(&group);
 
-        let button_box = gtk::Box::builder()
+        let status = gtk::Label::builder()
+            .halign(gtk::Align::Start)
+            .wrap(true)
+            .css_classes(vec!["dim-label"])
+            .build();
+        main_box.append(&status);
+        self.imp().status.replace(Some(status));
+
+        let buttons = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(12)
             .halign(gtk::Align::End)
             .margin_top(8)
             .build();
-
-        let cancel_button = gtk::Button::builder()
-            .label("Abbrechen")
-            .build();
-        let dialog_for_cancel = self.downgrade();
-        cancel_button.connect_clicked(move |_| {
-            if let Some(dialog) = dialog_for_cancel.upgrade() {
-                dialog.close();
+        let cancel = gtk::Button::with_label("Abbrechen");
+        cancel.connect_clicked(glib::clone!(
+            #[weak(rename_to = dialog)]
+            self,
+            move |button| {
+                if dialog.imp().running.get() {
+                    if let Some(cancellation) = dialog.imp().cancellation.borrow().as_ref() {
+                        cancellation.store(true, Ordering::Relaxed);
+                    }
+                    button.set_sensitive(false);
+                    dialog.set_status("Bereinigung wird abgebrochen …", false);
+                } else {
+                    dialog.close();
+                }
             }
-        });
-        button_box.append(&cancel_button);
+        ));
+        buttons.append(&cancel);
+        self.imp().cancel_button.replace(Some(cancel));
 
-        let purge_button = gtk::Button::builder()
-            .label("Bereinigen")
+        let purge = gtk::Button::builder()
+            .label("Endgültig löschen")
             .css_classes(vec!["destructive-action"])
             .build();
+        purge.connect_clicked(glib::clone!(
+            #[weak(rename_to = dialog)]
+            self,
+            #[weak]
+            days,
+            move |_| {
+                let Some(cutoff) = purge_cutoff(Local::now().timestamp(), days.value_as_int())
+                else {
+                    dialog.set_status("Der gewählte Zeitraum ist ungültig", true);
+                    return;
+                };
+                dialog.execute_purge(cutoff);
+            }
+        ));
+        buttons.append(&purge);
+        self.imp().purge_button.replace(Some(purge));
+        main_box.append(&buttons);
 
-        let dialog_for_purge = self.downgrade();
-        let cutoff_entry_for_purge = cutoff_entry.clone();
-        purge_button.connect_clicked(move |_| {
-            let Some(dialog) = dialog_for_purge.upgrade() else {
-                return;
-            };
-            let text = cutoff_entry_for_purge.text();
-            let Ok(cutoff) = NaiveDate::parse_from_str(text.trim(), "%Y-%m-%d") else {
-                return;
-            };
-
-            dialog.execute_purge(cutoff);
+        self.connect_close_request(|dialog| {
+            if !dialog.imp().running.get() {
+                return glib::Propagation::Proceed;
+            }
+            if let Some(cancellation) = dialog.imp().cancellation.borrow().as_ref() {
+                cancellation.store(true, Ordering::Relaxed);
+            }
+            dialog.set_status("Bereinigung wird abgebrochen …", false);
+            glib::Propagation::Stop
         });
-        button_box.append(&purge_button);
-
-        main_box.append(&button_box);
 
         toolbar.set_content(Some(&main_box));
         self.set_content(Some(&toolbar));
     }
 
-    fn execute_purge(&self, cutoff: NaiveDate) {
-        let dialog_weak = self.downgrade();
+    fn execute_purge(&self, cutoff_timestamp: i64) {
+        if self.imp().running.replace(true) {
+            return;
+        }
+        self.set_deletable(false);
+        if let Some(button) = self.imp().purge_button.borrow().as_ref() {
+            button.set_sensitive(false);
+        }
+        if let Some(button) = self.imp().cancel_button.borrow().as_ref() {
+            button.set_sensitive(true);
+            button.set_label("Abbrechen");
+        }
+        self.set_status("Lokale Termine werden geprüft …", false);
 
+        let cancellation = Arc::new(AtomicBool::new(false));
+        self.imp()
+            .cancellation
+            .replace(Some(Arc::clone(&cancellation)));
+        let dialog = self.downgrade();
         glib::spawn_future_local(async move {
             let (sender, receiver) = async_channel::bounded(1);
-
             std::thread::spawn(move || {
-                let mut purged_count = 0usize;
-
-                // 1. Purge local writable store
-                let local_store = CalendarStoreService::new();
-                if local_store.is_writable() {
-                    let snapshot = local_store.load_snapshot();
-                    for record in snapshot.events {
-                        if let Some(dtend_str) = extract_ical_date(&record.component, "DTEND")
-                            .or_else(|| extract_ical_date(&record.component, "DTSTART"))
-                        {
-                            if let Ok(end_date) = parse_compact_date(&dtend_str) {
-                                if end_date < cutoff {
-                                    if local_store.remove_component(&record.uid).is_ok() {
-                                        purged_count += 1;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // 2. Purge remote EDS writable sources if available
-                let ecal = ECalService::new();
-                if let Ok(discovery) = ecal.discover_source_capabilities(ECalComponentType::Event) {
-                    for src in discovery.sources {
-                        if src.writable && src.connected {
-                            // Backend purge notification
-                            let _ = ecal.refresh_source(&src.source_uid, ECalComponentType::Event);
-                        }
-                    }
-                }
-
-                let _ = sender.send_blocking(purged_count);
+                let outcome = match CalendarStoreService::new()
+                    .purge_events_before(cutoff_timestamp, &cancellation)
+                {
+                    Ok(confirmed) => CalendarPurgeOutcome {
+                        confirmed,
+                        error: None,
+                        cancelled: false,
+                    },
+                    Err(failure) => CalendarPurgeOutcome {
+                        confirmed: failure.confirmed,
+                        cancelled: failure.error.kind() == std::io::ErrorKind::Interrupted,
+                        error: (failure.error.kind() != std::io::ErrorKind::Interrupted)
+                            .then(|| failure.error.to_string()),
+                    },
+                };
+                let _ = sender.send_blocking(outcome);
             });
 
-            if let Ok(_count) = receiver.recv().await {
-                if let Some(dialog) = dialog_weak.upgrade() {
-                    dialog.close();
-                }
+            let Ok(outcome) = receiver.recv().await else {
+                return;
+            };
+            let Some(dialog) = dialog.upgrade() else {
+                return;
+            };
+            dialog.imp().running.set(false);
+            dialog.imp().cancellation.replace(None);
+            dialog.set_deletable(true);
+            if let Some(button) = dialog.imp().purge_button.borrow().as_ref() {
+                button.set_sensitive(true);
+            }
+            if let Some(button) = dialog.imp().cancel_button.borrow().as_ref() {
+                button.set_sensitive(true);
+                button.set_label("Schließen");
+            }
+            let message = outcome.message();
+            dialog.set_status(&message, outcome.error.is_some());
+            if let Some(on_finished) = dialog.imp().on_finished.borrow().as_ref() {
+                on_finished(outcome);
+                dialog.close();
             }
         });
     }
+
+    fn set_status(&self, message: &str, error: bool) {
+        if let Some(status) = self.imp().status.borrow().as_ref() {
+            status.set_text(message);
+            if error {
+                status.remove_css_class("dim-label");
+                status.add_css_class("error");
+            } else {
+                status.remove_css_class("error");
+                status.add_css_class("dim-label");
+            }
+        }
+    }
+}
+
+fn purge_cutoff(now_timestamp: i64, days: i32) -> Option<i64> {
+    if !(0..=1000).contains(&days) {
+        return None;
+    }
+    let seconds = i64::from(days).checked_mul(24 * 60 * 60)?;
+    now_timestamp.checked_sub(seconds)
 }
 
 impl Default for CalendarPurgeDialog {
@@ -242,18 +324,37 @@ impl Default for CalendarPurgeDialog {
     }
 }
 
-fn extract_ical_date(ics: &str, prop: &str) -> Option<String> {
-    for line in ics.lines() {
-        if line.starts_with(prop) {
-            if let Some((_, val)) = line.split_once(':') {
-                return Some(val.trim().to_string());
-            }
-        }
-    }
-    None
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-fn parse_compact_date(raw: &str) -> Result<NaiveDate, ()> {
-    let clean = raw.chars().take(8).collect::<String>();
-    NaiveDate::parse_from_str(&clean, "%Y%m%d").map_err(|_| ())
+    #[test]
+    fn purge_cutoff_matches_upstream_absolute_day_range() {
+        let now = 1_800_000_000_i64;
+        assert_eq!(purge_cutoff(now, 60), Some(now - 60 * 24 * 60 * 60));
+        assert_eq!(purge_cutoff(now, 0), Some(now));
+        assert!(purge_cutoff(now, 1000).is_some());
+        assert!(purge_cutoff(now, -1).is_none());
+        assert!(purge_cutoff(now, 1001).is_none());
+    }
+
+    #[test]
+    fn outcome_message_never_claims_skipped_series_were_deleted() {
+        let outcome = CalendarPurgeOutcome {
+            confirmed: CalendarPurgeResult {
+                removed_count: 1,
+                skipped_recurring_count: 2,
+                skipped_invalid_count: 1,
+            },
+            error: None,
+            cancelled: false,
+        };
+        let message = outcome.message();
+        assert!(message.contains("Ein alter lokaler Termin wurde gelöscht"));
+        assert!(message.contains(
+            "2 Serien/Instanzen oder mehrdeutige UIDs wurden sicherheitshalber beibehalten"
+        ));
+        assert!(message.contains("1 Termine ohne sicher auswertbares Ende"));
+        assert!(outcome.changed());
+    }
 }

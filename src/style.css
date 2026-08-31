@@ -68,7 +68,6 @@
 .message-list button,
 .message-list checkbutton {
   min-width: 24px;
-  max-width: 24px;
   min-height: 22px;
   padding: 0;
   margin: 0;
@@ -76,7 +75,6 @@
 
 .message-list .mail-thread-count {
   min-width: 24px;
-  max-width: 24px;
   padding: 0;
   border-radius: 3px;
   font-size: 0.82rem;
@@ -163,7 +161,6 @@
 .mail-column-header-cell.icon-cell {
   padding: 2px 0;
   min-width: 24px;
-  max-width: 24px;
 }
 
 .mail-column-header-cell.date-cell {
@@ -328,7 +325,7 @@
 }
 
 .mail-sidebar {
-  padding: 0;
+  padding: 4px 6px;
 }
 
 .mail-sidebar .navigation-sidebar,
@@ -339,7 +336,7 @@
 
 .mail-sidebar .mail-sidebar-row {
   min-height: 22px;
-  padding: 0;
+  padding: 2px 6px;
   margin: 0;
 }
 
@@ -356,7 +353,7 @@
 .mail-sidebar .navigation-sidebar row,
 .mail-sidebar listview row {
   min-height: 22px;
-  padding: 0 1px;
+  padding: 2px 6px;
   margin: 0;
   border-radius: 4px;
 }
@@ -453,7 +450,6 @@ splitview > .sidebar,
 .evolution-sidebar-drawer {
   background-color: @sidebar_bg_color;
   border-right: 1px solid alpha(@borders, 0.45);
-  min-width: 240px;
 }
 
 .evolution-sidebar-drawer .navigation-sidebar {
@@ -465,7 +461,7 @@ splitview > .sidebar,
   min-height: 28px;
   margin-top: 4px;
   margin-bottom: 4px;
-  padding: 4px 8px;
+  padding: 4px 10px;
   background-color: transparent;
   border-bottom: 1px solid alpha(@borders, 0.45);
 }
@@ -506,4 +502,22 @@ splitview > .sidebar,
   background-color: alpha(@accent_color, 0.15);
   color: @accent_color;
   font-weight: 700;
+}
+
+/* ── Unified Full-Width Mail Toolbar ───────────────────────────────────── */
+.unified-mail-toolbar {
+  padding: 4px 8px;
+  background-color: @headerbar_bg_color;
+  border-bottom: 1px solid alpha(@borders, 0.45);
+}
+
+.unified-mail-toolbar button {
+  min-width: 28px;
+  min-height: 28px;
+  padding: 4px;
+}
+
+.unified-mail-toolbar search-entry,
+.unified-mail-toolbar .search-entry {
+  min-width: 220px;
 }

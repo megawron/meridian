@@ -150,6 +150,11 @@ accessibility helpers, and view-local GTK state.
   reloads authoritative data after every partial failure. Recurring occurrence
   or this-and-future deletion fails closed until the backend can persist a
   lossless exception or series split.
+- Calendar purge is calendar-view-only on upstream `Ctrl+E`. The portable path
+  is explicitly limited to app-owned local non-recurring events, keeps series
+  and ambiguous records, surfaces confirmed/skipped/error counts, and reloads
+  the authoritative view after any confirmed removal. EDS active-client purge
+  remains a native provider boundary and cannot be simulated with refresh.
 - Saving an unrelated task field preserves `STATUS`, `PERCENT-COMPLETE` and
   `COMPLETED` independently, including absent or unsupported imported values.
   Only explicit lifecycle-control edits normalize the coupled lifecycle fields.
@@ -280,6 +285,13 @@ accessibility helpers, and view-local GTK state.
   GObject instances across that worker boundary.
 - Live settings changes must update the already visible page, not only the
   next page construction.
+- Mail-list headers and rows use the same stable column IDs and the same
+  normalized order. Messages/Wide/profile changes may rebuild realized list
+  cells, but must not reload providers, filters, paging state or selection.
+  Named-profile visibility follows the upstream galviews exactly. Wide and a
+  Wide-derived custom order replace the separate sender/subject cells with the
+  combined messages cell; Messages and Messages-derived custom orders retain
+  the separate cells.
 
 ## Work Guidance
 

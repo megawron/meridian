@@ -827,7 +827,6 @@ impl ContactsPage {
             .hscrollbar_policy(gtk::PolicyType::Never)
             .vscrollbar_policy(gtk::PolicyType::Automatic)
             .child(&sidebar_box)
-            .width_request(240)
             .vexpand(true)
             .build();
 
@@ -847,7 +846,6 @@ impl ContactsPage {
 
         let sidebar_outer_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
-            .width_request(240)
             .css_classes(vec!["evolution-sidebar-drawer"])
             .build();
         sidebar_outer_box.append(&drawer_header);
@@ -860,7 +858,6 @@ impl ContactsPage {
         let sidebar_page = adw::NavigationPage::builder()
             .title("Kontakte")
             .child(&sidebar_outer_box)
-            .width_request(240)
             .css_classes(vec!["evolution-sidebar-drawer"])
             .build();
 

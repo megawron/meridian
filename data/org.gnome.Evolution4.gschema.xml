@@ -243,6 +243,19 @@
       <range min="60" max="300"/>
       <summary>Width of the date column in the mail list</summary>
     </key>
+    <key name="mail-list-view-profile" type="s">
+      <default>'messages'</default>
+      <choices>
+        <choice value='messages'/>
+        <choice value='wide'/>
+        <choice value='custom'/>
+      </choices>
+      <summary>Active mail list column profile</summary>
+    </key>
+    <key name="mail-list-column-order" type="s">
+      <default>'status,attachment,flagged,sender,subject,date,follow-up,important,avatar,preview,size,follow-up-due,location,messages'</default>
+      <summary>Stable ordered mail list column identifiers</summary>
+    </key>
     <key name="color-scheme" type="s">
       <default>'system'</default>
       <summary>Application color scheme (system, light, or dark)</summary>

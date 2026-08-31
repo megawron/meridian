@@ -3820,7 +3820,6 @@ impl TasksPage {
 
         let sidebar_outer_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
-            .width_request(240)
             .css_classes(vec!["evolution-sidebar-drawer"])
             .build();
         sidebar_outer_box.append(&drawer_header);
@@ -3833,7 +3832,6 @@ impl TasksPage {
         let sidebar_page = adw::NavigationPage::builder()
             .title("Aufgaben")
             .child(&sidebar_outer_box)
-            .width_request(240)
             .css_classes(vec!["evolution-sidebar-drawer"])
             .build();
 

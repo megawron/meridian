@@ -6,6 +6,7 @@
 // Application entrypoint. Initializes logging, GTK4, libadwaita,
 // and launches the AdwApplication main loop.
 
+mod action_contract;
 mod application;
 mod dialogs;
 mod models;

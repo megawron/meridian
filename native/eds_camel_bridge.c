@@ -981,55 +981,19 @@ load_folder (LoadContext *context,
     }
 }
 
-static CamelStore *
-open_store_for_source (EdsCamelSession *session,
-                       ESource *source,
-                       GCancellable *cancellable,
-                       GError **error)
+static void
+configure_ews_service_credentials_and_settings (EdsCamelSession *session,
+                                                ESource *source,
+                                                CamelService *service,
+                                                const gchar *backend_name,
+                                                const gchar *source_uid)
 {
-    ESourceBackend *backend;
-    const gchar *source_uid;
-    const gchar *backend_name;
-    CamelService *service;
+    if (!session || !source || !service)
+        return;
 
-    source_uid = e_source_get_uid (source);
-    backend = E_SOURCE_BACKEND (
-        e_source_get_extension (source, E_SOURCE_EXTENSION_MAIL_ACCOUNT));
-    backend_name = backend ? e_source_backend_get_backend_name (backend) : NULL;
-
-    if (!source_uid || !backend_name || !*backend_name) {
-        g_set_error_literal (
-            error, G_IO_ERROR, G_IO_ERROR_NOT_SUPPORTED,
-            "EDS mail source has no Camel backend");
-        return NULL;
-    }
-
-    service = camel_session_ref_service (CAMEL_SESSION (session), source_uid);
-    if (!service) {
-        service = camel_session_add_service (
-            CAMEL_SESSION (session), source_uid, backend_name,
-            CAMEL_PROVIDER_STORE, error);
-    }
-    if (!service)
-        return NULL;
-
-    {
-        const gchar *parent_uid = e_source_get_parent (source);
-        ESource *parent = (parent_uid && *parent_uid)
-            ? e_source_registry_ref_source (session->registry, parent_uid)
-            : NULL;
-        g_printerr ("[EDS-DEBUG] Source '%s' (%s), parent='%s'\n",
-                    e_source_get_display_name (source), source_uid,
-                    parent ? e_source_get_display_name (parent) : "NULL");
-        g_clear_object (&parent);
-    }
     eds_camel_session_configure_service_for_source (session, source, service);
 
-    /* For EWS (Exchange Web Services) backends, evolution-ews requires the
-     * "hosturl" or "host" setting on CamelEwsSettings. If e_source_camel_configure_service
-     * did not populate it from the ESource, check if the ESource has an
-     * EWS extension or parent EWS extension and copy HostURL. */
-    if (g_str_equal (backend_name, "ews")) {
+    if (backend_name && g_str_equal (backend_name, "ews")) {
         CamelSettings *settings = camel_service_ref_settings (service);
         if (settings) {
             GParamSpec *pspec_hosturl = g_object_class_find_property (
@@ -1140,6 +1104,61 @@ open_store_for_source (EdsCamelSession *session,
             g_object_unref (settings);
         }
     }
+}
+
+static CamelStore *
+open_store_for_source (EdsCamelSession *session,
+                       ESource *source,
+                       GCancellable *cancellable,
+                       GError **error)
+{
+    ESourceBackend *backend_extension;
+    const gchar *backend_name;
+    const gchar *source_uid;
+    CamelService *service;
+
+    if (!session || !source) {
+        g_set_error_literal (
+            error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
+            "Invalid session or source for Camel store");
+        return NULL;
+    }
+
+    backend_extension = (ESourceBackend *) e_source_get_extension (
+        source, E_SOURCE_EXTENSION_MAIL_ACCOUNT);
+    backend_name = backend_extension
+        ? e_source_backend_get_backend_name (backend_extension)
+        : NULL;
+    source_uid = e_source_get_uid (source);
+
+    if (!source_uid || !backend_name || !*backend_name) {
+        g_set_error_literal (
+            error, G_IO_ERROR, G_IO_ERROR_NOT_SUPPORTED,
+            "EDS mail source has no Camel backend");
+        return NULL;
+    }
+
+    service = camel_session_ref_service (CAMEL_SESSION (session), source_uid);
+    if (!service) {
+        service = camel_session_add_service (
+            CAMEL_SESSION (session), source_uid, backend_name,
+            CAMEL_PROVIDER_STORE, error);
+    }
+    if (!service)
+        return NULL;
+
+    {
+        const gchar *parent_uid = e_source_get_parent (source);
+        ESource *parent = (parent_uid && *parent_uid)
+            ? e_source_registry_ref_source (session->registry, parent_uid)
+            : NULL;
+        g_printerr ("[EDS-DEBUG] Source '%s' (%s), parent='%s'\n",
+            e_source_get_display_name (source), source_uid,
+            parent ? e_source_get_display_name (parent) : "NULL");
+        g_clear_object (&parent);
+    }
+
+    configure_ews_service_credentials_and_settings (session, source, service, backend_name, source_uid);
 
     if (CAMEL_IS_OFFLINE_STORE (service)) {
         if (!camel_offline_store_get_online (CAMEL_OFFLINE_STORE (service))) {
@@ -2993,28 +3012,120 @@ evolution_eds_camel_watcher_free (EvolutionEdsCamelWatcher *watcher)
     g_free (watcher);
 }
 
+static gboolean
+folder_matches_type_by_name (CamelFolderInfo *info, CamelFolderInfoFlags type)
+{
+    if (!info)
+        return FALSE;
+
+    const gchar *display = info->display_name ? info->display_name : "";
+    const gchar *full = info->full_name ? info->full_name : "";
+
+    switch (type) {
+    case CAMEL_FOLDER_TYPE_DRAFTS:
+        return g_ascii_strcasecmp (display, "Drafts") == 0 ||
+               g_ascii_strcasecmp (display, "Entwürfe") == 0 ||
+               g_ascii_strcasecmp (display, "Entwurf") == 0 ||
+               g_ascii_strcasecmp (display, "Brouillons") == 0 ||
+               g_ascii_strcasecmp (display, "Borradores") == 0 ||
+               g_ascii_strcasecmp (display, "Bozze") == 0 ||
+               g_str_has_suffix (full, "/Drafts") ||
+               g_str_has_suffix (full, "/Entwürfe") ||
+               g_str_has_suffix (full, "/Entwurf") ||
+               g_ascii_strcasecmp (full, "Drafts") == 0 ||
+               g_ascii_strcasecmp (full, "Entwürfe") == 0;
+
+    case CAMEL_FOLDER_TYPE_SENT:
+        return g_ascii_strcasecmp (display, "Sent") == 0 ||
+               g_ascii_strcasecmp (display, "Sent Items") == 0 ||
+               g_ascii_strcasecmp (display, "Sent Messages") == 0 ||
+               g_ascii_strcasecmp (display, "Gesendet") == 0 ||
+               g_ascii_strcasecmp (display, "Gesendete Elemente") == 0 ||
+               g_ascii_strcasecmp (display, "Gesendete Objekte") == 0 ||
+               g_ascii_strcasecmp (display, "Éléments envoyés") == 0 ||
+               g_str_has_suffix (full, "/Sent") ||
+               g_str_has_suffix (full, "/Sent Items") ||
+               g_str_has_suffix (full, "/Gesendet") ||
+               g_str_has_suffix (full, "/Gesendete Elemente") ||
+               g_ascii_strcasecmp (full, "Sent") == 0 ||
+               g_ascii_strcasecmp (full, "Gesendete Elemente") == 0;
+
+    case CAMEL_FOLDER_TYPE_TRASH:
+        return g_ascii_strcasecmp (display, "Trash") == 0 ||
+               g_ascii_strcasecmp (display, "Deleted Items") == 0 ||
+               g_ascii_strcasecmp (display, "Deleted Messages") == 0 ||
+               g_ascii_strcasecmp (display, "Papierkorb") == 0 ||
+               g_ascii_strcasecmp (display, "Gelöschte Elemente") == 0 ||
+               g_ascii_strcasecmp (display, "Gelöschte Objekte") == 0 ||
+               g_str_has_suffix (full, "/Trash") ||
+               g_str_has_suffix (full, "/Deleted Items") ||
+               g_str_has_suffix (full, "/Papierkorb") ||
+               g_str_has_suffix (full, "/Gelöschte Elemente") ||
+               g_ascii_strcasecmp (full, "Trash") == 0 ||
+               g_ascii_strcasecmp (full, "Deleted Items") == 0;
+
+    case CAMEL_FOLDER_TYPE_JUNK:
+        return g_ascii_strcasecmp (display, "Junk") == 0 ||
+               g_ascii_strcasecmp (display, "Junk Email") == 0 ||
+               g_ascii_strcasecmp (display, "Junk E-Mail") == 0 ||
+               g_ascii_strcasecmp (display, "Spam") == 0 ||
+               g_ascii_strcasecmp (display, "Unerwünschte E-Mails") == 0 ||
+               g_str_has_suffix (full, "/Junk") ||
+               g_str_has_suffix (full, "/Junk Email") ||
+               g_str_has_suffix (full, "/Spam") ||
+               g_ascii_strcasecmp (full, "Junk") == 0 ||
+               g_ascii_strcasecmp (full, "Spam") == 0;
+
+    case CAMEL_FOLDER_TYPE_INBOX:
+        return g_ascii_strcasecmp (display, "Inbox") == 0 ||
+               g_ascii_strcasecmp (display, "Posteingang") == 0 ||
+               g_ascii_strcasecmp (display, "Boîte de réception") == 0 ||
+               g_str_has_suffix (full, "/Inbox") ||
+               g_str_has_suffix (full, "/Posteingang") ||
+               g_ascii_strcasecmp (full, "Inbox") == 0 ||
+               g_ascii_strcasecmp (full, "INBOX") == 0;
+
+    default:
+        return FALSE;
+    }
+}
+
 static const gchar *
-find_folder_name_by_type (CamelFolderInfo *folder_info,
-                          CamelFolderInfoFlags type)
+find_folder_name_by_type_pass (CamelFolderInfo *folder_info,
+                               CamelFolderInfoFlags type,
+                               gboolean match_name_fallback)
 {
     CamelFolderInfo *current;
 
     for (current = folder_info; current != NULL; current = current->next) {
         if (is_mail_folder (current) &&
-            (current->flags & CAMEL_FOLDER_TYPE_MASK) == type &&
             (current->flags & CAMEL_FOLDER_NOSELECT) == 0 &&
-            current->full_name && *current->full_name)
-            return current->full_name;
+            current->full_name && *current->full_name) {
+            if ((current->flags & CAMEL_FOLDER_TYPE_MASK) == type)
+                return current->full_name;
+            if (match_name_fallback && folder_matches_type_by_name (current, type))
+                return current->full_name;
+        }
 
         if (current->child) {
-            const gchar *child_name = find_folder_name_by_type (
-                current->child, type);
+            const gchar *child_name = find_folder_name_by_type_pass (
+                current->child, type, match_name_fallback);
             if (child_name)
                 return child_name;
         }
     }
 
     return NULL;
+}
+
+static const gchar *
+find_folder_name_by_type (CamelFolderInfo *folder_info,
+                          CamelFolderInfoFlags type)
+{
+    const gchar *found = find_folder_name_by_type_pass (folder_info, type, FALSE);
+    if (!found)
+        found = find_folder_name_by_type_pass (folder_info, type, TRUE);
+    return found;
 }
 
 static GPtrArray *
@@ -3830,6 +3941,73 @@ finish:
     return folder;
 }
 
+static void
+parse_email_address_parts (const gchar *input_address,
+                            gchar **out_name,
+                            gchar **out_email)
+{
+    if (out_name) *out_name = NULL;
+    if (out_email) *out_email = NULL;
+
+    if (!input_address || !*input_address)
+        return;
+
+    gchar *trimmed = g_strdup (input_address);
+    g_strstrip (trimmed);
+
+    gchar *angle_start = strchr (trimmed, '<');
+    gchar *angle_end = strrchr (trimmed, '>');
+
+    if (angle_start && angle_end && angle_end > angle_start) {
+        *angle_end = '\0';
+        gchar *email_part = g_strdup (angle_start + 1);
+        g_strstrip (email_part);
+
+        *angle_start = '\0';
+        gchar *name_part = g_strdup (trimmed);
+        g_strstrip (name_part);
+        gsize name_len = strlen (name_part);
+        if (name_len >= 2 && name_part[0] == '"' && name_part[name_len - 1] == '"') {
+            name_part[name_len - 1] = '\0';
+            memmove (name_part, name_part + 1, name_len - 1);
+            g_strstrip (name_part);
+        }
+
+        if (out_email) *out_email = email_part; else g_free (email_part);
+        if (out_name && *name_part) *out_name = name_part; else g_free (name_part);
+    } else {
+        if (out_email) *out_email = g_strdup (trimmed);
+    }
+
+    g_free (trimmed);
+}
+
+static gboolean
+set_camel_internet_address (CamelInternetAddress *cia,
+                             const gchar *provided_name,
+                             const gchar *provided_address)
+{
+    if (!cia || !provided_address || !*provided_address)
+        return FALSE;
+
+    gchar *parsed_name = NULL;
+    gchar *parsed_email = NULL;
+
+    parse_email_address_parts (provided_address, &parsed_name, &parsed_email);
+
+    const gchar *final_email = (parsed_email && *parsed_email) ? parsed_email : provided_address;
+    const gchar *final_name = (provided_name && *provided_name)
+        ? provided_name
+        : (parsed_name && *parsed_name ? parsed_name : NULL);
+
+    gint index = camel_internet_address_add (cia, final_name, final_email);
+    gboolean success = (index >= 0);
+
+    g_free (parsed_name);
+    g_free (parsed_email);
+    return success;
+}
+
 static gboolean
 set_message_identity (CamelMimeMessage *message,
                        ESource *identity_source,
@@ -3852,6 +4030,14 @@ set_message_identity (CamelMimeMessage *message,
     name = identity_extension
         ? e_source_mail_identity_dup_name (identity_extension)
         : NULL;
+
+    if (!address || !*address) {
+        if (identity_source && e_source_has_extension (identity_source, "GNOME Online Accounts")) {
+            ESourceExtension *goa = e_source_get_extension (identity_source, "GNOME Online Accounts");
+            address = e_source_goa_dup_address (E_SOURCE_GOA (goa));
+        }
+    }
+
     if (!address || !*address) {
         g_set_error_literal (
             error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
@@ -3860,7 +4046,7 @@ set_message_identity (CamelMimeMessage *message,
     }
 
     from = camel_internet_address_new ();
-    if (!camel_internet_address_add (
+    if (!set_camel_internet_address (
             from, name && *name ? name : NULL, address)) {
         g_set_error_literal (
             error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
@@ -3868,6 +4054,7 @@ set_message_identity (CamelMimeMessage *message,
         goto finish;
     }
 
+    camel_medium_remove_header (CAMEL_MEDIUM (message), "From");
     camel_mime_message_set_from (message, from);
     camel_mime_message_set_source (message, source_uid);
     success = TRUE;
@@ -4090,19 +4277,11 @@ evolution_eds_camel_send_message (
     identity_uid = account_extension
         ? e_source_mail_account_dup_identity_uid (account_extension)
         : NULL;
-    if (!identity_uid || !*identity_uid) {
-        g_set_error_literal (
-            &error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
-            "Für das EDS-Mailkonto ist keine Mail-Identität konfiguriert");
-        goto finish;
+    if (identity_uid && *identity_uid) {
+        identity_source = e_source_registry_ref_source (registry, identity_uid);
     }
-
-    identity_source = e_source_registry_ref_source (registry, identity_uid);
     if (!identity_source) {
-        g_set_error_literal (
-            &error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
-            "Die Mail-Identität des EDS-Kontos existiert nicht mehr");
-        goto finish;
+        identity_source = g_object_ref (source);
     }
 
     identity_extension = (ESourceMailIdentity *) e_source_get_extension (
@@ -4113,6 +4292,17 @@ evolution_eds_camel_send_message (
     identity_name = identity_extension
         ? e_source_mail_identity_dup_name (identity_extension)
         : NULL;
+
+    if (!identity_address || !*identity_address) {
+        if (e_source_has_extension (identity_source, "GNOME Online Accounts")) {
+            ESourceExtension *goa = e_source_get_extension (identity_source, "GNOME Online Accounts");
+            identity_address = e_source_goa_dup_address (E_SOURCE_GOA (goa));
+        } else if (e_source_has_extension (source, "GNOME Online Accounts")) {
+            ESourceExtension *goa = e_source_get_extension (source, "GNOME Online Accounts");
+            identity_address = e_source_goa_dup_address (E_SOURCE_GOA (goa));
+        }
+    }
+
     if (!identity_address || !*identity_address) {
         g_set_error_literal (
             &error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
@@ -4170,7 +4360,7 @@ evolution_eds_camel_send_message (
     if (!transport_service)
         goto finish;
 
-    e_source_camel_configure_service (transport_source, transport_service);
+    configure_ews_service_credentials_and_settings (session, transport_source, transport_service, backend_name, transport_uid);
     if (camel_service_get_connection_status (transport_service) != CAMEL_SERVICE_CONNECTED) {
         if (!camel_service_connect_sync (
                 transport_service, cancellable, &error))
@@ -4191,7 +4381,7 @@ evolution_eds_camel_send_message (
         goto finish;
 
     from = camel_internet_address_new ();
-    if (!camel_internet_address_add (
+    if (!set_camel_internet_address (
             from,
             identity_name && *identity_name ? identity_name : NULL,
             identity_address)) {
@@ -4200,6 +4390,7 @@ evolution_eds_camel_send_message (
             "Die EDS-Absenderadresse konnte nicht als Internetadresse gelesen werden");
         goto finish;
     }
+    camel_medium_remove_header (CAMEL_MEDIUM (message), "From");
     camel_mime_message_set_from (message, from);
     camel_mime_message_set_source (message, source_uid);
 

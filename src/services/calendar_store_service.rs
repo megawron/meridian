@@ -4,14 +4,15 @@
 // authoritative synchronized backend; explicitly selected external folders
 // stay read-only, while the app-owned fallback can persist local components.
 
+use std::collections::HashMap;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
-use super::ical_time_service::property_local_display;
+use super::ical_time_service::{property_local_display, property_local_timestamp};
 use super::reminder_service::{Alarm, parse_alarms, replace_component_alarms};
 
 static ATOMIC_WRITE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -399,6 +400,39 @@ pub struct CalendarSnapshot {
     pub memos: Vec<MemoRecord>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CalendarPurgeResult {
+    pub removed_count: usize,
+    pub skipped_recurring_count: usize,
+    pub skipped_invalid_count: usize,
+}
+
+#[derive(Debug)]
+pub struct CalendarPurgeFailure {
+    pub confirmed: CalendarPurgeResult,
+    pub error: io::Error,
+}
+
+impl std::fmt::Display for CalendarPurgeFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.error.fmt(formatter)
+    }
+}
+
+impl std::error::Error for CalendarPurgeFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.error)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CalendarPurgeDisposition {
+    Remove,
+    Keep,
+    Recurring,
+    Invalid,
+}
+
 #[derive(Debug, Clone)]
 pub struct CalendarStoreService {
     calendar_dir: PathBuf,
@@ -579,6 +613,120 @@ impl CalendarStoreService {
         ))
     }
 
+    /// Remove only app-owned, non-recurring VEVENTs which are proven to end
+    /// before `cutoff`.  Each backing file is rewritten once, so cancellation
+    /// or validation failure before that rewrite leaves the complete file
+    /// unchanged.  Recurrence masters and detached instances deliberately
+    /// fail closed until the portable store can address UID + RECURRENCE-ID
+    /// and evaluate the complete recurrence set like ECal does.
+    pub fn purge_events_before(
+        &self,
+        cutoff_timestamp: i64,
+        cancellation: &AtomicBool,
+    ) -> Result<CalendarPurgeResult, CalendarPurgeFailure> {
+        let mut confirmed = CalendarPurgeResult::default();
+        self.ensure_writable()
+            .map_err(|error| CalendarPurgeFailure {
+                confirmed: confirmed.clone(),
+                error,
+            })?;
+        let _mutation_guard = lock_calendar_mutations().map_err(|error| CalendarPurgeFailure {
+            confirmed: confirmed.clone(),
+            error,
+        })?;
+
+        let paths = self.mutable_calendar_files();
+        let mut file_locks = Vec::with_capacity(paths.len());
+        for path in &paths {
+            if cancellation.load(Ordering::Relaxed) {
+                return Err(calendar_purge_cancelled(confirmed));
+            }
+            file_locks.push(CalendarFileLock::acquire(path).map_err(|error| {
+                CalendarPurgeFailure {
+                    confirmed: confirmed.clone(),
+                    error,
+                }
+            })?);
+        }
+
+        let mut files = Vec::with_capacity(paths.len());
+        let mut uid_counts = HashMap::<String, usize>::new();
+        for path in paths {
+            if cancellation.load(Ordering::Relaxed) {
+                return Err(calendar_purge_cancelled(confirmed));
+            }
+            let calendar = fs::read_to_string(&path).map_err(|error| CalendarPurgeFailure {
+                confirmed: confirmed.clone(),
+                error,
+            })?;
+            let mut snapshot = CalendarSnapshot::default();
+            parse_ical(
+                &calendar,
+                &path,
+                "local-calendar",
+                "Lokaler Kalender",
+                &mut snapshot,
+            );
+            for event in &snapshot.events {
+                *uid_counts.entry(event.uid.clone()).or_insert(0) += 1;
+            }
+            files.push((path, calendar, snapshot));
+        }
+
+        for (path, calendar, snapshot) in files {
+            let mut removable_uids = Vec::new();
+            for event in &snapshot.events {
+                if cancellation.load(Ordering::Relaxed) {
+                    return Err(calendar_purge_cancelled(confirmed));
+                }
+                if uid_counts.get(&event.uid).copied().unwrap_or(0) != 1 {
+                    confirmed.skipped_recurring_count += 1;
+                    continue;
+                }
+                match calendar_event_purge_disposition(&event.component, cutoff_timestamp) {
+                    CalendarPurgeDisposition::Remove => removable_uids.push(event.uid.clone()),
+                    CalendarPurgeDisposition::Keep => {}
+                    CalendarPurgeDisposition::Recurring => {
+                        confirmed.skipped_recurring_count += 1;
+                    }
+                    CalendarPurgeDisposition::Invalid => {
+                        confirmed.skipped_invalid_count += 1;
+                    }
+                }
+            }
+
+            if removable_uids.is_empty() {
+                continue;
+            }
+            let mut updated = calendar;
+            for uid in &removable_uids {
+                if cancellation.load(Ordering::Relaxed) {
+                    return Err(calendar_purge_cancelled(confirmed));
+                }
+                updated = remove_calendar_component(&updated, &path, uid).map_err(|error| {
+                    CalendarPurgeFailure {
+                        confirmed: confirmed.clone(),
+                        error,
+                    }
+                })?;
+            }
+            write_atomic_locked(&path, updated.as_bytes()).map_err(|error| {
+                CalendarPurgeFailure {
+                    confirmed: confirmed.clone(),
+                    error,
+                }
+            })?;
+            confirmed.removed_count += removable_uids.len();
+            if cancellation.load(Ordering::Relaxed) {
+                return Err(calendar_purge_cancelled(confirmed));
+            }
+        }
+
+        drop(file_locks);
+
+        Ok(confirmed)
+    }
+
     fn ensure_writable(&self) -> io::Result<()> {
         if self.writable {
             Ok(())
@@ -599,6 +747,120 @@ impl CalendarStoreService {
         collect_calendar_files(&self.calendar_dir, &mut paths);
         paths.sort();
         paths
+    }
+}
+
+fn calendar_purge_cancelled(confirmed: CalendarPurgeResult) -> CalendarPurgeFailure {
+    CalendarPurgeFailure {
+        confirmed,
+        error: io::Error::new(
+            io::ErrorKind::Interrupted,
+            "Kalenderbereinigung abgebrochen",
+        ),
+    }
+}
+
+fn calendar_event_purge_disposition(
+    component: &str,
+    cutoff_timestamp: i64,
+) -> CalendarPurgeDisposition {
+    let properties = top_level_properties(component);
+    if properties
+        .iter()
+        .any(|(name, _, _)| matches!(name.as_str(), "RRULE" | "RDATE" | "RECURRENCE-ID"))
+    {
+        return CalendarPurgeDisposition::Recurring;
+    }
+    if properties.iter().any(|(name, _, _)| name == "DURATION") {
+        return CalendarPurgeDisposition::Invalid;
+    }
+
+    let end_properties = properties
+        .iter()
+        .filter(|(name, _, _)| name == "DTEND")
+        .collect::<Vec<_>>();
+    let start_properties = properties
+        .iter()
+        .filter(|(name, _, _)| name == "DTSTART")
+        .collect::<Vec<_>>();
+    if start_properties.len() != 1 || end_properties.len() > 1 {
+        return CalendarPurgeDisposition::Invalid;
+    }
+    let start = start_properties[0];
+    let Some(start_is_date) = ical_property_date_kind(&start.2, &start.1) else {
+        return CalendarPurgeDisposition::Invalid;
+    };
+    let Some(start_timestamp) = property_local_timestamp(&start.2, &start.1, 0) else {
+        return CalendarPurgeDisposition::Invalid;
+    };
+    let end_timestamp = if let Some(end) = end_properties.first() {
+        let Some(end_is_date) = ical_property_date_kind(&end.2, &end.1) else {
+            return CalendarPurgeDisposition::Invalid;
+        };
+        if end_is_date != start_is_date {
+            return CalendarPurgeDisposition::Invalid;
+        }
+        let Some(end_timestamp) = property_local_timestamp(&end.2, &end.1, 0) else {
+            return CalendarPurgeDisposition::Invalid;
+        };
+        if end_timestamp < start_timestamp || (start_is_date && end_timestamp == start_timestamp) {
+            return CalendarPurgeDisposition::Invalid;
+        }
+        end_timestamp
+    } else if start_is_date {
+        // RFC 5545 gives an all-day VEVENT without DTEND a one-day duration.
+        // Keep it until that default is represented explicitly and safely.
+        return CalendarPurgeDisposition::Invalid;
+    } else {
+        start_timestamp
+    };
+
+    if end_timestamp < cutoff_timestamp {
+        CalendarPurgeDisposition::Remove
+    } else {
+        CalendarPurgeDisposition::Keep
+    }
+}
+
+fn ical_property_date_kind(property: &str, value: &str) -> Option<bool> {
+    let bytes = value.as_bytes();
+    let value_is_date = bytes.len() == 8 && bytes.iter().all(u8::is_ascii_digit);
+    let value_is_datetime = matches!(bytes.len(), 15 | 16)
+        && bytes[8] == b'T'
+        && bytes[..8].iter().all(u8::is_ascii_digit)
+        && bytes[9..15].iter().all(u8::is_ascii_digit)
+        && (bytes.len() == 15 || bytes[15] == b'Z');
+    if !value_is_date && !value_is_datetime {
+        return None;
+    }
+
+    let mut declared_value = None;
+    let mut tzid = None;
+    for parameter in property.split(';').skip(1) {
+        let (name, value) = parameter.split_once('=')?;
+        let name = name.trim();
+        let value = value.trim().trim_matches('"');
+        if name.eq_ignore_ascii_case("VALUE") {
+            if declared_value.replace(value).is_some() {
+                return None;
+            }
+        } else if name.eq_ignore_ascii_case("TZID") {
+            if value.is_empty() || tzid.replace(value).is_some() {
+                return None;
+            }
+        }
+    }
+    if tzid.is_some() && (value_is_date || value.ends_with('Z')) {
+        return None;
+    }
+
+    match declared_value {
+        Some(value) if value.eq_ignore_ascii_case("DATE") => value_is_date.then_some(true),
+        Some(value) if value.eq_ignore_ascii_case("DATE-TIME") => {
+            value_is_datetime.then_some(false)
+        }
+        Some(_) => None,
+        None => Some(value_is_date),
     }
 }
 
@@ -2576,6 +2838,177 @@ mod tests {
             uid
         );
         assert!(service.load_snapshot().events.is_empty());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn purge_removes_only_proven_old_single_events_and_preserves_other_components() {
+        let root = temporary_directory("ical-purge-safe");
+        let path = root.join("calendar.ics");
+        fs::write(
+            &path,
+            concat!(
+                "BEGIN:VCALENDAR\r\nVERSION:2.0\r\n",
+                "BEGIN:VEVENT\r\nUID:old\r\nDTSTART:20260801T100000\r\n",
+                "DTEND:20260801T110000\r\nEND:VEVENT\r\n",
+                "BEGIN:VEVENT\r\nUID:boundary\r\nDTSTART:20260810T110000\r\n",
+                "DTEND:20260810T120000\r\nEND:VEVENT\r\n",
+                "BEGIN:VEVENT\r\nUID:future\r\nDTSTART:20260811T100000\r\n",
+                "DTEND:20260811T110000\r\nEND:VEVENT\r\n",
+                "BEGIN:VEVENT\r\nUID:series\r\nDTSTART:20260701T100000\r\n",
+                "RRULE:FREQ=DAILY\r\nEND:VEVENT\r\n",
+                "BEGIN:VEVENT\r\nUID:detached\r\nRECURRENCE-ID:20260702T100000\r\n",
+                "DTSTART:20260702T100000\r\nEND:VEVENT\r\n",
+                "BEGIN:VEVENT\r\nUID:duration\r\nDTSTART:20260703T100000\r\n",
+                "DURATION:PT1H\r\nEND:VEVENT\r\n",
+                "BEGIN:VTODO\r\nUID:task\r\nDTSTART:20260701T100000\r\nEND:VTODO\r\n",
+                "BEGIN:VJOURNAL\r\nUID:memo\r\nDTSTART:20260701T100000\r\nEND:VJOURNAL\r\n",
+                "END:VCALENDAR\r\n"
+            ),
+        )
+        .expect("purge fixture should be written");
+        let service = CalendarStoreService::with_writable_calendar_dir(&root);
+        let cutoff =
+            property_local_timestamp("DTEND", "20260810T120000", 0).expect("cutoff should parse");
+
+        let result = service
+            .purge_events_before(cutoff, &AtomicBool::new(false))
+            .expect("safe purge should succeed");
+
+        assert_eq!(result.removed_count, 1);
+        assert_eq!(result.skipped_recurring_count, 2);
+        assert_eq!(result.skipped_invalid_count, 1);
+        let snapshot = service.load_snapshot();
+        assert_eq!(
+            snapshot
+                .events
+                .iter()
+                .map(|event| event.uid.as_str())
+                .collect::<Vec<_>>(),
+            vec!["series", "detached", "duration", "boundary", "future"]
+        );
+        assert_eq!(snapshot.tasks.len(), 1);
+        assert_eq!(snapshot.memos.len(), 1);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn purge_uses_absolute_boundaries_and_rejects_implicit_or_invalid_ends() {
+        let cutoff = property_local_timestamp("DTEND", "20260810T100000Z", 0).unwrap();
+        let event = |start: &str, end: Option<&str>| {
+            format!(
+                "BEGIN:VEVENT\r\nUID:event\r\nDTSTART:{start}\r\n{}END:VEVENT\r\n",
+                end.map(|end| format!("DTEND:{end}\r\n"))
+                    .unwrap_or_default()
+            )
+        };
+
+        assert_eq!(
+            calendar_event_purge_disposition(
+                &event("20260810T090000Z", Some("20260810T100000Z")),
+                cutoff,
+            ),
+            CalendarPurgeDisposition::Keep
+        );
+        assert_eq!(
+            calendar_event_purge_disposition(
+                &event("20260810T090000Z", Some("20260810T095959Z")),
+                cutoff,
+            ),
+            CalendarPurgeDisposition::Remove
+        );
+        assert_eq!(
+            calendar_event_purge_disposition(
+                "BEGIN:VEVENT\r\nUID:all-day\r\nDTSTART;VALUE=DATE:20260810\r\nEND:VEVENT\r\n",
+                cutoff,
+            ),
+            CalendarPurgeDisposition::Invalid
+        );
+        assert_eq!(
+            calendar_event_purge_disposition(
+                &event("20260810T110000Z", Some("20260810T100000Z")),
+                cutoff,
+            ),
+            CalendarPurgeDisposition::Invalid
+        );
+        assert_eq!(
+            calendar_event_purge_disposition(
+                "BEGIN:VEVENT\r\nUID:mixed\r\nDTSTART;VALUE=DATE:20260801\r\nDTEND:20260802T100000Z\r\nEND:VEVENT\r\n",
+                cutoff,
+            ),
+            CalendarPurgeDisposition::Invalid
+        );
+        assert_eq!(
+            calendar_event_purge_disposition(
+                &event("20260801T090000Z", Some("20260801T100000Zunexpected"),),
+                cutoff,
+            ),
+            CalendarPurgeDisposition::Invalid
+        );
+        assert_eq!(
+            calendar_event_purge_disposition(
+                "BEGIN:VEVENT\r\nUID:invalid-tzid\r\nDTSTART;TZID=Europe/Berlin:20260801T090000Z\r\nDTEND;TZID=Europe/Berlin:20260801T100000Z\r\nEND:VEVENT\r\n",
+                cutoff,
+            ),
+            CalendarPurgeDisposition::Invalid
+        );
+    }
+
+    #[test]
+    fn purge_skips_duplicate_uids_across_the_complete_local_source() {
+        let root = temporary_directory("ical-purge-duplicate-source");
+        let first = root.join("first.ics");
+        let second = root.join("second.ics");
+        let calendar = |summary: &str| {
+            format!(
+                "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:duplicate\r\nSUMMARY:{summary}\r\nDTSTART:20260701T100000\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+            )
+        };
+        let first_original = calendar("First");
+        let second_original = calendar("Second");
+        fs::write(&first, &first_original).unwrap();
+        fs::write(&second, &second_original).unwrap();
+        let cutoff = property_local_timestamp("DTEND", "20260810T120000", 0).unwrap();
+
+        let result = CalendarStoreService::with_writable_calendar_dir(&root)
+            .purge_events_before(cutoff, &AtomicBool::new(false))
+            .expect("ambiguous UIDs must be skipped without failing the run");
+
+        assert_eq!(result.removed_count, 0);
+        assert_eq!(result.skipped_recurring_count, 2);
+        assert_eq!(fs::read_to_string(first).unwrap(), first_original);
+        assert_eq!(fs::read_to_string(second).unwrap(), second_original);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn purge_cancellation_and_readonly_store_leave_existing_data_unchanged() {
+        let root = temporary_directory("ical-purge-cancel");
+        let path = root.join("calendar.ics");
+        let original = concat!(
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\n",
+            "BEGIN:VEVENT\r\nUID:old\r\nDTSTART:20260701T100000\r\nEND:VEVENT\r\n",
+            "END:VCALENDAR\r\n"
+        );
+        fs::write(&path, original).expect("purge fixture should be written");
+        let cutoff =
+            property_local_timestamp("DTEND", "20260810T120000", 0).expect("cutoff should parse");
+        let cancelled = AtomicBool::new(true);
+
+        let failure = CalendarStoreService::with_writable_calendar_dir(&root)
+            .purge_events_before(cutoff, &cancelled)
+            .expect_err("cancelled purge must stop before writing");
+        assert_eq!(failure.error.kind(), io::ErrorKind::Interrupted);
+        assert_eq!(failure.confirmed.removed_count, 0);
+        assert_eq!(fs::read_to_string(&path).unwrap(), original);
+
+        let failure = CalendarStoreService::with_calendar_dir(&root)
+            .purge_events_before(cutoff, &AtomicBool::new(false))
+            .expect_err("read-only store must reject purge");
+        assert_eq!(failure.error.kind(), io::ErrorKind::PermissionDenied);
+        assert_eq!(fs::read_to_string(&path).unwrap(), original);
 
         let _ = fs::remove_dir_all(root);
     }

@@ -39,7 +39,7 @@ ist mit S0–S3 portabel geschlossen; das schließt weder `P0-MAIL-002A` noch
 Linux-, Visual- oder Großpostfach-Abnahme. Cargo-
 Format-/Check-, strikte Schema- und Diff-Prüfung, normaler und
 `eds_camel_bridge`-Cargo-Check sind grün; der finale unsandboxed
-portable/macOS-Workspace-Testlauf hat 618/618 Tests bestanden; das ist keine
+portable/macOS-Workspace-Testlauf hat 835/835 Tests bestanden; das ist keine
 Linux-Abnahme.
 Ein früherer sandboxed Lauf konnte 18 Graph-Loopback-Mockserver nicht binden
 und ist nicht der finale Testbeleg. Das ist nur eine portable Vorbedingung.
@@ -48,6 +48,19 @@ als `[x]` geführt.
 
 ### Audit-abgeleitete Linux-Handoffs
 
+- `[ ]` `MENU-ACTION-MAP`: Der portable Action-/Menü-/Shortcut-Vertrag ist
+  geschlossen. Unter Linux File/Edit/View/Message/Folder/Tools/Help,
+  Transport und relevante Popups gegen Evolution abgleichen; GTK-/IME-/
+  Fokusdispatch, sichtbare Accelerator, Theme/A11y sowie Nullauswahl und echte
+  Folder-/Provider-Capabilities prüfen. Die zentrale ID-/Scope-Tabelle und
+  Shortcut-Mirror werden nicht erneut portabel gebaut.
+- `[~]` `MAIL-SEARCH-CONTRACT` ist portabel `IN PROGRESS`/`partial`: strikte
+  kanonische Syntaxvalidierung für neue Saved Searches, fail-closed
+  Unknown-State-Negation, geschützte Saved-Search-Mutationen und exakte
+  `CurrentFolder`/`CurrentAccount`/`AllAccounts`-Scopes sind belegt. Nach dem
+  portablen Abschluss bleiben MailPage-Doppelparser,
+  acht Upstream-Modi, vierter Subfolder-Scope, AST/Graph-Fail-Closed,
+  Saved-v2 Scope/AST sowie echte Linux-/EDS-/Graph-/Provider-Abnahme offen.
 - `[ ]` `MAIL-PRINT-ACTION`: Liste und Reader drucken, Vorschau/PDF und
   `Ctrl+P` prüfen; GtkPrint/Portal-Fehler, Abbruch, HTML/WebKitGTK-
   Seitenumbrüche und visuelle Übereinstimmung dokumentieren. Der portable
@@ -233,6 +246,11 @@ als `[x]` geführt.
      jeweiligen Kopf; der Breiten-Griff verschiebt Kopf und Daten gemeinsam.
      Fehlende Symbolnamen müssen einen sichtbaren Fallback haben und dürfen
      keine leeren Flächen oder Text-Fehlglyphen erzeugen.
+     Danach zwischen Messages und Wide wechseln, mehrere Spalten in
+     Preferences verschieben und Absender-/Datumsbreite ändern. Kopf und jede
+     Zeile müssen ohne Provider-Reload sofort gleich geordnet bleiben; Custom-
+     Reihenfolge, Profil und beide Breiten müssen einen Neustart und Backup-
+     Restore überleben. Tastatur/A11y und Drag-and-drop gesondert prüfen.
   5. Sidebar prüfen: Konto-Wurzel ohne dekoratives Konto-Icon, flache
      aber erkennbare Ordnerindentation, keine zweite generische lokale
      Ordnergruppe bei einem reinen EDS-Konto, kein Expander bei einer einzelnen
@@ -825,6 +843,14 @@ Mit einem Testkonto ohne produktive Empfänger prüfen:
 - `[~]` Create/Modify/Remove mit EDS-UIDs testen. Parallel geänderte
   Komponenten, ungültige iCalendar-Daten, schreibgeschützte Kalender und
   gelöschte Quellen müssen sauber als Konflikt oder Backendfehler erscheinen.
+- `[ ]` `GW-CAL-ACTIONS-PURGE-LOCAL` zum nativen ECal-Purge erweitern und
+  abnehmen: nur die beim Start exakt aktiven, verbundenen, nicht-read-only
+  Kalender snapshotten; Termine gegen denselben Instant-Cutoff prüfen;
+  Serienmaster mit irgendeiner Instanz am/nach dem Cutoff erhalten; Instanzen
+  und Serien mit korrektem MOD_THIS/MOD_ALL-Scope entfernen. Abbruch und der
+  erste Providerfehler stoppen den Lauf mit sichtbarem bestätigtem Prefix und
+  autoritativem Monitor-Reload. Ein bloßer `refresh_source`-Erfolg darf niemals
+  als Bereinigung gelten.
 - `[~]` ECalClientView-Signale bei externem Erstellen, Ändern und Löschen in
   den GTK4-rs-Modellen prüfen; keine Duplikate und kein veralteter Detailview.
 - `[~]` Die portable Aufgaben-/Memo-Strecke ist für den EDS-unabhängigen Pfad
@@ -1207,7 +1233,7 @@ Kontotyp und Authentifizierung: EDS/Camel-Smoke-Konto; GOA-/Passwortpfad
   teilweise verifiziert, Ablauf-/Fehlerfälle bleiben offen
 Portable Vorbedingung: aktuelle uncommitted Verification-Runde; Cargo-Format-/
   Check-, strikte Schema- und git-diff-Prüfung grün; portable/macOS-
-  Workspace-Testevidenz: 618/618 Tests im finalen unsandboxed Lauf vollständig
+  Workspace-Testevidenz: 835/835 Tests im finalen unsandboxed Lauf vollständig
   erfolgreich; das ist keine Linux-Abnahme. Ein früherer sandboxed Lauf konnte
   18 Graph-Loopback-Mockserver nicht binden; unabhängige Reviews abgeschlossen;
   `P0-MAIL-WORKER-STORE`, `MAIL-TRANSPORT-COMMANDS`, `SET-01`,

@@ -12,7 +12,7 @@ Vollständige Architektur-Spezifikation, Feature-Mapping und Entwicklungs-Roadma
 > **Arbeitsstand 2026-08-24 (aktuelle uncommitted verification round):**
 > `git diff --check`, strikte Schema-Prüfung, normaler sowie mit
 > `RUSTFLAGS='--cfg=eds_camel_bridge'` erzwungener Cargo-Check sind grün; der
-> vollständige portable Workspace-Lauf hat 800/800 Tests bestanden und der
+> vollständige portable Workspace-Lauf hat 835/835 Tests bestanden und der
 > erzwungene Camel-Service-Lauf 17/17. Gezieltes Rustfmt ist grün; der globale
 > Fmt-Check bleibt wegen vorbestehender Drift außerhalb der aktuellen Pakete
 > offen. Das ist keine reale EDS-/Camel-/WebKit-Linux-Abnahme.
@@ -527,6 +527,17 @@ werden.
   sicher bereinigt; wenn defektes oder vollständig blockiertes HTML keinen
   sichtbaren Inhalt ergibt, zeigt der GTK4-rs-Viewer den verfügbaren
   Klartext-/Vorschau-Auszug statt einer leeren weißen Fläche.
+- [~] `MAIL-SEARCH-CONTRACT` ist `IN PROGRESS`/`partial`: Abgeschlossen sind
+  die strikte kanonische Syntaxvalidierung für neue Saved Searches, die
+  fail-closed Unknown-State-Negation sowie der Schutz von Saved-Search-
+  Mutationen gegen korrupte/unsupported/duplizierte Dateien durch atomare
+  Writes, eindeutige temporäre Dateien und process-lokale RMW-Serialisierung
+  sowie exakte `CurrentFolder`/`CurrentAccount`/`AllAccounts`-Scopes auch bei
+  leerer Suchabfrage. Offen bleiben der MailPage-Doppelparser, acht Upstream-Modi,
+  der vierte Subfolder-Scope, AST/Graph-Fail-Closed, Saved-v2 Scope/AST und
+  die Linux-/Provider-Abnahme. Gezielte Parser-, Negations-, Scope- und
+  Saved-Search-Mutationstests sind der portable Beleg; eine Gesamt-Testzahl
+  wird daraus nicht abgeleitet.
 - [~] Der Startordner der Mailansicht ist als portable Einstellung mit
   Posteingang, Alle Nachrichten, Gesendet, Entwürfe, Papierkorb, Archiv und
   Spam konfigurierbar und wird in Backup/Restore sowie beim lokalen Fallback
@@ -558,9 +569,12 @@ werden.
   Vorschautext und app-eigene Labels der Mail-Zeile lassen sich ebenfalls
   einzeln ein-/ausblenden und werden live sowie in Backup/Restore angewendet.
   Eine kompakte Evolution-Kopfzeile benennt die sichtbaren Spalten und bietet
-  am Absenderfeld einen ziehbaren Breiten-Griff; die Breite bleibt mit dem
-  Spaltenmenü persistent. Kopf und Datensätze verwenden dieselben festen
-  Zellbreiten. Betreff, Absender, Datum und Anhänge sind in der Kopfzeile
+  an Absender und Datum ziehbare Breiten-Griffe; beide Breiten bleiben mit dem
+  Spaltenmenü persistent. Die originalnahen Messages-/Wide-Profile und eine
+  vollständige benutzerdefinierte Spaltenreihenfolge sind in Preferences und
+  Spaltenmenü verfügbar, werden migriert/gesichert und wirken live ohne neuen
+  Providerabruf. Kopf und Datensätze verwenden dieselben stabilen Spalten-IDs
+  und Zellbreiten. Betreff, Absender, Datum und Anhänge sind in der Kopfzeile
   direkt anklickbare Sortierfelder und zeigen Richtungspfeile; die erste
   sichtbare Datenzeile ist grau, danach alterniert die Hinterlegung.
   Der helle Mail-Reader färbt `html` und `body`
@@ -849,6 +863,17 @@ jeweilige negative Fehlerpfad mit direkter Evidenz vorliegen.
   kompaktes Absenderbild statt als Base64-Text. Die dreistufige Nachverfolgung
   samt Text/Fälligkeit/Abschluss ist in Modell, lokaler Persistenz, Menü/Editor,
   Graph-Capability-Gate und Camel angebunden. Offen bleibt die reale Linux-Abnahme.
+  `MAIL-LIST-VIEW-CONTRACT` schließt portabel zusätzlich Messages-/Wide-
+  Profil, vollständige eindeutige Custom-Reihenfolge, gemeinsame stabile
+  Header-/Zeilen-IDs, Live-Neuordnung ohne Provider-Reload sowie Backup und
+  Migration beider Breiten; Drag-and-drop und visuelle Linux-Abnahme bleiben
+  offen.
+  `MENU-ACTION-MAP` schließt portabel die bisher getrennten Shell-Menü-,
+  Transport-, Accelerator- und Shortcut-Hilfe-Listen zu einem getesteten
+  Vertrag mit eindeutigen IDs und Zustandsvoraussetzungen zusammen. Eine
+  leere Nachrichtenauswahl deaktiviert den vollständigen Message-Scope, ohne
+  globale Suche, Modulwechsel oder New zu blockieren; Popup-, GTK-/IME-/Fokus-
+  und Providerabnahme bleiben Linux-Arbeit.
   Belege: Der portable Helper-/Workspace-Test ist grün; offen bleiben
   Linux-Referenzvergleich, Icon-Theme und sichtbare Dichte.
 - `P0-MAIL-WORKER-STORE` — S0–S3 sind portabel geschlossen und unabhängig
@@ -915,7 +940,7 @@ cargo test --workspace --locked --no-fail-fast --quiet
 ```
 
 Cargo-Check, strikte Schema- und Diff-Prüfung sind für den aktuellen
-Arbeitsstand grün; der vollständige portable Workspace-Lauf hat 800/800 Tests
+Arbeitsstand grün; der vollständige portable Workspace-Lauf hat 835/835 Tests
 bestanden, der erzwungene Camel-Service-Lauf 17/17. Gezieltes Rustfmt ist grün;
 der globale Format-Check bleibt wegen vorbestehender Drift offen. Das ist keine
 Linux-Abnahme.
@@ -1297,6 +1322,15 @@ Die Statuswerte sind Quellen-/UI-Belege, keine Laufzeit- oder Providerabnahme:
   This-Occurrence-/This-and-Future-Mutationen werden ohne Änderung abgelehnt.
   Beliebige EDS-Ziele, echte EXDATE-/Serien-Splits und die übrigen
   Upstream-Aktionen bleiben Parent-/Linux-Rest.
+- [~] `GW-CAL-ACTIONS-PURGE-LOCAL` schließt den app-eigenen portablen
+  Bereinigungspfad: Kalender-`Ctrl+E`, 60-Tage-Default und 0..1000-Tage-
+  Instant-Cutoff, Worker/Cancel/Doppelstart, einmaliger atomarer Dateirewrite,
+  sichtbare bestätigte Resultate und autoritativer Reload sind getestet. Nur
+  sicher beendete nicht-serielle lokale VEVENTs werden gelöscht; Serien,
+  Detached Instances, Duplicate UIDs, DURATION und ungültige Zeitgrenzen
+  bleiben fail-closed erhalten. Die Bereinigung aktuell aktiver schreibbarer
+  ECal-Clients mit Instanzprüfung und MOD_THIS/MOD_ALL bleibt Linux-/Provider-
+  Rest; ein Refresh wird nicht mehr als Löschung ausgegeben.
 - [~] VTODO/VJOURNAL-Erstellung, VTODO-Status, Notizbearbeitung/-löschung,
   VTODO-Bearbeitung, Prioritäten, Fälligkeiten und Notizlöschung werden über
   den EDS-Adapter persistiert. ECal-Signalaktualisierung ist angebunden;

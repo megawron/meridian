@@ -2373,8 +2373,43 @@ impl PreferencesDialog {
 
         let group_mail_columns = adw::PreferencesGroup::builder()
             .title("Mail-Zeile")
-            .description("Sichtbare Spalten und Zusatzinformationen der Nachrichtenliste")
+            .description("Ansichtsprofil, Reihenfolge, sichtbare Spalten und Zusatzinformationen")
             .build();
+        let row_mail_list_profile = adw::ComboRow::builder()
+            .title("Ansichtsprofil")
+            .subtitle("Standard entspricht Evolutions Messages-Ansicht; Wide priorisiert die Nachrichtenfelder")
+            .model(&gtk::StringList::new(&["Standard", "Wide", "Benutzerdefiniert"]))
+            .build();
+        if let Some(settings) = settings.clone() {
+            row_mail_list_profile.set_selected(match settings.mail_list_view_profile().as_str() {
+                "wide" => 1,
+                "custom" => 2,
+                _ => 0,
+            });
+            let settings_for_selection = settings.clone();
+            row_mail_list_profile.connect_selected_notify(move |row| match row.selected() {
+                0 => settings_for_selection.apply_mail_list_view_profile("messages"),
+                1 => settings_for_selection.apply_mail_list_view_profile("wide"),
+                _ => {
+                    let order = settings_for_selection.mail_list_column_order();
+                    settings_for_selection.set_mail_list_column_order(&order);
+                }
+            });
+            let profile_row = row_mail_list_profile.downgrade();
+            settings.connect_changed(Some("mail-list-view-profile"), move |settings, _| {
+                let Some(row) = profile_row.upgrade() else {
+                    return;
+                };
+                row.set_selected(match settings.string("mail-list-view-profile").as_str() {
+                    "wide" => 1,
+                    "custom" => 2,
+                    _ => 0,
+                });
+            });
+        }
+        group_mail_columns.add(&row_mail_list_profile);
+        group_mail_columns.add(&build_mail_column_order_editor(settings.clone()));
+
         let row_mail_show_avatar = adw::SwitchRow::builder()
             .title("Absender-Avatare anzeigen")
             .subtitle("Zeigt Initialen bzw. Bilder links neben dem Absender")
@@ -3301,6 +3336,121 @@ impl PreferencesDialog {
 }
 
 const MAX_EDITABLE_MAIL_NORMAL_HEADERS: usize = 64;
+
+fn mail_column_label(column: &str) -> &'static str {
+    match column {
+        "status" => "Status",
+        "attachment" => "Anhang",
+        "flagged" => "Markierung",
+        "sender" => "Absender / Empfänger",
+        "subject" => "Betreff",
+        "date" => "Datum",
+        "follow-up" => "Nachverfolgung",
+        "important" => "Wichtigkeit",
+        "avatar" => "Avatar",
+        "preview" => "Vorschautext",
+        "size" => "Größe",
+        "follow-up-due" => "Fälligkeit",
+        "location" => "Ort",
+        "messages" => "Nachrichten (Wide)",
+        _ => "Unbekannte Spalte",
+    }
+}
+
+fn build_mail_column_order_editor(settings: Option<AppSettings>) -> gtk::Box {
+    let state = Rc::new(RefCell::new(
+        settings
+            .as_ref()
+            .map(AppSettings::mail_list_column_order)
+            .unwrap_or_else(|| {
+                crate::services::settings_service::MAIL_LIST_COLUMN_IDS
+                    .iter()
+                    .map(|column| (*column).to_string())
+                    .collect()
+            }),
+    ));
+    let list = gtk::ListBox::builder()
+        .selection_mode(gtk::SelectionMode::None)
+        .css_classes(vec!["boxed-list"])
+        .build();
+    rebuild_mail_column_order_list(&list, &state, &settings);
+
+    if let Some(settings) = settings.as_ref() {
+        let state = Rc::clone(&state);
+        let list = list.clone();
+        let settings_for_signal = settings.clone();
+        let settings_for_rows = Some(settings.clone());
+        settings.connect_changed(Some("mail-list-column-order"), move |_, _| {
+            state.replace(settings_for_signal.mail_list_column_order());
+            rebuild_mail_column_order_list(&list, &state, &settings_for_rows);
+        });
+    }
+
+    let editor = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(4)
+        .margin_top(6)
+        .build();
+    editor.append(
+        &gtk::Label::builder()
+            .label("Spaltenreihenfolge")
+            .halign(gtk::Align::Start)
+            .css_classes(vec!["heading"])
+            .build(),
+    );
+    editor.append(&list);
+    editor
+}
+
+fn rebuild_mail_column_order_list(
+    list: &gtk::ListBox,
+    state: &Rc<RefCell<Vec<String>>>,
+    settings: &Option<AppSettings>,
+) {
+    while let Some(child) = list.first_child() {
+        list.remove(&child);
+    }
+    let columns = state.borrow().clone();
+    for (index, column) in columns.iter().enumerate() {
+        let row = adw::ActionRow::builder()
+            .title(mail_column_label(column))
+            .subtitle(column)
+            .build();
+        let up = gtk::Button::builder()
+            .icon_name("go-up-symbolic")
+            .tooltip_text("Spalte nach links verschieben")
+            .css_classes(vec!["flat", "circular"])
+            .sensitive(index > 0)
+            .build();
+        let down = gtk::Button::builder()
+            .icon_name("go-down-symbolic")
+            .tooltip_text("Spalte nach rechts verschieben")
+            .css_classes(vec!["flat", "circular"])
+            .sensitive(index + 1 < columns.len())
+            .build();
+        row.add_suffix(&up);
+        row.add_suffix(&down);
+
+        for (button, target) in [(up, index.checked_sub(1)), (down, Some(index + 1))] {
+            let state = Rc::clone(state);
+            let list = list.clone();
+            let settings = settings.clone();
+            button.connect_clicked(move |_| {
+                let Some(target) = target.filter(|target| *target < state.borrow().len()) else {
+                    return;
+                };
+                state.borrow_mut().swap(index, target);
+                if let Some(settings) = settings.as_ref() {
+                    let order = state.borrow().clone();
+                    settings.set_mail_list_column_order(&order);
+                } else {
+                    rebuild_mail_column_order_list(&list, &state, &settings);
+                }
+            });
+        }
+        list.append(&row);
+    }
+}
 
 fn default_mail_normal_headers_for_editor() -> Vec<(String, bool)> {
     [

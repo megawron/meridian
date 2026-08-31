@@ -22,6 +22,7 @@ use gtk::{gio, glib};
 use std::cell::Cell;
 use std::rc::Rc;
 
+use crate::action_contract::{ACTIONS, ActionScope, MenuPath, menu_actions};
 use crate::application::EvolutionApplication;
 use crate::dialogs::{ReminderDialog, ReminderDialogAction};
 use crate::services::AppSettings;
@@ -1316,84 +1317,16 @@ impl EvolutionWindow {
     }
 
     fn set_mail_actions_enabled(&self, enabled: bool) {
-        const MAIL_ACTIONS: &[&str] = &[
-            "toggle-sidebar",
-            "toggle-preview",
-            "toggle-all-headers",
-            "toggle-mail-threading",
-            "toggle-mail-show-deleted",
-            "toggle-mail-preview-text",
-            "toggle-mail-avatar",
-            "toggle-mail-sender",
-            "toggle-mail-recipient",
-            "toggle-mail-date",
-            "toggle-mail-attachment",
-            "toggle-mail-labels",
-            "mail-density-compact",
-            "mail-density-normal",
-            "mail-density-spacious",
-            "use-classic-mail-layout",
-            "use-modern-mail-layout",
-            "toggle-mail-toolbar",
-            "toggle-mail-statusbar",
-            "refresh-mail",
-            "undo",
-            "redo",
-            "undelete",
-            "reply",
-            "reply-all",
-            "reply-list",
-            "reply-alternative",
-            "forward",
-            "forward-inline",
-            "forward-quoted",
-            "forward-attached",
-            "export",
-            "mail-print",
-            "mail-print-preview",
-            "view-message-source",
-            "copy-message-link",
-            "goto-containing-folder",
-            "add-sender-contact",
-            "edit-as-new",
-            "find-in-message",
-            "delete",
-            "mark-unread",
-            "mark-read",
-            "select-all-mail",
-            "toggle-flag",
-            "toggle-important",
-            "mail-follow-up",
-            "edit-labels",
-            "move-message",
-            "copy-message",
-            "archive",
-            "mark-junk",
-            "mark-not-junk",
-            "new-folder",
-            "rename-folder",
-            "delete-folder",
-            "refresh-folder",
-            "mark-all-read",
-            "next-unread-folder",
-            "folder-edit-sort-order",
-            "empty-trash",
-            "empty-junk",
-            "expunge",
-            "search",
-            "zoom-in",
-            "zoom-out",
-            "zoom-reset",
-            "expand-all-threads",
-            "collapse-all-threads",
-            "mark-thread-read",
-            "delete-thread",
-            "mail-next",
-            "mail-prev",
-            "mail-next-unread",
-            "mail-prev-unread",
-        ];
-        for name in MAIL_ACTIONS {
+        for spec in ACTIONS.iter().filter(|spec| {
+            matches!(
+                spec.scope,
+                ActionScope::ActiveMail
+                    | ActionScope::MailList
+                    | ActionScope::MessageSelection
+                    | ActionScope::FolderSelection
+            )
+        }) {
+            let name = spec.action.trim_start_matches("win.");
             if let Some(action) = self
                 .lookup_action(name)
                 .and_then(|action| action.downcast::<gio::SimpleAction>().ok())
@@ -1407,6 +1340,15 @@ impl EvolutionWindow {
         self.update_folder_subscriptions_action(enabled);
         self.update_folder_sort_order_action(enabled);
         self.update_mail_navigation_actions(enabled);
+    }
+
+    fn set_calendar_actions_enabled(&self, enabled: bool) {
+        if let Some(action) = self
+            .lookup_action("purge-calendar")
+            .and_then(|action| action.downcast::<gio::SimpleAction>().ok())
+        {
+            action.set_enabled(enabled);
+        }
     }
 
     fn update_folder_sort_order_action(&self, mail_view_enabled: bool) {
@@ -1550,38 +1492,11 @@ impl EvolutionWindow {
             && self
                 .mail_page()
                 .is_some_and(|mail_page| mail_page.has_selected_message());
-        const MESSAGE_ACTIONS: &[&str] = &[
-            "reply",
-            "reply-all",
-            "reply-list",
-            "reply-alternative",
-            "forward",
-            "forward-inline",
-            "forward-quoted",
-            "forward-attached",
-            "export",
-            "mail-print",
-            "mail-print-preview",
-            "view-message-source",
-            "copy-message-link",
-            "goto-containing-folder",
-            "add-sender-contact",
-            "edit-as-new",
-            "find-in-message",
-            "delete",
-            "mark-unread",
-            "mark-read",
-            "toggle-flag",
-            "toggle-important",
-            "mail-follow-up",
-            "edit-labels",
-            "move-message",
-            "copy-message",
-            "archive",
-            "mark-junk",
-            "mark-not-junk",
-        ];
-        for name in MESSAGE_ACTIONS {
+        for spec in ACTIONS
+            .iter()
+            .filter(|spec| spec.scope == ActionScope::MessageSelection)
+        {
+            let name = spec.action.trim_start_matches("win.");
             if let Some(action) = self
                 .lookup_action(name)
                 .and_then(|action| action.downcast::<gio::SimpleAction>().ok())
@@ -1856,30 +1771,18 @@ impl EvolutionWindow {
             .build();
         header_bar.pack_start(&transport_button);
 
-        let view_switcher = adw::ViewSwitcher::builder()
+        let view_switcher_title = adw::ViewSwitcherTitle::builder()
             .stack(&view_stack)
-            .policy(adw::ViewSwitcherPolicy::Narrow)
+            .title("Evolution")
             .build();
-
-        let window_title = adw::WindowTitle::new("Evolution", "");
-
-        let title_stack = gtk::Stack::builder()
-            .transition_type(gtk::StackTransitionType::Crossfade)
-            .build();
-        title_stack.add_named(&window_title, Some("title"));
-        title_stack.add_named(&view_switcher, Some("switcher"));
 
         let update_title_widget = {
-            let title_stack = title_stack.clone();
+            let view_switcher_title = view_switcher_title.clone();
             move || {
                 let is_bottom = AppSettings::try_new()
                     .map(|s| s.switcher_location() == "bottom-left")
                     .unwrap_or(true);
-                if is_bottom {
-                    title_stack.set_visible_child_name("title");
-                } else {
-                    title_stack.set_visible_child_name("switcher");
-                }
+                view_switcher_title.set_view_switcher_enabled(!is_bottom);
             }
         };
 
@@ -1892,7 +1795,7 @@ impl EvolutionWindow {
             });
         }
 
-        header_bar.set_title_widget(Some(&title_stack));
+        header_bar.set_title_widget(Some(&view_switcher_title));
 
         let menu_model = Self::build_primary_menu();
         let menu_button = gtk::MenuButton::builder()
@@ -1944,6 +1847,7 @@ impl EvolutionWindow {
             .css_classes(vec!["caption", "dim-label"])
             .halign(gtk::Align::Start)
             .hexpand(true)
+            .ellipsize(pango::EllipsizeMode::End)
             .build();
 
         let status_progress = gtk::ProgressBar::builder()
@@ -2079,274 +1983,53 @@ impl EvolutionWindow {
         // ─── 1. Datei (File) ───────────────────────────────────────────────
         let file_menu = gio::Menu::new();
         let new_menu = gio::Menu::new();
-        new_menu.append(Some("Neue E-Mail"), Some("app.compose"));
-        new_menu.append(Some("Neuer Kontakt"), Some("win.new-contact"));
-        new_menu.append(Some("Neuer Termin"), Some("win.new-event"));
-        new_menu.append(Some("Neue Aufgabe"), Some("win.new-task"));
-        new_menu.append(Some("Neue Notiz"), Some("win.new-memo"));
-        new_menu.append(Some("Neuer Ordner..."), Some("win.new-folder"));
+        Self::append_contract_menu(&new_menu, MenuPath::FileNew);
         file_menu.append_submenu(Some("Neu"), &new_menu);
-        file_menu.append(Some("Lokale Entwürfe"), Some("app.drafts"));
-        file_menu.append(Some("Senden & Empfangen"), Some("win.mail-send-receive"));
-        file_menu.append(Some("Offline arbeiten"), Some("win.work-offline"));
-        file_menu.append(Some("Online arbeiten"), Some("win.work-online"));
-        file_menu.append(Some("Daten importieren…"), Some("win.import"));
-        file_menu.append(Some("Ausgewählte E-Mail exportieren"), Some("win.export"));
-        file_menu.append(Some("Ausgewählte E-Mail drucken…"), Some("win.mail-print"));
-        file_menu.append(
-            Some("Druckvorschau der ausgewählten E-Mail…"),
-            Some("win.mail-print-preview"),
-        );
+        Self::append_contract_menu(&file_menu, MenuPath::File);
         menu.append_submenu(Some("Datei"), &file_menu);
 
         // ─── 2. Bearbeiten (Edit) ──────────────────────────────────────────
         let edit_menu = gio::Menu::new();
-        edit_menu.append(Some("Rückgängig"), Some("win.undo"));
-        edit_menu.append(Some("Wiederholen"), Some("win.redo"));
-        edit_menu.append(Some("Löschen rückgängig machen"), Some("win.undelete"));
-        edit_menu.append(Some("E-Mail suchen"), Some("win.search"));
-        edit_menu.append(
-            Some("In angezeigter Nachricht suchen…"),
-            Some("win.find-in-message"),
-        );
-        edit_menu.append(Some("Globale Suche"), Some("app.global-search"));
-        edit_menu.append(
-            Some("Vergangene Termine löschen…"),
-            Some("win.purge-calendar"),
-        );
-        edit_menu.append(
-            Some("Filterregeln bearbeiten..."),
-            Some("win.filter-editor"),
-        );
-        edit_menu.append(
-            Some("Suchordner verwalten..."),
-            Some("win.search-folder-editor"),
-        );
-        edit_menu.append(Some("Einstellungen"), Some("app.preferences"));
+        Self::append_contract_menu(&edit_menu, MenuPath::Edit);
         menu.append_submenu(Some("Bearbeiten"), &edit_menu);
 
         // ─── 3. Ansicht (View) ─────────────────────────────────────────────
         let view_menu = gio::Menu::new();
         let switch_menu = gio::Menu::new();
-        switch_menu.append(Some("Mail"), Some("win.switch-mail"));
-        switch_menu.append(Some("Kalender"), Some("win.switch-calendar"));
-        switch_menu.append(Some("Kontakte"), Some("win.switch-contacts"));
-        switch_menu.append(Some("Aufgaben"), Some("win.switch-tasks"));
-        switch_menu.append(Some("Notizen"), Some("win.switch-memos"));
+        Self::append_contract_menu(&switch_menu, MenuPath::ViewSwitch);
         view_menu.append_submenu(Some("Bereich wechseln"), &switch_menu);
-
-        view_menu.append(
-            Some("Ordner-Seitenleiste ein-/ausblenden"),
-            Some("win.toggle-sidebar"),
-        );
-        view_menu.append(
-            Some("Vorschaufenster ein-/ausblenden"),
-            Some("win.toggle-preview"),
-        );
-        view_menu.append(
-            Some("Alle Nachrichtenkopfzeilen anzeigen"),
-            Some("win.toggle-all-headers"),
-        );
-        view_menu.append(
-            Some("Nachrichtenquelle anzeigen"),
-            Some("win.view-message-source"),
-        );
-        view_menu.append(
-            Some("Klassische Evolution-Mail-Anordnung"),
-            Some("win.use-classic-mail-layout"),
-        );
-        view_menu.append(
-            Some("Moderne Mail-Anordnung"),
-            Some("win.use-modern-mail-layout"),
-        );
-        view_menu.append(
-            Some("Klassische Mail-Werkzeugleiste ein-/ausblenden"),
-            Some("win.toggle-mail-toolbar"),
-        );
-        view_menu.append(
-            Some("Statusinformationen unten ein-/ausblenden"),
-            Some("win.toggle-mail-statusbar"),
-        );
-        view_menu.append(
-            Some("Unterhaltungen gruppieren/auflösen"),
-            Some("win.toggle-mail-threading"),
-        );
-        view_menu.append(
-            Some("Gelöschte Nachrichten anzeigen"),
-            Some("win.toggle-mail-show-deleted"),
-        );
-        view_menu.append(
-            Some("Vorschautext in Nachrichtenzeilen ein-/ausblenden"),
-            Some("win.toggle-mail-preview-text"),
-        );
-        view_menu.append(
-            Some("Avatare in Nachrichtenzeilen ein-/ausblenden"),
-            Some("win.toggle-mail-avatar"),
-        );
-        view_menu.append(
-            Some("Absender in Nachrichtenzeilen ein-/ausblenden"),
-            Some("win.toggle-mail-sender"),
-        );
-        view_menu.append(
-            Some("Empfänger in Nachrichtenzeilen ein-/ausblenden"),
-            Some("win.toggle-mail-recipient"),
-        );
-        view_menu.append(
-            Some("Datum in Nachrichtenzeilen ein-/ausblenden"),
-            Some("win.toggle-mail-date"),
-        );
-        view_menu.append(
-            Some("Anhangssymbole in Nachrichtenzeilen ein-/ausblenden"),
-            Some("win.toggle-mail-attachment"),
-        );
-        view_menu.append(
-            Some("Labels in Nachrichtenzeilen ein-/ausblenden"),
-            Some("win.toggle-mail-labels"),
-        );
+        Self::append_contract_menu(&view_menu, MenuPath::View);
         let density_menu = gio::Menu::new();
-        density_menu.append(Some("Kompakt"), Some("win.mail-density-compact"));
-        density_menu.append(Some("Standard"), Some("win.mail-density-normal"));
-        density_menu.append(Some("Geräumig"), Some("win.mail-density-spacious"));
+        Self::append_contract_menu(&density_menu, MenuPath::ViewDensity);
         view_menu.append_submenu(Some("Nachrichtendichte"), &density_menu);
-        view_menu.append(Some("Schrift vergrößern"), Some("win.zoom-in"));
-        view_menu.append(Some("Schrift verkleinern"), Some("win.zoom-out"));
-        view_menu.append(Some("Normale Schriftgröße"), Some("win.zoom-reset"));
-        view_menu.append(
-            Some("Alle Unterhaltungen aufklappen"),
-            Some("win.expand-all-threads"),
-        );
-        view_menu.append(
-            Some("Alle Unterhaltungen einklappen"),
-            Some("win.collapse-all-threads"),
-        );
+        Self::append_contract_menu(&view_menu, MenuPath::ViewAfterDensity);
         menu.append_submenu(Some("Ansicht"), &view_menu);
 
         // ─── 4. Nachricht (Message) ────────────────────────────────────────
         let message_menu = gio::Menu::new();
         let goto_menu = gio::Menu::new();
-        goto_menu.append(Some("Nächste Nachricht"), Some("win.mail-next"));
-        goto_menu.append(
-            Some("Nächste ungelesene Nachricht"),
-            Some("win.mail-next-unread"),
-        );
-        goto_menu.append(Some("Vorherige Nachricht"), Some("win.mail-prev"));
-        goto_menu.append(
-            Some("Vorherige ungelesene Nachricht"),
-            Some("win.mail-prev-unread"),
-        );
-        goto_menu.append(
-            Some("Enthaltender Ordner"),
-            Some("win.goto-containing-folder"),
-        );
+        Self::append_contract_menu(&goto_menu, MenuPath::MessageGoto);
         message_menu.append_submenu(Some("Gehe zu"), &goto_menu);
-        message_menu.append(Some("Antworten"), Some("win.reply"));
-        message_menu.append(Some("Allen antworten"), Some("win.reply-all"));
-        message_menu.append(Some("An Liste antworten"), Some("win.reply-list"));
-        message_menu.append(Some("Alternativ antworten…"), Some("win.reply-alternative"));
+        Self::append_contract_menu(&message_menu, MenuPath::MessageBeforeForward);
         let forward_menu = gio::Menu::new();
-        forward_menu.append(Some("Weiterleiten"), Some("win.forward"));
-        forward_menu.append(Some("Inline weiterleiten"), Some("win.forward-inline"));
-        forward_menu.append(Some("Zitiert weiterleiten"), Some("win.forward-quoted"));
-        forward_menu.append(
-            Some("Als Anhang weiterleiten"),
-            Some("win.forward-attached"),
-        );
+        Self::append_contract_menu(&forward_menu, MenuPath::MessageForward);
         message_menu.append_submenu(Some("Weiterleiten"), &forward_menu);
-        message_menu.append(Some("Als EML speichern..."), Some("win.export"));
-        message_menu.append(Some("Drucken…"), Some("win.mail-print"));
-        message_menu.append(Some("Druckvorschau…"), Some("win.mail-print-preview"));
-        message_menu.append(
-            Some("Nachrichtenlink kopieren"),
-            Some("win.copy-message-link"),
-        );
-        message_menu.append(
-            Some("Absender zum Adressbuch hinzufügen"),
-            Some("win.add-sender-contact"),
-        );
-        message_menu.append(
-            Some("Als neue Nachricht bearbeiten…"),
-            Some("win.edit-as-new"),
-        );
-        message_menu.append(
-            Some("Alle sichtbaren Nachrichten auswählen"),
-            Some("win.select-all-mail"),
-        );
-        message_menu.append(Some("Als gelesen markieren"), Some("win.mark-read"));
-        message_menu.append(Some("Als ungelesen markieren"), Some("win.mark-unread"));
-        message_menu.append(
-            Some("Unterhaltung als gelesen markieren"),
-            Some("win.mark-thread-read"),
-        );
-        message_menu.append(Some("Unterhaltung löschen"), Some("win.delete-thread"));
-        message_menu.append(Some("Markierung umschalten"), Some("win.toggle-flag"));
-        message_menu.append(
-            Some("Wichtigkeitsmarkierung umschalten"),
-            Some("win.toggle-important"),
-        );
-        message_menu.append(
-            Some("Zur Nachverfolgung markieren…"),
-            Some("win.mail-follow-up"),
-        );
-        message_menu.append(Some("Labels bearbeiten..."), Some("win.edit-labels"));
-        message_menu.append(Some("In Ordner verschieben..."), Some("win.move-message"));
-        message_menu.append(Some("In Ordner kopieren..."), Some("win.copy-message"));
-        message_menu.append(Some("Archivieren"), Some("win.archive"));
-        message_menu.append(Some("Als Spam markieren"), Some("win.mark-junk"));
-        message_menu.append(Some("Als Nicht-Spam markieren"), Some("win.mark-not-junk"));
-        message_menu.append(Some("Löschen"), Some("win.delete"));
-        message_menu.append(Some("Löschen rückgängig machen"), Some("win.undelete"));
+        Self::append_contract_menu(&message_menu, MenuPath::MessageAfterForward);
         menu.append_submenu(Some("Nachricht"), &message_menu);
 
         // ─── 5. Ordner (Folder) ────────────────────────────────────────────
         let folder_menu = gio::Menu::new();
-        folder_menu.append(Some("Neuer Ordner..."), Some("win.new-folder"));
-        folder_menu.append(Some("Ordner umbenennen..."), Some("win.rename-folder"));
-        folder_menu.append(Some("Ordner löschen..."), Some("win.delete-folder"));
-        folder_menu.append(Some("Ordner aktualisieren"), Some("win.refresh-folder"));
-        folder_menu.append(
-            Some("Alle als gelesen markieren"),
-            Some("win.mark-all-read"),
-        );
-        folder_menu.append(
-            Some("Nächster ungelesener Ordner"),
-            Some("win.next-unread-folder"),
-        );
-        folder_menu.append(Some("Ordner aktualisieren"), Some("win.refresh-mail"));
-        folder_menu.append(Some("Papierkorb leeren"), Some("win.empty-trash"));
-        folder_menu.append(Some("Spam-Ordner leeren"), Some("win.empty-junk"));
-        folder_menu.append(Some("Endgültig löschen (Expunge)"), Some("win.expunge"));
-        folder_menu.append(
-            Some("Abonnements verwalten..."),
-            Some("win.folder-subscriptions"),
-        );
-        folder_menu.append(
-            Some("Sortierreihenfolge bearbeiten..."),
-            Some("win.folder-edit-sort-order"),
-        );
-        folder_menu.append(
-            Some("Eigenschaften des Ordners..."),
-            Some("win.folder-properties"),
-        );
+        Self::append_contract_menu(&folder_menu, MenuPath::Folder);
         menu.append_submenu(Some("Ordner"), &folder_menu);
 
         // ─── 6. Extras (Tools) ─────────────────────────────────────────────
         let tools_menu = gio::Menu::new();
-        tools_menu.append(Some("Abwesenheitsnotiz (OOF)..."), Some("win.oof-settings"));
-        tools_menu.append(
-            Some("Filterregeln bearbeiten..."),
-            Some("win.filter-editor"),
-        );
-        tools_menu.append(
-            Some("Suchordner verwalten..."),
-            Some("win.search-folder-editor"),
-        );
-        tools_menu.append(Some("Kontoeinstellungen..."), Some("win.account-setup"));
+        Self::append_contract_menu(&tools_menu, MenuPath::Tools);
         menu.append_submenu(Some("Extras"), &tools_menu);
 
         // ─── 7. Hilfe (Help) ───────────────────────────────────────────────
         let help_menu = gio::Menu::new();
-        help_menu.append(Some("Tastenkombinationen"), Some("win.show-help-overlay"));
-        help_menu.append(Some("Über Evolution"), Some("app.about"));
+        Self::append_contract_menu(&help_menu, MenuPath::Help);
         menu.append_submenu(Some("Hilfe"), &help_menu);
 
         menu
@@ -2354,14 +2037,14 @@ impl EvolutionWindow {
 
     fn build_transport_menu() -> gio::Menu {
         let menu = gio::Menu::new();
-        menu.append(Some("Senden & Empfangen"), Some("win.mail-send-receive"));
-        menu.append(Some("Alle Konten empfangen"), Some("win.mail-receive-all"));
-        menu.append(
-            Some("Ausstehende Nachrichten senden"),
-            Some("win.mail-send-all"),
-        );
-        menu.append(Some("Abbrechen"), Some("win.mail-stop"));
+        Self::append_contract_menu(&menu, MenuPath::Transport);
         menu
+    }
+
+    fn append_contract_menu(menu: &gio::Menu, path: MenuPath) {
+        for item in menu_actions(path) {
+            menu.append(Some(item.label), Some(item.action));
+        }
     }
 
     fn setup_mail_transport_actions(&self) {
@@ -3492,12 +3175,11 @@ impl EvolutionWindow {
                 if let Some(cal_page) = win.calendar_page() {
                     cal_page.present_calendar_purge_dialog();
                 } else {
-                    let dialog = crate::dialogs::CalendarPurgeDialog::new();
-                    dialog.set_transient_for(Some(&win));
-                    dialog.present();
+                    win.add_toast(&adw::Toast::new("Kalenderansicht ist nicht verfügbar"));
                 }
             }
         ));
+        action_purge_calendar.set_enabled(false);
         self.add_action(&action_purge_calendar);
 
         let action_zoom_in = gio::SimpleAction::new("zoom-in", None);
@@ -3737,17 +3419,29 @@ impl EvolutionWindow {
             let window = self.downgrade();
             view_stack.connect_visible_child_name_notify(move |stack| {
                 if let Some(window) = window.upgrade() {
+                    let visible = stack.visible_child_name();
                     window.set_mail_actions_enabled(
-                        stack
-                            .visible_child_name()
+                        visible
+                            .as_deref()
                             .is_some_and(|view_name| view_name == "mail"),
+                    );
+                    window.set_calendar_actions_enabled(
+                        visible
+                            .as_deref()
+                            .is_some_and(|view_name| view_name == "calendar"),
                     );
                 }
             });
+            let visible = view_stack.visible_child_name();
             self.set_mail_actions_enabled(
-                view_stack
-                    .visible_child_name()
+                visible
+                    .as_deref()
                     .is_some_and(|view_name| view_name == "mail"),
+            );
+            self.set_calendar_actions_enabled(
+                visible
+                    .as_deref()
+                    .is_some_and(|view_name| view_name == "calendar"),
             );
         }
 
@@ -3774,6 +3468,7 @@ impl EvolutionWindow {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::action_contract::{ACTIONS, menu_actions};
 
     fn add_test_page(stack: &adw::ViewStack, name: &str) -> gtk::Box {
         let page = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -3793,6 +3488,59 @@ mod tests {
     fn restore_visible_page(stack: &adw::ViewStack, visible_page: Option<&str>) {
         if let Some(visible_page) = visible_page {
             stack.set_visible_child_name(visible_page);
+        }
+    }
+
+    #[test]
+    fn window_action_contract_is_registered() {
+        let _gtk_lock = GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = gtk_test_main_context() else {
+            return;
+        };
+        let app = EvolutionApplication::new();
+        let window = EvolutionWindow::new(&app);
+        for spec in ACTIONS
+            .iter()
+            .filter(|spec| spec.action.starts_with("win."))
+        {
+            let name = spec.action.trim_start_matches("win.");
+            assert!(
+                window.lookup_action(name).is_some(),
+                "missing window action: {name}"
+            );
+        }
+    }
+
+    #[test]
+    fn null_message_selection_disables_message_scope_but_keeps_shell_actions() {
+        let _gtk_lock = GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = gtk_test_main_context() else {
+            return;
+        };
+        let app = EvolutionApplication::new();
+        let window = EvolutionWindow::new(&app);
+
+        window.set_message_actions_enabled(false);
+        for spec in ACTIONS
+            .iter()
+            .filter(|spec| spec.scope == ActionScope::MessageSelection)
+        {
+            let name = spec.action.trim_start_matches("win.");
+            let action = window
+                .lookup_action(name)
+                .expect("action must be registered");
+            assert!(
+                !action.is_enabled(),
+                "message action stayed enabled: {name}"
+            );
+        }
+        for name in ["search", "switch-mail", "switch-calendar", "new"] {
+            let action = window.lookup_action(name).expect("shell action must exist");
+            assert!(action.is_enabled(), "shell action was disabled: {name}");
         }
     }
 
@@ -4076,6 +3824,41 @@ mod tests {
     }
 
     #[test]
+    fn calendar_purge_action_is_enabled_only_for_the_calendar_page() {
+        let _gtk_lock = GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(context) = gtk_test_main_context() else {
+            return;
+        };
+        let app = EvolutionApplication::new();
+        let window = EvolutionWindow::new(&app);
+        let stack = window
+            .imp()
+            .view_stack
+            .borrow()
+            .as_ref()
+            .cloned()
+            .expect("window construction must install its view stack");
+        let initial_page = stack.visible_child_name().map(|name| name.to_string());
+        let action = window
+            .lookup_action("purge-calendar")
+            .and_then(|action| action.downcast::<gio::SimpleAction>().ok())
+            .expect("calendar purge action must be registered");
+
+        stack.set_visible_child_name("calendar");
+        drain_main_context(&context);
+        assert!(action.is_enabled());
+
+        stack.set_visible_child_name("mail");
+        drain_main_context(&context);
+        assert!(!action.is_enabled());
+
+        restore_visible_page(&stack, initial_page.as_deref());
+        drain_main_context(&context);
+    }
+
+    #[test]
     fn gtk_hidden_page_callback_rejects_before_selecting_or_opening() {
         let _gtk_lock = GTK_TEST_MUTEX
             .lock()
@@ -4169,12 +3952,11 @@ mod tests {
     #[test]
     fn undelete_recovery_is_exposed_without_aliasing_generic_undo() {
         let source = include_str!("window.rs");
-        assert!(source.contains(
-            "edit_menu.append(Some(\"Löschen rückgängig machen\"), Some(\"win.undelete\"));"
-        ));
-        assert!(source.contains(
-            "message_menu.append(Some(\"Löschen rückgängig machen\"), Some(\"win.undelete\"));"
-        ));
+        for path in [MenuPath::Edit, MenuPath::MessageAfterForward] {
+            assert!(menu_actions(path).any(|item| {
+                item.label == "Löschen rückgängig machen" && item.action == "win.undelete"
+            }));
+        }
         assert!(
             source.contains("let action_undelete = gio::SimpleAction::new(\"undelete\", None);")
         );
@@ -4187,7 +3969,9 @@ mod tests {
     #[test]
     fn folder_sort_order_action_is_in_the_folder_menu_and_uses_page_sensitivity() {
         let source = include_str!("window.rs");
-        assert!(source.contains("Some(\"win.folder-edit-sort-order\")"));
+        assert!(
+            menu_actions(MenuPath::Folder).any(|item| item.action == "win.folder-edit-sort-order")
+        );
         assert!(source.contains(
             "let action_folder_edit_sort_order = gio::SimpleAction::new(\"folder-edit-sort-order\", None);"
         ));

@@ -212,6 +212,12 @@ struct BackupSettings {
     mail_show_location: bool,
     #[serde(default = "default_mail_sender_column_width")]
     mail_sender_column_width: i32,
+    #[serde(default = "default_mail_date_column_width")]
+    mail_date_column_width: i32,
+    #[serde(default = "default_mail_list_view_profile")]
+    mail_list_view_profile: String,
+    #[serde(default = "default_mail_list_column_order")]
+    mail_list_column_order: String,
     #[serde(default = "default_color_scheme")]
     color_scheme: String,
     #[serde(default = "default_switcher_location")]
@@ -453,6 +459,18 @@ fn default_mail_sender_column_width() -> i32 {
     180
 }
 
+fn default_mail_date_column_width() -> i32 {
+    130
+}
+
+fn default_mail_list_view_profile() -> String {
+    "messages".to_string()
+}
+
+fn default_mail_list_column_order() -> String {
+    crate::services::settings_service::MAIL_LIST_COLUMN_IDS.join(",")
+}
+
 fn default_mail_layout() -> String {
     "classic".to_string()
 }
@@ -552,6 +570,9 @@ impl BackupSettings {
             mail_show_follow_up_due: settings.mail_show_follow_up_due(),
             mail_show_location: settings.mail_show_location(),
             mail_sender_column_width: settings.mail_sender_column_width(),
+            mail_date_column_width: settings.mail_date_column_width(),
+            mail_list_view_profile: settings.mail_list_view_profile(),
+            mail_list_column_order: settings.mail_list_column_order().join(","),
             color_scheme: settings.color_scheme(),
             switcher_location: settings.switcher_location(),
             sign_new_messages: settings.sign_new_messages(),
@@ -645,6 +666,15 @@ impl BackupSettings {
         settings.set_mail_show_follow_up_due(self.mail_show_follow_up_due);
         settings.set_mail_show_location(self.mail_show_location);
         settings.set_mail_sender_column_width(self.mail_sender_column_width);
+        settings.set_mail_date_column_width(self.mail_date_column_width);
+        if self.mail_list_view_profile == "custom" {
+            let order = crate::services::settings_service::normalize_mail_list_column_order(
+                &self.mail_list_column_order,
+            );
+            settings.set_mail_list_column_order(&order);
+        } else {
+            settings.apply_mail_list_view_profile(&self.mail_list_view_profile);
+        }
         settings.set_color_scheme(&self.color_scheme);
         settings.set_switcher_location(&self.switcher_location);
         settings.set_sign_new_messages(self.sign_new_messages);
@@ -753,6 +783,28 @@ impl BackupSettings {
             80,
             360,
         )?;
+        validate_i32_setting(
+            "mail_date_column_width",
+            self.mail_date_column_width,
+            60,
+            300,
+        )?;
+        validate_choice(
+            "mail_list_view_profile",
+            &self.mail_list_view_profile,
+            &["messages", "wide", "custom"],
+        )?;
+        if crate::services::settings_service::normalize_mail_list_column_order(
+            &self.mail_list_column_order,
+        )
+        .join(",")
+            != self.mail_list_column_order
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "mail_list_column_order ist nicht kanonisch",
+            ));
+        }
         validate_u32_setting("mail_font_size", self.mail_font_size, 8, 48)?;
         validate_u32_setting(
             "calendar_workday_start",
@@ -1180,6 +1232,9 @@ const BACKUP_SETTINGS_FIELDS: &[&str] = &[
     "mail_show_follow_up_due",
     "mail_show_location",
     "mail_sender_column_width",
+    "mail_date_column_width",
+    "mail_list_view_profile",
+    "mail_list_column_order",
     "color_scheme",
     "switcher_location",
     "sign_new_messages",
@@ -2079,7 +2134,11 @@ mod tests {
                 "mail_sidebar_position": 240,
                 "mail_show_size": true,
                 "mail_show_follow_up_due": true,
-                "mail_show_location": true
+                "mail_show_location": true,
+                "mail_sender_column_width": 245,
+                "mail_date_column_width": 175,
+                "mail_list_view_profile": "custom",
+                "mail_list_column_order": "subject,sender,date,status,attachment,flagged,follow-up,important,avatar,preview,size,follow-up-due,location,messages"
             },
             "files": []
         }))
@@ -2098,6 +2157,14 @@ mod tests {
         assert!(settings.mail_show_size);
         assert!(settings.mail_show_follow_up_due);
         assert!(settings.mail_show_location);
+        assert_eq!(settings.mail_sender_column_width, 245);
+        assert_eq!(settings.mail_date_column_width, 175);
+        assert_eq!(settings.mail_list_view_profile, "custom");
+        assert!(
+            settings
+                .mail_list_column_order
+                .starts_with("subject,sender,date")
+        );
         validate_bundle(&bundle).expect("current fixture should validate");
 
         let encoded = serde_json::to_vec(&bundle).expect("current fixture should round-trip");
@@ -2107,6 +2174,41 @@ mod tests {
         assert_eq!(
             encoded,
             serde_json::to_vec(&decoded).expect("encoding should be stable")
+        );
+    }
+
+    #[test]
+    fn backup_restores_custom_mail_column_contract_and_both_widths() {
+        let source_backend = gtk::gio::memory_settings_backend_new();
+        let source = AppSettings::try_new_with_backend(&source_backend)
+            .expect("the application settings schema should be available in tests");
+        source.set_mail_sender_column_width(245);
+        source.set_mail_date_column_width(175);
+        source.set_mail_list_column_order(&[
+            "subject".to_string(),
+            "sender".to_string(),
+            "date".to_string(),
+        ]);
+
+        let encoded = serde_json::to_vec(&BackupSettings::from_app(&source))
+            .expect("mail list backup settings should serialize");
+        let snapshot: BackupSettings =
+            serde_json::from_slice(&encoded).expect("mail list backup settings should deserialize");
+        snapshot
+            .validate()
+            .expect("mail list backup settings should validate");
+
+        let target_backend = gtk::gio::memory_settings_backend_new();
+        let target = AppSettings::try_new_with_backend(&target_backend)
+            .expect("the application settings schema should be available in tests");
+        snapshot.apply_to(&target);
+
+        assert_eq!(target.mail_sender_column_width(), 245);
+        assert_eq!(target.mail_date_column_width(), 175);
+        assert_eq!(target.mail_list_view_profile(), "custom");
+        assert_eq!(
+            &target.mail_list_column_order()[..3],
+            &["subject", "sender", "date"]
         );
     }
 
@@ -2181,6 +2283,9 @@ mod tests {
             serde_json::json!({"mail_sync_message_limit": "100"}),
             serde_json::json!({"mail_sync_message_limit": 24}),
             serde_json::json!({"mail_sender_column_width": 79}),
+            serde_json::json!({"mail_date_column_width": 59}),
+            serde_json::json!({"mail_list_view_profile": "invalid"}),
+            serde_json::json!({"mail_list_column_order": "date,date"}),
             serde_json::json!({"switcher_location": "sidebar"}),
             serde_json::json!({"composer_charset": "X-UNKNOWN"}),
             serde_json::json!({"calendar_hidden_sources": "source-a,source-a"}),

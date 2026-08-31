@@ -21,7 +21,7 @@ use crate::services::reminder_service::{
 use crate::window::EvolutionWindow;
 use crate::{APP_ID, RESOURCE_PATH};
 
-const ACCELERATOR_BINDINGS: &[(&str, &[&str])] = &[
+pub(crate) const ACCELERATOR_BINDINGS: &[(&str, &[&str])] = &[
     ("app.quit", &["<Ctrl>Q"]),
     ("app.global-search", &["<Ctrl><Shift>G"]),
     ("app.preferences", &["<Ctrl>comma"]),
@@ -53,6 +53,7 @@ const ACCELERATOR_BINDINGS: &[(&str, &[&str])] = &[
     ("win.mail-print", &["<Ctrl>P"]),
     ("win.view-message-source", &["<Ctrl>U"]),
     ("win.find-in-message", &["<Ctrl><Shift>F"]),
+    ("win.purge-calendar", &["<Ctrl>E"]),
     ("win.delete", &["Delete"]),
     ("win.mark-read", &["<Ctrl>K"]),
     ("win.mark-unread", &["<Ctrl><Shift>K"]),
@@ -62,7 +63,10 @@ const ACCELERATOR_BINDINGS: &[(&str, &[&str])] = &[
     ("win.zoom-out", &["<Ctrl>minus"]),
     ("win.zoom-reset", &["<Ctrl>0"]),
     ("win.expand-all-threads", &["<Shift>plus", "<Shift>KP_Add"]),
-    ("win.collapse-all-threads", &["<Shift>minus", "<Shift>KP_Subtract"]),
+    (
+        "win.collapse-all-threads",
+        &["<Shift>minus", "<Shift>KP_Subtract"],
+    ),
     ("win.toggle-important", &["<Ctrl>I"]),
     ("win.archive", &["<Ctrl><Alt>A"]),
     ("win.mark-junk", &["<Ctrl>J"]),
@@ -71,6 +75,56 @@ const ACCELERATOR_BINDINGS: &[(&str, &[&str])] = &[
     ("win.copy-message", &["<Ctrl><Shift>C"]),
     ("win.select-all-mail", &["<Ctrl>A"]),
 ];
+
+pub(crate) fn primary_accelerator(action: &str) -> Option<&'static str> {
+    ACCELERATOR_BINDINGS
+        .iter()
+        .find_map(|(candidate, accelerators)| (*candidate == action).then(|| accelerators[0]))
+}
+
+#[cfg(test)]
+mod action_contract_tests {
+    use super::*;
+    use crate::action_contract::{ACTIONS, SHORTCUTS};
+
+    #[test]
+    fn every_documented_shortcut_has_a_registered_accelerator() {
+        for shortcut in SHORTCUTS {
+            assert!(
+                primary_accelerator(shortcut.action).is_some(),
+                "shortcut has no accelerator: {}",
+                shortcut.action
+            );
+        }
+    }
+
+    #[test]
+    fn every_accelerator_targets_an_exported_action() {
+        for (action, accelerators) in ACCELERATOR_BINDINGS {
+            assert!(!accelerators.is_empty(), "empty accelerator list: {action}");
+            assert!(
+                ACTIONS.iter().any(|spec| spec.action == *action),
+                "accelerator targets an unknown action: {action}"
+            );
+        }
+    }
+
+    #[test]
+    fn application_action_contract_is_registered() {
+        let app = EvolutionApplication::new();
+        app.setup_actions();
+        for spec in ACTIONS
+            .iter()
+            .filter(|spec| spec.action.starts_with("app."))
+        {
+            let name = spec.action.trim_start_matches("app.");
+            assert!(
+                app.lookup_action(name).is_some(),
+                "missing app action: {name}"
+            );
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 enum ReminderAction {
@@ -683,5 +737,6 @@ mod tests {
         assert_eq!(accelerators_for("win.find-in-message"), &["<Ctrl><Shift>F"]);
         assert_eq!(accelerators_for("win.undelete"), &["<Ctrl><Shift>D"]);
         assert_eq!(accelerators_for("win.mark-all-read"), &["<Ctrl><Shift>M"]);
+        assert_eq!(accelerators_for("win.purge-calendar"), &["<Ctrl>E"]);
     }
 }

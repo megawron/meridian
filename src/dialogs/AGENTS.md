@@ -41,6 +41,14 @@ and updates to the service/settings APIs.
   and local/external/nested members are edited as one pending value, invalid
   members remain visible with a validation error, and the original record is
   unchanged when validation, cancellation, or the backend write fails.
+- Calendar purge uses Evolution's destructive 0..1000-day prompt with a
+  60-day default, runs outside GTK, supports cancellation, prevents duplicate
+  starts, and reports removed/skipped/partial/error outcomes before triggering
+  an authoritative calendar reload. Never present provider refresh as purge.
+- Mail preferences expose Messages/Wide profiles and the complete normalized
+  column order. Moving any column persists `custom`; applying a named profile
+  restores that profile's deterministic order. The daily column popover also
+  exposes both named profiles and sender/date widths.
 
 ## Verification
 

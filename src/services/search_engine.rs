@@ -5,6 +5,7 @@
 use chrono::{DateTime, Local, NaiveDate, NaiveDateTime};
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::fmt;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -410,6 +411,20 @@ impl SearchDocument {
         self.fields = fields;
         self
     }
+
+    fn from_mail_record(record: &MailSearchRecord) -> Self {
+        Self {
+            result: SearchResultItem {
+                domain: SearchDomain::Mail,
+                title: String::new(),
+                snippet: String::new(),
+                date: String::new(),
+                target: None,
+            },
+            searchable_text: record.searchable_text.clone(),
+            fields: SearchDocumentFields::from_mail_record(record),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -441,6 +456,57 @@ impl SearchDocumentFields {
             ..Self::default()
         }
     }
+
+    fn from_mail_record(record: &MailSearchRecord) -> Self {
+        Self {
+            from: record.from.clone(),
+            to: record.to.clone(),
+            cc: record.cc.clone(),
+            bcc: record.bcc.clone(),
+            subject: record.subject.clone(),
+            body: record.body.clone(),
+            labels: record.labels.clone(),
+            filenames: record.filenames.clone(),
+            folder: record.folder.clone(),
+            reply_to: record.reply_to.clone(),
+            message_id: record.message_id.clone(),
+            location: record.location.clone(),
+            is_unread: record.is_unread,
+            is_flagged: record.is_flagged,
+            is_important: record.is_important,
+            is_junk: record.is_junk,
+            has_attachment: record.has_attachment,
+        }
+    }
+}
+
+/// Provider-neutral mail snapshot consumed by the canonical query matcher.
+///
+/// Providers should populate only data available for the message snapshot.
+/// Optional state/date values are deliberately tri-state: an unavailable
+/// value fails closed for positive and negative predicates alike.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct MailSearchRecord {
+    pub(crate) searchable_text: String,
+    pub(crate) from: String,
+    pub(crate) to: String,
+    pub(crate) cc: String,
+    pub(crate) bcc: String,
+    pub(crate) subject: String,
+    pub(crate) body: String,
+    pub(crate) labels: String,
+    pub(crate) filenames: String,
+    pub(crate) folder: String,
+    pub(crate) reply_to: String,
+    pub(crate) message_id: String,
+    pub(crate) location: String,
+    pub(crate) date: Option<NaiveDate>,
+    pub(crate) is_unread: Option<bool>,
+    pub(crate) is_flagged: Option<bool>,
+    pub(crate) is_important: Option<bool>,
+    pub(crate) is_junk: Option<bool>,
+    pub(crate) has_attachment: Option<bool>,
 }
 
 #[allow(dead_code)]
@@ -766,6 +832,149 @@ enum SearchQuery {
     Term(SearchQueryTerm),
 }
 
+/// Opaque parsed free-form mail query exposed to provider adapters.
+///
+/// The AST stays private so callers cannot accidentally depend on parser
+/// implementation details or construct queries which have not passed the
+/// strict parser.
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ParsedMailSearchQuery(SearchQuery);
+
+/// Default field used for unqualified mail-search terms.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum MailSearchFieldScope {
+    #[default]
+    Any,
+    Subject,
+    Sender,
+    Recipients,
+    Body,
+}
+
+/// The only Graph search plans the portable parser is allowed to emit.
+///
+/// `SafePositiveConjunction` is deliberately narrower than the local
+/// matcher: Graph receives it only when every canonical predicate has an
+/// exact positive Contains representation.  Everything else stays typed as
+/// `Unsupported`, so an adapter cannot silently turn a partial query into a
+/// broader search.
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum MailGraphSearchPlan {
+    SafePositiveConjunction(String),
+    Unsupported(String),
+}
+
+const MAIL_GRAPH_SEARCH_VALUE_MAX_CHARS: usize = 128;
+
+impl ParsedMailSearchQuery {
+    /// Compile this validated query to the strict portable Graph subset.
+    ///
+    /// The AST remains private: callers receive either the complete KQL
+    /// conjunction or an explicit unsupported result and can never observe a
+    /// partial clause list.
+    #[allow(dead_code)]
+    pub(crate) fn graph_search_plan(&self) -> MailGraphSearchPlan {
+        let mut clauses = Vec::new();
+        match append_mail_graph_clauses(&self.0, &mut clauses) {
+            Ok(()) if !clauses.is_empty() => {
+                MailGraphSearchPlan::SafePositiveConjunction(clauses.join(" AND "))
+            }
+            Ok(()) => MailGraphSearchPlan::Unsupported(
+                "empty query cannot be represented by Graph search".to_string(),
+            ),
+            Err(reason) => MailGraphSearchPlan::Unsupported(reason),
+        }
+    }
+}
+
+fn append_mail_graph_clauses(
+    query: &SearchQuery,
+    clauses: &mut Vec<String>,
+) -> Result<(), String> {
+    match query {
+        SearchQuery::All(expressions) => {
+            if expressions.is_empty() {
+                return Err("empty conjunction cannot be represented by Graph search".to_string());
+            }
+            for expression in expressions {
+                append_mail_graph_clauses(expression, clauses)?;
+            }
+            Ok(())
+        }
+        SearchQuery::Any(_) => Err("OR expressions are unsupported by Graph search".to_string()),
+        SearchQuery::Not(_) => Err("negated expressions are unsupported by Graph search".to_string()),
+        SearchQuery::Term(term) => {
+            clauses.push(mail_graph_clause(term)?);
+            Ok(())
+        }
+    }
+}
+
+fn mail_graph_clause(term: &SearchQueryTerm) -> Result<String, String> {
+    if term.negated {
+        return Err("negated terms are unsupported by Graph search".to_string());
+    }
+
+    match term.kind {
+        SearchTermKind::Text { field, matcher } => {
+            if matcher != SearchMatchKind::Contains {
+                return Err("only Contains text matching is supported by Graph search".to_string());
+            }
+            let value = escape_mail_graph_value(&term.value)?;
+            let field_name = match field {
+                SearchField::Any => None,
+                SearchField::From => Some("from"),
+                SearchField::Recipients => Some("recipients"),
+                SearchField::Cc => Some("cc"),
+                SearchField::Bcc => Some("bcc"),
+                SearchField::Subject => Some("subject"),
+                SearchField::Body => Some("body"),
+                SearchField::Filename => Some("attachment"),
+                SearchField::To
+                | SearchField::Label
+                | SearchField::Folder
+                | SearchField::ReplyTo
+                | SearchField::MessageId
+                | SearchField::Location => {
+                    return Err("local-only or unsupported field in Graph search".to_string());
+                }
+            };
+            Ok(match field_name {
+                Some(field_name) => format!("\"{field_name}:{value}\""),
+                None => format!("\"{value}\""),
+            })
+        }
+        SearchTermKind::State(SearchState::Attachment) => Ok("\"hasAttachments:true\"".to_string()),
+        SearchTermKind::State(_) => {
+            Err("local state predicates are unsupported by Graph search".to_string())
+        }
+        SearchTermKind::DateAtOrAfter(_)
+        | SearchTermKind::DateAtOrBefore(_)
+        | SearchTermKind::DateAfter(_)
+        | SearchTermKind::DateBefore(_)
+        | SearchTermKind::DateOn(_) => {
+            Err("date predicates are unsupported by Graph search".to_string())
+        }
+    }
+}
+
+fn escape_mail_graph_value(value: &str) -> Result<String, String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err("empty value cannot be represented by Graph search".to_string());
+    }
+    if value.chars().count() > MAIL_GRAPH_SEARCH_VALUE_MAX_CHARS {
+        return Err("Graph search value exceeds the supported length".to_string());
+    }
+    if value.contains(['\r', '\n']) {
+        return Err("Graph search value contains a line break".to_string());
+    }
+    Ok(value.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SearchField {
     Any,
@@ -822,7 +1031,7 @@ enum SearchTermKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum SearchQueryParseError {
+pub(crate) enum SearchQueryParseError {
     EmptyTerm,
     UnterminatedQuote,
     DanglingEscape,
@@ -834,6 +1043,37 @@ enum SearchQueryParseError {
     UnsupportedOperator(String),
     InvalidValue(String),
 }
+
+impl fmt::Display for SearchQueryParseError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::EmptyTerm => formatter.write_str("Suchbegriff darf nicht leer sein"),
+            Self::UnterminatedQuote => {
+                formatter.write_str("Suchanfrage enthält ein ungeschlossenes Anführungszeichen")
+            }
+            Self::DanglingEscape => {
+                formatter.write_str("Suchanfrage enthält einen unvollständigen Escape")
+            }
+            Self::UnexpectedClosingParenthesis => {
+                formatter.write_str("Suchanfrage enthält eine unerwartete schließende Klammer")
+            }
+            Self::MissingClosingParenthesis => {
+                formatter.write_str("Suchanfrage enthält eine nicht geschlossene Klammer")
+            }
+            Self::EmptyGroup => formatter.write_str("Suchanfrage enthält eine leere Gruppe"),
+            Self::InvalidSyntax(message) => write!(formatter, "Ungültige Suchsyntax: {message}"),
+            Self::UnknownOperator(operator) => {
+                write!(formatter, "Unbekannter Suchoperator „{operator}“")
+            }
+            Self::UnsupportedOperator(operator) => {
+                write!(formatter, "Nicht unterstützter Suchoperator „{operator}“")
+            }
+            Self::InvalidValue(value) => write!(formatter, "Ungültiger Suchwert „{value}“"),
+        }
+    }
+}
+
+impl std::error::Error for SearchQueryParseError {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SearchWord {
@@ -854,6 +1094,15 @@ enum SearchToken {
 // search. Native CamelFolderSearch/CamelSExp execution remains a separate
 // backend adapter and is intentionally not simulated here.
 fn parse_search_query(input: &str) -> Result<Option<SearchQuery>, SearchQueryParseError> {
+    parse_search_query_with_scope(input, None)
+}
+
+/// Parse a mail query while applying `default_field` only to bare terms.
+/// Explicit field/state/date operators always retain their canonical meaning.
+fn parse_search_query_with_scope(
+    input: &str,
+    default_field: Option<SearchField>,
+) -> Result<Option<SearchQuery>, SearchQueryParseError> {
     if input.trim().is_empty() {
         return Ok(None);
     }
@@ -864,7 +1113,7 @@ fn parse_search_query(input: &str) -> Result<Option<SearchQuery>, SearchQueryPar
     }
 
     let mut cursor = 0;
-    let expressions = parse_query_sequence(&tokens, &mut cursor, false)?;
+    let expressions = parse_query_sequence(&tokens, &mut cursor, false, default_field)?;
     if cursor != tokens.len() {
         return Err(SearchQueryParseError::InvalidSyntax(
             "unexpected tokens after search expression".to_string(),
@@ -873,10 +1122,40 @@ fn parse_search_query(input: &str) -> Result<Option<SearchQuery>, SearchQueryPar
     Ok(combine_all(expressions))
 }
 
+/// Parse the portable Evolution-compatible mail query language.
+///
+/// Empty input produces `Ok(None)`, while malformed or unsupported syntax
+/// returns an error so callers can fail closed instead of broadening a search.
+#[allow(dead_code)]
+pub(crate) fn parse_mail_query(
+    input: &str,
+    scope: MailSearchFieldScope,
+) -> Result<Option<ParsedMailSearchQuery>, SearchQueryParseError> {
+    let default_field = match scope {
+        MailSearchFieldScope::Any => SearchField::Any,
+        MailSearchFieldScope::Subject => SearchField::Subject,
+        MailSearchFieldScope::Sender => SearchField::From,
+        MailSearchFieldScope::Recipients => SearchField::Recipients,
+        MailSearchFieldScope::Body => SearchField::Body,
+    };
+    parse_search_query_with_scope(input, Some(default_field))
+        .map(|query| query.map(ParsedMailSearchQuery))
+}
+
+/// Validate a saved/free-form search without exposing or duplicating the AST
+/// parser at the caller.
+pub(crate) fn validate_search_syntax(input: &str) -> Result<(), SearchQueryParseError> {
+    if input.trim().is_empty() {
+        return Err(SearchQueryParseError::EmptyTerm);
+    }
+    parse_search_query(input).map(|_| ())
+}
+
 fn parse_query_sequence(
     tokens: &[SearchToken],
     cursor: &mut usize,
     expect_closing_parenthesis: bool,
+    default_field: Option<SearchField>,
 ) -> Result<Vec<SearchQuery>, SearchQueryParseError> {
     let mut expressions = Vec::new();
 
@@ -896,7 +1175,7 @@ fn parse_query_sequence(
             return Err(SearchQueryParseError::UnexpectedClosingParenthesis);
         }
 
-        if let Some(expression) = parse_query_atom(tokens, cursor)? {
+        if let Some(expression) = parse_query_atom(tokens, cursor, default_field)? {
             expressions.push(expression);
         }
     }
@@ -907,11 +1186,12 @@ fn parse_query_sequence(
 fn parse_query_atom(
     tokens: &[SearchToken],
     cursor: &mut usize,
+    default_field: Option<SearchField>,
 ) -> Result<Option<SearchQuery>, SearchQueryParseError> {
     match tokens.get(*cursor) {
         Some(SearchToken::OpenParen) => {
             *cursor += 1;
-            let expressions = parse_query_sequence(tokens, cursor, true)?;
+            let expressions = parse_query_sequence(tokens, cursor, true, default_field)?;
             combine_all(expressions)
                 .ok_or(SearchQueryParseError::EmptyGroup)
                 .map(Some)
@@ -925,7 +1205,7 @@ fn parse_query_atom(
                     )));
                 }
                 *cursor += 2;
-                let expressions = parse_query_sequence(tokens, cursor, true)?;
+                let expressions = parse_query_sequence(tokens, cursor, true, default_field)?;
                 let expression = match group.as_str() {
                     "and:" => combine_all(expressions).ok_or(SearchQueryParseError::EmptyGroup)?,
                     "or:" => {
@@ -958,7 +1238,7 @@ fn parse_query_atom(
             }
 
             *cursor += 1;
-            normalize_search_query_term(word).map(|term| term.map(SearchQuery::Term))
+            normalize_search_query_term(word, default_field).map(|term| term.map(SearchQuery::Term))
         }
         Some(SearchToken::CloseParen) => Err(SearchQueryParseError::UnexpectedClosingParenthesis),
         None => Err(SearchQueryParseError::InvalidSyntax(
@@ -977,6 +1257,7 @@ fn combine_all(mut expressions: Vec<SearchQuery>) -> Option<SearchQuery> {
 
 fn normalize_search_query_term(
     token: &SearchWord,
+    default_field: Option<SearchField>,
 ) -> Result<Option<SearchQueryTerm>, SearchQueryParseError> {
     if token.text.is_empty() {
         return Err(SearchQueryParseError::EmptyTerm);
@@ -1003,7 +1284,7 @@ fn normalize_search_query_term(
             value: token_text.to_lowercase(),
             negated,
             kind: SearchTermKind::Text {
-                field: SearchField::Any,
+                field: default_field.unwrap_or(SearchField::Any),
                 matcher: SearchMatchKind::Contains,
             },
         }));
@@ -1043,10 +1324,12 @@ fn normalize_search_query_term(
         "on" | "date" | "after" | "newer" | "before" | "older" | "sent" | "received" | "rcv" => {
             parse_date_term(base_key, option, raw_value, negated)
         }
-        "from" | "f" | "to" | "t" | "cc" | "c" | "bcc" | "recips" | "r" | "recipients"
-        | "subject" | "s" | "body" | "b" | "content" | "label" | "l" | "tag" | "keyword"
-        | "filename" | "name" | "folder" | "in" | "reply-to" | "replyto" | "mid" | "message-id"
-        | "location" | "m" => parse_field_term(base_key, option, value, negated),
+        "from" | "f" | "sender" | "to" | "t" | "cc" | "c" | "bcc" | "recipient" | "recips"
+        | "r" | "recipients" | "subject" | "s" | "body" | "b" | "content" | "label" | "l"
+        | "tag" | "keyword" | "filename" | "name" | "folder" | "in" | "reply-to" | "replyto"
+        | "mid" | "message-id" | "location" | "m" => {
+            parse_field_term(base_key, option, value, negated)
+        }
         "list" | "header" | "h" | "exists" | "e" | "size" | "sz" | "score" | "sc" => {
             Err(SearchQueryParseError::UnsupportedOperator(key))
         }
@@ -1055,9 +1338,26 @@ fn normalize_search_query_term(
 }
 
 fn split_search_key_option(key: &str) -> (&str, Option<&str>) {
-    key.split_once('-')
-        .map(|(base, option)| (base, Some(option)))
-        .unwrap_or((key, None))
+    // Matching options form a small closed set (`-no`, `-has-words`, `-regex`,
+    // …) while the base field itself may contain hyphens (`reply-to`,
+    // `message-id`).  Split at the first hyphen whose remainder is a known
+    // option; with no such suffix the whole key is the field name.
+    const MATCHER_OPTIONS: &[&str] = &[
+        "no", "contains", "c", "has-words", "w", "matches", "m",
+        "starts-with", "sw", "ends-with", "ew", "regex", "r",
+        "full-regex", "fr", "soundex", "se",
+        "=", "<", ">",  // Evolution date comparisons: sent-=:d, sent-<:d, sent->:d
+    ];
+    for (idx, ch) in key.char_indices() {
+        if ch != '-' {
+            continue;
+        }
+        let rest = &key[idx + 1..];
+        if MATCHER_OPTIONS.contains(&rest) {
+            return (&key[..idx], Some(rest));
+        }
+    }
+    (key, None)
 }
 
 fn parse_not_term(
@@ -1263,11 +1563,11 @@ fn parse_field_term(
     negated: bool,
 ) -> Result<Option<SearchQueryTerm>, SearchQueryParseError> {
     let field = match key {
-        "from" | "f" => SearchField::From,
+        "from" | "f" | "sender" => SearchField::From,
         "to" | "t" => SearchField::To,
         "cc" | "c" => SearchField::Cc,
         "bcc" => SearchField::Bcc,
-        "recips" | "r" | "recipients" => SearchField::Recipients,
+        "recipient" | "recips" | "r" | "recipients" => SearchField::Recipients,
         "subject" | "s" => SearchField::Subject,
         "body" | "b" | "content" => SearchField::Body,
         "label" | "l" | "tag" | "keyword" => SearchField::Label,
@@ -1402,19 +1702,83 @@ fn result_date(value: &str) -> Option<NaiveDate> {
     })
 }
 
+/// Match an opaque parsed query against a provider-owned mail snapshot.
+#[allow(dead_code)]
+pub(crate) fn matches_mail_query(query: &ParsedMailSearchQuery, record: &MailSearchRecord) -> bool {
+    let document = SearchDocument::from_mail_record(record);
+    search_query_matches(&query.0, &document, record.date)
+}
+
+/// Return whether evaluating `query` requires message-body text.
+///
+/// A bare term searches the complete portable message index and therefore
+/// potentially includes the body. Negation and groups preserve that need.
+#[allow(dead_code)]
+pub(crate) fn mail_query_needs_body(query: &ParsedMailSearchQuery) -> bool {
+    fn expression_needs_body(query: &SearchQuery) -> bool {
+        match query {
+            SearchQuery::All(expressions) | SearchQuery::Any(expressions) => {
+                expressions.iter().any(expression_needs_body)
+            }
+            SearchQuery::Not(expression) => expression_needs_body(expression),
+            SearchQuery::Term(term) => matches!(
+                term.kind,
+                SearchTermKind::Text {
+                    field: SearchField::Any | SearchField::Body,
+                    ..
+                }
+            ),
+        }
+    }
+
+    expression_needs_body(&query.0)
+}
+
 fn search_query_matches(
     query: &SearchQuery,
     document: &SearchDocument,
     document_date: Option<NaiveDate>,
 ) -> bool {
+    search_query_truth(query, document, document_date).unwrap_or(false)
+}
+
+/// Evaluate the query with Kleene's three-valued boolean algebra.
+///
+/// `None` means that a required provider value was unavailable. Keeping that
+/// state through groups is important: `NOT unknown` must remain unknown rather
+/// than becoming an accidental match. The public bool matcher unwraps only at
+/// the outer boundary and therefore fails closed.
+fn search_query_truth(
+    query: &SearchQuery,
+    document: &SearchDocument,
+    document_date: Option<NaiveDate>,
+) -> Option<bool> {
     match query {
-        SearchQuery::All(expressions) => expressions
-            .iter()
-            .all(|expression| search_query_matches(expression, document, document_date)),
-        SearchQuery::Any(expressions) => expressions
-            .iter()
-            .any(|expression| search_query_matches(expression, document, document_date)),
-        SearchQuery::Not(expression) => !search_query_matches(expression, document, document_date),
+        SearchQuery::All(expressions) => {
+            let mut unknown = false;
+            for expression in expressions {
+                match search_query_truth(expression, document, document_date) {
+                    Some(false) => return Some(false),
+                    Some(true) => {}
+                    None => unknown = true,
+                }
+            }
+            if unknown { None } else { Some(true) }
+        }
+        SearchQuery::Any(expressions) => {
+            let mut unknown = false;
+            for expression in expressions {
+                match search_query_truth(expression, document, document_date) {
+                    Some(true) => return Some(true),
+                    Some(false) => {}
+                    None => unknown = true,
+                }
+            }
+            if unknown { None } else { Some(false) }
+        }
+        SearchQuery::Not(expression) => {
+            search_query_truth(expression, document, document_date).map(|matches| !matches)
+        }
         SearchQuery::Term(term) => search_term_matches(term, document, document_date),
     }
 }
@@ -1423,30 +1787,33 @@ fn search_term_matches(
     term: &SearchQueryTerm,
     document: &SearchDocument,
     document_date: Option<NaiveDate>,
-) -> bool {
+) -> Option<bool> {
+    if let SearchTermKind::State(state) = term.kind {
+        return search_state_matches(document, state)
+            .map(|matches| if term.negated { !matches } else { matches });
+    }
+
     let matches = match term.kind {
         SearchTermKind::Text { field, matcher } => {
             let field_value = search_field_value(document, field);
-            search_text_matches(field_value.as_ref(), &term.value, matcher)
+            Some(search_text_matches(
+                field_value.as_ref(),
+                &term.value,
+                matcher,
+            ))
         }
         SearchTermKind::DateAtOrAfter(date) => {
-            document_date.is_some_and(|document_date| document_date >= date)
+            document_date.map(|document_date| document_date >= date)
         }
         SearchTermKind::DateAtOrBefore(date) => {
-            document_date.is_some_and(|document_date| document_date <= date)
+            document_date.map(|document_date| document_date <= date)
         }
-        SearchTermKind::DateAfter(date) => {
-            document_date.is_some_and(|document_date| document_date > date)
-        }
-        SearchTermKind::DateBefore(date) => {
-            document_date.is_some_and(|document_date| document_date < date)
-        }
-        SearchTermKind::DateOn(date) => {
-            document_date.is_some_and(|document_date| document_date == date)
-        }
-        SearchTermKind::State(state) => search_state_matches(document, state).unwrap_or(false),
+        SearchTermKind::DateAfter(date) => document_date.map(|document_date| document_date > date),
+        SearchTermKind::DateBefore(date) => document_date.map(|document_date| document_date < date),
+        SearchTermKind::DateOn(date) => document_date.map(|document_date| document_date == date),
+        SearchTermKind::State(_) => unreachable!("state terms are handled above"),
     };
-    if term.negated { !matches } else { matches }
+    matches.map(|matches| if term.negated { !matches } else { matches })
 }
 
 fn search_field_value<'a>(document: &'a SearchDocument, field: SearchField) -> Cow<'a, str> {
@@ -2127,9 +2494,9 @@ mod tests {
 
         let results =
             GlobalSearchEngine::query_documents(SearchDomain::All, "-after:2026-08-10", &documents);
-        assert_eq!(
-            results.iter().map(target_id).collect::<Vec<_>>(),
-            vec!["contact-1"]
+        assert!(
+            results.is_empty(),
+            "missing document dates must remain unknown for negated predicates"
         );
     }
 
@@ -2388,6 +2755,438 @@ mod tests {
         assert!(parse_search_query("subject:").is_err());
         assert!(parse_search_query("not:()").is_err());
         assert!(parse_search_query("(subject:one)").is_ok());
+    }
+
+    #[test]
+    fn search_syntax_validation_reports_invalid_queries_and_rejects_empty_input() {
+        for (query, expected_error) in [
+            (
+                "unknown:value",
+                SearchQueryParseError::UnknownOperator("unknown".to_string()),
+            ),
+            (
+                "or:(subject:one",
+                SearchQueryParseError::MissingClosingParenthesis,
+            ),
+            (
+                "subject:one)",
+                SearchQueryParseError::UnexpectedClosingParenthesis,
+            ),
+            (
+                "subject:\"unterminated",
+                SearchQueryParseError::UnterminatedQuote,
+            ),
+        ] {
+            let error = validate_search_syntax(query).expect_err("invalid query must fail");
+            assert_eq!(error, expected_error, "query {query:?}");
+            assert!(!error.to_string().is_empty());
+        }
+
+        assert_eq!(
+            validate_search_syntax("   ")
+                .expect_err("empty search input must fail")
+                .to_string(),
+            "Suchbegriff darf nicht leer sein"
+        );
+    }
+
+    #[test]
+    fn repeated_search_fields_are_accepted_by_the_canonical_parser() {
+        let query = parse_search_query("from:alice@example.org from:bob@example.org")
+            .expect("repeated fields should be valid")
+            .expect("non-empty query should produce an AST");
+
+        assert!(matches!(query, SearchQuery::All(expressions) if expressions.len() == 2));
+        assert!(validate_search_syntax("from:alice@example.org from:bob@example.org").is_ok());
+        assert!(validate_search_syntax("sender:alice recipient:bob").is_ok());
+    }
+
+    fn parsed_mail_query(input: &str, scope: MailSearchFieldScope) -> ParsedMailSearchQuery {
+        parse_mail_query(input, scope)
+            .expect("mail query should parse")
+            .expect("non-empty mail query should produce a parsed query")
+    }
+
+    fn assert_graph_plan_unsupported(input: &str) {
+        let query = parsed_mail_query(input, MailSearchFieldScope::Any);
+        assert!(
+            matches!(
+                query.graph_search_plan(),
+                MailGraphSearchPlan::Unsupported(_)
+            ),
+            "query should not be lowered to a partial Graph search: {input:?}"
+        );
+    }
+
+    #[test]
+    fn mail_graph_plan_emits_exact_safe_flat_and_clauses() {
+        let query = parsed_mail_query(
+            "subject:Roadmap from:Alice filename:Report.pdf has:attachment",
+            MailSearchFieldScope::Any,
+        );
+        assert_eq!(
+            query.graph_search_plan(),
+            MailGraphSearchPlan::SafePositiveConjunction(
+                "\"subject:roadmap\" AND \"from:alice\" AND \"attachment:report.pdf\" AND \"hasAttachments:true\""
+                    .to_string()
+            )
+        );
+
+        let escaped = parsed_mail_query(r#"subject:"A \"Quote\" \\path""#, MailSearchFieldScope::Any);
+        assert_eq!(
+            escaped.graph_search_plan(),
+            MailGraphSearchPlan::SafePositiveConjunction(
+                format!("\"subject:{}\"", r#"a \"quote\" \\path"#)
+            )
+        );
+    }
+
+    #[test]
+    fn mail_graph_plan_rejects_unsupported_or_unsafe_predicates() {
+        for input in [
+            "or:(subject:one subject:two)",
+            "not:(subject:one)",
+            "and:(subject:one or:(subject:two subject:three))",
+            "label:team",
+            "after:2026-08-01",
+            "folder:inbox",
+            "reply-to:alice@example.org",
+            "mid:message@example.org",
+            "location:local",
+            "is:unread",
+            "-is:attachment",
+            "no:attachment",
+            "subject-has-words:roadmap",
+            "subject-matches:roadmap",
+            "subject-starts-with:road",
+            "subject-ends-with:map",
+            "-subject:roadmap",
+            "to:alice@example.org",
+        ] {
+            assert_graph_plan_unsupported(input);
+        }
+
+        let line_break = parsed_mail_query(
+            &format!("subject:\"bad\rvalue\""),
+            MailSearchFieldScope::Any,
+        );
+        assert_graph_plan_unsupported_from_parsed(line_break);
+
+        let long_value = format!("subject:{}", "x".repeat(MAIL_GRAPH_SEARCH_VALUE_MAX_CHARS + 1));
+        let long_query = parsed_mail_query(&long_value, MailSearchFieldScope::Any);
+        assert_graph_plan_unsupported_from_parsed(long_query);
+
+        assert!(parse_mail_query("", MailSearchFieldScope::Any)
+            .expect("empty input should parse as no query")
+            .is_none());
+    }
+
+    fn assert_graph_plan_unsupported_from_parsed(query: ParsedMailSearchQuery) {
+        assert!(matches!(
+            query.graph_search_plan(),
+            MailGraphSearchPlan::Unsupported(_)
+        ));
+    }
+
+    #[test]
+    fn mail_graph_plan_maps_scoped_bare_terms_to_graph_fields() {
+        for (scope, expected) in [
+            (MailSearchFieldScope::Any, "\"needle\""),
+            (MailSearchFieldScope::Subject, "\"subject:needle\""),
+            (MailSearchFieldScope::Sender, "\"from:needle\""),
+            (MailSearchFieldScope::Recipients, "\"recipients:needle\""),
+            (MailSearchFieldScope::Body, "\"body:needle\""),
+        ] {
+            let query = parsed_mail_query("needle", scope);
+            assert_eq!(
+                query.graph_search_plan(),
+                MailGraphSearchPlan::SafePositiveConjunction(expected.to_string()),
+                "scope {scope:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn mail_graph_plan_keeps_repeated_fields_as_distinct_and_clauses() {
+        let query = parsed_mail_query(
+            "subject:one subject:two",
+            MailSearchFieldScope::Any,
+        );
+        assert_eq!(
+            query.graph_search_plan(),
+            MailGraphSearchPlan::SafePositiveConjunction(
+                "\"subject:one\" AND \"subject:two\"".to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn mail_query_scopes_apply_to_unqualified_terms() {
+        let cases = [
+            (
+                MailSearchFieldScope::Any,
+                MailSearchRecord {
+                    searchable_text: "needle".to_string(),
+                    ..MailSearchRecord::default()
+                },
+            ),
+            (
+                MailSearchFieldScope::Subject,
+                MailSearchRecord {
+                    subject: "needle".to_string(),
+                    ..MailSearchRecord::default()
+                },
+            ),
+            (
+                MailSearchFieldScope::Sender,
+                MailSearchRecord {
+                    from: "needle".to_string(),
+                    ..MailSearchRecord::default()
+                },
+            ),
+            (
+                MailSearchFieldScope::Recipients,
+                MailSearchRecord {
+                    cc: "needle".to_string(),
+                    ..MailSearchRecord::default()
+                },
+            ),
+            (
+                MailSearchFieldScope::Body,
+                MailSearchRecord {
+                    body: "needle".to_string(),
+                    ..MailSearchRecord::default()
+                },
+            ),
+        ];
+
+        for (scope, record) in cases {
+            let query = parsed_mail_query("needle", scope);
+            assert!(matches_mail_query(&query, &record), "scope {scope:?}");
+        }
+    }
+
+    #[test]
+    fn mail_query_explicit_fields_override_default_scope() {
+        let subject_record = MailSearchRecord {
+            subject: "project".to_string(),
+            ..MailSearchRecord::default()
+        };
+        let sender_record = MailSearchRecord {
+            from: "alice@example.org".to_string(),
+            ..MailSearchRecord::default()
+        };
+
+        assert!(matches_mail_query(
+            &parsed_mail_query("subject:project", MailSearchFieldScope::Sender),
+            &subject_record
+        ));
+        assert!(matches_mail_query(
+            &parsed_mail_query("from:alice@example.org", MailSearchFieldScope::Subject),
+            &sender_record
+        ));
+        assert!(!matches_mail_query(
+            &parsed_mail_query("project", MailSearchFieldScope::Sender),
+            &subject_record
+        ));
+    }
+
+    #[test]
+    fn mail_query_repeated_fields_are_conjoined() {
+        let complete = MailSearchRecord {
+            from: "alice bob".to_string(),
+            ..MailSearchRecord::default()
+        };
+        let incomplete = MailSearchRecord {
+            from: "alice".to_string(),
+            ..MailSearchRecord::default()
+        };
+        let query = parsed_mail_query("from:alice from:bob", MailSearchFieldScope::Any);
+
+        assert!(matches_mail_query(&query, &complete));
+        assert!(!matches_mail_query(&query, &incomplete));
+    }
+
+    #[test]
+    fn mail_query_nested_or_and_not_truth_tables() {
+        let query = parsed_mail_query(
+            "or:(and:(subject:alpha from:alice) and:(subject:beta from:bob))",
+            MailSearchFieldScope::Any,
+        );
+        let alpha_alice = MailSearchRecord {
+            subject: "alpha".to_string(),
+            from: "alice".to_string(),
+            ..MailSearchRecord::default()
+        };
+        let beta_bob = MailSearchRecord {
+            subject: "beta".to_string(),
+            from: "bob".to_string(),
+            ..MailSearchRecord::default()
+        };
+        let alpha_bob = MailSearchRecord {
+            subject: "alpha".to_string(),
+            from: "bob".to_string(),
+            ..MailSearchRecord::default()
+        };
+
+        assert!(matches_mail_query(&query, &alpha_alice));
+        assert!(matches_mail_query(&query, &beta_bob));
+        assert!(!matches_mail_query(&query, &alpha_bob));
+
+        let not_query = parsed_mail_query(
+            "not:(or:(subject:alpha subject:beta))",
+            MailSearchFieldScope::Any,
+        );
+        let gamma = MailSearchRecord {
+            subject: "gamma".to_string(),
+            ..MailSearchRecord::default()
+        };
+        assert!(!matches_mail_query(&not_query, &alpha_alice));
+        assert!(matches_mail_query(&not_query, &gamma));
+    }
+
+    #[test]
+    fn mail_query_body_requirement_tracks_nested_and_negated_terms() {
+        for (input, expected) in [
+            ("needle", true),
+            ("body:needle", true),
+            ("-body:needle", true),
+            ("not:(body:needle)", true),
+            ("or:(subject:needle body:needle)", true),
+            ("subject:needle", false),
+            ("from:alice", false),
+            ("is:unread", false),
+            ("after:2026-08-01", false),
+            ("folder:inbox", false),
+        ] {
+            let query = parsed_mail_query(input, MailSearchFieldScope::Any);
+            assert_eq!(mail_query_needs_body(&query), expected, "query {input:?}");
+        }
+    }
+
+    #[test]
+    fn mail_query_invalid_syntax_fails_closed() {
+        for input in [
+            "unknown:value",
+            "or:(subject:one",
+            "subject:one)",
+            "subject:\"unterminated",
+            "or:subject:one",
+            "not:()",
+        ] {
+            assert!(
+                parse_mail_query(input, MailSearchFieldScope::Any).is_err(),
+                "invalid query must not produce a matchable AST: {input:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn mail_query_matches_states_dates_and_folders() {
+        let record = MailSearchRecord {
+            folder: "inbox".to_string(),
+            date: NaiveDate::from_ymd_opt(2026, 8, 10),
+            is_unread: Some(true),
+            is_flagged: Some(true),
+            is_important: Some(true),
+            is_junk: Some(true),
+            has_attachment: Some(true),
+            ..MailSearchRecord::default()
+        };
+
+        for input in [
+            "is:unread",
+            "is:flagged",
+            "is:important",
+            "is:junk",
+            "has:attachment",
+            "is:inbox",
+            "folder:inbox",
+            "after:2026-08-01",
+            "before:2026-08-11",
+            "on:2026-08-10",
+        ] {
+            let query = parsed_mail_query(input, MailSearchFieldScope::Any);
+            assert!(matches_mail_query(&query, &record), "query {input:?}");
+        }
+
+        let unknown_state = MailSearchRecord {
+            is_unread: None,
+            ..MailSearchRecord::default()
+        };
+        for input in ["is:unread", "-is:unread"] {
+            let query = parsed_mail_query(input, MailSearchFieldScope::Any);
+            assert!(
+                !matches_mail_query(&query, &unknown_state),
+                "query {input:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn mail_query_unknown_values_follow_kleene_boolean_rules() {
+        let unknown = MailSearchRecord {
+            subject: "known".to_string(),
+            ..MailSearchRecord::default()
+        };
+
+        for input in [
+            "not:(is:unread)",
+            "not:(or:(is:unread is:flagged))",
+            "not:(and:(is:unread subject:known))",
+            "not:(or:(is:unread subject:missing))",
+        ] {
+            let query = parsed_mail_query(input, MailSearchFieldScope::Any);
+            assert!(
+                !matches_mail_query(&query, &unknown),
+                "unknown must not become a match through {input:?}"
+            );
+        }
+
+        let known_false_and = parsed_mail_query(
+            "not:(and:(is:unread subject:missing))",
+            MailSearchFieldScope::Any,
+        );
+        assert!(matches_mail_query(&known_false_and, &unknown));
+
+        let known_true_or = MailSearchRecord {
+            is_flagged: Some(true),
+            ..MailSearchRecord::default()
+        };
+        let dominant_true_or =
+            parsed_mail_query("not:(or:(is:unread is:flagged))", MailSearchFieldScope::Any);
+        assert!(!matches_mail_query(&dominant_true_or, &known_true_or));
+
+        let missing_date = MailSearchRecord::default();
+        for input in ["-after:2026-08-01", "not:(after:2026-08-01)"] {
+            let query = parsed_mail_query(input, MailSearchFieldScope::Any);
+            assert!(
+                !matches_mail_query(&query, &missing_date),
+                "missing date must remain unknown through {input:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_state_does_not_match_even_when_negated() {
+        let documents = [SearchResultItem {
+            domain: SearchDomain::Calendar,
+            title: "Statusless event".to_string(),
+            snippet: "No mail state".to_string(),
+            date: "2026-08-10".to_string(),
+            target: Some(SearchTarget::Event {
+                source_uid: "calendar".to_string(),
+                component_uid: "event-1".to_string(),
+            }),
+        }];
+
+        for query in ["is:unread", "-is:unread", "is:sent", "-is:sent"] {
+            assert!(
+                GlobalSearchEngine::query_documents(SearchDomain::Calendar, query, &documents)
+                    .is_empty(),
+                "unknown state must not match query {query:?}"
+            );
+        }
     }
 
     #[test]
