@@ -1371,6 +1371,16 @@ Die Statuswerte sind Quellen-/UI-Belege, keine Laufzeit- oder Providerabnahme:
   bleiben fail-closed erhalten. Die Bereinigung aktuell aktiver schreibbarer
   ECal-Clients mit Instanzprüfung und MOD_THIS/MOD_ALL bleibt Linux-/Provider-
   Rest; ein Refresh wird nicht mehr als Löschung ausgegeben.
+- [~] `GW-CAL-SHELL` schließt die upstream-äquivalente Kalender-Shell und Kreuzmodul-Integration:
+  Der Kalenderarbeitsbereich bindet neben dem Kalender-View-Stack ein horizontales Paned (`content_hpaned`)
+  mit dem vertikalen Aufgaben- und Notizbereich (`tag_vpaned` mit Taskpad und Memopad),
+  dessen Sichtbarkeit über einen Toolbar-Umschalter und GSettings (`calendar-show-tag-vpane`) gesteuert wird
+  und dessen Teilerposition (`calendar-tag-vpane-position`) persistent erhalten bleibt (inklusive
+  Migrationsabbildung von upstreams `show-tag-vpane` und `tag-vpane-position`).
+  Echtzeit-Such- und Kategoriefilter wirken synchron auf Termine, Aufgaben (Taskpad) und Notizen (Memopad);
+  Treffer werden über einen einheitlichen Open-by-UID-Vertrag im jeweiligen Komponenten-Editor geöffnet.
+  54/54 Kalendertests und 19/19 Migrationstests belegen die Funktionalität portabel;
+  reale EDS-ECal-Dienste und Linux-Live-Monitore bleiben Linux-only Rest.
 - [~] VTODO/VJOURNAL-Erstellung, VTODO-Status, Notizbearbeitung/-löschung,
   VTODO-Bearbeitung, Prioritäten, Fälligkeiten und Notizlöschung werden über
   den EDS-Adapter persistiert. ECal-Signalaktualisierung ist angebunden;
@@ -1448,10 +1458,20 @@ Die Statuswerte sind Quellen-/UI-Belege, keine Laufzeit- oder Providerabnahme:
   Aus dem Kontakt-Detail öffnet die Mailaktion den Composer mit den
   ausgewählten E-Mail-Adressen vorbefüllt; die sichtbaren Adressen können
   außerdem direkt in die Zwischenablage kopiert werden.
-  Die Liste unterstützt portabel echte 0/1/n-Auswahl, Batch-Mail und einen
+  Die Liste unterstützt portabel echte 0/1/n-Auswahl, Batch-Mail, einen
   vor dem Dateidialog vollständig validierten, atomar geschriebenen gemeinsamen
-  vCard-Export. Mutierende Mehrfachaktionen bleiben ohne Backend-Transaktion
-  deaktiviert; Transfer, Batch-Delete und Druck bleiben offen.
+  vCard-Export sowie sequentielles Stop-on-first-error-Löschen mit all-writable
+  (`GW-CONTACT-ACTIONS-DELETE-BATCH`). Mutierende Aktionen erfordern schreibbare
+  Quellen; `GW-CONTACT-ACTIONS-PRINT` schließt den portablen Drucken-Vertrag
+  (Einzel- und Mehrfachkartendruck mit Alphabet-Buchstaben-Headings und
+  Adresslistenauflösung, Tabellendruck sichtbarer Kontakte, striktes
+  GLib-Markup-Escaping, 0/1/n-Sensitivität, Kontextmenü, Sidebar-Listendruck und
+  `<Ctrl>P`), und `GW-CONTACT-ACTIONS-TRANSFER` schließt den portablen Kontakttransfer
+  zwischen Adressbüchern ("In Adressbuch kopieren…", "In Adressbuch verschieben…",
+  Auswahldialog schreibbarer Zieladressbücher per `adw::AlertDialog`, kollisionsfreie
+  UIDs via `prepare_vcard_for_transfer`, Create-before-delete für Verschieben,
+  All-Writable-Preflight und Stop-on-First-Error-Semantik); nativer Linux-Druckerdialog
+  und native EBook-Batchmutationen bleiben offen.
   EBookClientView-Signale werden
   UID-basiert in die Kontaktliste eingepflegt; der Linux-Laufzeittest und die
   vollständige native vCard-Feldparität fehlen noch. Der portable Pfad kann

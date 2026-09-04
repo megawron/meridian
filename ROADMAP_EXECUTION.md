@@ -179,6 +179,10 @@ und erweitert dessen Schreibbereich nur nach dokumentierter Kollisionsprüfung.
 | 63 | `MAIL-LIST-VIEW-CONTRACT` | `P0-MAIL-002A` | `data/org.gnome.Evolution4.gschema.xml`, `src/services/{settings,backup}_service.rs`, `src/dialogs/preferences_dialog.rs`, `src/views/mail_page.rs` | bestehende Mail-Spalten und Live-Settings | BLOCKED_LINUX | Evolutions Messages-/Wide-Profile, vollständige eindeutige benutzerdefinierte Reihenfolge, gemeinsame stabile Header-/Zeilen-IDs, Live-Neuaufbau ohne Provider-Reload sowie Sender-/Datumsbreite in Migration und Backup sind portabel getestet. Drag-and-drop, HiDPI-/Theme-/A11y- und Großpostfach-Abnahme bleiben Linux. |
 | 64 | `MENU-ACTION-MAP` | `P0-MAIL-002A` | `src/action_contract.rs`, `src/{application,window}.rs`, `src/dialogs/shortcuts_dialog.rs` | vorhandene Shell-/Reader-/Folder-Actions und Accelerator-Tabelle | BLOCKED_LINUX | Ein eindeutiger Vertrag treibt File/Edit/View/Message/Folder/Tools/Help, Transport und Shortcut-Hilfe samt Zustandsvoraussetzungen. Menü-/Shortcut-IDs, Registrierungen, Platzierungen, Accelerator-Mirror und Nullauswahl sind portabel getestet; Popup-Vollabgleich, GTK/IME/Fokus, Theme/A11y und reale Providerzustände bleiben Linux. |
 | 65 | `MAIL-SEARCH-CONTRACT` | `P1-SEARCH-001` | `src/services/{search_engine,search_folder}_service.rs`, `src/dialogs/advanced_search_dialog.rs`, `src/views/mail_page.rs` | `P1-SEARCH-001A`, `P0-MAIL-WORKER-STORE` | BLOCKED_LINUX | Kanonische Syntaxvalidierung für neue Saved Searches, fail-closed Unknown-State-Negation, exakte `CurrentFolder`/`CurrentFolderAndSubfolders`/`CurrentAccount`/`AllAccounts`-Scopes sowie geschützte Saved-Search-Mutationen (corrupt/unsupported/duplicate, eindeutige temporäre Dateien, atomare Writes und process-lokale RMW-Serialisierung) sind portabel belegt. Saved-Search-v2 persistiert Feld, Scope, exakte Konto-/Ordneridentität und versionierten AST, migriert v1 deterministisch und verwendet für Auswahl und Zähler denselben fail-closed Compiler; relative Daten bleiben dynamisch. Die sieben sichtbaren Upstream-Schnellmodi `SubjectOrAddresses`, `Subject`, `Sender`, `Recipients` (To/Cc, ohne Bcc), `Message`, `Body` und `FreeForm` verwenden den kanonischen AST/Matcher; MailPage verwendet ausschließlich den kanonischen AST. Der mail-sensitive Advanced-Search-Dialog erzeugt portable Text-/Status-/Datumsregeln mit UND/ODER sowie Regel-/Gruppen-Negation, validiert sie vor dem Anwenden und erhält Scope und exaktes Ordnerziel. Graph senkt nur eine strict-safe positive Konjunktion ab; OR/NOT und local-only-Prädikate werden als Ganzes nicht remote abgesenkt. CurrentFolder/CurrentAccount starten bei einem Wechsel eine neue Remote-Suche; `CurrentFolderAndSubfolders` bleibt für Graph fail-closed lokal auf der geladenen Seite mit persistenter Unvollständigkeitswarnung. Die normale Schnellsuche gleicht AllAccounts sichtbar auf CurrentAccount ab; Advanced und Saved Search bleiben im exakten Scope lokal. Sichere Continuation-Cursor treiben „Mehr laden“ snapshotgebunden an und werden erst nach erfolgreichem Modellaufbau übernommen. Offen bleiben zusätzliche native Upstream-Prädikate, echte Camel-S-Expression-FreeForm, rekursive Graph-Subfolder-Suche, echtes Multi-Account-Graph, nicht sicher fortsetzbare Provider-Truncation sowie Linux-/EDS-/Graph-/Provider-Abnahme; gezielte Parser-, Advanced-Builder-, Negations-, Scope-, Codec-, Migrations-, Paging- und Saved-Search-Mutationstests sind vorhanden. |
+| 66 | `GW-CAL-SHELL` | `P1-CAL-001` | `data/org.gnome.Evolution4.gschema.xml`, `src/services/{settings,migration}_service.rs`, `src/views/calendar_page.rs`, `src/window.rs` | App-eigener Kalender und Task/Memo-Snapshots | BLOCKED_LINUX | Upstream Taskpad & Memopad (`tag_vpaned` in `content_hpaned`), Toolbar-Umschalter (`calendar-show-tag-vpane`), Positionspersistenz (`calendar-tag-vpane-position`), synchrone Filterung (Query, Kategorie, versteckte Quellen), ECalService-Taskmutation sowie Open-by-UID-Routing über Window-Komponentenvertrag portabel implementiert und durch 54/54 Kalendertests sowie 19/19 Migrationstests belegt; native ECal-/EDS-Live-Provider-Abnahme unter Linux offen. |
+| 67 | `GW-CONTACT-ACTIONS-DELETE-BATCH` | `P1-CONTACT-001` | `src/views/contacts_page.rs` | `GW-CONTACT-ACTIONS-BATCH-EXPORT` | BLOCKED_LINUX | 0/1/n-Auswahl, all-writable Preflight, named/count Confirmation, sequentielles Stop-on-first-error-Delete über EBookService und bestätigter Prefix/Failure/Unattempted-Reducer portabel implementiert und durch 22/22 Tests belegt; EBook-Batchmutation und Providerabnahme offen. |
+| 68 | `GW-CONTACT-ACTIONS-PRINT` | `P1-CONTACT-001` | `src/services/contact_print_service.rs`, `src/views/contacts_page.rs` | `GW-CONTACT-ACTIONS-DELETE-BATCH` | BLOCKED_LINUX | Upstream-Parität zu `e-contact-print.c` und `e-addressbook-view.c:1650-1748` portabel implementiert: Einzel-/Mehrfachkarten mit Alphabet-Buchstaben-Headings, Adresslisten-Mitgliederauflösung/Verbergung, Tabellendruck sichtbarer Kontakte, striktes GLib-Markup-Escaping, 0/1/n-Sensitivität, Kontextmenü, Sidebar-Listendruck, `<Ctrl>P`-Shortcut und Fail-Closed-Preflight belegt durch 8 Print-Service-Tests, 23 Kontakt-Tests und 932/932 Workspace-Tests; Linux-Druckerdialog-/Portal-Abnahme offen. |
+| 69 | `GW-CONTACT-ACTIONS-TRANSFER` | `P1-CONTACT-001` | `src/views/contacts_page.rs` | `GW-CONTACT-ACTIONS-PRINT` | BLOCKED_LINUX | Upstream-Parität zu `e-addressbook-view.c:2111-2265` und `eab-gui-util.c:511-570` portabel implementiert: Kontakttransfer zwischen Adressbüchern ("In Adressbuch kopieren…", "In Adressbuch verschieben…") für 1..n Kontakte, Dropdown-Auswahl schreibbarer Zieladressbücher per `adw::AlertDialog`, Frische-UID-Generierung (`prepare_vcard_for_transfer`), Create-Before-Delete bei Move, All-Writable-Source-Preflight für Move, Read-Only-Toleranz bei Copy, Stop-on-First-Error-Semantik, Detail-Buttons, Kontextmenü-Einträge, 0/1/n-Sensitivitätssteuerung und Reducer belegt durch 33/33 Kontakttests und 942/942 Workspace-Tests; Linux-/EDS-Backend-Laufzeitabnahme offen. |
 
 ### Parallelisierungsregeln
 
@@ -998,6 +1002,17 @@ oder visuellen Linux-Belege.
 - Offener Parent-/Linux-Rest: beliebige EDS-Ziele, verlustfreie EXDATE-/Serien-
   Split-Mutation, Forward/RSVP/Schedule/Properties/Print und Provider-ACLs.
 
+### GW-CAL-SHELL
+
+- Status: `BLOCKED_LINUX`; portabler Shell-, Layout-, Filter- und Routing-Vertrag des offenen Parents `P1-CAL-001` geschlossen.
+- Portabler Beleg: Upstream-äquivalenter horizontal geteilter Kalenderarbeitsbereich (`tag_vpaned` in `content_hpaned`) mit Taskpad (Aufgabenliste, Zählerbadge, Statuslabel, Direktanlage-Aktion) und Memopad (Notizenliste, Zählerbadge, Statuslabel, Direktanlage-Aktion).
+  - Toolbar-Toggle (`tag_vpane_toggle_btn`) gebunden an GSettings-Key `calendar-show-tag-vpane` (Default: `true`) und `tag_vpaned`-Sichtbarkeit.
+  - Horizontale/vertikale Paned-Positionierung gebunden an `calendar-tag-vpane-position` (Default: `320`) mit Live-Persistenz und Migrationsabbildung von upstreams `tag-vpane-position` und `show-tag-vpane`.
+  - Synchrone Kreuzmodul-Filterung: Eingaben in `calendar_search_entry` und Auswahlen in `calendar_category_selector` filtern Termine, Aufgaben (Taskpad) und Notizen (Memopad) parallel und deterministisch unter Berücksichtigung von `calendar-hidden-sources`.
+  - Open-by-UID-Routing: `CalendarPage::open_search_result` löst UIDs konsistent über Termine (Event-Editor), Aufgaben (`open_task_by_uid` -> Task-Editor) und Notizen (`open_memo_by_uid` -> Memopad/Memo-Editor) auf.
+  - Abnahme: 54/54 Kalendertests, 19/19 Migrationstests und vollständige 916/916-Workspace-Suite grün.
+- Offener Parent-/Linux-Rest: ECal-Live-Signalmonitore, native EDS-Daemon-Synchronisation für VTODO/VJOURNAL-Updates und native Linux-Visualisierung.
+
 ### GW-CAL-ACTIONS-PURGE-LOCAL
 
 - Status: `BLOCKED_LINUX`; der app-eigene portable Teil des offenen Parents
@@ -1020,10 +1035,92 @@ oder visuellen Linux-Belege.
   `GW-CONTACT-ACTIONS` geschlossen.
 - Portabler Beleg: echte 0/1/n-Auswahl, Batch-Mail, selection-sensitive Actions,
   exakte Context-Selection und vor dem FileDialog vollständig validierter,
-  atomar ersetzter gemeinsamer vCard-3/4-Payload. Multi-Delete bleibt mangels
-  Backend-Transaktion explizit deaktiviert.
+  atomar ersetzter gemeinsamer vCard-3/4-Payload.
 - Offener Parent-/Linux-Rest: Batch-Delete/Transfer/Merge-Rollback, Printlayout,
   File-Portal und reale EBook-/EDS-ACL-/Providerwirkung.
+
+### GW-CONTACT-ACTIONS-DELETE-BATCH
+
+- Status: `BLOCKED_LINUX`; portabler Batch-Löschen-Teil des offenen Elternpakets
+  `GW-CONTACT-ACTIONS` geschlossen.
+- Portabler Beleg: 0/1/n-Auswahl preflightet alle ausgewählten Kontakte auf
+  schreibfähige Quellen (`contact_source_is_writable`); schreibgeschützte Quellen
+  deaktivieren das Löschen mit erklärendem Tooltip. Ein Bestätigungsdialog fragt
+  bei 1 Kontakt mit Name und Adressbuchquelle und bei n Kontakten mit der genauen
+  Anzahl. Der Worker löscht sequentiell außerhalb des GTK-Hauptloops über
+  `EBookService::remove_contact` und stoppt beim ersten Fehler. Der Reducer
+  entfernt nur den bestätigten gelöschten Präfix aus dem UI-Modell und der
+  Kontaktliste; unattempted und fehlgeschlagene Kontakte bleiben erhalten.
+  Entf/Rücktaste auf der Kontaktliste lösen das Löschen bei aktiver Sensitivität
+  aus, und Strg+A markiert alle sichtbaren Kontakte. Belegt durch 22/22
+  Kontakt-Unit-Tests sowie 923/923 Workspace-Tests.
+- Offener Parent-/Linux-Rest: EBook-Batchmutation, server-gestützte
+  Transaktionsgarantie, Undo und native Linux-/Providerabnahme.
+
+### GW-CONTACT-ACTIONS-PRINT
+
+- Status: `BLOCKED_LINUX`; portabler Drucken-Teil des offenen Elternpakets
+  `GW-CONTACT-ACTIONS` geschlossen.
+- Portabler Beleg: Parität zu Upstream GNOME Evolution `e-contact-print.c` und
+  `e-addressbook-view.c`:
+  1. Kartendruck (`build_contact_print_document`): Für einen oder mehrere ausgewählte
+     Kontakte formatiert als sauberes HTML und formatierter Plain-Text-Fallback.
+     Mehrere Kontakte werden nach Nachname/Vorname/Anzeigename alphabetisch sortiert
+     und mit auffälligen Buchstaben-Headings (`A`, `B`, `C`...) gruppiert.
+     Alle Felder (Name, Organisation, Titel, E-Mails, Telefone, Adressen, Kategorien,
+     Adressbuchquelle, Notizen) werden strikt via `glib::markup_escape_text` gegen XSS
+     und Injektionen geschützt. Kontaktlisten/Verteilerlisten rendern einen eigenen
+     Mitgliederabschnitt (mit Auflösung oder Verbergung gemäß `list_show_addresses`).
+  2. Tabellendruck (`build_contact_list_print_document`): Die aktuell sichtbare/gefilterte
+     Kontaktliste wird als tabellarische Übersicht (Name, Firma/Position, E-Mail, Telefon,
+     Adressbuch, Kategorien) mit Zusammenfassungskopf gedruckt.
+  3. UI-Integration in `ContactsPage`:
+     - Detail-Header `actions_box`: `print_btn` (`document-print-symbolic`) mit dynamischem
+       Tooltip für 0, 1 oder n Kontakte.
+     - Sidebar `new_contact_bar`: `print_list_btn` ("Sichtbare Kontakte drucken").
+     - Kontextmenü: "Drucken…" Eintrag auf Kontaktzeilen.
+     - Tastenkombination `<Ctrl>P`: Löst Kartendruck bei vorhandener Auswahl aus, sonst
+       den Tabellendruck der sichtbaren Liste.
+     - Informative Linux-Portal-Handoff-Meldung per Toast.
+  4. Preflight: Leere Auswahlen/Listen und doppelte Kontakt-Identitäten werden fail-closed
+     abgelehnt.
+  Belegt durch 8 Unit-Tests in `contact_print_service::tests`, 23 Tests in `contacts_page::tests`
+  sowie 932/932 Workspace-Tests.
+- Offener Parent-/Linux-Rest: Nativer Linux-Druckerdialog via GTK PrintOperation /
+  XDG Desktop Portal Druckportal, Page-Setup-Persistenz und visuelle Druckbild-Abnahme unter Linux.
+
+### GW-CONTACT-ACTIONS-TRANSFER
+
+- Status: `BLOCKED_LINUX`; portabler Transfer-Teil des offenen Elternpakets
+  `GW-CONTACT-ACTIONS` geschlossen.
+- Portabler Beleg: Parität zu Upstream GNOME Evolution `e-addressbook-view.c:2111-2265`
+  (`e_addressbook_view_copy_to_folder`, `e_addressbook_view_move_to_folder`) und `eab-gui-util.c:511-570`
+  (`eab_transfer_contacts`):
+  1. Transfer-Arten:
+     - **In Adressbuch kopieren…** (`ContactTransferKind::Copy`): Kopiert 1..n Kontakte in das
+       gewählte schreibbare Zieladressbuch. Darf auch aus schreibgeschützten Quellen ausgeführt werden.
+     - **In Adressbuch verschieben…** (`ContactTransferKind::Move`): Create-before-delete Semantik.
+       Zielkontakt wird neu angelegt; erst nach verifizierter Backend-Bestätigung wird der Quellkontakt
+       entfernt. Stop-on-first-error stoppt sofort bei erstem Fehler, ohne weitere Datensätze zu löschen.
+       Strikt fail-closed deaktiviert, sobald mindestens ein Quellkontakt aus einer schreibgeschützten
+       Quelle stammt.
+  2. Adressbuch-Auswahldialog & Preflight:
+     - Zieladressbuch-Auswahl via `adw::AlertDialog` mit `gtk::DropDown`, das alle schreibbaren
+       Adressbücher anzeigt (unter Ausschluss des gemeinsamen Quelladressbuchs).
+     - Preflight prüft: Mindestens 1 Kontakt ausgewählt, Ziel schreibbar, Quelle != Ziel,
+       keine doppelten Identitäten in der Auswahl.
+  3. Kollisionsfreie vCards (`prepare_vcard_for_transfer`):
+     - Ersetzt vorhandene `UID:...` durch frische `UID:evolution-gtk4-<uuid>` (oder fügt nach `BEGIN:VCARD` ein),
+       sodass keine `AlreadyExists`-Konflikte beim Kopieren/Verschieben auftreten.
+  4. UI-Integration in `ContactsPage`:
+     - Detail-Header `actions_box`: `copy_to_book_btn` ("In Adressbuch kopieren…") und
+       `move_to_book_btn` ("In Adressbuch verschieben…") mit 0/1/n-Sensitivität und Tooltips.
+     - Kontextmenü: "In Adressbuch kopieren…" und "In Adressbuch verschieben…" Einträge.
+     - Off-GTK-Thread Worker mit GTK-Loop Response-Handling und selektivem Modell-Update.
+  Belegt durch 10 neue Transfer-Unit-Tests in `contacts_page::tests` (33/33 Tests gesamt)
+  sowie 942/942 Workspace-Tests.
+- Offener Parent-/Linux-Rest: Native EDS EBook-Client-Batch-Mutationen, serverseitiges Atomic-Move,
+  und Live-Laufzeitabnahme unter Linux mit echten Adressbuchquellen.
 
 ### GW-TASK-EDITOR-LIFECYCLE
 
@@ -1345,10 +1442,15 @@ allein ist kein Implementierungsbeleg.
   Abschnitt 7 von `ROADMAP_LINUX.md`.
 - Evidenz: `P1-CONTACT-001A/B` in Commit `d6e7dcc` beziehungsweise `10b0321`:
   kompakte quellenneutrale Liste/Detailansicht, Mehrwortsuche, Kategorien und
-  sicher begrenzter Dublettenpfad. Der aktuelle uncommitted Slice
-  `GW-CONTACT-LISTS` ergänzt vCard-3/4-Mitglieder und Member-UI; beide
-  unabhängigen Reviews sind abgeschlossen und das Paket ist `BLOCKED_LINUX`.
-  Weitere Kontaktflächen sowie Linux-EBook/GAL-/ACL-Abnahme bleiben offen.
+  sicher begrenzter Dublettenpfad. Die portablen Slices `GW-CONTACT-LISTS` (vCard-3/4-
+  Mitglieder und Member-UI), `GW-CONTACT-ACTIONS-BATCH-EXPORT` (0/1/n-Auswahl, Batch-Mail,
+  atomarer vCard-Export), `GW-CONTACT-ACTIONS-DELETE-BATCH` (all-writable Preflight, named/count
+  Confirmation, sequentielles Stop-on-first-error-Delete), `GW-CONTACT-ACTIONS-PRINT`
+  (Kartendruck mit Alphabet-Headings, Adresslistenauflösung, Tabellendruck sichtbarer Kontakte,
+  `<Ctrl>P`) und `GW-CONTACT-ACTIONS-TRANSFER` (Kopieren/Verschieben zwischen Adressbüchern,
+  Create-before-delete, Fresh-UIDs, AlertDialog mit Dropdown) sind portabel implementiert
+  und stehen auf `BLOCKED_LINUX`. Weitere Kontaktflächen (z. B. Advanced Search) sowie
+  Linux-EBook/GAL-/ACL-Abnahme bleiben offen.
 
 ### P1-TASK-001 — Aufgaben, Memos und Erinnerungen
 

@@ -128,9 +128,31 @@ accessibility helpers, and view-local GTK state.
 - Contact-list editors expose local and external members, preserve list
   metadata and vCard 3/4 representations, mark invalid members, and refresh
   the visible member rows from the pending atomic write model.
-- Contact surfaces retain a real 0/1/n selection. Batch email and a combined
-  all-or-nothing vCard export may use the full selection; edit, merge, copy and
-  delete remain single-contact actions until their backend transaction is atomic.
+- Contact surfaces retain a real 0/1/n selection. Batch email, combined
+  all-or-nothing vCard export, batch deletion, and card printing use the full selection.
+  Delete-selection preflights all-writable sources, prompts with a named or
+  counted confirmation modal, deletes sequentially stopping at the first error,
+  and reduces the UI model to the confirmed deleted prefix. Delete and Backspace
+  keys trigger deletion when sensitive, and Ctrl+A selects all visible contacts.
+  Edit, merge, and copy remain single-contact actions.
+- Contact printing provides card printing for 1 or more selected contacts and
+  table printing for the visible contact list. Selected contact cards are grouped
+  alphabetically with bold letter badge headings, all RFC/vCard text escaped
+  strictly with GLib markup escaping, distribution list members enumerated or
+  hidden according to list settings, with safe @page CSS and plain-text fallback.
+  Visible contact list printing outputs a clean tabular summary. Strict preflight
+  rejects empty selections/lists and duplicate contact identities. Ctrl+P activates
+  card printing when contacts are selected, or visible list printing otherwise.
+- Contact transfer between address books ("In Adressbuch kopieren…", "In Adressbuch verschieben…")
+  mirrors upstream Evolution `e_addressbook_view_copy_to_folder` / `e_addressbook_view_move_to_folder`
+  and `eab_transfer_contacts`. Both actions operate on 1 or more selected contacts.
+  Copy to book is permitted from any source (including read-only); Move to book strictly
+  preflights that all source address books in the selection are writable. Transfers require
+  a distinct writable destination address book selected via `adw::AlertDialog` with dropdown.
+  Every contact vCard is prepared with a fresh unique UID to prevent collision in the destination.
+  Move enforces create-before-delete: destination records are written first, and only upon verified
+  destination creation is the source record deleted. The operation aborts on the first error and
+  reports precise counts of created and removed contacts.
 - Find-in-message uses Evolution's `Ctrl+Shift+F` path and an in-reader bar.
   WebKit uses its FindController; plaintext fallback offsets are Unicode
   character offsets. Selection, source and render generations invalidate stale
@@ -292,6 +314,22 @@ accessibility helpers, and view-local GTK state.
   Wide-derived custom order replace the separate sender/subject cells with the
   combined messages cell; Messages and Messages-derived custom orders retain
   the separate cells.
+- The Calendar shell embeds a horizontal paned layout (`content_hpaned`)
+  housing the calendar stack on the start side and the integrated vertical
+  Taskpad/Memopad pane (`tag_vpaned`) on the end side.
+- The Taskpad/Memopad pane's visibility is controlled by the GSettings key
+  `calendar-show-tag-vpane` (default: `true`) and a dedicated toolbar toggle
+  button (`tag_vpane_toggle_btn`). The paned position is persisted via
+  `calendar-tag-vpane-position` (default: `320`) and restored live.
+- Filter synchronization across the Calendar shell is unified: changes in the
+  search entry or category selector synchronously filter Events in the
+  calendar stack, Tasks in the Taskpad, and Memos in the Memopad, respecting
+  hidden calendar sources (`calendar-hidden-sources`).
+- Open-by-UID routing (`open_search_result`) searches events first, followed by
+  tasks (`open_task_by_uid`), and memos (`open_memo_by_uid`), routing to the
+  respective component editor via the window component contract.
+- Task completion toggles in the Taskpad mutate VTODO components asynchronously
+  off the GTK main thread and keep the sidebar and Taskpad views synchronized.
 
 ## Work Guidance
 
