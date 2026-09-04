@@ -89,6 +89,14 @@
       <default>'system'</default>
       <summary>Calendar display time zone (system, UTC, or an IANA identifier)</summary>
     </key>
+    <key name="calendar-show-tag-vpane" type="b">
+      <default>true</default>
+      <summary>Show Tasks and Memos pane in the Calendar view</summary>
+    </key>
+    <key name="calendar-tag-vpane-position" type="i">
+      <default>320</default>
+      <summary>Width/position of the Tasks and Memos pane</summary>
+    </key>
     <key name="auto-load-remote-images" type="b">
       <default>false</default>
       <summary>Automatically load remote images in HTML emails</summary>

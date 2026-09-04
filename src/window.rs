@@ -697,7 +697,7 @@ impl EvolutionWindow {
             .and_then(|widget| widget.downcast::<MemosPage>().ok())
     }
 
-    fn present_new_task(&self) {
+    pub(crate) fn present_new_task(&self) {
         if let Some(tasks_page) = self.tasks_page() {
             tasks_page.present_new_task();
             return;
@@ -715,7 +715,7 @@ impl EvolutionWindow {
         });
     }
 
-    fn present_new_memo(&self) {
+    pub(crate) fn present_new_memo(&self) {
         if let Some(memos_page) = self.memos_page() {
             memos_page.present_new_memo();
             return;

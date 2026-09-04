@@ -928,6 +928,8 @@ fn canonical_setting(
         "show-preview" | "message-preview" | "show-message-preview" => "show-message-preview",
         "show-headers" => "mail-normal-headers",
         "show-week-numbers" => "calendar-show-week-numbers",
+        "show-tag-vpane" => "calendar-show-tag-vpane",
+        "tag-vpane-position" => "calendar-tag-vpane-position",
         "week-start" | "first-weekday" => "calendar-week-start",
         "default-calendar" => "default-calendar-source",
         "default-address-book" => "default-address-book-source",
@@ -1057,6 +1059,8 @@ fn is_supported_migration_key(key: &str) -> bool {
             | "notifications-enabled"
             | "confirm-destructive-actions"
             | "calendar-show-week-numbers"
+            | "calendar-show-tag-vpane"
+            | "calendar-tag-vpane-position"
             | "calendar-hidden-sources"
             | "date-format"
             | "time-format"
@@ -1162,6 +1166,7 @@ fn normalize_imported_setting_value(key: &str, value: &str) -> Result<String, &'
         "mail-sync-message-limit" => normalize_u32_setting(value, 25, 1_000),
         "draft-autosave-interval" => normalize_u32_setting(value, 0, 3_600),
         "task-hpane-position" | "task-vpane-position" => normalize_i32_setting(value, 80, 4_096),
+        "calendar-tag-vpane-position" => normalize_i32_setting(value, 100, 2_000),
         "composer-charset" => normalize_composer_charset(value)
             .map(str::to_string)
             .ok_or("keine unterstützte Zeichenkodierung"),
@@ -1332,6 +1337,7 @@ fn is_boolean_migration_key(key: &str) -> bool {
             | "notifications-enabled"
             | "confirm-destructive-actions"
             | "calendar-show-week-numbers"
+            | "calendar-show-tag-vpane"
             | "auto-load-remote-images"
             | "offline-mode"
             | "force-dark-mode"
@@ -3293,6 +3299,8 @@ show-headers=[('From', true), ('X-Project', false)]
 [org/gnome/evolution/calendar]
 use-12-hour-format=true
 show-week-numbers=true
+show-tag-vpane=false
+tag-vpane-position=380
 
 [org/gnome/evolution/account]
 password='must-not-be-retained'
@@ -3334,6 +3342,14 @@ unknown-setting='ignored'
         assert!(parsed.settings.contains(&ImportedSetting {
             key: "time-format".to_string(),
             value: "12h".to_string(),
+        }));
+        assert!(parsed.settings.contains(&ImportedSetting {
+            key: "calendar-show-tag-vpane".to_string(),
+            value: "false".to_string(),
+        }));
+        assert!(parsed.settings.contains(&ImportedSetting {
+            key: "calendar-tag-vpane-position".to_string(),
+            value: "380".to_string(),
         }));
         assert!(
             !parsed

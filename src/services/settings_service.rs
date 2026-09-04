@@ -579,6 +579,23 @@ impl AppSettings {
         self.set_boolean("calendar-show-week-numbers", value);
     }
 
+    pub fn calendar_show_tag_vpane(&self) -> bool {
+        self.settings.boolean("calendar-show-tag-vpane")
+    }
+
+    pub fn set_calendar_show_tag_vpane(&self, value: bool) {
+        self.set_boolean("calendar-show-tag-vpane", value);
+    }
+
+    pub fn calendar_tag_vpane_position(&self) -> i32 {
+        let val = self.settings.int("calendar-tag-vpane-position");
+        if val <= 0 { 320 } else { val }
+    }
+
+    pub fn set_calendar_tag_vpane_position(&self, value: i32) {
+        self.set_int("calendar-tag-vpane-position", value.clamp(100, 2000));
+    }
+
     pub fn calendar_hidden_sources(&self) -> Vec<String> {
         self.settings
             .string("calendar-hidden-sources")
@@ -1557,6 +1574,14 @@ impl AppSettings {
             }
             "calendar-show-week-numbers" => {
                 self.set_calendar_show_week_numbers(parse_migrated_bool(key, value)?);
+            }
+            "calendar-show-tag-vpane" => {
+                self.set_calendar_show_tag_vpane(parse_migrated_bool(key, value)?);
+            }
+            "calendar-tag-vpane-position" => {
+                self.set_calendar_tag_vpane_position(parse_migrated_i32_in_range(
+                    key, value, 100, 2_000,
+                )?);
             }
             "calendar-hidden-sources" => {
                 let source_uids = value

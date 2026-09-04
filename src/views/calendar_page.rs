@@ -16,8 +16,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use crate::services::calendar_category_service::CalendarCategoryStore;
 use crate::services::calendar_category_service::category_names_from_ical_component;
 use crate::services::calendar_store_service::{
-    CalendarEventRecord, CalendarSnapshot, CalendarStoreService, TaskRecord, export_ical_component,
-    update_ical_property,
+    CalendarEventRecord, CalendarSnapshot, CalendarStoreService, MemoRecord, TaskRecord,
+    export_ical_component, update_ical_property,
 };
 use crate::services::ecal_service::{
     CalendarDataOrigin, ECalComponentType, ECalMutationResult, ECalService, ECalSyncEvent,
@@ -33,6 +33,7 @@ use crate::services::recurrence_service::{
     RecurrenceByDay, next_recurrence_date, parse_extended_weekday_token, parse_recurrence_rule,
     recurrence_occurs_on as recurrence_rule_occurs_on,
 };
+use crate::services::reminder_service::{ReminderComponentKind, ReminderIdentity};
 use crate::services::settings_service::AppSettings;
 use crate::views::accessibility::set_accessible_label;
 
@@ -869,6 +870,16 @@ mod imp {
         pub task_records: RefCell<Option<Rc<RefCell<Vec<TaskRecord>>>>>,
         pub task_list: RefCell<Option<gtk::ListBox>>,
         pub task_state: RefCell<Option<gtk::Label>>,
+        pub memo_records: RefCell<Option<Rc<RefCell<Vec<MemoRecord>>>>>,
+        pub taskpad_list: RefCell<Option<gtk::ListBox>>,
+        pub taskpad_state: RefCell<Option<gtk::Label>>,
+        pub taskpad_count: RefCell<Option<gtk::Label>>,
+        pub memopad_list: RefCell<Option<gtk::ListBox>>,
+        pub memopad_state: RefCell<Option<gtk::Label>>,
+        pub memopad_count: RefCell<Option<gtk::Label>>,
+        pub tag_vpaned: RefCell<Option<gtk::Paned>>,
+        pub content_hpaned: RefCell<Option<gtk::Paned>>,
+        pub tag_vpane_toggle_btn: RefCell<Option<gtk::ToggleButton>>,
         pub mini_calendar: RefCell<Option<gtk::Calendar>>,
         pub syncing_mini_calendar: Cell<bool>,
         pub calendar_search_entry: RefCell<Option<gtk::SearchEntry>>,
@@ -925,6 +936,16 @@ mod imp {
                 task_records: RefCell::new(None),
                 task_list: RefCell::new(None),
                 task_state: RefCell::new(None),
+                memo_records: RefCell::new(None),
+                taskpad_list: RefCell::new(None),
+                taskpad_state: RefCell::new(None),
+                taskpad_count: RefCell::new(None),
+                memopad_list: RefCell::new(None),
+                memopad_state: RefCell::new(None),
+                memopad_count: RefCell::new(None),
+                tag_vpaned: RefCell::new(None),
+                content_hpaned: RefCell::new(None),
+                tag_vpane_toggle_btn: RefCell::new(None),
                 mini_calendar: RefCell::new(None),
                 syncing_mini_calendar: Cell::new(false),
                 calendar_search_entry: RefCell::new(None),
@@ -1054,15 +1075,67 @@ impl CalendarPage {
     }
 
     pub(crate) fn open_search_result(&self, source_uid: &str, uid: &str) -> bool {
-        let Some(records) = self.imp().event_records.borrow().as_ref().cloned() else {
+        if let Some(records) = self.imp().event_records.borrow().as_ref().cloned() {
+            if let Some(event) =
+                unique_event_for_legacy_identity(&records.borrow(), source_uid, uid)
+            {
+                open_event_editor_for_widget(self, &event);
+                return true;
+            }
+        }
+        if self.open_task_by_uid(source_uid, uid) {
+            return true;
+        }
+        if self.open_memo_by_uid(source_uid, uid) {
+            return true;
+        }
+        false
+    }
+
+    pub(crate) fn open_task_by_uid(&self, source_uid: &str, uid: &str) -> bool {
+        let Some(records) = self.imp().task_records.borrow().as_ref().cloned() else {
             return false;
         };
-        let Some(event) = unique_event_for_legacy_identity(&records.borrow(), source_uid, uid)
-        else {
+        let matches = records.borrow().iter().any(|task| {
+            (source_uid.is_empty() || task.source_uid == source_uid) && task.uid == uid
+        });
+        if !matches {
+            return false;
+        }
+        let Some(root) = self.root() else {
             return false;
         };
-        open_event_editor_for_widget(self, &event);
-        true
+        let Ok(window) = root.downcast::<crate::window::EvolutionWindow>() else {
+            return false;
+        };
+        window.open_component(ReminderIdentity {
+            kind: ReminderComponentKind::Task,
+            source_uid: source_uid.to_string(),
+            component_uid: uid.to_string(),
+        })
+    }
+
+    pub(crate) fn open_memo_by_uid(&self, source_uid: &str, uid: &str) -> bool {
+        let Some(records) = self.imp().memo_records.borrow().as_ref().cloned() else {
+            return false;
+        };
+        let matches = records.borrow().iter().any(|memo| {
+            (source_uid.is_empty() || memo.source_uid == source_uid) && memo.uid == uid
+        });
+        if !matches {
+            return false;
+        }
+        let Some(root) = self.root() else {
+            return false;
+        };
+        let Ok(window) = root.downcast::<crate::window::EvolutionWindow>() else {
+            return false;
+        };
+        window.open_component(ReminderIdentity {
+            kind: ReminderComponentKind::Memo,
+            source_uid: source_uid.to_string(),
+            component_uid: uid.to_string(),
+        })
     }
 
     pub(crate) fn open_search_result_identity(&self, identity: &CalendarEventIdentity) -> bool {
@@ -1133,6 +1206,7 @@ impl CalendarPage {
         self.set_calendar_loading_status(true, "Kalender werden geladen …");
         self.imp().calendar_list_projection_count.set(None);
         self.refresh_task_sidebar();
+        self.refresh_task_and_memo_panes();
         self.refresh_event_list_visibility();
         self.refresh_calendar_views();
 
@@ -1268,6 +1342,14 @@ impl CalendarPage {
             }
             return;
         };
+        let Some(memo_records) = self.imp().memo_records.borrow().as_ref().cloned() else {
+            if self.finish_calendar_snapshot_load(generation, &cancellation) {
+                self.set_calendar_load_error("Notizdaten nicht verfügbar");
+                self.set_calendar_loading_status(false, "Notizdaten nicht verfügbar");
+                self.refresh_calendar_views();
+            }
+            return;
+        };
 
         if let Some(warning) = warning {
             tracing::warn!(%warning, "Calendar data loaded with a backend warning");
@@ -1281,6 +1363,7 @@ impl CalendarPage {
             event_list.remove(&child);
         }
         task_records.replace(snapshot_index.snapshot.tasks.clone());
+        memo_records.replace(snapshot_index.snapshot.memos.clone());
 
         let count = snapshot_index.snapshot.events.len();
         let state_label = self.imp().calendar_data_state.borrow().as_ref().cloned();
@@ -1356,6 +1439,7 @@ impl CalendarPage {
                         return;
                     }
                     page.refresh_task_sidebar();
+                    page.refresh_task_and_memo_panes();
                     page.refresh_calendar_views();
                     page.refresh_event_list_visibility();
                 }
@@ -1363,6 +1447,7 @@ impl CalendarPage {
         }
 
         self.refresh_task_sidebar();
+        self.refresh_task_and_memo_panes();
         self.refresh_calendar_views();
         self.refresh_event_list_visibility();
     }
@@ -1564,6 +1649,7 @@ impl CalendarPage {
         self.set_calendar_load_error(&message);
         self.set_calendar_loading_status(false, &message);
         self.refresh_task_sidebar();
+        self.refresh_task_and_memo_panes();
         self.refresh_calendar_views();
         self.refresh_event_list_visibility();
     }
@@ -1922,6 +2008,10 @@ impl CalendarPage {
         self.imp()
             .task_records
             .replace(Some(Rc::clone(&task_records)));
+        let memo_records = Rc::new(RefCell::new(Vec::<MemoRecord>::new()));
+        self.imp()
+            .memo_records
+            .replace(Some(Rc::clone(&memo_records)));
 
         let category_model = gtk::StringList::new(&["Alle Kategorien"]);
         let category_selector =
@@ -1952,6 +2042,8 @@ impl CalendarPage {
                 .replace(entry.text().trim().to_lowercase());
             page.refresh_calendar_views();
             page.refresh_event_list_visibility();
+            page.refresh_taskpad();
+            page.refresh_memopad();
         });
 
         let page_weak_for_category = self.downgrade();
@@ -1970,6 +2062,8 @@ impl CalendarPage {
             page.imp().calendar_category_filter.replace(category);
             page.refresh_calendar_views();
             page.refresh_event_list_visibility();
+            page.refresh_taskpad();
+            page.refresh_memopad();
         });
 
         self.start_calendar_snapshot_load();
@@ -2090,6 +2184,7 @@ impl CalendarPage {
                         settings.set_calendar_hidden_sources(&hidden_sources_vec);
                     }
                     page.refresh_task_sidebar();
+                    page.refresh_task_and_memo_panes();
                     page.refresh_calendar_views();
                     page.refresh_event_list_visibility();
                 });
@@ -2133,6 +2228,7 @@ impl CalendarPage {
                         settings.set_calendar_hidden_sources(&hidden_sources_vec);
                     }
                     page.refresh_task_sidebar();
+                    page.refresh_task_and_memo_panes();
                     page.refresh_calendar_views();
                     page.refresh_event_list_visibility();
                 });
@@ -2392,10 +2488,24 @@ impl CalendarPage {
         view_toolbar.append(&next_btn);
         view_toolbar.append(&date_label);
         view_toolbar.append(&btn_availability);
+        let show_tag_vpane_initial = settings
+            .as_ref()
+            .map(|s| s.calendar_show_tag_vpane())
+            .unwrap_or(true);
+        let tag_vpane_toggle_btn = gtk::ToggleButton::builder()
+            .icon_name("sidebar-show-symbolic")
+            .tooltip_text("Aufgaben- und Notizenleiste ein-/ausblenden")
+            .active(show_tag_vpane_initial)
+            .build();
+        self.imp()
+            .tag_vpane_toggle_btn
+            .replace(Some(tag_vpane_toggle_btn.clone()));
+
         view_toolbar.append(&btn_add_event);
         view_toolbar.append(&calendar_search_entry);
         view_toolbar.append(&category_selector);
         view_toolbar.append(&view_toggle);
+        view_toolbar.append(&tag_vpane_toggle_btn);
 
         content_box.append(&view_toolbar);
         content_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
@@ -2659,6 +2769,7 @@ impl CalendarPage {
                 if let Some(page) = page_weak.upgrade() {
                     page.refresh_hidden_calendar_sources();
                     page.refresh_task_sidebar();
+                    page.refresh_task_and_memo_panes();
                     page.refresh_calendar_views();
                     page.refresh_event_list_visibility();
                 }
@@ -2702,9 +2813,214 @@ impl CalendarPage {
             }
         ));
 
+        // --- Tag VPaned: Taskpad & Memopad (Upstream GW-CAL-SHELL parity) ---
+        let tag_vpaned = gtk::Paned::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .wide_handle(true)
+            .vexpand(true)
+            .build();
+        let tag_vpane_initial_pos = AppSettings::try_new()
+            .map(|s| s.calendar_tag_vpane_position())
+            .unwrap_or(320);
+        tag_vpaned.set_position(tag_vpane_initial_pos);
+        tag_vpaned.set_visible(show_tag_vpane_initial);
+        self.imp().tag_vpaned.replace(Some(tag_vpaned.clone()));
+
+        tag_vpaned.connect_position_notify(move |paned| {
+            let pos = paned.position();
+            if pos > 50 {
+                if let Some(settings) = AppSettings::try_new() {
+                    settings.set_calendar_tag_vpane_position(pos);
+                }
+            }
+        });
+
+        // 1. Taskpad (Start child of tag_vpaned)
+        let taskpad_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(4)
+            .margin_start(6)
+            .margin_end(6)
+            .margin_top(4)
+            .margin_bottom(4)
+            .vexpand(true)
+            .build();
+
+        let taskpad_header = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(6)
+            .build();
+        let taskpad_title = gtk::Label::builder()
+            .label("Aufgaben")
+            .css_classes(vec!["heading", "title-4"])
+            .halign(gtk::Align::Start)
+            .build();
+        let taskpad_count = gtk::Label::builder()
+            .css_classes(vec!["dim-label", "caption"])
+            .halign(gtk::Align::Start)
+            .build();
+        self.imp()
+            .taskpad_count
+            .replace(Some(taskpad_count.clone()));
+        let taskpad_spacer = gtk::Box::builder().hexpand(true).build();
+        let taskpad_add_btn = gtk::Button::builder()
+            .icon_name("list-add-symbolic")
+            .tooltip_text("Neue Aufgabe erstellen")
+            .css_classes(vec!["flat", "circular"])
+            .build();
+        taskpad_add_btn.connect_clicked(move |btn| {
+            if let Some(root) = btn.root() {
+                if let Ok(window) = root.downcast::<crate::window::EvolutionWindow>() {
+                    window.present_new_task();
+                }
+            }
+        });
+
+        taskpad_header.append(&taskpad_title);
+        taskpad_header.append(&taskpad_count);
+        taskpad_header.append(&taskpad_spacer);
+        taskpad_header.append(&taskpad_add_btn);
+        taskpad_box.append(&taskpad_header);
+
+        let taskpad_state = gtk::Label::builder()
+            .wrap(true)
+            .justify(gtk::Justification::Center)
+            .margin_top(12)
+            .margin_bottom(12)
+            .css_classes(vec!["dim-label"])
+            .build();
+        self.imp()
+            .taskpad_state
+            .replace(Some(taskpad_state.clone()));
+        taskpad_box.append(&taskpad_state);
+
+        let taskpad_list = gtk::ListBox::builder()
+            .selection_mode(gtk::SelectionMode::None)
+            .css_classes(vec!["boxed-list"])
+            .build();
+        self.imp().taskpad_list.replace(Some(taskpad_list.clone()));
+        let taskpad_scroll = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .vexpand(true)
+            .child(&taskpad_list)
+            .build();
+        taskpad_box.append(&taskpad_scroll);
+
+        tag_vpaned.set_start_child(Some(&taskpad_box));
+        tag_vpaned.set_resize_start_child(true);
+        tag_vpaned.set_shrink_start_child(false);
+
+        // 2. Memopad (End child of tag_vpaned)
+        let memopad_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(4)
+            .margin_start(6)
+            .margin_end(6)
+            .margin_top(4)
+            .margin_bottom(4)
+            .vexpand(true)
+            .build();
+
+        let memopad_header = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(6)
+            .build();
+        let memopad_title = gtk::Label::builder()
+            .label("Notizen")
+            .css_classes(vec!["heading", "title-4"])
+            .halign(gtk::Align::Start)
+            .build();
+        let memopad_count = gtk::Label::builder()
+            .css_classes(vec!["dim-label", "caption"])
+            .halign(gtk::Align::Start)
+            .build();
+        self.imp()
+            .memopad_count
+            .replace(Some(memopad_count.clone()));
+        let memopad_spacer = gtk::Box::builder().hexpand(true).build();
+        let memopad_add_btn = gtk::Button::builder()
+            .icon_name("list-add-symbolic")
+            .tooltip_text("Neue Notiz erstellen")
+            .css_classes(vec!["flat", "circular"])
+            .build();
+        memopad_add_btn.connect_clicked(move |btn| {
+            if let Some(root) = btn.root() {
+                if let Ok(window) = root.downcast::<crate::window::EvolutionWindow>() {
+                    window.present_new_memo();
+                }
+            }
+        });
+
+        memopad_header.append(&memopad_title);
+        memopad_header.append(&memopad_count);
+        memopad_header.append(&memopad_spacer);
+        memopad_header.append(&memopad_add_btn);
+        memopad_box.append(&memopad_header);
+
+        let memopad_state = gtk::Label::builder()
+            .wrap(true)
+            .justify(gtk::Justification::Center)
+            .margin_top(12)
+            .margin_bottom(12)
+            .css_classes(vec!["dim-label"])
+            .build();
+        self.imp()
+            .memopad_state
+            .replace(Some(memopad_state.clone()));
+        memopad_box.append(&memopad_state);
+
+        let memopad_list = gtk::ListBox::builder()
+            .selection_mode(gtk::SelectionMode::None)
+            .css_classes(vec!["boxed-list"])
+            .build();
+        self.imp().memopad_list.replace(Some(memopad_list.clone()));
+        let memopad_scroll = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .vexpand(true)
+            .child(&memopad_list)
+            .build();
+        memopad_box.append(&memopad_scroll);
+
+        tag_vpaned.set_end_child(Some(&memopad_box));
+        tag_vpaned.set_resize_end_child(true);
+        tag_vpaned.set_shrink_end_child(false);
+
+        // Connect toggle button to tag_vpaned visibility
+        if let Some(btn) = self.imp().tag_vpane_toggle_btn.borrow().as_ref() {
+            let tag_vpaned_toggle = tag_vpaned.clone();
+            btn.connect_toggled(move |btn| {
+                let active = btn.is_active();
+                tag_vpaned_toggle.set_visible(active);
+                if let Some(settings) = AppSettings::try_new() {
+                    settings.set_calendar_show_tag_vpane(active);
+                }
+            });
+        }
+
+        // Horizontal paned dividing calendar_stack (left) and tag_vpaned (right)
+        let content_hpaned = gtk::Paned::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .wide_handle(true)
+            .vexpand(true)
+            .hexpand(true)
+            .build();
+        content_hpaned.set_start_child(Some(&calendar_stack));
+        content_hpaned.set_end_child(Some(&tag_vpaned));
+        content_hpaned.set_resize_start_child(true);
+        content_hpaned.set_resize_end_child(false);
+        content_hpaned.set_shrink_start_child(false);
+        content_hpaned.set_shrink_end_child(false);
+        tag_vpaned.set_width_request(260);
+
+        self.imp()
+            .content_hpaned
+            .replace(Some(content_hpaned.clone()));
+
         calendar_stack.set_vexpand(true);
         content_box.set_vexpand(true);
-        content_box.append(&calendar_stack);
+        content_box.append(&content_hpaned);
 
         self.refresh_calendar_views();
 
@@ -2891,6 +3207,179 @@ impl CalendarPage {
             };
             state.set_label(&label);
         }
+    }
+
+    pub(crate) fn refresh_taskpad(&self) {
+        let Some(taskpad_list) = self.imp().taskpad_list.borrow().as_ref().cloned() else {
+            return;
+        };
+        let Some(records) = self.imp().task_records.borrow().as_ref().cloned() else {
+            return;
+        };
+
+        while let Some(child) = taskpad_list.first_child() {
+            taskpad_list.remove(&child);
+        }
+
+        match self.calendar_data_state() {
+            CalendarDataState::Loading => {
+                taskpad_list.set_visible(false);
+                if let Some(state) = self.imp().taskpad_state.borrow().as_ref() {
+                    state.set_visible(true);
+                    state.set_label("Aufgaben werden geladen …");
+                }
+                if let Some(count) = self.imp().taskpad_count.borrow().as_ref() {
+                    count.set_label("");
+                }
+                return;
+            }
+            CalendarDataState::Error => {
+                taskpad_list.set_visible(false);
+                if let Some(state) = self.imp().taskpad_state.borrow().as_ref() {
+                    state.set_visible(true);
+                    state.set_label(
+                        self.imp()
+                            .calendar_load_error
+                            .borrow()
+                            .as_deref()
+                            .unwrap_or("Aufgaben konnten nicht geladen werden"),
+                    );
+                }
+                if let Some(count) = self.imp().taskpad_count.borrow().as_ref() {
+                    count.set_label("");
+                }
+                return;
+            }
+            CalendarDataState::Ready => {}
+        }
+
+        let query = self.imp().calendar_search_query.borrow().clone();
+        let category = self.imp().calendar_category_filter.borrow().clone();
+        let hidden_sources = self.imp().hidden_calendar_sources.borrow().clone();
+
+        let mut tasks = records
+            .borrow()
+            .iter()
+            .filter(|task| {
+                task_matches_calendar_filter(task, &query, category.as_deref(), &hidden_sources)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        tasks.sort_by(|left, right| {
+            left.completed
+                .cmp(&right.completed)
+                .then_with(|| compare_task_due(&left.due, &right.due))
+                .then_with(|| {
+                    left.summary
+                        .to_lowercase()
+                        .cmp(&right.summary.to_lowercase())
+                })
+        });
+
+        for task in tasks.iter().cloned() {
+            append_taskpad_row(self, &taskpad_list, task);
+        }
+
+        let visible_count = tasks.len();
+        taskpad_list.set_visible(visible_count > 0);
+        if let Some(count) = self.imp().taskpad_count.borrow().as_ref() {
+            count.set_label(&format!("({visible_count})"));
+        }
+        if let Some(state) = self.imp().taskpad_state.borrow().as_ref() {
+            state.set_visible(visible_count == 0);
+            state.set_label(if records.borrow().is_empty() {
+                "Keine Aufgaben geladen"
+            } else {
+                "Keine passenden Aufgaben"
+            });
+        }
+    }
+
+    pub(crate) fn refresh_memopad(&self) {
+        let Some(memopad_list) = self.imp().memopad_list.borrow().as_ref().cloned() else {
+            return;
+        };
+        let Some(records) = self.imp().memo_records.borrow().as_ref().cloned() else {
+            return;
+        };
+
+        while let Some(child) = memopad_list.first_child() {
+            memopad_list.remove(&child);
+        }
+
+        match self.calendar_data_state() {
+            CalendarDataState::Loading => {
+                memopad_list.set_visible(false);
+                if let Some(state) = self.imp().memopad_state.borrow().as_ref() {
+                    state.set_visible(true);
+                    state.set_label("Notizen werden geladen …");
+                }
+                if let Some(count) = self.imp().memopad_count.borrow().as_ref() {
+                    count.set_label("");
+                }
+                return;
+            }
+            CalendarDataState::Error => {
+                memopad_list.set_visible(false);
+                if let Some(state) = self.imp().memopad_state.borrow().as_ref() {
+                    state.set_visible(true);
+                    state.set_label(
+                        self.imp()
+                            .calendar_load_error
+                            .borrow()
+                            .as_deref()
+                            .unwrap_or("Notizen konnten nicht geladen werden"),
+                    );
+                }
+                if let Some(count) = self.imp().memopad_count.borrow().as_ref() {
+                    count.set_label("");
+                }
+                return;
+            }
+            CalendarDataState::Ready => {}
+        }
+
+        let query = self.imp().calendar_search_query.borrow().clone();
+        let category = self.imp().calendar_category_filter.borrow().clone();
+        let hidden_sources = self.imp().hidden_calendar_sources.borrow().clone();
+
+        let mut memos = records
+            .borrow()
+            .iter()
+            .filter(|memo| {
+                memo_matches_calendar_filter(memo, &query, category.as_deref(), &hidden_sources)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        memos.sort_by(|left, right| {
+            left.summary
+                .to_lowercase()
+                .cmp(&right.summary.to_lowercase())
+                .then_with(|| left.updated.cmp(&right.updated))
+        });
+
+        for memo in memos.iter().cloned() {
+            append_memopad_row(self, &memopad_list, memo);
+        }
+
+        let visible_count = memos.len();
+        memopad_list.set_visible(visible_count > 0);
+        if let Some(count) = self.imp().memopad_count.borrow().as_ref() {
+            count.set_label(&format!("({visible_count})"));
+        }
+        if let Some(state) = self.imp().memopad_state.borrow().as_ref() {
+            state.set_visible(visible_count == 0);
+            state.set_label(if records.borrow().is_empty() {
+                "Keine Notizen geladen"
+            } else {
+                "Keine passenden Notizen"
+            });
+        }
+    }
+
+    pub(crate) fn refresh_task_and_memo_panes(&self) {
+        self.refresh_taskpad();
+        self.refresh_memopad();
     }
 
     fn shift_period(&self, direction: i32) {
@@ -5051,37 +5540,7 @@ fn set_task_completion_component(raw: &str, completed: bool) -> String {
     }
 }
 
-fn append_calendar_task_row(page: &CalendarPage, task_list: &gtk::ListBox, task: TaskRecord) {
-    let title = if task.summary.trim().is_empty() {
-        "(Ohne Betreff)".to_string()
-    } else {
-        task.summary.clone()
-    };
-    let row = adw::ActionRow::builder()
-        .title(&title)
-        .subtitle(&calendar_task_subtitle(&task))
-        .build();
-    if task.completed {
-        row.add_css_class("dim-label");
-    }
-
-    let check = gtk::CheckButton::builder()
-        .active(task.completed)
-        .sensitive(!task.source_uid.trim().is_empty())
-        .valign(gtk::Align::Center)
-        .tooltip_text(if task.source_uid.trim().is_empty() {
-            "Importierte Aufgaben sind schreibgeschützt"
-        } else {
-            "Aufgabe als erledigt markieren"
-        })
-        .build();
-    row.add_prefix(&check);
-    task_list.append(&row);
-
-    if task.source_uid.trim().is_empty() {
-        return;
-    }
-
+fn wire_task_completion_toggle(page: &CalendarPage, check: &gtk::CheckButton, task: TaskRecord) {
     let page_weak = page.downgrade();
     let page_weak_for_toggle = page_weak.clone();
     check.connect_toggled(move |check| {
@@ -5179,6 +5638,7 @@ fn append_calendar_task_row(page: &CalendarPage, task_list: &gtk::ListBox, task:
                     page.bump_calendar_revision();
                     check_for_result.set_sensitive(true);
                     page.refresh_task_sidebar();
+                    page.refresh_taskpad();
                     show_toast_for_widget(
                         &page,
                         if completed {
@@ -5201,6 +5661,186 @@ fn append_calendar_task_row(page: &CalendarPage, task_list: &gtk::ListBox, task:
             }
         });
     });
+}
+
+fn append_calendar_task_row(page: &CalendarPage, task_list: &gtk::ListBox, task: TaskRecord) {
+    let title = if task.summary.trim().is_empty() {
+        "(Ohne Betreff)".to_string()
+    } else {
+        task.summary.clone()
+    };
+    let row = adw::ActionRow::builder()
+        .title(&title)
+        .subtitle(&calendar_task_subtitle(&task))
+        .build();
+    if task.completed {
+        row.add_css_class("dim-label");
+    }
+
+    let check = gtk::CheckButton::builder()
+        .active(task.completed)
+        .sensitive(!task.source_uid.trim().is_empty())
+        .valign(gtk::Align::Center)
+        .tooltip_text(if task.source_uid.trim().is_empty() {
+            "Importierte Aufgaben sind schreibgeschützt"
+        } else {
+            "Aufgabe als erledigt markieren"
+        })
+        .build();
+    row.add_prefix(&check);
+    task_list.append(&row);
+
+    if task.source_uid.trim().is_empty() {
+        return;
+    }
+
+    wire_task_completion_toggle(page, &check, task);
+}
+
+fn append_taskpad_row(page: &CalendarPage, task_list: &gtk::ListBox, task: TaskRecord) {
+    let title = if task.summary.trim().is_empty() {
+        "(Ohne Betreff)".to_string()
+    } else {
+        task.summary.clone()
+    };
+    let row = adw::ActionRow::builder()
+        .title(&title)
+        .subtitle(&calendar_task_subtitle(&task))
+        .activatable(true)
+        .build();
+    if task.completed {
+        row.add_css_class("dim-label");
+    }
+
+    let check = gtk::CheckButton::builder()
+        .active(task.completed)
+        .sensitive(!task.source_uid.trim().is_empty())
+        .valign(gtk::Align::Center)
+        .tooltip_text(if task.source_uid.trim().is_empty() {
+            "Importierte Aufgaben sind schreibgeschützt"
+        } else {
+            "Aufgabe als erledigt markieren"
+        })
+        .build();
+    row.add_prefix(&check);
+
+    let page_weak = page.downgrade();
+    let task_source_uid = task.source_uid.clone();
+    let task_uid = task.uid.clone();
+    row.connect_activated(move |_| {
+        if let Some(page) = page_weak.upgrade() {
+            page.open_task_by_uid(&task_source_uid, &task_uid);
+        }
+    });
+
+    task_list.append(&row);
+
+    if task.source_uid.trim().is_empty() {
+        return;
+    }
+
+    wire_task_completion_toggle(page, &check, task);
+}
+
+fn calendar_memo_subtitle(memo: &MemoRecord) -> String {
+    if !memo.updated.trim().is_empty() {
+        memo.updated.trim().to_string()
+    } else if !memo.description.trim().is_empty() {
+        memo.description
+            .lines()
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_string()
+    } else if !memo.source_display_name.trim().is_empty() {
+        memo.source_display_name.trim().to_string()
+    } else {
+        String::new()
+    }
+}
+
+fn append_memopad_row(page: &CalendarPage, memo_list: &gtk::ListBox, memo: MemoRecord) {
+    let title = if memo.summary.trim().is_empty() {
+        "(Ohne Titel)".to_string()
+    } else {
+        memo.summary.clone()
+    };
+    let subtitle = calendar_memo_subtitle(&memo);
+    let row = adw::ActionRow::builder()
+        .title(&title)
+        .subtitle(&subtitle)
+        .activatable(true)
+        .build();
+
+    let icon = gtk::Image::builder()
+        .icon_name("text-x-generic-symbolic")
+        .valign(gtk::Align::Center)
+        .build();
+    row.add_prefix(&icon);
+
+    let page_weak = page.downgrade();
+    let memo_source_uid = memo.source_uid.clone();
+    let memo_uid = memo.uid.clone();
+    row.connect_activated(move |_| {
+        if let Some(page) = page_weak.upgrade() {
+            page.open_memo_by_uid(&memo_source_uid, &memo_uid);
+        }
+    });
+
+    memo_list.append(&row);
+}
+
+pub(crate) fn task_matches_calendar_filter(
+    task: &TaskRecord,
+    query: &str,
+    category_filter: Option<&str>,
+    hidden_sources: &HashSet<String>,
+) -> bool {
+    if hidden_sources.contains(&task.source_uid) {
+        return false;
+    }
+    if let Some(category) = category_filter {
+        let categories = category_names_from_ical_component(&task.component);
+        if !categories.iter().any(|c| c.eq_ignore_ascii_case(category)) {
+            return false;
+        }
+    }
+    if !query.trim().is_empty() {
+        let q = query.trim().to_lowercase();
+        let summary_match = task.summary.to_lowercase().contains(&q);
+        let component_match = task.component.to_lowercase().contains(&q);
+        if !summary_match && !component_match {
+            return false;
+        }
+    }
+    true
+}
+
+pub(crate) fn memo_matches_calendar_filter(
+    memo: &MemoRecord,
+    query: &str,
+    category_filter: Option<&str>,
+    hidden_sources: &HashSet<String>,
+) -> bool {
+    if hidden_sources.contains(&memo.source_uid) {
+        return false;
+    }
+    if let Some(category) = category_filter {
+        let categories = category_names_from_ical_component(&memo.component);
+        if !categories.iter().any(|c| c.eq_ignore_ascii_case(category)) {
+            return false;
+        }
+    }
+    if !query.trim().is_empty() {
+        let q = query.trim().to_lowercase();
+        let summary_match = memo.summary.to_lowercase().contains(&q);
+        let desc_match = memo.description.to_lowercase().contains(&q);
+        let component_match = memo.component.to_lowercase().contains(&q);
+        if !summary_match && !desc_match && !component_match {
+            return false;
+        }
+    }
+    true
 }
 
 fn upsert_task_record(task_records: Rc<RefCell<Vec<TaskRecord>>>, task: TaskRecord) {
@@ -8041,5 +8681,195 @@ mod tests {
         let mut imported = event.clone();
         imported.source_uid.clear();
         assert!(event_mutation_error(&imported).is_some());
+    }
+
+    #[test]
+    fn task_matches_calendar_filter_tests() {
+        let task = TaskRecord {
+            uid: "task-101".to_string(),
+            source_uid: "source-work".to_string(),
+            source_display_name: "Arbeit".to_string(),
+            component: "BEGIN:VTODO\r\nUID:task-101\r\nSUMMARY:Bericht fertigstellen\r\nCATEGORIES:Projekt,Wichtig\r\nDESCRIPTION:Detaillierte Analyse\r\nEND:VTODO\r\n".to_string(),
+            summary: "Bericht fertigstellen".to_string(),
+            due: "2026-09-10".to_string(),
+            priority: 1,
+            completed: false,
+        };
+        let hidden = HashSet::new();
+
+        // 1. Match everything when no filters
+        assert!(task_matches_calendar_filter(&task, "", None, &hidden));
+
+        // 2. Filter out if source is hidden
+        let mut hidden_sources = HashSet::new();
+        hidden_sources.insert("source-work".to_string());
+        assert!(!task_matches_calendar_filter(
+            &task,
+            "",
+            None,
+            &hidden_sources
+        ));
+
+        // 3. Search query matching summary
+        assert!(task_matches_calendar_filter(
+            &task, "bericht", None, &hidden
+        ));
+        assert!(task_matches_calendar_filter(&task, "FERTIG", None, &hidden));
+
+        // 4. Search query matching component / description
+        assert!(task_matches_calendar_filter(
+            &task, "analyse", None, &hidden
+        ));
+
+        // 5. Search query mismatch
+        assert!(!task_matches_calendar_filter(
+            &task, "urlaub", None, &hidden
+        ));
+
+        // 6. Category matching
+        assert!(task_matches_calendar_filter(
+            &task,
+            "",
+            Some("Projekt"),
+            &hidden
+        ));
+        assert!(task_matches_calendar_filter(
+            &task,
+            "",
+            Some("wichtig"),
+            &hidden
+        ));
+        assert!(!task_matches_calendar_filter(
+            &task,
+            "",
+            Some("Privat"),
+            &hidden
+        ));
+
+        // 7. Combined query and category match
+        assert!(task_matches_calendar_filter(
+            &task,
+            "bericht",
+            Some("Projekt"),
+            &hidden
+        ));
+        assert!(!task_matches_calendar_filter(
+            &task,
+            "bericht",
+            Some("Privat"),
+            &hidden
+        ));
+        assert!(!task_matches_calendar_filter(
+            &task,
+            "urlaub",
+            Some("Projekt"),
+            &hidden
+        ));
+    }
+
+    #[test]
+    fn memo_matches_calendar_filter_tests() {
+        let memo = MemoRecord {
+            uid: "memo-202".to_string(),
+            source_uid: "source-notes".to_string(),
+            source_display_name: "Notizen".to_string(),
+            component: "BEGIN:VJOURNAL\r\nUID:memo-202\r\nSUMMARY:Architektur Meeting\r\nCATEGORIES:Ideen,Technik\r\nDESCRIPTION:Diskussion über GTK4 Paned Layout\r\nEND:VJOURNAL\r\n".to_string(),
+            summary: "Architektur Meeting".to_string(),
+            description: "Diskussion über GTK4 Paned Layout".to_string(),
+            updated: "2026-09-04".to_string(),
+        };
+        let hidden = HashSet::new();
+
+        // 1. Match everything when no filters
+        assert!(memo_matches_calendar_filter(&memo, "", None, &hidden));
+
+        // 2. Filter out if source is hidden
+        let mut hidden_sources = HashSet::new();
+        hidden_sources.insert("source-notes".to_string());
+        assert!(!memo_matches_calendar_filter(
+            &memo,
+            "",
+            None,
+            &hidden_sources
+        ));
+
+        // 3. Search query matching summary
+        assert!(memo_matches_calendar_filter(
+            &memo, "meeting", None, &hidden
+        ));
+        assert!(memo_matches_calendar_filter(
+            &memo,
+            "ARCHITEKTUR",
+            None,
+            &hidden
+        ));
+
+        // 4. Search query matching description
+        assert!(memo_matches_calendar_filter(&memo, "paned", None, &hidden));
+
+        // 5. Search query mismatch
+        assert!(!memo_matches_calendar_filter(
+            &memo,
+            "einkaufsliste",
+            None,
+            &hidden
+        ));
+
+        // 6. Category matching
+        assert!(memo_matches_calendar_filter(
+            &memo,
+            "",
+            Some("Ideen"),
+            &hidden
+        ));
+        assert!(memo_matches_calendar_filter(
+            &memo,
+            "",
+            Some("technik"),
+            &hidden
+        ));
+        assert!(!memo_matches_calendar_filter(
+            &memo,
+            "",
+            Some("Privat"),
+            &hidden
+        ));
+
+        // 7. Combined query and category match
+        assert!(memo_matches_calendar_filter(
+            &memo,
+            "paned",
+            Some("Technik"),
+            &hidden
+        ));
+        assert!(!memo_matches_calendar_filter(
+            &memo,
+            "paned",
+            Some("Privat"),
+            &hidden
+        ));
+    }
+
+    #[test]
+    fn calendar_memo_subtitle_tests() {
+        let mut memo = MemoRecord {
+            uid: "m1".to_string(),
+            source_uid: "s1".to_string(),
+            source_display_name: "Persönlich".to_string(),
+            component: String::new(),
+            summary: "Titel".to_string(),
+            description: "Erste Zeile\nZweite Zeile".to_string(),
+            updated: "2026-09-04 12:00".to_string(),
+        };
+        assert_eq!(calendar_memo_subtitle(&memo), "2026-09-04 12:00");
+
+        memo.updated.clear();
+        assert_eq!(calendar_memo_subtitle(&memo), "Erste Zeile");
+
+        memo.description.clear();
+        assert_eq!(calendar_memo_subtitle(&memo), "Persönlich");
+
+        memo.source_display_name.clear();
+        assert_eq!(calendar_memo_subtitle(&memo), "");
     }
 }
