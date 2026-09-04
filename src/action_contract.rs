@@ -82,6 +82,7 @@ pub(crate) const ACTIONS: &[ActionSpec] = action_specs! {
         "win.apply-filters", "win.mail-density-compact",
         "win.mail-density-normal", "win.mail-density-spacious",
         "win.new-folder", "win.redo", "win.refresh-mail", "win.undo",
+        "win.search-advanced",
         "win.toggle-all-headers", "win.zoom-in", "win.zoom-out", "win.zoom-reset",
         "win.toggle-mail-attachment", "win.toggle-mail-avatar", "win.toggle-mail-date",
         "win.toggle-mail-labels", "win.toggle-mail-preview-text",
@@ -139,6 +140,7 @@ pub(crate) const PRIMARY_MENU_ACTIONS: &[MenuActionSpec] = menu_specs! {
     Edit => [
         ("Rückgängig", "win.undo"), ("Wiederholen", "win.redo"),
         ("Löschen rückgängig machen", "win.undelete"), ("E-Mail suchen", "win.search"),
+        ("Erweiterte Suche…", "win.search-advanced"),
         ("In angezeigter Nachricht suchen…", "win.find-in-message"),
         ("Globale Suche", "app.global-search"),
         ("Vergangene Termine löschen…", "win.purge-calendar"),
@@ -511,5 +513,16 @@ mod tests {
             action_scope("win.purge-calendar"),
             Some(ActionScope::ActiveCalendar)
         );
+    }
+
+    #[test]
+    fn advanced_search_is_mail_scoped_and_visible_next_to_mail_search() {
+        assert_eq!(
+            action_scope("win.search-advanced"),
+            Some(ActionScope::ActiveMail)
+        );
+        assert!(menu_actions(MenuPath::Edit).any(|item| {
+            item.action == "win.search-advanced" && item.label == "Erweiterte Suche…"
+        }));
     }
 }

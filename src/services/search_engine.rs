@@ -3,6 +3,7 @@
 // search_engine — Unified cross-component search engine (Mail, Contacts, Calendar).
 
 use chrono::{DateTime, Local, NaiveDate, NaiveDateTime};
+use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt;
@@ -841,7 +842,648 @@ enum SearchQuery {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ParsedMailSearchQuery(SearchQuery);
 
-/// Default field used for unqualified mail-search terms.
+/// Version of the provider-neutral mail-query fixture format.
+///
+/// This is intentionally separate from the parser's textual syntax version:
+/// saved-search consumers persist the fixture as a typed AST and must reject
+/// a future wire shape instead of attempting a lossy best-effort migration.
+pub(crate) const MAIL_QUERY_FIXTURE_VERSION: u32 = 1;
+const MAIL_QUERY_FIXTURE_FORMAT: &str = "evolution-mail-search-query";
+const MAIL_QUERY_FIXTURE_MAX_BYTES: usize = 256 * 1024;
+const MAIL_QUERY_FIXTURE_MAX_DEPTH: usize = 64;
+const MAIL_QUERY_FIXTURE_MAX_NODES: usize = 1024;
+const MAIL_QUERY_FIXTURE_MAX_TEXT_CHARS: usize = 16 * 1024;
+const MAIL_QUERY_FIXTURE_MAX_TOTAL_TEXT_CHARS: usize = 64 * 1024;
+
+/// Errors returned by the versioned mail-query fixture codec.
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum MailSearchFixtureError {
+    InvalidJson(String),
+    InvalidShape(String),
+    UnknownFormat(String),
+    UnsupportedVersion(u32),
+    SizeLimitExceeded(&'static str),
+}
+
+impl fmt::Display for MailSearchFixtureError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidJson(message) => {
+                write!(formatter, "invalid mail-search fixture JSON: {message}")
+            }
+            Self::InvalidShape(message) => {
+                write!(formatter, "invalid mail-search fixture shape: {message}")
+            }
+            Self::UnknownFormat(format) => {
+                write!(formatter, "unknown mail-search fixture format: {format}")
+            }
+            Self::UnsupportedVersion(version) => {
+                write!(
+                    formatter,
+                    "unsupported mail-search fixture version: {version}"
+                )
+            }
+            Self::SizeLimitExceeded(limit) => {
+                write!(formatter, "mail-search fixture exceeds {limit} limit")
+            }
+        }
+    }
+}
+
+impl std::error::Error for MailSearchFixtureError {}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MailQueryFixtureV1 {
+    format: String,
+    version: u32,
+    query: MailQueryFixtureNode,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
+enum MailQueryFixtureNode {
+    And {
+        children: Vec<MailQueryFixtureNode>,
+    },
+    Or {
+        children: Vec<MailQueryFixtureNode>,
+    },
+    Not {
+        child: Box<MailQueryFixtureNode>,
+    },
+    Term {
+        value: String,
+        negated: bool,
+        predicate: MailQueryFixturePredicate,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum MailQueryFixturePredicate {
+    Text {
+        field: MailQueryFixtureField,
+        matcher: MailQueryFixtureMatcher,
+    },
+    State {
+        state: MailQueryFixtureState,
+    },
+    DateAtOrAfter {
+        date: String,
+        relative: bool,
+    },
+    DateAtOrBefore {
+        date: String,
+        relative: bool,
+    },
+    DateAfter {
+        date: String,
+        relative: bool,
+    },
+    DateBefore {
+        date: String,
+        relative: bool,
+    },
+    DateOn {
+        date: String,
+        relative: bool,
+    },
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum MailQueryFixtureField {
+    Any,
+    From,
+    To,
+    Cc,
+    Bcc,
+    Recipients,
+    Subject,
+    Body,
+    Label,
+    Filename,
+    Folder,
+    ReplyTo,
+    MessageId,
+    Location,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum MailQueryFixtureMatcher {
+    Contains,
+    HasWords,
+    Exact,
+    StartsWith,
+    EndsWith,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum MailQueryFixtureState {
+    Unread,
+    Flagged,
+    Important,
+    Junk,
+    Attachment,
+    Draft,
+    Deleted,
+    Sent,
+    Inbox,
+    Archive,
+}
+
+#[derive(Debug, Default)]
+struct MailQueryFixtureLimits {
+    nodes: usize,
+    total_text_chars: usize,
+}
+
+impl MailQueryFixtureLimits {
+    fn visit_node(&mut self, depth: usize) -> Result<(), MailSearchFixtureError> {
+        if depth > MAIL_QUERY_FIXTURE_MAX_DEPTH {
+            return Err(MailSearchFixtureError::SizeLimitExceeded(
+                "maximum AST depth",
+            ));
+        }
+        self.nodes = self
+            .nodes
+            .checked_add(1)
+            .ok_or(MailSearchFixtureError::SizeLimitExceeded(
+                "maximum AST nodes",
+            ))?;
+        if self.nodes > MAIL_QUERY_FIXTURE_MAX_NODES {
+            return Err(MailSearchFixtureError::SizeLimitExceeded(
+                "maximum AST nodes",
+            ));
+        }
+        Ok(())
+    }
+
+    fn visit_text(&mut self, value: &str) -> Result<(), MailSearchFixtureError> {
+        let chars = value.chars().count();
+        if chars > MAIL_QUERY_FIXTURE_MAX_TEXT_CHARS {
+            return Err(MailSearchFixtureError::SizeLimitExceeded(
+                "maximum term text",
+            ));
+        }
+        self.total_text_chars = self.total_text_chars.checked_add(chars).ok_or(
+            MailSearchFixtureError::SizeLimitExceeded("maximum total term text"),
+        )?;
+        if self.total_text_chars > MAIL_QUERY_FIXTURE_MAX_TOTAL_TEXT_CHARS {
+            return Err(MailSearchFixtureError::SizeLimitExceeded(
+                "maximum total term text",
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Encode an already validated opaque mail query as a stable, versioned JSON
+/// fixture.  The private wire representation is deliberately separate from
+/// [`SearchQuery`], so callers cannot construct an unchecked AST by relying on
+/// serialization details.
+#[allow(dead_code)]
+pub(crate) fn encode_mail_query_fixture(
+    query: &ParsedMailSearchQuery,
+) -> Result<String, MailSearchFixtureError> {
+    let mut limits = MailQueryFixtureLimits::default();
+    let query = encode_mail_query_node(&query.0, 1, &mut limits)?;
+    let fixture = MailQueryFixtureV1 {
+        format: MAIL_QUERY_FIXTURE_FORMAT.to_string(),
+        version: MAIL_QUERY_FIXTURE_VERSION,
+        query,
+    };
+    let encoded = serde_json::to_string_pretty(&fixture)
+        .map_err(|error| MailSearchFixtureError::InvalidJson(error.to_string()))?;
+    if encoded.len() > MAIL_QUERY_FIXTURE_MAX_BYTES {
+        return Err(MailSearchFixtureError::SizeLimitExceeded(
+            "maximum fixture size",
+        ));
+    }
+    Ok(encoded)
+}
+
+/// Decode a stable mail-query fixture.  Unknown versions, enum values, wire
+/// fields, malformed shapes, and resource-limit violations all fail closed.
+#[allow(dead_code)]
+pub(crate) fn decode_mail_query_fixture(
+    fixture: &str,
+) -> Result<ParsedMailSearchQuery, MailSearchFixtureError> {
+    if fixture.len() > MAIL_QUERY_FIXTURE_MAX_BYTES {
+        return Err(MailSearchFixtureError::SizeLimitExceeded(
+            "maximum fixture size",
+        ));
+    }
+
+    // Inspect the small envelope first so a future version is reported as
+    // unsupported even when its payload shape is intentionally different.
+    let value: serde_json::Value = serde_json::from_str(fixture)
+        .map_err(|error| MailSearchFixtureError::InvalidJson(error.to_string()))?;
+    let object = value.as_object().ok_or_else(|| {
+        MailSearchFixtureError::InvalidShape("fixture root must be an object".to_string())
+    })?;
+    let format = object
+        .get("format")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| {
+            MailSearchFixtureError::InvalidShape("fixture format must be a string".to_string())
+        })?;
+    if format != MAIL_QUERY_FIXTURE_FORMAT {
+        return Err(MailSearchFixtureError::UnknownFormat(format.to_string()));
+    }
+    let version = object
+        .get("version")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|version| u32::try_from(version).ok())
+        .ok_or_else(|| {
+            MailSearchFixtureError::InvalidShape("fixture version must be a u32".to_string())
+        })?;
+    if version != MAIL_QUERY_FIXTURE_VERSION {
+        return Err(MailSearchFixtureError::UnsupportedVersion(version));
+    }
+
+    let fixture: MailQueryFixtureV1 = serde_json::from_value(value)
+        .map_err(|error| MailSearchFixtureError::InvalidShape(error.to_string()))?;
+    let mut limits = MailQueryFixtureLimits::default();
+    let query = decode_mail_query_node(fixture.query, 1, &mut limits)?;
+    Ok(ParsedMailSearchQuery(query))
+}
+
+fn encode_mail_query_node(
+    query: &SearchQuery,
+    depth: usize,
+    limits: &mut MailQueryFixtureLimits,
+) -> Result<MailQueryFixtureNode, MailSearchFixtureError> {
+    limits.visit_node(depth)?;
+    match query {
+        SearchQuery::All(expressions) => {
+            if expressions.len() < 2 {
+                return Err(MailSearchFixtureError::InvalidShape(
+                    "and node must contain at least two children".to_string(),
+                ));
+            }
+            Ok(MailQueryFixtureNode::And {
+                children: expressions
+                    .iter()
+                    .map(|expression| encode_mail_query_node(expression, depth + 1, limits))
+                    .collect::<Result<_, _>>()?,
+            })
+        }
+        SearchQuery::Any(expressions) => {
+            if expressions.len() < 2 {
+                return Err(MailSearchFixtureError::InvalidShape(
+                    "or node must contain at least two children".to_string(),
+                ));
+            }
+            Ok(MailQueryFixtureNode::Or {
+                children: expressions
+                    .iter()
+                    .map(|expression| encode_mail_query_node(expression, depth + 1, limits))
+                    .collect::<Result<_, _>>()?,
+            })
+        }
+        SearchQuery::Not(expression) => Ok(MailQueryFixtureNode::Not {
+            child: Box::new(encode_mail_query_node(expression, depth + 1, limits)?),
+        }),
+        SearchQuery::Term(term) => {
+            limits.visit_text(&term.value)?;
+            let predicate = encode_mail_query_predicate(&term.kind, &term.value, limits)?;
+            Ok(MailQueryFixtureNode::Term {
+                value: term.value.clone(),
+                negated: term.negated,
+                predicate,
+            })
+        }
+    }
+}
+
+fn encode_mail_query_predicate(
+    kind: &SearchTermKind,
+    term_value: &str,
+    limits: &mut MailQueryFixtureLimits,
+) -> Result<MailQueryFixturePredicate, MailSearchFixtureError> {
+    match kind {
+        SearchTermKind::Text { field, matcher } => Ok(MailQueryFixturePredicate::Text {
+            field: encode_mail_query_field(*field),
+            matcher: encode_mail_query_matcher(*matcher),
+        }),
+        SearchTermKind::State(state) => Ok(MailQueryFixturePredicate::State {
+            state: encode_mail_query_state(*state),
+        }),
+        SearchTermKind::DateAtOrAfter(date) => encode_mail_query_date(date, term_value, limits)
+            .map(|(date, relative)| MailQueryFixturePredicate::DateAtOrAfter { date, relative }),
+        SearchTermKind::DateAtOrBefore(date) => encode_mail_query_date(date, term_value, limits)
+            .map(|(date, relative)| MailQueryFixturePredicate::DateAtOrBefore { date, relative }),
+        SearchTermKind::DateAfter(date) => encode_mail_query_date(date, term_value, limits)
+            .map(|(date, relative)| MailQueryFixturePredicate::DateAfter { date, relative }),
+        SearchTermKind::DateBefore(date) => encode_mail_query_date(date, term_value, limits)
+            .map(|(date, relative)| MailQueryFixturePredicate::DateBefore { date, relative }),
+        SearchTermKind::DateOn(date) => encode_mail_query_date(date, term_value, limits)
+            .map(|(date, relative)| MailQueryFixturePredicate::DateOn { date, relative }),
+    }
+}
+
+fn encode_mail_query_date(
+    date: &NaiveDate,
+    term_value: &str,
+    limits: &mut MailQueryFixtureLimits,
+) -> Result<(String, bool), MailSearchFixtureError> {
+    // Relative expressions must remain relative on disk.  Persisting the
+    // resolved local date would freeze queries such as `after:7d` at the day
+    // on which the search was saved.  Compact YYYYMMDD values are the one
+    // absolute numeric form accepted by the general date parser; preserve
+    // those as absolute dates for fixture-v1 compatibility.
+    let normalized_relative = normalize_relative_mail_query_date(term_value);
+    let (value, relative) = match normalized_relative {
+        Some(value) if !is_compact_absolute_date(&value, date) => (value, true),
+        _ => (date.format("%Y-%m-%d").to_string(), false),
+    };
+    limits.visit_text(&value)?;
+    Ok((value, relative))
+}
+
+fn decode_mail_query_node(
+    node: MailQueryFixtureNode,
+    depth: usize,
+    limits: &mut MailQueryFixtureLimits,
+) -> Result<SearchQuery, MailSearchFixtureError> {
+    limits.visit_node(depth)?;
+    match node {
+        MailQueryFixtureNode::And { children } => {
+            if children.len() < 2 {
+                return Err(MailSearchFixtureError::InvalidShape(
+                    "and node must contain at least two children".to_string(),
+                ));
+            }
+            Ok(SearchQuery::All(
+                children
+                    .into_iter()
+                    .map(|child| decode_mail_query_node(child, depth + 1, limits))
+                    .collect::<Result<_, _>>()?,
+            ))
+        }
+        MailQueryFixtureNode::Or { children } => {
+            if children.len() < 2 {
+                return Err(MailSearchFixtureError::InvalidShape(
+                    "or node must contain at least two children".to_string(),
+                ));
+            }
+            Ok(SearchQuery::Any(
+                children
+                    .into_iter()
+                    .map(|child| decode_mail_query_node(child, depth + 1, limits))
+                    .collect::<Result<_, _>>()?,
+            ))
+        }
+        MailQueryFixtureNode::Not { child } => Ok(SearchQuery::Not(Box::new(
+            decode_mail_query_node(*child, depth + 1, limits)?,
+        ))),
+        MailQueryFixtureNode::Term {
+            value,
+            negated,
+            predicate,
+        } => {
+            limits.visit_text(&value)?;
+            let kind = decode_mail_query_predicate(predicate, &value, limits)?;
+            if matches!(kind, SearchTermKind::State(_)) {
+                if !value.is_empty() {
+                    return Err(MailSearchFixtureError::InvalidShape(
+                        "state term value must be empty".to_string(),
+                    ));
+                }
+            } else if value.trim().is_empty() {
+                return Err(MailSearchFixtureError::InvalidShape(
+                    "text and date term values must not be empty".to_string(),
+                ));
+            }
+            Ok(SearchQuery::Term(SearchQueryTerm {
+                value,
+                negated,
+                kind,
+            }))
+        }
+    }
+}
+
+fn decode_mail_query_predicate(
+    predicate: MailQueryFixturePredicate,
+    term_value: &str,
+    limits: &mut MailQueryFixtureLimits,
+) -> Result<SearchTermKind, MailSearchFixtureError> {
+    match predicate {
+        MailQueryFixturePredicate::Text { field, matcher } => Ok(SearchTermKind::Text {
+            field: decode_mail_query_field(field),
+            matcher: decode_mail_query_matcher(matcher),
+        }),
+        MailQueryFixturePredicate::State { state } => {
+            Ok(SearchTermKind::State(decode_mail_query_state(state)))
+        }
+        MailQueryFixturePredicate::DateAtOrAfter { date, relative } => {
+            decode_mail_query_date(date, relative, term_value, limits)
+                .map(SearchTermKind::DateAtOrAfter)
+        }
+        MailQueryFixturePredicate::DateAtOrBefore { date, relative } => {
+            decode_mail_query_date(date, relative, term_value, limits)
+                .map(SearchTermKind::DateAtOrBefore)
+        }
+        MailQueryFixturePredicate::DateAfter { date, relative } => {
+            decode_mail_query_date(date, relative, term_value, limits)
+                .map(SearchTermKind::DateAfter)
+        }
+        MailQueryFixturePredicate::DateBefore { date, relative } => {
+            decode_mail_query_date(date, relative, term_value, limits)
+                .map(SearchTermKind::DateBefore)
+        }
+        MailQueryFixturePredicate::DateOn { date, relative } => {
+            decode_mail_query_date(date, relative, term_value, limits).map(SearchTermKind::DateOn)
+        }
+    }
+}
+
+fn decode_mail_query_date(
+    date: String,
+    relative: bool,
+    term_value: &str,
+    limits: &mut MailQueryFixtureLimits,
+) -> Result<NaiveDate, MailSearchFixtureError> {
+    limits.visit_text(&date)?;
+    let normalized_term = term_value.trim().to_ascii_lowercase();
+    if relative {
+        let Some(normalized_relative) = normalize_relative_mail_query_date(&normalized_term) else {
+            return Err(MailSearchFixtureError::InvalidShape(
+                "relative date flag does not match the term value".to_string(),
+            ));
+        };
+        if date != normalized_relative {
+            return Err(MailSearchFixtureError::InvalidShape(
+                "relative date fixture expression does not match the term value".to_string(),
+            ));
+        }
+        // Resolve the raw relative expression exactly once at decode time so
+        // a saved search follows the current local day after a restart.
+        parse_search_date_value(&normalized_relative, true).ok_or_else(|| {
+            MailSearchFixtureError::InvalidShape(
+                "relative date term value is not a valid search date".to_string(),
+            )
+        })
+    } else {
+        let parsed_date = NaiveDate::parse_from_str(&date, "%Y-%m-%d").map_err(|error| {
+            MailSearchFixtureError::InvalidShape(format!("invalid date `{date}`: {error}"))
+        })?;
+        if normalize_relative_mail_query_date(&normalized_term)
+            .is_some_and(|value| !is_compact_absolute_date(&value, &parsed_date))
+        {
+            return Err(MailSearchFixtureError::InvalidShape(
+                "relative date term value is missing its relative flag".to_string(),
+            ));
+        }
+        parse_search_date_value(term_value, false)
+            .filter(|date| *date == parsed_date)
+            .ok_or_else(|| {
+                MailSearchFixtureError::InvalidShape(
+                    "date term value does not match the encoded date".to_string(),
+                )
+            })
+    }
+}
+
+fn normalize_relative_mail_query_date(value: &str) -> Option<String> {
+    let value = value.trim().to_ascii_lowercase();
+    if value
+        .strip_suffix('d')
+        .and_then(|days| days.parse::<i64>().ok())
+        .is_some_and(|days| (-100_000_000..=100_000_000).contains(&days))
+    {
+        return Some(value);
+    }
+    if matches!(
+        value.as_str(),
+        "today"
+            | "heute"
+            | "yesterday"
+            | "gestern"
+            | "tomorrow"
+            | "morgen"
+            | "past-week"
+            | "last-week"
+            | "letzte-woche"
+            | "past-month"
+            | "last-month"
+            | "letzter-monat"
+            | "past-year"
+            | "last-year"
+            | "letztes-jahr"
+    ) {
+        return Some(value);
+    }
+    value
+        .parse::<i64>()
+        .ok()
+        .filter(|days| (-100_000_000..=100_000_000).contains(days))
+        .map(|_| value)
+}
+
+fn is_compact_absolute_date(value: &str, encoded_date: &NaiveDate) -> bool {
+    value.len() == 8
+        && NaiveDate::parse_from_str(value, "%Y%m%d")
+            .ok()
+            .is_some_and(|date| date == *encoded_date)
+}
+
+fn encode_mail_query_field(field: SearchField) -> MailQueryFixtureField {
+    match field {
+        SearchField::Any => MailQueryFixtureField::Any,
+        SearchField::From => MailQueryFixtureField::From,
+        SearchField::To => MailQueryFixtureField::To,
+        SearchField::Cc => MailQueryFixtureField::Cc,
+        SearchField::Bcc => MailQueryFixtureField::Bcc,
+        SearchField::Recipients => MailQueryFixtureField::Recipients,
+        SearchField::Subject => MailQueryFixtureField::Subject,
+        SearchField::Body => MailQueryFixtureField::Body,
+        SearchField::Label => MailQueryFixtureField::Label,
+        SearchField::Filename => MailQueryFixtureField::Filename,
+        SearchField::Folder => MailQueryFixtureField::Folder,
+        SearchField::ReplyTo => MailQueryFixtureField::ReplyTo,
+        SearchField::MessageId => MailQueryFixtureField::MessageId,
+        SearchField::Location => MailQueryFixtureField::Location,
+    }
+}
+
+fn decode_mail_query_field(field: MailQueryFixtureField) -> SearchField {
+    match field {
+        MailQueryFixtureField::Any => SearchField::Any,
+        MailQueryFixtureField::From => SearchField::From,
+        MailQueryFixtureField::To => SearchField::To,
+        MailQueryFixtureField::Cc => SearchField::Cc,
+        MailQueryFixtureField::Bcc => SearchField::Bcc,
+        MailQueryFixtureField::Recipients => SearchField::Recipients,
+        MailQueryFixtureField::Subject => SearchField::Subject,
+        MailQueryFixtureField::Body => SearchField::Body,
+        MailQueryFixtureField::Label => SearchField::Label,
+        MailQueryFixtureField::Filename => SearchField::Filename,
+        MailQueryFixtureField::Folder => SearchField::Folder,
+        MailQueryFixtureField::ReplyTo => SearchField::ReplyTo,
+        MailQueryFixtureField::MessageId => SearchField::MessageId,
+        MailQueryFixtureField::Location => SearchField::Location,
+    }
+}
+
+fn encode_mail_query_matcher(matcher: SearchMatchKind) -> MailQueryFixtureMatcher {
+    match matcher {
+        SearchMatchKind::Contains => MailQueryFixtureMatcher::Contains,
+        SearchMatchKind::HasWords => MailQueryFixtureMatcher::HasWords,
+        SearchMatchKind::Exact => MailQueryFixtureMatcher::Exact,
+        SearchMatchKind::StartsWith => MailQueryFixtureMatcher::StartsWith,
+        SearchMatchKind::EndsWith => MailQueryFixtureMatcher::EndsWith,
+    }
+}
+
+fn decode_mail_query_matcher(matcher: MailQueryFixtureMatcher) -> SearchMatchKind {
+    match matcher {
+        MailQueryFixtureMatcher::Contains => SearchMatchKind::Contains,
+        MailQueryFixtureMatcher::HasWords => SearchMatchKind::HasWords,
+        MailQueryFixtureMatcher::Exact => SearchMatchKind::Exact,
+        MailQueryFixtureMatcher::StartsWith => SearchMatchKind::StartsWith,
+        MailQueryFixtureMatcher::EndsWith => SearchMatchKind::EndsWith,
+    }
+}
+
+fn encode_mail_query_state(state: SearchState) -> MailQueryFixtureState {
+    match state {
+        SearchState::Unread => MailQueryFixtureState::Unread,
+        SearchState::Flagged => MailQueryFixtureState::Flagged,
+        SearchState::Important => MailQueryFixtureState::Important,
+        SearchState::Junk => MailQueryFixtureState::Junk,
+        SearchState::Attachment => MailQueryFixtureState::Attachment,
+        SearchState::Draft => MailQueryFixtureState::Draft,
+        SearchState::Deleted => MailQueryFixtureState::Deleted,
+        SearchState::Sent => MailQueryFixtureState::Sent,
+        SearchState::Inbox => MailQueryFixtureState::Inbox,
+        SearchState::Archive => MailQueryFixtureState::Archive,
+    }
+}
+
+fn decode_mail_query_state(state: MailQueryFixtureState) -> SearchState {
+    match state {
+        MailQueryFixtureState::Unread => SearchState::Unread,
+        MailQueryFixtureState::Flagged => SearchState::Flagged,
+        MailQueryFixtureState::Important => SearchState::Important,
+        MailQueryFixtureState::Junk => SearchState::Junk,
+        MailQueryFixtureState::Attachment => SearchState::Attachment,
+        MailQueryFixtureState::Draft => SearchState::Draft,
+        MailQueryFixtureState::Deleted => SearchState::Deleted,
+        MailQueryFixtureState::Sent => SearchState::Sent,
+        MailQueryFixtureState::Inbox => SearchState::Inbox,
+        MailQueryFixtureState::Archive => SearchState::Archive,
+    }
+}
+
+/// Default field or upstream quick-search mode used for unqualified
+/// mail-search terms.
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) enum MailSearchFieldScope {
@@ -851,6 +1493,12 @@ pub(crate) enum MailSearchFieldScope {
     Sender,
     Recipients,
     Body,
+    /// Evolution's "Subject or Addresses contain" quick-search mode.
+    /// Recipients deliberately means To/Cc, never Bcc.
+    SubjectOrAddresses,
+    /// Evolution's "Message contains" quick-search mode.
+    /// Recipients deliberately means To/Cc, never Bcc.
+    Message,
 }
 
 /// The only Graph search plans the portable parser is allowed to emit.
@@ -890,10 +1538,7 @@ impl ParsedMailSearchQuery {
     }
 }
 
-fn append_mail_graph_clauses(
-    query: &SearchQuery,
-    clauses: &mut Vec<String>,
-) -> Result<(), String> {
+fn append_mail_graph_clauses(query: &SearchQuery, clauses: &mut Vec<String>) -> Result<(), String> {
     match query {
         SearchQuery::All(expressions) => {
             if expressions.is_empty() {
@@ -905,7 +1550,9 @@ fn append_mail_graph_clauses(
             Ok(())
         }
         SearchQuery::Any(_) => Err("OR expressions are unsupported by Graph search".to_string()),
-        SearchQuery::Not(_) => Err("negated expressions are unsupported by Graph search".to_string()),
+        SearchQuery::Not(_) => {
+            Err("negated expressions are unsupported by Graph search".to_string())
+        }
         SearchQuery::Term(term) => {
             clauses.push(mail_graph_clause(term)?);
             Ok(())
@@ -1137,9 +1784,98 @@ pub(crate) fn parse_mail_query(
         MailSearchFieldScope::Sender => SearchField::From,
         MailSearchFieldScope::Recipients => SearchField::Recipients,
         MailSearchFieldScope::Body => SearchField::Body,
+        // Parse combined quick-search modes from the neutral Any field first,
+        // then expand only unqualified terms below. Explicit field operators
+        // retain their canonical meaning.
+        MailSearchFieldScope::SubjectOrAddresses | MailSearchFieldScope::Message => {
+            SearchField::Any
+        }
     };
-    parse_search_query_with_scope(input, Some(default_field))
-        .map(|query| query.map(ParsedMailSearchQuery))
+    parse_search_query_with_scope(input, Some(default_field)).map(|query| {
+        query.map(|query| {
+            let query = match scope {
+                MailSearchFieldScope::SubjectOrAddresses => expand_unqualified_mail_fields(
+                    query,
+                    &[
+                        SearchField::Subject,
+                        SearchField::From,
+                        SearchField::Recipients,
+                    ],
+                ),
+                MailSearchFieldScope::Message => expand_unqualified_mail_fields(
+                    query,
+                    &[
+                        SearchField::Subject,
+                        SearchField::From,
+                        SearchField::Recipients,
+                        SearchField::Body,
+                    ],
+                ),
+                MailSearchFieldScope::Any
+                | MailSearchFieldScope::Subject
+                | MailSearchFieldScope::Sender
+                | MailSearchFieldScope::Recipients
+                | MailSearchFieldScope::Body => query,
+            };
+            ParsedMailSearchQuery(query)
+        })
+    })
+}
+
+/// Expand a bare term into one of Evolution's multi-field quick-search
+/// presets. Explicit fields and state/date predicates are left untouched.
+/// Negated bare terms become `NOT (field1 OR field2 ...)`, preserving the
+/// intuitive meaning of excluding a value from the whole preset.
+fn expand_unqualified_mail_fields(query: SearchQuery, fields: &[SearchField]) -> SearchQuery {
+    match query {
+        SearchQuery::All(expressions) => SearchQuery::All(
+            expressions
+                .into_iter()
+                .map(|expression| expand_unqualified_mail_fields(expression, fields))
+                .collect(),
+        ),
+        SearchQuery::Any(expressions) => SearchQuery::Any(
+            expressions
+                .into_iter()
+                .map(|expression| expand_unqualified_mail_fields(expression, fields))
+                .collect(),
+        ),
+        SearchQuery::Not(expression) => SearchQuery::Not(Box::new(expand_unqualified_mail_fields(
+            *expression,
+            fields,
+        ))),
+        SearchQuery::Term(term) => {
+            let SearchTermKind::Text { field, matcher } = term.kind else {
+                return SearchQuery::Term(term);
+            };
+            if field != SearchField::Any || matcher != SearchMatchKind::Contains {
+                return SearchQuery::Term(term);
+            }
+
+            let negated = term.negated;
+            let alternatives = SearchQuery::Any(
+                fields
+                    .iter()
+                    .copied()
+                    .map(|field| {
+                        SearchQuery::Term(SearchQueryTerm {
+                            value: term.value.clone(),
+                            negated: false,
+                            kind: SearchTermKind::Text {
+                                field,
+                                matcher: SearchMatchKind::Contains,
+                            },
+                        })
+                    })
+                    .collect(),
+            );
+            if negated {
+                SearchQuery::Not(Box::new(alternatives))
+            } else {
+                alternatives
+            }
+        }
+    }
 }
 
 /// Validate a saved/free-form search without exposing or duplicating the AST
@@ -1324,10 +2060,10 @@ fn normalize_search_query_term(
         "on" | "date" | "after" | "newer" | "before" | "older" | "sent" | "received" | "rcv" => {
             parse_date_term(base_key, option, raw_value, negated)
         }
-        "from" | "f" | "sender" | "to" | "t" | "cc" | "c" | "bcc" | "recipient" | "recips"
-        | "r" | "recipients" | "subject" | "s" | "body" | "b" | "content" | "label" | "l"
-        | "tag" | "keyword" | "filename" | "name" | "folder" | "in" | "reply-to" | "replyto"
-        | "mid" | "message-id" | "location" | "m" => {
+        "any" | "from" | "f" | "sender" | "to" | "t" | "cc" | "c" | "bcc" | "recipient"
+        | "recips" | "r" | "recipients" | "subject" | "s" | "body" | "b" | "content" | "label"
+        | "l" | "tag" | "keyword" | "filename" | "name" | "folder" | "in" | "reply-to"
+        | "replyto" | "mid" | "message-id" | "location" | "m" => {
             parse_field_term(base_key, option, value, negated)
         }
         "list" | "header" | "h" | "exists" | "e" | "size" | "sz" | "score" | "sc" => {
@@ -1343,10 +2079,26 @@ fn split_search_key_option(key: &str) -> (&str, Option<&str>) {
     // `message-id`).  Split at the first hyphen whose remainder is a known
     // option; with no such suffix the whole key is the field name.
     const MATCHER_OPTIONS: &[&str] = &[
-        "no", "contains", "c", "has-words", "w", "matches", "m",
-        "starts-with", "sw", "ends-with", "ew", "regex", "r",
-        "full-regex", "fr", "soundex", "se",
-        "=", "<", ">",  // Evolution date comparisons: sent-=:d, sent-<:d, sent->:d
+        "no",
+        "contains",
+        "c",
+        "has-words",
+        "w",
+        "matches",
+        "m",
+        "starts-with",
+        "sw",
+        "ends-with",
+        "ew",
+        "regex",
+        "r",
+        "full-regex",
+        "fr",
+        "soundex",
+        "se",
+        "=",
+        "<",
+        ">", // Evolution date comparisons: sent-=:d, sent-<:d, sent->:d
     ];
     for (idx, ch) in key.char_indices() {
         if ch != '-' {
@@ -1563,6 +2315,7 @@ fn parse_field_term(
     negated: bool,
 ) -> Result<Option<SearchQueryTerm>, SearchQueryParseError> {
     let field = match key {
+        "any" => SearchField::Any,
         "from" | "f" | "sender" => SearchField::From,
         "to" | "t" => SearchField::To,
         "cc" | "c" => SearchField::Cc,
@@ -2807,6 +3560,167 @@ mod tests {
             .expect("non-empty mail query should produce a parsed query")
     }
 
+    #[test]
+    fn mail_query_fixture_round_trips_the_complete_typed_ast() {
+        let query = parsed_mail_query(
+            concat!(
+                "and:(",
+                "or:(subject-contains:\"alpha beta\" from-has-words:alice@example.org) ",
+                "not:(-subject-starts-with:secret) ",
+                "subject-matches:exact ",
+                "subject-ends-with:suffix ",
+                "subject-no:blocked ",
+                "from:alice@example.org from:bob@example.org ",
+                "to:to@example.org cc:cc@example.org bcc:bcc@example.org ",
+                "recipients:recipient@example.org body:body label:team ",
+                "filename:report.pdf folder:inbox reply-to:reply@example.org ",
+                "mid:message@example.org location:local ",
+                "is:unread is:flagged is:important is:junk is:attachment ",
+                "is:draft is:deleted is:sent is:inbox is:archive ",
+                "after:2026-08-01 before:2026-08-31 after->:2026-08-02 ",
+                "before-<:2026-08-30 on:2026-08-15)"
+            ),
+            MailSearchFieldScope::Any,
+        );
+
+        let encoded = encode_mail_query_fixture(&query).expect("query should encode");
+        assert!(encoded.contains("\"version\": 1"));
+        assert!(encoded.contains("\"op\": \"and\""));
+        assert!(encoded.contains("\"kind\": \"text\""));
+        assert!(encoded.contains("\"kind\": \"state\""));
+        assert!(encoded.contains("\"kind\": \"date_at_or_after\""));
+        let decoded = decode_mail_query_fixture(&encoded).expect("query should decode");
+        assert_eq!(decoded, query);
+    }
+
+    #[test]
+    fn mail_query_fixture_preserves_dynamic_relative_date_semantics() {
+        for input in ["after:7d", "before:7d", "on:today", "sent:7"] {
+            let query = parsed_mail_query(input, MailSearchFieldScope::Any);
+            let encoded = encode_mail_query_fixture(&query).expect("query should encode");
+            assert!(
+                encoded.contains("\"relative\": true"),
+                "relative date marker should be persisted for {input:?}"
+            );
+            let decoded = decode_mail_query_fixture(&encoded).expect("query should decode");
+            assert_eq!(
+                decoded, query,
+                "relative query should round-trip: {input:?}"
+            );
+        }
+
+        let absolute = parsed_mail_query("after:20260801", MailSearchFieldScope::Any);
+        let encoded = encode_mail_query_fixture(&absolute).expect("query should encode");
+        assert!(encoded.contains("\"relative\": false"));
+        assert_eq!(
+            decode_mail_query_fixture(&encoded).expect("absolute query should decode"),
+            absolute
+        );
+    }
+
+    #[test]
+    fn mail_query_fixture_uses_stable_raw_relative_date_wire_values() {
+        for (input, expected_date) in [("after:7d", "7d"), ("on:today", "today"), ("sent:7", "7")] {
+            let query = parsed_mail_query(input, MailSearchFieldScope::Any);
+            let encoded = encode_mail_query_fixture(&query).expect("query should encode");
+            assert!(encoded.contains(&format!("\"date\": \"{expected_date}\"")));
+            assert!(encoded.contains("\"relative\": true"));
+
+            // Re-encoding after a dynamic decode must not change the wire
+            // representation when the local day changes.
+            let decoded = decode_mail_query_fixture(&encoded).expect("query should decode");
+            assert_eq!(encode_mail_query_fixture(&decoded).unwrap(), encoded);
+        }
+    }
+
+    #[test]
+    fn mail_query_fixture_rejects_tampered_relative_date_expression() {
+        let query = parsed_mail_query("after:7d", MailSearchFieldScope::Any);
+        let encoded = encode_mail_query_fixture(&query).expect("query should encode");
+        let tampered = encoded.replace("\"date\": \"7d\"", "\"date\": \"6d\"");
+        assert!(matches!(
+            decode_mail_query_fixture(&tampered),
+            Err(MailSearchFixtureError::InvalidShape(message))
+                if message.contains("does not match the term value")
+        ));
+
+        let query = parsed_mail_query("sent:7", MailSearchFieldScope::Any);
+        let encoded = encode_mail_query_fixture(&query).expect("query should encode");
+        let tampered = encoded.replace("\"date\": \"7\"", "\"date\": \"1970-01-01\"");
+        assert!(decode_mail_query_fixture(&tampered).is_err());
+    }
+
+    #[test]
+    fn mail_query_fixture_rejects_unknown_corrupt_and_oversized_data() {
+        let query = parsed_mail_query("subject:project", MailSearchFieldScope::Any);
+        let encoded = encode_mail_query_fixture(&query).expect("query should encode");
+
+        let unknown_version = encoded.replace("\"version\": 1", "\"version\": 2");
+        assert!(matches!(
+            decode_mail_query_fixture(&unknown_version),
+            Err(MailSearchFixtureError::UnsupportedVersion(2))
+        ));
+
+        let unknown_field = encoded.replace("\"subject\"", "\"future_field\"");
+        assert!(decode_mail_query_fixture(&unknown_field).is_err());
+        let unknown_matcher = encoded.replace("\"contains\"", "\"future_matcher\"");
+        assert!(decode_mail_query_fixture(&unknown_matcher).is_err());
+        let unknown_format = encoded.replace(MAIL_QUERY_FIXTURE_FORMAT, "future-mail-search-query");
+        assert!(matches!(
+            decode_mail_query_fixture(&unknown_format),
+            Err(MailSearchFixtureError::UnknownFormat(_))
+        ));
+        assert!(decode_mail_query_fixture("not-json").is_err());
+        assert!(decode_mail_query_fixture("[]").is_err());
+        assert!(
+            decode_mail_query_fixture(
+                &encoded.replace("\"predicate\": {", "\"predicate\": {\"unexpected\": true,")
+            )
+            .is_err()
+        );
+
+        let oversized = format!(
+            r#"{{"format":"{MAIL_QUERY_FIXTURE_FORMAT}","version":1,"query":{{"op":"term","value":"{}","negated":false,"predicate":{{"kind":"text","field":"subject","matcher":"contains"}}}}}}"#,
+            "x".repeat(MAIL_QUERY_FIXTURE_MAX_TEXT_CHARS + 1),
+        );
+        assert!(matches!(
+            decode_mail_query_fixture(&oversized),
+            Err(MailSearchFixtureError::SizeLimitExceeded(_))
+        ));
+    }
+
+    #[test]
+    fn mail_query_fixture_enforces_ast_depth_and_node_limits() {
+        let mut nested = r#"{"op":"term","value":"x","negated":false,"predicate":{"kind":"text","field":"subject","matcher":"contains"}}"#.to_string();
+        for _ in 0..MAIL_QUERY_FIXTURE_MAX_DEPTH {
+            nested = format!(r#"{{"op":"not","child":{nested}}}"#);
+        }
+        let too_deep =
+            format!(r#"{{"format":"{MAIL_QUERY_FIXTURE_FORMAT}","version":1,"query":{nested}}}"#);
+        assert!(matches!(
+            decode_mail_query_fixture(&too_deep),
+            Err(MailSearchFixtureError::SizeLimitExceeded(
+                "maximum AST depth"
+            ))
+        ));
+
+        let children = (0..=MAIL_QUERY_FIXTURE_MAX_NODES)
+            .map(|_| {
+                r#"{"op":"term","value":"x","negated":false,"predicate":{"kind":"text","field":"subject","matcher":"contains"}}"#
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        let too_many_nodes = format!(
+            r#"{{"format":"{MAIL_QUERY_FIXTURE_FORMAT}","version":1,"query":{{"op":"and","children":[{children}]}}}}"#
+        );
+        assert!(matches!(
+            decode_mail_query_fixture(&too_many_nodes),
+            Err(MailSearchFixtureError::SizeLimitExceeded(
+                "maximum AST nodes"
+            ))
+        ));
+    }
+
     fn assert_graph_plan_unsupported(input: &str) {
         let query = parsed_mail_query(input, MailSearchFieldScope::Any);
         assert!(
@@ -2832,12 +3746,14 @@ mod tests {
             )
         );
 
-        let escaped = parsed_mail_query(r#"subject:"A \"Quote\" \\path""#, MailSearchFieldScope::Any);
+        let escaped =
+            parsed_mail_query(r#"subject:"A \"Quote\" \\path""#, MailSearchFieldScope::Any);
         assert_eq!(
             escaped.graph_search_plan(),
-            MailGraphSearchPlan::SafePositiveConjunction(
-                format!("\"subject:{}\"", r#"a \"quote\" \\path"#)
-            )
+            MailGraphSearchPlan::SafePositiveConjunction(format!(
+                "\"subject:{}\"",
+                r#"a \"quote\" \\path"#
+            ))
         );
     }
 
@@ -2872,13 +3788,18 @@ mod tests {
         );
         assert_graph_plan_unsupported_from_parsed(line_break);
 
-        let long_value = format!("subject:{}", "x".repeat(MAIL_GRAPH_SEARCH_VALUE_MAX_CHARS + 1));
+        let long_value = format!(
+            "subject:{}",
+            "x".repeat(MAIL_GRAPH_SEARCH_VALUE_MAX_CHARS + 1)
+        );
         let long_query = parsed_mail_query(&long_value, MailSearchFieldScope::Any);
         assert_graph_plan_unsupported_from_parsed(long_query);
 
-        assert!(parse_mail_query("", MailSearchFieldScope::Any)
-            .expect("empty input should parse as no query")
-            .is_none());
+        assert!(
+            parse_mail_query("", MailSearchFieldScope::Any)
+                .expect("empty input should parse as no query")
+                .is_none()
+        );
     }
 
     fn assert_graph_plan_unsupported_from_parsed(query: ParsedMailSearchQuery) {
@@ -2907,11 +3828,118 @@ mod tests {
     }
 
     #[test]
+    fn mail_quick_modes_expand_bare_terms_to_the_upstream_field_sets() {
+        let subject_or_addresses =
+            parsed_mail_query("needle", MailSearchFieldScope::SubjectOrAddresses);
+        let message = parsed_mail_query("needle", MailSearchFieldScope::Message);
+
+        let records = [
+            (
+                MailSearchRecord {
+                    subject: "needle".to_string(),
+                    ..MailSearchRecord::default()
+                },
+                true,
+                true,
+            ),
+            (
+                MailSearchRecord {
+                    from: "needle".to_string(),
+                    ..MailSearchRecord::default()
+                },
+                true,
+                true,
+            ),
+            (
+                MailSearchRecord {
+                    to: "needle".to_string(),
+                    ..MailSearchRecord::default()
+                },
+                true,
+                true,
+            ),
+            (
+                MailSearchRecord {
+                    cc: "needle".to_string(),
+                    ..MailSearchRecord::default()
+                },
+                true,
+                true,
+            ),
+            (
+                MailSearchRecord {
+                    body: "needle".to_string(),
+                    ..MailSearchRecord::default()
+                },
+                false,
+                true,
+            ),
+            (
+                MailSearchRecord {
+                    bcc: "needle".to_string(),
+                    ..MailSearchRecord::default()
+                },
+                false,
+                false,
+            ),
+        ];
+
+        for (record, subject_or_addresses_expected, message_expected) in records {
+            assert_eq!(
+                matches_mail_query(&subject_or_addresses, &record),
+                subject_or_addresses_expected,
+                "Subject-or-addresses mode must use only Subject/From/To/Cc"
+            );
+            assert_eq!(
+                matches_mail_query(&message, &record),
+                message_expected,
+                "Message mode must use Subject/From/To/Cc/Body"
+            );
+        }
+    }
+
+    #[test]
+    fn mail_quick_mode_recipients_excludes_bcc() {
+        let query = parsed_mail_query("needle", MailSearchFieldScope::Recipients);
+        let bcc_only = MailSearchRecord {
+            bcc: "needle".to_string(),
+            ..MailSearchRecord::default()
+        };
+        let to_and_bcc = MailSearchRecord {
+            to: "needle".to_string(),
+            bcc: "needle".to_string(),
+            ..MailSearchRecord::default()
+        };
+
+        assert!(!matches_mail_query(&query, &bcc_only));
+        assert!(matches_mail_query(&query, &to_and_bcc));
+    }
+
+    #[test]
+    fn mail_quick_mode_or_shapes_are_unsupported_by_graph_as_a_whole() {
+        for scope in [
+            MailSearchFieldScope::SubjectOrAddresses,
+            MailSearchFieldScope::Message,
+        ] {
+            let query = parsed_mail_query("needle", scope);
+            assert!(matches!(
+                &query.0,
+                SearchQuery::Any(expressions) if expressions.len() == match scope {
+                    MailSearchFieldScope::SubjectOrAddresses => 3,
+                    MailSearchFieldScope::Message => 4,
+                    _ => unreachable!(),
+                }
+            ));
+            assert!(matches!(
+                query.graph_search_plan(),
+                MailGraphSearchPlan::Unsupported(reason) if reason.contains("OR")
+            ));
+        }
+    }
+
+    #[test]
     fn mail_graph_plan_keeps_repeated_fields_as_distinct_and_clauses() {
-        let query = parsed_mail_query(
-            "subject:one subject:two",
-            MailSearchFieldScope::Any,
-        );
+        let query = parsed_mail_query("subject:one subject:two", MailSearchFieldScope::Any);
         assert_eq!(
             query.graph_search_plan(),
             MailGraphSearchPlan::SafePositiveConjunction(

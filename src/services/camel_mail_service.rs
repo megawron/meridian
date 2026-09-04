@@ -299,6 +299,11 @@ pub(crate) struct CamelMailLoad {
     pub(crate) is_graph: bool,
     pub(crate) search_query: Option<String>,
     pub(crate) graph_next_links: HashMap<String, String>,
+    /// Opaque continuation for a Graph search.  This is deliberately kept
+    /// separate from `graph_next_links`, which is keyed by folder ID for the
+    /// ordinary folder-list paging path.
+    #[serde(default)]
+    pub(crate) graph_search_next_cursor: Option<String>,
 }
 
 pub(crate) fn mail_cache_path() -> std::path::PathBuf {
@@ -451,6 +456,7 @@ pub(crate) fn load_messages_graph(
         is_graph: true,
         search_query: None,
         graph_next_links,
+        graph_search_next_cursor: None,
     })
 }
 
@@ -461,6 +467,23 @@ pub(crate) fn search_messages_graph(
     source_uid: Option<&str>,
     folder_name: Option<&str>,
     query: &str,
+    max_items: i32,
+    cancelled: &Arc<AtomicBool>,
+) -> Result<CamelMailLoad, String> {
+    search_messages_graph_page(source_uid, folder_name, query, None, max_items, cancelled)
+}
+
+/// Run one bounded page of a portable Graph mailbox search.
+///
+/// `cursor == None` starts a new KQL search.  A present cursor is an opaque,
+/// origin-validated Graph continuation URL and must be passed back unchanged
+/// by the Exchange service.  The legacy `search_messages_graph` wrapper above
+/// keeps existing callers source-compatible while MailPage adopts paging.
+pub(crate) fn search_messages_graph_page(
+    source_uid: Option<&str>,
+    folder_name: Option<&str>,
+    query: &str,
+    cursor: Option<&str>,
     max_items: i32,
     cancelled: &Arc<AtomicBool>,
 ) -> Result<CamelMailLoad, String> {
@@ -486,19 +509,22 @@ pub(crate) fn search_messages_graph(
             .iter()
             .find(|folder| folder_matches_name(&folder.display_name, wanted))
     });
-    if folder_name.is_some() && selected_folder.is_none() {
+    if cursor.is_none() && folder_name.is_some() && selected_folder.is_none() {
         return Err("Der angeforderte Graph-Mailordner wurde nicht gefunden".to_string());
     }
-    let messages = service
-        .search_messages_sync(
+    let search_result = service
+        .search_messages_cursor_sync(
             selected_folder.map(|folder| folder.id.as_str()),
             folder_name,
             query,
+            cursor,
             window.limit,
         )
         .map_err(|error| error.to_string())?;
+    let is_complete = search_result.is_complete;
     cancellation_error(cancelled, "Graph-Mail-Suche")?;
-    let mut messages = messages
+    let mut messages = search_result
+        .messages
         .into_iter()
         .map(|message| {
             let display_folder = folder_name
@@ -538,10 +564,18 @@ pub(crate) fn search_messages_graph(
         configured_sources: 1,
         successful_sources: 1,
         failed_sources: 0,
-        warning: None,
+        warning: graph_search_warning(is_complete),
         is_graph: true,
         search_query: Some(query.to_string()),
         graph_next_links: HashMap::new(),
+        graph_search_next_cursor: search_result.next_cursor,
+    })
+}
+
+fn graph_search_warning(is_complete: bool) -> Option<String> {
+    (!is_complete).then(|| {
+        "Graph-Suche ist unvollständig: Das Ergebnislimit wurde erreicht; weitere Treffer sind möglich."
+            .to_string()
     })
 }
 
@@ -1402,6 +1436,7 @@ fn load_messages_native(
         is_graph: false,
         search_query: None,
         graph_next_links: HashMap::new(),
+        graph_search_next_cursor: None,
     })
 }
 
@@ -2534,6 +2569,7 @@ mod tests {
             is_graph: false,
             search_query: None,
             graph_next_links: HashMap::new(),
+            graph_search_next_cursor: None,
         };
 
         assert!(load.has_more_for(Some("account-a"), Some("INBOX"), 0, 10));
@@ -2557,6 +2593,45 @@ mod tests {
             MAX_MAIL_PAGE_SIZE
         );
         assert!(PageWindow::normalized(MAX_MAIL_PAGE_OFFSET + 1, 10).is_err());
+    }
+
+    #[test]
+    fn incomplete_graph_search_is_exposed_as_a_clear_warning() {
+        assert!(graph_search_warning(true).is_none());
+        let warning = graph_search_warning(false).expect("incomplete search needs a warning");
+        assert!(warning.contains("unvollständig"));
+        assert!(warning.contains("Ergebnislimit"));
+    }
+
+    #[test]
+    fn cached_mail_loads_default_search_cursor_to_none() {
+        let cached = r#"{
+            "messages": [],
+            "folders": [],
+            "configured_sources": 1,
+            "successful_sources": 1,
+            "failed_sources": 0,
+            "warning": null,
+            "is_graph": true,
+            "search_query": null,
+            "graph_next_links": {}
+        }"#;
+        let load: CamelMailLoad = serde_json::from_str(cached).unwrap();
+        assert_eq!(load.graph_search_next_cursor, None);
+    }
+
+    #[test]
+    fn graph_search_adapter_keeps_search_cursor_outside_folder_cursors() {
+        let source = include_str!("camel_mail_service.rs");
+        let search_adapter = source
+            .split_once("pub(crate) fn search_messages_graph_page")
+            .and_then(|(_, source)| source.split_once("fn graph_search_warning"))
+            .map(|(source, _)| source)
+            .expect("cursor-aware Graph search adapter should be present");
+
+        assert!(search_adapter.contains("search_messages_cursor_sync"));
+        assert!(search_adapter.contains("graph_search_next_cursor: search_result.next_cursor"));
+        assert!(search_adapter.contains("graph_next_links: HashMap::new()"));
     }
 
     #[test]

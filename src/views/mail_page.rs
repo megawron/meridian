@@ -4,7 +4,7 @@
 
 use adw::prelude::*;
 use adw::subclass::prelude::*;
-use chrono::{Duration, Local, NaiveDate, NaiveDateTime, Utc};
+use chrono::{NaiveDate, Utc};
 use gtk::{gio, glib};
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -56,10 +56,13 @@ use crate::services::mail_store_service::{
     parse_rfc822_header_fields,
 };
 use crate::services::search_engine::{
-    MailSearchFieldScope, MailSearchRecord, ParsedMailSearchQuery, SearchQueryParseError,
+    MailGraphSearchPlan, MailSearchFieldScope, MailSearchRecord, ParsedMailSearchQuery,
+    SearchQueryParseError, decode_mail_query_fixture, encode_mail_query_fixture,
     mail_query_needs_body, matches_mail_query, parse_mail_query,
 };
-use crate::services::search_folder_service::SearchFolderService;
+use crate::services::search_folder_service::{
+    SavedSearch, SavedSearchFieldMode, SavedSearchScope, SearchFolderService,
+};
 use crate::views::accessibility::set_accessible_label;
 use crate::views::{MailViewer, MessageSearchResult, MessageSearchStatus};
 
@@ -392,6 +395,33 @@ fn folder_path_is_within(folder_name: &str, parent_name: &str) -> bool {
             .is_some_and(|suffix| suffix.starts_with('/'))
 }
 
+fn folder_selection_matches_with_subfolders(
+    selection: &FolderSelection,
+    message: &MailMessageObject,
+) -> bool {
+    if selection.matches(message) {
+        return true;
+    }
+
+    if let Some(source_uid) = selection.source_uid.as_deref() {
+        let Some(location) = message.backend_location() else {
+            return false;
+        };
+        let Some(parent_name) = selection.folder_name.as_deref() else {
+            return location.source_uid == source_uid;
+        };
+        return location.source_uid == source_uid
+            && folder_path_is_within(&location.folder_name, parent_name);
+    }
+
+    let parent_folder_id = match selection.folder_id.as_str() {
+        "all" => return true,
+        "spam" => "junk",
+        folder_id => folder_id,
+    };
+    folder_path_is_within(message.folder_id().as_str(), parent_folder_id)
+}
+
 fn renamed_folder_path(folder_name: &str, old_name: &str, new_name: &str) -> Option<String> {
     if folder_name == old_name {
         return Some(new_name.to_string());
@@ -405,42 +435,90 @@ fn renamed_folder_path(folder_name: &str, old_name: &str, new_name: &str) -> Opt
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
 pub enum QuickSearchField {
     #[default]
+    SubjectOrAddresses,
+    /// Compatibility name for the former all-fields mode.  It remains
+    /// intentionally hidden from the selector and shares FreeForm semantics.
     AllFields,
+    FreeForm,
     Subject,
     Sender,
     Recipient,
+    Message,
     Body,
 }
 
 impl QuickSearchField {
     fn from_selector_index(index: u32) -> Self {
         match index {
+            0 => Self::SubjectOrAddresses,
             1 => Self::Subject,
             2 => Self::Sender,
             3 => Self::Recipient,
-            4 => Self::Body,
-            _ => Self::AllFields,
+            4 => Self::Message,
+            5 => Self::Body,
+            6 => Self::FreeForm,
+            _ => Self::FreeForm,
         }
     }
 
     fn selector_index(self) -> u32 {
         match self {
-            Self::AllFields => 0,
+            Self::SubjectOrAddresses => 0,
             Self::Subject => 1,
             Self::Sender => 2,
             Self::Recipient => 3,
-            Self::Body => 4,
+            Self::Message => 4,
+            Self::Body => 5,
+            Self::FreeForm | Self::AllFields => 6,
         }
     }
 
     fn canonical_scope(self) -> MailSearchFieldScope {
         match self {
-            Self::AllFields => MailSearchFieldScope::Any,
+            Self::FreeForm | Self::AllFields => MailSearchFieldScope::Any,
+            Self::SubjectOrAddresses => MailSearchFieldScope::SubjectOrAddresses,
             Self::Subject => MailSearchFieldScope::Subject,
             Self::Sender => MailSearchFieldScope::Sender,
             Self::Recipient => MailSearchFieldScope::Recipients,
+            Self::Message => MailSearchFieldScope::Message,
             Self::Body => MailSearchFieldScope::Body,
         }
+    }
+
+    fn to_saved(self) -> SavedSearchFieldMode {
+        match self {
+            Self::SubjectOrAddresses => SavedSearchFieldMode::SubjectOrAddresses,
+            Self::AllFields | Self::FreeForm => SavedSearchFieldMode::FreeForm,
+            Self::Subject => SavedSearchFieldMode::Subject,
+            Self::Sender => SavedSearchFieldMode::Sender,
+            Self::Recipient => SavedSearchFieldMode::Recipients,
+            Self::Message => SavedSearchFieldMode::Message,
+            Self::Body => SavedSearchFieldMode::Body,
+        }
+    }
+
+    fn from_saved(field: SavedSearchFieldMode) -> Self {
+        match field {
+            SavedSearchFieldMode::SubjectOrAddresses => Self::SubjectOrAddresses,
+            SavedSearchFieldMode::Subject => Self::Subject,
+            SavedSearchFieldMode::Sender => Self::Sender,
+            SavedSearchFieldMode::Recipients => Self::Recipient,
+            SavedSearchFieldMode::Message => Self::Message,
+            SavedSearchFieldMode::Body => Self::Body,
+            SavedSearchFieldMode::FreeForm => Self::FreeForm,
+        }
+    }
+}
+
+impl From<QuickSearchField> for SavedSearchFieldMode {
+    fn from(field: QuickSearchField) -> Self {
+        field.to_saved()
+    }
+}
+
+impl From<SavedSearchFieldMode> for QuickSearchField {
+    fn from(field: SavedSearchFieldMode) -> Self {
+        Self::from_saved(field)
     }
 }
 
@@ -448,6 +526,7 @@ impl QuickSearchField {
 pub enum QuickSearchScope {
     #[default]
     CurrentFolder,
+    CurrentFolderAndSubfolders,
     CurrentAccount,
     AllAccounts,
 }
@@ -455,8 +534,9 @@ pub enum QuickSearchScope {
 impl QuickSearchScope {
     fn from_selector_index(index: u32) -> Self {
         match index {
-            1 => Self::CurrentAccount,
-            2 => Self::AllAccounts,
+            1 => Self::CurrentFolderAndSubfolders,
+            2 => Self::CurrentAccount,
+            3 => Self::AllAccounts,
             _ => Self::CurrentFolder,
         }
     }
@@ -464,23 +544,41 @@ impl QuickSearchScope {
     fn selector_index(self) -> u32 {
         match self {
             Self::CurrentFolder => 0,
-            Self::CurrentAccount => 1,
-            Self::AllAccounts => 2,
+            Self::CurrentFolderAndSubfolders => 1,
+            Self::CurrentAccount => 2,
+            Self::AllAccounts => 3,
+        }
+    }
+
+    fn to_saved(self) -> SavedSearchScope {
+        match self {
+            Self::CurrentFolder => SavedSearchScope::CurrentFolder,
+            Self::CurrentFolderAndSubfolders => SavedSearchScope::CurrentFolderAndSubfolders,
+            Self::CurrentAccount => SavedSearchScope::CurrentAccount,
+            Self::AllAccounts => SavedSearchScope::AllAccounts,
+        }
+    }
+
+    fn from_saved(scope: SavedSearchScope) -> Self {
+        match scope {
+            SavedSearchScope::CurrentFolder => Self::CurrentFolder,
+            SavedSearchScope::CurrentFolderAndSubfolders => Self::CurrentFolderAndSubfolders,
+            SavedSearchScope::CurrentAccount => Self::CurrentAccount,
+            SavedSearchScope::AllAccounts => Self::AllAccounts,
         }
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum MessageSearchField {
-    From,
-    To,
-    Cc,
-    Bcc,
-    Subject,
-    Body,
-    Label,
-    Filename,
-    Folder,
+impl From<QuickSearchScope> for SavedSearchScope {
+    fn from(scope: QuickSearchScope) -> Self {
+        scope.to_saved()
+    }
+}
+
+impl From<SavedSearchScope> for QuickSearchScope {
+    fn from(scope: SavedSearchScope) -> Self {
+        Self::from_saved(scope)
+    }
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -494,130 +592,26 @@ enum MessageSearchCanonicalState {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 struct MessageSearchQuery {
     canonical: MessageSearchCanonicalState,
-    text_terms: Vec<String>,
-    negative_text_terms: Vec<String>,
-    negative_fields: Vec<(MessageSearchField, String)>,
-    from: Option<String>,
-    to: Option<String>,
-    cc: Option<String>,
-    bcc: Option<String>,
-    subject: Option<String>,
-    body: Option<String>,
-    label: Option<String>,
-    filename: Option<String>,
-    unread: Option<bool>,
-    flagged: Option<bool>,
-    important: Option<bool>,
-    junk: Option<bool>,
-    has_attachment: Option<bool>,
-    folder: Option<String>,
-    date_after: Option<NaiveDate>,
-    date_before: Option<NaiveDate>,
-    date_not_after: Option<NaiveDate>,
-    date_not_before: Option<NaiveDate>,
-    date_not_on: Option<NaiveDate>,
 }
 
 impl MessageSearchQuery {
+    #[cfg(test)]
     fn parse(input: &str) -> Self {
-        Self::parse_with_field_scope(input, QuickSearchField::AllFields)
+        Self::parse_with_field_scope(input, QuickSearchField::FreeForm)
     }
 
     fn parse_with_field_scope(input: &str, field_scope: QuickSearchField) -> Self {
-        let mut query = Self::default();
-        query.canonical = match parse_mail_query(input, field_scope.canonical_scope()) {
-            Ok(Some(parsed)) => MessageSearchCanonicalState::Parsed(parsed),
-            Ok(None) => MessageSearchCanonicalState::Empty,
-            Err(error) => MessageSearchCanonicalState::Invalid(error),
-        };
-        for raw_token in search_tokens(input) {
-            let (negated, token) = split_search_negation(&raw_token);
-            let Some((raw_key, raw_value)) = token.split_once(':') else {
-                match field_scope {
-                    QuickSearchField::Subject => {
-                        query.push_field(
-                            MessageSearchField::Subject,
-                            token.to_lowercase(),
-                            negated,
-                        );
-                    }
-                    QuickSearchField::Sender => {
-                        query.push_field(MessageSearchField::From, token.to_lowercase(), negated);
-                    }
-                    QuickSearchField::Recipient => {
-                        query.push_field(MessageSearchField::To, token.to_lowercase(), negated);
-                    }
-                    QuickSearchField::Body => {
-                        query.push_field(MessageSearchField::Body, token.to_lowercase(), negated);
-                    }
-                    QuickSearchField::AllFields => {
-                        query.push_text(token, negated);
-                    }
-                }
-                continue;
-            };
-            let raw_value = raw_value.trim();
-            let value = raw_value.to_lowercase();
-            if value.is_empty() {
-                query.push_text(token, negated);
-                continue;
-            }
-            let raw_key = raw_key.to_ascii_lowercase();
-            let (key, key_negated) = raw_key
-                .strip_prefix("not-")
-                .map(|key| (key, true))
-                .unwrap_or((raw_key.as_str(), false));
-            let negated = negated ^ key_negated;
-            match key {
-                "from" | "sender" => query.push_field(MessageSearchField::From, value, negated),
-                "to" | "recipient" => query.push_field(MessageSearchField::To, value, negated),
-                "cc" => query.push_field(MessageSearchField::Cc, value, negated),
-                "bcc" => query.push_field(MessageSearchField::Bcc, value, negated),
-                "subject" => query.push_field(MessageSearchField::Subject, value, negated),
-                "body" | "content" => query.push_field(MessageSearchField::Body, value, negated),
-                "label" | "tag" | "keyword" => {
-                    query.push_field(MessageSearchField::Label, value, negated)
-                }
-                "filename" | "name" => {
-                    query.push_field(MessageSearchField::Filename, value, negated)
-                }
-                "is" => query.parse_is_value(&value, negated),
-                "has" | "no" => {
-                    if matches!(value.as_str(), "attachment" | "attachments") {
-                        let expected = key == "has";
-                        query.has_attachment = Some(expected ^ negated);
-                    } else {
-                        query.push_text(token, negated);
-                    }
-                }
-                "after" | "newer" => match parse_search_date(raw_value, false) {
-                    Some(date) if negated => query.date_not_after = Some(date),
-                    Some(date) => query.date_after = Some(date),
-                    None => query.push_text(token, negated),
-                },
-                "before" | "older" => match parse_search_date(raw_value, true) {
-                    Some(date) if negated => query.date_not_before = Some(date),
-                    Some(date) => query.date_before = Some(date),
-                    None => query.push_text(token, negated),
-                },
-                "on" => match parse_search_date(raw_value, false) {
-                    Some(date) if negated => query.date_not_on = Some(date),
-                    Some(date) => {
-                        query.date_after = Some(date);
-                        query.date_before = date.checked_add_signed(Duration::days(1));
-                    }
-                    None => query.push_text(token, negated),
-                },
-                "in" | "folder" => query.push_field(MessageSearchField::Folder, value, negated),
-                "not" => query.push_text(&value, !negated),
-                _ => query.push_text(token, negated),
-            }
+        Self {
+            canonical: match parse_mail_query(input, field_scope.canonical_scope()) {
+                Ok(Some(parsed)) => MessageSearchCanonicalState::Parsed(parsed),
+                Ok(None) => MessageSearchCanonicalState::Empty,
+                Err(error) => MessageSearchCanonicalState::Invalid(error),
+            },
         }
-        query
     }
 
     fn is_empty(&self) -> bool {
-        matches!(self.canonical, MessageSearchCanonicalState::Empty)
+        matches!(&self.canonical, MessageSearchCanonicalState::Empty)
     }
 
     fn canonical_query(&self) -> Option<&ParsedMailSearchQuery> {
@@ -626,182 +620,220 @@ impl MessageSearchQuery {
             MessageSearchCanonicalState::Empty | MessageSearchCanonicalState::Invalid(_) => None,
         }
     }
-
-    fn push_text(&mut self, value: &str, negated: bool) {
-        if negated {
-            self.negative_text_terms.push(value.to_lowercase());
-        } else {
-            self.text_terms.push(value.to_lowercase());
-        }
-    }
-
-    fn push_field(&mut self, field: MessageSearchField, value: String, negated: bool) {
-        if negated {
-            self.negative_fields.push((field, value));
-            return;
-        }
-        match field {
-            MessageSearchField::From => self.from = Some(value),
-            MessageSearchField::To => self.to = Some(value),
-            MessageSearchField::Cc => self.cc = Some(value),
-            MessageSearchField::Bcc => self.bcc = Some(value),
-            MessageSearchField::Subject => self.subject = Some(value),
-            MessageSearchField::Body => self.body = Some(value),
-            MessageSearchField::Label => self.label = Some(value),
-            MessageSearchField::Filename => self.filename = Some(value),
-            MessageSearchField::Folder => self.folder = Some(value),
-        }
-    }
-
-    fn parse_is_value(&mut self, value: &str, negated: bool) {
-        let (value, value_negated) = value
-            .strip_prefix("not-")
-            .map(|value| (value, true))
-            .unwrap_or((value, false));
-        let negated = negated ^ value_negated;
-        match value {
-            "unread" => self.unread = Some(true ^ negated),
-            "read" => self.unread = Some(false ^ negated),
-            "starred" | "flagged" => self.flagged = Some(true ^ negated),
-            "important" => self.important = Some(true ^ negated),
-            "junk" | "spam" => self.junk = Some(true ^ negated),
-            "attachment" | "attachments" => self.has_attachment = Some(true ^ negated),
-            "inbox" | "sent" | "sent-mail" | "draft" | "drafts" | "trash" | "deleted"
-            | "archive" => self.push_field(MessageSearchField::Folder, value.to_string(), negated),
-            "all" | "all-mail" if !negated => {}
-            _ => self.push_text(&format!("is:{value}"), negated),
-        }
-    }
 }
 
-/// Translate only the positive parts of the Evolution-style query that have
-/// an equivalent in Outlook/Graph KQL.  The complete parsed query still runs
-/// through `message_matches_filter` locally, which preserves negative terms,
-/// labels, dates, flags and folder predicates whose semantics are not the
-/// same on every Graph mailbox.
-fn graph_search_expression(query: &MessageSearchQuery) -> Option<String> {
-    if matches!(&query.canonical, MessageSearchCanonicalState::Invalid(_)) {
-        return None;
-    }
-
-    let mut clauses = Vec::new();
-
-    for term in &query.text_terms {
-        // A free-text token containing `:` could be interpreted as an
-        // unsupported KQL property by Graph.  Keep it in the local filter
-        // instead of turning a valid local search into a remote 400 response.
-        if !term.contains(':') {
-            if let Some(value) = escape_graph_search_value(term) {
-                clauses.push(format!("\"{value}\""));
-            }
-        }
-    }
-    for (field, value) in [
-        ("from", query.from.as_deref()),
-        ("recipients", query.to.as_deref()),
-        ("cc", query.cc.as_deref()),
-        ("bcc", query.bcc.as_deref()),
-        ("subject", query.subject.as_deref()),
-        ("body", query.body.as_deref()),
-        ("attachment", query.filename.as_deref()),
-    ] {
-        let Some(value) = value.and_then(escape_graph_search_value) else {
-            continue;
-        };
-        clauses.push(format!("\"{field}:{value}\""));
-    }
-    if let Some(has_attachment) = query.has_attachment {
-        clauses.push(format!("\"hasAttachments:{has_attachment}\""));
-    }
-
-    (!clauses.is_empty()).then(|| clauses.join(" AND "))
+/// The one representation used by saved-search selection and counters.  The
+/// persisted query is checked against its versioned AST before it can reach a
+/// filter or a provider adapter, so field/scope/target changes cannot leave a
+/// stale textual query behind.
+#[derive(Clone, Debug)]
+struct CompiledSavedSearch {
+    query: MessageSearchQuery,
+    scope: QuickSearchScope,
 }
 
-fn escape_graph_search_value(value: &str) -> Option<String> {
-    let value = value.trim();
-    if value.is_empty() || value.chars().count() > 128 || value.contains(['\r', '\n']) {
-        return None;
-    }
-    Some(value.replace('\\', "\\\\").replace('"', "\\\""))
+#[derive(Clone, Debug)]
+struct ResolvedSavedSearch {
+    compiled: CompiledSavedSearch,
+    target: FolderSelection,
 }
 
-fn split_search_negation(token: &str) -> (bool, &str) {
-    token
-        .strip_prefix('-')
-        .filter(|value| !value.is_empty())
-        .map(|value| (true, value))
-        .unwrap_or((false, token))
-}
+const SAVED_SEARCH_TARGET_WARNING: &str =
+    "Gespeicherte Suche: Das exakte Ziel ist nicht verfügbar; es werden 0 Treffer angezeigt.";
 
-fn search_tokens(input: &str) -> Vec<String> {
-    let mut tokens = Vec::new();
-    let mut current = String::new();
-    let mut quoted = false;
-    let mut escaped = false;
-    for character in input.chars() {
-        if escaped {
-            current.push(character);
-            escaped = false;
-            continue;
-        }
-        match character {
-            '\\' if quoted => escaped = true,
-            '"' => quoted = !quoted,
-            character if character.is_whitespace() && !quoted => {
-                if !current.is_empty() {
-                    tokens.push(std::mem::take(&mut current));
-                }
-            }
-            character => current.push(character),
-        }
-    }
-    if escaped {
-        current.push('\\');
-    }
-    if !current.is_empty() {
-        tokens.push(current);
-    }
-    tokens
-}
-
-fn parse_search_date(value: &str, inclusive_next_day: bool) -> Option<NaiveDate> {
-    let value = value.trim();
-    if let Some(days) = value
-        .strip_suffix('d')
-        .and_then(|value| value.parse::<i64>().ok())
-    {
-        return Some(Local::now().date_naive() - Duration::days(days.max(0)));
-    }
-    let relative = match value.to_ascii_lowercase().as_str() {
-        "today" | "heute" => Some(Local::now().date_naive()),
-        "yesterday" | "gestern" => Some(Local::now().date_naive() - Duration::days(1)),
-        "tomorrow" | "morgen" => Some(Local::now().date_naive() + Duration::days(1)),
-        _ => None,
+fn compile_saved_search(search: &SavedSearch) -> Result<CompiledSavedSearch, String> {
+    let field = QuickSearchField::from_saved(search.field);
+    let query_from_text = MessageSearchQuery::parse_with_field_scope(&search.query, field);
+    let Some(parsed_from_text) = query_from_text.canonical_query() else {
+        return Err("Suchabfrage ist leer oder ungültig".to_string());
     };
-    let date = relative
-        .or_else(|| NaiveDate::parse_from_str(value, "%Y-%m-%d").ok())
-        .or_else(|| NaiveDate::parse_from_str(value, "%Y%m%d").ok())
-        .or_else(|| {
-            chrono::DateTime::parse_from_rfc3339(value)
-                .ok()
-                .map(|date| date.date_naive())
-        })
-        .or_else(|| {
-            chrono::DateTime::parse_from_rfc2822(value)
-                .ok()
-                .map(|date| date.date_naive())
-        })
-        .or_else(|| {
-            ["%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y%m%dT%H%M%S"]
-                .into_iter()
-                .find_map(|format| NaiveDateTime::parse_from_str(value, format).ok())
-                .map(|date| date.date())
-        })?;
-    if inclusive_next_day {
-        date.checked_add_signed(Duration::days(1))
-    } else {
-        Some(date)
+    let parsed_from_ast = decode_mail_query_fixture(&search.ast)
+        .map_err(|error| format!("AST-Suchfixture ist ungültig: {error}"))?;
+    // Relative date predicates are resolved when parsed.  Compare the
+    // canonical wire form instead of the resolved Rust AST so a save/load
+    // crossing local midnight does not make an otherwise identical search
+    // stale.  The wire form still covers the raw predicate/operator/field.
+    let text_fixture = encode_mail_query_fixture(parsed_from_text)
+        .map_err(|error| format!("Suchabfrage konnte nicht kanonisch encodiert werden: {error}"))?;
+    let ast_fixture = encode_mail_query_fixture(&parsed_from_ast).map_err(|error| {
+        format!("AST-Suchfixture konnte nicht kanonisch encodiert werden: {error}")
+    })?;
+    if text_fixture != ast_fixture {
+        return Err("AST-Suchfixture und Suchabfrage stimmen nicht überein".to_string());
     }
+    Ok(CompiledSavedSearch {
+        query: MessageSearchQuery {
+            canonical: MessageSearchCanonicalState::Parsed(parsed_from_ast),
+        },
+        scope: QuickSearchScope::from_saved(search.scope),
+    })
+}
+
+fn saved_search_remote_folder_key(source_uid: &str, folder_name: &str) -> String {
+    format!("{source_uid}\u{0}{folder_name}")
+}
+
+fn is_known_local_saved_folder(folder_id: &str, local_folder_ids: &HashSet<String>) -> bool {
+    matches!(
+        folder_id,
+        "inbox" | "sent" | "drafts" | "trash" | "archive" | "spam" | "junk"
+    ) || local_folder_ids.contains(folder_id)
+}
+
+/// Resolve only exact persisted identities.  In particular, an unavailable
+/// folder or account is an error rather than an invitation to use the active
+/// folder, Inbox, or all accounts.
+fn resolve_saved_search_target(
+    search: &SavedSearch,
+    local_folder_ids: &HashSet<String>,
+    remote_folder_ids: &HashSet<String>,
+    remote_folders: &[CamelFolderSummary],
+) -> Result<FolderSelection, String> {
+    let source_uid = search.source_uid.as_deref();
+    let folder_name = search.folder_name.as_deref();
+    match search.scope {
+        SavedSearchScope::AllAccounts => {
+            if search.folder_id.is_some() || source_uid.is_some() || folder_name.is_some() {
+                return Err(
+                    "Kontenübergreifende Suche enthält eine unerwartete Zielidentität".to_string(),
+                );
+            }
+            Ok(FolderSelection::all())
+        }
+        SavedSearchScope::CurrentAccount => {
+            if search.folder_id.is_some() || folder_name.is_some() {
+                return Err("Kontosuche enthält eine unerwartete Ordneridentität".to_string());
+            }
+            let Some(source_uid) = source_uid.filter(|value| !value.trim().is_empty()) else {
+                return Err("Quell-ID des gespeicherten Kontos ist nicht verfügbar".to_string());
+            };
+            let source_available = remote_folders
+                .iter()
+                .any(|folder| folder.source_uid == source_uid)
+                || remote_folder_ids.iter().any(|folder_id| {
+                    folder_id
+                        .split_once('\u{0}')
+                        .is_some_and(|(source, _)| source == source_uid)
+                });
+            if !source_available {
+                return Err(format!("Mailkonto „{source_uid}“ ist nicht verfügbar"));
+            }
+            Ok(FolderSelection {
+                folder_id: format!("account:{source_uid}"),
+                source_uid: Some(source_uid.to_string()),
+                folder_name: None,
+            })
+        }
+        SavedSearchScope::CurrentFolder | SavedSearchScope::CurrentFolderAndSubfolders => {
+            let Some(folder_id) = search.folder_id.as_deref() else {
+                return Err("Gespeicherte Ordnersuche enthält keine Ordner-ID".to_string());
+            };
+            match (source_uid, folder_name) {
+                (None, None) => {
+                    if !is_known_local_saved_folder(folder_id, local_folder_ids) {
+                        return Err(format!("Lokaler Ordner „{folder_id}“ ist nicht verfügbar"));
+                    }
+                    Ok(FolderSelection {
+                        folder_id: folder_id.to_string(),
+                        source_uid: None,
+                        folder_name: None,
+                    })
+                }
+                (Some(source_uid), Some(folder_name))
+                    if !source_uid.trim().is_empty() && !folder_name.trim().is_empty() =>
+                {
+                    let expected_id = saved_search_remote_folder_key(source_uid, folder_name);
+                    if folder_id != expected_id {
+                        return Err("Remote-Ordner-ID stimmt nicht mit dem exakten Ziel überein"
+                            .to_string());
+                    }
+                    let exact_summary = remote_folders.iter().any(|folder| {
+                        folder.is_selectable
+                            && folder.source_uid == source_uid
+                            && folder.folder_name == folder_name
+                            && folder.folder_id == folder_id
+                    });
+                    if !remote_folder_ids.contains(folder_id) || !exact_summary {
+                        return Err(format!(
+                            "Remote-Ordner „{source_uid}/{folder_name}“ ist nicht verfügbar"
+                        ));
+                    }
+                    Ok(FolderSelection {
+                        folder_id: folder_id.to_string(),
+                        source_uid: Some(source_uid.to_string()),
+                        folder_name: Some(folder_name.to_string()),
+                    })
+                }
+                _ => Err(
+                    "Gespeicherte Ordnersuche enthält keine vollständige Zielidentität".to_string(),
+                ),
+            }
+        }
+    }
+}
+
+fn resolve_compiled_saved_search(
+    search: &SavedSearch,
+    local_folder_ids: &HashSet<String>,
+    remote_folder_ids: &HashSet<String>,
+    remote_folders: &[CamelFolderSummary],
+) -> Result<ResolvedSavedSearch, String> {
+    let compiled = compile_saved_search(search)?;
+    let target =
+        resolve_saved_search_target(search, local_folder_ids, remote_folder_ids, remote_folders)?;
+    Ok(ResolvedSavedSearch { compiled, target })
+}
+
+fn mail_graph_search_query(query: &MessageSearchQuery) -> Option<String> {
+    let MessageSearchCanonicalState::Parsed(parsed) = &query.canonical else {
+        return None;
+    };
+    match parsed.graph_search_plan() {
+        MailGraphSearchPlan::SafePositiveConjunction(expression) => Some(expression),
+        MailGraphSearchPlan::Unsupported(_) => None,
+    }
+}
+
+const GRAPH_LOCAL_SEARCH_WARNING: &str = "Diese Suche wird nur auf den geladenen Nachrichten ausgewertet; weitere Treffer können fehlen.";
+
+fn graph_local_search_warning(
+    query: &MessageSearchQuery,
+    graph_backend_active: bool,
+) -> Option<&'static str> {
+    if !graph_backend_active {
+        return None;
+    }
+    let MessageSearchCanonicalState::Parsed(parsed) = &query.canonical else {
+        return None;
+    };
+    matches!(
+        parsed.graph_search_plan(),
+        MailGraphSearchPlan::Unsupported(_)
+    )
+    .then_some(GRAPH_LOCAL_SEARCH_WARNING)
+}
+
+fn graph_scope_local_search_warning(
+    search_scope: QuickSearchScope,
+    graph_backend_active: bool,
+) -> Option<&'static str> {
+    if !graph_backend_active {
+        return None;
+    }
+    match search_scope {
+        QuickSearchScope::CurrentFolderAndSubfolders => Some(GRAPH_SUBFOLDER_SEARCH_WARNING),
+        QuickSearchScope::AllAccounts => Some(GRAPH_ALL_ACCOUNTS_SEARCH_WARNING),
+        QuickSearchScope::CurrentFolder | QuickSearchScope::CurrentAccount => None,
+    }
+}
+
+fn graph_local_search_warning_for_scope(
+    query: &MessageSearchQuery,
+    graph_backend_active: bool,
+    search_scope: QuickSearchScope,
+) -> Option<&'static str> {
+    graph_scope_local_search_warning(search_scope, graph_backend_active)
+        .or_else(|| graph_local_search_warning(query, graph_backend_active))
 }
 
 fn message_date(message: &MailMessageObject) -> Option<NaiveDate> {
@@ -1186,6 +1218,9 @@ fn message_matches_filter(
     };
     let scope_matches = match search_scope {
         QuickSearchScope::AllAccounts => true,
+        QuickSearchScope::CurrentFolderAndSubfolders => {
+            folder_selection_matches_with_subfolders(folder_selection, message)
+        }
         QuickSearchScope::CurrentAccount => {
             if let Some(source_uid) = folder_selection.source_uid.as_deref() {
                 message
@@ -1215,6 +1250,7 @@ fn message_matches_filter(
     )
 }
 
+#[cfg(test)]
 fn search_query_needs_body(query: &MessageSearchQuery) -> bool {
     query.canonical_query().is_some_and(mail_query_needs_body)
 }
@@ -2118,40 +2154,69 @@ enum GraphSearchScopePlan {
     Unsupported,
 }
 
+/// Immutable identity of one remote Graph search.  The continuation cursor is
+/// scoped to this exact query/target and must never be reused after any of
+/// those inputs changes.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct GraphSearchState {
+    raw_input: String,
+    graph_query: String,
+    effective_scope: QuickSearchScope,
+    source_uid: Option<String>,
+    folder_name: Option<String>,
+    next_cursor: Option<String>,
+}
+
+const GRAPH_SEARCH_SCOPE_FALLBACK_MESSAGE: &str = "Die Graph-Suche unterstützt nur ein Konto; der Suchbereich wurde auf „Aktuelles Konto“ zurückgesetzt.";
+const GRAPH_SUBFOLDER_SEARCH_WARNING: &str = "Die Suche nach Ordner und Unterordnern ist für Graph nicht rekursiv verfügbar; nur geladene Nachrichten werden lokal geprüft.";
+const GRAPH_ALL_ACCOUNTS_SEARCH_WARNING: &str = "Die Graph-Suche kann nicht über alle Konten ausgeführt werden; nur geladene Nachrichten werden lokal geprüft.";
+
+fn graph_folder_name_for_local_id(folder_id: &str) -> Option<&'static str> {
+    match folder_id {
+        "inbox" => Some("Inbox"),
+        "sent" => Some("Sent Items"),
+        "drafts" => Some("Drafts"),
+        "trash" => Some("Deleted Items"),
+        "spam" => Some("Junk Email"),
+        "archive" => Some("Archive"),
+        _ => None,
+    }
+}
+
 fn graph_search_scope_plan(
     scope: QuickSearchScope,
     selection: &FolderSelection,
     active_request: Option<&MailLoadRequest>,
 ) -> GraphSearchScopePlan {
-    if scope == QuickSearchScope::AllAccounts {
-        return GraphSearchScopePlan::Unsupported;
-    }
-
-    let source_uid = selection.source_uid.clone().or_else(|| {
-        active_request
-            .and_then(|request| request.source_uid.clone())
-    });
-    let folder_name = if scope == QuickSearchScope::CurrentFolder {
-        if selection.is_remote() {
-            selection.folder_name.clone()
-        } else {
-            match selection.folder_id.as_str() {
-                "inbox" => Some("Inbox".to_string()),
-                "sent" => Some("Sent Items".to_string()),
-                "drafts" => Some("Drafts".to_string()),
-                "trash" => Some("Deleted Items".to_string()),
-                "spam" => Some("Junk Email".to_string()),
-                "archive" => Some("Archive".to_string()),
-                _ => None,
+    let source_uid = selection
+        .source_uid
+        .clone()
+        .or_else(|| active_request.and_then(|request| request.source_uid.clone()));
+    match scope {
+        QuickSearchScope::CurrentFolder => {
+            // A local folder has no provider identity.  Never turn its
+            // display/builtin name (or a stale active request) into an
+            // unvalidated Graph target.
+            if selection.source_uid.is_none() {
+                return GraphSearchScopePlan::Unsupported;
+            }
+            GraphSearchScopePlan::Supported {
+                source_uid,
+                folder_name: selection
+                    .folder_name
+                    .clone()
+                    .or_else(|| active_request.and_then(|request| request.folder_name.clone()))
+                    .or_else(|| {
+                        graph_folder_name_for_local_id(&selection.folder_id).map(str::to_string)
+                    }),
             }
         }
-    } else {
-        None
-    };
-
-    GraphSearchScopePlan::Supported {
-        source_uid,
-        folder_name,
+        QuickSearchScope::CurrentFolderAndSubfolders => GraphSearchScopePlan::Unsupported,
+        QuickSearchScope::CurrentAccount => GraphSearchScopePlan::Supported {
+            source_uid,
+            folder_name: None,
+        },
+        QuickSearchScope::AllAccounts => GraphSearchScopePlan::Unsupported,
     }
 }
 
@@ -2579,6 +2644,8 @@ struct PendingMailApply {
     camel_warning_visible: bool,
     camel_is_graph: bool,
     camel_search_applied: bool,
+    graph_search_state: Option<GraphSearchState>,
+    graph_search_next_cursor: Option<String>,
     local_reason: Option<String>,
 }
 
@@ -2592,6 +2659,8 @@ struct PendingMailCompletion {
     has_visible_local_content: bool,
     pending_search: Option<String>,
     result_kind: &'static str,
+    graph_search_state: Option<GraphSearchState>,
+    graph_search_next_cursor: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -2620,6 +2689,17 @@ fn thread_context_members_are_current(
 
 fn advance_generation(current: u64) -> u64 {
     current.wrapping_add(1).max(1)
+}
+
+fn committed_graph_search_cursor(previous: Option<&str>, next: Option<String>) -> Option<String> {
+    if previous
+        .zip(next.as_deref())
+        .is_some_and(|(previous, next)| previous == next)
+    {
+        None
+    } else {
+        next
+    }
 }
 
 fn crypto_result_is_current(
@@ -2751,20 +2831,25 @@ impl PendingMailApply {
         previous_selection: MailSelectionAnchor,
         pending_search: Option<String>,
         generation: u64,
+        graph_search_state: Option<GraphSearchState>,
     ) -> Self {
         let status = format_camel_status(&camel);
-        let has_more = camel.search_query.is_none()
-            && if camel.is_graph {
-                !camel.graph_next_links.is_empty()
+        let has_more = if camel.is_graph {
+            if camel.search_query.is_some() {
+                camel.graph_search_next_cursor.is_some()
             } else {
-                camel.has_more_for(
-                    request.source_uid.as_deref(),
-                    request.folder_name.as_deref(),
-                    request.offset,
-                    request.max_messages_per_folder,
-                )
-            };
+                !camel.graph_next_links.is_empty()
+            }
+        } else {
+            camel.has_more_for(
+                request.source_uid.as_deref(),
+                request.folder_name.as_deref(),
+                request.offset,
+                request.max_messages_per_folder,
+            )
+        };
         request.graph_cursors = camel.graph_next_links.clone();
+        let graph_search_next_cursor = camel.graph_search_next_cursor.clone();
         let camel_warning_visible =
             camel.warning.is_some() || !camel.folders.iter().any(|folder| folder.is_selectable);
         let messages = std::mem::take(&mut camel.messages);
@@ -2795,6 +2880,8 @@ impl PendingMailApply {
             camel_warning_visible,
             camel_is_graph: camel.is_graph,
             camel_search_applied: camel.search_query.is_some(),
+            graph_search_state,
+            graph_search_next_cursor,
             local_reason: None,
         }
     }
@@ -2834,6 +2921,8 @@ impl PendingMailApply {
             camel_warning_visible: false,
             camel_is_graph: false,
             camel_search_applied: false,
+            graph_search_state: None,
+            graph_search_next_cursor: None,
             local_reason: Some(reason),
         }
     }
@@ -3069,6 +3158,18 @@ fn format_camel_status(camel: &CamelMailLoad) -> String {
     )
 }
 
+fn pending_graph_search_input(
+    camel: &CamelMailLoad,
+    input: Option<&str>,
+    suppress_retry: bool,
+) -> Option<String> {
+    if suppress_retry || !camel.is_graph || camel.search_query.is_some() {
+        return None;
+    }
+    let input = input?.trim();
+    (!input.is_empty()).then(|| input.to_string())
+}
+
 // ─── GObject Subclass ───────────────────────────────────────────────────────
 
 mod imp {
@@ -3135,12 +3236,17 @@ mod imp {
         pub search_list: RefCell<Option<gtk::ListBox>>,
         pub search_field_scope: Cell<QuickSearchField>,
         pub search_scope: Cell<QuickSearchScope>,
+        pub search_scope_state: RefCell<Option<Rc<Cell<QuickSearchScope>>>>,
         pub search_scope_adjusting: Cell<bool>,
+        pub saved_search_applying: Cell<bool>,
+        pub saved_search_target_valid: RefCell<Option<Rc<Cell<bool>>>>,
+        pub suppress_pending_search_generation: Cell<Option<u64>>,
         pub search_field_selector: RefCell<Option<gtk::DropDown>>,
         pub search_scope_selector: RefCell<Option<gtk::DropDown>>,
         pub quick_filter: RefCell<Option<gtk::DropDown>>,
         pub message_state: RefCell<Option<gtk::Label>>,
         pub message_status_area: RefCell<Option<gtk::Box>>,
+        pub graph_local_search_warning: RefCell<Option<gtk::Label>>,
         pub refresh_button: RefCell<Option<gtk::Button>>,
         pub load_more_button: RefCell<Option<gtk::Button>>,
         pub batch_action_bar: RefCell<Option<gtk::Box>>,
@@ -3163,6 +3269,7 @@ mod imp {
         pub search_generation: Cell<u64>,
         pub graph_backend_active: Cell<bool>,
         pub remote_search_applied: Cell<bool>,
+        pub(super) graph_search_state: RefCell<Option<GraphSearchState>>,
         pub mail_incremental_cancellation: RefCell<Option<Arc<AtomicBool>>>,
         pub mail_change_cancellation: RefCell<Option<Arc<AtomicBool>>>,
         pub camel_monitor_started: Cell<bool>,
@@ -3351,6 +3458,7 @@ mod imp {
             if let Some(cancelled) = self.mail_search_cancellation.borrow().as_ref() {
                 cancelled.store(true, Ordering::Relaxed);
             }
+            self.graph_search_state.replace(None);
             if let Some(source) = self.search_debounce_source.borrow_mut().take() {
                 source.remove();
             }
@@ -4056,6 +4164,32 @@ impl MailPage {
             search_entry.set_text(query);
             search_entry.grab_focus();
         }
+    }
+
+    /// Present the provider-neutral advanced-search builder for the current
+    /// search text.  The dialog owns validation; cancelling it leaves all
+    /// mailbox/search state untouched.
+    pub fn present_advanced_search_dialog(&self) {
+        let Some(parent) = self.root().and_downcast::<gtk::Window>() else {
+            self.show_toast("Kein Fenster für die erweiterte Suche verfügbar");
+            return;
+        };
+        let initial_query = self
+            .imp()
+            .search_entry
+            .borrow()
+            .as_ref()
+            .map(|entry| entry.text().to_string())
+            .unwrap_or_default();
+        let page = self.downgrade();
+        let dialog =
+            crate::dialogs::AdvancedSearchDialog::with_query(&initial_query, move |query| {
+                if let Some(page) = page.upgrade() {
+                    page.apply_advanced_search_query(query);
+                }
+            });
+        dialog.set_transient_for(Some(&parent));
+        dialog.present();
     }
 
     pub(crate) fn select_search_result(&self, message_id: &str) -> bool {
@@ -5581,6 +5715,226 @@ impl MailPage {
         }
     }
 
+    fn saved_search_remote_folder_ids(&self) -> HashSet<String> {
+        let mut folder_ids = self
+            .imp()
+            .mail_folder_summaries
+            .borrow()
+            .iter()
+            .map(|folder| folder.folder_id.clone())
+            .collect::<HashSet<_>>();
+        if let Some(index) = self.imp().dynamic_folder_index.borrow().as_ref().cloned() {
+            folder_ids.extend(index.borrow().keys().cloned());
+        }
+        folder_ids
+    }
+
+    fn resolve_saved_search_for_page(
+        &self,
+        search: &SavedSearch,
+    ) -> Result<ResolvedSavedSearch, String> {
+        let local_folder_ids = self.imp().local_folder_ids.borrow().clone();
+        let remote_folder_ids = self.saved_search_remote_folder_ids();
+        let remote_folders = self.imp().mail_folder_summaries.borrow().clone();
+        resolve_compiled_saved_search(
+            search,
+            &local_folder_ids,
+            &remote_folder_ids,
+            &remote_folders,
+        )
+    }
+
+    fn set_saved_search_target_valid(&self, valid: bool) {
+        if let Some(state) = self.imp().saved_search_target_valid.borrow().as_ref() {
+            state.set(valid);
+        }
+    }
+
+    fn saved_search_load_request(&self, resolved: &ResolvedSavedSearch) -> Option<MailLoadRequest> {
+        let target = &resolved.target;
+        let desired = match resolved.compiled.scope {
+            QuickSearchScope::CurrentFolder | QuickSearchScope::CurrentFolderAndSubfolders
+                if target.is_remote() =>
+            {
+                MailLoadRequest {
+                    source_uid: target.source_uid.clone(),
+                    folder_name: target.folder_name.clone(),
+                    offset: 0,
+                    max_messages_per_folder: configured_mail_page_limit(),
+                    graph_cursors: HashMap::new(),
+                }
+            }
+            QuickSearchScope::CurrentAccount if target.source_uid.is_some() => MailLoadRequest {
+                source_uid: target.source_uid.clone(),
+                folder_name: None,
+                offset: 0,
+                max_messages_per_folder: configured_mail_page_limit(),
+                graph_cursors: HashMap::new(),
+            },
+            _ => MailLoadRequest::initial(),
+        };
+        let active = self.imp().active_request.borrow().clone();
+        let request_differs = active.as_ref().is_none_or(|request| {
+            request.source_uid != desired.source_uid || request.folder_name != desired.folder_name
+        });
+        (request_differs || self.imp().remote_search_applied.get()).then_some(desired)
+    }
+
+    /// Apply one validated advanced-search query without changing the active
+    /// scope or exact folder target.  The selector/entry writes are guarded so
+    /// their notifications cannot create a second search; the one explicit
+    /// `handle_search_changed` below owns backend routing.
+    fn apply_advanced_search_query(&self, query: String) {
+        if self.imp().saved_search_applying.replace(true) {
+            return;
+        }
+
+        let query = query.trim().to_string();
+        let field = QuickSearchField::FreeForm;
+        self.imp().search_field_scope.set(field);
+        if let Some(selector) = self.imp().search_field_selector.borrow().as_ref() {
+            selector.set_selected(field.selector_index());
+        }
+        if let Some(entry) = self.imp().search_entry.borrow().as_ref() {
+            entry.set_text(&query);
+        }
+        let parsed_query = MessageSearchQuery::parse_with_field_scope(&query, field);
+        if let Some(search_query) = self.imp().search_query.borrow().as_ref() {
+            search_query.replace(parsed_query);
+        }
+        if let Some(filter) = self.imp().message_filter.borrow().as_ref() {
+            filter.changed(gtk::FilterChange::Different);
+        }
+        if let Some(filter) = self.imp().thread_filter.borrow().as_ref() {
+            filter.changed(gtk::FilterChange::Different);
+        }
+        self.imp().saved_search_applying.set(false);
+        // The existing scope and FolderSelection remain untouched throughout
+        // this path; only the FreeForm query is replaced.
+        self.handle_search_changed_with_scope_policy(&query, false);
+    }
+
+    /// Apply one complete saved-search definition while suppressing every GTK
+    /// callback that its selector/list updates would otherwise trigger.
+    fn apply_saved_search(&self, search: Option<SavedSearch>) {
+        if self.imp().saved_search_applying.replace(true) {
+            return;
+        }
+
+        let resolved_result = search
+            .as_ref()
+            .map(|search| self.resolve_saved_search_for_page(search));
+        let resolved = resolved_result
+            .as_ref()
+            .and_then(|result| result.clone().ok());
+        let compiled = search
+            .as_ref()
+            .and_then(|search| compile_saved_search(search).ok());
+        let target_error = resolved_result
+            .as_ref()
+            .and_then(|result| result.as_ref().err().cloned());
+
+        if target_error.is_some() {
+            self.invalidate_pending_graph_search();
+        }
+
+        if let Some(search) = search.as_ref() {
+            let field = QuickSearchField::from_saved(search.field);
+            let scope = QuickSearchScope::from_saved(search.scope);
+            self.imp().search_field_scope.set(field);
+            self.imp().search_scope.set(scope);
+            if let Some(scope_state) = self.imp().search_scope_state.borrow().as_ref() {
+                scope_state.set(scope);
+            }
+            if let Some(selector) = self.imp().search_field_selector.borrow().as_ref() {
+                selector.set_selected(field.selector_index());
+            }
+            if let Some(selector) = self.imp().search_scope_selector.borrow().as_ref() {
+                selector.set_selected(scope.selector_index());
+            }
+            if let Some(entry) = self.imp().search_entry.borrow().as_ref() {
+                entry.set_text(&search.query);
+            }
+            if let Some(query) = self.imp().search_query.borrow().as_ref() {
+                query.replace(
+                    compiled
+                        .as_ref()
+                        .map(|compiled| compiled.query.clone())
+                        .unwrap_or_default(),
+                );
+            }
+        }
+
+        let selection = resolved
+            .as_ref()
+            .map(|resolved| resolved.target.clone())
+            .unwrap_or_else(|| FolderSelection {
+                folder_id: String::new(),
+                source_uid: None,
+                folder_name: None,
+            });
+        self.set_saved_search_target_valid(resolved.is_some());
+        if let Some(current) = self.imp().folder_selection.borrow().as_ref() {
+            current.replace(selection.clone());
+        }
+        // Keep the Saved-Search row selected. Selecting its physical target
+        // row would deselect that row and run a second load; the exact target
+        // lives in `folder_selection` while both physical folder selectors
+        // are cleared under this apply guard.
+        if let Some(folder_list) = self.imp().folder_list.borrow().as_ref() {
+            folder_list.unselect_all();
+        }
+        if let Some(dynamic_selection) = self.imp().dynamic_folder_selection.borrow().as_ref() {
+            dynamic_selection.set_selected(gtk::INVALID_LIST_POSITION);
+        }
+        if let Some(message_filter) = self.imp().message_filter_state.borrow().as_ref() {
+            message_filter.set(MessageFilter::All);
+        }
+        if let Some(quick_filter) = self.imp().quick_filter.borrow().as_ref() {
+            quick_filter.set_selected(MessageFilter::All.selector_index());
+        }
+        if let Some(filter) = self.imp().message_filter.borrow().as_ref() {
+            filter.changed(gtk::FilterChange::Different);
+        }
+        if let Some(filter) = self.imp().thread_filter.borrow().as_ref() {
+            filter.changed(gtk::FilterChange::Different);
+        }
+
+        if let Some(error) = target_error {
+            self.set_graph_local_search_warning(Some(SAVED_SEARCH_TARGET_WARNING));
+            tracing::warn!(%error, "Saved search target or query is unavailable");
+        } else if let (Some(resolved), Some(search)) = (resolved.as_ref(), search.as_ref()) {
+            self.set_graph_local_search_warning(graph_local_search_warning_for_scope(
+                &resolved.compiled.query,
+                self.imp().graph_backend_active.get(),
+                resolved.compiled.scope,
+            ));
+            let graph_search_supported = self.imp().graph_backend_active.get()
+                && resolved.target.source_uid.is_some()
+                && matches!(
+                    resolved.compiled.scope,
+                    QuickSearchScope::CurrentFolder | QuickSearchScope::CurrentAccount
+                )
+                && mail_graph_search_query(&resolved.compiled.query).is_some();
+            if graph_search_supported {
+                self.handle_search_changed(&search.query);
+            } else if let Some(request) = self.saved_search_load_request(resolved) {
+                self.start_mail_load(request, true);
+                // The saved definition is already installed in the local
+                // canonical filter.  Replaying the non-empty entry after the
+                // base load would execute it a second time and could also
+                // reconcile an exact unsupported scope to a broader one.
+                self.imp()
+                    .suppress_pending_search_generation
+                    .set(Some(self.imp().load_generation.get()));
+            } else {
+                self.handle_search_changed_with_scope_policy(&search.query, false);
+            }
+        }
+
+        self.imp().saved_search_applying.set(false);
+    }
+
     fn refresh_search_folder_counts(&self) {
         let Some(search_list) = self.imp().search_list.borrow().as_ref().cloned() else {
             return;
@@ -5591,7 +5945,9 @@ impl MailPage {
         let messages = (0..store.n_items())
             .filter_map(|index| store.item(index).and_downcast::<MailMessageObject>())
             .collect::<Vec<_>>();
-        let all_messages = FolderSelection::all();
+        let local_folder_ids = self.imp().local_folder_ids.borrow().clone();
+        let remote_folder_ids = self.saved_search_remote_folder_ids();
+        let remote_folders = self.imp().mail_folder_summaries.borrow().clone();
 
         for index in 0..search_list.observe_children().n_items() {
             let Some(row) = search_list
@@ -5600,32 +5956,41 @@ impl MailPage {
             else {
                 continue;
             };
-            let Some(query) = (unsafe {
-                row.data::<String>("search-query")
-                    .map(|value| value.as_ref().clone())
-            }) else {
-                continue;
-            };
-            let query = MessageSearchQuery::parse(&query);
-            let mut unread = 0u32;
-            for message in &messages {
-                if message_matches_filter(
-                    message,
-                    &query,
-                    MessageFilter::All,
-                    &all_messages,
-                    QuickSearchScope::CurrentFolder,
-                ) {
-                    if counts_as_unread(message.is_unread(), message.is_deleted()) {
-                        unread = unread.saturating_add(1);
-                    }
-                }
-            }
             let Some(badge) = (unsafe {
                 row.data::<gtk::Label>("folder-badge")
                     .map(|value| value.as_ref().clone())
             }) else {
                 continue;
+            };
+            let unread = unsafe {
+                row.data::<SavedSearch>("saved-search")
+                    .and_then(|value| {
+                        resolve_compiled_saved_search(
+                            value.as_ref(),
+                            &local_folder_ids,
+                            &remote_folder_ids,
+                            &remote_folders,
+                        )
+                        .ok()
+                    })
+                    .map(|resolved| {
+                        messages
+                            .iter()
+                            .filter(|message| {
+                                message_matches_filter(
+                                    message,
+                                    &resolved.compiled.query,
+                                    MessageFilter::All,
+                                    &resolved.target,
+                                    resolved.compiled.scope,
+                                )
+                            })
+                            .filter(|message| {
+                                counts_as_unread(message.is_unread(), message.is_deleted())
+                            })
+                            .count() as u32
+                    })
+                    .unwrap_or(0)
             };
             let (label, visible) = unread_badge_state(unread);
             badge.set_label(&label);
@@ -8535,6 +8900,12 @@ impl MailPage {
 
         let page_for_source = self.downgrade();
         source_selection.connect_selected_item_notify(move |selection| {
+            if page_for_source
+                .upgrade()
+                .is_some_and(|page| page.imp().saved_search_applying.get())
+            {
+                return;
+            }
             if let Some(source) = selection.selected_item().and_downcast::<EdsSourceObject>() {
                 if !source.enabled() {
                     tracing::debug!(
@@ -8792,9 +9163,10 @@ impl MailPage {
             let Some(page) = page_for_dynamic_selection.upgrade() else {
                 return;
             };
-            if page.imp().updating_folder_rows.get() {
+            if page.imp().updating_folder_rows.get() || page.imp().saved_search_applying.get() {
                 return;
             }
+            page.set_saved_search_target_valid(true);
             let Some(row) = selection.selected_item().and_downcast::<gtk::TreeListRow>() else {
                 return;
             };
@@ -9041,13 +9413,8 @@ impl MailPage {
         icon_name: &str,
         label_text: &str,
         badge_text: &str,
-        query: &str,
     ) -> gtk::ListBoxRow {
-        let row = Self::create_folder_row(folder_id, icon_name, label_text, badge_text);
-        unsafe {
-            row.set_data("search-query", query.to_string());
-        }
-        row
+        Self::create_folder_row(folder_id, icon_name, label_text, badge_text)
     }
 
     fn populate_search_folders(search_list: &gtk::ListBox) {
@@ -9055,13 +9422,30 @@ impl MailPage {
             search_list.remove(&row);
         }
         for folder in SearchFolderService::default_vfolders() {
-            search_list.append(&Self::create_search_folder_row(
+            let Some(saved_search) = SavedSearch::with_metadata(
+                folder.id(),
+                folder.name(),
+                folder.query_expression(),
+                SavedSearchFieldMode::FreeForm,
+                SavedSearchScope::AllAccounts,
+                None,
+                None,
+                None,
+            )
+            .ok() else {
+                tracing::warn!(id = %folder.id(), "Could not compile built-in saved search");
+                continue;
+            };
+            let row = Self::create_search_folder_row(
                 &folder.id(),
                 &folder.icon_name(),
                 &folder.name(),
                 "",
-                &folder.query_expression(),
-            ));
+            );
+            unsafe {
+                row.set_data("saved-search", saved_search);
+            }
+            search_list.append(&row);
         }
         for search in SearchFolderService::default().load_saved() {
             let row = Self::create_search_folder_row(
@@ -9069,8 +9453,10 @@ impl MailPage {
                 "edit-find-symbolic",
                 &search.name,
                 "",
-                &search.query,
             );
+            unsafe {
+                row.set_data("saved-search", search.clone());
+            }
             let edit_button = gtk::Button::builder()
                 .icon_name("document-edit-symbolic")
                 .tooltip_text("Gespeicherten Suchordner bearbeiten")
@@ -11146,14 +11532,25 @@ impl MailPage {
         let message_filter = Rc::new(Cell::new(MessageFilter::All));
         let folder_selection = Rc::new(RefCell::new(FolderSelection::all()));
         let search_scope = Rc::new(Cell::new(QuickSearchScope::CurrentFolder));
+        let saved_search_target_valid = Rc::new(Cell::new(true));
+        self.imp()
+            .search_scope_state
+            .replace(Some(Rc::clone(&search_scope)));
+        self.imp()
+            .saved_search_target_valid
+            .replace(Some(Rc::clone(&saved_search_target_valid)));
         let query_for_filter = Rc::clone(&query);
         let message_filter_for_filter = Rc::clone(&message_filter);
         let folder_selection_for_filter = Rc::clone(&folder_selection);
         let search_scope_for_filter = Rc::clone(&search_scope);
+        let saved_search_target_valid_for_filter = Rc::clone(&saved_search_target_valid);
         let custom_filter = gtk::CustomFilter::new(move |obj| {
             let Some(msg) = obj.downcast_ref::<MailMessageObject>() else {
                 return false;
             };
+            if !saved_search_target_valid_for_filter.get() {
+                return false;
+            }
 
             let query = query_for_filter.borrow();
             let selected_folder = folder_selection_for_filter.borrow();
@@ -11177,11 +11574,15 @@ impl MailPage {
         let message_filter_for_thread_filter = Rc::clone(&message_filter);
         let folder_selection_for_thread_filter = Rc::clone(&folder_selection);
         let search_scope_for_thread_filter = Rc::clone(&search_scope);
+        let saved_search_target_valid_for_thread_filter = Rc::clone(&saved_search_target_valid);
         let thread_members_for_filter = Rc::clone(&thread_members);
         let thread_filter = gtk::CustomFilter::new(move |obj| {
             let Some(root) = obj.downcast_ref::<MailMessageObject>() else {
                 return false;
             };
+            if !saved_search_target_valid_for_thread_filter.get() {
+                return false;
+            }
             let query = query_for_thread_filter.borrow();
             let selected_folder = folder_selection_for_thread_filter.borrow();
             let members = thread_members_for_filter.borrow();
@@ -12442,6 +12843,12 @@ impl MailPage {
         let thread_filter_for_quick_filter = thread_filter.clone();
         let page_for_quick_filter = self.downgrade();
         quick_filter.connect_selected_notify(move |selector| {
+            if page_for_quick_filter
+                .upgrade()
+                .is_some_and(|page| page.imp().saved_search_applying.get())
+            {
+                return;
+            }
             let filter = MessageFilter::from_selector_index(selector.selected());
             message_filter_for_quick_filter.set(filter);
             filter_for_quick_filter.changed(gtk::FilterChange::Different);
@@ -12481,7 +12888,26 @@ impl MailPage {
                 page.show_toast("Eine leere Suche kann nicht gespeichert werden");
                 return;
             }
-            let dialog = crate::dialogs::SearchFolderDialog::new(&query);
+            let field = page.imp().search_field_scope.get().to_saved();
+            let scope = page.imp().search_scope.get().to_saved();
+            let selection = page.active_folder_selection();
+            let (folder_id, source_uid, folder_name) = match scope {
+                SavedSearchScope::AllAccounts => (None, None, None),
+                SavedSearchScope::CurrentAccount => (None, selection.source_uid, None),
+                SavedSearchScope::CurrentFolder | SavedSearchScope::CurrentFolderAndSubfolders => (
+                    Some(selection.folder_id),
+                    selection.source_uid,
+                    selection.folder_name,
+                ),
+            };
+            let dialog = crate::dialogs::SearchFolderDialog::new_with_metadata(
+                &query,
+                field,
+                scope,
+                folder_id,
+                source_uid,
+                folder_name,
+            );
             if let Some(root) = page.root().and_downcast::<gtk::Window>() {
                 dialog.set_transient_for(Some(&root));
             }
@@ -12496,23 +12922,29 @@ impl MailPage {
         });
 
         let search_field_model = gtk::StringList::new(&[
-            "Alle Felder",
+            "Betreff oder Adressen",
             "Betreff",
             "Absender",
             "Empfänger",
+            "Nachricht",
             "Nachrichtentext",
+            "Freier Ausdruck",
         ]);
         let search_field_selector =
             gtk::DropDown::new(Some(search_field_model), None::<&gtk::Expression>);
-        search_field_selector.set_tooltip_text(Some("Zu durchsuchendes Feld"));
-        set_accessible_label(&search_field_selector, "Suchfeld");
+        search_field_selector.set_tooltip_text(Some("Schnellsuche auswählen"));
+        set_accessible_label(&search_field_selector, "Suchoption");
         search_field_selector.set_selected(self.imp().search_field_scope.get().selector_index());
         self.imp()
             .search_field_selector
             .replace(Some(search_field_selector.clone()));
 
-        let search_scope_model =
-            gtk::StringList::new(&["Aktueller Ordner", "Aktuelles Konto", "Alle Konten"]);
+        let search_scope_model = gtk::StringList::new(&[
+            "Aktueller Ordner",
+            "Aktueller Ordner und Unterordner",
+            "Aktuelles Konto",
+            "Alle Konten",
+        ]);
         let search_scope_selector =
             gtk::DropDown::new(Some(search_scope_model), None::<&gtk::Expression>);
         search_scope_selector.set_tooltip_text(Some("Suchbereich"));
@@ -12535,34 +12967,30 @@ impl MailPage {
                 return;
             };
 
+            if page.imp().saved_search_applying.get() {
+                return;
+            }
             if page.imp().search_scope_adjusting.get() {
                 search_scope_for_scope_change.set(requested_scope);
                 page.imp().search_scope.set(requested_scope);
                 return;
             }
 
-            if requested_scope == QuickSearchScope::AllAccounts
-                && page.imp().graph_backend_active.get()
-            {
-                let was_adjusting = page.imp().search_scope_adjusting.replace(true);
-                page.imp()
-                    .search_scope
-                    .set(QuickSearchScope::CurrentAccount);
-                search_scope_for_scope_change.set(QuickSearchScope::CurrentAccount);
-                selector.set_selected(QuickSearchScope::CurrentAccount.selector_index());
-                page.imp().search_scope_adjusting.set(was_adjusting);
-                page.show_toast(
-                    "Die Graph-Suche unterstützt nur ein Konto; der Suchbereich wurde auf „Aktuelles Konto“ zurückgesetzt.",
-                );
-                filter_for_scope_change.changed(gtk::FilterChange::Different);
-                thread_filter_for_scope_change.changed(gtk::FilterChange::Different);
-                return;
-            }
-
+            page.set_saved_search_target_valid(true);
             search_scope_for_scope_change.set(requested_scope);
             page.imp().search_scope.set(requested_scope);
+            page.set_graph_local_search_warning(graph_scope_local_search_warning(
+                requested_scope,
+                page.imp().graph_backend_active.get(),
+            ));
+            if page.reconcile_graph_search_scope() {
+                search_scope_for_scope_change.set(page.imp().search_scope.get());
+                page.restart_graph_search_for_scope_change();
+                return;
+            }
             filter_for_scope_change.changed(gtk::FilterChange::Different);
             thread_filter_for_scope_change.changed(gtk::FilterChange::Different);
+            page.restart_graph_search_for_scope_change();
         });
 
         let search_field_for_field_change = self.downgrade();
@@ -12571,16 +12999,21 @@ impl MailPage {
         let thread_filter_for_field_change = thread_filter.clone();
         let search_entry_for_field_change = search_entry.clone();
         search_field_selector.connect_selected_notify(move |selector| {
+            let Some(page) = search_field_for_field_change.upgrade() else {
+                return;
+            };
+            if page.imp().saved_search_applying.get() {
+                return;
+            }
+            page.set_saved_search_target_valid(true);
             let field_scope = QuickSearchField::from_selector_index(selector.selected());
             let text = search_entry_for_field_change.text();
             *query_for_field_change.borrow_mut() =
                 MessageSearchQuery::parse_with_field_scope(text.as_str(), field_scope);
             filter_for_field_change.changed(gtk::FilterChange::Different);
             thread_filter_for_field_change.changed(gtk::FilterChange::Different);
-            if let Some(page) = search_field_for_field_change.upgrade() {
-                page.imp().search_field_scope.set(field_scope);
-                page.handle_search_changed(text.as_str());
-            }
+            page.imp().search_field_scope.set(field_scope);
+            page.handle_search_changed(text.as_str());
         });
 
         let query_for_search = Rc::clone(&query);
@@ -12588,17 +13021,19 @@ impl MailPage {
         let thread_filter_for_search = thread_filter.clone();
         let page_for_search = self.downgrade();
         search_entry.connect_search_changed(move |entry| {
-            let field_scope = page_for_search
-                .upgrade()
-                .map(|p| p.imp().search_field_scope.get())
-                .unwrap_or_default();
+            let Some(page) = page_for_search.upgrade() else {
+                return;
+            };
+            if page.imp().saved_search_applying.get() {
+                return;
+            }
+            page.set_saved_search_target_valid(true);
+            let field_scope = page.imp().search_field_scope.get();
             *query_for_search.borrow_mut() =
                 MessageSearchQuery::parse_with_field_scope(entry.text().as_str(), field_scope);
             filter_for_search.changed(gtk::FilterChange::Different);
             thread_filter_for_search.changed(gtk::FilterChange::Different);
-            if let Some(page) = page_for_search.upgrade() {
-                page.handle_search_changed(entry.text().as_str());
-            }
+            page.handle_search_changed(entry.text().as_str());
         });
 
         let sort_model = gtk::StringList::new(&[
@@ -12999,6 +13434,17 @@ impl MailPage {
             .wrap_mode(gtk::pango::WrapMode::WordChar)
             .ellipsize(gtk::pango::EllipsizeMode::End)
             .build();
+        let graph_local_search_warning = gtk::Label::builder()
+            .css_classes(vec!["warning", "caption"])
+            .halign(gtk::Align::Start)
+            .margin_start(12)
+            .margin_end(12)
+            .margin_top(4)
+            .margin_bottom(4)
+            .wrap(true)
+            .wrap_mode(gtk::pango::WrapMode::WordChar)
+            .visible(false)
+            .build();
 
         let refresh_button = gtk::Button::builder()
             .icon_name("view-refresh-symbolic")
@@ -13316,6 +13762,7 @@ impl MailPage {
         batch_action_bar.append(&batch_delete_button);
 
         list_container.append(&batch_action_bar);
+        list_container.append(&graph_local_search_warning);
         let column_header = self.build_mail_column_header();
         let column_header_scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Automatic)
@@ -13338,6 +13785,9 @@ impl MailPage {
         self.imp()
             .message_status_area
             .replace(Some(message_state_box.clone()));
+        self.imp()
+            .graph_local_search_warning
+            .replace(Some(graph_local_search_warning));
 
         self.imp().refresh_button.replace(Some(refresh_button));
         self.imp().load_more_button.replace(Some(load_more_button));
@@ -13378,13 +13828,13 @@ impl MailPage {
         let query_for_folder = Rc::clone(query);
         let page_for_rows = self.downgrade();
         folder_list.connect_row_selected(move |_, row| {
-            if page_for_rows
-                .upgrade()
-                .map(|page| page.imp().updating_folder_rows.get())
-                .unwrap_or(false)
-            {
+            let Some(page) = page_for_rows.upgrade() else {
+                return;
+            };
+            if page.imp().updating_folder_rows.get() || page.imp().saved_search_applying.get() {
                 return;
             }
+            page.set_saved_search_target_valid(true);
 
             let selection = row
                 .and_then(Self::folder_row_data)
@@ -13394,129 +13844,83 @@ impl MailPage {
             message_filter_for_rows.set(MessageFilter::All);
             query_for_folder.replace(MessageSearchQuery::default());
             let (folder_title, folder_icon) = selection.title_and_icon();
-            if let Some(page) = page_for_rows.upgrade() {
-                if let Some(quick_filter) = page.imp().quick_filter.borrow().as_ref() {
-                    quick_filter.set_selected(0);
-                }
-                if let Some(title) = page.imp().drawer_header_title.borrow().as_ref() {
-                    title.set_label(folder_title);
-                }
-                if let Some(icon) = page.imp().drawer_header_icon.borrow().as_ref() {
-                    icon.set_icon_name(Some(folder_icon));
-                }
-                if let Some(root) = page.root().and_downcast::<crate::window::EvolutionWindow>() {
-                    root.update_folder_sort_order_action_for_current_view();
-                    root.update_folder_properties_action_for_current_view();
-                    root.update_folder_subscriptions_action_for_current_view();
-                }
+            if let Some(quick_filter) = page.imp().quick_filter.borrow().as_ref() {
+                quick_filter.set_selected(0);
+            }
+            if let Some(title) = page.imp().drawer_header_title.borrow().as_ref() {
+                title.set_label(folder_title);
+            }
+            if let Some(icon) = page.imp().drawer_header_icon.borrow().as_ref() {
+                icon.set_icon_name(Some(folder_icon));
+            }
+            if let Some(root) = page.root().and_downcast::<crate::window::EvolutionWindow>() {
+                root.update_folder_sort_order_action_for_current_view();
+                root.update_folder_properties_action_for_current_view();
+                root.update_folder_subscriptions_action_for_current_view();
             }
             if row.is_some() {
                 search_list_for_rows.unselect_all();
-                if let Some(page) = page_for_rows.upgrade() {
-                    if let Some(search_entry) = page.imp().search_entry.borrow().as_ref() {
-                        search_entry.set_text("");
-                    }
+                if let Some(search_entry) = page.imp().search_entry.borrow().as_ref() {
+                    search_entry.set_text("");
                 }
             }
             custom_filter_for_rows.changed(gtk::FilterChange::Different);
             thread_filter_for_rows.changed(gtk::FilterChange::Different);
 
-            if let Some(page) = page_for_rows.upgrade() {
-                if selection.is_remote() {
-                    page.start_mail_load(
-                        MailLoadRequest {
-                            source_uid: selection.source_uid.clone(),
-                            folder_name: selection.folder_name.clone(),
-                            offset: 0,
-                            max_messages_per_folder: configured_mail_page_limit(),
-                            graph_cursors: HashMap::new(),
-                        },
-                        true,
-                    );
-                } else {
-                    let needs_all_mail_reload = page
-                        .imp()
-                        .active_request
-                        .borrow()
-                        .as_ref()
-                        .map(|request| {
-                            request.source_uid.is_some() || request.folder_name.is_some()
-                        })
-                        .unwrap_or(false)
-                        || page.imp().graph_backend_active.get();
-                    if needs_all_mail_reload {
-                        page.start_mail_load(MailLoadRequest::initial(), true);
-                    }
+            if selection.is_remote() {
+                page.start_mail_load(
+                    MailLoadRequest {
+                        source_uid: selection.source_uid.clone(),
+                        folder_name: selection.folder_name.clone(),
+                        offset: 0,
+                        max_messages_per_folder: configured_mail_page_limit(),
+                        graph_cursors: HashMap::new(),
+                    },
+                    true,
+                );
+            } else {
+                let needs_all_mail_reload = page
+                    .imp()
+                    .active_request
+                    .borrow()
+                    .as_ref()
+                    .map(|request| request.source_uid.is_some() || request.folder_name.is_some())
+                    .unwrap_or(false)
+                    || page.imp().graph_backend_active.get();
+                if needs_all_mail_reload {
+                    page.start_mail_load(MailLoadRequest::initial(), true);
                 }
             }
         });
 
-        let message_filter = Rc::clone(message_filter);
-        let folder_selection = Rc::clone(folder_selection);
         let custom_filter = custom_filter.clone();
         let thread_filter = thread_filter.clone();
-        let query = Rc::clone(query);
-        let folder_list_for_search = folder_list.clone();
         let page_for_search = self.downgrade();
         search_list.connect_row_selected(move |_, row| {
-            let folder_id = row.and_then(Self::folder_id).unwrap_or_default();
-            let filter = match folder_id.as_str() {
-                "vfolder-unread" => MessageFilter::Unread,
-                "vfolder-flagged" => MessageFilter::Flagged,
-                "vfolder-important" => MessageFilter::Important,
-                _ => MessageFilter::All,
+            let Some(page) = page_for_search.upgrade() else {
+                return;
             };
-            message_filter.set(filter);
-            if let Some(page) = page_for_search.upgrade() {
-                let selected = filter.selector_index();
-                if let Some(quick_filter) = page.imp().quick_filter.borrow().as_ref() {
-                    quick_filter.set_selected(selected);
-                }
+            if page.imp().saved_search_applying.get() {
+                return;
             }
-            if row.is_some() {
-                let saved_query = unsafe {
-                    row.and_then(|row| {
-                        row.data::<String>("search-query")
-                            .map(|value| value.as_ref().clone())
-                    })
-                };
-                query.replace(
-                    saved_query
-                        .as_deref()
-                        .map(MessageSearchQuery::parse)
-                        .unwrap_or_default(),
-                );
-                folder_selection.replace(FolderSelection::all());
-                folder_list_for_search.unselect_all();
-                if let Some(page) = page_for_search.upgrade() {
-                    if let Some(root) = page.root().and_downcast::<crate::window::EvolutionWindow>()
-                    {
-                        root.update_folder_properties_action_for_current_view();
-                        root.update_folder_subscriptions_action_for_current_view();
-                    }
-                    if let (Some(search_entry), Some(saved_query)) = (
-                        page.imp().search_entry.borrow().as_ref(),
-                        saved_query.as_deref(),
-                    ) {
-                        search_entry.set_text(saved_query);
-                    }
-                    let needs_all_mail_reload = page
-                        .imp()
-                        .active_request
-                        .borrow()
-                        .as_ref()
-                        .map(|request| {
-                            request.source_uid.is_some() || request.folder_name.is_some()
-                        })
-                        .unwrap_or(false)
-                        || page.imp().graph_backend_active.get();
-                    if needs_all_mail_reload {
-                        page.start_mail_load(MailLoadRequest::initial(), true);
-                    }
-                }
+            let Some(row) = row else {
+                page.set_saved_search_target_valid(true);
+                custom_filter.changed(gtk::FilterChange::Different);
+                thread_filter.changed(gtk::FilterChange::Different);
+                return;
+            };
+            let saved_search = unsafe {
+                row.data::<SavedSearch>("saved-search")
+                    .map(|value| value.as_ref().clone())
+            };
+            if let Some(saved_search) = saved_search {
+                page.apply_saved_search(Some(saved_search));
+            } else {
+                page.set_saved_search_target_valid(false);
+                page.set_graph_local_search_warning(Some(SAVED_SEARCH_TARGET_WARNING));
+                custom_filter.changed(gtk::FilterChange::Different);
+                thread_filter.changed(gtk::FilterChange::Different);
             }
-            custom_filter.changed(gtk::FilterChange::Different);
-            thread_filter.changed(gtk::FilterChange::Different);
         });
     }
 
@@ -15392,6 +15796,17 @@ impl MailPage {
             return;
         }
 
+        if self.imp().remote_search_applied.get() {
+            let Some(state) = self.imp().graph_search_state.borrow().clone() else {
+                return;
+            };
+            if state.next_cursor.is_some() {
+                let generation = self.imp().search_generation.get();
+                self.start_graph_search_page(state, generation, false);
+            }
+            return;
+        }
+
         let Some(mut request) = self.imp().active_request.borrow().clone() else {
             return;
         };
@@ -15407,6 +15822,44 @@ impl MailPage {
         }
         if let Some(source) = self.imp().mail_thread_apply_source.borrow_mut().take() {
             source.remove();
+        }
+    }
+
+    /// Invalidate a provider search without selecting another mailbox.  A
+    /// stale saved-search target must leave the current result model behind a
+    /// fail-closed filter, and an already queued Graph worker must not be
+    /// allowed to publish over its warning later.
+    fn invalidate_pending_graph_search(&self) {
+        if let Some(cancelled) = self.imp().mail_search_cancellation.borrow_mut().take() {
+            cancelled.store(true, Ordering::Relaxed);
+        }
+        if let Some(cancelled) = self.imp().mail_load_cancellation.borrow().as_ref() {
+            cancelled.store(true, Ordering::Relaxed);
+        }
+        if let Some(cancelled) = self.imp().mail_incremental_cancellation.borrow().as_ref() {
+            cancelled.store(true, Ordering::Relaxed);
+        }
+        self.imp().mail_incremental_loading.set(false);
+        if let Some(source) = self.imp().search_debounce_source.borrow_mut().take() {
+            source.remove();
+        }
+        self.imp()
+            .search_generation
+            .set(self.imp().search_generation.get().wrapping_add(1));
+        self.imp()
+            .load_generation
+            .set(self.imp().load_generation.get().wrapping_add(1));
+        self.imp().suppress_pending_search_generation.set(None);
+        self.imp().remote_search_applied.set(false);
+        self.imp().graph_search_state.replace(None);
+        self.cancel_pending_mail_apply();
+        self.imp().mail_loading.set(false);
+        if let Some(button) = self.imp().refresh_button.borrow().as_ref() {
+            button.set_sensitive(true);
+        }
+        if let Some(button) = self.imp().load_more_button.borrow().as_ref() {
+            button.set_visible(false);
+            button.set_sensitive(true);
         }
     }
 
@@ -15432,6 +15885,7 @@ impl MailPage {
             .search_generation
             .set(self.imp().search_generation.get().wrapping_add(1));
         self.imp().remote_search_applied.set(false);
+        self.imp().graph_search_state.replace(None);
         if let Some(cancelled) = self.imp().mail_load_cancellation.borrow().as_ref() {
             cancelled.store(true, Ordering::Relaxed);
         }
@@ -15518,7 +15972,23 @@ impl MailPage {
         });
     }
 
+    fn set_graph_local_search_warning(&self, warning: Option<&str>) {
+        if let Some(label) = self.imp().graph_local_search_warning.borrow().as_ref() {
+            label.set_label(warning.unwrap_or_default());
+            label.set_visible(warning.is_some());
+        }
+    }
+
     fn handle_search_changed(&self, input: &str) {
+        self.handle_search_changed_with_scope_policy(input, true);
+    }
+
+    /// Route one search change. Ordinary quick-search edits may reconcile a
+    /// provider-unsupported scope to the closest supported scope; an
+    /// Advanced-Search apply explicitly preserves the user's current scope
+    /// and therefore stays local with a visible warning when Graph cannot
+    /// execute that exact scope.
+    fn handle_search_changed_with_scope_policy(&self, input: &str, reconcile_scope: bool) {
         let cancelled_search =
             if let Some(cancelled) = self.imp().mail_search_cancellation.borrow_mut().take() {
                 cancelled.store(true, Ordering::Relaxed);
@@ -15531,9 +16001,18 @@ impl MailPage {
         }
         let generation = self.imp().search_generation.get().wrapping_add(1);
         self.imp().search_generation.set(generation);
+        self.imp().graph_search_state.replace(None);
+
+        if reconcile_scope {
+            self.reconcile_graph_search_scope();
+        }
 
         let input = input.trim().to_string();
         if input.is_empty() {
+            self.set_graph_local_search_warning(graph_scope_local_search_warning(
+                self.imp().search_scope.get(),
+                self.imp().graph_backend_active.get(),
+            ));
             if self.imp().remote_search_applied.replace(false) {
                 let mut request = self
                     .imp()
@@ -15543,6 +16022,9 @@ impl MailPage {
                     .unwrap_or_else(MailLoadRequest::initial);
                 request.offset = 0;
                 self.start_mail_load(request, true);
+                self.imp()
+                    .suppress_pending_search_generation
+                    .set(Some(self.imp().load_generation.get()));
             } else if cancelled_search {
                 self.restore_after_graph_search(false);
             }
@@ -15550,16 +16032,20 @@ impl MailPage {
         }
 
         if !self.imp().graph_backend_active.get() {
+            self.set_graph_local_search_warning(None);
             if cancelled_search {
                 self.restore_after_graph_search(false);
             }
             return;
         }
-        if self.reconcile_graph_search_scope() {
-            return;
-        }
-        let query = MessageSearchQuery::parse(&input);
-        let Some(graph_query) = graph_search_expression(&query) else {
+        let query =
+            MessageSearchQuery::parse_with_field_scope(&input, self.imp().search_field_scope.get());
+        self.set_graph_local_search_warning(graph_local_search_warning_for_scope(
+            &query,
+            self.imp().graph_backend_active.get(),
+            self.imp().search_scope.get(),
+        ));
+        let Some(graph_query) = mail_graph_search_query(&query) else {
             // State-only, label-only and date-only predicates remain fully
             // local.  If a previous remote search was displayed, restore the
             // normal Graph page first so the local predicate sees the normal
@@ -15573,11 +16059,39 @@ impl MailPage {
                     .unwrap_or_else(MailLoadRequest::initial);
                 request.offset = 0;
                 self.start_mail_load(request, true);
+                self.imp()
+                    .suppress_pending_search_generation
+                    .set(Some(self.imp().load_generation.get()));
             } else if cancelled_search {
                 self.restore_after_graph_search(false);
             }
             return;
         };
+
+        if matches!(
+            self.current_graph_search_scope_plan(),
+            GraphSearchScopePlan::Unsupported
+        ) {
+            // Graph cannot express a recursive folder scope.  Keep the
+            // current loaded page for local filtering; if it is a previous
+            // remote result, restore the normal mailbox window first.
+            if self.imp().remote_search_applied.replace(false) {
+                let mut request = self
+                    .imp()
+                    .active_request
+                    .borrow()
+                    .clone()
+                    .unwrap_or_else(MailLoadRequest::initial);
+                request.offset = 0;
+                self.start_mail_load(request, true);
+                self.imp()
+                    .suppress_pending_search_generation
+                    .set(Some(self.imp().load_generation.get()));
+            } else if cancelled_search {
+                self.restore_after_graph_search(false);
+            }
+            return;
+        }
 
         let page = self.downgrade();
         let source = glib::timeout_add_local_once(StdDuration::from_millis(250), move || {
@@ -15616,6 +16130,9 @@ impl MailPage {
         self.imp()
             .search_scope
             .set(QuickSearchScope::CurrentAccount);
+        if let Some(scope_state) = self.imp().search_scope_state.borrow().as_ref() {
+            scope_state.set(QuickSearchScope::CurrentAccount);
+        }
         if let Some(selector) = self.imp().search_scope_selector.borrow().as_ref() {
             if selector.selected() != QuickSearchScope::CurrentAccount.selector_index() {
                 let was_adjusting = self.imp().search_scope_adjusting.replace(true);
@@ -15629,15 +16146,60 @@ impl MailPage {
         if let Some(filter) = self.imp().thread_filter.borrow().as_ref() {
             filter.changed(gtk::FilterChange::Different);
         }
-        self.show_toast(
-            "Die Graph-Suche unterstützt nur ein Konto; der Suchbereich wurde auf „Aktuelles Konto“ zurückgesetzt.",
-        );
+        self.show_toast(GRAPH_SEARCH_SCOPE_FALLBACK_MESSAGE);
         true
+    }
+
+    fn restart_graph_search_for_scope_change(&self) {
+        if !self.imp().graph_backend_active.get() {
+            return;
+        }
+        let Some(search_entry) = self.imp().search_entry.borrow().as_ref().cloned() else {
+            return;
+        };
+        let input = search_entry.text();
+        if !input.trim().is_empty() {
+            self.handle_search_changed(input.as_str());
+        }
     }
 
     fn start_graph_search(&self, input: String, graph_query: String, generation: u64) {
         if generation != self.imp().search_generation.get()
             || !self.imp().graph_backend_active.get()
+        {
+            return;
+        }
+        let GraphSearchScopePlan::Supported {
+            source_uid,
+            folder_name,
+        } = self.current_graph_search_scope_plan()
+        else {
+            self.reconcile_graph_search_scope();
+            return;
+        };
+        let search_state = GraphSearchState {
+            raw_input: input,
+            graph_query,
+            effective_scope: self.imp().search_scope.get(),
+            source_uid,
+            folder_name,
+            next_cursor: None,
+        };
+        self.imp()
+            .graph_search_state
+            .replace(Some(search_state.clone()));
+        self.start_graph_search_page(search_state, generation, true);
+    }
+
+    fn start_graph_search_page(
+        &self,
+        search_state: GraphSearchState,
+        generation: u64,
+        replace: bool,
+    ) {
+        if generation != self.imp().search_generation.get()
+            || !self.imp().graph_backend_active.get()
+            || self.imp().graph_search_state.borrow().as_ref() != Some(&search_state)
         {
             return;
         }
@@ -15648,17 +16210,12 @@ impl MailPage {
             cancelled.store(true, Ordering::Relaxed);
         }
         self.imp().mail_incremental_loading.set(false);
+        if let Some(cancelled) = self.imp().mail_search_cancellation.borrow_mut().take() {
+            cancelled.store(true, Ordering::Relaxed);
+        }
         let load_generation = self.imp().load_generation.get().wrapping_add(1);
         self.imp().load_generation.set(load_generation);
         self.cancel_pending_mail_apply();
-        let GraphSearchScopePlan::Supported {
-            source_uid,
-            folder_name,
-        } = self.current_graph_search_scope_plan()
-        else {
-            self.reconcile_graph_search_scope();
-            return;
-        };
         let cancellation = Arc::new(AtomicBool::new(false));
         self.imp()
             .mail_search_cancellation
@@ -15672,28 +16229,42 @@ impl MailPage {
             button.set_sensitive(false);
         }
         if let Some(state) = self.imp().message_state.borrow().as_ref() {
-            state.set_label("Graph-Suche läuft …");
+            state.set_label(if replace {
+                "Graph-Suche läuft …"
+            } else {
+                "Weitere Graph-Suchergebnisse werden geladen …"
+            });
         }
 
-        let request = MailLoadRequest {
-            source_uid: source_uid.clone(),
-            folder_name: folder_name.clone(),
-            offset: 0,
-            max_messages_per_folder: configured_mail_page_limit(),
-            graph_cursors: HashMap::new(),
-        };
+        let mut request = self
+            .imp()
+            .active_request
+            .borrow()
+            .clone()
+            .unwrap_or_else(MailLoadRequest::initial);
+        request.source_uid = search_state.source_uid.clone();
+        request.folder_name = search_state.folder_name.clone();
+        request.offset = 0;
+        request.graph_cursors.clear();
         let search_limit = request.max_messages_per_folder;
+        let source_uid = search_state.source_uid.clone();
+        let folder_name = search_state.folder_name.clone();
+        let graph_query = search_state.graph_query.clone();
+        let cursor = search_state.next_cursor.clone();
+        let input = search_state.raw_input.clone();
+        let worker_cancellation = cancellation.clone();
         let (sender, receiver) = async_channel::bounded(1);
         std::thread::spawn(move || {
-            let result = camel_mail_service::search_messages_graph(
+            let result = camel_mail_service::search_messages_graph_page(
                 source_uid.as_deref(),
                 folder_name.as_deref(),
                 &graph_query,
+                cursor.as_deref(),
                 search_limit,
-                &cancellation,
+                &worker_cancellation,
             )
             .and_then(|load| {
-                prepare_searchable_body_texts(&load.messages, &cancellation)
+                prepare_searchable_body_texts(&load.messages, &worker_cancellation)
                     .map(|searchable_body_texts| (load, searchable_body_texts))
             });
             if let Err(error) = sender.send_blocking(result) {
@@ -15701,6 +16272,8 @@ impl MailPage {
             }
         });
 
+        let result_cancellation = cancellation.clone();
+        let search_state_for_result = search_state.clone();
         let page = self.downgrade();
         glib::spawn_future_local(async move {
             let result = receiver.recv().await;
@@ -15709,6 +16282,8 @@ impl MailPage {
             };
             if page.imp().search_generation.get() != generation
                 || !generation_is_current(page.imp().load_generation.get(), load_generation)
+                || result_cancellation.load(Ordering::Relaxed)
+                || page.imp().graph_search_state.borrow().as_ref() != Some(&search_state_for_result)
             {
                 return;
             }
@@ -15725,22 +16300,57 @@ impl MailPage {
                             camel: load,
                             searchable_body_texts,
                         },
-                        true,
+                        replace,
                     );
                 }
                 Ok(Err(error)) => {
                     tracing::warn!(%error, query = %input, "Graph mail search failed");
-                    page.restore_after_graph_search(true);
+                    page.handle_graph_search_page_error(replace, &search_state_for_result, &error);
                 }
                 Err(_) => {
-                    page.restore_after_graph_search(true);
+                    page.handle_graph_search_page_error(
+                        replace,
+                        &search_state_for_result,
+                        "Mail-Suchergebnis wurde vorzeitig beendet.",
+                    );
                 }
             }
         });
     }
 
+    fn handle_graph_search_page_error(
+        &self,
+        replace: bool,
+        search_state: &GraphSearchState,
+        error: &str,
+    ) {
+        if replace {
+            self.restore_after_graph_search(true);
+            return;
+        }
+
+        let has_more = self
+            .imp()
+            .graph_search_state
+            .borrow()
+            .as_ref()
+            .filter(|state| *state == search_state)
+            .and_then(|state| state.next_cursor.as_ref())
+            .is_some();
+        if let Some(button) = self.imp().load_more_button.borrow().as_ref() {
+            button.set_visible(has_more);
+            button.set_sensitive(true);
+        }
+        if let Some(state) = self.imp().message_state.borrow().as_ref() {
+            state.set_label(&format!(
+                "Graph-Suche konnte nicht erweitert werden: {error}"
+            ));
+        }
+    }
+
     fn restore_after_graph_search(&self, clear_stale_models: bool) {
         self.imp().remote_search_applied.set(false);
+        self.imp().graph_search_state.replace(None);
         if clear_stale_models {
             if let Some(store) = self.imp().message_store.borrow().as_ref() {
                 store.remove_all();
@@ -15763,21 +16373,43 @@ impl MailPage {
             .unwrap_or_else(MailLoadRequest::initial);
         request.offset = 0;
         self.start_mail_load(request, true);
+        // The query is already installed in the local GTK filter. Replaying
+        // it through the ordinary quick-search route could reconcile an exact
+        // Advanced/Saved scope after this base-page restore.
+        self.imp()
+            .suppress_pending_search_generation
+            .set(Some(self.imp().load_generation.get()));
     }
 
     fn apply_mail_load(&self, request: MailLoadRequest, result: MailPageLoadResult, replace: bool) {
+        let suppress_pending_search = self
+            .imp()
+            .suppress_pending_search_generation
+            .get()
+            .is_some_and(|generation| generation == self.imp().load_generation.get());
+        if suppress_pending_search {
+            self.imp().suppress_pending_search_generation.set(None);
+        }
         let pending_search = match &result {
             MailPageLoadResult::Camel { camel, .. }
-            | MailPageLoadResult::Combined { camel, .. }
-                if camel.is_graph && camel.search_query.is_none() =>
-            {
-                self.imp()
+            | MailPageLoadResult::Combined { camel, .. } => {
+                let input = self
+                    .imp()
                     .search_entry
                     .borrow()
                     .as_ref()
-                    .map(|entry| entry.text().trim().to_string())
-                    .filter(|query| !query.is_empty())
+                    .map(|entry| entry.text().to_string());
+                pending_graph_search_input(camel, input.as_deref(), suppress_pending_search)
             }
+            _ => None,
+        };
+        let graph_search_state = match &result {
+            MailPageLoadResult::Camel { camel, .. }
+            | MailPageLoadResult::Combined { camel, .. } => camel
+                .search_query
+                .is_some()
+                .then(|| self.imp().graph_search_state.borrow().clone())
+                .flatten(),
             _ => None,
         };
         let result_kind = match &result {
@@ -15815,6 +16447,7 @@ impl MailPage {
                     previous_selection,
                     pending_search,
                     self.imp().load_generation.get(),
+                    graph_search_state.clone(),
                 ));
             }
             MailPageLoadResult::Camel {
@@ -15837,6 +16470,7 @@ impl MailPage {
                     previous_selection,
                     pending_search,
                     self.imp().load_generation.get(),
+                    graph_search_state,
                 ));
             }
             MailPageLoadResult::Local {
@@ -15908,6 +16542,7 @@ impl MailPage {
 
         if pending.result_kind == "local" {
             self.imp().mail_folder_summaries.replace(Vec::new());
+            self.imp().graph_search_state.replace(None);
         } else {
             self.imp()
                 .mail_folder_summaries
@@ -15927,8 +16562,8 @@ impl MailPage {
                 self.imp().local_folder_ids.replace(HashSet::new());
             }
             self.imp().graph_backend_active.set(pending.camel_is_graph);
-            if pending.camel_is_graph {
-                self.reconcile_graph_search_scope();
+            if !pending.camel_is_graph {
+                self.set_graph_local_search_warning(None);
             }
             self.imp()
                 .remote_search_applied
@@ -16171,6 +16806,8 @@ impl MailPage {
             has_visible_local_content: pending.appended > 0 || !visible_local_folders.is_empty(),
             pending_search: pending.pending_search.clone(),
             result_kind: pending.result_kind,
+            graph_search_state: pending.graph_search_state.clone(),
+            graph_search_next_cursor: pending.graph_search_next_cursor.clone(),
         };
         if let Some(store) = self.imp().message_store.borrow().as_ref().cloned() {
             self.begin_pending_thread_models(store, completion);
@@ -16505,6 +17142,9 @@ impl MailPage {
     }
 
     fn finalize_pending_mail_apply(&self, completion: &PendingMailCompletion) {
+        if !generation_is_current(self.imp().load_generation.get(), completion.generation) {
+            return;
+        }
         if let Some(filter) = self.imp().message_filter.borrow().as_ref() {
             filter.changed(gtk::FilterChange::Different);
         }
@@ -16557,6 +17197,25 @@ impl MailPage {
         }
         if let Some(button) = self.imp().load_more_button.borrow().as_ref() {
             button.set_sensitive(true);
+        }
+
+        let mut graph_search_has_more = None;
+        if let Some(search_state) = completion.graph_search_state.as_ref() {
+            let mut current_state = self.imp().graph_search_state.borrow_mut();
+            if current_state.as_ref() == Some(search_state) {
+                if let Some(current_state) = current_state.as_mut() {
+                    current_state.next_cursor = committed_graph_search_cursor(
+                        search_state.next_cursor.as_deref(),
+                        completion.graph_search_next_cursor.clone(),
+                    );
+                    graph_search_has_more = Some(current_state.next_cursor.is_some());
+                }
+            }
+        }
+        if let Some(has_more) = graph_search_has_more {
+            if let Some(button) = self.imp().load_more_button.borrow().as_ref() {
+                button.set_visible(has_more);
+            }
         }
 
         if completion.replace
@@ -16690,6 +17349,8 @@ impl MailPage {
                 has_visible_local_content: false,
                 pending_search: None,
                 result_kind: "incremental",
+                graph_search_state: None,
+                graph_search_next_cursor: None,
             },
         );
     }
@@ -17127,6 +17788,38 @@ mod tests {
         }
     }
 
+    fn local_scope_test_message(id: &str, folder_id: &str) -> MailMessageObject {
+        MailMessageObject::new(
+            id,
+            folder_id,
+            "Alice",
+            "alice@example.test",
+            "me@example.test",
+            "",
+            "",
+            "",
+            "Project update",
+            None,
+            Vec::new(),
+            Vec::new(),
+            id,
+            1,
+            0,
+            "Tue, 11 Aug 2026 14:30:00 +0000",
+            0,
+            "Project update",
+            "",
+            true,
+            false,
+            false,
+            MailFollowUpState::None,
+            MailFollowUpMetadata::default(),
+            Vec::new(),
+            None,
+            Vec::new(),
+        )
+    }
+
     fn skip_rust_trivia(source: &str, mut index: usize) -> usize {
         let bytes = source.as_bytes();
         loop {
@@ -17366,6 +18059,22 @@ mod tests {
         assert!(generation_is_current(7, 7));
         assert!(!generation_is_current(8, 7));
         assert!(!generation_is_current(7, 8));
+    }
+
+    #[test]
+    fn repeated_graph_search_cursor_fails_closed() {
+        assert_eq!(
+            committed_graph_search_cursor(Some("cursor"), Some("cursor".to_string())),
+            None
+        );
+        assert_eq!(
+            committed_graph_search_cursor(Some("cursor"), Some("next".to_string())),
+            Some("next".to_string())
+        );
+        assert_eq!(
+            committed_graph_search_cursor(None, Some("first".to_string())),
+            Some("first".to_string())
+        );
     }
 
     #[test]
@@ -17909,6 +18618,49 @@ mod tests {
     }
 
     #[test]
+    fn current_folder_and_subfolders_matches_local_and_remote_descendants() {
+        let local_selection = FolderSelection::from_folder_id("inbox");
+        let local_root = local_scope_test_message("local-root", "inbox");
+        let local_child = local_scope_test_message("local-child", "inbox/2026");
+        let local_prefix_collision = local_scope_test_message("local-sibling", "inbox-old");
+
+        assert!(folder_selection_matches_with_subfolders(
+            &local_selection,
+            &local_root
+        ));
+        assert!(folder_selection_matches_with_subfolders(
+            &local_selection,
+            &local_child
+        ));
+        assert!(!folder_selection_matches_with_subfolders(
+            &local_selection,
+            &local_prefix_collision
+        ));
+
+        let remote_selection = FolderSelection {
+            folder_id: "source-a\u{0}Projects".to_string(),
+            source_uid: Some("source-a".to_string()),
+            folder_name: Some("Projects".to_string()),
+        };
+        let remote_child = scope_test_message("remote-child", "source-a", "Projects/2026", true);
+        let remote_prefix_collision =
+            scope_test_message("remote-sibling", "source-a", "Projects-old", true);
+
+        assert!(folder_selection_matches_with_subfolders(
+            &remote_selection,
+            &remote_child
+        ));
+        assert!(!folder_selection_matches_with_subfolders(
+            &remote_selection,
+            &remote_prefix_collision
+        ));
+        assert!(!folder_selection_matches_with_subfolders(
+            &remote_selection,
+            &scope_test_message("wrong-account", "source-b", "Projects/2026", true)
+        ));
+    }
+
+    #[test]
     fn camel_status_keeps_failed_account_warning_visible() {
         let status = format_camel_status(&CamelMailLoad {
             messages: Vec::new(),
@@ -17919,6 +18671,7 @@ mod tests {
             warning: Some("OAuth-Anmeldung fehlgeschlagen".to_string()),
             is_graph: false,
             search_query: None,
+            graph_search_next_cursor: None,
             graph_next_links: HashMap::new(),
         });
 
@@ -17937,6 +18690,7 @@ mod tests {
             warning: None,
             is_graph: false,
             search_query: None,
+            graph_search_next_cursor: None,
             graph_next_links: HashMap::new(),
         });
 
@@ -17945,35 +18699,102 @@ mod tests {
     }
 
     #[test]
+    fn graph_error_restore_does_not_requeue_the_failed_query() {
+        let base_load = CamelMailLoad {
+            messages: Vec::new(),
+            folders: Vec::new(),
+            configured_sources: 1,
+            successful_sources: 1,
+            failed_sources: 0,
+            warning: None,
+            is_graph: true,
+            search_query: None,
+            graph_search_next_cursor: None,
+            graph_next_links: HashMap::new(),
+        };
+        let search_load = CamelMailLoad {
+            search_query: Some("\"subject:roadmap\"".to_string()),
+            ..base_load.clone()
+        };
+
+        assert_eq!(
+            pending_graph_search_input(&base_load, Some("subject:roadmap"), true),
+            None,
+            "the base-page restore after a Graph error must not retry automatically"
+        );
+        assert_eq!(
+            pending_graph_search_input(&base_load, Some("subject:roadmap"), false),
+            Some("subject:roadmap".to_string()),
+            "a later user-triggered load must still be allowed to start a search"
+        );
+        assert_eq!(
+            pending_graph_search_input(&search_load, Some("subject:roadmap"), false),
+            None,
+            "a completed Graph search must never schedule itself as a pending search"
+        );
+    }
+
+    #[test]
+    fn graph_error_restore_and_non_graph_apply_have_explicit_search_cleanup_contracts() {
+        let source = include_str!("mail_page.rs");
+        let restore = compact_rust(rust_function_body(source, "restore_after_graph_search"));
+        assert!(restore.contains("clear_stale_models"));
+        assert!(restore.contains("suppress_pending_search_generation"));
+
+        let apply = compact_rust(rust_function_body(source, "apply_mail_load"));
+        assert!(apply.contains("pending_graph_search_input"));
+        assert!(apply.contains("suppress_pending_search_generation"));
+
+        let begin = compact_rust(rust_function_body(source, "begin_pending_mail_apply"));
+        let non_graph = begin
+            .find("if!pending.camel_is_graph")
+            .expect("non-Graph pending results must have a cleanup branch");
+        let clear_warning = begin[non_graph..]
+            .find("set_graph_local_search_warning(None)")
+            .expect("non-Graph pending results must clear the Graph warning")
+            + non_graph;
+        assert!(clear_warning > non_graph);
+    }
+
+    #[test]
     fn message_search_query_parses_field_and_state_operators() {
         let query = MessageSearchQuery::parse(
             "from:alice@example.test subject:Roadmap is:unread has:attachment deploy",
         );
 
-        assert_eq!(query.from.as_deref(), Some("alice@example.test"));
-        assert_eq!(query.subject.as_deref(), Some("roadmap"));
-        assert_eq!(query.unread, Some(true));
-        assert_eq!(query.has_attachment, Some(true));
-        assert_eq!(query.text_terms, vec!["deploy"]);
+        assert!(matches!(
+            &query.canonical,
+            MessageSearchCanonicalState::Parsed(_)
+        ));
+        assert_eq!(mail_graph_search_query(&query), None);
     }
 
     #[test]
     fn message_search_query_parses_labels_and_state_operators() {
         let query = MessageSearchQuery::parse("label:important is:read");
 
-        assert_eq!(query.unread, Some(false));
-        assert_eq!(query.label.as_deref(), Some("important"));
-        assert!(query.text_terms.is_empty());
+        assert!(matches!(
+            &query.canonical,
+            MessageSearchCanonicalState::Parsed(_)
+        ));
+        assert_eq!(mail_graph_search_query(&query), None);
     }
 
     #[test]
-    fn message_search_query_keeps_important_separate_from_starred() {
+    fn message_search_query_keeps_local_state_out_of_graph_transport() {
         let important = MessageSearchQuery::parse("is:important");
-        assert_eq!(important.important, Some(true));
-        assert_eq!(important.flagged, None);
+        assert!(matches!(
+            &important.canonical,
+            MessageSearchCanonicalState::Parsed(_)
+        ));
+        assert_eq!(mail_graph_search_query(&important), None);
 
         let not_important = MessageSearchQuery::parse("is:not-important");
-        assert_eq!(not_important.important, Some(false));
+        assert!(matches!(
+            &not_important.canonical,
+            MessageSearchCanonicalState::Parsed(_)
+        ));
+        assert_eq!(mail_graph_search_query(&not_important), None);
         assert!(!not_important.is_empty());
     }
 
@@ -18492,38 +19313,51 @@ mod tests {
     #[test]
     fn message_search_query_supports_quotes_recipients_and_dates() {
         let query = MessageSearchQuery::parse(
-            "subject:\"Quarterly report\" cc:team@example.test filename:report.pdf after:2026-08-01 no:attachment",
+            "subject:\"Quarterly report\" cc:team@example.test filename:report.pdf",
         );
 
-        assert_eq!(query.subject.as_deref(), Some("quarterly report"));
-        assert_eq!(query.cc.as_deref(), Some("team@example.test"));
-        assert_eq!(query.filename.as_deref(), Some("report.pdf"));
-        assert_eq!(query.has_attachment, Some(false));
-        assert_eq!(query.date_after, NaiveDate::from_ymd_opt(2026, 8, 1));
-        assert!(query.text_terms.is_empty());
+        assert_eq!(
+            mail_graph_search_query(&query),
+            Some(
+                "\"subject:quarterly report\" AND \"cc:team@example.test\" AND \"attachment:report.pdf\""
+                    .to_string()
+            )
+        );
     }
 
     #[test]
     fn message_search_query_supports_folder_and_exact_date_aliases() {
         let query = MessageSearchQuery::parse("in:sent on:2026-08-11");
 
-        assert_eq!(query.folder.as_deref(), Some("sent"));
-        assert_eq!(query.date_after, NaiveDate::from_ymd_opt(2026, 8, 11));
-        assert_eq!(query.date_before, NaiveDate::from_ymd_opt(2026, 8, 12));
+        assert!(matches!(
+            &query.canonical,
+            MessageSearchCanonicalState::Parsed(_)
+        ));
+        assert_eq!(mail_graph_search_query(&query), None);
     }
 
     #[test]
     fn message_search_query_supports_older_newer_and_folder_states() {
         let newer = MessageSearchQuery::parse("newer:7d");
-        assert!(newer.date_after.is_some());
-        assert!(newer.date_before.is_none());
+        assert!(matches!(
+            &newer.canonical,
+            MessageSearchCanonicalState::Parsed(_)
+        ));
+        assert_eq!(mail_graph_search_query(&newer), None);
 
         let older = MessageSearchQuery::parse("older:2026-08-01");
-        assert!(older.date_after.is_none());
-        assert_eq!(older.date_before, NaiveDate::from_ymd_opt(2026, 8, 2));
+        assert!(matches!(
+            &older.canonical,
+            MessageSearchCanonicalState::Parsed(_)
+        ));
+        assert_eq!(mail_graph_search_query(&older), None);
 
         let sent = MessageSearchQuery::parse("is:sent");
-        assert_eq!(sent.folder.as_deref(), Some("sent"));
+        assert!(matches!(
+            &sent.canonical,
+            MessageSearchCanonicalState::Parsed(_)
+        ));
+        assert_eq!(mail_graph_search_query(&sent), None);
     }
 
     #[test]
@@ -18532,40 +19366,33 @@ mod tests {
             "-from:blocked@example.test -body:secret is:not-unread is:not-starred is:not-important is:junk -has:attachment after:2026-08-01",
         );
 
-        assert_eq!(query.unread, Some(false));
-        assert_eq!(query.flagged, Some(false));
-        assert_eq!(query.important, Some(false));
-        assert_eq!(query.junk, Some(true));
-        assert_eq!(query.has_attachment, Some(false));
-        assert!(
-            query
-                .negative_fields
-                .contains(&(MessageSearchField::From, "blocked@example.test".to_string()))
-        );
-        assert!(
-            query
-                .negative_fields
-                .contains(&(MessageSearchField::Body, "secret".to_string()))
-        );
+        assert!(matches!(
+            &query.canonical,
+            MessageSearchCanonicalState::Parsed(_)
+        ));
+        assert_eq!(mail_graph_search_query(&query), None);
         assert!(!query.is_empty());
 
         let date_query = MessageSearchQuery::parse("on:2026-08-11T14:30:00Z");
-        assert_eq!(date_query.date_after, NaiveDate::from_ymd_opt(2026, 8, 11));
-        assert_eq!(date_query.date_before, NaiveDate::from_ymd_opt(2026, 8, 12));
+        assert!(matches!(
+            &date_query.canonical,
+            MessageSearchCanonicalState::Parsed(_)
+        ));
+        assert_eq!(mail_graph_search_query(&date_query), None);
     }
 
     #[test]
     fn message_search_query_tracks_empty_parsed_and_invalid_canonical_states() {
         let empty = MessageSearchQuery::parse("  ");
         assert!(matches!(
-            empty.canonical,
+            &empty.canonical,
             MessageSearchCanonicalState::Empty
         ));
 
         let parsed =
             MessageSearchQuery::parse("and:(subject:roadmap or:(from:alice not:(is:junk)))");
         assert!(matches!(
-            parsed.canonical,
+            &parsed.canonical,
             MessageSearchCanonicalState::Parsed(_)
         ));
 
@@ -18600,7 +19427,7 @@ mod tests {
                 &FolderSelection::all(),
                 QuickSearchScope::CurrentFolder,
             ));
-            assert_eq!(graph_search_expression(&invalid), None);
+            assert_eq!(mail_graph_search_query(&invalid), None);
         }
     }
 
@@ -18612,9 +19439,13 @@ mod tests {
             .next()
             .expect("scope fixture should contain a message");
         assert!(matches!(
-            repeated.canonical,
+            &repeated.canonical,
             MessageSearchCanonicalState::Parsed(_)
         ));
+        assert_eq!(
+            mail_graph_search_query(&repeated),
+            Some("\"from:alice\" AND \"from:alice\"".to_string())
+        );
         assert!(message_matches_filter(
             &message,
             &repeated,
@@ -18684,25 +19515,303 @@ mod tests {
     }
 
     #[test]
-    fn graph_search_expression_keeps_only_positive_graph_predicates() {
-        let query = MessageSearchQuery::parse(
-            "from:alice@example.test subject:Roadmap has:attachment is:unread -spam label:team after:2026-01-01",
+    fn graph_search_plan_emits_only_safe_positive_conjunctions() {
+        let query =
+            MessageSearchQuery::parse("from:alice@example.test subject:Roadmap has:attachment");
+        assert_eq!(
+            mail_graph_search_query(&query),
+            Some(
+                "\"from:alice@example.test\" AND \"subject:roadmap\" AND \"hasAttachments:true\""
+                    .to_string()
+            )
         );
-        let expression = graph_search_expression(&query).expect("Graph terms should be present");
-
-        assert!(expression.contains("\"from:alice@example.test\""));
-        assert!(expression.contains("\"subject:roadmap\""));
-        assert!(expression.contains("\"hasAttachments:true\""));
-        assert!(!expression.contains("spam"));
-        assert!(!expression.contains("team"));
-        assert!(!expression.contains("2026-01-01"));
     }
 
     #[test]
-    fn graph_search_expression_is_empty_for_local_only_predicates() {
+    fn graph_search_plan_escapes_canonical_values_exactly_once() {
+        let query = MessageSearchQuery::parse(r#"subject:"A \"Quote\" \\path""#);
+
+        assert_eq!(
+            mail_graph_search_query(&query),
+            Some(r#""subject:a \"quote\" \\path""#.to_string())
+        );
+    }
+
+    #[test]
+    fn graph_search_plan_rejects_unsupported_canonical_shapes_as_a_whole() {
+        for input in [
+            "or:(subject:one subject:two)",
+            "not:(subject:one)",
+            "label:team",
+            "after:2026-08-01",
+            "is:unread",
+            "subject-has-words:roadmap",
+            "subject-matches:roadmap",
+            "no:attachment",
+            "to:alice@example.test",
+            "unknown:value",
+            "subject:\"unterminated",
+        ] {
+            let query = MessageSearchQuery::parse(input);
+            assert_eq!(
+                mail_graph_search_query(&query),
+                None,
+                "unsupported query must not become a partial Graph request: {input:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn graph_local_search_warning_is_only_for_active_unsupported_queries() {
+        let unsupported = MessageSearchQuery::parse("or:(subject:one subject:two)");
+        assert_eq!(
+            graph_local_search_warning(&unsupported, true),
+            Some(GRAPH_LOCAL_SEARCH_WARNING)
+        );
+        assert_eq!(graph_local_search_warning(&unsupported, false), None);
+
+        for query in [
+            MessageSearchQuery::parse("subject:one"),
+            MessageSearchQuery::parse("  "),
+            MessageSearchQuery::parse("subject:\"unterminated"),
+        ] {
+            assert_eq!(graph_local_search_warning(&query, true), None);
+        }
+    }
+
+    #[test]
+    fn graph_quick_mode_or_presets_keep_the_persistent_unsupported_warning() {
+        for field in [
+            QuickSearchField::SubjectOrAddresses,
+            QuickSearchField::Message,
+        ] {
+            let query = MessageSearchQuery::parse_with_field_scope("project", field);
+            assert_eq!(mail_graph_search_query(&query), None, "field {field:?}");
+            assert_eq!(
+                graph_local_search_warning(&query, true),
+                Some(GRAPH_LOCAL_SEARCH_WARNING),
+                "field {field:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn graph_subfolder_scope_stays_local_with_a_visible_incomplete_warning() {
+        let selection = scope_test_selection();
+        assert!(matches!(
+            graph_search_scope_plan(
+                QuickSearchScope::CurrentFolderAndSubfolders,
+                &selection,
+                None,
+            ),
+            GraphSearchScopePlan::Unsupported
+        ));
+        assert_eq!(
+            graph_scope_local_search_warning(QuickSearchScope::CurrentFolderAndSubfolders, true),
+            Some(GRAPH_SUBFOLDER_SEARCH_WARNING)
+        );
+        assert_eq!(
+            graph_scope_local_search_warning(QuickSearchScope::CurrentFolder, true),
+            None
+        );
+        assert_eq!(
+            graph_scope_local_search_warning(QuickSearchScope::AllAccounts, true),
+            Some(GRAPH_ALL_ACCOUNTS_SEARCH_WARNING)
+        );
+        assert_eq!(
+            graph_local_search_warning_for_scope(
+                &MessageSearchQuery::parse("subject:roadmap"),
+                true,
+                QuickSearchScope::CurrentFolderAndSubfolders,
+            ),
+            Some(GRAPH_SUBFOLDER_SEARCH_WARNING)
+        );
+    }
+
+    #[test]
+    fn search_scope_source_contract_keeps_upstream_order_and_local_fallback() {
+        let source = include_str!("mail_page.rs");
+        let model = source
+            .find("\"Aktueller Ordner\"")
+            .expect("search scope model must expose Current Folder");
+        let subfolders = source
+            .find("\"Aktueller Ordner und Unterordner\"")
+            .expect("search scope model must expose Current Folder and Subfolders");
+        let account = source
+            .find("\"Aktuelles Konto\"")
+            .expect("search scope model must expose Current Account");
+        let all = source
+            .find("\"Alle Konten\"")
+            .expect("search scope model must expose All Accounts");
+        assert!(model < subfolders && subfolders < account && account < all);
+
+        let filter = compact_rust(rust_function_body(source, "message_matches_filter"));
+        assert!(filter.contains("CurrentFolderAndSubfolders"));
+        assert!(filter.contains("folder_selection_matches_with_subfolders"));
+
+        let handler = compact_rust(rust_function_body(
+            source,
+            "handle_search_changed_with_scope_policy",
+        ));
+        assert!(handler.contains("GraphSearchScopePlan::Unsupported"));
+        assert!(handler.contains("start_mail_load(request,true)"));
+        assert!(handler.contains("graph_local_search_warning_for_scope"));
+
+        let scope_gate = handler
+            .find("current_graph_search_scope_plan()")
+            .expect("unsupported recursive scopes must be handled before debounce");
+        let debounce = handler
+            .find("timeout_add_local_once")
+            .expect("supported Graph searches should still use debounce");
+        assert!(scope_gate < debounce);
+    }
+
+    #[test]
+    fn graph_subfolder_scope_restores_the_base_page_after_remote_search() {
+        let source = include_str!("mail_page.rs");
+        let handler = compact_rust(rust_function_body(
+            source,
+            "handle_search_changed_with_scope_policy",
+        ));
+        let scope_gate = handler
+            .find("current_graph_search_scope_plan()")
+            .expect("recursive scope gate is required");
+        let scope_tail = &handler[scope_gate..];
+        let reset_remote = scope_tail
+            .find("remote_search_applied.replace(false)")
+            .expect("recursive local fallback must clear a previous remote result set");
+        let reload = scope_tail
+            .find("start_mail_load(request,true)")
+            .expect("recursive local fallback must reload the normal Graph page");
+        assert!(reset_remote < reload);
+        assert!(scope_tail.contains("restore_after_graph_search(false)"));
+    }
+
+    #[test]
+    fn graph_search_handler_reconciles_scope_before_processing_input() {
+        let source = include_str!("mail_page.rs");
+        let handle = compact_rust(rust_function_body(
+            source,
+            "handle_search_changed_with_scope_policy",
+        ));
+        assert!(handle.contains("self.reconcile_graph_search_scope();"));
+        assert!(!handle.contains("ifself.reconcile_graph_search_scope(){return;}"));
+        assert!(handle.contains("set_graph_local_search_warning"));
+
+        let begin = compact_rust(rust_function_body(source, "begin_pending_mail_apply"));
+        assert!(begin.contains("set_graph_local_search_warning(None)"));
+    }
+
+    #[test]
+    fn graph_search_transport_consumes_only_the_canonical_plan() {
+        let source = include_str!("mail_page.rs");
+        let lowering = compact_rust(rust_function_body(source, "mail_graph_search_query"));
+        assert!(lowering.contains("MessageSearchCanonicalState::Parsed"));
+        assert!(lowering.contains("parsed.graph_search_plan()"));
+        assert!(lowering.contains("MailGraphSearchPlan::SafePositiveConjunction"));
+        assert!(lowering.contains("MailGraphSearchPlan::Unsupported"));
+        assert!(!lowering.contains("escape_graph_search_value"));
+
+        let start = compact_rust(rust_function_body(source, "start_graph_search"));
+        let plan = start
+            .find("current_graph_search_scope_plan()")
+            .expect("Graph search must resolve its scope before starting work");
+        let dispatch = start
+            .find("start_graph_search_page")
+            .expect("Graph search must dispatch through its cursor-aware page path");
+        assert!(plan < dispatch);
+        let page = compact_rust(rust_function_body(source, "start_graph_search_page"));
+        assert!(page.contains("std::thread::spawn"));
+    }
+
+    #[test]
+    fn graph_search_paging_keeps_snapshot_cursor_and_append_contracts() {
+        let source = include_str!("mail_page.rs");
+        for field in [
+            "raw_input",
+            "graph_query",
+            "effective_scope",
+            "source_uid",
+            "folder_name",
+            "next_cursor",
+        ] {
+            assert!(
+                source.contains(field),
+                "GraphSearchState must retain {field}"
+            );
+        }
+        let load_more = compact_rust(rust_function_body(source, "load_more_mail"));
+        let remote_branch = load_more
+            .find("remote_search_applied.get()")
+            .expect("remote search must own its load-more path");
+        let search_page = load_more
+            .find("start_graph_search_page")
+            .expect("remote load-more must request a Graph search page");
+        let numeric_offset = load_more
+            .find("request.offset=request.offset")
+            .expect("normal mail paging must retain its numeric offset path");
+        assert!(remote_branch < search_page && search_page < numeric_offset);
+
+        let page = compact_rust(rust_function_body(source, "start_graph_search_page"));
+        assert!(page.contains("search_messages_graph_page"));
+        assert!(page.contains("cursor.as_deref()"));
+        assert!(page.contains("search_generation"));
+        assert!(page.contains("load_generation"));
+        assert!(page.contains("result_cancellation"));
+        assert!(page.contains("graph_search_state"));
+        assert!(page.contains("apply_mail_load"));
+        assert!(page.contains("replace"));
+
+        let apply = compact_rust(rust_function_body(source, "apply_mail_load"));
+        assert!(apply.contains("graph_search_state"));
+        assert!(apply.contains("PendingMailApply::from_camel"));
+
+        let from_camel = compact_rust(rust_function_body(source, "from_camel"));
+        assert!(from_camel.contains("graph_search_next_cursor.is_some()"));
+
+        let finalize = compact_rust(rust_function_body(source, "finalize_pending_mail_apply"));
+        assert!(finalize.contains("current_state.next_cursor"));
+        assert!(finalize.contains("completion.graph_search_next_cursor"));
+
+        let error = compact_rust(rust_function_body(source, "handle_graph_search_page_error"));
+        assert!(error.contains("ifreplace"));
+        assert!(error.contains("restore_after_graph_search(true)"));
+        assert!(error.contains("state.next_cursor"));
+    }
+
+    #[test]
+    fn graph_search_handler_uses_the_selected_quick_search_field() {
+        let source = include_str!("mail_page.rs");
+        let handle = compact_rust(rust_function_body(
+            source,
+            "handle_search_changed_with_scope_policy",
+        ));
+        assert!(handle.contains("MessageSearchQuery::parse_with_field_scope"));
+        assert!(handle.contains("self.imp().search_field_scope.get()"));
+        assert!(handle.contains("mail_graph_search_query(&query)"));
+        assert!(!handle.contains("MessageSearchQuery::parse(&input)"));
+    }
+
+    #[test]
+    fn graph_scope_change_restarts_only_a_nonempty_active_graph_search() {
+        let source = include_str!("mail_page.rs");
+        let restart = compact_rust(rust_function_body(
+            source,
+            "restart_graph_search_for_scope_change",
+        ));
+        assert!(restart.contains("graph_backend_active.get()"));
+        assert!(restart.contains("!input.trim().is_empty()"));
+        assert!(restart.contains("handle_search_changed(input.as_str())"));
+
+        let build = compact_rust(rust_function_body(source, "build_message_list"));
+        assert!(build.contains("restart_graph_search_for_scope_change()"));
+    }
+
+    #[test]
+    fn graph_search_plan_is_empty_for_local_only_predicates() {
         let query = MessageSearchQuery::parse("is:unread label:important after:today");
 
-        assert_eq!(graph_search_expression(&query), None);
+        assert_eq!(mail_graph_search_query(&query), None);
         assert!(!search_query_needs_body(&query));
 
         assert!(search_query_needs_body(&MessageSearchQuery::parse(
@@ -18824,39 +19933,58 @@ mod tests {
 
     #[test]
     fn message_search_query_supports_quick_search_field_and_scope() {
-        let subject_query =
-            MessageSearchQuery::parse_with_field_scope("Meeting", QuickSearchField::Subject);
-        assert_eq!(subject_query.subject.as_deref(), Some("meeting"));
-        assert!(subject_query.text_terms.is_empty());
+        assert_eq!(
+            QuickSearchField::default(),
+            QuickSearchField::SubjectOrAddresses
+        );
 
-        let sender_query =
-            MessageSearchQuery::parse_with_field_scope("Alice", QuickSearchField::Sender);
-        assert_eq!(sender_query.from.as_deref(), Some("alice"));
-        assert!(sender_query.text_terms.is_empty());
-
-        let recipient_query =
-            MessageSearchQuery::parse_with_field_scope("Bob", QuickSearchField::Recipient);
-        assert_eq!(recipient_query.to.as_deref(), Some("bob"));
-        assert!(recipient_query.text_terms.is_empty());
-
-        let body_query =
-            MessageSearchQuery::parse_with_field_scope("Secret", QuickSearchField::Body);
-        assert_eq!(body_query.body.as_deref(), Some("secret"));
-        assert!(body_query.text_terms.is_empty());
+        for (field, input, expected) in [
+            (QuickSearchField::SubjectOrAddresses, "Meeting", None),
+            (
+                QuickSearchField::Subject,
+                "Meeting",
+                Some("\"subject:meeting\""),
+            ),
+            (QuickSearchField::Sender, "Alice", Some("\"from:alice\"")),
+            (
+                QuickSearchField::Recipient,
+                "Bob",
+                Some("\"recipients:bob\""),
+            ),
+            (QuickSearchField::Message, "Meeting", None),
+            (QuickSearchField::Body, "Secret", Some("\"body:secret\"")),
+            (QuickSearchField::FreeForm, "Meeting", Some("\"meeting\"")),
+        ] {
+            let query = MessageSearchQuery::parse_with_field_scope(input, field);
+            assert_eq!(
+                mail_graph_search_query(&query),
+                expected.map(str::to_string),
+                "field {field:?}"
+            );
+        }
 
         for (field, scope) in [
-            (QuickSearchField::AllFields, MailSearchFieldScope::Any),
+            (
+                QuickSearchField::SubjectOrAddresses,
+                MailSearchFieldScope::SubjectOrAddresses,
+            ),
             (QuickSearchField::Subject, MailSearchFieldScope::Subject),
             (QuickSearchField::Sender, MailSearchFieldScope::Sender),
-            (QuickSearchField::Recipient, MailSearchFieldScope::Recipients),
+            (
+                QuickSearchField::Recipient,
+                MailSearchFieldScope::Recipients,
+            ),
+            (QuickSearchField::Message, MailSearchFieldScope::Message),
             (QuickSearchField::Body, MailSearchFieldScope::Body),
+            (QuickSearchField::FreeForm, MailSearchFieldScope::Any),
+            (QuickSearchField::AllFields, MailSearchFieldScope::Any),
         ] {
             assert_eq!(field.canonical_scope(), scope);
         }
 
         assert_eq!(
             QuickSearchField::from_selector_index(0),
-            QuickSearchField::AllFields
+            QuickSearchField::SubjectOrAddresses
         );
         assert_eq!(
             QuickSearchField::from_selector_index(1),
@@ -18872,8 +20000,43 @@ mod tests {
         );
         assert_eq!(
             QuickSearchField::from_selector_index(4),
+            QuickSearchField::Message
+        );
+        assert_eq!(
+            QuickSearchField::from_selector_index(5),
             QuickSearchField::Body
         );
+        assert_eq!(
+            QuickSearchField::from_selector_index(6),
+            QuickSearchField::FreeForm
+        );
+        assert_eq!(QuickSearchField::FreeForm.selector_index(), 6);
+        assert_eq!(QuickSearchField::AllFields.selector_index(), 6);
+
+        let subject_or = MessageSearchQuery::parse_with_field_scope(
+            "project",
+            QuickSearchField::SubjectOrAddresses,
+        );
+        let message =
+            MessageSearchQuery::parse_with_field_scope("project", QuickSearchField::Message);
+        let fixture = scope_test_messages()
+            .into_iter()
+            .next()
+            .expect("scope fixture should contain a message");
+        assert!(message_matches_filter(
+            &fixture,
+            &subject_or,
+            MessageFilter::All,
+            &FolderSelection::all(),
+            QuickSearchScope::CurrentFolder,
+        ));
+        assert!(message_matches_filter(
+            &fixture,
+            &message,
+            MessageFilter::All,
+            &FolderSelection::all(),
+            QuickSearchScope::CurrentFolder,
+        ));
 
         assert_eq!(
             QuickSearchScope::from_selector_index(0),
@@ -18881,12 +20044,190 @@ mod tests {
         );
         assert_eq!(
             QuickSearchScope::from_selector_index(1),
-            QuickSearchScope::CurrentAccount
+            QuickSearchScope::CurrentFolderAndSubfolders
         );
         assert_eq!(
             QuickSearchScope::from_selector_index(2),
+            QuickSearchScope::CurrentAccount
+        );
+        assert_eq!(
+            QuickSearchScope::from_selector_index(3),
             QuickSearchScope::AllAccounts
         );
+    }
+
+    #[test]
+    fn saved_search_modes_round_trip_through_quick_search_state() {
+        for (quick, saved) in [
+            (
+                QuickSearchField::SubjectOrAddresses,
+                SavedSearchFieldMode::SubjectOrAddresses,
+            ),
+            (QuickSearchField::Subject, SavedSearchFieldMode::Subject),
+            (QuickSearchField::Sender, SavedSearchFieldMode::Sender),
+            (
+                QuickSearchField::Recipient,
+                SavedSearchFieldMode::Recipients,
+            ),
+            (QuickSearchField::Message, SavedSearchFieldMode::Message),
+            (QuickSearchField::Body, SavedSearchFieldMode::Body),
+            (QuickSearchField::FreeForm, SavedSearchFieldMode::FreeForm),
+        ] {
+            assert_eq!(SavedSearchFieldMode::from(quick), saved);
+            assert_eq!(QuickSearchField::from(saved), quick);
+        }
+        assert_eq!(
+            QuickSearchField::AllFields.to_saved(),
+            SavedSearchFieldMode::FreeForm
+        );
+
+        for (quick, saved) in [
+            (
+                QuickSearchScope::CurrentFolder,
+                SavedSearchScope::CurrentFolder,
+            ),
+            (
+                QuickSearchScope::CurrentFolderAndSubfolders,
+                SavedSearchScope::CurrentFolderAndSubfolders,
+            ),
+            (
+                QuickSearchScope::CurrentAccount,
+                SavedSearchScope::CurrentAccount,
+            ),
+            (QuickSearchScope::AllAccounts, SavedSearchScope::AllAccounts),
+        ] {
+            assert_eq!(SavedSearchScope::from(quick), saved);
+            assert_eq!(QuickSearchScope::from(saved), quick);
+        }
+    }
+
+    #[test]
+    fn saved_search_compile_and_target_resolution_are_fail_closed() {
+        let local_ids = HashSet::from(["custom:Projects".to_string()]);
+        let remote_id = saved_search_remote_folder_key("account-a", "Inbox");
+        let remote_ids = HashSet::from([remote_id.clone()]);
+        let remote_folders = vec![CamelFolderSummary {
+            source_uid: "account-a".to_string(),
+            source_display_name: "Account A".to_string(),
+            folder_name: "Inbox".to_string(),
+            folder_id: remote_id.clone(),
+            display_name: "Inbox".to_string(),
+            unread_count: 0,
+            total_count: 0,
+            is_selectable: true,
+        }];
+
+        let local = SavedSearch::with_metadata(
+            "local",
+            "Local",
+            "subject:roadmap",
+            SavedSearchFieldMode::Subject,
+            SavedSearchScope::CurrentFolder,
+            Some("custom:Projects".to_string()),
+            None,
+            None,
+        )
+        .expect("local saved search should be constructible");
+        assert!(compile_saved_search(&local).is_ok());
+        assert_eq!(
+            resolve_saved_search_target(&local, &local_ids, &remote_ids, &remote_folders)
+                .expect("known local target should resolve")
+                .folder_id,
+            "custom:Projects"
+        );
+
+        let mut all_as_local = local.clone();
+        all_as_local.folder_id = Some("all".to_string());
+        assert!(
+            resolve_saved_search_target(&all_as_local, &local_ids, &remote_ids, &remote_folders)
+                .is_err()
+        );
+
+        let remote = SavedSearch::with_metadata(
+            "remote",
+            "Remote",
+            "after:7d",
+            SavedSearchFieldMode::FreeForm,
+            SavedSearchScope::CurrentFolder,
+            Some(remote_id),
+            Some("account-a".to_string()),
+            Some("Inbox".to_string()),
+        )
+        .expect("remote saved search should be constructible");
+        // The AST/text comparison is deliberately made via canonical wire
+        // values, so relative dates remain valid across a local-midnight
+        // reload.
+        assert!(compile_saved_search(&remote).is_ok());
+        assert!(
+            resolve_saved_search_target(&remote, &local_ids, &remote_ids, &remote_folders).is_ok()
+        );
+
+        let mut stale = remote.clone();
+        stale.source_uid = Some("missing-account".to_string());
+        assert!(
+            resolve_saved_search_target(&stale, &local_ids, &remote_ids, &remote_folders).is_err()
+        );
+    }
+
+    #[test]
+    fn saved_search_rows_and_apply_do_not_use_query_string_row_data() {
+        let source = include_str!("mail_page.rs");
+        let production = &source[..source
+            .rfind("#[cfg(test)]\nmod tests")
+            .expect("mail page test module should be present")];
+        assert!(production.contains("row.set_data(\"saved-search\", saved_search)"));
+        assert!(production.contains("row.set_data(\"saved-search\", search.clone())"));
+        assert!(!production.contains("search-query"));
+
+        let apply = compact_rust(rust_function_body(source, "apply_saved_search"));
+        assert!(apply.contains("saved_search_applying.replace(true)"));
+        assert!(apply.contains("search_scope_state"));
+        assert!(apply.contains("message_filter_state"));
+        assert!(apply.contains("target_error"));
+        assert!(apply.contains("invalidate_pending_graph_search"));
+        assert!(apply.contains("suppress_pending_search_generation"));
+
+        let invalidate = compact_rust(rust_function_body(
+            source,
+            "invalidate_pending_graph_search",
+        ));
+        assert!(invalidate.contains("mail_load_cancellation"));
+        assert!(invalidate.contains("mail_incremental_cancellation"));
+        assert!(invalidate.contains("load_generation"));
+        assert!(invalidate.contains("graph_search_state.replace(None)"));
+    }
+
+    #[test]
+    fn advanced_search_dialog_keeps_scope_target_and_has_one_apply_route() {
+        let source = include_str!("mail_page.rs");
+        let present = compact_rust(rust_function_body(source, "present_advanced_search_dialog"));
+        assert!(present.contains("AdvancedSearchDialog::with_query"));
+        assert!(present.contains("initial_query"));
+        assert!(present.contains("apply_advanced_search_query"));
+
+        let apply = compact_rust(rust_function_body(source, "apply_advanced_search_query"));
+        assert!(apply.contains("saved_search_applying.replace(true)"));
+        assert!(apply.contains("QuickSearchField::FreeForm"));
+        assert!(apply.contains("search_field_selector"));
+        assert!(apply.contains("search_entry"));
+        assert!(apply.contains("search_query"));
+        assert_eq!(apply.matches("handle_search_changed").count(), 1);
+        assert!(apply.contains("handle_search_changed_with_scope_policy(&query,false)"));
+        assert!(!apply.contains("SavedSearch::with_metadata"));
+        assert!(!apply.contains("resolve_saved_search"));
+        assert!(!apply.contains("folder_selection"));
+        assert!(!apply.contains("search_scope.set"));
+        assert!(!apply.contains("set_saved_search_target_valid"));
+
+        let begin = compact_rust(rust_function_body(source, "begin_pending_mail_apply"));
+        assert!(!begin.contains("reconcile_graph_search_scope"));
+        let restore = compact_rust(rust_function_body(source, "restore_after_graph_search"));
+        assert!(restore.contains("suppress_pending_search_generation"));
+        let route = compact_rust(rust_function_body(
+            source,
+            "handle_search_changed_with_scope_policy",
+        ));
+        assert!(route.matches("suppress_pending_search_generation").count() >= 3);
     }
 
     #[test]
@@ -19483,7 +20824,10 @@ mod tests {
             folder_path_with_replaced_leaf("Projects/2026", "Archive"),
             "Projects/Archive"
         );
-        assert_eq!(folder_path_with_replaced_leaf("Inbox", "Primary"), "Primary");
+        assert_eq!(
+            folder_path_with_replaced_leaf("Inbox", "Primary"),
+            "Primary"
+        );
     }
 
     #[test]

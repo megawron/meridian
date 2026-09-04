@@ -178,7 +178,7 @@ und erweitert dessen Schreibbereich nur nach dokumentierter Kollisionsprüfung.
 | 62 | `GW-CAL-ACTIONS-PURGE-LOCAL` | `P1-CAL-001` | `src/services/calendar_store_service.rs`, `src/dialogs/calendar_purge_dialog.rs`, `src/views/calendar_page.rs`, `src/{application,window}.rs` | app-eigener lokaler Kalender | BLOCKED_LINUX | `Ctrl+E` ist kalendergebunden; 60-Tage-Default/0..1000-Cutoff, Worker/Cancel/Doppelstart, einmaliger atomarer Dateirewrite, autoritativer Reload und sichtbare Resultate sind portabel getestet. Serien/RECURRENCE-ID/Duplicate-UID/DURATION/ungültige Grenzen bleiben fail-closed; aktive ECal-Clients und Provider-Purge bleiben Linux. |
 | 63 | `MAIL-LIST-VIEW-CONTRACT` | `P0-MAIL-002A` | `data/org.gnome.Evolution4.gschema.xml`, `src/services/{settings,backup}_service.rs`, `src/dialogs/preferences_dialog.rs`, `src/views/mail_page.rs` | bestehende Mail-Spalten und Live-Settings | BLOCKED_LINUX | Evolutions Messages-/Wide-Profile, vollständige eindeutige benutzerdefinierte Reihenfolge, gemeinsame stabile Header-/Zeilen-IDs, Live-Neuaufbau ohne Provider-Reload sowie Sender-/Datumsbreite in Migration und Backup sind portabel getestet. Drag-and-drop, HiDPI-/Theme-/A11y- und Großpostfach-Abnahme bleiben Linux. |
 | 64 | `MENU-ACTION-MAP` | `P0-MAIL-002A` | `src/action_contract.rs`, `src/{application,window}.rs`, `src/dialogs/shortcuts_dialog.rs` | vorhandene Shell-/Reader-/Folder-Actions und Accelerator-Tabelle | BLOCKED_LINUX | Ein eindeutiger Vertrag treibt File/Edit/View/Message/Folder/Tools/Help, Transport und Shortcut-Hilfe samt Zustandsvoraussetzungen. Menü-/Shortcut-IDs, Registrierungen, Platzierungen, Accelerator-Mirror und Nullauswahl sind portabel getestet; Popup-Vollabgleich, GTK/IME/Fokus, Theme/A11y und reale Providerzustände bleiben Linux. |
-| 65 | `MAIL-SEARCH-CONTRACT` | `P1-SEARCH-001` | `src/services/{search_engine,search_folder}_service.rs`, `src/views/mail_page.rs` | `P1-SEARCH-001A`, `P0-MAIL-WORKER-STORE` | IN PROGRESS | Kanonische Syntaxvalidierung für neue Saved Searches, fail-closed Unknown-State-Negation, exakte CurrentFolder/CurrentAccount/AllAccounts-Scopes sowie geschützte Saved-Search-Mutationen (corrupt/unsupported/duplicate, eindeutige temporäre Dateien, atomare Writes und process-lokale RMW-Serialisierung) sind portabel belegt. Offen bleiben MailPage-Doppelparser, acht Upstream-Modi, vierter Subfolder-Scope, AST/Graph-Fail-Closed, Saved-v2 Scope/AST sowie Linux-/Provider-Abnahme; gezielte Parser-, Negations-, Scope- und Saved-Search-Mutationstests sind vorhanden. |
+| 65 | `MAIL-SEARCH-CONTRACT` | `P1-SEARCH-001` | `src/services/{search_engine,search_folder}_service.rs`, `src/dialogs/advanced_search_dialog.rs`, `src/views/mail_page.rs` | `P1-SEARCH-001A`, `P0-MAIL-WORKER-STORE` | BLOCKED_LINUX | Kanonische Syntaxvalidierung für neue Saved Searches, fail-closed Unknown-State-Negation, exakte `CurrentFolder`/`CurrentFolderAndSubfolders`/`CurrentAccount`/`AllAccounts`-Scopes sowie geschützte Saved-Search-Mutationen (corrupt/unsupported/duplicate, eindeutige temporäre Dateien, atomare Writes und process-lokale RMW-Serialisierung) sind portabel belegt. Saved-Search-v2 persistiert Feld, Scope, exakte Konto-/Ordneridentität und versionierten AST, migriert v1 deterministisch und verwendet für Auswahl und Zähler denselben fail-closed Compiler; relative Daten bleiben dynamisch. Die sieben sichtbaren Upstream-Schnellmodi `SubjectOrAddresses`, `Subject`, `Sender`, `Recipients` (To/Cc, ohne Bcc), `Message`, `Body` und `FreeForm` verwenden den kanonischen AST/Matcher; MailPage verwendet ausschließlich den kanonischen AST. Der mail-sensitive Advanced-Search-Dialog erzeugt portable Text-/Status-/Datumsregeln mit UND/ODER sowie Regel-/Gruppen-Negation, validiert sie vor dem Anwenden und erhält Scope und exaktes Ordnerziel. Graph senkt nur eine strict-safe positive Konjunktion ab; OR/NOT und local-only-Prädikate werden als Ganzes nicht remote abgesenkt. CurrentFolder/CurrentAccount starten bei einem Wechsel eine neue Remote-Suche; `CurrentFolderAndSubfolders` bleibt für Graph fail-closed lokal auf der geladenen Seite mit persistenter Unvollständigkeitswarnung. Die normale Schnellsuche gleicht AllAccounts sichtbar auf CurrentAccount ab; Advanced und Saved Search bleiben im exakten Scope lokal. Sichere Continuation-Cursor treiben „Mehr laden“ snapshotgebunden an und werden erst nach erfolgreichem Modellaufbau übernommen. Offen bleiben zusätzliche native Upstream-Prädikate, echte Camel-S-Expression-FreeForm, rekursive Graph-Subfolder-Suche, echtes Multi-Account-Graph, nicht sicher fortsetzbare Provider-Truncation sowie Linux-/EDS-/Graph-/Provider-Abnahme; gezielte Parser-, Advanced-Builder-, Negations-, Scope-, Codec-, Migrations-, Paging- und Saved-Search-Mutationstests sind vorhanden. |
 
 ### Parallelisierungsregeln
 
@@ -494,16 +494,39 @@ und erweitert dessen Schreibbereich nur nach dokumentierter Kollisionsprüfung.
 
 ### MAIL-SEARCH-CONTRACT — kanonische Suchsyntax und Saved Searches
 
-- Status: `IN PROGRESS` / `partial`.
+- Status: `BLOCKED_LINUX`
 - Abgeschlossen sind die strikte kanonische Syntaxvalidierung neuer Saved
   Searches, die fail-closed Unknown-State-Negation sowie die geschützten
   Saved-Search-Mutationen gegen korrupte/unsupported/duplizierte Dateien mit
   eindeutigen temporären Dateien, atomaren Writes und process-lokaler
-  RMW-Serialisierung sowie exakte CurrentFolder/CurrentAccount/AllAccounts-
-  Scopes auch bei leerer Suchabfrage.
-- Offen bleiben die Ablösung des MailPage-Doppelparsers, acht Upstream-Modi,
-  der vierte Subfolder-Scope, AST/Graph-Fail-Closed, Saved-v2 Scope/AST und
-  die Linux-/Provider-Abnahme. Gezielte Parser-, Negations- und
+  RMW-Serialisierung sowie exakte `CurrentFolder`/`CurrentFolderAndSubfolders`/
+  `CurrentAccount`/`AllAccounts`-Scopes auch bei leerer Suchabfrage. Die sieben
+  sichtbaren Upstream-Schnellmodi `SubjectOrAddresses`, `Subject`, `Sender`,
+  `Recipients` (To/Cc, ohne Bcc), `Message`, `Body` und `FreeForm` verwenden
+  denselben kanonischen AST und Matcher; MailPage verwendet ihn ausschließlich.
+  Der Graph-Transport senkt nur strict-safe positive Konjunktionen ab; OR/NOT
+  und local-only-Prädikate werden als Ganzes nicht remote abgesenkt.
+  CurrentFolder/CurrentAccount lösen bei einer laufenden Graph-Suche jeweils
+  eine neue Remote-Suche aus; `CurrentFolderAndSubfolders` bleibt für Graph
+  fail-closed lokal auf der geladenen Seite und zeigt dauerhaft die
+  Unvollständigkeitswarnung. Die normale Schnellsuche gleicht AllAccounts
+  sichtbar auf CurrentAccount ab; Advanced und Saved Search behalten den
+  exakten Scope und bleiben dort lokal. Das Graph-Suchergebnis trägt
+  `is_complete`; sichere, origin-geprüfte Continuation-Cursor treiben
+  „Mehr laden“ snapshotgebunden an und werden erst nach erfolgreichem
+  Modellaufbau übernommen. Bei Provider-Truncation ohne sicheren Cursor zeigt
+  die UI weiter eine sichtbare Unvollständigkeitswarnung.
+- Der mail-sensitive portable Advanced-Search-Dialog erzeugt Text-/Status-/
+  Datumsregeln mit UND/ODER sowie Regel-/Gruppen-Negation, validiert sie gegen
+  denselben Parser und erhält Scope und exaktes Ordnerziel. Offen bleiben
+  zusätzliche native Upstream-Prädikate, echte Camel-S-Expression-FreeForm,
+  rekursive Graph-Subfolder-Suche, echtes Multi-Account-Graph, nicht sicher
+  fortsetzbare Provider-Truncation und die Linux-/EDS-/Graph-/Provider-Abnahme.
+  Saved-Search-v2 speichert Feld, Scope, exakte Konto-/Ordneridentität und den
+  versionierten kanonischen AST, liest v1 deterministisch weiter und lässt
+  fehlende Ziele mit sichtbarer Warnung und 0 Treffern fail-closed. Auswahl und
+  Zähler verwenden denselben Compiler; relative Datumswerte bleiben dynamisch.
+  Gezielte Parser-, Negations-, Codec-, Migrations- und
   Saved-Search-Mutationstests begleiten den Slice; eine Gesamt-Testzahl wird
   hier nicht behauptet.
 

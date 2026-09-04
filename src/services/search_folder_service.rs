@@ -3,7 +3,10 @@
 // search_folder_service — Service for managing and evaluating Virtual Search Folders (vFolders).
 
 use crate::models::search_folder::SearchFolderObject;
-use crate::services::search_engine::validate_search_syntax;
+use crate::services::search_engine::{
+    MailSearchFieldScope, decode_mail_query_fixture, encode_mail_query_fixture, parse_mail_query,
+    validate_search_syntax,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, OpenOptions};
@@ -17,45 +20,349 @@ pub struct SearchFolderService {
     path: PathBuf,
 }
 
-const CURRENT_VERSION: u32 = 1;
+const LEGACY_VERSION: u32 = 1;
+const CURRENT_VERSION: u32 = 2;
+const MAX_ID_CHARS: usize = 128;
+const MAX_NAME_CHARS: usize = 160;
+const MAX_QUERY_CHARS: usize = 4096;
+const MAX_IDENTITY_CHARS: usize = 1024;
 
 static SEARCH_FILE_LOCKS: OnceLock<Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>> = OnceLock::new();
 
+/// The upstream quick-search field/mode attached to a saved search.
+///
+/// These names are part of the on-disk contract.  Keep the explicit serde
+/// spelling stable when Rust enum names change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SavedSearchFieldMode {
+    SubjectOrAddresses,
+    Subject,
+    Sender,
+    Recipients,
+    Message,
+    Body,
+    FreeForm,
+}
+
+impl Default for SavedSearchFieldMode {
+    fn default() -> Self {
+        Self::FreeForm
+    }
+}
+
+impl SavedSearchFieldMode {
+    fn search_scope(self) -> MailSearchFieldScope {
+        match self {
+            Self::SubjectOrAddresses => MailSearchFieldScope::SubjectOrAddresses,
+            Self::Subject => MailSearchFieldScope::Subject,
+            Self::Sender => MailSearchFieldScope::Sender,
+            Self::Recipients => MailSearchFieldScope::Recipients,
+            Self::Message => MailSearchFieldScope::Message,
+            Self::Body => MailSearchFieldScope::Body,
+            Self::FreeForm => MailSearchFieldScope::Any,
+        }
+    }
+}
+
+/// The source scope attached to a saved search.
+///
+/// The source/folder identities on [`SavedSearch`] are exact values, not
+/// display labels.  They are deliberately kept separate from this enum so a
+/// source can be unavailable without silently changing the scope.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SavedSearchScope {
+    CurrentFolder,
+    CurrentFolderAndSubfolders,
+    CurrentAccount,
+    AllAccounts,
+}
+
+impl Default for SavedSearchScope {
+    fn default() -> Self {
+        Self::AllAccounts
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SavedSearch {
     pub id: String,
     pub name: String,
     pub query: String,
+    pub field: SavedSearchFieldMode,
+    pub scope: SavedSearchScope,
+    /// Exact local folder ID or remote dynamic folder key.  Account-wide
+    /// searches intentionally carry no folder identity.
+    #[serde(default)]
+    pub folder_id: Option<String>,
+    #[serde(default)]
+    pub source_uid: Option<String>,
+    #[serde(default)]
+    pub folder_name: Option<String>,
+    /// Versioned, canonical serialization of the parsed mail-search AST.
+    pub ast: String,
 }
 
 impl SavedSearch {
+    /// Build a new free-form/all-account saved search with its AST fixture.
+    /// Callers editing an existing record should retain the loaded metadata or
+    /// use [`Self::with_metadata`]; `save_saved` never invents a scope for a
+    /// record that already carries one.
+    #[allow(dead_code)]
+    pub fn new(
+        id: impl Into<String>,
+        name: impl Into<String>,
+        query: impl Into<String>,
+    ) -> io::Result<Self> {
+        Self::with_metadata(
+            id,
+            name,
+            query,
+            SavedSearchFieldMode::FreeForm,
+            SavedSearchScope::AllAccounts,
+            None,
+            None,
+            None,
+        )
+    }
+
+    /// Build a saved search and derive the canonical AST fixture from its
+    /// query/mode.  Persisted records are still validated again on write.
+    #[allow(dead_code)]
+    pub fn with_metadata(
+        id: impl Into<String>,
+        name: impl Into<String>,
+        query: impl Into<String>,
+        field: SavedSearchFieldMode,
+        scope: SavedSearchScope,
+        folder_id: Option<String>,
+        source_uid: Option<String>,
+        folder_name: Option<String>,
+    ) -> io::Result<Self> {
+        let mut search = Self {
+            id: id.into(),
+            name: name.into(),
+            query: query.into(),
+            field,
+            scope,
+            folder_id,
+            source_uid,
+            folder_name,
+            ast: String::new(),
+        };
+        let parsed = search.validate_query_and_metadata()?;
+        search.ast = encode_fixture(&parsed)?;
+        search.validate_fixture(&parsed)?;
+        Ok(search)
+    }
+
     fn validate(&self) -> io::Result<()> {
-        if self.id.trim().is_empty() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "Gespeicherte Suchen benötigen eine ID",
-            ));
-        }
-        if self.name.trim().is_empty() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "Gespeicherte Suchen benötigen einen Namen",
-            ));
-        }
-        if self.query.trim().is_empty() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "Gespeicherte Suchen benötigen eine Suchabfrage",
-            ));
-        }
+        let parsed = self.validate_query_and_metadata()?;
+        self.validate_fixture(&parsed)
+    }
+
+    fn validate_query_and_metadata(
+        &self,
+    ) -> io::Result<crate::services::search_engine::ParsedMailSearchQuery> {
+        validate_bounded_text(&self.id, "ID", MAX_ID_CHARS, true)?;
+        validate_bounded_text(&self.name, "Name", MAX_NAME_CHARS, true)?;
+        validate_bounded_text(&self.query, "Suchabfrage", MAX_QUERY_CHARS, true)?;
+
         validate_search_syntax(&self.query).map_err(|error| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
                 format!("Ungültige Suchabfrage: {error}"),
             )
         })?;
+        let parsed = parse_mail_query(&self.query, self.field.search_scope())
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error.to_string()))?
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "Gespeicherte Suchen benötigen eine Suchabfrage",
+                )
+            })?;
+        validate_folder_id(self.folder_id.as_deref())?;
+        validate_identity(self.source_uid.as_deref(), "Quell-ID")?;
+        validate_identity(self.folder_name.as_deref(), "Ordnername")?;
+
+        match self.scope {
+            SavedSearchScope::CurrentFolder | SavedSearchScope::CurrentFolderAndSubfolders => {
+                let local_identity = self.folder_id.is_some()
+                    && self.source_uid.is_none()
+                    && self.folder_name.is_none();
+                let remote_identity = self.folder_id.is_some()
+                    && self.source_uid.is_some()
+                    && self.folder_name.is_some();
+                if !local_identity && !remote_identity {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "Ordnersuchen benötigen entweder eine lokale Ordner-ID oder die vollständige Quell-/Ordneridentität",
+                    ));
+                }
+                if local_identity
+                    && self
+                        .folder_id
+                        .as_deref()
+                        .is_some_and(|id| id == "all" || id.contains('\0'))
+                {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "Lokale Ordnersuchen benötigen eine konkrete Ordner-ID ohne dynamischen Quelltrenner",
+                    ));
+                }
+                if remote_identity {
+                    let expected = format!(
+                        "{}\u{0}{}",
+                        self.source_uid.as_deref().unwrap_or_default(),
+                        self.folder_name.as_deref().unwrap_or_default()
+                    );
+                    if self.folder_id.as_deref() != Some(expected.as_str()) {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            "Remote-Ordner-ID stimmt nicht mit Quell-ID und Ordnername überein",
+                        ));
+                    }
+                }
+            }
+            SavedSearchScope::CurrentAccount => {
+                if self.source_uid.is_none()
+                    || self.folder_id.is_some()
+                    || self.folder_name.is_some()
+                {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "Kontosuchen benötigen genau eine Quell-ID und keine Ordneridentität",
+                    ));
+                }
+            }
+            SavedSearchScope::AllAccounts => {
+                if self.folder_id.is_some()
+                    || self.source_uid.is_some()
+                    || self.folder_name.is_some()
+                {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "Kontenübergreifende Suchen dürfen keine Quellen- oder Ordneridentität enthalten",
+                    ));
+                }
+            }
+        }
+
+        Ok(parsed)
+    }
+
+    fn validate_fixture(
+        &self,
+        parsed: &crate::services::search_engine::ParsedMailSearchQuery,
+    ) -> io::Result<()> {
+        if self.ast.trim().is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Gespeicherte Suchen benötigen ein AST-Suchfixture",
+            ));
+        }
+        let decoded = decode_mail_query_fixture(&self.ast).map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Ungültiges AST-Suchfixture: {error}"),
+            )
+        })?;
+        // Compare canonical wire forms rather than resolved AST dates. Relative
+        // expressions are intentionally re-evaluated against the current local
+        // day; wire comparison keeps `after:7d` stable even if validation spans
+        // midnight while still rejecting any textual/field/predicate mismatch.
+        let decoded_fixture = encode_fixture(&decoded)?;
+        let parsed_fixture = encode_fixture(parsed)?;
+        if decoded_fixture != parsed_fixture {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "AST-Suchfixture und Suchabfrage stimmen nicht überein",
+            ));
+        }
         Ok(())
     }
+}
+
+fn encode_fixture(
+    parsed: &crate::services::search_engine::ParsedMailSearchQuery,
+) -> io::Result<String> {
+    encode_mail_query_fixture(parsed).map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("AST-Suchfixture konnte nicht erzeugt werden: {error}"),
+        )
+    })
+}
+
+fn validate_bounded_text(
+    value: &str,
+    label: &str,
+    max_chars: usize,
+    required: bool,
+) -> io::Result<()> {
+    if required && value.trim().is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("Gespeicherte Suchen benötigen {label}"),
+        ));
+    }
+    if value.chars().count() > max_chars || value.chars().any(char::is_control) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("Ungültiger oder zu langer Wert für {label}"),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_identity(value: Option<&str>, label: &str) -> io::Result<()> {
+    if let Some(value) = value {
+        validate_bounded_text(value, label, MAX_IDENTITY_CHARS, true)?;
+    }
+    Ok(())
+}
+
+fn validate_folder_id(value: Option<&str>) -> io::Result<()> {
+    let Some(value) = value else {
+        return Ok(());
+    };
+    if value.trim().is_empty() || value.chars().count() > MAX_IDENTITY_CHARS {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Ungültige oder zu lange Ordner-ID",
+        ));
+    }
+    // Remote dynamic folder IDs use one NUL as the stable source/name
+    // separator.  No other control character is safe in either identity.
+    if value
+        .chars()
+        .any(|character| character.is_control() && character != '\0')
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Ungültige Ordner-ID",
+        ));
+    }
+    Ok(())
+}
+
+fn migrate_legacy_search(legacy: LegacySavedSearch) -> io::Result<SavedSearch> {
+    // v1 had no field or source metadata.  FreeForm + AllAccounts is the only
+    // deterministic interpretation that cannot narrow or broaden the old
+    // query based on a guessed UI state.
+    SavedSearch::with_metadata(
+        legacy.id,
+        legacy.name,
+        legacy.query,
+        SavedSearchFieldMode::FreeForm,
+        SavedSearchScope::AllAccounts,
+        None,
+        None,
+        None,
+    )
 }
 
 fn validate_searches(searches: &[SavedSearch]) -> io::Result<()> {
@@ -72,11 +379,34 @@ fn validate_searches(searches: &[SavedSearch]) -> io::Result<()> {
     Ok(())
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
-struct SearchFile {
+#[derive(Debug, Deserialize)]
+struct SearchFileVersion {
+    version: u32,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SearchFileV2 {
     version: u32,
     #[serde(default)]
     searches: Vec<SavedSearch>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LegacySavedSearch {
+    id: String,
+    name: String,
+    query: String,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SearchFileV1 {
+    #[allow(dead_code)]
+    version: u32,
+    #[serde(default)]
+    searches: Vec<LegacySavedSearch>,
 }
 
 impl SearchFolderService {
@@ -196,23 +526,46 @@ impl SearchFolderService {
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
             Err(error) => return Err(error),
         };
-        let file = serde_json::from_slice::<SearchFile>(&raw).map_err(|error| {
+        let version = serde_json::from_slice::<SearchFileVersion>(&raw).map_err(|error| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("Ungültige gespeicherte-Suchen-Datei: {error}"),
             )
         })?;
-        if file.version != CURRENT_VERSION {
-            return Err(io::Error::new(
+
+        match version.version {
+            LEGACY_VERSION => {
+                let file = serde_json::from_slice::<SearchFileV1>(&raw).map_err(|error| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("Ungültige v1-Suchdatei: {error}"),
+                    )
+                })?;
+                let searches = file
+                    .searches
+                    .into_iter()
+                    .map(migrate_legacy_search)
+                    .collect::<io::Result<Vec<_>>>()?;
+                validate_searches(&searches)?;
+                Ok(searches)
+            }
+            CURRENT_VERSION => {
+                let file = serde_json::from_slice::<SearchFileV2>(&raw).map_err(|error| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("Ungültige v2-Suchdatei: {error}"),
+                    )
+                })?;
+                validate_searches(&file.searches)?;
+                Ok(file.searches)
+            }
+            unsupported => Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!(
-                    "Nicht unterstützte gespeicherte-Suchen-Version: {} (erwartet {})",
-                    file.version, CURRENT_VERSION
+                    "Nicht unterstützte gespeicherte-Suchen-Version: {unsupported} (erwartet {LEGACY_VERSION} oder {CURRENT_VERSION})"
                 ),
-            ));
+            )),
         }
-        validate_searches(&file.searches)?;
-        Ok(file.searches)
     }
 
     fn write_searches(path: &Path, searches: &[SavedSearch]) -> io::Result<()> {
@@ -222,7 +575,7 @@ impl SearchFolderService {
             .filter(|parent| !parent.as_os_str().is_empty())
             .unwrap_or_else(|| Path::new("."));
         fs::create_dir_all(parent)?;
-        let encoded = serde_json::to_vec_pretty(&SearchFile {
+        let encoded = serde_json::to_vec_pretty(&SearchFileV2 {
             version: CURRENT_VERSION,
             searches: searches.to_vec(),
         })
@@ -302,10 +655,20 @@ mod tests {
     }
 
     fn saved_search(id: &str, name: &str, query: &str) -> SavedSearch {
+        SavedSearch::new(id, name, query).expect("test saved search should be valid")
+    }
+
+    fn raw_saved_search(id: &str, name: &str, query: &str) -> SavedSearch {
         SavedSearch {
             id: id.to_string(),
             name: name.to_string(),
             query: query.to_string(),
+            field: SavedSearchFieldMode::FreeForm,
+            scope: SavedSearchScope::AllAccounts,
+            folder_id: None,
+            source_uid: None,
+            folder_name: None,
+            ast: "invalid-fixture".to_string(),
         }
     }
 
@@ -320,17 +683,317 @@ mod tests {
 
     #[test]
     fn saved_search_serialization_roundtrips_without_backend_state() {
-        let file = SearchFile {
+        let file = SearchFileV2 {
             version: CURRENT_VERSION,
-            searches: vec![SavedSearch {
-                id: "search-1".to_string(),
-                name: "Rechnungen".to_string(),
-                query: "from:billing@example.org is:unread".to_string(),
-            }],
+            searches: vec![saved_search(
+                "search-1",
+                "Rechnungen",
+                "from:billing@example.org is:unread",
+            )],
         };
         let raw = serde_json::to_vec(&file).expect("search file should serialize");
-        let decoded: SearchFile = serde_json::from_slice(&raw).expect("search file should parse");
+        let decoded: SearchFileV2 = serde_json::from_slice(&raw).expect("search file should parse");
         assert_eq!(decoded.searches, file.searches);
+    }
+
+    #[test]
+    fn saved_search_v2_roundtrips_all_modes_and_scopes() {
+        let root = test_root("v2-roundtrip");
+        let service = SearchFolderService::new(root.join("searches.json"));
+        let modes = [
+            SavedSearchFieldMode::SubjectOrAddresses,
+            SavedSearchFieldMode::Subject,
+            SavedSearchFieldMode::Sender,
+            SavedSearchFieldMode::Recipients,
+            SavedSearchFieldMode::Message,
+            SavedSearchFieldMode::Body,
+            SavedSearchFieldMode::FreeForm,
+        ];
+        let scopes = [
+            (
+                SavedSearchScope::CurrentFolder,
+                Some("account-uid\u{0}Inbox".to_string()),
+                Some("account-uid".to_string()),
+                Some("Inbox".to_string()),
+            ),
+            (
+                SavedSearchScope::CurrentFolderAndSubfolders,
+                Some("account-uid\u{0}Projects".to_string()),
+                Some("account-uid".to_string()),
+                Some("Projects".to_string()),
+            ),
+            (
+                SavedSearchScope::CurrentAccount,
+                None,
+                Some("account-uid".to_string()),
+                None,
+            ),
+            (SavedSearchScope::AllAccounts, None, None, None),
+        ];
+
+        let mut expected = Vec::new();
+        for (index, field) in modes.into_iter().enumerate() {
+            let search = SavedSearch::with_metadata(
+                format!("mode-{index}"),
+                format!("Mode {index}"),
+                "needle",
+                field,
+                SavedSearchScope::AllAccounts,
+                None,
+                None,
+                None,
+            )
+            .expect("mode should create a valid saved search");
+            service
+                .save_saved(search.clone())
+                .expect("mode should persist");
+            expected.push(search);
+        }
+        for (index, (scope, folder_id, source_uid, folder_name)) in scopes.into_iter().enumerate() {
+            let search = SavedSearch::with_metadata(
+                format!("scope-{index}"),
+                format!("Scope {index}"),
+                "needle",
+                SavedSearchFieldMode::FreeForm,
+                scope,
+                folder_id,
+                source_uid,
+                folder_name,
+            )
+            .expect("scope should create a valid saved search");
+            service
+                .save_saved(search.clone())
+                .expect("scope should persist");
+            expected.push(search);
+        }
+
+        assert_eq!(service.load_saved(), expected);
+        let raw = fs::read(service.path()).expect("v2 file should exist");
+        let value: serde_json::Value =
+            serde_json::from_slice(&raw).expect("v2 file should be JSON");
+        assert_eq!(value["version"], serde_json::json!(CURRENT_VERSION));
+        assert_eq!(value["searches"][0]["field"], "subject_or_addresses");
+        assert_eq!(value["searches"][0]["scope"], "all_accounts");
+        assert!(value["searches"][0]["ast"].is_string());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn saved_search_v2_preserves_local_folder_identity_without_remote_metadata() {
+        let root = test_root("v2-local-identity");
+        let service = SearchFolderService::new(root.join("searches.json"));
+        let local_folder = SavedSearch::with_metadata(
+            "local-folder",
+            "Lokale Projekte",
+            "is:unread",
+            SavedSearchFieldMode::FreeForm,
+            SavedSearchScope::CurrentFolder,
+            Some("custom:Projects".to_string()),
+            None,
+            None,
+        )
+        .expect("local folder identity should be valid");
+        let local_subfolders = SavedSearch::with_metadata(
+            "local-subfolders",
+            "Lokale Projekte samt Unterordnern",
+            "is:starred",
+            SavedSearchFieldMode::FreeForm,
+            SavedSearchScope::CurrentFolderAndSubfolders,
+            Some("custom:Projects".to_string()),
+            None,
+            None,
+        )
+        .expect("local subfolder identity should be valid");
+        service.save_saved(local_folder.clone()).unwrap();
+        service.save_saved(local_subfolders.clone()).unwrap();
+        assert_eq!(
+            service.load_saved(),
+            vec![local_folder.clone(), local_subfolders.clone()]
+        );
+
+        for invalid in [
+            SavedSearch {
+                folder_id: None,
+                ..local_subfolders.clone()
+            },
+            SavedSearch {
+                folder_id: Some("all".to_string()),
+                ..local_subfolders.clone()
+            },
+            SavedSearch {
+                folder_id: Some("custom:Projects".to_string()),
+                source_uid: Some("account-uid".to_string()),
+                folder_name: None,
+                ..local_subfolders.clone()
+            },
+        ] {
+            let error = service
+                .save_saved(invalid)
+                .expect_err("incomplete local identity must fail closed");
+            assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        }
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn saved_search_v2_validates_remote_folder_and_account_identity() {
+        let root = test_root("v2-remote-identity");
+        let service = SearchFolderService::new(root.join("searches.json"));
+        let remote_folder = SavedSearch::with_metadata(
+            "remote-folder",
+            "Remote Inbox",
+            "subject:invoice",
+            SavedSearchFieldMode::Subject,
+            SavedSearchScope::CurrentFolder,
+            Some("account-uid\u{0}Inbox".to_string()),
+            Some("account-uid".to_string()),
+            Some("Inbox".to_string()),
+        )
+        .expect("remote folder identity should be valid");
+        let account = SavedSearch::with_metadata(
+            "remote-account",
+            "Remote account",
+            "is:unread",
+            SavedSearchFieldMode::FreeForm,
+            SavedSearchScope::CurrentAccount,
+            None,
+            Some("account-uid".to_string()),
+            None,
+        )
+        .expect("remote account identity should be valid");
+        service.save_saved(remote_folder.clone()).unwrap();
+        service.save_saved(account.clone()).unwrap();
+        assert_eq!(
+            service.load_saved(),
+            vec![remote_folder.clone(), account.clone()]
+        );
+
+        for invalid in [
+            SavedSearch {
+                folder_id: Some("wrong-id".to_string()),
+                ..account.clone()
+            },
+            SavedSearch {
+                source_uid: None,
+                ..account.clone()
+            },
+            SavedSearch {
+                folder_name: Some("Inbox".to_string()),
+                ..account.clone()
+            },
+            SavedSearch {
+                folder_id: None,
+                source_uid: Some("account-uid".to_string()),
+                folder_name: Some("Inbox".to_string()),
+                ..remote_folder.clone()
+            },
+            SavedSearch {
+                folder_id: Some("account-uid\u{0}Archive".to_string()),
+                ..remote_folder.clone()
+            },
+        ] {
+            let error = service
+                .save_saved(invalid)
+                .expect_err("incomplete remote identity must fail closed");
+            assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        }
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn v1_saved_searches_migrate_deterministically_and_next_write_is_v2() {
+        let root = test_root("v1-migration");
+        let path = root.join("searches.json");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let legacy = serde_json::json!({
+            "version": LEGACY_VERSION,
+            "searches": [{
+                "id": "legacy-1",
+                "name": "Legacy",
+                "query": "from:billing@example.org is:unread"
+            }]
+        });
+        let original = serde_json::to_vec_pretty(&legacy).unwrap();
+        fs::write(&path, &original).unwrap();
+        let service = SearchFolderService::new(&path);
+
+        let migrated = service.load_saved();
+        assert_eq!(migrated.len(), 1);
+        assert_eq!(migrated[0].field, SavedSearchFieldMode::FreeForm);
+        assert_eq!(migrated[0].scope, SavedSearchScope::AllAccounts);
+        assert_eq!(migrated[0].source_uid, None);
+        assert_eq!(migrated[0].folder_name, None);
+        assert!(!migrated[0].ast.is_empty());
+        assert_eq!(fs::read(&path).unwrap(), original);
+
+        // An update through the normal RMW path retains the migrated record
+        // and atomically upgrades the file format.
+        service
+            .save_saved(SavedSearch::new("new-1", "New", "is:starred").unwrap())
+            .expect("next write should upgrade legacy storage");
+        let upgraded: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(upgraded["version"], serde_json::json!(CURRENT_VERSION));
+        assert_eq!(service.load_saved().len(), 2);
+        assert_eq!(service.load_saved()[0], migrated[0]);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn v2_mismatched_unknown_and_corrupt_fixtures_fail_closed() {
+        let cases = [
+            "mismatch",
+            "unknown-field-mode",
+            "corrupt-fixture",
+            "unknown-file-field",
+        ];
+        for label in cases {
+            let root = test_root(label);
+            let path = root.join("searches.json");
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            let valid = saved_search("search-1", "One", "is:unread");
+            let mut file = SearchFileV2 {
+                version: CURRENT_VERSION,
+                searches: vec![valid.clone()],
+            };
+            let raw = match label {
+                "mismatch" => {
+                    file.searches[0].ast = saved_search("other", "Other", "is:starred").ast;
+                    serde_json::to_vec_pretty(&file).unwrap()
+                }
+                "unknown-field-mode" => {
+                    let mut value = serde_json::to_value(&file).unwrap();
+                    value["searches"][0]["field"] = serde_json::json!("future_mode");
+                    serde_json::to_vec_pretty(&value).unwrap()
+                }
+                "corrupt-fixture" => {
+                    file.searches[0].ast = "not-json".to_string();
+                    serde_json::to_vec_pretty(&file).unwrap()
+                }
+                "unknown-file-field" => {
+                    let mut value = serde_json::to_value(&file).unwrap();
+                    value["unknown"] = serde_json::json!(true);
+                    serde_json::to_vec_pretty(&value).unwrap()
+                }
+                _ => unreachable!(),
+            };
+            fs::write(&path, &raw).unwrap();
+            let service = SearchFolderService::new(&path);
+            assert!(
+                service.load_saved().is_empty(),
+                "{label} must not be loaded"
+            );
+            let error = service
+                .save_saved(saved_search("new", "New", "is:starred"))
+                .expect_err("{label} must reject RMW");
+            assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+            assert_eq!(fs::read(&path).unwrap(), raw);
+            let _ = fs::remove_dir_all(root);
+        }
     }
 
     #[test]
@@ -393,7 +1056,7 @@ mod tests {
             ("search-1", "Name", "subject:\"unterminated"),
         ] {
             let error = service
-                .save_saved(saved_search(id, name, query))
+                .save_saved(raw_saved_search(id, name, query))
                 .expect_err("invalid saved search must be rejected");
             assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
         }
@@ -408,7 +1071,7 @@ mod tests {
             ("corrupt", br#"{"version":1,"searches":["# as &[u8]),
             (
                 "version",
-                br#"{"version":2,"searches":[]}"# as &[u8],
+                br#"{"version":3,"searches":[]}"# as &[u8],
             ),
             (
                 "duplicate",

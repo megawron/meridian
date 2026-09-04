@@ -519,11 +519,25 @@ werden.
   Batch-Aktionen ausgewählt werden. Für Microsoft Graph ist die
   serverseitige Mail-Suche für positive Volltext-, Absender-, Empfänger-,
   Betreff-, Text-, Anhangs- und Anhangsstatus-Prädikate asynchron, debounced,
-  abbrechbar und paginiert an denselben Mail-/Threadpfad angebunden; negative
-  Prädikate sowie Status-, Label-, Ordner- und Datumsfeinheiten bleiben als
-  lokaler Nachfilter erhalten. Native Camel-Suche, CamelVee-Suchordner und
-  native EDS/Camel-Kopien und providerabhängige Live-Zähler bleiben
-  Linux-/Backend-Abnahme. Der Nachrichtentext wird vor der Darstellung
+  abbrechbar und an denselben Mail-/Threadpfad angebunden. Der Graph-Transport
+  senkt dabei ausschließlich strict-safe positive Konjunktionen ab; OR, NOT
+  und local-only-Prädikate werden als Ganzes nicht remote abgesenkt, statt nur
+  teilweise in eine unvollständige KQL-Abfrage umzuschreiben. Ein Wechsel
+  zwischen CurrentFolder und CurrentAccount löst eine neue Remote-Suche aus;
+  `CurrentFolderAndSubfolders` filtert lokal exakt über Ordnerpfade; Graph führt
+  diesen rekursiven Scope fail-closed nicht remote aus, sondern lässt die
+  geladene Seite lokal prüfen und zeigt dafür dauerhaft eine
+  Unvollständigkeitswarnung. Die normale Schnellsuche gleicht AllAccounts
+  sichtbar auf CurrentAccount ab; Advanced und Saved Search erhalten den
+  exakten Scope und bleiben dort ehrlich lokal. Graph-Suchergebnisse tragen
+  `is_complete`; sichere, origin-geprüfte Continuation-Cursor speisen
+  „Mehr laden“, werden erst nach erfolgreichem Modellaufbau übernommen und
+  bleiben bei Fehlern wiederholbar. Ein abgeschnittenes Ergebnis ohne sicheren
+  Cursor zeigt weiterhin eine sichtbare Unvollständigkeitswarnung. Native
+  Camel-Suche, CamelVee-Suchordner und native
+  EDS/Camel-Kopien sowie providerabhängige Live-Zähler bleiben Linux-/Backend-
+  Abnahme. Der
+  Nachrichtentext wird vor der Darstellung
   sicher bereinigt; wenn defektes oder vollständig blockiertes HTML keinen
   sichtbaren Inhalt ergibt, zeigt der GTK4-rs-Viewer den verfügbaren
   Klartext-/Vorschau-Auszug statt einer leeren weißen Fläche.
@@ -532,12 +546,36 @@ werden.
   fail-closed Unknown-State-Negation sowie der Schutz von Saved-Search-
   Mutationen gegen korrupte/unsupported/duplizierte Dateien durch atomare
   Writes, eindeutige temporäre Dateien und process-lokale RMW-Serialisierung
-  sowie exakte `CurrentFolder`/`CurrentAccount`/`AllAccounts`-Scopes auch bei
-  leerer Suchabfrage. Offen bleiben der MailPage-Doppelparser, acht Upstream-Modi,
-  der vierte Subfolder-Scope, AST/Graph-Fail-Closed, Saved-v2 Scope/AST und
-  die Linux-/Provider-Abnahme. Gezielte Parser-, Negations-, Scope- und
-  Saved-Search-Mutationstests sind der portable Beleg; eine Gesamt-Testzahl
-  wird daraus nicht abgeleitet.
+  sowie exakte `CurrentFolder`/`CurrentFolderAndSubfolders`/`CurrentAccount`/
+  `AllAccounts`-Scopes auch bei leerer Suchabfrage. Die sieben sichtbaren
+  Upstream-Schnellmodi `SubjectOrAddresses`, `Subject`, `Sender`, `Recipients`
+  (To/Cc, ohne Bcc), `Message`, `Body` und `FreeForm` verwenden denselben
+  kanonischen AST und Matcher. MailPage verwendet ausschließlich den
+  kanonischen AST; der Graph-Pfad senkt nur strict-safe positive Konjunktionen
+  ab und verweigert OR/NOT sowie local-only-Prädikate als gesamte
+  Remote-Absenkung. Scope-Wechsel zwischen CurrentFolder und CurrentAccount
+  starten die Remote-Suche neu; `CurrentFolderAndSubfolders` bleibt im Graph
+  fail-closed lokal auf der geladenen Seite und zeigt dauerhaft die
+  Unvollständigkeitswarnung. Die normale Schnellsuche gleicht AllAccounts
+  sichtbar auf CurrentAccount ab; Advanced und Saved Search behalten den
+  exakten Scope und bleiben lokal. Graph-Ergebnisse tragen `is_complete`;
+  sichere Continuation-Cursor treiben „Mehr laden“ generationen- und
+  snapshotgebunden an und werden erst nach erfolgreichem Modellaufbau
+  übernommen. Ein mail-sensitiver Advanced-Search-Dialog
+  baut portable Text-/Status-/Datumsregeln mit UND/ODER sowie Regel- und
+  Gruppen-Negation, validiert sie vor dem Anwenden gegen denselben kanonischen
+  Parser und erhält Scope sowie exaktes Ordnerziel. Offen bleiben die darüber
+  hinausgehenden nativen Upstream-Prädikate, echte Camel-S-Expression-FreeForm,
+  rekursive Graph-Subfolder-Suche, echtes Multi-Account-Graph, nicht sicher
+  fortsetzbare Provider-Truncation sowie die
+  Linux-/EDS-/Graph-/Provider-Abnahme. Saved-Search-v2 persistiert Feld, Scope,
+  exakte Konto-/Ordneridentität und einen versionierten kanonischen AST;
+  v1-Dateien werden deterministisch als FreeForm/AllAccounts migriert.
+  Sidebar-Auswahl und Zähler verwenden dieselbe kompilierte Definition,
+  relative Datumswerte bleiben dynamisch, und verschwundene Ziele liefern
+  fail-closed 0 Treffer mit sichtbarer Warnung. Gezielte Parser-, Negations-,
+  Scope-, Codec-, Migrations- und Saved-Search-Mutationstests sind der portable
+  Beleg; eine Gesamt-Testzahl wird daraus nicht abgeleitet.
 - [~] Der Startordner der Mailansicht ist als portable Einstellung mit
   Posteingang, Alle Nachrichten, Gesendet, Entwürfe, Papierkorb, Archiv und
   Spam konfigurierbar und wird in Backup/Restore sowie beim lokalen Fallback
@@ -750,8 +788,10 @@ werden.
 - [~] Portable virtuelle Suchordner sind vorhanden: vier Standardabfragen und
   beliebig viele gespeicherte lokale Suchdefinitionen können angelegt,
   bearbeitet und gelöscht werden. Die vorhandene lokale Suchsprache wird
-  ausgewertet; Suchordner zeigen Treffer-/Ungelesen-Zähler für den geladenen
-  Nachrichtenbestand. Der portable Graph-Pfad führt kompatible positive
+  ausgewertet; v2 bewahrt Suchfeld, Scope, exaktes Ziel und kanonischen AST,
+  liest v1 kompatibel und wendet Definition und Treffer-/Ungelesen-Zähler über
+  denselben fail-closed Compiler auf den geladenen Nachrichtenbestand an. Der
+  portable Graph-Pfad führt kompatible positive
   Suchbestandteile bereits über Outlook-KQL auf dem Server aus und wendet die
   übrigen Prädikate lokal nach; serverseitige gespeicherte Suchordner,
   CamelVeeStore/CamelVeeFolder und providerübergreifende Live-Zähler bleiben

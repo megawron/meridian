@@ -54,13 +54,34 @@ als `[x]` geführt.
   Fokusdispatch, sichtbare Accelerator, Theme/A11y sowie Nullauswahl und echte
   Folder-/Provider-Capabilities prüfen. Die zentrale ID-/Scope-Tabelle und
   Shortcut-Mirror werden nicht erneut portabel gebaut.
-- `[~]` `MAIL-SEARCH-CONTRACT` ist portabel `IN PROGRESS`/`partial`: strikte
+- `[~]` `MAIL-SEARCH-CONTRACT`: portabler Schnitt ist `BLOCKED_LINUX`: strikte
   kanonische Syntaxvalidierung für neue Saved Searches, fail-closed
-  Unknown-State-Negation, geschützte Saved-Search-Mutationen und exakte
-  `CurrentFolder`/`CurrentAccount`/`AllAccounts`-Scopes sind belegt. Nach dem
-  portablen Abschluss bleiben MailPage-Doppelparser,
-  acht Upstream-Modi, vierter Subfolder-Scope, AST/Graph-Fail-Closed,
-  Saved-v2 Scope/AST sowie echte Linux-/EDS-/Graph-/Provider-Abnahme offen.
+  Unknown-State-Negation, geschützte Saved-Search-Mutationen sowie exakte
+  `CurrentFolder`/`CurrentFolderAndSubfolders`/`CurrentAccount`/`AllAccounts`-
+  Scopes sind belegt. Die sieben sichtbaren Upstream-Schnellmodi
+  `SubjectOrAddresses`, `Subject`, `Sender`, `Recipients` (To/Cc, ohne Bcc),
+  `Message`, `Body` und `FreeForm` verwenden den kanonischen AST und Matcher;
+  MailPage verwendet ihn ausschließlich. Graph senkt nur strict-safe positive
+  Konjunktionen ab und verweigert OR/NOT sowie local-only-Prädikate als gesamte
+  Remote-Absenkung. CurrentFolder/CurrentAccount starten bei einem Wechsel eine
+  neue Remote-Suche; `CurrentFolderAndSubfolders` wird für Graph fail-closed
+  lokal auf der geladenen Seite geprüft und zeigt dauerhaft eine
+  Unvollständigkeitswarnung. Die normale Schnellsuche gleicht AllAccounts
+  sichtbar auf CurrentAccount ab; Advanced und Saved Search behalten den
+  exakten Scope und bleiben dort lokal. Graph-Ergebnisse tragen `is_complete`;
+  sichere Continuation-Cursor treiben „Mehr laden“ snapshotgebunden an und
+  werden erst nach erfolgreichem Modellaufbau übernommen. Saved-Search-v2
+  persistiert Feld, Scope,
+  exakte Konto-/Ordneridentität und den versionierten kanonischen AST, migriert
+  v1 deterministisch und lässt verschwundene Ziele mit 0 Treffern sichtbar
+  fail-closed; Auswahl und Zähler kompilieren dieselbe Definition. Der
+  mail-sensitiv verdrahtete portable Advanced-Search-Dialog erzeugt validierte
+  Text-/Status-/Datumsregeln mit UND/ODER und Negation, ohne Scope oder exaktes
+  Ordnerziel umzuschreiben. Offen bleiben zusätzliche native
+  Upstream-Prädikate, echte Camel-S-Expression-FreeForm, rekursive
+  Graph-Subfolder-Suche, echtes Multi-Account-Graph, nicht sicher fortsetzbare
+  Provider-Truncation sowie echte
+  Linux-/EDS-/Graph-/Provider-Abnahme.
 - `[ ]` `MAIL-PRINT-ACTION`: Liste und Reader drucken, Vorschau/PDF und
   `Ctrl+P` prüfen; GtkPrint/Portal-Fehler, Abbruch, HTML/WebKitGTK-
   Seitenumbrüche und visuelle Übereinstimmung dokumentieren. Der portable
@@ -586,6 +607,13 @@ Authentifizierungsdaten oder Mailinhalte in das Log übernehmen.
   die lokale Suche nicht als Serverabfrage ausgegeben werden: Provider-Fehler,
   Offlinezustand, unvollständig geladene Ordner und UID-Neuzuordnung müssen
   als sichtbarer Status erscheinen.
+- `[ ]` Den portablen Graph-Mailpfad gegen echte Konten abnehmen: CurrentFolder-
+  und CurrentAccount-Wechsel müssen eine neue Remote-Suche starten, AllAccounts
+  muss den ehrlichen CurrentAccount-Fallback anzeigen. `is_complete` und die
+  sichtbare Warnung bei Limit-/Continuation-Truncation dürfen nicht als
+  vollständige Trefferliste erscheinen; echtes Multi-Account-Graph sowie
+  Nicht sicher fortsetzbare Provider-Truncation bleibt dabei ein offenes
+  Linux-/Provider-Gate.
 - `[ ]` Gespeicherte Suchordner gegen `CamelVeeStore`/`CamelVeeFolder`
   verifizieren: Regeln müssen beim Start wiederhergestellt, bei Änderungen
   aktualisiert und bei Fehlern ohne Verlust der lokalen Suchdefinition

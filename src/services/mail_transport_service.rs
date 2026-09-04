@@ -1593,6 +1593,7 @@ mod tests {
             warning: Some("HTTP 503 beim Graph-Ordner".to_string()),
             is_graph: true,
             search_query: None,
+            graph_search_next_cursor: None,
             graph_next_links: std::collections::HashMap::new(),
         };
         assert!(matches!(
@@ -1609,6 +1610,7 @@ mod tests {
             warning: None,
             is_graph: true,
             search_query: None,
+            graph_search_next_cursor: None,
             graph_next_links: std::collections::HashMap::new(),
         };
         assert!(graph_transport_load_result(Ok(complete), "Camel unavailable").is_ok());

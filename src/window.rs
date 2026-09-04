@@ -3358,6 +3358,18 @@ impl EvolutionWindow {
         ));
         self.add_action(&action_search);
 
+        let action_search_advanced = gio::SimpleAction::new("search-advanced", None);
+        action_search_advanced.connect_activate(glib::clone!(
+            #[weak(rename_to = window)]
+            self,
+            move |_, _| {
+                if let Some(mail_page) = window.mail_page() {
+                    mail_page.present_advanced_search_dialog();
+                }
+            }
+        ));
+        self.add_action(&action_search_advanced);
+
         let action_find_in_message = gio::SimpleAction::new("find-in-message", None);
         action_find_in_message.connect_activate(glib::clone!(
             #[weak(rename_to = window)]
@@ -3991,5 +4003,14 @@ mod tests {
         assert!(source.contains("action_folder_subscriptions.set_enabled(false)"));
         assert!(source.contains("mail_page.can_present_folder_subscriptions()"));
         assert!(source.contains("mail_page.present_folder_subscriptions_dialog()"));
+    }
+
+    #[test]
+    fn advanced_search_action_delegates_to_the_mail_page() {
+        let source = include_str!("window.rs");
+        assert!(source.contains(
+            "let action_search_advanced = gio::SimpleAction::new(\"search-advanced\", None);"
+        ));
+        assert!(source.contains("mail_page.present_advanced_search_dialog()"));
     }
 }

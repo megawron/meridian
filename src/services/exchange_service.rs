@@ -131,6 +131,22 @@ pub struct ExchangeMailAttachment {
     pub content: Vec<u8>,
 }
 
+/// Result of one bounded Graph mail search.
+///
+/// Graph may return a continuation link even after the caller's result limit
+/// has been reached.  Keeping that fact beside the messages prevents callers
+/// from presenting a truncated result set as a complete search.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExchangeMailSearchResult {
+    pub messages: Vec<ExchangeMailMessage>,
+    pub is_complete: bool,
+    /// The opaque, origin-validated Graph continuation URL for the next
+    /// search page, if Graph reported a safe continuation.  Callers must pass
+    /// this value back unchanged to a cursor-aware search request; query and
+    /// folder arguments are intentionally not re-applied when following it.
+    pub next_cursor: Option<String>,
+}
+
 impl ExchangeMailMessage {
     /// Convert a Graph message into the same parser output used by local
     /// maildir/mbox and native Camel.  This keeps search, threading, labels
@@ -1430,15 +1446,16 @@ impl ExchangeService {
 
     /// Search the signed-in mailbox using Outlook/Graph KQL.  The Graph mail
     /// search endpoint returns at most 1,000 results; this method follows
-    /// continuation links until the caller's bounded result limit is met.
+    /// continuation links until the caller's bounded result limit is met, and
+    /// reports when that limit may have truncated the search result.
     pub fn search_messages_sync(
         &self,
         folder_id: Option<&str>,
         folder_name: Option<&str>,
         search: &str,
         max_items: usize,
-    ) -> Result<Vec<ExchangeMailMessage>, ExchangeError> {
-        let max_items = validate_limit(max_items)?.min(MAX_GRAPH_SEARCH_ITEMS);
+    ) -> Result<ExchangeMailSearchResult, ExchangeError> {
+        let max_items = validate_search_limit(max_items)?;
         let search = validate_query(search)?;
         if search.is_empty() {
             return Err(ExchangeError::InvalidQuery(
@@ -1461,8 +1478,100 @@ impl ExchangeService {
             ("$search".to_string(), search),
             ("$top".to_string(), page_size(max_items).to_string()),
         ];
-        let messages: Vec<GraphMessage> = self.request_collection(&path, &params, max_items)?;
-        self.into_public_messages(messages, folder_name.unwrap_or_default().to_string())
+        let (messages, is_complete, next_cursor) =
+            self.request_collection_with_completeness(&path, &params, max_items)?;
+        let messages =
+            self.into_public_messages(messages, folder_name.unwrap_or_default().to_string())?;
+        Ok(ExchangeMailSearchResult {
+            messages,
+            is_complete,
+            next_cursor,
+        })
+    }
+
+    /// Load one bounded Graph mail-search page.
+    ///
+    /// With `cursor == None`, this starts a new KQL search using `folder_id`,
+    /// `folder_name` and `search`.  With a cursor, the cursor is first
+    /// validated against this service's configured origin and then requested
+    /// verbatim.  In particular, the caller's query and folder are not
+    /// reinterpreted or appended to a continuation URL.  This keeps Graph's
+    /// opaque paging state authoritative and lets UI paging cross the
+    /// service's ordinary search result limit one page at a time.
+    pub fn search_messages_cursor_sync(
+        &self,
+        folder_id: Option<&str>,
+        folder_name: Option<&str>,
+        search: &str,
+        cursor: Option<&str>,
+        max_items: usize,
+    ) -> Result<ExchangeMailSearchResult, ExchangeError> {
+        let max_items = validate_search_limit(max_items)?;
+        let is_continuation = cursor.is_some();
+        let (url, params) = match cursor {
+            Some(cursor) => (self.validate_next_link(cursor)?, Vec::new()),
+            None => {
+                let search = validate_query(search)?;
+                if search.is_empty() {
+                    return Err(ExchangeError::InvalidQuery(
+                        "Die Graph-Mail-Suche darf nicht leer sein".to_string(),
+                    ));
+                }
+                let path = folder_id
+                    .map(|folder_id| {
+                        encode_path_segment(folder_id)
+                            .map(|folder_id| format!("me/mailFolders/{folder_id}/messages"))
+                    })
+                    .transpose()?;
+                let path = path.unwrap_or_else(|| "me/messages".to_string());
+                let params = vec![
+                    (
+                        "$select".to_string(),
+                        "id,parentFolderId,internetMessageId,subject,sender,from,toRecipients,ccRecipients,bccRecipients,replyTo,receivedDateTime,sentDateTime,size,body,bodyPreview,hasAttachments,isRead,flag,importance,categories,internetMessageHeaders"
+                            .to_string(),
+                    ),
+                    ("$search".to_string(), search),
+                    ("$top".to_string(), page_size(max_items).to_string()),
+                ];
+                (self.endpoint(&path)?, params)
+            }
+        };
+
+        let page: GraphCollection<GraphMessage> =
+            self.request_json_url(Method::GET, url, &params, None)?;
+        let GraphCollection {
+            value: page_values,
+            next_link,
+        } = page;
+        let next_cursor = next_link
+            .map(|link| {
+                self.validate_next_link(&link)?;
+                Ok::<String, ExchangeError>(link)
+            })
+            .transpose()?;
+        let page_was_truncated = page_values.len() > max_items;
+        // A Graph continuation advances past the complete server page.  If
+        // the server violated `$top` and we dropped values from that page,
+        // exposing its cursor would silently skip those values on retry.
+        let next_cursor = if page_was_truncated {
+            None
+        } else {
+            next_cursor
+        };
+        let messages = page_values.into_iter().take(max_items).collect::<Vec<_>>();
+        let fallback_folder_id = if is_continuation {
+            // A cursor owns the search context.  Do not let a caller-supplied
+            // folder name invent an identity when Graph omits parentFolderId.
+            String::new()
+        } else {
+            folder_name.unwrap_or_default().to_string()
+        };
+        let messages = self.into_public_messages(messages, fallback_folder_id)?;
+        Ok(ExchangeMailSearchResult {
+            messages,
+            is_complete: !page_was_truncated && next_cursor.is_none(),
+            next_cursor,
+        })
     }
 
     fn list_message_attachments_sync(
@@ -2153,6 +2262,68 @@ impl ExchangeService {
                 .transpose()?;
         }
         Ok(values)
+    }
+
+    /// Collect a bounded collection while preserving whether the bound cut
+    /// off a page or a validated continuation link.  Ordinary collection
+    /// callers intentionally keep using `request_collection`; this stricter
+    /// boundary is reserved for mail search, where a truncated result must be
+    /// surfaced instead of looking complete to the caller.
+    fn request_collection_with_completeness<T: DeserializeOwned>(
+        &self,
+        path: &str,
+        params: &[(String, String)],
+        max_items: usize,
+    ) -> Result<(Vec<T>, bool, Option<String>), ExchangeError> {
+        let max_items = validate_limit(max_items)?;
+        let mut next_url = Some(self.endpoint(path)?);
+        let mut first_page = true;
+        let mut pages = 0;
+        let mut values = Vec::new();
+
+        while let Some(url) = next_url.take() {
+            pages += 1;
+            if pages > MAX_GRAPH_PAGES {
+                return Err(ExchangeError::Decode(
+                    "Microsoft-Graph lieferte zu viele Seiten ohne Abschluss".to_string(),
+                ));
+            }
+            let response: GraphCollection<T> = self.request_json_url(
+                Method::GET,
+                url,
+                if first_page { params } else { &[] },
+                None,
+            )?;
+            first_page = false;
+
+            let GraphCollection {
+                value: page_values,
+                next_link,
+            } = response;
+            let remaining = max_items.saturating_sub(values.len());
+            let page_was_truncated = page_values.len() > remaining;
+            values.extend(page_values.into_iter().take(remaining));
+            let validated_next_url = next_link
+                .map(|link| {
+                    let url = self.validate_next_link(&link)?;
+                    Ok::<(Url, String), ExchangeError>((url, link))
+                })
+                .transpose()?;
+
+            if page_was_truncated {
+                // The continuation points after the whole server page, not
+                // after the prefix returned to the caller.  Do not expose it
+                // when `$top` was violated and values were dropped.
+                return Ok((values, false, None));
+            }
+            if values.len() >= max_items {
+                let next_cursor = validated_next_url.map(|(_, cursor)| cursor);
+                return Ok((values, next_cursor.is_none(), next_cursor));
+            }
+            next_url = validated_next_url.map(|(url, _)| url);
+        }
+
+        Ok((values, true, None))
     }
 
     fn append_mail_folder_tree(
@@ -2849,6 +3020,10 @@ fn validate_limit(limit: usize) -> Result<usize, ExchangeError> {
     Ok(limit.min(MAX_GRAPH_ITEMS))
 }
 
+fn validate_search_limit(limit: usize) -> Result<usize, ExchangeError> {
+    Ok(validate_limit(limit)?.min(MAX_GRAPH_SEARCH_ITEMS))
+}
+
 fn page_size(limit: usize) -> usize {
     limit.min(GRAPH_PAGE_SIZE).max(1)
 }
@@ -3024,6 +3199,31 @@ mod tests {
                 .expect("mock response should be written");
         });
         (format!("http://{address}/v1.0"), receiver, handle)
+    }
+
+    fn mock_server_sequence(
+        responses: Vec<String>,
+    ) -> (String, mpsc::Receiver<Vec<String>>, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("mock server should bind");
+        let address = listener
+            .local_addr()
+            .expect("mock server address should exist");
+        let (sender, receiver) = mpsc::channel();
+        let base_url = format!("http://{address}/v1.0");
+        let response_base_url = base_url.clone();
+        let handle = thread::spawn(move || {
+            let mut requests = Vec::with_capacity(responses.len());
+            for response in responses {
+                let (mut stream, _) = listener.accept().expect("client should connect");
+                requests.push(read_request(&mut stream));
+                let response = response.replace("__BASE__", &response_base_url);
+                stream
+                    .write_all(response.as_bytes())
+                    .expect("mock response should be written");
+            }
+            sender.send(requests).expect("requests should be observed");
+        });
+        (base_url, receiver, handle)
     }
 
     fn slow_mock_server() -> (
@@ -3852,7 +4052,7 @@ mod tests {
             server_url: base_url,
             ..ExchangeService::graph("user@example.org", "token")
         };
-        let messages = service
+        let result = service
             .search_messages_sync(
                 Some("folder-id"),
                 Some("Inbox"),
@@ -3866,9 +4066,193 @@ mod tests {
         assert!(request.contains("GET /v1.0/me/mailFolders/folder-id/messages?"));
         assert!(request.contains("%24search="));
         assert!(request.contains("subject%3Aroadmap"));
-        assert_eq!(messages.len(), 1);
-        assert_eq!(messages[0].folder_id, "folder-id");
-        assert_eq!(messages[0].subject, "Roadmap");
+        assert!(result.is_complete);
+        assert_eq!(result.messages.len(), 1);
+        assert_eq!(result.messages[0].folder_id, "folder-id");
+        assert_eq!(result.messages[0].subject, "Roadmap");
+    }
+
+    #[test]
+    fn graph_message_search_follows_next_link_within_limit_and_is_complete() {
+        let responses = vec![
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{\"value\":[{\"id\":\"first\"}],\"@odata.nextLink\":\"__BASE__/search-page-2\"}".to_string(),
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{\"value\":[{\"id\":\"second\"}]}".to_string(),
+        ];
+        let (base_url, requests, handle) = mock_server_sequence(responses);
+        let service = ExchangeService {
+            server_url: base_url,
+            ..ExchangeService::graph("user@example.org", "token")
+        };
+
+        let result = service
+            .search_messages_sync(None, None, "\"roadmap\"", 5)
+            .expect("Graph search should follow its continuation");
+        let requests = requests.recv().expect("requests should be captured");
+        handle.join().expect("mock server should finish");
+
+        assert!(result.is_complete);
+        assert!(result.next_cursor.is_none());
+        assert_eq!(
+            result
+                .messages
+                .iter()
+                .map(|message| message.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["first", "second"]
+        );
+        assert_eq!(requests.len(), 2);
+        assert!(requests[1].contains("GET /v1.0/search-page-2"));
+    }
+
+    #[test]
+    fn graph_message_search_cursor_loads_first_and_following_pages() {
+        let responses = vec![
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{\"value\":[{\"id\":\"first\"}],\"@odata.nextLink\":\"__BASE__/search-page-2?skiptoken=opaque%2Bcursor\"}".to_string(),
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{\"value\":[{\"id\":\"second\",\"parentFolderId\":\"cursor-folder-id\"}]}".to_string(),
+        ];
+        let (base_url, requests, handle) = mock_server_sequence(responses);
+        let service = ExchangeService {
+            server_url: base_url,
+            ..ExchangeService::graph("user@example.org", "token")
+        };
+
+        let first = service
+            .search_messages_cursor_sync(Some("folder-id"), Some("Inbox"), "\"roadmap\"", None, 1)
+            .expect("first Graph search cursor page should load");
+        assert!(!first.is_complete);
+        let cursor = first
+            .next_cursor
+            .as_deref()
+            .expect("first search page should expose its continuation cursor")
+            .to_string();
+
+        // A continuation is opaque: these values must not be validated,
+        // folded into the URL, or used to rebuild the original search.
+        let second = service
+            .search_messages_cursor_sync(
+                Some("folder with\ninvalid id"),
+                Some("Not the original folder"),
+                "\n",
+                Some(&cursor),
+                1,
+            )
+            .expect("continuation Graph search cursor page should load");
+        assert!(second.is_complete);
+        assert!(second.next_cursor.is_none());
+        assert_eq!(first.messages[0].id, "first");
+        assert_eq!(second.messages[0].id, "second");
+        assert_eq!(second.messages[0].folder_id, "cursor-folder-id");
+
+        let requests = requests.recv().expect("requests should be captured");
+        handle.join().expect("mock server should finish");
+        assert!(requests[0].contains("GET /v1.0/me/mailFolders/folder-id/messages?"));
+        assert!(requests[0].contains("%24search="));
+        assert!(requests[1].contains("GET /v1.0/search-page-2?skiptoken=opaque%2Bcursor"));
+        assert!(!requests[1].contains("mailFolders"));
+        assert!(!requests[1].contains("%24search"));
+    }
+
+    #[test]
+    fn graph_message_search_cursor_rejects_a_foreign_origin_before_transport() {
+        let service = ExchangeService::graph("user@example.org", "token");
+
+        let error = service
+            .search_messages_cursor_sync(
+                Some("folder\nnot-used"),
+                Some("not-used"),
+                "\n",
+                Some("https://attacker.example/v1.0/me/messages?skiptoken=opaque"),
+                20,
+            )
+            .expect_err("foreign Graph cursor origin must be rejected");
+        assert!(matches!(error, ExchangeError::InvalidUrl(_)));
+    }
+
+    #[test]
+    fn graph_message_search_cursor_rejects_a_foreign_origin_from_graph() {
+        let response = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{\"value\":[{\"id\":\"first\"}],\"@odata.nextLink\":\"https://attacker.example/v1.0/me/messages?skiptoken=opaque\"}";
+        let (base_url, requests, handle) = mock_server(response);
+        let service = ExchangeService {
+            server_url: base_url,
+            ..ExchangeService::graph("user@example.org", "token")
+        };
+
+        let error = service
+            .search_messages_cursor_sync(None, None, "\"roadmap\"", None, 20)
+            .expect_err("foreign Graph continuation origin must be rejected");
+        requests.recv().expect("request should be captured");
+        handle.join().expect("mock server should finish");
+
+        assert!(matches!(error, ExchangeError::InvalidUrl(_)));
+    }
+
+    #[test]
+    fn graph_message_search_cursor_drops_next_cursor_on_page_truncation() {
+        let response = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{\"value\":[{\"id\":\"first\"},{\"id\":\"second\"}],\"@odata.nextLink\":\"__BASE__/search-page-2\"}".to_string();
+        let (base_url, requests, handle) = mock_server_sequence(vec![response]);
+        let service = ExchangeService {
+            server_url: base_url,
+            ..ExchangeService::graph("user@example.org", "token")
+        };
+
+        let result = service
+            .search_messages_cursor_sync(None, None, "\"roadmap\"", None, 1)
+            .expect("Graph search should return the bounded page");
+        requests.recv().expect("request should be captured");
+        handle.join().expect("mock server should finish");
+
+        assert!(!result.is_complete);
+        assert!(result.next_cursor.is_none());
+        assert_eq!(result.messages.len(), 1);
+        assert_eq!(result.messages[0].id, "first");
+    }
+
+    #[test]
+    fn graph_message_search_reports_an_incomplete_limit_with_remaining_next_link() {
+        let responses = vec![
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{\"value\":[{\"id\":\"first\"}],\"@odata.nextLink\":\"__BASE__/search-page-2\"}".to_string(),
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{\"value\":[{\"id\":\"second\"}],\"@odata.nextLink\":\"__BASE__/search-page-3\"}".to_string(),
+        ];
+        let (base_url, requests, handle) = mock_server_sequence(responses);
+        let expected_cursor = format!("{base_url}/search-page-3");
+        let service = ExchangeService {
+            server_url: base_url,
+            ..ExchangeService::graph("user@example.org", "token")
+        };
+
+        let result = service
+            .search_messages_sync(None, None, "\"roadmap\"", 2)
+            .expect("Graph search should return its bounded result");
+        let requests = requests.recv().expect("requests should be captured");
+        handle.join().expect("mock server should finish");
+
+        assert!(!result.is_complete);
+        assert_eq!(
+            result.next_cursor.as_deref(),
+            Some(expected_cursor.as_str())
+        );
+        assert_eq!(result.messages.len(), 2);
+        assert_eq!(requests.len(), 2);
+    }
+
+    #[test]
+    fn graph_message_search_reports_page_truncation_without_next_link() {
+        let response = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{\"value\":[{\"id\":\"first\"},{\"id\":\"second\"},{\"id\":\"third\"}]}";
+        let (base_url, requests, handle) = mock_server(response);
+        let service = ExchangeService {
+            server_url: base_url,
+            ..ExchangeService::graph("user@example.org", "token")
+        };
+
+        let result = service
+            .search_messages_sync(None, None, "\"roadmap\"", 2)
+            .expect("Graph search should return the bounded page");
+        requests.recv().expect("request should be captured");
+        handle.join().expect("mock server should finish");
+
+        assert!(!result.is_complete);
+        assert_eq!(result.messages.len(), 2);
+        assert_eq!(result.messages[1].id, "second");
     }
 
     #[test]

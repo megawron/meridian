@@ -10,6 +10,7 @@ use crate::services::settings_service::AppSettings;
 
 pub mod about_dialog;
 pub mod account_setup_dialog;
+pub mod advanced_search_dialog;
 pub mod availability_dialog;
 pub mod calendar_purge_dialog;
 pub mod compose_dialog;
@@ -32,6 +33,8 @@ pub mod source_properties_dialog;
 
 pub use about_dialog::show_about_dialog;
 pub use account_setup_dialog::AccountSetupDialog;
+#[allow(unused_imports)]
+pub use advanced_search_dialog::AdvancedSearchDialog;
 pub use availability_dialog::AvailabilityDialog;
 pub use calendar_purge_dialog::CalendarPurgeDialog;
 pub use compose_dialog::ComposeDialog;

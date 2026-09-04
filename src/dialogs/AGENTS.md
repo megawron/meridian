@@ -49,6 +49,10 @@ and updates to the service/settings APIs.
   column order. Moving any column persists `custom`; applying a named profile
   restores that profile's deterministic order. The daily column popover also
   exposes both named profiles and sender/date widths.
+- Advanced search and search folder dialogs construct only canonical query
+  syntax, validate generated rules against the canonical parser before
+  forwarding them to callbacks, preserve exact folder/account scopes without
+  broadening, and fail closed on empty or invalid input.
 
 ## Verification
 

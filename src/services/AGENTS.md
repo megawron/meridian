@@ -101,6 +101,12 @@ settings persistence.
   schema/default, preference surface, live use, backup and migration evidence
   separately, preserve deliberate secret exclusions, and report unsupported
   or missing fields instead of inferring native EDS/provider effect.
+- Mail search uses one canonical query AST and matcher across quick search,
+  advanced search, and saved searches. Saved-search v2 persists field, scope,
+  target account/folder identities, and the versioned AST; v1 files migrate
+  deterministically. Protected saved-search mutations write atomically with
+  process-local RMW serialization and reject corrupt, mismatched, or duplicate
+  payloads fail-closed.
 
 ## Work Guidance
 
