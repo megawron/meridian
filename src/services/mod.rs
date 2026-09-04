@@ -8,6 +8,7 @@ pub mod backup_service;
 pub mod calendar_category_service;
 pub mod calendar_store_service;
 pub mod camel_mail_service;
+pub mod contact_print_service;
 pub mod contact_search_service;
 pub mod contact_store_service;
 pub mod crypto_service;

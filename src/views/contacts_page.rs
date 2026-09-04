@@ -11,6 +11,9 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use crate::services::contact_print_service::{
+    build_contact_list_print_document, build_contact_print_document,
+};
 use crate::services::contact_search_service::{
     ContactIdentity, ContactOuterFilters, ContactSearchEvaluation, ContactSearchField,
     ContactSearchQuery, ContactSearchSnapshot, LastValidContactSearch, LatestContactSearchWorker,
@@ -700,6 +703,7 @@ impl ContactsPage {
 
         let new_contact_bar = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
+            .spacing(6)
             .margin_start(8)
             .margin_end(8)
             .margin_top(8)
@@ -821,6 +825,43 @@ impl ContactsPage {
         ));
         set_accessible_label(&new_list_btn, "Neue Kontaktliste erstellen");
         new_contact_bar.append(&new_list_btn);
+
+        let print_list_btn = gtk::Button::builder()
+            .icon_name("document-print-symbolic")
+            .tooltip_text("Sichtbare Kontakte drucken")
+            .build();
+        set_accessible_label(&print_list_btn, "Sichtbare Kontakte drucken");
+        let contact_list_for_list_print = contact_list.clone();
+        let stored_contacts_for_list_print = Rc::clone(&stored_contacts);
+        let search_state_for_list_print = Rc::clone(&search_state);
+        print_list_btn.connect_clicked(glib::clone!(
+            #[weak(rename_to = page)]
+            self,
+            move |_| {
+                let visible = match visible_contact_records_checked(
+                    &contact_list_for_list_print,
+                    &stored_contacts_for_list_print,
+                    &search_state_for_list_print,
+                ) {
+                    Ok(visible) => visible,
+                    Err(error) => {
+                        page.show_toast(&error);
+                        return;
+                    }
+                };
+                match build_contact_list_print_document(&visible) {
+                    Ok(doc) => {
+                        let count = doc.contact_count;
+                        let len = doc.html.len();
+                        page.show_toast(&format!(
+                            "Portables Listen-Druckdokument vorbereitet ({len} Zeichen, {count} Kontakte); Print-Portal ist Linux-Handoff"
+                        ));
+                    }
+                    Err(error) => page.show_toast(&error),
+                }
+            }
+        ));
+        new_contact_bar.append(&print_list_btn);
         sidebar_box.append(&new_contact_bar);
 
         let sidebar_scroll = gtk::ScrolledWindow::builder()
@@ -1291,6 +1332,48 @@ impl ContactsPage {
             }
         ));
 
+        let print_btn = gtk::Button::builder()
+            .icon_name("document-print-symbolic")
+            .tooltip_text("Ausgewählte Kontakte drucken")
+            .css_classes(vec!["circular"])
+            .build();
+        set_accessible_label(&print_btn, "Ausgewählte Kontakte drucken");
+        let contact_list_for_print = contact_list.clone();
+        let stored_contacts_for_print = Rc::clone(&stored_contacts);
+        print_btn.connect_clicked(glib::clone!(
+            #[weak(rename_to = page)]
+            self,
+            move |_| {
+                let selected = match selected_contact_records_checked(
+                    &contact_list_for_print,
+                    &stored_contacts_for_print,
+                ) {
+                    Ok(selected) => selected,
+                    Err(error) => {
+                        page.show_toast(&error);
+                        return;
+                    }
+                };
+                match build_contact_print_document(&selected) {
+                    Ok(doc) => {
+                        let count = doc.contact_count;
+                        let len = doc.html.len();
+                        let label = if count == 1 {
+                            format!(
+                                "Portables Druckdokument vorbereitet ({len} Zeichen, 1 Kontakt); Print-Portal ist Linux-Handoff"
+                            )
+                        } else {
+                            format!(
+                                "Portables Druckdokument vorbereitet ({len} Zeichen, {count} Kontakte); Print-Portal ist Linux-Handoff"
+                            )
+                        };
+                        page.show_toast(&label);
+                    }
+                    Err(error) => page.show_toast(&error),
+                }
+            }
+        ));
+
         let call_btn = gtk::Button::builder()
             .icon_name("call-start-symbolic")
             .tooltip_text("Telefonnummer anrufen")
@@ -1330,11 +1413,22 @@ impl ContactsPage {
             self,
             move |_| {
                 if let Some(record) = selected_contact_for_map.borrow().as_ref() {
-                    let addr = record.contact.addresses.first().map(|s| s.as_str()).unwrap_or("");
+                    let addr = record
+                        .contact
+                        .addresses
+                        .first()
+                        .map(|s| s.as_str())
+                        .unwrap_or("");
                     if !addr.is_empty() {
                         let encoded: String = addr
                             .chars()
-                            .map(|c| if c.is_alphanumeric() || c == ' ' { c } else { '+' })
+                            .map(|c| {
+                                if c.is_alphanumeric() || c == ' ' {
+                                    c
+                                } else {
+                                    '+'
+                                }
+                            })
                             .collect();
                         let uri = format!(
                             "https://www.openstreetmap.org/search?query={}",
@@ -1363,7 +1457,12 @@ impl ContactsPage {
             self,
             move |_| {
                 if let Some(record) = selected_contact_for_web.borrow().as_ref() {
-                    let url = record.contact.urls.first().map(|s| s.as_str()).unwrap_or("");
+                    let url = record
+                        .contact
+                        .urls
+                        .first()
+                        .map(|s| s.as_str())
+                        .unwrap_or("");
                     if !url.is_empty() {
                         let uri = if url.starts_with("http://") || url.starts_with("https://") {
                             url.to_string()
@@ -1381,6 +1480,117 @@ impl ContactsPage {
             }
         ));
 
+        let copy_to_book_btn = gtk::Button::builder()
+            .icon_name("edit-copy-symbolic")
+            .tooltip_text("In Adressbuch kopieren…")
+            .css_classes(vec!["circular"])
+            .build();
+        set_accessible_label(&copy_to_book_btn, "In Adressbuch kopieren");
+
+        let move_to_book_btn = gtk::Button::builder()
+            .icon_name("folder-move-symbolic")
+            .tooltip_text("In Adressbuch verschieben…")
+            .css_classes(vec!["circular"])
+            .build();
+        set_accessible_label(&move_to_book_btn, "In Adressbuch verschieben");
+
+        let transfer_ctx = ContactTransferUiContext {
+            contact_list: contact_list.clone(),
+            stored_contacts: Rc::clone(&stored_contacts),
+            selected_contact: Rc::clone(&selected_contact),
+            detail_avatar: detail_avatar.clone(),
+            detail_name: detail_name.clone(),
+            detail_title: detail_title.clone(),
+            detail_extra: detail_extra.clone(),
+            email_btn: email_btn.clone(),
+            export_btn: export_btn.clone(),
+            print_btn: print_btn.clone(),
+            edit_btn: edit_btn.clone(),
+            merge_btn: merge_btn.clone(),
+            delete_btn: delete_btn.clone(),
+            copy_to_book_btn: copy_to_book_btn.clone(),
+            move_to_book_btn: move_to_book_btn.clone(),
+            category_model: category_model.clone(),
+            category_selector: category_selector.clone(),
+            selected_category: Rc::clone(&selected_category),
+            empty_state: empty_state.clone(),
+            search_state: Rc::clone(&search_state),
+        };
+
+        let contact_list_for_copy_book = contact_list.clone();
+        let stored_contacts_for_copy_book = Rc::clone(&stored_contacts);
+        let selected_contact_for_copy_book = Rc::clone(&selected_contact);
+        let book_model_for_copy_book = book_model.clone();
+        let book_source_uids_for_copy_book = Rc::clone(&book_source_uids);
+        let ctx_for_copy_book = transfer_ctx.clone();
+        let detail_name_for_copy_book = detail_name.clone();
+        copy_to_book_btn.connect_clicked(glib::clone!(
+            #[weak(rename_to = page)]
+            self,
+            move |_| {
+                let selected = match selected_contact_records_checked(
+                    &contact_list_for_copy_book,
+                    &stored_contacts_for_copy_book,
+                ) {
+                    Ok(selected) if !selected.is_empty() => selected,
+                    _ => {
+                        if let Some(contact) = selected_contact_for_copy_book.borrow().clone() {
+                            vec![contact]
+                        } else {
+                            page.show_toast("Kein Kontakt ausgewählt");
+                            return;
+                        }
+                    }
+                };
+                run_contact_transfer_dialog(
+                    &detail_name_for_copy_book,
+                    &page,
+                    ContactTransferKind::Copy,
+                    selected,
+                    &book_model_for_copy_book,
+                    &book_source_uids_for_copy_book.borrow(),
+                    ctx_for_copy_book.clone(),
+                );
+            }
+        ));
+
+        let contact_list_for_move_book = contact_list.clone();
+        let stored_contacts_for_move_book = Rc::clone(&stored_contacts);
+        let selected_contact_for_move_book = Rc::clone(&selected_contact);
+        let book_model_for_move_book = book_model.clone();
+        let book_source_uids_for_move_book = Rc::clone(&book_source_uids);
+        let ctx_for_move_book = transfer_ctx.clone();
+        let detail_name_for_move_book = detail_name.clone();
+        move_to_book_btn.connect_clicked(glib::clone!(
+            #[weak(rename_to = page)]
+            self,
+            move |_| {
+                let selected = match selected_contact_records_checked(
+                    &contact_list_for_move_book,
+                    &stored_contacts_for_move_book,
+                ) {
+                    Ok(selected) if !selected.is_empty() => selected,
+                    _ => {
+                        if let Some(contact) = selected_contact_for_move_book.borrow().clone() {
+                            vec![contact]
+                        } else {
+                            page.show_toast("Kein Kontakt ausgewählt");
+                            return;
+                        }
+                    }
+                };
+                run_contact_transfer_dialog(
+                    &detail_name_for_move_book,
+                    &page,
+                    ContactTransferKind::Move,
+                    selected,
+                    &book_model_for_move_book,
+                    &book_source_uids_for_move_book.borrow(),
+                    ctx_for_move_book.clone(),
+                );
+            }
+        ));
+
         let selected_contact_for_delete = Rc::clone(&selected_contact);
         let stored_contacts_for_delete = Rc::clone(&stored_contacts);
         let contact_list_for_delete = contact_list.clone();
@@ -1394,39 +1604,41 @@ impl ContactsPage {
         let selected_category_for_delete = Rc::clone(&selected_category);
         let email_btn_for_delete = email_btn.clone();
         let export_btn_for_delete = export_btn.clone();
+        let print_btn_for_delete = print_btn.clone();
         let edit_btn_for_delete = edit_btn.clone();
         let merge_btn_for_delete = merge_btn.clone();
         let delete_btn_for_delete = delete_btn.clone();
+        let copy_to_book_btn_for_delete = copy_to_book_btn.clone();
+        let move_to_book_btn_for_delete = move_to_book_btn.clone();
         let search_state_for_delete = Rc::clone(&search_state);
         delete_btn.connect_clicked(glib::clone!(
             #[weak(rename_to = page)]
             self,
             move |_| {
-                let Some(contact) = selected_contact_for_delete.borrow().clone() else {
-                    page.show_toast("Kein Kontakt ausgewählt");
-                    return;
+                let selected = match selected_contact_records_checked(
+                    &contact_list_for_delete,
+                    &stored_contacts_for_delete,
+                ) {
+                    Ok(selected) if !selected.is_empty() => selected,
+                    _ => {
+                        if let Some(contact) = selected_contact_for_delete.borrow().clone() {
+                            vec![contact]
+                        } else {
+                            page.show_toast("Kein Kontakt ausgewählt");
+                            return;
+                        }
+                    }
                 };
-                if !contact_source_is_writable(&contact.source_uid) {
-                    page.show_toast(
-                        "Dieser Kontakt stammt aus einer schreibgeschützten importierten Quelle",
-                    );
-                    return;
-                }
 
-                let source_name = contact_source_label(
-                    &contact.source_display_name,
-                    &contact.source_uid,
-                );
-                let confirmation_message = if contact.source_uid == LOCAL_ADDRESS_BOOK_SOURCE_UID {
-                    format!(
-                        "Der Kontakt wird dauerhaft aus dem lokalen Adressbuch („{source_name}“) entfernt."
-                    )
-                } else {
-                    format!(
-                        "Der Kontakt wird dauerhaft aus dem synchronisierten Adressbuch „{source_name}“ entfernt."
-                    )
+                let plan = match plan_contact_delete_batch(&selected) {
+                    Ok(plan) => plan,
+                    Err(error) => {
+                        page.show_toast(&error);
+                        return;
+                    }
                 };
-                let contact_for_action = contact.clone();
+
+                let plan_for_action = plan.clone();
                 let selected_contact_for_action = Rc::clone(&selected_contact_for_delete);
                 let stored_contacts_for_action = Rc::clone(&stored_contacts_for_delete);
                 let contact_list_for_action = contact_list_for_delete.clone();
@@ -1440,29 +1652,61 @@ impl ContactsPage {
                 let selected_category_for_action = Rc::clone(&selected_category_for_delete);
                 let email_btn_for_action = email_btn_for_delete.clone();
                 let export_btn_for_action = export_btn_for_delete.clone();
+                let print_btn_for_action = print_btn_for_delete.clone();
                 let edit_btn_for_action = edit_btn_for_delete.clone();
                 let merge_btn_for_action = merge_btn_for_delete.clone();
                 let delete_btn_for_action = delete_btn_for_delete.clone();
+                let copy_to_book_btn_for_action = copy_to_book_btn_for_delete.clone();
+                let move_to_book_btn_for_action = move_to_book_btn_for_delete.clone();
                 let page_weak_for_action = page.downgrade();
                 let search_state_for_action = Rc::clone(&search_state_for_delete);
                 crate::dialogs::run_destructive_action(
                     &detail_name_for_delete,
-                    "Kontakt löschen?",
-                    &confirmation_message,
+                    &plan.confirmation.title,
+                    &plan.confirmation.description,
                     "Löschen",
                     move || {
-                        let source_uid = contact_for_action.source_uid.clone();
-                        let contact_uid = contact_for_action.uid.clone();
+                        let plan_for_worker = plan_for_action.clone();
                         let (sender, receiver) = async_channel::bounded(1);
                         std::thread::spawn(move || {
-                            let result =
-                                EBookService::new().remove_contact(&source_uid, &contact_uid);
+                            let service = EBookService::new();
+                            let mut result = ContactDeleteWorkerResult {
+                                removed: Vec::with_capacity(plan_for_worker.items.len()),
+                                failure: None,
+                            };
+                            for item in plan_for_worker.items {
+                                if !contact_source_is_writable(&item.identity.source_uid) {
+                                    result.failure = Some((
+                                        item.identity,
+                                        "Die Adressbuchquelle ist unmittelbar vor dem Löschen nicht mehr schreibfähig"
+                                            .to_string(),
+                                    ));
+                                    break;
+                                }
+                                match service.remove_contact(&item.identity.source_uid, &item.identity.uid) {
+                                    Ok(confirmed) => {
+                                        let confirmed_uid = confirmed_contact_uid(&confirmed.uid, &item.identity.uid);
+                                        if confirmed_uid == item.identity.uid {
+                                            result.removed.push(item.identity);
+                                        } else {
+                                            result.failure = Some((
+                                                item.identity,
+                                                "Das Backend bestätigte das Löschen eines anderen Kontakts".to_string(),
+                                            ));
+                                            break;
+                                        }
+                                    }
+                                    Err(error) => {
+                                        result.failure = Some((item.identity, error.to_string()));
+                                        break;
+                                    }
+                                }
+                            }
                             if let Err(error) = sender.send_blocking(result) {
                                 tracing::debug!(%error, "Contact deletion result was dropped");
                             }
                         });
 
-                        let contact_for_result = contact_for_action.clone();
                         let selected_contact_for_result = Rc::clone(&selected_contact_for_action);
                         let stored_contacts_for_result = Rc::clone(&stored_contacts_for_action);
                         let contact_list_for_result = contact_list_for_action.clone();
@@ -1470,81 +1714,124 @@ impl ContactsPage {
                         let detail_title_for_result = detail_title_for_action.clone();
                         let detail_avatar_for_result = detail_avatar_for_action.clone();
                         let detail_extra_for_result = detail_extra_for_action.clone();
+                        let empty_state_for_result = empty_state_for_action.clone();
+                        let category_model_for_result = category_model_for_action.clone();
+                        let category_selector_for_result = category_selector_for_action.clone();
+                        let selected_category_for_result = Rc::clone(&selected_category_for_action);
+                        let email_btn_for_result = email_btn_for_action.clone();
+                        let export_btn_for_result = export_btn_for_action.clone();
+                        let print_btn_for_result = print_btn_for_action.clone();
+                        let edit_btn_for_result = edit_btn_for_action.clone();
+                        let merge_btn_for_result = merge_btn_for_action.clone();
+                        let delete_btn_for_result = delete_btn_for_action.clone();
+                        let copy_to_book_btn_for_result = copy_to_book_btn_for_action.clone();
+                        let move_to_book_btn_for_result = move_to_book_btn_for_action.clone();
                         let page_weak_for_result = page_weak_for_action.clone();
+                        let search_state_for_result = Rc::clone(&search_state_for_action);
                         glib::spawn_future_local(async move {
                             match receiver.recv().await {
-                                Ok(Ok(result)) => {
-                                    let uid = result.uid;
-                                    let uid = confirmed_contact_uid(&uid, &contact_for_result.uid);
-                                    let key = (contact_for_result.source_uid.clone(), uid.clone());
-                                    if let Some(page) = page_weak_for_result.upgrade() {
-                                        clear_contact_selection(&page, &contact_list_for_result);
-                                    }
-                                    if let Some(index) = stored_contacts_for_result
-                                        .borrow()
-                                        .iter()
-                                        .position(|item| {
-                                            (item.source_uid.clone(), item.uid.clone()) == key
-                                        })
-                                    {
-                                        remove_contact_list_row(
+                                Ok(result) => {
+                                    let removed_count = result.removed.len();
+                                    if removed_count > 0 {
+                                        if let Some(page) = page_weak_for_result.upgrade() {
+                                            clear_contact_selection(&page, &contact_list_for_result);
+                                        }
+                                        for removed_id in &result.removed {
+                                            remove_contact_list_row(
+                                                &contact_list_for_result,
+                                                &removed_id.source_uid,
+                                                &removed_id.uid,
+                                            );
+                                        }
+                                        let updated = reduce_contact_delete_result(
+                                            &stored_contacts_for_result.borrow(),
+                                            &result.removed,
+                                        );
+                                        *stored_contacts_for_result.borrow_mut() = updated;
+
+                                        let selected_is_deleted = selected_contact_for_result
+                                            .borrow()
+                                            .as_ref()
+                                            .map(|c| {
+                                                result.removed.iter().any(|r| {
+                                                    r.source_uid == c.source_uid && r.uid == c.uid
+                                                })
+                                            })
+                                            .unwrap_or(false);
+
+                                        if selected_is_deleted {
+                                            *selected_contact_for_result.borrow_mut() = None;
+                                            detail_avatar_for_result.set_text(Some(""));
+                                            detail_avatar_for_result
+                                                .set_custom_image(None::<&gdk::Texture>);
+                                            detail_name_for_result
+                                                .set_label("Kein Kontakt ausgewählt");
+                                            detail_title_for_result.set_label(
+                                                "Adressbuchdaten werden nach der Synchronisation angezeigt",
+                                            );
+                                            detail_extra_for_result
+                                                .set_label("Keine weiteren Kontaktdaten");
+                                        }
+
+                                        mark_duplicate_rows(
                                             &contact_list_for_result,
-                                            &contact_for_result.source_uid,
-                                            &uid,
+                                            &stored_contacts_for_result,
                                         );
-                                        stored_contacts_for_result.borrow_mut().remove(index);
-                                    }
-                                    mark_duplicate_rows(
-                                        &contact_list_for_result,
-                                        &stored_contacts_for_result,
-                                    );
-                                    empty_state_for_action.set_visible(
-                                        stored_contacts_for_result.borrow().is_empty(),
-                                    );
-                                    if stored_contacts_for_result.borrow().is_empty() {
-                                        empty_state_for_action
-                                            .set_label("Keine Kontakte im Adressbuch geladen");
-                                    }
-                                    refresh_contact_category_model(
-                                        &category_model_for_action,
-                                        &category_selector_for_action,
-                                        &stored_contacts_for_result,
-                                        &selected_category_for_action,
-                                    );
-                                    *selected_contact_for_result.borrow_mut() = None;
-                                    detail_avatar_for_result.set_text(Some(""));
-                                    detail_avatar_for_result
-                                        .set_custom_image(None::<&gdk::Texture>);
-                                    detail_name_for_result.set_label("Kein Kontakt ausgewählt");
-                                    detail_title_for_result.set_label(
-                                        "Adressbuchdaten werden nach der Synchronisation angezeigt",
-                                    );
-                                    detail_extra_for_result
-                                        .set_label("Keine weiteren Kontaktdaten");
-                                    update_contact_action_sensitivity(
-                                        &email_btn_for_action,
-                                        &export_btn_for_action,
-                                        &edit_btn_for_action,
-                                        &merge_btn_for_action,
-                                        &delete_btn_for_action,
-                                        None,
-                                        &selected_contact_for_result,
-                                        &stored_contacts_for_result,
-                                    );
-                                    if let Some(page) = page_weak_for_result.upgrade() {
-                                        reapply_active_contact_search(
-                                            page.downgrade(),
-                                            Rc::clone(&search_state_for_action),
-                                            Rc::clone(&stored_contacts_for_result),
+                                        empty_state_for_result.set_visible(
+                                            stored_contacts_for_result.borrow().is_empty(),
                                         );
-                                        page.show_toast(&format!("Kontakt gelöscht ({uid})"));
+                                        if stored_contacts_for_result.borrow().is_empty() {
+                                            empty_state_for_result
+                                                .set_label("Keine Kontakte im Adressbuch geladen");
+                                        }
+                                        refresh_contact_category_model(
+                                            &category_model_for_result,
+                                            &category_selector_for_result,
+                                            &stored_contacts_for_result,
+                                            &selected_category_for_result,
+                                        );
+                                        update_contact_action_sensitivity(
+                                            &email_btn_for_result,
+                                            &export_btn_for_result,
+                                            &edit_btn_for_result,
+                                            &merge_btn_for_result,
+                                            &delete_btn_for_result,
+                                            Some(&print_btn_for_result),
+                                            None,
+                                            Some(&copy_to_book_btn_for_result),
+                                            Some(&move_to_book_btn_for_result),
+                                            &selected_contact_for_result,
+                                            &stored_contacts_for_result,
+                                        );
+                                        if let Some(page) = page_weak_for_result.upgrade() {
+                                            reapply_active_contact_search(
+                                                page.downgrade(),
+                                                Rc::clone(&search_state_for_result),
+                                                Rc::clone(&stored_contacts_for_result),
+                                            );
+                                        }
                                     }
-                                }
-                                Ok(Err(error)) => {
-                                    show_toast_for_widget(
-                                        &detail_name_for_result,
-                                        &format!("Kontakt konnte nicht gelöscht werden: {error}"),
-                                    );
+
+                                    if let Some((failed_id, error)) = result.failure {
+                                        let message = if removed_count > 0 {
+                                            format!(
+                                                "{removed_count} Kontakt(e) gelöscht; Fehler beim Löschen von {}: {error}",
+                                                failed_id.uid
+                                            )
+                                        } else {
+                                            format!("Kontakt konnte nicht gelöscht werden: {error}")
+                                        };
+                                        show_toast_for_widget(&detail_name_for_result, &message);
+                                    } else if removed_count == 1 {
+                                        let uid = &result.removed[0].uid;
+                                        if let Some(page) = page_weak_for_result.upgrade() {
+                                            page.show_toast(&format!("Kontakt gelöscht ({uid})"));
+                                        }
+                                    } else if removed_count > 1 {
+                                        if let Some(page) = page_weak_for_result.upgrade() {
+                                            page.show_toast(&format!("{removed_count} Kontakte gelöscht"));
+                                        }
+                                    }
                                 }
                                 Err(error) => {
                                     tracing::debug!(%error, "Contact deletion channel closed");
@@ -1562,6 +1849,9 @@ impl ContactsPage {
         let email_btn_for_context = email_btn.clone();
         let edit_btn_for_context = edit_btn.clone();
         let export_btn_for_context = export_btn.clone();
+        let print_btn_for_context = print_btn.clone();
+        let copy_to_book_btn_for_context = copy_to_book_btn.clone();
+        let move_to_book_btn_for_context = move_to_book_btn.clone();
         let merge_btn_for_context = merge_btn.clone();
         let delete_btn_for_context = delete_btn.clone();
         let selected_contact_for_context = Rc::clone(&selected_contact);
@@ -1626,6 +1916,39 @@ impl ContactsPage {
             });
             menu_box.append(&export);
 
+            let print = gtk::Button::with_label("Drucken…");
+            print.set_halign(gtk::Align::Fill);
+            print.add_css_class("flat");
+            let popover_for_print = popover.clone();
+            let print_button_for_menu = print_btn_for_context.clone();
+            print.connect_clicked(move |_| {
+                popover_for_print.popdown();
+                print_button_for_menu.activate();
+            });
+            menu_box.append(&print);
+
+            let copy_to_book = gtk::Button::with_label("In Adressbuch kopieren…");
+            copy_to_book.set_halign(gtk::Align::Fill);
+            copy_to_book.add_css_class("flat");
+            let popover_for_copy_to_book = popover.clone();
+            let copy_to_book_button_for_menu = copy_to_book_btn_for_context.clone();
+            copy_to_book.connect_clicked(move |_| {
+                popover_for_copy_to_book.popdown();
+                copy_to_book_button_for_menu.activate();
+            });
+            menu_box.append(&copy_to_book);
+
+            let move_to_book = gtk::Button::with_label("In Adressbuch verschieben…");
+            move_to_book.set_halign(gtk::Align::Fill);
+            move_to_book.add_css_class("flat");
+            let popover_for_move_to_book = popover.clone();
+            let move_to_book_button_for_menu = move_to_book_btn_for_context.clone();
+            move_to_book.connect_clicked(move |_| {
+                popover_for_move_to_book.popdown();
+                move_to_book_button_for_menu.activate();
+            });
+            menu_box.append(&move_to_book);
+
             let merge = gtk::Button::with_label("Dubletten zusammenführen");
             merge.set_halign(gtk::Align::Fill);
             merge.add_css_class("flat");
@@ -1657,7 +1980,18 @@ impl ContactsPage {
                 selected_contact_for_context.borrow().as_ref(),
                 &stored_contacts_for_context.borrow(),
             );
-            apply_contact_action_state(action_state, &email, &export, &edit, &merge, &delete, None);
+            apply_contact_action_state(
+                action_state,
+                &email,
+                &export,
+                &edit,
+                &merge,
+                &delete,
+                Some(&print),
+                None,
+                Some(&copy_to_book),
+                Some(&move_to_book),
+            );
 
             popover.set_child(Some(&menu_box));
             popover.set_parent(&contact_list_for_context);
@@ -1671,11 +2005,51 @@ impl ContactsPage {
         });
         contact_list.add_controller(context_click);
 
+        let list_key_controller = gtk::EventControllerKey::new();
+        let delete_btn_for_key = delete_btn.clone();
+        let print_btn_for_key = print_btn.clone();
+        let print_list_btn_for_key = print_list_btn.clone();
+        let contact_list_for_key = contact_list.clone();
+        list_key_controller.connect_key_pressed(move |_, key, _, modifiers| {
+            if (key == gtk::gdk::Key::Delete
+                || key == gtk::gdk::Key::BackSpace
+                || key == gtk::gdk::Key::KP_Delete)
+                && modifiers
+                    .difference(gtk::gdk::ModifierType::LOCK_MASK)
+                    .is_empty()
+            {
+                if delete_btn_for_key.is_sensitive() {
+                    delete_btn_for_key.activate();
+                    return glib::Propagation::Stop;
+                }
+            } else if (key == gtk::gdk::Key::a || key == gtk::gdk::Key::A)
+                && modifiers.contains(gtk::gdk::ModifierType::CONTROL_MASK)
+            {
+                contact_list_for_key.select_all();
+                return glib::Propagation::Stop;
+            } else if (key == gtk::gdk::Key::p || key == gtk::gdk::Key::P)
+                && modifiers.contains(gtk::gdk::ModifierType::CONTROL_MASK)
+            {
+                if print_btn_for_key.is_sensitive() {
+                    print_btn_for_key.activate();
+                    return glib::Propagation::Stop;
+                } else if print_list_btn_for_key.is_sensitive() {
+                    print_list_btn_for_key.activate();
+                    return glib::Propagation::Stop;
+                }
+            }
+            glib::Propagation::Proceed
+        });
+        contact_list.add_controller(list_key_controller);
+
         actions_box.append(&email_btn);
         actions_box.append(&call_btn);
         actions_box.append(&map_btn);
         actions_box.append(&web_btn);
         actions_box.append(&export_btn);
+        actions_box.append(&print_btn);
+        actions_box.append(&copy_to_book_btn);
+        actions_box.append(&move_to_book_btn);
         actions_box.append(&edit_btn);
         actions_box.append(&merge_btn);
         actions_box.append(&delete_btn);
@@ -1755,6 +2129,9 @@ impl ContactsPage {
         let page_weak_for_selection = self.downgrade();
         let email_btn_for_selection = email_btn.clone();
         let export_btn_for_selection = export_btn.clone();
+        let print_btn_for_selection = print_btn.clone();
+        let copy_to_book_btn_for_selection = copy_to_book_btn.clone();
+        let move_to_book_btn_for_selection = move_to_book_btn.clone();
         let edit_btn_for_selection = edit_btn.clone();
         let merge_btn_for_selection = merge_btn.clone();
         let delete_btn_for_selection = delete_btn.clone();
@@ -1781,10 +2158,13 @@ impl ContactsPage {
                 &email_row_for_selection,
                 &email_btn_for_selection,
                 &export_btn_for_selection,
+                &print_btn_for_selection,
                 &edit_btn_for_selection,
                 &merge_btn_for_selection,
                 &delete_btn_for_selection,
                 &copy_btn_for_selection,
+                &copy_to_book_btn_for_selection,
+                &move_to_book_btn_for_selection,
             );
         });
 
@@ -1801,10 +2181,13 @@ impl ContactsPage {
             &email_row1,
             &email_btn,
             &export_btn,
+            &print_btn,
             &edit_btn,
             &merge_btn,
             &delete_btn,
             &copy_btn1,
+            &copy_to_book_btn,
+            &move_to_book_btn,
         );
 
         let edit_btn_for_activate = edit_btn.clone();
@@ -1831,10 +2214,13 @@ impl ContactsPage {
             let page_weak_for_monitor = self.downgrade();
             let email_btn_for_monitor = email_btn.clone();
             let export_btn_for_monitor = export_btn.clone();
+            let print_btn_for_monitor = print_btn.clone();
             let edit_btn_for_monitor = edit_btn.clone();
             let merge_btn_for_monitor = merge_btn.clone();
             let delete_btn_for_monitor = delete_btn.clone();
             let copy_btn_for_monitor = copy_btn1.clone();
+            let copy_to_book_btn_for_monitor = copy_to_book_btn.clone();
+            let move_to_book_btn_for_monitor = move_to_book_btn.clone();
             glib::spawn_future_local(async move {
                 while let Ok(event) = receiver.recv().await {
                     let Some(page) = page_weak_for_monitor.upgrade() else {
@@ -1942,10 +2328,13 @@ impl ContactsPage {
                         &email_row_for_monitor,
                         &email_btn_for_monitor,
                         &export_btn_for_monitor,
+                        &print_btn_for_monitor,
                         &edit_btn_for_monitor,
                         &merge_btn_for_monitor,
                         &delete_btn_for_monitor,
                         &copy_btn_for_monitor,
+                        &copy_to_book_btn_for_monitor,
+                        &move_to_book_btn_for_monitor,
                     );
                     empty_state_for_monitor
                         .set_visible(stored_contacts_for_monitor.borrow().is_empty());
@@ -2253,6 +2642,9 @@ struct ContactActionState {
     merge: bool,
     delete: bool,
     copy: bool,
+    print: bool,
+    transfer_copy: bool,
+    transfer_move: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2264,6 +2656,578 @@ struct ContactSelectionActionState {
     merge: bool,
     delete: bool,
     copy: bool,
+    print: bool,
+    transfer_copy: bool,
+    transfer_move: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ContactTransferKind {
+    Copy,
+    Move,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ContactTransferItem {
+    pub(crate) identity: ContactIdentity,
+    pub(crate) name: String,
+    pub(crate) source_uid: String,
+    pub(crate) source_display_name: String,
+    pub(crate) vcard: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ContactTransferPlan {
+    pub(crate) items: Vec<ContactTransferItem>,
+    pub(crate) kind: ContactTransferKind,
+    pub(crate) destination_uid: String,
+    pub(crate) destination_display_name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ContactTransferWorkerResult {
+    pub(crate) kind: ContactTransferKind,
+    pub(crate) destination_uid: String,
+    pub(crate) destination_display_name: String,
+    pub(crate) created: Vec<EBookContactRecord>,
+    pub(crate) removed_from_source: Vec<ContactIdentity>,
+    pub(crate) failure: Option<(ContactIdentity, String)>,
+}
+
+#[derive(Clone)]
+struct ContactTransferUiContext {
+    contact_list: gtk::ListBox,
+    stored_contacts: Rc<RefCell<Vec<EBookContactRecord>>>,
+    selected_contact: Rc<RefCell<Option<EBookContactRecord>>>,
+    detail_avatar: adw::Avatar,
+    detail_name: gtk::Label,
+    detail_title: gtk::Label,
+    detail_extra: gtk::Label,
+    email_btn: gtk::Button,
+    export_btn: gtk::Button,
+    print_btn: gtk::Button,
+    edit_btn: gtk::Button,
+    merge_btn: gtk::Button,
+    delete_btn: gtk::Button,
+    copy_to_book_btn: gtk::Button,
+    move_to_book_btn: gtk::Button,
+    category_model: gtk::StringList,
+    category_selector: gtk::DropDown,
+    selected_category: Rc<RefCell<String>>,
+    empty_state: gtk::Label,
+    search_state: Rc<ContactPageSearchState>,
+}
+
+impl ContactTransferUiContext {
+    fn update_action_sensitivity(&self) {
+        update_contact_action_sensitivity(
+            &self.email_btn,
+            &self.export_btn,
+            &self.edit_btn,
+            &self.merge_btn,
+            &self.delete_btn,
+            Some(&self.print_btn),
+            None,
+            Some(&self.copy_to_book_btn),
+            Some(&self.move_to_book_btn),
+            &self.selected_contact,
+            &self.stored_contacts,
+        );
+    }
+}
+
+fn prepare_vcard_for_transfer(vcard: &str) -> String {
+    let fresh_uid = format!("evolution-gtk4-{}", uuid::Uuid::new_v4());
+    let normalized = vcard.replace("\r\n", "\n").replace('\r', "\n");
+    let mut lines: Vec<String> = normalized.lines().map(ToString::to_string).collect();
+    let mut replaced = false;
+    for line in &mut lines {
+        if line.starts_with("UID:") || line.starts_with("UID;") {
+            *line = format!("UID:{fresh_uid}");
+            replaced = true;
+            break;
+        }
+    }
+    if !replaced {
+        let insertion = lines
+            .iter()
+            .position(|line| line.eq_ignore_ascii_case("BEGIN:VCARD"))
+            .map(|index| index + 1)
+            .unwrap_or(0);
+        lines.insert(insertion, format!("UID:{fresh_uid}"));
+    }
+    let mut result = lines.join("\r\n");
+    if !result.ends_with("\r\n") {
+        result.push_str("\r\n");
+    }
+    result
+}
+
+fn plan_contact_transfer(
+    selected: &[EBookContactRecord],
+    kind: ContactTransferKind,
+    destination_uid: &str,
+    destination_display_name: &str,
+    destination_writable: bool,
+) -> Result<ContactTransferPlan, String> {
+    if selected.is_empty() {
+        return Err("Keine Kontakte ausgewählt".to_string());
+    }
+    let destination_uid = destination_uid.trim();
+    if destination_uid.is_empty() || !destination_writable {
+        return Err("Das Zieladressbuch ist nicht schreibfähig".to_string());
+    }
+
+    if selected.iter().all(|r| r.source_uid == destination_uid) {
+        return Err("Quelle und Ziel sind dasselbe Adressbuch".to_string());
+    }
+
+    let mut seen = HashSet::with_capacity(selected.len());
+    let mut items = Vec::with_capacity(selected.len());
+
+    for record in selected {
+        let identity = ContactIdentity::new(record.source_uid.clone(), record.uid.clone());
+        if !seen.insert(identity.clone()) {
+            return Err("Ein ausgewählter Kontakt wurde mehrfach aufgelöst".to_string());
+        }
+        if kind == ContactTransferKind::Move && !contact_source_is_writable(&record.source_uid) {
+            return Err(
+                "Mindestens ein ausgewählter Kontakt stammt aus einer schreibgeschützten Quelle"
+                    .to_string(),
+            );
+        }
+        let name = if record.contact.fn_name.trim().is_empty() {
+            "Unbenannter Kontakt".to_string()
+        } else {
+            record.contact.fn_name.trim().to_string()
+        };
+        let source_display_name =
+            contact_source_label(&record.source_display_name, &record.source_uid);
+        let vcard = record.vcard.trim();
+        if vcard.is_empty() {
+            return Err(format!(
+                "Kontakt „{name}“ enthält keine gültigen vCard-Daten für die Übertragung"
+            ));
+        }
+
+        items.push(ContactTransferItem {
+            identity,
+            name,
+            source_uid: record.source_uid.clone(),
+            source_display_name,
+            vcard: vcard.to_string(),
+        });
+    }
+
+    Ok(ContactTransferPlan {
+        items,
+        kind,
+        destination_uid: destination_uid.to_string(),
+        destination_display_name: destination_display_name.trim().to_string(),
+    })
+}
+
+fn reduce_contact_transfer_result(
+    stored_contacts: &[EBookContactRecord],
+    removed: &[ContactIdentity],
+    created: &[EBookContactRecord],
+) -> Vec<EBookContactRecord> {
+    let mut updated: Vec<EBookContactRecord> = stored_contacts
+        .iter()
+        .filter(|record| {
+            !removed.iter().any(|identity| {
+                identity.source_uid == record.source_uid && identity.uid == record.uid
+            })
+        })
+        .cloned()
+        .collect();
+
+    for record in created {
+        if !updated
+            .iter()
+            .any(|r| r.source_uid == record.source_uid && r.uid == record.uid)
+        {
+            updated.push(record.clone());
+        }
+    }
+    updated
+}
+
+fn available_writable_address_books(
+    book_model: &gtk::StringList,
+    book_source_uids: &[String],
+) -> Vec<(String, String)> {
+    let mut result = Vec::new();
+    for (index, uid) in book_source_uids.iter().enumerate() {
+        if index == 0 || uid.trim().is_empty() {
+            continue;
+        }
+        if contact_source_is_writable(uid) {
+            let label = book_model
+                .string(index as u32)
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| uid.clone());
+            result.push((uid.clone(), label));
+        }
+    }
+    if result.is_empty()
+        && crate::services::contact_store_service::ContactStoreService::new().is_writable()
+    {
+        result.push((
+            LOCAL_ADDRESS_BOOK_SOURCE_UID.to_string(),
+            "Lokales Adressbuch".to_string(),
+        ));
+    }
+    result
+}
+
+fn run_contact_transfer_dialog(
+    parent: &impl glib::object::IsA<gtk::Widget>,
+    page: &ContactsPage,
+    kind: ContactTransferKind,
+    selected_records: Vec<EBookContactRecord>,
+    book_model: &gtk::StringList,
+    book_source_uids: &[String],
+    ctx: ContactTransferUiContext,
+) {
+    let available = available_writable_address_books(book_model, book_source_uids);
+    let common_source = if selected_records
+        .iter()
+        .all(|r| r.source_uid == selected_records[0].source_uid)
+    {
+        Some(selected_records[0].source_uid.as_str())
+    } else {
+        None
+    };
+
+    let eligible: Vec<(String, String)> = available
+        .into_iter()
+        .filter(|(uid, _)| common_source.map_or(true, |common| uid != common))
+        .collect();
+
+    if eligible.is_empty() {
+        page.show_toast("Kein anderes beschreibbares Zieladressbuch verfügbar");
+        return;
+    }
+
+    let dest_names: Vec<&str> = eligible.iter().map(|(_, name)| name.as_str()).collect();
+    let dest_model = gtk::StringList::new(&dest_names);
+
+    let count = selected_records.len();
+    let (title, description, confirm_label, appearance) = match kind {
+        ContactTransferKind::Copy => {
+            let title = if count == 1 {
+                "Kontakt kopieren".to_string()
+            } else {
+                format!("{count} Kontakte kopieren")
+            };
+            let description = if count == 1 {
+                "Wählen Sie das Zieladressbuch aus, in das der Kontakt kopiert werden soll:"
+                    .to_string()
+            } else {
+                "Wählen Sie das Zieladressbuch aus, in das die Kontakte kopiert werden sollen:"
+                    .to_string()
+            };
+            (
+                title,
+                description,
+                "Kopieren",
+                adw::ResponseAppearance::Suggested,
+            )
+        }
+        ContactTransferKind::Move => {
+            let title = if count == 1 {
+                "Kontakt verschieben".to_string()
+            } else {
+                format!("{count} Kontakte verschieben")
+            };
+            let description = if count == 1 {
+                "Der Kontakt wird im Zieladressbuch neu angelegt und anschließend aus dem bisherigen Adressbuch entfernt.".to_string()
+            } else {
+                "Die ausgewählten Kontakte werden im Zieladressbuch neu angelegt und anschließend aus ihren bisherigen Adressbüchern entfernt.".to_string()
+            };
+            (
+                title,
+                description,
+                "Verschieben",
+                adw::ResponseAppearance::Suggested,
+            )
+        }
+    };
+
+    let content_box = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(8)
+        .margin_top(6)
+        .margin_bottom(6)
+        .build();
+
+    let dropdown = gtk::DropDown::new(Some(dest_model), None::<&gtk::Expression>);
+    dropdown.set_hexpand(true);
+    content_box.append(&dropdown);
+
+    let dialog = adw::AlertDialog::new(Some(&title), Some(&description));
+    dialog.set_extra_child(Some(&content_box));
+    dialog.add_response("cancel", "Abbrechen");
+    dialog.add_response("confirm", confirm_label);
+    dialog.set_response_appearance("confirm", appearance);
+    dialog.set_default_response(Some("confirm"));
+    dialog.set_close_response("cancel");
+
+    let page_weak = page.downgrade();
+    dialog.connect_response(None, move |_, response| {
+        if response != "confirm" {
+            return;
+        }
+        let Some(page) = page_weak.upgrade() else {
+            return;
+        };
+        let selected_idx = dropdown.selected() as usize;
+        let Some((dest_uid, dest_display_name)) = eligible.get(selected_idx).cloned() else {
+            page.show_toast("Ungültige Adressbuchauswahl");
+            return;
+        };
+
+        let plan = match plan_contact_transfer(
+            &selected_records,
+            kind,
+            &dest_uid,
+            &dest_display_name,
+            contact_source_is_writable(&dest_uid),
+        ) {
+            Ok(plan) => plan,
+            Err(error) => {
+                page.show_toast(&error);
+                return;
+            }
+        };
+
+        execute_contact_transfer_worker(plan, page.downgrade(), ctx.clone());
+    });
+
+    dialog.present(Some(parent));
+}
+
+fn execute_contact_transfer_worker(
+    plan: ContactTransferPlan,
+    page_weak: glib::WeakRef<ContactsPage>,
+    ctx: ContactTransferUiContext,
+) {
+    let (sender, receiver) = async_channel::bounded(1);
+    std::thread::spawn(move || {
+        let service = EBookService::new();
+        let mut result = ContactTransferWorkerResult {
+            kind: plan.kind,
+            destination_uid: plan.destination_uid.clone(),
+            destination_display_name: plan.destination_display_name.clone(),
+            created: Vec::with_capacity(plan.items.len()),
+            removed_from_source: Vec::with_capacity(if plan.kind == ContactTransferKind::Move {
+                plan.items.len()
+            } else {
+                0
+            }),
+            failure: None,
+        };
+
+        for item in plan.items {
+            if !contact_source_is_writable(&plan.destination_uid) {
+                result.failure = Some((
+                    item.identity,
+                    "Das Zieladressbuch ist nicht mehr schreibfähig".to_string(),
+                ));
+                break;
+            }
+
+            if plan.kind == ContactTransferKind::Move
+                && !contact_source_is_writable(&item.source_uid)
+            {
+                result.failure = Some((
+                    item.identity,
+                    "Die Quelladresse ist unmittelbar vor dem Verschieben nicht mehr schreibfähig"
+                        .to_string(),
+                ));
+                break;
+            }
+
+            let transfer_vcard = prepare_vcard_for_transfer(&item.vcard);
+            match service.create_contact(&plan.destination_uid, &transfer_vcard) {
+                Ok(mutation) => {
+                    let created_uid = confirmed_contact_uid(&mutation.uid, &item.identity.uid);
+                    let vcard_content = mutation.vcard.unwrap_or(transfer_vcard);
+                    let parsed_contact = VCardContact::parse_vcard_string(&vcard_content)
+                        .unwrap_or_else(|| VCardContact::new(&item.name, "", "", ""));
+                    result.created.push(EBookContactRecord {
+                        source_uid: plan.destination_uid.clone(),
+                        source_display_name: plan.destination_display_name.clone(),
+                        uid: created_uid,
+                        vcard: vcard_content,
+                        contact: parsed_contact,
+                    });
+                }
+                Err(error) => {
+                    result.failure = Some((
+                        item.identity,
+                        format!("Erstellen im Zieladressbuch fehlgeschlagen: {error}"),
+                    ));
+                    break;
+                }
+            }
+
+            if plan.kind == ContactTransferKind::Move {
+                match service.remove_contact(&item.identity.source_uid, &item.identity.uid) {
+                    Ok(confirmed) => {
+                        let confirmed_uid =
+                            confirmed_contact_uid(&confirmed.uid, &item.identity.uid);
+                        if confirmed_uid == item.identity.uid {
+                            result.removed_from_source.push(item.identity);
+                        } else {
+                            result.failure = Some((
+                                item.identity,
+                                "Das Backend bestätigte das Löschen eines anderen Kontakts"
+                                    .to_string(),
+                            ));
+                            break;
+                        }
+                    }
+                    Err(error) => {
+                        result.failure = Some((
+                            item.identity,
+                            format!("Entfernen aus dem Quelladressbuch fehlgeschlagen: {error}"),
+                        ));
+                        break;
+                    }
+                }
+            }
+        }
+
+        if let Err(error) = sender.send_blocking(result) {
+            tracing::debug!(%error, "Contact transfer result was dropped");
+        }
+    });
+
+    glib::spawn_future_local(async move {
+        let Ok(result) = receiver.recv().await else {
+            return;
+        };
+        let created_count = result.created.len();
+        let removed_count = result.removed_from_source.len();
+
+        if created_count > 0 || removed_count > 0 {
+            if let Some(page) = page_weak.upgrade() {
+                clear_contact_selection(&page, &ctx.contact_list);
+            }
+            for removed_id in &result.removed_from_source {
+                remove_contact_list_row(&ctx.contact_list, &removed_id.source_uid, &removed_id.uid);
+            }
+            for record in &result.created {
+                append_contact_row(&ctx.contact_list, record);
+            }
+            let updated = reduce_contact_transfer_result(
+                &ctx.stored_contacts.borrow(),
+                &result.removed_from_source,
+                &result.created,
+            );
+            *ctx.stored_contacts.borrow_mut() = updated;
+
+            let selected_is_removed = ctx
+                .selected_contact
+                .borrow()
+                .as_ref()
+                .map(|c| {
+                    result
+                        .removed_from_source
+                        .iter()
+                        .any(|r| r.source_uid == c.source_uid && r.uid == c.uid)
+                })
+                .unwrap_or(false);
+
+            if selected_is_removed {
+                *ctx.selected_contact.borrow_mut() = None;
+                ctx.detail_avatar.set_text(Some(""));
+                ctx.detail_avatar.set_custom_image(None::<&gdk::Texture>);
+                ctx.detail_name.set_label("Kein Kontakt ausgewählt");
+                ctx.detail_title
+                    .set_label("Adressbuchdaten werden nach der Synchronisation angezeigt");
+                ctx.detail_extra.set_label("Keine weiteren Kontaktdaten");
+            }
+
+            mark_duplicate_rows(&ctx.contact_list, &ctx.stored_contacts);
+            ctx.empty_state
+                .set_visible(ctx.stored_contacts.borrow().is_empty());
+            refresh_contact_category_model(
+                &ctx.category_model,
+                &ctx.category_selector,
+                &ctx.stored_contacts,
+                &ctx.selected_category,
+            );
+            ctx.update_action_sensitivity();
+            if let Some(page) = page_weak.upgrade() {
+                reapply_active_contact_search(
+                    page.downgrade(),
+                    Rc::clone(&ctx.search_state),
+                    Rc::clone(&ctx.stored_contacts),
+                );
+            }
+        }
+
+        if let Some((failed_id, error)) = result.failure {
+            let message = if created_count > 0 {
+                format!(
+                    "{created_count} Kontakt(e) übertragen; Fehler bei {}: {error}",
+                    failed_id.uid
+                )
+            } else {
+                format!("Übertragung fehlgeschlagen: {error}")
+            };
+            show_toast_for_widget(&ctx.detail_name, &message);
+        } else {
+            let dest = &result.destination_display_name;
+            let message = match result.kind {
+                ContactTransferKind::Copy => {
+                    if created_count == 1 {
+                        format!("1 Kontakt nach „{dest}“ kopiert")
+                    } else {
+                        format!("{created_count} Kontakte nach „{dest}“ kopiert")
+                    }
+                }
+                ContactTransferKind::Move => {
+                    if created_count == 1 {
+                        format!("1 Kontakt nach „{dest}“ verschoben")
+                    } else {
+                        format!("{created_count} Kontakte nach „{dest}“ verschoben")
+                    }
+                }
+            };
+            if let Some(page) = page_weak.upgrade() {
+                page.show_toast(&message);
+            }
+        }
+    });
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ContactDeleteResolved {
+    pub(crate) identity: ContactIdentity,
+    pub(crate) source_display_name: String,
+    pub(crate) name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ContactDeleteConfirmation {
+    pub(crate) title: String,
+    pub(crate) description: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ContactDeletePlan {
+    pub(crate) items: Vec<ContactDeleteResolved>,
+    pub(crate) confirmation: ContactDeleteConfirmation,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ContactDeleteWorkerResult {
+    pub(crate) removed: Vec<ContactIdentity>,
+    pub(crate) failure: Option<(ContactIdentity, String)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2305,6 +3269,79 @@ fn contact_source_is_writable(source_uid: &str) -> bool {
     true
 }
 
+fn plan_contact_delete_batch(selected: &[EBookContactRecord]) -> Result<ContactDeletePlan, String> {
+    if selected.is_empty() {
+        return Err("Keine Kontakte ausgewählt".to_string());
+    }
+
+    let mut seen = HashSet::with_capacity(selected.len());
+    let mut items = Vec::with_capacity(selected.len());
+
+    for record in selected {
+        let identity = ContactIdentity::new(record.source_uid.clone(), record.uid.clone());
+        if !seen.insert(identity.clone()) {
+            return Err("Ein ausgewählter Kontakt wurde mehrfach aufgelöst".to_string());
+        }
+        if !contact_source_is_writable(&record.source_uid) {
+            return Err(
+                "Mindestens ein ausgewählter Kontakt stammt aus einer schreibgeschützten Quelle"
+                    .to_string(),
+            );
+        }
+        let name = if record.contact.fn_name.trim().is_empty() {
+            "Unbenannter Kontakt".to_string()
+        } else {
+            record.contact.fn_name.trim().to_string()
+        };
+        let source_display_name =
+            contact_source_label(&record.source_display_name, &record.source_uid);
+        items.push(ContactDeleteResolved {
+            identity,
+            source_display_name,
+            name,
+        });
+    }
+
+    let confirmation = if items.len() == 1 {
+        let item = &items[0];
+        ContactDeleteConfirmation {
+            title: "Kontakt löschen?".to_string(),
+            description: format!(
+                "Der Kontakt „{}“ wird dauerhaft aus dem Adressbuch „{}“ entfernt.",
+                item.name, item.source_display_name
+            ),
+        }
+    } else {
+        ContactDeleteConfirmation {
+            title: "Kontakte löschen?".to_string(),
+            description: format!(
+                "Möchten Sie die {} ausgewählten Kontakte wirklich dauerhaft aus ihren Adressbüchern entfernen?",
+                items.len()
+            ),
+        }
+    };
+
+    Ok(ContactDeletePlan {
+        items,
+        confirmation,
+    })
+}
+
+fn reduce_contact_delete_result(
+    stored_contacts: &[EBookContactRecord],
+    removed: &[ContactIdentity],
+) -> Vec<EBookContactRecord> {
+    stored_contacts
+        .iter()
+        .filter(|record| {
+            !removed.iter().any(|identity| {
+                identity.source_uid == record.source_uid && identity.uid == record.uid
+            })
+        })
+        .cloned()
+        .collect()
+}
+
 fn contact_action_state(
     selected: Option<&EBookContactRecord>,
     contacts: &[EBookContactRecord],
@@ -2317,6 +3354,9 @@ fn contact_action_state(
             merge: false,
             delete: false,
             copy: false,
+            print: false,
+            transfer_copy: false,
+            transfer_move: false,
         };
     };
     let recipient = contact_recipient_text_with_records(&record.contact, contacts);
@@ -2333,6 +3373,9 @@ fn contact_action_state(
         merge: writable && contact_has_mergeable_duplicate(record, contacts),
         delete: writable,
         copy: copyable,
+        print: true,
+        transfer_copy: true,
+        transfer_move: writable,
     }
 }
 
@@ -2351,6 +3394,10 @@ fn contact_selection_action_state(
     let single = selection_count == 1;
     let single_state = single.then(|| contact_action_state(selected.first(), contacts));
     let recipients = selected_contact_recipients(selected, contacts);
+    let all_writable = !selected.is_empty()
+        && selected
+            .iter()
+            .all(|record| contact_source_is_writable(&record.source_uid));
     ContactSelectionActionState {
         selection_count,
         email: !recipients.trim().is_empty(),
@@ -2361,11 +3408,13 @@ fn contact_selection_action_state(
         export: plan_contact_vcard_export(selected).is_ok(),
         edit: single_state.is_some_and(|state| state.edit),
         merge: single_state.is_some_and(|state| state.merge),
-        // The existing EBook mutation is intentionally a single-contact
-        // transaction.  Keep multi-delete visibly unavailable until a
-        // backend-atomic batch mutation exists instead of deleting a prefix.
-        delete: single_state.is_some_and(|state| state.delete),
+        // Batch deletion is supported across all-writable contacts with a
+        // preflight check, confirmation dialog, and stop-on-first-error worker.
+        delete: all_writable,
         copy: single_state.is_some_and(|state| state.copy),
+        print: !selected.is_empty(),
+        transfer_copy: !selected.is_empty(),
+        transfer_move: all_writable,
     }
 }
 
@@ -2375,7 +3424,10 @@ fn update_contact_action_sensitivity(
     edit_button: &gtk::Button,
     merge_button: &gtk::Button,
     delete_button: &gtk::Button,
+    print_button: Option<&gtk::Button>,
     copy_button: Option<&gtk::Button>,
+    transfer_copy_button: Option<&gtk::Button>,
+    transfer_move_button: Option<&gtk::Button>,
     selected: &Rc<RefCell<Option<EBookContactRecord>>>,
     contacts: &Rc<RefCell<Vec<EBookContactRecord>>>,
 ) {
@@ -2389,7 +3441,10 @@ fn update_contact_action_sensitivity(
         edit_button,
         merge_button,
         delete_button,
+        print_button,
         copy_button,
+        transfer_copy_button,
+        transfer_move_button,
     );
 }
 
@@ -2400,15 +3455,27 @@ fn apply_contact_action_state(
     edit_button: &gtk::Button,
     merge_button: &gtk::Button,
     delete_button: &gtk::Button,
+    print_button: Option<&gtk::Button>,
     copy_button: Option<&gtk::Button>,
+    transfer_copy_button: Option<&gtk::Button>,
+    transfer_move_button: Option<&gtk::Button>,
 ) {
     email_button.set_sensitive(state.email);
     export_button.set_sensitive(state.export);
     edit_button.set_sensitive(state.edit);
     merge_button.set_sensitive(state.merge);
     delete_button.set_sensitive(state.delete);
+    if let Some(print_button) = print_button {
+        print_button.set_sensitive(state.print);
+    }
     if let Some(copy_button) = copy_button {
         copy_button.set_sensitive(state.copy);
+    }
+    if let Some(transfer_copy_button) = transfer_copy_button {
+        transfer_copy_button.set_sensitive(state.transfer_copy);
+    }
+    if let Some(transfer_move_button) = transfer_move_button {
+        transfer_move_button.set_sensitive(state.transfer_move);
     }
 }
 
@@ -2419,14 +3486,20 @@ fn apply_contact_selection_action_state(
     edit_button: &gtk::Button,
     merge_button: &gtk::Button,
     delete_button: &gtk::Button,
+    print_button: &gtk::Button,
     copy_button: &gtk::Button,
+    transfer_copy_button: &gtk::Button,
+    transfer_move_button: &gtk::Button,
 ) {
     email_button.set_sensitive(state.email);
     export_button.set_sensitive(state.export);
     edit_button.set_sensitive(state.edit);
     merge_button.set_sensitive(state.merge);
     delete_button.set_sensitive(state.delete);
+    print_button.set_sensitive(state.print);
     copy_button.set_sensitive(state.copy);
+    transfer_copy_button.set_sensitive(state.transfer_copy);
+    transfer_move_button.set_sensitive(state.transfer_move);
 
     let multiple = state.selection_count > 1;
     email_button.set_tooltip_text(Some(if state.email {
@@ -2441,6 +3514,29 @@ fn apply_contact_selection_action_state(
     } else {
         "Die Auswahl enthält keine vollständig exportierbare vCard"
     }));
+    print_button.set_tooltip_text(Some(if state.selection_count == 0 {
+        "Kein Kontakt ausgewählt"
+    } else if multiple {
+        "Ausgewählte Kontakte drucken"
+    } else {
+        "Ausgewählten Kontakt drucken"
+    }));
+    transfer_copy_button.set_tooltip_text(Some(if state.selection_count == 0 {
+        "Kein Kontakt ausgewählt"
+    } else if multiple {
+        "Ausgewählte Kontakte in anderes Adressbuch kopieren"
+    } else {
+        "Kontakt in anderes Adressbuch kopieren"
+    }));
+    transfer_move_button.set_tooltip_text(Some(if state.selection_count == 0 {
+        "Kein Kontakt ausgewählt"
+    } else if !state.transfer_move {
+        "Die Auswahl enthält Kontakte aus einer schreibgeschützten Quelle"
+    } else if multiple {
+        "Ausgewählte Kontakte in anderes Adressbuch verschieben"
+    } else {
+        "Kontakt in anderes Adressbuch verschieben"
+    }));
     edit_button.set_tooltip_text(Some(if multiple {
         "Bearbeiten ist nur für genau einen Kontakt verfügbar"
     } else {
@@ -2451,8 +3547,12 @@ fn apply_contact_selection_action_state(
     } else {
         "Dubletten derselben Quelle zusammenführen"
     }));
-    delete_button.set_tooltip_text(Some(if multiple {
-        "Mehrere Kontakte können noch nicht atomar gelöscht werden"
+    delete_button.set_tooltip_text(Some(if state.selection_count == 0 {
+        "Kein Kontakt ausgewählt"
+    } else if !state.delete {
+        "Die Auswahl enthält Kontakte aus einer schreibgeschützten Quelle"
+    } else if multiple {
+        "Ausgewählte Kontakte löschen"
     } else {
         "Kontakt löschen"
     }));
@@ -2604,6 +3704,51 @@ fn selected_contact_records_checked(
     Ok(selected)
 }
 
+fn visible_contact_records_checked(
+    contact_list: &gtk::ListBox,
+    stored_contacts: &Rc<RefCell<Vec<EBookContactRecord>>>,
+    search_state: &Rc<ContactPageSearchState>,
+) -> Result<Vec<EBookContactRecord>, String> {
+    let visible_ids = search_state.visible_identities.borrow();
+    let records = stored_contacts.borrow();
+    let mut visible = Vec::new();
+
+    let mut child = contact_list.first_child();
+    while let Some(current) = child {
+        let next = current.next_sibling();
+        if let Ok(row) = current.downcast::<gtk::ListBoxRow>() {
+            if let Some(identity) = row_contact_identity(&row) {
+                let is_visible = if visible_ids.is_empty() {
+                    true
+                } else {
+                    visible_ids.contains(&identity)
+                };
+                if is_visible {
+                    let matches = records
+                        .iter()
+                        .filter(|r| r.source_uid == identity.source_uid && r.uid == identity.uid)
+                        .collect::<Vec<_>>();
+                    match matches.as_slice() {
+                        [record] => visible.push((*record).clone()),
+                        _ => {
+                            return Err(
+                                "Ein sichtbarer Kontakt ist nicht mehr eindeutig verfügbar"
+                                    .to_string(),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        child = next;
+    }
+
+    if visible.is_empty() {
+        return Err("Es sind keine sichtbaren Kontakte zum Drucken vorhanden".to_string());
+    }
+    Ok(visible)
+}
+
 fn selected_contact_recipients(
     selected: &[EBookContactRecord],
     records: &[EBookContactRecord],
@@ -2709,10 +3854,13 @@ fn sync_contact_selection(
     email_row: &adw::ActionRow,
     email_button: &gtk::Button,
     export_button: &gtk::Button,
+    print_button: &gtk::Button,
     edit_button: &gtk::Button,
     merge_button: &gtk::Button,
     delete_button: &gtk::Button,
     copy_button: &gtk::Button,
+    transfer_copy_button: &gtk::Button,
+    transfer_move_button: &gtk::Button,
 ) {
     let selected = match selected_contact_records_checked(contact_list, stored_contacts) {
         Ok(selected) => selected,
@@ -2738,13 +3886,19 @@ fn sync_contact_selection(
                     merge: false,
                     delete: false,
                     copy: false,
+                    transfer_copy: false,
+                    transfer_move: false,
+                    print: false,
                 },
                 email_button,
                 export_button,
                 edit_button,
                 merge_button,
                 delete_button,
+                print_button,
                 copy_button,
+                transfer_copy_button,
+                transfer_move_button,
             );
             return;
         }
@@ -2789,7 +3943,7 @@ fn sync_contact_selection(
             detail_avatar.set_custom_image(None::<&gdk::Texture>);
             detail_name.set_label(&format!("{} Kontakte ausgewählt", records.len()));
             detail_title.set_label(
-                "E-Mail und vCard-Export verwenden die vollständige Auswahl; Bearbeiten, Zusammenführen und Löschen benötigen genau einen Kontakt.",
+                "E-Mail, Drucken, Löschen und vCard-Export verwenden die vollständige Auswahl; Bearbeiten und Zusammenführen benötigen genau einen Kontakt.",
             );
             email_row.set_title(&format!("{} Kontakte ausgewählt", records.len()));
             email_row.set_subtitle(if state.email {
@@ -2797,9 +3951,11 @@ fn sync_contact_selection(
             } else {
                 "Keine E-Mail-Adressen in der Auswahl"
             });
-            detail_extra.set_label(
-                "Mehrfachauswahl: Der Export schreibt alle ausgewählten, geprüften vCards in eine Datei. Mehrfaches Löschen ist noch nicht verfügbar.",
-            );
+            detail_extra.set_label(if state.delete {
+                "Mehrfachauswahl: Ausgewählte Kontakte können gemeinsam gedruckt, exportiert oder gelöscht werden."
+            } else {
+                "Mehrfachauswahl: Drucken und Export schreiben die geprüften vCards. Löschen ist für schreibgeschützte Quellen deaktiviert."
+            });
             split.set_show_content(true);
         }
     }
@@ -2810,7 +3966,10 @@ fn sync_contact_selection(
         edit_button,
         merge_button,
         delete_button,
+        print_button,
         copy_button,
+        transfer_copy_button,
+        transfer_move_button,
     );
 }
 
@@ -3533,13 +4692,15 @@ impl Default for ContactsPage {
 mod tests {
     use super::{
         ContactActionState, ContactIdentity, ContactPageSearchState, ContactSelectionRestore,
-        ContactVCardExportError, confirmed_contact_uid, contact_action_state,
+        ContactTransferKind, ContactVCardExportError, confirmed_contact_uid, contact_action_state,
         contact_category_matches, contact_detail_summary, contact_email_text,
         contact_load_status_message, contact_query_matches, contact_recipient_text,
         contact_recipient_text_with_records, contact_records_are_duplicates,
         contact_records_share_duplicate_key, contact_selection_action_state, contact_sort_key,
         contact_source_label, contact_status_needs_visibility, context_action_state,
-        plan_contact_vcard_export, should_restore_contact_selection,
+        plan_contact_delete_batch, plan_contact_transfer, plan_contact_vcard_export,
+        prepare_vcard_for_transfer, reduce_contact_delete_result, reduce_contact_transfer_result,
+        should_restore_contact_selection,
     };
     use crate::services::contact_search_service::{
         ContactClauseGroup, ContactOuterFilters, ContactSearchClause, ContactSearchField,
@@ -3667,6 +4828,9 @@ mod tests {
                 merge: false,
                 delete: false,
                 copy: false,
+                transfer_copy: false,
+                transfer_move: false,
+                print: false,
             }
         );
 
@@ -3679,10 +4843,13 @@ mod tests {
         let context_state = context_action_state(Some(&imported), std::slice::from_ref(&imported));
         assert!(state.email);
         assert!(state.export);
+        assert!(state.print);
         assert!(!state.edit);
         assert!(!state.merge);
         assert!(!state.delete);
         assert!(state.copy);
+        assert!(state.transfer_copy);
+        assert!(!state.transfer_move);
         assert_eq!(context_state, state);
     }
 
@@ -3706,10 +4873,40 @@ mod tests {
         assert_eq!(state.selection_count, 2);
         assert!(state.email);
         assert!(state.export);
+        assert!(state.print);
         assert!(!state.edit);
         assert!(!state.merge);
-        assert!(!state.delete);
+        assert!(state.delete);
         assert!(!state.copy);
+        assert!(state.transfer_copy);
+        assert!(state.transfer_move);
+    }
+
+    #[test]
+    fn contact_selection_action_state_enables_print_for_any_selection() {
+        let ada = record(
+            "book-a",
+            "ada",
+            VCardContact::new("Ada", "ada@example.test", "", ""),
+        );
+        let grace = record(
+            "book-a",
+            "grace",
+            VCardContact::new("Grace", "grace@example.test", "", ""),
+        );
+
+        // 0 selected: print disabled
+        let state_empty = contact_selection_action_state(&[], &[]);
+        assert!(!state_empty.print);
+
+        // 1 selected: print enabled
+        let state_single = contact_selection_action_state(&[ada.clone()], &[ada.clone()]);
+        assert!(state_single.print);
+
+        // multiple selected: print enabled
+        let state_multi =
+            contact_selection_action_state(&[ada.clone(), grace.clone()], &[ada, grace]);
+        assert!(state_multi.print);
     }
 
     #[test]
@@ -3859,5 +5056,279 @@ mod tests {
         );
         assert!(contact_email_text(&outer).contains("Adressen verborgen"));
         assert!(!contact_email_text(&outer).contains("nested@example.test"));
+    }
+
+    #[test]
+    fn plan_contact_delete_batch_rejects_empty_selection() {
+        let result = plan_contact_delete_batch(&[]);
+        assert_eq!(result, Err("Keine Kontakte ausgewählt".to_string()));
+    }
+
+    #[test]
+    fn plan_contact_delete_batch_single_contact_creates_named_confirmation() {
+        let contact = VCardContact::new("Ada Lovelace", "ada@example.test", "", "");
+        let contact_rec = record("book-a", "ada-uid", contact);
+        let plan = plan_contact_delete_batch(&[contact_rec]).expect("plan succeeds");
+        assert_eq!(plan.items.len(), 1);
+        assert_eq!(
+            plan.items[0].identity,
+            ContactIdentity::new("book-a", "ada-uid")
+        );
+        assert_eq!(plan.items[0].name, "Ada Lovelace");
+        assert_eq!(plan.confirmation.title, "Kontakt löschen?");
+        assert!(plan.confirmation.description.contains("Ada Lovelace"));
+        assert!(plan.confirmation.description.contains("Testadressbuch"));
+    }
+
+    #[test]
+    fn plan_contact_delete_batch_multiple_contacts_creates_count_confirmation() {
+        let c1 = VCardContact::new("Ada Lovelace", "ada@example.test", "", "");
+        let c2 = VCardContact::new("Grace Hopper", "grace@example.test", "", "");
+        let r1 = record("book-a", "ada-uid", c1);
+        let r2 = record("book-a", "grace-uid", c2);
+        let plan = plan_contact_delete_batch(&[r1, r2]).expect("plan succeeds");
+        assert_eq!(plan.items.len(), 2);
+        assert_eq!(plan.confirmation.title, "Kontakte löschen?");
+        assert!(
+            plan.confirmation
+                .description
+                .contains("2 ausgewählten Kontakte")
+        );
+    }
+
+    #[test]
+    fn plan_contact_delete_batch_rejects_readonly_imported_source() {
+        let contact = VCardContact::new("Imported Readonly", "read@example.test", "", "");
+        // Empty source_uid denotes imported/unwritable record
+        let contact_rec = record("", "read-uid", contact);
+        let result = plan_contact_delete_batch(&[contact_rec]);
+        assert_eq!(
+            result,
+            Err(
+                "Mindestens ein ausgewählter Kontakt stammt aus einer schreibgeschützten Quelle"
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn plan_contact_delete_batch_rejects_duplicate_identity() {
+        let c1 = VCardContact::new("Ada Lovelace", "ada@example.test", "", "");
+        let r1 = record("book-a", "ada-uid", c1.clone());
+        let r2 = record("book-a", "ada-uid", c1);
+        let result = plan_contact_delete_batch(&[r1, r2]);
+        assert_eq!(
+            result,
+            Err("Ein ausgewählter Kontakt wurde mehrfach aufgelöst".to_string())
+        );
+    }
+
+    #[test]
+    fn reduce_contact_delete_result_removes_only_confirmed_prefix() {
+        let c1 = VCardContact::new("Ada", "ada@example.test", "", "");
+        let c2 = VCardContact::new("Grace", "grace@example.test", "", "");
+        let c3 = VCardContact::new("Margaret", "margaret@example.test", "", "");
+        let r1 = record("book-a", "1", c1);
+        let r2 = record("book-a", "2", c2);
+        let r3 = record("book-a", "3", c3);
+        let stored = vec![r1.clone(), r2.clone(), r3.clone()];
+
+        // Only r1 and r2 were confirmed removed (r3 was unattempted or failed)
+        let removed = vec![
+            ContactIdentity::new("book-a", "1"),
+            ContactIdentity::new("book-a", "2"),
+        ];
+        let reduced = reduce_contact_delete_result(&stored, &removed);
+        assert_eq!(reduced.len(), 1);
+        assert_eq!(reduced[0].uid, "3");
+    }
+
+    #[test]
+    fn contact_selection_action_state_enables_delete_only_for_all_writable() {
+        let c1 = VCardContact::new("Ada", "ada@example.test", "", "");
+        let c2 = VCardContact::new("Grace", "grace@example.test", "", "");
+        let r_writable1 = record("book-a", "1", c1);
+        let r_writable2 = record("book-a", "2", c2);
+        let r_readonly = record(
+            "",
+            "3",
+            VCardContact::new("Imported", "imp@example.test", "", ""),
+        );
+
+        // Empty selection: delete disabled
+        let state_empty = contact_selection_action_state(&[], &[]);
+        assert!(!state_empty.delete);
+
+        // Multiple writable: delete enabled
+        let state_writable =
+            contact_selection_action_state(&[r_writable1.clone(), r_writable2.clone()], &[]);
+        assert!(state_writable.delete);
+        assert_eq!(state_writable.selection_count, 2);
+
+        // Mixed writable + read-only: delete disabled
+        let state_mixed = contact_selection_action_state(&[r_writable1, r_readonly], &[]);
+        assert!(!state_mixed.delete);
+    }
+
+    #[test]
+    fn prepare_vcard_for_transfer_replaces_existing_uid() {
+        let vcard =
+            "BEGIN:VCARD\r\nVERSION:3.0\r\nUID:old-uid-12345\r\nFN:Ada Lovelace\r\nEND:VCARD";
+        let transformed = prepare_vcard_for_transfer(vcard);
+        assert!(!transformed.contains("UID:old-uid-12345"));
+        assert!(transformed.contains("UID:evolution-gtk4-"));
+        assert!(transformed.contains("FN:Ada Lovelace"));
+    }
+
+    #[test]
+    fn prepare_vcard_for_transfer_inserts_uid_if_missing() {
+        let vcard = "BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Ada Lovelace\r\nEND:VCARD";
+        let transformed = prepare_vcard_for_transfer(vcard);
+        assert!(transformed.contains("UID:evolution-gtk4-"));
+        assert!(transformed.contains("FN:Ada Lovelace"));
+    }
+
+    #[test]
+    fn plan_contact_transfer_rejects_empty_selection() {
+        let result = plan_contact_transfer(
+            &[],
+            ContactTransferKind::Copy,
+            "target-book",
+            "Target Book",
+            true,
+        );
+        assert_eq!(result, Err("Keine Kontakte ausgewählt".to_string()));
+    }
+
+    #[test]
+    fn plan_contact_transfer_rejects_non_writable_destination() {
+        let c1 = VCardContact::new("Ada", "ada@example.test", "", "");
+        let r1 = record("book-a", "1", c1);
+        let result = plan_contact_transfer(
+            &[r1],
+            ContactTransferKind::Copy,
+            "readonly-book",
+            "Readonly Book",
+            false,
+        );
+        assert_eq!(
+            result,
+            Err("Das Zieladressbuch ist nicht schreibfähig".to_string())
+        );
+    }
+
+    #[test]
+    fn plan_contact_transfer_rejects_same_source_and_destination() {
+        let c1 = VCardContact::new("Ada", "ada@example.test", "", "");
+        let r1 = record("book-a", "1", c1);
+        let result =
+            plan_contact_transfer(&[r1], ContactTransferKind::Copy, "book-a", "Book A", true);
+        assert_eq!(
+            result,
+            Err("Quelle und Ziel sind dasselbe Adressbuch".to_string())
+        );
+    }
+
+    #[test]
+    fn plan_contact_transfer_move_rejects_readonly_source() {
+        let c1 = VCardContact::new("Imported", "imp@example.test", "", "");
+        let r1 = record("", "1", c1);
+        let result = plan_contact_transfer(
+            &[r1],
+            ContactTransferKind::Move,
+            "target-book",
+            "Target Book",
+            true,
+        );
+        assert_eq!(
+            result,
+            Err(
+                "Mindestens ein ausgewählter Kontakt stammt aus einer schreibgeschützten Quelle"
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn plan_contact_transfer_copy_allows_readonly_source() {
+        let c1 = VCardContact::new("Imported", "imp@example.test", "", "");
+        let r1 = record("", "1", c1);
+        let plan = plan_contact_transfer(
+            &[r1],
+            ContactTransferKind::Copy,
+            "target-book",
+            "Target Book",
+            true,
+        )
+        .expect("plan copy succeeds");
+        assert_eq!(plan.items.len(), 1);
+        assert_eq!(plan.destination_uid, "target-book");
+        assert_eq!(plan.kind, ContactTransferKind::Copy);
+    }
+
+    #[test]
+    fn plan_contact_transfer_rejects_duplicate_identities() {
+        let c1 = VCardContact::new("Ada", "ada@example.test", "", "");
+        let r1 = record("book-a", "1", c1.clone());
+        let r2 = record("book-a", "1", c1);
+        let result = plan_contact_transfer(
+            &[r1, r2],
+            ContactTransferKind::Copy,
+            "target-book",
+            "Target Book",
+            true,
+        );
+        assert_eq!(
+            result,
+            Err("Ein ausgewählter Kontakt wurde mehrfach aufgelöst".to_string())
+        );
+    }
+
+    #[test]
+    fn plan_contact_transfer_creates_valid_plan() {
+        let c1 = VCardContact::new("Ada Lovelace", "ada@example.test", "", "");
+        let c2 = VCardContact::new("Grace Hopper", "grace@example.test", "", "");
+        let r1 = record("book-a", "ada-orig", c1);
+        let r2 = record("book-a", "grace-orig", c2);
+        let plan = plan_contact_transfer(
+            &[r1, r2],
+            ContactTransferKind::Move,
+            "book-b",
+            "Book B",
+            true,
+        )
+        .expect("plan move succeeds");
+        assert_eq!(plan.items.len(), 2);
+        assert_eq!(plan.kind, ContactTransferKind::Move);
+        assert_eq!(plan.destination_uid, "book-b");
+        assert_eq!(plan.destination_display_name, "Book B");
+        assert_eq!(plan.items[0].name, "Ada Lovelace");
+        assert_eq!(plan.items[1].name, "Grace Hopper");
+    }
+
+    #[test]
+    fn reduce_contact_transfer_result_handles_copy_and_move() {
+        let c1 = VCardContact::new("Ada", "ada@example.test", "", "");
+        let c2 = VCardContact::new("Grace", "grace@example.test", "", "");
+        let r1 = record("book-a", "1", c1);
+        let r2 = record("book-a", "2", c2);
+        let stored = vec![r1.clone(), r2.clone()];
+
+        // Copy: 0 removed from source, 1 created in destination
+        let created_record = record(
+            "book-b",
+            "dest-1",
+            VCardContact::new("Ada", "ada@example.test", "", ""),
+        );
+        let after_copy = reduce_contact_transfer_result(&stored, &[], &[created_record.clone()]);
+        assert_eq!(after_copy.len(), 3);
+
+        // Move: 1 removed from source, 1 created in destination
+        let removed_identity = ContactIdentity::new("book-a", "1");
+        let after_move =
+            reduce_contact_transfer_result(&stored, &[removed_identity], &[created_record]);
+        assert_eq!(after_move.len(), 2);
+        assert_eq!(after_move[0].uid, "2");
+        assert_eq!(after_move[1].uid, "dest-1");
     }
 }
