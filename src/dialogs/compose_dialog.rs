@@ -1829,16 +1829,15 @@ impl ComposeDialog {
             let mut identities: Vec<ComposeIdentity> = active_sources
                 .iter()
                 .map(|source| {
-                    let label = if source.backend_name.is_empty()
-                        || source.display_name.contains('@')
-                    {
-                        format!("{}{}", source.display_name, cache_suffix)
-                    } else {
-                        format!(
-                            "{} · {}{}",
-                            source.display_name, source.backend_name, cache_suffix
-                        )
-                    };
+                    let label =
+                        if source.backend_name.is_empty() || source.display_name.contains('@') {
+                            format!("{}{}", source.display_name, cache_suffix)
+                        } else {
+                            format!(
+                                "{} · {}{}",
+                                source.display_name, source.backend_name, cache_suffix
+                            )
+                        };
                     ComposeIdentity {
                         source_uid: source.uid.clone(),
                         from: source.display_name.clone(),

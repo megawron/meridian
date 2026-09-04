@@ -74,7 +74,8 @@ const ALLOWED_TAGS: &[&str] = &[
 
 const BLOCKED_TAGS: &[&str] = &[
     "applet", "audio", "base", "canvas", "embed", "form", "iframe", "link", "math", "meta",
-    "noembed", "noscript", "object", "portal", "script", "style", "svg", "template", "track", "video", "xml",
+    "noembed", "noscript", "object", "portal", "script", "style", "svg", "template", "track",
+    "video", "xml",
 ];
 
 const ALLOWED_CSS_AT_RULES: &[&str] = &[
@@ -477,7 +478,11 @@ fn sanitize_tag(raw_tag: &str, closing: bool, tag_name: &str) -> Option<String> 
         }
     }
 
-    let tag_suffix = if self_closing || matches!(tag_name, "br" | "hr" | "img" | "col" | "source" | "wbr" | "track") {
+    let tag_suffix = if self_closing
+        || matches!(
+            tag_name,
+            "br" | "hr" | "img" | "col" | "source" | "wbr" | "track"
+        ) {
         "/>"
     } else {
         ">"

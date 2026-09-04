@@ -584,17 +584,34 @@ impl HtmlEditor {
         let entry_url_weak = entry_url.downgrade();
         let entry_label_weak = entry_label.downgrade();
         btn_insert_link_confirm.connect_clicked(move |_| {
-            let Some(entry_url) = entry_url_weak.upgrade() else { return; };
-            let Some(entry_label) = entry_label_weak.upgrade() else { return; };
+            let Some(entry_url) = entry_url_weak.upgrade() else {
+                return;
+            };
+            let Some(entry_label) = entry_label_weak.upgrade() else {
+                return;
+            };
             let url = entry_url.text().trim().to_string();
             let label = entry_label.text().trim().to_string();
             if !url.is_empty() {
                 let js = if label.is_empty() {
-                    format!("document.execCommand('createLink', false, '{}');", url.replace('\'', "\\'"))
+                    format!(
+                        "document.execCommand('createLink', false, '{}');",
+                        url.replace('\'', "\\'")
+                    )
                 } else {
-                    format!("document.execCommand('insertHTML', false, '<a href=\"{}\">{}</a>');", url.replace('\"', "\\\""), label.replace('<', "&lt;").replace('>', "&gt;"))
+                    format!(
+                        "document.execCommand('insertHTML', false, '<a href=\"{}\">{}</a>');",
+                        url.replace('\"', "\\\""),
+                        label.replace('<', "&lt;").replace('>', "&gt;")
+                    )
                 };
-                web_view_for_link.evaluate_javascript(&js, None, None, None::<&gio::Cancellable>, |_| {});
+                web_view_for_link.evaluate_javascript(
+                    &js,
+                    None,
+                    None,
+                    None::<&gio::Cancellable>,
+                    |_| {},
+                );
                 entry_url.set_text("");
                 entry_label.set_text("");
             }
@@ -620,7 +637,9 @@ impl HtmlEditor {
         let web_view_for_image = web_view.clone();
         let editor_for_image = self.downgrade();
         btn_image.connect_clicked(move |_| {
-            let Some(editor) = editor_for_image.upgrade() else { return; };
+            let Some(editor) = editor_for_image.upgrade() else {
+                return;
+            };
             let parent = editor.root().and_downcast::<gtk::Window>();
             let file_dialog = gtk::FileDialog::builder()
                 .title("Bild zum Einfügen auswählen")

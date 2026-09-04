@@ -141,7 +141,10 @@ impl ImportDialog {
                         if let Some(dialog) = dialog_inner.upgrade() {
                             *dialog.imp().selected_file.borrow_mut() = Some(path.clone());
                             if let Some(row) = file_row_inner.upgrade() {
-                                let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("Ausgewählt");
+                                let filename = path
+                                    .file_name()
+                                    .and_then(|n| n.to_str())
+                                    .unwrap_or("Ausgewählt");
                                 row.set_subtitle(filename);
                             }
                             dialog.auto_select_target_for_path(&path);
@@ -161,9 +164,7 @@ impl ImportDialog {
             "E-Mail / Posteingang (.mbox / .eml)",
         ]);
         target_dropdown.set_valign(gtk::Align::Center);
-        let target_row = adw::ActionRow::builder()
-            .title("Zielkomponente")
-            .build();
+        let target_row = adw::ActionRow::builder().title("Zielkomponente").build();
         target_row.add_suffix(&target_dropdown);
         group.add(&target_row);
         *self.imp().target_dropdown.borrow_mut() = Some(target_dropdown);
@@ -178,9 +179,7 @@ impl ImportDialog {
             .margin_top(8)
             .build();
 
-        let cancel_btn = gtk::Button::builder()
-            .label("Abbrechen")
-            .build();
+        let cancel_btn = gtk::Button::builder().label("Abbrechen").build();
         let dialog_for_cancel = self.downgrade();
         cancel_btn.connect_clicked(move |_| {
             if let Some(dialog) = dialog_for_cancel.upgrade() {
@@ -207,7 +206,11 @@ impl ImportDialog {
     }
 
     fn auto_select_target_for_path(&self, path: &std::path::Path) {
-        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_lowercase();
         if let Some(dropdown) = self.imp().target_dropdown.borrow().as_ref() {
             match ext.as_str() {
                 "vcf" | "vcard" => dropdown.set_selected(3),
@@ -222,7 +225,13 @@ impl ImportDialog {
         let Some(path) = self.imp().selected_file.borrow().clone() else {
             return;
         };
-        let target_idx = self.imp().target_dropdown.borrow().as_ref().map(|d| d.selected()).unwrap_or(0);
+        let target_idx = self
+            .imp()
+            .target_dropdown
+            .borrow()
+            .as_ref()
+            .map(|d| d.selected())
+            .unwrap_or(0);
         let dialog_weak = self.downgrade();
 
         glib::spawn_future_local(async move {

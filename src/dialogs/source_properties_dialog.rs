@@ -91,9 +91,7 @@ impl SourcePropertiesDialog {
             .build();
 
         // 1. General group
-        let general_group = adw::PreferencesGroup::builder()
-            .title("Allgemein")
-            .build();
+        let general_group = adw::PreferencesGroup::builder().title("Allgemein").build();
 
         let name_row = adw::EntryRow::builder()
             .title("Name")
@@ -141,16 +139,26 @@ impl SourcePropertiesDialog {
             .valign(gtk::Align::Center)
             .margin_end(8)
             .build();
-        color_dot.set_markup(&format!("<span foreground=\"{color}\" font_size=\"x-large\">●</span>"));
+        color_dot.set_markup(&format!(
+            "<span foreground=\"{color}\" font_size=\"x-large\">●</span>"
+        ));
         color_row.add_prefix(&color_dot);
         visual_group.add(&color_row);
 
         let writable_row = adw::ActionRow::builder()
             .title("Schreibzugriff")
-            .subtitle(if is_writable { "Schreibbar (Lese-/Schreibzugriff)" } else { "Schreibgeschützt (Nur Lesen)" })
+            .subtitle(if is_writable {
+                "Schreibbar (Lese-/Schreibzugriff)"
+            } else {
+                "Schreibgeschützt (Nur Lesen)"
+            })
             .build();
         let write_icon = gtk::Image::builder()
-            .icon_name(if is_writable { "document-edit-symbolic" } else { "channel-insecure-symbolic" })
+            .icon_name(if is_writable {
+                "document-edit-symbolic"
+            } else {
+                "channel-insecure-symbolic"
+            })
             .valign(gtk::Align::Center)
             .build();
         writable_row.add_prefix(&write_icon);
