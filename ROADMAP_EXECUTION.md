@@ -192,6 +192,7 @@ und erweitert dessen Schreibbereich nur nach dokumentierter Kollisionsprüfung.
 | 76 | `GW-SOURCE-SELECTOR` | `P1-CAL-001` | `src/models/source_selector.rs`, `src/views/{calendar,contacts,memos,tasks}_page.rs` | `GW-SOURCE-SETTINGS`, `GW-ADDRESSBOOK-SETTINGS` | BLOCKED_LINUX | Upstream-Parität zu `e-source-selector.c`: Vereinheitlichtes Source-Selector-Modell (`SourceSelectorModel`, `SourceSelectorItem`) mit Mehrfachauswahl, Primärquellen-Verwaltung (`is_primary`, `set_primary`), Exklusivauswahl (`select_exclusive`), Alle auswählen (`select_all`), Farb- und Statusanzeige (`is_selected`, `is_enabled`, `is_writable`), primärem Badge-Indikator (`create_primary_indicator`) sowie Kontextmenü (`create_source_row_menu` mit „Nur diese(n) anzeigen“, „Alle anzeigen“, „Als Standard festlegen“). Konsistente Integration in Kalender- (Checkboxen + Farbpunkt + Primärbadge + Menü), Aufgaben- (Icon + Primärbadge + Menü), Memo- (Icon + Primärbadge + Menü) und Adressbuch-Seiten (Icon + Primärbadge + Menü) mit persistenter GSettings-Synchronisation belegt durch 7 Source-Selector-Unit-Tests und 970/970 Workspace-Tests; Linux EDS Client-Daemon und GOA Account Integration offen. |
 | 77 | `GW-ICAL-IMPORT` | `P1-CAL-001`, `P1-TASK-001` | `src/services/ical_import_service.rs`, `src/services/mod.rs`, `src/dialogs/import_dialog.rs` | `GW-SOURCE-SETTINGS`, `GW-SOURCE-SELECTOR` | BLOCKED_LINUX | Upstream-Parität zu `src/calendar/importers/icalendar-importer.c` und `e-cal-shell-backend.c`: Vollständiger Multi-Komponenten-Parser für iCalendar (`.ics`) und vCalendar (`.vcs`) mit Komponentenextraktion (`VEVENT`, `VTODO`, `VJOURNAL`), Erhalt von Wiederholungsregeln (`RRULE`, `EXDATE`, `RDATE`), Alarmen (`VALARM`), Zeitzonen (`VTIMEZONE`) und benutzerdefinierten Properties, Duplikat-Erkennung gegen den Store, drei atomare Duplikat-Strategien (`KeepBothNewUid`, `OverwriteExisting`, `SkipExisting`), Vorschau-Zusammenfassung (`summary_label`), Integration in `ImportDialog` mit Fortschritts- und Duplikat-Steuerung sowie transaktionaler Rollback-Schutz belegt durch 5 Ical-Import-Tests, 1 Import-Dialog-Test und 976/976 Workspace-Tests; Import in entfernte EDS-Server-Collections unter Linux offen. |
 | 78 | `GW-CONTACT-IMPORT` | `P1-CONTACT-001` | `src/services/contact_import_service.rs`, `src/services/contact_store_service.rs`, `src/services/mod.rs`, `src/dialogs/import_dialog.rs` | `GW-ADDRESSBOOK-SETTINGS`, `GW-SOURCE-SELECTOR`, `GW-ICAL-IMPORT` | BLOCKED_LINUX | Upstream-Parität zu `src/addressbook/importers/evolution-vcard-importer.c`, `evolution-csv-importer.c` und `evolution-ldif-importer.c`: Vollständiger Multi-Format-Importeur für vCard (`.vcf`, `.vcard`), CSV (`.csv`) mit Dialekt- und Feld-Mapping (Name, E-Mail, Telefon, Organisation, Jobtitel, Adresse, Notizen) und RFC 2849 LDIF (`.ldif`, `.ldi`) mit Attributabbildung (`cn`, `sn`, `givenName`, `mail`, `telephoneNumber`, `o`, `title`, `postalAddress`), Inhalts- und Formatheuristik (`detect_contact_format`), Duplikat-Erkennung nach E-Mail und Vollname, drei atomare Duplikat-Strategien (`KeepBothNew`, `OverwriteExisting`, `SkipExisting`), Vorschau-Zusammenfassung (`summary_label`), Integration in `ImportDialog` sowie transaktionaler Rollback-Schutz belegt durch 6 Contact-Import-Tests und 982/982 Workspace-Tests; EDS EBook-Backend-Import auf Linux offen. |
+| 79 | `GW-EXPORT-PRINT` | `P1-CAL-001`, `P1-CONTACT-001` | `src/services/{calendar_export_service,calendar_print_service,contact_export_service}.rs`, `src/services/mod.rs`, `src/views/{calendar,contacts}_page.rs` | `GW-ICAL-IMPORT`, `GW-CONTACT-IMPORT` | BLOCKED_LINUX | Upstream-Parität zu evolution save-calendar plugin (ical-format.c, csv-format.c, rdf-format.c), addressbook exporter (e-addressbook-view.c) und print dialogs: Vollständiger Multi-Format-Kalenderexport für iCalendar (.ics), CSV (.csv mit 17 Upstream-Spalten, RFC 4180 Escaping und Semikolon-Listen-Quoting) und RDF/RSS 1.0 (.rdf), Multi-Format-Kontaktexport für vCard (.vcf), CSV (.csv mit Standard-Adressbuchfeldern) und RFC 2849 LDIF (.ldif), Kalenderdruck für Einzeltermine und chronologische Tages-/Terminlisten-Agenda mit druckoptimiertem CSS und Badges, Tastenkürzel <Ctrl>P, Toolbar-Buttons, Zeilen-Aktionen und Popover-Menüs („Termin drucken“, „Termin exportieren“, „Exportieren (vCard, CSV, LDIF)…“) belegt durch 5 Calendar-Export-Tests, 4 Contact-Export-Tests, 3 Calendar-Print-Tests, 1 Contact-Export-Plan-Test und 995/995 Workspace-Tests; Linux Desktop GtkPrintOperation / Portal-Handoff offen. |
 
 ### Parallelisierungsregeln
 
@@ -1377,7 +1378,35 @@ oder visuellen Linux-Belege.
   Belegt durch 6 Contact-Import-Unit-Tests (`detect_contact_format_identifies_extensions_and_contents`, `parse_csv_contacts_handles_varied_headers_and_delimiters`, `parse_ldif_contacts_extracts_rfc2849_attributes`, `plan_contact_import_identifies_duplicates_by_email_and_name`, `duplicate_policies_behave_deterministically_with_store`, `execute_contact_import_rollback_on_failure`) und 982/982 Workspace-Tests.
 - Offener Parent-/Linux-Rest: Import in entfernte EDS EBook-Backends, Feld-Mapping-Editor-UI, GOA-Account-Konflikte und visuelle Desktop-Portal-Abnahme.
 
+### GW-EXPORT-PRINT
 
+- Status: `BLOCKED_LINUX`; portabler Multi-Format-Kalender- und Kontakt-Exporteur sowie Kalender-/Agenda-Druckteil der offenen Elternpakete `P1-CAL-001` und `P1-CONTACT-001` geschlossen.
+- Portabler Beleg: Upstream-Parität zum Evolution `save-calendar`-Plugin (`save-calendar.c`, `ical-format.c`, `csv-format.c`, `rdf-format.c`), Adressbuch-Exporter (`e-addressbook-view.c`) und Druckdialogen (`print.c`):
+  1. Neuer Exportservice `CalendarExportService` (`src/services/calendar_export_service.rs`):
+     - `CalendarExportFormat`: Multi-Format-Unterstützung für iCalendar (`.ics`), CSV (`.csv`) und RDF / RSS 1.0 (`.rdf`).
+     - iCalendar: RFC 5545 Envelope (`BEGIN:VCALENDAR...END:VCALENDAR`) unter vollständiger Beibehaltung von Zeilenfaltung, Serien, Alarmen und Zeitparametern.
+     - CSV-Export: 17 exakte Upstream-Spalten (`UID`, `Summary`, `Description List`, `Categories List`, `Comment List`, `Completed`, `Created`, `Contact List`, `Start`, `End`, `Due`, `percent Done`, `Priority`, `URL`, `Attendees List`, `Location`, `Modified`) mit RFC 4180 Escaping und automatischem Quoting für Semikolon-Listenfelder (Kategorien, Kontakte, Teilnehmer).
+     - RDF / RSS 1.0 Export: Standard-RDF/XML-Schema mit `rdf:RDF`, `rss:channel`, `rss:items` Sequenz und `rss:item` Einträgen mit Datumsnormalisierung und XML-Entity-Escaping.
+  2. Neuer Kontaktexportservice `ContactExportService` (`src/services/contact_export_service.rs`):
+     - `ContactExportFormat`: Multi-Format-Unterstützung für vCard (`.vcf`), CSV (`.csv`) und RFC 2849 LDIF (`.ldif`, `.ldi`).
+     - vCard: Fortlaufende vCard-Envelope mit Zeilenentfaltung und Attribut-Erhalt.
+     - CSV: 11 Standard-Adressbuchspalten (`First Name`, `Last Name`, `Full Name`, `Email`, `Business Phone`, `Home Phone`, `Mobile Phone`, `Organization`, `Job Title`, `Address`, `Notes`) mit RFC 4180 Escaping und strukturierter Telefon-Klassifizierung.
+     - RFC 2849 LDIF: Standardisierte LDIF-Einträge mit `dn`, `cn`, `sn`, `givenName`, `mail`, `telephoneNumber`, `homePhone`, `mobile`, `o`, `title`, `postalAddress` und `description`.
+  3. Neuer Kalenderdruckservice `CalendarPrintService` (`src/services/calendar_print_service.rs`):
+     - `CalendarPrintDocument`: Liefert druckoptimiertes HTML mit sauberem CSS (Schriftarten, Badges, Tabellen, Zeitbereiche, Seitenumbruch-Regeln `@media print`) sowie formatierte Klartextausgabe.
+     - `build_event_print_document`: Einzeltermin-Druckbeleg mit Termindetails, Organisator, Status und Beschreibung.
+     - `build_calendar_list_print_document`: Chronologische Agenda gruppiert nach Tagesabschnitten mit Kopfzeilen, Mehrtages- und Ganztags-Indikatoren.
+  4. Integration in `CalendarPage` (`src/views/calendar_page.rs`):
+     - Toolbar-Buttons `btn_export_calendar` (iCalendar, CSV, RDF) und `btn_print_calendar` (Druckansicht).
+     - Globale Tastenkombination `<Ctrl>P` in der Kalenderansicht zum Auslösen von `print_visible_agenda()`.
+     - Zeilenbuttons für jeden Termin: `print_button` (Termin drucken) und `export_button` (Multi-Format-Export via Dateidialog).
+     - Kontextmenü-Einträge „Termin drucken“ und „Termin exportieren“.
+  5. Integration in `ContactsPage` (`src/views/contacts_page.rs`):
+     - Export-Dialog mit automatischer Formatwahl (`.vcf`, `.csv`, `.ldif`) und Filter-Dropdowns.
+     - `plan_contact_export` und `save_contact_export_async`.
+     - Kontextmenü-Aktualisierung „Exportieren (vCard, CSV, LDIF)…“.
+  Belegt durch 5 Calendar-Export-Tests, 4 Contact-Export-Tests, 3 Calendar-Print-Tests, 1 Contact-Export-Plan-Test und 995/995 Workspace-Tests.
+- Offener Parent-/Linux-Rest: Echte Druckausgabe über GTK-Print-Portal (`GtkPrintOperation`) / CUPS-Druckerdialoge und providerseitige Vollmengenabfrage unter Linux.
 
 ### GW-TASK-EDITOR-LIFECYCLE
 
@@ -1654,8 +1683,8 @@ Als weitere disjunkte Folgepakete bleiben:
 `GW-CAL-SHELL`, `GW-CAL-ACTIONS`, `GW-EVENT-EDITOR`,
 `GW-TASK-SURFACE`, `GW-TASK-EDITOR`,
 `GW-CONTACT-ACTIONS`, `GW-CONTACT-SEARCH`,
-`GW-SOURCE-SELECTOR`, `GW-SOURCE-MGMT`,
-`GW-IMPORT-FRAMEWORK` und `GW-EXPORT-PRINT`. Jedes Paket benötigt einen
+`GW-SOURCE-SELECTOR`, `GW-SOURCE-MGMT` und
+`GW-IMPORT-FRAMEWORK` (`GW-EXPORT-PRINT` ist portabel geschlossen). Jedes Paket benötigt einen
 eigenen portablen Daten-/UI-Vertrag, negative Tests und einen expliziten
 Linux-/EDS-/Desktop-Handoff.
 
