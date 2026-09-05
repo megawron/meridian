@@ -193,6 +193,9 @@ und erweitert dessen Schreibbereich nur nach dokumentierter Kollisionsprüfung.
 | 77 | `GW-ICAL-IMPORT` | `P1-CAL-001`, `P1-TASK-001` | `src/services/ical_import_service.rs`, `src/services/mod.rs`, `src/dialogs/import_dialog.rs` | `GW-SOURCE-SETTINGS`, `GW-SOURCE-SELECTOR` | BLOCKED_LINUX | Upstream-Parität zu `src/calendar/importers/icalendar-importer.c` und `e-cal-shell-backend.c`: Vollständiger Multi-Komponenten-Parser für iCalendar (`.ics`) und vCalendar (`.vcs`) mit Komponentenextraktion (`VEVENT`, `VTODO`, `VJOURNAL`), Erhalt von Wiederholungsregeln (`RRULE`, `EXDATE`, `RDATE`), Alarmen (`VALARM`), Zeitzonen (`VTIMEZONE`) und benutzerdefinierten Properties, Duplikat-Erkennung gegen den Store, drei atomare Duplikat-Strategien (`KeepBothNewUid`, `OverwriteExisting`, `SkipExisting`), Vorschau-Zusammenfassung (`summary_label`), Integration in `ImportDialog` mit Fortschritts- und Duplikat-Steuerung sowie transaktionaler Rollback-Schutz belegt durch 5 Ical-Import-Tests, 1 Import-Dialog-Test und 976/976 Workspace-Tests; Import in entfernte EDS-Server-Collections unter Linux offen. |
 | 78 | `GW-CONTACT-IMPORT` | `P1-CONTACT-001` | `src/services/contact_import_service.rs`, `src/services/contact_store_service.rs`, `src/services/mod.rs`, `src/dialogs/import_dialog.rs` | `GW-ADDRESSBOOK-SETTINGS`, `GW-SOURCE-SELECTOR`, `GW-ICAL-IMPORT` | BLOCKED_LINUX | Upstream-Parität zu `src/addressbook/importers/evolution-vcard-importer.c`, `evolution-csv-importer.c` und `evolution-ldif-importer.c`: Vollständiger Multi-Format-Importeur für vCard (`.vcf`, `.vcard`), CSV (`.csv`) mit Dialekt- und Feld-Mapping (Name, E-Mail, Telefon, Organisation, Jobtitel, Adresse, Notizen) und RFC 2849 LDIF (`.ldif`, `.ldi`) mit Attributabbildung (`cn`, `sn`, `givenName`, `mail`, `telephoneNumber`, `o`, `title`, `postalAddress`), Inhalts- und Formatheuristik (`detect_contact_format`), Duplikat-Erkennung nach E-Mail und Vollname, drei atomare Duplikat-Strategien (`KeepBothNew`, `OverwriteExisting`, `SkipExisting`), Vorschau-Zusammenfassung (`summary_label`), Integration in `ImportDialog` sowie transaktionaler Rollback-Schutz belegt durch 6 Contact-Import-Tests und 982/982 Workspace-Tests; EDS EBook-Backend-Import auf Linux offen. |
 | 79 | `GW-EXPORT-PRINT` | `P1-CAL-001`, `P1-CONTACT-001` | `src/services/{calendar_export_service,calendar_print_service,contact_export_service}.rs`, `src/services/mod.rs`, `src/views/{calendar,contacts}_page.rs` | `GW-ICAL-IMPORT`, `GW-CONTACT-IMPORT` | BLOCKED_LINUX | Upstream-Parität zu evolution save-calendar plugin (ical-format.c, csv-format.c, rdf-format.c), addressbook exporter (e-addressbook-view.c) und print dialogs: Vollständiger Multi-Format-Kalenderexport für iCalendar (.ics), CSV (.csv mit 17 Upstream-Spalten, RFC 4180 Escaping und Semikolon-Listen-Quoting) und RDF/RSS 1.0 (.rdf), Multi-Format-Kontaktexport für vCard (.vcf), CSV (.csv mit Standard-Adressbuchfeldern) und RFC 2849 LDIF (.ldif), Kalenderdruck für Einzeltermine und chronologische Tages-/Terminlisten-Agenda mit druckoptimiertem CSS und Badges, Tastenkürzel <Ctrl>P, Toolbar-Buttons, Zeilen-Aktionen und Popover-Menüs („Termin drucken“, „Termin exportieren“, „Exportieren (vCard, CSV, LDIF)…“) belegt durch 5 Calendar-Export-Tests, 4 Contact-Export-Tests, 3 Calendar-Print-Tests, 1 Contact-Export-Plan-Test und 995/995 Workspace-Tests; Linux Desktop GtkPrintOperation / Portal-Handoff offen. |
+| 80 | `COMPOSER-RECIPIENT-AUTOCOMPLETE` | `P0-COMP-001` | `src/dialogs/compose_dialog.rs` | `P0-COMP-001B`, `P1-CONTACT-001A` | BLOCKED_LINUX | Upstream-Parität zu `e-name-selector-entry.c`: 333ms Debounce, vCard- und GAL-Suche, Tastaturnavigation (Pfeiltasten, Tab/Enter, Escape), Token-Ersetzung im aktiven Feld und Stale-Generationsschutz portabel belegt; Linux EDS EBook-Query-Provider und visuelle Popover-Interaktion offen. |
+| 81 | `MAIL-NAME-SELECTOR-DIALOG` | `P0-COMP-001` | `src/dialogs/name_selector_dialog.rs`, `src/dialogs/compose_dialog.rs` | `COMPOSER-RECIPIENT-AUTOCOMPLETE` | BLOCKED_LINUX | Upstream-Parität zu `e-name-selector-dialog.c`: AdwWindow/HeaderBar, Kontaktsuche in Echtzeit (Name, Org, Mail, Nickname), Transfer-Buttons (`An ->`, `Cc ->`, `Bcc ->`), Entfernen, RFC-5322-Formatierung und Übernahme in Composer portabel getestet; Linux EDS-Streaming bei großen Adressbüchern offen. |
+| 82 | `MAIL-ITIP-BANNER` | `P0-MAIL-001` | `src/views/itip_banner.rs`, `src/views/mail_page.rs`, `src/services/itip_service.rs`, `src/window.rs`, `src/views/calendar_page.rs`, `src/style.css` | `P0-MAIL-001C`, `P1-CAL-001A` | BLOCKED_LINUX | Upstream-Parität zu `itip-view.c`: Interaktives iTIP-Meeting-Banner zwischen Mail-Headern und Body, Methoden-Erkennung (REQUEST, CANCEL, REPLY, PUBLISH), Status-Badges (Angenommen, Vorbehalt, Abgelehnt, Ausstehend), Kalender-Zielauswahl, Antwort-Buttons mit Bestätigung, Recurrence-/Organisator-/Teilnehmer-Formatierung und Datumssprung in Kalenderansicht portabel getestet; EDS ECalClient-Server-Zustellung und Linux-Visuals offen. |
 
 ### Parallelisierungsregeln
 
@@ -896,6 +899,59 @@ oder visuellen Linux-Belege.
   per-message Receipt/Priority/Charset/MIME-/Security-Optionen sind getestet.
 - Linux-Rest: WebKitGTK-/Print-Portal, EDS-Identitäten, Crypto-Backends und
   native Draft-/Sent-/Transportwirkung.
+
+### COMPOSER-RECIPIENT-AUTOCOMPLETE
+
+- Status: `BLOCKED_LINUX`; portable Implementierung und Testabdeckung abgeschlossen.
+- Ziel: Automatische Empfänger-Vervollständigung im Mail-Composer für An-, Cc-
+  und Bcc-Felder direkt während der Eingabe. Upstream-kompatibles 333ms Debounce,
+  nicht-blockierende asynchrone Suche über vCard-Kontakte (ContactStoreService)
+  und Exchange GAL (ActiveDirectoryService), Tastaturnavigation
+  (Pfeiltasten hoch/runter, Enter/Tab zur Übernahme, Escape zum Schließen) sowie
+  präzises Ersetzen des aktiven Tokens in Komma-getrennten Empfängerlisten.
+- Portable Evidenz: 333ms Debounce-Verhalten, Token- und Präfix-Extraktion,
+  Cursor-Positionierung (`replace_current_recipient`), nicht-blockierender
+  Suchpfad, Generation-Counter gegen asynchrone Stale-Ergebnisse, GAL-Kontext
+  (Titel, Abteilung) und vCard-Präzisionsabgleich (Name, Nickname, primäre und
+  sekundäre E-Mail-Adressen) sind mit gezielten Unit-Tests belegt.
+- Linux-Rest: Native EDS EBook-Query-Provider-Performance und visuelle
+  GTK4-/HiDPI-Popover-Interaktion.
+
+### MAIL-NAME-SELECTOR-DIALOG
+
+- Status: `BLOCKED_LINUX`; portable Implementierung und Testabdeckung abgeschlossen.
+- Ziel: Portierung des Evolution-Adressbuch-Auswahldialogs (`ENameSelectorDialog`)
+  nach GTK4/libadwaita. Durchsuchen lokaler Adressbücher und Verzeichnisdienste
+  nach Kontakten, Transferieren von Kontakten in Ziel-Listen (An, Cc, Bcc) über
+  Transfer-Buttons (`An ->`, `Cc ->`, `Bcc ->`), Entfernen von Empfängern und
+  Übernahme der formatierten Empfängerzeichenketten (`Name <email>` bzw. `email`)
+  in den Composer.
+- Portable Evidenz: AdwWindow mit HeaderBar, getrennte Source- und Destination-
+  Modelle, Echtzeit-Filterung über Name, Organisation, E-Mail und Nickname,
+  Deduping bei Mehrfach-Transfer, Formatierung nach RFC 5322 (`format_destinations`)
+  und sauberes Schließen ohne Datenverlust sind getestet.
+- Linux-Rest: EBook-View-Backend-Streaming bei sehr großen Adressbüchern (>50k
+  Kontakte) und visuelle Linux-Desktop-Abnahme.
+
+### MAIL-ITIP-BANNER
+
+- Status: `BLOCKED_LINUX`; portable Implementierung und Testabdeckung abgeschlossen.
+- Ziel: Portierung der interaktiven iTIP-Termineinladungsansicht (`itip-view.c`)
+  als GTK4-Banner (`ItipBanner`) zwischen Nachrichtenkopf und Mail-Body im Mail-Viewer.
+  Erkennung von iTIP/iCalendar-Anhängen und Mail-MIME-Parts (`text/calendar`,
+  `application/ics`), Parsen der Methode (`REQUEST`, `CANCEL`, `REPLY`, `PUBLISH`),
+  visuelle Anzeige von Zusammenfassung, Organisator, Ort, Start-/Endzeit,
+  Wiederholungsregel und Teilnehmerliste mit Status-Badges (`Angenommen`,
+  `Mit Vorbehalt`, `Abgelehnt`, `Ausstehend`). Auswahl des Zielkalenders,
+  Aktionsschaltflächen (`Annehmen`, `Vorbehalt`, `Ablehnen`), Speichern/Aktualisieren
+  im Kalender über `ItipService` sowie Navigation direkt zum Termindatum im Kalender.
+- Portable Evidenz: Vollständige Unit-Tests in `itip_service.rs` für
+  `format_recurrence_summary`, `attendee_partstat`, `update_attendee_partstat`,
+  `parse_itip_invitation`, Generierung der iTIP-Antwort (`METHOD:REPLY`) und
+  iTIP-Banner-Modellabbildung; Integrationstests für Datumsnavigation in
+  `window.rs` und `calendar_page.rs` (988/988 Workspace-Tests grün).
+- Linux-Rest: EDS ECalClient-Server-Zustellung und iTIP-Transport über Camel
+  sowie visuelle Linux-Desktop-Abnahme.
 
 ### GW-TASK-FILTERS
 

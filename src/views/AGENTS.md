@@ -118,6 +118,14 @@ accessibility helpers, and view-local GTK state.
 - Mail HTML always passes through the shared sanitizer and document-composition
   path. Remote resources are denied per message by default; CID/data content,
   base URIs, fallback text, loading, and errors must remain explicit.
+- The iTIP meeting invitation banner (`ItipBanner`) renders between the message
+  header and the mail body when an iCalendar/iTIP part or attachment is present,
+  matching upstream Evolution's `itip-view.c`. It exposes the meeting summary,
+  time/recurrence, location, organizer, attendees with participation status
+  badges, a target calendar dropdown, response actions (`Annehmen`, `Vorbehalt`,
+  `Ablehnen`), and a date-navigation shortcut to jump directly to the meeting in
+  the Calendar page. All responses update the component or local calendar via
+  `ItipService` and prepare RFC 5546 `METHOD:REPLY` envelopes without blocking GTK.
 - Keep loading and empty/error states explicit. Never leave a permanent
   spinner when a module has finished loading or failed.
 - Task filters use the persisted typed filter/search contract: date windows,

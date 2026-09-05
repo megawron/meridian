@@ -521,3 +521,49 @@ splitview > .sidebar,
 .unified-mail-toolbar .search-entry {
   min-width: 220px;
 }
+
+/* ── iTIP Meeting Invitation Banner ────────────────────────────────────────── */
+.itip-banner {
+  background-color: alpha(@card_bg_color, 0.95);
+  border: 1px solid alpha(@window_fg_color, 0.12);
+  border-left: 4px solid @accent_color;
+  border-radius: 8px;
+  padding: 12px 16px;
+  margin: 8px 16px;
+  transition: all 200ms ease;
+}
+
+.itip-banner.itip-cancelled {
+  border-left-color: @destructive_color;
+}
+
+.itip-banner.itip-accepted {
+  border-left-color: #2ec27e;
+}
+
+.itip-status-badge {
+  border-radius: 9999px;
+  padding: 2px 10px;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.itip-status-badge.accepted {
+  background-color: alpha(#2ec27e, 0.18);
+  color: #2ec27e;
+}
+
+.itip-status-badge.tentative {
+  background-color: alpha(#e5a50a, 0.18);
+  color: #e5a50a;
+}
+
+.itip-status-badge.declined {
+  background-color: alpha(#e01b24, 0.18);
+  color: #e01b24;
+}
+
+.itip-status-badge.pending {
+  background-color: alpha(@window_fg_color, 0.08);
+  color: alpha(@window_fg_color, 0.7);
+}

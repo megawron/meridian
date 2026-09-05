@@ -1340,10 +1340,13 @@ Die Statuswerte sind Quellen-/UI-Belege, keine Laufzeit- oder Providerabnahme:
   VJOURNAL-Editor persistieren den gemeinsamen verlustarmen Multi-VALARM-
   Vertrag und Kategorien. `text/calendar`-
   Nachrichten werden portabel als iTIP-Einladung erkannt; REQUEST/PUBLISH/ADD
-  kann in den app-eigenen lokalen Kalender übernommen werden. Portable
-  ACCEPTED/TENTATIVE/DECLINED-Antworten erzeugen bereits einen RFC-kompatiblen
-  `METHOD:REPLY`-Kalenderteil und einen persistierten app-eigenen
-  Antwortentwurf. Komplexe freie-Zeiten-/DST-Fälle sowie native
+  kann in den app-eigenen lokalen Kalender übernommen werden. `MAIL-ITIP-BANNER`
+  bettet die interaktive Termineinladungsansicht (`ItipBanner`) mit Status-Badges
+  (Angenommen, Mit Vorbehalt, Abgelehnt, Ausstehend), Kalender-Zielauswahl,
+  Recurrence-/Teilnehmer-Details und Datumssprung in die Kalenderansicht direkt
+  zwischen Header und Mail-Body ein. Portable ACCEPTED/TENTATIVE/DECLINED-Antworten
+  erzeugen einen RFC-kompatiblen `METHOD:REPLY`-Kalenderteil und einen persistierten
+  app-eigenen Antwortentwurf. Komplexe freie-Zeiten-/DST-Fälle sowie native
   EDS-/Camel-Anhangsübertragung und Offline-Sync fehlen noch; der
   serverseitige Teilnehmerstatus bleibt für die Linux-Abnahme zuständig. Der
   portable Reminder-Service wertet nur sichere `DISPLAY`-Actions aus und
@@ -1546,20 +1549,22 @@ Die Statuswerte sind Quellen-/UI-Belege, keine Laufzeit- oder Providerabnahme:
   Auch der Kontakteditor verwendet dieselbe cachefähige Quellenentdeckung,
   bewahrt eine gespeicherte, aktuell nicht erreichbare Quelle sichtbar und
   bietet das lokale Adressbuch nur bei schreibbarer Verfügbarkeit an.
-- [~] Lokale vCard-Kontakte werden asynchron als Autocomplete für To/Cc/Bcc im
-  Composer angeboten und in den aktuellen Empfänger-Token eingesetzt; die
+- [~] Die Empfänger-Autovervollständigung (`COMPOSER-RECIPIENT-AUTOCOMPLETE`)
+  bietet Upstream-kompatibles 333ms Debouncing, ein GTK4-Popover mit Tastaturnavigation
+  (Pfeiltasten, Tab/Enter zur Übernahme, Escape zum Schließen) und Token-Ersetzung
+  für To/Cc/Bcc über lokale vCards und Exchange GAL. Der Adressbuch-Auswahldialog
+  (`MAIL-NAME-SELECTOR-DIALOG` / `ENameSelectorDialog`) erlaubt Echtzeit-Kontaktsuche
+  über Name, Organisation, E-Mail und Nickname sowie Transfer (`An ->`, `Cc ->`, `Bcc ->`),
+  Entfernen und synchrone RFC-5322-Übernahme in den Composer. Die
   Kontakt-Schnellsuche durchsucht Name, E-Mail, Organisation, Titel, Telefon,
   Notiz, Kategorien, Adressen und die erhaltene vCard. Der portable
   Adressbuchfilter kann EDS-Quellen bzw. das lokale Adressbuch auswählen und
   Dubletten anhand normalisierter E-Mail-/Telefonwerte anzeigen. Die
   Adressbuchauswahl ist als persistente Standardquelle in den Einstellungen
-  verfügbar. Die portable Exchange-GAL-Suche ist über einen eigenen
-  asynchronen Verzeichnis-Button an To/Cc/Bcc angebunden, verwendet weiterhin
-  die lokale vCard-Autovervollständigung getrennt davon, setzt Treffer in den
-  aktuellen Empfänger-Token ein und verarbeitet Graph-Pagination, Timeouts,
-  fehlende Berechtigungen und Offlinefehler ohne den GTK-Thread zu blockieren.
-  Native EBook-GAL/LDAP-Felder, echte EDS-/GOA-Credentials und die Linux-
-  Abnahme gegen reale Verzeichnisdienste bleiben offen.
+  verfügbar. Die portable Exchange-GAL-Suche verarbeitet Graph-Pagination,
+  Timeouts, fehlende Berechtigungen und Offlinefehler ohne den GTK-Thread zu
+  blockieren. Native EBook-GAL/LDAP-Felder, echte EDS-/GOA-Credentials und die
+  Linux-Abnahme gegen reale Verzeichnisdienste bleiben offen.
 
 #### Phase 5 — Sicherheit und Datenschutz
 

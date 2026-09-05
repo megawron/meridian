@@ -3716,6 +3716,11 @@ impl CalendarPage {
         }
     }
 
+    pub fn navigate_to_date(&self, date: NaiveDate) {
+        self.set_calendar_anchor(date);
+        self.refresh_calendar_views();
+    }
+
     fn current_calendar_viewport(&self) -> CalendarViewport {
         self.imp().view_state.borrow().viewport()
     }

@@ -10,6 +10,7 @@ mod html_editor;
 #[cfg(not(target_os = "linux"))]
 #[path = "html_editor_fallback.rs"]
 mod html_editor;
+pub mod itip_banner;
 mod mail_page;
 mod mail_viewer;
 mod memos_page;
@@ -20,6 +21,7 @@ pub use contacts_page::ContactsPage;
 #[allow(unused_imports)]
 pub use html_editor::EditorContent;
 pub use html_editor::HtmlEditor;
+pub use itip_banner::ItipBanner;
 pub use mail_page::MailPage;
 #[cfg(target_os = "linux")]
 pub(crate) use mail_viewer::MailPrintDialogResult;

@@ -66,6 +66,8 @@ pub struct ItipInvitation {
     pub organizer: String,
     pub attendees: Vec<String>,
     pub sequence: Option<u32>,
+    pub recurrence: Option<String>,
+    pub raw_component: String,
 }
 
 /// Build a standards-shaped iTIP REPLY without contacting an account
@@ -156,12 +158,15 @@ pub fn parse_invitation(raw: &str) -> Option<ItipInvitation> {
     let organizer = ical_property(raw, "ORGANIZER").unwrap_or_default();
     let attendees = ical_properties(raw, "ATTENDEE");
     let sequence = ical_property(raw, "SEQUENCE").and_then(|value| value.parse::<u32>().ok());
+    let recurrence = ical_property(raw, "RRULE");
     Some(ItipInvitation {
         method,
         event,
         organizer,
         attendees,
         sequence,
+        recurrence,
+        raw_component: raw.to_string(),
     })
 }
 
@@ -325,6 +330,189 @@ fn top_level_properties(raw: &str, target: &str) -> Vec<(String, String)> {
     properties
 }
 
+/// Formats an RFC 5545 RRULE into a human-readable summary string in German.
+pub fn format_recurrence_summary(rrule: &str) -> String {
+    let mut parts = Vec::new();
+    let mut freq = String::new();
+    let mut interval = 1u32;
+    let mut by_days = Vec::new();
+    let mut count = None;
+    let mut until = None;
+
+    for param in rrule.split(';') {
+        let (k, v) = match param.split_once('=') {
+            Some((k, v)) => (k.trim().to_ascii_uppercase(), v.trim()),
+            None => continue,
+        };
+        match k.as_str() {
+            "FREQ" => freq = v.to_ascii_uppercase(),
+            "INTERVAL" => interval = v.parse::<u32>().unwrap_or(1),
+            "BYDAY" => {
+                for day in v.split(',') {
+                    let day_upper = day.trim().to_ascii_uppercase();
+                    let d = match day_upper.as_str() {
+                        "MO" => "Mo".to_string(),
+                        "TU" => "Di".to_string(),
+                        "WE" => "Mi".to_string(),
+                        "TH" => "Do".to_string(),
+                        "FR" => "Fr".to_string(),
+                        "SA" => "Sa".to_string(),
+                        "SU" => "So".to_string(),
+                        other => other.to_string(),
+                    };
+                    by_days.push(d);
+                }
+            }
+            "COUNT" => count = Some(v.to_string()),
+            "UNTIL" => until = Some(v.to_string()),
+            _ => {}
+        }
+    }
+
+    match freq.as_str() {
+        "DAILY" => {
+            if interval == 1 {
+                parts.push("Täglich".to_string());
+            } else {
+                parts.push(format!("Alle {interval} Tage"));
+            }
+        }
+        "WEEKLY" => {
+            if interval == 1 {
+                parts.push("Wöchentlich".to_string());
+            } else {
+                parts.push(format!("Alle {interval} Wochen"));
+            }
+            if !by_days.is_empty() {
+                parts.push(format!("jeden {}", by_days.join(", ")));
+            }
+        }
+        "MONTHLY" => {
+            if interval == 1 {
+                parts.push("Monatlich".to_string());
+            } else {
+                parts.push(format!("Alle {interval} Monate"));
+            }
+        }
+        "YEARLY" => {
+            if interval == 1 {
+                parts.push("Jährlich".to_string());
+            } else {
+                parts.push(format!("Alle {interval} Jahre"));
+            }
+        }
+        _ => {
+            if !rrule.trim().is_empty() {
+                parts.push(format!("Wiederholung ({rrule})"));
+            }
+        }
+    }
+
+    if let Some(c) = count {
+        parts.push(format!("({c} Mal)"));
+    } else if let Some(u) = until {
+        parts.push(format!("(bis {u})"));
+    }
+
+    if parts.is_empty() {
+        rrule.to_string()
+    } else {
+        parts.join(" ")
+    }
+}
+
+/// Extract the user's participation status (PARTSTAT) for a given attendee address from an iCalendar component.
+pub fn attendee_partstat(raw: &str, attendee_email: &str) -> Option<ItipReplyStatus> {
+    let target = normalize_attendee_address(attendee_email)?;
+    for (prop, val) in top_level_properties(raw, "ATTENDEE") {
+        if normalize_attendee_address(&unescape_ical_text(&val)) == Some(target.clone()) {
+            for param in prop.split(';').skip(1) {
+                if let Some((k, v)) = param.split_once('=') {
+                    if k.trim().eq_ignore_ascii_case("PARTSTAT") {
+                        match v.trim().to_ascii_uppercase().as_str() {
+                            "ACCEPTED" => return Some(ItipReplyStatus::Accepted),
+                            "TENTATIVE" => return Some(ItipReplyStatus::Tentative),
+                            "DECLINED" => return Some(ItipReplyStatus::Declined),
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Find the user's status across any matching candidate email addresses (e.g. configured account profiles).
+pub fn find_user_status(raw: &str, candidate_emails: &[&str]) -> Option<ItipReplyStatus> {
+    for email in candidate_emails {
+        if let Some(status) = attendee_partstat(raw, email) {
+            return Some(status);
+        }
+    }
+    None
+}
+
+/// Update or insert an ATTENDEE line with the specified PARTSTAT in a VEVENT component.
+pub fn update_attendee_partstat(
+    component: &str,
+    attendee_email: &str,
+    status: ItipReplyStatus,
+) -> String {
+    let target = normalize_attendee_address(attendee_email).unwrap_or_else(|| {
+        if attendee_email.starts_with("mailto:") {
+            attendee_email.to_string()
+        } else {
+            format!("mailto:{attendee_email}")
+        }
+    });
+
+    let mut lines = Vec::new();
+    let mut attendee_updated = false;
+
+    for line in unfold_lines(component) {
+        let Some((prop_with_params, val)) = line.split_once(':') else {
+            lines.push(line);
+            continue;
+        };
+
+        let prop_name = prop_with_params
+            .split(';')
+            .next()
+            .unwrap_or(prop_with_params)
+            .trim();
+
+        if prop_name.eq_ignore_ascii_case("ATTENDEE") {
+            let normalized_val = normalize_attendee_address(&unescape_ical_text(val));
+            if normalized_val == Some(target.clone()) {
+                let mut params = prop_with_params
+                    .split(';')
+                    .skip(1)
+                    .filter(|p| {
+                        !p.split_once('=')
+                            .map(|(k, _)| k.trim().eq_ignore_ascii_case("PARTSTAT"))
+                            .unwrap_or(false)
+                    })
+                    .map(|p| p.trim().to_string())
+                    .collect::<Vec<_>>();
+                params.push(format!("PARTSTAT={}", status.as_ical()));
+                lines.push(format!("ATTENDEE;{}:{val}", params.join(";")));
+                attendee_updated = true;
+                continue;
+            }
+        } else if prop_name.eq_ignore_ascii_case("END") && val.trim().eq_ignore_ascii_case("VEVENT") {
+            if !attendee_updated {
+                lines.push(format!("ATTENDEE;PARTSTAT={}:{target}", status.as_ical()));
+                attendee_updated = true;
+            }
+        }
+
+        lines.push(line);
+    }
+
+    format!("{}\r\n", lines.join("\r\n"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -409,6 +597,69 @@ mod tests {
         assert!(
             build_reply_component(&invitation, "not-an-address", ItipReplyStatus::Declined)
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn formats_recurrence_summary_properly() {
+        assert_eq!(
+            format_recurrence_summary("FREQ=WEEKLY;BYDAY=MO,WE,FR"),
+            "Wöchentlich jeden Mo, Mi, Fr"
+        );
+        assert_eq!(
+            format_recurrence_summary("FREQ=DAILY;INTERVAL=2;COUNT=5"),
+            "Alle 2 Tage (5 Mal)"
+        );
+        assert_eq!(
+            format_recurrence_summary("FREQ=MONTHLY;UNTIL=20261231T235959Z"),
+            "Monatlich (bis 20261231T235959Z)"
+        );
+        assert_eq!(
+            format_recurrence_summary("FREQ=YEARLY"),
+            "Jährlich"
+        );
+    }
+
+    #[test]
+    fn updates_and_reads_attendee_partstat() {
+        let component = concat!(
+            "BEGIN:VEVENT\r\n",
+            "UID:event-123\r\n",
+            "SUMMARY:Sync\r\n",
+            "ATTENDEE;CN=Host:mailto:host@example.org\r\n",
+            "ATTENDEE;CN=Guest;PARTSTAT=NEEDS-ACTION:mailto:guest@example.org\r\n",
+            "END:VEVENT\r\n"
+        );
+
+        assert_eq!(
+            attendee_partstat(component, "guest@example.org"),
+            None
+        );
+
+        let updated = update_attendee_partstat(component, "guest@example.org", ItipReplyStatus::Accepted);
+        assert_eq!(
+            attendee_partstat(&updated, "guest@example.org"),
+            Some(ItipReplyStatus::Accepted)
+        );
+        assert!(updated.contains("PARTSTAT=ACCEPTED"));
+
+        let candidate_emails = ["other@example.org", "guest@example.org"];
+        assert_eq!(
+            find_user_status(&updated, &candidate_emails),
+            Some(ItipReplyStatus::Accepted)
+        );
+
+        let updated_declined = update_attendee_partstat(&updated, "guest@example.org", ItipReplyStatus::Declined);
+        assert_eq!(
+            attendee_partstat(&updated_declined, "guest@example.org"),
+            Some(ItipReplyStatus::Declined)
+        );
+
+        // Also test inserting a new attendee if not in list
+        let updated_new = update_attendee_partstat(component, "newuser@example.org", ItipReplyStatus::Tentative);
+        assert_eq!(
+            attendee_partstat(&updated_new, "newuser@example.org"),
+            Some(ItipReplyStatus::Tentative)
         );
     }
 }

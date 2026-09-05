@@ -64,7 +64,7 @@ use crate::services::search_folder_service::{
     SavedSearch, SavedSearchFieldMode, SavedSearchScope, SearchFolderService,
 };
 use crate::views::accessibility::set_accessible_label;
-use crate::views::{MailViewer, MessageSearchResult, MessageSearchStatus};
+use crate::views::{ItipBanner, MailViewer, MessageSearchResult, MessageSearchStatus};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum MessageFilter {
@@ -3219,6 +3219,7 @@ mod imp {
         pub all_headers_cancellation: RefCell<Option<Arc<AtomicBool>>>,
         pub(super) message_source_windows: RefCell<HashMap<String, MessageSourceWindowState>>,
         pub mail_viewer: RefCell<Option<MailViewer>>,
+        pub itip_banner: RefCell<Option<ItipBanner>>,
         pub print_status_area: RefCell<Option<gtk::Box>>,
         pub print_status_label: RefCell<Option<gtk::Label>>,
         pub print_cancel_button: RefCell<Option<gtk::Button>>,
@@ -3372,6 +3373,7 @@ mod imp {
             let (
                 detail_view,
                 mail_viewer,
+                itip_banner,
                 crypto_label,
                 lbl_crypto,
                 crypto_chip,
@@ -3390,6 +3392,7 @@ mod imp {
                 .replace(Some(all_headers_revealer));
             self.all_headers_grid.replace(Some(all_headers_grid));
             self.mail_viewer.replace(Some(mail_viewer.clone()));
+            self.itip_banner.replace(Some(itip_banner.clone()));
             self.message_find_revealer
                 .replace(Some(message_find_revealer));
             self.message_find_entry.replace(Some(message_find_entry));
@@ -3403,6 +3406,7 @@ mod imp {
                 &mail_viewer,
                 &lbl_crypto,
                 &attachment_bar,
+                &itip_banner,
             );
             obj.connect_folder_filters(
                 &folder_list,
@@ -12816,17 +12820,6 @@ impl MailPage {
         self.imp().mail_list_view.replace(Some(list_view.clone()));
         self.imp().mail_list_factory.replace(Some(factory.clone()));
 
-        // Search entry container
-        let search_box = gtk::Box::builder()
-            .orientation(gtk::Orientation::Horizontal)
-            .css_classes(vec!["mail-search-bar"])
-            .margin_start(8)
-            .margin_end(8)
-            .margin_top(8)
-            .margin_bottom(8)
-            .spacing(6)
-            .build();
-
         let search_entry = gtk::SearchEntry::builder()
             .placeholder_text("Mails durchsuchen (from:, in:sent, on:2026-08-11, is:unread)…")
             .hexpand(true)
@@ -13946,6 +13939,7 @@ impl MailPage {
     ) -> (
         gtk::Box,
         MailViewer,
+        ItipBanner,
         gtk::Label,
         gtk::Label,
         gtk::Box,
@@ -14307,10 +14301,49 @@ impl MailPage {
             }
         });
 
+        let itip_banner = ItipBanner::new();
+        let detail_for_cal = detail_view.downgrade();
+        itip_banner.connect_calendar_navigate(move |date| {
+            if let Some(detail) = detail_for_cal.upgrade() {
+                if let Some(root) = detail.root() {
+                    if let Ok(win) = root.downcast::<crate::window::EvolutionWindow>() {
+                        win.show_calendar_date(date);
+                    }
+                }
+            }
+        });
+        let detail_for_toast = detail_view.downgrade();
+        itip_banner.connect_action_toast(move |msg| {
+            if let Some(detail) = detail_for_toast.upgrade() {
+                show_mail_toast_for_widget(&detail, &msg);
+            }
+        });
+        let detail_for_reply = detail_view.downgrade();
+        itip_banner.connect_reply_draft_saved(move |invitation, status| {
+            let invitation = invitation.clone();
+            let detail_for_reply = detail_for_reply.clone();
+            glib::spawn_future_local(async move {
+                let (sender, receiver) = async_channel::bounded(1);
+                std::thread::spawn(move || {
+                    let res = save_itip_reply_draft(&invitation, status);
+                    let _ = sender.send_blocking(res);
+                });
+                if let Ok(Ok(draft_id)) = receiver.recv().await {
+                    if let Some(detail) = detail_for_reply.upgrade() {
+                        show_mail_toast_for_widget(
+                            &detail,
+                            &format!("Antwort als Entwurf gespeichert ({draft_id})"),
+                        );
+                    }
+                }
+            });
+        });
+
         detail_view.append(&header_box);
         detail_view.append(&header_separator);
         detail_view.append(&thread_context);
         detail_view.append(&message_find_revealer);
+        detail_view.append(itip_banner.widget());
         detail_view.append(&mail_viewer);
         detail_view.append(&attachment_separator);
         detail_view.append(&attachment_bar);
@@ -14319,6 +14352,7 @@ impl MailPage {
         (
             detail_view,
             mail_viewer,
+            itip_banner,
             crypto_label,
             lbl_crypto,
             crypto_chip,
@@ -14343,14 +14377,18 @@ impl MailPage {
         mail_viewer: &MailViewer,
         lbl_crypto: &gtk::Label,
         attachment_bar: &gtk::Box,
+        itip_banner: &ItipBanner,
     ) {
         let selection_for_async_crypto = selection.clone();
         let page_for_read = self.downgrade();
+        let itip_banner_clone = itip_banner.clone();
         selection.connect_selected_item_notify(glib::clone!(
             #[strong]
             selection_for_async_crypto,
             #[strong]
             page_for_read,
+            #[strong]
+            itip_banner_clone,
             #[weak]
             mail_viewer,
             #[weak]
@@ -14494,6 +14532,7 @@ impl MailPage {
                                 tracing::debug!(%error, "OpenPGP inspection result was dropped");
                             }
                         });
+                        let itip_banner_for_crypto = itip_banner_clone.clone();
                         glib::spawn_future_local(async move {
                             let Ok((result_generation, result_identity, inspection)) =
                                 crypto_receiver.recv().await
@@ -14534,6 +14573,7 @@ impl MailPage {
                                             &current,
                                             &viewer_for_crypto,
                                             &attachment_bar_for_crypto,
+                                            Some(&itip_banner_for_crypto),
                                         );
                                     }
                                     label.set_label(&label_text);
@@ -14548,8 +14588,14 @@ impl MailPage {
                             }
                         });
                     }
-                    Self::render_message_content(&msg, &mail_viewer, &attachment_bar);
+                    Self::render_message_content(
+                        &msg,
+                        &mail_viewer,
+                        &attachment_bar,
+                        Some(&itip_banner_clone),
+                    );
                 } else {
+                    itip_banner_clone.set_invitation(None, &[]);
                     lbl_crypto.set_label("");
                     while let Some(child) = attachment_bar.first_child() {
                         attachment_bar.remove(&child);
@@ -14577,11 +14623,13 @@ impl MailPage {
         message: &MailMessageObject,
         mail_viewer: &MailViewer,
         attachment_bar: &gtk::Box,
+        itip_banner: Option<&ItipBanner>,
     ) {
         while let Some(child) = attachment_bar.first_child() {
             attachment_bar.remove(&child);
         }
 
+        let mut itip_invitation = None;
         let attachments = message.attachments();
         for attachment in &attachments {
             let looks_like_calendar = attachment
@@ -14594,8 +14642,28 @@ impl MailPage {
                 && let Some(invitation) =
                     parse_invitation(&String::from_utf8_lossy(&attachment.content))
             {
+                if itip_invitation.is_none() {
+                    itip_invitation = Some(invitation.clone());
+                }
                 append_itip_invitation(attachment_bar, invitation);
             }
+        }
+
+        if itip_invitation.is_none() {
+            if let Some(raw_mime) = message.raw_mime() {
+                let text = String::from_utf8_lossy(&raw_mime);
+                if text.contains("BEGIN:VCALENDAR") {
+                    if let Some(invitation) = parse_invitation(&text) {
+                        itip_invitation = Some(invitation);
+                    }
+                }
+            }
+        }
+
+        if let Some(banner) = itip_banner {
+            let profiles = AccountConfigStore::default().load();
+            let user_emails: Vec<&str> = profiles.iter().map(|p| p.email.as_str()).collect();
+            banner.set_invitation(itip_invitation, &user_emails);
         }
 
         let inline_images = attachments

@@ -626,6 +626,15 @@ impl EvolutionWindow {
         }
     }
 
+    pub(crate) fn show_calendar_date(&self, date: chrono::NaiveDate) {
+        if let Some(view_stack) = self.imp().view_stack.borrow().as_ref() {
+            view_stack.set_visible_child_name("calendar");
+        }
+        if let Some(calendar_page) = self.calendar_page() {
+            calendar_page.navigate_to_date(date);
+        }
+    }
+
     fn contacts_page(&self) -> Option<ContactsPage> {
         self.imp()
             .view_stack
