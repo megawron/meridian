@@ -19,6 +19,7 @@ pub mod eds_service;
 pub mod eds_source_cache_service;
 pub mod exchange_service;
 pub mod html_sanitizer;
+pub mod ical_import_service;
 pub mod ical_time_service;
 pub mod inline_content_service;
 pub mod itip_service;

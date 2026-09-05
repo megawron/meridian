@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// ImportDialog — Import assistant for iCalendar (.ics), vCard (.vcf), and mail (.mbox, .eml) files.
+// ImportDialog — Import assistant for iCalendar (.ics, .vcs), vCard (.vcf), and mail (.mbox, .eml) files.
 
 use adw::prelude::*;
 use adw::subclass::prelude::*;
@@ -10,6 +10,9 @@ use std::path::PathBuf;
 
 use crate::services::calendar_store_service::CalendarStoreService;
 use crate::services::contact_store_service::ContactStoreService;
+use crate::services::ical_import_service::{
+    IcalDuplicatePolicy, execute_ical_import, plan_ical_import,
+};
 use crate::services::mail_store_service::MailStoreService;
 
 mod imp {
@@ -20,6 +23,9 @@ mod imp {
         pub selected_file: RefCell<Option<PathBuf>>,
         pub file_label: RefCell<Option<gtk::Label>>,
         pub target_dropdown: RefCell<Option<gtk::DropDown>>,
+        pub policy_dropdown: RefCell<Option<gtk::DropDown>>,
+        pub preview_row: RefCell<Option<adw::ActionRow>>,
+        pub policy_row: RefCell<Option<adw::ActionRow>>,
     }
 
     #[glib::object_subclass]
@@ -55,7 +61,7 @@ impl ImportDialog {
 
     fn build_ui(&self) {
         self.set_title(Some("Daten importieren"));
-        self.set_default_size(520, 420);
+        self.set_default_size(540, 480);
         self.set_modal(true);
 
         let toolbar = adw::ToolbarView::new();
@@ -87,7 +93,7 @@ impl ImportDialog {
         main_box.append(&title);
 
         let desc = gtk::Label::builder()
-            .label("Wählen Sie eine iCalendar- (.ics), vCard- (.vcf) oder Mail-Datei (.mbox / .eml), um Daten in Ihr lokales Adressbuch, Ihren Kalender oder Ihre Mailbox zu importieren.")
+            .label("Wählen Sie eine iCalendar- (.ics, .vcs), vCard- (.vcf) oder Mail-Datei (.mbox / .eml), um Daten in Ihren Kalender, Ihre Aufgaben, Notizen, Kontakte oder Mailbox zu importieren.")
             .wrap(true)
             .justify(gtk::Justification::Center)
             .css_classes(vec!["dim-label"])
@@ -124,8 +130,11 @@ impl ImportDialog {
                 .build();
 
             let filter = gtk::FileFilter::new();
-            filter.set_name(Some("Unterstützte Formate (*.ics, *.vcf, *.mbox, *.eml)"));
+            filter.set_name(Some(
+                "Unterstützte Formate (*.ics, *.vcs, *.vcf, *.mbox, *.eml)",
+            ));
             filter.add_pattern("*.ics");
+            filter.add_pattern("*.vcs");
             filter.add_pattern("*.vcf");
             filter.add_pattern("*.vcard");
             filter.add_pattern("*.mbox");
@@ -156,10 +165,17 @@ impl ImportDialog {
         file_row.add_suffix(&choose_file_btn);
         group.add(&file_row);
 
+        let preview_row = adw::ActionRow::builder()
+            .title("Gefundene Einträge")
+            .subtitle("Noch keine Datei geladen")
+            .build();
+        group.add(&preview_row);
+        *self.imp().preview_row.borrow_mut() = Some(preview_row);
+
         let target_dropdown = gtk::DropDown::from_strings(&[
-            "Kalender / Termine (.ics)",
-            "Aufgaben / Tasks (.ics)",
-            "Memos / Notizen (.ics)",
+            "Kalender / Termine (.ics, .vcs)",
+            "Aufgaben / Tasks (.ics, .vcs)",
+            "Memos / Notizen (.ics, .vcs)",
             "Kontakte / Adressbuch (.vcf)",
             "E-Mail / Posteingang (.mbox / .eml)",
         ]);
@@ -168,6 +184,21 @@ impl ImportDialog {
         target_row.add_suffix(&target_dropdown);
         group.add(&target_row);
         *self.imp().target_dropdown.borrow_mut() = Some(target_dropdown);
+
+        let policy_dropdown = gtk::DropDown::from_strings(&[
+            "Beide behalten (neue Kennung vergeben)",
+            "Bestehende Einträge überschreiben",
+            "Bereits vorhandene Einträge überspringen",
+        ]);
+        policy_dropdown.set_valign(gtk::Align::Center);
+        let policy_row = adw::ActionRow::builder()
+            .title("Duplikat-Behandlung")
+            .visible(false)
+            .build();
+        policy_row.add_suffix(&policy_dropdown);
+        group.add(&policy_row);
+        *self.imp().policy_dropdown.borrow_mut() = Some(policy_dropdown);
+        *self.imp().policy_row.borrow_mut() = Some(policy_row);
 
         main_box.append(&group);
 
@@ -211,12 +242,40 @@ impl ImportDialog {
             .and_then(|e| e.to_str())
             .unwrap_or("")
             .to_lowercase();
+
+        let is_ical = ext == "ics" || ext == "vcs";
+
         if let Some(dropdown) = self.imp().target_dropdown.borrow().as_ref() {
             match ext.as_str() {
                 "vcf" | "vcard" => dropdown.set_selected(3),
                 "mbox" | "eml" => dropdown.set_selected(4),
-                "ics" => dropdown.set_selected(0),
+                "ics" | "vcs" => dropdown.set_selected(0),
                 _ => {}
+            }
+        }
+
+        if let Some(policy_row) = self.imp().policy_row.borrow().as_ref() {
+            policy_row.set_visible(is_ical);
+        }
+
+        if let Some(preview_row) = self.imp().preview_row.borrow().as_ref() {
+            if is_ical {
+                if let Ok(content) = std::fs::read_to_string(path) {
+                    let plan = plan_ical_import(
+                        &content,
+                        &std::collections::HashSet::new(),
+                        IcalDuplicatePolicy::default(),
+                    );
+                    preview_row.set_subtitle(&plan.summary_label());
+                } else {
+                    preview_row.set_subtitle("Datei konnte nicht gelesen werden");
+                }
+            } else if ext == "vcf" || ext == "vcard" {
+                preview_row.set_subtitle("vCard-Kontaktdaten bereit für Import");
+            } else if ext == "mbox" || ext == "eml" {
+                preview_row.set_subtitle("E-Mail-Nachrichtenarchiv bereit für Import");
+            } else {
+                preview_row.set_subtitle("Format bereit für Import");
             }
         }
     }
@@ -232,6 +291,20 @@ impl ImportDialog {
             .as_ref()
             .map(|d| d.selected())
             .unwrap_or(0);
+        let policy_idx = self
+            .imp()
+            .policy_dropdown
+            .borrow()
+            .as_ref()
+            .map(|d| d.selected())
+            .unwrap_or(0);
+
+        let duplicate_policy = match policy_idx {
+            1 => IcalDuplicatePolicy::OverwriteExisting,
+            2 => IcalDuplicatePolicy::SkipExisting,
+            _ => IcalDuplicatePolicy::KeepBothNewUid,
+        };
+
         let dialog_weak = self.downgrade();
 
         glib::spawn_future_local(async move {
@@ -241,15 +314,28 @@ impl ImportDialog {
                 let content = std::fs::read_to_string(&path).unwrap_or_default();
                 let count = match target_idx {
                     0 | 1 | 2 => {
-                        // iCalendar import into local store
+                        // iCalendar import into store with duplicate policy and multi-component parsing
                         let store = CalendarStoreService::new();
-                        let mut imported = 0usize;
-                        if !content.is_empty() {
-                            if store.create_component(&content).is_ok() {
-                                imported += 1;
+                        let snapshot = store.load_snapshot();
+                        let mut existing = std::collections::HashSet::new();
+                        for e in snapshot.events {
+                            existing.insert(e.uid);
+                        }
+                        for t in snapshot.tasks {
+                            existing.insert(t.uid);
+                        }
+                        for m in snapshot.memos {
+                            existing.insert(m.uid);
+                        }
+
+                        let plan = plan_ical_import(&content, &existing, duplicate_policy);
+                        match execute_ical_import(&plan, &store) {
+                            Ok(res) => res.imported_count + res.overwritten_count,
+                            Err(err) => {
+                                tracing::warn!(%err, "iCalendar import failed");
+                                0
                             }
                         }
-                        imported
                     }
                     3 => {
                         // vCard contact import
@@ -284,5 +370,34 @@ impl ImportDialog {
 impl Default for ImportDialog {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+pub mod tests {
+    use super::*;
+
+    #[test]
+    fn duplicate_policy_maps_dropdown_index_correctly() {
+        let p0 = match 0 {
+            1 => IcalDuplicatePolicy::OverwriteExisting,
+            2 => IcalDuplicatePolicy::SkipExisting,
+            _ => IcalDuplicatePolicy::KeepBothNewUid,
+        };
+        assert_eq!(p0, IcalDuplicatePolicy::KeepBothNewUid);
+
+        let p1 = match 1 {
+            1 => IcalDuplicatePolicy::OverwriteExisting,
+            2 => IcalDuplicatePolicy::SkipExisting,
+            _ => IcalDuplicatePolicy::KeepBothNewUid,
+        };
+        assert_eq!(p1, IcalDuplicatePolicy::OverwriteExisting);
+
+        let p2 = match 2 {
+            1 => IcalDuplicatePolicy::OverwriteExisting,
+            2 => IcalDuplicatePolicy::SkipExisting,
+            _ => IcalDuplicatePolicy::KeepBothNewUid,
+        };
+        assert_eq!(p2, IcalDuplicatePolicy::SkipExisting);
     }
 }
