@@ -9515,6 +9515,9 @@ fn start_task_source_discovery(
         while let Some(child) = source_list.first_child() {
             source_list.remove(&child);
         }
+        let default_task_uid = AppSettings::try_new()
+            .map(|s| s.default_task_source_uid())
+            .unwrap_or_default();
         for (index, name) in names.iter().enumerate() {
             let escaped = glib::markup_escape_text(name);
             let row = adw::ActionRow::builder().title(escaped.as_str()).build();
@@ -9524,6 +9527,66 @@ fn start_task_source_discovery(
                 "view-list-details-symbolic"
             });
             row.add_prefix(&image);
+
+            if index > 0 && index - 1 < uids.len() {
+                let source_uid = uids[index - 1].clone();
+                let is_primary = (!default_task_uid.is_empty() && default_task_uid == source_uid)
+                    || (default_task_uid.is_empty() && source_uid == "local-calendar");
+                if is_primary {
+                    row.add_suffix(&crate::models::source_selector::create_primary_indicator());
+                }
+
+                let page_weak_menu = page.downgrade();
+                let source_selector_menu = source_selector.clone();
+                let source_list_menu = source_list.clone();
+                let target_index = index as u32;
+                let menu_btn = crate::models::source_selector::create_source_row_menu(
+                    is_primary,
+                    "Aufgabenliste",
+                    {
+                        let source_selector = source_selector_menu.clone();
+                        let source_list = source_list_menu.clone();
+                        let page_weak = page_weak_menu.clone();
+                        move || {
+                            source_selector.set_selected(target_index);
+                            if let Some(row) = source_list.row_at_index(target_index as i32) {
+                                source_list.select_row(Some(&row));
+                            }
+                            if let Some(p) = page_weak.upgrade() {
+                                update_task_selection_controls(&p);
+                            }
+                        }
+                    },
+                    {
+                        let source_selector = source_selector_menu.clone();
+                        let source_list = source_list_menu.clone();
+                        let page_weak = page_weak_menu.clone();
+                        move || {
+                            source_selector.set_selected(0);
+                            if let Some(row) = source_list.row_at_index(0) {
+                                source_list.select_row(Some(&row));
+                            }
+                            if let Some(p) = page_weak.upgrade() {
+                                update_task_selection_controls(&p);
+                            }
+                        }
+                    },
+                    {
+                        let uid = source_uid.clone();
+                        let page_weak = page_weak_menu.clone();
+                        move || {
+                            if let Some(settings) = AppSettings::try_new() {
+                                settings.set_default_task_source_uid(&uid);
+                            }
+                            if let Some(p) = page_weak.upgrade() {
+                                start_task_source_discovery(&p, Some(uid.clone()), false);
+                            }
+                        }
+                    },
+                );
+                row.add_suffix(&menu_btn);
+            }
+
             source_list.append(&row);
         }
         let selected = preferred_source_uid

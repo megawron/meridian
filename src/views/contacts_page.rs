@@ -369,6 +369,9 @@ impl ContactsPage {
             while let Some(child) = book_source_list_for_load.first_child() {
                 book_source_list_for_load.remove(&child);
             }
+            let default_book_uid = AppSettings::try_new()
+                .map(|s| s.default_address_book_source_uid())
+                .unwrap_or_default();
             for (index, name) in names.iter().enumerate() {
                 let escaped = glib::markup_escape_text(name);
                 let row = adw::ActionRow::builder()
@@ -381,6 +384,57 @@ impl ContactsPage {
                     "x-office-address-book-symbolic"
                 });
                 row.add_prefix(&image);
+
+                if index > 0 && index - 1 < uids.len() {
+                    let source_uid = uids[index - 1].clone();
+                    let is_primary = (!default_book_uid.is_empty()
+                        && default_book_uid == source_uid)
+                        || (default_book_uid.is_empty()
+                            && source_uid == LOCAL_ADDRESS_BOOK_SOURCE_UID);
+                    if is_primary {
+                        row.add_suffix(&crate::models::source_selector::create_primary_indicator());
+                    }
+
+                    let book_selector = book_selector_for_load.clone();
+                    let book_source_list = book_source_list_for_load.clone();
+                    let target_index = index as u32;
+                    let menu_btn = crate::models::source_selector::create_source_row_menu(
+                        is_primary,
+                        "Adressbuch",
+                        {
+                            let book_selector = book_selector.clone();
+                            let book_source_list = book_source_list.clone();
+                            move || {
+                                book_selector.set_selected(target_index);
+                                if let Some(row) =
+                                    book_source_list.row_at_index(target_index as i32)
+                                {
+                                    book_source_list.select_row(Some(&row));
+                                }
+                            }
+                        },
+                        {
+                            let book_selector = book_selector.clone();
+                            let book_source_list = book_source_list.clone();
+                            move || {
+                                book_selector.set_selected(0);
+                                if let Some(row) = book_source_list.row_at_index(0) {
+                                    book_source_list.select_row(Some(&row));
+                                }
+                            }
+                        },
+                        {
+                            let uid = source_uid.clone();
+                            move || {
+                                if let Some(settings) = AppSettings::try_new() {
+                                    settings.set_default_address_book_source_uid(&uid);
+                                }
+                            }
+                        },
+                    );
+                    row.add_suffix(&menu_btn);
+                }
+
                 book_source_list_for_load.append(&row);
             }
             let selected_index = uids

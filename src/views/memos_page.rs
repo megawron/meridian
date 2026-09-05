@@ -676,6 +676,9 @@ impl MemosPage {
             while let Some(child) = memo_source_list_for_load.first_child() {
                 memo_source_list_for_load.remove(&child);
             }
+            let default_memo_uid = AppSettings::try_new()
+                .map(|s| s.default_memo_source_uid())
+                .unwrap_or_default();
             for (index, name) in names.iter().enumerate() {
                 let escaped = glib::markup_escape_text(name);
                 let row = adw::ActionRow::builder().title(escaped.as_str()).build();
@@ -685,6 +688,54 @@ impl MemosPage {
                     "view-list-details-symbolic"
                 });
                 row.add_prefix(&image);
+
+                if index > 0 && index - 1 < uids.len() {
+                    let source_uid = uids[index - 1].clone();
+                    let is_primary = (!default_memo_uid.is_empty()
+                        && default_memo_uid == source_uid)
+                        || (default_memo_uid.is_empty() && source_uid == "local-calendar");
+                    if is_primary {
+                        row.add_suffix(&crate::models::source_selector::create_primary_indicator());
+                    }
+
+                    let source_selector = source_selector_for_load.clone();
+                    let source_list = memo_source_list_for_load.clone();
+                    let target_index = index as u32;
+                    let menu_btn = crate::models::source_selector::create_source_row_menu(
+                        is_primary,
+                        "Notizbuch",
+                        {
+                            let source_selector = source_selector.clone();
+                            let source_list = source_list.clone();
+                            move || {
+                                source_selector.set_selected(target_index);
+                                if let Some(row) = source_list.row_at_index(target_index as i32) {
+                                    source_list.select_row(Some(&row));
+                                }
+                            }
+                        },
+                        {
+                            let source_selector = source_selector.clone();
+                            let source_list = source_list.clone();
+                            move || {
+                                source_selector.set_selected(0);
+                                if let Some(row) = source_list.row_at_index(0) {
+                                    source_list.select_row(Some(&row));
+                                }
+                            }
+                        },
+                        {
+                            let uid = source_uid.clone();
+                            move || {
+                                if let Some(settings) = AppSettings::try_new() {
+                                    settings.set_default_memo_source_uid(&uid);
+                                }
+                            }
+                        },
+                    );
+                    row.add_suffix(&menu_btn);
+                }
+
                 memo_source_list_for_load.append(&row);
             }
             let selected = initial_source_filter

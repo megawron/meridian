@@ -887,6 +887,9 @@ mod imp {
         pub calendar_category_model: RefCell<Option<gtk::StringList>>,
         pub calendar_category_selector: RefCell<Option<gtk::DropDown>>,
         pub hidden_calendar_sources: RefCell<HashSet<String>>,
+        pub calendar_source_list: RefCell<Option<gtk::ListBox>>,
+        pub calendar_source_state_label: RefCell<Option<gtk::Label>>,
+        pub calendar_source_selector: RefCell<crate::models::source_selector::SourceSelector>,
         pub ecal_monitor_cancel: RefCell<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>>,
         pub(super) calendar_load_cancel: RefCell<Option<Arc<AtomicBool>>>,
         pub(super) calendar_load_gate: RefCell<CalendarLoadGate>,
@@ -953,6 +956,13 @@ mod imp {
                 calendar_category_model: RefCell::new(None),
                 calendar_category_selector: RefCell::new(None),
                 hidden_calendar_sources: RefCell::new(HashSet::new()),
+                calendar_source_list: RefCell::new(None),
+                calendar_source_state_label: RefCell::new(None),
+                calendar_source_selector: RefCell::new(
+                    crate::models::source_selector::SourceSelector::new(
+                        crate::models::source_selector::SourceDomain::Calendar,
+                    ),
+                ),
                 ecal_monitor_cancel: RefCell::new(None),
                 calendar_load_cancel: RefCell::new(None),
                 calendar_load_gate: RefCell::new(CalendarLoadGate::default()),
@@ -1973,6 +1983,9 @@ impl CalendarPage {
             .build();
 
         sidebar_box.append(&source_list);
+        self.imp()
+            .calendar_source_list
+            .replace(Some(source_list.clone()));
 
         let calendar_state = gtk::Label::builder()
             .label("Kalender werden nach der Synchronisation angezeigt")
@@ -1981,6 +1994,9 @@ impl CalendarPage {
             .halign(gtk::Align::Start)
             .build();
         sidebar_box.append(&calendar_state);
+        self.imp()
+            .calendar_source_state_label
+            .replace(Some(calendar_state.clone()));
 
         let local_item_state = gtk::Label::builder()
             .label("Keine lokalen .ics-Daten geladen")
@@ -2128,130 +2144,7 @@ impl CalendarPage {
             });
         }
 
-        let source_list_for_load = source_list.clone();
-        let calendar_state_for_load = calendar_state.clone();
-        let page_weak_for_source = self.downgrade();
-        glib::spawn_future_local(async move {
-            let discovery =
-                eds_service::discover_sources(eds_service::EdsSourceKind::Calendar).await;
-            let mut sources = discovery.sources;
-            sources.sort_by_cached_key(|source| {
-                (source.display_name.to_lowercase(), source.uid.clone())
-            });
-            let hidden_sources = page_weak_for_source
-                .upgrade()
-                .map(|page| page.imp().hidden_calendar_sources.borrow().clone())
-                .unwrap_or_default();
-            let mut displayed_sources = 0usize;
-
-            for source in sources {
-                let source_uid = source.uid.clone();
-                let escaped_title = glib::markup_escape_text(&source.display_name);
-                let subtitle = if source.enabled {
-                    "aktiv"
-                } else {
-                    "deaktiviert"
-                };
-                let escaped_subtitle = glib::markup_escape_text(subtitle);
-                let row = adw::ActionRow::builder()
-                    .title(escaped_title.as_str())
-                    .subtitle(escaped_subtitle.as_str())
-                    .use_markup(true)
-                    .build();
-                let check = gtk::CheckButton::builder()
-                    .active(source.enabled && !hidden_sources.contains(&source_uid))
-                    .sensitive(source.enabled)
-                    .valign(gtk::Align::Center)
-                    .tooltip_text("Kalender in den Ansichten ein-/ausblenden")
-                    .build();
-                let page_weak_for_toggle = page_weak_for_source.clone();
-                let source_uid_for_toggle = source_uid.clone();
-                check.connect_toggled(move |check| {
-                    let Some(page) = page_weak_for_toggle.upgrade() else {
-                        return;
-                    };
-                    let hidden_sources_vec = {
-                        let mut hidden_sources = page.imp().hidden_calendar_sources.borrow_mut();
-                        if check.is_active() {
-                            hidden_sources.remove(&source_uid_for_toggle);
-                        } else {
-                            hidden_sources.insert(source_uid_for_toggle.clone());
-                        }
-                        hidden_sources.iter().cloned().collect::<Vec<_>>()
-                    };
-                    if let Some(settings) = AppSettings::try_new() {
-                        settings.set_calendar_hidden_sources(&hidden_sources_vec);
-                    }
-                    page.refresh_task_sidebar();
-                    page.refresh_task_and_memo_panes();
-                    page.refresh_calendar_views();
-                    page.refresh_event_list_visibility();
-                });
-                let color = calendar_source_color(&source.uid, &source.display_name);
-                let color_dot = gtk::Label::new(None);
-                color_dot.set_markup(&format!("<span foreground=\"{color}\">●</span>"));
-                color_dot.set_margin_start(4);
-                color_dot.set_margin_end(2);
-                row.add_prefix(&color_dot);
-                row.add_prefix(&check);
-                source_list_for_load.append(&row);
-                displayed_sources += 1;
-            }
-
-            if CalendarStoreService::new().is_writable() {
-                let source_uid = "local-calendar".to_string();
-                let row = adw::ActionRow::builder()
-                    .title("Lokaler Kalender")
-                    .subtitle("App-eigener iCalendar-Speicher")
-                    .build();
-                let check = gtk::CheckButton::builder()
-                    .active(!hidden_sources.contains(&source_uid))
-                    .valign(gtk::Align::Center)
-                    .tooltip_text("Kalender in den Ansichten ein-/ausblenden")
-                    .build();
-                let page_weak_for_toggle = page_weak_for_source.clone();
-                check.connect_toggled(move |check| {
-                    let Some(page) = page_weak_for_toggle.upgrade() else {
-                        return;
-                    };
-                    let hidden_sources_vec = {
-                        let mut hidden_sources = page.imp().hidden_calendar_sources.borrow_mut();
-                        if check.is_active() {
-                            hidden_sources.remove("local-calendar");
-                        } else {
-                            hidden_sources.insert("local-calendar".to_string());
-                        }
-                        hidden_sources.iter().cloned().collect::<Vec<_>>()
-                    };
-                    if let Some(settings) = AppSettings::try_new() {
-                        settings.set_calendar_hidden_sources(&hidden_sources_vec);
-                    }
-                    page.refresh_task_sidebar();
-                    page.refresh_task_and_memo_panes();
-                    page.refresh_calendar_views();
-                    page.refresh_event_list_visibility();
-                });
-                let color = calendar_source_color("local-calendar", "Lokaler Kalender");
-                let color_dot = gtk::Label::new(None);
-                color_dot.set_markup(&format!("<span foreground=\"{color}\">●</span>"));
-                color_dot.set_margin_start(4);
-                color_dot.set_margin_end(2);
-                row.add_prefix(&color_dot);
-                row.add_prefix(&check);
-                source_list_for_load.append(&row);
-                displayed_sources += 1;
-            }
-
-            if displayed_sources == 0 {
-                let status = discovery
-                    .error
-                    .map(|error| format!("Kalender sind nicht erreichbar: {error}"))
-                    .unwrap_or_else(|| "Keine Kalenderquellen verfügbar".to_string());
-                calendar_state_for_load.set_label(&status);
-            } else {
-                calendar_state_for_load.set_visible(false);
-            }
-        });
+        self.reload_calendar_sources();
 
         let tasks_label = gtk::Label::builder()
             .label("Aufgaben")
@@ -3135,6 +3028,228 @@ impl CalendarPage {
         self.imp()
             .hidden_calendar_sources
             .replace(hidden_sources.into_iter().collect());
+        self.reload_calendar_sources();
+    }
+
+    pub(crate) fn reload_calendar_sources(&self) {
+        let Some(source_list) = self.imp().calendar_source_list.borrow().as_ref().cloned() else {
+            return;
+        };
+        let calendar_state = self
+            .imp()
+            .calendar_source_state_label
+            .borrow()
+            .as_ref()
+            .cloned();
+        let page_weak = self.downgrade();
+        glib::spawn_future_local(async move {
+            let discovery =
+                eds_service::discover_sources(eds_service::EdsSourceKind::Calendar).await;
+            let mut sources = discovery.sources;
+            sources.sort_by_cached_key(|source| {
+                (source.display_name.to_lowercase(), source.uid.clone())
+            });
+
+            let mut items = Vec::new();
+            for source in sources {
+                let color = calendar_source_color(&source.uid, &source.display_name);
+                items.push(
+                    crate::models::source_selector::SourceSelectorItem::new(
+                        &source.uid,
+                        &source.display_name,
+                        &source.backend_name,
+                        source.enabled,
+                        source.enabled,
+                    )
+                    .with_color(color),
+                );
+            }
+            if CalendarStoreService::new().is_writable() {
+                let color = calendar_source_color("local-calendar", "Lokaler Kalender");
+                items.push(
+                    crate::models::source_selector::SourceSelectorItem::new(
+                        "local-calendar",
+                        "Lokaler Kalender",
+                        "local",
+                        true,
+                        true,
+                    )
+                    .with_color(color),
+                );
+            }
+
+            let Some(page) = page_weak.upgrade() else {
+                return;
+            };
+            {
+                let mut selector = page.imp().calendar_source_selector.borrow_mut();
+                selector.update_sources(items);
+                if let Some(settings) = AppSettings::try_new() {
+                    selector.load_from_settings(&settings);
+                }
+                *page.imp().hidden_calendar_sources.borrow_mut() =
+                    selector.hidden_uids().into_iter().collect();
+            }
+
+            while let Some(child) = source_list.first_child() {
+                source_list.remove(&child);
+            }
+
+            let selector = page.imp().calendar_source_selector.borrow().clone();
+            let mut displayed_sources = 0usize;
+
+            for item in selector.sources() {
+                let source_uid = item.uid.clone();
+                let escaped_title = glib::markup_escape_text(&item.display_name);
+                let subtitle = if item.enabled { "aktiv" } else { "deaktiviert" };
+                let escaped_subtitle = glib::markup_escape_text(subtitle);
+                let row = adw::ActionRow::builder()
+                    .title(escaped_title.as_str())
+                    .subtitle(escaped_subtitle.as_str())
+                    .use_markup(true)
+                    .build();
+
+                let check = gtk::CheckButton::builder()
+                    .active(item.enabled && selector.is_selected(&source_uid))
+                    .sensitive(item.enabled)
+                    .valign(gtk::Align::Center)
+                    .tooltip_text("Kalender in den Ansichten ein-/ausblenden")
+                    .build();
+
+                let page_weak_for_toggle = page.downgrade();
+                let source_uid_for_toggle = source_uid.clone();
+                check.connect_toggled(move |check| {
+                    let Some(page) = page_weak_for_toggle.upgrade() else {
+                        return;
+                    };
+                    {
+                        let mut sel = page.imp().calendar_source_selector.borrow_mut();
+                        sel.set_selected(&source_uid_for_toggle, check.is_active());
+                        if let Some(settings) = AppSettings::try_new() {
+                            sel.save_to_settings(&settings);
+                        }
+                        *page.imp().hidden_calendar_sources.borrow_mut() =
+                            sel.hidden_uids().into_iter().collect();
+                    }
+                    page.refresh_task_sidebar();
+                    page.refresh_task_and_memo_panes();
+                    page.refresh_calendar_views();
+                    page.refresh_event_list_visibility();
+                });
+
+                if let Some(color) = &item.color {
+                    let color_dot = gtk::Label::new(None);
+                    color_dot.set_markup(&format!("<span foreground=\"{color}\">●</span>"));
+                    color_dot.set_margin_start(4);
+                    color_dot.set_margin_end(2);
+                    row.add_prefix(&color_dot);
+                }
+                row.add_prefix(&check);
+
+                let is_primary = selector.is_primary(&source_uid);
+                if is_primary {
+                    row.add_suffix(&crate::models::source_selector::create_primary_indicator());
+                }
+
+                let page_weak_for_menu = page.downgrade();
+                let source_uid_for_menu = source_uid.clone();
+                let menu_btn = crate::models::source_selector::create_source_row_menu(
+                    is_primary,
+                    "Kalender",
+                    {
+                        let page_weak = page_weak_for_menu.clone();
+                        let uid = source_uid_for_menu.clone();
+                        move || {
+                            if let Some(page) = page_weak.upgrade() {
+                                page.select_exclusive_calendar_source(&uid);
+                            }
+                        }
+                    },
+                    {
+                        let page_weak = page_weak_for_menu.clone();
+                        move || {
+                            if let Some(page) = page_weak.upgrade() {
+                                page.select_all_calendar_sources();
+                            }
+                        }
+                    },
+                    {
+                        let page_weak = page_weak_for_menu.clone();
+                        let uid = source_uid_for_menu.clone();
+                        move || {
+                            if let Some(page) = page_weak.upgrade() {
+                                page.set_default_calendar_source(&uid);
+                            }
+                        }
+                    },
+                );
+                row.add_suffix(&menu_btn);
+
+                source_list.append(&row);
+                displayed_sources += 1;
+            }
+
+            if let Some(state_lbl) = calendar_state {
+                if displayed_sources == 0 {
+                    let status = discovery
+                        .error
+                        .map(|error| format!("Kalender sind nicht erreichbar: {error}"))
+                        .unwrap_or_else(|| "Keine Kalenderquellen verfügbar".to_string());
+                    state_lbl.set_label(&status);
+                    state_lbl.set_visible(true);
+                } else {
+                    state_lbl.set_visible(false);
+                }
+            }
+        });
+    }
+
+    pub(crate) fn select_exclusive_calendar_source(&self, uid: &str) {
+        {
+            let mut selector = self.imp().calendar_source_selector.borrow_mut();
+            selector.select_exclusive(uid);
+            if let Some(settings) = AppSettings::try_new() {
+                selector.save_to_settings(&settings);
+            }
+            *self.imp().hidden_calendar_sources.borrow_mut() =
+                selector.hidden_uids().into_iter().collect();
+        }
+        self.refresh_task_sidebar();
+        self.refresh_task_and_memo_panes();
+        self.refresh_calendar_views();
+        self.refresh_event_list_visibility();
+        self.reload_calendar_sources();
+    }
+
+    pub(crate) fn select_all_calendar_sources(&self) {
+        {
+            let mut selector = self.imp().calendar_source_selector.borrow_mut();
+            selector.select_all();
+            if let Some(settings) = AppSettings::try_new() {
+                selector.save_to_settings(&settings);
+            }
+            *self.imp().hidden_calendar_sources.borrow_mut() =
+                selector.hidden_uids().into_iter().collect();
+        }
+        self.refresh_task_sidebar();
+        self.refresh_task_and_memo_panes();
+        self.refresh_calendar_views();
+        self.refresh_event_list_visibility();
+        self.reload_calendar_sources();
+    }
+
+    pub(crate) fn set_default_calendar_source(&self, uid: &str) {
+        {
+            let mut selector = self.imp().calendar_source_selector.borrow_mut();
+            selector.set_primary(uid);
+            if let Some(settings) = AppSettings::try_new() {
+                selector.save_to_settings(&settings);
+            }
+            *self.imp().hidden_calendar_sources.borrow_mut() =
+                selector.hidden_uids().into_iter().collect();
+        }
+        self.refresh_calendar_views();
+        self.reload_calendar_sources();
     }
 
     fn refresh_task_sidebar(&self) {

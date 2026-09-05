@@ -6,4 +6,5 @@ pub mod eds_source;
 pub mod folder;
 pub mod mail_message;
 pub mod search_folder;
+pub mod source_selector;
 pub mod task_item;
