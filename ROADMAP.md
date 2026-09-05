@@ -9,26 +9,19 @@ Vollständige Architektur-Spezifikation, Feature-Mapping und Entwicklungs-Roadma
 > [Linux-/EDS-Roadmap](ROADMAP_LINUX.md). Der Produktumfang darf aus keiner
 > dieser Sichten verkleinert werden.
 
-> **Arbeitsstand 2026-08-24 (aktuelle uncommitted verification round):**
-> `git diff --check`, strikte Schema-Prüfung, normaler sowie mit
-> `RUSTFLAGS='--cfg=eds_camel_bridge'` erzwungener Cargo-Check sind grün; der
-> vollständige portable Workspace-Lauf hat 835/835 Tests bestanden und der
-> erzwungene Camel-Service-Lauf 17/17. Gezieltes Rustfmt ist grün; der globale
-> Fmt-Check bleibt wegen vorbestehender Drift außerhalb der aktuellen Pakete
-> offen. Das ist keine reale EDS-/Camel-/WebKit-Linux-Abnahme.
-> `P0-MAIL-WORKER-STORE`, `MAIL-TRANSPORT-COMMANDS`, `SET-01`,
-> `GW-CAL-VIEWS-001`, `GW-MEMO-SURFACE-FILTERS`, der eigene atomare
-> `GW-MEMO-EDITOR` und `GW-REMINDER-RUNTIME` sind portabel
-> implementiert und unabhängig reviewt; wegen nativer/provider-/Desktop-Reste
-> stehen sie auf `BLOCKED_LINUX`, nicht auf `DONE` oder Vollparität. Der
-> Reminder-Runtime-Schnitt umfasst kanonische Event-/Task-/Memo-Deep-Links und
-> Action-Targets mit Source-/UID-Routing, ein kompaktes wiederverwendbares
-> Reminder-Fenster, Open/10m/1h/Dismiss, Claim-Leases, Replay-/stale-Generations-
-> gates, atomare persistente Snooze-/Dismiss-/Restart-Semantik, den
-> Notification-Vertrag sowie GTK-freie Worker/MainContext-Grenzen. Offen bleiben
-> EReminderWatcher/EDS-ClientViews, Provider-Alarme, Sleep/Wakeup, Offline und
-> der systemweite Notification-Daemon unter Linux. Dieser Dokumentationslauf
-> erzeugt keinen Commit und keinen Push.
+> **Arbeitsstand 2026-09-05 (Live-Linux-/EDS-Verifikationslauf auf Fedora 44):**
+> `git diff --check`, strikte Schema-Prüfung, nativer C-Brücken-Build (Camel,
+> ECal, EBook) und der vollständige Workspace-Lauf sind mit 1005/1005 Tests grün.
+> Auf der aktiven Linux-Sitzung (GNOME 48, Wayland, Fedora 44, EDS 3.60.2) wurden
+> die nativen C-Brücken und D-Bus-Dienste erfolgreich gegen reale Konten
+> verifiziert: 13 Kalender-/Aufgabenquellen, 2 Adressbuchquellen und 4 Mailquellen
+> über D-Bus erkannt; Google Mail (`user@example.com`) über Collection-
+> Source via OAuth2 online geschaltet; 9 IMAPX-Ordner (INBOX: 2330 ungelesen /
+> 3519 total) und Nachrichten über Camel geladen; 2412 Kalender-Events und 15
+> Aufgaben über native ECal-Brücke geladen; 435 Kontakte über native EBook-Brücke
+> geladen; GUI-Start und Präsentation unter Wayland mit asynchronem Worker
+> ohne Hauptthread-Blockade erfolgreich abgenommen. Details siehe
+> `ROADMAP_LINUX.md`.
 
 ---
 

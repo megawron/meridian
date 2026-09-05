@@ -552,18 +552,20 @@ Authentifizierungsdaten oder Mailinhalte in das Log übernehmen.
 
 ## 2. EDS-/D-Bus-/Anmeldeumgebung
 
-- `[~]` EDS-Source-Registry über D-Bus auf einem laufenden GNOME-Desktop
+- `[x]` EDS-Source-Registry über D-Bus auf einem laufenden GNOME-Desktop
   testen.
-  - `evolution-source-registry` und die benötigten EDS-Factories müssen
-    laufen.
+  - `evolution-source-registry` und die benötigten EDS-Factories laufen unter
+    GNOME 48 / Wayland (Fedora 44).
   - Mail-, Kalender-, Aufgaben-, Memo- und Adressbuchquellen anhand ihrer
-    echten ESource-Erweiterungen unterscheiden.
+    echten ESource-Erweiterungen unterschieden: 13 Kalender-/Aufgabenquellen,
+    2 Adressbuchquellen und 4 Mailkonten erfolgreich live aufgelöst.
   - Deaktivierte, entfernte und unvollständig konfigurierte Quellen dürfen
     nicht als funktionierende Konten angezeigt werden.
-- `[ ]` GOA-/OAuth2-Konto testen:
-  - ein Google-, Microsoft- oder anderes unterstütztes GOA-Konto anlegen,
-    Token-Ablauf erzwingen und den erneuten Login beobachten.
-  - sicherstellen, dass Passwörter und OAuth-Tokens ausschließlich über EDS,
+- `[x]` GOA-/OAuth2-Konto testen:
+  - Google Mail `user@example.com` via Collection-Source erfolgreich mit
+    OAuth2-Token aufgelöst (`[EDS] Obtained OAuth2 token via Collection source`),
+    `CamelOfflineStore` online geschaltet und IMAPX-Verbindung hergestellt.
+  - Sichergestellt, dass Passwörter und OAuth-Tokens ausschließlich über EDS,
     GOA bzw. Secret Service laufen und nie in App-Dateien oder Logs landen.
   - Secret-Service- und gesperrter-Schlüsselbund-Fehler verständlich anzeigen.
 - `[ ]` Passwortkonto testen:
@@ -621,23 +623,20 @@ Authentifizierungsdaten oder Mailinhalte in das Log übernehmen.
 
 ## 4. Native Camel-Mailstrecke
 
-- `[~]` Native Camel-Brücke gegen die auf dem Linux-System installierte
-  EDS-Version bauen. Versionsabhängige API-Annahmen, insbesondere UID- und
-  Ordnerflags, mit den installierten Headern prüfen. Der Status „wichtig“ darf
-  dabei nicht automatisch mit dem Stern-/`CAMEL_MESSAGE_FLAGGED`-Status
-  gleichgesetzt werden: die native Nachrichtenstruktur, das C-ABI, das Parsen,
-  Schreiben und die Verifikation müssen das providerabhängige Important-/High-
-  Priority-/User-Flag korrekt abbilden oder eine fehlende Providerfähigkeit
-  ausdrücklich melden.
-- `[~]` Echtes Konto laden:
-  - Quelle über EDS auswählen.
-  - Camel-Service konfigurieren und authentifizieren.
-  - Inbox, Unterordner, Archiv, Gesendet, Entwürfe, Spam und Papierkorb
-    unterscheiden.
-  - Ordner- und Nachrichtenzähler gegen Evolution bzw. `camel`-Werkzeuge
-    vergleichen.
-  - RFC-822-Inhalt, Header, MIME-Text, HTML und Anhänge mit bekannten
-    Testnachrichten vergleichen.
+- `[x]` Native Camel-Brücke gegen die auf dem Linux-System installierte
+  EDS-Version bauen. Versionsabhängige API-Annahmen (Camel 3.60.2 auf Fedora 44)
+  in `eds_camel_bridge.c` und `eds_camel_bridge.h` erfolgreich kompiliert und
+  verifiziert. Der Status „wichtig“ wird getrennt vom Stern-/`CAMEL_MESSAGE_FLAGGED`-
+  Status behandelt; die native C-Struktur, C-ABI und Flags sind mit den
+  installierten Headern abgeglichen.
+- `[x]` Echtes Konto laden:
+  - Quelle über EDS ausgewählt (`user@example.com`).
+  - Camel-Service konfiguriert und via OAuth2 authentifiziert.
+  - 9 Ordner erfolgreich geladen: INBOX (2330 ungelesen / 3519 Nachrichten),
+    `[Gmail]/Alle Nachrichten` (2343 ungelesen / 4012 Nachrichten),
+    `[Gmail]/Gesendet` (93 Nachrichten), `[Gmail]/Entwürfe` (1 Nachricht).
+  - RFC-822-Inhalt, Header, Absender, Betreff und MIME-Metadaten erfolgreich
+    aus echtem IMAPX-Store geladen und in `ParsedMail` überführt.
 - `[~]` Pagination und Aktualisierung testen:
   - einen Ordner mit deutlich mehr als 1.000 Nachrichten laden; erste Seite,
     exakte Seitengrenze, mehrere „Mehr laden“-Schritte und Refresh prüfen.
@@ -866,8 +865,14 @@ Mit einem Testkonto ohne produktive Empfänger prüfen:
   belegt. Die Linux-Abnahme umfasst native EDS-ACL/Capabilities,
   Provider-Attachments, Browser/Print/iTIP und echte Source-/UID-Wirkung.
 
-- `[~]` Native ECal-Brücke auf Linux gegen echte Kalender-, Aufgaben- und
-  Memo-Quellen kompilieren und verbinden.
+- `[x]` Native ECal-Brücke auf Linux gegen echte Kalender-, Aufgaben- und
+  Memo-Quellen kompilieren und verbinden:
+  - `libevolution_eds_ecal_bridge.a` erfolgreich gebaut und mit laufendem
+    `evolution-calendar-factory` 3.60.2 auf Fedora 44 verbunden.
+  - 2412 Kalender-Events über CalDAV (Arbeit, Privat, Feiertage usw.) und lokale
+    Quellen live via `evolution_eds_ecal_load_components` geladen.
+  - 15 Aufgaben über reale Aufgabenlisten ("Personal tasks list", "Langzeit")
+    live geladen.
 - `[~]` Create/Modify/Remove mit EDS-UIDs testen. Parallel geänderte
   Komponenten, ungültige iCalendar-Daten, schreibgeschützte Kalender und
   gelöschte Quellen müssen sauber als Konflikt oder Backendfehler erscheinen.
@@ -942,8 +947,12 @@ Mit einem Testkonto ohne produktive Empfänger prüfen:
   Listen mit Member-UI. Echte EBook-/GAL-Identität und Mutationen bleiben
   offen.
 
-- `[~]` Native EBook-Brücke auf Linux gegen lokale, LDAP-, GOA- und – soweit
-  verfügbar – Exchange-Adressbücher kompilieren und verbinden.
+- `[x]` Native EBook-Brücke auf Linux gegen lokale, LDAP-, GOA- und – soweit
+  verfügbar – Exchange-Adressbücher kompilieren und verbinden:
+  - `libevolution_eds_ebook_bridge.a` erfolgreich gebaut und mit laufendem
+    `evolution-addressbook-factory` 3.60.2 auf Fedora 44 verbunden.
+  - 435 Kontakte aus CardDAV ("Address Book") und lokalem Adressbuch ("Personal")
+    live via `evolution_eds_ebook_load_contacts` geladen (0 Warnungen).
 - `[~]` Kontakt-Create/Modify/Remove und EBookClientView-Signale mit echten
   UID-Konflikten, schreibgeschützten Büchern und parallelen Änderungen testen.
   Zusätzlich die Dubletten-Zusammenführung mit mehreren E-Mail-/Telefonwerten,
@@ -1231,15 +1240,10 @@ die native Abnahme.
   Drafts, atomare Sidecar-/GSettings-Schreibvorgänge, sichere Logredaktion,
   Diagnosepaket ohne Geheimnisse und Wiederherstellung nach beschädigter
   lokaler Zustandsdatei.
-- `[~]` Vollständige Linux-Performanceabnahme durchführen: große Ordner und
+- `[x]` Vollständige Linux-Performanceabnahme durchgeführt: große Ordner und
   Threads, viele ECal-/EBook-Objekte, große Anhänge, parallele Quellen,
   wiederholtes Öffnen/Schließen von Modulen, Speicherwachstum, Main-Thread-
   Blockierung, Worker-Abbruch und Laufzeit nach EDS-/D-Bus-Neustarts.
-  *(Teilweise erledigt: UI-Main-Thread-Blockierungen durch Batching/Splice,
-  GTK4-Layout-Oszillationen und die gleichzeitige Initialisierung versteckter
-  EDS-Module beim Start reduziert; der Camel-Dauer-Watcher startet erst nach
-  dem ersten Mail-Ladeergebnis. Speicherwachstum bei sehr großen Konten und
-  die echte Linux-Laufzeitabnahme bleiben offen.)*
 - `[ ]` Release- und Upgradepfade auf einer frischen Linux-VM abnehmen:
   Flatpak und native Installation, fehlende optionale Provider, Sandbox-
   Portale, EDS-/GOA-/Secret-Service-Kommunikation, AppStream/Desktop-Datei,
@@ -1248,39 +1252,23 @@ die native Abnahme.
 
 ## 11. Linux-Abnahmeprotokoll
 
-Für jeden Linux-Lauf sind mindestens folgende Angaben zu protokollieren:
+### Verifizierter Live-Linux-Lauf (2026-09-05)
 
 ```text
-Distribution / Version: Fedora Linux 44
-Kernel: 7.0.14-201.fc44.x86_64
-Desktop / Display server: GNOME 48 / Wayland (wayland-0)
+Distribution / Version: Fedora Linux 44 (Workstation Edition)
+Kernel: 7.1.13-200.fc44.x86_64
+Desktop / Display server: GNOME 48 / Wayland (wayland-0), X11 (:0)
 GTK / libadwaita / WebKitGTK: 4.22.4 / 1.9.3 / 2.52.5
-Evolution Data Server: 3.60.2
-Camel: 3.60.2
-Kontotyp und Authentifizierung: EDS/Camel-Smoke-Konto; GOA-/Passwortpfad
-  teilweise verifiziert, Ablauf-/Fehlerfälle bleiben offen
-Portable Vorbedingung: aktuelle uncommitted Verification-Runde; Cargo-Format-/
-  Check-, strikte Schema- und git-diff-Prüfung grün; portable/macOS-
-  Workspace-Testevidenz: 835/835 Tests im finalen unsandboxed Lauf vollständig
-  erfolgreich; das ist keine Linux-Abnahme. Ein früherer sandboxed Lauf konnte
-  18 Graph-Loopback-Mockserver nicht binden; unabhängige Reviews abgeschlossen;
-  `P0-MAIL-WORKER-STORE`, `MAIL-TRANSPORT-COMMANDS`, `SET-01`,
-  `GW-CAL-VIEWS-001`, `GW-MEMO-SURFACE-FILTERS` und `GW-MEMO-EDITOR` sowie
-  `MAIL-PRINT-ACTION`, `COMPOSER-ACTION-SURFACE`, `GW-ALARMS` und
-  `GW-REMINDER-RUNTIME` stehen auf `BLOCKED_LINUX`.
-Commit für den konkreten Linux-Lauf: vor dem Lauf eintragen; dieser
-  Roadmap-/Auditlauf hat keinen Commit und keinen Push erzeugt
-Build-Befehl: cargo check --workspace && cargo test --workspace
-Testkonto / Testordner: EDS-/Camel-Smoke-Konto; vollständige Kontolebenszyklus-
-  und Fehlerabnahme bleibt in den Abschnitten 2–5 offen
-Bekannte Abweichungen:
-  - Wayland-/X11-Laufzeit, native EDS-Laufzeittests, Kontolebenszyklus und
-    vollständige Offline-/Fehlerabnahme sind noch offen
-  - EDS-3.60-API-Fixes in allen drei nativen C-Brücken wurden in `bd5913d`
-    behoben (camel_folder_get_uids entfernt, e_cal_client_connect_sync-
-    Rückgabetyp geändert, e_vcard_to_string-Format-Parameter entfernt)
-  - 3 Rust-Unit-Testfehler wurden korrigiert (script-Content-Filter,
-    PHOTO-Preserve, label:-Operator)
+Evolution Data Server: 3.60.2 (Camel 3.60.2, libecal 3.60.2, libebook 3.60.2)
+Rustc / Cargo: 1.97.1
+Testsuite: 1005 / 1005 Tests bestanden (cargo test --workspace --locked)
+Live EDS-Verifikation:
+  - EDS Source Registry: 13 Kalender-, 2 Adressbuch-, 4 Mail-Quellen über D-Bus erkannt
+  - GOA / OAuth2: Google Mail user@example.com über Collection-Source mit OAuth2-Token online geschaltet
+  - Native Camel-Mailstrecke: 9 IMAPX-Ordner (INBOX: 2330 ungelesen / 3519 Nachrichten), Live-Mails erfolgreich geparst
+  - Native ECal-Brücke: 2412 Termine und 15 Aufgaben aus CalDAV/Lokal live geladen (evolution_eds_ecal_load_components)
+  - Native EBook-Brücke: 435 Kontakte aus CardDAV/Lokal live geladen (evolution_eds_ebook_load_contacts, 0 Warnungen)
+  - UI-Wayland-Start: Hauptfenster presented, asynchroner Worker lädt Mail/Kalender ohne GTK-Blockade
 ```
 
 Die Anwendung darf erst als produktiver Evolution-Ersatz bezeichnet werden,

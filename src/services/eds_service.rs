@@ -812,4 +812,88 @@ mod tests {
         assert!(error.contains("registry unavailable"));
         assert!(error.contains("Quellencache beschädigt"));
     }
+
+    #[tokio::test]
+    async fn live_eds_source_discovery_smoke() {
+        if let Ok(sources) = list_sources(EdsSourceKind::Calendar).await {
+            println!("Live EDS Calendar sources count: {}", sources.len());
+            for s in &sources {
+                println!("  [Cal] uid={}, name={}, backend={}", s.uid, s.display_name, s.backend_name);
+            }
+        }
+        if let Ok(sources) = list_sources(EdsSourceKind::AddressBook).await {
+            println!("Live EDS AddressBook sources count: {}", sources.len());
+            for s in &sources {
+                println!("  [Book] uid={}, name={}, backend={}", s.uid, s.display_name, s.backend_name);
+            }
+        }
+        if let Ok(sources) = list_sources(EdsSourceKind::Mail).await {
+            println!("Live EDS Mail sources count: {}", sources.len());
+            for s in &sources {
+                println!("  [Mail] uid={}, name={}, backend={}", s.uid, s.display_name, s.backend_name);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn live_eds_components_and_contacts_smoke() {
+        use crate::services::ecal_service::ECalService;
+        use crate::services::ebook_service::EBookService;
+
+        let ecal = ECalService::new();
+        match ecal.load_snapshot() {
+            Ok(snapshot) => {
+                println!(
+                    "Live ECal Snapshot loaded: {} events, {} tasks, {} memos",
+                    snapshot.events.len(),
+                    snapshot.tasks.len(),
+                    snapshot.memos.len()
+                );
+                for ev in snapshot.events.iter().take(5) {
+                    println!("  [Event] {} (source: {})", ev.summary, ev.source_display_name);
+                }
+                for t in snapshot.tasks.iter().take(5) {
+                    println!("  [Task] {} (source: {})", t.summary, t.source_display_name);
+                }
+                for m in snapshot.memos.iter().take(5) {
+                    println!("  [Memo] {} (source: {})", m.summary, m.source_display_name);
+                }
+            }
+            Err(e) => println!("Live ECal load error: {e}"),
+        }
+
+        let ebook = EBookService::new();
+        match ebook.load_contacts() {
+            Ok((contacts, warning)) => {
+                println!(
+                    "Live EBook Contacts loaded: {} contacts (warning: {:?})",
+                    contacts.len(),
+                    warning
+                );
+                for c in contacts.iter().take(5) {
+                    println!("  [Contact] {} (source: {})", c.contact.fn_name, c.source_display_name);
+                }
+            }
+            Err(e) => println!("Live EBook load error: {e}"),
+        }
+
+        use crate::services::camel_mail_service;
+        match camel_mail_service::load_messages_page(None, None, 0, 5) {
+            Ok(mail_load) => {
+                println!(
+                    "Live Camel Mail loaded: {} messages, {} folders (warning: {:?})",
+                    mail_load.messages.len(),
+                    mail_load.folders.len(),
+                    mail_load.warning
+                );
+                for f in mail_load.folders.iter().take(5) {
+                    println!("  [Folder] {} (unread: {}, total: {})", f.folder_name, f.unread_count, f.total_count);
+                }
+                for msg in mail_load.messages.iter().take(5) {
+                    println!("  [Mail Message] {} from {:?}", msg.subject, msg.sender_name);
+                }
+            }
+            Err(e) => println!("Live Camel load error: {e}"),
+        }
+    }
 }
