@@ -73,6 +73,14 @@ and updates to the service/settings APIs.
 - Source properties dialog (`SourcePropertiesDialog`) enables editing display names,
   color selection using native GTK4 `ColorDialogButton` with live preview dot and hex
   subtitle synchronization, and default-source toggling with confirmation callbacks.
+- Account setup dialog (`AccountSetupDialog`) and mail preferences (`PreferencesDialog`)
+  expose per-account custom configuration matching upstream Evolution: per-account
+  signature selection from `SignatureStore`, automated sync interval and auto-check
+  toggles, all-folders checking, expunge on exit, OpenPGP and S/MIME security options
+  (key IDs, sign-by-default, encrypt-by-default), and composing defaults (HTML mode,
+  default CC/BCC). Preferences dialog allows direct editing of local and EDS accounts
+  with active configuration chips and badges.
+
 
 ## Verification
 

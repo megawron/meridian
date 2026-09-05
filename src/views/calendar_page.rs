@@ -2582,7 +2582,7 @@ impl CalendarPage {
         self.imp().month_grid.replace(Some(month_grid.clone()));
 
         let month_scroll = gtk::ScrolledWindow::builder()
-            .hscrollbar_policy(gtk::PolicyType::Never)
+            .hscrollbar_policy(gtk::PolicyType::Automatic)
             .vscrollbar_policy(gtk::PolicyType::Automatic)
             .child(&month_grid)
             .build();
@@ -2592,15 +2592,15 @@ impl CalendarPage {
         // 2. Day View
         let day_view = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
-            .margin_start(16)
-            .margin_end(16)
-            .margin_top(16)
-            .margin_bottom(16)
+            .margin_start(8)
+            .margin_end(8)
+            .margin_top(8)
+            .margin_bottom(8)
             .spacing(8)
             .build();
         self.imp().day_view.replace(Some(day_view.clone()));
         let day_scroll = gtk::ScrolledWindow::builder()
-            .hscrollbar_policy(gtk::PolicyType::Never)
+            .hscrollbar_policy(gtk::PolicyType::Automatic)
             .vscrollbar_policy(gtk::PolicyType::Automatic)
             .child(&day_view)
             .build();
@@ -2610,15 +2610,15 @@ impl CalendarPage {
         // 3. Week View
         let week_view = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
-            .margin_start(16)
-            .margin_end(16)
-            .margin_top(16)
-            .margin_bottom(16)
+            .margin_start(8)
+            .margin_end(8)
+            .margin_top(8)
+            .margin_bottom(8)
             .spacing(8)
             .build();
         self.imp().week_view.replace(Some(week_view.clone()));
         let week_scroll = gtk::ScrolledWindow::builder()
-            .hscrollbar_policy(gtk::PolicyType::Never)
+            .hscrollbar_policy(gtk::PolicyType::Automatic)
             .vscrollbar_policy(gtk::PolicyType::Automatic)
             .child(&week_view)
             .build();
@@ -3069,7 +3069,7 @@ impl CalendarPage {
         content_hpaned.set_end_child(Some(&tag_vpaned));
         content_hpaned.set_resize_start_child(true);
         content_hpaned.set_resize_end_child(false);
-        content_hpaned.set_shrink_start_child(false);
+        content_hpaned.set_shrink_start_child(true);
         content_hpaned.set_shrink_end_child(false);
         tag_vpaned.set_width_request(260);
 
@@ -4071,284 +4071,258 @@ impl CalendarPage {
         let Some(view) = self.imp().day_view.borrow().as_ref().cloned() else {
             return;
         };
-        clear_box(&view);
-        if self.append_calendar_state_to_box(&view) {
-            return;
-        }
         let date = self.current_calendar_viewport().visible_range.start;
-        let heading = gtk::Label::builder()
-            .label(&format_date(date))
-            .css_classes(vec!["title-3"])
-            .halign(gtk::Align::Start)
-            .build();
-        view.append(&heading);
-        view.append(
-            &gtk::Label::builder()
-                .label(&format!("Arbeitszeit: {}", configured_workday_text()))
-                .css_classes(vec!["dim-label"])
-                .halign(gtk::Align::Start)
-                .build(),
-        );
-
-        let list = gtk::ListBox::builder()
-            .selection_mode(gtk::SelectionMode::None)
-            .css_classes(vec!["boxed-list"])
-            .build();
-        let mut events = self
-            .events_by_date(CalendarDateRange::single(date))
-            .remove(&date)
-            .unwrap_or_default();
-        events.sort_by_key(|event| event_start_datetime(event));
-        if events.is_empty() {
-            list.append(&empty_period_row(
-                "Keine Termine",
-                "Für diesen Tag sind keine VEVENTs geladen.",
-            ));
-        } else {
-            for event in events {
-                list.append(&calendar_event_row(self, &event));
-            }
-        }
-        view.append(&list);
+        let heading = format!("{} · Arbeitszeit: {}", format_date(date), configured_workday_text());
+        self.render_continuous_time_grid(&view, &[date], &heading);
     }
 
     fn refresh_week_view(&self) {
         let Some(view) = self.imp().week_view.borrow().as_ref().cloned() else {
             return;
         };
-        clear_box(&view);
-        if self.append_calendar_state_to_box(&view) {
-            return;
-        }
         let week_start = self.current_calendar_viewport().visible_range.start;
         let week_number = AppSettings::try_new()
             .filter(|settings| settings.calendar_show_week_numbers())
             .map(|_| format!(" · KW {:02}", week_start.iso_week().week()))
             .unwrap_or_default();
-        let week_heading = gtk::Label::builder()
-            .label(&format!(
-                "Termine dieser Woche{week_number} · Arbeitszeit: {}",
-                configured_workday_text()
-            ))
-            .css_classes(vec!["title-3"])
-            .halign(gtk::Align::Start)
-            .build();
-        view.append(&week_heading);
-
-        let visible_range = CalendarDateRange::from_days(week_start, 7);
-        let events_by_date = self.events_by_date(visible_range);
-        for day in visible_range.dates() {
-            let day_box = gtk::Box::builder()
-                .orientation(gtk::Orientation::Vertical)
-                .spacing(4)
-                .build();
-            day_box.add_css_class("card");
-            let heading = gtk::Label::builder()
-                .label(&format_date(day))
-                .halign(gtk::Align::Start)
-                .margin_start(10)
-                .margin_top(8)
-                .build();
-            if day == Local::now().date_naive() {
-                heading.add_css_class("accent");
-            }
-            day_box.append(&heading);
-
-            let list = gtk::ListBox::builder()
-                .selection_mode(gtk::SelectionMode::None)
-                .css_classes(vec!["boxed-list"])
-                .margin_start(4)
-                .margin_end(4)
-                .margin_bottom(4)
-                .build();
-            let mut events = events_by_date.get(&day).cloned().unwrap_or_default();
-            events.sort_by_key(|event| event_start_datetime(event));
-            if events.is_empty() {
-                list.append(&empty_period_row("Keine Termine", ""));
-            } else {
-                for event in events {
-                    list.append(&calendar_event_row(self, &event));
-                }
-            }
-            day_box.append(&list);
-            view.append(&day_box);
-        }
+        let heading = format!(
+            "Wochenansicht{week_number} · Arbeitszeit: {}",
+            configured_workday_text()
+        );
+        let days: Vec<NaiveDate> = (0..7).map(|i| week_start + chrono::Duration::days(i)).collect();
+        self.render_continuous_time_grid(&view, &days, &heading);
     }
 
     fn refresh_workweek_view(&self) {
         let Some(view) = self.imp().workweek_view.borrow().as_ref().cloned() else {
             return;
         };
-        clear_box(&view);
-        if self.append_calendar_state_to_box(&view) {
+        let viewport = self.current_calendar_viewport();
+        let workdays = configured_workdays();
+        let days = workweek_display_dates(viewport.visible_range, &workdays);
+        let (workday_start, workday_end) = configured_workday_range();
+        let heading = format!(
+            "Arbeitswoche · {}–{} · Arbeitszeit: {}–{}",
+            days.first()
+                .map(|day| format_date(*day))
+                .unwrap_or_else(|| format_date(viewport.visible_range.start)),
+            days.last()
+                .map(|day| format_date(*day))
+                .unwrap_or_else(|| format_date(viewport.visible_range.start)),
+            format_clock_minutes(workday_start),
+            format_clock_minutes(workday_end),
+        );
+        self.render_continuous_time_grid(&view, &days, &heading);
+    }
+
+    fn render_continuous_time_grid(
+        &self,
+        view: &gtk::Box,
+        days: &[NaiveDate],
+        heading_text: &str,
+    ) {
+        clear_box(view);
+        if self.append_calendar_state_to_box(view) {
             return;
         }
 
-        let viewport = self.current_calendar_viewport();
-        let start_date = viewport.visible_range.start;
-        let workdays = configured_workdays();
-        let days = workweek_display_dates(viewport.visible_range, &workdays);
-        let events_by_date = self.events_by_date(viewport.visible_range);
-        let (workday_start, workday_end) = configured_workday_range();
-        let slot_count = ((workday_end - workday_start) + 29) / 30;
+        let heading = gtk::Label::builder()
+            .label(heading_text)
+            .css_classes(vec!["title-3"])
+            .halign(gtk::Align::Start)
+            .build();
+        view.append(&heading);
 
-        view.append(
-            &gtk::Label::builder()
-                .label(&format!(
-                    "Arbeitswoche · {}–{} · Zeitleiste {}–{}",
-                    days.first()
-                        .map(|day| format_date(*day))
-                        .unwrap_or_else(|| format_date(start_date)),
-                    days.last()
-                        .map(|day| format_date(*day))
-                        .unwrap_or_else(|| format_date(start_date)),
-                    format_clock_minutes(workday_start),
-                    format_clock_minutes(workday_end),
-                ))
-                .css_classes(vec!["title-3"])
-                .halign(gtk::Align::Start)
-                .build(),
-        );
+        let today = Local::now().date_naive();
+        let (workday_start, workday_end) = configured_workday_range();
+        let visible_range = if let (Some(first), Some(last)) = (days.first(), days.last()) {
+            let end = last
+                .succ_opt()
+                .unwrap_or_else(|| *last + Duration::days(1));
+            CalendarDateRange::new(*first, end)
+        } else {
+            return;
+        };
+        let events_by_date = self.events_by_date(visible_range);
+
+        // 48 slots: 24 hours * 2 slots per hour (30 min intervals)
+        const SLOT_COUNT: usize = 48;
 
         let grid = gtk::Grid::builder()
-            .column_spacing(2)
-            .row_spacing(2)
+            .column_spacing(0)
+            .row_spacing(0)
             .hexpand(true)
+            .css_classes(vec!["calendar-time-grid"])
             .build();
-        grid.attach(
-            &gtk::Label::builder()
-                .label("Zeit")
-                .css_classes(vec!["heading", "dim-label"])
-                .margin_end(6)
-                .build(),
-            0,
-            0,
-            1,
-            1,
-        );
 
-        let mut all_day_cells = Vec::with_capacity(days.len());
+        // ── Row 0: Headers ──
+        let time_header = gtk::Label::builder()
+            .label("Zeit")
+            .css_classes(vec!["calendar-grid-header-cell", "dim-label"])
+            .halign(gtk::Align::Center)
+            .valign(gtk::Align::Center)
+            .width_request(58)
+            .build();
+        grid.attach(&time_header, 0, 0, 1, 1);
+
         for (day_index, day) in days.iter().enumerate() {
-            let heading = gtk::Label::builder()
-                .label(&format!("{}\n{}.", weekday_name(*day), day.day()))
-                .css_classes(vec!["heading"])
-                .halign(gtk::Align::Center)
+            let is_today = *day == today;
+            let header_cell = gtk::Box::builder()
+                .orientation(gtk::Orientation::Vertical)
+                .spacing(2)
+                .css_classes(if is_today {
+                    vec!["calendar-grid-header-cell", "today"]
+                } else {
+                    vec!["calendar-grid-header-cell"]
+                })
                 .hexpand(true)
                 .build();
-            if *day == Local::now().date_naive() {
-                heading.add_css_class("accent");
-            }
-            grid.attach(&heading, day_index as i32 + 1, 0, 1, 1);
+            let day_name = gtk::Label::builder()
+                .label(weekday_name(*day))
+                .css_classes(vec!["heading"])
+                .halign(gtk::Align::Center)
+                .build();
+            let day_num = gtk::Label::builder()
+                .label(&format!("{}.{:02}.", day.day(), day.month()))
+                .css_classes(if is_today {
+                    vec!["caption", "accent"]
+                } else {
+                    vec!["caption", "dim-label"]
+                })
+                .halign(gtk::Align::Center)
+                .build();
+            header_cell.append(&day_name);
+            header_cell.append(&day_num);
+            grid.attach(&header_cell, day_index as i32 + 1, 0, 1, 1);
+        }
 
+        // ── Row 1: All-Day Row ──
+        let all_day_label = gtk::Label::builder()
+            .label("Ganztägig")
+            .css_classes(vec!["calendar-allday-label"])
+            .halign(gtk::Align::Center)
+            .valign(gtk::Align::Center)
+            .build();
+        grid.attach(&all_day_label, 0, 1, 1, 1);
+
+        for (day_index, day) in days.iter().enumerate() {
             let all_day_cell = gtk::Box::builder()
                 .orientation(gtk::Orientation::Vertical)
                 .spacing(2)
-                .width_request(150)
+                .css_classes(vec!["calendar-allday-cell"])
+                .hexpand(true)
+                .valign(gtk::Align::Fill)
                 .build();
-            let all_day_frame = gtk::Frame::builder().child(&all_day_cell).build();
-            install_day_drop_target(&all_day_frame, self, *day);
-            grid.attach(&all_day_frame, day_index as i32 + 1, 1, 1, 1);
-            all_day_cells.push(all_day_cell);
+            install_day_drop_target(&all_day_cell, self, *day);
+
+            let day_events = events_by_date.get(day).cloned().unwrap_or_default();
+            for event in day_events.iter().filter(|e| e.all_day) {
+                all_day_cell.append(&calendar_grid_event_chip(self, event, true, *day));
+            }
+            grid.attach(&all_day_cell, day_index as i32 + 1, 1, 1, 1);
         }
 
-        let mut cells = (0..days.len())
-            .map(|_| Vec::<gtk::Box>::with_capacity(slot_count as usize))
-            .collect::<Vec<_>>();
-        for slot in 0..slot_count {
+        // ── Rows 2..50: 48 30-minute time slots ──
+        let mut slot_cells: Vec<Vec<gtk::Box>> = (0..days.len())
+            .map(|_| Vec::with_capacity(SLOT_COUNT))
+            .collect();
+
+        for slot in 0..SLOT_COUNT {
             let row = slot as i32 + 2;
-            let minute = workday_start + slot * 30;
-            grid.attach(
-                &gtk::Label::builder()
+            let minute = (slot * 30) as u32;
+            let is_hour = slot % 2 == 0;
+            let is_workday = minute >= workday_start && minute < workday_end;
+
+            if is_hour {
+                let gutter_label = gtk::Label::builder()
                     .label(&format_clock_minutes(minute))
-                    .css_classes(vec!["caption", "dim-label"])
+                    .css_classes(vec!["calendar-time-gutter-label"])
                     .halign(gtk::Align::End)
                     .valign(gtk::Align::Start)
-                    .margin_end(6)
-                    .margin_top(6)
-                    .build(),
-                0,
-                row,
-                1,
-                1,
-            );
-            for (day_index, day_cells) in cells.iter_mut().enumerate() {
+                    .build();
+                let gutter_box = gtk::Box::builder()
+                    .orientation(gtk::Orientation::Vertical)
+                    .css_classes(vec!["calendar-time-gutter", "calendar-hour-cell"])
+                    .width_request(58)
+                    .build();
+                gutter_box.append(&gutter_label);
+                grid.attach(&gutter_box, 0, row, 1, 1);
+            } else {
+                let gutter_box = gtk::Box::builder()
+                    .orientation(gtk::Orientation::Vertical)
+                    .css_classes(vec!["calendar-time-gutter", "calendar-half-hour-cell"])
+                    .width_request(58)
+                    .build();
+                grid.attach(&gutter_box, 0, row, 1, 1);
+            }
+
+            for (day_index, day) in days.iter().enumerate() {
+                let mut cell_classes = vec!["calendar-grid-cell"];
+                if is_hour {
+                    cell_classes.push("calendar-hour-cell");
+                } else {
+                    cell_classes.push("calendar-half-hour-cell");
+                }
+                if is_workday {
+                    cell_classes.push("calendar-workday-cell");
+                } else {
+                    cell_classes.push("calendar-offhours-cell");
+                }
+
                 let cell = gtk::Box::builder()
                     .orientation(gtk::Orientation::Vertical)
-                    .spacing(2)
-                    .width_request(150)
-                    .height_request(42)
+                    .spacing(1)
+                    .hexpand(true)
+                    .height_request(24)
                     .valign(gtk::Align::Fill)
+                    .css_classes(cell_classes)
                     .build();
-                let frame = gtk::Frame::builder().child(&cell).build();
-                if slot % 2 == 0 {
-                    frame.add_css_class("view");
-                }
-                install_day_drop_target(&frame, self, days[day_index]);
-                grid.attach(&frame, day_index as i32 + 1, row, 1, 1);
-                day_cells.push(cell);
+
+                install_day_drop_target(&cell, self, *day);
+
+                let click_gesture = gtk::GestureClick::new();
+                let page_weak = self.downgrade();
+                let target_date = *day;
+                click_gesture.connect_pressed(move |gesture, n_press, _x, _y| {
+                    if n_press == 2 {
+                        if let (Some(_page), Some(widget)) = (page_weak.upgrade(), gesture.widget()) {
+                            let dialog = crate::dialogs::EventDialog::new_for_date(target_date);
+                            if let Some(root) = widget.root() {
+                                if let Ok(win) = root.downcast::<gtk::Window>() {
+                                    dialog.set_transient_for(Some(&win));
+                                }
+                            }
+                            dialog.present();
+                        }
+                    }
+                });
+                cell.add_controller(click_gesture);
+
+                grid.attach(&cell, day_index as i32 + 1, row, 1, 1);
+                slot_cells[day_index].push(cell);
             }
         }
 
+        // ── Place Timed Events ──
         for (day_index, day) in days.iter().enumerate() {
             let mut events = events_by_date.get(day).cloned().unwrap_or_default();
             events.sort_by_key(event_start_datetime);
+
             for event in events {
                 if event.all_day {
-                    all_day_cells[day_index].append(&calendar_event_row(self, &event));
                     continue;
                 }
-
                 let slot = event_start_datetime(&event)
                     .filter(|start| start.date() == *day)
                     .map(|start| {
-                        let minutes = start.time().hour() * 60 + start.time().minute();
-                        minutes
-                            .saturating_sub(workday_start)
-                            .checked_div(30)
-                            .unwrap_or(0)
+                        let mins = start.time().hour() * 60 + start.time().minute();
+                        (mins / 30) as usize
                     })
-                    .unwrap_or(0)
-                    .min(slot_count.saturating_sub(1));
-                let title = if event.summary.trim().is_empty() {
-                    "(Ohne Titel)"
-                } else {
-                    event.summary.as_str()
-                };
-                let event_button = gtk::Button::builder()
-                    .halign(gtk::Align::Fill)
-                    .valign(gtk::Align::Start)
-                    .hexpand(true)
-                    .css_classes(vec!["flat", "card"])
-                    .build();
-                let event_label = gtk::Label::builder()
-                    .halign(gtk::Align::Fill)
-                    .valign(gtk::Align::Start)
-                    .xalign(0.0)
-                    .wrap(true)
-                    .margin_start(4)
-                    .margin_end(4)
-                    .margin_top(3)
-                    .margin_bottom(3)
-                    .build();
-                event_label.set_markup(&calendar_event_markup(
-                    &event,
-                    &format!("{} · {}", event_time_text(&event), title),
-                ));
-                event_button.set_child(Some(&event_label));
-                set_accessible_label(&event_button, &format!("Termin öffnen: {title}"));
-                let event_identity_for_click = CalendarEventIdentity::from_event(&event);
-                let page_weak_for_click = self.downgrade();
-                event_button.connect_clicked(move |button| {
-                    let (Some(page), Some(identity)) = (
-                        page_weak_for_click.upgrade(),
-                        event_identity_for_click.as_ref(),
-                    ) else {
-                        return;
-                    };
-                    page.open_event_editor_for_identity(button, identity);
-                });
-                install_event_drag_source(&event_button, &event, *day);
-                cells[day_index][slot as usize].append(&event_button);
+                    .unwrap_or(16)
+                    .min(SLOT_COUNT - 1);
+
+                let chip = calendar_grid_event_chip(self, &event, false, *day);
+                slot_cells[day_index][slot].append(&chip);
             }
         }
 
@@ -4992,6 +4966,10 @@ impl CalendarPage {
         if self.attach_calendar_state_to_grid(&grid) {
             return;
         }
+        grid.set_column_spacing(0);
+        grid.set_row_spacing(0);
+        grid.add_css_class("calendar-month-grid");
+
         let viewport = self.current_calendar_viewport();
         let current_date = viewport.anchor_date;
         let year = current_date.year();
@@ -5009,7 +4987,7 @@ impl CalendarPage {
         for (column, weekday) in configured_weekday_names().iter().enumerate() {
             let label = gtk::Label::builder()
                 .label(*weekday)
-                .css_classes(vec!["heading", "dim-label"])
+                .css_classes(vec!["calendar-grid-header-cell", "heading"])
                 .margin_top(4)
                 .margin_bottom(4)
                 .build();
@@ -5018,7 +4996,7 @@ impl CalendarPage {
         if show_week_numbers {
             let label = gtk::Label::builder()
                 .label("KW")
-                .css_classes(vec!["heading", "dim-label"])
+                .css_classes(vec!["calendar-grid-header-cell", "dim-label"])
                 .margin_top(4)
                 .margin_bottom(4)
                 .build();
@@ -5028,25 +5006,47 @@ impl CalendarPage {
         for (cell_index, date) in viewport.visible_range.dates().enumerate() {
             let row = (cell_index / 7) as i32 + 1;
             let column = (cell_index % 7) as i32;
+            let mut cell_classes = vec!["calendar-month-cell"];
+            let outside_month = date.year() != year || date.month() != month;
+            if outside_month {
+                cell_classes.push("outside-month");
+            }
+            if date == today {
+                cell_classes.push("today");
+            }
+
             let cell_box = gtk::Box::builder()
                 .orientation(gtk::Orientation::Vertical)
                 .spacing(2)
-                .margin_start(4)
-                .margin_end(4)
-                .margin_top(4)
-                .margin_bottom(4)
+                .css_classes(cell_classes)
                 .build();
 
-            let cell_frame = gtk::Frame::builder().child(&cell_box).build();
-            install_day_drop_target(&cell_frame, self, date);
+            install_day_drop_target(&cell_box, self, date);
+
+            let click_gesture = gtk::GestureClick::new();
+            let page_weak = self.downgrade();
+            let target_date = date;
+            click_gesture.connect_pressed(move |gesture, n_press, _x, _y| {
+                if n_press == 2 {
+                    if let (Some(_page), Some(widget)) = (page_weak.upgrade(), gesture.widget()) {
+                        let dialog = crate::dialogs::EventDialog::new_for_date(target_date);
+                        if let Some(root) = widget.root() {
+                            if let Ok(win) = root.downcast::<gtk::Window>() {
+                                dialog.set_transient_for(Some(&win));
+                            }
+                        }
+                        dialog.present();
+                    }
+                }
+            });
+            cell_box.add_controller(click_gesture);
+
             let day_label = gtk::Label::builder()
                 .label(&date.day().to_string())
                 .halign(gtk::Align::Start)
                 .css_classes(vec!["caption"])
                 .build();
-            let outside_month = date.year() != year || date.month() != month;
             if outside_month {
-                cell_frame.add_css_class("dim-label");
                 day_label.add_css_class("dim-label");
             }
             if date == today {
@@ -5093,8 +5093,7 @@ impl CalendarPage {
                 cell_box.append(&more_label);
             }
 
-            cell_frame.add_css_class("card");
-            grid.attach(&cell_frame, column + column_offset, row, 1, 1);
+            grid.attach(&cell_box, column + column_offset, row, 1, 1);
         }
 
         if show_week_numbers {
@@ -5106,7 +5105,7 @@ impl CalendarPage {
                     .unwrap_or(month_start);
                 let label = gtk::Label::builder()
                     .label(&format!("{:02}", week_date.iso_week().week()))
-                    .css_classes(vec!["caption", "dim-label"])
+                    .css_classes(vec!["calendar-time-gutter-label", "caption", "dim-label"])
                     .valign(gtk::Align::Start)
                     .margin_top(6)
                     .build();
@@ -6278,6 +6277,76 @@ fn set_calendar_event_row_identity(row: &adw::ActionRow, event: &CalendarEventRe
             identity.recurrence_id.clone().unwrap_or_default(),
         );
     }
+}
+
+fn calendar_grid_event_chip(
+    page: &CalendarPage,
+    event: &CalendarEventRecord,
+    is_all_day: bool,
+    day: NaiveDate,
+) -> gtk::Widget {
+    let title = if event.summary.trim().is_empty() {
+        "(Ohne Titel)"
+    } else {
+        event.summary.as_str()
+    };
+    let time_text = event_time_text(event);
+    let color = event_color_for_record(event);
+    let chip_button = gtk::Button::builder()
+        .halign(gtk::Align::Fill)
+        .valign(gtk::Align::Start)
+        .hexpand(true)
+        .css_classes(if is_all_day {
+            vec!["flat", "calendar-grid-event", "all-day-chip"]
+        } else {
+            vec!["flat", "calendar-grid-event"]
+        })
+        .build();
+
+    let text = if is_all_day {
+        format!(
+            "<span foreground=\"{color}\">■</span> {}",
+            glib::markup_escape_text(title)
+        )
+    } else {
+        format!(
+            "<span foreground=\"{color}\">■</span> <b>{}</b> {}",
+            glib::markup_escape_text(&time_text),
+            glib::markup_escape_text(title)
+        )
+    };
+
+    let label = gtk::Label::builder()
+        .halign(gtk::Align::Fill)
+        .valign(gtk::Align::Center)
+        .xalign(0.0)
+        .ellipsize(gtk::pango::EllipsizeMode::End)
+        .use_markup(true)
+        .label(&text)
+        .build();
+
+    chip_button.set_child(Some(&label));
+    set_accessible_label(&chip_button, &format!("Termin öffnen: {title}"));
+    if !event.source_display_name.is_empty() {
+        chip_button.set_tooltip_text(Some(&format!(
+            "{title}\n{time_text} · {}",
+            event.source_display_name
+        )));
+    }
+
+    let event_identity_for_click = CalendarEventIdentity::from_event(event);
+    let page_weak_for_click = page.downgrade();
+    chip_button.connect_clicked(move |button| {
+        let (Some(page), Some(identity)) = (
+            page_weak_for_click.upgrade(),
+            event_identity_for_click.as_ref(),
+        ) else {
+            return;
+        };
+        page.open_event_editor_for_identity(button, identity);
+    });
+    install_event_drag_source(&chip_button, event, day);
+    chip_button.upcast()
 }
 
 fn calendar_event_row(page: &CalendarPage, event: &CalendarEventRecord) -> adw::ActionRow {
@@ -9469,5 +9538,24 @@ mod tests {
             &hidden,
             true
         ));
+    }
+
+    #[test]
+    fn continuous_grid_slot_time_conversion_and_bounds() {
+        // 48 slots cover 24 hours in 30-minute intervals
+        for slot in 0..48u32 {
+            let minute = slot * 30;
+            let hour = minute / 60;
+            let min = minute % 60;
+            assert!(hour < 24);
+            assert!(min == 0 || min == 30);
+            let formatted = format_clock_minutes(minute);
+            assert!(!formatted.is_empty());
+        }
+
+        // Test boundary values
+        assert_eq!(format_clock_minutes(0), "00:00");
+        assert_eq!(format_clock_minutes(9 * 60 + 30), "09:30");
+        assert_eq!(format_clock_minutes(23 * 60 + 30), "23:30");
     }
 }

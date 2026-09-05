@@ -19,7 +19,7 @@ use std::rc::Rc;
 
 use crate::services::AppSettings;
 use crate::services::account_config_service::{
-    AccountConfigStore, reconciled_local_default_account,
+    AccountConfigStore, AccountProfile, AccountProtocol, reconciled_local_default_account,
 };
 use crate::services::backup_service;
 use crate::services::calendar_category_service::{CalendarCategory, CalendarCategoryStore};
@@ -295,11 +295,30 @@ impl PreferencesDialog {
         let profile_count = profiles.len();
         for (index, profile) in profiles.into_iter().enumerate() {
             let is_default = profile.enabled && profile.id == default_id;
+            let mut extras = Vec::new();
+            if is_default {
+                extras.push("Standardkonto");
+            }
+            if let Some(ref sig) = profile.signature_id {
+                if !sig.is_empty() {
+                    extras.push("Signatur konfiguriert");
+                }
+            }
+            if !profile.pgp_key_id.is_empty() {
+                extras.push("PGP");
+            }
+            if profile.auto_check_enabled {
+                extras.push("Auto-Abruf");
+            }
+            let extra_str = if extras.is_empty() {
+                String::new()
+            } else {
+                format!(" · {}", extras.join(", "))
+            };
             let subtitle = format!(
-                "{} · {}{}",
+                "{} · {}{extra_str}",
                 profile.email,
-                profile.protocol.as_str(),
-                if is_default { " · Standardkonto" } else { "" }
+                profile.protocol.as_str()
             );
             let row = adw::ActionRow::builder()
                 .title(&profile.display_name)
@@ -316,6 +335,24 @@ impl PreferencesDialog {
                     ));
                 }
             ));
+
+            let edit_btn = gtk::Button::builder()
+                .icon_name("document-edit-symbolic")
+                .tooltip_text("Benutzerdefinierte Kontoeinstellungen bearbeiten")
+                .css_classes(vec!["flat"])
+                .valign(gtk::Align::Center)
+                .build();
+            let profile_for_edit_btn = profile.clone();
+            edit_btn.connect_clicked(glib::clone!(
+                #[weak(rename_to = page)]
+                self,
+                move |_| {
+                    page.present_account_dialog(crate::dialogs::AccountSetupDialog::new_for_edit(
+                        &profile_for_edit_btn,
+                    ));
+                }
+            ));
+            row.add_suffix(&edit_btn);
 
             let move_up = gtk::Button::builder()
                 .icon_name("go-up-symbolic")
@@ -553,11 +590,73 @@ impl PreferencesDialog {
                 let row = adw::ActionRow::builder()
                     .title(&source.display_name)
                     .subtitle(format!(
-                        "{backend} · {state} · schreibgeschützte EDS-Entdeckung"
+                        "{backend} · {state} · EDS-Konto (Klicken für benutzerdefinierte Einstellungen)"
                     ))
+                    .activatable(true)
                     .build();
                 let icon_mail = gtk::Image::from_icon_name("mail-read-symbolic");
                 row.add_prefix(&icon_mail);
+
+                let source_display_name = source.display_name.clone();
+                let source_uid = source.uid.clone();
+                let source_backend = source.backend_name.clone();
+                let page_weak = self.downgrade();
+                let open_eds_editor = move || {
+                    let store = AccountConfigStore::default();
+                    let profiles = store.load();
+                    let matched_profile = profiles.into_iter().find(|p| {
+                        p.id == format!("eds:{}", source_uid)
+                            || p.display_name == source_display_name
+                            || (!p.email.is_empty() && source_display_name.contains(&p.email))
+                    });
+                    let profile_to_edit = matched_profile.unwrap_or_else(|| {
+                        let is_pop = source_backend.to_ascii_lowercase().contains("pop");
+                        let is_exchange = source_backend.to_ascii_lowercase().contains("ews")
+                            || source_backend.to_ascii_lowercase().contains("exchange");
+                        let is_goa = source_backend.to_ascii_lowercase().contains("goa");
+                        let protocol = if is_pop {
+                            AccountProtocol::Pop3
+                        } else if is_exchange {
+                            AccountProtocol::Exchange
+                        } else if is_goa {
+                            AccountProtocol::Goa
+                        } else {
+                            AccountProtocol::ImapSmtp
+                        };
+                        let email = if source_display_name.contains('@') {
+                            source_display_name.clone()
+                        } else {
+                            String::new()
+                        };
+                        AccountProfile {
+                            id: format!("eds:{}", source_uid),
+                            display_name: source_display_name.clone(),
+                            email,
+                            protocol,
+                            ..Default::default()
+                        }
+                    });
+                    if let Some(page) = page_weak.upgrade() {
+                        page.present_account_dialog(crate::dialogs::AccountSetupDialog::new_for_edit(
+                            &profile_to_edit,
+                        ));
+                    }
+                };
+                let open_for_row = open_eds_editor.clone();
+                row.connect_activated(move |_| {
+                    open_for_row();
+                });
+                let edit_btn = gtk::Button::builder()
+                    .icon_name("document-edit-symbolic")
+                    .tooltip_text("Benutzerdefinierte Einstellungen für dieses EDS-Konto anpassen")
+                    .css_classes(vec!["flat"])
+                    .valign(gtk::Align::Center)
+                    .build();
+                edit_btn.connect_clicked(move |_| {
+                    open_eds_editor();
+                });
+                row.add_suffix(&edit_btn);
+
                 group_accounts.add(&row);
             }
         }
@@ -3261,7 +3360,7 @@ impl PreferencesDialog {
         group_calendar_time.add(&row_workday_end);
 
         let group_calendar_reminders = adw::PreferencesGroup::builder()
-            .title("Erinnerungen & Termine")
+            .title("Erinnerungen &amp; Termine")
             .description("Standard-Erinnerungen für Termine und Benachrichtigungen")
             .build();
 
@@ -3322,16 +3421,16 @@ impl PreferencesDialog {
         group_calendar_reminders.add(&row_default_reminder_units);
 
         let row_use_ba_reminder = adw::SwitchRow::builder()
-            .title("Geburtstags- & Jahrestagserinnerungen")
+            .title("Geburtstags- &amp; Jahrestagserinnerungen")
             .subtitle("Erinnerungen für Kontakte mit Geburts- oder Jahrestag")
             .build();
         let row_ba_reminder_interval = adw::SpinRow::with_range(1.0, 10_080.0, 1.0);
-        row_ba_reminder_interval.set_title("Intervall für Geburtstage & Jahrestage");
+        row_ba_reminder_interval.set_title("Intervall für Geburtstage &amp; Jahrestage");
         row_ba_reminder_interval.set_digits(0);
         row_ba_reminder_interval.set_snap_to_ticks(true);
 
         let row_ba_reminder_units = adw::ComboRow::builder()
-            .title("Einheit für Geburtstage & Jahrestage")
+            .title("Einheit für Geburtstage &amp; Jahrestage")
             .model(&gtk::StringList::new(&["Minuten", "Stunden", "Tage"]))
             .build();
 

@@ -76,8 +76,8 @@ impl AccountSetupDialog {
         glib::Object::builder()
             .property("title", "Neues Konto einrichten")
             .property("modal", true)
-            .property("default-width", 600)
-            .property("default-height", 580)
+            .property("default-width", 660)
+            .property("default-height", 660)
             .build()
     }
 
@@ -86,8 +86,8 @@ impl AccountSetupDialog {
         glib::Object::builder()
             .property("title", "Kontoprofil bearbeiten")
             .property("modal", true)
-            .property("default-width", 600)
-            .property("default-height", 580)
+            .property("default-width", 660)
+            .property("default-height", 660)
             .property("edit-profile-json", encoded)
             .build()
     }
@@ -173,6 +173,32 @@ impl AccountSetupDialog {
             .build();
         group_user.add(&row_aliases);
 
+        let signatures = crate::services::signature_store_service::SignatureStore::default().load();
+        let mut sig_labels = vec!["Keine (nur Text)".to_string(), "Allgemeine Standardsignatur".to_string()];
+        for sig in &signatures {
+            sig_labels.push(sig.name.clone());
+        }
+        let sig_refs: Vec<&str> = sig_labels.iter().map(String::as_str).collect();
+        let row_signature = adw::ComboRow::builder()
+            .title("Standard-Signatur")
+            .subtitle("Signatur für ausgehende E-Mails dieses Kontos")
+            .model(&gtk::StringList::new(&sig_refs))
+            .build();
+        if let Some(profile) = edit_profile.as_ref() {
+            if let Some(ref sig_id) = profile.signature_id {
+                if sig_id == "default" {
+                    row_signature.set_selected(1);
+                } else if let Some(pos) = signatures.iter().position(|s| s.id == *sig_id) {
+                    row_signature.set_selected((pos + 2) as u32);
+                } else {
+                    row_signature.set_selected(0);
+                }
+            } else {
+                row_signature.set_selected(0);
+            }
+        }
+        group_user.add(&row_signature);
+
         if let Some(profile) = edit_profile.as_ref() {
             row_fullname.set_text(&profile.display_name);
             row_email.set_text(&profile.email);
@@ -185,7 +211,7 @@ impl AccountSetupDialog {
 
         // ── 3. Server Settings (IMAP / SMTP) ───────────────────────────────
         let group_server = adw::PreferencesGroup::builder()
-            .title("Server-Einstellungen")
+            .title("Server-Einstellungen &amp; Abruf")
             .build();
 
         let row_imap_host = adw::EntryRow::builder()
@@ -227,6 +253,31 @@ impl AccountSetupDialog {
             });
         }
         group_server.add(&row_security);
+
+        let row_auto_check = adw::SwitchRow::builder()
+            .title("Automatisch auf neue E-Mails prüfen")
+            .active(edit_profile.as_ref().map(|p| p.auto_check_enabled).unwrap_or(true))
+            .build();
+        group_server.add(&row_auto_check);
+
+        let row_check_interval = adw::EntryRow::builder()
+            .title("Prüfintervall (Minuten)")
+            .text(&edit_profile.as_ref().map(|p| p.check_interval_minutes.to_string()).unwrap_or_else(|| "10".to_string()))
+            .build();
+        group_server.add(&row_check_interval);
+
+        let row_check_all_folders = adw::SwitchRow::builder()
+            .title("In allen Ordnern nach neuen Nachrichten suchen")
+            .subtitle("Prüft nicht nur den Posteingang")
+            .active(edit_profile.as_ref().map(|p| p.check_all_folders).unwrap_or(false))
+            .build();
+        group_server.add(&row_check_all_folders);
+
+        let row_expunge_on_exit = adw::SwitchRow::builder()
+            .title("Papierkorb beim Beenden bereinigen (Expunge)")
+            .active(edit_profile.as_ref().map(|p| p.expunge_on_exit).unwrap_or(false))
+            .build();
+        group_server.add(&row_expunge_on_exit);
 
         content_box.append(&group_server);
 
@@ -290,6 +341,80 @@ impl AccountSetupDialog {
         group_cred.add(&row_password);
 
         content_box.append(&group_cred);
+
+        // ── 5. Security Settings ─────────────────────────────────────────────
+        let group_security = adw::PreferencesGroup::builder()
+            .title("Sicherheit &amp; Verschlüsselung")
+            .description("OpenPGP- und S/MIME-Einstellungen für dieses Konto")
+            .build();
+
+        let row_pgp_key = adw::EntryRow::builder()
+            .title("OpenPGP-Schlüssel-ID")
+            .build();
+        if let Some(profile) = edit_profile.as_ref() {
+            row_pgp_key.set_text(&profile.pgp_key_id);
+        }
+        group_security.add(&row_pgp_key);
+
+        let row_pgp_sign = adw::SwitchRow::builder()
+            .title("Ausgehende E-Mails immer mit PGP signieren")
+            .active(edit_profile.as_ref().map(|p| p.pgp_always_sign).unwrap_or(false))
+            .build();
+        group_security.add(&row_pgp_sign);
+
+        let row_pgp_encrypt = adw::SwitchRow::builder()
+            .title("Ausgehende E-Mails immer mit PGP verschlüsseln")
+            .active(edit_profile.as_ref().map(|p| p.pgp_always_encrypt).unwrap_or(false))
+            .build();
+        group_security.add(&row_pgp_encrypt);
+
+        let row_smime_sign = adw::EntryRow::builder()
+            .title("S/MIME-Signaturzertifikat")
+            .build();
+        if let Some(profile) = edit_profile.as_ref() {
+            row_smime_sign.set_text(&profile.smime_sign_cert);
+        }
+        group_security.add(&row_smime_sign);
+
+        let row_smime_encrypt = adw::EntryRow::builder()
+            .title("S/MIME-Verschlüsselungszertifikat")
+            .build();
+        if let Some(profile) = edit_profile.as_ref() {
+            row_smime_encrypt.set_text(&profile.smime_encrypt_cert);
+        }
+        group_security.add(&row_smime_encrypt);
+
+        content_box.append(&group_security);
+
+        // ── 6. Composing Settings ────────────────────────────────────────────
+        let group_composing = adw::PreferencesGroup::builder()
+            .title("Optionen für das Verfassen")
+            .description("Standardeinstellungen für neue E-Mails von diesem Konto")
+            .build();
+
+        let row_prefer_html = adw::SwitchRow::builder()
+            .title("HTML-Formatierung beim Verfassen bevorzugen")
+            .active(edit_profile.as_ref().map(|p| p.prefer_html).unwrap_or(true))
+            .build();
+        group_composing.add(&row_prefer_html);
+
+        let row_default_cc = adw::EntryRow::builder()
+            .title("Immer Kopie (CC) an")
+            .build();
+        if let Some(profile) = edit_profile.as_ref() {
+            row_default_cc.set_text(&profile.default_cc);
+        }
+        group_composing.add(&row_default_cc);
+
+        let row_default_bcc = adw::EntryRow::builder()
+            .title("Immer Blindkopie (BCC) an")
+            .build();
+        if let Some(profile) = edit_profile.as_ref() {
+            row_default_bcc.set_text(&profile.default_bcc);
+        }
+        group_composing.add(&row_default_bcc);
+
+        content_box.append(&group_composing);
 
         let update_protocol_fields = {
             let row_imap_host = row_imap_host.clone();
@@ -379,6 +504,8 @@ impl AccountSetupDialog {
             #[strong]
             row_aliases,
             #[strong]
+            row_signature,
+            #[strong]
             row_imap_host,
             #[strong]
             row_smtp_host,
@@ -386,6 +513,14 @@ impl AccountSetupDialog {
             row_imap_port,
             #[strong]
             row_smtp_port,
+            #[strong]
+            row_auto_check,
+            #[strong]
+            row_check_interval,
+            #[strong]
+            row_check_all_folders,
+            #[strong]
+            row_expunge_on_exit,
             #[strong]
             row_username,
             #[strong]
@@ -404,6 +539,22 @@ impl AccountSetupDialog {
             row_trash_folder,
             #[strong]
             row_junk_folder,
+            #[strong]
+            row_pgp_key,
+            #[strong]
+            row_pgp_sign,
+            #[strong]
+            row_pgp_encrypt,
+            #[strong]
+            row_smime_sign,
+            #[strong]
+            row_smime_encrypt,
+            #[strong]
+            row_prefer_html,
+            #[strong]
+            row_default_cc,
+            #[strong]
+            row_default_bcc,
             move |_| {
                 let email = row_email.text().trim().to_string();
                 if email.is_empty() {
@@ -448,6 +599,21 @@ impl AccountSetupDialog {
                     .filter(|alias| !alias.is_empty())
                     .map(ToOwned::to_owned)
                     .collect::<Vec<_>>();
+
+                let signatures = crate::services::signature_store_service::SignatureStore::default().load();
+                let signature_id = match row_signature.selected() {
+                    0 => None,
+                    1 => Some("default".to_string()),
+                    idx => signatures.get((idx - 2) as usize).map(|s| s.id.clone()),
+                };
+
+                let check_interval_minutes = row_check_interval
+                    .text()
+                    .trim()
+                    .parse::<u32>()
+                    .unwrap_or(10)
+                    .clamp(1, 1440);
+
                 let profile = AccountProfile {
                     id: edit_id
                         .clone()
@@ -472,6 +638,19 @@ impl AccountSetupDialog {
                     trash_folder: row_trash_folder.text().trim().to_string(),
                     junk_folder: row_junk_folder.text().trim().to_string(),
                     enabled: edit_enabled,
+                    signature_id,
+                    check_interval_minutes,
+                    auto_check_enabled: row_auto_check.is_active(),
+                    check_all_folders: row_check_all_folders.is_active(),
+                    expunge_on_exit: row_expunge_on_exit.is_active(),
+                    pgp_key_id: row_pgp_key.text().trim().to_string(),
+                    pgp_always_sign: row_pgp_sign.is_active(),
+                    pgp_always_encrypt: row_pgp_encrypt.is_active(),
+                    smime_sign_cert: row_smime_sign.text().trim().to_string(),
+                    smime_encrypt_cert: row_smime_encrypt.text().trim().to_string(),
+                    default_cc: row_default_cc.text().trim().to_string(),
+                    default_bcc: row_default_bcc.text().trim().to_string(),
+                    prefer_html: row_prefer_html.is_active(),
                 };
 
                 if let Err(error) = profile.validate() {

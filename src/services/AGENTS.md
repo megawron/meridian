@@ -115,6 +115,11 @@ settings persistence.
   deterministically. Protected saved-search mutations write atomically with
   process-local RMW serialization and reject corrupt, mismatched, or duplicate
   payloads fail-closed.
+- Account configuration (`AccountProfile`, `AccountConfigService`) stores per-account
+  custom options (signature assignment, auto-sync intervals, folder check scope, expunge
+  on exit, OpenPGP and S/MIME encryption and signing parameters, compose preferences)
+  with strict backward compatibility via `#[serde(default)]` and atomic file writes.
+
 
 ## Work Guidance
 

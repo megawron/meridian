@@ -3535,19 +3535,21 @@ impl MailPage {
     }
 
     pub fn set_sidebar_visible(&self, visible: bool) {
-        // Show/hide the folder sidebar by collapsing the paned to 0 or restoring
         let paned = &self.imp().outer_paned;
+        if let Some(start) = paned.start_child() {
+            start.set_visible(visible);
+        }
         if visible {
             let saved_position = AppSettings::try_new()
                 .map(|settings| settings.mail_sidebar_position())
-                .unwrap_or(220);
-            if paned.position() < 10 {
-                paned.set_position(saved_position.max(10));
+                .unwrap_or(260)
+                .max(260);
+            if paned.position() < 100 {
+                paned.set_position(saved_position);
             }
-        } else {
-            paned.set_position(0);
         }
     }
+
 
     pub fn select_previous_message(&self) -> bool {
         let Some(selection) = self.imp().message_selection.borrow().as_ref().cloned() else {
@@ -9005,7 +9007,7 @@ impl MailPage {
         let dynamic_folder_index = Rc::new(RefCell::new(HashMap::<String, FolderObject>::new()));
         let children_for_dynamic_model = Rc::clone(&dynamic_folder_children);
         let dynamic_tree_model =
-            gtk::TreeListModel::new(dynamic_folder_store.clone(), false, false, move |item| {
+            gtk::TreeListModel::new(dynamic_folder_store.clone(), false, true, move |item| {
                 let folder = item.downcast_ref::<FolderObject>()?;
                 children_for_dynamic_model
                     .borrow()
@@ -9024,8 +9026,8 @@ impl MailPage {
                 .downcast_ref::<gtk::ListItem>()
                 .expect("Expected ListItem");
             let expander = gtk::TreeExpander::new();
-            expander.set_indent_for_icon(false);
-            expander.set_indent_for_depth(false);
+            expander.set_indent_for_icon(true);
+            expander.set_indent_for_depth(true);
             let row = gtk::Box::builder()
                 .orientation(gtk::Orientation::Horizontal)
                 .spacing(6)
@@ -9084,6 +9086,35 @@ impl MailPage {
                 page.present_folder_context_menu(&row, x, y, target);
             });
             row.add_controller(right_click);
+
+            let click = gtk::GestureClick::builder()
+                .button(gtk::gdk::BUTTON_PRIMARY)
+                .build();
+            let list_item_for_click = list_item.downgrade();
+            click.connect_pressed(move |_, n_press, _, _| {
+                let Some(list_item) = list_item_for_click.upgrade() else {
+                    return;
+                };
+                let Some(tree_row) = list_item.item().and_downcast::<gtk::TreeListRow>() else {
+                    return;
+                };
+                let Some(folder) = tree_row.item().and_downcast::<FolderObject>() else {
+                    return;
+                };
+                let is_account_root = folder
+                    .folder_name()
+                    .as_deref()
+                    .map(|name| name.trim().is_empty())
+                    .unwrap_or(true);
+                let is_unselectable = !folder.selectable();
+                if (is_account_root || is_unselectable) && tree_row.is_expandable() {
+                    tree_row.set_expanded(!tree_row.is_expanded());
+                } else if n_press == 2 && tree_row.is_expandable() {
+                    tree_row.set_expanded(!tree_row.is_expanded());
+                }
+            });
+            row.add_controller(click);
+
             expander.set_child(Some(&row));
             list_item.set_child(Some(&expander));
         });
@@ -9108,7 +9139,7 @@ impl MailPage {
                 .child()
                 .and_downcast::<gtk::Box>()
                 .expect("Expected folder row");
-            row.set_margin_start(compact_folder_indent(tree_row.depth() as usize));
+            row.set_margin_start(2);
             if let Some(icon) = row.first_child().and_downcast::<gtk::Image>() {
                 let is_account_root = folder
                     .folder_name()
@@ -9148,6 +9179,17 @@ impl MailPage {
             .css_classes(vec!["navigation-sidebar"])
             .build();
         dynamic_folder_view.set_margin_start(2);
+        let dynamic_folder_selection_for_activate = dynamic_folder_selection.clone();
+        dynamic_folder_view.connect_activate(move |_, position| {
+            if let Some(tree_row) = dynamic_folder_selection_for_activate
+                .item(position)
+                .and_downcast::<gtk::TreeListRow>()
+            {
+                if tree_row.is_expandable() {
+                    tree_row.set_expanded(!tree_row.is_expanded());
+                }
+            }
+        });
 
         self.imp()
             .dynamic_folder_store
@@ -9177,7 +9219,12 @@ impl MailPage {
             let Some(folder) = row.item().and_downcast::<FolderObject>() else {
                 return;
             };
-            if !folder.selectable() {
+            let is_account_root = folder
+                .folder_name()
+                .as_deref()
+                .map(|name| name.trim().is_empty())
+                .unwrap_or(true);
+            if !folder.selectable() || is_account_root {
                 return;
             }
             let Some(source_uid) = folder.source_uid() else {
@@ -9263,6 +9310,7 @@ impl MailPage {
             .css_classes(vec!["caption", "dim-label"])
             .halign(gtk::Align::Start)
             .hexpand(true)
+            .ellipsize(pango::EllipsizeMode::End)
             .build();
         let new_local_folder_button = gtk::Button::builder()
             .icon_name("folder-new-symbolic")
@@ -9360,6 +9408,7 @@ impl MailPage {
             .label("Posteingang")
             .halign(gtk::Align::Start)
             .hexpand(true)
+            .ellipsize(pango::EllipsizeMode::End)
             .build();
         drawer_header.append(&drawer_icon);
         drawer_header.append(&drawer_title);
@@ -9369,6 +9418,7 @@ impl MailPage {
         let sidebar_scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
             .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .propagate_natural_width(true)
             .child(&sidebar_box)
             .build();
         let sidebar_content = gtk::Box::builder()
@@ -14988,7 +15038,7 @@ impl MailPage {
         let sidebar_child: gtk::Widget = sidebar.upcast();
         imp.outer_paned.set_start_child(Some(&sidebar_child));
         imp.outer_paned.set_resize_start_child(false);
-        imp.outer_paned.set_shrink_start_child(true);
+        imp.outer_paned.set_shrink_start_child(false);
 
         let list_page = adw::NavigationPage::builder()
             .title("Posteingang")
@@ -15014,16 +15064,21 @@ impl MailPage {
         let sidebar_visible = AppSettings::try_new()
             .map(|settings| settings.mail_show_sidebar())
             .unwrap_or(true);
-        imp.outer_paned
-            .set_position(if sidebar_visible { 240 } else { 0 });
+        let sidebar_position = AppSettings::try_new()
+            .map(|settings| settings.mail_sidebar_position())
+            .unwrap_or(260)
+            .max(260);
+        sidebar_child.set_visible(sidebar_visible);
+        imp.outer_paned.set_position(sidebar_position);
         if let Some(settings) = AppSettings::try_new() {
             imp.outer_paned.connect_position_notify(move |paned| {
                 let position = paned.position();
-                if position > 10 {
+                if position >= 100 {
                     settings.set_mail_sidebar_position(position);
                 }
             });
         }
+
 
         imp.outer_paned.set_vexpand(true);
         imp.outer_paned.set_hexpand(true);

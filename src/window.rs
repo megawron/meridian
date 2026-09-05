@@ -1947,10 +1947,7 @@ impl EvolutionWindow {
 
         let bp_mobile =
             adw::Breakpoint::new(adw::BreakpointCondition::parse("max-width: 560sp").unwrap());
-        bp_mobile.add_setter(mail_page.outer_paned(), "position", Some(&0_i32.to_value()));
-        // if let Some(preview) = mail_page.preview_widget() {
-        //     bp_mobile.add_setter(&preview, "visible", Some(&false.to_value()));
-        // }
+        // Sidebar visibility is handled cleanly via the sidebar toggle button
         bp_mobile.add_setter(&sidebar_button, "active", Some(&false.to_value()));
 
         self.add_breakpoint(bp_narrow);

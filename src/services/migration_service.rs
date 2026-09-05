@@ -3374,6 +3374,7 @@ fn profile_from_source_with_warnings(
             trash_folder,
             junk_folder,
             enabled,
+            ..Default::default()
         },
         warnings,
     ))

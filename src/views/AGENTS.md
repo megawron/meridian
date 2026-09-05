@@ -15,6 +15,10 @@ accessibility helpers, and view-local GTK state.
   behavior, context menus, and configurable classic/modern mail arrangement.
 - Keep mail-account roots and their folder trees in the compact sidebar; backend
   implementation names must not appear in visible navigation or status labels.
+  Keep the mail sidebar paned `shrink_start_child` false so the folder navigation
+  starts pinned at x=0 without negative-offset clipping when narrowed; autoexpand
+  account roots by default and toggle expanders on activation/click so account
+  folders are immediately reachable.
 - A folder context menu targets the exact selectable row under the secondary
   click without changing the active reader folder or starting a load. Keep the
   target only for that popover lifetime, reject whitespace/account roots, and
@@ -343,6 +347,16 @@ accessibility helpers, and view-local GTK state.
   `SourcePropertiesDialog` for display name, color, and default status) and
   "Gruppen verwalten…" (opening `ManageGroupsDialog`). Sidebar lists display only
   items from visible groups (`visible_sources()`).
+- Calendar Day, Week, and Work-Week views render a continuous 30-minute interval
+  time grid (`render_continuous_time_grid`) matching upstream Evolution and Lookout:
+  a fixed left time gutter (`calendar-time-gutter`) with hour labels, sticky column
+  day headers with today accentuation, dedicated all-day event rows, distinct
+  background styling for business hours vs off-hours, solid 1px hour divisions and
+  dashed half-hour divisions, compact event chips (`calendar-grid-event`) with left
+  color bar and drag-and-drop support, and double-click event creation across all
+  empty time slots. Month view uses a seamless border table grid (`calendar-month-grid`,
+  `calendar-month-cell`) without isolated cards or rounded gaps.
+
 
 ## Work Guidance
 

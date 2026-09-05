@@ -83,6 +83,73 @@ pub struct AccountProfile {
     #[serde(default)]
     pub junk_folder: String,
     pub enabled: bool,
+    #[serde(default)]
+    pub signature_id: Option<String>,
+    #[serde(default = "default_check_interval")]
+    pub check_interval_minutes: u32,
+    #[serde(default = "default_true")]
+    pub auto_check_enabled: bool,
+    #[serde(default)]
+    pub check_all_folders: bool,
+    #[serde(default)]
+    pub expunge_on_exit: bool,
+    #[serde(default)]
+    pub pgp_key_id: String,
+    #[serde(default)]
+    pub pgp_always_sign: bool,
+    #[serde(default)]
+    pub pgp_always_encrypt: bool,
+    #[serde(default)]
+    pub smime_sign_cert: String,
+    #[serde(default)]
+    pub smime_encrypt_cert: String,
+    #[serde(default)]
+    pub default_cc: String,
+    #[serde(default)]
+    pub default_bcc: String,
+    #[serde(default = "default_true")]
+    pub prefer_html: bool,
+}
+
+impl Default for AccountProfile {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            display_name: String::new(),
+            email: String::new(),
+            protocol: AccountProtocol::ImapSmtp,
+            imap_host: String::new(),
+            smtp_host: String::new(),
+            tls_mode: "tls".to_string(),
+            username: String::new(),
+            imap_port: default_imap_port(),
+            smtp_port: default_smtp_port(),
+            auth_method: "password".to_string(),
+            reply_to: String::new(),
+            organization: String::new(),
+            aliases: Vec::new(),
+            inbox_folder: String::new(),
+            drafts_folder: String::new(),
+            sent_folder: String::new(),
+            archive_folder: String::new(),
+            trash_folder: String::new(),
+            junk_folder: String::new(),
+            enabled: true,
+            signature_id: None,
+            check_interval_minutes: default_check_interval(),
+            auto_check_enabled: true,
+            check_all_folders: false,
+            expunge_on_exit: false,
+            pgp_key_id: String::new(),
+            pgp_always_sign: false,
+            pgp_always_encrypt: false,
+            smime_sign_cert: String::new(),
+            smime_encrypt_cert: String::new(),
+            default_cc: String::new(),
+            default_bcc: String::new(),
+            prefer_html: true,
+        }
+    }
 }
 
 impl AccountProfile {
@@ -135,6 +202,14 @@ fn default_imap_port() -> u16 {
 
 fn default_smtp_port() -> u16 {
     465
+}
+
+fn default_check_interval() -> u32 {
+    10
+}
+
+fn default_true() -> bool {
+    true
 }
 
 fn is_plausible_address(value: &str) -> bool {
@@ -330,6 +405,7 @@ mod tests {
             trash_folder: String::new(),
             junk_folder: String::new(),
             enabled: true,
+            ..Default::default()
         };
 
         store
@@ -372,6 +448,19 @@ mod tests {
         assert!(profile.archive_folder.is_empty());
         assert!(profile.trash_folder.is_empty());
         assert!(profile.junk_folder.is_empty());
+        assert_eq!(profile.signature_id, None);
+        assert_eq!(profile.check_interval_minutes, 10);
+        assert!(profile.auto_check_enabled);
+        assert!(!profile.check_all_folders);
+        assert!(!profile.expunge_on_exit);
+        assert!(profile.pgp_key_id.is_empty());
+        assert!(!profile.pgp_always_sign);
+        assert!(!profile.pgp_always_encrypt);
+        assert!(profile.smime_sign_cert.is_empty());
+        assert!(profile.smime_encrypt_cert.is_empty());
+        assert!(profile.default_cc.is_empty());
+        assert!(profile.default_bcc.is_empty());
+        assert!(profile.prefer_html);
     }
 
     #[test]
@@ -398,6 +487,7 @@ mod tests {
             trash_folder: String::new(),
             junk_folder: String::new(),
             enabled: true,
+            ..Default::default()
         };
         assert!(profile.validate().is_ok());
         profile.email = "not-an-address".to_string();
@@ -478,6 +568,7 @@ mod tests {
             trash_folder: String::new(),
             junk_folder: String::new(),
             enabled,
+            ..Default::default()
         }
     }
 

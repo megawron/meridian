@@ -5283,6 +5283,7 @@ mod tests {
             trash_folder: String::new(),
             junk_folder: String::new(),
             enabled: true,
+            ..Default::default()
         };
         let identities = compose_identities_for_profile(profile.clone());
         assert_eq!(identities.len(), 2);
