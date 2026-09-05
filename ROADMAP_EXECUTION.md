@@ -1634,10 +1634,12 @@ allein ist kein Implementierungsbeleg.
   Confirmation, sequentielles Stop-on-first-error-Delete), `GW-CONTACT-ACTIONS-PRINT`
   (Kartendruck mit Alphabet-Headings, Adresslistenauflösung, Tabellendruck sichtbarer Kontakte,
   `<Ctrl>P`), `GW-CONTACT-ACTIONS-TRANSFER` (Kopieren/Verschieben zwischen Adressbüchern,
-  Create-before-delete, Fresh-UIDs, AlertDialog mit Dropdown) und `GW-CONTACT-SEARCH`
+  Create-before-delete, Fresh-UIDs, AlertDialog mit Dropdown), `GW-CONTACT-SEARCH`
   (typisierter Search-AST, Feld-/Operator-Registry, ContactSearchDialog, Quick-Search,
-  Outer-Filters, Treffer-/Preview-Sync, Worker-Generierungen) sind portabel implementiert
-  und stehen auf `BLOCKED_LINUX`. Weitere Kontaktflächen (z. B. Contact Surface Map-Linking) sowie
+  Outer-Filters, Treffer-/Preview-Sync, Worker-Generierungen) und `GW-ADDRESSBOOK-SETTINGS`
+  (24 GSettings-Keys, Map-Policy, Autocomplete, 12 Editor-Sektionen, formatierte Adressen,
+  Live-GSettings-Sync, versionierte Migration und Backup) sind portabel implementiert
+  und stehen auf `BLOCKED_LINUX`. Weitere Kontaktflächen sowie
   Linux-EBook/GAL-/ACL-Abnahme bleiben offen.
 
 ### P1-TASK-001 — Aufgaben, Memos und Erinnerungen
