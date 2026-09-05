@@ -15,9 +15,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::services::calendar_category_service::CalendarCategoryStore;
 use crate::services::calendar_category_service::category_names_from_ical_component;
+use crate::services::calendar_export_service::{CalendarExportFormat, export_calendar_events};
+use crate::services::calendar_print_service::{
+    build_calendar_list_print_document, build_event_print_document,
+};
 use crate::services::calendar_store_service::{
     CalendarEventRecord, CalendarSnapshot, CalendarStoreService, MemoRecord, TaskRecord,
-    export_ical_component, update_ical_property,
+    update_ical_property,
 };
 use crate::services::ecal_service::{
     CalendarDataOrigin, ECalComponentType, ECalMutationResult, ECalService, ECalSyncEvent,
@@ -103,6 +107,7 @@ struct CalendarEventActionState {
     can_edit: bool,
     can_delete: bool,
     can_export: bool,
+    can_print: bool,
     can_copy_to_local: bool,
     can_move_to_local: bool,
     recurring: bool,
@@ -1188,6 +1193,134 @@ impl CalendarPage {
             dialog.set_transient_for(Some(&root));
         }
         dialog.present();
+    }
+
+    /// Return all currently loaded calendar events as a cloned vector.
+    pub fn loaded_calendar_events(&self) -> Vec<CalendarEventRecord> {
+        self.imp()
+            .event_records
+            .borrow()
+            .as_ref()
+            .map(|records| records.borrow().clone())
+            .unwrap_or_default()
+    }
+
+    /// Print the current visible calendar view or agenda.
+    pub fn print_visible_agenda(&self) {
+        let events = self.loaded_calendar_events();
+        if events.is_empty() {
+            show_toast_for_widget(self, "Keine Termine zum Drucken verfügbar");
+            return;
+        }
+        let view_name = match *self.imp().current_view.borrow() {
+            CalendarView::Day => "Tagesansicht",
+            CalendarView::Week => "Wochenansicht",
+            CalendarView::WorkWeek => "Arbeitswochenansicht",
+            CalendarView::Month => "Monatsansicht",
+            CalendarView::Agenda => "Agenda",
+            CalendarView::Year => "Jahresübersicht",
+            CalendarView::List => "Terminliste",
+        };
+        match build_calendar_list_print_document(&events, Some(view_name)) {
+            Ok(doc) => {
+                show_toast_for_widget(
+                    self,
+                    &format!(
+                        "Druckdokument vorbereitet ({} Zeichen, {} Termine); Print-Portal ist Linux-Handoff",
+                        doc.html.len(),
+                        doc.event_count
+                    ),
+                );
+            }
+            Err(err) => {
+                show_toast_for_widget(self, &format!("Drucken fehlgeschlagen: {err}"));
+            }
+        }
+    }
+
+    /// Present a file dialog to export calendar events in iCalendar, CSV, or RDF format.
+    pub fn export_calendar_dialog(&self) {
+        let events = self.loaded_calendar_events();
+        if events.is_empty() {
+            show_toast_for_widget(self, "Keine Termine zum Exportieren verfügbar");
+            return;
+        }
+        let Some(root) = self.root().and_downcast::<gtk::Window>() else {
+            return;
+        };
+
+        let filter_ics = gtk::FileFilter::new();
+        filter_ics.set_name(Some("iCalendar (*.ics)"));
+        filter_ics.add_pattern("*.ics");
+
+        let filter_csv = gtk::FileFilter::new();
+        filter_csv.set_name(Some("Kommagetrennte Werte (*.csv)"));
+        filter_csv.add_pattern("*.csv");
+
+        let filter_rdf = gtk::FileFilter::new();
+        filter_rdf.set_name(Some("RDF / RSS 1.0 (*.rdf)"));
+        filter_rdf.add_pattern("*.rdf");
+
+        let filters = gio::ListStore::new::<gtk::FileFilter>();
+        filters.append(&filter_ics);
+        filters.append(&filter_csv);
+        filters.append(&filter_rdf);
+
+        let file_dialog = gtk::FileDialog::builder()
+            .title("Kalender exportieren")
+            .filters(&filters)
+            .default_filter(&filter_ics)
+            .initial_name("kalender.ics")
+            .modal(true)
+            .build();
+
+        let page_weak = self.downgrade();
+        file_dialog.save(Some(&root), None::<&gio::Cancellable>, move |result| {
+            let Ok(file) = result else {
+                return;
+            };
+            let Some(page) = page_weak.upgrade() else {
+                return;
+            };
+            let events = page.loaded_calendar_events();
+            let format = if let Some(path) = file.path() {
+                let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
+                if ext.eq_ignore_ascii_case("csv") {
+                    CalendarExportFormat::Csv
+                } else if ext.eq_ignore_ascii_case("rdf") {
+                    CalendarExportFormat::Rdf
+                } else {
+                    CalendarExportFormat::ICalendar
+                }
+            } else {
+                CalendarExportFormat::ICalendar
+            };
+            let payload = match export_calendar_events(&events, format, None) {
+                Ok(data) => data,
+                Err(err) => {
+                    show_toast_for_widget(&page, &err);
+                    return;
+                }
+            };
+            let save_res = file.replace_contents(
+                payload.as_bytes(),
+                None,
+                true,
+                gio::FileCreateFlags::NONE,
+                None::<&gio::Cancellable>,
+            );
+            match save_res {
+                Ok(_) => show_toast_for_widget(
+                    &page,
+                    &format!(
+                        "{} Termin(e) als {} exportiert",
+                        events.len(),
+                        format.display_label()
+                    ),
+                ),
+                Err(err) => show_toast_for_widget(&page, &format!("Exportfehler: {err}")),
+            }
+        });
     }
 
     fn start_calendar_snapshot_load(&self) {
@@ -2393,10 +2526,38 @@ impl CalendarPage {
             .tag_vpane_toggle_btn
             .replace(Some(tag_vpane_toggle_btn.clone()));
 
+        let btn_export_calendar = gtk::Button::builder()
+            .icon_name("document-save-symbolic")
+            .tooltip_text("Kalender exportieren (iCalendar, CSV, RDF)")
+            .css_classes(vec!["flat"])
+            .build();
+        set_accessible_label(&btn_export_calendar, "Kalender exportieren");
+        let page_weak_for_export = self.downgrade();
+        btn_export_calendar.connect_clicked(move |_| {
+            if let Some(page) = page_weak_for_export.upgrade() {
+                page.export_calendar_dialog();
+            }
+        });
+
+        let btn_print_calendar = gtk::Button::builder()
+            .icon_name("document-print-symbolic")
+            .tooltip_text("Kalenderansicht drucken (Strg+P)")
+            .css_classes(vec!["flat"])
+            .build();
+        set_accessible_label(&btn_print_calendar, "Kalender drucken");
+        let page_weak_for_print = self.downgrade();
+        btn_print_calendar.connect_clicked(move |_| {
+            if let Some(page) = page_weak_for_print.upgrade() {
+                page.print_visible_agenda();
+            }
+        });
+
         view_toolbar.append(&btn_add_event);
         view_toolbar.append(&calendar_search_entry);
         view_toolbar.append(&category_selector);
         view_toolbar.append(&view_toggle);
+        view_toolbar.append(&btn_export_calendar);
+        view_toolbar.append(&btn_print_calendar);
         view_toolbar.append(&tag_vpane_toggle_btn);
 
         content_box.append(&view_toolbar);
@@ -2928,8 +3089,17 @@ impl CalendarPage {
             .build();
         split.set_content(Some(&content_page));
         let split_for_navigation = split.clone();
+        let page_weak_for_keys = self.downgrade();
         let key_controller = gtk::EventControllerKey::new();
         key_controller.connect_key_pressed(move |_, key, _, modifiers| {
+            let is_print = (key == gtk::gdk::Key::p || key == gtk::gdk::Key::P)
+                && modifiers.contains(gtk::gdk::ModifierType::CONTROL_MASK);
+            if is_print {
+                if let Some(page) = page_weak_for_keys.upgrade() {
+                    page.print_visible_agenda();
+                    return glib::Propagation::Stop;
+                }
+            }
             let is_back = key == gtk::gdk::Key::Escape
                 || (key == gtk::gdk::Key::Left
                     && modifiers.contains(gtk::gdk::ModifierType::ALT_MASK));
@@ -6433,7 +6603,8 @@ fn calendar_event_action_state(
     CalendarEventActionState {
         can_edit: mutable,
         can_delete: mutable,
-        can_export: !event.component.trim().is_empty(),
+        can_export: !event.component.trim().is_empty() || !event.summary.trim().is_empty(),
+        can_print: !event.summary.trim().is_empty() || !event.component.trim().is_empty(),
         can_copy_to_local: transferable,
         can_move_to_local: transferable,
         recurring: calendar_event_is_recurring(event),
@@ -7010,13 +7181,21 @@ fn append_event_row(
     let recurring = action_state.recurring;
     edit_button.set_sensitive(action_state.can_edit);
     delete_button.set_sensitive(action_state.can_delete);
-    let export_button = gtk::Button::builder()
-        .icon_name("document-save-symbolic")
-        .tooltip_text("Termin als iCalendar exportieren")
+    let print_button = gtk::Button::builder()
+        .icon_name("document-print-symbolic")
+        .tooltip_text("Termin drucken")
         .css_classes(vec!["flat"])
         .valign(gtk::Align::Center)
         .build();
-    set_accessible_label(&export_button, "Termin als iCalendar exportieren");
+    set_accessible_label(&print_button, "Termin drucken");
+    print_button.set_sensitive(action_state.can_print);
+    let export_button = gtk::Button::builder()
+        .icon_name("document-save-symbolic")
+        .tooltip_text("Termin exportieren (iCalendar, CSV, RDF)")
+        .css_classes(vec!["flat"])
+        .valign(gtk::Align::Center)
+        .build();
+    set_accessible_label(&export_button, "Termin exportieren");
     export_button.set_sensitive(action_state.can_export);
     let copy_button = gtk::Button::builder()
         .icon_name("edit-copy-symbolic")
@@ -7035,6 +7214,7 @@ fn append_event_row(
         .build();
     set_accessible_label(&move_button, "Termin in lokalen Kalender verschieben");
     row.add_suffix(&edit_button);
+    row.add_suffix(&print_button);
     row.add_suffix(&export_button);
     row.add_suffix(&copy_button);
     row.add_suffix(&move_button);
@@ -7043,6 +7223,7 @@ fn append_event_row(
     let event_identity_for_edit = CalendarEventIdentity::from_event(&event);
     let page_weak_for_edit = page.downgrade();
     let edit_button_for_context = edit_button.clone();
+    let print_button_for_context = print_button.clone();
     let edit_button_for_signal = edit_button.clone();
     let edit_button_for_click = edit_button.clone();
     edit_button_for_signal.connect_clicked(move |_| {
@@ -7089,16 +7270,41 @@ fn append_event_row(
         dialog.present();
     });
 
+    let event_for_print = event.clone();
+    print_button.connect_clicked(move |btn| {
+        let summary_display = if event_for_print.summary.trim().is_empty() {
+            "Termin"
+        } else {
+            event_for_print.summary.trim()
+        };
+        match build_event_print_document(&event_for_print) {
+            Ok(doc) => {
+                show_toast_for_widget(
+                    btn,
+                    &format!(
+                        "Druckansicht für „{summary_display}“ vorbereitet ({} Zeichen); Print-Portal ist Linux-Handoff",
+                        doc.html.len()
+                    ),
+                );
+            }
+            Err(err) => {
+                show_toast_for_widget(btn, &format!("Drucken fehlgeschlagen: {err}"));
+            }
+        }
+    });
+
     let event_for_export = event.clone();
     let export_button_for_context = export_button.clone();
     let copy_button_for_context = copy_button.clone();
     let move_button_for_context = move_button.clone();
     let export_button_for_signal = export_button.clone();
     export_button_for_signal.connect_clicked(move |_| {
-        if event_for_export.component.trim().is_empty() {
+        if event_for_export.component.trim().is_empty()
+            && event_for_export.summary.trim().is_empty()
+        {
             show_toast_for_widget(
                 &export_button,
-                "Für diesen Termin sind keine iCalendar-Daten verfügbar",
+                "Für diesen Termin sind keine Kalenderdaten verfügbar",
             );
             return;
         }
@@ -7108,9 +7314,47 @@ fn append_event_row(
         let Ok(window) = root.downcast::<gtk::Window>() else {
             return;
         };
+
+        let filter_ics = gtk::FileFilter::new();
+        filter_ics.set_name(Some("iCalendar (*.ics)"));
+        filter_ics.add_pattern("*.ics");
+
+        let filter_csv = gtk::FileFilter::new();
+        filter_csv.set_name(Some("Kommagetrennte Werte (*.csv)"));
+        filter_csv.add_pattern("*.csv");
+
+        let filter_rdf = gtk::FileFilter::new();
+        filter_rdf.set_name(Some("RDF / RSS 1.0 (*.rdf)"));
+        filter_rdf.add_pattern("*.rdf");
+
+        let filters = gio::ListStore::new::<gtk::FileFilter>();
+        filters.append(&filter_ics);
+        filters.append(&filter_csv);
+        filters.append(&filter_rdf);
+
+        let safe_name = if event_for_export.summary.trim().is_empty() {
+            "termin".to_string()
+        } else {
+            event_for_export
+                .summary
+                .chars()
+                .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-')
+                .collect::<String>()
+        };
+        let initial_name = format!(
+            "{}.ics",
+            if safe_name.is_empty() {
+                "termin"
+            } else {
+                &safe_name
+            }
+        );
+
         let file_dialog = gtk::FileDialog::builder()
-            .title("Termin als iCalendar speichern")
-            .initial_name("termin.ics")
+            .title("Termin exportieren")
+            .filters(&filters)
+            .default_filter(&filter_ics)
+            .initial_name(&initial_name)
             .modal(true)
             .build();
         let event_for_dialog = event_for_export.clone();
@@ -7119,8 +7363,27 @@ fn append_event_row(
             let Ok(file) = result else {
                 return;
             };
+            let format = if let Some(path) = file.path() {
+                let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
+                if ext.eq_ignore_ascii_case("csv") {
+                    CalendarExportFormat::Csv
+                } else if ext.eq_ignore_ascii_case("rdf") {
+                    CalendarExportFormat::Rdf
+                } else {
+                    CalendarExportFormat::ICalendar
+                }
+            } else {
+                CalendarExportFormat::ICalendar
+            };
+            let payload = match export_calendar_events(&[event_for_dialog.clone()], format, None) {
+                Ok(data) => data,
+                Err(err) => {
+                    show_toast_for_widget(&export_button_for_result, &err);
+                    return;
+                }
+            };
             let save_result = file.replace_contents(
-                export_ical_component(&event_for_dialog.component).as_bytes(),
+                payload.as_bytes(),
                 None,
                 true,
                 gio::FileCreateFlags::NONE,
@@ -7129,11 +7392,11 @@ fn append_event_row(
             match save_result {
                 Ok(_) => show_toast_for_widget(
                     &export_button_for_result,
-                    "Termin als iCalendar exportiert",
+                    &format!("Termin als {} exportiert", format.display_label()),
                 ),
                 Err(error) => show_toast_for_widget(
                     &export_button_for_result,
-                    &format!("iCalendar konnte nicht gespeichert werden: {error}"),
+                    &format!("Termin konnte nicht gespeichert werden: {error}"),
                 ),
             }
         });
@@ -7406,10 +7669,22 @@ fn append_event_row(
         });
         menu_box.append(&edit);
 
-        let export = gtk::Button::with_label("Als iCalendar exportieren");
+        let print = gtk::Button::with_label("Termin drucken");
+        print.set_halign(gtk::Align::Fill);
+        print.add_css_class("flat");
+        print.set_sensitive(action_state.can_print);
+        let popover_for_print = popover.clone();
+        let print_button_for_menu = print_button_for_context.clone();
+        print.connect_clicked(move |_| {
+            popover_for_print.popdown();
+            print_button_for_menu.activate();
+        });
+        menu_box.append(&print);
+
+        let export = gtk::Button::with_label("Termin exportieren");
         export.set_halign(gtk::Align::Fill);
         export.add_css_class("flat");
-        export.set_sensitive(!event.component.trim().is_empty());
+        export.set_sensitive(action_state.can_export);
         let popover_for_export = popover.clone();
         let export_button_for_menu = export_button_for_context.clone();
         export.connect_clicked(move |_| {
@@ -8052,11 +8327,13 @@ mod tests {
         assert!(state.can_edit);
         assert!(state.can_delete);
         assert!(state.can_export);
+        assert!(state.can_print);
         assert!(state.can_copy_to_local);
         assert!(state.can_move_to_local);
 
         let local = all_day_event("local-calendar", "event-2", "2026-08-10", "2026-08-11");
         let local_state = calendar_event_action_state(&local, true);
+        assert!(local_state.can_print);
         assert!(!local_state.can_copy_to_local);
         assert!(!local_state.can_move_to_local);
         assert!(

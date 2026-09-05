@@ -11,6 +11,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use crate::services::contact_export_service::{ContactExportFormat, export_contacts};
 use crate::services::contact_print_service::{
     build_contact_list_print_document, build_contact_print_document,
 };
@@ -1336,10 +1337,10 @@ impl ContactsPage {
 
         let export_btn = gtk::Button::builder()
             .icon_name("document-save-symbolic")
-            .tooltip_text("Kontakt als vCard exportieren")
+            .tooltip_text("Ausgewählte Kontakte exportieren (vCard, CSV, LDIF)")
             .css_classes(vec!["circular"])
             .build();
-        set_accessible_label(&export_btn, "Kontakt als vCard exportieren");
+        set_accessible_label(&export_btn, "Ausgewählte Kontakte exportieren");
         let contact_list_for_export = contact_list.clone();
         let stored_contacts_for_export = Rc::clone(&stored_contacts);
         let export_btn_for_export = export_btn.clone();
@@ -1357,31 +1358,80 @@ impl ContactsPage {
                         return;
                     }
                 };
-                // Plan the complete output before opening the save dialog.
-                // This prevents a partially valid selection from producing a
-                // partial export if one cached vCard is malformed.
-                let plan = match plan_contact_vcard_export(&selected) {
-                    Ok(plan) => plan,
-                    Err(error) => {
-                        page.show_toast(&error.user_message());
-                        return;
-                    }
-                };
+                if selected.is_empty() {
+                    page.show_toast("Keine Kontakte zum Exportieren ausgewählt");
+                    return;
+                }
                 let Some(root) = page.root().and_downcast::<gtk::Window>() else {
                     page.show_toast("Kein Fenster für den Export verfügbar");
                     return;
                 };
+
+                let filter_vcf = gtk::FileFilter::new();
+                filter_vcf.set_name(Some("vCard (*.vcf)"));
+                filter_vcf.add_pattern("*.vcf");
+                filter_vcf.add_pattern("*.vcard");
+
+                let filter_csv = gtk::FileFilter::new();
+                filter_csv.set_name(Some("Kommagetrennte Werte (*.csv)"));
+                filter_csv.add_pattern("*.csv");
+
+                let filter_ldif = gtk::FileFilter::new();
+                filter_ldif.set_name(Some("LDAP Data Interchange Format (*.ldif)"));
+                filter_ldif.add_pattern("*.ldif");
+                filter_ldif.add_pattern("*.ldi");
+
+                let filters = gio::ListStore::new::<gtk::FileFilter>();
+                filters.append(&filter_vcf);
+                filters.append(&filter_csv);
+                filters.append(&filter_ldif);
+
+                let initial_name = if selected.len() == 1 {
+                    let name = &selected[0].contact.fn_name;
+                    let safe = name
+                        .chars()
+                        .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-')
+                        .collect::<String>();
+                    if safe.is_empty() {
+                        "kontakt.vcf".to_string()
+                    } else {
+                        format!("{safe}.vcf")
+                    }
+                } else {
+                    "kontakte.vcf".to_string()
+                };
+
                 let file_dialog = gtk::FileDialog::builder()
-                    .title("Kontakte als vCard speichern")
-                    .initial_name(&plan.initial_name)
+                    .title("Kontakte exportieren")
+                    .filters(&filters)
+                    .default_filter(&filter_vcf)
+                    .initial_name(&initial_name)
                     .modal(true)
                     .build();
                 let export_button = export_btn_for_export.clone();
+                let selected_for_dialog = selected.clone();
                 file_dialog.save(Some(&root), None::<&gio::Cancellable>, move |result| {
                     let Ok(file) = result else {
                         return;
                     };
-                    save_contact_vcard_export_async(&export_button, file, plan);
+                    let format = if let Some(path) = file.path() {
+                        let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
+                        if ext.eq_ignore_ascii_case("csv") {
+                            ContactExportFormat::Csv
+                        } else if ext.eq_ignore_ascii_case("ldif")
+                            || ext.eq_ignore_ascii_case("ldi")
+                        {
+                            ContactExportFormat::Ldif
+                        } else {
+                            ContactExportFormat::VCard
+                        }
+                    } else {
+                        ContactExportFormat::VCard
+                    };
+                    match plan_contact_export(&selected_for_dialog, format) {
+                        Ok(plan) => save_contact_export_async(&export_button, file, plan),
+                        Err(err) => show_toast_for_widget(&export_button, &err),
+                    }
                 });
             }
         ));
@@ -1972,7 +2022,7 @@ impl ContactsPage {
             });
             menu_box.append(&edit);
 
-            let export = gtk::Button::with_label("Als vCard exportieren");
+            let export = gtk::Button::with_label("Exportieren (vCard, CSV, LDIF)…");
             export.set_halign(gtk::Align::Fill);
             export.add_css_class("flat");
             let popover_for_export = popover.clone();
@@ -3908,13 +3958,68 @@ fn plan_contact_vcard_export(
     })
 }
 
-fn save_contact_vcard_export_async(
-    button: &gtk::Button,
-    file: gio::File,
-    plan: ContactVCardExportPlan,
-) {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ContactExportPlan {
+    pub(crate) initial_name: String,
+    pub(crate) payload: Vec<u8>,
+    pub(crate) contact_count: usize,
+    pub(crate) format: ContactExportFormat,
+}
+
+pub(crate) fn plan_contact_export(
+    selected: &[EBookContactRecord],
+    format: ContactExportFormat,
+) -> Result<ContactExportPlan, String> {
+    if selected.is_empty() {
+        return Err("Keine Kontakte ausgewählt".to_string());
+    }
+
+    match format {
+        ContactExportFormat::VCard => {
+            let vcard_plan =
+                plan_contact_vcard_export(selected).map_err(|err| err.user_message())?;
+            Ok(ContactExportPlan {
+                initial_name: vcard_plan.initial_name,
+                payload: vcard_plan.payload,
+                contact_count: vcard_plan.contact_count,
+                format: ContactExportFormat::VCard,
+            })
+        }
+        ContactExportFormat::Csv | ContactExportFormat::Ldif => {
+            let contacts: Vec<VCardContact> = selected.iter().map(|r| r.contact.clone()).collect();
+            let text = export_contacts(&contacts, format, None)?;
+            let initial_name = if selected.len() == 1 {
+                let name = &selected[0].contact.fn_name;
+                let safe_stem = if name.trim().is_empty() {
+                    "kontakt".to_string()
+                } else {
+                    name.chars()
+                        .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-')
+                        .collect::<String>()
+                };
+                let stem = if safe_stem.is_empty() {
+                    "kontakt"
+                } else {
+                    &safe_stem
+                };
+                format!("{stem}.{}", format.extension())
+            } else {
+                format!("kontakte.{}", format.extension())
+            };
+            Ok(ContactExportPlan {
+                initial_name,
+                payload: text.into_bytes(),
+                contact_count: selected.len(),
+                format,
+            })
+        }
+    }
+}
+
+fn save_contact_export_async(button: &gtk::Button, file: gio::File, plan: ContactExportPlan) {
     let button = button.clone();
     let contact_count = plan.contact_count;
+    let format = plan.format;
     file.replace_contents_async(
         plan.payload,
         None,
@@ -3922,16 +4027,20 @@ fn save_contact_vcard_export_async(
         gio::FileCreateFlags::NONE,
         None::<&gio::Cancellable>,
         move |result| match result {
-            Ok(_) if contact_count == 1 => {
-                show_toast_for_widget(&button, "Kontakt als vCard exportiert")
-            }
+            Ok(_) if contact_count == 1 => show_toast_for_widget(
+                &button,
+                &format!("Kontakt als {} exportiert", format.display_label()),
+            ),
             Ok(_) => show_toast_for_widget(
                 &button,
-                &format!("{contact_count} Kontakte als eine vCard-Datei exportiert"),
+                &format!(
+                    "{contact_count} Kontakte als {} exportiert",
+                    format.display_label()
+                ),
             ),
             Err((_, error)) => show_toast_for_widget(
                 &button,
-                &format!("vCard konnte nicht gespeichert werden: {error}"),
+                &format!("Export konnte nicht gespeichert werden: {error}"),
             ),
         },
     );
@@ -4883,11 +4992,12 @@ mod tests {
         contact_records_are_duplicates, contact_records_share_duplicate_key,
         contact_selection_action_state, contact_sort_key, contact_source_label,
         contact_status_needs_visibility, context_action_state, ordered_contact_addresses,
-        plan_contact_delete_batch, plan_contact_transfer, plan_contact_vcard_export,
-        prepare_vcard_for_transfer, quick_field_for_index, quick_query,
+        plan_contact_delete_batch, plan_contact_export, plan_contact_transfer,
+        plan_contact_vcard_export, prepare_vcard_for_transfer, quick_field_for_index, quick_query,
         reduce_contact_delete_result, reduce_contact_transfer_result,
         should_restore_contact_selection, with_contact_outer_filters,
     };
+    use crate::services::contact_export_service::ContactExportFormat;
     use crate::services::contact_search_service::{
         ContactClauseGroup, ContactOuterFilters, ContactSearchClause, ContactSearchField,
         ContactSearchOperator, ContactSearchQuery,
@@ -5190,6 +5300,44 @@ mod tests {
                 contact_name: "Grace".to_string(),
             })
         );
+    }
+
+    #[test]
+    fn plan_contact_export_supports_csv_and_ldif() {
+        let ada = record(
+            "book-a",
+            "ada",
+            VCardContact::new(
+                "Ada Lovelace",
+                "ada@example.test",
+                "Analytical Engine",
+                "Mathematician",
+            ),
+        );
+        let grace = record(
+            "book-b",
+            "grace",
+            VCardContact::new("Grace Hopper", "grace@example.test", "US Navy", "Admiral"),
+        );
+
+        let csv_plan = plan_contact_export(&[ada.clone(), grace.clone()], ContactExportFormat::Csv)
+            .expect("CSV export plan should succeed");
+        assert_eq!(csv_plan.format, ContactExportFormat::Csv);
+        assert_eq!(csv_plan.contact_count, 2);
+        assert_eq!(csv_plan.initial_name, "kontakte.csv");
+        let csv_str = String::from_utf8(csv_plan.payload).expect("CSV is utf-8");
+        assert!(csv_str.contains("Ada Lovelace"));
+        assert!(csv_str.contains("Grace Hopper"));
+        assert!(csv_str.contains("Analytical Engine"));
+
+        let ldif_plan = plan_contact_export(&[ada], ContactExportFormat::Ldif)
+            .expect("LDIF export plan should succeed");
+        assert_eq!(ldif_plan.format, ContactExportFormat::Ldif);
+        assert_eq!(ldif_plan.contact_count, 1);
+        assert_eq!(ldif_plan.initial_name, "AdaLovelace.ldif");
+        let ldif_str = String::from_utf8(ldif_plan.payload).expect("LDIF is utf-8");
+        assert!(ldif_str.contains("cn: Ada Lovelace"));
+        assert!(ldif_str.contains("mail: ada@example.test"));
     }
 
     #[test]
