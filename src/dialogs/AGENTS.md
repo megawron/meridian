@@ -74,12 +74,16 @@ and updates to the service/settings APIs.
   color selection using native GTK4 `ColorDialogButton` with live preview dot and hex
   subtitle synchronization, and default-source toggling with confirmation callbacks.
 - Account setup dialog (`AccountSetupDialog`) and mail preferences (`PreferencesDialog`)
-  expose per-account custom configuration matching upstream Evolution: per-account
-  signature selection from `SignatureStore`, automated sync interval and auto-check
-  toggles, all-folders checking, expunge on exit, OpenPGP and S/MIME security options
-  (key IDs, sign-by-default, encrypt-by-default), and composing defaults (HTML mode,
-  default CC/BCC). Preferences dialog allows direct editing of local and EDS accounts
-  with active configuration chips and badges.
+  expose per-account custom configuration matching upstream Evolution: structured into
+  5 native libadwaita tabs (`AdwViewStack`, `AdwViewSwitcher`, `AdwPreferencesPage`,
+  and responsive `Breakpoint` with `AdwViewSwitcherBar` at narrow widths):
+  1. Identität (account type/protocol, user info, signature selection from `SignatureStore`),
+  2. Empfangen (incoming server, port, TLS mode, auth credentials, sync interval, all folders, expunge),
+  3. Versenden (outgoing SMTP host, port, security info),
+  4. Standardordner (special folder mapping, composing defaults: HTML preference, default CC/BCC),
+  5. Sicherheit (OpenPGP key ID, sign/encrypt defaults, S/MIME certificates).
+  Preferences dialog allows direct editing of local and EDS accounts with active configuration
+  chips and badges. Validation failures focus and navigate directly to the relevant tab.
 
 
 ## Verification
