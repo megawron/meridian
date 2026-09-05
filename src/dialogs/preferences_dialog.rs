@@ -35,7 +35,7 @@ use crate::services::mail_store_service::{
     LocalFilterRunReport, MailStoreService, MailStoreWorkerConfig,
 };
 use crate::services::migration_service;
-use crate::services::settings_service::validate_mail_normal_header_name;
+use crate::services::settings_service::{ReminderDurationUnit, validate_mail_normal_header_name};
 use crate::services::signature_store_service::SignatureStore;
 
 /// Owned, framework-neutral inputs for one manual filter worker.
@@ -2847,18 +2847,134 @@ impl PreferencesDialog {
         }
         group_calendar_time.add(&row_workday_end);
 
-        let row_default_reminder = adw::SpinRow::with_range(0.0, 10_080.0, 5.0);
-        row_default_reminder.set_title("Standard-Erinnerung");
-        row_default_reminder.set_subtitle("Minuten vor einem neuen Termin");
-        row_default_reminder.set_digits(0);
-        row_default_reminder.set_snap_to_ticks(true);
+        let group_calendar_reminders = adw::PreferencesGroup::builder()
+            .title("Erinnerungen & Termine")
+            .description("Standard-Erinnerungen für Termine und Benachrichtigungen")
+            .build();
+
+        let row_use_default_reminder = adw::SwitchRow::builder()
+            .title("Standard-Erinnerung für Termine")
+            .subtitle("Erinnerung automatisch zu neuen Terminen hinzufügen")
+            .build();
+        let row_default_reminder_interval = adw::SpinRow::with_range(1.0, 10_080.0, 1.0);
+        row_default_reminder_interval.set_title("Standard-Erinnerungsintervall");
+        row_default_reminder_interval.set_subtitle("Vor Beginn des Termins");
+        row_default_reminder_interval.set_digits(0);
+        row_default_reminder_interval.set_snap_to_ticks(true);
+
+        let row_default_reminder_units = adw::ComboRow::builder()
+            .title("Standard-Erinnerungseinheit")
+            .model(&gtk::StringList::new(&["Minuten", "Stunden", "Tage"]))
+            .build();
+
         if let Some(settings) = settings.clone() {
-            row_default_reminder.set_value(settings.calendar_default_reminder_minutes() as f64);
-            row_default_reminder.connect_value_notify(move |row| {
-                settings.set_calendar_default_reminder_minutes(row.value().round() as u32);
+            let active = settings.use_default_reminder();
+            row_use_default_reminder.set_active(active);
+            row_default_reminder_interval.set_sensitive(active);
+            row_default_reminder_units.set_sensitive(active);
+
+            let row_interval_ref = row_default_reminder_interval.clone();
+            let row_units_ref = row_default_reminder_units.clone();
+            let settings_for_toggle = settings.clone();
+            row_use_default_reminder.connect_active_notify(move |row| {
+                let is_active = row.is_active();
+                row_interval_ref.set_sensitive(is_active);
+                row_units_ref.set_sensitive(is_active);
+                settings_for_toggle.set_use_default_reminder(is_active);
+            });
+
+            row_default_reminder_interval.set_value(settings.default_reminder_interval() as f64);
+            let settings_for_interval = settings.clone();
+            row_default_reminder_interval.connect_value_notify(move |row| {
+                settings_for_interval.set_default_reminder_interval(row.value().round() as u32);
+            });
+
+            row_default_reminder_units.set_selected(match settings.default_reminder_units() {
+                ReminderDurationUnit::Minutes => 0,
+                ReminderDurationUnit::Hours => 1,
+                ReminderDurationUnit::Days => 2,
+            });
+            let settings_for_units = settings.clone();
+            row_default_reminder_units.connect_selected_notify(move |row| {
+                let unit = match row.selected() {
+                    1 => ReminderDurationUnit::Hours,
+                    2 => ReminderDurationUnit::Days,
+                    _ => ReminderDurationUnit::Minutes,
+                };
+                settings_for_units.set_default_reminder_units(unit);
             });
         }
-        group_calendar_time.add(&row_default_reminder);
+        group_calendar_reminders.add(&row_use_default_reminder);
+        group_calendar_reminders.add(&row_default_reminder_interval);
+        group_calendar_reminders.add(&row_default_reminder_units);
+
+        let row_use_ba_reminder = adw::SwitchRow::builder()
+            .title("Geburtstags- & Jahrestagserinnerungen")
+            .subtitle("Erinnerungen für Kontakte mit Geburts- oder Jahrestag")
+            .build();
+        let row_ba_reminder_interval = adw::SpinRow::with_range(1.0, 10_080.0, 1.0);
+        row_ba_reminder_interval.set_title("Intervall für Geburtstage & Jahrestage");
+        row_ba_reminder_interval.set_digits(0);
+        row_ba_reminder_interval.set_snap_to_ticks(true);
+
+        let row_ba_reminder_units = adw::ComboRow::builder()
+            .title("Einheit für Geburtstage & Jahrestage")
+            .model(&gtk::StringList::new(&["Minuten", "Stunden", "Tage"]))
+            .build();
+
+        if let Some(settings) = settings.clone() {
+            let active = settings.use_ba_reminder();
+            row_use_ba_reminder.set_active(active);
+            row_ba_reminder_interval.set_sensitive(active);
+            row_ba_reminder_units.set_sensitive(active);
+
+            let row_interval_ref = row_ba_reminder_interval.clone();
+            let row_units_ref = row_ba_reminder_units.clone();
+            let settings_for_toggle = settings.clone();
+            row_use_ba_reminder.connect_active_notify(move |row| {
+                let is_active = row.is_active();
+                row_interval_ref.set_sensitive(is_active);
+                row_units_ref.set_sensitive(is_active);
+                settings_for_toggle.set_use_ba_reminder(is_active);
+            });
+
+            row_ba_reminder_interval.set_value(settings.ba_reminder_interval() as f64);
+            let settings_for_interval = settings.clone();
+            row_ba_reminder_interval.connect_value_notify(move |row| {
+                settings_for_interval.set_ba_reminder_interval(row.value().round() as u32);
+            });
+
+            row_ba_reminder_units.set_selected(match settings.ba_reminder_units() {
+                ReminderDurationUnit::Minutes => 0,
+                ReminderDurationUnit::Hours => 1,
+                ReminderDurationUnit::Days => 2,
+            });
+            let settings_for_units = settings.clone();
+            row_ba_reminder_units.connect_selected_notify(move |row| {
+                let unit = match row.selected() {
+                    1 => ReminderDurationUnit::Hours,
+                    2 => ReminderDurationUnit::Days,
+                    _ => ReminderDurationUnit::Minutes,
+                };
+                settings_for_units.set_ba_reminder_units(unit);
+            });
+        }
+        group_calendar_reminders.add(&row_use_ba_reminder);
+        group_calendar_reminders.add(&row_ba_reminder_interval);
+        group_calendar_reminders.add(&row_ba_reminder_units);
+
+        let row_hide_cancelled_events = adw::SwitchRow::builder()
+            .title("Abgesagte Termine ausblenden")
+            .subtitle("Termine mit Status CANCELLED nicht in Ansichten anzeigen")
+            .build();
+        if let Some(settings) = settings.clone() {
+            row_hide_cancelled_events.set_active(settings.hide_cancelled_events());
+            let settings_for_cancelled = settings.clone();
+            row_hide_cancelled_events.connect_active_notify(move |row| {
+                settings_for_cancelled.set_hide_cancelled_events(row.is_active());
+            });
+        }
+        group_calendar_reminders.add(&row_hide_cancelled_events);
 
         let row_notifications = adw::SwitchRow::builder()
             .title("Desktop-Benachrichtigungen")
@@ -2978,6 +3094,77 @@ impl PreferencesDialog {
             });
         }
         group_task_memo_lists.add(&row_task_sort_direction);
+
+        let row_hide_completed_tasks = adw::SwitchRow::builder()
+            .title("Erledigte Aufgaben ausblenden")
+            .subtitle("Erledigte Aufgaben nach Ablauf einer Frist ausblenden")
+            .build();
+        let row_hide_completed_tasks_value = adw::SpinRow::with_range(0.0, 1000.0, 1.0);
+        row_hide_completed_tasks_value.set_title("Frist für erledigte Aufgaben");
+        row_hide_completed_tasks_value.set_subtitle("0 = sofort nach Erledigung ausblenden");
+        row_hide_completed_tasks_value.set_digits(0);
+        row_hide_completed_tasks_value.set_snap_to_ticks(true);
+
+        let row_hide_completed_tasks_units = adw::ComboRow::builder()
+            .title("Einheit für Erledigungsfrist")
+            .model(&gtk::StringList::new(&["Minuten", "Stunden", "Tage"]))
+            .build();
+
+        if let Some(settings) = settings.clone() {
+            let active = settings.hide_completed_tasks();
+            row_hide_completed_tasks.set_active(active);
+            row_hide_completed_tasks_value.set_sensitive(active);
+            row_hide_completed_tasks_units.set_sensitive(active);
+
+            let row_val_ref = row_hide_completed_tasks_value.clone();
+            let row_units_ref = row_hide_completed_tasks_units.clone();
+            let settings_for_toggle = settings.clone();
+            row_hide_completed_tasks.connect_active_notify(move |row| {
+                let is_active = row.is_active();
+                row_val_ref.set_sensitive(is_active);
+                row_units_ref.set_sensitive(is_active);
+                settings_for_toggle.set_hide_completed_tasks(is_active);
+            });
+
+            row_hide_completed_tasks_value.set_value(settings.hide_completed_tasks_value() as f64);
+            let settings_for_val = settings.clone();
+            row_hide_completed_tasks_value.connect_value_notify(move |row| {
+                settings_for_val.set_hide_completed_tasks_value(row.value().round() as u32);
+            });
+
+            row_hide_completed_tasks_units.set_selected(
+                match settings.hide_completed_tasks_units() {
+                    ReminderDurationUnit::Minutes => 0,
+                    ReminderDurationUnit::Hours => 1,
+                    ReminderDurationUnit::Days => 2,
+                },
+            );
+            let settings_for_units = settings.clone();
+            row_hide_completed_tasks_units.connect_selected_notify(move |row| {
+                let unit = match row.selected() {
+                    1 => ReminderDurationUnit::Hours,
+                    2 => ReminderDurationUnit::Days,
+                    _ => ReminderDurationUnit::Minutes,
+                };
+                settings_for_units.set_hide_completed_tasks_units(unit);
+            });
+        }
+        group_task_memo_lists.add(&row_hide_completed_tasks);
+        group_task_memo_lists.add(&row_hide_completed_tasks_value);
+        group_task_memo_lists.add(&row_hide_completed_tasks_units);
+
+        let row_hide_cancelled_tasks = adw::SwitchRow::builder()
+            .title("Abgebrochene Aufgaben ausblenden")
+            .subtitle("Aufgaben mit Status CANCELLED in Ansichten nicht anzeigen")
+            .build();
+        if let Some(settings) = settings.clone() {
+            row_hide_cancelled_tasks.set_active(settings.hide_cancelled_tasks());
+            let settings_for_cancelled = settings.clone();
+            row_hide_cancelled_tasks.connect_active_notify(move |row| {
+                settings_for_cancelled.set_hide_cancelled_tasks(row.is_active());
+            });
+        }
+        group_task_memo_lists.add(&row_hide_cancelled_tasks);
 
         let row_memo_sort = adw::ComboRow::builder()
             .title("Notizen sortieren nach")
@@ -3272,6 +3459,7 @@ impl PreferencesDialog {
         page_calendar_general.add(&group_calendar_view);
         page_calendar_general.add(&group_calendar_days);
         page_calendar_general.add(&group_calendar_time);
+        page_calendar_general.add(&group_calendar_reminders);
 
         let page_calendar_display = adw::PreferencesPage::builder()
             .title("Display &amp; Formats")

@@ -18,7 +18,7 @@ use std::io::{self, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use super::settings_service::AppSettings;
+use super::settings_service::{AppSettings, ReminderDurationUnit};
 
 const CURRENT_VERSION: u32 = 4;
 static TEMP_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -271,6 +271,28 @@ struct BackupSettings {
     calendar_workday_end: u32,
     #[serde(default = "default_reminder")]
     calendar_default_reminder: u32,
+    #[serde(default)]
+    use_default_reminder: bool,
+    #[serde(default = "default_default_reminder_interval")]
+    default_reminder_interval: u32,
+    #[serde(default = "default_default_reminder_units")]
+    default_reminder_units: String,
+    #[serde(default)]
+    use_ba_reminder: bool,
+    #[serde(default = "default_default_reminder_interval")]
+    ba_reminder_interval: u32,
+    #[serde(default = "default_default_reminder_units")]
+    ba_reminder_units: String,
+    #[serde(default)]
+    hide_completed_tasks: bool,
+    #[serde(default = "default_hide_completed_tasks_value")]
+    hide_completed_tasks_value: u32,
+    #[serde(default = "default_hide_completed_tasks_units")]
+    hide_completed_tasks_units: String,
+    #[serde(default)]
+    hide_cancelled_tasks: bool,
+    #[serde(default)]
+    hide_cancelled_events: bool,
     #[serde(default = "default_notifications_enabled")]
     notifications_enabled: bool,
     #[serde(default = "default_confirm_destructive_actions")]
@@ -575,6 +597,22 @@ fn default_mail_threading() -> bool {
     true
 }
 
+fn default_default_reminder_interval() -> u32 {
+    15
+}
+
+fn default_default_reminder_units() -> String {
+    "minutes".to_string()
+}
+
+fn default_hide_completed_tasks_value() -> u32 {
+    1
+}
+
+fn default_hide_completed_tasks_units() -> String {
+    "days".to_string()
+}
+
 impl BackupSettings {
     fn from_app(settings: &AppSettings) -> Self {
         Self {
@@ -650,6 +688,17 @@ impl BackupSettings {
             calendar_workday_start: settings.calendar_workday_start_minutes(),
             calendar_workday_end: settings.calendar_workday_end_minutes(),
             calendar_default_reminder: settings.calendar_default_reminder_minutes(),
+            use_default_reminder: settings.use_default_reminder(),
+            default_reminder_interval: settings.default_reminder_interval(),
+            default_reminder_units: settings.default_reminder_units().as_str().to_string(),
+            use_ba_reminder: settings.use_ba_reminder(),
+            ba_reminder_interval: settings.ba_reminder_interval(),
+            ba_reminder_units: settings.ba_reminder_units().as_str().to_string(),
+            hide_completed_tasks: settings.hide_completed_tasks(),
+            hide_completed_tasks_value: settings.hide_completed_tasks_value(),
+            hide_completed_tasks_units: settings.hide_completed_tasks_units().as_str().to_string(),
+            hide_cancelled_tasks: settings.hide_cancelled_tasks(),
+            hide_cancelled_events: settings.hide_cancelled_events(),
             notifications_enabled: settings.notifications_enabled(),
             confirm_destructive_actions: settings.confirm_destructive_actions(),
             calendar_show_week_numbers: settings.calendar_show_week_numbers(),
@@ -775,6 +824,21 @@ impl BackupSettings {
         settings.set_calendar_workday_start_minutes(self.calendar_workday_start);
         settings.set_calendar_workday_end_minutes(self.calendar_workday_end);
         settings.set_calendar_default_reminder_minutes(self.calendar_default_reminder);
+        settings.set_use_default_reminder(self.use_default_reminder);
+        settings.set_default_reminder_interval(self.default_reminder_interval);
+        settings.set_default_reminder_units(ReminderDurationUnit::from_str(
+            &self.default_reminder_units,
+        ));
+        settings.set_use_ba_reminder(self.use_ba_reminder);
+        settings.set_ba_reminder_interval(self.ba_reminder_interval);
+        settings.set_ba_reminder_units(ReminderDurationUnit::from_str(&self.ba_reminder_units));
+        settings.set_hide_completed_tasks(self.hide_completed_tasks);
+        settings.set_hide_completed_tasks_value(self.hide_completed_tasks_value);
+        settings.set_hide_completed_tasks_units(ReminderDurationUnit::from_str(
+            &self.hide_completed_tasks_units,
+        ));
+        settings.set_hide_cancelled_tasks(self.hide_cancelled_tasks);
+        settings.set_hide_cancelled_events(self.hide_cancelled_events);
         settings.set_notifications_enabled(self.notifications_enabled);
         settings.set_confirm_destructive_actions(self.confirm_destructive_actions);
         settings.set_calendar_show_week_numbers(self.calendar_show_week_numbers);
@@ -975,6 +1039,24 @@ impl BackupSettings {
             0,
             10_080,
         )?;
+        validate_u32_setting(
+            "default_reminder_interval",
+            self.default_reminder_interval,
+            0,
+            100_000,
+        )?;
+        validate_u32_setting(
+            "ba_reminder_interval",
+            self.ba_reminder_interval,
+            0,
+            100_000,
+        )?;
+        validate_u32_setting(
+            "hide_completed_tasks_value",
+            self.hide_completed_tasks_value,
+            0,
+            100_000,
+        )?;
         validate_u32_setting("mail_sync_interval", self.mail_sync_interval, 0, 86_400)?;
         validate_u32_setting(
             "mail_sync_message_limit",
@@ -1055,6 +1137,21 @@ impl BackupSettings {
             &["openpgp", "smime"],
         )?;
         validate_choice("quote_style", &self.quote_style, &["prefix", "blockquote"])?;
+        validate_choice(
+            "default_reminder_units",
+            &self.default_reminder_units,
+            &["minutes", "hours", "days"],
+        )?;
+        validate_choice(
+            "ba_reminder_units",
+            &self.ba_reminder_units,
+            &["minutes", "hours", "days"],
+        )?;
+        validate_choice(
+            "hide_completed_tasks_units",
+            &self.hide_completed_tasks_units,
+            &["minutes", "hours", "days"],
+        )?;
         validate_choice(
             "task_search_mode",
             &self.task_search_mode,
@@ -1436,6 +1533,17 @@ const BACKUP_SETTINGS_FIELDS: &[&str] = &[
     "calendar_workday_start",
     "calendar_workday_end",
     "calendar_default_reminder",
+    "use_default_reminder",
+    "default_reminder_interval",
+    "default_reminder_units",
+    "use_ba_reminder",
+    "ba_reminder_interval",
+    "ba_reminder_units",
+    "hide_completed_tasks",
+    "hide_completed_tasks_value",
+    "hide_completed_tasks_units",
+    "hide_cancelled_tasks",
+    "hide_cancelled_events",
     "notifications_enabled",
     "confirm_destructive_actions",
     "calendar_show_week_numbers",
@@ -2892,6 +3000,17 @@ mod tests {
         assert_eq!(settings.calendar_workday_start, 540);
         assert_eq!(settings.calendar_workday_end, 1_020);
         assert_eq!(settings.calendar_default_reminder, 15);
+        assert!(!settings.use_default_reminder);
+        assert_eq!(settings.default_reminder_interval, 15);
+        assert_eq!(settings.default_reminder_units, "minutes");
+        assert!(!settings.use_ba_reminder);
+        assert_eq!(settings.ba_reminder_interval, 15);
+        assert_eq!(settings.ba_reminder_units, "minutes");
+        assert!(!settings.hide_completed_tasks);
+        assert_eq!(settings.hide_completed_tasks_value, 1);
+        assert_eq!(settings.hide_completed_tasks_units, "days");
+        assert!(!settings.hide_cancelled_tasks);
+        assert!(!settings.hide_cancelled_events);
         assert!(settings.notifications_enabled);
         assert!(settings.mark_read_on_selection);
         assert!(settings.show_message_preview);
@@ -3196,6 +3315,101 @@ mod tests {
             fresh_settings.calendar_groups_order(),
             vec!["grp-b", "grp-a"]
         );
+    }
+
+    #[test]
+    fn reminder_and_task_filter_settings_backup_validation_and_roundtrip() {
+        let backend = gio::memory_settings_backend_new();
+        let settings = AppSettings::try_new_with_backend(&backend).expect("settings should load");
+
+        settings.set_use_default_reminder(true);
+        settings.set_default_reminder_interval(45);
+        settings.set_default_reminder_units(ReminderDurationUnit::Minutes);
+        settings.set_use_ba_reminder(true);
+        settings.set_ba_reminder_interval(2);
+        settings.set_ba_reminder_units(ReminderDurationUnit::Days);
+        settings.set_hide_completed_tasks(true);
+        settings.set_hide_completed_tasks_value(3);
+        settings.set_hide_completed_tasks_units(ReminderDurationUnit::Hours);
+        settings.set_hide_cancelled_tasks(true);
+        settings.set_hide_cancelled_events(true);
+
+        let backup = BackupSettings::from_app(&settings);
+
+        assert!(backup.use_default_reminder);
+        assert_eq!(backup.default_reminder_interval, 45);
+        assert_eq!(backup.default_reminder_units, "minutes");
+        assert!(backup.use_ba_reminder);
+        assert_eq!(backup.ba_reminder_interval, 2);
+        assert_eq!(backup.ba_reminder_units, "days");
+        assert!(backup.hide_completed_tasks);
+        assert_eq!(backup.hide_completed_tasks_value, 3);
+        assert_eq!(backup.hide_completed_tasks_units, "hours");
+        assert!(backup.hide_cancelled_tasks);
+        assert!(backup.hide_cancelled_events);
+
+        backup.validate().expect("backup should validate");
+
+        // Validate rejects invalid unit
+        let mut invalid_units = backup.clone();
+        invalid_units.default_reminder_units = "weeks".to_string();
+        assert!(invalid_units.validate().is_err());
+
+        let mut invalid_ba_units = backup.clone();
+        invalid_ba_units.ba_reminder_units = "seconds".to_string();
+        assert!(invalid_ba_units.validate().is_err());
+
+        let mut invalid_task_units = backup.clone();
+        invalid_task_units.hide_completed_tasks_units = "months".to_string();
+        assert!(invalid_task_units.validate().is_err());
+
+        // Validate rejects out of bounds interval
+        let mut invalid_interval = backup.clone();
+        invalid_interval.default_reminder_interval = 200_000;
+        assert!(invalid_interval.validate().is_err());
+
+        // JSON serialization round-trip
+        let serialized = serde_json::to_string(&backup).expect("should serialize");
+        let deserialized: BackupSettings =
+            serde_json::from_str(&serialized).expect("should deserialize");
+        assert!(deserialized.use_default_reminder);
+        assert_eq!(deserialized.default_reminder_interval, 45);
+        assert_eq!(deserialized.default_reminder_units, "minutes");
+        assert!(deserialized.use_ba_reminder);
+        assert_eq!(deserialized.ba_reminder_interval, 2);
+        assert_eq!(deserialized.ba_reminder_units, "days");
+        assert!(deserialized.hide_completed_tasks);
+        assert_eq!(deserialized.hide_completed_tasks_value, 3);
+        assert_eq!(deserialized.hide_completed_tasks_units, "hours");
+        assert!(deserialized.hide_cancelled_tasks);
+        assert!(deserialized.hide_cancelled_events);
+
+        // Restoration into fresh settings
+        let fresh_backend = gio::memory_settings_backend_new();
+        let fresh_settings =
+            AppSettings::try_new_with_backend(&fresh_backend).expect("settings should load");
+        deserialized.apply_to(&fresh_settings);
+
+        assert!(fresh_settings.use_default_reminder());
+        assert_eq!(fresh_settings.default_reminder_interval(), 45);
+        assert_eq!(
+            fresh_settings.default_reminder_units(),
+            ReminderDurationUnit::Minutes
+        );
+        assert!(fresh_settings.use_ba_reminder());
+        assert_eq!(fresh_settings.ba_reminder_interval(), 2);
+        assert_eq!(
+            fresh_settings.ba_reminder_units(),
+            ReminderDurationUnit::Days
+        );
+        assert!(fresh_settings.hide_completed_tasks());
+        assert_eq!(fresh_settings.hide_completed_tasks_value(), 3);
+        assert_eq!(
+            fresh_settings.hide_completed_tasks_units(),
+            ReminderDurationUnit::Hours
+        );
+        assert!(fresh_settings.hide_cancelled_tasks());
+        assert!(fresh_settings.hide_cancelled_events());
     }
 
     fn temporary_directory(label: &str) -> PathBuf {

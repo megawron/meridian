@@ -555,6 +555,121 @@ impl AppSettings {
         self.set_int("calendar-default-reminder", value.min(10_080) as i32);
     }
 
+    pub fn use_default_reminder(&self) -> bool {
+        self.settings.boolean("use-default-reminder")
+    }
+
+    pub fn set_use_default_reminder(&self, value: bool) {
+        self.set_boolean("use-default-reminder", value);
+    }
+
+    pub fn default_reminder_interval(&self) -> u32 {
+        self.settings
+            .int("default-reminder-interval")
+            .clamp(0, 100_000) as u32
+    }
+
+    pub fn set_default_reminder_interval(&self, value: u32) {
+        let clamped = value.min(100_000);
+        self.set_int("default-reminder-interval", clamped as i32);
+        let minutes = self.default_reminder_units().to_minutes(clamped);
+        self.set_calendar_default_reminder_minutes(minutes);
+    }
+
+    pub fn default_reminder_units(&self) -> ReminderDurationUnit {
+        ReminderDurationUnit::from_str(&self.settings.string("default-reminder-units"))
+    }
+
+    pub fn set_default_reminder_units(&self, unit: ReminderDurationUnit) {
+        self.set_string("default-reminder-units", unit.as_str());
+        let minutes = unit.to_minutes(self.default_reminder_interval());
+        self.set_calendar_default_reminder_minutes(minutes);
+    }
+
+    pub fn default_reminder_total_minutes(&self) -> u32 {
+        self.default_reminder_units()
+            .to_minutes(self.default_reminder_interval())
+    }
+
+    pub fn use_ba_reminder(&self) -> bool {
+        self.settings.boolean("use-ba-reminder")
+    }
+
+    pub fn set_use_ba_reminder(&self, value: bool) {
+        self.set_boolean("use-ba-reminder", value);
+    }
+
+    pub fn ba_reminder_interval(&self) -> u32 {
+        self.settings.int("ba-reminder-interval").clamp(0, 100_000) as u32
+    }
+
+    pub fn set_ba_reminder_interval(&self, value: u32) {
+        self.set_int("ba-reminder-interval", value.min(100_000) as i32);
+    }
+
+    pub fn ba_reminder_units(&self) -> ReminderDurationUnit {
+        ReminderDurationUnit::from_str(&self.settings.string("ba-reminder-units"))
+    }
+
+    pub fn set_ba_reminder_units(&self, unit: ReminderDurationUnit) {
+        self.set_string("ba-reminder-units", unit.as_str());
+    }
+
+    pub fn hide_completed_tasks(&self) -> bool {
+        self.settings.boolean("hide-completed-tasks")
+    }
+
+    pub fn set_hide_completed_tasks(&self, value: bool) {
+        self.set_boolean("hide-completed-tasks", value);
+    }
+
+    pub fn hide_completed_tasks_value(&self) -> u32 {
+        self.settings
+            .int("hide-completed-tasks-value")
+            .clamp(0, 100_000) as u32
+    }
+
+    pub fn set_hide_completed_tasks_value(&self, value: u32) {
+        self.set_int("hide-completed-tasks-value", value.min(100_000) as i32);
+    }
+
+    pub fn hide_completed_tasks_units(&self) -> ReminderDurationUnit {
+        ReminderDurationUnit::from_str(&self.settings.string("hide-completed-tasks-units"))
+    }
+
+    pub fn set_hide_completed_tasks_units(&self, unit: ReminderDurationUnit) {
+        self.set_string("hide-completed-tasks-units", unit.as_str());
+    }
+
+    pub fn hide_completed_tasks_cutoff_timestamp(&self, now_secs: i64) -> Option<i64> {
+        if !self.hide_completed_tasks() {
+            return None;
+        }
+        let value = self.hide_completed_tasks_value();
+        if value == 0 {
+            Some(now_secs)
+        } else {
+            let delta = self.hide_completed_tasks_units().to_seconds(value) as i64;
+            Some(now_secs.saturating_sub(delta))
+        }
+    }
+
+    pub fn hide_cancelled_tasks(&self) -> bool {
+        self.settings.boolean("hide-cancelled-tasks")
+    }
+
+    pub fn set_hide_cancelled_tasks(&self, value: bool) {
+        self.set_boolean("hide-cancelled-tasks", value);
+    }
+
+    pub fn hide_cancelled_events(&self) -> bool {
+        self.settings.boolean("hide-cancelled-events")
+    }
+
+    pub fn set_hide_cancelled_events(&self, value: bool) {
+        self.set_boolean("hide-cancelled-events", value);
+    }
+
     pub fn notifications_enabled(&self) -> bool {
         self.settings.boolean("notifications-enabled")
     }
@@ -1902,6 +2017,43 @@ impl AppSettings {
                     key, value, 0, 10_080,
                 )?);
             }
+            "use-default-reminder" => {
+                self.set_use_default_reminder(parse_migrated_bool(key, value)?);
+            }
+            "default-reminder-interval" => {
+                self.set_default_reminder_interval(parse_migrated_u32_in_range(
+                    key, value, 0, 100_000,
+                )?);
+            }
+            "default-reminder-units" => {
+                self.set_default_reminder_units(ReminderDurationUnit::from_str(value));
+            }
+            "use-ba-reminder" => {
+                self.set_use_ba_reminder(parse_migrated_bool(key, value)?);
+            }
+            "ba-reminder-interval" => {
+                self.set_ba_reminder_interval(parse_migrated_u32_in_range(key, value, 0, 100_000)?);
+            }
+            "ba-reminder-units" => {
+                self.set_ba_reminder_units(ReminderDurationUnit::from_str(value));
+            }
+            "hide-completed-tasks" => {
+                self.set_hide_completed_tasks(parse_migrated_bool(key, value)?);
+            }
+            "hide-completed-tasks-value" => {
+                self.set_hide_completed_tasks_value(parse_migrated_u32_in_range(
+                    key, value, 0, 100_000,
+                )?);
+            }
+            "hide-completed-tasks-units" => {
+                self.set_hide_completed_tasks_units(ReminderDurationUnit::from_str(value));
+            }
+            "hide-cancelled-tasks" => {
+                self.set_hide_cancelled_tasks(parse_migrated_bool(key, value)?);
+            }
+            "hide-cancelled-events" => {
+                self.set_hide_cancelled_events(parse_migrated_bool(key, value)?);
+            }
             "notifications-enabled" => {
                 self.set_notifications_enabled(parse_migrated_bool(key, value)?);
             }
@@ -2217,6 +2369,17 @@ impl AppSettings {
             "calendar-workday-start",
             "calendar-workday-end",
             "calendar-default-reminder",
+            "use-default-reminder",
+            "default-reminder-interval",
+            "default-reminder-units",
+            "use-ba-reminder",
+            "ba-reminder-interval",
+            "ba-reminder-units",
+            "hide-completed-tasks",
+            "hide-completed-tasks-units",
+            "hide-completed-tasks-value",
+            "hide-cancelled-tasks",
+            "hide-cancelled-events",
             "notifications-enabled",
             "confirm-destructive-actions",
             "calendar-show-week-numbers",
@@ -2481,6 +2644,53 @@ pub fn sanitize_ordered_list(items: &[String]) -> Vec<String> {
         }
     }
     cleaned
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ReminderDurationUnit {
+    #[default]
+    Minutes,
+    Hours,
+    Days,
+}
+
+impl ReminderDurationUnit {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Minutes => "minutes",
+            Self::Hours => "hours",
+            Self::Days => "days",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Self {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "hours" | "hour" | "1" => Self::Hours,
+            "days" | "day" | "2" => Self::Days,
+            _ => Self::Minutes,
+        }
+    }
+
+    pub fn to_seconds(&self, value: u32) -> u64 {
+        match self {
+            Self::Minutes => (value as u64) * 60,
+            Self::Hours => (value as u64) * 3600,
+            Self::Days => (value as u64) * 86400,
+        }
+    }
+
+    pub fn to_minutes(&self, value: u32) -> u32 {
+        match self {
+            Self::Minutes => value,
+            Self::Hours => value.saturating_mul(60),
+            Self::Days => value.saturating_mul(1440),
+        }
+    }
+}
+
+#[allow(dead_code)]
+pub fn sanitize_duration_units(units: &str) -> &'static str {
+    ReminderDurationUnit::from_str(units).as_str()
 }
 
 #[cfg(test)]
@@ -3254,5 +3464,158 @@ mod tests {
         assert!(reset.calendar_groups_order().is_empty());
         assert!(reset.task_hidden_groups().is_empty());
         assert!(reset.task_groups_order().is_empty());
+    }
+
+    #[test]
+    fn reminder_and_task_filter_settings_roundtrip_and_cutoff() {
+        use super::ReminderDurationUnit;
+
+        let backend = gio::memory_settings_backend_new();
+        let settings = settings_with_backend(&backend);
+
+        // 1. Check initial defaults
+        assert!(!settings.use_default_reminder());
+        assert_eq!(settings.default_reminder_interval(), 15);
+        assert_eq!(
+            settings.default_reminder_units(),
+            ReminderDurationUnit::Minutes
+        );
+        assert_eq!(settings.default_reminder_total_minutes(), 15);
+        assert!(!settings.use_ba_reminder());
+        assert_eq!(settings.ba_reminder_interval(), 15);
+        assert_eq!(settings.ba_reminder_units(), ReminderDurationUnit::Minutes);
+        assert!(!settings.hide_completed_tasks());
+        assert_eq!(settings.hide_completed_tasks_value(), 1);
+        assert_eq!(
+            settings.hide_completed_tasks_units(),
+            ReminderDurationUnit::Days
+        );
+        assert!(!settings.hide_cancelled_tasks());
+        assert!(!settings.hide_cancelled_events());
+
+        // 2. Cutoff calculation when disabled
+        assert_eq!(
+            settings.hide_completed_tasks_cutoff_timestamp(1_700_000_000),
+            None
+        );
+
+        // 3. Mutate typed settings
+        settings.set_use_default_reminder(true);
+        assert!(settings.use_default_reminder());
+
+        settings.set_default_reminder_interval(2);
+        settings.set_default_reminder_units(ReminderDurationUnit::Hours);
+        assert_eq!(settings.default_reminder_interval(), 2);
+        assert_eq!(
+            settings.default_reminder_units(),
+            ReminderDurationUnit::Hours
+        );
+        assert_eq!(settings.default_reminder_total_minutes(), 120);
+        assert_eq!(settings.calendar_default_reminder_minutes(), 120);
+
+        settings.set_use_ba_reminder(true);
+        settings.set_ba_reminder_interval(3);
+        settings.set_ba_reminder_units(ReminderDurationUnit::Days);
+        assert!(settings.use_ba_reminder());
+        assert_eq!(settings.ba_reminder_interval(), 3);
+        assert_eq!(settings.ba_reminder_units(), ReminderDurationUnit::Days);
+
+        settings.set_hide_completed_tasks(true);
+        settings.set_hide_completed_tasks_value(2);
+        settings.set_hide_completed_tasks_units(ReminderDurationUnit::Days);
+        assert!(settings.hide_completed_tasks());
+        assert_eq!(settings.hide_completed_tasks_value(), 2);
+        assert_eq!(
+            settings.hide_completed_tasks_units(),
+            ReminderDurationUnit::Days
+        );
+
+        // Cutoff calculation with 2 days
+        let now = 1_700_000_000;
+        let expected_cutoff = now - 2 * 86_400;
+        assert_eq!(
+            settings.hide_completed_tasks_cutoff_timestamp(now),
+            Some(expected_cutoff)
+        );
+
+        // Cutoff calculation with 0 (immediate)
+        settings.set_hide_completed_tasks_value(0);
+        assert_eq!(
+            settings.hide_completed_tasks_cutoff_timestamp(now),
+            Some(now)
+        );
+
+        settings.set_hide_cancelled_tasks(true);
+        assert!(settings.hide_cancelled_tasks());
+        settings.set_hide_cancelled_events(true);
+        assert!(settings.hide_cancelled_events());
+
+        // 4. Test apply_migrated_setting
+        settings
+            .apply_migrated_setting("use-default-reminder", "false")
+            .unwrap();
+        assert!(!settings.use_default_reminder());
+
+        settings
+            .apply_migrated_setting("default-reminder-interval", "45")
+            .unwrap();
+        assert_eq!(settings.default_reminder_interval(), 45);
+
+        settings
+            .apply_migrated_setting("default-reminder-units", "minutes")
+            .unwrap();
+        assert_eq!(
+            settings.default_reminder_units(),
+            ReminderDurationUnit::Minutes
+        );
+
+        settings
+            .apply_migrated_setting("hide-completed-tasks", "false")
+            .unwrap();
+        assert!(!settings.hide_completed_tasks());
+
+        settings
+            .apply_migrated_setting("hide-completed-tasks-value", "10")
+            .unwrap();
+        assert_eq!(settings.hide_completed_tasks_value(), 10);
+
+        settings
+            .apply_migrated_setting("hide-completed-tasks-units", "hours")
+            .unwrap();
+        assert_eq!(
+            settings.hide_completed_tasks_units(),
+            ReminderDurationUnit::Hours
+        );
+
+        settings
+            .apply_migrated_setting("hide-cancelled-tasks", "false")
+            .unwrap();
+        assert!(!settings.hide_cancelled_tasks());
+
+        settings
+            .apply_migrated_setting("hide-cancelled-events", "false")
+            .unwrap();
+        assert!(!settings.hide_cancelled_events());
+
+        // 5. Reset to defaults
+        settings.reset_to_defaults();
+        let reset = settings_with_backend(&backend);
+        assert!(!reset.use_default_reminder());
+        assert_eq!(reset.default_reminder_interval(), 15);
+        assert_eq!(
+            reset.default_reminder_units(),
+            ReminderDurationUnit::Minutes
+        );
+        assert!(!reset.use_ba_reminder());
+        assert_eq!(reset.ba_reminder_interval(), 15);
+        assert_eq!(reset.ba_reminder_units(), ReminderDurationUnit::Minutes);
+        assert!(!reset.hide_completed_tasks());
+        assert_eq!(reset.hide_completed_tasks_value(), 1);
+        assert_eq!(
+            reset.hide_completed_tasks_units(),
+            ReminderDurationUnit::Days
+        );
+        assert!(!reset.hide_cancelled_tasks());
+        assert!(!reset.hide_cancelled_events());
     }
 }

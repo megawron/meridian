@@ -81,6 +81,65 @@
       <default>15</default>
       <summary>Default event reminder in minutes before the event</summary>
     </key>
+    <key name="use-default-reminder" type="b">
+      <default>false</default>
+      <summary>Whether to set a default reminder for appointments</summary>
+    </key>
+    <key name="default-reminder-interval" type="i">
+      <default>15</default>
+      <summary>Number of units for determining a default reminder</summary>
+    </key>
+    <key name="default-reminder-units" type="s">
+      <choices>
+        <choice value='minutes'/>
+        <choice value='hours'/>
+        <choice value='days'/>
+      </choices>
+      <default>'minutes'</default>
+      <summary>Units for a default reminder, minutes, hours or days</summary>
+    </key>
+    <key name="use-ba-reminder" type="b">
+      <default>false</default>
+      <summary>Whether to set a reminder for birthdays and anniversaries</summary>
+    </key>
+    <key name="ba-reminder-interval" type="i">
+      <default>15</default>
+      <summary>Number of units for determining a birthday and anniversary reminder</summary>
+    </key>
+    <key name="ba-reminder-units" type="s">
+      <choices>
+        <choice value='minutes'/>
+        <choice value='hours'/>
+        <choice value='days'/>
+      </choices>
+      <default>'minutes'</default>
+      <summary>Units for birthday and anniversary reminder, minutes, hours or days</summary>
+    </key>
+    <key name="hide-completed-tasks" type="b">
+      <default>false</default>
+      <summary>Whether to hide completed tasks in the tasks view</summary>
+    </key>
+    <key name="hide-completed-tasks-units" type="s">
+      <choices>
+        <choice value='minutes'/>
+        <choice value='hours'/>
+        <choice value='days'/>
+      </choices>
+      <default>'days'</default>
+      <summary>Units for determining when to hide completed tasks, minutes, hours or days</summary>
+    </key>
+    <key name="hide-completed-tasks-value" type="i">
+      <default>1</default>
+      <summary>Number of units for determining when to hide completed tasks</summary>
+    </key>
+    <key name="hide-cancelled-tasks" type="b">
+      <default>false</default>
+      <summary>Whether to hide cancelled tasks in the tasks view</summary>
+    </key>
+    <key name="hide-cancelled-events" type="b">
+      <default>false</default>
+      <summary>Whether to hide cancelled events in the calendar view</summary>
+    </key>
     <key name="notifications-enabled" type="b">
       <default>true</default>
       <summary>Show desktop notifications for local reminders</summary>

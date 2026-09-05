@@ -328,10 +328,12 @@ impl EventDialog {
         group_recurrence.add(&attachment_box);
         let alarm_editor = AlarmEditor::new(edit_component.as_deref(), "");
         if edit_component.is_none() {
-            let default_minutes = AppSettings::try_new()
-                .map(|settings| settings.calendar_default_reminder_minutes())
-                .unwrap_or(15);
-            alarm_editor.add_default_display_if_empty(default_minutes);
+            if let Some(settings) = AppSettings::try_new() {
+                if settings.use_default_reminder() {
+                    let default_minutes = settings.default_reminder_total_minutes();
+                    alarm_editor.add_default_display_if_empty(default_minutes);
+                }
+            }
         }
         group_recurrence.add(alarm_editor.widget());
         let row_private = adw::SwitchRow::builder()

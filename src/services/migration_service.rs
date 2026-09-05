@@ -969,6 +969,17 @@ fn canonical_setting(
         | "address book-groups-order"
         | "contacts-groups-order"
         | "addressbook-groups-order" => "addressbook-groups-order",
+        "use-default-reminder" | "default-reminder" => "use-default-reminder",
+        "default-reminder-interval" => "default-reminder-interval",
+        "default-reminder-units" => "default-reminder-units",
+        "use-ba-reminder" | "ba-reminder" => "use-ba-reminder",
+        "ba-reminder-interval" => "ba-reminder-interval",
+        "ba-reminder-units" => "ba-reminder-units",
+        "hide-completed-tasks" | "hide-completed" => "hide-completed-tasks",
+        "hide-completed-tasks-value" | "hide-completed-value" => "hide-completed-tasks-value",
+        "hide-completed-tasks-units" | "hide-completed-units" => "hide-completed-tasks-units",
+        "hide-cancelled-tasks" => "hide-cancelled-tasks",
+        "hide-cancelled-events" => "hide-cancelled-events",
         "use-12-hour-format" | "use-12-hour-clock" => "time-format",
         "show-toolbar" if group.contains("mail") => "mail-show-toolbar",
         "show-sidebar" if group.contains("mail") => "mail-show-sidebar",
@@ -1055,6 +1066,9 @@ fn migration_value_type(key: &str) -> SettingValueType {
             | "calendar-workday-start"
             | "calendar-workday-end"
             | "calendar-default-reminder"
+            | "default-reminder-interval"
+            | "ba-reminder-interval"
+            | "hide-completed-tasks-value"
             | "calendar-time-divisions"
             | "mail-sync-interval"
             | "mail-sync-message-limit"
@@ -1106,6 +1120,17 @@ fn is_supported_migration_key(key: &str) -> bool {
             | "calendar-workday-start"
             | "calendar-workday-end"
             | "calendar-default-reminder"
+            | "use-default-reminder"
+            | "default-reminder-interval"
+            | "default-reminder-units"
+            | "use-ba-reminder"
+            | "ba-reminder-interval"
+            | "ba-reminder-units"
+            | "hide-completed-tasks"
+            | "hide-completed-tasks-value"
+            | "hide-completed-tasks-units"
+            | "hide-cancelled-tasks"
+            | "hide-cancelled-events"
             | "calendar-time-divisions"
             | "calendar-compress-weekend"
             | "calendar-month-scroll-by-week"
@@ -1228,6 +1253,17 @@ fn normalize_imported_setting_value(key: &str, value: &str) -> Result<String, &'
         "mail-font-size" => normalize_u32_setting(value, 8, 48),
         "calendar-workday-start" | "calendar-workday-end" => normalize_u32_setting(value, 0, 1_439),
         "calendar-default-reminder" => normalize_u32_setting(value, 0, 10_080),
+        "default-reminder-interval" | "ba-reminder-interval" | "hide-completed-tasks-value" => {
+            normalize_u32_setting(value, 0, 100_000)
+        }
+        "default-reminder-units" | "ba-reminder-units" | "hide-completed-tasks-units" => {
+            match value.trim().to_ascii_lowercase().as_str() {
+                "minutes" | "min" | "0" => Ok("minutes".to_string()),
+                "hours" | "hour" | "1" => Ok("hours".to_string()),
+                "days" | "day" | "2" => Ok("days".to_string()),
+                _ => Err("keine unterstützte Zeiteinheit"),
+            }
+        }
         "mail-sync-interval" => normalize_u32_setting(value, 0, 86_400),
         "mail-sync-message-limit" => normalize_u32_setting(value, 25, 1_000),
         "draft-autosave-interval" => normalize_u32_setting(value, 0, 3_600),
@@ -1486,6 +1522,11 @@ fn is_boolean_migration_key(key: &str) -> bool {
             | "calendar-show-tag-vpane"
             | "calendar-compress-weekend"
             | "calendar-month-scroll-by-week"
+            | "use-default-reminder"
+            | "use-ba-reminder"
+            | "hide-completed-tasks"
+            | "hide-cancelled-tasks"
+            | "hide-cancelled-events"
             | "auto-load-remote-images"
             | "offline-mode"
             | "force-dark-mode"
@@ -3663,6 +3704,72 @@ default-address-book='book-def'
         assert!(parsed.settings.contains(&ImportedSetting {
             key: "default-address-book-source".to_string(),
             value: "book-def".to_string(),
+        }));
+    }
+
+    #[test]
+    fn reminder_and_task_filter_settings_upstream_migration_parities() {
+        let parsed = parse_evolution_settings(
+            r#"
+[org/gnome/evolution/calendar]
+use-default-reminder=true
+default-reminder-interval=@i 30
+default-reminder-units='hours'
+use-ba-reminder=true
+ba-reminder-interval=2
+ba-reminder-units='days'
+hide-completed-tasks=true
+hide-completed-tasks-value=@i 5
+hide-completed-tasks-units='days'
+hide-cancelled-tasks=true
+hide-cancelled-events=true
+"#,
+            Path::new("evolution-reminders-setup.ini"),
+        );
+
+        assert!(parsed.settings.contains(&ImportedSetting {
+            key: "use-default-reminder".to_string(),
+            value: "true".to_string(),
+        }));
+        assert!(parsed.settings.contains(&ImportedSetting {
+            key: "default-reminder-interval".to_string(),
+            value: "30".to_string(),
+        }));
+        assert!(parsed.settings.contains(&ImportedSetting {
+            key: "default-reminder-units".to_string(),
+            value: "hours".to_string(),
+        }));
+        assert!(parsed.settings.contains(&ImportedSetting {
+            key: "use-ba-reminder".to_string(),
+            value: "true".to_string(),
+        }));
+        assert!(parsed.settings.contains(&ImportedSetting {
+            key: "ba-reminder-interval".to_string(),
+            value: "2".to_string(),
+        }));
+        assert!(parsed.settings.contains(&ImportedSetting {
+            key: "ba-reminder-units".to_string(),
+            value: "days".to_string(),
+        }));
+        assert!(parsed.settings.contains(&ImportedSetting {
+            key: "hide-completed-tasks".to_string(),
+            value: "true".to_string(),
+        }));
+        assert!(parsed.settings.contains(&ImportedSetting {
+            key: "hide-completed-tasks-value".to_string(),
+            value: "5".to_string(),
+        }));
+        assert!(parsed.settings.contains(&ImportedSetting {
+            key: "hide-completed-tasks-units".to_string(),
+            value: "days".to_string(),
+        }));
+        assert!(parsed.settings.contains(&ImportedSetting {
+            key: "hide-cancelled-tasks".to_string(),
+            value: "true".to_string(),
+        }));
+        assert!(parsed.settings.contains(&ImportedSetting {
+            key: "hide-cancelled-events".to_string(),
+            value: "true".to_string(),
         }));
     }
 

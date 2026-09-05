@@ -374,6 +374,10 @@ struct TaskFilterContext {
     now: NaiveDateTime,
     now_timestamp: i64,
     today: NaiveDate,
+    hide_completed_tasks: bool,
+    hide_completed_value: u32,
+    hide_completed_cutoff: Option<i64>,
+    hide_cancelled_tasks: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -2537,12 +2541,33 @@ fn current_task_filter_context() -> TaskFilterContext {
             )
         })
         .unwrap_or_else(|| Local::now().naive_local());
+    let settings = AppSettings::try_new();
+    let now_timestamp = current
+        .map(|datetime| datetime.to_unix())
+        .unwrap_or_else(|| Utc::now().timestamp());
+    let hide_completed_tasks = settings
+        .as_ref()
+        .map(|s| s.hide_completed_tasks())
+        .unwrap_or(false);
+    let hide_completed_value = settings
+        .as_ref()
+        .map(|s| s.hide_completed_tasks_value())
+        .unwrap_or(1);
+    let hide_completed_cutoff = settings
+        .as_ref()
+        .and_then(|s| s.hide_completed_tasks_cutoff_timestamp(now_timestamp));
+    let hide_cancelled_tasks = settings
+        .as_ref()
+        .map(|s| s.hide_cancelled_tasks())
+        .unwrap_or(false);
     TaskFilterContext {
         today: now.date(),
         now,
-        now_timestamp: current
-            .map(|datetime| datetime.to_unix())
-            .unwrap_or_else(|| Utc::now().timestamp()),
+        now_timestamp,
+        hide_completed_tasks,
+        hide_completed_value,
+        hide_completed_cutoff,
+        hide_cancelled_tasks,
     }
 }
 
@@ -3435,6 +3460,33 @@ fn task_priority_value(raw: &str) -> u8 {
 
 fn task_is_completed(task: &TaskItemObject) -> bool {
     task.is_completed() || task_status_value(&task.component()) == "COMPLETED"
+}
+
+fn task_completed_timestamp(task: &TaskItemObject) -> Option<i64> {
+    let component = task.component();
+    let (_, value) = ical_property_with_parameters(&component, "COMPLETED")?;
+    let value = value.trim();
+    if let Some(stripped) = value.strip_suffix('Z') {
+        if stripped.len() == 15 && stripped.as_bytes().get(8) == Some(&b'T') {
+            if let Ok(naive) = NaiveDateTime::parse_from_str(stripped, "%Y%m%dT%H%M%S") {
+                return Some(naive.and_utc().timestamp());
+            }
+        }
+    }
+    if value.len() == 15 && value.as_bytes().get(8) == Some(&b'T') {
+        if let Ok(naive) = NaiveDateTime::parse_from_str(value, "%Y%m%dT%H%M%S") {
+            return Some(naive.and_utc().timestamp());
+        }
+    }
+    if value.len() == 8 && value.bytes().all(|byte| byte.is_ascii_digit()) {
+        if let Ok(date) = NaiveDate::parse_from_str(value, "%Y%m%d") {
+            return date.and_hms_opt(0, 0, 0).map(|dt| dt.and_utc().timestamp());
+        }
+    }
+    if let Ok(date) = NaiveDate::parse_from_str(value, "%Y-%m-%d") {
+        return date.and_hms_opt(0, 0, 0).map(|dt| dt.and_utc().timestamp());
+    }
+    None
 }
 
 fn task_quick_edit_values(task: &TaskItemObject) -> TaskQuickEditValues {
@@ -5260,6 +5312,29 @@ impl TasksPage {
                     if let Some(page) = page_weak.upgrade() {
                         apply_task_preview_paned_layout(&page, orientation);
                     }
+                });
+            }
+
+            for key in [
+                "hide-completed-tasks",
+                "hide-completed-tasks-value",
+                "hide-completed-tasks-units",
+                "hide-cancelled-tasks",
+            ] {
+                let page_weak = self.downgrade();
+                let task_list_for_filter_settings = task_list.clone();
+                let task_store_for_filter_settings = task_store.clone();
+                let empty_tasks_for_filter_settings = empty_tasks.clone();
+                settings.connect_changed(Some(key), move |_, _| {
+                    let Some(page) = page_weak.upgrade() else {
+                        return;
+                    };
+                    render_task_rows(
+                        &page,
+                        &task_list_for_filter_settings,
+                        &task_store_for_filter_settings,
+                        &empty_tasks_for_filter_settings,
+                    );
                 });
             }
         }
@@ -8451,6 +8526,25 @@ fn task_matches_filter_with_context(
         !task_categories(task).any(|category| category.eq_ignore_ascii_case(category_filter))
     }) {
         return false;
+    }
+    if context.hide_cancelled_tasks
+        && filter != TaskFilter::Cancelled
+        && task_status_value(&task.component()) == "CANCELLED"
+    {
+        return false;
+    }
+    if context.hide_completed_tasks && filter != TaskFilter::Completed && task_is_completed(task) {
+        if context.hide_completed_value == 0 {
+            return false;
+        }
+        if let Some(cutoff) = context.hide_completed_cutoff {
+            let ts = task_completed_timestamp(task).unwrap_or(0);
+            if ts < cutoff {
+                return false;
+            }
+        } else {
+            return false;
+        }
     }
     let matches_filter = match filter {
         TaskFilter::All => true,
@@ -12110,6 +12204,10 @@ mod tests {
             today,
             now,
             now_timestamp: now.and_utc().timestamp(),
+            hide_completed_tasks: false,
+            hide_completed_value: 1,
+            hide_completed_cutoff: None,
+            hide_cancelled_tasks: false,
         }
     }
 
@@ -13663,6 +13761,151 @@ mod tests {
     }
 
     #[test]
+    fn task_hide_cancelled_and_completed_filter_parities() {
+        let base_now = 1_700_000_000i64;
+        let mut context = fixed_context("2026-08-10", 10);
+        context.now_timestamp = base_now;
+
+        let cancelled = TaskItemObject::new(
+            "local-calendar",
+            "task-c",
+            "Cancelled Task",
+            "",
+            "normal",
+            false,
+            "BEGIN:VTODO\r\nSTATUS:CANCELLED\r\nEND:VTODO\r\n",
+        );
+
+        let completed_old = TaskItemObject::new(
+            "local-calendar",
+            "task-done-old",
+            "Old Completed",
+            "",
+            "normal",
+            true,
+            "BEGIN:VTODO\r\nSTATUS:COMPLETED\r\nCOMPLETED:20231114T200000Z\r\nEND:VTODO\r\n",
+        );
+
+        let recent_ts = chrono::DateTime::from_timestamp(base_now - 300, 0)
+            .unwrap()
+            .format("%Y%m%dT%H%M%SZ")
+            .to_string();
+        let completed_recent = TaskItemObject::new(
+            "local-calendar",
+            "task-done-recent",
+            "Recent Completed",
+            "",
+            "normal",
+            true,
+            &format!("BEGIN:VTODO\r\nSTATUS:COMPLETED\r\nCOMPLETED:{recent_ts}\r\nEND:VTODO\r\n"),
+        );
+
+        let query = TaskQuery::default();
+
+        // 1. By default (hide = false), all tasks are visible in TaskFilter::All
+        assert!(task_matches_filter_with_context(
+            &cancelled,
+            TaskFilter::All,
+            None,
+            None,
+            &query,
+            context
+        ));
+        assert!(task_matches_filter_with_context(
+            &completed_old,
+            TaskFilter::All,
+            None,
+            None,
+            &query,
+            context
+        ));
+        assert!(task_matches_filter_with_context(
+            &completed_recent,
+            TaskFilter::All,
+            None,
+            None,
+            &query,
+            context
+        ));
+
+        // 2. When hide_cancelled_tasks is true:
+        let mut hide_cancelled_ctx = context;
+        hide_cancelled_ctx.hide_cancelled_tasks = true;
+        // In All: hidden!
+        assert!(!task_matches_filter_with_context(
+            &cancelled,
+            TaskFilter::All,
+            None,
+            None,
+            &query,
+            hide_cancelled_ctx
+        ));
+        // In Cancelled view: preserved!
+        assert!(task_matches_filter_with_context(
+            &cancelled,
+            TaskFilter::Cancelled,
+            None,
+            None,
+            &query,
+            hide_cancelled_ctx
+        ));
+
+        // 3. When hide_completed_tasks is true with value = 0 (hide immediately):
+        let mut hide_completed_imm_ctx = context;
+        hide_completed_imm_ctx.hide_completed_tasks = true;
+        hide_completed_imm_ctx.hide_completed_value = 0;
+        assert!(!task_matches_filter_with_context(
+            &completed_old,
+            TaskFilter::All,
+            None,
+            None,
+            &query,
+            hide_completed_imm_ctx
+        ));
+        assert!(!task_matches_filter_with_context(
+            &completed_recent,
+            TaskFilter::All,
+            None,
+            None,
+            &query,
+            hide_completed_imm_ctx
+        ));
+        // In Completed view: preserved!
+        assert!(task_matches_filter_with_context(
+            &completed_old,
+            TaskFilter::Completed,
+            None,
+            None,
+            &query,
+            hide_completed_imm_ctx
+        ));
+
+        // 4. When hide_completed_tasks is true with cutoff:
+        let mut hide_completed_cutoff_ctx = context;
+        hide_completed_cutoff_ctx.hide_completed_tasks = true;
+        hide_completed_cutoff_ctx.hide_completed_value = 1;
+        hide_completed_cutoff_ctx.hide_completed_cutoff = Some(base_now - 600); // 10 minutes ago
+        // Old completed (completed before cutoff): hidden!
+        assert!(!task_matches_filter_with_context(
+            &completed_old,
+            TaskFilter::All,
+            None,
+            None,
+            &query,
+            hide_completed_cutoff_ctx
+        ));
+        // Recent completed (completed 5 min ago >= cutoff): visible!
+        assert!(task_matches_filter_with_context(
+            &completed_recent,
+            TaskFilter::All,
+            None,
+            None,
+            &query,
+            hide_completed_cutoff_ctx
+        ));
+    }
+
+    #[test]
     fn task_filter_truth_table_covers_upstream_daily_filters() {
         let context = fixed_context("2026-08-10", 10);
         let today = fixture_task(
@@ -13895,6 +14138,10 @@ mod tests {
             today: now.date(),
             now,
             now_timestamp,
+            hide_completed_tasks: false,
+            hide_completed_value: 1,
+            hide_completed_cutoff: None,
+            hide_cancelled_tasks: false,
         };
         assert!(task_matches_filter_with_context(
             &task,

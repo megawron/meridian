@@ -2758,11 +2758,13 @@ impl CalendarPage {
                 "calendar-compress-weekend",
                 "calendar-month-scroll-by-week",
                 "calendar-second-zone",
+                "hide-cancelled-events",
             ] {
                 let page_weak = self.downgrade();
                 settings.connect_changed(Some(key), move |_, _| {
                     if let Some(page) = page_weak.upgrade() {
                         page.refresh_calendar_views();
+                        page.refresh_event_list_visibility();
                     }
                 });
             }
@@ -5296,6 +5298,12 @@ fn configured_first_weekday() -> Weekday {
         .unwrap_or(Weekday::Mon)
 }
 
+fn configured_hide_cancelled_events() -> bool {
+    AppSettings::try_new()
+        .map(|settings| settings.hide_cancelled_events())
+        .unwrap_or(false)
+}
+
 fn configured_workdays() -> Vec<Weekday> {
     let value = AppSettings::try_new()
         .map(|settings| settings.calendar_workdays())
@@ -6526,13 +6534,38 @@ fn compare_optional_order<T: Ord>(left: Option<T>, right: Option<T>) -> CompareO
     }
 }
 
+fn event_is_cancelled(event: &CalendarEventRecord) -> bool {
+    ical_property(&event.component, "STATUS")
+        .as_deref()
+        .is_some_and(|status| status.trim().eq_ignore_ascii_case("CANCELLED"))
+}
+
 fn event_matches_calendar_filter(
     event: &CalendarEventRecord,
     search_query: &str,
     category_filter: Option<&str>,
     hidden_sources: &HashSet<String>,
 ) -> bool {
+    event_matches_calendar_filter_with_options(
+        event,
+        search_query,
+        category_filter,
+        hidden_sources,
+        configured_hide_cancelled_events(),
+    )
+}
+
+fn event_matches_calendar_filter_with_options(
+    event: &CalendarEventRecord,
+    search_query: &str,
+    category_filter: Option<&str>,
+    hidden_sources: &HashSet<String>,
+    hide_cancelled: bool,
+) -> bool {
     if hidden_sources.contains(&event.source_uid) {
+        return false;
+    }
+    if hide_cancelled && event_is_cancelled(event) {
         return false;
     }
     let search_query = search_query.trim().to_lowercase();
@@ -8874,5 +8907,78 @@ mod tests {
 
         memo.source_display_name.clear();
         assert_eq!(calendar_memo_subtitle(&memo), "");
+    }
+
+    #[test]
+    fn calendar_event_hide_cancelled_events_filter_tests() {
+        let confirmed_event = CalendarEventRecord {
+            uid: "evt-1".to_string(),
+            source_uid: "cal-local".to_string(),
+            source_display_name: "Personal".to_string(),
+            component: concat!(
+                "BEGIN:VEVENT\r\nUID:evt-1\r\n",
+                "STATUS:CONFIRMED\r\nSUMMARY:Team Meeting\r\nEND:VEVENT\r\n"
+            )
+            .to_string(),
+            summary: "Team Meeting".to_string(),
+            description: "".to_string(),
+            location: "".to_string(),
+            start: "2026-08-10 10:00".to_string(),
+            end: "2026-08-10 11:00".to_string(),
+            all_day: false,
+        };
+
+        let cancelled_event = CalendarEventRecord {
+            uid: "evt-2".to_string(),
+            source_uid: "cal-local".to_string(),
+            source_display_name: "Personal".to_string(),
+            component: concat!(
+                "BEGIN:VEVENT\r\nUID:evt-2\r\n",
+                "STATUS:CANCELLED\r\nSUMMARY:Cancelled Project Sync\r\nEND:VEVENT\r\n"
+            )
+            .to_string(),
+            summary: "Cancelled Project Sync".to_string(),
+            description: "".to_string(),
+            location: "".to_string(),
+            start: "2026-08-10 14:00".to_string(),
+            end: "2026-08-10 15:00".to_string(),
+            all_day: false,
+        };
+
+        let hidden = HashSet::new();
+
+        // 1. Confirmed event is visible regardless of hide_cancelled flag
+        assert!(event_matches_calendar_filter_with_options(
+            &confirmed_event,
+            "",
+            None,
+            &hidden,
+            false
+        ));
+        assert!(event_matches_calendar_filter_with_options(
+            &confirmed_event,
+            "",
+            None,
+            &hidden,
+            true
+        ));
+
+        // 2. Cancelled event is visible when hide_cancelled is false
+        assert!(event_matches_calendar_filter_with_options(
+            &cancelled_event,
+            "",
+            None,
+            &hidden,
+            false
+        ));
+
+        // 3. Cancelled event is filtered out when hide_cancelled is true
+        assert!(!event_matches_calendar_filter_with_options(
+            &cancelled_event,
+            "",
+            None,
+            &hidden,
+            true
+        ));
     }
 }
