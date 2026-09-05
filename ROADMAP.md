@@ -1389,6 +1389,16 @@ Die Statuswerte sind Quellen-/UI-Belege, keine Laufzeit- oder Providerabnahme:
   (`VALUE=DATE`) und Uhrzeit-Modus wechselt sowie Multi-`VALARM`-Synchronisation bereitstellt.
   Eingabevalidierung und Schutz gegen Zeilenumbruch-Injektionen sind portabel durch 13 Unit-Tests und die
   gesamte Workspace-Suite (947/947) belegt; Live-ECalClient-Server-Roundtrip und iTIP-Planung bleiben Linux-only.
+- [~] `GW-CALENDAR-SETTINGS` schließt die upstream-äquivalenten Kalenderansichts- und Zeitzoneneinstellungen (`calendar-config-keys.h`, `calendar-config.c`, `e-calendar-preferences.c`):
+  GSettings-Schema (`data/org.gnome.Evolution4.gschema.xml`) und typisierte Zugriffe in `AppSettings`
+  unterstützen Zeiteinteilungen (`calendar-time-divisions`: 5, 10, 15, 30, 60 Minuten),
+  Wochenendkomprimierung (`calendar-compress-weekend`), wochenweises Scrollen im Monatsraster (`calendar-month-scroll-by-week`),
+  zweite Zeitzone (`calendar-second-zone`) samt MRU-Historie (`calendar-second-zones`, max. 5 Einträge)
+  sowie alle 7 Kalenderansichten (`day`, `week`, `workweek`, `month`, `agenda`, `year`, `list`).
+  `PreferencesDialog` bindet alle Optionen in Adw-Gruppen ein; `CalendarPage` lauscht auf GSettings-Änderungen
+  und aktualisiert Ansichten live. Upstream-Migration decodiert Dconf/Ini-Keys samt GVariant-`@as`-Arrays;
+  Backup und Restore sichern und validieren alle 5 Einstellungen versioniert abwärtskompatibel.
+  Portabel belegt durch 950/950 Workspace-Tests; systemweite GNOME-Desktop-Zeitzonensynchronisation und Theme-Visuals bleiben Linux-only.
 - [~] VTODO/VJOURNAL-Erstellung, VTODO-Status, Notizbearbeitung/-löschung,
   VTODO-Bearbeitung, Prioritäten, Fälligkeiten und Notizlöschung werden über
   den EDS-Adapter persistiert. ECal-Signalaktualisierung ist angebunden;

@@ -814,18 +814,17 @@ fn raw_calendar_view_setting() -> Option<String> {
 }
 
 fn persisted_calendar_view_name(settings: Option<&AppSettings>) -> String {
-    raw_calendar_view_setting()
-        .or_else(|| settings.map(|settings| settings.calendar_view()))
+    settings
+        .map(|settings| settings.calendar_view())
+        .or_else(raw_calendar_view_setting)
         .unwrap_or_else(|| "month".to_string())
 }
 
 fn persist_calendar_view(view: CalendarView, settings: Option<&AppSettings>) {
     let value = calendar_view_name(view);
-    if !matches!(view, CalendarView::Year | CalendarView::List) {
-        if let Some(settings) = settings {
-            settings.set_calendar_view(value);
-            return;
-        }
+    if let Some(settings) = settings {
+        settings.set_calendar_view(value);
+        return;
     }
 
     let Some(schema) = application_settings_schema() else {
@@ -2755,6 +2754,10 @@ impl CalendarPage {
                 "calendar-workday-start",
                 "calendar-workday-end",
                 "calendar-show-week-numbers",
+                "calendar-time-divisions",
+                "calendar-compress-weekend",
+                "calendar-month-scroll-by-week",
+                "calendar-second-zone",
             ] {
                 let page_weak = self.downgrade();
                 settings.connect_changed(Some(key), move |_, _| {

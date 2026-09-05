@@ -236,7 +236,14 @@ fn main() {
 /// compiled copy in Cargo's OUT_DIR and let AppSettings use it as a fallback.
 /// Production installs still use the normal system schema search path.
 fn prepare_settings_schema(manifest_dir: &PathBuf, out_dir: &PathBuf) {
-    let source = manifest_dir.join("../data/org.gnome.Evolution4.gschema.xml");
+    let source = if manifest_dir
+        .join("data/org.gnome.Evolution4.gschema.xml")
+        .is_file()
+    {
+        manifest_dir.join("data/org.gnome.Evolution4.gschema.xml")
+    } else {
+        manifest_dir.join("../data/org.gnome.Evolution4.gschema.xml")
+    };
     let schema_dir = out_dir.join("schemas");
     if !source.is_file() || fs::create_dir_all(&schema_dir).is_err() {
         return;

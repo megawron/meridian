@@ -485,14 +485,14 @@ impl AppSettings {
     pub fn calendar_view(&self) -> String {
         let value = self.settings.string("calendar-view").to_string();
         match value.as_str() {
-            "day" | "week" | "workweek" | "month" | "agenda" => value,
+            "day" | "week" | "workweek" | "month" | "agenda" | "year" | "list" => value,
             _ => "month".to_string(),
         }
     }
 
     pub fn set_calendar_view(&self, value: &str) {
         let value = match value {
-            "day" | "week" | "workweek" | "month" | "agenda" => value,
+            "day" | "week" | "workweek" | "month" | "agenda" | "year" | "list" => value,
             _ => "month",
         };
         if let Err(error) = self.settings.set_string("calendar-view", value) {
@@ -620,6 +620,85 @@ impl AppSettings {
         {
             tracing::warn!(%error, "Could not persist hidden calendar sources");
         }
+    }
+
+    pub fn calendar_time_divisions(&self) -> i32 {
+        sanitize_time_divisions(self.settings.int("calendar-time-divisions"))
+    }
+
+    pub fn set_calendar_time_divisions(&self, value: i32) {
+        self.set_int("calendar-time-divisions", sanitize_time_divisions(value));
+    }
+
+    pub fn calendar_compress_weekend(&self) -> bool {
+        self.settings.boolean("calendar-compress-weekend")
+    }
+
+    pub fn set_calendar_compress_weekend(&self, value: bool) {
+        self.set_boolean("calendar-compress-weekend", value);
+    }
+
+    pub fn calendar_month_scroll_by_week(&self) -> bool {
+        self.settings.boolean("calendar-month-scroll-by-week")
+    }
+
+    pub fn set_calendar_month_scroll_by_week(&self, value: bool) {
+        self.set_boolean("calendar-month-scroll-by-week", value);
+    }
+
+    pub fn calendar_second_zone(&self) -> String {
+        self.settings.string("calendar-second-zone").to_string()
+    }
+
+    pub fn set_calendar_second_zone(&self, value: &str) {
+        let trimmed = value.trim();
+        if let Err(error) = self.settings.set_string("calendar-second-zone", trimmed) {
+            tracing::warn!(%error, "Could not persist calendar second zone");
+        }
+        if !trimmed.is_empty() && trimmed != "system" {
+            self.add_calendar_second_zone_to_recent(trimmed);
+        }
+    }
+
+    pub fn calendar_second_zones(&self) -> Vec<String> {
+        self.settings
+            .string("calendar-second-zones")
+            .split(',')
+            .map(str::trim)
+            .filter(|z| !z.is_empty())
+            .map(ToOwned::to_owned)
+            .collect()
+    }
+
+    pub fn set_calendar_second_zones(&self, zones: &[String]) {
+        let mut clean = Vec::new();
+        for zone in zones {
+            let trimmed = zone.trim();
+            if !trimmed.is_empty() && !clean.iter().any(|z: &String| z == trimmed) {
+                clean.push(trimmed.to_string());
+            }
+            if clean.len() >= 5 {
+                break;
+            }
+        }
+        if let Err(error) = self
+            .settings
+            .set_string("calendar-second-zones", &clean.join(","))
+        {
+            tracing::warn!(%error, "Could not persist calendar second zones");
+        }
+    }
+
+    pub fn add_calendar_second_zone_to_recent(&self, location: &str) {
+        let location = location.trim();
+        if location.is_empty() {
+            return;
+        }
+        let mut list = self.calendar_second_zones();
+        list.retain(|z| z != location);
+        list.insert(0, location.to_string());
+        list.truncate(5);
+        self.set_calendar_second_zones(&list);
     }
 
     pub fn date_format(&self) -> String {
@@ -1583,6 +1662,31 @@ impl AppSettings {
                     key, value, 100, 2_000,
                 )?);
             }
+            "calendar-time-divisions" => {
+                let div = parse_migrated_i32(key, value)?;
+                if !matches!(div, 5 | 10 | 15 | 30 | 60) {
+                    return Err(format!("ungültige Zeiteinteilung für „{key}“"));
+                }
+                self.set_calendar_time_divisions(div);
+            }
+            "calendar-compress-weekend" => {
+                self.set_calendar_compress_weekend(parse_migrated_bool(key, value)?);
+            }
+            "calendar-month-scroll-by-week" => {
+                self.set_calendar_month_scroll_by_week(parse_migrated_bool(key, value)?);
+            }
+            "calendar-second-zone" => {
+                self.set_calendar_second_zone(value);
+            }
+            "calendar-second-zones" => {
+                let zones = value
+                    .split([',', ';'])
+                    .map(str::trim)
+                    .filter(|z| !z.is_empty())
+                    .map(ToOwned::to_owned)
+                    .collect::<Vec<_>>();
+                self.set_calendar_second_zones(&zones);
+            }
             "calendar-hidden-sources" => {
                 let source_uids = value
                     .split([',', ';'])
@@ -1833,6 +1937,11 @@ impl AppSettings {
             "notifications-enabled",
             "confirm-destructive-actions",
             "calendar-show-week-numbers",
+            "calendar-time-divisions",
+            "calendar-compress-weekend",
+            "calendar-month-scroll-by-week",
+            "calendar-second-zone",
+            "calendar-second-zones",
             "date-format",
             "time-format",
             "calendar-time-zone",
@@ -2046,6 +2155,13 @@ fn sanitize_calendar_workdays(value: &str) -> String {
         "monday,tuesday,wednesday,thursday,friday".to_string()
     } else {
         selected.join(",")
+    }
+}
+
+pub fn sanitize_time_divisions(value: i32) -> i32 {
+    match value {
+        5 | 10 | 15 | 30 | 60 => value,
+        _ => 30,
     }
 }
 
@@ -2635,5 +2751,104 @@ mod tests {
         assert_eq!(reset.memo_source_filter(), "");
         assert!(reset.memo_preview_visible());
         assert_eq!(reset.memo_preview_orientation(), "classic");
+    }
+
+    #[test]
+    fn calendar_view_and_timezone_settings_round_trip_migrate_and_reset_strictly() {
+        let backend = gio::memory_settings_backend_new();
+        let settings = settings_with_backend(&backend);
+
+        // Initial defaults
+        assert_eq!(settings.calendar_view(), "month");
+        assert_eq!(settings.calendar_time_divisions(), 30);
+        assert!(settings.calendar_compress_weekend());
+        assert!(settings.calendar_month_scroll_by_week());
+        assert_eq!(settings.calendar_second_zone(), "");
+        assert!(settings.calendar_second_zones().is_empty());
+
+        // View selection including year and list
+        settings.set_calendar_view("year");
+        assert_eq!(settings.calendar_view(), "year");
+        settings.set_calendar_view("list");
+        assert_eq!(settings.calendar_view(), "list");
+        settings.set_calendar_view("invalid-view");
+        assert_eq!(settings.calendar_view(), "month");
+
+        // Time divisions: valid and sanitization
+        for valid in [5, 10, 15, 30, 60] {
+            settings.set_calendar_time_divisions(valid);
+            assert_eq!(settings.calendar_time_divisions(), valid);
+        }
+        settings.set_calendar_time_divisions(45);
+        assert_eq!(settings.calendar_time_divisions(), 30);
+
+        // Booleans
+        settings.set_calendar_compress_weekend(false);
+        assert!(!settings.calendar_compress_weekend());
+        settings.set_calendar_month_scroll_by_week(false);
+        assert!(!settings.calendar_month_scroll_by_week());
+
+        // Second zone and recent zones tracking
+        settings.set_calendar_second_zone("UTC");
+        assert_eq!(settings.calendar_second_zone(), "UTC");
+        assert_eq!(settings.calendar_second_zones(), vec!["UTC".to_string()]);
+
+        settings.set_calendar_second_zone("Europe/Berlin");
+        assert_eq!(settings.calendar_second_zone(), "Europe/Berlin");
+        assert_eq!(
+            settings.calendar_second_zones(),
+            vec!["Europe/Berlin".to_string(), "UTC".to_string()]
+        );
+
+        // More zones up to max 5
+        for tz in [
+            "America/New_York",
+            "Asia/Tokyo",
+            "Australia/Sydney",
+            "Pacific/Auckland",
+        ] {
+            settings.add_calendar_second_zone_to_recent(tz);
+        }
+        let recent = settings.calendar_second_zones();
+        assert_eq!(recent.len(), 5);
+        assert_eq!(recent[0], "Pacific/Auckland");
+
+        // Migration testing
+        settings
+            .apply_migrated_setting("calendar-time-divisions", "15")
+            .expect("15 min divisions should migrate");
+        assert_eq!(settings.calendar_time_divisions(), 15);
+
+        assert!(
+            settings
+                .apply_migrated_setting("calendar-time-divisions", "25")
+                .is_err(),
+            "25 min should be rejected"
+        );
+
+        settings
+            .apply_migrated_setting("calendar-compress-weekend", "true")
+            .expect("compress-weekend should migrate");
+        assert!(settings.calendar_compress_weekend());
+
+        settings
+            .apply_migrated_setting("calendar-month-scroll-by-week", "true")
+            .expect("month-scroll-by-week should migrate");
+        assert!(settings.calendar_month_scroll_by_week());
+
+        settings
+            .apply_migrated_setting("calendar-second-zone", "America/Chicago")
+            .expect("second-zone should migrate");
+        assert_eq!(settings.calendar_second_zone(), "America/Chicago");
+
+        // Reset to defaults
+        settings.reset_to_defaults();
+        let reset = settings_with_backend(&backend);
+        assert_eq!(reset.calendar_view(), "month");
+        assert_eq!(reset.calendar_time_divisions(), 30);
+        assert!(reset.calendar_compress_weekend());
+        assert!(reset.calendar_month_scroll_by_week());
+        assert_eq!(reset.calendar_second_zone(), "");
+        assert!(reset.calendar_second_zones().is_empty());
     }
 }

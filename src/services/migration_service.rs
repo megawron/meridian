@@ -931,6 +931,11 @@ fn canonical_setting(
         "show-tag-vpane" => "calendar-show-tag-vpane",
         "tag-vpane-position" => "calendar-tag-vpane-position",
         "week-start" | "first-weekday" => "calendar-week-start",
+        "time-divisions" => "calendar-time-divisions",
+        "compress-weekend" => "calendar-compress-weekend",
+        "month-scroll-by-week" => "calendar-month-scroll-by-week",
+        "day-second-zone" | "second-zone" => "calendar-second-zone",
+        "day-second-zones" | "second-zones" => "calendar-second-zones",
         "default-calendar" => "default-calendar-source",
         "default-address-book" => "default-address-book-source",
         "default-task-list" => "default-task-source",
@@ -1021,6 +1026,7 @@ fn migration_value_type(key: &str) -> SettingValueType {
             | "calendar-workday-start"
             | "calendar-workday-end"
             | "calendar-default-reminder"
+            | "calendar-time-divisions"
             | "mail-sync-interval"
             | "mail-sync-message-limit"
             | "draft-autosave-interval"
@@ -1029,7 +1035,7 @@ fn migration_value_type(key: &str) -> SettingValueType {
     ) {
         return SettingValueType::Int32;
     }
-    if key == "calendar-hidden-sources" {
+    if key == "calendar-hidden-sources" || key == "calendar-second-zones" {
         return SettingValueType::StringArray;
     }
     if key == "mail-normal-headers" {
@@ -1056,6 +1062,11 @@ fn is_supported_migration_key(key: &str) -> bool {
             | "calendar-workday-start"
             | "calendar-workday-end"
             | "calendar-default-reminder"
+            | "calendar-time-divisions"
+            | "calendar-compress-weekend"
+            | "calendar-month-scroll-by-week"
+            | "calendar-second-zone"
+            | "calendar-second-zones"
             | "notifications-enabled"
             | "confirm-destructive-actions"
             | "calendar-show-week-numbers"
@@ -1181,7 +1192,7 @@ fn normalize_imported_setting_value(key: &str, value: &str) -> Result<String, &'
             _ => Err("kein unterstützter Bereich"),
         },
         "calendar-view" => match value.to_ascii_lowercase().as_str() {
-            "day" | "week" | "workweek" | "work-week" | "month" | "agenda" => {
+            "day" | "week" | "workweek" | "work-week" | "month" | "agenda" | "year" | "list" => {
                 Ok(if value.eq_ignore_ascii_case("work-week") {
                     "workweek".to_string()
                 } else {
@@ -1190,6 +1201,38 @@ fn normalize_imported_setting_value(key: &str, value: &str) -> Result<String, &'
             }
             _ => Err("keine unterstützte Kalenderansicht"),
         },
+        "calendar-time-divisions" => match value.trim().parse::<i32>() {
+            Ok(5 | 10 | 15 | 30 | 60) => Ok(value.trim().to_string()),
+            _ => Err("keine unterstützte Zeiteinteilung"),
+        },
+        "calendar-second-zone" => {
+            let trimmed = value.trim();
+            if trimmed.is_empty()
+                || trimmed == "system"
+                || trimmed
+                    .chars()
+                    .all(|c| c.is_alphanumeric() || matches!(c, '/' | '_' | '-' | '+'))
+            {
+                Ok(trimmed.to_string())
+            } else {
+                Err("keine gültige Zeitzone")
+            }
+        }
+        "calendar-second-zones" => {
+            let zones = value
+                .split([',', ';'])
+                .map(str::trim)
+                .filter(|z| !z.is_empty())
+                .collect::<Vec<_>>();
+            if zones.iter().any(|z| {
+                !z.chars()
+                    .all(|c| c.is_alphanumeric() || matches!(c, '/' | '_' | '-' | '+'))
+            }) {
+                Err("ungültige Zeitzonenliste")
+            } else {
+                Ok(zones.join(","))
+            }
+        }
         "calendar-week-start" => match value.to_ascii_lowercase().as_str() {
             "0" | "monday" | "mon" => Ok("monday".to_string()),
             "1" | "sunday" | "sun" => Ok("sunday".to_string()),
@@ -1338,6 +1381,8 @@ fn is_boolean_migration_key(key: &str) -> bool {
             | "confirm-destructive-actions"
             | "calendar-show-week-numbers"
             | "calendar-show-tag-vpane"
+            | "calendar-compress-weekend"
+            | "calendar-month-scroll-by-week"
             | "auto-load-remote-images"
             | "offline-mode"
             | "force-dark-mode"
@@ -3357,6 +3402,77 @@ unknown-setting='ignored'
                 .iter()
                 .any(|setting| setting.key == "password")
         );
+    }
+
+    #[test]
+    fn calendar_view_and_timezone_upstream_migration_parities() {
+        let parsed = parse_evolution_settings(
+            r#"
+[org/gnome/evolution/calendar]
+calendar-view='year'
+time-divisions=@i 15
+compress-weekend=@b false
+month-scroll-by-week=@b false
+day-second-zone='America/New_York'
+day-second-zones=['Europe/Berlin', 'UTC']
+"#,
+            Path::new("evolution-calendar-settings.ini"),
+        );
+        assert!(parsed.settings.contains(&ImportedSetting {
+            key: "calendar-view".to_string(),
+            value: "year".to_string(),
+        }));
+        assert!(parsed.settings.contains(&ImportedSetting {
+            key: "calendar-time-divisions".to_string(),
+            value: "15".to_string(),
+        }));
+        assert!(parsed.settings.contains(&ImportedSetting {
+            key: "calendar-compress-weekend".to_string(),
+            value: "false".to_string(),
+        }));
+        assert!(parsed.settings.contains(&ImportedSetting {
+            key: "calendar-month-scroll-by-week".to_string(),
+            value: "false".to_string(),
+        }));
+        assert!(parsed.settings.contains(&ImportedSetting {
+            key: "calendar-second-zone".to_string(),
+            value: "America/New_York".to_string(),
+        }));
+        assert!(parsed.settings.contains(&ImportedSetting {
+            key: "calendar-second-zones".to_string(),
+            value: "Europe/Berlin,UTC".to_string(),
+        }));
+
+        let list_view_parsed = parse_evolution_settings(
+            "[org/gnome/evolution/calendar]\ncalendar-view='list'\n",
+            Path::new("calendar-list-view.ini"),
+        );
+        assert!(list_view_parsed.settings.contains(&ImportedSetting {
+            key: "calendar-view".to_string(),
+            value: "list".to_string(),
+        }));
+
+        let negative = parse_evolution_settings(
+            r#"
+[org/gnome/evolution/calendar]
+time-divisions=@i 25
+calendar-view='decade'
+day-second-zone='bad zone; danger'
+"#,
+            Path::new("calendar-negative.ini"),
+        );
+        assert!(
+            !negative
+                .settings
+                .iter()
+                .any(|s| s.key == "calendar-time-divisions")
+        );
+        assert!(!negative.settings.iter().any(|s| s.key == "calendar-view"));
+        assert_eq!(negative.warnings.len(), 4);
+        assert!(negative.warnings[0].contains("calendar-time-divisions"));
+        assert!(negative.warnings[1].contains("calendar-view"));
+        assert!(negative.warnings[2].contains("calendar-second-zone"));
+        assert!(negative.warnings[3].contains("keine unterstützten nicht-geheimen"));
     }
 
     #[test]

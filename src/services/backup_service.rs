@@ -277,6 +277,16 @@ struct BackupSettings {
     confirm_destructive_actions: bool,
     #[serde(default)]
     calendar_show_week_numbers: bool,
+    #[serde(default = "default_calendar_time_divisions")]
+    calendar_time_divisions: i32,
+    #[serde(default = "default_calendar_compress_weekend")]
+    calendar_compress_weekend: bool,
+    #[serde(default = "default_calendar_month_scroll_by_week")]
+    calendar_month_scroll_by_week: bool,
+    #[serde(default = "default_calendar_second_zone")]
+    calendar_second_zone: String,
+    #[serde(default = "default_calendar_second_zones")]
+    calendar_second_zones: String,
     #[serde(default = "default_calendar_hidden_sources")]
     calendar_hidden_sources: String,
     #[serde(default = "default_date_format")]
@@ -379,6 +389,26 @@ fn default_workday_end() -> u32 {
 
 fn default_reminder() -> u32 {
     15
+}
+
+fn default_calendar_time_divisions() -> i32 {
+    30
+}
+
+fn default_calendar_compress_weekend() -> bool {
+    true
+}
+
+fn default_calendar_month_scroll_by_week() -> bool {
+    true
+}
+
+fn default_calendar_second_zone() -> String {
+    String::new()
+}
+
+fn default_calendar_second_zones() -> String {
+    String::new()
 }
 
 fn default_notifications_enabled() -> bool {
@@ -601,6 +631,11 @@ impl BackupSettings {
             notifications_enabled: settings.notifications_enabled(),
             confirm_destructive_actions: settings.confirm_destructive_actions(),
             calendar_show_week_numbers: settings.calendar_show_week_numbers(),
+            calendar_time_divisions: settings.calendar_time_divisions(),
+            calendar_compress_weekend: settings.calendar_compress_weekend(),
+            calendar_month_scroll_by_week: settings.calendar_month_scroll_by_week(),
+            calendar_second_zone: settings.calendar_second_zone(),
+            calendar_second_zones: settings.calendar_second_zones().join(","),
             calendar_hidden_sources: settings.calendar_hidden_sources().join(","),
             date_format: settings.date_format(),
             time_format: settings.time_format(),
@@ -710,6 +745,17 @@ impl BackupSettings {
         settings.set_notifications_enabled(self.notifications_enabled);
         settings.set_confirm_destructive_actions(self.confirm_destructive_actions);
         settings.set_calendar_show_week_numbers(self.calendar_show_week_numbers);
+        settings.set_calendar_time_divisions(self.calendar_time_divisions);
+        settings.set_calendar_compress_weekend(self.calendar_compress_weekend);
+        settings.set_calendar_month_scroll_by_week(self.calendar_month_scroll_by_week);
+        settings.set_calendar_second_zone(&self.calendar_second_zone);
+        settings.set_calendar_second_zones(
+            &self
+                .calendar_second_zones
+                .split(',')
+                .map(str::to_string)
+                .collect::<Vec<_>>(),
+        );
         settings.set_calendar_hidden_sources(
             &self
                 .calendar_hidden_sources
@@ -836,8 +882,14 @@ impl BackupSettings {
         validate_choice(
             "calendar_view",
             &self.calendar_view,
-            &["day", "week", "workweek", "month", "agenda"],
+            &["day", "week", "workweek", "month", "agenda", "year", "list"],
         )?;
+        if !matches!(self.calendar_time_divisions, 5 | 10 | 15 | 30 | 60) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "calendar_time_divisions ist keine gültige Zeiteinteilung",
+            ));
+        }
         validate_choice(
             "calendar_week_start",
             &self.calendar_week_start,
@@ -1262,6 +1314,11 @@ const BACKUP_SETTINGS_FIELDS: &[&str] = &[
     "notifications_enabled",
     "confirm_destructive_actions",
     "calendar_show_week_numbers",
+    "calendar_time_divisions",
+    "calendar_compress_weekend",
+    "calendar_month_scroll_by_week",
+    "calendar_second_zone",
+    "calendar_second_zones",
     "calendar_hidden_sources",
     "date_format",
     "time_format",
@@ -2715,6 +2772,11 @@ mod tests {
         assert!(settings.mail_show_toolbar);
         assert!(settings.mail_show_sidebar);
         assert_eq!(settings.calendar_time_zone, "system");
+        assert_eq!(settings.calendar_time_divisions, 30);
+        assert!(settings.calendar_compress_weekend);
+        assert!(settings.calendar_month_scroll_by_week);
+        assert_eq!(settings.calendar_second_zone, "");
+        assert_eq!(settings.calendar_second_zones, "");
         assert_eq!(settings.mail_sidebar_position, 240);
         assert_eq!(settings.mail_modern_preview_position, 420);
         assert_eq!(settings.mail_classic_preview_position, 360);
@@ -2857,6 +2919,65 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn calendar_view_and_timezone_settings_backup_validation_and_roundtrip() {
+        let backend = gio::memory_settings_backend_new();
+        let app_settings =
+            AppSettings::try_new_with_backend(&backend).expect("settings should load");
+
+        app_settings.set_calendar_view("year");
+        app_settings.set_calendar_time_divisions(15);
+        app_settings.set_calendar_compress_weekend(false);
+        app_settings.set_calendar_month_scroll_by_week(false);
+        app_settings.set_calendar_second_zone("Europe/London");
+        app_settings.set_calendar_second_zones(&[
+            "Europe/London".to_string(),
+            "America/New_York".to_string(),
+        ]);
+
+        let backup = BackupSettings::from_app(&app_settings);
+        backup.validate().expect("backup settings should validate");
+
+        assert_eq!(backup.calendar_view, "year");
+        assert_eq!(backup.calendar_time_divisions, 15);
+        assert!(!backup.calendar_compress_weekend);
+        assert!(!backup.calendar_month_scroll_by_week);
+        assert_eq!(backup.calendar_second_zone, "Europe/London");
+        assert_eq!(
+            backup.calendar_second_zones,
+            "Europe/London,America/New_York"
+        );
+
+        // List view also validates
+        let mut list_backup = backup.clone();
+        list_backup.calendar_view = "list".to_string();
+        list_backup.validate().expect("list view should validate");
+
+        // Invalid calendar view rejected
+        let mut invalid_view = backup.clone();
+        invalid_view.calendar_view = "century".to_string();
+        assert!(invalid_view.validate().is_err());
+
+        // Invalid time divisions rejected
+        let mut invalid_div = backup.clone();
+        invalid_div.calendar_time_divisions = 25;
+        assert!(invalid_div.validate().is_err());
+
+        // Roundtrip via JSON serialization
+        let serialized = serde_json::to_string(&backup).expect("should serialize");
+        let deserialized: BackupSettings =
+            serde_json::from_str(&serialized).expect("should deserialize");
+        assert_eq!(deserialized.calendar_view, "year");
+        assert_eq!(deserialized.calendar_time_divisions, 15);
+        assert!(!deserialized.calendar_compress_weekend);
+        assert!(!deserialized.calendar_month_scroll_by_week);
+        assert_eq!(deserialized.calendar_second_zone, "Europe/London");
+        assert_eq!(
+            deserialized.calendar_second_zones,
+            "Europe/London,America/New_York"
+        );
     }
 
     fn temporary_directory(label: &str) -> PathBuf {

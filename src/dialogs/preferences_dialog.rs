@@ -2561,6 +2561,8 @@ impl PreferencesDialog {
                 "Arbeitswoche",
                 "Monat",
                 "Agenda",
+                "Jahr",
+                "Liste",
             ]))
             .build();
         if let Some(settings) = settings.clone() {
@@ -2568,7 +2570,10 @@ impl PreferencesDialog {
                 "day" => 0,
                 "week" => 1,
                 "workweek" => 2,
+                "month" => 3,
                 "agenda" => 4,
+                "year" => 5,
+                "list" => 6,
                 _ => 3,
             });
             row_calendar_view.connect_selected_notify(move |row| {
@@ -2577,11 +2582,46 @@ impl PreferencesDialog {
                     1 => "week",
                     2 => "workweek",
                     4 => "agenda",
+                    5 => "year",
+                    6 => "list",
                     _ => "month",
                 });
             });
         }
         group_calendar_view.add(&row_calendar_view);
+
+        let row_time_divisions = adw::ComboRow::builder()
+            .title("Zeiteinteilung")
+            .subtitle("Intervall der Zeitleiste in Tages- und Arbeitswochenansicht")
+            .model(&gtk::StringList::new(&[
+                "60 Minuten",
+                "30 Minuten",
+                "15 Minuten",
+                "10 Minuten",
+                "5 Minuten",
+            ]))
+            .build();
+        if let Some(settings) = settings.clone() {
+            row_time_divisions.set_selected(match settings.calendar_time_divisions() {
+                60 => 0,
+                30 => 1,
+                15 => 2,
+                10 => 3,
+                5 => 4,
+                _ => 1,
+            });
+            row_time_divisions.connect_selected_notify(move |row| {
+                settings.set_calendar_time_divisions(match row.selected() {
+                    0 => 60,
+                    1 => 30,
+                    2 => 15,
+                    3 => 10,
+                    4 => 5,
+                    _ => 30,
+                });
+            });
+        }
+        group_calendar_view.add(&row_time_divisions);
 
         let row_week_start = adw::ComboRow::builder()
             .title("Wochenbeginn")
@@ -2614,6 +2654,30 @@ impl PreferencesDialog {
             });
         }
         group_calendar_view.add(&row_week_numbers);
+
+        let row_compress_weekend = adw::SwitchRow::builder()
+            .title("Wochenende in Monatsansicht komprimieren")
+            .subtitle("Samstag und Sonntag in einer gemeinsamen Spalte darstellen")
+            .build();
+        if let Some(settings) = settings.clone() {
+            row_compress_weekend.set_active(settings.calendar_compress_weekend());
+            row_compress_weekend.connect_active_notify(move |row| {
+                settings.set_calendar_compress_weekend(row.is_active());
+            });
+        }
+        group_calendar_view.add(&row_compress_weekend);
+
+        let row_month_scroll_by_week = adw::SwitchRow::builder()
+            .title("Monatsansicht wochenweise scrollen")
+            .subtitle("Blättert beim Scrollen um eine Woche statt um einen ganzen Monat")
+            .build();
+        if let Some(settings) = settings.clone() {
+            row_month_scroll_by_week.set_active(settings.calendar_month_scroll_by_week());
+            row_month_scroll_by_week.connect_active_notify(move |row| {
+                settings.set_calendar_month_scroll_by_week(row.is_active());
+            });
+        }
+        group_calendar_view.add(&row_month_scroll_by_week);
 
         let row_date_format = adw::ComboRow::builder()
             .title("Datumsformat")
@@ -2671,6 +2735,18 @@ impl PreferencesDialog {
             });
         }
         group_calendar_view.add(&row_calendar_time_zone);
+
+        let row_second_zone = adw::EntryRow::builder().title("Zweite Zeitzone").build();
+        row_second_zone.set_tooltip_text(Some(
+            "Zusätzliche Zeitzone für die Tagesansicht (z. B. UTC oder America/New_York)",
+        ));
+        if let Some(settings) = settings.clone() {
+            row_second_zone.set_text(&settings.calendar_second_zone());
+            row_second_zone.connect_changed(move |row| {
+                settings.set_calendar_second_zone(&row.text());
+            });
+        }
+        group_calendar_view.add(&row_second_zone);
 
         let group_default_ecal_sources = adw::PreferencesGroup::builder()
             .title("Standardquellen")

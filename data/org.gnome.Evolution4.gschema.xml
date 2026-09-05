@@ -39,7 +39,27 @@
     </key>
     <key name="calendar-view" type="s">
       <default>'month'</default>
-      <summary>Default calendar view (day, week, workweek, month, or agenda)</summary>
+      <summary>Default calendar view (day, week, workweek, month, agenda, year, or list)</summary>
+    </key>
+    <key name="calendar-time-divisions" type="i">
+      <default>30</default>
+      <summary>Intervals shown in day and workweek views in minutes (5, 10, 15, 30, or 60)</summary>
+    </key>
+    <key name="calendar-compress-weekend" type="b">
+      <default>true</default>
+      <summary>Compress weekends in month view</summary>
+    </key>
+    <key name="calendar-month-scroll-by-week" type="b">
+      <default>true</default>
+      <summary>Scroll month view by a week instead of a month</summary>
+    </key>
+    <key name="calendar-second-zone" type="s">
+      <default>''</default>
+      <summary>Second time zone for day and workweek views</summary>
+    </key>
+    <key name="calendar-second-zones" type="s">
+      <default>''</default>
+      <summary>Recently used second time zones</summary>
     </key>
     <key name="calendar-week-start" type="s">
       <default>'monday'</default>

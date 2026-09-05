@@ -185,6 +185,7 @@ und erweitert dessen Schreibbereich nur nach dokumentierter Kollisionsprüfung.
 | 69 | `GW-CONTACT-ACTIONS-TRANSFER` | `P1-CONTACT-001` | `src/views/contacts_page.rs` | `GW-CONTACT-ACTIONS-PRINT` | BLOCKED_LINUX | Upstream-Parität zu `e-addressbook-view.c:2111-2265` und `eab-gui-util.c:511-570` portabel implementiert: Kontakttransfer zwischen Adressbüchern ("In Adressbuch kopieren…", "In Adressbuch verschieben…") für 1..n Kontakte, Dropdown-Auswahl schreibbarer Zieladressbücher per `adw::AlertDialog`, Frische-UID-Generierung (`prepare_vcard_for_transfer`), Create-Before-Delete bei Move, All-Writable-Source-Preflight für Move, Read-Only-Toleranz bei Copy, Stop-on-First-Error-Semantik, Detail-Buttons, Kontextmenü-Einträge, 0/1/n-Sensitivitätssteuerung und Reducer belegt durch 33/33 Kontakttests und 942/942 Workspace-Tests; Linux-/EDS-Backend-Laufzeitabnahme offen. |
 | 70 | `GW-CONTACT-SEARCH` | `P1-CONTACT-001` | `src/services/contact_search_service.rs`, `src/dialogs/contact_search_dialog.rs`, `src/views/contacts_page.rs` | `GW-CONTACT-ACTIONS-TRANSFER` | BLOCKED_LINUX | Upstream-Parität zu `src/modules/addressbook/e-book-shell-view.c::book_shell_view_execute_search`, `e_addressbook_view_set_search` und `e-book-shell-content.c` portabel implementiert: typisierter AST (`ContactSearchQuery`), UND/ODER-Klauselgruppen (`All`/`Any`), Feld- und Operator-Registry (`ContactSearchField`, `ContactSearchOperator`), äußere Filter (Adressbuch-Quelle, Kategorie, Kontakte ohne Kategorie, Nur-Dubletten), `ContactSearchDialog` mit dynamischem Klausel-Editor und Syntax-Fallback, Schnellsuch-Modi (Alle Felder, Name, E-Mail, Telefon, Kategorie), asynchrone Worker-Suche mit Generierungszählung und Stornierung, automatische Treffer-/Preview-Synchronisation und stabile Selektionswiederherstellung belegt durch 22 Search-Tests, 35 Kontakt-Tests und 944/944 Workspace-Tests; EDS-Backend-Query-Syntax und Linux-Provider-Suchgrenzen offen. |
 | 71 | `GW-EVENT-EDITOR` | `P1-CAL-001` | `src/dialogs/event_dialog.rs`, `src/services/calendar_store_service.rs` | `P1-CAL-001B`, `GW-CAL-SHELL` | BLOCKED_LINUX | Upstream-Parität zu `calendar/gui/e-comp-editor-event.c` und `e-comp-editor.c`: `update_existing_event_component` für verlustfreies Event-Editing, strikte Beibehaltung unberührter RFC5545-Eigenschaften (`ORGANIZER`, `GEO`, `URL`, `PRIORITY`, `X-EVOLUTION-*`, Custom-Properties), Parameter-Erhalt bei Teilnehmern (`CN`, `ROLE`, `PARTSTAT`) und Anhängen (`FMTTYPE`), Multi-VALARM-Synchronisation, Datums-/Uhrzeit- und Zeitzonenerhalt (`TZID`), robuster Wechsel zwischen Ganztags- (`VALUE=DATE`) und Uhrzeit-Modus, Eingabevalidierung und CRLF-Injektionsschutz belegt durch 13 Unit-Tests und 947/947 Workspace-Tests; nativer EDS-ECalClient-Server-Roundtrip unter Linux offen. |
+| 72 | `GW-CALENDAR-SETTINGS` | `P1-CAL-001` | `data/org.gnome.Evolution4.gschema.xml`, `src/services/{settings,migration,backup}_service.rs`, `src/dialogs/preferences_dialog.rs`, `src/views/calendar_page.rs` | `P1-CAL-001B`, `GW-CAL-SHELL` | BLOCKED_LINUX | Upstream-Parität zu `calendar-config-keys.h`, `calendar-config.c` und `e-calendar-preferences.c`: Zeiteinteilung (`calendar-time-divisions`: 5/10/15/30/60 min), Wochenende-Komprimierung (`calendar-compress-weekend`), wochenweises Scrollen (`calendar-month-scroll-by-week`), zweite Zeitzone (`calendar-second-zone`) samt Verlaufsliste (`calendar-second-zones`), Unterstützung von `year` und `list` in allen Einstellungs- und Validierungsschichten, Live-Synchronisation in Kalenderansicht, vollständige Upstream-Dconf/Ini-Migration sowie versioniertes Backup/Restore belegt durch 950/950 Workspace-Tests; GNOME Desktop GSettings-Integration und Visuals unter Linux offen. |
 
 ### Parallelisierungsregeln
 
@@ -1173,6 +1174,35 @@ oder visuellen Linux-Belege.
      - Automatische Persistenz von Kategorie-Metadaten über `CalendarCategoryStore`.
   Belegt durch 13 gezielte Unit-Tests in `dialogs::event_dialog::tests` (inkl. `update_existing_event_preserves_unknown_properties_and_parameters`, `update_existing_event_validates_inputs`, `update_existing_event_switches_all_day_mode`) und 947/947 Workspace-Tests.
 - Offener Parent-/Linux-Rest: ECal-Create/Modify/Remove gegen Live-EDS-Dämonen, serverseitige iTIP-Planung/Meeting-Einladungen, Server-ACLs und Linux-Visuals.
+
+### GW-CALENDAR-SETTINGS
+
+- Status: `BLOCKED_LINUX`; portabler Einstellungs- und Migrations-Teil des offenen Elternpakets `P1-CAL-001` geschlossen.
+- Portabler Beleg: Upstream-Parität zu `src/calendar/gui/calendar-config-keys.h`, `calendar-config.c` und `src/modules/calendar/e-calendar-preferences.c`:
+  1. GSchema (`data/org.gnome.Evolution4.gschema.xml`):
+     - `calendar-time-divisions` (`i`, default 30): Zeiteinteilung für Tages- und Arbeitswochenansicht (5, 10, 15, 30, 60 Minuten).
+     - `calendar-compress-weekend` (`b`, default true): Komprimierung von Samstag und Sonntag in einer gemeinsamen Monatsansichts-Spalte.
+     - `calendar-month-scroll-by-week` (`b`, default true): Wochenweises statt monatsweises Blättern beim Scrollen im Monatsraster.
+     - `calendar-second-zone` (`s`, default `''`): Zweite Zeitzone für die Tagesansicht.
+     - `calendar-second-zones` (`s`, default `''`): Historie der zuletzt verwendeten zweiten Zeitzonen (maximal 5 Einträge, FIFO/MRU-Reihenfolge).
+     - `calendar-view`: Offiziell erweitert um `year` und `list` in allen Validierungs-, Migrations- und Einstellungsstufen.
+  2. Typisierter Zugriff und Sanitization (`src/services/settings_service.rs`):
+     - `sanitize_time_divisions`: Validiert streng auf `5 | 10 | 15 | 30 | 60`, fällt sonst auf Default 30 zurück.
+     - `calendar_second_zone` / `calendar_second_zones`: Automatische Aktualisierung der MRU-Liste mit max. 5 Einträgen bei Auswahl einer zweiten Zeitzone.
+     - `calendar_view` / `set_calendar_view`: Vollständige Unterstützung von `day`, `week`, `workweek`, `month`, `agenda`, `year` und `list`.
+     - `import_setting` und `reset_to_defaults`: Vollständig verdrahtet.
+  3. Upstream-Migration (`src/services/migration_service.rs`):
+     - Kanonische Abbildung von Upstream-GSettings/Dconf-Schlüsseln: `time-divisions`, `compress-weekend`, `month-scroll-by-week`, `day-second-zone` / `second-zone`, `day-second-zones` / `second-zones`.
+     - Dekodierung von GVariant-Array `@as` (`day-second-zones`) in portable kommaseparierte Strings.
+     - Strikte Validierung von Zeiteinteilung und Zeitzonennamen mit Warnungen bei ungültigen Werten.
+  4. Backup & Restore (`src/services/backup_service.rs`):
+     - Alle 5 Einstellungen in `BackupSettings` integriert, serialisiert, deserialisiert und validiert (`calendar_time_divisions` in `[5, 10, 15, 30, 60]`, `calendar_view` inklusive `year` und `list`).
+     - Rückwärtskompatibilität für ältere Backups mit expliziten Standardwerten belegt.
+  5. UI- und Live-Synchronisation (`src/dialogs/preferences_dialog.rs`, `src/views/calendar_page.rs`):
+     - `group_calendar_view`: Erweiterte Standardansichts-Auswahl (inkl. Jahr und Liste), ComboRow für Zeiteinteilung, SwitchRows für Wochenend-Komprimierung und wochenweises Scrollen, EntryRow für zweite Zeitzone.
+     - `calendar_page.rs`: `connect_changed` reagiert live auf Änderungen aller Kalenderschlüssel.
+  Belegt durch gezielte Unit-Tests in `settings_service::tests`, `migration_service::tests` und `backup_service::tests` sowie 950/950 Workspace-Tests.
+- Offener Parent-/Linux-Rest: GNOME Control Center / Desktop-Zeitzonen-Synchronisation und visuelle Dichte/Theming unter Linux.
 
 ### GW-TASK-EDITOR-LIFECYCLE
 
