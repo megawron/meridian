@@ -681,7 +681,7 @@ fn unescape_vcard_value(value: &str) -> String {
         .replace("\\\\", "\\")
 }
 
-fn split_vcards(raw: &str) -> Vec<String> {
+pub(crate) fn split_vcards(raw: &str) -> Vec<String> {
     let normalized = raw.replace("\r\n", "\n").replace('\r', "\n");
     let mut cards = Vec::new();
     let mut current = Vec::new();

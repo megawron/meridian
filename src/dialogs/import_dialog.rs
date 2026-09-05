@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// ImportDialog — Import assistant for iCalendar (.ics, .vcs), vCard (.vcf), and mail (.mbox, .eml) files.
+// ImportDialog — Import assistant for iCalendar (.ics, .vcs), vCard (.vcf), CSV (.csv), LDIF (.ldif), and mail (.mbox, .eml) files.
 
 use adw::prelude::*;
 use adw::subclass::prelude::*;
@@ -9,6 +9,10 @@ use std::cell::RefCell;
 use std::path::PathBuf;
 
 use crate::services::calendar_store_service::CalendarStoreService;
+use crate::services::contact_import_service::{
+    ContactDuplicatePolicy, ContactImportFormat, detect_contact_format, execute_contact_import,
+    plan_contact_import,
+};
 use crate::services::contact_store_service::ContactStoreService;
 use crate::services::ical_import_service::{
     IcalDuplicatePolicy, execute_ical_import, plan_ical_import,
@@ -93,7 +97,7 @@ impl ImportDialog {
         main_box.append(&title);
 
         let desc = gtk::Label::builder()
-            .label("Wählen Sie eine iCalendar- (.ics, .vcs), vCard- (.vcf) oder Mail-Datei (.mbox / .eml), um Daten in Ihren Kalender, Ihre Aufgaben, Notizen, Kontakte oder Mailbox zu importieren.")
+            .label("Wählen Sie eine iCalendar- (.ics, .vcs), Kontakt- (.vcf, .csv, .ldif) oder Mail-Datei (.mbox / .eml), um Daten in Ihren Kalender, Ihre Aufgaben, Notizen, Kontakte oder Mailbox zu importieren.")
             .wrap(true)
             .justify(gtk::Justification::Center)
             .css_classes(vec!["dim-label"])
@@ -131,12 +135,15 @@ impl ImportDialog {
 
             let filter = gtk::FileFilter::new();
             filter.set_name(Some(
-                "Unterstützte Formate (*.ics, *.vcs, *.vcf, *.mbox, *.eml)",
+                "Unterstützte Formate (*.ics, *.vcs, *.vcf, *.vcard, *.csv, *.ldif, *.ldi, *.mbox, *.eml)",
             ));
             filter.add_pattern("*.ics");
             filter.add_pattern("*.vcs");
             filter.add_pattern("*.vcf");
             filter.add_pattern("*.vcard");
+            filter.add_pattern("*.csv");
+            filter.add_pattern("*.ldif");
+            filter.add_pattern("*.ldi");
             filter.add_pattern("*.mbox");
             filter.add_pattern("*.eml");
 
@@ -176,7 +183,7 @@ impl ImportDialog {
             "Kalender / Termine (.ics, .vcs)",
             "Aufgaben / Tasks (.ics, .vcs)",
             "Memos / Notizen (.ics, .vcs)",
-            "Kontakte / Adressbuch (.vcf)",
+            "Kontakte / Adressbuch (.vcf, .csv, .ldif)",
             "E-Mail / Posteingang (.mbox / .eml)",
         ]);
         target_dropdown.set_valign(gtk::Align::Center);
@@ -243,24 +250,30 @@ impl ImportDialog {
             .unwrap_or("")
             .to_lowercase();
 
+        let content = std::fs::read_to_string(path).unwrap_or_default();
+        let contact_fmt = detect_contact_format(path, &content);
         let is_ical = ext == "ics" || ext == "vcs";
+        let is_contact = contact_fmt != ContactImportFormat::Unknown;
 
         if let Some(dropdown) = self.imp().target_dropdown.borrow().as_ref() {
-            match ext.as_str() {
-                "vcf" | "vcard" => dropdown.set_selected(3),
-                "mbox" | "eml" => dropdown.set_selected(4),
-                "ics" | "vcs" => dropdown.set_selected(0),
-                _ => {}
+            if is_contact {
+                dropdown.set_selected(3);
+            } else {
+                match ext.as_str() {
+                    "mbox" | "eml" => dropdown.set_selected(4),
+                    "ics" | "vcs" => dropdown.set_selected(0),
+                    _ => {}
+                }
             }
         }
 
         if let Some(policy_row) = self.imp().policy_row.borrow().as_ref() {
-            policy_row.set_visible(is_ical);
+            policy_row.set_visible(is_ical || is_contact);
         }
 
         if let Some(preview_row) = self.imp().preview_row.borrow().as_ref() {
             if is_ical {
-                if let Ok(content) = std::fs::read_to_string(path) {
+                if !content.is_empty() {
                     let plan = plan_ical_import(
                         &content,
                         &std::collections::HashSet::new(),
@@ -270,8 +283,19 @@ impl ImportDialog {
                 } else {
                     preview_row.set_subtitle("Datei konnte nicht gelesen werden");
                 }
-            } else if ext == "vcf" || ext == "vcard" {
-                preview_row.set_subtitle("vCard-Kontaktdaten bereit für Import");
+            } else if is_contact {
+                let existing = ContactStoreService::new()
+                    .load_contacts()
+                    .into_iter()
+                    .map(|r| r.contact)
+                    .collect::<Vec<_>>();
+                let plan = plan_contact_import(
+                    &content,
+                    contact_fmt,
+                    &existing,
+                    ContactDuplicatePolicy::default(),
+                );
+                preview_row.set_subtitle(&plan.summary_label());
             } else if ext == "mbox" || ext == "eml" {
                 preview_row.set_subtitle("E-Mail-Nachrichtenarchiv bereit für Import");
             } else {
@@ -299,10 +323,16 @@ impl ImportDialog {
             .map(|d| d.selected())
             .unwrap_or(0);
 
-        let duplicate_policy = match policy_idx {
+        let ical_duplicate_policy = match policy_idx {
             1 => IcalDuplicatePolicy::OverwriteExisting,
             2 => IcalDuplicatePolicy::SkipExisting,
             _ => IcalDuplicatePolicy::KeepBothNewUid,
+        };
+
+        let contact_duplicate_policy = match policy_idx {
+            1 => ContactDuplicatePolicy::OverwriteExisting,
+            2 => ContactDuplicatePolicy::SkipExisting,
+            _ => ContactDuplicatePolicy::KeepBothNew,
         };
 
         let dialog_weak = self.downgrade();
@@ -328,7 +358,7 @@ impl ImportDialog {
                             existing.insert(m.uid);
                         }
 
-                        let plan = plan_ical_import(&content, &existing, duplicate_policy);
+                        let plan = plan_ical_import(&content, &existing, ical_duplicate_policy);
                         match execute_ical_import(&plan, &store) {
                             Ok(res) => res.imported_count + res.overwritten_count,
                             Err(err) => {
@@ -338,15 +368,27 @@ impl ImportDialog {
                         }
                     }
                     3 => {
-                        // vCard contact import
+                        // Contact import (vCard, CSV, LDIF) with duplicate policy
                         let store = ContactStoreService::new();
-                        let mut imported = 0usize;
-                        if !content.is_empty() {
-                            if store.import_vcard_content(&content).is_ok() {
-                                imported += 1;
+                        let format = detect_contact_format(&path, &content);
+                        let existing = store
+                            .load_contacts()
+                            .into_iter()
+                            .map(|r| r.contact)
+                            .collect::<Vec<_>>();
+                        let plan = plan_contact_import(
+                            &content,
+                            format,
+                            &existing,
+                            contact_duplicate_policy,
+                        );
+                        match execute_contact_import(&plan, &store) {
+                            Ok(res) => res.imported_count + res.overwritten_count,
+                            Err(err) => {
+                                tracing::warn!(%err, "Contact import failed");
+                                0
                             }
                         }
-                        imported
                     }
                     4 => {
                         // Mail import
@@ -399,5 +441,26 @@ pub mod tests {
             _ => IcalDuplicatePolicy::KeepBothNewUid,
         };
         assert_eq!(p2, IcalDuplicatePolicy::SkipExisting);
+
+        let c0 = match 0 {
+            1 => ContactDuplicatePolicy::OverwriteExisting,
+            2 => ContactDuplicatePolicy::SkipExisting,
+            _ => ContactDuplicatePolicy::KeepBothNew,
+        };
+        assert_eq!(c0, ContactDuplicatePolicy::KeepBothNew);
+
+        let c1 = match 1 {
+            1 => ContactDuplicatePolicy::OverwriteExisting,
+            2 => ContactDuplicatePolicy::SkipExisting,
+            _ => ContactDuplicatePolicy::KeepBothNew,
+        };
+        assert_eq!(c1, ContactDuplicatePolicy::OverwriteExisting);
+
+        let c2 = match 2 {
+            1 => ContactDuplicatePolicy::OverwriteExisting,
+            2 => ContactDuplicatePolicy::SkipExisting,
+            _ => ContactDuplicatePolicy::KeepBothNew,
+        };
+        assert_eq!(c2, ContactDuplicatePolicy::SkipExisting);
     }
 }
