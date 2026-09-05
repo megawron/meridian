@@ -131,7 +131,7 @@ und erweitert dessen Schreibbereich nur nach dokumentierter Kollisionsprüfung.
 | 15 | `P0-COMP-001B` | `P0-COMP-001` | `src/dialogs/compose_dialog.rs`, `src/services/draft_store_service.rs` | `P0-COMP-001A` | DONE | Autosave, Recovery, pro-Draft-Sendelock und revisionssicheres Cleanup integriert |
 | 16 | `P0-RECOVERY-001A` | `P0-RECOVERY-001` | `src/services/eds_service.rs`, `src/services/eds_source_cache_service.rs` | Pakete 9–15 | DONE | Offline/Online, persistenter Backoff, atomarer Cache und Neustart portabel getestet |
 | 17 | `P1-CAL-001B` | `P1-CAL-001` | `src/views/calendar_page.rs` | `P1-CAL-001A` | DONE | Ansichten verwenden gemeinsame Recurrence-/Zeitzonenregeln |
-| 18 | `P1-CONTACT-001B` | `P1-CONTACT-001` | `src/views/contacts_page.rs` | `P1-CONTACT-001A` | IN PROGRESS | `GW-CONTACT-LISTS` ist `BLOCKED_LINUX`; weitere Kontaktaktionen/-suche sowie EBook-/Provider-Reste halten das Elternziel offen |
+| 18 | `P1-CONTACT-001B` | `P1-CONTACT-001` | `src/views/contacts_page.rs` | `P1-CONTACT-001A` | IN PROGRESS | `GW-CONTACT-LISTS`, `GW-CONTACT-ACTIONS-*` und `GW-CONTACT-SEARCH` sind `BLOCKED_LINUX`; weitere EBook-/Provider-Reste halten das Elternziel offen |
 | 19 | `P1-TASK-001A` | `P1-TASK-001` | `src/views/tasks_page.rs` | keine | IN PROGRESS | Task-CRUD ist belegt und `GW-TASK-FILTERS` ist `BLOCKED_LINUX`; weitere Taskpad-/Editor- und EDS-Reste halten das Elternziel offen |
 | 20 | `P1-MAIL-FIND` | `P0-MAIL-002A` | `src/views/{mail_page,mail_viewer}.rs`, `src/window.rs`, `src/application.rs` | `P0-MAIL-001C` | BLOCKED_LINUX | Evolution-Menü/Shortcut, kompakte Suchleiste, Unicode-Fallback, WebKit-FindController, Wrap und stale Generationsgates portabel grün; WebKit-Laufzeitabnahme offen |
 | 21 | `MAIL-PRINT-ACTION` | `P0-MAIL-002` | `src/application.rs`, `src/window.rs`, `src/views/{mail_page,mail_viewer}.rs`, `src/services/mail_print_service.rs` | portabler `P0-MAIL-002A`-Auswahlvertrag erfüllt | BLOCKED_LINUX | Liste/Reader, Print/Preview, `Ctrl+P`, sicherer Worker-Snapshot, Generation/Cancel/Error und Reviews portabel belegt; native WebKitGTK-Dialoge/PDF/Visualabnahme offen |
@@ -183,6 +183,7 @@ und erweitert dessen Schreibbereich nur nach dokumentierter Kollisionsprüfung.
 | 67 | `GW-CONTACT-ACTIONS-DELETE-BATCH` | `P1-CONTACT-001` | `src/views/contacts_page.rs` | `GW-CONTACT-ACTIONS-BATCH-EXPORT` | BLOCKED_LINUX | 0/1/n-Auswahl, all-writable Preflight, named/count Confirmation, sequentielles Stop-on-first-error-Delete über EBookService und bestätigter Prefix/Failure/Unattempted-Reducer portabel implementiert und durch 22/22 Tests belegt; EBook-Batchmutation und Providerabnahme offen. |
 | 68 | `GW-CONTACT-ACTIONS-PRINT` | `P1-CONTACT-001` | `src/services/contact_print_service.rs`, `src/views/contacts_page.rs` | `GW-CONTACT-ACTIONS-DELETE-BATCH` | BLOCKED_LINUX | Upstream-Parität zu `e-contact-print.c` und `e-addressbook-view.c:1650-1748` portabel implementiert: Einzel-/Mehrfachkarten mit Alphabet-Buchstaben-Headings, Adresslisten-Mitgliederauflösung/Verbergung, Tabellendruck sichtbarer Kontakte, striktes GLib-Markup-Escaping, 0/1/n-Sensitivität, Kontextmenü, Sidebar-Listendruck, `<Ctrl>P`-Shortcut und Fail-Closed-Preflight belegt durch 8 Print-Service-Tests, 23 Kontakt-Tests und 932/932 Workspace-Tests; Linux-Druckerdialog-/Portal-Abnahme offen. |
 | 69 | `GW-CONTACT-ACTIONS-TRANSFER` | `P1-CONTACT-001` | `src/views/contacts_page.rs` | `GW-CONTACT-ACTIONS-PRINT` | BLOCKED_LINUX | Upstream-Parität zu `e-addressbook-view.c:2111-2265` und `eab-gui-util.c:511-570` portabel implementiert: Kontakttransfer zwischen Adressbüchern ("In Adressbuch kopieren…", "In Adressbuch verschieben…") für 1..n Kontakte, Dropdown-Auswahl schreibbarer Zieladressbücher per `adw::AlertDialog`, Frische-UID-Generierung (`prepare_vcard_for_transfer`), Create-Before-Delete bei Move, All-Writable-Source-Preflight für Move, Read-Only-Toleranz bei Copy, Stop-on-First-Error-Semantik, Detail-Buttons, Kontextmenü-Einträge, 0/1/n-Sensitivitätssteuerung und Reducer belegt durch 33/33 Kontakttests und 942/942 Workspace-Tests; Linux-/EDS-Backend-Laufzeitabnahme offen. |
+| 70 | `GW-CONTACT-SEARCH` | `P1-CONTACT-001` | `src/services/contact_search_service.rs`, `src/dialogs/contact_search_dialog.rs`, `src/views/contacts_page.rs` | `GW-CONTACT-ACTIONS-TRANSFER` | BLOCKED_LINUX | Upstream-Parität zu `src/modules/addressbook/e-book-shell-view.c::book_shell_view_execute_search`, `e_addressbook_view_set_search` und `e-book-shell-content.c` portabel implementiert: typisierter AST (`ContactSearchQuery`), UND/ODER-Klauselgruppen (`All`/`Any`), Feld- und Operator-Registry (`ContactSearchField`, `ContactSearchOperator`), äußere Filter (Adressbuch-Quelle, Kategorie, Kontakte ohne Kategorie, Nur-Dubletten), `ContactSearchDialog` mit dynamischem Klausel-Editor und Syntax-Fallback, Schnellsuch-Modi (Alle Felder, Name, E-Mail, Telefon, Kategorie), asynchrone Worker-Suche mit Generierungszählung und Stornierung, automatische Treffer-/Preview-Synchronisation und stabile Selektionswiederherstellung belegt durch 22 Search-Tests, 35 Kontakt-Tests und 944/944 Workspace-Tests; EDS-Backend-Query-Syntax und Linux-Provider-Suchgrenzen offen. |
 
 ### Parallelisierungsregeln
 
@@ -1122,6 +1123,38 @@ oder visuellen Linux-Belege.
 - Offener Parent-/Linux-Rest: Native EDS EBook-Client-Batch-Mutationen, serverseitiges Atomic-Move,
   und Live-Laufzeitabnahme unter Linux mit echten Adressbuchquellen.
 
+### GW-CONTACT-SEARCH
+
+- Status: `BLOCKED_LINUX`; portabler Kontaktsuch- und Advanced-Search-Teil des offenen Elternpakets
+  `P1-CONTACT-001` geschlossen.
+- Portabler Beleg: Parität zu Upstream GNOME Evolution `src/modules/addressbook/e-book-shell-view.c::book_shell_view_execute_search`,
+  `e_addressbook_view_set_search` und `e-book-shell-content.c`:
+  1. Typisierter AST und Registry (`src/services/contact_search_service.rs`):
+     - `ContactSearchQuery` mit Klauselgruppen `ContactClauseGroup::All` (UND) und `ContactClauseGroup::Any` (ODER).
+     - Feld-Matrix: `Name`, `Email`, `Phone`, `Category`, `AnyField`.
+     - Operator-Matrix: `Contains`, `NotContains`, `Is`, `IsNot`, `StartsWith`, `EndsWith`.
+     - Äußere Filter (`ContactOuterFilters`): Adressbuchquelle (`source_uid`), exakte Kategorie (`category`),
+       Kontakte ohne Kategorie (`unmatched_category`) und Dublettenfilter (`duplicate_only`).
+     - Strikte Validierung (`validate`), versionierter Fixture-Codec (`encode_query_fixture` / `decode_query_fixture`),
+       deterministische Normalisierung (`normalize_search_text`) und Fail-Closed-Syntaxprüfung.
+  2. Dialog für erweiterte Kontaktsuche (`src/dialogs/contact_search_dialog.rs`):
+     - `ContactSearchDialog`: Libadwaita-Fenster mit dynamischem Hinzufügen und Entfernen von Klauselzeilen,
+       Feld- und Operator-Dropdowns, UND/ODER-Gruppenauswahl, äußerem Kategoriefeld, Checkbuttons für
+       unmatched und Dubletten, Re-Open-Seeding (`seed_query_for_reopen`) aus dem aktiven Zustand.
+     - Freitext-/Syntax-Fallback: typisierte Syntax wird akzeptiert, native GTK3-Ausdrücke und S-Expressions
+       werden fail-closed abgelehnt.
+  3. UI-Integration in `ContactsPage` (`src/views/contacts_page.rs`):
+     - Schnellsuchleiste mit Textentry und Dropdown ("Alle Felder", "Name", "E-Mail", "Telefon", "Kategorie").
+     - Button "Erweiterte Suche…" öffnet `ContactSearchDialog`.
+     - Äußere Filter in der Sidebar: Adressbuchliste, Kategorie-Dropdown, "Nur ohne Kategorie", "Nur Dubletten".
+     - Asynchroner Such-Worker (`start_contact_search`) mit Generierungszähler und Stornierungstoken.
+     - Treffer- und Preview-Synchronisation: `apply_contact_search_selection` behält die Auswahl bei Treffer
+       oder leert die Detailansicht sauber; Statusmeldung ("Keine Kontakte entsprechen der Suche") und Spinner.
+  Belegt durch 22 Search-Tests in `contact_search_service` und `contact_search_dialog`, 35 Kontakttests in
+  `contacts_page::tests` sowie 944/944 Workspace-Tests.
+- Offener Parent-/Linux-Rest: EBook-Query-Syntax für native EDS-Backends, serverseitige Provider-Suchgrenzen
+  und Live-Laufzeitabnahme unter Linux.
+
 ### GW-TASK-EDITOR-LIFECYCLE
 
 - Status: `BLOCKED_LINUX`; portabler Teil des offenen Elternpakets
@@ -1447,9 +1480,11 @@ allein ist kein Implementierungsbeleg.
   atomarer vCard-Export), `GW-CONTACT-ACTIONS-DELETE-BATCH` (all-writable Preflight, named/count
   Confirmation, sequentielles Stop-on-first-error-Delete), `GW-CONTACT-ACTIONS-PRINT`
   (Kartendruck mit Alphabet-Headings, Adresslistenauflösung, Tabellendruck sichtbarer Kontakte,
-  `<Ctrl>P`) und `GW-CONTACT-ACTIONS-TRANSFER` (Kopieren/Verschieben zwischen Adressbüchern,
-  Create-before-delete, Fresh-UIDs, AlertDialog mit Dropdown) sind portabel implementiert
-  und stehen auf `BLOCKED_LINUX`. Weitere Kontaktflächen (z. B. Advanced Search) sowie
+  `<Ctrl>P`), `GW-CONTACT-ACTIONS-TRANSFER` (Kopieren/Verschieben zwischen Adressbüchern,
+  Create-before-delete, Fresh-UIDs, AlertDialog mit Dropdown) und `GW-CONTACT-SEARCH`
+  (typisierter Search-AST, Feld-/Operator-Registry, ContactSearchDialog, Quick-Search,
+  Outer-Filters, Treffer-/Preview-Sync, Worker-Generierungen) sind portabel implementiert
+  und stehen auf `BLOCKED_LINUX`. Weitere Kontaktflächen (z. B. Contact Surface Map-Linking) sowie
   Linux-EBook/GAL-/ACL-Abnahme bleiben offen.
 
 ### P1-TASK-001 — Aufgaben, Memos und Erinnerungen

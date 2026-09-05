@@ -1466,12 +1466,17 @@ Die Statuswerte sind Quellen-/UI-Belege, keine Laufzeit- oder Providerabnahme:
   (Einzel- und Mehrfachkartendruck mit Alphabet-Buchstaben-Headings und
   Adresslistenauflösung, Tabellendruck sichtbarer Kontakte, striktes
   GLib-Markup-Escaping, 0/1/n-Sensitivität, Kontextmenü, Sidebar-Listendruck und
-  `<Ctrl>P`), und `GW-CONTACT-ACTIONS-TRANSFER` schließt den portablen Kontakttransfer
+  `<Ctrl>P`), `GW-CONTACT-ACTIONS-TRANSFER` schließt den portablen Kontakttransfer
   zwischen Adressbüchern ("In Adressbuch kopieren…", "In Adressbuch verschieben…",
   Auswahldialog schreibbarer Zieladressbücher per `adw::AlertDialog`, kollisionsfreie
   UIDs via `prepare_vcard_for_transfer`, Create-before-delete für Verschieben,
-  All-Writable-Preflight und Stop-on-First-Error-Semantik); nativer Linux-Druckerdialog
-  und native EBook-Batchmutationen bleiben offen.
+  All-Writable-Preflight und Stop-on-First-Error-Semantik), und `GW-CONTACT-SEARCH`
+  schließt die Kontaktsuche und Advanced Search (typisierter AST `ContactSearchQuery`,
+  UND/ODER-Klauselgruppen `All`/`Any`, Feld- und Operator-Registry, Schnellsuch-Modi,
+  äußere Filter für Quelle/Kategorie/ohne Kategorie/Dubletten, `ContactSearchDialog`
+  mit dynamischem Klausel-Editor und Syntax-Fallback, asynchroner Worker mit
+  Generierungszählung/Stornierung und Treffer-/Preview-Synchronisation); nativer Linux-Druckerdialog,
+  EDS-Backend-Query-Syntax und native EBook-Batchmutationen bleiben offen.
   EBookClientView-Signale werden
   UID-basiert in die Kontaktliste eingepflegt; der Linux-Laufzeittest und die
   vollständige native vCard-Feldparität fehlen noch. Der portable Pfad kann

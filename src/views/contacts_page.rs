@@ -4699,8 +4699,9 @@ mod tests {
         contact_records_share_duplicate_key, contact_selection_action_state, contact_sort_key,
         contact_source_label, contact_status_needs_visibility, context_action_state,
         plan_contact_delete_batch, plan_contact_transfer, plan_contact_vcard_export,
-        prepare_vcard_for_transfer, reduce_contact_delete_result, reduce_contact_transfer_result,
-        should_restore_contact_selection,
+        prepare_vcard_for_transfer, quick_field_for_index, quick_query,
+        reduce_contact_delete_result, reduce_contact_transfer_result,
+        should_restore_contact_selection, with_contact_outer_filters,
     };
     use crate::services::contact_search_service::{
         ContactClauseGroup, ContactOuterFilters, ContactSearchClause, ContactSearchField,
@@ -4708,6 +4709,8 @@ mod tests {
     };
     use crate::services::ebook_service::{EBookContactRecord, EBookDataOrigin};
     use crate::services::vcard_service::VCardContact;
+    use std::cell::RefCell;
+    use std::rc::Rc;
 
     fn record(source_uid: &str, uid: &str, contact: VCardContact) -> EBookContactRecord {
         EBookContactRecord {
@@ -4794,6 +4797,69 @@ mod tests {
             }
         );
         assert_eq!(state.active_query(), updated);
+    }
+
+    #[test]
+    fn quick_search_and_field_mapping_parity() {
+        assert_eq!(quick_field_for_index(0), ContactSearchField::AnyField);
+        assert_eq!(quick_field_for_index(1), ContactSearchField::Name);
+        assert_eq!(quick_field_for_index(2), ContactSearchField::Email);
+        assert_eq!(quick_field_for_index(3), ContactSearchField::Phone);
+        assert_eq!(quick_field_for_index(4), ContactSearchField::Category);
+        assert_eq!(quick_field_for_index(99), ContactSearchField::AnyField);
+
+        assert_eq!(
+            quick_query(ContactSearchField::AnyField, ""),
+            ContactSearchQuery::all()
+        );
+        assert_eq!(
+            quick_query(ContactSearchField::Name, "   "),
+            ContactSearchQuery::all()
+        );
+
+        let any_query = quick_query(ContactSearchField::AnyField, "Ada Lovelace");
+        assert_eq!(any_query.group, ContactClauseGroup::All);
+        assert_eq!(
+            any_query.clauses,
+            vec![ContactSearchClause::new(
+                ContactSearchField::AnyField,
+                ContactSearchOperator::Contains,
+                "Ada Lovelace",
+            )]
+        );
+
+        let name_query = quick_query(ContactSearchField::Name, "Ada");
+        assert_eq!(
+            name_query.clauses,
+            vec![ContactSearchClause::new(
+                ContactSearchField::Name,
+                ContactSearchOperator::Contains,
+                "Ada",
+            )]
+        );
+
+        let email_query = quick_query(ContactSearchField::Email, "ada@example.test");
+        assert_eq!(
+            email_query.clauses,
+            vec![ContactSearchClause::new(
+                ContactSearchField::Email,
+                ContactSearchOperator::Contains,
+                "ada@example.test",
+            )]
+        );
+    }
+
+    #[test]
+    fn quick_query_composes_with_contact_outer_filters() {
+        let book = Rc::new(RefCell::new("book-work".to_string()));
+        let category = Rc::new(RefCell::new("VIP".to_string()));
+        let base_query = quick_query(ContactSearchField::Name, "Ada");
+        let filtered = with_contact_outer_filters(base_query, &book, &category, true, true);
+        assert_eq!(filtered.filters.source_uid.as_deref(), Some("book-work"));
+        assert_eq!(filtered.filters.category.as_deref(), Some("VIP"));
+        assert!(filtered.filters.unmatched_category);
+        assert!(filtered.filters.duplicate_only);
+        assert_eq!(filtered.clauses.len(), 1);
     }
 
     #[test]
