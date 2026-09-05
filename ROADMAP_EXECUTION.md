@@ -184,6 +184,7 @@ und erweitert dessen Schreibbereich nur nach dokumentierter Kollisionsprüfung.
 | 68 | `GW-CONTACT-ACTIONS-PRINT` | `P1-CONTACT-001` | `src/services/contact_print_service.rs`, `src/views/contacts_page.rs` | `GW-CONTACT-ACTIONS-DELETE-BATCH` | BLOCKED_LINUX | Upstream-Parität zu `e-contact-print.c` und `e-addressbook-view.c:1650-1748` portabel implementiert: Einzel-/Mehrfachkarten mit Alphabet-Buchstaben-Headings, Adresslisten-Mitgliederauflösung/Verbergung, Tabellendruck sichtbarer Kontakte, striktes GLib-Markup-Escaping, 0/1/n-Sensitivität, Kontextmenü, Sidebar-Listendruck, `<Ctrl>P`-Shortcut und Fail-Closed-Preflight belegt durch 8 Print-Service-Tests, 23 Kontakt-Tests und 932/932 Workspace-Tests; Linux-Druckerdialog-/Portal-Abnahme offen. |
 | 69 | `GW-CONTACT-ACTIONS-TRANSFER` | `P1-CONTACT-001` | `src/views/contacts_page.rs` | `GW-CONTACT-ACTIONS-PRINT` | BLOCKED_LINUX | Upstream-Parität zu `e-addressbook-view.c:2111-2265` und `eab-gui-util.c:511-570` portabel implementiert: Kontakttransfer zwischen Adressbüchern ("In Adressbuch kopieren…", "In Adressbuch verschieben…") für 1..n Kontakte, Dropdown-Auswahl schreibbarer Zieladressbücher per `adw::AlertDialog`, Frische-UID-Generierung (`prepare_vcard_for_transfer`), Create-Before-Delete bei Move, All-Writable-Source-Preflight für Move, Read-Only-Toleranz bei Copy, Stop-on-First-Error-Semantik, Detail-Buttons, Kontextmenü-Einträge, 0/1/n-Sensitivitätssteuerung und Reducer belegt durch 33/33 Kontakttests und 942/942 Workspace-Tests; Linux-/EDS-Backend-Laufzeitabnahme offen. |
 | 70 | `GW-CONTACT-SEARCH` | `P1-CONTACT-001` | `src/services/contact_search_service.rs`, `src/dialogs/contact_search_dialog.rs`, `src/views/contacts_page.rs` | `GW-CONTACT-ACTIONS-TRANSFER` | BLOCKED_LINUX | Upstream-Parität zu `src/modules/addressbook/e-book-shell-view.c::book_shell_view_execute_search`, `e_addressbook_view_set_search` und `e-book-shell-content.c` portabel implementiert: typisierter AST (`ContactSearchQuery`), UND/ODER-Klauselgruppen (`All`/`Any`), Feld- und Operator-Registry (`ContactSearchField`, `ContactSearchOperator`), äußere Filter (Adressbuch-Quelle, Kategorie, Kontakte ohne Kategorie, Nur-Dubletten), `ContactSearchDialog` mit dynamischem Klausel-Editor und Syntax-Fallback, Schnellsuch-Modi (Alle Felder, Name, E-Mail, Telefon, Kategorie), asynchrone Worker-Suche mit Generierungszählung und Stornierung, automatische Treffer-/Preview-Synchronisation und stabile Selektionswiederherstellung belegt durch 22 Search-Tests, 35 Kontakt-Tests und 944/944 Workspace-Tests; EDS-Backend-Query-Syntax und Linux-Provider-Suchgrenzen offen. |
+| 71 | `GW-EVENT-EDITOR` | `P1-CAL-001` | `src/dialogs/event_dialog.rs`, `src/services/calendar_store_service.rs` | `P1-CAL-001B`, `GW-CAL-SHELL` | BLOCKED_LINUX | Upstream-Parität zu `calendar/gui/e-comp-editor-event.c` und `e-comp-editor.c`: `update_existing_event_component` für verlustfreies Event-Editing, strikte Beibehaltung unberührter RFC5545-Eigenschaften (`ORGANIZER`, `GEO`, `URL`, `PRIORITY`, `X-EVOLUTION-*`, Custom-Properties), Parameter-Erhalt bei Teilnehmern (`CN`, `ROLE`, `PARTSTAT`) und Anhängen (`FMTTYPE`), Multi-VALARM-Synchronisation, Datums-/Uhrzeit- und Zeitzonenerhalt (`TZID`), robuster Wechsel zwischen Ganztags- (`VALUE=DATE`) und Uhrzeit-Modus, Eingabevalidierung und CRLF-Injektionsschutz belegt durch 13 Unit-Tests und 947/947 Workspace-Tests; nativer EDS-ECalClient-Server-Roundtrip unter Linux offen. |
 
 ### Parallelisierungsregeln
 
@@ -1155,6 +1156,24 @@ oder visuellen Linux-Belege.
 - Offener Parent-/Linux-Rest: EBook-Query-Syntax für native EDS-Backends, serverseitige Provider-Suchgrenzen
   und Live-Laufzeitabnahme unter Linux.
 
+### GW-EVENT-EDITOR
+
+- Status: `BLOCKED_LINUX`; portabler Ereignis-Editor- und Komponentenmutations-Teil des offenen Elternpakets `P1-CAL-001` geschlossen.
+- Portabler Beleg: Upstream-Parität zu `calendar/gui/e-comp-editor-event.c` und `e-comp-editor.c`:
+  1. Extrahierte, zustandsunabhängig testbare Mutationsfunktion (`update_existing_event_component` in `src/dialogs/event_dialog.rs`):
+     - Unberührte RFC5545-Top-Level- und Vendor-Eigenschaften bleiben strikt erhalten: `ORGANIZER`, `GEO`, `URL`, `PRIORITY`, `X-EVOLUTION-MOVE-CALENDAR`, `X-CUSTOM-*` und benutzerdefinierte Flags.
+     - Parameter-Erhalt bei Teilnehmern (`replace_ical_attendees`): Bestehende `CN`-, `ROLE`-, `PARTSTAT`- und `RSVP`-Parameter werden bei Übereinstimmung der Mail-Adresse verlustfrei erhalten; neu hinzugefügte Teilnehmer werden mit Standardpräfix serialisiert; entfernte Teilnehmer werden sauber getrimmt.
+     - Parameter-Erhalt bei Anhängen (`replace_ical_attachments`): `FMTTYPE`-, `VALUE=URI`- und inline/remote-Attribute bleiben erhalten; neue Anhänge werden angehängt; gelöschte Anhänge werden entfernt.
+     - Zeitzonen-Präfixe (`DTSTART;TZID=...`, `DTEND;TZID=...`, `RDATE;TZID=...`): Bestehende Zeitzonenbezeichner werden bei Zeitänderungen erhalten.
+     - Wechsel zwischen Ganztags- (`VALUE=DATE`) und Uhrzeit-Modus: Bei Konvertierung zu Ganztag wird `VALUE=DATE` gesetzt und Zeitzonensuffixe bereinigt; bei Konvertierung zurück zu Uhrzeit wird `VALUE=DATE` sauber entfernt.
+     - Multi-`VALARM`-Synchronisation: Integriert mit `AlarmEditor` und `replace_component_alarms`; benutzerdefinierte und erweiterte Alarmtypen (Audio, Email, Procedure) werden geschützt.
+  2. Dialog- und Speicherintegration (`EventDialog::build_ui`):
+     - Beim Speichern modifizierter Termine (`edit_uid.is_some()`) führt `EventDialog` `update_existing_event_component` aus und sendet die aktualisierte iCalendar-Zeichenkette asynchron über `ECalService::modify_component`.
+     - Strikte Eingabevalidierung vor Mutation: Titel-Pflichtfeld, Beginn-vor-Ende-Prüfung, Statusvalidierung und Schutz gegen CRLF-Zeilenumbruch-Injektionen in Wiederholungs-, Teilnehmer- und Konferenzfeldern.
+     - Automatische Persistenz von Kategorie-Metadaten über `CalendarCategoryStore`.
+  Belegt durch 13 gezielte Unit-Tests in `dialogs::event_dialog::tests` (inkl. `update_existing_event_preserves_unknown_properties_and_parameters`, `update_existing_event_validates_inputs`, `update_existing_event_switches_all_day_mode`) und 947/947 Workspace-Tests.
+- Offener Parent-/Linux-Rest: ECal-Create/Modify/Remove gegen Live-EDS-Dämonen, serverseitige iTIP-Planung/Meeting-Einladungen, Server-ACLs und Linux-Visuals.
+
 ### GW-TASK-EDITOR-LIFECYCLE
 
 - Status: `BLOCKED_LINUX`; portabler Teil des offenen Elternpakets
@@ -1454,8 +1473,13 @@ allein ist kein Implementierungsbeleg.
   gemeinsame RRULE/RDATE/EXDATE-/Mehrtag-/DTEND-Auswertung und 25 gezielte
   Kalender-View-Tests. `GW-ALARMS` ergänzt den reviewed Multi-VALARM-Editor,
   verlustarmen Parser/Serializer und Event-/Task-/Memo-Scheduler und ist wegen
-  des EDS-Watchers `BLOCKED_LINUX`; `GW-MEMO-EDITOR` ergänzt als eigener
-  atomarer Schnitt mit exakt diesem Produktionsscope in
+  des EDS-Watchers `BLOCKED_LINUX`; `GW-EVENT-EDITOR` schließt als portabler
+  Schnitt das verlustfreie Event-Editing (`update_existing_event_component`) mit
+  vollständigem Erhalt von RFC5545-Top-Level-/Vendor-Properties (ORGANIZER, GEO,
+  URL, PRIORITY, X-EVOLUTION-*), Parameter-Erhalt bei Teilnehmern und Anhängen,
+  Ganztags-/Uhrzeit-Moduswechsel (`VALUE=DATE`), Multi-VALARM-Synchronisation
+  und Eingabeschutz ab und ist `BLOCKED_LINUX`; `GW-MEMO-EDITOR` ergänzt als
+  eigener atomarer Schnitt mit exakt diesem Produktionsscope in
   `src/services/calendar_store_service.rs` und `src/views/memos_page.rs` den
   vollständigen portablen VJOURNAL-Draft- /
   Attachment-/URL-/unknown-property-/VALARM-Erhalt sowie atomare

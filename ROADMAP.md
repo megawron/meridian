@@ -1381,6 +1381,14 @@ Die Statuswerte sind Quellen-/UI-Belege, keine Laufzeit- oder Providerabnahme:
   Treffer werden über einen einheitlichen Open-by-UID-Vertrag im jeweiligen Komponenten-Editor geöffnet.
   54/54 Kalendertests und 19/19 Migrationstests belegen die Funktionalität portabel;
   reale EDS-ECal-Dienste und Linux-Live-Monitore bleiben Linux-only Rest.
+- [~] `GW-EVENT-EDITOR` schließt die upstream-äquivalente Ereignis-Bearbeitung (`calendar/gui/e-comp-editor-event.c`):
+  `EventDialog` nutzt die extrahierte und auditierte Funktion `update_existing_event_component` für verlustfreies
+  iCalendar-Update, die unberührte RFC5545-Eigenschaften (`ORGANIZER`, `GEO`, `URL`, `PRIORITY`, `X-EVOLUTION-*`,
+  anbieterspezifische Felder) unverändert erhält, Parameter bei Teilnehmern (`CN`, `ROLE`, `PARTSTAT`) und Anhängen
+  (`FMTTYPE`) bewahrt, Zeitzonen-Präfixe (`TZID`) auf `DTSTART`/`DTEND`/`RDATE` schützt, nahtlos zwischen Ganztags-
+  (`VALUE=DATE`) und Uhrzeit-Modus wechselt sowie Multi-`VALARM`-Synchronisation bereitstellt.
+  Eingabevalidierung und Schutz gegen Zeilenumbruch-Injektionen sind portabel durch 13 Unit-Tests und die
+  gesamte Workspace-Suite (947/947) belegt; Live-ECalClient-Server-Roundtrip und iTIP-Planung bleiben Linux-only.
 - [~] VTODO/VJOURNAL-Erstellung, VTODO-Status, Notizbearbeitung/-löschung,
   VTODO-Bearbeitung, Prioritäten, Fälligkeiten und Notizlöschung werden über
   den EDS-Adapter persistiert. ECal-Signalaktualisierung ist angebunden;
