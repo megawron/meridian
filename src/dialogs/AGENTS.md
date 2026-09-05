@@ -61,6 +61,11 @@ and updates to the service/settings APIs.
   entries with Evolution's upstream 333ms debounce, generation-tracked queries
   across local vCards and GAL directory sources, keyboard-first navigation
   (Up/Down/Enter/Tab/Escape), and comma-delimited recipient token replacement.
+- Filter editor dialog (`FilterEditorDialog`) supports all 23 typed filter actions
+  with dynamic target inputs (folders, labels, colors, scores, sound files, programs,
+  addresses). Mail preferences (`PreferencesDialog`) provide live toggles for
+  `filters-log-actions` and `filters-log-file`, as well as dry-run test simulation
+  triggers per rule and for all active rules without mailbox mutation.
 
 ## Verification
 

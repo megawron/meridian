@@ -220,6 +220,15 @@ fn apply_read_only_mail_filters(
                                 .labels
                                 .retain(|candidate| !candidate.eq_ignore_ascii_case(label));
                         }
+                        FilterAction::AssignColor(_)
+                        | FilterAction::UnsetColor
+                        | FilterAction::AssignScore(_)
+                        | FilterAction::AdjustScore(_)
+                        | FilterAction::Beep
+                        | FilterAction::PlaySound(_)
+                        | FilterAction::RunProgram(_)
+                        | FilterAction::PipeToProgram(_)
+                        | FilterAction::ForwardTo(_) => {}
                     }
                 }
                 if stop_processing {

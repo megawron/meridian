@@ -60,6 +60,14 @@ settings persistence.
 - MIME, vCard, settings, filter, and profile import paths preserve unknown safe
   data where possible. Unsupported values become redacted warnings; credentials
   and secret material must never enter app-owned stores, reports, or logs.
+- Mail filter rules are an exhaustive 23-action typed contract (including color,
+  score, beep, sound, program execution, pipes, forwarding, labels, flags, and
+  folder operations). Conditions and actions compile bidirectionally to Camel
+  S-expressions (`to_camel_sexp`). Execution actions and errors are logged via
+  `FilterExecutionLogger` and `global_filter_logger()` when enabled by GSettings
+  `filters-log-actions` to an optional `filters-log-file`. Dry-run simulations
+  (`simulate_filters_on_messages`, `simulate_filter_rule`, `simulate_all_filters`)
+  return a `FilterSimulationReport` without mutating mailbox or sidecar state.
 - Portable task filters are a typed, persistable contract: upstream-relevant
   date/status/category/attachment predicates and advanced search terms are
   normalized on load and migration, evaluated deterministically across date

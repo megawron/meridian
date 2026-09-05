@@ -149,6 +149,15 @@ fn filter_action_index(action: &FilterAction) -> u32 {
         FilterAction::ClearJunk => 11,
         FilterAction::SetLabel(_) => 12,
         FilterAction::ClearLabel(_) => 13,
+        FilterAction::AssignColor(_) => 14,
+        FilterAction::UnsetColor => 15,
+        FilterAction::AssignScore(_) => 16,
+        FilterAction::AdjustScore(_) => 17,
+        FilterAction::Beep => 18,
+        FilterAction::PlaySound(_) => 19,
+        FilterAction::RunProgram(_) => 20,
+        FilterAction::PipeToProgram(_) => 21,
+        FilterAction::ForwardTo(_) => 22,
     }
 }
 
@@ -200,7 +209,30 @@ fn action_from_editor(editor: &ActionEditor) -> Result<FilterAction, String> {
         12 if target.is_empty() => Err("Für das Label ist ein Name erforderlich".into()),
         12 => Ok(FilterAction::SetLabel(target)),
         13 if target.is_empty() => Err("Für das Label ist ein Name erforderlich".into()),
-        _ => Ok(FilterAction::ClearLabel(target)),
+        13 => Ok(FilterAction::ClearLabel(target)),
+        14 if target.is_empty() => {
+            Err("Für die Farbe ist ein Farbwert erforderlich (z.B. #ff0000 oder red)".into())
+        }
+        14 => Ok(FilterAction::AssignColor(target)),
+        15 => Ok(FilterAction::UnsetColor),
+        16 => target
+            .parse::<i32>()
+            .map(FilterAction::AssignScore)
+            .map_err(|_| "Für die Bewertung ist eine gültige Ganzzahl erforderlich".to_string()),
+        17 => target
+            .parse::<i32>()
+            .map(FilterAction::AdjustScore)
+            .map_err(|_| "Für die Bewertungsanpassung ist eine Ganzzahl (+/-) erforderlich".to_string()),
+        18 => Ok(FilterAction::Beep),
+        19 if target.is_empty() => Err("Für den Klang ist ein Dateipfad erforderlich".into()),
+        19 => Ok(FilterAction::PlaySound(target)),
+        20 if target.is_empty() => Err("Für das Programm ist ein Befehl erforderlich".into()),
+        20 => Ok(FilterAction::RunProgram(target)),
+        21 if target.is_empty() => Err("Für die Weiterleitung (Pipe) ist ein Befehl erforderlich".into()),
+        21 => Ok(FilterAction::PipeToProgram(target)),
+        22 if target.is_empty() => Err("Für die Weiterleitung ist eine E-Mail-Adresse erforderlich".into()),
+        22 => Ok(FilterAction::ForwardTo(target)),
+        _ => Err("Unbekannte Filteraktion".into()),
     }
 }
 
@@ -319,28 +351,27 @@ fn append_action_editor(
         "Als kein Spam markieren",
         "Label setzen",
         "Label entfernen",
+        "Farbe zuweisen",
+        "Farbe entfernen",
+        "Bewertung festlegen",
+        "Bewertung anpassen",
+        "Signalton ausgeben",
+        "Klang abspielen",
+        "Programm ausführen",
+        "An Programm weiterleiten (Pipe)",
+        "Weiterleiten an",
     ]);
     let action_type = gtk::DropDown::new(Some(action_model), None::<&gtk::Expression>);
     action_type.set_selected(filter_action_index(&action));
-    action_type.set_width_request(220);
+    action_type.set_width_request(240);
     let target = gtk::Entry::builder()
-        .placeholder_text("Zielordner oder Label")
+        .placeholder_text("Zielordner, Label oder Parameter")
         .hexpand(true)
         .build();
-    match &action {
-        FilterAction::MoveToFolder(folder)
-        | FilterAction::CopyToFolder(folder)
-        | FilterAction::SetLabel(folder)
-        | FilterAction::ClearLabel(folder) => target.set_text(folder),
-        _ => {}
+    if let Some(target_val) = action.target_value() {
+        target.set_text(target_val);
     }
-    target.set_sensitive(matches!(
-        action,
-        FilterAction::MoveToFolder(_)
-            | FilterAction::CopyToFolder(_)
-            | FilterAction::SetLabel(_)
-            | FilterAction::ClearLabel(_)
-    ));
+    target.set_sensitive(action.target_value().is_some());
     let remove = gtk::Button::builder()
         .icon_name("user-trash-symbolic")
         .tooltip_text("Aktion entfernen")
@@ -358,15 +389,37 @@ fn append_action_editor(
 
     let target_for_type = target.clone();
     action_type.connect_selected_notify(move |dropdown| {
-        let needs_target = matches!(dropdown.selected(), 0 | 1 | 12 | 13);
+        let sel = dropdown.selected();
+        let needs_target = matches!(sel, 0 | 1 | 12 | 13 | 14 | 16 | 17 | 19 | 20 | 21 | 22);
         target_for_type.set_sensitive(needs_target);
         if needs_target && target_for_type.text().trim().is_empty() {
-            target_for_type.set_text(if matches!(dropdown.selected(), 12 | 13) {
-                "work"
-            } else {
-                "archive"
-            });
+            let default_val = match sel {
+                0 | 1 => "archive",
+                12 | 13 => "work",
+                14 => "#ff0000",
+                16 => "10",
+                17 => "5",
+                19 => "/usr/share/sounds/freedesktop/stereo/complete.oga",
+                20 => "/usr/bin/notify-send",
+                21 => "cat",
+                22 => "user@example.com",
+                _ => "",
+            };
+            target_for_type.set_text(default_val);
         }
+        let placeholder = match sel {
+            0 | 1 => "Zielordner (z.B. archive)",
+            12 | 13 => "Labelname (z.B. Important)",
+            14 => "Farbcode oder Name (z.B. #ff0000)",
+            16 => "Punktzahl (Ganzzahl, z.B. 10)",
+            17 => "Punkte delta (z.B. +5 oder -10)",
+            19 => "Klangdatei-Pfad (z.B. .wav, .oga)",
+            20 => "Befehl / Skriptpfad",
+            21 => "Befehl für STDIN-Pipe",
+            22 => "Empfänger-E-Mail-Adresse",
+            _ => "",
+        };
+        target_for_type.set_placeholder_text(Some(placeholder));
     });
 
     editors.borrow_mut().push(ActionEditor {

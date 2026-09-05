@@ -2196,6 +2196,32 @@ impl AppSettings {
         self.set_boolean("contact-editor-show-certs", value);
     }
 
+    pub fn filters_log_actions(&self) -> bool {
+        self.settings.boolean("filters-log-actions")
+    }
+
+    pub fn set_filters_log_actions(&self, value: bool) {
+        self.set_boolean("filters-log-actions", value);
+    }
+
+    pub fn filters_log_file(&self) -> String {
+        self.settings.string("filters-log-file").to_string()
+    }
+
+    pub fn set_filters_log_file(&self, value: &str) {
+        if let Err(error) = self.settings.set_string("filters-log-file", value.trim()) {
+            tracing::warn!(%error, "Could not persist filters log file");
+        }
+    }
+
+    pub fn flush_outbox(&self) -> bool {
+        self.settings.boolean("flush-outbox")
+    }
+
+    pub fn set_flush_outbox(&self, value: bool) {
+        self.set_boolean("flush-outbox", value);
+    }
+
     /// Apply one already-normalized, non-secret setting from an explicit
     /// profile migration.  The migration parser only exposes keys from the
     /// installed schema; keeping the final type conversion here makes sure
@@ -2643,6 +2669,15 @@ impl AppSettings {
             "contact-editor-show-certs" => {
                 self.set_contact_editor_show_certs(parse_migrated_bool(key, value)?);
             }
+            "filters-log-actions" => {
+                self.set_filters_log_actions(parse_migrated_bool(key, value)?);
+            }
+            "filters-log-file" => {
+                self.set_filters_log_file(value);
+            }
+            "flush-outbox" => {
+                self.set_flush_outbox(parse_migrated_bool(key, value)?);
+            }
             _ => return Err(format!("unbekannter Migrationsschlüssel „{key}“")),
         }
         Ok(())
@@ -2803,6 +2838,9 @@ impl AppSettings {
             "contact-editor-show-misc",
             "contact-editor-show-notes",
             "contact-editor-show-certs",
+            "filters-log-actions",
+            "filters-log-file",
+            "flush-outbox",
         ] {
             self.settings.reset(key);
         }
@@ -4089,5 +4127,49 @@ mod tests {
         assert_eq!(reset.contact_layout(), "classic");
         assert!(reset.contact_preview_visible());
         assert!(reset.contact_editor_show_phone());
+    }
+
+    #[test]
+    fn filter_logging_and_flush_outbox_roundtrip() {
+        let backend = gio::memory_settings_backend_new();
+        let settings = settings_with_backend(&backend);
+
+        // 1. Defaults
+        assert!(!settings.filters_log_actions());
+        assert_eq!(settings.filters_log_file(), "");
+        assert!(settings.flush_outbox());
+
+        // 2. Setters
+        settings.set_filters_log_actions(true);
+        assert!(settings.filters_log_actions());
+
+        settings.set_filters_log_file(" /tmp/filter.log ");
+        assert_eq!(settings.filters_log_file(), "/tmp/filter.log");
+
+        settings.set_flush_outbox(false);
+        assert!(!settings.flush_outbox());
+
+        // 3. Migration import
+        settings
+            .apply_migrated_setting("filters-log-actions", "false")
+            .unwrap();
+        assert!(!settings.filters_log_actions());
+
+        settings
+            .apply_migrated_setting("filters-log-file", "/var/log/evolution-filters.log")
+            .unwrap();
+        assert_eq!(settings.filters_log_file(), "/var/log/evolution-filters.log");
+
+        settings
+            .apply_migrated_setting("flush-outbox", "true")
+            .unwrap();
+        assert!(settings.flush_outbox());
+
+        // 4. Reset to defaults
+        settings.reset_to_defaults();
+        let reset = settings_with_backend(&backend);
+        assert!(!reset.filters_log_actions());
+        assert_eq!(reset.filters_log_file(), "");
+        assert!(reset.flush_outbox());
     }
 }

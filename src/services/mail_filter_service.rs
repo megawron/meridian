@@ -6,11 +6,12 @@
 // to CamelFilterDriver later, while local imports and tests can already use
 // the same matching semantics without inventing successful server actions.
 
-use chrono::{DateTime, NaiveDate, NaiveDateTime};
+use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 
 const CURRENT_VERSION: u32 = 1;
 
@@ -109,6 +110,66 @@ pub enum FilterAction {
     ClearJunk,
     SetLabel(String),
     ClearLabel(String),
+    AssignColor(String),
+    UnsetColor,
+    AssignScore(i32),
+    AdjustScore(i32),
+    Beep,
+    PlaySound(String),
+    RunProgram(String),
+    PipeToProgram(String),
+    ForwardTo(String),
+}
+
+impl FilterAction {
+    pub fn description(&self) -> String {
+        match self {
+            Self::MoveToFolder(folder) => format!("In Ordner »{folder}« verschieben"),
+            Self::CopyToFolder(folder) => format!("In Ordner »{folder}« kopieren"),
+            Self::MarkRead => "Als gelesen markieren".to_string(),
+            Self::MarkUnread => "Als ungelesen markieren".to_string(),
+            Self::SetFlagged => "Stern-/Markierungsstatus setzen".to_string(),
+            Self::ClearFlagged => "Stern-/Markierungsstatus entfernen".to_string(),
+            Self::SetImportant => "Wichtigkeit setzen".to_string(),
+            Self::ClearImportant => "Wichtigkeit entfernen".to_string(),
+            Self::Delete => "Löschen".to_string(),
+            Self::StopProcessing => "Weitere Filterregeln nicht ausführen".to_string(),
+            Self::SetJunk => "Als unerwünscht einstufen".to_string(),
+            Self::ClearJunk => "Unerwünscht-Status aufheben".to_string(),
+            Self::SetLabel(label) => format!("Farbetikett »{label}« zuweisen"),
+            Self::ClearLabel(label) => {
+                if label.is_empty() {
+                    "Alle Farbetiketten entfernen".to_string()
+                } else {
+                    format!("Farbetikett »{label}« entfernen")
+                }
+            }
+            Self::AssignColor(color) => format!("Farbe »{color}« zuweisen"),
+            Self::UnsetColor => "Farbe zurücksetzen".to_string(),
+            Self::AssignScore(score) => format!("Bewertung auf {score} setzen"),
+            Self::AdjustScore(score) => format!("Bewertung um {score} anpassen"),
+            Self::Beep => "Signalton abspielen".to_string(),
+            Self::PlaySound(file) => format!("Klangdatei »{file}« abspielen"),
+            Self::RunProgram(cmd) => format!("Befehl ausführen: »{cmd}«"),
+            Self::PipeToProgram(cmd) => format!("An Befehl weiterleiten: »{cmd}«"),
+            Self::ForwardTo(addr) => format!("Weiterleiten an »{addr}«"),
+        }
+    }
+
+    pub fn target_value(&self) -> Option<&str> {
+        match self {
+            Self::MoveToFolder(target)
+            | Self::CopyToFolder(target)
+            | Self::SetLabel(target)
+            | Self::ClearLabel(target)
+            | Self::AssignColor(target)
+            | Self::PlaySound(target)
+            | Self::RunProgram(target)
+            | Self::PipeToProgram(target)
+            | Self::ForwardTo(target) => Some(target.as_str()),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -187,7 +248,12 @@ impl MailFilterRule {
                 FilterAction::MoveToFolder(target)
                 | FilterAction::CopyToFolder(target)
                 | FilterAction::SetLabel(target)
-                | FilterAction::ClearLabel(target) => Some(target),
+                | FilterAction::ClearLabel(target)
+                | FilterAction::AssignColor(target)
+                | FilterAction::PlaySound(target)
+                | FilterAction::RunProgram(target)
+                | FilterAction::PipeToProgram(target)
+                | FilterAction::ForwardTo(target) => Some(target),
                 _ => None,
             };
             if target.is_some_and(|target| target.trim().is_empty()) {
@@ -340,6 +406,235 @@ impl MailFilterRule {
             condition_matches.all(|matches| matches)
         } else {
             condition_matches.any(|matches| matches)
+        }
+    }
+
+    /// Compiles the rule into upstream Camel filter driver S-expressions:
+    /// returns `(search_query_sexp, actions_sexp)`.
+    pub fn to_camel_sexp(&self) -> (String, String) {
+        let conditions = self.effective_conditions();
+        let cond_sexps: Vec<String> = conditions.into_iter().map(|c| c.to_camel_sexp()).collect();
+        let search_sexp = if cond_sexps.is_empty() {
+            String::new()
+        } else if cond_sexps.len() == 1 {
+            cond_sexps[0].clone()
+        } else if self.match_all {
+            format!("(and {})", cond_sexps.join(" "))
+        } else {
+            format!("(or {})", cond_sexps.join(" "))
+        };
+
+        let actions = self.effective_actions();
+        let action_sexps: Vec<String> = actions.into_iter().map(|a| a.to_camel_sexp()).collect();
+        let actions_sexp = action_sexps.join(" ");
+
+        (search_sexp, actions_sexp)
+    }
+}
+
+pub fn camel_escape_string(value: &str) -> String {
+    let mut out = String::with_capacity(value.len() + 2);
+    out.push('"');
+    for ch in value.chars() {
+        if ch == '"' || ch == '\\' {
+            out.push('\\');
+        }
+        out.push(ch);
+    }
+    out.push('"');
+    out
+}
+
+impl FilterCondition {
+    pub fn to_camel_sexp(&self) -> String {
+        let val = &self.value;
+        match self.field {
+            FilterField::Subject => match self.operator {
+                FilterOperator::Contains => {
+                    format!("(header-contains \"Subject\" {})", camel_escape_string(val))
+                }
+                FilterOperator::NotContains => format!(
+                    "(not (header-contains \"Subject\" {}))",
+                    camel_escape_string(val)
+                ),
+                FilterOperator::Equals => {
+                    format!("(header-matches \"Subject\" {})", camel_escape_string(val))
+                }
+                FilterOperator::NotEquals => format!(
+                    "(not (header-matches \"Subject\" {}))",
+                    camel_escape_string(val)
+                ),
+                FilterOperator::StartsWith => format!(
+                    "(header-starts-with \"Subject\" {})",
+                    camel_escape_string(val)
+                ),
+                FilterOperator::EndsWith => {
+                    format!("(header-ends-with \"Subject\" {})", camel_escape_string(val))
+                }
+                FilterOperator::Exists => "(header-exists \"Subject\")".to_string(),
+                _ => format!("(header-contains \"Subject\" {})", camel_escape_string(val)),
+            },
+            FilterField::Sender => match self.operator {
+                FilterOperator::Contains => {
+                    format!("(header-contains \"From\" {})", camel_escape_string(val))
+                }
+                FilterOperator::NotContains => format!(
+                    "(not (header-contains \"From\" {}))",
+                    camel_escape_string(val)
+                ),
+                FilterOperator::Equals => {
+                    format!("(header-matches \"From\" {})", camel_escape_string(val))
+                }
+                FilterOperator::NotEquals => format!(
+                    "(not (header-matches \"From\" {}))",
+                    camel_escape_string(val)
+                ),
+                FilterOperator::StartsWith => format!(
+                    "(header-starts-with \"From\" {})",
+                    camel_escape_string(val)
+                ),
+                FilterOperator::EndsWith => {
+                    format!("(header-ends-with \"From\" {})", camel_escape_string(val))
+                }
+                FilterOperator::Exists => "(header-exists \"From\")".to_string(),
+                _ => format!("(header-contains \"From\" {})", camel_escape_string(val)),
+            },
+            FilterField::Recipient => {
+                let esc = camel_escape_string(val);
+                match self.operator {
+                    FilterOperator::Contains => format!(
+                        "(or (header-contains \"To\" {esc}) (header-contains \"Cc\" {esc}))"
+                    ),
+                    FilterOperator::NotContains => format!(
+                        "(not (or (header-contains \"To\" {esc}) (header-contains \"Cc\" {esc})))"
+                    ),
+                    FilterOperator::Equals => format!(
+                        "(or (header-matches \"To\" {esc}) (header-matches \"Cc\" {esc}))"
+                    ),
+                    FilterOperator::NotEquals => format!(
+                        "(not (or (header-matches \"To\" {esc}) (header-matches \"Cc\" {esc})))"
+                    ),
+                    FilterOperator::StartsWith => format!(
+                        "(or (header-starts-with \"To\" {esc}) (header-starts-with \"Cc\" {esc}))"
+                    ),
+                    FilterOperator::EndsWith => format!(
+                        "(or (header-ends-with \"To\" {esc}) (header-ends-with \"Cc\" {esc}))"
+                    ),
+                    FilterOperator::Exists => {
+                        "(or (header-exists \"To\") (header-exists \"Cc\"))".to_string()
+                    }
+                    _ => format!(
+                        "(or (header-contains \"To\" {esc}) (header-contains \"Cc\" {esc}))"
+                    ),
+                }
+            }
+            FilterField::Body => match self.operator {
+                FilterOperator::NotContains => {
+                    format!("(not (body-contains {}))", camel_escape_string(val))
+                }
+                _ => format!("(body-contains {})", camel_escape_string(val)),
+            },
+            FilterField::Header => match self.operator {
+                FilterOperator::Exists => format!("(header-exists {})", camel_escape_string(val)),
+                _ => format!("(header-contains \"{}\" {})", val, camel_escape_string(val)),
+            },
+            FilterField::Label => match self.operator {
+                FilterOperator::NotEquals | FilterOperator::NotContains => {
+                    format!("(not (user-flag {}))", camel_escape_string(val))
+                }
+                _ => format!("(user-flag {})", camel_escape_string(val)),
+            },
+            FilterField::Unread => {
+                let is_true = parse_boolean_value(val).unwrap_or(true);
+                if is_true {
+                    "(not (system-flag \"Seen\"))".to_string()
+                } else {
+                    "(system-flag \"Seen\")".to_string()
+                }
+            }
+            FilterField::Flagged => {
+                let is_true = parse_boolean_value(val).unwrap_or(true);
+                if is_true {
+                    "(system-flag \"Flagged\")".to_string()
+                } else {
+                    "(not (system-flag \"Flagged\"))".to_string()
+                }
+            }
+            FilterField::Important => {
+                let is_true = parse_boolean_value(val).unwrap_or(true);
+                if is_true {
+                    "(system-flag \"Flagged\")".to_string()
+                } else {
+                    "(not (system-flag \"Flagged\"))".to_string()
+                }
+            }
+            FilterField::Attachment => {
+                let is_true = parse_boolean_value(val).unwrap_or(true);
+                if is_true {
+                    "(system-flag \"Attachments\")".to_string()
+                } else {
+                    "(not (system-flag \"Attachments\"))".to_string()
+                }
+            }
+            FilterField::Junk => {
+                let is_true = parse_boolean_value(val).unwrap_or(true);
+                if is_true {
+                    "(= (junk-test) 1)".to_string()
+                } else {
+                    "(not (= (junk-test) 1))".to_string()
+                }
+            }
+            FilterField::Date => match self.operator {
+                FilterOperator::Before => {
+                    format!("(sent-date-before {})", camel_escape_string(val))
+                }
+                FilterOperator::After => {
+                    format!("(sent-date-after {})", camel_escape_string(val))
+                }
+                _ => format!("(sent-date-is {})", camel_escape_string(val)),
+            },
+            FilterField::Folder => format!("(folder-name {})", camel_escape_string(val)),
+        }
+    }
+}
+
+impl FilterAction {
+    pub fn to_camel_sexp(&self) -> String {
+        match self {
+            Self::MoveToFolder(folder) => format!("(move-to {})", camel_escape_string(folder)),
+            Self::CopyToFolder(folder) => format!("(copy-to {})", camel_escape_string(folder)),
+            Self::MarkRead => "(set-system-flag \"Seen\")".to_string(),
+            Self::MarkUnread => "(unset-system-flag \"Seen\")".to_string(),
+            Self::SetFlagged => "(set-system-flag \"Flagged\")".to_string(),
+            Self::ClearFlagged => "(unset-system-flag \"Flagged\")".to_string(),
+            Self::SetImportant => "(set-system-flag \"Flagged\")".to_string(),
+            Self::ClearImportant => "(unset-system-flag \"Flagged\")".to_string(),
+            Self::Delete => "(delete)".to_string(),
+            Self::StopProcessing => "(stop)".to_string(),
+            Self::SetJunk => "(set-system-flag \"Junk\")".to_string(),
+            Self::ClearJunk => "(unset-system-flag \"Junk\")".to_string(),
+            Self::SetLabel(label) => format!("(set-label {})", camel_escape_string(label)),
+            Self::ClearLabel(label) => {
+                if label.is_empty() {
+                    "(unset-label)".to_string()
+                } else {
+                    format!("(unset-label {})", camel_escape_string(label))
+                }
+            }
+            Self::AssignColor(color) => format!("(set-color {})", camel_escape_string(color)),
+            Self::UnsetColor => "(set-color \"\")".to_string(),
+            Self::AssignScore(score) => format!("(set-score {score})"),
+            Self::AdjustScore(score) => format!("(adjust-score {score})"),
+            Self::Beep => "(beep)".to_string(),
+            Self::PlaySound(sound) => format!("(play-sound {})", camel_escape_string(sound)),
+            Self::RunProgram(cmd) => {
+                format!("(shell \"/bin/sh\" \"-c\" {})", camel_escape_string(cmd))
+            }
+            Self::PipeToProgram(cmd) => format!(
+                "(pipe-message \"/bin/sh\" \"-c\" {})",
+                camel_escape_string(cmd)
+            ),
+            Self::ForwardTo(addr) => format!("(forward-to {} \"\")", camel_escape_string(addr)),
         }
     }
 }
@@ -568,6 +863,95 @@ impl Default for MailFilterStore {
     fn default() -> Self {
         Self::from_environment()
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FilterActionStatus {
+    Success,
+    Failed,
+    Skipped,
+    Simulated,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FilterLogEntry {
+    pub timestamp: DateTime<Utc>,
+    pub rule_id: String,
+    pub rule_name: String,
+    pub action_description: String,
+    pub message_id: String,
+    pub message_subject: String,
+    pub status: FilterActionStatus,
+    pub error_message: Option<String>,
+}
+
+const MAX_LOG_ENTRIES: usize = 500;
+
+#[derive(Debug, Default)]
+pub struct FilterExecutionLogger {
+    entries: Mutex<Vec<FilterLogEntry>>,
+}
+
+impl FilterExecutionLogger {
+    pub fn new() -> Self {
+        Self {
+            entries: Mutex::new(Vec::new()),
+        }
+    }
+
+    pub fn log(&self, entry: FilterLogEntry, log_file: Option<&Path>) {
+        if let Some(path) = log_file {
+            if let Some(parent) = path.parent() {
+                let _ = fs::create_dir_all(parent);
+            }
+            if let Ok(mut file) = fs::OpenOptions::new().create(true).append(true).open(path) {
+                use std::io::Write;
+                let error_suffix = match &entry.error_message {
+                    Some(err) => format!(" - error: {err}"),
+                    None => String::new(),
+                };
+                let line = format!(
+                    "[{}] [{:?}] rule '{}' ({}) -> {} on message '{}' (ID: {}){}\n",
+                    entry.timestamp.format("%Y-%m-%d %H:%M:%S"),
+                    entry.status,
+                    entry.rule_name,
+                    entry.rule_id,
+                    entry.action_description,
+                    entry.message_subject,
+                    entry.message_id,
+                    error_suffix
+                );
+                let _ = file.write_all(line.as_bytes());
+            }
+        }
+
+        if let Ok(mut entries) = self.entries.lock() {
+            entries.push(entry);
+            if entries.len() > MAX_LOG_ENTRIES {
+                let excess = entries.len() - MAX_LOG_ENTRIES;
+                entries.drain(0..excess);
+            }
+        }
+    }
+
+    pub fn entries(&self) -> Vec<FilterLogEntry> {
+        self.entries
+            .lock()
+            .map(|guard| guard.clone())
+            .unwrap_or_default()
+    }
+
+    pub fn clear(&self) {
+        if let Ok(mut entries) = self.entries.lock() {
+            entries.clear();
+        }
+    }
+}
+
+static GLOBAL_FILTER_LOGGER: OnceLock<FilterExecutionLogger> = OnceLock::new();
+
+pub fn global_filter_logger() -> &'static FilterExecutionLogger {
+    GLOBAL_FILTER_LOGGER.get_or_init(FilterExecutionLogger::new)
 }
 
 #[cfg(test)]
@@ -938,6 +1322,157 @@ mod tests {
         assert!(!store.move_rule("one", -1).unwrap());
         assert!(!store.move_rule("two", 1).unwrap());
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn camel_sexp_compiler_generates_valid_expressions() {
+        let rule = MailFilterRule {
+            id: "full-test".to_string(),
+            name: "Parity Rule".to_string(),
+            enabled: true,
+            scope: FilterScope::Incoming,
+            condition: FilterCondition {
+                field: FilterField::Subject,
+                value: "meeting".to_string(),
+                operator: FilterOperator::Contains,
+            },
+            action: FilterAction::MarkRead,
+            conditions: vec![
+                FilterCondition {
+                    field: FilterField::Subject,
+                    value: "meeting".to_string(),
+                    operator: FilterOperator::Contains,
+                },
+                FilterCondition {
+                    field: FilterField::Sender,
+                    value: "boss@example.org".to_string(),
+                    operator: FilterOperator::Equals,
+                },
+                FilterCondition {
+                    field: FilterField::Unread,
+                    value: "true".to_string(),
+                    operator: FilterOperator::Equals,
+                },
+                FilterCondition {
+                    field: FilterField::Attachment,
+                    value: "yes".to_string(),
+                    operator: FilterOperator::Equals,
+                },
+            ],
+            actions: vec![
+                FilterAction::MarkRead,
+                FilterAction::AssignColor("#ff0000".to_string()),
+                FilterAction::UnsetColor,
+                FilterAction::AssignScore(10),
+                FilterAction::AdjustScore(-5),
+                FilterAction::Beep,
+                FilterAction::PlaySound("alarm.ogg".to_string()),
+                FilterAction::RunProgram("notify-send alert".to_string()),
+                FilterAction::PipeToProgram("procmail".to_string()),
+                FilterAction::ForwardTo("team@example.org".to_string()),
+                FilterAction::MoveToFolder("archive".to_string()),
+                FilterAction::StopProcessing,
+            ],
+            match_all: true,
+        };
+
+        let (query_sexp, actions_sexp) = rule.to_camel_sexp();
+        assert!(query_sexp.starts_with("(and "));
+        assert!(query_sexp.contains("(header-contains \"Subject\" \"meeting\")"));
+        assert!(query_sexp.contains("(header-matches \"From\" \"boss@example.org\")"));
+        assert!(query_sexp.contains("(not (system-flag \"Seen\"))"));
+        assert!(query_sexp.contains("(system-flag \"Attachments\")"));
+
+        assert!(actions_sexp.contains("(set-system-flag \"Seen\")"));
+        assert!(actions_sexp.contains("(set-color \"#ff0000\")"));
+        assert!(actions_sexp.contains("(set-color \"\")"));
+        assert!(actions_sexp.contains("(set-score 10)"));
+        assert!(actions_sexp.contains("(adjust-score -5)"));
+        assert!(actions_sexp.contains("(beep)"));
+        assert!(actions_sexp.contains("(play-sound \"alarm.ogg\")"));
+        assert!(actions_sexp.contains("(shell \"/bin/sh\" \"-c\" \"notify-send alert\")"));
+        assert!(actions_sexp.contains("(pipe-message \"/bin/sh\" \"-c\" \"procmail\")"));
+        assert!(actions_sexp.contains("(forward-to \"team@example.org\" \"\")"));
+        assert!(actions_sexp.contains("(move-to \"archive\")"));
+        assert!(actions_sexp.contains("(stop)"));
+    }
+
+    #[test]
+    fn new_actions_require_valid_targets() {
+        let mut rule = test_rule(FilterField::Subject, "test");
+
+        rule.action = FilterAction::AssignColor("".to_string());
+        assert!(rule.validate().is_err());
+        rule.action = FilterAction::AssignColor("#00ff00".to_string());
+        assert!(rule.validate().is_ok());
+
+        rule.action = FilterAction::UnsetColor;
+        assert!(rule.validate().is_ok());
+
+        rule.action = FilterAction::AssignScore(0);
+        assert!(rule.validate().is_ok());
+
+        rule.action = FilterAction::Beep;
+        assert!(rule.validate().is_ok());
+
+        rule.action = FilterAction::PlaySound("".to_string());
+        assert!(rule.validate().is_err());
+        rule.action = FilterAction::PlaySound("sound.wav".to_string());
+        assert!(rule.validate().is_ok());
+
+        rule.action = FilterAction::RunProgram("".to_string());
+        assert!(rule.validate().is_err());
+        rule.action = FilterAction::RunProgram("echo hi".to_string());
+        assert!(rule.validate().is_ok());
+
+        rule.action = FilterAction::PipeToProgram("".to_string());
+        assert!(rule.validate().is_err());
+        rule.action = FilterAction::PipeToProgram("cat".to_string());
+        assert!(rule.validate().is_ok());
+
+        rule.action = FilterAction::ForwardTo("".to_string());
+        assert!(rule.validate().is_err());
+        rule.action = FilterAction::ForwardTo("user@domain.org".to_string());
+        assert!(rule.validate().is_ok());
+    }
+
+    #[test]
+    fn filter_execution_logger_records_and_caps() {
+        let logger = FilterExecutionLogger::new();
+        assert!(logger.entries().is_empty());
+
+        let temp = temporary_directory("logger-test");
+        let log_file = temp.join("filter.log");
+
+        for i in 0..520 {
+            logger.log(
+                FilterLogEntry {
+                    timestamp: Utc::now(),
+                    rule_id: format!("rule-{i}"),
+                    rule_name: "Test Rule".to_string(),
+                    action_description: "mark read".to_string(),
+                    message_id: format!("msg-{i}"),
+                    message_subject: "Subject".to_string(),
+                    status: FilterActionStatus::Success,
+                    error_message: None,
+                },
+                Some(&log_file),
+            );
+        }
+
+        let entries = logger.entries();
+        assert_eq!(entries.len(), 500);
+        assert_eq!(entries.first().unwrap().rule_id, "rule-20");
+        assert_eq!(entries.last().unwrap().rule_id, "rule-519");
+
+        assert!(log_file.exists());
+        let content = fs::read_to_string(&log_file).unwrap();
+        assert!(content.contains("[Success] rule 'Test Rule' (rule-0) -> mark read"));
+
+        logger.clear();
+        assert!(logger.entries().is_empty());
+
+        let _ = fs::remove_dir_all(temp);
     }
 
     fn test_rule(field: FilterField, value: &str) -> MailFilterRule {

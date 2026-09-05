@@ -605,6 +605,85 @@ impl PreferencesDialog {
             }
         ));
         group_filters.add(&row_add_filter);
+
+        let row_test_all = adw::ActionRow::builder()
+            .title("Testlauf für alle aktiven Filterregeln…")
+            .subtitle("Simulation auf dem lokalen Mailbestand ohne Änderungen anzuwenden")
+            .activatable(true)
+            .build();
+        let icon_test = gtk::Image::from_icon_name("system-search-symbolic");
+        row_test_all.add_prefix(&icon_test);
+        let dialog_weak_for_all_sim = self.downgrade();
+        let settings_for_all_sim = settings.clone();
+        row_test_all.connect_activated(move |_| {
+            let Some(dialog) = dialog_weak_for_all_sim.upgrade() else {
+                return;
+            };
+            let (sender, receiver) = async_channel::bounded(1);
+            let local_mail_directory = settings_for_all_sim
+                .as_ref()
+                .map(|settings| settings.local_mail_directory());
+            let worker_result = std::thread::Builder::new()
+                .name("simulate-all-filters".to_string())
+                .spawn(move || {
+                    let store = match local_mail_directory.as_deref().filter(|path| !path.trim().is_empty()) {
+                        Some(dir) => MailStoreService::with_mail_dir(PathBuf::from(dir)),
+                        None => MailStoreService::new(),
+                    };
+                    let report = store.simulate_all_filters();
+                    let _ = sender.send_blocking(report);
+                });
+            if let Err(error) = worker_result {
+                dialog.show_toast(&format!(
+                    "Testlauf fehlgeschlagen: Worker konnte nicht gestartet werden: {error}"
+                ));
+                return;
+            }
+            let dialog_weak = dialog.downgrade();
+            glib::spawn_future_local(async move {
+                let result = receiver.recv().await;
+                let Some(dialog) = dialog_weak.upgrade() else {
+                    return;
+                };
+                match result {
+                    Ok(report) => {
+                        dialog.show_toast(&format!(
+                            "Testlauf für alle Filter: {} Treffer bei {} geprüften Nachricht(en)",
+                            report.matches.len(),
+                            report.total_messages_evaluated,
+                        ));
+                    }
+                    Err(_) => {}
+                }
+            });
+        });
+        group_filters.add(&row_test_all);
+
+        let row_log_actions = adw::SwitchRow::builder()
+            .title("Filteraktionen protokollieren")
+            .subtitle("Schreibt ausgeführte Filteraktionen und Fehler in die Filter-Protokolldatei")
+            .build();
+        if let Some(settings) = settings.clone() {
+            row_log_actions.set_active(settings.filters_log_actions());
+            let settings_for_log = settings.clone();
+            row_log_actions.connect_active_notify(move |switch| {
+                settings_for_log.set_filters_log_actions(switch.is_active());
+            });
+        }
+        group_filters.add(&row_log_actions);
+
+        let row_log_file = adw::EntryRow::builder()
+            .title("Filter-Protokolldatei")
+            .show_apply_button(true)
+            .build();
+        if let Some(settings) = settings.clone() {
+            row_log_file.set_text(&settings.filters_log_file());
+            let settings_for_file = settings.clone();
+            row_log_file.connect_apply(move |entry| {
+                settings_for_file.set_filters_log_file(entry.text().as_str());
+            });
+        }
+        group_filters.add(&row_log_file);
         for rule in MailFilterStore::default().load() {
             let condition_text = rule
                 .effective_conditions()
@@ -783,6 +862,71 @@ impl PreferencesDialog {
             });
             row.add_suffix(&run_button);
 
+            let simulate_button = gtk::Button::builder()
+                .icon_name("system-search-symbolic")
+                .tooltip_text("Testlauf für diese Regel ausführen (ohne Änderungen anzuwenden)")
+                .css_classes(vec!["flat"])
+                .valign(gtk::Align::Center)
+                .build();
+            let rule_id_for_sim = rule.id.clone();
+            let dialog_weak_for_sim = self.downgrade();
+            let simulate_button_for_result = simulate_button.clone();
+            let settings_for_sim = settings.clone();
+            simulate_button.connect_clicked(move |_| {
+                let Some(dialog) = dialog_weak_for_sim.upgrade() else {
+                    return;
+                };
+                simulate_button_for_result.set_sensitive(false);
+                let (sender, receiver) = async_channel::bounded(1);
+                let local_mail_directory = settings_for_sim
+                    .as_ref()
+                    .map(|settings| settings.local_mail_directory());
+                let rule_id = rule_id_for_sim.clone();
+                let worker_result = std::thread::Builder::new()
+                    .name("simulate-mail-filter".to_string())
+                    .spawn(move || {
+                        let store = match local_mail_directory.as_deref().filter(|path| !path.trim().is_empty()) {
+                            Some(dir) => MailStoreService::with_mail_dir(PathBuf::from(dir)),
+                            None => MailStoreService::new(),
+                        };
+                        let report = store.simulate_filter_rule(&rule_id);
+                        let _ = sender.send_blocking(report);
+                    });
+                if let Err(error) = worker_result {
+                    simulate_button_for_result.set_sensitive(true);
+                    dialog.show_toast(&format!(
+                        "Testlauf fehlgeschlagen: Worker konnte nicht gestartet werden: {error}"
+                    ));
+                    return;
+                }
+                let dialog_weak = dialog.downgrade();
+                let simulate_button = simulate_button_for_result.clone();
+                glib::spawn_future_local(async move {
+                    let result = receiver.recv().await;
+                    let Some(dialog) = dialog_weak.upgrade() else {
+                        return;
+                    };
+                    simulate_button.set_sensitive(true);
+                    match result {
+                        Ok(Ok(Some(report))) => {
+                            dialog.show_toast(&format!(
+                                "Testlauf abgeschlossen: {} von {} Nachricht(en) treffen zu (ohne Änderungen)",
+                                report.matches.len(),
+                                report.total_messages_evaluated,
+                            ));
+                        }
+                        Ok(Ok(None)) => {
+                            dialog.show_toast("Filterregel wurde für den Testlauf nicht gefunden");
+                        }
+                        Ok(Err(error)) => {
+                            dialog.show_toast(&format!("Testlauf fehlgeschlagen: {error}"));
+                        }
+                        Err(_) => {}
+                    }
+                });
+            });
+            row.add_suffix(&simulate_button);
+
             let delete_button = gtk::Button::builder()
                 .icon_name("user-trash-symbolic")
                 .tooltip_text("Filterregel entfernen")
@@ -848,6 +992,19 @@ impl PreferencesDialog {
             });
         }
         group_sync.add(&row_offline_mode);
+
+        let row_flush_outbox = adw::SwitchRow::builder()
+            .title("Postausgang beim Abrufen leeren")
+            .subtitle("Sendet wartende Nachrichten im Postausgang automatisch ab, wenn neue E-Mails abgerufen werden")
+            .build();
+        if let Some(settings) = settings.clone() {
+            row_flush_outbox.set_active(settings.flush_outbox());
+            let settings_for_flush = settings.clone();
+            row_flush_outbox.connect_active_notify(move |switch| {
+                settings_for_flush.set_flush_outbox(switch.is_active());
+            });
+        }
+        group_sync.add(&row_flush_outbox);
 
         let row_sync_interval = adw::SpinRow::with_range(0.0, 86_400.0, 5.0);
         row_sync_interval.set_title("Mail-Aktualisierungsintervall");
@@ -4827,22 +4984,7 @@ fn filter_operator_label(operator: FilterOperator) -> &'static str {
 }
 
 fn filter_action_label(action: &FilterAction) -> String {
-    match action {
-        FilterAction::MoveToFolder(folder) => format!("verschieben nach {folder}"),
-        FilterAction::CopyToFolder(folder) => format!("kopieren nach {folder}"),
-        FilterAction::MarkRead => "als gelesen markieren".to_string(),
-        FilterAction::MarkUnread => "als ungelesen markieren".to_string(),
-        FilterAction::SetFlagged => "Stern-/Markierungsstatus setzen".to_string(),
-        FilterAction::ClearFlagged => "Stern-/Markierungsstatus entfernen".to_string(),
-        FilterAction::SetImportant => "Wichtigkeit setzen".to_string(),
-        FilterAction::ClearImportant => "Wichtigkeit entfernen".to_string(),
-        FilterAction::Delete => "löschen".to_string(),
-        FilterAction::StopProcessing => "weitere Filterregeln nicht ausführen".to_string(),
-        FilterAction::SetJunk => "als Spam markieren".to_string(),
-        FilterAction::ClearJunk => "als kein Spam markieren".to_string(),
-        FilterAction::SetLabel(label) => format!("Label setzen „{label}“"),
-        FilterAction::ClearLabel(label) => format!("Label entfernen „{label}“"),
-    }
+    action.description()
 }
 
 impl Default for PreferencesDialog {

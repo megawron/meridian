@@ -413,6 +413,16 @@ struct BackupSettings {
     contact_editor_show_notes: bool,
     #[serde(default = "default_contact_editor_show_section")]
     contact_editor_show_certs: bool,
+    #[serde(default)]
+    filters_log_actions: bool,
+    #[serde(default)]
+    filters_log_file: String,
+    #[serde(default = "default_flush_outbox")]
+    flush_outbox: bool,
+}
+
+fn default_flush_outbox() -> bool {
+    true
 }
 
 fn default_window_width() -> i32 {
@@ -840,6 +850,9 @@ impl BackupSettings {
             contact_editor_show_misc: settings.contact_editor_show_misc(),
             contact_editor_show_notes: settings.contact_editor_show_notes(),
             contact_editor_show_certs: settings.contact_editor_show_certs(),
+            filters_log_actions: settings.filters_log_actions(),
+            filters_log_file: settings.filters_log_file(),
+            flush_outbox: settings.flush_outbox(),
         }
     }
 
@@ -1084,6 +1097,9 @@ impl BackupSettings {
         settings.set_contact_editor_show_misc(self.contact_editor_show_misc);
         settings.set_contact_editor_show_notes(self.contact_editor_show_notes);
         settings.set_contact_editor_show_certs(self.contact_editor_show_certs);
+        settings.set_filters_log_actions(self.filters_log_actions);
+        settings.set_filters_log_file(&self.filters_log_file);
+        settings.set_flush_outbox(self.flush_outbox);
     }
 
     fn validate(&self) -> io::Result<()> {
@@ -1767,6 +1783,9 @@ const BACKUP_SETTINGS_FIELDS: &[&str] = &[
     "contact_editor_show_misc",
     "contact_editor_show_notes",
     "contact_editor_show_certs",
+    "filters_log_actions",
+    "filters_log_file",
+    "flush_outbox",
 ];
 
 fn is_sensitive_backup_key(key: &str) -> bool {

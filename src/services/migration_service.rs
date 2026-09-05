@@ -2601,7 +2601,12 @@ fn unsupported_filter_warnings(raw: &str, path: &Path) -> Vec<String> {
                 ));
                 continue;
             }
-            let recognition_target = if filter_action_requires_target(&name) {
+            let recognition_target = if matches!(
+                name.trim().to_ascii_lowercase().as_str(),
+                "score" | "set-score" | "assign-score" | "adj-score" | "adjust-score"
+            ) {
+                "0".to_string()
+            } else if filter_action_requires_target(&name) {
                 "portable-target".to_string()
             } else {
                 String::new()
@@ -2681,6 +2686,25 @@ fn filter_action_requires_target(name: &str) -> bool {
             | "clear-label"
             | "remove-label"
             | "remove-tag"
+            | "set-color"
+            | "color"
+            | "colour"
+            | "assign-color"
+            | "set-score"
+            | "score"
+            | "assign-score"
+            | "adj-score"
+            | "adjust-score"
+            | "play-sound"
+            | "sound"
+            | "shell"
+            | "run-program"
+            | "exec"
+            | "pipe"
+            | "pipe-message"
+            | "pipe-to-program"
+            | "forward"
+            | "forward-to"
     )
 }
 
@@ -2759,6 +2783,29 @@ fn filter_action_from_evolution_name(name: &str, target: String) -> Option<Filte
         }
         "clear-label" | "remove-label" | "remove-tag" => {
             (!target.is_empty()).then_some(FilterAction::ClearLabel(target))
+        }
+        "set-color" | "color" | "colour" | "assign-color" => {
+            (!target.trim().is_empty()).then_some(FilterAction::AssignColor(target.trim().to_string()))
+        }
+        "unset-color" | "clear-color" => Some(FilterAction::UnsetColor),
+        "set-score" | "score" | "assign-score" => {
+            target.trim().parse::<i32>().ok().map(FilterAction::AssignScore)
+        }
+        "adj-score" | "adjust-score" => {
+            target.trim().parse::<i32>().ok().map(FilterAction::AdjustScore)
+        }
+        "beep" => Some(FilterAction::Beep),
+        "play-sound" | "sound" => {
+            (!target.trim().is_empty()).then_some(FilterAction::PlaySound(target.trim().to_string()))
+        }
+        "shell" | "run-program" | "exec" => {
+            (!target.trim().is_empty()).then_some(FilterAction::RunProgram(target.trim().to_string()))
+        }
+        "pipe" | "pipe-message" | "pipe-to-program" => {
+            (!target.trim().is_empty()).then_some(FilterAction::PipeToProgram(target.trim().to_string()))
+        }
+        "forward" | "forward-to" => {
+            (!target.trim().is_empty()).then_some(FilterAction::ForwardTo(target.trim().to_string()))
         }
         _ => None,
     }
@@ -4690,7 +4737,7 @@ Password=must-not-be-retained
               <part name="subject"><value name="regex">Rechnung</value></part>
               <part name="score"><value>10</value></part>
               <action name="mark-read" />
-              <action name="play-sound"><value>bell</value></action>
+              <action name="quarantine"><value>vault</value></action>
             </rule></filteroptions>"#,
         )
         .expect("filter file should be written");
@@ -4717,7 +4764,7 @@ Password=must-not-be-retained
             report
                 .warnings
                 .iter()
-                .any(|warning| warning.contains("play-sound"))
+                .any(|warning| warning.contains("quarantine"))
         );
         assert!(
             report
@@ -4765,6 +4812,77 @@ Password=must-not-be-retained
         assert!(signature.text.contains("<strong>Viele Grüße</strong>"));
         assert!(!signature.text.contains("script"));
         assert!(!signature.text.contains("onclick"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn test_import_filters_with_extended_actions() {
+        let root = temporary_directory("extended-filters");
+        let profile_root = root.join(".config").join("evolution");
+        fs::create_dir_all(&profile_root).expect("profile directory should be created");
+
+        let xml = r#"<?xml version="1.0"?>
+<filteroptions>
+  <ruleset>
+    <rule grouping="all" source="incoming" name="Extended Actions Rule">
+      <partset>
+        <part name="subject">
+          <value name="contains" type="string">Alert</value>
+        </part>
+      </partset>
+      <actionset>
+        <action name="set-color">
+          <value name="color" type="string">#ff0000</value>
+        </action>
+        <action name="set-score">
+          <value name="score" type="integer">42</value>
+        </action>
+        <action name="beep"/>
+        <action name="play-sound">
+          <value name="sound" type="string">/path/to/alert.wav</value>
+        </action>
+        <action name="run-program">
+          <value name="cmd" type="string">notify-send Alert</value>
+        </action>
+        <action name="pipe-to-program">
+          <value name="cmd" type="string">proc-mail</value>
+        </action>
+        <action name="forward-to">
+          <value name="addr" type="string">team@example.com</value>
+        </action>
+      </actionset>
+    </rule>
+  </ruleset>
+</filteroptions>"#;
+
+        fs::write(profile_root.join("filters.xml"), xml).expect("filters.xml written");
+
+        let account_store = AccountConfigStore::new(root.join("accounts.json"));
+        let filter_store = MailFilterStore::new(root.join("mail-filters.json"));
+        let signature_store = SignatureStore::new(root.join("signatures.json"));
+
+        let report = import_evolution_sources_with_stores(
+            &profile_root,
+            &account_store,
+            &filter_store,
+            &signature_store,
+        )
+        .expect("extended actions filters should import");
+
+        assert_eq!(report.imported_filters, 1);
+        let rules = filter_store.load();
+        assert_eq!(rules.len(), 1);
+        let rule = &rules[0];
+        assert_eq!(rule.name, "Extended Actions Rule");
+        assert_eq!(rule.action, FilterAction::AssignColor("#ff0000".to_string()));
+        assert_eq!(rule.actions.len(), 7);
+        assert_eq!(rule.actions[1], FilterAction::AssignScore(42));
+        assert_eq!(rule.actions[2], FilterAction::Beep);
+        assert_eq!(rule.actions[3], FilterAction::PlaySound("/path/to/alert.wav".to_string()));
+        assert_eq!(rule.actions[4], FilterAction::RunProgram("notify-send Alert".to_string()));
+        assert_eq!(rule.actions[5], FilterAction::PipeToProgram("proc-mail".to_string()));
+        assert_eq!(rule.actions[6], FilterAction::ForwardTo("team@example.com".to_string()));
 
         let _ = fs::remove_dir_all(root);
     }

@@ -721,5 +721,21 @@
       <default>true</default>
       <summary>Show certificates in editor</summary>
     </key>
+    <key name="filters-log-actions" type="b">
+      <default>false</default>
+      <summary>Log filter actions</summary>
+      <description>Log filter actions to the specified log file or standard output.</description>
+    </key>
+    <key name="filters-log-file" type="s">
+      <default>''</default>
+      <summary>Logfile to log filter actions</summary>
+      <description>If not set, or being stdout, logging is directed to stdout/tracing, otherwise to the specified file path.</description>
+    </key>
+    <key name="flush-outbox" type="b">
+      <default>true</default>
+      <summary>Flush Outbox after filtering</summary>
+      <description>Whether to flush Outbox after filtering is done.</description>
+    </key>
   </schema>
 </schemalist>
+

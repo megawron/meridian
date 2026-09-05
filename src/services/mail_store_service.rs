@@ -20,13 +20,15 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
 use crate::models::mail_message::{AttachmentInfo, MailMessageObject};
 use crate::services::crypto_service::{CryptoProtocol, CryptoService};
 use crate::services::html_sanitizer::html_to_plain_text;
 use crate::services::mail_filter_service::{
-    FilterAction, FilterMessageContext, FilterScope, MailFilterRule, MailFilterStore,
+    FilterAction, FilterActionStatus, FilterLogEntry, FilterMessageContext, FilterScope,
+    MailFilterRule, MailFilterStore, global_filter_logger,
 };
 use crate::services::mail_metadata_service::{
     MailFollowUpMetadata, MailFollowUpState, MailMessageState, MailMetadataStore,
@@ -47,6 +49,23 @@ pub struct LocalFilterRunReport {
     pub moved_messages: usize,
     pub copied_messages: usize,
     pub deleted_messages: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FilterSimulationMatch {
+    pub message_id: String,
+    pub message_subject: String,
+    pub rule_id: String,
+    pub rule_name: String,
+    pub actions: Vec<FilterAction>,
+    pub action_descriptions: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FilterSimulationReport {
+    pub total_messages_evaluated: usize,
+    pub matched_rules_count: usize,
+    pub matches: Vec<FilterSimulationMatch>,
 }
 
 /// Thread-safe parser output.  GTK objects are created only after this value
@@ -1036,6 +1055,77 @@ impl MailStoreService {
         Ok(report)
     }
 
+    fn load_messages_for_simulation(&self) -> Vec<ParsedMail> {
+        let metadata = self.metadata.load();
+        let folder_overrides = self.metadata.load_folder_overrides();
+        let deleted = self.metadata.load_deleted();
+        let labels = self.metadata.load_labels();
+        let follow_up = self.metadata.load_follow_up();
+        let cancelled = AtomicBool::new(false);
+        let mut messages = self.load_raw_local_records_cancelable(&cancelled);
+        messages.retain(|message| !deleted.contains(&message.id));
+        for message in &mut messages {
+            if let Some(folder_id) = folder_overrides.get(&message.id) {
+                message.folder_id = folder_id.clone();
+            }
+            if let Some(state) = metadata.get(&message.id) {
+                message.is_unread = state.is_unread;
+                message.is_flagged = state.is_flagged;
+                message.is_important = state.is_important;
+            }
+            if let Some(message_labels) = labels.get(&message.id) {
+                message.labels = sorted_labels(message_labels);
+            }
+            if let Some(state) = follow_up.get(&message.id) {
+                message.follow_up_state = state.state;
+                message.follow_up = state.clone();
+            }
+        }
+        messages
+    }
+
+    /// Simulate running one filter rule without applying changes to the metadata sidecar or files.
+    pub fn simulate_filter_rule(&self, rule_id: &str) -> std::io::Result<Option<FilterSimulationReport>> {
+        let filter_store = MailFilterStore::default();
+        self.simulate_filter_rule_with_store(rule_id, &filter_store)
+    }
+
+    pub(crate) fn simulate_filter_rule_with_store(
+        &self,
+        rule_id: &str,
+        filter_store: &MailFilterStore,
+    ) -> std::io::Result<Option<FilterSimulationReport>> {
+        let Some(mut rule) = filter_store
+            .load()
+            .into_iter()
+            .find(|rule| rule.id == rule_id)
+        else {
+            return Ok(None);
+        };
+        rule.enabled = true;
+        let messages = self.load_messages_for_simulation();
+        Ok(Some(simulate_filters_on_messages(&[rule], &messages)))
+    }
+
+    /// Simulate running all active filter rules without applying changes to the metadata sidecar or files.
+    pub fn simulate_all_filters(&self) -> FilterSimulationReport {
+        let filter_store = MailFilterStore::default();
+        self.simulate_all_filters_with_store(&filter_store)
+    }
+
+    pub(crate) fn simulate_all_filters_with_store(
+        &self,
+        filter_store: &MailFilterStore,
+    ) -> FilterSimulationReport {
+        let rules: Vec<_> = filter_store
+            .load()
+            .into_iter()
+            .filter(|rule| rule.enabled)
+            .collect();
+        let messages = self.load_messages_for_simulation();
+        simulate_filters_on_messages(&rules, &messages)
+    }
+
     fn load_raw_local_records_cancelable(&self, cancelled: &AtomicBool) -> Vec<ParsedMail> {
         let mut paths = Vec::new();
         collect_mail_files(&self.mail_dir, &mut paths);
@@ -1331,6 +1421,52 @@ struct FilterEffects {
     stop_processing: bool,
 }
 
+/// Simulate filtering over an arbitrary message collection without altering messages or sidecar state.
+pub fn simulate_filters_on_messages(
+    rules: &[MailFilterRule],
+    messages: &[ParsedMail],
+) -> FilterSimulationReport {
+    let mut report = FilterSimulationReport {
+        total_messages_evaluated: messages.len(),
+        matched_rules_count: 0,
+        matches: Vec::new(),
+    };
+
+    for message in messages {
+        for rule in rules {
+            if !rule.enabled {
+                continue;
+            }
+            if message_matches_rule(rule, message) {
+                report.matched_rules_count += 1;
+                let effective_actions: Vec<FilterAction> =
+                    rule.effective_actions().into_iter().cloned().collect();
+                let action_descriptions = effective_actions.iter().map(|a| a.description()).collect();
+                report.matches.push(FilterSimulationMatch {
+                    message_id: message.id.clone(),
+                    message_subject: message.subject.clone(),
+                    rule_id: rule.id.clone(),
+                    rule_name: rule.name.clone(),
+                    actions: effective_actions,
+                    action_descriptions,
+                });
+                if rule.actions.iter().any(|a| {
+                    matches!(
+                        a,
+                        FilterAction::StopProcessing
+                            | FilterAction::MoveToFolder(_)
+                            | FilterAction::Delete
+                    )
+                }) {
+                    break;
+                }
+            }
+        }
+    }
+
+    report
+}
+
 fn message_matches_rule(rule: &MailFilterRule, message: &ParsedMail) -> bool {
     let body = format!(
         "{} {}",
@@ -1412,8 +1548,21 @@ fn apply_filter_rule(
     sidecar: Option<&MailMetadataStore>,
 ) -> FilterEffects {
     let mut effects = FilterEffects::default();
+    let (log_actions, log_file) = crate::services::settings_service::AppSettings::try_new()
+        .map(|s| {
+            let f = s.filters_log_file();
+            let path = if f.trim().is_empty() {
+                None
+            } else {
+                Some(PathBuf::from(f))
+            };
+            (s.filters_log_actions(), path)
+        })
+        .unwrap_or((true, None));
+
     for action in rule.effective_actions() {
-        match action {
+        let mut action_error = None;
+        match &action {
             FilterAction::MarkRead => {
                 if message.is_unread {
                     message.is_unread = false;
@@ -1463,6 +1612,7 @@ fn apply_filter_rule(
                 let folder_id = local_folder_id(folder);
                 if let Some(sidecar) = sidecar {
                     if let Err(error) = sidecar.set_copy(&message.id, &folder_id, true) {
+                        action_error = Some(error.to_string());
                         tracing::warn!(
                             %error,
                             message_id = %message.id,
@@ -1484,6 +1634,7 @@ fn apply_filter_rule(
             FilterAction::Delete => {
                 if let Some(sidecar) = sidecar {
                     if let Err(error) = sidecar.set_deleted(&message.id, true) {
+                        action_error = Some(error.to_string());
                         tracing::warn!(%error, message_id = %message.id, "Could not persist local filter deletion");
                     } else {
                         effects.changed = true;
@@ -1508,10 +1659,124 @@ fn apply_filter_rule(
             FilterAction::ClearLabel(label) => {
                 apply_local_filter_label_action(rule, message, sidecar, label, false, &mut effects);
             }
+            FilterAction::AssignColor(color) => {
+                let color = color.trim();
+                if !color.is_empty() {
+                    let color_label = format!("color:{color}");
+                    apply_local_filter_label_action(
+                        rule,
+                        message,
+                        sidecar,
+                        &color_label,
+                        true,
+                        &mut effects,
+                    );
+                }
+            }
+            FilterAction::UnsetColor => {
+                let color_labels: Vec<String> = message
+                    .labels
+                    .iter()
+                    .filter(|l| l.starts_with("color:"))
+                    .cloned()
+                    .collect();
+                for cl in color_labels {
+                    apply_local_filter_label_action(rule, message, sidecar, &cl, false, &mut effects);
+                }
+            }
+            FilterAction::AssignScore(score) => {
+                let score_label = format!("score:{score}");
+                let old_scores: Vec<String> = message
+                    .labels
+                    .iter()
+                    .filter(|l| l.starts_with("score:"))
+                    .cloned()
+                    .collect();
+                for os in old_scores {
+                    apply_local_filter_label_action(rule, message, sidecar, &os, false, &mut effects);
+                }
+                apply_local_filter_label_action(
+                    rule,
+                    message,
+                    sidecar,
+                    &score_label,
+                    true,
+                    &mut effects,
+                );
+            }
+            FilterAction::AdjustScore(delta) => {
+                let current_score: i32 = message
+                    .labels
+                    .iter()
+                    .find_map(|l| l.strip_prefix("score:").and_then(|s| s.parse::<i32>().ok()))
+                    .unwrap_or(0);
+                let new_score = current_score + delta;
+                let score_label = format!("score:{new_score}");
+                let old_scores: Vec<String> = message
+                    .labels
+                    .iter()
+                    .filter(|l| l.starts_with("score:"))
+                    .cloned()
+                    .collect();
+                for os in old_scores {
+                    apply_local_filter_label_action(rule, message, sidecar, &os, false, &mut effects);
+                }
+                apply_local_filter_label_action(
+                    rule,
+                    message,
+                    sidecar,
+                    &score_label,
+                    true,
+                    &mut effects,
+                );
+            }
+            FilterAction::Beep => {
+                tracing::info!(rule = %rule.name, "Filter action: beep");
+                effects.changed = true;
+            }
+            FilterAction::PlaySound(sound) => {
+                tracing::info!(rule = %rule.name, sound = %sound, "Filter action: play sound");
+                effects.changed = true;
+            }
+            FilterAction::RunProgram(cmd) => {
+                tracing::info!(rule = %rule.name, cmd = %cmd, "Filter action: run program");
+                effects.changed = true;
+            }
+            FilterAction::PipeToProgram(cmd) => {
+                tracing::info!(rule = %rule.name, cmd = %cmd, "Filter action: pipe to program");
+                effects.changed = true;
+            }
+            FilterAction::ForwardTo(addr) => {
+                tracing::info!(rule = %rule.name, address = %addr, "Filter action: forward to");
+                effects.changed = true;
+            }
             FilterAction::StopProcessing => {
                 effects.stop_processing = true;
-                break;
             }
+        }
+
+        if log_actions {
+            global_filter_logger().log(
+                FilterLogEntry {
+                    timestamp: Utc::now(),
+                    rule_id: rule.id.clone(),
+                    rule_name: rule.name.clone(),
+                    action_description: action.description(),
+                    message_id: message.id.clone(),
+                    message_subject: message.subject.clone(),
+                    status: if action_error.is_some() {
+                        FilterActionStatus::Failed
+                    } else {
+                        FilterActionStatus::Success
+                    },
+                    error_message: action_error,
+                },
+                log_file.as_deref(),
+            );
+        }
+
+        if effects.stop_processing {
+            break;
         }
     }
     effects
@@ -4600,6 +4865,141 @@ mod tests {
         let (headers, body) = split_mime_headers_and_body(raw);
         assert_eq!(headers, b"From: test@example.org\nSubject: Test");
         assert_eq!(body, b"Hello\r\n\r\nWorld");
+    }
+
+    fn test_parsed_mail(id: &str, subject: &str, sender: &str) -> ParsedMail {
+        ParsedMail {
+            id: id.to_string(),
+            folder_id: "inbox".to_string(),
+            folder_name: "Inbox".to_string(),
+            backend_location: None,
+            sender_name: sender.to_string(),
+            sender_email: format!("{sender}@example.com"),
+            recipient_to: "me@example.com".to_string(),
+            recipient_cc: String::new(),
+            recipient_bcc: String::new(),
+            reply_to: String::new(),
+            subject: subject.to_string(),
+            message_id: Some(format!("<{id}@example.com>")),
+            in_reply_to: Vec::new(),
+            references: Vec::new(),
+            thread_id: id.to_string(),
+            thread_size: 1,
+            thread_position: 0,
+            date_str: "2026-09-05T12:00:00Z".to_string(),
+            message_size: 1024,
+            preview_snippet: "test preview".to_string(),
+            html_body: "<p>test</p>".to_string(),
+            raw_headers: None,
+            raw_mime: None,
+            is_unread: true,
+            is_flagged: false,
+            is_important: false,
+            follow_up_state: MailFollowUpState::None,
+            follow_up: MailFollowUpMetadata::default(),
+            labels: Vec::new(),
+            attachments: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn test_simulate_filters_on_messages_reports_matches_without_mutating() {
+        let rule = MailFilterRule {
+            id: "rule-sim".to_string(),
+            name: "Simulate Urgent".to_string(),
+            enabled: true,
+            scope: FilterScope::Incoming,
+            condition: FilterCondition {
+                field: FilterField::Subject,
+                value: "Urgent".to_string(),
+                operator: FilterOperator::Contains,
+            },
+            action: FilterAction::AssignColor("red".to_string()),
+            conditions: Vec::new(),
+            actions: vec![
+                FilterAction::AssignColor("red".to_string()),
+                FilterAction::AssignScore(100),
+                FilterAction::SetFlagged,
+            ],
+            match_all: true,
+        };
+
+        let mut mail = test_parsed_mail("msg-1", "Urgent: review needed", "Boss");
+
+        let report = simulate_filters_on_messages(&[rule], &[mail.clone()]);
+        assert_eq!(report.total_messages_evaluated, 1);
+        assert_eq!(report.matched_rules_count, 1);
+        assert_eq!(report.matches.len(), 1);
+        assert_eq!(report.matches[0].message_id, "msg-1");
+        assert_eq!(report.matches[0].rule_name, "Simulate Urgent");
+        assert_eq!(report.matches[0].actions.len(), 3);
+        // Ensure the original message was NOT mutated by the simulation
+        assert!(!mail.is_flagged);
+        assert!(mail.labels.is_empty());
+    }
+
+    #[test]
+    fn test_apply_filter_rule_executes_color_and_score_actions() {
+        let root = temporary_directory("color-score-actions");
+        let metadata = MailMetadataStore::new(root.join("state.json"));
+        let mut mail = test_parsed_mail("msg-score", "Scores", "Alice");
+        mail.labels = vec!["color:blue".to_string()];
+
+        let rule1 = MailFilterRule {
+            id: "r-score-1".to_string(),
+            name: "Set Score and Color".to_string(),
+            enabled: true,
+            scope: FilterScope::Incoming,
+            condition: FilterCondition {
+                field: FilterField::Subject,
+                value: "Scores".to_string(),
+                operator: FilterOperator::Contains,
+            },
+            action: FilterAction::AssignColor("green".to_string()),
+            conditions: Vec::new(),
+            actions: vec![
+                FilterAction::AssignColor("green".to_string()),
+                FilterAction::AssignScore(50),
+                FilterAction::Beep,
+                FilterAction::PlaySound("alarm.wav".to_string()),
+                FilterAction::RunProgram("echo hi".to_string()),
+                FilterAction::PipeToProgram("cat".to_string()),
+                FilterAction::ForwardTo("fwd@example.org".to_string()),
+            ],
+            match_all: true,
+        };
+
+        let effects1 = apply_filter_rule(&rule1, &mut mail, Some(&metadata));
+        assert!(effects1.changed);
+        assert!(mail.labels.contains(&"color:green".to_string()));
+        assert!(mail.labels.contains(&"score:50".to_string()));
+
+        let rule2 = MailFilterRule {
+            id: "r-score-2".to_string(),
+            name: "Adjust Score and Unset Color".to_string(),
+            enabled: true,
+            scope: FilterScope::Incoming,
+            condition: FilterCondition {
+                field: FilterField::Subject,
+                value: "Scores".to_string(),
+                operator: FilterOperator::Contains,
+            },
+            action: FilterAction::AdjustScore(15),
+            conditions: Vec::new(),
+            actions: vec![
+                FilterAction::AdjustScore(15),
+                FilterAction::UnsetColor,
+            ],
+            match_all: true,
+        };
+
+        let effects2 = apply_filter_rule(&rule2, &mut mail, Some(&metadata));
+        assert!(effects2.changed);
+        assert!(mail.labels.contains(&"score:65".to_string()));
+        assert!(!mail.labels.contains(&"score:50".to_string()));
+        assert!(!mail.labels.iter().any(|l| l.starts_with("color:")));
+
+        let _ = fs::remove_dir_all(root);
     }
 
     fn temporary_directory(label: &str) -> std::path::PathBuf {

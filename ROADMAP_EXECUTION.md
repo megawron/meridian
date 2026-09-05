@@ -1733,6 +1733,12 @@ oder visuellen Linux-Belege.
 - Linux-Rest: reale EDS/Camel-Tag-Roundtrips, Graph-/Camel-Providerwirkung,
   Locale/Zeitzonen- und visuelle Dialogabnahme.
 
+### MAIL-FILTER-ACTIONS-PARITY
+
+- Status: `BLOCKED_LINUX`; portabler Filter-Aktions-, Compiler-, Simulations- und Logging-Vertrag geschlossen.
+- Portabler Beleg: 23 vollständige `FilterAction`-Varianten (inkl. `AssignColor`, `UnsetColor`, `AssignScore`, `AdjustScore`, `Beep`, `PlaySound`, `RunProgram`, `PipeToProgram`, `ForwardTo`), bidirektionaler Camel-S-Expression-Compiler (`to_camel_sexp`) für Bedingungen und Aktionen, Aktionsausführung und Fehlerprotokollierung (`FilterExecutionLogger`, `global_filter_logger`) synchronisiert mit GSettings `filters-log-actions` und `filters-log-file`, Testlauf-/Dry-Run-Simulation (`simulate_filters_on_messages`, `simulate_filter_rule`, `simulate_all_filters`) mit `FilterSimulationReport` ohne Mailbox- oder Sidecar-Mutation, UI-Integration im `FilterEditorDialog` (23 Aktionsvarianten) und in den `PreferencesDialog`-Einstellungen (Filterprotokollierung, Einzelregel- und Gesamtsimulation), Migration und Backup/Restore-Roundtrips.
+- Offener Parent-/Linux-Rest: native Camel-Filterdriver-Ausführung im laufenden Mail-Daemon, Shell- und Sound-Execution im Linux-Desktop-Context, Benachrichtigungen und visuelle GTK4-Abnahme.
+
 ### Weitere Groupware-/Settings-Lücken aus den Audits
 
 Als weitere disjunkte Folgepakete bleiben:

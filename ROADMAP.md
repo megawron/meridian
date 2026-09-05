@@ -1653,8 +1653,14 @@ Die Statuswerte sind Quellen-/UI-Belege, keine Laufzeit- oder Providerabnahme:
   zurück. Neue und bearbeitete Regeln werden vor dem Persistieren auf Namen,
   Bedingungen und erforderliche Aktionsziele geprüft; leere Editorzeilen
   werden nicht mehr stillschweigend verworfen.
-- [ ] Camel-Filterdriver mit persistenten Regeln, Reihenfolge, Bedingungen,
-  vollständigen Aktionen, Testlauf und Fehlerprotokoll.
+- [x] Camel-Filterdriver mit persistenten Regeln, Reihenfolge, Bedingungen,
+  vollständigen Aktionen (23 Aktionsvarianten inkl. Farbe, Score, Audio,
+  Programmausführung/Pipe und Weiterleitung), Camel-S-Expression-Compiler
+  (`to_camel_sexp`), Testlauf/Dry-Run-Simulation (`simulate_filters_on_messages`,
+  `simulate_filter_rule`, `simulate_all_filters`) mit `FilterSimulationReport`,
+  Aktions- und Fehlerprotokoll (`filters-log-actions`, `filters-log-file`,
+  `FilterExecutionLogger`) sowie UI-Integration im Filter-Editor und den
+  Einstellungen.
 - [~] Die lokale Suchsprache unterstützt Feld-, Label-, Status-, Ordner-, Datums-,
   Zitat- und Anhangsoperatoren (`in:`/`folder:`, `on:`, `older:`/`newer:`) sowie
   negative Evolution-Prädikate (`-from:`, `-body:`, `is:not-*`, `-has:`);
