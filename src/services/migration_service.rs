@@ -925,6 +925,13 @@ fn canonical_setting(
 ) -> Result<Option<(String, String)>, &'static str> {
     let group = group.to_ascii_lowercase();
     let canonical = match key {
+        "show-preview" if group.contains("addressbook") || group.contains("contact") => {
+            "contact-preview-visible"
+        }
+        "show-preview" if group.contains("memo") => "memo-preview-visible",
+        "show-preview" if group.contains("calendar") || group.contains("task") => {
+            "task-preview-visible"
+        }
         "show-preview" | "message-preview" | "show-message-preview" => "show-message-preview",
         "show-headers" => "mail-normal-headers",
         "show-week-numbers" => "calendar-show-week-numbers",
@@ -980,6 +987,40 @@ fn canonical_setting(
         "hide-completed-tasks-units" | "hide-completed-units" => "hide-completed-tasks-units",
         "hide-cancelled-tasks" => "hide-cancelled-tasks",
         "hide-cancelled-events" => "hide-cancelled-events",
+        "primary-addressbook" => "default-address-book-source",
+        "address-formatting" => "contact-address-formatting",
+        "completion-minimum-query-length" => "contact-completion-minimum-query-length",
+        "completion-show-address" => "contact-completion-show-address",
+        "completion-book-sources" | "completion-sources" => "contact-completion-book-sources",
+        "preview-show-maps" => "contact-preview-show-maps",
+        "preview-home-before-work" => "contact-preview-home-before-work",
+        "open-map-target" => "contact-open-map-target",
+        "open-map-prefer-local" => "contact-open-map-prefer-local",
+        "layout" if group.contains("addressbook") || group.contains("contact") => "contact-layout",
+        "hpane-position" if group.contains("addressbook") || group.contains("contact") => {
+            "contact-hpane-position"
+        }
+        "vpane-position" if group.contains("addressbook") || group.contains("contact") => {
+            "contact-vpane-position"
+        }
+        "editor-show-contact-phone" | "editor-show-phone" => "contact-editor-show-phone",
+        "editor-show-contact-sip" | "editor-show-sip" => "contact-editor-show-sip",
+        "editor-show-contact-im" | "editor-show-im" => "contact-editor-show-im",
+        "editor-show-mailing-home" | "editor-show-home-address" => {
+            "contact-editor-show-home-address"
+        }
+        "editor-show-mailing-work" | "editor-show-work-address" => {
+            "contact-editor-show-work-address"
+        }
+        "editor-show-mailing-other" | "editor-show-other-address" => {
+            "contact-editor-show-other-address"
+        }
+        "editor-show-personal-web" | "editor-show-web" => "contact-editor-show-web",
+        "editor-show-personal-job" | "editor-show-job" => "contact-editor-show-job",
+        "editor-show-personal-dates" | "editor-show-dates" => "contact-editor-show-dates",
+        "editor-show-personal-misc" | "editor-show-misc" => "contact-editor-show-misc",
+        "editor-show-notes" => "contact-editor-show-notes",
+        "editor-show-certs" => "contact-editor-show-certs",
         "use-12-hour-format" | "use-12-hour-clock" => "time-format",
         "show-toolbar" if group.contains("mail") => "mail-show-toolbar",
         "show-sidebar" if group.contains("mail") => "mail-show-sidebar",
@@ -1075,6 +1116,9 @@ fn migration_value_type(key: &str) -> SettingValueType {
             | "draft-autosave-interval"
             | "task-hpane-position"
             | "task-vpane-position"
+            | "contact-completion-minimum-query-length"
+            | "contact-hpane-position"
+            | "contact-vpane-position"
     ) {
         return SettingValueType::Int32;
     }
@@ -1227,6 +1271,30 @@ fn is_supported_migration_key(key: &str) -> bool {
             | "memo-preview-visible"
             | "memo-preview-orientation"
             | "offline-mode"
+            | "contact-completion-minimum-query-length"
+            | "contact-completion-show-address"
+            | "contact-completion-book-sources"
+            | "contact-address-formatting"
+            | "contact-preview-show-maps"
+            | "contact-preview-home-before-work"
+            | "contact-open-map-target"
+            | "contact-open-map-prefer-local"
+            | "contact-layout"
+            | "contact-preview-visible"
+            | "contact-hpane-position"
+            | "contact-vpane-position"
+            | "contact-editor-show-phone"
+            | "contact-editor-show-sip"
+            | "contact-editor-show-im"
+            | "contact-editor-show-home-address"
+            | "contact-editor-show-work-address"
+            | "contact-editor-show-other-address"
+            | "contact-editor-show-web"
+            | "contact-editor-show-job"
+            | "contact-editor-show-dates"
+            | "contact-editor-show-misc"
+            | "contact-editor-show-notes"
+            | "contact-editor-show-certs"
     )
 }
 
@@ -1268,6 +1336,33 @@ fn normalize_imported_setting_value(key: &str, value: &str) -> Result<String, &'
         "mail-sync-message-limit" => normalize_u32_setting(value, 25, 1_000),
         "draft-autosave-interval" => normalize_u32_setting(value, 0, 3_600),
         "task-hpane-position" | "task-vpane-position" => normalize_i32_setting(value, 80, 4_096),
+        "contact-completion-minimum-query-length" => normalize_u32_setting(value, 1, 100),
+        "contact-hpane-position" | "contact-vpane-position" => {
+            normalize_i32_setting(value, 80, 4_096)
+        }
+        "contact-open-map-target" => match value.trim().to_ascii_lowercase().as_str() {
+            "openstreetmap" | "osm" => Ok("openstreetmap".to_string()),
+            "google" | "googlemaps" | "google-maps" => Ok("google".to_string()),
+            _ => Err("kein unterstützter Kartendienst"),
+        },
+        "contact-layout" => match value.trim().to_ascii_lowercase().as_str() {
+            "0" | "classic" => Ok("classic".to_string()),
+            "1" | "vertical" => Ok("vertical".to_string()),
+            _ => Err("kein unterstütztes Kontaktlayout"),
+        },
+        "contact-completion-book-sources" => {
+            let uids = value
+                .split([',', ';'])
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(String::from)
+                .collect::<Vec<_>>();
+            if uids.iter().any(|s| s.chars().any(char::is_control)) {
+                Err("ungültige Quellenliste")
+            } else {
+                Ok(crate::services::settings_service::sanitize_source_list(&uids).join(","))
+            }
+        }
         "calendar-tag-vpane-position" => normalize_i32_setting(value, 100, 2_000),
         "composer-charset" => normalize_composer_charset(value)
             .map(str::to_string)
@@ -1556,6 +1651,24 @@ fn is_boolean_migration_key(key: &str) -> bool {
             | "task-preview-visible"
             | "memo-preview-visible"
             | "memo-sort-descending"
+            | "contact-completion-show-address"
+            | "contact-address-formatting"
+            | "contact-preview-show-maps"
+            | "contact-preview-home-before-work"
+            | "contact-open-map-prefer-local"
+            | "contact-preview-visible"
+            | "contact-editor-show-phone"
+            | "contact-editor-show-sip"
+            | "contact-editor-show-im"
+            | "contact-editor-show-home-address"
+            | "contact-editor-show-work-address"
+            | "contact-editor-show-other-address"
+            | "contact-editor-show-web"
+            | "contact-editor-show-job"
+            | "contact-editor-show-dates"
+            | "contact-editor-show-misc"
+            | "contact-editor-show-notes"
+            | "contact-editor-show-certs"
     )
 }
 
@@ -3769,6 +3882,142 @@ hide-cancelled-events=true
         }));
         assert!(parsed.settings.contains(&ImportedSetting {
             key: "hide-cancelled-events".to_string(),
+            value: "true".to_string(),
+        }));
+    }
+
+    #[test]
+    fn addressbook_settings_upstream_migration_parities() {
+        let parsed = parse_evolution_settings(
+            r#"
+[org/gnome/evolution/addressbook]
+primary-addressbook='addr-src-1'
+address-formatting=true
+completion-minimum-query-length=@i 4
+completion-show-address=true
+completion-book-sources='addr-src-1,addr-src-2'
+preview-show-maps=true
+preview-home-before-work=true
+open-map-target='google'
+open-map-prefer-local=false
+show-preview=true
+layout=1
+hpane-position=@i 250
+vpane-position=@i 450
+editor-show-contact-phone=true
+editor-show-contact-sip=true
+editor-show-contact-im=true
+editor-show-mailing-home=true
+editor-show-mailing-work=true
+editor-show-mailing-other=true
+editor-show-personal-web=true
+editor-show-personal-job=true
+editor-show-personal-dates=true
+editor-show-personal-misc=true
+editor-show-notes=true
+editor-show-certs=true
+"#,
+            Path::new("evolution-addressbook-setup.ini"),
+        );
+
+        assert!(parsed.settings.contains(&ImportedSetting {
+            key: "default-address-book-source".to_string(),
+            value: "addr-src-1".to_string(),
+        }));
+        assert!(parsed.settings.contains(&ImportedSetting {
+            key: "contact-address-formatting".to_string(),
+            value: "true".to_string(),
+        }));
+        assert!(parsed.settings.contains(&ImportedSetting {
+            key: "contact-completion-minimum-query-length".to_string(),
+            value: "4".to_string(),
+        }));
+        assert!(parsed.settings.contains(&ImportedSetting {
+            key: "contact-completion-show-address".to_string(),
+            value: "true".to_string(),
+        }));
+        assert!(parsed.settings.contains(&ImportedSetting {
+            key: "contact-completion-book-sources".to_string(),
+            value: "addr-src-1,addr-src-2".to_string(),
+        }));
+        assert!(parsed.settings.contains(&ImportedSetting {
+            key: "contact-preview-show-maps".to_string(),
+            value: "true".to_string(),
+        }));
+        assert!(parsed.settings.contains(&ImportedSetting {
+            key: "contact-preview-home-before-work".to_string(),
+            value: "true".to_string(),
+        }));
+        assert!(parsed.settings.contains(&ImportedSetting {
+            key: "contact-open-map-target".to_string(),
+            value: "google".to_string(),
+        }));
+        assert!(parsed.settings.contains(&ImportedSetting {
+            key: "contact-open-map-prefer-local".to_string(),
+            value: "false".to_string(),
+        }));
+        assert!(parsed.settings.contains(&ImportedSetting {
+            key: "contact-preview-visible".to_string(),
+            value: "true".to_string(),
+        }));
+        assert!(parsed.settings.contains(&ImportedSetting {
+            key: "contact-layout".to_string(),
+            value: "vertical".to_string(),
+        }));
+        assert!(parsed.settings.contains(&ImportedSetting {
+            key: "contact-hpane-position".to_string(),
+            value: "250".to_string(),
+        }));
+        assert!(parsed.settings.contains(&ImportedSetting {
+            key: "contact-vpane-position".to_string(),
+            value: "450".to_string(),
+        }));
+        assert!(parsed.settings.contains(&ImportedSetting {
+            key: "contact-editor-show-phone".to_string(),
+            value: "true".to_string(),
+        }));
+        assert!(parsed.settings.contains(&ImportedSetting {
+            key: "contact-editor-show-sip".to_string(),
+            value: "true".to_string(),
+        }));
+        assert!(parsed.settings.contains(&ImportedSetting {
+            key: "contact-editor-show-im".to_string(),
+            value: "true".to_string(),
+        }));
+        assert!(parsed.settings.contains(&ImportedSetting {
+            key: "contact-editor-show-home-address".to_string(),
+            value: "true".to_string(),
+        }));
+        assert!(parsed.settings.contains(&ImportedSetting {
+            key: "contact-editor-show-work-address".to_string(),
+            value: "true".to_string(),
+        }));
+        assert!(parsed.settings.contains(&ImportedSetting {
+            key: "contact-editor-show-other-address".to_string(),
+            value: "true".to_string(),
+        }));
+        assert!(parsed.settings.contains(&ImportedSetting {
+            key: "contact-editor-show-web".to_string(),
+            value: "true".to_string(),
+        }));
+        assert!(parsed.settings.contains(&ImportedSetting {
+            key: "contact-editor-show-job".to_string(),
+            value: "true".to_string(),
+        }));
+        assert!(parsed.settings.contains(&ImportedSetting {
+            key: "contact-editor-show-dates".to_string(),
+            value: "true".to_string(),
+        }));
+        assert!(parsed.settings.contains(&ImportedSetting {
+            key: "contact-editor-show-misc".to_string(),
+            value: "true".to_string(),
+        }));
+        assert!(parsed.settings.contains(&ImportedSetting {
+            key: "contact-editor-show-notes".to_string(),
+            value: "true".to_string(),
+        }));
+        assert!(parsed.settings.contains(&ImportedSetting {
+            key: "contact-editor-show-certs".to_string(),
             value: "true".to_string(),
         }));
     }

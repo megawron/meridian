@@ -365,6 +365,54 @@ struct BackupSettings {
     memo_source_filter: String,
     #[serde(default = "default_memo_sort_descending")]
     memo_sort_descending: bool,
+    #[serde(default = "default_contact_completion_minimum_query_length")]
+    contact_completion_minimum_query_length: u32,
+    #[serde(default)]
+    contact_completion_show_address: bool,
+    #[serde(default)]
+    contact_completion_book_sources: String,
+    #[serde(default)]
+    contact_address_formatting: bool,
+    #[serde(default)]
+    contact_preview_show_maps: bool,
+    #[serde(default)]
+    contact_preview_home_before_work: bool,
+    #[serde(default = "default_contact_open_map_target")]
+    contact_open_map_target: String,
+    #[serde(default = "default_contact_open_map_prefer_local")]
+    contact_open_map_prefer_local: bool,
+    #[serde(default = "default_contact_layout")]
+    contact_layout: String,
+    #[serde(default = "default_contact_preview_visible")]
+    contact_preview_visible: bool,
+    #[serde(default = "default_contact_hpane_position")]
+    contact_hpane_position: i32,
+    #[serde(default = "default_contact_vpane_position")]
+    contact_vpane_position: i32,
+    #[serde(default = "default_contact_editor_show_section")]
+    contact_editor_show_phone: bool,
+    #[serde(default = "default_contact_editor_show_section")]
+    contact_editor_show_sip: bool,
+    #[serde(default = "default_contact_editor_show_section")]
+    contact_editor_show_im: bool,
+    #[serde(default = "default_contact_editor_show_section")]
+    contact_editor_show_home_address: bool,
+    #[serde(default = "default_contact_editor_show_section")]
+    contact_editor_show_work_address: bool,
+    #[serde(default = "default_contact_editor_show_section")]
+    contact_editor_show_other_address: bool,
+    #[serde(default = "default_contact_editor_show_section")]
+    contact_editor_show_web: bool,
+    #[serde(default = "default_contact_editor_show_section")]
+    contact_editor_show_job: bool,
+    #[serde(default = "default_contact_editor_show_section")]
+    contact_editor_show_dates: bool,
+    #[serde(default = "default_contact_editor_show_section")]
+    contact_editor_show_misc: bool,
+    #[serde(default = "default_contact_editor_show_section")]
+    contact_editor_show_notes: bool,
+    #[serde(default = "default_contact_editor_show_section")]
+    contact_editor_show_certs: bool,
 }
 
 fn default_window_width() -> i32 {
@@ -613,6 +661,38 @@ fn default_hide_completed_tasks_units() -> String {
     "days".to_string()
 }
 
+fn default_contact_completion_minimum_query_length() -> u32 {
+    3
+}
+
+fn default_contact_open_map_target() -> String {
+    "openstreetmap".to_string()
+}
+
+fn default_contact_open_map_prefer_local() -> bool {
+    true
+}
+
+fn default_contact_layout() -> String {
+    "classic".to_string()
+}
+
+fn default_contact_preview_visible() -> bool {
+    true
+}
+
+fn default_contact_hpane_position() -> i32 {
+    200
+}
+
+fn default_contact_vpane_position() -> i32 {
+    400
+}
+
+fn default_contact_editor_show_section() -> bool {
+    true
+}
+
 impl BackupSettings {
     fn from_app(settings: &AppSettings) -> Self {
         Self {
@@ -735,6 +815,31 @@ impl BackupSettings {
             memo_sort_field: settings.memo_sort_field(),
             memo_source_filter: settings.memo_source_filter(),
             memo_sort_descending: settings.memo_sort_descending(),
+            contact_completion_minimum_query_length: settings
+                .contact_completion_minimum_query_length(),
+            contact_completion_show_address: settings.contact_completion_show_address(),
+            contact_completion_book_sources: settings.contact_completion_book_sources(),
+            contact_address_formatting: settings.contact_address_formatting(),
+            contact_preview_show_maps: settings.contact_preview_show_maps(),
+            contact_preview_home_before_work: settings.contact_preview_home_before_work(),
+            contact_open_map_target: settings.contact_open_map_target(),
+            contact_open_map_prefer_local: settings.contact_open_map_prefer_local(),
+            contact_layout: settings.contact_layout(),
+            contact_preview_visible: settings.contact_preview_visible(),
+            contact_hpane_position: settings.contact_hpane_position(),
+            contact_vpane_position: settings.contact_vpane_position(),
+            contact_editor_show_phone: settings.contact_editor_show_phone(),
+            contact_editor_show_sip: settings.contact_editor_show_sip(),
+            contact_editor_show_im: settings.contact_editor_show_im(),
+            contact_editor_show_home_address: settings.contact_editor_show_home_address(),
+            contact_editor_show_work_address: settings.contact_editor_show_work_address(),
+            contact_editor_show_other_address: settings.contact_editor_show_other_address(),
+            contact_editor_show_web: settings.contact_editor_show_web(),
+            contact_editor_show_job: settings.contact_editor_show_job(),
+            contact_editor_show_dates: settings.contact_editor_show_dates(),
+            contact_editor_show_misc: settings.contact_editor_show_misc(),
+            contact_editor_show_notes: settings.contact_editor_show_notes(),
+            contact_editor_show_certs: settings.contact_editor_show_certs(),
         }
     }
 
@@ -953,6 +1058,32 @@ impl BackupSettings {
         settings.set_memo_sort_field(&self.memo_sort_field);
         settings.set_memo_source_filter(&self.memo_source_filter);
         settings.set_memo_sort_descending(self.memo_sort_descending);
+        settings.set_contact_completion_minimum_query_length(
+            self.contact_completion_minimum_query_length,
+        );
+        settings.set_contact_completion_show_address(self.contact_completion_show_address);
+        settings.set_contact_completion_book_sources(&self.contact_completion_book_sources);
+        settings.set_contact_address_formatting(self.contact_address_formatting);
+        settings.set_contact_preview_show_maps(self.contact_preview_show_maps);
+        settings.set_contact_preview_home_before_work(self.contact_preview_home_before_work);
+        settings.set_contact_open_map_target(&self.contact_open_map_target);
+        settings.set_contact_open_map_prefer_local(self.contact_open_map_prefer_local);
+        settings.set_contact_layout(&self.contact_layout);
+        settings.set_contact_preview_visible(self.contact_preview_visible);
+        settings.set_contact_hpane_position(self.contact_hpane_position);
+        settings.set_contact_vpane_position(self.contact_vpane_position);
+        settings.set_contact_editor_show_phone(self.contact_editor_show_phone);
+        settings.set_contact_editor_show_sip(self.contact_editor_show_sip);
+        settings.set_contact_editor_show_im(self.contact_editor_show_im);
+        settings.set_contact_editor_show_home_address(self.contact_editor_show_home_address);
+        settings.set_contact_editor_show_work_address(self.contact_editor_show_work_address);
+        settings.set_contact_editor_show_other_address(self.contact_editor_show_other_address);
+        settings.set_contact_editor_show_web(self.contact_editor_show_web);
+        settings.set_contact_editor_show_job(self.contact_editor_show_job);
+        settings.set_contact_editor_show_dates(self.contact_editor_show_dates);
+        settings.set_contact_editor_show_misc(self.contact_editor_show_misc);
+        settings.set_contact_editor_show_notes(self.contact_editor_show_notes);
+        settings.set_contact_editor_show_certs(self.contact_editor_show_certs);
     }
 
     fn validate(&self) -> io::Result<()> {
@@ -1196,6 +1327,38 @@ impl BackupSettings {
             &self.addressbook_hidden_groups,
         )?;
         validate_source_or_group_list("addressbook_groups_order", &self.addressbook_groups_order)?;
+        validate_u32_setting(
+            "contact_completion_minimum_query_length",
+            self.contact_completion_minimum_query_length,
+            1,
+            100,
+        )?;
+        validate_choice(
+            "contact_open_map_target",
+            &self.contact_open_map_target,
+            &["openstreetmap", "google"],
+        )?;
+        validate_choice(
+            "contact_layout",
+            &self.contact_layout,
+            &["classic", "vertical"],
+        )?;
+        validate_i32_setting(
+            "contact_hpane_position",
+            self.contact_hpane_position,
+            80,
+            4_096,
+        )?;
+        validate_i32_setting(
+            "contact_vpane_position",
+            self.contact_vpane_position,
+            80,
+            4_096,
+        )?;
+        validate_source_or_group_list(
+            "contact_completion_book_sources",
+            &self.contact_completion_book_sources,
+        )?;
         for (name, value) in [
             ("default_account", &self.default_account),
             ("default_calendar_source", &self.default_calendar_source),
@@ -1580,6 +1743,30 @@ const BACKUP_SETTINGS_FIELDS: &[&str] = &[
     "memo_sort_field",
     "memo_source_filter",
     "memo_sort_descending",
+    "contact_completion_minimum_query_length",
+    "contact_completion_show_address",
+    "contact_completion_book_sources",
+    "contact_address_formatting",
+    "contact_preview_show_maps",
+    "contact_preview_home_before_work",
+    "contact_open_map_target",
+    "contact_open_map_prefer_local",
+    "contact_layout",
+    "contact_preview_visible",
+    "contact_hpane_position",
+    "contact_vpane_position",
+    "contact_editor_show_phone",
+    "contact_editor_show_sip",
+    "contact_editor_show_im",
+    "contact_editor_show_home_address",
+    "contact_editor_show_work_address",
+    "contact_editor_show_other_address",
+    "contact_editor_show_web",
+    "contact_editor_show_job",
+    "contact_editor_show_dates",
+    "contact_editor_show_misc",
+    "contact_editor_show_notes",
+    "contact_editor_show_certs",
 ];
 
 fn is_sensitive_backup_key(key: &str) -> bool {
@@ -3070,6 +3257,99 @@ mod tests {
         assert_eq!(settings.task_search_mode, "any-field");
         assert!(settings.memo_source_filter.is_empty());
         assert!(settings.memo_sort_descending);
+        assert_eq!(settings.contact_completion_minimum_query_length, 3);
+        assert!(!settings.contact_completion_show_address);
+        assert!(settings.contact_completion_book_sources.is_empty());
+        assert!(!settings.contact_address_formatting);
+        assert!(!settings.contact_preview_show_maps);
+        assert!(!settings.contact_preview_home_before_work);
+        assert_eq!(settings.contact_open_map_target, "openstreetmap");
+        assert!(settings.contact_open_map_prefer_local);
+        assert_eq!(settings.contact_layout, "classic");
+        assert!(settings.contact_preview_visible);
+        assert_eq!(settings.contact_hpane_position, 200);
+        assert_eq!(settings.contact_vpane_position, 400);
+        assert!(settings.contact_editor_show_phone);
+        assert!(settings.contact_editor_show_sip);
+        assert!(settings.contact_editor_show_im);
+        assert!(settings.contact_editor_show_home_address);
+        assert!(settings.contact_editor_show_work_address);
+        assert!(settings.contact_editor_show_other_address);
+        assert!(settings.contact_editor_show_web);
+        assert!(settings.contact_editor_show_job);
+        assert!(settings.contact_editor_show_dates);
+        assert!(settings.contact_editor_show_misc);
+        assert!(settings.contact_editor_show_notes);
+        assert!(settings.contact_editor_show_certs);
+    }
+
+    #[test]
+    fn contact_settings_backup_validation_and_roundtrip() {
+        let json = serde_json::json!({
+            "contact_completion_minimum_query_length": 5,
+            "contact_completion_show_address": true,
+            "contact_completion_book_sources": "addr-1,addr-2",
+            "contact_address_formatting": true,
+            "contact_preview_show_maps": true,
+            "contact_preview_home_before_work": true,
+            "contact_open_map_target": "google",
+            "contact_open_map_prefer_local": false,
+            "contact_layout": "vertical",
+            "contact_preview_visible": false,
+            "contact_hpane_position": 250,
+            "contact_vpane_position": 450,
+            "contact_editor_show_phone": false,
+            "contact_editor_show_sip": false,
+            "contact_editor_show_im": false,
+            "contact_editor_show_home_address": false,
+            "contact_editor_show_work_address": false,
+            "contact_editor_show_other_address": false,
+            "contact_editor_show_web": false,
+            "contact_editor_show_job": false,
+            "contact_editor_show_dates": false,
+            "contact_editor_show_misc": false,
+            "contact_editor_show_notes": false,
+            "contact_editor_show_certs": false
+        });
+        let settings: BackupSettings =
+            serde_json::from_value(json).expect("contact settings should parse");
+        assert_eq!(settings.contact_completion_minimum_query_length, 5);
+        assert!(settings.contact_completion_show_address);
+        assert_eq!(settings.contact_completion_book_sources, "addr-1,addr-2");
+        assert!(settings.contact_address_formatting);
+        assert!(settings.contact_preview_show_maps);
+        assert!(settings.contact_preview_home_before_work);
+        assert_eq!(settings.contact_open_map_target, "google");
+        assert!(!settings.contact_open_map_prefer_local);
+        assert_eq!(settings.contact_layout, "vertical");
+        assert!(!settings.contact_preview_visible);
+        assert_eq!(settings.contact_hpane_position, 250);
+        assert_eq!(settings.contact_vpane_position, 450);
+        assert!(!settings.contact_editor_show_phone);
+        assert!(!settings.contact_editor_show_sip);
+        assert!(!settings.contact_editor_show_im);
+        assert!(!settings.contact_editor_show_home_address);
+        assert!(!settings.contact_editor_show_work_address);
+        assert!(!settings.contact_editor_show_other_address);
+        assert!(!settings.contact_editor_show_web);
+        assert!(!settings.contact_editor_show_job);
+        assert!(!settings.contact_editor_show_dates);
+        assert!(!settings.contact_editor_show_misc);
+        assert!(!settings.contact_editor_show_notes);
+        assert!(!settings.contact_editor_show_certs);
+        assert!(settings.validate().is_ok());
+
+        let mut invalid_target = settings.clone();
+        invalid_target.contact_open_map_target = "bing".to_string();
+        assert!(invalid_target.validate().is_err());
+
+        let mut invalid_layout = settings.clone();
+        invalid_layout.contact_layout = "compact".to_string();
+        assert!(invalid_layout.validate().is_err());
+
+        let mut invalid_query_len = settings.clone();
+        invalid_query_len.contact_completion_minimum_query_length = 0;
+        assert!(invalid_query_len.validate().is_err());
     }
 
     #[test]

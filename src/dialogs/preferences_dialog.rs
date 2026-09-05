@@ -1094,6 +1094,262 @@ impl PreferencesDialog {
         ));
         page_contacts.add(&group_default_address_book);
 
+        let group_contacts_display = adw::PreferencesGroup::builder()
+            .title("Darstellung &amp; Karten")
+            .description("Adressformatierung, Anzeigereihenfolge und Kartendienste")
+            .build();
+
+        let row_address_formatting = adw::SwitchRow::builder()
+            .title("Adressformatierung")
+            .subtitle("Adressen in der Kontaktansicht mit Zeilenumbrüchen strukturieren")
+            .build();
+
+        let row_home_before_work = adw::SwitchRow::builder()
+            .title("Privatadresse vor Arbeitsadresse")
+            .subtitle("Private Kontaktdaten in der Vorschau vor geschäftlichen priorisieren")
+            .build();
+
+        let row_preview_show_maps = adw::SwitchRow::builder()
+            .title("Kartenhinweise anzeigen")
+            .subtitle("Kartenverfügbarkeit in der Kontaktvorschau signalisieren")
+            .build();
+
+        let row_open_map_target = adw::ComboRow::builder()
+            .title("Kartendienst")
+            .subtitle("Dienst zum Öffnen von Adressen auf der Karte")
+            .model(&gtk::StringList::new(&["OpenStreetMap", "Google Maps"]))
+            .build();
+
+        let row_open_map_prefer_local = adw::SwitchRow::builder()
+            .title("Lokale Kartenanwendung bevorzugen")
+            .subtitle("Systemeigene geo:-Karten-Apps vor dem Webbrowser bevorzugen")
+            .build();
+
+        let row_contact_preview_visible = adw::SwitchRow::builder()
+            .title("Kontaktvorschau einblenden")
+            .subtitle("Vorschaubereich für ausgewählte Kontakte anzeigen")
+            .build();
+
+        if let Some(settings_ref) = settings.clone() {
+            row_address_formatting.set_active(settings_ref.contact_address_formatting());
+            let s_formatting = settings_ref.clone();
+            row_address_formatting.connect_active_notify(move |row| {
+                s_formatting.set_contact_address_formatting(row.is_active());
+            });
+
+            row_home_before_work.set_active(settings_ref.contact_preview_home_before_work());
+            let s_home = settings_ref.clone();
+            row_home_before_work.connect_active_notify(move |row| {
+                s_home.set_contact_preview_home_before_work(row.is_active());
+            });
+
+            row_preview_show_maps.set_active(settings_ref.contact_preview_show_maps());
+            let s_maps = settings_ref.clone();
+            row_preview_show_maps.connect_active_notify(move |row| {
+                s_maps.set_contact_preview_show_maps(row.is_active());
+            });
+
+            let map_target_idx = if settings_ref
+                .contact_open_map_target()
+                .eq_ignore_ascii_case("google")
+            {
+                1
+            } else {
+                0
+            };
+            row_open_map_target.set_selected(map_target_idx);
+            let s_target = settings_ref.clone();
+            row_open_map_target.connect_selected_notify(move |row| {
+                let target = if row.selected() == 1 {
+                    "google"
+                } else {
+                    "openstreetmap"
+                };
+                s_target.set_contact_open_map_target(target);
+            });
+
+            row_open_map_prefer_local.set_active(settings_ref.contact_open_map_prefer_local());
+            let s_prefer = settings_ref.clone();
+            row_open_map_prefer_local.connect_active_notify(move |row| {
+                s_prefer.set_contact_open_map_prefer_local(row.is_active());
+            });
+
+            row_contact_preview_visible.set_active(settings_ref.contact_preview_visible());
+            let s_preview = settings_ref.clone();
+            row_contact_preview_visible.connect_active_notify(move |row| {
+                s_preview.set_contact_preview_visible(row.is_active());
+            });
+        }
+
+        group_contacts_display.add(&row_address_formatting);
+        group_contacts_display.add(&row_home_before_work);
+        group_contacts_display.add(&row_preview_show_maps);
+        group_contacts_display.add(&row_open_map_target);
+        group_contacts_display.add(&row_open_map_prefer_local);
+        group_contacts_display.add(&row_contact_preview_visible);
+        page_contacts.add(&group_contacts_display);
+
+        let group_contacts_autocomplete = adw::PreferencesGroup::builder()
+            .title("Autovervollständigung")
+            .description("Einstellungen für die Adress- und Kontaktsuche beim Verfassen")
+            .build();
+
+        let row_completion_show_address = adw::SwitchRow::builder()
+            .title("E-Mail-Adresse anzeigen")
+            .subtitle("E-Mail-Adresse neben dem Namen in Vorschlägen einblenden")
+            .build();
+
+        let row_completion_min_query_length = adw::SpinRow::with_range(1.0, 100.0, 1.0);
+        row_completion_min_query_length.set_title("Minimale Suchlänge");
+        row_completion_min_query_length
+            .set_subtitle("Mindestanzahl an Zeichen vor Beginn der Adresssuche");
+        row_completion_min_query_length.set_digits(0);
+        row_completion_min_query_length.set_snap_to_ticks(true);
+
+        if let Some(settings_ref) = settings.clone() {
+            row_completion_show_address.set_active(settings_ref.contact_completion_show_address());
+            let s_comp_addr = settings_ref.clone();
+            row_completion_show_address.connect_active_notify(move |row| {
+                s_comp_addr.set_contact_completion_show_address(row.is_active());
+            });
+
+            row_completion_min_query_length
+                .set_value(settings_ref.contact_completion_minimum_query_length() as f64);
+            let s_comp_len = settings_ref.clone();
+            row_completion_min_query_length.connect_value_notify(move |row| {
+                s_comp_len.set_contact_completion_minimum_query_length(row.value().round() as u32);
+            });
+        }
+
+        group_contacts_autocomplete.add(&row_completion_show_address);
+        group_contacts_autocomplete.add(&row_completion_min_query_length);
+        page_contacts.add(&group_contacts_autocomplete);
+
+        let group_contacts_editor = adw::PreferencesGroup::builder()
+            .title("Kontakteditor-Abschnitte")
+            .description("Sichtbarkeit der einzelnen Detailabschnitte im Bearbeitungsdialog")
+            .build();
+
+        fn add_contact_editor_toggle(
+            group: &adw::PreferencesGroup,
+            settings: &Option<AppSettings>,
+            title: &str,
+            subtitle: &str,
+            getter: fn(&AppSettings) -> bool,
+            setter: fn(&AppSettings, bool),
+        ) {
+            let row = adw::SwitchRow::builder()
+                .title(title)
+                .subtitle(subtitle)
+                .build();
+            if let Some(s) = settings.clone() {
+                row.set_active(getter(&s));
+                let s_clone = s.clone();
+                row.connect_active_notify(move |r| {
+                    setter(&s_clone, r.is_active());
+                });
+            }
+            group.add(&row);
+        }
+
+        add_contact_editor_toggle(
+            &group_contacts_editor,
+            &settings,
+            "Telefonnummern",
+            "Telefon- und Mobilnummern",
+            AppSettings::contact_editor_show_phone,
+            AppSettings::set_contact_editor_show_phone,
+        );
+        add_contact_editor_toggle(
+            &group_contacts_editor,
+            &settings,
+            "SIP- / VoIP-Adressen",
+            "Internettelefonie-Konten",
+            AppSettings::contact_editor_show_sip,
+            AppSettings::set_contact_editor_show_sip,
+        );
+        add_contact_editor_toggle(
+            &group_contacts_editor,
+            &settings,
+            "Instant Messaging",
+            "Chat- und Messenger-Kennungen",
+            AppSettings::contact_editor_show_im,
+            AppSettings::set_contact_editor_show_im,
+        );
+        add_contact_editor_toggle(
+            &group_contacts_editor,
+            &settings,
+            "Privatadresse",
+            "Wohnsitz und private Anschrift",
+            AppSettings::contact_editor_show_home_address,
+            AppSettings::set_contact_editor_show_home_address,
+        );
+        add_contact_editor_toggle(
+            &group_contacts_editor,
+            &settings,
+            "Geschäftsadresse",
+            "Büro- und Firmenanschrift",
+            AppSettings::contact_editor_show_work_address,
+            AppSettings::set_contact_editor_show_work_address,
+        );
+        add_contact_editor_toggle(
+            &group_contacts_editor,
+            &settings,
+            "Weitere Adressen",
+            "Sonstige postalische Adressen",
+            AppSettings::contact_editor_show_other_address,
+            AppSettings::set_contact_editor_show_other_address,
+        );
+        add_contact_editor_toggle(
+            &group_contacts_editor,
+            &settings,
+            "Websites",
+            "Homepages und Weblinks",
+            AppSettings::contact_editor_show_web,
+            AppSettings::set_contact_editor_show_web,
+        );
+        add_contact_editor_toggle(
+            &group_contacts_editor,
+            &settings,
+            "Beruf &amp; Organisation",
+            "Position, Abteilung und Firma",
+            AppSettings::contact_editor_show_job,
+            AppSettings::set_contact_editor_show_job,
+        );
+        add_contact_editor_toggle(
+            &group_contacts_editor,
+            &settings,
+            "Geburts- und Jahrestage",
+            "Persönliche Termine und Jubiläen",
+            AppSettings::contact_editor_show_dates,
+            AppSettings::set_contact_editor_show_dates,
+        );
+        add_contact_editor_toggle(
+            &group_contacts_editor,
+            &settings,
+            "Zusatzangaben",
+            "Zeitzone, Geokoordinaten und Rollen",
+            AppSettings::contact_editor_show_misc,
+            AppSettings::set_contact_editor_show_misc,
+        );
+        add_contact_editor_toggle(
+            &group_contacts_editor,
+            &settings,
+            "Notizen",
+            "Freitext-Notizen zum Kontakt",
+            AppSettings::contact_editor_show_notes,
+            AppSettings::set_contact_editor_show_notes,
+        );
+        add_contact_editor_toggle(
+            &group_contacts_editor,
+            &settings,
+            "Zertifikate",
+            "S/MIME- und Verschlüsselungszertifikate",
+            AppSettings::contact_editor_show_certs,
+            AppSettings::set_contact_editor_show_certs,
+        );
+        page_contacts.add(&group_contacts_editor);
+
         let group_backup = adw::PreferencesGroup::builder()
             .title("Daten &amp; Sicherung")
             .description(

@@ -1970,6 +1970,232 @@ impl AppSettings {
         self.set_int(key, value.clamp(80, 4_096));
     }
 
+    pub fn contact_completion_minimum_query_length(&self) -> u32 {
+        self.settings
+            .int("contact-completion-minimum-query-length")
+            .clamp(1, 100) as u32
+    }
+
+    pub fn set_contact_completion_minimum_query_length(&self, value: u32) {
+        self.set_int(
+            "contact-completion-minimum-query-length",
+            value.clamp(1, 100) as i32,
+        );
+    }
+
+    pub fn contact_completion_show_address(&self) -> bool {
+        self.settings.boolean("contact-completion-show-address")
+    }
+
+    pub fn set_contact_completion_show_address(&self, value: bool) {
+        self.set_boolean("contact-completion-show-address", value);
+    }
+
+    pub fn contact_completion_book_sources(&self) -> String {
+        self.settings
+            .string("contact-completion-book-sources")
+            .to_string()
+    }
+
+    pub fn set_contact_completion_book_sources(&self, value: &str) {
+        let uids: Vec<String> = value
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(String::from)
+            .collect();
+        let cleaned = sanitize_source_list(&uids);
+        self.set_string("contact-completion-book-sources", &cleaned.join(","));
+    }
+
+    pub fn contact_address_formatting(&self) -> bool {
+        self.settings.boolean("contact-address-formatting")
+    }
+
+    pub fn set_contact_address_formatting(&self, value: bool) {
+        self.set_boolean("contact-address-formatting", value);
+    }
+
+    pub fn contact_preview_show_maps(&self) -> bool {
+        self.settings.boolean("contact-preview-show-maps")
+    }
+
+    pub fn set_contact_preview_show_maps(&self, value: bool) {
+        self.set_boolean("contact-preview-show-maps", value);
+    }
+
+    pub fn contact_preview_home_before_work(&self) -> bool {
+        self.settings.boolean("contact-preview-home-before-work")
+    }
+
+    pub fn set_contact_preview_home_before_work(&self, value: bool) {
+        self.set_boolean("contact-preview-home-before-work", value);
+    }
+
+    pub fn contact_open_map_target(&self) -> String {
+        let value = self.settings.string("contact-open-map-target");
+        if value.eq_ignore_ascii_case("google") {
+            "google".to_string()
+        } else {
+            "openstreetmap".to_string()
+        }
+    }
+
+    pub fn set_contact_open_map_target(&self, value: &str) {
+        let normalized = if value.trim().eq_ignore_ascii_case("google") {
+            "google"
+        } else {
+            "openstreetmap"
+        };
+        self.set_string("contact-open-map-target", normalized);
+    }
+
+    pub fn contact_open_map_prefer_local(&self) -> bool {
+        self.settings.boolean("contact-open-map-prefer-local")
+    }
+
+    pub fn set_contact_open_map_prefer_local(&self, value: bool) {
+        self.set_boolean("contact-open-map-prefer-local", value);
+    }
+
+    pub fn contact_layout(&self) -> String {
+        let value = self.settings.string("contact-layout");
+        if value.eq_ignore_ascii_case("vertical") {
+            "vertical".to_string()
+        } else {
+            "classic".to_string()
+        }
+    }
+
+    pub fn set_contact_layout(&self, value: &str) {
+        let normalized = if value.trim().eq_ignore_ascii_case("vertical") {
+            "vertical"
+        } else {
+            "classic"
+        };
+        self.set_string("contact-layout", normalized);
+    }
+
+    pub fn contact_preview_visible(&self) -> bool {
+        self.settings.boolean("contact-preview-visible")
+    }
+
+    pub fn set_contact_preview_visible(&self, value: bool) {
+        self.set_boolean("contact-preview-visible", value);
+    }
+
+    pub fn contact_hpane_position(&self) -> i32 {
+        self.settings.int("contact-hpane-position").clamp(80, 4_096)
+    }
+
+    pub fn set_contact_hpane_position(&self, value: i32) {
+        self.set_int("contact-hpane-position", value.clamp(80, 4_096));
+    }
+
+    pub fn contact_vpane_position(&self) -> i32 {
+        self.settings.int("contact-vpane-position").clamp(80, 4_096)
+    }
+
+    pub fn set_contact_vpane_position(&self, value: i32) {
+        self.set_int("contact-vpane-position", value.clamp(80, 4_096));
+    }
+
+    pub fn contact_editor_show_phone(&self) -> bool {
+        self.settings.boolean("contact-editor-show-phone")
+    }
+
+    pub fn set_contact_editor_show_phone(&self, value: bool) {
+        self.set_boolean("contact-editor-show-phone", value);
+    }
+
+    pub fn contact_editor_show_sip(&self) -> bool {
+        self.settings.boolean("contact-editor-show-sip")
+    }
+
+    pub fn set_contact_editor_show_sip(&self, value: bool) {
+        self.set_boolean("contact-editor-show-sip", value);
+    }
+
+    pub fn contact_editor_show_im(&self) -> bool {
+        self.settings.boolean("contact-editor-show-im")
+    }
+
+    pub fn set_contact_editor_show_im(&self, value: bool) {
+        self.set_boolean("contact-editor-show-im", value);
+    }
+
+    pub fn contact_editor_show_home_address(&self) -> bool {
+        self.settings.boolean("contact-editor-show-home-address")
+    }
+
+    pub fn set_contact_editor_show_home_address(&self, value: bool) {
+        self.set_boolean("contact-editor-show-home-address", value);
+    }
+
+    pub fn contact_editor_show_work_address(&self) -> bool {
+        self.settings.boolean("contact-editor-show-work-address")
+    }
+
+    pub fn set_contact_editor_show_work_address(&self, value: bool) {
+        self.set_boolean("contact-editor-show-work-address", value);
+    }
+
+    pub fn contact_editor_show_other_address(&self) -> bool {
+        self.settings.boolean("contact-editor-show-other-address")
+    }
+
+    pub fn set_contact_editor_show_other_address(&self, value: bool) {
+        self.set_boolean("contact-editor-show-other-address", value);
+    }
+
+    pub fn contact_editor_show_web(&self) -> bool {
+        self.settings.boolean("contact-editor-show-web")
+    }
+
+    pub fn set_contact_editor_show_web(&self, value: bool) {
+        self.set_boolean("contact-editor-show-web", value);
+    }
+
+    pub fn contact_editor_show_job(&self) -> bool {
+        self.settings.boolean("contact-editor-show-job")
+    }
+
+    pub fn set_contact_editor_show_job(&self, value: bool) {
+        self.set_boolean("contact-editor-show-job", value);
+    }
+
+    pub fn contact_editor_show_dates(&self) -> bool {
+        self.settings.boolean("contact-editor-show-dates")
+    }
+
+    pub fn set_contact_editor_show_dates(&self, value: bool) {
+        self.set_boolean("contact-editor-show-dates", value);
+    }
+
+    pub fn contact_editor_show_misc(&self) -> bool {
+        self.settings.boolean("contact-editor-show-misc")
+    }
+
+    pub fn set_contact_editor_show_misc(&self, value: bool) {
+        self.set_boolean("contact-editor-show-misc", value);
+    }
+
+    pub fn contact_editor_show_notes(&self) -> bool {
+        self.settings.boolean("contact-editor-show-notes")
+    }
+
+    pub fn set_contact_editor_show_notes(&self, value: bool) {
+        self.set_boolean("contact-editor-show-notes", value);
+    }
+
+    pub fn contact_editor_show_certs(&self) -> bool {
+        self.settings.boolean("contact-editor-show-certs")
+    }
+
+    pub fn set_contact_editor_show_certs(&self, value: bool) {
+        self.set_boolean("contact-editor-show-certs", value);
+    }
+
     /// Apply one already-normalized, non-secret setting from an explicit
     /// profile migration.  The migration parser only exposes keys from the
     /// installed schema; keeping the final type conversion here makes sure
@@ -2342,6 +2568,81 @@ impl AppSettings {
                 let value = normalize_memo_preview_orientation_value(value)?;
                 self.set_string("memo-preview-orientation", &value);
             }
+            "contact-completion-minimum-query-length" => {
+                let val = parse_migrated_u32_in_range(key, value, 1, 100)?;
+                self.set_contact_completion_minimum_query_length(val);
+            }
+            "contact-completion-show-address" => {
+                self.set_contact_completion_show_address(parse_migrated_bool(key, value)?);
+            }
+            "contact-completion-book-sources" => {
+                self.set_contact_completion_book_sources(value);
+            }
+            "contact-address-formatting" => {
+                self.set_contact_address_formatting(parse_migrated_bool(key, value)?);
+            }
+            "contact-preview-show-maps" => {
+                self.set_contact_preview_show_maps(parse_migrated_bool(key, value)?);
+            }
+            "contact-preview-home-before-work" => {
+                self.set_contact_preview_home_before_work(parse_migrated_bool(key, value)?);
+            }
+            "contact-open-map-target" => {
+                self.set_contact_open_map_target(value);
+            }
+            "contact-open-map-prefer-local" => {
+                self.set_contact_open_map_prefer_local(parse_migrated_bool(key, value)?);
+            }
+            "contact-layout" => {
+                self.set_contact_layout(value);
+            }
+            "contact-preview-visible" => {
+                self.set_contact_preview_visible(parse_migrated_bool(key, value)?);
+            }
+            "contact-hpane-position" => {
+                let val = parse_migrated_i32_in_range(key, value, 80, 4_096)?;
+                self.set_contact_hpane_position(val);
+            }
+            "contact-vpane-position" => {
+                let val = parse_migrated_i32_in_range(key, value, 80, 4_096)?;
+                self.set_contact_vpane_position(val);
+            }
+            "contact-editor-show-phone" => {
+                self.set_contact_editor_show_phone(parse_migrated_bool(key, value)?);
+            }
+            "contact-editor-show-sip" => {
+                self.set_contact_editor_show_sip(parse_migrated_bool(key, value)?);
+            }
+            "contact-editor-show-im" => {
+                self.set_contact_editor_show_im(parse_migrated_bool(key, value)?);
+            }
+            "contact-editor-show-home-address" => {
+                self.set_contact_editor_show_home_address(parse_migrated_bool(key, value)?);
+            }
+            "contact-editor-show-work-address" => {
+                self.set_contact_editor_show_work_address(parse_migrated_bool(key, value)?);
+            }
+            "contact-editor-show-other-address" => {
+                self.set_contact_editor_show_other_address(parse_migrated_bool(key, value)?);
+            }
+            "contact-editor-show-web" => {
+                self.set_contact_editor_show_web(parse_migrated_bool(key, value)?);
+            }
+            "contact-editor-show-job" => {
+                self.set_contact_editor_show_job(parse_migrated_bool(key, value)?);
+            }
+            "contact-editor-show-dates" => {
+                self.set_contact_editor_show_dates(parse_migrated_bool(key, value)?);
+            }
+            "contact-editor-show-misc" => {
+                self.set_contact_editor_show_misc(parse_migrated_bool(key, value)?);
+            }
+            "contact-editor-show-notes" => {
+                self.set_contact_editor_show_notes(parse_migrated_bool(key, value)?);
+            }
+            "contact-editor-show-certs" => {
+                self.set_contact_editor_show_certs(parse_migrated_bool(key, value)?);
+            }
             _ => return Err(format!("unbekannter Migrationsschlüssel „{key}“")),
         }
         Ok(())
@@ -2478,6 +2779,30 @@ impl AppSettings {
             "memo-category-filter",
             "memo-preview-visible",
             "memo-preview-orientation",
+            "contact-completion-minimum-query-length",
+            "contact-completion-show-address",
+            "contact-completion-book-sources",
+            "contact-address-formatting",
+            "contact-preview-show-maps",
+            "contact-preview-home-before-work",
+            "contact-open-map-target",
+            "contact-open-map-prefer-local",
+            "contact-layout",
+            "contact-preview-visible",
+            "contact-hpane-position",
+            "contact-vpane-position",
+            "contact-editor-show-phone",
+            "contact-editor-show-sip",
+            "contact-editor-show-im",
+            "contact-editor-show-home-address",
+            "contact-editor-show-work-address",
+            "contact-editor-show-other-address",
+            "contact-editor-show-web",
+            "contact-editor-show-job",
+            "contact-editor-show-dates",
+            "contact-editor-show-misc",
+            "contact-editor-show-notes",
+            "contact-editor-show-certs",
         ] {
             self.settings.reset(key);
         }
@@ -2646,6 +2971,35 @@ pub fn sanitize_ordered_list(items: &[String]) -> Vec<String> {
     cleaned
 }
 
+pub fn build_contact_map_uri(
+    address: &str,
+    target: &str,
+    prefer_local: bool,
+) -> (String, Option<String>) {
+    let encoded: String = address
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == ' ' {
+                c
+            } else {
+                '+'
+            }
+        })
+        .collect();
+    let query = encoded.replace(' ', "+");
+    let web_url = if target.trim().eq_ignore_ascii_case("google") {
+        format!("https://www.google.com/maps/search/?api=1&query={query}")
+    } else {
+        format!("https://www.openstreetmap.org/search?query={query}")
+    };
+
+    if prefer_local {
+        (format!("geo:0,0?q={query}"), Some(web_url))
+    } else {
+        (web_url, None)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ReminderDurationUnit {
     #[default]
@@ -2696,7 +3050,7 @@ pub fn sanitize_duration_units(units: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{
-        AppSettings, DEFAULT_MAIL_NORMAL_HEADERS, MAX_MAIL_NORMAL_HEADERS,
+        AppSettings, DEFAULT_MAIL_NORMAL_HEADERS, MAX_MAIL_NORMAL_HEADERS, build_contact_map_uri,
         clamp_mail_sync_message_limit, default_mail_normal_headers, mail_list_profile_column_order,
         normalize_composer_charset, normalize_mail_list_column_order,
         normalized_mail_list_view_profile, normalized_mail_sort_field,
@@ -3617,5 +3971,123 @@ mod tests {
         );
         assert!(!reset.hide_cancelled_tasks());
         assert!(!reset.hide_cancelled_events());
+    }
+
+    #[test]
+    fn contact_settings_roundtrip_defaults_and_map_uri() {
+        let backend = gio::memory_settings_backend_new();
+        let settings = settings_with_backend(&backend);
+
+        // 1. Defaults
+        assert_eq!(settings.contact_completion_minimum_query_length(), 3);
+        assert!(!settings.contact_completion_show_address());
+        assert!(settings.contact_completion_book_sources().is_empty());
+        assert!(!settings.contact_address_formatting());
+        assert!(!settings.contact_preview_show_maps());
+        assert!(!settings.contact_preview_home_before_work());
+        assert_eq!(settings.contact_open_map_target(), "openstreetmap");
+        assert!(settings.contact_open_map_prefer_local());
+        assert_eq!(settings.contact_layout(), "classic");
+        assert!(settings.contact_preview_visible());
+        assert_eq!(settings.contact_hpane_position(), 200);
+        assert_eq!(settings.contact_vpane_position(), 400);
+        assert!(settings.contact_editor_show_phone());
+        assert!(settings.contact_editor_show_sip());
+        assert!(settings.contact_editor_show_im());
+        assert!(settings.contact_editor_show_home_address());
+        assert!(settings.contact_editor_show_work_address());
+        assert!(settings.contact_editor_show_other_address());
+        assert!(settings.contact_editor_show_web());
+        assert!(settings.contact_editor_show_job());
+        assert!(settings.contact_editor_show_dates());
+        assert!(settings.contact_editor_show_misc());
+        assert!(settings.contact_editor_show_notes());
+        assert!(settings.contact_editor_show_certs());
+
+        // 2. Setters & clamping / normalization
+        settings.set_contact_completion_minimum_query_length(5);
+        assert_eq!(settings.contact_completion_minimum_query_length(), 5);
+        settings.set_contact_completion_minimum_query_length(0);
+        assert_eq!(settings.contact_completion_minimum_query_length(), 1);
+
+        settings.set_contact_completion_show_address(true);
+        assert!(settings.contact_completion_show_address());
+
+        settings.set_contact_completion_book_sources(" book-b , book-a , book-b ");
+        assert_eq!(settings.contact_completion_book_sources(), "book-a,book-b");
+
+        settings.set_contact_address_formatting(true);
+        assert!(settings.contact_address_formatting());
+
+        settings.set_contact_preview_show_maps(true);
+        assert!(settings.contact_preview_show_maps());
+
+        settings.set_contact_preview_home_before_work(true);
+        assert!(settings.contact_preview_home_before_work());
+
+        settings.set_contact_open_map_target("google");
+        assert_eq!(settings.contact_open_map_target(), "google");
+        settings.set_contact_open_map_target("unknown");
+        assert_eq!(settings.contact_open_map_target(), "openstreetmap");
+
+        settings.set_contact_open_map_prefer_local(false);
+        assert!(!settings.contact_open_map_prefer_local());
+
+        settings.set_contact_layout("vertical");
+        assert_eq!(settings.contact_layout(), "vertical");
+        settings.set_contact_layout("other");
+        assert_eq!(settings.contact_layout(), "classic");
+
+        settings.set_contact_preview_visible(false);
+        assert!(!settings.contact_preview_visible());
+
+        settings.set_contact_hpane_position(350);
+        assert_eq!(settings.contact_hpane_position(), 350);
+        settings.set_contact_hpane_position(50);
+        assert_eq!(settings.contact_hpane_position(), 80);
+
+        settings.set_contact_vpane_position(550);
+        assert_eq!(settings.contact_vpane_position(), 550);
+
+        settings.set_contact_editor_show_phone(false);
+        assert!(!settings.contact_editor_show_phone());
+
+        // 3. Map URI generation
+        let (primary, fallback) =
+            build_contact_map_uri("Alexanderplatz 1, Berlin", "openstreetmap", true);
+        assert_eq!(primary, "geo:0,0?q=Alexanderplatz+1++Berlin");
+        assert_eq!(
+            fallback,
+            Some("https://www.openstreetmap.org/search?query=Alexanderplatz+1++Berlin".to_string())
+        );
+
+        let (primary_google, fallback_google) =
+            build_contact_map_uri("1600 Amphitheatre Pkwy", "google", false);
+        assert_eq!(
+            primary_google,
+            "https://www.google.com/maps/search/?api=1&query=1600+Amphitheatre+Pkwy"
+        );
+        assert_eq!(fallback_google, None);
+
+        // 4. Migration import
+        settings
+            .apply_migrated_setting("contact-layout", "vertical")
+            .unwrap();
+        assert_eq!(settings.contact_layout(), "vertical");
+        settings
+            .apply_migrated_setting("contact-open-map-target", "google")
+            .unwrap();
+        assert_eq!(settings.contact_open_map_target(), "google");
+
+        // 5. Reset to defaults
+        settings.reset_to_defaults();
+        let reset = settings_with_backend(&backend);
+        assert_eq!(reset.contact_completion_minimum_query_length(), 3);
+        assert!(!reset.contact_completion_show_address());
+        assert_eq!(reset.contact_open_map_target(), "openstreetmap");
+        assert!(reset.contact_open_map_prefer_local());
+        assert_eq!(reset.contact_layout(), "classic");
+        assert!(reset.contact_preview_visible());
+        assert!(reset.contact_editor_show_phone());
     }
 }

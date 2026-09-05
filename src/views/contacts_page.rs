@@ -1401,43 +1401,56 @@ impl ContactsPage {
             }
         ));
 
+        let map_target = AppSettings::try_new()
+            .map(|s| s.contact_open_map_target())
+            .unwrap_or_else(|| "openstreetmap".to_string());
+        let map_tooltip = if map_target.eq_ignore_ascii_case("google") {
+            "Adresse in Google Maps anzeigen"
+        } else {
+            "Adresse in OpenStreetMap anzeigen"
+        };
         let map_btn = gtk::Button::builder()
             .icon_name("mark-location-symbolic")
-            .tooltip_text("Adresse in OpenStreetMap anzeigen")
+            .tooltip_text(map_tooltip)
             .css_classes(vec!["circular"])
             .build();
-        set_accessible_label(&map_btn, "Adresse in OpenStreetMap anzeigen");
+        set_accessible_label(&map_btn, map_tooltip);
         let selected_contact_for_map = Rc::clone(&selected_contact);
         map_btn.connect_clicked(glib::clone!(
             #[weak(rename_to = page)]
             self,
             move |_| {
                 if let Some(record) = selected_contact_for_map.borrow().as_ref() {
-                    let addr = record
-                        .contact
-                        .addresses
-                        .first()
-                        .map(|s| s.as_str())
-                        .unwrap_or("");
+                    let (target, prefer_local, home_before_work) = AppSettings::try_new()
+                        .map(|s| {
+                            (
+                                s.contact_open_map_target(),
+                                s.contact_open_map_prefer_local(),
+                                s.contact_preview_home_before_work(),
+                            )
+                        })
+                        .unwrap_or_else(|| ("openstreetmap".to_string(), true, false));
+                    let addrs = ordered_contact_addresses(&record.contact, home_before_work);
+                    let addr = addrs.first().map(|s| s.as_str()).unwrap_or("");
                     if !addr.is_empty() {
-                        let encoded: String = addr
-                            .chars()
-                            .map(|c| {
-                                if c.is_alphanumeric() || c == ' ' {
-                                    c
-                                } else {
-                                    '+'
-                                }
-                            })
-                            .collect();
-                        let uri = format!(
-                            "https://www.openstreetmap.org/search?query={}",
-                            encoded.replace(' ', "+")
-                        );
-                        let _ = gio::AppInfo::launch_default_for_uri(
-                            &uri,
+                        let (primary_uri, fallback_uri) =
+                            crate::services::settings_service::build_contact_map_uri(
+                                addr,
+                                &target,
+                                prefer_local,
+                            );
+                        let launched = gio::AppInfo::launch_default_for_uri(
+                            &primary_uri,
                             None::<&gio::AppLaunchContext>,
                         );
+                        if launched.is_err() {
+                            if let Some(fallback) = fallback_uri {
+                                let _ = gio::AppInfo::launch_default_for_uri(
+                                    &fallback,
+                                    None::<&gio::AppLaunchContext>,
+                                );
+                            }
+                        }
                     } else {
                         page.show_toast("Keine Adresse hinterlegt");
                     }
@@ -2377,6 +2390,52 @@ impl ContactsPage {
             }
         });
         split.add_controller(key_controller);
+
+        if let Some(settings) = AppSettings::try_new() {
+            detail_box.set_visible(settings.contact_preview_visible());
+
+            let map_btn_for_settings = map_btn.clone();
+            settings.connect_changed(Some("contact-open-map-target"), move |settings, _| {
+                let target = settings.string("contact-open-map-target");
+                let tooltip = if target.eq_ignore_ascii_case("google") {
+                    "Adresse in Google Maps anzeigen"
+                } else {
+                    "Adresse in OpenStreetMap anzeigen"
+                };
+                map_btn_for_settings.set_tooltip_text(Some(tooltip));
+                set_accessible_label(&map_btn_for_settings, tooltip);
+            });
+
+            let detail_box_for_settings = detail_box.clone();
+            settings.connect_changed(Some("contact-preview-visible"), move |settings, _| {
+                detail_box_for_settings.set_visible(settings.boolean("contact-preview-visible"));
+            });
+
+            let detail_extra_for_home = detail_extra.clone();
+            let selected_for_home = Rc::clone(&selected_contact);
+            settings.connect_changed(Some("contact-preview-home-before-work"), move |_, _| {
+                if let Some(record) = selected_for_home.borrow().as_ref() {
+                    detail_extra_for_home.set_label(&contact_detail_summary(&record.contact));
+                }
+            });
+
+            let detail_extra_for_maps = detail_extra.clone();
+            let selected_for_maps = Rc::clone(&selected_contact);
+            settings.connect_changed(Some("contact-preview-show-maps"), move |_, _| {
+                if let Some(record) = selected_for_maps.borrow().as_ref() {
+                    detail_extra_for_maps.set_label(&contact_detail_summary(&record.contact));
+                }
+            });
+
+            let detail_extra_for_formatting = detail_extra.clone();
+            let selected_for_formatting = Rc::clone(&selected_contact);
+            settings.connect_changed(Some("contact-address-formatting"), move |_, _| {
+                if let Some(record) = selected_for_formatting.borrow().as_ref() {
+                    detail_extra_for_formatting.set_label(&contact_detail_summary(&record.contact));
+                }
+            });
+        }
+
         split.set_parent(self);
     }
 
@@ -4616,7 +4675,44 @@ fn contact_detail_title(contact: &VCardContact) -> String {
     }
 }
 
-fn contact_detail_summary(contact: &VCardContact) -> String {
+pub(crate) fn ordered_contact_addresses(
+    contact: &VCardContact,
+    home_before_work: bool,
+) -> Vec<String> {
+    if !home_before_work || contact.address_properties.is_empty() {
+        return contact.addresses.clone();
+    }
+    let mut entries: Vec<(usize, &str, &crate::services::vcard_service::VCardProperty)> = contact
+        .addresses
+        .iter()
+        .zip(contact.address_properties.iter())
+        .enumerate()
+        .map(|(idx, (addr, prop))| (idx, addr.as_str(), prop))
+        .collect();
+    entries.sort_by_key(|(idx, _, prop)| {
+        let prop_upper = prop.property.to_ascii_uppercase();
+        let rank = if prop_upper.contains("HOME") {
+            0
+        } else if prop_upper.contains("WORK") {
+            1
+        } else {
+            2
+        };
+        (rank, *idx)
+    });
+    entries
+        .into_iter()
+        .map(|(_, addr, _)| addr.to_string())
+        .collect()
+}
+
+pub(crate) fn contact_detail_summary_with_options(
+    contact: &VCardContact,
+    home_before_work: bool,
+    show_maps: bool,
+    map_target: &str,
+    address_formatting: bool,
+) -> String {
     let mut lines = Vec::new();
     if contact.is_list {
         lines.push(format!(
@@ -4636,8 +4732,22 @@ fn contact_detail_summary(contact: &VCardContact) -> String {
             lines.push("Mitgliederadressen: verborgen".to_string());
         }
     }
-    if !contact.addresses.is_empty() {
-        lines.push(format!("Adresse: {}", contact.addresses.join(" · ")));
+    let ordered_addrs = ordered_contact_addresses(contact, home_before_work);
+    if !ordered_addrs.is_empty() {
+        let separator = if address_formatting {
+            "\n         "
+        } else {
+            " · "
+        };
+        lines.push(format!("Adresse: {}", ordered_addrs.join(separator)));
+        if show_maps {
+            let service_name = if map_target.eq_ignore_ascii_case("google") {
+                "Google Maps"
+            } else {
+                "OpenStreetMap"
+            };
+            lines.push(format!("Karte: aktiv ({service_name})"));
+        }
     }
     if !contact.categories.is_empty() {
         lines.push(format!("Kategorien: {}", contact.categories.join(", ")));
@@ -4682,6 +4792,26 @@ fn contact_detail_summary(contact: &VCardContact) -> String {
     }
 }
 
+fn contact_detail_summary(contact: &VCardContact) -> String {
+    let (home_before_work, show_maps, map_target, address_formatting) = AppSettings::try_new()
+        .map(|s| {
+            (
+                s.contact_preview_home_before_work(),
+                s.contact_preview_show_maps(),
+                s.contact_open_map_target(),
+                s.contact_address_formatting(),
+            )
+        })
+        .unwrap_or_else(|| (false, false, "openstreetmap".to_string(), false));
+    contact_detail_summary_with_options(
+        contact,
+        home_before_work,
+        show_maps,
+        &map_target,
+        address_formatting,
+    )
+}
+
 impl Default for ContactsPage {
     fn default() -> Self {
         Self::new()
@@ -4693,11 +4823,12 @@ mod tests {
     use super::{
         ContactActionState, ContactIdentity, ContactPageSearchState, ContactSelectionRestore,
         ContactTransferKind, ContactVCardExportError, confirmed_contact_uid, contact_action_state,
-        contact_category_matches, contact_detail_summary, contact_email_text,
-        contact_load_status_message, contact_query_matches, contact_recipient_text,
-        contact_recipient_text_with_records, contact_records_are_duplicates,
-        contact_records_share_duplicate_key, contact_selection_action_state, contact_sort_key,
-        contact_source_label, contact_status_needs_visibility, context_action_state,
+        contact_category_matches, contact_detail_summary, contact_detail_summary_with_options,
+        contact_email_text, contact_load_status_message, contact_query_matches,
+        contact_recipient_text, contact_recipient_text_with_records,
+        contact_records_are_duplicates, contact_records_share_duplicate_key,
+        contact_selection_action_state, contact_sort_key, contact_source_label,
+        contact_status_needs_visibility, context_action_state, ordered_contact_addresses,
         plan_contact_delete_batch, plan_contact_transfer, plan_contact_vcard_export,
         prepare_vcard_for_transfer, quick_field_for_index, quick_query,
         reduce_contact_delete_result, reduce_contact_transfer_result,
@@ -5396,5 +5527,67 @@ mod tests {
         assert_eq!(after_move.len(), 2);
         assert_eq!(after_move[0].uid, "2");
         assert_eq!(after_move[1].uid, "dest-1");
+    }
+
+    #[test]
+    fn ordered_contact_addresses_respects_home_before_work() {
+        let mut contact = VCardContact::new("Max Mustermann", "max@example.test", "", "");
+        contact.addresses = vec![
+            "Arbeitsstraße 10, 10115 Berlin".to_string(),
+            "Heimweg 1, 80331 München".to_string(),
+        ];
+        contact.address_properties = vec![
+            crate::services::vcard_service::VCardProperty {
+                property: "ADR;TYPE=WORK".to_string(),
+                value: "Arbeitsstraße 10, 10115 Berlin".to_string(),
+                raw_value: ";;Arbeitsstraße 10;Berlin;;10115;Deutschland".to_string(),
+            },
+            crate::services::vcard_service::VCardProperty {
+                property: "ADR;TYPE=HOME".to_string(),
+                value: "Heimweg 1, 80331 München".to_string(),
+                raw_value: ";;Heimweg 1;München;;80331;Deutschland".to_string(),
+            },
+        ];
+
+        // Without home_before_work, natural order is preserved
+        let natural = ordered_contact_addresses(&contact, false);
+        assert_eq!(natural[0], "Arbeitsstraße 10, 10115 Berlin");
+        assert_eq!(natural[1], "Heimweg 1, 80331 München");
+
+        // With home_before_work, HOME is placed first
+        let prioritized = ordered_contact_addresses(&contact, true);
+        assert_eq!(prioritized[0], "Heimweg 1, 80331 München");
+        assert_eq!(prioritized[1], "Arbeitsstraße 10, 10115 Berlin");
+    }
+
+    #[test]
+    fn contact_detail_summary_with_options_formats_maps_and_lines() {
+        let mut contact = VCardContact::new("Max Mustermann", "max@example.test", "", "");
+        contact.addresses = vec!["Hauptstraße 1, 10115 Berlin".to_string()];
+
+        let summary_osm_map =
+            contact_detail_summary_with_options(&contact, false, true, "openstreetmap", false);
+        assert!(summary_osm_map.contains("Adresse: Hauptstraße 1, 10115 Berlin"));
+        assert!(summary_osm_map.contains("Karte: aktiv (OpenStreetMap)"));
+
+        let summary_google_map =
+            contact_detail_summary_with_options(&contact, false, true, "google", false);
+        assert!(summary_google_map.contains("Karte: aktiv (Google Maps)"));
+
+        let summary_no_map =
+            contact_detail_summary_with_options(&contact, false, false, "openstreetmap", false);
+        assert!(!summary_no_map.contains("Karte:"));
+
+        let mut multi_addr_contact = VCardContact::new("Erika", "erika@example.test", "", "");
+        multi_addr_contact.addresses =
+            vec!["Straße 1, Berlin".to_string(), "Weg 2, Hamburg".to_string()];
+        let formatted = contact_detail_summary_with_options(
+            &multi_addr_contact,
+            false,
+            false,
+            "openstreetmap",
+            true,
+        );
+        assert!(formatted.contains("Adresse: Straße 1, Berlin\n         Weg 2, Hamburg"));
     }
 }
