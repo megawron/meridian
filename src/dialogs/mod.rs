@@ -24,6 +24,7 @@ pub mod folder_sort_order_dialog;
 pub mod folder_subscriptions_dialog;
 pub mod global_search_dialog;
 pub mod import_dialog;
+pub mod name_selector_dialog;
 pub mod oof_dialog;
 pub mod preferences_dialog;
 pub mod reminder_dialog;
@@ -50,6 +51,7 @@ pub use folder_sort_order_dialog::{
 pub use folder_subscriptions_dialog::FolderSubscriptionsDialog;
 pub use global_search_dialog::GlobalSearchDialog;
 pub use import_dialog::ImportDialog;
+pub use name_selector_dialog::NameSelectorDialog;
 pub use oof_dialog::OutOfOfficeDialog;
 pub use preferences_dialog::PreferencesDialog;
 pub use reminder_dialog::{ReminderDialog, ReminderDialogAction};

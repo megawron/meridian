@@ -53,6 +53,14 @@ and updates to the service/settings APIs.
   syntax, validate generated rules against the canonical parser before
   forwarding them to callbacks, preserve exact folder/account scopes without
   broadening, and fail closed on empty or invalid input.
+- Name selector dialog (`ENameSelectorDialog`) presents contacts from configured
+  address books and directory services with search-as-you-type, transfer buttons
+  to To/Cc/Bcc destination models, destination removal, and synchronized updates
+  back to composer recipient entry fields.
+- Recipient autocompletion attaches a non-blocking GTK4 popover to recipient
+  entries with Evolution's upstream 333ms debounce, generation-tracked queries
+  across local vCards and GAL directory sources, keyboard-first navigation
+  (Up/Down/Enter/Tab/Escape), and comma-delimited recipient token replacement.
 
 ## Verification
 

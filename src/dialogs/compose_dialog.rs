@@ -17,6 +17,7 @@ use gtk::glib;
 use gtk::glib::prelude::{StaticVariantType, ToVariant};
 use std::cell::{Cell, RefCell};
 use std::path::Path;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -24,9 +25,11 @@ use crate::services::AppSettings;
 use crate::services::account_config_service::{
     AccountConfigStore, AccountProfile, reconciled_local_default_account,
 };
+use crate::dialogs::NameSelectorDialog;
 use crate::services::camel_mail_service;
 use crate::services::contact_store_service::ContactStoreService;
 use crate::services::crypto_service::SmimeOptions;
+use crate::services::vcard_service::VCardContact;
 use crate::services::draft_store_service::{
     DraftAttachment, DraftComposerOptions, DraftMessage, DraftStoreService,
 };
@@ -911,10 +914,11 @@ impl ComposeDialog {
         let combo_from = gtk::DropDown::new(Some(source_model.clone()), None::<&gtk::Expression>);
         combo_from.set_hexpand(true);
 
-        // To
-        let lbl_to = gtk::Label::builder()
-            .label("An:")
-            .css_classes(vec!["dim-label"])
+        // To (Evolution-compatible header button opening NameSelectorDialog)
+        let btn_to = gtk::Button::builder()
+            .label("An…")
+            .tooltip_text("Empfänger aus dem Adressbuch auswählen")
+            .css_classes(vec!["flat"])
             .halign(gtk::Align::End)
             .build();
         let entry_to = gtk::Entry::builder()
@@ -924,9 +928,10 @@ impl ComposeDialog {
 
         // Cc/Bcc are visible from the beginning so recipients are never
         // silently omitted from a locally restored draft.
-        let lbl_cc = gtk::Label::builder()
-            .label("Cc:")
-            .css_classes(vec!["dim-label"])
+        let btn_cc = gtk::Button::builder()
+            .label("Cc…")
+            .tooltip_text("Cc-Empfänger aus dem Adressbuch auswählen")
+            .css_classes(vec!["flat"])
             .halign(gtk::Align::End)
             .build();
         let entry_cc = gtk::Entry::builder()
@@ -934,9 +939,10 @@ impl ComposeDialog {
             .hexpand(true)
             .build();
 
-        let lbl_bcc = gtk::Label::builder()
-            .label("Bcc:")
-            .css_classes(vec!["dim-label"])
+        let btn_bcc = gtk::Button::builder()
+            .label("Bcc…")
+            .tooltip_text("Bcc-Empfänger aus dem Adressbuch auswählen")
+            .css_classes(vec!["flat"])
             .halign(gtk::Align::End)
             .build();
         let entry_bcc = gtk::Entry::builder()
@@ -947,6 +953,42 @@ impl ComposeDialog {
         let directory_button_to = recipient_directory_button();
         let directory_button_cc = recipient_directory_button();
         let directory_button_bcc = recipient_directory_button();
+
+        let wire_name_selector = |btn: &gtk::Button,
+                                  dialog_weak: glib::WeakRef<ComposeDialog>,
+                                  e_to: gtk::Entry,
+                                  e_cc: gtk::Entry,
+                                  e_bcc: gtk::Entry| {
+            btn.connect_clicked(move |_| {
+                let Some(dialog) = dialog_weak.upgrade() else {
+                    return;
+                };
+                let to_val = e_to.text().to_string();
+                let cc_val = e_cc.text().to_string();
+                let bcc_val = e_bcc.text().to_string();
+                let e_to_clone = e_to.clone();
+                let e_cc_clone = e_cc.clone();
+                let e_bcc_clone = e_bcc.clone();
+                let dialog_clone = dialog.clone();
+                let selector = NameSelectorDialog::new(
+                    &dialog,
+                    &to_val,
+                    &cc_val,
+                    &bcc_val,
+                    move |new_to, new_cc, new_bcc| {
+                        e_to_clone.set_text(&new_to);
+                        e_cc_clone.set_text(&new_cc);
+                        e_bcc_clone.set_text(&new_bcc);
+                        dialog_clone.mark_changed();
+                    },
+                );
+                selector.present();
+            });
+        };
+
+        wire_name_selector(&btn_to, self.downgrade(), entry_to.clone(), entry_cc.clone(), entry_bcc.clone());
+        wire_name_selector(&btn_cc, self.downgrade(), entry_to.clone(), entry_cc.clone(), entry_bcc.clone());
+        wire_name_selector(&btn_bcc, self.downgrade(), entry_to.clone(), entry_cc.clone(), entry_bcc.clone());
 
         // Subject
         let lbl_subject = gtk::Label::builder()
@@ -961,7 +1003,7 @@ impl ComposeDialog {
 
         form_grid.attach(&lbl_from, 0, 0, 1, 1);
         form_grid.attach(&combo_from, 1, 0, 1, 1);
-        form_grid.attach(&lbl_to, 0, 1, 1, 1);
+        form_grid.attach(&btn_to, 0, 1, 1, 1);
         form_grid.attach(
             &recipient_field(&entry_to, &directory_button_to),
             1,
@@ -969,7 +1011,7 @@ impl ComposeDialog {
             1,
             1,
         );
-        form_grid.attach(&lbl_cc, 0, 2, 1, 1);
+        form_grid.attach(&btn_cc, 0, 2, 1, 1);
         form_grid.attach(
             &recipient_field(&entry_cc, &directory_button_cc),
             1,
@@ -977,7 +1019,7 @@ impl ComposeDialog {
             1,
             1,
         );
-        form_grid.attach(&lbl_bcc, 0, 3, 1, 1);
+        form_grid.attach(&btn_bcc, 0, 3, 1, 1);
         form_grid.attach(
             &recipient_field(&entry_bcc, &directory_button_bcc),
             1,
@@ -1169,6 +1211,22 @@ impl ComposeDialog {
             &directory_button_bcc,
             self.downgrade(),
             combo_from.clone(),
+        );
+
+        setup_recipient_autocompletion(
+            &entry_to,
+            &combo_from,
+            self.downgrade(),
+        );
+        setup_recipient_autocompletion(
+            &entry_cc,
+            &combo_from,
+            self.downgrade(),
+        );
+        setup_recipient_autocompletion(
+            &entry_bcc,
+            &combo_from,
+            self.downgrade(),
         );
 
         let dialog_weak_for_templates = self.downgrade();
@@ -4259,6 +4317,389 @@ fn gal_contact_to_recipient_suggestion(contact: GalContact) -> RecipientSuggesti
     }
 }
 
+fn setup_recipient_autocompletion(
+    entry: &gtk::Entry,
+    combo_from: &gtk::DropDown,
+    dialog_weak: glib::WeakRef<ComposeDialog>,
+) {
+    let popover = gtk::Popover::new();
+    popover.set_autohide(false);
+    popover.set_position(gtk::PositionType::Bottom);
+    popover.set_has_arrow(false);
+    popover.set_parent(entry);
+
+    let container = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(4)
+        .margin_start(4)
+        .margin_end(4)
+        .margin_top(4)
+        .margin_bottom(4)
+        .width_request(380)
+        .build();
+
+    let list = gtk::ListBox::builder()
+        .selection_mode(gtk::SelectionMode::Single)
+        .css_classes(vec!["boxed-list"])
+        .build();
+
+    let scroll = gtk::ScrolledWindow::builder()
+        .child(&list)
+        .max_content_height(240)
+        .propagate_natural_height(true)
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .vscrollbar_policy(gtk::PolicyType::Automatic)
+        .build();
+
+    container.append(&scroll);
+    popover.set_child(Some(&container));
+
+    let visible_suggestions = Rc::new(RefCell::new(Vec::<RecipientSuggestion>::new()));
+    let generation = Rc::new(Cell::new(0u64));
+    let debounce_source = Rc::new(RefCell::new(Option::<glib::SourceId>::None));
+
+    let entry_for_activate = entry.downgrade();
+    let popover_for_activate = popover.clone();
+    let visible_for_activate = Rc::clone(&visible_suggestions);
+    let dialog_weak_for_activate = dialog_weak.clone();
+    let accept_selection = move |selected_index: usize| {
+        let Some(entry) = entry_for_activate.upgrade() else {
+            return;
+        };
+        let suggestions = visible_for_activate.borrow();
+        let Some(suggestion) = suggestions.get(selected_index) else {
+            return;
+        };
+        let formatted = recipient_suggestion_label(suggestion);
+        entry.set_text(&replace_current_recipient(&entry.text(), &formatted));
+        entry.set_position(-1);
+        popover_for_activate.popdown();
+        if let Some(dialog) = dialog_weak_for_activate.upgrade() {
+            dialog.mark_changed();
+        }
+    };
+
+    let accept_selection_for_row = Rc::new(accept_selection);
+    let accept_for_row_cb = Rc::clone(&accept_selection_for_row);
+    list.connect_row_activated(move |_, row| {
+        let idx = row.index();
+        if idx >= 0 {
+            accept_for_row_cb(idx as usize);
+        }
+    });
+
+    let key_controller = gtk::EventControllerKey::new();
+    let popover_for_key = popover.clone();
+    let list_for_key = list.clone();
+    let visible_for_key = Rc::clone(&visible_suggestions);
+    let accept_for_key = Rc::clone(&accept_selection_for_row);
+    key_controller.connect_key_pressed(move |_, key, _, _| {
+        if !popover_for_key.is_visible() {
+            return glib::Propagation::Proceed;
+        }
+        let count = visible_for_key.borrow().len();
+        if count == 0 {
+            return glib::Propagation::Proceed;
+        }
+
+        match key {
+            gtk::gdk::Key::Down => {
+                let current = list_for_key.selected_row().map(|r| r.index()).unwrap_or(-1);
+                let next = (current + 1).min((count - 1) as i32);
+                if let Some(row) = list_for_key.row_at_index(next) {
+                    list_for_key.select_row(Some(&row));
+                }
+                glib::Propagation::Stop
+            }
+            gtk::gdk::Key::Up => {
+                let current = list_for_key.selected_row().map(|r| r.index()).unwrap_or(0);
+                let prev = (current - 1).max(0);
+                if let Some(row) = list_for_key.row_at_index(prev) {
+                    list_for_key.select_row(Some(&row));
+                }
+                glib::Propagation::Stop
+            }
+            gtk::gdk::Key::Return | gtk::gdk::Key::KP_Enter | gtk::gdk::Key::Tab => {
+                let current = list_for_key.selected_row().map(|r| r.index()).unwrap_or(0);
+                if current >= 0 && (current as usize) < count {
+                    accept_for_key(current as usize);
+                    glib::Propagation::Stop
+                } else {
+                    glib::Propagation::Proceed
+                }
+            }
+            gtk::gdk::Key::Escape => {
+                popover_for_key.popdown();
+                glib::Propagation::Stop
+            }
+            _ => glib::Propagation::Proceed,
+        }
+    });
+    entry.add_controller(key_controller);
+
+    let popover_for_focus = popover.clone();
+    let focus_controller = gtk::EventControllerFocus::new();
+    focus_controller.connect_leave(move |_| {
+        popover_for_focus.popdown();
+    });
+    entry.add_controller(focus_controller);
+
+    let entry_weak = entry.downgrade();
+    let popover_for_changed = popover.clone();
+    let list_for_changed = list.clone();
+    let combo_from_clone = combo_from.clone();
+    let dialog_weak_for_changed = dialog_weak.clone();
+    entry.connect_changed(move |e| {
+        let text = e.text().to_string();
+        let fragment = current_recipient_fragment(&text).to_string();
+
+        let (min_len, show_address) = AppSettings::try_new()
+            .map(|s| {
+                (
+                    s.contact_completion_minimum_query_length().max(1) as usize,
+                    s.contact_completion_show_address(),
+                )
+            })
+            .unwrap_or((3, false));
+
+        if fragment.chars().count() < min_len {
+            if let Some(source_id) = debounce_source.borrow_mut().take() {
+                source_id.remove();
+            }
+            popover_for_changed.popdown();
+            return;
+        }
+
+        if let Some(source_id) = debounce_source.borrow_mut().take() {
+            source_id.remove();
+        }
+
+        let generation_id = generation.get() + 1;
+        generation.set(generation_id);
+
+        let entry_weak_clone = entry_weak.clone();
+        let popover_clone = popover_for_changed.clone();
+        let list_clone = list_for_changed.clone();
+        let visible_clone = Rc::clone(&visible_suggestions);
+        let generation_clone = Rc::clone(&generation);
+        let combo_from_source = combo_from_clone.clone();
+        let dialog_weak_source = dialog_weak_for_changed.clone();
+
+        let source_id = glib::timeout_add_local(
+            std::time::Duration::from_millis(333),
+            move || {
+                if generation_clone.get() != generation_id {
+                    return glib::ControlFlow::Break;
+                }
+                let Some(entry) = entry_weak_clone.upgrade() else {
+                    return glib::ControlFlow::Break;
+                };
+                let cur_fragment = current_recipient_fragment(&entry.text()).to_string();
+                if cur_fragment.chars().count() < min_len {
+                    popover_clone.popdown();
+                    return glib::ControlFlow::Break;
+                }
+
+                let mut suggestions = search_recipient_suggestions(&cur_fragment, show_address);
+
+                let source_uid = dialog_weak_source
+                    .upgrade()
+                    .map(|d| d.selected_identity(combo_from_source.selected()).source_uid)
+                    .unwrap_or_default();
+
+                if !source_uid.trim().is_empty() {
+                    if let Some(graph) = graph_service_for_source(&source_uid) {
+                        if let Ok(gal_contacts) = graph.search_gal_sync(&cur_fragment) {
+                            for gc in gal_contacts {
+                                let sugg = gal_contact_to_recipient_suggestion(gc);
+                                if !sugg.address.is_empty()
+                                    && !suggestions.iter().any(|s| s.address.eq_ignore_ascii_case(&sugg.address))
+                                {
+                                    suggestions.push(sugg);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if generation_clone.get() != generation_id {
+                    return glib::ControlFlow::Break;
+                }
+
+                suggestions.truncate(10);
+
+                while let Some(row) = list_clone.first_child() {
+                    list_clone.remove(&row);
+                }
+
+                if suggestions.is_empty() {
+                    popover_clone.popdown();
+                    visible_clone.replace(Vec::new());
+                    return glib::ControlFlow::Break;
+                }
+
+                for sugg in &suggestions {
+                    let row = gtk::Box::builder()
+                        .orientation(gtk::Orientation::Horizontal)
+                        .spacing(8)
+                        .margin_start(8)
+                        .margin_end(8)
+                        .margin_top(4)
+                        .margin_bottom(4)
+                        .build();
+
+                    let icon = gtk::Image::builder()
+                        .icon_name("avatar-default-symbolic")
+                        .build();
+                    row.append(&icon);
+
+                    let text_box = gtk::Box::builder()
+                        .orientation(gtk::Orientation::Vertical)
+                        .spacing(1)
+                        .hexpand(true)
+                        .build();
+
+                    let display = if sugg.display.is_empty() {
+                        &sugg.address
+                    } else {
+                        &sugg.display
+                    };
+                    let lbl_name = gtk::Label::builder()
+                        .label(display)
+                        .xalign(0.0)
+                        .ellipsize(gtk::pango::EllipsizeMode::End)
+                        .build();
+                    text_box.append(&lbl_name);
+
+                    if !sugg.display.is_empty() && !sugg.address.is_empty() {
+                        let lbl_email = gtk::Label::builder()
+                            .label(&sugg.address)
+                            .xalign(0.0)
+                            .css_classes(vec!["dim-label", "caption"])
+                            .ellipsize(gtk::pango::EllipsizeMode::End)
+                            .build();
+                        text_box.append(&lbl_email);
+                    }
+
+                    row.append(&text_box);
+                    list_clone.append(&row);
+                }
+
+                visible_clone.replace(suggestions);
+                if let Some(first_row) = list_clone.row_at_index(0) {
+                    list_clone.select_row(Some(&first_row));
+                }
+                popover_clone.popup();
+
+                glib::ControlFlow::Break
+            },
+        );
+        debounce_source.borrow_mut().replace(source_id);
+    });
+}
+
+fn search_recipient_suggestions(query: &str, show_address: bool) -> Vec<RecipientSuggestion> {
+    let query_norm = query.trim().to_lowercase();
+    if query_norm.is_empty() {
+        return Vec::new();
+    }
+    let store = ContactStoreService::new();
+    let contacts = store.load_contacts();
+    let mut results = Vec::new();
+
+    for record in contacts {
+        let c = &record.contact;
+        if contact_matches_query(c, &query_norm) {
+            let suggestions = contact_to_recipient_suggestions(c, show_address);
+            for s in suggestions {
+                if !results.iter().any(|r: &RecipientSuggestion| r.address.eq_ignore_ascii_case(&s.address)) {
+                    results.push(s);
+                }
+            }
+        }
+    }
+    results
+}
+
+fn contact_matches_query(contact: &VCardContact, query: &str) -> bool {
+    let query = query.trim().to_lowercase();
+    if query.is_empty() {
+        return false;
+    }
+    if contact.fn_name.to_lowercase().contains(&query) {
+        return true;
+    }
+    if contact.email.to_lowercase().contains(&query) {
+        return true;
+    }
+    if contact.emails.iter().any(|e| e.to_lowercase().contains(&query)) {
+        return true;
+    }
+    if contact.nickname.to_lowercase().contains(&query) {
+        return true;
+    }
+    if contact.is_list && contact.list_name.to_lowercase().contains(&query) {
+        return true;
+    }
+    if contact.is_list
+        && contact.list_members.iter().any(|m| {
+            m.display_name.to_lowercase().contains(&query) || m.email.to_lowercase().contains(&query)
+        })
+    {
+        return true;
+    }
+    false
+}
+
+fn contact_to_recipient_suggestions(
+    contact: &VCardContact,
+    _show_address: bool,
+) -> Vec<RecipientSuggestion> {
+    let mut suggestions = Vec::new();
+    let display_name = if !contact.fn_name.is_empty() {
+        contact.fn_name.clone()
+    } else if !contact.nickname.is_empty() {
+        contact.nickname.clone()
+    } else if contact.is_list && !contact.list_name.is_empty() {
+        contact.list_name.clone()
+    } else {
+        String::new()
+    };
+
+    if !contact.email.is_empty() {
+        suggestions.push(RecipientSuggestion {
+            display: display_name.clone(),
+            address: contact.email.clone(),
+        });
+    }
+
+    for email in &contact.emails {
+        if email != &contact.email && !email.is_empty() {
+            suggestions.push(RecipientSuggestion {
+                display: display_name.clone(),
+                address: email.clone(),
+            });
+        }
+    }
+
+    if contact.is_list {
+        for member in &contact.list_members {
+            if !member.email.is_empty() {
+                suggestions.push(RecipientSuggestion {
+                    display: if !member.display_name.is_empty() {
+                        member.display_name.clone()
+                    } else {
+                        display_name.clone()
+                    },
+                    address: member.email.clone(),
+                });
+            }
+        }
+    }
+
+    suggestions
+}
+
 fn recipient_suggestion_label(suggestion: &RecipientSuggestion) -> String {
     if suggestion.display.is_empty() {
         suggestion.address.clone()
@@ -4675,6 +5116,32 @@ mod tests {
             replace_current_recipient("mar", "maria@example.org"),
             "maria@example.org, "
         );
+    }
+
+    #[test]
+    fn contact_matches_query_and_extracts_suggestions() {
+        let mut contact = VCardContact::new(
+            "Ada Lovelace",
+            "ada@example.org",
+            "Analytical Engine",
+            "Pioneer",
+        );
+        contact.emails = vec![
+            "ada@example.org".to_string(),
+            "ada.second@example.org".to_string(),
+        ];
+        contact.nickname = "Ada".to_string();
+
+        assert!(contact_matches_query(&contact, "ada"));
+        assert!(contact_matches_query(&contact, "lovelace"));
+        assert!(contact_matches_query(&contact, "second@example"));
+        assert!(!contact_matches_query(&contact, "grace"));
+
+        let suggestions = contact_to_recipient_suggestions(&contact, false);
+        assert_eq!(suggestions.len(), 2);
+        assert_eq!(suggestions[0].address, "ada@example.org");
+        assert_eq!(suggestions[0].display, "Ada Lovelace");
+        assert_eq!(suggestions[1].address, "ada.second@example.org");
     }
 
     #[test]
