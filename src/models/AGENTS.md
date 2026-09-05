@@ -34,6 +34,11 @@ thread-safe-to-transfer domain values.
 - Keep complete follow-up metadata alongside its compatibility state field and
   update both atomically; list rendering, the editor, reload, and undo must not
   observe different follow-up states for the same message.
+- Source selector model (`SourceSelector`) manages source groups (`SourceGroup`),
+  ordered and hidden group states, custom user groups, and source-level metadata.
+  External source reloads (`update_sources`) must preserve user-customized display
+  names, colors, and custom group assignments. `visible_sources()` excludes items
+  belonging to hidden groups from sidebar views while maintaining selection states.
 
 ## Verification
 

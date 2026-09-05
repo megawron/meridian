@@ -24,6 +24,7 @@ pub mod folder_sort_order_dialog;
 pub mod folder_subscriptions_dialog;
 pub mod global_search_dialog;
 pub mod import_dialog;
+pub mod manage_groups_dialog;
 pub mod name_selector_dialog;
 pub mod oof_dialog;
 pub mod preferences_dialog;
@@ -51,6 +52,7 @@ pub use folder_sort_order_dialog::{
 pub use folder_subscriptions_dialog::FolderSubscriptionsDialog;
 pub use global_search_dialog::GlobalSearchDialog;
 pub use import_dialog::ImportDialog;
+pub use manage_groups_dialog::ManageGroupsDialog;
 pub use name_selector_dialog::NameSelectorDialog;
 pub use oof_dialog::OutOfOfficeDialog;
 pub use preferences_dialog::PreferencesDialog;
@@ -58,7 +60,7 @@ pub use reminder_dialog::{ReminderDialog, ReminderDialogAction};
 pub use search_folder_dialog::SearchFolderDialog;
 pub use shortcuts_dialog::show_shortcuts_dialog;
 #[allow(unused_imports)]
-pub use source_properties_dialog::SourcePropertiesDialog;
+pub use source_properties_dialog::{SourcePropertiesDialog, SourcePropertiesUpdate};
 
 /// Run a destructive operation immediately when confirmations are disabled;
 /// otherwise present one consistent confirmation dialog for all data views.

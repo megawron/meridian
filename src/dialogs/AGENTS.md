@@ -66,6 +66,13 @@ and updates to the service/settings APIs.
   addresses). Mail preferences (`PreferencesDialog`) provide live toggles for
   `filters-log-actions` and `filters-log-file`, as well as dry-run test simulation
   triggers per rule and for all active rules without mailbox mutation.
+- Group management dialog (`ManageGroupsDialog`) presents source groups with
+  reordering (Move Up / Move Down), visibility toggles (show/hide), and custom
+  group creation and deletion. Persists changes to domain-specific GSettings keys
+  (`*-hidden-groups`, `*-groups-order`) across Calendar, Tasks, Memos, and Contacts.
+- Source properties dialog (`SourcePropertiesDialog`) enables editing display names,
+  color selection using native GTK4 `ColorDialogButton` with live preview dot and hex
+  subtitle synchronization, and default-source toggling with confirmation callbacks.
 
 ## Verification
 

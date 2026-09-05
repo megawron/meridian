@@ -9540,7 +9540,11 @@ fn start_task_source_discovery(
                 let source_selector_menu = source_selector.clone();
                 let source_list_menu = source_list.clone();
                 let target_index = index as u32;
-                let menu_btn = crate::models::source_selector::create_source_row_menu(
+                let source_uid_for_menu = source_uid.clone();
+                let name_for_menu = name.clone();
+                let uids_for_groups = uids.clone();
+                let names_for_groups = names.clone();
+                let menu_btn = crate::models::source_selector::create_source_row_menu_full(
                     is_primary,
                     "Aufgabenliste",
                     {
@@ -9583,6 +9587,90 @@ fn start_task_source_discovery(
                             }
                         }
                     },
+                    Some({
+                        let uid = source_uid_for_menu.clone();
+                        let name = name_for_menu.clone();
+                        let page_weak = page_weak_menu.clone();
+                        move || {
+                            if let Some(page) = page_weak.upgrade() {
+                                let root_window = page.root().and_downcast::<gtk::Window>();
+                                let dialog = crate::dialogs::SourcePropertiesDialog::new(
+                                    &uid,
+                                    &name,
+                                    "Aufgabenliste",
+                                    "#3584e4",
+                                    true,
+                                    is_primary,
+                                );
+                                if let Some(parent) = root_window.as_ref() {
+                                    dialog.set_transient_for(Some(parent));
+                                }
+                                let page_weak_save = page.downgrade();
+                                dialog.set_on_save(move |update| {
+                                    if let Some(p) = page_weak_save.upgrade() {
+                                        if update.is_default {
+                                            if let Some(settings) = AppSettings::try_new() {
+                                                settings.set_default_task_source_uid(
+                                                    &update.source_uid,
+                                                );
+                                            }
+                                        }
+                                        start_task_source_discovery(&p, None, false);
+                                    }
+                                });
+                                dialog.present();
+                            }
+                        }
+                    }),
+                    Some({
+                        let page_weak = page_weak_menu.clone();
+                        let uids = uids_for_groups.clone();
+                        let names = names_for_groups.clone();
+                        move || {
+                            if let Some(page) = page_weak.upgrade() {
+                                let root_window = page.root().and_downcast::<gtk::Window>();
+                                let mut selector =
+                                    crate::models::source_selector::SourceSelector::new(
+                                        crate::models::source_selector::SourceDomain::Tasks,
+                                    );
+                                let items: Vec<
+                                    crate::models::source_selector::SourceSelectorItem,
+                                > = uids
+                                    .iter()
+                                    .skip(1)
+                                    .zip(names.iter().skip(1))
+                                    .map(|(uid, name)| {
+                                        crate::models::source_selector::SourceSelectorItem::new(
+                                            uid,
+                                            name,
+                                            "tasks",
+                                            true,
+                                            uid == "local-calendar",
+                                        )
+                                    })
+                                    .collect();
+                                selector.update_sources(items);
+                                if let Some(settings) = AppSettings::try_new() {
+                                    selector.load_from_settings(&settings);
+                                }
+                                let page_weak_save = page.downgrade();
+                                let dialog = crate::dialogs::ManageGroupsDialog::new(
+                                    root_window.as_ref(),
+                                    "Aufgabenliste",
+                                    &selector,
+                                    move |updated_selector| {
+                                        if let Some(settings) = AppSettings::try_new() {
+                                            updated_selector.save_to_settings(&settings);
+                                        }
+                                        if let Some(p) = page_weak_save.upgrade() {
+                                            start_task_source_discovery(&p, None, false);
+                                        }
+                                    },
+                                );
+                                dialog.present();
+                            }
+                        }
+                    }),
                 );
                 row.add_suffix(&menu_btn);
             }

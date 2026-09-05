@@ -399,7 +399,12 @@ impl ContactsPage {
                     let book_selector = book_selector_for_load.clone();
                     let book_source_list = book_source_list_for_load.clone();
                     let target_index = index as u32;
-                    let menu_btn = crate::models::source_selector::create_source_row_menu(
+                    let source_uid_for_menu = source_uid.clone();
+                    let name_for_menu = name.clone();
+                    let row_weak_for_menu = row.downgrade();
+                    let uids_for_groups = uids.clone();
+                    let names_for_groups = names.clone();
+                    let menu_btn = crate::models::source_selector::create_source_row_menu_full(
                         is_primary,
                         "Adressbuch",
                         {
@@ -432,6 +437,90 @@ impl ContactsPage {
                                 }
                             }
                         },
+                        Some({
+                            let uid = source_uid_for_menu.clone();
+                            let name = name_for_menu.clone();
+                            let row_weak = row_weak_for_menu.clone();
+                            move || {
+                                let root_window = row_weak
+                                    .upgrade()
+                                    .and_then(|r| r.root())
+                                    .and_downcast::<gtk::Window>();
+                                let dialog = crate::dialogs::SourcePropertiesDialog::new(
+                                    &uid,
+                                    &name,
+                                    "Adressbuch",
+                                    "#3584e4",
+                                    true,
+                                    is_primary,
+                                );
+                                if let Some(parent) = root_window.as_ref() {
+                                    dialog.set_transient_for(Some(parent));
+                                }
+                                let row_weak_save = row_weak.clone();
+                                dialog.set_on_save(move |update| {
+                                    if let Some(row) = row_weak_save.upgrade() {
+                                        row.set_title(&glib::markup_escape_text(
+                                            &update.display_name,
+                                        ));
+                                    }
+                                    if update.is_default {
+                                        if let Some(settings) = AppSettings::try_new() {
+                                            settings.set_default_address_book_source_uid(
+                                                &update.source_uid,
+                                            );
+                                        }
+                                    }
+                                });
+                                dialog.present();
+                            }
+                        }),
+                        Some({
+                            let row_weak = row_weak_for_menu.clone();
+                            let uids = uids_for_groups.clone();
+                            let names = names_for_groups.clone();
+                            move || {
+                                let root_window = row_weak
+                                    .upgrade()
+                                    .and_then(|r| r.root())
+                                    .and_downcast::<gtk::Window>();
+                                let mut selector =
+                                    crate::models::source_selector::SourceSelector::new(
+                                        crate::models::source_selector::SourceDomain::Contacts,
+                                    );
+                                let items: Vec<
+                                    crate::models::source_selector::SourceSelectorItem,
+                                > = uids
+                                    .iter()
+                                    .skip(1)
+                                    .zip(names.iter().skip(1))
+                                    .map(|(uid, name)| {
+                                        crate::models::source_selector::SourceSelectorItem::new(
+                                            uid,
+                                            name,
+                                            "contacts",
+                                            true,
+                                            uid == LOCAL_ADDRESS_BOOK_SOURCE_UID,
+                                        )
+                                    })
+                                    .collect();
+                                selector.update_sources(items);
+                                if let Some(settings) = AppSettings::try_new() {
+                                    selector.load_from_settings(&settings);
+                                }
+                                let dialog = crate::dialogs::ManageGroupsDialog::new(
+                                    root_window.as_ref(),
+                                    "Adressbuch",
+                                    &selector,
+                                    move |updated_selector| {
+                                        if let Some(settings) = AppSettings::try_new() {
+                                            updated_selector.save_to_settings(&settings);
+                                        }
+                                    },
+                                );
+                                dialog.present();
+                            }
+                        }),
                     );
                     row.add_suffix(&menu_btn);
                 }

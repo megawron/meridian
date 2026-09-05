@@ -338,6 +338,11 @@ accessibility helpers, and view-local GTK state.
   respective component editor via the window component contract.
 - Task completion toggles in the Taskpad mutate VTODO components asynchronously
   off the GTK main thread and keep the sidebar and Taskpad views synchronized.
+- Source selector rows across Calendar, Tasks, Memos, and Contacts provide context
+  menus (`create_source_row_menu_full`) offering "Eigenschaften…" (opening
+  `SourcePropertiesDialog` for display name, color, and default status) and
+  "Gruppen verwalten…" (opening `ManageGroupsDialog`). Sidebar lists display only
+  items from visible groups (`visible_sources()`).
 
 ## Work Guidance
 

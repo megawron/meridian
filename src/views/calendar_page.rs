@@ -3268,7 +3268,7 @@ impl CalendarPage {
             let selector = page.imp().calendar_source_selector.borrow().clone();
             let mut displayed_sources = 0usize;
 
-            for item in selector.sources() {
+            for item in selector.visible_sources() {
                 let source_uid = item.uid.clone();
                 let escaped_title = glib::markup_escape_text(&item.display_name);
                 let subtitle = if item.enabled { "aktiv" } else { "deaktiviert" };
@@ -3323,7 +3323,9 @@ impl CalendarPage {
 
                 let page_weak_for_menu = page.downgrade();
                 let source_uid_for_menu = source_uid.clone();
-                let menu_btn = crate::models::source_selector::create_source_row_menu(
+                let display_name_for_menu = item.display_name.clone();
+                let color_for_menu = item.color.clone().unwrap_or_else(|| "#3584e4".to_string());
+                let menu_btn = crate::models::source_selector::create_source_row_menu_full(
                     is_primary,
                     "Kalender",
                     {
@@ -3352,6 +3354,96 @@ impl CalendarPage {
                             }
                         }
                     },
+                    Some({
+                        let page_weak = page_weak_for_menu.clone();
+                        let uid = source_uid_for_menu.clone();
+                        let name = display_name_for_menu.clone();
+                        let col = color_for_menu.clone();
+                        move || {
+                            if let Some(page) = page_weak.upgrade() {
+                                let root_window = page.root().and_downcast::<gtk::Window>();
+                                let dialog = crate::dialogs::SourcePropertiesDialog::new(
+                                    &uid,
+                                    &name,
+                                    "Kalender",
+                                    &col,
+                                    true,
+                                    is_primary,
+                                );
+                                if let Some(parent) = root_window.as_ref() {
+                                    dialog.set_transient_for(Some(parent));
+                                }
+                                let page_weak_save = page.downgrade();
+                                dialog.set_on_save(move |update| {
+                                    if let Some(page) = page_weak_save.upgrade() {
+                                        {
+                                            let mut sel =
+                                                page.imp().calendar_source_selector.borrow_mut();
+                                            sel.update_source_metadata(
+                                                &update.source_uid,
+                                                &update.display_name,
+                                                Some(&update.color),
+                                                update.is_default,
+                                            );
+                                            if let Some(settings) = AppSettings::try_new() {
+                                                sel.save_to_settings(&settings);
+                                                if update.is_default {
+                                                    settings.set_default_calendar_source_uid(
+                                                        &update.source_uid,
+                                                    );
+                                                }
+                                            }
+                                        }
+                                        page.reload_calendar_sources();
+                                        page.refresh_task_sidebar();
+                                        page.refresh_task_and_memo_panes();
+                                        page.refresh_calendar_views();
+                                        page.refresh_event_list_visibility();
+                                    }
+                                });
+                                dialog.present();
+                            }
+                        }
+                    }),
+                    Some({
+                        let page_weak = page_weak_for_menu.clone();
+                        move || {
+                            if let Some(page) = page_weak.upgrade() {
+                                let root_window = page.root().and_downcast::<gtk::Window>();
+                                let current_sel =
+                                    page.imp().calendar_source_selector.borrow().clone();
+                                let page_weak_save = page.downgrade();
+                                let dialog = crate::dialogs::ManageGroupsDialog::new(
+                                    root_window.as_ref(),
+                                    "Kalender",
+                                    &current_sel,
+                                    move |updated_selector| {
+                                        if let Some(page) = page_weak_save.upgrade() {
+                                            {
+                                                let mut sel = page
+                                                    .imp()
+                                                    .calendar_source_selector
+                                                    .borrow_mut();
+                                                *sel = updated_selector;
+                                                sel.deselect_sources_in_hidden_groups();
+                                                if let Some(settings) = AppSettings::try_new() {
+                                                    sel.save_to_settings(&settings);
+                                                }
+                                                *page.imp().hidden_calendar_sources.borrow_mut() =
+                                                    sel.hidden_uids().into_iter().collect();
+                                            }
+                                            page.reload_calendar_sources();
+                                            page.refresh_task_sidebar();
+                                            page.refresh_task_and_memo_panes();
+                                            page.refresh_calendar_views();
+                                            page.refresh_event_list_visibility();
+                                        }
+                                    },
+                                );
+                                dialog.present();
+                            }
+                        }
+                    }),
                 );
                 row.add_suffix(&menu_btn);
 
