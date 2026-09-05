@@ -186,6 +186,7 @@ und erweitert dessen Schreibbereich nur nach dokumentierter Kollisionsprüfung.
 | 70 | `GW-CONTACT-SEARCH` | `P1-CONTACT-001` | `src/services/contact_search_service.rs`, `src/dialogs/contact_search_dialog.rs`, `src/views/contacts_page.rs` | `GW-CONTACT-ACTIONS-TRANSFER` | BLOCKED_LINUX | Upstream-Parität zu `src/modules/addressbook/e-book-shell-view.c::book_shell_view_execute_search`, `e_addressbook_view_set_search` und `e-book-shell-content.c` portabel implementiert: typisierter AST (`ContactSearchQuery`), UND/ODER-Klauselgruppen (`All`/`Any`), Feld- und Operator-Registry (`ContactSearchField`, `ContactSearchOperator`), äußere Filter (Adressbuch-Quelle, Kategorie, Kontakte ohne Kategorie, Nur-Dubletten), `ContactSearchDialog` mit dynamischem Klausel-Editor und Syntax-Fallback, Schnellsuch-Modi (Alle Felder, Name, E-Mail, Telefon, Kategorie), asynchrone Worker-Suche mit Generierungszählung und Stornierung, automatische Treffer-/Preview-Synchronisation und stabile Selektionswiederherstellung belegt durch 22 Search-Tests, 35 Kontakt-Tests und 944/944 Workspace-Tests; EDS-Backend-Query-Syntax und Linux-Provider-Suchgrenzen offen. |
 | 71 | `GW-EVENT-EDITOR` | `P1-CAL-001` | `src/dialogs/event_dialog.rs`, `src/services/calendar_store_service.rs` | `P1-CAL-001B`, `GW-CAL-SHELL` | BLOCKED_LINUX | Upstream-Parität zu `calendar/gui/e-comp-editor-event.c` und `e-comp-editor.c`: `update_existing_event_component` für verlustfreies Event-Editing, strikte Beibehaltung unberührter RFC5545-Eigenschaften (`ORGANIZER`, `GEO`, `URL`, `PRIORITY`, `X-EVOLUTION-*`, Custom-Properties), Parameter-Erhalt bei Teilnehmern (`CN`, `ROLE`, `PARTSTAT`) und Anhängen (`FMTTYPE`), Multi-VALARM-Synchronisation, Datums-/Uhrzeit- und Zeitzonenerhalt (`TZID`), robuster Wechsel zwischen Ganztags- (`VALUE=DATE`) und Uhrzeit-Modus, Eingabevalidierung und CRLF-Injektionsschutz belegt durch 13 Unit-Tests und 947/947 Workspace-Tests; nativer EDS-ECalClient-Server-Roundtrip unter Linux offen. |
 | 72 | `GW-CALENDAR-SETTINGS` | `P1-CAL-001` | `data/org.gnome.Evolution4.gschema.xml`, `src/services/{settings,migration,backup}_service.rs`, `src/dialogs/preferences_dialog.rs`, `src/views/calendar_page.rs` | `P1-CAL-001B`, `GW-CAL-SHELL` | BLOCKED_LINUX | Upstream-Parität zu `calendar-config-keys.h`, `calendar-config.c` und `e-calendar-preferences.c`: Zeiteinteilung (`calendar-time-divisions`: 5/10/15/30/60 min), Wochenende-Komprimierung (`calendar-compress-weekend`), wochenweises Scrollen (`calendar-month-scroll-by-week`), zweite Zeitzone (`calendar-second-zone`) samt Verlaufsliste (`calendar-second-zones`), Unterstützung von `year` und `list` in allen Einstellungs- und Validierungsschichten, Live-Synchronisation in Kalenderansicht, vollständige Upstream-Dconf/Ini-Migration sowie versioniertes Backup/Restore belegt durch 950/950 Workspace-Tests; GNOME Desktop GSettings-Integration und Visuals unter Linux offen. |
+| 73 | `GW-SOURCE-SETTINGS` | `P1-CAL-001` | `data/org.gnome.Evolution4.gschema.xml`, `src/services/{settings,migration,backup}_service.rs` | `GW-SOURCE-SELECTOR`, `GW-CALENDAR-SETTINGS` | BLOCKED_LINUX | Upstream-Parität zu `e-source-selector.c` und `calendar-config-keys.h`: Default-Quellen für Kalender, Aufgaben, Memos und Adressbücher, domänenspezifische Sichtbarkeitslisten (`task-hidden-sources`, `memo-hidden-sources`, `addressbook-hidden-sources`), Gruppen-Sichtbarkeit und Gruppen-Reihenfolge (`calendar-hidden-groups`, `calendar-groups-order`, `task-hidden-groups`, `task-groups-order`, `memo-hidden-groups`, `memo-groups-order`, `addressbook-hidden-groups`, `addressbook-groups-order`), atomare Pruning-Funktion `prune_deleted_source` gegen verbleibende tote UIDs in Defaults/Sichtbarkeitslisten/Gruppen, Upstream-Dconf-Migration samt Key-Normalisierung und GVariant-Array-Dekodierung sowie versioniertes Backup/Restore mit strikter Validierung belegt durch 20 Settings-, 21 Migrations- und 24 Backup-Tests sowie 953/953 Workspace-Tests; EDS-Source-Gruppen und Live-Provider auf Linux offen. |
 
 ### Parallelisierungsregeln
 
@@ -1203,6 +1204,34 @@ oder visuellen Linux-Belege.
      - `calendar_page.rs`: `connect_changed` reagiert live auf Änderungen aller Kalenderschlüssel.
   Belegt durch gezielte Unit-Tests in `settings_service::tests`, `migration_service::tests` und `backup_service::tests` sowie 950/950 Workspace-Tests.
 - Offener Parent-/Linux-Rest: GNOME Control Center / Desktop-Zeitzonen-Synchronisation und visuelle Dichte/Theming unter Linux.
+
+### GW-SOURCE-SETTINGS
+
+- Status: `BLOCKED_LINUX`; portabler Einstellungs-, Migrations-, Backup- und Pruning-Teil des offenen Elternpakets `P1-CAL-001` / `GW-SOURCE-SELECTOR` geschlossen.
+- Portabler Beleg: Upstream-Parität zu `src/libedataserverui/e-source-selector.c` und `src/calendar/gui/calendar-config-keys.h`:
+  1. GSchema (`data/org.gnome.Evolution4.gschema.xml`):
+     - `task-hidden-sources` (`s`, default `''`): Versteckte Aufgabenlisten-Quellen-UIDs.
+     - `memo-hidden-sources` (`s`, default `''`): Versteckte Memolisten-Quellen-UIDs.
+     - `addressbook-hidden-sources` (`s`, default `''`): Versteckte Adressbuch-Quellen-UIDs.
+     - `calendar-hidden-groups` / `calendar-groups-order` (`s`, default `''`): Versteckte Gruppen und Gruppenreihenfolge für Kalender.
+     - `task-hidden-groups` / `task-groups-order` (`s`, default `''`): Versteckte Gruppen und Gruppenreihenfolge für Aufgaben.
+     - `memo-hidden-groups` / `memo-groups-order` (`s`, default `''`): Versteckte Gruppen und Gruppenreihenfolge für Memos.
+     - `addressbook-hidden-groups` / `addressbook-groups-order` (`s`, default `''`): Versteckte Gruppen und Gruppenreihenfolge für Adressbücher.
+  2. Typisierter Zugriff, Normalisierung und atomares Pruning (`src/services/settings_service.rs`):
+     - `sanitize_source_list`: Sortierung und Deduplizierung für Sichtbarkeitslisten.
+     - `sanitize_ordered_list`: Reihenfolgeerhaltende Deduplizierung für Gruppenanordnungen.
+     - Typisierte Accessors für alle 11 neuen GSettings-Schlüssel.
+     - `prune_deleted_source(deleted_uid: &str)`: Atomare Bereinigung aller Default-Quellen (`default_calendar_source_uid`, `default_task_source_uid`, `default_memo_source_uid`, `default_address_book_source_uid`, `task_source_filter`, `memo_source_filter`), aller 4 Hidden-Sources-Listen und aller 8 Gruppen-Listen, wenn eine Quelle gelöscht wird.
+     - `import_setting` und `reset_to_defaults`: Vollständig verdrahtet.
+  3. Upstream-Migration (`src/services/migration_service.rs`):
+     - Kanonische Abbildung von Upstream-GSettings/Dconf-Schlüsseln: `task-hidden-sources`, `memo-hidden-sources`, `addressbook-hidden-sources`, `[SourceSelector] /org/gnome/evolution/{calendar,tasks,memos,addressbook}/hidden-groups` und `groups-order`.
+     - Dekodierung von GVariant-Array `@as` in portable kommaseparierte Strings.
+     - Reihenfolgeerhaltende Deduplizierung und Validierung auf Steuerzeichen.
+  4. Backup & Restore (`src/services/backup_service.rs`):
+     - Alle 11 neuen Felder in `BackupSettings` integriert, serialisiert, deserialisiert und validiert (`validate_source_or_group_list` auf Max-Größe 4096, Token-Validität, Steuerzeichenfreiheit, keine Dubletten).
+     - Vollständige Abwärtskompatibilität für ältere Backups mit Standardwerten belegt.
+  Belegt durch gezielte Unit-Tests (`source_and_group_settings_and_pruning_roundtrip`, `source_and_group_settings_upstream_migration_parities`, `source_and_group_settings_backup_validation_and_roundtrip`) und 953/953 Workspace-Tests.
+- Offener Parent-/Linux-Rest: Reale EDS-Source-Gruppen (`ESourceGroup`), dynamische Remote-Capabilities und Provider-Registrierung unter Linux.
 
 ### GW-TASK-EDITOR-LIFECYCLE
 

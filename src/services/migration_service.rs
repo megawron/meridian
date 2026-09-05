@@ -940,6 +940,35 @@ fn canonical_setting(
         "default-address-book" => "default-address-book-source",
         "default-task-list" => "default-task-source",
         "default-memo-list" => "default-memo-source",
+        "task-hidden-sources" | "tasks-hidden-sources" => "task-hidden-sources",
+        "memo-hidden-sources" | "memos-hidden-sources" => "memo-hidden-sources",
+        "addressbook-hidden-sources" | "contacts-hidden-sources" => "addressbook-hidden-sources",
+        "calendar-hidden-groups" => "calendar-hidden-groups",
+        "calendar-groups-order" => "calendar-groups-order",
+        "task-list-hidden-groups"
+        | "task list-hidden-groups"
+        | "tasks-hidden-groups"
+        | "task-hidden-groups" => "task-hidden-groups",
+        "task-list-groups-order"
+        | "task list-groups-order"
+        | "tasks-groups-order"
+        | "task-groups-order" => "task-groups-order",
+        "memo-list-hidden-groups"
+        | "memo list-hidden-groups"
+        | "memos-hidden-groups"
+        | "memo-hidden-groups" => "memo-hidden-groups",
+        "memo-list-groups-order"
+        | "memo list-groups-order"
+        | "memos-groups-order"
+        | "memo-groups-order" => "memo-groups-order",
+        "address-book-hidden-groups"
+        | "address book-hidden-groups"
+        | "contacts-hidden-groups"
+        | "addressbook-hidden-groups" => "addressbook-hidden-groups",
+        "address-book-groups-order"
+        | "address book-groups-order"
+        | "contacts-groups-order"
+        | "addressbook-groups-order" => "addressbook-groups-order",
         "use-12-hour-format" | "use-12-hour-clock" => "time-format",
         "show-toolbar" if group.contains("mail") => "mail-show-toolbar",
         "show-sidebar" if group.contains("mail") => "mail-show-sidebar",
@@ -1035,7 +1064,22 @@ fn migration_value_type(key: &str) -> SettingValueType {
     ) {
         return SettingValueType::Int32;
     }
-    if key == "calendar-hidden-sources" || key == "calendar-second-zones" {
+    if matches!(
+        key,
+        "calendar-hidden-sources"
+            | "task-hidden-sources"
+            | "memo-hidden-sources"
+            | "addressbook-hidden-sources"
+            | "calendar-hidden-groups"
+            | "calendar-groups-order"
+            | "task-hidden-groups"
+            | "task-groups-order"
+            | "memo-hidden-groups"
+            | "memo-groups-order"
+            | "addressbook-hidden-groups"
+            | "addressbook-groups-order"
+            | "calendar-second-zones"
+    ) {
         return SettingValueType::StringArray;
     }
     if key == "mail-normal-headers" {
@@ -1073,6 +1117,17 @@ fn is_supported_migration_key(key: &str) -> bool {
             | "calendar-show-tag-vpane"
             | "calendar-tag-vpane-position"
             | "calendar-hidden-sources"
+            | "task-hidden-sources"
+            | "memo-hidden-sources"
+            | "addressbook-hidden-sources"
+            | "calendar-hidden-groups"
+            | "calendar-groups-order"
+            | "task-hidden-groups"
+            | "task-groups-order"
+            | "memo-hidden-groups"
+            | "memo-groups-order"
+            | "addressbook-hidden-groups"
+            | "addressbook-groups-order"
             | "date-format"
             | "time-format"
             | "calendar-time-zone"
@@ -1231,6 +1286,54 @@ fn normalize_imported_setting_value(key: &str, value: &str) -> Result<String, &'
                 Err("ungültige Zeitzonenliste")
             } else {
                 Ok(zones.join(","))
+            }
+        }
+        "calendar-hidden-sources"
+        | "task-hidden-sources"
+        | "memo-hidden-sources"
+        | "addressbook-hidden-sources"
+        | "calendar-hidden-groups"
+        | "task-hidden-groups"
+        | "memo-hidden-groups"
+        | "addressbook-hidden-groups" => {
+            let items = value
+                .split([',', ';'])
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .collect::<Vec<_>>();
+            if items.iter().any(|s| s.chars().any(char::is_control)) {
+                Err("ungültige Quellenliste")
+            } else {
+                let mut ordered = Vec::new();
+                let mut seen = std::collections::HashSet::new();
+                for item in items {
+                    if seen.insert(item) {
+                        ordered.push(item);
+                    }
+                }
+                Ok(ordered.join(","))
+            }
+        }
+        "calendar-groups-order"
+        | "task-groups-order"
+        | "memo-groups-order"
+        | "addressbook-groups-order" => {
+            let items = value
+                .split([',', ';'])
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .collect::<Vec<_>>();
+            if items.iter().any(|s| s.chars().any(char::is_control)) {
+                Err("ungültige Gruppenreihenfolge")
+            } else {
+                let mut ordered = Vec::new();
+                let mut seen = std::collections::HashSet::new();
+                for item in items {
+                    if seen.insert(item) {
+                        ordered.push(item);
+                    }
+                }
+                Ok(ordered.join(","))
             }
         }
         "calendar-week-start" => match value.to_ascii_lowercase().as_str() {
@@ -3473,6 +3576,94 @@ day-second-zone='bad zone; danger'
         assert!(negative.warnings[1].contains("calendar-view"));
         assert!(negative.warnings[2].contains("calendar-second-zone"));
         assert!(negative.warnings[3].contains("keine unterstützten nicht-geheimen"));
+    }
+
+    #[test]
+    fn source_and_group_settings_upstream_migration_parities() {
+        let parsed = parse_evolution_settings(
+            r#"
+[SourceSelector]
+Calendar-hidden-groups=@as ['Group X', 'Group Y']
+Calendar-groups-order=['Group 1', 'Group 2', 'Group 3']
+Task List-hidden-groups='TaskGrp1,TaskGrp2'
+Task List-groups-order=['TaskOrderA', 'TaskOrderB']
+Memo List-hidden-groups=@as ['MemoGrp1']
+Memo List-groups-order=['MemoOrderA']
+Address Book-hidden-groups=['BookGrp1']
+Address Book-groups-order=['BookOrder1', 'BookOrder2']
+
+[org/gnome/evolution/calendar]
+task-hidden-sources=@as ['task-src-1', 'task-src-2']
+memo-hidden-sources='memo-src-1,memo-src-2'
+addressbook-hidden-sources=['book-src-1']
+default-calendar='cal-def'
+default-task-list='task-def'
+default-memo-list='memo-def'
+default-address-book='book-def'
+"#,
+            Path::new("evolution-sources-setup.ini"),
+        );
+
+        assert!(parsed.settings.contains(&ImportedSetting {
+            key: "calendar-hidden-groups".to_string(),
+            value: "Group X,Group Y".to_string(),
+        }));
+        assert!(parsed.settings.contains(&ImportedSetting {
+            key: "calendar-groups-order".to_string(),
+            value: "Group 1,Group 2,Group 3".to_string(),
+        }));
+        assert!(parsed.settings.contains(&ImportedSetting {
+            key: "task-hidden-groups".to_string(),
+            value: "TaskGrp1,TaskGrp2".to_string(),
+        }));
+        assert!(parsed.settings.contains(&ImportedSetting {
+            key: "task-groups-order".to_string(),
+            value: "TaskOrderA,TaskOrderB".to_string(),
+        }));
+        assert!(parsed.settings.contains(&ImportedSetting {
+            key: "memo-hidden-groups".to_string(),
+            value: "MemoGrp1".to_string(),
+        }));
+        assert!(parsed.settings.contains(&ImportedSetting {
+            key: "memo-groups-order".to_string(),
+            value: "MemoOrderA".to_string(),
+        }));
+        assert!(parsed.settings.contains(&ImportedSetting {
+            key: "addressbook-hidden-groups".to_string(),
+            value: "BookGrp1".to_string(),
+        }));
+        assert!(parsed.settings.contains(&ImportedSetting {
+            key: "addressbook-groups-order".to_string(),
+            value: "BookOrder1,BookOrder2".to_string(),
+        }));
+        assert!(parsed.settings.contains(&ImportedSetting {
+            key: "task-hidden-sources".to_string(),
+            value: "task-src-1,task-src-2".to_string(),
+        }));
+        assert!(parsed.settings.contains(&ImportedSetting {
+            key: "memo-hidden-sources".to_string(),
+            value: "memo-src-1,memo-src-2".to_string(),
+        }));
+        assert!(parsed.settings.contains(&ImportedSetting {
+            key: "addressbook-hidden-sources".to_string(),
+            value: "book-src-1".to_string(),
+        }));
+        assert!(parsed.settings.contains(&ImportedSetting {
+            key: "default-calendar-source".to_string(),
+            value: "cal-def".to_string(),
+        }));
+        assert!(parsed.settings.contains(&ImportedSetting {
+            key: "default-task-source".to_string(),
+            value: "task-def".to_string(),
+        }));
+        assert!(parsed.settings.contains(&ImportedSetting {
+            key: "default-memo-source".to_string(),
+            value: "memo-def".to_string(),
+        }));
+        assert!(parsed.settings.contains(&ImportedSetting {
+            key: "default-address-book-source".to_string(),
+            value: "book-def".to_string(),
+        }));
     }
 
     #[test]

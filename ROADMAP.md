@@ -1399,6 +1399,10 @@ Die Statuswerte sind Quellen-/UI-Belege, keine Laufzeit- oder Providerabnahme:
   und aktualisiert Ansichten live. Upstream-Migration decodiert Dconf/Ini-Keys samt GVariant-`@as`-Arrays;
   Backup und Restore sichern und validieren alle 5 Einstellungen versioniert abwärtskompatibel.
   Portabel belegt durch 950/950 Workspace-Tests; systemweite GNOME-Desktop-Zeitzonensynchronisation und Theme-Visuals bleiben Linux-only.
+- [~] `GW-SOURCE-SETTINGS` schließt die upstream-äquivalenten Quellenauswahl-, Sichtbarkeits- und Gruppeneinstellungen (`e-source-selector.c`, `calendar-config-keys.h`):
+  GSettings-Schema (`data/org.gnome.Evolution4.gschema.xml`) und `AppSettings` unterstützen Default-Quellen für Kalender, Aufgaben, Memos und Adressbücher, domänenspezifische Sichtbarkeitslisten (`task-hidden-sources`, `memo-hidden-sources`, `addressbook-hidden-sources`), Gruppen-Sichtbarkeit und Gruppen-Reihenfolge (`calendar-hidden-groups`, `calendar-groups-order`, `task-hidden-groups`, `task-groups-order`, `memo-hidden-groups`, `memo-groups-order`, `addressbook-hidden-groups`, `addressbook-groups-order`).
+  Die atomare Pruning-Funktion `prune_deleted_source` stellt sicher, dass beim Löschen einer Quelle keine toten UIDs in Defaults, Filtern, Sichtbarkeitslisten oder Gruppen verbleiben. Upstream-Migration decodiert Dconf/Ini-Keys samt GVariant-`@as`-Arrays; Backup und Restore sichern und validieren alle 11 Einstellungen versioniert abwärtskompatibel.
+  Portabel belegt durch 953/953 Workspace-Tests; reale EDS-Source-Gruppen (`ESourceGroup`), dynamische Remote-Capabilities und Provider-Registrierung bleiben Linux-only.
 - [~] VTODO/VJOURNAL-Erstellung, VTODO-Status, Notizbearbeitung/-löschung,
   VTODO-Bearbeitung, Prioritäten, Fälligkeiten und Notizlöschung werden über
   den EDS-Adapter persistiert. ECal-Signalaktualisierung ist angebunden;

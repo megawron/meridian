@@ -97,6 +97,50 @@
       <default>''</default>
       <summary>Hidden calendar source UIDs</summary>
     </key>
+    <key name="task-hidden-sources" type="s">
+      <default>''</default>
+      <summary>Hidden task list source UIDs</summary>
+    </key>
+    <key name="memo-hidden-sources" type="s">
+      <default>''</default>
+      <summary>Hidden memo list source UIDs</summary>
+    </key>
+    <key name="addressbook-hidden-sources" type="s">
+      <default>''</default>
+      <summary>Hidden address book source UIDs</summary>
+    </key>
+    <key name="calendar-hidden-groups" type="s">
+      <default>''</default>
+      <summary>Hidden calendar source groups</summary>
+    </key>
+    <key name="calendar-groups-order" type="s">
+      <default>''</default>
+      <summary>Custom display order for calendar source groups</summary>
+    </key>
+    <key name="task-hidden-groups" type="s">
+      <default>''</default>
+      <summary>Hidden task list source groups</summary>
+    </key>
+    <key name="task-groups-order" type="s">
+      <default>''</default>
+      <summary>Custom display order for task list source groups</summary>
+    </key>
+    <key name="memo-hidden-groups" type="s">
+      <default>''</default>
+      <summary>Hidden memo list source groups</summary>
+    </key>
+    <key name="memo-groups-order" type="s">
+      <default>''</default>
+      <summary>Custom display order for memo list source groups</summary>
+    </key>
+    <key name="addressbook-hidden-groups" type="s">
+      <default>''</default>
+      <summary>Hidden address book source groups</summary>
+    </key>
+    <key name="addressbook-groups-order" type="s">
+      <default>''</default>
+      <summary>Custom display order for address book source groups</summary>
+    </key>
     <key name="date-format" type="s">
       <default>'german'</default>
       <summary>Calendar date display format (german, iso, or us)</summary>

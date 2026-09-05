@@ -289,6 +289,28 @@ struct BackupSettings {
     calendar_second_zones: String,
     #[serde(default = "default_calendar_hidden_sources")]
     calendar_hidden_sources: String,
+    #[serde(default = "default_calendar_hidden_sources")]
+    task_hidden_sources: String,
+    #[serde(default = "default_calendar_hidden_sources")]
+    memo_hidden_sources: String,
+    #[serde(default = "default_calendar_hidden_sources")]
+    addressbook_hidden_sources: String,
+    #[serde(default = "default_calendar_hidden_sources")]
+    calendar_hidden_groups: String,
+    #[serde(default = "default_calendar_hidden_sources")]
+    calendar_groups_order: String,
+    #[serde(default = "default_calendar_hidden_sources")]
+    task_hidden_groups: String,
+    #[serde(default = "default_calendar_hidden_sources")]
+    task_groups_order: String,
+    #[serde(default = "default_calendar_hidden_sources")]
+    memo_hidden_groups: String,
+    #[serde(default = "default_calendar_hidden_sources")]
+    memo_groups_order: String,
+    #[serde(default = "default_calendar_hidden_sources")]
+    addressbook_hidden_groups: String,
+    #[serde(default = "default_calendar_hidden_sources")]
+    addressbook_groups_order: String,
     #[serde(default = "default_date_format")]
     date_format: String,
     #[serde(default = "default_time_format")]
@@ -637,6 +659,17 @@ impl BackupSettings {
             calendar_second_zone: settings.calendar_second_zone(),
             calendar_second_zones: settings.calendar_second_zones().join(","),
             calendar_hidden_sources: settings.calendar_hidden_sources().join(","),
+            task_hidden_sources: settings.task_hidden_sources().join(","),
+            memo_hidden_sources: settings.memo_hidden_sources().join(","),
+            addressbook_hidden_sources: settings.addressbook_hidden_sources().join(","),
+            calendar_hidden_groups: settings.calendar_hidden_groups().join(","),
+            calendar_groups_order: settings.calendar_groups_order().join(","),
+            task_hidden_groups: settings.task_hidden_groups().join(","),
+            task_groups_order: settings.task_groups_order().join(","),
+            memo_hidden_groups: settings.memo_hidden_groups().join(","),
+            memo_groups_order: settings.memo_groups_order().join(","),
+            addressbook_hidden_groups: settings.addressbook_hidden_groups().join(","),
+            addressbook_groups_order: settings.addressbook_groups_order().join(","),
             date_format: settings.date_format(),
             time_format: settings.time_format(),
             mail_sort_field: settings.mail_sort_field(),
@@ -759,6 +792,83 @@ impl BackupSettings {
         settings.set_calendar_hidden_sources(
             &self
                 .calendar_hidden_sources
+                .split(',')
+                .map(str::to_string)
+                .collect::<Vec<_>>(),
+        );
+        settings.set_task_hidden_sources(
+            &self
+                .task_hidden_sources
+                .split(',')
+                .map(str::to_string)
+                .collect::<Vec<_>>(),
+        );
+        settings.set_memo_hidden_sources(
+            &self
+                .memo_hidden_sources
+                .split(',')
+                .map(str::to_string)
+                .collect::<Vec<_>>(),
+        );
+        settings.set_addressbook_hidden_sources(
+            &self
+                .addressbook_hidden_sources
+                .split(',')
+                .map(str::to_string)
+                .collect::<Vec<_>>(),
+        );
+        settings.set_calendar_hidden_groups(
+            &self
+                .calendar_hidden_groups
+                .split(',')
+                .map(str::to_string)
+                .collect::<Vec<_>>(),
+        );
+        settings.set_calendar_groups_order(
+            &self
+                .calendar_groups_order
+                .split(',')
+                .map(str::to_string)
+                .collect::<Vec<_>>(),
+        );
+        settings.set_task_hidden_groups(
+            &self
+                .task_hidden_groups
+                .split(',')
+                .map(str::to_string)
+                .collect::<Vec<_>>(),
+        );
+        settings.set_task_groups_order(
+            &self
+                .task_groups_order
+                .split(',')
+                .map(str::to_string)
+                .collect::<Vec<_>>(),
+        );
+        settings.set_memo_hidden_groups(
+            &self
+                .memo_hidden_groups
+                .split(',')
+                .map(str::to_string)
+                .collect::<Vec<_>>(),
+        );
+        settings.set_memo_groups_order(
+            &self
+                .memo_groups_order
+                .split(',')
+                .map(str::to_string)
+                .collect::<Vec<_>>(),
+        );
+        settings.set_addressbook_hidden_groups(
+            &self
+                .addressbook_hidden_groups
+                .split(',')
+                .map(str::to_string)
+                .collect::<Vec<_>>(),
+        );
+        settings.set_addressbook_groups_order(
+            &self
+                .addressbook_groups_order
                 .split(',')
                 .map(str::to_string)
                 .collect::<Vec<_>>(),
@@ -972,6 +1082,23 @@ impl BackupSettings {
         validate_spellcheck_languages(&self.spellcheck_languages)?;
         validate_calendar_workdays(&self.calendar_workdays)?;
         validate_calendar_hidden_sources(&self.calendar_hidden_sources)?;
+        validate_source_or_group_list("task_hidden_sources", &self.task_hidden_sources)?;
+        validate_source_or_group_list("memo_hidden_sources", &self.memo_hidden_sources)?;
+        validate_source_or_group_list(
+            "addressbook_hidden_sources",
+            &self.addressbook_hidden_sources,
+        )?;
+        validate_source_or_group_list("calendar_hidden_groups", &self.calendar_hidden_groups)?;
+        validate_source_or_group_list("calendar_groups_order", &self.calendar_groups_order)?;
+        validate_source_or_group_list("task_hidden_groups", &self.task_hidden_groups)?;
+        validate_source_or_group_list("task_groups_order", &self.task_groups_order)?;
+        validate_source_or_group_list("memo_hidden_groups", &self.memo_hidden_groups)?;
+        validate_source_or_group_list("memo_groups_order", &self.memo_groups_order)?;
+        validate_source_or_group_list(
+            "addressbook_hidden_groups",
+            &self.addressbook_hidden_groups,
+        )?;
+        validate_source_or_group_list("addressbook_groups_order", &self.addressbook_groups_order)?;
         for (name, value) in [
             ("default_account", &self.default_account),
             ("default_calendar_source", &self.default_calendar_source),
@@ -1156,30 +1283,28 @@ fn validate_calendar_workdays(value: &str) -> io::Result<()> {
     Ok(())
 }
 
-fn validate_calendar_hidden_sources(value: &str) -> io::Result<()> {
+fn validate_source_or_group_list(field: &'static str, value: &str) -> io::Result<()> {
     if value.is_empty() || value.len() > 4_096 {
         if value.is_empty() {
             return Ok(());
         }
-        return Err(validation_error(
-            "calendar_hidden_sources",
-            "ungültige Quellenliste",
-        ));
+        return Err(validation_error(field, "ungültige Quellenliste"));
     }
 
     let mut seen = HashSet::new();
-    for source_uid in value.split(',').map(str::trim) {
-        if source_uid.is_empty()
-            || source_uid.chars().any(char::is_control)
-            || !seen.insert(source_uid)
-        {
+    for item in value.split(',').map(str::trim) {
+        if item.is_empty() || item.chars().any(char::is_control) || !seen.insert(item) {
             return Err(validation_error(
-                "calendar_hidden_sources",
+                field,
                 "keine eindeutige portable Quellenliste",
             ));
         }
     }
     Ok(())
+}
+
+fn validate_calendar_hidden_sources(value: &str) -> io::Result<()> {
+    validate_source_or_group_list("calendar_hidden_sources", value)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1320,6 +1445,17 @@ const BACKUP_SETTINGS_FIELDS: &[&str] = &[
     "calendar_second_zone",
     "calendar_second_zones",
     "calendar_hidden_sources",
+    "task_hidden_sources",
+    "memo_hidden_sources",
+    "addressbook_hidden_sources",
+    "calendar_hidden_groups",
+    "calendar_groups_order",
+    "task_hidden_groups",
+    "task_groups_order",
+    "memo_hidden_groups",
+    "memo_groups_order",
+    "addressbook_hidden_groups",
+    "addressbook_groups_order",
     "date_format",
     "time_format",
     "mail_sort_field",
@@ -2793,6 +2929,17 @@ mod tests {
         assert!(!settings.mail_show_location);
         assert!(!settings.calendar_show_week_numbers);
         assert!(settings.calendar_hidden_sources.is_empty());
+        assert!(settings.task_hidden_sources.is_empty());
+        assert!(settings.memo_hidden_sources.is_empty());
+        assert!(settings.addressbook_hidden_sources.is_empty());
+        assert!(settings.calendar_hidden_groups.is_empty());
+        assert!(settings.calendar_groups_order.is_empty());
+        assert!(settings.task_hidden_groups.is_empty());
+        assert!(settings.task_groups_order.is_empty());
+        assert!(settings.memo_hidden_groups.is_empty());
+        assert!(settings.memo_groups_order.is_empty());
+        assert!(settings.addressbook_hidden_groups.is_empty());
+        assert!(settings.addressbook_groups_order.is_empty());
         assert_eq!(settings.mail_sort_field, "date");
         assert!(settings.mail_sort_descending);
         assert!(settings.mail_threading);
@@ -2977,6 +3124,77 @@ mod tests {
         assert_eq!(
             deserialized.calendar_second_zones,
             "Europe/London,America/New_York"
+        );
+    }
+
+    #[test]
+    fn source_and_group_settings_backup_validation_and_roundtrip() {
+        let backend = gio::memory_settings_backend_new();
+        let settings = AppSettings::try_new_with_backend(&backend).expect("settings should load");
+
+        settings.set_task_hidden_sources(&["task-1".to_string(), "task-2".to_string()]);
+        settings.set_memo_hidden_sources(&["memo-1".to_string()]);
+        settings.set_addressbook_hidden_sources(&["addr-1".to_string()]);
+        settings.set_calendar_hidden_groups(&["cal-grp-1".to_string()]);
+        settings.set_calendar_groups_order(&["grp-b".to_string(), "grp-a".to_string()]);
+        settings.set_task_hidden_groups(&["task-grp-1".to_string()]);
+        settings.set_task_groups_order(&["task-ord-1".to_string()]);
+        settings.set_memo_hidden_groups(&["memo-grp-1".to_string()]);
+        settings.set_memo_groups_order(&["memo-ord-1".to_string()]);
+        settings.set_addressbook_hidden_groups(&["book-grp-1".to_string()]);
+        settings.set_addressbook_groups_order(&["book-ord-1".to_string()]);
+
+        let backup = BackupSettings::from_app(&settings);
+
+        assert_eq!(backup.task_hidden_sources, "task-1,task-2");
+        assert_eq!(backup.memo_hidden_sources, "memo-1");
+        assert_eq!(backup.addressbook_hidden_sources, "addr-1");
+        assert_eq!(backup.calendar_hidden_groups, "cal-grp-1");
+        assert_eq!(backup.calendar_groups_order, "grp-b,grp-a");
+        assert_eq!(backup.task_hidden_groups, "task-grp-1");
+        assert_eq!(backup.task_groups_order, "task-ord-1");
+        assert_eq!(backup.memo_hidden_groups, "memo-grp-1");
+        assert_eq!(backup.memo_groups_order, "memo-ord-1");
+        assert_eq!(backup.addressbook_hidden_groups, "book-grp-1");
+        assert_eq!(backup.addressbook_groups_order, "book-ord-1");
+
+        // Validate succeeds on valid settings
+        backup.validate().expect("backup should validate");
+
+        // Invalid (duplicate UID in list)
+        let mut invalid_dupe = backup.clone();
+        invalid_dupe.task_hidden_sources = "task-1,task-1".to_string();
+        assert!(invalid_dupe.validate().is_err());
+
+        // Invalid (control character in group order)
+        let mut invalid_ctrl = backup.clone();
+        invalid_ctrl.calendar_groups_order = "grp-a\ngrp-b".to_string();
+        assert!(invalid_ctrl.validate().is_err());
+
+        // JSON serialization round-trip
+        let serialized = serde_json::to_string(&backup).expect("should serialize");
+        let deserialized: BackupSettings =
+            serde_json::from_str(&serialized).expect("should deserialize");
+        assert_eq!(deserialized.task_hidden_sources, "task-1,task-2");
+        assert_eq!(deserialized.memo_hidden_sources, "memo-1");
+        assert_eq!(deserialized.addressbook_hidden_sources, "addr-1");
+        assert_eq!(deserialized.calendar_groups_order, "grp-b,grp-a");
+
+        // Restoration into fresh settings
+        let fresh_backend = gio::memory_settings_backend_new();
+        let fresh_settings =
+            AppSettings::try_new_with_backend(&fresh_backend).expect("settings should load");
+        deserialized.apply_to(&fresh_settings);
+
+        assert_eq!(
+            fresh_settings.task_hidden_sources(),
+            vec!["task-1", "task-2"]
+        );
+        assert_eq!(fresh_settings.memo_hidden_sources(), vec!["memo-1"]);
+        assert_eq!(fresh_settings.addressbook_hidden_sources(), vec!["addr-1"]);
+        assert_eq!(
+            fresh_settings.calendar_groups_order(),
+            vec!["grp-b", "grp-a"]
         );
     }
 

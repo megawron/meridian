@@ -607,19 +607,276 @@ impl AppSettings {
     }
 
     pub fn set_calendar_hidden_sources(&self, source_uids: &[String]) {
-        let mut source_uids = source_uids
-            .iter()
-            .map(|uid| uid.trim())
-            .filter(|uid| !uid.is_empty())
-            .collect::<Vec<_>>();
-        source_uids.sort_unstable();
-        source_uids.dedup();
+        let source_uids = sanitize_source_list(source_uids);
         if let Err(error) = self
             .settings
             .set_string("calendar-hidden-sources", &source_uids.join(","))
         {
             tracing::warn!(%error, "Could not persist hidden calendar sources");
         }
+    }
+
+    pub fn task_hidden_sources(&self) -> Vec<String> {
+        self.settings
+            .string("task-hidden-sources")
+            .split(',')
+            .map(str::trim)
+            .filter(|uid| !uid.is_empty())
+            .map(ToOwned::to_owned)
+            .collect()
+    }
+
+    pub fn set_task_hidden_sources(&self, source_uids: &[String]) {
+        let source_uids = sanitize_source_list(source_uids);
+        if let Err(error) = self
+            .settings
+            .set_string("task-hidden-sources", &source_uids.join(","))
+        {
+            tracing::warn!(%error, "Could not persist hidden task sources");
+        }
+    }
+
+    pub fn memo_hidden_sources(&self) -> Vec<String> {
+        self.settings
+            .string("memo-hidden-sources")
+            .split(',')
+            .map(str::trim)
+            .filter(|uid| !uid.is_empty())
+            .map(ToOwned::to_owned)
+            .collect()
+    }
+
+    pub fn set_memo_hidden_sources(&self, source_uids: &[String]) {
+        let source_uids = sanitize_source_list(source_uids);
+        if let Err(error) = self
+            .settings
+            .set_string("memo-hidden-sources", &source_uids.join(","))
+        {
+            tracing::warn!(%error, "Could not persist hidden memo sources");
+        }
+    }
+
+    pub fn addressbook_hidden_sources(&self) -> Vec<String> {
+        self.settings
+            .string("addressbook-hidden-sources")
+            .split(',')
+            .map(str::trim)
+            .filter(|uid| !uid.is_empty())
+            .map(ToOwned::to_owned)
+            .collect()
+    }
+
+    pub fn set_addressbook_hidden_sources(&self, source_uids: &[String]) {
+        let source_uids = sanitize_source_list(source_uids);
+        if let Err(error) = self
+            .settings
+            .set_string("addressbook-hidden-sources", &source_uids.join(","))
+        {
+            tracing::warn!(%error, "Could not persist hidden address book sources");
+        }
+    }
+
+    pub fn calendar_hidden_groups(&self) -> Vec<String> {
+        self.settings
+            .string("calendar-hidden-groups")
+            .split(',')
+            .map(str::trim)
+            .filter(|g| !g.is_empty())
+            .map(ToOwned::to_owned)
+            .collect()
+    }
+
+    pub fn set_calendar_hidden_groups(&self, groups: &[String]) {
+        let groups = sanitize_source_list(groups);
+        if let Err(error) = self
+            .settings
+            .set_string("calendar-hidden-groups", &groups.join(","))
+        {
+            tracing::warn!(%error, "Could not persist hidden calendar groups");
+        }
+    }
+
+    pub fn calendar_groups_order(&self) -> Vec<String> {
+        self.settings
+            .string("calendar-groups-order")
+            .split(',')
+            .map(str::trim)
+            .filter(|g| !g.is_empty())
+            .map(ToOwned::to_owned)
+            .collect()
+    }
+
+    pub fn set_calendar_groups_order(&self, groups: &[String]) {
+        let groups = sanitize_ordered_list(groups);
+        if let Err(error) = self
+            .settings
+            .set_string("calendar-groups-order", &groups.join(","))
+        {
+            tracing::warn!(%error, "Could not persist calendar groups order");
+        }
+    }
+
+    pub fn task_hidden_groups(&self) -> Vec<String> {
+        self.settings
+            .string("task-hidden-groups")
+            .split(',')
+            .map(str::trim)
+            .filter(|g| !g.is_empty())
+            .map(ToOwned::to_owned)
+            .collect()
+    }
+
+    pub fn set_task_hidden_groups(&self, groups: &[String]) {
+        let groups = sanitize_source_list(groups);
+        if let Err(error) = self
+            .settings
+            .set_string("task-hidden-groups", &groups.join(","))
+        {
+            tracing::warn!(%error, "Could not persist hidden task groups");
+        }
+    }
+
+    pub fn task_groups_order(&self) -> Vec<String> {
+        self.settings
+            .string("task-groups-order")
+            .split(',')
+            .map(str::trim)
+            .filter(|g| !g.is_empty())
+            .map(ToOwned::to_owned)
+            .collect()
+    }
+
+    pub fn set_task_groups_order(&self, groups: &[String]) {
+        let groups = sanitize_ordered_list(groups);
+        if let Err(error) = self
+            .settings
+            .set_string("task-groups-order", &groups.join(","))
+        {
+            tracing::warn!(%error, "Could not persist task groups order");
+        }
+    }
+
+    pub fn memo_hidden_groups(&self) -> Vec<String> {
+        self.settings
+            .string("memo-hidden-groups")
+            .split(',')
+            .map(str::trim)
+            .filter(|g| !g.is_empty())
+            .map(ToOwned::to_owned)
+            .collect()
+    }
+
+    pub fn set_memo_hidden_groups(&self, groups: &[String]) {
+        let groups = sanitize_source_list(groups);
+        if let Err(error) = self
+            .settings
+            .set_string("memo-hidden-groups", &groups.join(","))
+        {
+            tracing::warn!(%error, "Could not persist hidden memo groups");
+        }
+    }
+
+    pub fn memo_groups_order(&self) -> Vec<String> {
+        self.settings
+            .string("memo-groups-order")
+            .split(',')
+            .map(str::trim)
+            .filter(|g| !g.is_empty())
+            .map(ToOwned::to_owned)
+            .collect()
+    }
+
+    pub fn set_memo_groups_order(&self, groups: &[String]) {
+        let groups = sanitize_ordered_list(groups);
+        if let Err(error) = self
+            .settings
+            .set_string("memo-groups-order", &groups.join(","))
+        {
+            tracing::warn!(%error, "Could not persist memo groups order");
+        }
+    }
+
+    pub fn addressbook_hidden_groups(&self) -> Vec<String> {
+        self.settings
+            .string("addressbook-hidden-groups")
+            .split(',')
+            .map(str::trim)
+            .filter(|g| !g.is_empty())
+            .map(ToOwned::to_owned)
+            .collect()
+    }
+
+    pub fn set_addressbook_hidden_groups(&self, groups: &[String]) {
+        let groups = sanitize_source_list(groups);
+        if let Err(error) = self
+            .settings
+            .set_string("addressbook-hidden-groups", &groups.join(","))
+        {
+            tracing::warn!(%error, "Could not persist hidden address book groups");
+        }
+    }
+
+    pub fn addressbook_groups_order(&self) -> Vec<String> {
+        self.settings
+            .string("addressbook-groups-order")
+            .split(',')
+            .map(str::trim)
+            .filter(|g| !g.is_empty())
+            .map(ToOwned::to_owned)
+            .collect()
+    }
+
+    pub fn set_addressbook_groups_order(&self, groups: &[String]) {
+        let groups = sanitize_ordered_list(groups);
+        if let Err(error) = self
+            .settings
+            .set_string("addressbook-groups-order", &groups.join(","))
+        {
+            tracing::warn!(%error, "Could not persist address book groups order");
+        }
+    }
+
+    pub fn prune_deleted_source(&self, deleted_uid: &str) {
+        let uid = deleted_uid.trim();
+        if uid.is_empty() {
+            return;
+        }
+        if self.default_calendar_source_uid() == uid {
+            self.set_default_calendar_source_uid("");
+        }
+        if self.default_task_source_uid() == uid {
+            self.set_default_task_source_uid("");
+        }
+        if self.default_memo_source_uid() == uid {
+            self.set_default_memo_source_uid("");
+        }
+        if self.default_address_book_source_uid() == uid {
+            self.set_default_address_book_source_uid("");
+        }
+        if self.task_source_filter() == uid {
+            self.set_task_source_filter("");
+        }
+        if self.memo_source_filter() == uid {
+            self.set_memo_source_filter("");
+        }
+
+        let prune = |list: Vec<String>| -> Vec<String> {
+            list.into_iter().filter(|item| item != uid).collect()
+        };
+
+        self.set_calendar_hidden_sources(&prune(self.calendar_hidden_sources()));
+        self.set_task_hidden_sources(&prune(self.task_hidden_sources()));
+        self.set_memo_hidden_sources(&prune(self.memo_hidden_sources()));
+        self.set_addressbook_hidden_sources(&prune(self.addressbook_hidden_sources()));
+
+        self.set_calendar_hidden_groups(&prune(self.calendar_hidden_groups()));
+        self.set_calendar_groups_order(&prune(self.calendar_groups_order()));
+        self.set_task_hidden_groups(&prune(self.task_hidden_groups()));
+        self.set_task_groups_order(&prune(self.task_groups_order()));
+        self.set_memo_hidden_groups(&prune(self.memo_hidden_groups()));
+        self.set_memo_groups_order(&prune(self.memo_groups_order()));
+        self.set_addressbook_hidden_groups(&prune(self.addressbook_hidden_groups()));
+        self.set_addressbook_groups_order(&prune(self.addressbook_groups_order()));
     }
 
     pub fn calendar_time_divisions(&self) -> i32 {
@@ -1687,19 +1944,45 @@ impl AppSettings {
                     .collect::<Vec<_>>();
                 self.set_calendar_second_zones(&zones);
             }
-            "calendar-hidden-sources" => {
-                let source_uids = value
+            "calendar-hidden-sources"
+            | "task-hidden-sources"
+            | "memo-hidden-sources"
+            | "addressbook-hidden-sources"
+            | "calendar-hidden-groups"
+            | "calendar-groups-order"
+            | "task-hidden-groups"
+            | "task-groups-order"
+            | "memo-hidden-groups"
+            | "memo-groups-order"
+            | "addressbook-hidden-groups"
+            | "addressbook-groups-order" => {
+                let items = value
                     .split([',', ';'])
                     .map(str::trim)
-                    .filter(|source_uid| !source_uid.is_empty())
+                    .filter(|item| !item.is_empty())
                     .map(ToOwned::to_owned)
                     .collect::<Vec<_>>();
-                if source_uids.iter().any(|source_uid| {
-                    source_uid.is_empty() || source_uid.chars().any(char::is_control)
-                }) {
+                if items
+                    .iter()
+                    .any(|item| item.is_empty() || item.chars().any(char::is_control))
+                {
                     return Err(format!("ungültige Quellenliste für „{key}“"));
                 }
-                self.set_calendar_hidden_sources(&source_uids);
+                match key {
+                    "calendar-hidden-sources" => self.set_calendar_hidden_sources(&items),
+                    "task-hidden-sources" => self.set_task_hidden_sources(&items),
+                    "memo-hidden-sources" => self.set_memo_hidden_sources(&items),
+                    "addressbook-hidden-sources" => self.set_addressbook_hidden_sources(&items),
+                    "calendar-hidden-groups" => self.set_calendar_hidden_groups(&items),
+                    "calendar-groups-order" => self.set_calendar_groups_order(&items),
+                    "task-hidden-groups" => self.set_task_hidden_groups(&items),
+                    "task-groups-order" => self.set_task_groups_order(&items),
+                    "memo-hidden-groups" => self.set_memo_hidden_groups(&items),
+                    "memo-groups-order" => self.set_memo_groups_order(&items),
+                    "addressbook-hidden-groups" => self.set_addressbook_hidden_groups(&items),
+                    "addressbook-groups-order" => self.set_addressbook_groups_order(&items),
+                    _ => unreachable!(),
+                }
             }
             "date-format" => self.set_date_format(value),
             "time-format" => self.set_time_format(value),
@@ -1942,6 +2225,18 @@ impl AppSettings {
             "calendar-month-scroll-by-week",
             "calendar-second-zone",
             "calendar-second-zones",
+            "calendar-hidden-sources",
+            "task-hidden-sources",
+            "memo-hidden-sources",
+            "addressbook-hidden-sources",
+            "calendar-hidden-groups",
+            "calendar-groups-order",
+            "task-hidden-groups",
+            "task-groups-order",
+            "memo-hidden-groups",
+            "memo-groups-order",
+            "addressbook-hidden-groups",
+            "addressbook-groups-order",
             "date-format",
             "time-format",
             "calendar-time-zone",
@@ -2163,6 +2458,29 @@ pub fn sanitize_time_divisions(value: i32) -> i32 {
         5 | 10 | 15 | 30 | 60 => value,
         _ => 30,
     }
+}
+
+pub fn sanitize_source_list(uids: &[String]) -> Vec<String> {
+    let mut cleaned = uids
+        .iter()
+        .map(|uid| uid.trim())
+        .filter(|uid| !uid.is_empty())
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+    cleaned.sort_unstable();
+    cleaned.dedup();
+    cleaned
+}
+
+pub fn sanitize_ordered_list(items: &[String]) -> Vec<String> {
+    let mut cleaned = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for item in items.iter().map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        if seen.insert(item.to_string()) {
+            cleaned.push(item.to_string());
+        }
+    }
+    cleaned
 }
 
 #[cfg(test)]
@@ -2850,5 +3168,91 @@ mod tests {
         assert!(reset.calendar_month_scroll_by_week());
         assert_eq!(reset.calendar_second_zone(), "");
         assert!(reset.calendar_second_zones().is_empty());
+    }
+
+    #[test]
+    fn source_and_group_settings_and_pruning_roundtrip() {
+        let backend = gio::memory_settings_backend_new();
+        let settings = settings_with_backend(&backend);
+
+        // 1. Initial defaults
+        assert!(settings.task_hidden_sources().is_empty());
+        assert!(settings.memo_hidden_sources().is_empty());
+        assert!(settings.addressbook_hidden_sources().is_empty());
+        assert!(settings.calendar_hidden_groups().is_empty());
+        assert!(settings.calendar_groups_order().is_empty());
+        assert!(settings.task_hidden_groups().is_empty());
+        assert!(settings.task_groups_order().is_empty());
+        assert!(settings.memo_hidden_groups().is_empty());
+        assert!(settings.memo_groups_order().is_empty());
+        assert!(settings.addressbook_hidden_groups().is_empty());
+        assert!(settings.addressbook_groups_order().is_empty());
+
+        // 2. Setting and sanitization (sorting/dedup for hidden, order preservation for groups_order)
+        settings.set_task_hidden_sources(&[
+            "task-src-b".to_string(),
+            "task-src-a".to_string(),
+            "task-src-b".to_string(),
+            "".to_string(),
+        ]);
+        assert_eq!(
+            settings.task_hidden_sources(),
+            vec!["task-src-a", "task-src-b"]
+        );
+
+        settings.set_memo_hidden_sources(&["memo-x".to_string(), "memo-y".to_string()]);
+        assert_eq!(settings.memo_hidden_sources(), vec!["memo-x", "memo-y"]);
+
+        settings.set_addressbook_hidden_sources(&["book-1".to_string()]);
+        assert_eq!(settings.addressbook_hidden_sources(), vec!["book-1"]);
+
+        settings.set_calendar_groups_order(&[
+            "Group Z".to_string(),
+            "Group A".to_string(),
+            "Group Z".to_string(),
+        ]);
+        // groups order preserves first appearance order
+        assert_eq!(settings.calendar_groups_order(), vec!["Group Z", "Group A"]);
+
+        // 3. Set default sources
+        settings.set_default_calendar_source_uid("cal-to-delete");
+        settings.set_default_task_source_uid("task-to-delete");
+        settings.set_default_memo_source_uid("memo-to-delete");
+        settings.set_default_address_book_source_uid("book-to-delete");
+        settings
+            .set_calendar_hidden_sources(&["cal-to-delete".to_string(), "cal-keep".to_string()]);
+        settings.set_task_hidden_sources(&["task-to-delete".to_string(), "task-keep".to_string()]);
+
+        // 4. Prune deleted source
+        settings.prune_deleted_source("cal-to-delete");
+        assert_eq!(settings.default_calendar_source_uid(), "");
+        assert_eq!(settings.calendar_hidden_sources(), vec!["cal-keep"]);
+
+        settings.prune_deleted_source("task-to-delete");
+        assert_eq!(settings.default_task_source_uid(), "");
+        assert_eq!(settings.task_hidden_sources(), vec!["task-keep"]);
+
+        // 5. Import setting for groups and hidden sources
+        settings
+            .apply_migrated_setting("task-hidden-groups", "Personal, Work")
+            .expect("should import task-hidden-groups");
+        assert_eq!(settings.task_hidden_groups(), vec!["Personal", "Work"]);
+
+        settings
+            .apply_migrated_setting("task-groups-order", "Work, Personal")
+            .expect("should import task-groups-order");
+        assert_eq!(settings.task_groups_order(), vec!["Work", "Personal"]);
+
+        // 6. Reset to defaults
+        settings.reset_to_defaults();
+        let reset = settings_with_backend(&backend);
+        assert!(reset.calendar_hidden_sources().is_empty());
+        assert!(reset.task_hidden_sources().is_empty());
+        assert!(reset.memo_hidden_sources().is_empty());
+        assert!(reset.addressbook_hidden_sources().is_empty());
+        assert!(reset.calendar_hidden_groups().is_empty());
+        assert!(reset.calendar_groups_order().is_empty());
+        assert!(reset.task_hidden_groups().is_empty());
+        assert!(reset.task_groups_order().is_empty());
     }
 }
