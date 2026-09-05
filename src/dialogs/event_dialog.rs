@@ -557,33 +557,62 @@ impl EventDialog {
             );
             alarm_editor.set_summary(&entry_title.text());
             let alarms = alarm_editor.alarms();
-            let new_component = match build_event_component(
-                &entry_title.text(),
-                &row_location.text(),
-                &row_conference.text(),
-                match row_status.selected() {
-                    1 => "TENTATIVE",
-                    2 => "CANCELLED",
-                    _ => "CONFIRMED",
-                },
-                row_transparency.selected() == 1,
-                row_allday.is_active(),
-                &row_start.text(),
-                &row_end.text(),
-                &text_desc.buffer().text(
-                    &text_desc.buffer().start_iter(),
-                    &text_desc.buffer().end_iter(),
-                    false,
-                ),
-                &row_recurrence.text(),
-                &row_rdates.text(),
-                &row_exdates.text(),
-                &row_attendees.text(),
-                &row_categories.text(),
-                &attachments,
-                &alarms,
-                row_private.is_active(),
+            let status = match row_status.selected() {
+                1 => "TENTATIVE",
+                2 => "CANCELLED",
+                _ => "CONFIRMED",
+            };
+            let description = text_desc.buffer().text(
+                &text_desc.buffer().start_iter(),
+                &text_desc.buffer().end_iter(),
+                false,
+            );
+            let component = match (
+                edit_component_for_save.as_deref(),
+                edit_uid_for_save.as_deref(),
             ) {
+                (Some(original), Some(uid)) => update_existing_event_component(
+                    original,
+                    uid,
+                    &entry_title.text(),
+                    &row_location.text(),
+                    &row_conference.text(),
+                    status,
+                    row_transparency.selected() == 1,
+                    row_allday.is_active(),
+                    &row_start.text(),
+                    &row_end.text(),
+                    &description,
+                    &row_recurrence.text(),
+                    &row_rdates.text(),
+                    &row_exdates.text(),
+                    &row_attendees.text(),
+                    &row_categories.text(),
+                    &attachments,
+                    &alarms,
+                    row_private.is_active(),
+                ),
+                _ => build_event_component(
+                    &entry_title.text(),
+                    &row_location.text(),
+                    &row_conference.text(),
+                    status,
+                    row_transparency.selected() == 1,
+                    row_allday.is_active(),
+                    &row_start.text(),
+                    &row_end.text(),
+                    &description,
+                    &row_recurrence.text(),
+                    &row_rdates.text(),
+                    &row_exdates.text(),
+                    &row_attendees.text(),
+                    &row_categories.text(),
+                    &attachments,
+                    &alarms,
+                    row_private.is_active(),
+                ),
+            };
+            let component = match component {
                 Ok(component) => component,
                 Err(error) => {
                     dialog.show_toast(&error);
@@ -595,123 +624,6 @@ impl EventDialog {
             if let Err(error) = CalendarCategoryStore::default().ensure_names(category_names) {
                 tracing::warn!(%error, "Could not persist calendar category metadata");
             }
-
-            let component = if let (Some(original), Some(uid)) = (
-                edit_component_for_save.as_deref(),
-                edit_uid_for_save.as_deref(),
-            ) {
-                let all_day = row_allday.is_active();
-                let start_value =
-                    parse_event_datetime(&row_start.text(), all_day, "Beginn").unwrap_or_default();
-                let end_value =
-                    parse_event_datetime(&row_end.text(), all_day, "Ende").unwrap_or_default();
-                let start_property = if all_day {
-                    "DTSTART;VALUE=DATE".to_string()
-                } else {
-                    ical_datetime_property_prefix(original, "DTSTART")
-                        .unwrap_or_else(|| "DTSTART".to_string())
-                };
-                let end_property = if all_day {
-                    "DTEND;VALUE=DATE".to_string()
-                } else {
-                    ical_datetime_property_prefix(original, "DTEND")
-                        .unwrap_or_else(|| "DTEND".to_string())
-                };
-                let mut updated =
-                    update_ical_property(original, "UID", Some(&escape_ical_text(uid)));
-                updated = update_ical_property(
-                    &updated,
-                    "SUMMARY",
-                    Some(&escape_ical_text(entry_title.text().trim())),
-                );
-                updated = update_ical_property(
-                    &updated,
-                    "LOCATION",
-                    Some(&escape_ical_text(row_location.text().trim())),
-                );
-                let conference = row_conference.text();
-                let conference_value =
-                    (!conference.trim().is_empty()).then(|| escape_ical_text(conference.trim()));
-                updated = update_ical_property(&updated, "CONFERENCE", conference_value.as_deref());
-                updated = update_ical_property(
-                    &updated,
-                    "STATUS",
-                    Some(match row_status.selected() {
-                        1 => "TENTATIVE",
-                        2 => "CANCELLED",
-                        _ => "CONFIRMED",
-                    }),
-                );
-                updated = update_ical_property(
-                    &updated,
-                    "TRANSP",
-                    Some(if row_transparency.selected() == 1 {
-                        "TRANSPARENT"
-                    } else {
-                        "OPAQUE"
-                    }),
-                );
-                updated = update_ical_property(&updated, &start_property, Some(&start_value));
-                updated = update_ical_property(&updated, &end_property, Some(&end_value));
-                updated = update_ical_property(
-                    &updated,
-                    "DESCRIPTION",
-                    Some(&escape_ical_text(&text_desc.buffer().text(
-                        &text_desc.buffer().start_iter(),
-                        &text_desc.buffer().end_iter(),
-                        false,
-                    ))),
-                );
-                let recurrence = row_recurrence.text();
-                updated = update_ical_property(
-                    &updated,
-                    "RRULE",
-                    (!recurrence.trim().is_empty()).then_some(recurrence.as_str()),
-                );
-                let rdate_prefix = ical_recurrence_property_prefix(original, "RDATE", all_day)
-                    .unwrap_or_else(|| default_recurrence_property_prefix("RDATE", all_day));
-                let rdates = serialize_recurrence_values(&row_rdates.text());
-                updated = update_ical_property(
-                    &updated,
-                    &rdate_prefix,
-                    (!rdates.is_empty()).then_some(rdates.as_str()),
-                );
-                let exdate_prefix = ical_recurrence_property_prefix(original, "EXDATE", all_day)
-                    .unwrap_or_else(|| default_recurrence_property_prefix("EXDATE", all_day));
-                let exdates = serialize_recurrence_values(&row_exdates.text());
-                updated = update_ical_property(
-                    &updated,
-                    &exdate_prefix,
-                    (!exdates.is_empty()).then_some(exdates.as_str()),
-                );
-                let categories = serialize_categories(&row_categories.text());
-                updated = update_ical_property(
-                    &updated,
-                    "CATEGORIES",
-                    (!categories.is_empty()).then_some(categories.as_str()),
-                );
-                updated = update_ical_property(
-                    &updated,
-                    "CLASS",
-                    Some(if row_private.is_active() {
-                        "PRIVATE"
-                    } else {
-                        "PUBLIC"
-                    }),
-                );
-                let attendees = parse_attendees(&row_attendees.text());
-                updated = replace_ical_attendees(&updated, &attendees);
-                let attachments = parse_attachments(&attachment_buffer.text(
-                    &attachment_buffer.start_iter(),
-                    &attachment_buffer.end_iter(),
-                    false,
-                ));
-                updated = replace_ical_attachments(&updated, &attachments);
-                updated = replace_component_alarms(&updated, &alarms);
-                updated
-            } else {
-                new_component
-            };
             let source_uid_for_worker = source_uid.clone();
             let operation_uid = edit_uid_for_save.clone();
             let was_edit = edit_uid_for_save.is_some();
@@ -1697,6 +1609,152 @@ fn build_event_component(
     Ok(replace_component_alarms(&component, alarms))
 }
 
+/// Update an existing event component while preserving unknown properties, parameters,
+/// and vendor-specific fields (e.g., ORGANIZER, GEO, URL, PRIORITY, X-*, and custom alarms).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn update_existing_event_component(
+    original: &str,
+    uid: &str,
+    title: &str,
+    location: &str,
+    conference: &str,
+    status: &str,
+    transparent: bool,
+    all_day: bool,
+    start: &str,
+    end: &str,
+    description: &str,
+    recurrence: &str,
+    rdates: &str,
+    exdates: &str,
+    attendees: &str,
+    categories: &str,
+    attachments: &str,
+    alarms: &[Alarm],
+    private: bool,
+) -> Result<String, String> {
+    let title = title.trim();
+    if title.is_empty() {
+        return Err("Ein Termin benötigt einen Titel".to_string());
+    }
+    let start_value = parse_event_datetime(start, all_day, "Beginn")?;
+    let end_value = parse_event_datetime(end, all_day, "Ende")?;
+    if !all_day && end_value <= start_value {
+        return Err("Das Ende muss nach dem Beginn liegen".to_string());
+    }
+    let status = match status.to_ascii_uppercase().as_str() {
+        "TENTATIVE" => "TENTATIVE",
+        "CANCELLED" => "CANCELLED",
+        "CONFIRMED" => "CONFIRMED",
+        _ => return Err("Der Terminstatus ist ungültig".to_string()),
+    };
+    for (field, value) in [
+        ("RRULE", recurrence),
+        ("RDATE", rdates),
+        ("EXDATE", exdates),
+        ("Teilnehmer", attendees),
+        ("Konferenz-URL", conference),
+    ] {
+        if value
+            .chars()
+            .any(|character| character == '\r' || character == '\n')
+        {
+            return Err(format!("{field} enthält ungültige Zeilenumbrüche"));
+        }
+    }
+
+    let start_property = if all_day {
+        "DTSTART;VALUE=DATE".to_string()
+    } else {
+        ical_datetime_property_prefix(original, "DTSTART").unwrap_or_else(|| "DTSTART".to_string())
+    };
+    let end_property = if all_day {
+        "DTEND;VALUE=DATE".to_string()
+    } else {
+        ical_datetime_property_prefix(original, "DTEND").unwrap_or_else(|| "DTEND".to_string())
+    };
+    let mut updated = update_ical_property(original, "UID", Some(&escape_ical_text(uid)));
+    updated = update_ical_property(&updated, "SUMMARY", Some(&escape_ical_text(title)));
+    updated = update_ical_property(
+        &updated,
+        "LOCATION",
+        Some(&escape_ical_text(location.trim())),
+    );
+    let conference_value =
+        (!conference.trim().is_empty()).then(|| escape_ical_text(conference.trim()));
+    updated = update_ical_property(&updated, "CONFERENCE", conference_value.as_deref());
+    updated = update_ical_property(&updated, "STATUS", Some(status));
+    updated = update_ical_property(
+        &updated,
+        "TRANSP",
+        Some(if transparent { "TRANSPARENT" } else { "OPAQUE" }),
+    );
+    let original_has_date_start = component_property_has_date_value(original, "DTSTART");
+    let original_has_date_end = component_property_has_date_value(original, "DTEND");
+    if original_has_date_start != all_day {
+        updated = update_ical_property(&updated, "DTSTART", None);
+    }
+    updated = update_ical_property(&updated, &start_property, Some(&start_value));
+
+    if original_has_date_end != all_day {
+        updated = update_ical_property(&updated, "DTEND", None);
+    }
+    updated = update_ical_property(&updated, &end_property, Some(&end_value));
+
+    updated = update_ical_property(
+        &updated,
+        "DESCRIPTION",
+        Some(&escape_ical_text(description.trim())),
+    );
+    let recurrence_trimmed = recurrence.trim();
+    updated = update_ical_property(
+        &updated,
+        "RRULE",
+        (!recurrence_trimmed.is_empty()).then_some(recurrence_trimmed),
+    );
+    let rdate_prefix = ical_recurrence_property_prefix(original, "RDATE", all_day)
+        .unwrap_or_else(|| default_recurrence_property_prefix("RDATE", all_day));
+    let rdates_serialized = serialize_recurrence_values(rdates);
+    let original_has_date_rdate = component_property_has_date_value(original, "RDATE");
+    if original_has_date_rdate != all_day {
+        updated = update_ical_property(&updated, "RDATE", None);
+    }
+    updated = update_ical_property(
+        &updated,
+        &rdate_prefix,
+        (!rdates_serialized.is_empty()).then_some(rdates_serialized.as_str()),
+    );
+    let exdate_prefix = ical_recurrence_property_prefix(original, "EXDATE", all_day)
+        .unwrap_or_else(|| default_recurrence_property_prefix("EXDATE", all_day));
+    let exdates_serialized = serialize_recurrence_values(exdates);
+    let original_has_date_exdate = component_property_has_date_value(original, "EXDATE");
+    if original_has_date_exdate != all_day {
+        updated = update_ical_property(&updated, "EXDATE", None);
+    }
+    updated = update_ical_property(
+        &updated,
+        &exdate_prefix,
+        (!exdates_serialized.is_empty()).then_some(exdates_serialized.as_str()),
+    );
+    let categories_serialized = serialize_categories(categories);
+    updated = update_ical_property(
+        &updated,
+        "CATEGORIES",
+        (!categories_serialized.is_empty()).then_some(categories_serialized.as_str()),
+    );
+    updated = update_ical_property(
+        &updated,
+        "CLASS",
+        Some(if private { "PRIVATE" } else { "PUBLIC" }),
+    );
+    let attendees = parse_attendees(attendees);
+    updated = replace_ical_attendees(&updated, &attendees);
+    let attachments = parse_attachments(attachments);
+    updated = replace_ical_attachments(&updated, &attachments);
+    updated = replace_component_alarms(&updated, alarms);
+    Ok(updated)
+}
+
 fn replace_ical_attendees(raw: &str, values: &[String]) -> String {
     let existing = existing_attendee_properties(raw);
     let mut lines = Vec::new();
@@ -2154,5 +2212,283 @@ mod tests {
             serialize_categories(r"Arbeit,Privat\, Familie,Reise"),
             r"Arbeit,Privat\, Familie,Reise"
         );
+    }
+
+    #[test]
+    fn update_existing_event_preserves_unknown_properties_and_parameters() {
+        let raw = concat!(
+            "BEGIN:VEVENT\r\n",
+            "UID:upstream-event-123\r\n",
+            "DTSTAMP:20260101T000000Z\r\n",
+            "DTSTART;TZID=Europe/Berlin:20260810T090000\r\n",
+            "DTEND;TZID=Europe/Berlin:20260810T100000\r\n",
+            "SUMMARY:Initial Strategy Meeting\r\n",
+            "ORGANIZER;CN=Alice Boss:mailto:alice@example.com\r\n",
+            "GEO:48.85299;2.36885\r\n",
+            "URL:https://intranet.example.com/meeting/123\r\n",
+            "PRIORITY:1\r\n",
+            "CLASS:CONFIDENTIAL\r\n",
+            "X-EVOLUTION-MOVE-CALENDAR:1\r\n",
+            "X-CUSTOM-FLAG:TRUE\r\n",
+            "ATTENDEE;CN=Bob Colleague;ROLE=REQ-PARTICIPANT;PARTSTAT=ACCEPTED:mailto:bob@example.com\r\n",
+            "ATTENDEE;CN=Charlie Remote;ROLE=OPT-PARTICIPANT:mailto:charlie@example.com\r\n",
+            "RDATE;TZID=Europe/Berlin:20260810T090000\r\n",
+            "ATTACH;FMTTYPE=application/pdf;VALUE=URI:https://example.com/spec.pdf\r\n",
+            "BEGIN:VALARM\r\n",
+            "ACTION:AUDIO\r\n",
+            "TRIGGER;VALUE=DATE-TIME:20260810T083000Z\r\n",
+            "ATTACH;FMTTYPE=audio/ogg;VALUE=URI:https://example.test/alarm.ogg\r\n",
+            "END:VALARM\r\n",
+            "END:VEVENT\r\n"
+        );
+
+        let mut alarms = parse_alarms(raw);
+        alarms.push(Alarm::new_display_relative(
+            AlarmRelation::Start,
+            -15 * 60,
+            Some("Meeting starts in 15m".to_string()),
+        ));
+
+        let updated = update_existing_event_component(
+            raw,
+            "upstream-event-123",
+            "Updated Strategy Meeting",
+            "Room 101",
+            "https://meet.example.com/abc",
+            "CONFIRMED",
+            false,
+            false,
+            "2026-08-10 10:00",
+            "2026-08-10 11:30",
+            "Discuss Q3 goals and roadmap.",
+            "FREQ=WEEKLY;COUNT=5",
+            "20260817T100000,20260824T100000",
+            "20260831T100000",
+            "mailto:bob@example.com, mailto:dana@example.com",
+            r"Work,Strategy\, Planning",
+            "https://example.com/spec.pdf\nhttps://example.com/agenda.pdf",
+            &alarms,
+            true,
+        )
+        .expect("update_existing_event_component should succeed");
+
+        let unfolded = unfold_ical_lines(&updated);
+
+        // Verify edited fields
+        assert!(unfolded.contains(&"SUMMARY:Updated Strategy Meeting".to_string()));
+        assert!(unfolded.contains(&"LOCATION:Room 101".to_string()));
+        assert!(unfolded.contains(&"CONFERENCE:https://meet.example.com/abc".to_string()));
+        assert!(unfolded.contains(&"STATUS:CONFIRMED".to_string()));
+        assert!(unfolded.contains(&"TRANSP:OPAQUE".to_string()));
+        assert!(unfolded.contains(&"DTSTART;TZID=Europe/Berlin:20260810T100000".to_string()));
+        assert!(unfolded.contains(&"DTEND;TZID=Europe/Berlin:20260810T113000".to_string()));
+        assert!(unfolded.contains(&"DESCRIPTION:Discuss Q3 goals and roadmap.".to_string()));
+        assert!(unfolded.contains(&"RRULE:FREQ=WEEKLY;COUNT=5".to_string()));
+        assert!(
+            unfolded
+                .contains(&"RDATE;TZID=Europe/Berlin:20260817T100000,20260824T100000".to_string())
+        );
+        assert!(unfolded.contains(&"EXDATE:20260831T100000".to_string()));
+        assert!(unfolded.contains(&r"CATEGORIES:Work,Strategy\, Planning".to_string()));
+        assert!(unfolded.contains(&"CLASS:PRIVATE".to_string()));
+
+        // Verify preserved unknown/vendor properties
+        assert!(unfolded.contains(&"ORGANIZER;CN=Alice Boss:mailto:alice@example.com".to_string()));
+        assert!(unfolded.contains(&"GEO:48.85299;2.36885".to_string()));
+        assert!(unfolded.contains(&"URL:https://intranet.example.com/meeting/123".to_string()));
+        assert!(unfolded.contains(&"PRIORITY:1".to_string()));
+        assert!(unfolded.contains(&"X-EVOLUTION-MOVE-CALENDAR:1".to_string()));
+        assert!(unfolded.contains(&"X-CUSTOM-FLAG:TRUE".to_string()));
+
+        // Verify preserved attendee parameters and added/removed attendees
+        assert!(unfolded.contains(
+            &"ATTENDEE;CN=Bob Colleague;ROLE=REQ-PARTICIPANT;PARTSTAT=ACCEPTED:mailto:bob@example.com".to_string()
+        ));
+        assert!(unfolded.contains(&"ATTENDEE:mailto:dana@example.com".to_string()));
+        assert!(!updated.contains("charlie@example.com"));
+
+        // Verify preserved attachment FMTTYPE and newly added attachment
+        assert!(unfolded.contains(
+            &"ATTACH;FMTTYPE=application/pdf;VALUE=URI:https://example.com/spec.pdf".to_string()
+        ));
+        assert!(unfolded.contains(&"ATTACH;VALUE=URI:https://example.com/agenda.pdf".to_string()));
+
+        // Verify alarms: audio alarm from raw preserved plus newly added display alarm
+        assert!(unfolded.contains(&"ACTION:AUDIO".to_string()));
+        assert!(unfolded.contains(
+            &"ATTACH;FMTTYPE=audio/ogg;VALUE=URI:https://example.test/alarm.ogg".to_string()
+        ));
+        assert!(unfolded.contains(&"ACTION:DISPLAY".to_string()));
+        assert!(unfolded.contains(&"TRIGGER:-PT15M".to_string()));
+    }
+
+    #[test]
+    fn update_existing_event_validates_inputs() {
+        let raw = "BEGIN:VEVENT\r\nUID:event-1\r\nDTSTART:20260810T090000\r\nDTEND:20260810T100000\r\nSUMMARY:Test\r\nEND:VEVENT\r\n";
+
+        // Empty title
+        assert!(
+            update_existing_event_component(
+                raw,
+                "event-1",
+                "   ",
+                "",
+                "",
+                "CONFIRMED",
+                false,
+                false,
+                "2026-08-10 10:00",
+                "2026-08-10 11:00",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                &[],
+                false
+            )
+            .is_err()
+        );
+
+        // End before start
+        assert!(
+            update_existing_event_component(
+                raw,
+                "event-1",
+                "Meeting",
+                "",
+                "",
+                "CONFIRMED",
+                false,
+                false,
+                "2026-08-10 12:00",
+                "2026-08-10 11:00",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                &[],
+                false
+            )
+            .is_err()
+        );
+
+        // Invalid status
+        assert!(
+            update_existing_event_component(
+                raw,
+                "event-1",
+                "Meeting",
+                "",
+                "",
+                "INVALID_STATUS",
+                false,
+                false,
+                "2026-08-10 10:00",
+                "2026-08-10 11:00",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                &[],
+                false
+            )
+            .is_err()
+        );
+
+        // Newline injection in recurrence
+        assert!(
+            update_existing_event_component(
+                raw,
+                "event-1",
+                "Meeting",
+                "",
+                "",
+                "CONFIRMED",
+                false,
+                false,
+                "2026-08-10 10:00",
+                "2026-08-10 11:00",
+                "",
+                "FREQ=DAILY\r\nX-INJECTED:bad",
+                "",
+                "",
+                "",
+                "",
+                "",
+                &[],
+                false
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn update_existing_event_switches_all_day_mode() {
+        let timed = "BEGIN:VEVENT\r\nUID:event-timed\r\nDTSTART:20260810T090000\r\nDTEND:20260810T100000\r\nSUMMARY:Timed\r\nEND:VEVENT\r\n";
+
+        // Switch timed -> all-day
+        let all_day = update_existing_event_component(
+            timed,
+            "event-timed",
+            "All-Day Event",
+            "",
+            "",
+            "CONFIRMED",
+            false,
+            true,
+            "2026-08-10",
+            "2026-08-11",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            &[],
+            false,
+        )
+        .expect("should convert to all-day");
+
+        assert!(all_day.contains("DTSTART;VALUE=DATE:20260810"));
+        assert!(all_day.contains("DTEND;VALUE=DATE:20260811"));
+        assert!(!all_day.contains("DTSTART:20260810\r\n"));
+
+        // Switch all-day -> timed
+        let back_to_timed = update_existing_event_component(
+            &all_day,
+            "event-timed",
+            "Back to Timed",
+            "",
+            "",
+            "CONFIRMED",
+            false,
+            false,
+            "2026-08-10 14:00",
+            "2026-08-10 15:00",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            &[],
+            false,
+        )
+        .expect("should convert to timed");
+
+        assert!(back_to_timed.contains("DTSTART:20260810T140000"));
+        assert!(back_to_timed.contains("DTEND:20260810T150000"));
+        assert!(!back_to_timed.contains("VALUE=DATE"));
     }
 }
