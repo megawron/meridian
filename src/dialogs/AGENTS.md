@@ -84,6 +84,30 @@ and updates to the service/settings APIs.
   5. Sicherheit (OpenPGP key ID, sign/encrypt defaults, S/MIME certificates).
   Preferences dialog allows direct editing of local and EDS accounts with active configuration
   chips and badges. Validation failures focus and navigate directly to the relevant tab.
+- Mail preferences (`PreferencesDialog`) provide dedicated sub-pages for "Farben & Labels"
+  (ordered label list with color dots, Add/Edit dialogs with GTK4 `ColorDialogButton`,
+  reordering, deletion with confirmation, and reset to defaults) and "Junk-Mail-Optionen"
+  (incoming spam scan toggle, address book whitelist options, auto-expunge on exit with
+  retention days, spam plugin selector, and custom spam headers).
+- Composer dialog (`ComposeDialog`) and preferences expose full parity for composer settings:
+  1. Header visibility toggles for From, Reply-To, Cc, and Bcc tied to GSettings and toggleable
+     via `win.composer-view-*` actions in the Ansicht menu, with automatic unhiding when drafts
+     contain non-empty values.
+  2. Reply-To input with contact autocompletion and address book search, persisted in drafts and
+     exported in outgoing messages and RFC822 EML.
+  3. Pre-send validation dialogs (`adw::AlertDialog`) prompting for empty subjects and only-Bcc
+     recipients when configured.
+  4. Signature formatting respecting top-posting (`composer-top-signature`) and RFC outline
+     dashes delimiter `--<br>` (`composer-signature-outline`).
+  5. Configurable quoting and forwarding styles (`composer-reply-style`, `composer-forward-style`)
+     supporting inline, quoted prefix, blockquote, and attached workflows.
+  6. Inline spellchecking toggle (`composer-inline-spelling`) dynamically controlling WebKitGTK.
+- Mail preferences (`PreferencesDialog`) provide dedicated controls for mail reading policies:
+  1. HTML image loading policy combo row (`mail-image-loading-policy`: `'never'`, `'sometimes'`/`'contacts'`, `'always'`).
+  2. Automatic mark-as-read toggle (`mail-mark-seen`) and configurable timeout slider/spinrow (`mail-mark-seen-timeout`).
+  3. Caret navigation toggle (`mail-caret-mode`) and magic spacebar toggle (`mail-magic-spacebar`).
+  4. Display real absolute timestamp vs relative date toggle (`mail-show-real-date`) and collapsed headers toggle (`mail-headers-collapsed`).
+  5. Citation highlighting toggle (`mail-citation-highlighting`) and 5 nested quote level color pickers (`mail-citation-color-1` .. `5`) using `gtk::ColorDialogButton` with live preview color dots and hex subtitles.
 
 
 ## Verification

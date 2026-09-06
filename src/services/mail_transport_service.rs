@@ -1450,7 +1450,7 @@ mod tests {
         assert!(MailTransportAction::SendAll.includes_send());
         assert!(!MailTransportAction::SendAll.includes_receive());
 
-        let service = MailTransportService::with_backend(Arc::new(ScriptedBackend::new([])));
+        let service = MailTransportService::with_backend(Arc::new(ScriptedBackend::cancellable()));
         let graph = service.action_graph();
         assert!(graph.mail_send_receive);
         assert!(graph.mail_receive_all);
@@ -1465,10 +1465,14 @@ mod tests {
         assert!(service.action_graph().mail_send_all);
 
         let operation = service.start(MailTransportAction::ReceiveAll).unwrap();
+        while service.snapshot().state != MailTransportState::Running {
+            thread::sleep(Duration::from_millis(2));
+        }
         assert!(!service.action_graph().mail_send_receive);
         assert!(!service.action_graph().mail_receive_all);
         assert!(!service.action_graph().mail_send_all);
         assert!(service.action_graph().mail_stop);
+        assert!(service.stop());
         drop(wait_for_terminal(&service, operation));
 
         service.set_mode(MailTransportMode::Offline);
@@ -1754,12 +1758,16 @@ mod tests {
     #[test]
     fn stale_finish_publishes_current_generation_after_mode_bounce() {
         let release = Arc::new(AtomicBool::new(false));
+        let started = Arc::new(AtomicBool::new(false));
         let backend = DeferredCancelBackend {
             release: release.clone(),
-            started: Arc::new(AtomicBool::new(false)),
+            started: started.clone(),
         };
         let service = MailTransportService::with_backend(Arc::new(backend));
         let operation = service.start(MailTransportAction::ReceiveAll).unwrap();
+        while !started.load(Ordering::Acquire) {
+            thread::yield_now();
+        }
         let old_generation = operation.generation;
 
         service.set_mode(MailTransportMode::Offline);

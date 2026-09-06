@@ -392,7 +392,10 @@ impl HtmlEditor {
 
         // WebKit6 WebView Canvas
         let web_context = webkit6::WebContext::new();
-        web_context.set_spell_checking_enabled(true);
+        let inline_spelling = AppSettings::try_new()
+            .map(|settings| settings.composer_inline_spelling())
+            .unwrap_or(true);
+        web_context.set_spell_checking_enabled(inline_spelling);
         if let Some(settings) = AppSettings::try_new() {
             let language_setting = settings.spellcheck_languages();
             let languages = language_setting

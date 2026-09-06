@@ -35,7 +35,9 @@ use crate::services::mail_store_service::{
     LocalFilterRunReport, MailStoreService, MailStoreWorkerConfig,
 };
 use crate::services::migration_service;
-use crate::services::settings_service::{ReminderDurationUnit, validate_mail_normal_header_name};
+use crate::services::settings_service::{
+    MailLabelDefinition, ReminderDurationUnit, validate_mail_normal_header_name,
+};
 use crate::services::signature_store_service::SignatureStore;
 
 /// Owned, framework-neutral inputs for one manual filter worker.
@@ -2257,8 +2259,21 @@ impl PreferencesDialog {
         }
         group_composer.add(&row_request_read_receipt);
 
+        let row_composer_inline_spelling = adw::SwitchRow::builder()
+            .title("Direkte Rechtschreibprüfung")
+            .subtitle("Rechtschreibprüfung während der Eingabe im Composer aktivieren")
+            .active(true)
+            .build();
+        if let Some(settings) = settings.clone() {
+            row_composer_inline_spelling.set_active(settings.composer_inline_spelling());
+            row_composer_inline_spelling.connect_active_notify(move |row| {
+                settings.set_composer_inline_spelling(row.is_active());
+            });
+        }
+        group_composer.add(&row_composer_inline_spelling);
+
         let row_spellcheck_languages = adw::ComboRow::builder()
-            .title("Rechtschreibprüfung")
+            .title("Rechtschreibprüfung-Sprachen")
             .subtitle(
                 "Wörterbuchsprachen für neue Composer (Systemstandard, Deutsch oder Englisch)",
             )
@@ -2379,6 +2394,118 @@ impl PreferencesDialog {
             group_composer.add(&signature_row);
         }
 
+        let group_composer_headers = adw::PreferencesGroup::builder()
+            .title("Standardmäßig sichtbare Kopfzeilen")
+            .description("Wählen Sie aus, welche Empfänger- und Absenderfelder standardmäßig im Composer eingeblendet werden")
+            .build();
+        let row_show_from = adw::SwitchRow::builder()
+            .title("Absenderfeld (Von) anzeigen")
+            .active(true)
+            .build();
+        if let Some(settings) = settings.clone() {
+            row_show_from.set_active(settings.composer_show_from());
+            row_show_from.connect_active_notify(move |row| {
+                settings.set_composer_show_from(row.is_active());
+            });
+        }
+        group_composer_headers.add(&row_show_from);
+
+        let row_show_reply_to = adw::SwitchRow::builder()
+            .title("Antwortadresse (Reply-To) anzeigen")
+            .active(false)
+            .build();
+        if let Some(settings) = settings.clone() {
+            row_show_reply_to.set_active(settings.composer_show_reply_to());
+            row_show_reply_to.connect_active_notify(move |row| {
+                settings.set_composer_show_reply_to(row.is_active());
+            });
+        }
+        group_composer_headers.add(&row_show_reply_to);
+
+        let row_show_cc = adw::SwitchRow::builder()
+            .title("Kopiefeld (Cc) anzeigen")
+            .active(true)
+            .build();
+        if let Some(settings) = settings.clone() {
+            row_show_cc.set_active(settings.composer_show_cc());
+            row_show_cc.connect_active_notify(move |row| {
+                settings.set_composer_show_cc(row.is_active());
+            });
+        }
+        group_composer_headers.add(&row_show_cc);
+
+        let row_show_bcc = adw::SwitchRow::builder()
+            .title("Blindkopiefeld (Bcc) anzeigen")
+            .active(false)
+            .build();
+        if let Some(settings) = settings.clone() {
+            row_show_bcc.set_active(settings.composer_show_bcc());
+            row_show_bcc.connect_active_notify(move |row| {
+                settings.set_composer_show_bcc(row.is_active());
+            });
+        }
+        group_composer_headers.add(&row_show_bcc);
+
+        let group_composer_prompts = adw::PreferencesGroup::builder()
+            .title("Bestätigungen beim Senden")
+            .description("Sicherheitsabfragen vor dem Absenden einer Nachricht")
+            .build();
+        let row_prompt_empty_subject = adw::SwitchRow::builder()
+            .title("Warnen bei leerem Betreff")
+            .subtitle("Vor dem Absenden bestätigen, wenn kein Betreff angegeben wurde")
+            .active(true)
+            .build();
+        if let Some(settings) = settings.clone() {
+            row_prompt_empty_subject.set_active(settings.composer_prompt_empty_subject());
+            row_prompt_empty_subject.connect_active_notify(move |row| {
+                settings.set_composer_prompt_empty_subject(row.is_active());
+            });
+        }
+        group_composer_prompts.add(&row_prompt_empty_subject);
+
+        let row_prompt_only_bcc = adw::SwitchRow::builder()
+            .title("Warnen bei ausschließlichen Bcc-Empfängern")
+            .subtitle("Vor dem Absenden bestätigen, wenn nur verdeckte Empfänger angegeben sind")
+            .active(true)
+            .build();
+        if let Some(settings) = settings.clone() {
+            row_prompt_only_bcc.set_active(settings.composer_prompt_only_bcc());
+            row_prompt_only_bcc.connect_active_notify(move |row| {
+                settings.set_composer_prompt_only_bcc(row.is_active());
+            });
+        }
+        group_composer_prompts.add(&row_prompt_only_bcc);
+
+        let group_signature_options = adw::PreferencesGroup::builder()
+            .title("Signatur-Optionen")
+            .description("Positionierung und Formatierung der Signatur")
+            .build();
+        let row_top_signature = adw::SwitchRow::builder()
+            .title("Signatur oberhalb des Zitats einfügen")
+            .subtitle("Signatur bei Antworten und Weiterleitungen oberhalb des zitierten Texts platzieren (Top-Posting)")
+            .active(false)
+            .build();
+        if let Some(settings) = settings.clone() {
+            row_top_signature.set_active(settings.composer_top_signature());
+            row_top_signature.connect_active_notify(move |row| {
+                settings.set_composer_top_signature(row.is_active());
+            });
+        }
+        group_signature_options.add(&row_top_signature);
+
+        let row_signature_outline = adw::SwitchRow::builder()
+            .title("Signatur-Trennlinie (-- ) einfügen")
+            .subtitle("Standardmäßige Trennlinie vor der Signatur einfügen")
+            .active(true)
+            .build();
+        if let Some(settings) = settings.clone() {
+            row_signature_outline.set_active(settings.composer_signature_outline());
+            row_signature_outline.connect_active_notify(move |row| {
+                settings.set_composer_signature_outline(row.is_active());
+            });
+        }
+        group_signature_options.add(&row_signature_outline);
+
         let group_signature_editor = adw::PreferencesGroup::builder()
             .title("Signaturtext &amp; Inhalt")
             .description("Der Inhalt der Signatur, der beim Erstellen neuer E-Mails automatisch eingefügt wird")
@@ -2404,7 +2531,7 @@ impl PreferencesDialog {
 
         let group_reply = adw::PreferencesGroup::builder()
             .title("Antworten &amp; Weiterleiten")
-            .description("Verhalten für den übernommenen Originaltext")
+            .description("Verhalten für den übernommenen Originaltext und Antwortstile")
             .build();
         let row_quote_original = adw::SwitchRow::builder()
             .title("Originaltext zitieren")
@@ -2443,6 +2570,59 @@ impl PreferencesDialog {
             });
         }
         group_reply.add(&row_quote_style);
+
+        let row_reply_style = adw::ComboRow::builder()
+            .title("Standard-Antwortstil")
+            .subtitle("Verhalten beim Antworten auf empfangene Nachrichten")
+            .model(&gtk::StringList::new(&[
+                "Zitiert (Standard)",
+                "Eingebettet",
+                "Als Anhang",
+                "Nicht zitieren",
+            ]))
+            .build();
+        if let Some(settings) = settings.clone() {
+            row_reply_style.set_selected(match settings.composer_reply_style().as_str() {
+                "inline" => 1,
+                "attached" => 2,
+                "do-not-quote" => 3,
+                _ => 0,
+            });
+            row_reply_style.connect_selected_notify(move |row| {
+                settings.set_composer_reply_style(match row.selected() {
+                    1 => "inline",
+                    2 => "attached",
+                    3 => "do-not-quote",
+                    _ => "quoted",
+                });
+            });
+        }
+        group_reply.add(&row_reply_style);
+
+        let row_forward_style = adw::ComboRow::builder()
+            .title("Standard-Weiterleitungsstil")
+            .subtitle("Verhalten beim Weiterleiten von Nachrichten")
+            .model(&gtk::StringList::new(&[
+                "Als Anhang (Standard)",
+                "Eingebettet",
+                "Zitiert",
+            ]))
+            .build();
+        if let Some(settings) = settings.clone() {
+            row_forward_style.set_selected(match settings.composer_forward_style().as_str() {
+                "inline" => 1,
+                "quoted" => 2,
+                _ => 0,
+            });
+            row_forward_style.connect_selected_notify(move |row| {
+                settings.set_composer_forward_style(match row.selected() {
+                    1 => "inline",
+                    2 => "quoted",
+                    _ => "attached",
+                });
+            });
+        }
+        group_reply.add(&row_forward_style);
 
         // ── 2. Page: Erscheinungsbild & Leseansicht ─────────────────────────
         let page_appearance = adw::PreferencesPage::builder()
@@ -2484,18 +2664,33 @@ impl PreferencesDialog {
             .title("Leseansicht &amp; Datenschutz")
             .build();
 
-        let row_remote_images = adw::SwitchRow::builder()
-            .title("Externe Bilder automatisch laden")
-            .subtitle("Aus Sicherheitsgründen wird empfohlen, diese Option deaktiviert zu lassen")
-            .active(false)
+        let row_image_policy = adw::ComboRow::builder()
+            .title("Bilder in HTML-Nachrichten laden")
+            .subtitle("Steuert das automatische Nachladen externer Bilder und Webressourcen")
+            .model(&gtk::StringList::new(&[
+                "Nie (Empfohlen für Datenschutz)",
+                "Nur bei bekannten Kontakten",
+                "Immer",
+            ]))
             .build();
         if let Some(settings) = settings.clone() {
-            row_remote_images.set_active(settings.auto_load_remote_images());
-            row_remote_images.connect_active_notify(move |row| {
-                settings.set_auto_load_remote_images(row.is_active());
+            let policy = settings.mail_image_loading_policy();
+            row_image_policy.set_selected(match policy.as_str() {
+                "sometimes" | "contacts" => 1,
+                "always" => 2,
+                _ => 0,
+            });
+            row_image_policy.connect_selected_notify(move |row| {
+                let policy_str = match row.selected() {
+                    1 => "sometimes",
+                    2 => "always",
+                    _ => "never",
+                };
+                settings.set_mail_image_loading_policy(policy_str);
+                settings.set_auto_load_remote_images(row.selected() == 2);
             });
         }
-        group_reading.add(&row_remote_images);
+        group_reading.add(&row_image_policy);
 
         let row_html_rendering = adw::SwitchRow::builder()
             .title("HTML-Nachrichten rendern")
@@ -2541,8 +2736,9 @@ impl PreferencesDialog {
             .active(true)
             .build();
         if let Some(settings) = settings.clone() {
-            row_mark_read.set_active(settings.mark_read_on_selection());
+            row_mark_read.set_active(settings.mail_mark_seen());
             row_mark_read.connect_active_notify(move |row| {
+                settings.set_mail_mark_seen(row.is_active());
                 settings.set_mark_read_on_selection(row.is_active());
             });
         }
@@ -2563,7 +2759,7 @@ impl PreferencesDialog {
         row_mark_read_timeout.add_suffix(&timeout_options);
 
         if let Some(settings) = settings.clone() {
-            let timeout_ms = settings.mark_read_timeout();
+            let timeout_ms = settings.mail_mark_seen_timeout();
             let selected_idx = match timeout_ms {
                 t if t <= 0 => 0,
                 t if t <= 800 => 1,
@@ -2580,10 +2776,63 @@ impl PreferencesDialog {
                     3 => 3000,
                     _ => 5000,
                 };
-                settings.set_mark_read_timeout(ms);
+                settings.set_mail_mark_seen_timeout(ms);
+                settings.set_mark_read_timeout(ms as i32);
             });
         }
         group_reading.add(&row_mark_read_timeout);
+
+        let row_caret_mode = adw::SwitchRow::builder()
+            .title("Caret-Navigation (F7)")
+            .subtitle("Ermöglicht das Bewegen eines sichtbaren Textcursors in der Nachrichtenvorschau")
+            .active(false)
+            .build();
+        if let Some(settings) = settings.clone() {
+            row_caret_mode.set_active(settings.mail_caret_mode());
+            row_caret_mode.connect_active_notify(move |row| {
+                settings.set_mail_caret_mode(row.is_active());
+            });
+        }
+        group_reading.add(&row_caret_mode);
+
+        let row_magic_spacebar = adw::SwitchRow::builder()
+            .title("Magische Leertaste")
+            .subtitle("Leertaste blättert in der Nachricht nach unten oder springt am Ende zur nächsten ungelesenen Nachricht")
+            .active(true)
+            .build();
+        if let Some(settings) = settings.clone() {
+            row_magic_spacebar.set_active(settings.mail_magic_spacebar());
+            row_magic_spacebar.connect_active_notify(move |row| {
+                settings.set_mail_magic_spacebar(row.is_active());
+            });
+        }
+        group_reading.add(&row_magic_spacebar);
+
+        let row_show_real_date = adw::SwitchRow::builder()
+            .title("Vollständiges Datum anzeigen")
+            .subtitle("Zeigt immer das genaue absolute Datum anstelle relativer Bezeichnungen (wie »Heute« oder »Gestern«)")
+            .active(true)
+            .build();
+        if let Some(settings) = settings.clone() {
+            row_show_real_date.set_active(settings.mail_show_real_date());
+            row_show_real_date.connect_active_notify(move |row| {
+                settings.set_mail_show_real_date(row.is_active());
+            });
+        }
+        group_reading.add(&row_show_real_date);
+
+        let row_headers_collapsed = adw::SwitchRow::builder()
+            .title("Kopfzeilen standardmäßig einklappen")
+            .subtitle("Zeigt in der normalen Leseansicht eine reduzierte Kopfzeilenanzeige an")
+            .active(false)
+            .build();
+        if let Some(settings) = settings.clone() {
+            row_headers_collapsed.set_active(settings.mail_headers_collapsed());
+            row_headers_collapsed.connect_active_notify(move |row| {
+                settings.set_mail_headers_collapsed(row.is_active());
+            });
+        }
+        group_reading.add(&row_headers_collapsed);
 
         let row_message_preview = adw::SwitchRow::builder()
             .title("Mail-Vorschaufenster anzeigen")
@@ -2772,6 +3021,106 @@ impl PreferencesDialog {
             });
         }
         group_reading.add(&row_confirm_destructive);
+        page_appearance.add(&group_reading);
+
+        let group_citations = adw::PreferencesGroup::builder()
+            .title("Zitate &amp; Hervorhebung")
+            .description("Farben und Formatierung für verschachtelte Zitatebenen in E-Mails")
+            .build();
+
+        let row_citation_highlighting = adw::SwitchRow::builder()
+            .title("Zitate farblich hervorheben")
+            .subtitle("Zeigt farbige linke Ränder für die jeweiligen Zitatebenen an")
+            .active(true)
+            .build();
+        if let Some(settings) = settings.clone() {
+            row_citation_highlighting.set_active(settings.mail_citation_highlighting());
+            row_citation_highlighting.connect_active_notify(move |row| {
+                settings.set_mail_citation_highlighting(row.is_active());
+            });
+        }
+        group_citations.add(&row_citation_highlighting);
+
+        let citation_color_configs = [
+            ("Zitatebene 1", 1),
+            ("Zitatebene 2", 2),
+            ("Zitatebene 3", 3),
+            ("Zitatebene 4", 4),
+            ("Zitatebene 5", 5),
+        ];
+
+        for (title, level) in citation_color_configs {
+            let initial_color = settings
+                .as_ref()
+                .map(|s| match level {
+                    1 => s.mail_citation_color_1(),
+                    2 => s.mail_citation_color_2(),
+                    3 => s.mail_citation_color_3(),
+                    4 => s.mail_citation_color_4(),
+                    _ => s.mail_citation_color_5(),
+                })
+                .unwrap_or_else(|| match level {
+                    1 => "#729fcf".to_string(),
+                    2 => "#ad7fa8".to_string(),
+                    3 => "#8ae234".to_string(),
+                    4 => "#fcaf3e".to_string(),
+                    _ => "#e9b96e".to_string(),
+                });
+
+            let color_row = adw::ActionRow::builder()
+                .title(title)
+                .subtitle(&initial_color)
+                .build();
+
+            let color_dot = gtk::Label::builder()
+                .use_markup(true)
+                .margin_start(6)
+                .margin_end(6)
+                .build();
+            color_dot.set_markup(&format!(
+                "<span foreground=\"{initial_color}\" font_size=\"x-large\">●</span>"
+            ));
+            color_row.add_prefix(&color_dot);
+
+            let color_dialog = gtk::ColorDialog::builder()
+                .title(&format!("Farbe für {title} auswählen"))
+                .build();
+            let color_button = gtk::ColorDialogButton::new(Some(color_dialog));
+            if let Ok(rgba) = gtk::gdk::RGBA::parse(&initial_color) {
+                color_button.set_rgba(&rgba);
+            }
+            color_button.set_valign(gtk::Align::Center);
+            color_row.add_suffix(&color_button);
+
+            if let Some(settings) = settings.clone() {
+                let color_dot_weak = color_dot.downgrade();
+                let color_row_weak = color_row.downgrade();
+                color_button.connect_rgba_notify(move |btn| {
+                    let rgba = btn.rgba();
+                    let r = (rgba.red() * 255.0).round() as u8;
+                    let g = (rgba.green() * 255.0).round() as u8;
+                    let b = (rgba.blue() * 255.0).round() as u8;
+                    let hex = format!("#{r:02x}{g:02x}{b:02x}");
+                    if let Some(dot) = color_dot_weak.upgrade() {
+                        dot.set_markup(&format!(
+                            "<span foreground=\"{hex}\" font_size=\"x-large\">●</span>"
+                        ));
+                    }
+                    if let Some(row) = color_row_weak.upgrade() {
+                        row.set_subtitle(&hex);
+                    }
+                    match level {
+                        1 => settings.set_mail_citation_color_1(&hex),
+                        2 => settings.set_mail_citation_color_2(&hex),
+                        3 => settings.set_mail_citation_color_3(&hex),
+                        4 => settings.set_mail_citation_color_4(&hex),
+                        _ => settings.set_mail_citation_color_5(&hex),
+                    }
+                });
+            }
+            group_citations.add(&color_row);
+        }
+        page_appearance.add(&group_citations);
 
         let group_theme = adw::PreferencesGroup::builder()
             .title("Farbschema")
@@ -3884,32 +4233,36 @@ impl PreferencesDialog {
             .margin_bottom(8)
             .build();
 
-        let page_mail_general = adw::PreferencesPage::builder().title("General").build();
+        let group_mail_labels = build_mail_labels_group(&self, settings.clone());
+        let group_mail_junk = build_mail_junk_group(settings.clone());
+
+        let page_mail_general = adw::PreferencesPage::builder().title("Allgemein").build();
         page_mail_general.add(&group_reading);
         let page_mail_html = adw::PreferencesPage::builder()
-            .title("HTML Messages")
+            .title("HTML-Mails")
             .build();
         page_mail_html.add(&group_theme);
-        let page_mail_labels = adw::PreferencesPage::builder().title("Labels").build();
-        page_mail_labels.add(&group_mail_columns);
-        let page_mail_headers = adw::PreferencesPage::builder().title("Headers").build();
+        let page_mail_labels = adw::PreferencesPage::builder().title("Farben &amp; Labels").build();
+        page_mail_labels.add(&group_mail_labels);
+        let page_mail_headers = adw::PreferencesPage::builder().title("Kopfzeilen").build();
         page_mail_headers.add(&group_mail_normal_headers);
-        let page_mail_junk = adw::PreferencesPage::builder().title("Junk").build();
-        page_mail_junk.add(&group_filters);
-        let page_mail_confirmations = adw::PreferencesPage::builder()
-            .title("Confirmations")
+        let page_mail_junk = adw::PreferencesPage::builder().title("Junk &amp; Spam").build();
+        page_mail_junk.add(&group_mail_junk);
+        let page_mail_layout = adw::PreferencesPage::builder()
+            .title("Listenansicht &amp; Layout")
             .build();
-        page_mail_confirmations.add(&group_mail_list);
+        page_mail_layout.add(&group_mail_list);
+        page_mail_layout.add(&group_mail_columns);
 
-        mail_sub_stack.add_titled(&page_mail_general, Some("general"), "General");
-        mail_sub_stack.add_titled(&page_mail_html, Some("html"), "HTML Messages");
-        mail_sub_stack.add_titled(&page_mail_labels, Some("labels"), "Labels");
-        mail_sub_stack.add_titled(&page_mail_headers, Some("headers"), "Headers");
-        mail_sub_stack.add_titled(&page_mail_junk, Some("junk"), "Junk");
+        mail_sub_stack.add_titled(&page_mail_general, Some("general"), "Allgemein");
+        mail_sub_stack.add_titled(&page_mail_html, Some("html"), "HTML-Mails");
+        mail_sub_stack.add_titled(&page_mail_labels, Some("labels"), "Farben & Labels");
+        mail_sub_stack.add_titled(&page_mail_headers, Some("headers"), "Kopfzeilen");
+        mail_sub_stack.add_titled(&page_mail_junk, Some("junk"), "Junk & Spam");
         mail_sub_stack.add_titled(
-            &page_mail_confirmations,
-            Some("confirmations"),
-            "Confirmations",
+            &page_mail_layout,
+            Some("layout"),
+            "Listenansicht",
         );
 
         let mail_detail_box = gtk::Box::builder()
@@ -3936,8 +4289,11 @@ impl PreferencesDialog {
 
         let page_composer_general = adw::PreferencesPage::builder().title("General").build();
         page_composer_general.add(&group_composer);
+        page_composer_general.add(&group_composer_headers);
+        page_composer_general.add(&group_composer_prompts);
         let page_composer_signatures = adw::PreferencesPage::builder().title("Signatures").build();
         page_composer_signatures.add(&group_signature_editor);
+        page_composer_signatures.add(&group_signature_options);
         let page_composer_replies = adw::PreferencesPage::builder().title("Replies").build();
         page_composer_replies.add(&group_reply);
 
@@ -5039,6 +5395,637 @@ fn refresh_open_category_views(parent: &PreferencesDialog) {
     }
 }
 
+fn refresh_open_mail_views(parent: &PreferencesDialog) {
+    if let Some(window) = parent
+        .root()
+        .and_downcast::<crate::window::EvolutionWindow>()
+    {
+        window.refresh_mail_page();
+    }
+}
+
+fn build_mail_labels_group(
+    parent: &PreferencesDialog,
+    settings: Option<AppSettings>,
+) -> adw::PreferencesGroup {
+    let group = adw::PreferencesGroup::builder()
+        .title("Farben &amp; Labels")
+        .description("Farbetiketten zur Kennzeichnung und schnellen Filterung von Nachrichten")
+        .build();
+
+    let state = Rc::new(RefCell::new(
+        settings
+            .as_ref()
+            .map(AppSettings::mail_labels)
+            .unwrap_or_else(MailLabelDefinition::default_labels),
+    ));
+
+    let list = gtk::ListBox::builder()
+        .selection_mode(gtk::SelectionMode::None)
+        .css_classes(vec!["boxed-list"])
+        .build();
+    rebuild_mail_labels_list(&list, &state, &settings, parent);
+
+    let add_btn = gtk::Button::builder()
+        .label("Neues Etikett hinzufügen…")
+        .icon_name("list-add-symbolic")
+        .css_classes(vec!["suggested-action", "flat"])
+        .halign(gtk::Align::Start)
+        .build();
+
+    let reset_btn = gtk::Button::builder()
+        .label("Auf Standard zurücksetzen")
+        .tooltip_text("Etiketten auf die Evolution-Standardfarben zurücksetzen")
+        .css_classes(vec!["flat"])
+        .halign(gtk::Align::Start)
+        .build();
+
+    let action_box = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(12)
+        .margin_top(8)
+        .build();
+    action_box.append(&add_btn);
+    action_box.append(&reset_btn);
+
+    let parent_weak_for_add = parent.downgrade();
+    let state_for_add = Rc::clone(&state);
+    let list_for_add = list.clone();
+    let settings_for_add = settings.clone();
+    add_btn.connect_clicked(move |_| {
+        let Some(parent_dlg) = parent_weak_for_add.upgrade() else {
+            return;
+        };
+        present_edit_label_dialog(
+            &parent_dlg,
+            None,
+            state_for_add.clone(),
+            list_for_add.clone(),
+            settings_for_add.clone(),
+        );
+    });
+
+    let state_for_reset = Rc::clone(&state);
+    let list_for_reset = list.clone();
+    let settings_for_reset = settings.clone();
+    let parent_weak_for_reset = parent.downgrade();
+    reset_btn.connect_clicked(move |_| {
+        let defaults = MailLabelDefinition::default_labels();
+        state_for_reset.replace(defaults.clone());
+        if let Some(s) = settings_for_reset.as_ref() {
+            s.set_mail_labels(&defaults);
+        }
+        if let Some(parent_dlg) = parent_weak_for_reset.upgrade() {
+            rebuild_mail_labels_list(
+                &list_for_reset,
+                &state_for_reset,
+                &settings_for_reset,
+                &parent_dlg,
+            );
+            parent_dlg.show_toast("Standardetiketten wiederhergestellt");
+            refresh_open_mail_views(&parent_dlg);
+        }
+    });
+
+    group.add(&list);
+    group.add(&action_box);
+    group
+}
+
+fn rebuild_mail_labels_list(
+    list: &gtk::ListBox,
+    state: &Rc<RefCell<Vec<MailLabelDefinition>>>,
+    settings: &Option<AppSettings>,
+    parent: &PreferencesDialog,
+) {
+    while let Some(child) = list.first_child() {
+        list.remove(&child);
+    }
+
+    let labels = state.borrow().clone();
+    for (index, label_def) in labels.into_iter().enumerate() {
+        list.append(&mail_label_row(
+            list, state, settings, parent, index, label_def,
+        ));
+    }
+}
+
+fn mail_label_row(
+    list: &gtk::ListBox,
+    state: &Rc<RefCell<Vec<MailLabelDefinition>>>,
+    settings: &Option<AppSettings>,
+    parent: &PreferencesDialog,
+    index: usize,
+    label_def: MailLabelDefinition,
+) -> gtk::ListBoxRow {
+    let row = gtk::ListBoxRow::new();
+    row.set_selectable(false);
+    row.set_activatable(false);
+
+    let content = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(12)
+        .margin_top(6)
+        .margin_bottom(6)
+        .margin_start(12)
+        .margin_end(12)
+        .build();
+
+    let color_dot = gtk::Label::builder()
+        .label("●")
+        .css_classes(vec!["title-2"])
+        .valign(gtk::Align::Center)
+        .build();
+    color_dot.set_markup(&format!(
+        "<span foreground=\"{}\" font_size=\"x-large\">●</span>",
+        label_def.color
+    ));
+
+    let text_box = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(2)
+        .hexpand(true)
+        .valign(gtk::Align::Center)
+        .build();
+    let name_label = gtk::Label::builder()
+        .label(&label_def.display_name())
+        .halign(gtk::Align::Start)
+        .css_classes(vec!["heading"])
+        .build();
+    let tag_label = gtk::Label::builder()
+        .label(format!("Tag: {} · {}", label_def.tag, label_def.color))
+        .halign(gtk::Align::Start)
+        .css_classes(vec!["caption", "dim-label"])
+        .build();
+    text_box.append(&name_label);
+    text_box.append(&tag_label);
+
+    let up_btn = gtk::Button::builder()
+        .icon_name("go-up-symbolic")
+        .tooltip_text("Etikett nach oben verschieben")
+        .css_classes(vec!["flat", "circular"])
+        .sensitive(index > 0)
+        .valign(gtk::Align::Center)
+        .build();
+    let down_btn = gtk::Button::builder()
+        .icon_name("go-down-symbolic")
+        .tooltip_text("Etikett nach unten verschieben")
+        .css_classes(vec!["flat", "circular"])
+        .sensitive(index + 1 < state.borrow().len())
+        .valign(gtk::Align::Center)
+        .build();
+    let edit_btn = gtk::Button::builder()
+        .icon_name("document-edit-symbolic")
+        .tooltip_text("Etikett bearbeiten")
+        .css_classes(vec!["flat", "circular"])
+        .valign(gtk::Align::Center)
+        .build();
+    let delete_btn = gtk::Button::builder()
+        .icon_name("user-trash-symbolic")
+        .tooltip_text("Etikett entfernen")
+        .css_classes(vec!["flat", "circular", "error"])
+        .valign(gtk::Align::Center)
+        .build();
+
+    content.append(&color_dot);
+    content.append(&text_box);
+    content.append(&up_btn);
+    content.append(&down_btn);
+    content.append(&edit_btn);
+    content.append(&delete_btn);
+    row.set_child(Some(&content));
+
+    // Move Up
+    let state_up = Rc::clone(state);
+    let list_up = list.clone();
+    let settings_up = settings.clone();
+    let parent_weak_up = parent.downgrade();
+    up_btn.connect_clicked(move |_| {
+        if index > 0 {
+            state_up.borrow_mut().swap(index, index - 1);
+            if let Some(s) = settings_up.as_ref() {
+                s.set_mail_labels(&state_up.borrow());
+            }
+            if let Some(p) = parent_weak_up.upgrade() {
+                rebuild_mail_labels_list(&list_up, &state_up, &settings_up, &p);
+                refresh_open_mail_views(&p);
+            }
+        }
+    });
+
+    // Move Down
+    let state_down = Rc::clone(state);
+    let list_down = list.clone();
+    let settings_down = settings.clone();
+    let parent_weak_down = parent.downgrade();
+    down_btn.connect_clicked(move |_| {
+        if index + 1 < state_down.borrow().len() {
+            state_down.borrow_mut().swap(index, index + 1);
+            if let Some(s) = settings_down.as_ref() {
+                s.set_mail_labels(&state_down.borrow());
+            }
+            if let Some(p) = parent_weak_down.upgrade() {
+                rebuild_mail_labels_list(&list_down, &state_down, &settings_down, &p);
+                refresh_open_mail_views(&p);
+            }
+        }
+    });
+
+    // Edit
+    let parent_weak_edit = parent.downgrade();
+    let state_edit = Rc::clone(state);
+    let list_edit = list.clone();
+    let settings_edit = settings.clone();
+    let label_for_edit = label_def.clone();
+    edit_btn.connect_clicked(move |_| {
+        if let Some(p) = parent_weak_edit.upgrade() {
+            present_edit_label_dialog(
+                &p,
+                Some((index, label_for_edit.clone())),
+                state_edit.clone(),
+                list_edit.clone(),
+                settings_edit.clone(),
+            );
+        }
+    });
+
+    // Delete
+    let parent_weak_del = parent.downgrade();
+    let state_del = Rc::clone(state);
+    let list_del = list.clone();
+    let settings_del = settings.clone();
+    let label_name = label_def.name.clone();
+    delete_btn.connect_clicked(move |btn| {
+        let Some(p) = parent_weak_del.upgrade() else {
+            return;
+        };
+        let p_for_action = p.clone();
+        let state_for_action = state_del.clone();
+        let list_for_action = list_del.clone();
+        let settings_for_action = settings_del.clone();
+        let name_for_prompt = label_name.clone();
+        crate::dialogs::run_destructive_action(
+            btn,
+            &format!("Etikett „{name_for_prompt}“ löschen?"),
+            "Das Etikett wird aus den konfigurierten Mail-Labels entfernt.",
+            "Löschen",
+            move || {
+                state_for_action
+                    .borrow_mut()
+                    .retain(|l| l.name != name_for_prompt);
+                if let Some(s) = settings_for_action.as_ref() {
+                    s.set_mail_labels(&state_for_action.borrow());
+                }
+                rebuild_mail_labels_list(
+                    &list_for_action,
+                    &state_for_action,
+                    &settings_for_action,
+                    &p_for_action,
+                );
+                p_for_action.show_toast("Etikett gelöscht");
+                refresh_open_mail_views(&p_for_action);
+            },
+        );
+    });
+
+    row
+}
+
+fn present_edit_label_dialog(
+    parent: &PreferencesDialog,
+    edit_target: Option<(usize, MailLabelDefinition)>,
+    state: Rc<RefCell<Vec<MailLabelDefinition>>>,
+    list: gtk::ListBox,
+    settings: Option<AppSettings>,
+) {
+    let is_edit = edit_target.is_some();
+    let title = if is_edit {
+        "Etikett bearbeiten"
+    } else {
+        "Neues Etikett hinzufügen"
+    };
+
+    let initial_name = edit_target
+        .as_ref()
+        .map(|(_, l)| l.name.clone())
+        .unwrap_or_default();
+    let initial_color = edit_target
+        .as_ref()
+        .map(|(_, l)| l.color.clone())
+        .unwrap_or_else(|| "#3465A4".to_string());
+    let initial_tag = edit_target
+        .as_ref()
+        .map(|(_, l)| l.tag.clone())
+        .unwrap_or_default();
+
+    let root_window = parent.root().and_then(|r| r.downcast::<gtk::Window>().ok());
+
+    let window = adw::Window::builder()
+        .title(title)
+        .modal(true)
+        .default_width(420)
+        .default_height(320)
+        .build();
+    if let Some(w) = root_window.as_ref() {
+        window.set_transient_for(Some(w));
+    }
+
+    let toolbar = adw::ToolbarView::new();
+    let header = adw::HeaderBar::new();
+
+    let cancel_btn = gtk::Button::builder().label("Abbrechen").build();
+    let save_btn = gtk::Button::builder()
+        .label(if is_edit { "Speichern" } else { "Hinzufügen" })
+        .css_classes(vec!["suggested-action"])
+        .sensitive(!initial_name.trim().is_empty())
+        .build();
+    header.pack_start(&cancel_btn);
+    header.pack_end(&save_btn);
+    toolbar.add_top_bar(&header);
+
+    let content_box = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(16)
+        .margin_start(16)
+        .margin_end(16)
+        .margin_top(16)
+        .margin_bottom(16)
+        .build();
+
+    let group = adw::PreferencesGroup::builder().build();
+
+    let name_entry = adw::EntryRow::builder()
+        .title("Name")
+        .text(&initial_name)
+        .build();
+    group.add(&name_entry);
+
+    let tag_entry = adw::EntryRow::builder()
+        .title("Tag (optional)")
+        .text(&initial_tag)
+        .build();
+    group.add(&tag_entry);
+
+    let color_row = adw::ActionRow::builder()
+        .title("Farbe")
+        .subtitle(&initial_color)
+        .build();
+    let color_dot = gtk::Label::builder()
+        .label("●")
+        .css_classes(vec!["title-2"])
+        .valign(gtk::Align::Center)
+        .margin_end(8)
+        .build();
+    color_dot.set_markup(&format!(
+        "<span foreground=\"{initial_color}\" font_size=\"x-large\">●</span>"
+    ));
+    color_row.add_prefix(&color_dot);
+
+    let color_dialog = gtk::ColorDialog::builder()
+        .title("Etikettenfarbe auswählen")
+        .build();
+    let color_button = gtk::ColorDialogButton::new(Some(color_dialog));
+    if let Ok(rgba) = gtk::gdk::RGBA::parse(&initial_color) {
+        color_button.set_rgba(&rgba);
+    }
+    color_button.set_valign(gtk::Align::Center);
+    color_row.add_suffix(&color_button);
+
+    let current_hex = Rc::new(RefCell::new(initial_color.clone()));
+    let hex_for_button = Rc::clone(&current_hex);
+    let color_dot_weak = color_dot.downgrade();
+    let color_row_weak = color_row.downgrade();
+    color_button.connect_rgba_notify(move |btn| {
+        let rgba = btn.rgba();
+        let r = (rgba.red() * 255.0).round() as u8;
+        let g = (rgba.green() * 255.0).round() as u8;
+        let b = (rgba.blue() * 255.0).round() as u8;
+        let hex = format!("#{r:02x}{g:02x}{b:02x}");
+        *hex_for_button.borrow_mut() = hex.clone();
+        if let Some(dot) = color_dot_weak.upgrade() {
+            dot.set_markup(&format!(
+                "<span foreground=\"{hex}\" font_size=\"x-large\">●</span>"
+            ));
+        }
+        if let Some(row) = color_row_weak.upgrade() {
+            row.set_subtitle(&hex);
+        }
+    });
+
+    group.add(&color_row);
+    content_box.append(&group);
+    toolbar.set_content(Some(&content_box));
+    window.set_content(Some(&toolbar));
+
+    let save_btn_for_name = save_btn.clone();
+    name_entry.connect_changed(move |entry| {
+        save_btn_for_name.set_sensitive(!entry.text().trim().is_empty());
+    });
+
+    let window_for_cancel = window.downgrade();
+    cancel_btn.connect_clicked(move |_| {
+        if let Some(w) = window_for_cancel.upgrade() {
+            w.close();
+        }
+    });
+
+    let window_for_save = window.downgrade();
+    let parent_weak = parent.downgrade();
+    save_btn.connect_clicked(move |_| {
+        let name = name_entry.text().trim().to_string();
+        if name.is_empty() {
+            return;
+        }
+        let tag_text = tag_entry.text().trim().to_string();
+        let tag = if tag_text.is_empty() {
+            None
+        } else {
+            Some(tag_text)
+        };
+        let color = current_hex.borrow().clone();
+
+        let new_def = MailLabelDefinition::new(name, color, tag);
+
+        let mut labels = state.borrow_mut();
+        if let Some((idx, _)) = edit_target {
+            if idx < labels.len() {
+                labels[idx] = new_def;
+            }
+        } else {
+            labels.push(new_def);
+        }
+        drop(labels);
+
+        if let Some(s) = settings.as_ref() {
+            s.set_mail_labels(&state.borrow());
+        }
+        if let Some(p) = parent_weak.upgrade() {
+            rebuild_mail_labels_list(&list, &state, &settings, &p);
+            p.show_toast(if is_edit {
+                "Etikett gespeichert"
+            } else {
+                "Etikett hinzugefügt"
+            });
+            refresh_open_mail_views(&p);
+        }
+        if let Some(w) = window_for_save.upgrade() {
+            w.close();
+        }
+    });
+
+    window.present();
+}
+
+fn build_mail_junk_group(settings: Option<AppSettings>) -> adw::PreferencesGroup {
+    let group = adw::PreferencesGroup::builder()
+        .title("Junk-Mail-Optionen")
+        .description("Automatische Erkennung und Behandlung unerwünschter Werbe- und Spam-E-Mails")
+        .build();
+
+    let row_check_incoming = adw::SwitchRow::builder()
+        .title("Eingehende E-Mails automatisch auf Junk untersuchen")
+        .subtitle("Prüft neu eingehende Nachrichten anhand des ausgewählten Spam-Filtermoduls")
+        .active(true)
+        .build();
+    if let Some(s) = settings.clone() {
+        row_check_incoming.set_active(s.junk_check_incoming());
+        row_check_incoming.connect_active_notify(move |row| {
+            s.set_junk_check_incoming(row.is_active());
+        });
+    }
+    group.add(&row_check_incoming);
+
+    let row_lookup_ab = adw::SwitchRow::builder()
+        .title("Absender in Adressbüchern nicht als Junk einstufen")
+        .subtitle("Nachrichten von bekannten Kontakten werden niemals als Spam markiert")
+        .active(false)
+        .build();
+    if let Some(s) = settings.clone() {
+        row_lookup_ab.set_active(s.junk_lookup_addressbook());
+        row_lookup_ab.connect_active_notify(move |row| {
+            s.set_junk_lookup_addressbook(row.is_active());
+        });
+    }
+    group.add(&row_lookup_ab);
+
+    let row_lookup_ab_local = adw::SwitchRow::builder()
+        .title("Nur lokale Adressbücher für die Positivliste nutzen")
+        .subtitle("Schließt externe LDAP- und GAL-Verzeichnisse von der Positivliste aus")
+        .active(false)
+        .build();
+    if let Some(s) = settings.clone() {
+        row_lookup_ab_local.set_active(s.junk_lookup_addressbook_local_only());
+        row_lookup_ab_local.connect_active_notify(move |row| {
+            s.set_junk_lookup_addressbook_local_only(row.is_active());
+        });
+    }
+    group.add(&row_lookup_ab_local);
+
+    let row_empty_on_exit = adw::SwitchRow::builder()
+        .title("Junk-Ordner beim Beenden der Anwendung leeren")
+        .subtitle("Löscht Nachrichten im Junk-Ordner automatisch beim Schließen")
+        .active(false)
+        .build();
+    if let Some(s) = settings.clone() {
+        row_empty_on_exit.set_active(s.junk_empty_on_exit());
+        row_empty_on_exit.connect_active_notify(move |row| {
+            s.set_junk_empty_on_exit(row.is_active());
+        });
+    }
+    group.add(&row_empty_on_exit);
+
+    let row_empty_days = adw::ComboRow::builder()
+        .title("Aufbewahrungsdauer im Junk-Ordner")
+        .subtitle(
+            "Legt fest, welches Mindestalter E-Mails haben müssen, bevor sie beim Beenden gelöscht werden",
+        )
+        .model(&gtk::StringList::new(&[
+            "Alle Nachrichten beim Beenden löschen",
+            "Nur Nachrichten älter als 1 Tag löschen",
+            "Nur Nachrichten älter als 7 Tage löschen",
+            "Nur Nachrichten älter als 14 Tage löschen",
+            "Nur Nachrichten älter als 30 Tage löschen",
+        ]))
+        .build();
+    if let Some(s) = settings.clone() {
+        let days = s.junk_empty_on_exit_days();
+        let idx = match days {
+            1 => 1,
+            7 => 2,
+            14 => 3,
+            30 => 4,
+            _ => 0,
+        };
+        row_empty_days.set_selected(idx);
+        row_empty_days.connect_selected_notify(move |row| {
+            let days = match row.selected() {
+                1 => 1,
+                2 => 7,
+                3 => 14,
+                4 => 30,
+                _ => 0,
+            };
+            s.set_junk_empty_on_exit_days(days);
+        });
+    }
+    group.add(&row_empty_days);
+
+    let row_plugin = adw::ComboRow::builder()
+        .title("Standard-Spam-Filter")
+        .subtitle("Wählt das primäre Spam-Prüfprogramm für lokale und entfernte Filter")
+        .model(&gtk::StringList::new(&["Bogofilter", "SpamAssassin"]))
+        .build();
+    if let Some(s) = settings.clone() {
+        let selected = if s.junk_default_plugin().eq_ignore_ascii_case("SpamAssassin") {
+            1
+        } else {
+            0
+        };
+        row_plugin.set_selected(selected);
+        row_plugin.connect_selected_notify(move |row| {
+            let plugin = if row.selected() == 1 {
+                "SpamAssassin"
+            } else {
+                "Bogofilter"
+            };
+            s.set_junk_default_plugin(plugin);
+        });
+    }
+    group.add(&row_plugin);
+
+    let expander_custom_header = adw::ExpanderRow::builder()
+        .title("Benutzerdefinierte Spam-Kopfzeilen")
+        .subtitle("Zusätzliche Erkennung über Server-Spam-Header (z. B. X-Spam-Flag: YES)")
+        .build();
+
+    let entry_header_name = adw::EntryRow::builder()
+        .title("Header-Feldname (z. B. X-Spam-Flag)")
+        .build();
+    let entry_header_value = adw::EntryRow::builder()
+        .title("Header-Wert (z. B. YES)")
+        .build();
+
+    if let Some(s) = settings.clone() {
+        entry_header_name.set_text(&s.junk_custom_header());
+        let s_name = s.clone();
+        entry_header_name.connect_changed(move |entry| {
+            s_name.set_junk_custom_header(&entry.text());
+        });
+
+        entry_header_value.set_text(&s.junk_custom_header_value());
+        let s_val = s.clone();
+        entry_header_value.connect_changed(move |entry| {
+            s_val.set_junk_custom_header_value(&entry.text());
+        });
+    }
+
+    expander_custom_header.add_row(&entry_header_name);
+    expander_custom_header.add_row(&entry_header_value);
+    group.add(&expander_custom_header);
+
+    group
+}
+
 fn selected_file_paths(model: &gio::ListModel) -> Vec<std::path::PathBuf> {
     (0..model.n_items())
         .filter_map(|index| {
@@ -5417,5 +6404,32 @@ mod tests {
             manual_filter_result_toast(&cancelled),
             "Lokaler Filterlauf abgebrochen: receiving from an empty and closed channel"
         );
+    }
+
+    #[test]
+    fn mail_reading_preferences_structure_and_citations_wired() {
+        let source = include_str!("preferences_dialog.rs");
+        assert!(source.contains("mail_image_loading_policy"));
+        assert!(source.contains("set_mail_image_loading_policy"));
+        assert!(source.contains("mail_mark_seen"));
+        assert!(source.contains("set_mail_mark_seen"));
+        assert!(source.contains("mail_mark_seen_timeout"));
+        assert!(source.contains("set_mail_mark_seen_timeout"));
+        assert!(source.contains("mail_caret_mode"));
+        assert!(source.contains("set_mail_caret_mode"));
+        assert!(source.contains("mail_magic_spacebar"));
+        assert!(source.contains("set_mail_magic_spacebar"));
+        assert!(source.contains("mail_show_real_date"));
+        assert!(source.contains("set_mail_show_real_date"));
+        assert!(source.contains("mail_headers_collapsed"));
+        assert!(source.contains("set_mail_headers_collapsed"));
+        assert!(source.contains("mail_citation_highlighting"));
+        assert!(source.contains("set_mail_citation_highlighting"));
+        assert!(source.contains("mail_citation_color_1"));
+        assert!(source.contains("mail_citation_color_2"));
+        assert!(source.contains("mail_citation_color_3"));
+        assert!(source.contains("mail_citation_color_4"));
+        assert!(source.contains("mail_citation_color_5"));
+        assert!(source.contains("Zitate &amp; Hervorhebung"));
     }
 }

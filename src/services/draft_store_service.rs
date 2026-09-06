@@ -52,6 +52,8 @@ pub struct DraftMessage {
     #[serde(default)]
     pub from: String,
     #[serde(default)]
+    pub reply_to: String,
+    #[serde(default)]
     pub source_uid: String,
     pub to: String,
     pub cc: String,
@@ -417,6 +419,7 @@ mod tests {
         let draft = DraftMessage {
             id: "draft-1".to_string(),
             from: String::new(),
+            reply_to: String::new(),
             source_uid: String::new(),
             to: "person@example.org".to_string(),
             cc: String::new(),
@@ -499,6 +502,7 @@ mod tests {
                 .save(DraftMessage {
                     id: id.to_string(),
                     from: String::new(),
+                    reply_to: String::new(),
                     source_uid: String::new(),
                     to: String::new(),
                     cc: String::new(),
@@ -586,6 +590,7 @@ mod tests {
         let draft = DraftMessage {
             id: "itip-reply-meeting-1".to_string(),
             from: "person@example.org".to_string(),
+            reply_to: String::new(),
             source_uid: "account-1".to_string(),
             to: "organizer@example.org".to_string(),
             cc: String::new(),
@@ -709,6 +714,7 @@ mod tests {
         DraftMessage {
             id: id.to_string(),
             from: "sender@example.org".to_string(),
+            reply_to: String::new(),
             source_uid: "source-1".to_string(),
             to: "recipient@example.org".to_string(),
             cc: String::new(),

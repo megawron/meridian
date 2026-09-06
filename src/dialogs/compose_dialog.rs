@@ -129,6 +129,10 @@ const COMPOSER_OPERATION_ACTIONS: &[&str] = &[
     "smime-sign",
     "smime-encrypt",
     "charset",
+    "view-from",
+    "view-reply-to",
+    "view-cc",
+    "view-bcc",
 ];
 
 mod imp {
@@ -139,11 +143,17 @@ mod imp {
         pub draft_id: RefCell<String>,
         pub persisted_draft: RefCell<Option<DraftMessage>>,
         pub local_draft_persisted: Cell<bool>,
+        pub entry_from_row: RefCell<Option<gtk::Widget>>,
         pub entry_to: RefCell<Option<gtk::Entry>>,
+        pub entry_reply_to: RefCell<Option<gtk::Entry>>,
         pub entry_cc: RefCell<Option<gtk::Entry>>,
         pub entry_bcc: RefCell<Option<gtk::Entry>>,
         pub entry_subject: RefCell<Option<gtk::Entry>>,
         pub combo_from: RefCell<Option<gtk::DropDown>>,
+        pub row_from_widgets: RefCell<Vec<gtk::Widget>>,
+        pub row_reply_to_widgets: RefCell<Vec<gtk::Widget>>,
+        pub row_cc_widgets: RefCell<Vec<gtk::Widget>>,
+        pub row_bcc_widgets: RefCell<Vec<gtk::Widget>>,
         pub source_uids: RefCell<Vec<String>>,
         pub(super) source_identities: RefCell<Vec<ComposeIdentity>>,
         pub requested_source_uid: RefCell<Option<String>>,
@@ -618,11 +628,23 @@ impl ComposeDialog {
         if let Some(entry) = dialog.imp().entry_to.borrow().as_ref() {
             entry.set_text(&draft.to);
         }
+        if let Some(entry) = dialog.imp().entry_reply_to.borrow().as_ref() {
+            entry.set_text(&draft.reply_to);
+        }
         if let Some(entry) = dialog.imp().entry_cc.borrow().as_ref() {
             entry.set_text(&draft.cc);
         }
         if let Some(entry) = dialog.imp().entry_bcc.borrow().as_ref() {
             entry.set_text(&draft.bcc);
+        }
+        if !draft.reply_to.trim().is_empty() {
+            dialog.set_row_reply_to_visible(true);
+        }
+        if !draft.cc.trim().is_empty() {
+            dialog.set_row_cc_visible(true);
+        }
+        if !draft.bcc.trim().is_empty() {
+            dialog.set_row_bcc_visible(true);
         }
         if let Some(entry) = dialog.imp().entry_subject.borrow().as_ref() {
             entry.set_text(&draft.subject);
@@ -904,15 +926,46 @@ impl ComposeDialog {
             .margin_bottom(8)
             .build();
 
+        let show_from = AppSettings::try_new()
+            .map(|settings| settings.composer_show_from())
+            .unwrap_or(true);
+        let show_reply_to = AppSettings::try_new()
+            .map(|settings| settings.composer_show_reply_to())
+            .unwrap_or(false);
+        let show_cc = AppSettings::try_new()
+            .map(|settings| settings.composer_show_cc())
+            .unwrap_or(true);
+        let show_bcc = AppSettings::try_new()
+            .map(|settings| settings.composer_show_bcc())
+            .unwrap_or(false);
+
         // From
         let lbl_from = gtk::Label::builder()
             .label("Von:")
             .css_classes(vec!["dim-label"])
             .halign(gtk::Align::End)
+            .visible(show_from)
             .build();
         let source_model = gtk::StringList::new(&["Absender werden geladen…"]);
         let combo_from = gtk::DropDown::new(Some(source_model.clone()), None::<&gtk::Expression>);
         combo_from.set_hexpand(true);
+        combo_from.set_visible(show_from);
+
+        // Reply-To
+        let btn_reply_to = gtk::Button::builder()
+            .label("Antwort an…")
+            .tooltip_text("Antwortadresse aus dem Adressbuch auswählen")
+            .css_classes(vec!["flat"])
+            .halign(gtk::Align::End)
+            .visible(show_reply_to)
+            .build();
+        let entry_reply_to = gtk::Entry::builder()
+            .placeholder_text("Antwortadresse (Reply-To)…")
+            .hexpand(true)
+            .build();
+        let directory_button_reply_to = recipient_directory_button();
+        let reply_to_field_widget = recipient_field(&entry_reply_to, &directory_button_reply_to);
+        reply_to_field_widget.set_visible(show_reply_to);
 
         // To (Evolution-compatible header button opening NameSelectorDialog)
         let btn_to = gtk::Button::builder()
@@ -926,13 +979,13 @@ impl ComposeDialog {
             .hexpand(true)
             .build();
 
-        // Cc/Bcc are visible from the beginning so recipients are never
-        // silently omitted from a locally restored draft.
+        // Cc/Bcc visibility defaults from AppSettings
         let btn_cc = gtk::Button::builder()
             .label("Cc…")
             .tooltip_text("Cc-Empfänger aus dem Adressbuch auswählen")
             .css_classes(vec!["flat"])
             .halign(gtk::Align::End)
+            .visible(show_cc)
             .build();
         let entry_cc = gtk::Entry::builder()
             .placeholder_text("Weitere Empfänger (Cc)…")
@@ -944,6 +997,7 @@ impl ComposeDialog {
             .tooltip_text("Bcc-Empfänger aus dem Adressbuch auswählen")
             .css_classes(vec!["flat"])
             .halign(gtk::Align::End)
+            .visible(show_bcc)
             .build();
         let entry_bcc = gtk::Entry::builder()
             .placeholder_text("Verdeckte Empfänger (Bcc)…")
@@ -953,6 +1007,11 @@ impl ComposeDialog {
         let directory_button_to = recipient_directory_button();
         let directory_button_cc = recipient_directory_button();
         let directory_button_bcc = recipient_directory_button();
+        let to_field_widget = recipient_field(&entry_to, &directory_button_to);
+        let cc_field_widget = recipient_field(&entry_cc, &directory_button_cc);
+        cc_field_widget.set_visible(show_cc);
+        let bcc_field_widget = recipient_field(&entry_bcc, &directory_button_bcc);
+        bcc_field_widget.set_visible(show_bcc);
 
         let wire_name_selector = |btn: &gtk::Button,
                                   dialog_weak: glib::WeakRef<ComposeDialog>,
@@ -1003,32 +1062,16 @@ impl ComposeDialog {
 
         form_grid.attach(&lbl_from, 0, 0, 1, 1);
         form_grid.attach(&combo_from, 1, 0, 1, 1);
-        form_grid.attach(&btn_to, 0, 1, 1, 1);
-        form_grid.attach(
-            &recipient_field(&entry_to, &directory_button_to),
-            1,
-            1,
-            1,
-            1,
-        );
-        form_grid.attach(&btn_cc, 0, 2, 1, 1);
-        form_grid.attach(
-            &recipient_field(&entry_cc, &directory_button_cc),
-            1,
-            2,
-            1,
-            1,
-        );
-        form_grid.attach(&btn_bcc, 0, 3, 1, 1);
-        form_grid.attach(
-            &recipient_field(&entry_bcc, &directory_button_bcc),
-            1,
-            3,
-            1,
-            1,
-        );
-        form_grid.attach(&lbl_subject, 0, 4, 1, 1);
-        form_grid.attach(&entry_subject, 1, 4, 1, 1);
+        form_grid.attach(&btn_reply_to, 0, 1, 1, 1);
+        form_grid.attach(&reply_to_field_widget, 1, 1, 1, 1);
+        form_grid.attach(&btn_to, 0, 2, 1, 1);
+        form_grid.attach(&to_field_widget, 1, 2, 1, 1);
+        form_grid.attach(&btn_cc, 0, 3, 1, 1);
+        form_grid.attach(&cc_field_widget, 1, 3, 1, 1);
+        form_grid.attach(&btn_bcc, 0, 4, 1, 1);
+        form_grid.attach(&bcc_field_widget, 1, 4, 1, 1);
+        form_grid.attach(&lbl_subject, 0, 5, 1, 1);
+        form_grid.attach(&entry_subject, 1, 5, 1, 1);
 
         content_box.append(&form_grid);
         content_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
@@ -1080,12 +1123,31 @@ impl ComposeDialog {
         content_box.append(&attachment_list);
 
         self.imp().entry_to.replace(Some(entry_to.clone()));
+        self.imp()
+            .entry_reply_to
+            .replace(Some(entry_reply_to.clone()));
         self.imp().entry_cc.replace(Some(entry_cc.clone()));
         self.imp().entry_bcc.replace(Some(entry_bcc.clone()));
         self.imp()
             .entry_subject
             .replace(Some(entry_subject.clone()));
         self.imp().combo_from.replace(Some(combo_from.clone()));
+        self.imp().row_from_widgets.replace(vec![
+            lbl_from.clone().upcast(),
+            combo_from.clone().upcast(),
+        ]);
+        self.imp().row_reply_to_widgets.replace(vec![
+            btn_reply_to.clone().upcast(),
+            reply_to_field_widget.clone().upcast(),
+        ]);
+        self.imp().row_cc_widgets.replace(vec![
+            btn_cc.clone().upcast(),
+            cc_field_widget.clone().upcast(),
+        ]);
+        self.imp().row_bcc_widgets.replace(vec![
+            btn_bcc.clone().upcast(),
+            bcc_field_widget.clone().upcast(),
+        ]);
         self.imp().html_editor.replace(Some(html_editor.clone()));
         self.imp()
             .plain_text_button
@@ -1110,8 +1172,11 @@ impl ComposeDialog {
             btn_save_snippet.clone().upcast(),
             attachment_list_widget,
             directory_button_to.clone().upcast(),
+            directory_button_reply_to.clone().upcast(),
             directory_button_cc.clone().upcast(),
             directory_button_bcc.clone().upcast(),
+            btn_reply_to.clone().upcast(),
+            entry_reply_to.clone().upcast(),
             entry_to.clone().upcast(),
             entry_cc.clone().upcast(),
             entry_bcc.clone().upcast(),
@@ -1172,7 +1237,13 @@ impl ComposeDialog {
             dialog.mark_changed();
         });
 
-        for entry in [&entry_to, &entry_cc, &entry_bcc, &entry_subject] {
+        for entry in [
+            &entry_to,
+            &entry_reply_to,
+            &entry_cc,
+            &entry_bcc,
+            &entry_subject,
+        ] {
             let dialog_weak = self.downgrade();
             entry.connect_changed(move |_| {
                 if let Some(dialog) = dialog_weak.upgrade() {
@@ -1195,6 +1266,12 @@ impl ComposeDialog {
         }
 
         setup_directory_recipient_search(
+            &entry_reply_to,
+            &directory_button_reply_to,
+            self.downgrade(),
+            combo_from.clone(),
+        );
+        setup_directory_recipient_search(
             &entry_to,
             &directory_button_to,
             self.downgrade(),
@@ -1213,6 +1290,11 @@ impl ComposeDialog {
             combo_from.clone(),
         );
 
+        setup_recipient_autocompletion(
+            &entry_reply_to,
+            &combo_from,
+            self.downgrade(),
+        );
         setup_recipient_autocompletion(
             &entry_to,
             &combo_from,
@@ -1602,7 +1684,7 @@ impl ComposeDialog {
                 suggestions_for_load.replace(suggestions);
             }
         });
-        for entry in [&entry_to, &entry_cc, &entry_bcc] {
+        for entry in [&entry_to, &entry_reply_to, &entry_cc, &entry_bcc] {
             setup_local_recipient_completion(
                 entry,
                 std::rc::Rc::clone(&local_recipient_suggestions),
@@ -1624,109 +1706,122 @@ impl ComposeDialog {
                 dialog.show_toast("Automatisches Speichern läuft noch; der Versand startet danach");
                 return;
             }
-            let Some((operation_id, cancel)) =
-                dialog.begin_operation(ComposeOperation::Sending)
-            else {
-                return;
-            };
-            dialog.set_operation_status(operation_id, "Nachricht wird gelesen…", true);
-
-            let identity = dialog.selected_identity(combo_from_for_send.selected());
-            let (pgp_sign, pgp_encrypt) = dialog.pgp_flags_for_message();
-            let request_read_receipt = dialog.request_read_receipt_for_message();
-            let priority = dialog.priority_for_message();
-            let charset = dialog
-                .imp()
-                .charset
-                .borrow()
-                .clone();
-            let to = entry_to_for_send.text().to_string();
-            let cc = entry_cc_for_send.text().to_string();
-            let bcc = entry_bcc_for_send.text().to_string();
-            let subject = entry_subject_for_send.text().to_string();
-            let attachments = dialog.imp().attachments.borrow().clone();
-            let calendar_method = dialog.imp().calendar_method.borrow().clone();
-            let calendar_component = dialog.imp().calendar_component.borrow().clone();
-            let pgp_key = dialog.pgp_key_for_message();
-            let smime_options = dialog.smime_options_for_message();
-            let draft_id = dialog.imp().draft_id.borrow().clone();
-            let expected_draft = dialog.imp().persisted_draft.borrow().clone();
+            let html_editor_for_send = html_editor_for_send.clone();
+            let entry_to_for_send = entry_to_for_send.clone();
+            let entry_cc_for_send = entry_cc_for_send.clone();
+            let entry_bcc_for_send = entry_bcc_for_send.clone();
+            let entry_subject_for_send = entry_subject_for_send.clone();
+            let combo_from_for_send = combo_from_for_send.clone();
             let dialog_weak = dialog.downgrade();
-            let cancel_for_worker = Arc::clone(&cancel);
-
-            html_editor_for_send.read_content(move |result| {
+            dialog.validate_and_confirm_send(move || {
                 let Some(dialog) = dialog_weak.upgrade() else {
                     return;
                 };
-                if !dialog.is_current_operation(operation_id) {
+                let Some((operation_id, cancel)) =
+                    dialog.begin_operation(ComposeOperation::Sending)
+                else {
                     return;
-                }
-                let content = match result {
-                    Ok(content) => content,
-                    Err(error) => {
-                        dialog.finish_operation(operation_id);
-                        dialog.show_toast(&format!(
-                            "Nachricht konnte nicht gelesen werden; Entwurf bleibt geöffnet: {error}"
-                        ));
+                };
+                dialog.set_operation_status(operation_id, "Nachricht wird gelesen…", true);
+
+                let identity = dialog.selected_identity(combo_from_for_send.selected());
+                let reply_to = dialog.effective_reply_to(&identity.reply_to);
+                let (pgp_sign, pgp_encrypt) = dialog.pgp_flags_for_message();
+                let request_read_receipt = dialog.request_read_receipt_for_message();
+                let priority = dialog.priority_for_message();
+                let charset = dialog
+                    .imp()
+                    .charset
+                    .borrow()
+                    .clone();
+                let to = entry_to_for_send.text().to_string();
+                let cc = entry_cc_for_send.text().to_string();
+                let bcc = entry_bcc_for_send.text().to_string();
+                let subject = entry_subject_for_send.text().to_string();
+                let attachments = dialog.imp().attachments.borrow().clone();
+                let calendar_method = dialog.imp().calendar_method.borrow().clone();
+                let calendar_component = dialog.imp().calendar_component.borrow().clone();
+                let pgp_key = dialog.pgp_key_for_message();
+                let smime_options = dialog.smime_options_for_message();
+                let draft_id = dialog.imp().draft_id.borrow().clone();
+                let expected_draft = dialog.imp().persisted_draft.borrow().clone();
+                let dialog_weak = dialog.downgrade();
+                let cancel_for_worker = Arc::clone(&cancel);
+
+                html_editor_for_send.read_content(move |result| {
+                    let Some(dialog) = dialog_weak.upgrade() else {
+                        return;
+                    };
+                    if !dialog.is_current_operation(operation_id) {
                         return;
                     }
-                };
-                if cancel.is_cancel_requested() {
-                    dialog.finish_operation(operation_id);
-                    dialog.show_toast("Versand abgebrochen; der Entwurf bleibt erhalten");
-                    return;
-                }
+                    let content = match result {
+                        Ok(content) => content,
+                        Err(error) => {
+                            dialog.finish_operation(operation_id);
+                            dialog.show_toast(&format!(
+                                "Nachricht konnte nicht gelesen werden; Entwurf bleibt geöffnet: {error}"
+                            ));
+                            return;
+                        }
+                    };
+                    if cancel.is_cancel_requested() {
+                        dialog.finish_operation(operation_id);
+                        dialog.show_toast("Versand abgebrochen; der Entwurf bleibt erhalten");
+                        return;
+                    }
 
-                let draft = DraftMessage {
-                    id: draft_id,
-                    from: identity.from.clone(),
-                    source_uid: identity.source_uid.clone(),
-                    to: to.clone(),
-                    cc: cc.clone(),
-                    bcc: bcc.clone(),
-                    subject: subject.clone(),
-                    html_body: content.body.clone(),
-                    plain_text: content.plain_text,
-                    updated_at: Utc::now().to_rfc3339(),
-                    attachments: attachments.clone(),
-                    calendar_method: calendar_method.clone(),
-                    calendar_component: calendar_component.clone(),
-                    pgp_sign,
-                    pgp_encrypt,
-                    pgp_key: pgp_key.clone(),
-                    smime_options: Some(DraftComposerOptions {
+                    let draft = DraftMessage {
+                        id: draft_id,
+                        from: identity.from.clone(),
+                        reply_to: reply_to.clone(),
+                        source_uid: identity.source_uid.clone(),
+                        to: to.clone(),
+                        cc: cc.clone(),
+                        bcc: bcc.clone(),
+                        subject: subject.clone(),
+                        html_body: content.body.clone(),
+                        plain_text: content.plain_text,
+                        updated_at: Utc::now().to_rfc3339(),
+                        attachments: attachments.clone(),
+                        calendar_method: calendar_method.clone(),
+                        calendar_component: calendar_component.clone(),
+                        pgp_sign,
+                        pgp_encrypt,
+                        pgp_key: pgp_key.clone(),
+                        smime_options: Some(DraftComposerOptions {
+                            request_read_receipt,
+                            priority,
+                            charset: charset.clone(),
+                            smime: smime_options.clone(),
+                        }),
+                    };
+                    let outgoing = OutgoingMessage {
+                        source_uid: identity.source_uid,
+                        from: identity.from,
+                        reply_to,
                         request_read_receipt,
+                        to,
+                        cc,
+                        bcc,
+                        subject,
+                        html_body: content.body,
+                        plain_text: content.plain_text,
                         priority,
-                        charset: charset.clone(),
-                        smime: smime_options.clone(),
-                    }),
-                };
-                let outgoing = OutgoingMessage {
-                    source_uid: identity.source_uid,
-                    from: identity.from,
-                    reply_to: identity.reply_to,
-                    request_read_receipt,
-                    to,
-                    cc,
-                    bcc,
-                    subject,
-                    html_body: content.body,
-                    plain_text: content.plain_text,
-                    priority,
-                    charset,
-                    attachments,
-                    calendar_method,
-                    calendar_component,
-                    pgp_sign,
-                    pgp_encrypt,
-                    pgp_key,
-                    smime_options,
-                };
-                dialog.set_operation_status(
-                    operation_id,
-                    "Entwurf wird gesichert und Nachricht wird vorbereitet…",
-                    true,
-                );
+                        charset,
+                        attachments,
+                        calendar_method,
+                        calendar_component,
+                        pgp_sign,
+                        pgp_encrypt,
+                        pgp_key,
+                        smime_options,
+                    };
+                    dialog.set_operation_status(
+                        operation_id,
+                        "Entwurf wird gesichert und Nachricht wird vorbereitet…",
+                        true,
+                    );
 
                 let (sender, receiver) = async_channel::bounded(4);
                 std::thread::spawn(move || {
@@ -1866,6 +1961,7 @@ impl ComposeDialog {
                 });
             });
         });
+    });
 
         let source_model_for_load = source_model.clone();
         let combo_from_for_load = combo_from.clone();
@@ -1999,7 +2095,7 @@ impl ComposeDialog {
                 let subject = entry_subject.text().to_string();
                 let identity = dialog.selected_identity(combo_from.selected());
                 let from = identity.from.clone();
-                let reply_to = identity.reply_to.clone();
+                let reply_to = dialog.effective_reply_to(&identity.reply_to);
                 let source_uid = identity.source_uid.clone();
                 let attachments = dialog.imp().attachments.borrow().clone();
                 let calendar_method = dialog.imp().calendar_method.borrow().clone();
@@ -2044,6 +2140,7 @@ impl ComposeDialog {
                     let draft = DraftMessage {
                         id: draft_id,
                         from: from.clone(),
+                        reply_to: reply_to.clone(),
                         source_uid: source_uid.clone(),
                         to: to.clone(),
                         cc: cc.clone(),
@@ -2362,6 +2459,114 @@ impl ComposeDialog {
         let sign_action = add_composer_toggle_action(&group, sign_action_name, btn_sign);
         let encrypt_action = add_composer_toggle_action(&group, encrypt_action_name, btn_encrypt);
 
+        let show_from = AppSettings::try_new()
+            .map(|s| s.composer_show_from())
+            .unwrap_or(true);
+        let action_view_from = gio::SimpleAction::new_stateful(
+            "view-from",
+            None,
+            &show_from.to_variant(),
+        );
+        let dialog_for_view_from = self.downgrade();
+        action_view_from.connect_activate(move |action, _| {
+            let Some(dialog) = dialog_for_view_from.upgrade() else {
+                return;
+            };
+            let current = action.state().and_then(|v| v.get::<bool>()).unwrap_or(true);
+            let new_state = !current;
+            action.set_state(&new_state.to_variant());
+            for widget in dialog.imp().row_from_widgets.borrow().iter() {
+                widget.set_visible(new_state);
+            }
+            if !dialog.imp().suppress_setting_persistence.get() {
+                if let Some(settings) = AppSettings::try_new() {
+                    settings.set_composer_show_from(new_state);
+                }
+            }
+        });
+        group.add_action(&action_view_from);
+
+        let show_reply_to = AppSettings::try_new()
+            .map(|s| s.composer_show_reply_to())
+            .unwrap_or(false);
+        let action_view_reply_to = gio::SimpleAction::new_stateful(
+            "view-reply-to",
+            None,
+            &show_reply_to.to_variant(),
+        );
+        let dialog_for_view_reply_to = self.downgrade();
+        action_view_reply_to.connect_activate(move |action, _| {
+            let Some(dialog) = dialog_for_view_reply_to.upgrade() else {
+                return;
+            };
+            let current = action.state().and_then(|v| v.get::<bool>()).unwrap_or(false);
+            let new_state = !current;
+            action.set_state(&new_state.to_variant());
+            for widget in dialog.imp().row_reply_to_widgets.borrow().iter() {
+                widget.set_visible(new_state);
+            }
+            if !dialog.imp().suppress_setting_persistence.get() {
+                if let Some(settings) = AppSettings::try_new() {
+                    settings.set_composer_show_reply_to(new_state);
+                }
+            }
+        });
+        group.add_action(&action_view_reply_to);
+
+        let show_cc = AppSettings::try_new()
+            .map(|s| s.composer_show_cc())
+            .unwrap_or(true);
+        let action_view_cc = gio::SimpleAction::new_stateful(
+            "view-cc",
+            None,
+            &show_cc.to_variant(),
+        );
+        let dialog_for_view_cc = self.downgrade();
+        action_view_cc.connect_activate(move |action, _| {
+            let Some(dialog) = dialog_for_view_cc.upgrade() else {
+                return;
+            };
+            let current = action.state().and_then(|v| v.get::<bool>()).unwrap_or(true);
+            let new_state = !current;
+            action.set_state(&new_state.to_variant());
+            for widget in dialog.imp().row_cc_widgets.borrow().iter() {
+                widget.set_visible(new_state);
+            }
+            if !dialog.imp().suppress_setting_persistence.get() {
+                if let Some(settings) = AppSettings::try_new() {
+                    settings.set_composer_show_cc(new_state);
+                }
+            }
+        });
+        group.add_action(&action_view_cc);
+
+        let show_bcc = AppSettings::try_new()
+            .map(|s| s.composer_show_bcc())
+            .unwrap_or(false);
+        let action_view_bcc = gio::SimpleAction::new_stateful(
+            "view-bcc",
+            None,
+            &show_bcc.to_variant(),
+        );
+        let dialog_for_view_bcc = self.downgrade();
+        action_view_bcc.connect_activate(move |action, _| {
+            let Some(dialog) = dialog_for_view_bcc.upgrade() else {
+                return;
+            };
+            let current = action.state().and_then(|v| v.get::<bool>()).unwrap_or(false);
+            let new_state = !current;
+            action.set_state(&new_state.to_variant());
+            for widget in dialog.imp().row_bcc_widgets.borrow().iter() {
+                widget.set_visible(new_state);
+            }
+            if !dialog.imp().suppress_setting_persistence.get() {
+                if let Some(settings) = AppSettings::try_new() {
+                    settings.set_composer_show_bcc(new_state);
+                }
+            }
+        });
+        group.add_action(&action_view_bcc);
+
         let charset = self.imp().charset.borrow().clone();
         let charset = mail_composer_service::normalize_charset(&charset).unwrap_or(charset);
         let action_charset = gio::SimpleAction::new_stateful(
@@ -2405,6 +2610,12 @@ impl ComposeDialog {
         file_menu.append(Some("Neue leere Nachricht"), Some("compose.new-message"));
         file_menu.append(Some("Schließen"), Some("compose.close"));
 
+        let view_menu = gio::Menu::new();
+        view_menu.append(Some("Absenderfeld (Von)"), Some("compose.view-from"));
+        view_menu.append(Some("Antwortadresse (Reply-To)"), Some("compose.view-reply-to"));
+        view_menu.append(Some("Kopiefeld (Cc)"), Some("compose.view-cc"));
+        view_menu.append(Some("Blindkopiefeld (Bcc)"), Some("compose.view-bcc"));
+
         let insert_menu = gio::Menu::new();
         insert_menu.append(Some("Anlage…"), Some("compose.attach"));
 
@@ -2443,6 +2654,7 @@ impl ComposeDialog {
 
         let menu = gio::Menu::new();
         menu.append_submenu(Some("Datei"), &file_menu);
+        menu.append_submenu(Some("Ansicht"), &view_menu);
         menu.append_submenu(Some("Einfügen"), &insert_menu);
         menu.append_submenu(Some("Optionen"), &options_menu);
 
@@ -2478,6 +2690,10 @@ impl ComposeDialog {
             action_priority,
             sign_action,
             encrypt_action,
+            action_view_from,
+            action_view_reply_to,
+            action_view_cc,
+            action_view_bcc,
         );
     }
 
@@ -2586,13 +2802,14 @@ impl ComposeDialog {
             .cloned()
             .ok_or_else(|| "Kein Absender ausgewählt".to_string())?;
         let identity = self.selected_identity(combo_from.selected());
+        let reply_to = self.effective_reply_to(&identity.reply_to);
         let (pgp_sign, pgp_encrypt) = self.pgp_flags_for_message();
         let charset = self.imp().charset.borrow().clone();
         let charset = mail_composer_service::normalize_charset(&charset)?;
         Ok(OutgoingMessage {
             source_uid: identity.source_uid,
             from: identity.from,
-            reply_to: identity.reply_to,
+            reply_to,
             request_read_receipt: self.request_read_receipt_for_message(),
             to: entry_text(&self.imp().entry_to),
             cc: entry_text(&self.imp().entry_cc),
@@ -2918,7 +3135,13 @@ impl ComposeDialog {
     }
 
     fn update_sender_dependent_controls(&self, selected: u32) {
-        let sender_available = !self.selected_identity(selected).from.trim().is_empty();
+        let identity = self.selected_identity(selected);
+        let sender_available = !identity.from.trim().is_empty();
+        if let Some(entry_reply_to) = self.imp().entry_reply_to.borrow().as_ref() {
+            if entry_reply_to.text().trim().is_empty() && !identity.reply_to.trim().is_empty() {
+                entry_reply_to.set_text(&identity.reply_to);
+            }
+        }
         if !sender_available
             && let Some(button) = self.imp().request_read_receipt_button.borrow().as_ref()
             && button.is_active()
@@ -2930,6 +3153,154 @@ impl ComposeDialog {
             button.set_sensitive(sender_available && idle);
         }
         self.set_action_enabled("request-read-receipt", sender_available && idle);
+    }
+
+    fn effective_reply_to(&self, identity_reply_to: &str) -> String {
+        let explicit = self
+            .imp()
+            .entry_reply_to
+            .borrow()
+            .as_ref()
+            .map(|entry| entry.text().trim().to_string())
+            .unwrap_or_default();
+        if explicit.is_empty() {
+            identity_reply_to.to_string()
+        } else {
+            explicit
+        }
+    }
+
+    pub fn set_row_reply_to_visible(&self, visible: bool) {
+        for widget in self.imp().row_reply_to_widgets.borrow().iter() {
+            widget.set_visible(visible);
+        }
+        if let Some(action) = self.composer_action("view-reply-to") {
+            action.set_state(&visible.to_variant());
+        }
+    }
+
+    pub fn set_row_cc_visible(&self, visible: bool) {
+        for widget in self.imp().row_cc_widgets.borrow().iter() {
+            widget.set_visible(visible);
+        }
+        if let Some(action) = self.composer_action("view-cc") {
+            action.set_state(&visible.to_variant());
+        }
+    }
+
+    pub fn set_row_bcc_visible(&self, visible: bool) {
+        for widget in self.imp().row_bcc_widgets.borrow().iter() {
+            widget.set_visible(visible);
+        }
+        if let Some(action) = self.composer_action("view-bcc") {
+            action.set_state(&visible.to_variant());
+        }
+    }
+
+    pub fn set_row_from_visible(&self, visible: bool) {
+        for widget in self.imp().row_from_widgets.borrow().iter() {
+            widget.set_visible(visible);
+        }
+        if let Some(action) = self.composer_action("view-from") {
+            action.set_state(&visible.to_variant());
+        }
+    }
+
+    fn composer_action(&self, name: &str) -> Option<gio::SimpleAction> {
+        self.imp()
+            .composer_action_group
+            .borrow()
+            .as_ref()
+            .and_then(|group| group.lookup_action(name))
+            .and_then(|action| action.downcast::<gio::SimpleAction>().ok())
+    }
+
+    fn validate_and_confirm_send<F: FnOnce() + 'static>(&self, on_confirmed: F) {
+        let settings = AppSettings::try_new();
+        let prompt_empty_subject = settings
+            .as_ref()
+            .map(|s| s.composer_prompt_empty_subject())
+            .unwrap_or(true);
+        let prompt_only_bcc = settings
+            .as_ref()
+            .map(|s| s.composer_prompt_only_bcc())
+            .unwrap_or(true);
+
+        let subject_empty = self
+            .imp()
+            .entry_subject
+            .borrow()
+            .as_ref()
+            .map(|e| e.text().trim().is_empty())
+            .unwrap_or(false);
+
+        let to_empty = self
+            .imp()
+            .entry_to
+            .borrow()
+            .as_ref()
+            .map(|e| e.text().trim().is_empty())
+            .unwrap_or(true);
+        let cc_empty = self
+            .imp()
+            .entry_cc
+            .borrow()
+            .as_ref()
+            .map(|e| e.text().trim().is_empty())
+            .unwrap_or(true);
+        let bcc_has_recipients = self
+            .imp()
+            .entry_bcc
+            .borrow()
+            .as_ref()
+            .map(|e| !e.text().trim().is_empty())
+            .unwrap_or(false);
+        let only_bcc = to_empty && cc_empty && bcc_has_recipients;
+
+        let dialog_weak = self.downgrade();
+        let on_confirmed = Rc::new(RefCell::new(Some(on_confirmed)));
+        let on_confirmed_bcc = Rc::clone(&on_confirmed);
+        let check_bcc_step = move || {
+            let Some(dialog) = dialog_weak.upgrade() else {
+                return;
+            };
+            if prompt_only_bcc && only_bcc {
+                let alert = adw::AlertDialog::new(
+                    Some("Nur verdeckte Empfänger (Bcc)"),
+                    Some(
+                        "Die Nachricht enthält ausschließlich verdeckte Empfänger (Bcc). Trotzdem senden?",
+                    ),
+                );
+                alert.add_responses(&[("cancel", "Abbrechen"), ("send", "Senden")]);
+                alert.set_response_appearance("send", adw::ResponseAppearance::Suggested);
+                let on_confirmed_action = Rc::clone(&on_confirmed_bcc);
+                alert.choose(&dialog, None::<&gio::Cancellable>, move |response| {
+                    if response == "send" {
+                        if let Some(action) = on_confirmed_action.borrow_mut().take() {
+                            action();
+                        }
+                    }
+                });
+            } else if let Some(action) = on_confirmed_bcc.borrow_mut().take() {
+                action();
+            }
+        };
+
+        if prompt_empty_subject && subject_empty {
+            let alert = adw::AlertDialog::new(
+                Some("Kein Betreff"),
+                Some("Die Nachricht hat keinen Betreff. Trotzdem senden?"),
+            );
+            alert.add_responses(&[("cancel", "Abbrechen"), ("send", "Trotzdem senden")]);
+            alert.set_response_appearance("send", adw::ResponseAppearance::Suggested);
+            alert.choose(self, None::<&gio::Cancellable>, move |response| {
+                if response == "send" {
+                    check_bcc_step();
+                }
+            });
+        } else {
+            check_bcc_step();
+        }
     }
 
     fn priority_for_message(&self) -> bool {
@@ -3166,6 +3537,7 @@ impl ComposeDialog {
         let subject = entry_subject.text().to_string();
         let identity = self.selected_identity(combo_from.selected());
         let from = identity.from;
+        let reply_to = self.effective_reply_to(&identity.reply_to);
         let source_uid = identity.source_uid;
         let draft_id = self.imp().draft_id.borrow().clone();
         let attachments = self.imp().attachments.borrow().clone();
@@ -3215,6 +3587,7 @@ impl ComposeDialog {
             let draft = DraftMessage {
                 id: draft_id,
                 from,
+                reply_to,
                 source_uid,
                 to,
                 cc,
@@ -3765,9 +4138,21 @@ fn reply_body_html_with_style(
     } else {
         style
     };
-    let prefix = signature_prefix_html();
+    let top_signature = AppSettings::try_new()
+        .map(|s| s.composer_top_signature())
+        .unwrap_or(false);
+    let (prefix, suffix) = if top_signature {
+        (signature_prefix_html(), String::new())
+    } else {
+        ("<p><br></p>".to_string(), signature_body_html())
+    };
+
     if style == "none" {
-        return prefix;
+        return if top_signature {
+            prefix
+        } else {
+            format!("{prefix}{suffix}")
+        };
     }
 
     let attribution = if sender.trim().is_empty() {
@@ -3796,17 +4181,25 @@ fn reply_body_html_with_style(
             format!("Ursprüngliche Nachricht:<br>{}", headers.join("<br>"))
         };
         return if quoted.trim().is_empty() {
-            prefix
+            if top_signature {
+                prefix
+            } else {
+                format!("{prefix}{suffix}")
+            }
         } else {
-            format!("{prefix}<p>{header_block}</p><pre>{quoted}</pre>")
+            format!("{prefix}<p>{header_block}</p><pre>{quoted}</pre>{suffix}")
         };
     }
 
     let quoted = format_quoted_body(&quoted, style);
     if quoted.is_empty() {
-        prefix
+        if top_signature {
+            prefix
+        } else {
+            format!("{prefix}{suffix}")
+        }
     } else {
-        format!("{prefix}<p>{attribution}:</p>{quoted}")
+        format!("{prefix}<p>{attribution}:</p>{quoted}{suffix}")
     }
 }
 
@@ -3818,6 +4211,20 @@ fn forward_body_html_with_style(
     original_html: &str,
     quote_style: &str,
 ) -> String {
+    let quote_style = if quote_style == "default" {
+        default_forward_style()
+    } else {
+        quote_style
+    };
+    let top_signature = AppSettings::try_new()
+        .map(|s| s.composer_top_signature())
+        .unwrap_or(false);
+    let (prefix, suffix) = if top_signature {
+        (signature_prefix_html(), String::new())
+    } else {
+        ("<p><br></p>".to_string(), signature_body_html())
+    };
+
     let mut headers = Vec::new();
     if !sender.trim().is_empty() {
         headers.push(format!("Von: {}", html_escape(sender.trim())));
@@ -3845,11 +4252,14 @@ fn forward_body_html_with_style(
     } else {
         format_quoted_body(&quoted, quote_style)
     };
-    let prefix = signature_prefix_html();
     if quoted.is_empty() {
-        prefix
+        if top_signature {
+            prefix
+        } else {
+            format!("{prefix}{suffix}")
+        }
     } else {
-        format!("{prefix}<p>{header_block}</p>{quoted}")
+        format!("{prefix}<p>{header_block}</p>{quoted}{suffix}")
     }
 }
 
@@ -3869,12 +4279,24 @@ fn format_quoted_body(quoted: &str, style: &str) -> String {
     }
 }
 
+fn signature_delimiter_html() -> &'static str {
+    let outline = AppSettings::try_new()
+        .map(|s| s.composer_signature_outline())
+        .unwrap_or(true);
+    if outline {
+        "--<br>"
+    } else {
+        ""
+    }
+}
+
 fn signature_body_html() -> String {
     let signature = default_signature_html();
     if signature.is_empty() {
         String::new()
     } else {
-        format!("<p><br></p><p>--<br>{signature}</p>")
+        let delimiter = signature_delimiter_html();
+        format!("<p><br></p><p>{delimiter}{signature}</p>")
     }
 }
 
@@ -3883,7 +4305,8 @@ fn signature_prefix_html() -> String {
     if signature.is_empty() {
         "<p><br></p>".to_string()
     } else {
-        format!("<p>--<br>{signature}</p><p><br></p>")
+        let delimiter = signature_delimiter_html();
+        format!("<p>{delimiter}{signature}</p><p><br></p>")
     }
 }
 
@@ -3914,10 +4337,27 @@ fn default_quote_style() -> &'static str {
     if !settings.quote_original() {
         return "none";
     }
-    if settings.quote_style() == "prefix" {
-        "prefix"
-    } else {
-        "blockquote"
+    match settings.composer_reply_style().as_str() {
+        "do-not-quote" => "none",
+        "inline" => "inline",
+        _ => {
+            if settings.quote_style() == "prefix" {
+                "prefix"
+            } else {
+                "blockquote"
+            }
+        }
+    }
+}
+
+fn default_forward_style() -> &'static str {
+    let Some(settings) = AppSettings::try_new() else {
+        return "attached";
+    };
+    match settings.composer_forward_style().as_str() {
+        "inline" => "inline",
+        "quoted" => "prefix",
+        _ => "attached",
     }
 }
 
@@ -5052,6 +5492,7 @@ mod tests {
         let draft = DraftMessage {
             id: "draft-test".to_string(),
             from: String::new(),
+            reply_to: String::new(),
             source_uid: String::new(),
             to: String::new(),
             cc: String::new(),
@@ -5321,5 +5762,58 @@ mod tests {
             reconciled_composer_default_account("external-eds", &[disabled]),
             "external-eds"
         );
+    }
+
+    #[test]
+    fn composer_view_actions_and_reply_to_support() {
+        assert!(COMPOSER_OPERATION_ACTIONS.contains(&"view-from"));
+        assert!(COMPOSER_OPERATION_ACTIONS.contains(&"view-reply-to"));
+        assert!(COMPOSER_OPERATION_ACTIONS.contains(&"view-cc"));
+        assert!(COMPOSER_OPERATION_ACTIONS.contains(&"view-bcc"));
+
+        let draft = DraftMessage {
+            id: "draft-reply-to".to_string(),
+            from: "Sender <sender@example.com>".to_string(),
+            reply_to: "custom-reply@example.com".to_string(),
+            source_uid: "source-1".to_string(),
+            to: "recipient@example.com".to_string(),
+            cc: String::new(),
+            bcc: String::new(),
+            subject: "Test Subject".to_string(),
+            html_body: "<p>Hello</p>".to_string(),
+            plain_text: false,
+            updated_at: "2026-09-06T12:00:00Z".to_string(),
+            attachments: Vec::new(),
+            calendar_method: None,
+            calendar_component: None,
+            pgp_sign: false,
+            pgp_encrypt: false,
+            pgp_key: String::new(),
+            smime_options: None,
+        };
+        assert_eq!(draft.reply_to, "custom-reply@example.com");
+
+        let outgoing = OutgoingMessage {
+            source_uid: "source-1".to_string(),
+            from: "Sender <sender@example.com>".to_string(),
+            reply_to: "custom-reply@example.com".to_string(),
+            request_read_receipt: false,
+            to: "recipient@example.com".to_string(),
+            cc: String::new(),
+            bcc: String::new(),
+            subject: "Test Subject".to_string(),
+            html_body: "<p>Hello</p>".to_string(),
+            plain_text: false,
+            priority: false,
+            charset: "UTF-8".to_string(),
+            attachments: Vec::new(),
+            calendar_method: None,
+            calendar_component: None,
+            pgp_sign: false,
+            pgp_encrypt: false,
+            pgp_key: String::new(),
+            smime_options: None,
+        };
+        assert_eq!(outgoing.reply_to, "custom-reply@example.com");
     }
 }
