@@ -52,6 +52,7 @@ mod imp {
         #[cfg(target_os = "linux")]
         pub renderer_stack: RefCell<Option<gtk::Stack>>,
         pub fallback_view: RefCell<Option<gtk::TextView>>,
+        pub fallback_scroll: RefCell<Option<gtk::ScrolledWindow>>,
         #[cfg(target_os = "linux")]
         pub renderer_error_label: RefCell<Option<gtk::Label>>,
         pub current_message_id: RefCell<Option<String>>,
@@ -84,6 +85,7 @@ mod imp {
         pub settings: RefCell<Option<AppSettings>>,
         pub remote_content_store: RefCell<Option<RemoteContentStore>>,
         pub remote_content_allowed: RefCell<HashSet<String>>,
+        pub current_sender: RefCell<Option<String>>,
     }
 
     #[glib::object_subclass]
@@ -132,6 +134,26 @@ impl MailViewer {
         glib::Object::builder().build()
     }
 
+    pub fn set_current_sender(&self, sender: Option<&str>) {
+        self.imp()
+            .current_sender
+            .replace(sender.map(str::to_string));
+    }
+
+    pub fn set_caret_mode(&self, enabled: bool) {
+        #[cfg(target_os = "linux")]
+        {
+            if let Some(webview) = self.imp().webview.borrow().as_ref() {
+                if let Some(settings) = webkit6::prelude::WebViewExt::settings(webview) {
+                    settings.set_enable_caret_browsing(enabled);
+                }
+            }
+        }
+        if let Some(fallback) = self.imp().fallback_view.borrow().as_ref() {
+            fallback.set_cursor_visible(enabled);
+        }
+    }
+
     fn build_ui(&self) {
         tracing::debug!("MailViewer construction started");
         let box_container = gtk::Box::builder()
@@ -172,9 +194,12 @@ impl MailViewer {
             .build();
         box_container.append(&junk_banner);
 
+        let caret_mode = AppSettings::try_new()
+            .map(|s| s.mail_caret_mode())
+            .unwrap_or(false);
         let fallback_view = gtk::TextView::builder()
             .editable(false)
-            .cursor_visible(false)
+            .cursor_visible(caret_mode)
             .wrap_mode(gtk::WrapMode::WordChar)
             .css_classes(vec!["mail-plain-view"])
             .top_margin(16)
@@ -194,6 +219,9 @@ impl MailViewer {
             .hexpand(true)
             .vexpand(true)
             .build();
+        self.imp()
+            .fallback_scroll
+            .replace(Some(fallback_scroll.clone()));
 
         #[cfg(target_os = "linux")]
         {
@@ -272,10 +300,17 @@ impl MailViewer {
         if let Some(settings) = AppSettings::try_new() {
             for key in [
                 "auto-load-remote-images",
+                "mail-image-loading-policy",
                 "render-html",
                 "force-dark-mode",
                 "mail-font-family",
                 "mail-font-size",
+                "mail-citation-highlighting",
+                "mail-citation-color-1",
+                "mail-citation-color-2",
+                "mail-citation-color-3",
+                "mail-citation-color-4",
+                "mail-citation-color-5",
             ] {
                 let viewer_weak = self.downgrade();
                 settings.connect_changed(Some(key), move |_, _| {
@@ -284,6 +319,13 @@ impl MailViewer {
                     }
                 });
             }
+            let viewer_weak_caret = self.downgrade();
+            settings.connect_changed(Some("mail-caret-mode"), move |settings, _| {
+                if let Some(viewer) = viewer_weak_caret.upgrade() {
+                    let caret = settings.boolean("mail-caret-mode");
+                    viewer.set_caret_mode(caret);
+                }
+            });
             self.imp().settings.replace(Some(settings));
         }
 
@@ -338,6 +380,32 @@ impl MailViewer {
         );
     }
 
+    /// Scroll the visible mail viewer viewport up or down by one page.
+    /// Returns true if scrolling occurred, or false if already at the boundary.
+    pub fn scroll_page(&self, down: bool) -> bool {
+        let scroll = self.imp().fallback_scroll.borrow().clone();
+        if let Some(scroll) = scroll {
+            let vadj = scroll.vadjustment();
+            let value = vadj.value();
+            let page_size = vadj.page_size();
+            let upper = vadj.upper();
+            let lower = vadj.lower();
+            let max_scroll = (upper - page_size).max(lower);
+            if down {
+                if value < max_scroll - 2.0 {
+                    let next = (value + page_size * 0.9).min(max_scroll);
+                    vadj.set_value(next);
+                    return true;
+                }
+            } else if value > lower + 2.0 {
+                let next = (value - page_size * 0.9).max(lower);
+                vadj.set_value(next);
+                return true;
+            }
+        }
+        false
+    }
+
     /// Load a message and resolve inline CID images in the render worker.
     /// Attachment payloads are reference-counted, so rapid selection changes
     /// do not copy or Base64-encode large images on GTK's main context.
@@ -386,10 +454,17 @@ impl MailViewer {
             .current_fallback_text
             .replace(fallback_text.map(str::to_string));
         let settings = AppSettings::try_new();
-        let global_remote_images = settings
+        let image_policy = settings
             .as_ref()
-            .map(AppSettings::auto_load_remote_images)
-            .unwrap_or(false);
+            .map(AppSettings::mail_image_loading_policy)
+            .unwrap_or_else(|| "never".to_string());
+        let global_remote_images = image_policy == "always"
+            || settings
+                .as_ref()
+                .map(AppSettings::auto_load_remote_images)
+                .unwrap_or(false);
+        let contacts_remote_images = (image_policy == "sometimes" || image_policy == "contacts")
+            && sender_in_contacts(self.imp().current_sender.borrow().as_deref());
         let per_message_remote_images = message_id
             .map(|message_id| {
                 self.imp()
@@ -399,6 +474,7 @@ impl MailViewer {
             })
             .unwrap_or(false);
         let remote_images_allowed = global_remote_images
+            || contacts_remote_images
             || per_message_remote_images
             || self.imp().remote_images_allowed_for_current.get();
         let render_html = settings
@@ -413,6 +489,20 @@ impl MailViewer {
             .as_ref()
             .map(AppSettings::mail_font_size)
             .unwrap_or(16);
+        let citation_highlighting = settings
+            .as_ref()
+            .map(AppSettings::mail_citation_highlighting)
+            .unwrap_or(true);
+        let citation_colors = settings
+            .as_ref()
+            .map(AppSettings::mail_citation_colors)
+            .unwrap_or_else(|| [
+                "#729FCF".to_string(),
+                "#AD7FA8".to_string(),
+                "#8AE234".to_string(),
+                "#FCAF3E".to_string(),
+                "#E9B96E".to_string(),
+            ]);
         let render_key = RenderRequestKey {
             source_generation: self.imp().source_generation.get(),
             render_html,
@@ -423,6 +513,8 @@ impl MailViewer {
                 .unwrap_or(false),
             mail_font_family: safe_css_font_family(&mail_font_family),
             mail_font_size: safe_mail_font_size(mail_font_size),
+            citation_highlighting,
+            citation_colors,
         };
         if self.imp().last_render_key.borrow().as_ref() == Some(&render_key) {
             return;
@@ -1309,6 +1401,10 @@ impl MailViewer {
         let web_context = webkit6::WebContext::new();
         let settings = webkit6::Settings::new();
         settings.set_enable_javascript(false);
+        let caret_mode = AppSettings::try_new()
+            .map(|s| s.mail_caret_mode())
+            .unwrap_or(false);
+        settings.set_enable_caret_browsing(caret_mode);
         // Remote sources are controlled by the sanitized document and CSP,
         // not by WebKit's global image switch. The latter must stay enabled
         // so trusted inline `data:`, `cid:` and `blob:` images remain visible.
@@ -1561,6 +1657,8 @@ struct RenderRequestKey {
     force_dark_mode: bool,
     mail_font_family: String,
     mail_font_size: u32,
+    citation_highlighting: bool,
+    citation_colors: [String; 5],
 }
 
 impl RenderRequestKey {
@@ -1646,6 +1744,8 @@ fn execute_render_job(job: RenderJob, current_generation: &AtomicU64) -> Option<
                 key.force_dark_mode,
                 &key.mail_font_family,
                 key.mail_font_size,
+                key.citation_highlighting,
+                &key.citation_colors,
             );
             (render_plan, document.into())
         }
@@ -1657,6 +1757,8 @@ fn execute_render_job(job: RenderJob, current_generation: &AtomicU64) -> Option<
                 key.force_dark_mode,
                 &key.mail_font_family,
                 key.mail_font_size,
+                key.citation_highlighting,
+                &key.citation_colors,
             );
             (plan, document.into())
         }
@@ -1927,6 +2029,69 @@ fn is_internal_renderer_uri(value: &str) -> bool {
         || value.starts_with("about:blank#evolution-mail-render-")
 }
 
+fn sender_in_contacts(sender: Option<&str>) -> bool {
+    let Some(sender) = sender else {
+        return false;
+    };
+    let sender = sender.trim().to_lowercase();
+    if sender.is_empty() {
+        return false;
+    }
+    let email_to_check = if let Some(start) = sender.find('<')
+        && let Some(end) = sender.rfind('>')
+        && start < end
+    {
+        sender[start + 1..end].trim()
+    } else {
+        sender.as_str()
+    };
+
+    let contacts =
+        crate::services::contact_store_service::ContactStoreService::new().load_contacts();
+    contacts.into_iter().any(|record| {
+        let contact = record.contact;
+        if contact.email.trim().eq_ignore_ascii_case(email_to_check) {
+            return true;
+        }
+        contact
+            .emails
+            .iter()
+            .any(|e| e.trim().eq_ignore_ascii_case(email_to_check))
+    })
+}
+
+fn safe_css_color(color: &str, fallback: &str) -> String {
+    let trimmed = color.trim();
+    if (trimmed.starts_with('#')
+        && (trimmed.len() == 4 || trimmed.len() == 7 || trimmed.len() == 9))
+        && trimmed[1..].chars().all(|c| c.is_ascii_hexdigit())
+    {
+        trimmed.to_string()
+    } else {
+        fallback.to_string()
+    }
+}
+
+fn blockquote_citation_css(citation_highlighting: bool, citation_colors: &[String; 5]) -> String {
+    if !citation_highlighting {
+        return "blockquote { border-left: 3px solid #888a85; margin: 8px 0; padding-left: 12px; opacity: 0.85; }".to_string();
+    }
+    let defaults = ["#729fcf", "#ad7fa8", "#8ae234", "#fcaf3e", "#e9b96e"];
+    let c0 = safe_css_color(&citation_colors[0], defaults[0]);
+    let c1 = safe_css_color(&citation_colors[1], defaults[1]);
+    let c2 = safe_css_color(&citation_colors[2], defaults[2]);
+    let c3 = safe_css_color(&citation_colors[3], defaults[3]);
+    let c4 = safe_css_color(&citation_colors[4], defaults[4]);
+
+    format!(
+        "blockquote {{ border-left: 3px solid {c0}; margin: 8px 0; padding-left: 12px; opacity: 0.85; }} \
+         blockquote blockquote {{ border-left: 3px solid {c1}; }} \
+         blockquote blockquote blockquote {{ border-left: 3px solid {c2}; }} \
+         blockquote blockquote blockquote blockquote {{ border-left: 3px solid {c3}; }} \
+         blockquote blockquote blockquote blockquote blockquote {{ border-left: 3px solid {c4}; }}"
+    )
+}
+
 fn compose_sanitized_mail_document(
     sanitized: &str,
     render_html: bool,
@@ -1934,6 +2099,8 @@ fn compose_sanitized_mail_document(
     force_dark_mode: bool,
     mail_font_family: &str,
     mail_font_size: u32,
+    citation_highlighting: bool,
+    citation_colors: &[String; 5],
 ) -> String {
     let mail_font_family = safe_css_font_family(mail_font_family);
     let mail_font_size = safe_mail_font_size(mail_font_size);
@@ -1977,9 +2144,11 @@ fn compose_sanitized_mail_document(
     let body_css = body_css
         .replace("__FONT_FAMILY__", &mail_font_family)
         .replace("__FONT_SIZE__", &mail_font_size.to_string());
+    let citation_css = blockquote_citation_css(citation_highlighting, citation_colors);
     let style_tag = format!(
-        "<style>{} pre {{ white-space: pre-wrap; word-wrap: break-word; font-family: inherit; font-size: inherit; margin: 0; }} blockquote {{ border-left: 3px solid #888a85; margin: 8px 0; padding-left: 12px; opacity: 0.85; }} a {{ color: #3584e4; text-decoration: underline; }} table {{ max-width: 100%; border-collapse: collapse; }} img {{ max-width: 100%; height: auto; }} body > table, body > div, body > center, body > article, body > main {{ max-width: 100%; }}{}</style>",
+        "<style>{} pre {{ white-space: pre-wrap; word-wrap: break-word; font-family: inherit; font-size: inherit; margin: 0; }} {} a {{ color: #3584e4; text-decoration: underline; }} table {{ max-width: 100%; border-collapse: collapse; }} img {{ max-width: 100%; height: auto; }} body > table, body > div, body > center, body > article, body > main {{ max-width: 100%; }}{}</style>",
         body_css,
+        citation_css,
         if remote_images_allowed {
             ""
         } else {
@@ -2296,6 +2465,16 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::AtomicU64;
 
+    fn test_citation_colors() -> [String; 5] {
+        [
+            "#729fcf".to_string(),
+            "#ad7fa8".to_string(),
+            "#8ae234".to_string(),
+            "#fcaf3e".to_string(),
+            "#e9b96e".to_string(),
+        ]
+    }
+
     fn render_key(source_generation: u64) -> RenderRequestKey {
         RenderRequestKey {
             source_generation,
@@ -2304,6 +2483,8 @@ mod tests {
             force_dark_mode: false,
             mail_font_family: "system-ui, sans-serif".to_string(),
             mail_font_size: 16,
+            citation_highlighting: true,
+            citation_colors: test_citation_colors(),
         }
     }
 
@@ -2484,6 +2665,8 @@ mod tests {
             false,
             "system-ui, sans-serif",
             14,
+            true,
+            &test_citation_colors(),
         );
 
         assert!(document.contains("img-src data: cid: blob:"));
@@ -2640,6 +2823,8 @@ mod tests {
             false,
             "system-ui, sans-serif",
             14,
+            true,
+            &test_citation_colors(),
         );
         let baseline = document
             .find("color-scheme: light")
@@ -2652,6 +2837,70 @@ mod tests {
         assert!(
             document.contains("img[src^=\"http://\"], img[src^=\"https://\"], img[src^=\"//\"]")
         );
+    }
+
+    #[test]
+    fn citation_highlighting_css_generates_nested_levels() {
+        let colors = [
+            "#111111".to_string(),
+            "#222222".to_string(),
+            "#333333".to_string(),
+            "#444444".to_string(),
+            "#555555".to_string(),
+        ];
+        let doc_with_highlighting = compose_sanitized_mail_document(
+            "<blockquote>Level 1<blockquote>Level 2</blockquote></blockquote>",
+            true,
+            false,
+            false,
+            "sans-serif",
+            14,
+            true,
+            &colors,
+        );
+        assert!(doc_with_highlighting.contains("blockquote { border-left: 3px solid #111111;"));
+        assert!(doc_with_highlighting.contains("blockquote blockquote { border-left: 3px solid #222222; }"));
+        assert!(doc_with_highlighting.contains("blockquote blockquote blockquote { border-left: 3px solid #333333; }"));
+        assert!(doc_with_highlighting.contains("blockquote blockquote blockquote blockquote { border-left: 3px solid #444444; }"));
+        assert!(doc_with_highlighting.contains("blockquote blockquote blockquote blockquote blockquote { border-left: 3px solid #555555; }"));
+
+        let doc_without_highlighting = compose_sanitized_mail_document(
+            "<blockquote>Level 1</blockquote>",
+            true,
+            false,
+            false,
+            "sans-serif",
+            14,
+            false,
+            &colors,
+        );
+        assert!(doc_without_highlighting.contains("blockquote { border-left: 3px solid #888a85;"));
+        assert!(!doc_without_highlighting.contains("blockquote blockquote {"));
+    }
+
+    #[test]
+    fn citation_highlighting_handles_invalid_colors_safely() {
+        let invalid_colors = [
+            "red; color: blue".to_string(),
+            "".to_string(),
+            "invalid".to_string(),
+            "#GGG".to_string(),
+            "#1234567890".to_string(),
+        ];
+        let doc = compose_sanitized_mail_document(
+            "<blockquote>Level 1</blockquote>",
+            true,
+            false,
+            false,
+            "sans-serif",
+            14,
+            true,
+            &invalid_colors,
+        );
+        // Fallbacks to upstream defaults
+        assert!(doc.contains("blockquote { border-left: 3px solid #729fcf;"));
+        assert!(doc.contains("blockquote blockquote { border-left: 3px solid #ad7fa8; }"));
+        assert!(!doc.contains("red; color: blue"));
     }
 }
 

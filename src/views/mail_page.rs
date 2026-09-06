@@ -861,6 +861,10 @@ fn format_message_date(value: &str) -> String {
         return value.to_string();
     };
     let settings = AppSettings::try_new();
+    let show_real_date = settings
+        .as_ref()
+        .map(|s| s.mail_show_real_date())
+        .unwrap_or(true);
     let date_format = settings
         .as_ref()
         .map(|settings| settings.date_format())
@@ -869,6 +873,23 @@ fn format_message_date(value: &str) -> String {
         .as_ref()
         .map(|settings| settings.time_format())
         .unwrap_or_else(|| "24h".to_string());
+
+    let time_pattern = match time_format.as_str() {
+        "12h" => "%I:%M %p",
+        _ => "%H:%M",
+    };
+
+    if !show_real_date {
+        let local_now = chrono::Local::now();
+        let message_local = parsed.with_timezone(&chrono::Local);
+        let days_diff = (local_now.date_naive() - message_local.date_naive()).num_days();
+        if days_diff == 0 {
+            return message_local.format(time_pattern).to_string();
+        } else if days_diff == 1 {
+            return format!("Gestern {}", message_local.format(time_pattern));
+        }
+    }
+
     let pattern = match (date_format.as_str(), time_format.as_str()) {
         ("iso", "12h") => "%Y-%m-%d %I:%M %p",
         ("iso", _) => "%Y-%m-%d %H:%M",
@@ -948,6 +969,48 @@ fn set_image_icon_with_fallback(image: &gtk::Image, preferred: &str, fallback: &
 
 fn set_button_icon_with_fallback(button: &gtk::Button, preferred: &str, fallback: &str) {
     button.set_icon_name(&themed_icon_name(button, preferred, fallback));
+}
+
+fn format_labels_for_display_with_defs(
+    labels: &[String],
+    configured: &[crate::services::settings_service::MailLabelDefinition],
+) -> String {
+    if labels.is_empty() {
+        return String::new();
+    }
+    let display_names: Vec<String> = labels
+        .iter()
+        .map(|lbl| {
+            let trimmed = lbl.trim();
+            if let Some(def) = configured.iter().find(|d| {
+                d.tag.eq_ignore_ascii_case(trimmed)
+                    || d.name.eq_ignore_ascii_case(trimmed)
+                    || d.display_name().eq_ignore_ascii_case(trimmed)
+            }) {
+                def.display_name()
+            } else if let Some(stripped) = trimmed
+                .strip_prefix("$Label")
+                .or_else(|| trimmed.strip_prefix("$label"))
+            {
+                stripped.replace('_', " ").trim().to_string()
+            } else {
+                trimmed.replace('_', " ")
+            }
+        })
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    display_names.join(", ")
+}
+
+fn format_labels_for_display(labels: &[String]) -> String {
+    if labels.is_empty() {
+        return String::new();
+    }
+    let configured = AppSettings::try_new()
+        .map(|s| s.mail_labels())
+        .unwrap_or_else(crate::services::settings_service::MailLabelDefinition::default_labels);
+    format_labels_for_display_with_defs(labels, &configured)
 }
 
 fn mail_row_expander_visible(thread_size: usize, depth: u32) -> bool {
@@ -1605,6 +1668,9 @@ fn configured_normal_header_fields(
     fields: &[(String, String)],
     configuration: &[(String, bool)],
 ) -> Vec<(String, String)> {
+    let collapsed = AppSettings::try_new()
+        .map(|s| s.mail_headers_collapsed())
+        .unwrap_or(false);
     let mut selected = Vec::new();
     let from_value = fields
         .iter()
@@ -1613,6 +1679,13 @@ fn configured_normal_header_fields(
 
     for (configured_name, enabled) in configuration {
         if !enabled {
+            continue;
+        }
+        if collapsed
+            && !configured_name.eq_ignore_ascii_case("from")
+            && !configured_name.eq_ignore_ascii_case("date")
+            && !configured_name.eq_ignore_ascii_case("subject")
+        {
             continue;
         }
         let configured_name = configured_name.trim();
@@ -3800,6 +3873,20 @@ impl MailPage {
             let page_weak_for_normal_headers = self.downgrade();
             settings.connect_changed(Some("mail-normal-headers"), move |_, _| {
                 if let Some(page) = page_weak_for_normal_headers.upgrade() {
+                    let selected = page.selected_message();
+                    page.refresh_normal_headers_for_message(selected.as_ref());
+                }
+            });
+            let page_weak_for_header_collapse = self.downgrade();
+            settings.connect_changed(Some("mail-headers-collapsed"), move |_, _| {
+                if let Some(page) = page_weak_for_header_collapse.upgrade() {
+                    let selected = page.selected_message();
+                    page.refresh_normal_headers_for_message(selected.as_ref());
+                }
+            });
+            let page_weak_for_real_date = self.downgrade();
+            settings.connect_changed(Some("mail-show-real-date"), move |_, _| {
+                if let Some(page) = page_weak_for_real_date.upgrade() {
                     let selected = page.selected_message();
                     page.refresh_normal_headers_for_message(selected.as_ref());
                 }
@@ -7545,61 +7632,143 @@ impl MailPage {
             return;
         };
 
+        let configured_labels = AppSettings::try_new()
+            .map(|s| s.mail_labels())
+            .unwrap_or_else(crate::services::settings_service::MailLabelDefinition::default_labels);
+
+        let current_labels = if has_batch {
+            Vec::new()
+        } else {
+            self.selected_message()
+                .map(|m| m.labels())
+                .unwrap_or_default()
+        };
+
         let dialog = adw::Window::builder()
             .title(if has_batch {
-                "Label für Auswahl"
+                "Labels für Auswahl"
             } else {
-                "Label der Nachricht"
+                "Labels der Nachricht"
             })
             .modal(true)
-            .default_width(420)
-            .default_height(180)
+            .default_width(440)
+            .default_height(380)
             .build();
         dialog.set_transient_for(Some(&parent));
 
         let toolbar = adw::ToolbarView::new();
         let header = adw::HeaderBar::new();
-        let set_button = gtk::Button::builder()
-            .label("Setzen")
+        let close_button = gtk::Button::builder()
+            .label("Schließen")
             .css_classes(vec!["suggested-action"])
             .build();
-        let remove_button = gtk::Button::builder()
-            .label("Entfernen")
-            .css_classes(vec!["destructive-action"])
-            .build();
-        header.pack_start(&remove_button);
-        header.pack_end(&set_button);
+        header.pack_end(&close_button);
         toolbar.add_top_bar(&header);
 
         let content = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
-            .spacing(8)
-            .margin_start(20)
-            .margin_end(20)
-            .margin_top(20)
-            .margin_bottom(20)
+            .spacing(12)
+            .margin_start(16)
+            .margin_end(16)
+            .margin_top(16)
+            .margin_bottom(16)
             .build();
+
+        let group_labels = adw::PreferencesGroup::builder()
+            .title("Standard- und benutzerdefinierte Labels")
+            .build();
+
+        for label_def in configured_labels {
+            let tag = label_def.tag.clone();
+            let name = label_def.name.clone();
+            let display_name = label_def.display_name();
+            let color = label_def.color.clone();
+
+            let is_active = current_labels
+                .iter()
+                .any(|l| l.eq_ignore_ascii_case(&tag) || l.eq_ignore_ascii_case(&name));
+
+            let row = adw::SwitchRow::builder()
+                .title(&display_name)
+                .subtitle(format!("Tag: {tag} · {color}"))
+                .active(is_active)
+                .build();
+
+            let color_dot = gtk::Label::builder()
+                .label("●")
+                .css_classes(vec!["title-2"])
+                .valign(gtk::Align::Center)
+                .margin_end(8)
+                .build();
+            color_dot.set_markup(&format!(
+                "<span foreground=\"{color}\" font_size=\"x-large\">●</span>"
+            ));
+            row.add_prefix(&color_dot);
+
+            let page_weak = self.downgrade();
+            let tag_for_toggle = tag.clone();
+            row.connect_active_notify(move |switch_row| {
+                let Some(page) = page_weak.upgrade() else {
+                    return;
+                };
+                let active = switch_row.is_active();
+                let result = if has_batch {
+                    page.set_batch_label(&tag_for_toggle, active)
+                        .map(|count| format!("{count} Nachricht(en) aktualisiert"))
+                } else {
+                    page.set_selected_label(&tag_for_toggle, active)
+                        .map(|_| {
+                            if active {
+                                "Label hinzugefügt".to_string()
+                            } else {
+                                "Label entfernt".to_string()
+                            }
+                        })
+                };
+                match result {
+                    Ok(msg) => page.show_toast(&msg),
+                    Err(error) => {
+                        page.show_toast(&format!("Label konnte nicht aktualisiert werden: {error}"))
+                    }
+                }
+            });
+
+            group_labels.add(&row);
+        }
+
+        let group_custom = adw::PreferencesGroup::builder()
+            .title("Freies Label")
+            .description("Eigenen Tag oder Labelnamen angeben")
+            .build();
+
         let label_entry = adw::EntryRow::builder()
-            .title("Label")
+            .title("Freitext-Label")
             .show_apply_button(false)
             .build();
-        label_entry.set_tooltip_text(Some("z. B. Arbeit oder Rechnungen"));
-        content.append(&label_entry);
-        content.append(
-            &gtk::Label::builder()
-                .label("Labels werden bei lokalen/importierten Nachrichten im app-eigenen Sidecar gespeichert.")
-                .wrap(true)
-                .halign(gtk::Align::Start)
-                .css_classes(vec!["caption", "dim-label"])
-                .build(),
-        );
-        toolbar.set_content(Some(&content));
-        dialog.set_content(Some(&toolbar));
+        group_custom.add(&label_entry);
+
+        let custom_actions = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(8)
+            .margin_top(4)
+            .build();
+
+        let set_custom_btn = gtk::Button::builder()
+            .label("Label setzen")
+            .css_classes(vec!["suggested-action", "flat"])
+            .build();
+        let remove_custom_btn = gtk::Button::builder()
+            .label("Label entfernen")
+            .css_classes(vec!["destructive-action", "flat"])
+            .build();
+
+        custom_actions.append(&set_custom_btn);
+        custom_actions.append(&remove_custom_btn);
+        group_custom.add(&custom_actions);
 
         let page_for_set = self.downgrade();
-        let dialog_for_set = dialog.clone();
         let entry_for_set = label_entry.clone();
-        set_button.connect_clicked(move |_| {
+        set_custom_btn.connect_clicked(move |_| {
             let label = entry_for_set.text().trim().to_string();
             let Some(page) = page_for_set.upgrade() else {
                 return;
@@ -7616,10 +7785,7 @@ impl MailPage {
                     .map(|_| "Label gesetzt".to_string())
             };
             match result {
-                Ok(message) => {
-                    page.show_toast(&message);
-                    dialog_for_set.close();
-                }
+                Ok(message) => page.show_toast(&message),
                 Err(error) => {
                     page.show_toast(&format!("Label konnte nicht gesetzt werden: {error}"))
                 }
@@ -7627,9 +7793,8 @@ impl MailPage {
         });
 
         let page_for_remove = self.downgrade();
-        let dialog_for_remove = dialog.clone();
         let entry_for_remove = label_entry.clone();
-        remove_button.connect_clicked(move |_| {
+        remove_custom_btn.connect_clicked(move |_| {
             let label = entry_for_remove.text().trim().to_string();
             let Some(page) = page_for_remove.upgrade() else {
                 return;
@@ -7646,13 +7811,28 @@ impl MailPage {
                     .map(|_| "Label entfernt".to_string())
             };
             match result {
-                Ok(message) => {
-                    page.show_toast(&message);
-                    dialog_for_remove.close();
-                }
+                Ok(message) => page.show_toast(&message),
                 Err(error) => {
                     page.show_toast(&format!("Label konnte nicht entfernt werden: {error}"))
                 }
+            }
+        });
+
+        content.append(&group_labels);
+        content.append(&group_custom);
+
+        let scrolled = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .child(&content)
+            .build();
+        toolbar.set_content(Some(&scrolled));
+        dialog.set_content(Some(&toolbar));
+
+        let dialog_weak = dialog.downgrade();
+        close_button.connect_clicked(move |_| {
+            if let Some(d) = dialog_weak.upgrade() {
+                d.close();
             }
         });
 
@@ -12744,7 +12924,10 @@ impl MailPage {
                 let mut subject_text = msg.subject();
                 let labels = msg.labels();
                 if show_labels && !labels.is_empty() {
-                    subject_text.push_str(&format!("  ·  [{}]", labels.join(", ")));
+                    let display_labels = format_labels_for_display(&labels);
+                    if !display_labels.is_empty() {
+                        subject_text.push_str(&format!("  ·  [{display_labels}]"));
+                    }
                 }
                 subject.set_label(&subject_text);
                 if msg.is_unread() {
@@ -12786,7 +12969,10 @@ impl MailPage {
                     let mut subject_text = msg.subject();
                     let labels = msg.labels();
                     if show_labels && !labels.is_empty() {
-                        subject_text.push_str(&format!("  ·  [{}]", labels.join(", ")));
+                        let display_labels = format_labels_for_display(&labels);
+                        if !display_labels.is_empty() {
+                            subject_text.push_str(&format!("  ·  [{display_labels}]"));
+                        }
                     }
                     subject.set_label(&subject_text);
                 }
@@ -14462,11 +14648,11 @@ impl MailPage {
                     let settings = AppSettings::try_new();
                     let mark_read_on_selection = settings
                         .as_ref()
-                        .map(|s| s.mark_read_on_selection())
+                        .map(|s| s.mail_mark_seen())
                         .unwrap_or(true);
                     let timeout_ms = settings
                         .as_ref()
-                        .map(|s| s.mark_read_timeout())
+                        .map(|s| s.mail_mark_seen_timeout())
                         .unwrap_or(1500);
 
                     if was_unread && mark_read_on_selection {
@@ -14651,6 +14837,7 @@ impl MailPage {
                         attachment_bar.remove(&child);
                     }
                     attachment_bar.set_visible(false);
+                    mail_viewer.set_current_sender(None);
                     mail_viewer.set_trash_banner_visible(false);
                     mail_viewer.set_junk_banner_visible(false);
                     mail_viewer.load_html_for_message(None, "", None);
@@ -14730,6 +14917,8 @@ impl MailPage {
             .collect::<Vec<_>>();
         let html_body = message.html_body();
         let preview = message.preview_snippet();
+        let sender = sender_header(message);
+        mail_viewer.set_current_sender(Some(&sender));
         mail_viewer.load_message_content_with_fallback(
             Some(&message.id()),
             &html_body,
@@ -15088,6 +15277,35 @@ impl MailPage {
         imp.root_box.append(&unified_toolbar);
         imp.root_box.append(&imp.outer_paned);
         imp.root_box.set_parent(&*self.imp().obj());
+
+        let space_controller = gtk::EventControllerKey::new();
+        let page_weak_for_space = self.downgrade();
+        space_controller.connect_key_pressed(move |_, keyval, _, state| {
+            if keyval == gtk::gdk::Key::space {
+                let magic_spacebar = AppSettings::try_new()
+                    .map(|s| s.mail_magic_spacebar())
+                    .unwrap_or(true);
+                if magic_spacebar {
+                    let is_shift = state.contains(gtk::gdk::ModifierType::SHIFT_MASK);
+                    if let Some(page) = page_weak_for_space.upgrade() {
+                        let viewer = page.imp().mail_viewer.borrow().clone();
+                        if let Some(viewer) = viewer {
+                            let scrolled = viewer.scroll_page(!is_shift);
+                            if !scrolled {
+                                if is_shift {
+                                    page.select_previous_message();
+                                } else if !page.select_relative_unread_message(true) {
+                                    page.select_next_message();
+                                }
+                            }
+                            return glib::Propagation::Stop;
+                        }
+                    }
+                }
+            }
+            glib::Propagation::Proceed
+        });
+        self.add_controller(space_controller);
     }
 
     fn load_initial_data(&self, source_store: &gio::ListStore, source_state: &gtk::Label) {
@@ -17809,6 +18027,7 @@ fn save_itip_reply_draft(
     let draft = DraftMessage {
         id: draft_id.clone(),
         from: profile.email.clone(),
+        reply_to: profile.reply_to.clone(),
         source_uid: profile.id.clone(),
         to: organizer_mailbox,
         cc: String::new(),
@@ -21210,5 +21429,47 @@ mod tests {
         let wide_order = crate::services::settings_service::mail_list_profile_column_order("wide");
         assert!(!mail_list_uses_wide_messages("custom", &messages_order));
         assert!(mail_list_uses_wide_messages("custom", &wide_order));
+    }
+
+    #[test]
+    fn mail_labels_display_formatting_matches_configured_and_fallback() {
+        use crate::services::settings_service::MailLabelDefinition;
+
+        let defs = vec![
+            MailLabelDefinition::new("_Wichtig", "#EF2929", Some("$Labelimportant".to_string())),
+            MailLabelDefinition::new("_Dienstlich", "#F57900", Some("$Labelwork".to_string())),
+            MailLabelDefinition::new("Projekt _X", "#729FCF", Some("$Labelprojekt_x".to_string())),
+        ];
+
+        // Known tags should format as display names without mnemonics
+        let labels = vec!["$Labelimportant".to_string(), "$Labelwork".to_string()];
+        assert_eq!(
+            format_labels_for_display_with_defs(&labels, &defs),
+            "Wichtig, Dienstlich"
+        );
+
+        // Case insensitivity
+        let labels_ci = vec!["$labelIMPORTANT".to_string(), "$LabelWork".to_string()];
+        assert_eq!(
+            format_labels_for_display_with_defs(&labels_ci, &defs),
+            "Wichtig, Dienstlich"
+        );
+
+        // Custom configured tag
+        let custom_labels = vec!["$Labelprojekt_x".to_string()];
+        assert_eq!(
+            format_labels_for_display_with_defs(&custom_labels, &defs),
+            "Projekt X"
+        );
+
+        // Fallback for unconfigured tags
+        let unconfigured = vec!["$LabelUrgent_Task".to_string(), "invoice_2026".to_string()];
+        assert_eq!(
+            format_labels_for_display_with_defs(&unconfigured, &defs),
+            "Urgent Task, invoice 2026"
+        );
+
+        // Empty case
+        assert_eq!(format_labels_for_display_with_defs(&[], &defs), "");
     }
 }

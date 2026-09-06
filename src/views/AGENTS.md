@@ -122,6 +122,17 @@ accessibility helpers, and view-local GTK state.
 - Mail HTML always passes through the shared sanitizer and document-composition
   path. Remote resources are denied per message by default; CID/data content,
   base URIs, fallback text, loading, and errors must remain explicit.
+- Mail reading and viewer policies in `MailViewer` and `MailPage` enforce:
+  1. Remote image loading policy (`mail-image-loading-policy`: `never`, `sometimes`/`contacts`,
+     `always`), with `sometimes` checking the sender address against known contacts.
+  2. Automatic mark-as-read (`mail-mark-seen`) with configurable delay (`mail-mark-seen-timeout`),
+     cancelled immediately on selection change.
+  3. Caret navigation (`mail-caret-mode`, F7) controlling WebKit caret browsing and TextView cursor.
+  4. Magic Spacebar (`mail-magic-spacebar`) paging down the viewport and advancing to the next unread
+     message at the end (Shift+Space scrolling up or jumping to previous message).
+  5. Nested citation quote highlighting (`mail-citation-highlighting`) applying 5 configurable CSS
+     level colors (`mail-citation-color-1..5`) with sanitized hex fallbacks.
+  6. Header view compression (`mail-headers-collapsed`) and timestamp formatting (`mail-show-real-date`).
 - The iTIP meeting invitation banner (`ItipBanner`) renders between the message
   header and the mail body when an iCalendar/iTIP part or attachment is present,
   matching upstream Evolution's `itip-view.c`. It exposes the meeting summary,
@@ -319,6 +330,9 @@ accessibility helpers, and view-local GTK state.
   GObject instances across that worker boundary.
 - Live settings changes must update the already visible page, not only the
   next page construction.
+- Mail labels in the message list render user-friendly display names from configured
+  `mail-labels` definitions. The label editor modal (`present_label_editor`) provides
+  fast 1-click toggling for configured colored labels as well as custom free-text labels.
 - Mail-list headers and rows use the same stable column IDs and the same
   normalized order. Messages/Wide/profile changes may rebuild realized list
   cells, but must not reload providers, filters, paging state or selection.
@@ -347,15 +361,20 @@ accessibility helpers, and view-local GTK state.
   `SourcePropertiesDialog` for display name, color, and default status) and
   "Gruppen verwalten…" (opening `ManageGroupsDialog`). Sidebar lists display only
   items from visible groups (`visible_sources()`).
-- Calendar Day, Week, and Work-Week views render a continuous 30-minute interval
+- Calendar Day, Week, and Work-Week views render a continuous interval
   time grid (`render_continuous_time_grid`) matching upstream Evolution and Lookout:
-  a fixed left time gutter (`calendar-time-gutter`) with hour labels, sticky column
+  configurable time division (`calendar-time-divisions`: 5, 10, 15, 30, 60 minutes;
+  default 30), a primary left time gutter (`calendar-time-gutter`) with hour labels,
+  an optional secondary timezone gutter column (`calendar-second-zone`, `.calendar-time-gutter-secondary`,
+  `.secondary-tz-header`, `.secondary-tz-label`) showing live converted times, sticky column
   day headers with today accentuation, dedicated all-day event rows, distinct
-  background styling for business hours vs off-hours, solid 1px hour divisions and
-  dashed half-hour divisions, compact event chips (`calendar-grid-event`) with left
-  color bar and drag-and-drop support, and double-click event creation across all
-  empty time slots. Month view uses a seamless border table grid (`calendar-month-grid`,
-  `calendar-month-cell`) without isolated cards or rounded gaps.
+  background styling for business hours vs off-hours, solid 1px hour divisions,
+  dashed half-hour divisions, and dotted fine sub-divisions, compact event chips
+  (`calendar-grid-event`) with left color bar and drag-and-drop support, and double-click
+  event creation across all empty time slots. Month view uses a seamless border table grid
+  (`calendar-month-grid`, `calendar-month-cell`) without isolated cards or rounded gaps,
+  supports weekend compression styling (`calendar-compress-weekend`, `.weekend.compressed`),
+  and configurable week-by-week scrolling navigation (`calendar-month-scroll-by-week`).
 
 
 ## Work Guidance

@@ -297,7 +297,17 @@ impl CalendarViewState {
         self.selected_range = Some(CalendarDateRange::single(date));
     }
 
+    #[allow(dead_code)]
     pub(crate) fn navigate(&mut self, direction: i32, first_weekday: Weekday) {
+        self.navigate_step(direction, first_weekday, false);
+    }
+
+    pub(crate) fn navigate_step(
+        &mut self,
+        direction: i32,
+        first_weekday: Weekday,
+        scroll_month_by_week: bool,
+    ) {
         if self.view == CalendarView::List {
             return;
         }
@@ -315,7 +325,15 @@ impl CalendarViewState {
                 .start
                 .checked_add_signed(Duration::days(direction * 7))
                 .expect("week navigation overflow"),
-            CalendarView::Month => shift_month(self.anchor_date, direction as i32),
+            CalendarView::Month => {
+                if scroll_month_by_week {
+                    self.anchor_date
+                        .checked_add_signed(Duration::days(direction * 7))
+                        .expect("week navigation overflow")
+                } else {
+                    shift_month(self.anchor_date, direction as i32)
+                }
+            }
             CalendarView::Agenda => self
                 .visible_range
                 .start
@@ -3768,10 +3786,11 @@ impl CalendarPage {
         if *self.imp().current_view.borrow() == CalendarView::List {
             return;
         }
-        self.imp()
-            .view_state
-            .borrow_mut()
-            .navigate(direction, configured_first_weekday());
+        self.imp().view_state.borrow_mut().navigate_step(
+            direction,
+            configured_first_weekday(),
+            configured_month_scroll_by_week(),
+        );
         *self.imp().current_date.borrow_mut() = self.imp().view_state.borrow().anchor_date;
         self.sync_mini_calendar();
     }
@@ -4145,8 +4164,23 @@ impl CalendarPage {
         };
         let events_by_date = self.events_by_date(visible_range);
 
-        // 48 slots: 24 hours * 2 slots per hour (30 min intervals)
-        const SLOT_COUNT: usize = 48;
+        let interval_minutes = configured_time_divisions();
+        let slots_per_hour = (60 / interval_minutes) as usize;
+        let slot_count = 24 * slots_per_hour;
+        let slot_height = match interval_minutes {
+            60 => 36,
+            30 => 24,
+            15 => 18,
+            10 => 14,
+            5 => 12,
+            _ => 24,
+        };
+
+        let second_zone_name = configured_second_zone();
+        let second_tz = timezone_from_name(&second_zone_name);
+        let has_second_zone = second_tz.is_some();
+        let day_column_offset = if has_second_zone { 2 } else { 1 };
+        let use_12h = AppSettings::try_new().is_some_and(|s| s.time_format() == "12h");
 
         let grid = gtk::Grid::builder()
             .column_spacing(0)
@@ -4164,6 +4198,18 @@ impl CalendarPage {
             .width_request(58)
             .build();
         grid.attach(&time_header, 0, 0, 1, 1);
+
+        if has_second_zone {
+            let sec_header_text = secondary_timezone_header_label(&second_zone_name);
+            let sec_header = gtk::Label::builder()
+                .label(&sec_header_text)
+                .css_classes(vec!["calendar-grid-header-cell", "secondary-tz-header"])
+                .halign(gtk::Align::Center)
+                .valign(gtk::Align::Center)
+                .width_request(58)
+                .build();
+            grid.attach(&sec_header, 1, 0, 1, 1);
+        }
 
         for (day_index, day) in days.iter().enumerate() {
             let is_today = *day == today;
@@ -4193,7 +4239,7 @@ impl CalendarPage {
                 .build();
             header_cell.append(&day_name);
             header_cell.append(&day_num);
-            grid.attach(&header_cell, day_index as i32 + 1, 0, 1, 1);
+            grid.attach(&header_cell, day_index as i32 + day_column_offset, 0, 1, 1);
         }
 
         // ── Row 1: All-Day Row ──
@@ -4204,6 +4250,15 @@ impl CalendarPage {
             .valign(gtk::Align::Center)
             .build();
         grid.attach(&all_day_label, 0, 1, 1, 1);
+
+        if has_second_zone {
+            let sec_allday_box = gtk::Box::builder()
+                .orientation(gtk::Orientation::Vertical)
+                .css_classes(vec!["calendar-allday-label", "calendar-time-gutter-secondary"])
+                .width_request(58)
+                .build();
+            grid.attach(&sec_allday_box, 1, 1, 1, 1);
+        }
 
         for (day_index, day) in days.iter().enumerate() {
             let all_day_cell = gtk::Box::builder()
@@ -4219,18 +4274,19 @@ impl CalendarPage {
             for event in day_events.iter().filter(|e| e.all_day) {
                 all_day_cell.append(&calendar_grid_event_chip(self, event, true, *day));
             }
-            grid.attach(&all_day_cell, day_index as i32 + 1, 1, 1, 1);
+            grid.attach(&all_day_cell, day_index as i32 + day_column_offset, 1, 1, 1);
         }
 
-        // ── Rows 2..50: 48 30-minute time slots ──
+        // ── Rows 2..(slot_count + 2): Dynamic time slots ──
         let mut slot_cells: Vec<Vec<gtk::Box>> = (0..days.len())
-            .map(|_| Vec::with_capacity(SLOT_COUNT))
+            .map(|_| Vec::with_capacity(slot_count))
             .collect();
 
-        for slot in 0..SLOT_COUNT {
+        for slot in 0..slot_count {
             let row = slot as i32 + 2;
-            let minute = (slot * 30) as u32;
-            let is_hour = slot % 2 == 0;
+            let minute = (slot * interval_minutes as usize) as u32;
+            let is_hour = slot % slots_per_hour == 0;
+            let is_half_hour = interval_minutes < 60 && (minute % 60 == 30);
             let is_workday = minute >= workday_start && minute < workday_end;
 
             if is_hour {
@@ -4247,21 +4303,68 @@ impl CalendarPage {
                     .build();
                 gutter_box.append(&gutter_label);
                 grid.attach(&gutter_box, 0, row, 1, 1);
+
+                if let Some(ref sec_tz_obj) = second_tz {
+                    let sec_box = gtk::Box::builder()
+                        .orientation(gtk::Orientation::Vertical)
+                        .css_classes(vec![
+                            "calendar-time-gutter",
+                            "calendar-time-gutter-secondary",
+                            "calendar-hour-cell",
+                        ])
+                        .width_request(58)
+                        .build();
+                    let sec_time_str = secondary_timezone_hour_label(
+                        days.first().copied().unwrap_or(today),
+                        minute,
+                        sec_tz_obj,
+                        use_12h,
+                    )
+                    .unwrap_or_default();
+                    let sec_label = gtk::Label::builder()
+                        .label(&sec_time_str)
+                        .css_classes(vec!["secondary-tz-label"])
+                        .halign(gtk::Align::End)
+                        .valign(gtk::Align::Start)
+                        .build();
+                    sec_box.append(&sec_label);
+                    grid.attach(&sec_box, 1, row, 1, 1);
+                }
             } else {
+                let slot_subclass = if is_half_hour {
+                    "calendar-half-hour-cell"
+                } else {
+                    "calendar-fine-slot-cell"
+                };
                 let gutter_box = gtk::Box::builder()
                     .orientation(gtk::Orientation::Vertical)
-                    .css_classes(vec!["calendar-time-gutter", "calendar-half-hour-cell"])
+                    .css_classes(vec!["calendar-time-gutter", slot_subclass])
                     .width_request(58)
                     .build();
                 grid.attach(&gutter_box, 0, row, 1, 1);
+
+                if second_tz.is_some() {
+                    let sec_box = gtk::Box::builder()
+                        .orientation(gtk::Orientation::Vertical)
+                        .css_classes(vec![
+                            "calendar-time-gutter",
+                            "calendar-time-gutter-secondary",
+                            slot_subclass,
+                        ])
+                        .width_request(58)
+                        .build();
+                    grid.attach(&sec_box, 1, row, 1, 1);
+                }
             }
 
             for (day_index, day) in days.iter().enumerate() {
                 let mut cell_classes = vec!["calendar-grid-cell"];
                 if is_hour {
                     cell_classes.push("calendar-hour-cell");
-                } else {
+                } else if is_half_hour {
                     cell_classes.push("calendar-half-hour-cell");
+                } else {
+                    cell_classes.push("calendar-fine-slot-cell");
                 }
                 if is_workday {
                     cell_classes.push("calendar-workday-cell");
@@ -4273,7 +4376,7 @@ impl CalendarPage {
                     .orientation(gtk::Orientation::Vertical)
                     .spacing(1)
                     .hexpand(true)
-                    .height_request(24)
+                    .height_request(slot_height)
                     .valign(gtk::Align::Fill)
                     .css_classes(cell_classes)
                     .build();
@@ -4298,7 +4401,7 @@ impl CalendarPage {
                 });
                 cell.add_controller(click_gesture);
 
-                grid.attach(&cell, day_index as i32 + 1, row, 1, 1);
+                grid.attach(&cell, day_index as i32 + day_column_offset, row, 1, 1);
                 slot_cells[day_index].push(cell);
             }
         }
@@ -4316,10 +4419,10 @@ impl CalendarPage {
                     .filter(|start| start.date() == *day)
                     .map(|start| {
                         let mins = start.time().hour() * 60 + start.time().minute();
-                        (mins / 30) as usize
+                        (mins / interval_minutes as u32) as usize
                     })
-                    .unwrap_or(16)
-                    .min(SLOT_COUNT - 1);
+                    .unwrap_or_else(|| (16 * 60 / interval_minutes as u32) as usize)
+                    .min(slot_count.saturating_sub(1));
 
                 let chip = calendar_grid_event_chip(self, &event, false, *day);
                 slot_cells[day_index][slot].append(&chip);
@@ -5003,6 +5106,7 @@ impl CalendarPage {
             grid.attach(&label, 0, 0, 1, 1);
         }
 
+        let compress_weekend = configured_compress_weekend();
         for (cell_index, date) in viewport.visible_range.dates().enumerate() {
             let row = (cell_index / 7) as i32 + 1;
             let column = (cell_index % 7) as i32;
@@ -5013,6 +5117,13 @@ impl CalendarPage {
             }
             if date == today {
                 cell_classes.push("today");
+            }
+            let is_weekend = date.weekday() == Weekday::Sat || date.weekday() == Weekday::Sun;
+            if is_weekend {
+                cell_classes.push("weekend");
+                if compress_weekend {
+                    cell_classes.push("compressed");
+                }
             }
 
             let cell_box = gtk::Box::builder()
@@ -5683,6 +5794,91 @@ fn configured_hide_cancelled_events() -> bool {
     AppSettings::try_new()
         .map(|settings| settings.hide_cancelled_events())
         .unwrap_or(false)
+}
+
+fn normalize_calendar_time_divisions(divisions: i32) -> i32 {
+    match divisions {
+        5 | 10 | 15 | 30 | 60 => divisions,
+        _ => 30,
+    }
+}
+
+fn configured_time_divisions() -> i32 {
+    AppSettings::try_new()
+        .map(|settings| normalize_calendar_time_divisions(settings.calendar_time_divisions()))
+        .unwrap_or(30)
+}
+
+fn configured_compress_weekend() -> bool {
+    AppSettings::try_new()
+        .map(|settings| settings.calendar_compress_weekend())
+        .unwrap_or(false)
+}
+
+fn configured_month_scroll_by_week() -> bool {
+    AppSettings::try_new()
+        .map(|settings| settings.calendar_month_scroll_by_week())
+        .unwrap_or(false)
+}
+
+fn configured_second_zone() -> String {
+    AppSettings::try_new()
+        .map(|settings| settings.calendar_second_zone())
+        .unwrap_or_default()
+}
+
+fn timezone_from_name(name: &str) -> Option<glib::TimeZone> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if trimmed.eq_ignore_ascii_case("utc") {
+        Some(glib::TimeZone::utc())
+    } else {
+        glib::TimeZone::from_identifier(Some(trimmed))
+    }
+}
+
+fn secondary_timezone_header_label(zone: &str) -> String {
+    let trimmed = zone.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    let name = trimmed.rsplit('/').next().unwrap_or(trimmed);
+    name.replace('_', " ")
+}
+
+fn secondary_timezone_hour_label(
+    date: NaiveDate,
+    minute_of_day: u32,
+    second_tz: &glib::TimeZone,
+    use_12h: bool,
+) -> Option<String> {
+    let hour = (minute_of_day / 60) as i32;
+    let minute = (minute_of_day % 60) as i32;
+    let local_dt = glib::DateTime::new(
+        &glib::TimeZone::local(),
+        date.year(),
+        date.month() as i32,
+        date.day() as i32,
+        hour,
+        minute,
+        0.0,
+    )
+    .ok()?;
+    let converted_dt = local_dt.to_timezone(second_tz).ok()?;
+    let conv_hour = converted_dt.hour();
+    let conv_min = converted_dt.minute();
+    if use_12h {
+        let suffix = if conv_hour < 12 { "AM" } else { "PM" };
+        let display_hour = match conv_hour % 12 {
+            0 => 12,
+            v => v,
+        };
+        Some(format!("{display_hour}:{conv_min:02} {suffix}"))
+    } else {
+        Some(format!("{conv_hour:02}:{conv_min:02}"))
+    }
 }
 
 fn configured_workdays() -> Vec<Weekday> {
@@ -9557,5 +9753,87 @@ mod tests {
         assert_eq!(format_clock_minutes(0), "00:00");
         assert_eq!(format_clock_minutes(9 * 60 + 30), "09:30");
         assert_eq!(format_clock_minutes(23 * 60 + 30), "23:30");
+    }
+
+    #[test]
+    fn normalize_calendar_time_divisions_values() {
+        assert_eq!(normalize_calendar_time_divisions(5), 5);
+        assert_eq!(normalize_calendar_time_divisions(10), 10);
+        assert_eq!(normalize_calendar_time_divisions(15), 15);
+        assert_eq!(normalize_calendar_time_divisions(30), 30);
+        assert_eq!(normalize_calendar_time_divisions(60), 60);
+
+        // Invalid fallback to 30
+        assert_eq!(normalize_calendar_time_divisions(0), 30);
+        assert_eq!(normalize_calendar_time_divisions(7), 30);
+        assert_eq!(normalize_calendar_time_divisions(45), 30);
+        assert_eq!(normalize_calendar_time_divisions(120), 30);
+        assert_eq!(normalize_calendar_time_divisions(-1), 30);
+    }
+
+    #[test]
+    fn time_divisions_calculates_correct_slot_count_and_intervals() {
+        for (div, expected_slots_per_hour, expected_total_slots) in [
+            (60, 1, 24),
+            (30, 2, 48),
+            (15, 4, 96),
+            (10, 6, 144),
+            (5, 12, 288),
+        ] {
+            let normalized = normalize_calendar_time_divisions(div);
+            let slots_per_hour = (60 / normalized) as usize;
+            let total_slots = 24 * slots_per_hour;
+            assert_eq!(slots_per_hour, expected_slots_per_hour);
+            assert_eq!(total_slots, expected_total_slots);
+        }
+    }
+
+    #[test]
+    fn secondary_timezone_header_and_hour_labels() {
+        assert_eq!(secondary_timezone_header_label("UTC"), "UTC");
+        assert_eq!(
+            secondary_timezone_header_label("America/New_York"),
+            "New York"
+        );
+        assert_eq!(
+            secondary_timezone_header_label("Europe/Berlin"),
+            "Berlin"
+        );
+        assert_eq!(secondary_timezone_header_label(""), "");
+        assert_eq!(secondary_timezone_header_label("   "), "");
+
+        let utc_tz = timezone_from_name("UTC").expect("UTC timezone should resolve");
+        let date = NaiveDate::from_ymd_opt(2026, 9, 6).unwrap();
+
+        // Check hour label formatting
+        let label_24h = secondary_timezone_hour_label(date, 12 * 60, &utc_tz, false);
+        assert!(label_24h.is_some());
+
+        let label_12h = secondary_timezone_hour_label(date, 12 * 60, &utc_tz, true);
+        assert!(label_12h.is_some());
+    }
+
+    #[test]
+    fn month_scroll_by_week_navigation_step() {
+        let anchor = NaiveDate::from_ymd_opt(2026, 9, 15).unwrap();
+        let mut state_month = CalendarViewState::new(CalendarView::Month, anchor, Weekday::Mon);
+
+        // Standard month navigation (shift by month)
+        state_month.navigate_step(1, Weekday::Mon, false);
+        assert_eq!(
+            state_month.anchor_date,
+            NaiveDate::from_ymd_opt(2026, 10, 1).unwrap()
+        );
+
+        // Week-by-week month navigation (shift by 7 days)
+        let mut state_week_scroll =
+            CalendarViewState::new(CalendarView::Month, anchor, Weekday::Mon);
+        state_week_scroll.navigate_step(1, Weekday::Mon, true);
+        assert_eq!(
+            state_week_scroll.anchor_date,
+            NaiveDate::from_ymd_opt(2026, 9, 22).unwrap()
+        );
+        state_week_scroll.navigate_step(-1, Weekday::Mon, true);
+        assert_eq!(state_week_scroll.anchor_date, anchor);
     }
 }
