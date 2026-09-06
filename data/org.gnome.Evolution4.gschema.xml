@@ -252,6 +252,50 @@
       <default>''</default>
       <summary>Preferred spell-checking languages (comma-separated, empty for system default)</summary>
     </key>
+    <key name="composer-show-from" type="b">
+      <default>true</default>
+      <summary>Show the From account selector in composer</summary>
+    </key>
+    <key name="composer-show-cc" type="b">
+      <default>true</default>
+      <summary>Show the Cc recipient entry in composer</summary>
+    </key>
+    <key name="composer-show-bcc" type="b">
+      <default>false</default>
+      <summary>Show the Bcc recipient entry in composer</summary>
+    </key>
+    <key name="composer-show-reply-to" type="b">
+      <default>false</default>
+      <summary>Show the Reply-To entry in composer</summary>
+    </key>
+    <key name="composer-prompt-empty-subject" type="b">
+      <default>true</default>
+      <summary>Prompt for confirmation when sending a message with an empty subject</summary>
+    </key>
+    <key name="composer-prompt-only-bcc" type="b">
+      <default>true</default>
+      <summary>Prompt for confirmation when sending a message with only Bcc recipients</summary>
+    </key>
+    <key name="composer-inline-spelling" type="b">
+      <default>true</default>
+      <summary>Enable inline spell-checking in composer</summary>
+    </key>
+    <key name="composer-reply-style" type="s">
+      <default>'quoted'</default>
+      <summary>Default reply style (quoted, inline, or attach)</summary>
+    </key>
+    <key name="composer-forward-style" type="s">
+      <default>'attached'</default>
+      <summary>Default forward style (attached, inline, or quoted)</summary>
+    </key>
+    <key name="composer-top-signature" type="b">
+      <default>false</default>
+      <summary>Insert signature above quoted text when replying</summary>
+    </key>
+    <key name="composer-signature-outline" type="b">
+      <default>true</default>
+      <summary>Prepend signature dash separator (-- ) before signature text</summary>
+    </key>
     <key name="mail-font-family" type="s">
       <default>'system-ui, sans-serif'</default>
       <summary>Font family used for mail and composer text</summary>
@@ -259,6 +303,58 @@
     <key name="mail-font-size" type="i">
       <default>16</default>
       <summary>Font size used for mail and composer text</summary>
+    </key>
+    <key name="mail-image-loading-policy" type="s">
+      <default>'never'</default>
+      <summary>Policy for loading remote images in HTML mail (never, always, sometimes)</summary>
+    </key>
+    <key name="mail-mark-seen" type="b">
+      <default>true</default>
+      <summary>Mark a message as read when it is viewed</summary>
+    </key>
+    <key name="mail-mark-seen-timeout" type="i">
+      <default>1500</default>
+      <summary>Delay in milliseconds before automatically marking a viewed message as read</summary>
+    </key>
+    <key name="mail-caret-mode" type="b">
+      <default>false</default>
+      <summary>Enable caret navigation cursor in message viewer</summary>
+    </key>
+    <key name="mail-magic-spacebar" type="b">
+      <default>true</default>
+      <summary>Spacebar pages down or advances to next unread message at end</summary>
+    </key>
+    <key name="mail-citation-highlighting" type="b">
+      <default>true</default>
+      <summary>Highlight nested quote levels with distinctive colors</summary>
+    </key>
+    <key name="mail-citation-color-1" type="s">
+      <default>'#729fcf'</default>
+      <summary>Border color for 1st citation level</summary>
+    </key>
+    <key name="mail-citation-color-2" type="s">
+      <default>'#ad7fa8'</default>
+      <summary>Border color for 2nd citation level</summary>
+    </key>
+    <key name="mail-citation-color-3" type="s">
+      <default>'#8ae234'</default>
+      <summary>Border color for 3rd citation level</summary>
+    </key>
+    <key name="mail-citation-color-4" type="s">
+      <default>'#fcaf3e'</default>
+      <summary>Border color for 4th citation level</summary>
+    </key>
+    <key name="mail-citation-color-5" type="s">
+      <default>'#e9b96e'</default>
+      <summary>Border color for 5th citation level</summary>
+    </key>
+    <key name="mail-headers-collapsed" type="b">
+      <default>false</default>
+      <summary>Collapse message viewer header block to compact form</summary>
+    </key>
+    <key name="mail-show-real-date" type="b">
+      <default>true</default>
+      <summary>Show real absolute timestamp in message headers</summary>
     </key>
     <key name="mark-read-on-selection" type="b">
       <default>true</default>
@@ -351,6 +447,11 @@
     <key name="mail-show-labels" type="b">
       <default>true</default>
       <summary>Show app-owned labels in the mail list</summary>
+    </key>
+    <key name="mail-labels" type="as">
+      <default>['Important:#EF2929|$Labelimportant', 'Work:#F57900|$Labelwork', 'Personal:#4E9A06|$Labelpersonal', 'To Do:#3465A4|$Labeltodo', 'Later:#75507B|$Labellater']</default>
+      <summary>List of mail labels and their associated colors and tags</summary>
+      <description>List of labels known to the mail component. Each entry is in the format name:color[|tag].</description>
     </key>
     <key name="mail-show-size" type="b">
       <default>false</default>
@@ -735,6 +836,41 @@
       <default>true</default>
       <summary>Flush Outbox after filtering</summary>
       <description>Whether to flush Outbox after filtering is done.</description>
+    </key>
+    <key name="junk-check-incoming" type="b">
+      <default>true</default>
+      <summary>Check incoming mail being junk</summary>
+      <description>Run junk test on incoming mail.</description>
+    </key>
+    <key name="junk-empty-on-exit" type="b">
+      <default>false</default>
+      <summary>Empty Junk folders on exit</summary>
+      <description>Empty all Junk folders when exiting the application.</description>
+    </key>
+    <key name="junk-empty-on-exit-days" type="i">
+      <default>0</default>
+      <summary>Minimum days between emptying the junk on exit</summary>
+      <description>Minimum time between emptying the junk on exit, in days. 0 means every exit.</description>
+    </key>
+    <key name="junk-lookup-addressbook" type="b">
+      <default>true</default>
+      <summary>Lookup sender in address book to skip junk filtering</summary>
+    </key>
+    <key name="junk-lookup-addressbook-local-only" type="b">
+      <default>false</default>
+      <summary>Lookup sender only in local address book</summary>
+    </key>
+    <key name="junk-default-plugin" type="s">
+      <default>'Bogofilter'</default>
+      <summary>The default plugin for junk hook</summary>
+    </key>
+    <key name="junk-custom-header" type="s">
+      <default>'X-Spam-Flag'</default>
+      <summary>Custom spam header name</summary>
+    </key>
+    <key name="junk-custom-header-value" type="s">
+      <default>'YES'</default>
+      <summary>Custom spam header expected value</summary>
     </key>
   </schema>
 </schemalist>

@@ -419,6 +419,207 @@ struct BackupSettings {
     filters_log_file: String,
     #[serde(default = "default_flush_outbox")]
     flush_outbox: bool,
+    #[serde(default = "default_mail_labels")]
+    mail_labels: Vec<String>,
+    #[serde(default = "default_junk_check_incoming")]
+    junk_check_incoming: bool,
+    #[serde(default = "default_junk_empty_on_exit")]
+    junk_empty_on_exit: bool,
+    #[serde(default = "default_junk_empty_on_exit_days")]
+    junk_empty_on_exit_days: i32,
+    #[serde(default = "default_junk_lookup_addressbook")]
+    junk_lookup_addressbook: bool,
+    #[serde(default = "default_junk_lookup_addressbook_local_only")]
+    junk_lookup_addressbook_local_only: bool,
+    #[serde(default = "default_junk_default_plugin")]
+    junk_default_plugin: String,
+    #[serde(default = "default_junk_custom_header")]
+    junk_custom_header: String,
+    #[serde(default = "default_junk_custom_header_value")]
+    junk_custom_header_value: String,
+    #[serde(default = "default_composer_show_from")]
+    composer_show_from: bool,
+    #[serde(default = "default_composer_show_cc")]
+    composer_show_cc: bool,
+    #[serde(default = "default_composer_show_bcc")]
+    composer_show_bcc: bool,
+    #[serde(default = "default_composer_show_reply_to")]
+    composer_show_reply_to: bool,
+    #[serde(default = "default_composer_prompt_empty_subject")]
+    composer_prompt_empty_subject: bool,
+    #[serde(default = "default_composer_prompt_only_bcc")]
+    composer_prompt_only_bcc: bool,
+    #[serde(default = "default_composer_inline_spelling")]
+    composer_inline_spelling: bool,
+    #[serde(default = "default_composer_reply_style")]
+    composer_reply_style: String,
+    #[serde(default = "default_composer_forward_style")]
+    composer_forward_style: String,
+    #[serde(default = "default_composer_top_signature")]
+    composer_top_signature: bool,
+    #[serde(default = "default_composer_signature_outline")]
+    composer_signature_outline: bool,
+    #[serde(default = "default_mail_image_loading_policy")]
+    mail_image_loading_policy: String,
+    #[serde(default = "default_mail_mark_seen")]
+    mail_mark_seen: bool,
+    #[serde(default = "default_mail_mark_seen_timeout")]
+    mail_mark_seen_timeout: u32,
+    #[serde(default = "default_mail_caret_mode")]
+    mail_caret_mode: bool,
+    #[serde(default = "default_mail_magic_spacebar")]
+    mail_magic_spacebar: bool,
+    #[serde(default = "default_mail_citation_highlighting")]
+    mail_citation_highlighting: bool,
+    #[serde(default = "default_mail_citation_color_1")]
+    mail_citation_color_1: String,
+    #[serde(default = "default_mail_citation_color_2")]
+    mail_citation_color_2: String,
+    #[serde(default = "default_mail_citation_color_3")]
+    mail_citation_color_3: String,
+    #[serde(default = "default_mail_citation_color_4")]
+    mail_citation_color_4: String,
+    #[serde(default = "default_mail_citation_color_5")]
+    mail_citation_color_5: String,
+    #[serde(default = "default_mail_headers_collapsed")]
+    mail_headers_collapsed: bool,
+    #[serde(default = "default_mail_show_real_date")]
+    mail_show_real_date: bool,
+}
+
+fn default_composer_show_from() -> bool {
+    true
+}
+
+fn default_composer_show_cc() -> bool {
+    true
+}
+
+fn default_composer_show_bcc() -> bool {
+    false
+}
+
+fn default_composer_show_reply_to() -> bool {
+    false
+}
+
+fn default_composer_prompt_empty_subject() -> bool {
+    true
+}
+
+fn default_composer_prompt_only_bcc() -> bool {
+    true
+}
+
+fn default_composer_inline_spelling() -> bool {
+    true
+}
+
+fn default_composer_reply_style() -> String {
+    "quoted".to_string()
+}
+
+fn default_composer_forward_style() -> String {
+    "attached".to_string()
+}
+
+fn default_composer_top_signature() -> bool {
+    false
+}
+
+fn default_composer_signature_outline() -> bool {
+    true
+}
+
+fn default_mail_image_loading_policy() -> String {
+    "never".to_string()
+}
+
+fn default_mail_mark_seen() -> bool {
+    true
+}
+
+fn default_mail_mark_seen_timeout() -> u32 {
+    1500
+}
+
+fn default_mail_caret_mode() -> bool {
+    false
+}
+
+fn default_mail_magic_spacebar() -> bool {
+    true
+}
+
+fn default_mail_citation_highlighting() -> bool {
+    true
+}
+
+fn default_mail_citation_color_1() -> String {
+    "#729FCF".to_string()
+}
+
+fn default_mail_citation_color_2() -> String {
+    "#AD7FA8".to_string()
+}
+
+fn default_mail_citation_color_3() -> String {
+    "#8AE234".to_string()
+}
+
+fn default_mail_citation_color_4() -> String {
+    "#FCAF3E".to_string()
+}
+
+fn default_mail_citation_color_5() -> String {
+    "#E9B96E".to_string()
+}
+
+fn default_mail_headers_collapsed() -> bool {
+    false
+}
+
+fn default_mail_show_real_date() -> bool {
+    true
+}
+
+fn default_mail_labels() -> Vec<String> {
+    crate::services::settings_service::MailLabelDefinition::default_labels()
+        .into_iter()
+        .map(|l| l.to_setting_string())
+        .collect()
+}
+
+fn default_junk_check_incoming() -> bool {
+    true
+}
+
+fn default_junk_empty_on_exit() -> bool {
+    false
+}
+
+fn default_junk_empty_on_exit_days() -> i32 {
+    0
+}
+
+fn default_junk_lookup_addressbook() -> bool {
+    false
+}
+
+fn default_junk_lookup_addressbook_local_only() -> bool {
+    false
+}
+
+fn default_junk_default_plugin() -> String {
+    "Bogofilter".to_string()
+}
+
+fn default_junk_custom_header() -> String {
+    String::new()
+}
+
+fn default_junk_custom_header_value() -> String {
+    String::new()
 }
 
 fn default_flush_outbox() -> bool {
@@ -853,6 +1054,43 @@ impl BackupSettings {
             filters_log_actions: settings.filters_log_actions(),
             filters_log_file: settings.filters_log_file(),
             flush_outbox: settings.flush_outbox(),
+            mail_labels: settings
+                .mail_labels()
+                .into_iter()
+                .map(|l| l.to_setting_string())
+                .collect(),
+            junk_check_incoming: settings.junk_check_incoming(),
+            junk_empty_on_exit: settings.junk_empty_on_exit(),
+            junk_empty_on_exit_days: settings.junk_empty_on_exit_days(),
+            junk_lookup_addressbook: settings.junk_lookup_addressbook(),
+            junk_lookup_addressbook_local_only: settings.junk_lookup_addressbook_local_only(),
+            junk_default_plugin: settings.junk_default_plugin(),
+            junk_custom_header: settings.junk_custom_header(),
+            junk_custom_header_value: settings.junk_custom_header_value(),
+            composer_show_from: settings.composer_show_from(),
+            composer_show_cc: settings.composer_show_cc(),
+            composer_show_bcc: settings.composer_show_bcc(),
+            composer_show_reply_to: settings.composer_show_reply_to(),
+            composer_prompt_empty_subject: settings.composer_prompt_empty_subject(),
+            composer_prompt_only_bcc: settings.composer_prompt_only_bcc(),
+            composer_inline_spelling: settings.composer_inline_spelling(),
+            composer_reply_style: settings.composer_reply_style(),
+            composer_forward_style: settings.composer_forward_style(),
+            composer_top_signature: settings.composer_top_signature(),
+            composer_signature_outline: settings.composer_signature_outline(),
+            mail_image_loading_policy: settings.mail_image_loading_policy(),
+            mail_mark_seen: settings.mail_mark_seen(),
+            mail_mark_seen_timeout: settings.mail_mark_seen_timeout(),
+            mail_caret_mode: settings.mail_caret_mode(),
+            mail_magic_spacebar: settings.mail_magic_spacebar(),
+            mail_citation_highlighting: settings.mail_citation_highlighting(),
+            mail_citation_color_1: settings.mail_citation_color_1(),
+            mail_citation_color_2: settings.mail_citation_color_2(),
+            mail_citation_color_3: settings.mail_citation_color_3(),
+            mail_citation_color_4: settings.mail_citation_color_4(),
+            mail_citation_color_5: settings.mail_citation_color_5(),
+            mail_headers_collapsed: settings.mail_headers_collapsed(),
+            mail_show_real_date: settings.mail_show_real_date(),
         }
     }
 
@@ -1100,6 +1338,44 @@ impl BackupSettings {
         settings.set_filters_log_actions(self.filters_log_actions);
         settings.set_filters_log_file(&self.filters_log_file);
         settings.set_flush_outbox(self.flush_outbox);
+        let label_defs: Vec<crate::services::settings_service::MailLabelDefinition> = self
+            .mail_labels
+            .iter()
+            .filter_map(|s| crate::services::settings_service::MailLabelDefinition::parse(s))
+            .collect();
+        settings.set_mail_labels(&label_defs);
+        settings.set_junk_check_incoming(self.junk_check_incoming);
+        settings.set_junk_empty_on_exit(self.junk_empty_on_exit);
+        settings.set_junk_empty_on_exit_days(self.junk_empty_on_exit_days);
+        settings.set_junk_lookup_addressbook(self.junk_lookup_addressbook);
+        settings.set_junk_lookup_addressbook_local_only(self.junk_lookup_addressbook_local_only);
+        settings.set_junk_default_plugin(&self.junk_default_plugin);
+        settings.set_junk_custom_header(&self.junk_custom_header);
+        settings.set_junk_custom_header_value(&self.junk_custom_header_value);
+        settings.set_composer_show_from(self.composer_show_from);
+        settings.set_composer_show_cc(self.composer_show_cc);
+        settings.set_composer_show_bcc(self.composer_show_bcc);
+        settings.set_composer_show_reply_to(self.composer_show_reply_to);
+        settings.set_composer_prompt_empty_subject(self.composer_prompt_empty_subject);
+        settings.set_composer_prompt_only_bcc(self.composer_prompt_only_bcc);
+        settings.set_composer_inline_spelling(self.composer_inline_spelling);
+        settings.set_composer_reply_style(&self.composer_reply_style);
+        settings.set_composer_forward_style(&self.composer_forward_style);
+        settings.set_composer_top_signature(self.composer_top_signature);
+        settings.set_composer_signature_outline(self.composer_signature_outline);
+        settings.set_mail_image_loading_policy(&self.mail_image_loading_policy);
+        settings.set_mail_mark_seen(self.mail_mark_seen);
+        settings.set_mail_mark_seen_timeout(self.mail_mark_seen_timeout);
+        settings.set_mail_caret_mode(self.mail_caret_mode);
+        settings.set_mail_magic_spacebar(self.mail_magic_spacebar);
+        settings.set_mail_citation_highlighting(self.mail_citation_highlighting);
+        settings.set_mail_citation_color_1(&self.mail_citation_color_1);
+        settings.set_mail_citation_color_2(&self.mail_citation_color_2);
+        settings.set_mail_citation_color_3(&self.mail_citation_color_3);
+        settings.set_mail_citation_color_4(&self.mail_citation_color_4);
+        settings.set_mail_citation_color_5(&self.mail_citation_color_5);
+        settings.set_mail_headers_collapsed(self.mail_headers_collapsed);
+        settings.set_mail_show_real_date(self.mail_show_real_date);
     }
 
     fn validate(&self) -> io::Result<()> {
@@ -1120,6 +1396,16 @@ impl BackupSettings {
                 "Windows-1252",
                 "US-ASCII",
             ],
+        )?;
+        validate_choice(
+            "composer_reply_style",
+            &self.composer_reply_style,
+            &["quoted", "inline", "attach"],
+        )?;
+        validate_choice(
+            "composer_forward_style",
+            &self.composer_forward_style,
+            &["attached", "inline", "quoted"],
         )?;
         validate_choice(
             "switcher_location",
@@ -1404,6 +1690,29 @@ impl BackupSettings {
         {
             validate_string("smime_recipient_certificates", certificate, 4_096, false)?;
         }
+        validate_i32_setting("junk_empty_on_exit_days", self.junk_empty_on_exit_days, 0, 365)?;
+        validate_string("junk_default_plugin", &self.junk_default_plugin, 128, true)?;
+        validate_string("junk_custom_header", &self.junk_custom_header, 256, true)?;
+        validate_string("junk_custom_header_value", &self.junk_custom_header_value, 256, true)?;
+        for label_str in &self.mail_labels {
+            validate_string("mail_labels", label_str, 256, false)?;
+        }
+        validate_choice(
+            "mail_image_loading_policy",
+            &self.mail_image_loading_policy,
+            &["never", "always", "sometimes"],
+        )?;
+        validate_u32_setting(
+            "mail_mark_seen_timeout",
+            self.mail_mark_seen_timeout,
+            0,
+            60_000,
+        )?;
+        validate_color_setting("mail_citation_color_1", &self.mail_citation_color_1)?;
+        validate_color_setting("mail_citation_color_2", &self.mail_citation_color_2)?;
+        validate_color_setting("mail_citation_color_3", &self.mail_citation_color_3)?;
+        validate_color_setting("mail_citation_color_4", &self.mail_citation_color_4)?;
+        validate_color_setting("mail_citation_color_5", &self.mail_citation_color_5)?;
         Ok(())
     }
 }
@@ -1413,6 +1722,19 @@ fn validation_error(field: &str, reason: &str) -> io::Error {
         io::ErrorKind::InvalidData,
         format!("Ungültiger Sicherungswert für {field}: {reason}"),
     )
+}
+
+fn validate_color_setting(field: &str, value: &str) -> io::Result<()> {
+    validate_string(field, value, 32, false)?;
+    let trimmed = value.trim();
+    let hex = trimmed.strip_prefix('#').unwrap_or(trimmed);
+    if (hex.len() == 3 || hex.len() == 6 || hex.len() == 8)
+        && hex.chars().all(|c| c.is_ascii_hexdigit())
+    {
+        Ok(())
+    } else {
+        Err(validation_error(field, "ungültiger Farbwert"))
+    }
 }
 
 fn validate_i32_setting(field: &str, value: i32, minimum: i32, maximum: i32) -> io::Result<()> {
@@ -1786,6 +2108,39 @@ const BACKUP_SETTINGS_FIELDS: &[&str] = &[
     "filters_log_actions",
     "filters_log_file",
     "flush_outbox",
+    "mail_labels",
+    "junk_check_incoming",
+    "junk_empty_on_exit",
+    "junk_empty_on_exit_days",
+    "junk_lookup_addressbook",
+    "junk_lookup_addressbook_local_only",
+    "junk_default_plugin",
+    "junk_custom_header",
+    "junk_custom_header_value",
+    "composer_show_from",
+    "composer_show_cc",
+    "composer_show_bcc",
+    "composer_show_reply_to",
+    "composer_prompt_empty_subject",
+    "composer_prompt_only_bcc",
+    "composer_inline_spelling",
+    "composer_reply_style",
+    "composer_forward_style",
+    "composer_top_signature",
+    "composer_signature_outline",
+    "mail_image_loading_policy",
+    "mail_mark_seen",
+    "mail_mark_seen_timeout",
+    "mail_caret_mode",
+    "mail_magic_spacebar",
+    "mail_citation_highlighting",
+    "mail_citation_color_1",
+    "mail_citation_color_2",
+    "mail_citation_color_3",
+    "mail_citation_color_4",
+    "mail_citation_color_5",
+    "mail_headers_collapsed",
+    "mail_show_real_date",
 ];
 
 fn is_sensitive_backup_key(key: &str) -> bool {
@@ -3709,6 +4064,261 @@ mod tests {
         );
         assert!(fresh_settings.hide_cancelled_tasks());
         assert!(fresh_settings.hide_cancelled_events());
+    }
+
+    #[test]
+    fn mail_labels_and_junk_settings_backup_validation_and_roundtrip() {
+        let backend = gio::memory_settings_backend_new();
+        let settings = AppSettings::try_new_with_backend(&backend).expect("settings should load");
+
+        let custom_labels = vec![
+            crate::services::settings_service::MailLabelDefinition::new(
+                "Urgent",
+                "#FF0000",
+                Some("$Labelurgent".to_string()),
+            ),
+            crate::services::settings_service::MailLabelDefinition::new(
+                "Project Alpha",
+                "#00FF00",
+                None,
+            ),
+        ];
+        settings.set_mail_labels(&custom_labels);
+        settings.set_junk_check_incoming(false);
+        settings.set_junk_empty_on_exit(true);
+        settings.set_junk_empty_on_exit_days(14);
+        settings.set_junk_lookup_addressbook(true);
+        settings.set_junk_lookup_addressbook_local_only(true);
+        settings.set_junk_default_plugin("SpamAssassin");
+        settings.set_junk_custom_header("X-Spam-Flag");
+        settings.set_junk_custom_header_value("YES");
+
+        let backup = BackupSettings::from_app(&settings);
+
+        assert_eq!(backup.mail_labels.len(), 2);
+        assert_eq!(backup.mail_labels[0], "Urgent:#FF0000|$Labelurgent");
+        assert_eq!(backup.mail_labels[1], "Project Alpha:#00FF00|project_alpha");
+        assert!(!backup.junk_check_incoming);
+        assert!(backup.junk_empty_on_exit);
+        assert_eq!(backup.junk_empty_on_exit_days, 14);
+        assert!(backup.junk_lookup_addressbook);
+        assert!(backup.junk_lookup_addressbook_local_only);
+        assert_eq!(backup.junk_default_plugin, "SpamAssassin");
+        assert_eq!(backup.junk_custom_header, "X-Spam-Flag");
+        assert_eq!(backup.junk_custom_header_value, "YES");
+
+        backup.validate().expect("backup should validate");
+
+        // Validate rejects out of bounds empty on exit days
+        let mut invalid_days = backup.clone();
+        invalid_days.junk_empty_on_exit_days = 400;
+        assert!(invalid_days.validate().is_err());
+
+        // JSON serialization round-trip
+        let serialized = serde_json::to_string(&backup).expect("should serialize");
+        let deserialized: BackupSettings =
+            serde_json::from_str(&serialized).expect("should deserialize");
+        assert_eq!(deserialized.mail_labels.len(), 2);
+        assert_eq!(deserialized.mail_labels[0], "Urgent:#FF0000|$Labelurgent");
+        assert!(!deserialized.junk_check_incoming);
+        assert!(deserialized.junk_empty_on_exit);
+        assert_eq!(deserialized.junk_empty_on_exit_days, 14);
+        assert!(deserialized.junk_lookup_addressbook);
+        assert!(deserialized.junk_lookup_addressbook_local_only);
+        assert_eq!(deserialized.junk_default_plugin, "SpamAssassin");
+        assert_eq!(deserialized.junk_custom_header, "X-Spam-Flag");
+        assert_eq!(deserialized.junk_custom_header_value, "YES");
+
+        // Restoration into fresh settings
+        let fresh_backend = gio::memory_settings_backend_new();
+        let fresh_settings =
+            AppSettings::try_new_with_backend(&fresh_backend).expect("settings should load");
+        deserialized.apply_to(&fresh_settings);
+
+        let restored_labels = fresh_settings.mail_labels();
+        assert_eq!(restored_labels.len(), 2);
+        assert_eq!(restored_labels[0].name, "Urgent");
+        assert_eq!(restored_labels[0].color, "#FF0000");
+        assert_eq!(restored_labels[0].tag, "$Labelurgent");
+        assert_eq!(restored_labels[1].name, "Project Alpha");
+        assert_eq!(restored_labels[1].color, "#00FF00");
+        assert_eq!(restored_labels[1].tag, "project_alpha");
+
+        assert!(!fresh_settings.junk_check_incoming());
+        assert!(fresh_settings.junk_empty_on_exit());
+        assert_eq!(fresh_settings.junk_empty_on_exit_days(), 14);
+        assert!(fresh_settings.junk_lookup_addressbook());
+        assert!(fresh_settings.junk_lookup_addressbook_local_only());
+        assert_eq!(fresh_settings.junk_default_plugin(), "SpamAssassin");
+        assert_eq!(fresh_settings.junk_custom_header(), "X-Spam-Flag");
+        assert_eq!(fresh_settings.junk_custom_header_value(), "YES");
+    }
+
+    #[test]
+    fn composer_settings_backup_validation_and_roundtrip() {
+        let backend = gio::memory_settings_backend_new();
+        let settings = AppSettings::try_new_with_backend(&backend).expect("settings should load");
+
+        settings.set_composer_show_from(false);
+        settings.set_composer_show_cc(false);
+        settings.set_composer_show_bcc(true);
+        settings.set_composer_show_reply_to(true);
+        settings.set_composer_prompt_empty_subject(false);
+        settings.set_composer_prompt_only_bcc(false);
+        settings.set_composer_inline_spelling(false);
+        settings.set_composer_reply_style("inline");
+        settings.set_composer_forward_style("quoted");
+        settings.set_composer_top_signature(true);
+        settings.set_composer_signature_outline(false);
+
+        let backup = BackupSettings::from_app(&settings);
+        assert!(!backup.composer_show_from);
+        assert!(!backup.composer_show_cc);
+        assert!(backup.composer_show_bcc);
+        assert!(backup.composer_show_reply_to);
+        assert!(!backup.composer_prompt_empty_subject);
+        assert!(!backup.composer_prompt_only_bcc);
+        assert!(!backup.composer_inline_spelling);
+        assert_eq!(backup.composer_reply_style, "inline");
+        assert_eq!(backup.composer_forward_style, "quoted");
+        assert!(backup.composer_top_signature);
+        assert!(!backup.composer_signature_outline);
+
+        backup.validate().expect("backup should validate");
+
+        // Validate rejects invalid styles
+        let mut invalid_reply = backup.clone();
+        invalid_reply.composer_reply_style = "invalid_style".to_string();
+        assert!(invalid_reply.validate().is_err());
+
+        let mut invalid_forward = backup.clone();
+        invalid_forward.composer_forward_style = "invalid_style".to_string();
+        assert!(invalid_forward.validate().is_err());
+
+        // JSON serialization round-trip
+        let serialized = serde_json::to_string(&backup).expect("should serialize");
+        let deserialized: BackupSettings =
+            serde_json::from_str(&serialized).expect("should deserialize");
+        assert!(!deserialized.composer_show_from);
+        assert!(!deserialized.composer_show_cc);
+        assert!(deserialized.composer_show_bcc);
+        assert!(deserialized.composer_show_reply_to);
+        assert!(!deserialized.composer_prompt_empty_subject);
+        assert!(!deserialized.composer_prompt_only_bcc);
+        assert!(!deserialized.composer_inline_spelling);
+        assert_eq!(deserialized.composer_reply_style, "inline");
+        assert_eq!(deserialized.composer_forward_style, "quoted");
+        assert!(deserialized.composer_top_signature);
+        assert!(!deserialized.composer_signature_outline);
+
+        // Restoration into fresh settings
+        let fresh_backend = gio::memory_settings_backend_new();
+        let fresh_settings =
+            AppSettings::try_new_with_backend(&fresh_backend).expect("settings should load");
+        deserialized.apply_to(&fresh_settings);
+
+        assert!(!fresh_settings.composer_show_from());
+        assert!(!fresh_settings.composer_show_cc());
+        assert!(fresh_settings.composer_show_bcc());
+        assert!(fresh_settings.composer_show_reply_to());
+        assert!(!fresh_settings.composer_prompt_empty_subject());
+        assert!(!fresh_settings.composer_prompt_only_bcc());
+        assert!(!fresh_settings.composer_inline_spelling());
+        assert_eq!(fresh_settings.composer_reply_style(), "inline");
+        assert_eq!(fresh_settings.composer_forward_style(), "quoted");
+        assert!(fresh_settings.composer_top_signature());
+        assert!(!fresh_settings.composer_signature_outline());
+    }
+
+    #[test]
+    fn mail_reading_policies_backup_validation_and_roundtrip() {
+        let backend = gio::memory_settings_backend_new();
+        let settings =
+            AppSettings::try_new_with_backend(&backend).expect("settings should load");
+
+        settings.set_mail_image_loading_policy("sometimes");
+        settings.set_mail_mark_seen(false);
+        settings.set_mail_mark_seen_timeout(5000);
+        settings.set_mail_caret_mode(true);
+        settings.set_mail_magic_spacebar(false);
+        settings.set_mail_citation_highlighting(false);
+        settings.set_mail_citation_color_1("#112233");
+        settings.set_mail_citation_color_2("#223344");
+        settings.set_mail_citation_color_3("#334455");
+        settings.set_mail_citation_color_4("#445566");
+        settings.set_mail_citation_color_5("#556677");
+        settings.set_mail_headers_collapsed(true);
+        settings.set_mail_show_real_date(false);
+
+        let backup = BackupSettings::from_app(&settings);
+        assert_eq!(backup.mail_image_loading_policy, "sometimes");
+        assert!(!backup.mail_mark_seen);
+        assert_eq!(backup.mail_mark_seen_timeout, 5000);
+        assert!(backup.mail_caret_mode);
+        assert!(!backup.mail_magic_spacebar);
+        assert!(!backup.mail_citation_highlighting);
+        assert_eq!(backup.mail_citation_color_1, "#112233");
+        assert_eq!(backup.mail_citation_color_2, "#223344");
+        assert_eq!(backup.mail_citation_color_3, "#334455");
+        assert_eq!(backup.mail_citation_color_4, "#445566");
+        assert_eq!(backup.mail_citation_color_5, "#556677");
+        assert!(backup.mail_headers_collapsed);
+        assert!(!backup.mail_show_real_date);
+
+        backup.validate().expect("backup should validate");
+
+        // Validate rejects invalid image loading policy
+        let mut invalid_policy = backup.clone();
+        invalid_policy.mail_image_loading_policy = "unsupported".to_string();
+        assert!(invalid_policy.validate().is_err());
+
+        // Validate rejects invalid timeout
+        let mut invalid_timeout = backup.clone();
+        invalid_timeout.mail_mark_seen_timeout = 70_000;
+        assert!(invalid_timeout.validate().is_err());
+
+        // Validate rejects invalid color
+        let mut invalid_color = backup.clone();
+        invalid_color.mail_citation_color_1 = "not-a-color".to_string();
+        assert!(invalid_color.validate().is_err());
+
+        // JSON serialization round-trip
+        let serialized = serde_json::to_string(&backup).expect("should serialize");
+        let deserialized: BackupSettings =
+            serde_json::from_str(&serialized).expect("should deserialize");
+        assert_eq!(deserialized.mail_image_loading_policy, "sometimes");
+        assert!(!deserialized.mail_mark_seen);
+        assert_eq!(deserialized.mail_mark_seen_timeout, 5000);
+        assert!(deserialized.mail_caret_mode);
+        assert!(!deserialized.mail_magic_spacebar);
+        assert!(!deserialized.mail_citation_highlighting);
+        assert_eq!(deserialized.mail_citation_color_1, "#112233");
+        assert_eq!(deserialized.mail_citation_color_2, "#223344");
+        assert_eq!(deserialized.mail_citation_color_3, "#334455");
+        assert_eq!(deserialized.mail_citation_color_4, "#445566");
+        assert_eq!(deserialized.mail_citation_color_5, "#556677");
+        assert!(deserialized.mail_headers_collapsed);
+        assert!(!deserialized.mail_show_real_date);
+
+        // Restoration into fresh settings
+        let fresh_backend = gio::memory_settings_backend_new();
+        let fresh_settings =
+            AppSettings::try_new_with_backend(&fresh_backend).expect("settings should load");
+        deserialized.apply_to(&fresh_settings);
+
+        assert_eq!(fresh_settings.mail_image_loading_policy(), "sometimes");
+        assert!(!fresh_settings.mail_mark_seen());
+        assert_eq!(fresh_settings.mail_mark_seen_timeout(), 5000);
+        assert!(fresh_settings.mail_caret_mode());
+        assert!(!fresh_settings.mail_magic_spacebar());
+        assert!(!fresh_settings.mail_citation_highlighting());
+        assert_eq!(fresh_settings.mail_citation_color_1(), "#112233");
+        assert_eq!(fresh_settings.mail_citation_color_2(), "#223344");
+        assert_eq!(fresh_settings.mail_citation_color_3(), "#334455");
+        assert_eq!(fresh_settings.mail_citation_color_4(), "#445566");
+        assert_eq!(fresh_settings.mail_citation_color_5(), "#556677");
+        assert!(fresh_settings.mail_headers_collapsed());
+        assert!(!fresh_settings.mail_show_real_date());
     }
 
     fn temporary_directory(label: &str) -> PathBuf {

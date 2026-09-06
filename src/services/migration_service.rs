@@ -1295,6 +1295,30 @@ fn is_supported_migration_key(key: &str) -> bool {
             | "contact-editor-show-misc"
             | "contact-editor-show-notes"
             | "contact-editor-show-certs"
+            | "composer-show-from"
+            | "composer-show-cc"
+            | "composer-show-bcc"
+            | "composer-show-reply-to"
+            | "composer-prompt-empty-subject"
+            | "composer-prompt-only-bcc"
+            | "composer-inline-spelling"
+            | "composer-reply-style"
+            | "composer-forward-style"
+            | "composer-top-signature"
+            | "composer-signature-outline"
+            | "mail-image-loading-policy"
+            | "mail-mark-seen"
+            | "mail-mark-seen-timeout"
+            | "mail-caret-mode"
+            | "mail-magic-spacebar"
+            | "mail-citation-highlighting"
+            | "mail-citation-color-1"
+            | "mail-citation-color-2"
+            | "mail-citation-color-3"
+            | "mail-citation-color-4"
+            | "mail-citation-color-5"
+            | "mail-headers-collapsed"
+            | "mail-show-real-date"
     )
 }
 
@@ -1367,6 +1391,29 @@ fn normalize_imported_setting_value(key: &str, value: &str) -> Result<String, &'
         "composer-charset" => normalize_composer_charset(value)
             .map(str::to_string)
             .ok_or("keine unterstützte Zeichenkodierung"),
+        "composer-reply-style" => {
+            crate::services::settings_service::normalize_composer_reply_style(value)
+                .map(str::to_string)
+                .ok_or("kein unterstützter Antwort-Stil")
+        }
+        "composer-forward-style" => {
+            crate::services::settings_service::normalize_composer_forward_style(value)
+                .map(str::to_string)
+                .ok_or("kein unterstützter Weiterleitungs-Stil")
+        }
+        "mail-image-loading-policy" => {
+            crate::services::settings_service::normalize_image_loading_policy(value)
+                .map(str::to_string)
+                .ok_or("keine unterstützte Bildladerichtlinie")
+        }
+        "mail-mark-seen-timeout" => normalize_u32_setting(value, 0, 60_000),
+        "mail-citation-color-1"
+        | "mail-citation-color-2"
+        | "mail-citation-color-3"
+        | "mail-citation-color-4"
+        | "mail-citation-color-5" => {
+            Ok(crate::services::settings_service::normalize_hex_color(value))
+        }
         "active-view" => match value.to_ascii_lowercase().as_str() {
             "mail" | "calendar" | "contacts" | "addressbook" | "tasks" | "memos" => {
                 Ok(if value.eq_ignore_ascii_case("addressbook") {
@@ -1603,6 +1650,21 @@ fn normalize_imported_setting_value(key: &str, value: &str) -> Result<String, &'
                 Err("keine portable Sprachliste")
             }
         }
+        "junk-empty-on-exit-days" => normalize_i32_setting(value, 0, 365),
+        "junk-default-plugin" => {
+            if value.len() > 128 || value.chars().any(char::is_control) {
+                Err("ungültiges Junk-Plugin")
+            } else {
+                Ok(value.to_string())
+            }
+        }
+        "junk-custom-header" | "junk-custom-header-value" => {
+            if value.len() > 256 || value.chars().any(char::is_control) {
+                Err("ungültiger Junk-Header")
+            } else {
+                Ok(value.to_string())
+            }
+        }
         _ => Ok(value.to_string()),
     }
 }
@@ -1627,6 +1689,21 @@ fn is_boolean_migration_key(key: &str) -> bool {
             | "force-dark-mode"
             | "render-html"
             | "composer-html"
+            | "composer-show-from"
+            | "composer-show-cc"
+            | "composer-show-bcc"
+            | "composer-show-reply-to"
+            | "composer-prompt-empty-subject"
+            | "composer-prompt-only-bcc"
+            | "composer-inline-spelling"
+            | "composer-top-signature"
+            | "composer-signature-outline"
+            | "mail-mark-seen"
+            | "mail-caret-mode"
+            | "mail-magic-spacebar"
+            | "mail-citation-highlighting"
+            | "mail-headers-collapsed"
+            | "mail-show-real-date"
             | "request-read-receipt"
             | "mark-read-on-selection"
             | "show-message-preview"
@@ -1642,6 +1719,10 @@ fn is_boolean_migration_key(key: &str) -> bool {
             | "mail-show-attachment"
             | "mail-show-preview-text"
             | "mail-show-labels"
+            | "junk-check-incoming"
+            | "junk-empty-on-exit"
+            | "junk-lookup-addressbook"
+            | "junk-lookup-addressbook-local-only"
             | "sign-new-messages"
             | "append-signature"
             | "quote-original"
@@ -4231,6 +4312,58 @@ task-layout=7
         assert!(normalize_imported_setting_value("memo-category-filter", "\"quoted\"").is_err());
         assert!(normalize_imported_setting_value("memo-source-filter", "source a").is_err());
         assert!(normalize_imported_setting_value("memo-preview-visible", "maybe").is_err());
+    }
+
+    #[test]
+    fn mail_reading_policies_migration_normalization() {
+        assert_eq!(
+            normalize_imported_setting_value("mail-image-loading-policy", "always").unwrap(),
+            "always"
+        );
+        assert_eq!(
+            normalize_imported_setting_value("mail-image-loading-policy", "CONTACTS").unwrap(),
+            "sometimes"
+        );
+        assert!(normalize_imported_setting_value("mail-image-loading-policy", "invalid").is_err());
+
+        assert_eq!(
+            normalize_imported_setting_value("mail-mark-seen", "true").unwrap(),
+            "true"
+        );
+        assert_eq!(
+            normalize_imported_setting_value("mail-mark-seen-timeout", "2500").unwrap(),
+            "2500"
+        );
+        assert!(normalize_imported_setting_value("mail-mark-seen-timeout", "90000").is_err());
+
+        assert_eq!(
+            normalize_imported_setting_value("mail-caret-mode", "false").unwrap(),
+            "false"
+        );
+        assert_eq!(
+            normalize_imported_setting_value("mail-magic-spacebar", "1").unwrap(),
+            "true"
+        );
+        assert_eq!(
+            normalize_imported_setting_value("mail-citation-highlighting", "yes").unwrap(),
+            "true"
+        );
+        assert_eq!(
+            normalize_imported_setting_value("mail-citation-color-1", "#abcdef").unwrap(),
+            "#ABCDEF"
+        );
+        assert_eq!(
+            normalize_imported_setting_value("mail-citation-color-2", "#123").unwrap(),
+            "#112233"
+        );
+        assert_eq!(
+            normalize_imported_setting_value("mail-headers-collapsed", "0").unwrap(),
+            "false"
+        );
+        assert_eq!(
+            normalize_imported_setting_value("mail-show-real-date", "true").unwrap(),
+            "true"
+        );
     }
 
     #[test]

@@ -312,8 +312,169 @@ pub(crate) fn normalize_composer_charset(value: &str) -> Option<&'static str> {
     }
 }
 
+pub(crate) fn normalize_composer_reply_style(value: &str) -> Option<&'static str> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "quoted" => Some("quoted"),
+        "inline" => Some("inline"),
+        "attach" | "attached" => Some("attach"),
+        _ => None,
+    }
+}
+
+pub(crate) fn normalize_composer_forward_style(value: &str) -> Option<&'static str> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "attached" | "attach" => Some("attached"),
+        "inline" => Some("inline"),
+        "quoted" => Some("quoted"),
+        _ => None,
+    }
+}
+
+pub(crate) fn normalize_image_loading_policy(value: &str) -> Option<&'static str> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "never" => Some("never"),
+        "always" => Some("always"),
+        "sometimes" | "contacts" => Some("sometimes"),
+        _ => None,
+    }
+}
+
 fn clamp_mail_sync_message_limit(value: i32) -> i32 {
     value.clamp(MIN_MAIL_SYNC_MESSAGE_LIMIT, MAX_MAIL_SYNC_MESSAGE_LIMIT)
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct MailLabelDefinition {
+    pub name: String,
+    pub color: String,
+    pub tag: String,
+}
+
+impl MailLabelDefinition {
+    pub fn new(name: impl Into<String>, color: impl Into<String>, tag: Option<String>) -> Self {
+        let name = name.into().trim().to_string();
+        let color = normalize_hex_color(&color.into());
+        let tag = tag
+            .filter(|t| !t.trim().is_empty())
+            .unwrap_or_else(|| Self::tag_from_name(&name));
+        Self { name, color, tag }
+    }
+
+    pub fn display_name(&self) -> String {
+        self.name.replace('_', "")
+    }
+
+    pub fn tag_from_name(name: &str) -> String {
+        let clean = name.replace('_', "");
+        let clean = clean.trim().to_ascii_lowercase();
+        match clean.as_str() {
+            "important" | "wichtig" => "$Labelimportant".to_string(),
+            "work" | "arbeit" => "$Labelwork".to_string(),
+            "personal" | "persönlich" | "persoenlich" => "$Labelpersonal".to_string(),
+            "to do" | "todo" | "zu erledigen" => "$Labeltodo".to_string(),
+            "later" | "später" | "spaeter" => "$Labellater".to_string(),
+            _ => {
+                let mut sanitized = String::new();
+                for c in clean.chars() {
+                    if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                        sanitized.push(c);
+                    } else if c.is_whitespace() {
+                        sanitized.push('_');
+                    }
+                }
+                if sanitized.is_empty() {
+                    "custom_label".to_string()
+                } else {
+                    sanitized
+                }
+            }
+        }
+    }
+
+    pub fn parse(entry: &str) -> Option<Self> {
+        let entry = entry.trim();
+        if entry.is_empty() {
+            return None;
+        }
+        let (name_color, tag_part) = if let Some((nc, t)) = entry.split_once('|') {
+            (nc.trim(), Some(t.trim().to_string()))
+        } else {
+            (entry, None)
+        };
+        let (name, color) = if let Some((n, c)) = name_color.split_once(':') {
+            (n.trim(), c.trim())
+        } else {
+            (name_color, "#3465A4")
+        };
+        if name.is_empty() {
+            return None;
+        }
+        let color = normalize_hex_color(color);
+        let tag = tag_part
+            .filter(|t| !t.is_empty())
+            .unwrap_or_else(|| Self::tag_from_name(name));
+        Some(Self {
+            name: name.to_string(),
+            color,
+            tag,
+        })
+    }
+
+    pub fn to_setting_string(&self) -> String {
+        if self.tag.starts_with('$') || !self.tag.is_empty() {
+            format!("{}:{}|{}", self.name, self.color, self.tag)
+        } else {
+            format!("{}:{}", self.name, self.color)
+        }
+    }
+
+    pub fn default_labels() -> Vec<Self> {
+        vec![
+            Self {
+                name: "Important".to_string(),
+                color: "#EF2929".to_string(),
+                tag: "$Labelimportant".to_string(),
+            },
+            Self {
+                name: "Work".to_string(),
+                color: "#F57900".to_string(),
+                tag: "$Labelwork".to_string(),
+            },
+            Self {
+                name: "Personal".to_string(),
+                color: "#4E9A06".to_string(),
+                tag: "$Labelpersonal".to_string(),
+            },
+            Self {
+                name: "To Do".to_string(),
+                color: "#3465A4".to_string(),
+                tag: "$Labeltodo".to_string(),
+            },
+            Self {
+                name: "Later".to_string(),
+                color: "#75507B".to_string(),
+                tag: "$Labellater".to_string(),
+            },
+        ]
+    }
+}
+
+pub fn normalize_hex_color(color: &str) -> String {
+    let trimmed = color.trim();
+    let hex = trimmed.strip_prefix('#').unwrap_or(trimmed);
+    if (hex.len() == 6 || hex.len() == 8) && hex.chars().all(|c| c.is_ascii_hexdigit()) {
+        format!("#{}", &hex[..6].to_ascii_uppercase())
+    } else if hex.len() == 3 && hex.chars().all(|c| c.is_ascii_hexdigit()) {
+        let mut expanded = String::with_capacity(7);
+        expanded.push('#');
+        for c in hex.chars() {
+            expanded.push(c.to_ascii_uppercase());
+            expanded.push(c.to_ascii_uppercase());
+        }
+        expanded
+    } else {
+        "#3465A4".to_string()
+    }
 }
 
 impl AppSettings {
@@ -1176,6 +1337,100 @@ impl AppSettings {
         }
     }
 
+    pub fn composer_show_from(&self) -> bool {
+        self.settings.boolean("composer-show-from")
+    }
+
+    pub fn set_composer_show_from(&self, value: bool) {
+        self.set_boolean("composer-show-from", value);
+    }
+
+    pub fn composer_show_cc(&self) -> bool {
+        self.settings.boolean("composer-show-cc")
+    }
+
+    pub fn set_composer_show_cc(&self, value: bool) {
+        self.set_boolean("composer-show-cc", value);
+    }
+
+    pub fn composer_show_bcc(&self) -> bool {
+        self.settings.boolean("composer-show-bcc")
+    }
+
+    pub fn set_composer_show_bcc(&self, value: bool) {
+        self.set_boolean("composer-show-bcc", value);
+    }
+
+    pub fn composer_show_reply_to(&self) -> bool {
+        self.settings.boolean("composer-show-reply-to")
+    }
+
+    pub fn set_composer_show_reply_to(&self, value: bool) {
+        self.set_boolean("composer-show-reply-to", value);
+    }
+
+    pub fn composer_prompt_empty_subject(&self) -> bool {
+        self.settings.boolean("composer-prompt-empty-subject")
+    }
+
+    pub fn set_composer_prompt_empty_subject(&self, value: bool) {
+        self.set_boolean("composer-prompt-empty-subject", value);
+    }
+
+    pub fn composer_prompt_only_bcc(&self) -> bool {
+        self.settings.boolean("composer-prompt-only-bcc")
+    }
+
+    pub fn set_composer_prompt_only_bcc(&self, value: bool) {
+        self.set_boolean("composer-prompt-only-bcc", value);
+    }
+
+    pub fn composer_inline_spelling(&self) -> bool {
+        self.settings.boolean("composer-inline-spelling")
+    }
+
+    pub fn set_composer_inline_spelling(&self, value: bool) {
+        self.set_boolean("composer-inline-spelling", value);
+    }
+
+    pub fn composer_reply_style(&self) -> String {
+        normalize_composer_reply_style(&self.settings.string("composer-reply-style"))
+            .unwrap_or("quoted")
+            .to_string()
+    }
+
+    pub fn set_composer_reply_style(&self, value: &str) {
+        let value = normalize_composer_reply_style(value).unwrap_or("quoted");
+        self.set_string("composer-reply-style", value);
+    }
+
+    pub fn composer_forward_style(&self) -> String {
+        normalize_composer_forward_style(&self.settings.string("composer-forward-style"))
+            .unwrap_or("attached")
+            .to_string()
+    }
+
+    pub fn set_composer_forward_style(&self, value: &str) {
+        let value = normalize_composer_forward_style(value).unwrap_or("attached");
+        self.set_string("composer-forward-style", value);
+    }
+
+    pub fn composer_top_signature(&self) -> bool {
+        self.settings.boolean("composer-top-signature")
+    }
+
+    pub fn set_composer_top_signature(&self, value: bool) {
+        self.set_boolean("composer-top-signature", value);
+    }
+
+    pub fn composer_signature_outline(&self) -> bool {
+        self.settings.boolean("composer-signature-outline")
+    }
+
+    pub fn set_composer_signature_outline(&self, value: bool) {
+        self.set_boolean("composer-signature-outline", value);
+    }
+
     pub fn mail_font_family(&self) -> String {
         let value = self.settings.string("mail-font-family").to_string();
         sanitize_font_family(&value)
@@ -1196,12 +1451,144 @@ impl AppSettings {
         self.set_int("mail-font-size", value.clamp(8, 48) as i32);
     }
 
+    pub fn mail_image_loading_policy(&self) -> String {
+        normalize_image_loading_policy(&self.settings.string("mail-image-loading-policy"))
+            .unwrap_or("never")
+            .to_string()
+    }
+
+    pub fn set_mail_image_loading_policy(&self, value: &str) {
+        let value = normalize_image_loading_policy(value).unwrap_or("never");
+        self.set_string("mail-image-loading-policy", value);
+        self.set_boolean("auto-load-remote-images", value == "always");
+    }
+
+    pub fn mail_mark_seen(&self) -> bool {
+        self.settings.boolean("mail-mark-seen")
+    }
+
+    pub fn set_mail_mark_seen(&self, value: bool) {
+        self.set_boolean("mail-mark-seen", value);
+        self.set_boolean("mark-read-on-selection", value);
+    }
+
+    pub fn mail_mark_seen_timeout(&self) -> u32 {
+        self.settings.int("mail-mark-seen-timeout").clamp(0, 60_000) as u32
+    }
+
+    pub fn set_mail_mark_seen_timeout(&self, value: u32) {
+        let clamped = value.clamp(0, 60_000) as i32;
+        self.set_int("mail-mark-seen-timeout", clamped);
+        self.set_int("mark-read-timeout", clamped.clamp(0, 30_000));
+    }
+
+    pub fn mail_caret_mode(&self) -> bool {
+        self.settings.boolean("mail-caret-mode")
+    }
+
+    pub fn set_mail_caret_mode(&self, value: bool) {
+        self.set_boolean("mail-caret-mode", value);
+    }
+
+    pub fn mail_magic_spacebar(&self) -> bool {
+        self.settings.boolean("mail-magic-spacebar")
+    }
+
+    pub fn set_mail_magic_spacebar(&self, value: bool) {
+        self.set_boolean("mail-magic-spacebar", value);
+    }
+
+    pub fn mail_citation_highlighting(&self) -> bool {
+        self.settings.boolean("mail-citation-highlighting")
+    }
+
+    pub fn set_mail_citation_highlighting(&self, value: bool) {
+        self.set_boolean("mail-citation-highlighting", value);
+    }
+
+    pub fn mail_citation_color_1(&self) -> String {
+        let val = self.settings.string("mail-citation-color-1");
+        normalize_hex_color(&val)
+    }
+
+    pub fn set_mail_citation_color_1(&self, value: &str) {
+        let value = normalize_hex_color(value);
+        self.set_string("mail-citation-color-1", &value);
+    }
+
+    pub fn mail_citation_color_2(&self) -> String {
+        let val = self.settings.string("mail-citation-color-2");
+        normalize_hex_color(&val)
+    }
+
+    pub fn set_mail_citation_color_2(&self, value: &str) {
+        let value = normalize_hex_color(value);
+        self.set_string("mail-citation-color-2", &value);
+    }
+
+    pub fn mail_citation_color_3(&self) -> String {
+        let val = self.settings.string("mail-citation-color-3");
+        normalize_hex_color(&val)
+    }
+
+    pub fn set_mail_citation_color_3(&self, value: &str) {
+        let value = normalize_hex_color(value);
+        self.set_string("mail-citation-color-3", &value);
+    }
+
+    pub fn mail_citation_color_4(&self) -> String {
+        let val = self.settings.string("mail-citation-color-4");
+        normalize_hex_color(&val)
+    }
+
+    pub fn set_mail_citation_color_4(&self, value: &str) {
+        let value = normalize_hex_color(value);
+        self.set_string("mail-citation-color-4", &value);
+    }
+
+    pub fn mail_citation_color_5(&self) -> String {
+        let val = self.settings.string("mail-citation-color-5");
+        normalize_hex_color(&val)
+    }
+
+    pub fn set_mail_citation_color_5(&self, value: &str) {
+        let value = normalize_hex_color(value);
+        self.set_string("mail-citation-color-5", &value);
+    }
+
+    pub fn mail_citation_colors(&self) -> [String; 5] {
+        [
+            self.mail_citation_color_1(),
+            self.mail_citation_color_2(),
+            self.mail_citation_color_3(),
+            self.mail_citation_color_4(),
+            self.mail_citation_color_5(),
+        ]
+    }
+
+    pub fn mail_headers_collapsed(&self) -> bool {
+        self.settings.boolean("mail-headers-collapsed")
+    }
+
+    pub fn set_mail_headers_collapsed(&self, value: bool) {
+        self.set_boolean("mail-headers-collapsed", value);
+    }
+
+    pub fn mail_show_real_date(&self) -> bool {
+        self.settings.boolean("mail-show-real-date")
+    }
+
+    pub fn set_mail_show_real_date(&self, value: bool) {
+        self.set_boolean("mail-show-real-date", value);
+    }
+
     pub fn mark_read_on_selection(&self) -> bool {
         self.settings.boolean("mark-read-on-selection")
     }
 
     pub fn set_mark_read_on_selection(&self, value: bool) {
         self.set_boolean("mark-read-on-selection", value);
+        self.set_boolean("mail-mark-seen", value);
     }
 
     pub fn mark_read_timeout(&self) -> i32 {
@@ -1209,7 +1596,9 @@ impl AppSettings {
     }
 
     pub fn set_mark_read_timeout(&self, value: i32) {
-        self.set_int("mark-read-timeout", value.clamp(0, 30_000));
+        let clamped = value.clamp(0, 30_000);
+        self.set_int("mark-read-timeout", clamped);
+        self.set_int("mail-mark-seen-timeout", clamped);
     }
 
     pub fn show_message_preview(&self) -> bool {
@@ -2222,6 +2611,96 @@ impl AppSettings {
         self.set_boolean("flush-outbox", value);
     }
 
+    pub fn mail_labels(&self) -> Vec<MailLabelDefinition> {
+        let strv = self.settings.strv("mail-labels");
+        let mut labels = Vec::new();
+        for entry in strv {
+            if let Some(def) = MailLabelDefinition::parse(entry.as_str()) {
+                labels.push(def);
+            }
+        }
+        if labels.is_empty() {
+            MailLabelDefinition::default_labels()
+        } else {
+            labels
+        }
+    }
+
+    pub fn set_mail_labels(&self, labels: &[MailLabelDefinition]) -> bool {
+        let raw: Vec<String> = labels.iter().map(|l| l.to_setting_string()).collect();
+        let slice_refs: Vec<&str> = raw.iter().map(String::as_str).collect();
+        if let Err(error) = self.settings.set_strv("mail-labels", &*slice_refs) {
+            tracing::warn!(%error, "Could not persist mail labels");
+            false
+        } else {
+            true
+        }
+    }
+
+    pub fn junk_check_incoming(&self) -> bool {
+        self.settings.boolean("junk-check-incoming")
+    }
+
+    pub fn set_junk_check_incoming(&self, value: bool) {
+        self.set_boolean("junk-check-incoming", value);
+    }
+
+    pub fn junk_empty_on_exit(&self) -> bool {
+        self.settings.boolean("junk-empty-on-exit")
+    }
+
+    pub fn set_junk_empty_on_exit(&self, value: bool) {
+        self.set_boolean("junk-empty-on-exit", value);
+    }
+
+    pub fn junk_empty_on_exit_days(&self) -> i32 {
+        self.settings.int("junk-empty-on-exit-days")
+    }
+
+    pub fn set_junk_empty_on_exit_days(&self, value: i32) {
+        self.set_int("junk-empty-on-exit-days", value);
+    }
+
+    pub fn junk_lookup_addressbook(&self) -> bool {
+        self.settings.boolean("junk-lookup-addressbook")
+    }
+
+    pub fn set_junk_lookup_addressbook(&self, value: bool) {
+        self.set_boolean("junk-lookup-addressbook", value);
+    }
+
+    pub fn junk_lookup_addressbook_local_only(&self) -> bool {
+        self.settings.boolean("junk-lookup-addressbook-local-only")
+    }
+
+    pub fn set_junk_lookup_addressbook_local_only(&self, value: bool) {
+        self.set_boolean("junk-lookup-addressbook-local-only", value);
+    }
+
+    pub fn junk_default_plugin(&self) -> String {
+        self.settings.string("junk-default-plugin").to_string()
+    }
+
+    pub fn set_junk_default_plugin(&self, value: &str) {
+        self.set_string("junk-default-plugin", value);
+    }
+
+    pub fn junk_custom_header(&self) -> String {
+        self.settings.string("junk-custom-header").to_string()
+    }
+
+    pub fn set_junk_custom_header(&self, value: &str) {
+        self.set_string("junk-custom-header", value);
+    }
+
+    pub fn junk_custom_header_value(&self) -> String {
+        self.settings.string("junk-custom-header-value").to_string()
+    }
+
+    pub fn set_junk_custom_header_value(&self, value: &str) {
+        self.set_string("junk-custom-header-value", value);
+    }
+
     /// Apply one already-normalized, non-secret setting from an explicit
     /// profile migration.  The migration parser only exposes keys from the
     /// installed schema; keeping the final type conversion here makes sure
@@ -2678,6 +3157,126 @@ impl AppSettings {
             "flush-outbox" => {
                 self.set_flush_outbox(parse_migrated_bool(key, value)?);
             }
+            "mail-labels" | "labels" => {
+                let mut labels = Vec::new();
+                for entry in value.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+                    let clean_entry = entry.trim_matches(|c| c == '[' || c == ']' || c == '\'' || c == '"');
+                    if let Some(label) = MailLabelDefinition::parse(clean_entry) {
+                        labels.push(label);
+                    }
+                }
+                if labels.is_empty() {
+                    return Err("ungültige mail-labels-Liste".to_string());
+                }
+                self.set_mail_labels(&labels);
+            }
+            "junk-check-incoming" => {
+                self.set_junk_check_incoming(parse_migrated_bool(key, value)?);
+            }
+            "junk-empty-on-exit" => {
+                self.set_junk_empty_on_exit(parse_migrated_bool(key, value)?);
+            }
+            "junk-empty-on-exit-days" => {
+                self.set_junk_empty_on_exit_days(parse_migrated_i32_in_range(key, value, 0, 365)?);
+            }
+            "junk-lookup-addressbook" => {
+                self.set_junk_lookup_addressbook(parse_migrated_bool(key, value)?);
+            }
+            "junk-lookup-addressbook-local-only" => {
+                self.set_junk_lookup_addressbook_local_only(parse_migrated_bool(key, value)?);
+            }
+            "junk-default-plugin" => {
+                if !matches!(value, "Bogofilter" | "SpamAssassin") {
+                    return Err(format!("ungültiges Junk-Plugin für „{key}“"));
+                }
+                self.set_junk_default_plugin(value);
+            }
+            "junk-custom-header" => {
+                self.set_junk_custom_header(value);
+            }
+            "junk-custom-header-value" => {
+                self.set_junk_custom_header_value(value);
+            }
+            "composer-show-from" => {
+                self.set_composer_show_from(parse_migrated_bool(key, value)?);
+            }
+            "composer-show-cc" => {
+                self.set_composer_show_cc(parse_migrated_bool(key, value)?);
+            }
+            "composer-show-bcc" => {
+                self.set_composer_show_bcc(parse_migrated_bool(key, value)?);
+            }
+            "composer-show-reply-to" => {
+                self.set_composer_show_reply_to(parse_migrated_bool(key, value)?);
+            }
+            "composer-prompt-empty-subject" => {
+                self.set_composer_prompt_empty_subject(parse_migrated_bool(key, value)?);
+            }
+            "composer-prompt-only-bcc" => {
+                self.set_composer_prompt_only_bcc(parse_migrated_bool(key, value)?);
+            }
+            "composer-inline-spelling" => {
+                self.set_composer_inline_spelling(parse_migrated_bool(key, value)?);
+            }
+            "composer-reply-style" => {
+                let value = normalize_composer_reply_style(value)
+                    .ok_or_else(|| format!("ungültiger Antwort-Stil für „{key}“"))?;
+                self.set_composer_reply_style(value);
+            }
+            "composer-forward-style" => {
+                let value = normalize_composer_forward_style(value)
+                    .ok_or_else(|| format!("ungültiger Weiterleitungs-Stil für „{key}“"))?;
+                self.set_composer_forward_style(value);
+            }
+            "composer-top-signature" => {
+                self.set_composer_top_signature(parse_migrated_bool(key, value)?);
+            }
+            "composer-signature-outline" => {
+                self.set_composer_signature_outline(parse_migrated_bool(key, value)?);
+            }
+            "mail-image-loading-policy" => {
+                let value = normalize_image_loading_policy(value)
+                    .ok_or_else(|| format!("ungültige Bildladerichtlinie für „{key}“"))?;
+                self.set_mail_image_loading_policy(value);
+            }
+            "mail-mark-seen" => {
+                self.set_mail_mark_seen(parse_migrated_bool(key, value)?);
+            }
+            "mail-mark-seen-timeout" => {
+                self.set_mail_mark_seen_timeout(
+                    parse_migrated_i32(key, value)?.clamp(0, 60_000) as u32,
+                );
+            }
+            "mail-caret-mode" => {
+                self.set_mail_caret_mode(parse_migrated_bool(key, value)?);
+            }
+            "mail-magic-spacebar" => {
+                self.set_mail_magic_spacebar(parse_migrated_bool(key, value)?);
+            }
+            "mail-citation-highlighting" => {
+                self.set_mail_citation_highlighting(parse_migrated_bool(key, value)?);
+            }
+            "mail-citation-color-1" => {
+                self.set_mail_citation_color_1(&normalize_hex_color(value));
+            }
+            "mail-citation-color-2" => {
+                self.set_mail_citation_color_2(&normalize_hex_color(value));
+            }
+            "mail-citation-color-3" => {
+                self.set_mail_citation_color_3(&normalize_hex_color(value));
+            }
+            "mail-citation-color-4" => {
+                self.set_mail_citation_color_4(&normalize_hex_color(value));
+            }
+            "mail-citation-color-5" => {
+                self.set_mail_citation_color_5(&normalize_hex_color(value));
+            }
+            "mail-headers-collapsed" => {
+                self.set_mail_headers_collapsed(parse_migrated_bool(key, value)?);
+            }
+            "mail-show-real-date" => {
+                self.set_mail_show_real_date(parse_migrated_bool(key, value)?);
+            }
             _ => return Err(format!("unbekannter Migrationsschlüssel „{key}“")),
         }
         Ok(())
@@ -2725,6 +3324,8 @@ impl AppSettings {
             "calendar-second-zone",
             "calendar-second-zones",
             "calendar-hidden-sources",
+            "calendar-tag-vpane-position",
+            "calendar-show-tag-vpane",
             "task-hidden-sources",
             "memo-hidden-sources",
             "addressbook-hidden-sources",
@@ -2736,6 +3337,12 @@ impl AppSettings {
             "memo-groups-order",
             "addressbook-hidden-groups",
             "addressbook-groups-order",
+            "sidebar-width",
+            "show-menubar",
+            "show-toolbar",
+            "show-sidebar",
+            "show-statusbar",
+            "toolbar-style",
             "date-format",
             "time-format",
             "calendar-time-zone",
@@ -2750,6 +3357,7 @@ impl AppSettings {
             "mail-font-family",
             "mail-font-size",
             "mark-read-on-selection",
+            "mark-read-timeout",
             "show-message-preview",
             "mail-show-security-details",
             "mail-show-all-headers",
@@ -2770,10 +3378,20 @@ impl AppSettings {
             "mail-show-attachment",
             "mail-show-preview-text",
             "mail-show-labels",
+            "mail-labels",
             "mail-show-size",
             "mail-show-follow-up-due",
             "mail-show-location",
             "mail-sender-column-width",
+            "mail-subject-column-width",
+            "mail-date-column-width",
+            "mail-size-column-width",
+            "mail-follow-up-due-column-width",
+            "mail-location-column-width",
+            "mail-sort-column",
+            "mail-list-view-profile",
+            "mail-list-column-order",
+            "mail-list-wide-column-order",
             "color-scheme",
             "sign-new-messages",
             "default-pgp-key",
@@ -2841,6 +3459,38 @@ impl AppSettings {
             "filters-log-actions",
             "filters-log-file",
             "flush-outbox",
+            "junk-check-incoming",
+            "junk-empty-on-exit",
+            "junk-empty-on-exit-days",
+            "junk-lookup-addressbook",
+            "junk-lookup-addressbook-local-only",
+            "junk-default-plugin",
+            "junk-custom-header",
+            "junk-custom-header-value",
+            "composer-show-from",
+            "composer-show-cc",
+            "composer-show-bcc",
+            "composer-show-reply-to",
+            "composer-prompt-empty-subject",
+            "composer-prompt-only-bcc",
+            "composer-inline-spelling",
+            "composer-reply-style",
+            "composer-forward-style",
+            "composer-top-signature",
+            "composer-signature-outline",
+            "mail-image-loading-policy",
+            "mail-mark-seen",
+            "mail-mark-seen-timeout",
+            "mail-caret-mode",
+            "mail-magic-spacebar",
+            "mail-citation-highlighting",
+            "mail-citation-color-1",
+            "mail-citation-color-2",
+            "mail-citation-color-3",
+            "mail-citation-color-4",
+            "mail-citation-color-5",
+            "mail-headers-collapsed",
+            "mail-show-real-date",
         ] {
             self.settings.reset(key);
         }
@@ -3088,11 +3738,13 @@ pub fn sanitize_duration_units(units: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{
-        AppSettings, DEFAULT_MAIL_NORMAL_HEADERS, MAX_MAIL_NORMAL_HEADERS, build_contact_map_uri,
-        clamp_mail_sync_message_limit, default_mail_normal_headers, mail_list_profile_column_order,
-        normalize_composer_charset, normalize_mail_list_column_order,
-        normalized_mail_list_view_profile, normalized_mail_sort_field,
-        normalized_switcher_location, sanitize_calendar_workdays, sanitize_spellcheck_languages,
+        AppSettings, DEFAULT_MAIL_NORMAL_HEADERS, MAX_MAIL_NORMAL_HEADERS, MailLabelDefinition,
+        build_contact_map_uri, clamp_mail_sync_message_limit, default_mail_normal_headers,
+        mail_list_profile_column_order, normalize_composer_charset,
+        normalize_composer_forward_style, normalize_composer_reply_style,
+        normalize_image_loading_policy, normalize_mail_list_column_order,
+        normalized_mail_list_view_profile, normalized_mail_sort_field, normalized_switcher_location,
+        sanitize_calendar_workdays, sanitize_spellcheck_languages,
         validate_mail_normal_header_name,
     };
     use gtk::gio;
@@ -4171,5 +4823,313 @@ mod tests {
         assert!(!reset.filters_log_actions());
         assert_eq!(reset.filters_log_file(), "");
         assert!(reset.flush_outbox());
+    }
+
+    #[test]
+    fn mail_labels_and_junk_settings_roundtrip() {
+        let backend = gio::memory_settings_backend_new();
+        let settings = settings_with_backend(&backend);
+
+        // 1. Defaults
+        let default_labels = settings.mail_labels();
+        assert_eq!(default_labels.len(), 5);
+        assert_eq!(default_labels[0].name, "Important");
+        assert_eq!(default_labels[0].color, "#EF2929");
+        assert_eq!(default_labels[0].tag, "$Labelimportant");
+
+        assert!(settings.junk_check_incoming());
+        assert!(!settings.junk_empty_on_exit());
+        assert_eq!(settings.junk_empty_on_exit_days(), 0);
+        assert!(settings.junk_lookup_addressbook());
+        assert!(!settings.junk_lookup_addressbook_local_only());
+        assert_eq!(settings.junk_default_plugin(), "Bogofilter");
+        assert_eq!(settings.junk_custom_header(), "X-Spam-Flag");
+        assert_eq!(settings.junk_custom_header_value(), "YES");
+
+        // 2. Setters & Label definition manipulation
+        let custom_labels = vec![
+            MailLabelDefinition::new("Urgent", "#FF0000", None),
+            MailLabelDefinition::new("Client A", "#00FF00", Some("client-a".to_string())),
+        ];
+        assert!(settings.set_mail_labels(&custom_labels));
+        let loaded = settings.mail_labels();
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(loaded[0].name, "Urgent");
+        assert_eq!(loaded[0].color, "#FF0000");
+        assert_eq!(loaded[1].name, "Client A");
+        assert_eq!(loaded[1].tag, "client-a");
+
+        settings.set_junk_check_incoming(false);
+        assert!(!settings.junk_check_incoming());
+        settings.set_junk_empty_on_exit(true);
+        assert!(settings.junk_empty_on_exit());
+        settings.set_junk_empty_on_exit_days(7);
+        assert_eq!(settings.junk_empty_on_exit_days(), 7);
+        settings.set_junk_lookup_addressbook(false);
+        assert!(!settings.junk_lookup_addressbook());
+        settings.set_junk_lookup_addressbook_local_only(true);
+        assert!(settings.junk_lookup_addressbook_local_only());
+        settings.set_junk_default_plugin("SpamAssassin");
+        assert_eq!(settings.junk_default_plugin(), "SpamAssassin");
+        settings.set_junk_custom_header("X-Spam-Status");
+        assert_eq!(settings.junk_custom_header(), "X-Spam-Status");
+        settings.set_junk_custom_header_value("Yes");
+        assert_eq!(settings.junk_custom_header_value(), "Yes");
+
+        // 3. Migration
+        settings
+            .apply_migrated_setting(
+                "mail-labels",
+                "['Work:#F57900|$Labelwork', 'Billing:#112233|billing']",
+            )
+            .unwrap();
+        let migrated_labels = settings.mail_labels();
+        assert_eq!(migrated_labels.len(), 2);
+        assert_eq!(migrated_labels[0].name, "Work");
+        assert_eq!(migrated_labels[1].name, "Billing");
+        assert_eq!(migrated_labels[1].color, "#112233");
+
+        settings
+            .apply_migrated_setting("junk-check-incoming", "true")
+            .unwrap();
+        assert!(settings.junk_check_incoming());
+        settings
+            .apply_migrated_setting("junk-default-plugin", "Bogofilter")
+            .unwrap();
+        assert_eq!(settings.junk_default_plugin(), "Bogofilter");
+        assert!(
+            settings
+                .apply_migrated_setting("junk-default-plugin", "InvalidPlugin")
+                .is_err()
+        );
+
+        // 4. Reset to defaults
+        settings.reset_to_defaults();
+        let reset = settings_with_backend(&backend);
+        assert_eq!(reset.mail_labels().len(), 5);
+        assert!(reset.junk_check_incoming());
+        assert!(!reset.junk_empty_on_exit());
+        assert_eq!(reset.junk_empty_on_exit_days(), 0);
+        assert_eq!(reset.junk_default_plugin(), "Bogofilter");
+    }
+
+    #[test]
+    fn composer_header_toggles_and_options_roundtrip() {
+        let backend = gio::memory_settings_backend_new();
+        let settings = settings_with_backend(&backend);
+
+        // 1. Defaults
+        assert!(settings.composer_show_from());
+        assert!(settings.composer_show_cc());
+        assert!(!settings.composer_show_bcc());
+        assert!(!settings.composer_show_reply_to());
+        assert!(settings.composer_prompt_empty_subject());
+        assert!(settings.composer_prompt_only_bcc());
+        assert!(settings.composer_inline_spelling());
+        assert_eq!(settings.composer_reply_style(), "quoted");
+        assert_eq!(settings.composer_forward_style(), "attached");
+        assert!(!settings.composer_top_signature());
+        assert!(settings.composer_signature_outline());
+
+        // 2. Setters & Roundtrip
+        settings.set_composer_show_from(false);
+        assert!(!settings.composer_show_from());
+        settings.set_composer_show_bcc(true);
+        assert!(settings.composer_show_bcc());
+        settings.set_composer_show_reply_to(true);
+        assert!(settings.composer_show_reply_to());
+        settings.set_composer_prompt_empty_subject(false);
+        assert!(!settings.composer_prompt_empty_subject());
+        settings.set_composer_prompt_only_bcc(false);
+        assert!(!settings.composer_prompt_only_bcc());
+        settings.set_composer_inline_spelling(false);
+        assert!(!settings.composer_inline_spelling());
+        settings.set_composer_reply_style("inline");
+        assert_eq!(settings.composer_reply_style(), "inline");
+        settings.set_composer_forward_style("quoted");
+        assert_eq!(settings.composer_forward_style(), "quoted");
+        settings.set_composer_top_signature(true);
+        assert!(settings.composer_top_signature());
+        settings.set_composer_signature_outline(false);
+        assert!(!settings.composer_signature_outline());
+
+        // 3. Normalization
+        assert_eq!(normalize_composer_reply_style("ATTACH"), Some("attach"));
+        assert_eq!(normalize_composer_reply_style("invalid"), None);
+        assert_eq!(normalize_composer_forward_style("inline"), Some("inline"));
+        assert_eq!(normalize_composer_forward_style("invalid"), None);
+
+        // 4. Migration
+        settings
+            .apply_migrated_setting("composer-show-bcc", "true")
+            .unwrap();
+        assert!(settings.composer_show_bcc());
+        settings
+            .apply_migrated_setting("composer-reply-style", "attach")
+            .unwrap();
+        assert_eq!(settings.composer_reply_style(), "attach");
+        assert!(
+            settings
+                .apply_migrated_setting("composer-reply-style", "nonexistent")
+                .is_err()
+        );
+
+        // 5. Reset to defaults
+        settings.reset_to_defaults();
+        let reset = settings_with_backend(&backend);
+        assert!(reset.composer_show_from());
+        assert!(reset.composer_show_cc());
+        assert!(!reset.composer_show_bcc());
+        assert!(!reset.composer_show_reply_to());
+        assert!(reset.composer_prompt_empty_subject());
+        assert_eq!(reset.composer_reply_style(), "quoted");
+        assert_eq!(reset.composer_forward_style(), "attached");
+        assert!(!reset.composer_top_signature());
+        assert!(reset.composer_signature_outline());
+    }
+
+    #[test]
+    fn mail_reading_policies_roundtrip() {
+        let backend = gio::memory_settings_backend_new();
+        let settings = settings_with_backend(&backend);
+
+        // 1. Defaults
+        assert_eq!(settings.mail_image_loading_policy(), "never");
+        assert!(settings.mail_mark_seen());
+        assert_eq!(settings.mail_mark_seen_timeout(), 1500);
+        assert!(!settings.mail_caret_mode());
+        assert!(settings.mail_magic_spacebar());
+        assert!(settings.mail_citation_highlighting());
+        assert_eq!(settings.mail_citation_color_1(), "#729FCF");
+        assert_eq!(settings.mail_citation_color_2(), "#AD7FA8");
+        assert_eq!(settings.mail_citation_color_3(), "#8AE234");
+        assert_eq!(settings.mail_citation_color_4(), "#FCAF3E");
+        assert_eq!(settings.mail_citation_color_5(), "#E9B96E");
+        assert_eq!(
+            settings.mail_citation_colors(),
+            [
+                "#729FCF".to_string(),
+                "#AD7FA8".to_string(),
+                "#8AE234".to_string(),
+                "#FCAF3E".to_string(),
+                "#E9B96E".to_string(),
+            ]
+        );
+        assert!(!settings.mail_headers_collapsed());
+        assert!(settings.mail_show_real_date());
+
+        // 2. Setters & Hex normalization
+        settings.set_mail_image_loading_policy("sometimes");
+        assert_eq!(settings.mail_image_loading_policy(), "sometimes");
+        assert!(!settings.auto_load_remote_images());
+
+        settings.set_mail_image_loading_policy("always");
+        assert_eq!(settings.mail_image_loading_policy(), "always");
+        assert!(settings.auto_load_remote_images());
+
+        settings.set_mail_mark_seen(false);
+        assert!(!settings.mail_mark_seen());
+        assert!(!settings.mark_read_on_selection());
+
+        settings.set_mail_mark_seen_timeout(3000);
+        assert_eq!(settings.mail_mark_seen_timeout(), 3000);
+        assert_eq!(settings.mark_read_timeout(), 3000);
+
+        settings.set_mail_caret_mode(true);
+        assert!(settings.mail_caret_mode());
+
+        settings.set_mail_magic_spacebar(false);
+        assert!(!settings.mail_magic_spacebar());
+
+        settings.set_mail_citation_highlighting(false);
+        assert!(!settings.mail_citation_highlighting());
+
+        settings.set_mail_citation_color_1("#112233");
+        assert_eq!(settings.mail_citation_color_1(), "#112233");
+
+        settings.set_mail_citation_color_2("#aabbcc");
+        assert_eq!(settings.mail_citation_color_2(), "#AABBCC");
+
+        settings.set_mail_citation_color_3("#123");
+        assert_eq!(settings.mail_citation_color_3(), "#112233");
+
+        settings.set_mail_citation_color_4("#445566");
+        assert_eq!(settings.mail_citation_color_4(), "#445566");
+
+        settings.set_mail_citation_color_5("#778899");
+        assert_eq!(settings.mail_citation_color_5(), "#778899");
+
+        settings.set_mail_headers_collapsed(true);
+        assert!(settings.mail_headers_collapsed());
+
+        settings.set_mail_show_real_date(false);
+        assert!(!settings.mail_show_real_date());
+
+        // 3. Normalization
+        assert_eq!(normalize_image_loading_policy("ALWAYS"), Some("always"));
+        assert_eq!(normalize_image_loading_policy("contacts"), Some("sometimes"));
+        assert_eq!(normalize_image_loading_policy("never"), Some("never"));
+        assert_eq!(normalize_image_loading_policy("invalid"), None);
+
+        // 4. Migration
+        settings
+            .apply_migrated_setting("mail-image-loading-policy", "sometimes")
+            .unwrap();
+        assert_eq!(settings.mail_image_loading_policy(), "sometimes");
+        settings
+            .apply_migrated_setting("mail-mark-seen", "true")
+            .unwrap();
+        assert!(settings.mail_mark_seen());
+        settings
+            .apply_migrated_setting("mail-mark-seen-timeout", "4500")
+            .unwrap();
+        assert_eq!(settings.mail_mark_seen_timeout(), 4500);
+        settings
+            .apply_migrated_setting("mail-caret-mode", "true")
+            .unwrap();
+        assert!(settings.mail_caret_mode());
+        settings
+            .apply_migrated_setting("mail-magic-spacebar", "true")
+            .unwrap();
+        assert!(settings.mail_magic_spacebar());
+        settings
+            .apply_migrated_setting("mail-citation-highlighting", "true")
+            .unwrap();
+        assert!(settings.mail_citation_highlighting());
+        settings
+            .apply_migrated_setting("mail-citation-color-1", "#123456")
+            .unwrap();
+        assert_eq!(settings.mail_citation_color_1(), "#123456");
+        settings
+            .apply_migrated_setting("mail-headers-collapsed", "false")
+            .unwrap();
+        assert!(!settings.mail_headers_collapsed());
+        settings
+            .apply_migrated_setting("mail-show-real-date", "true")
+            .unwrap();
+        assert!(settings.mail_show_real_date());
+
+        assert!(
+            settings
+                .apply_migrated_setting("mail-image-loading-policy", "bad_policy")
+                .is_err()
+        );
+
+        // 5. Reset to defaults
+        settings.reset_to_defaults();
+        let reset = settings_with_backend(&backend);
+        assert_eq!(reset.mail_image_loading_policy(), "never");
+        assert!(reset.mail_mark_seen());
+        assert_eq!(reset.mail_mark_seen_timeout(), 1500);
+        assert!(!reset.mail_caret_mode());
+        assert!(reset.mail_magic_spacebar());
+        assert!(reset.mail_citation_highlighting());
+        assert_eq!(reset.mail_citation_color_1(), "#729FCF");
+        assert_eq!(reset.mail_citation_color_2(), "#AD7FA8");
+        assert_eq!(reset.mail_citation_color_3(), "#8AE234");
+        assert_eq!(reset.mail_citation_color_4(), "#FCAF3E");
+        assert_eq!(reset.mail_citation_color_5(), "#E9B96E");
+        assert!(!reset.mail_headers_collapsed());
+        assert!(reset.mail_show_real_date());
     }
 }

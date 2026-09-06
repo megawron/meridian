@@ -119,6 +119,23 @@ settings persistence.
   custom options (signature assignment, auto-sync intervals, folder check scope, expunge
   on exit, OpenPGP and S/MIME encryption and signing parameters, compose preferences)
   with strict backward compatibility via `#[serde(default)]` and atomic file writes.
+- Mail labels (`MailLabelDefinition`, `mail-labels`) store ordered `Name:Color[|Tag]`
+  tuples with uppercase `#RRGGBB` normalization, mnemonic stripping for display,
+  and bidirectional `$Label*` tag mapping. Junk mail options (`junk-*`) persist
+  incoming spam check, exit expunge with retention days, address book whitelist checks,
+  active spam filter plugin, and custom spam headers across backup and migration.
+- Composer settings (`composer-*`) persist header visibility flags (`composer-show-from`,
+  `composer-show-reply-to`, `composer-show-cc`, `composer-show-bcc`), confirmation prompts
+  (`composer-prompt-empty-subject`, `composer-prompt-only-bcc`), inline spellchecking
+  (`composer-inline-spelling`), reply/forward styles (`composer-reply-style`,
+  `composer-forward-style`), and signature formatting (`composer-top-signature`,
+  `composer-signature-outline`) with full backup/restore and migration normalization.
+- Mail reading and preview policies (`mail-image-loading-policy`, `mail-mark-seen`,
+  `mail-mark-seen-timeout`, `mail-caret-mode`, `mail-magic-spacebar`, `mail-citation-highlighting`,
+  `mail-citation-color-1..5`, `mail-headers-collapsed`, `mail-show-real-date`) persist
+  image loading rules (never/sometimes/always), automatic read marking and timeout, caret
+  browsing, spacebar paging, quote level color styling, and timestamp policies across
+  GSettings, backup validation, and migration normalization.
 
 
 ## Work Guidance
