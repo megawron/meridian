@@ -421,9 +421,20 @@ werden.
   verworfen. Identische Anfragen werden zusammengelegt. Diese Stale-Discard-
   Strecke ist erst nach den portablen Tests und dem Linux-Umschalttest als
   belastbar zu werten.
-  Die portable Leseeinstellung, ob eine Nachricht beim Auswählen als gelesen
-  markiert wird, ist persistent und gilt für lokale sowie native Mailpfade;
-  providerabhängige Lesestatus-Synchronisation bleibt Linux/EDS-Abnahme.
+  Die portablen Lese- und Renderingrichtlinien (`MAIL-READING-POLICIES-PARITY`)
+  sind vollständig persistent über GSettings abgebildet und wirken live auf lokale
+  sowie native Mailpfade:
+  - Bild-Nachladerichtlinie (`mail-image-loading-policy`: `'never'`, `'sometimes'`/`'contacts'`
+    mit dynamischem Adressbuchabgleich über `ContactStoreService`, `'always'`),
+  - Automatische Gelesen-Markierung (`mail-mark-seen`) mit konfigurierbarer Verzögerung
+    (`mail-mark-seen-timeout` in ms),
+  - Caret-Navigation (`mail-caret-mode` / `F7`) und Magic Spacebar (`mail-magic-spacebar`),
+  - Verschachteltes Zitat-Highlighting (`mail-citation-highlighting`) mit 5 anpassbaren
+    Farbstufen (`mail-citation-color-1` .. `5`) und nativem Hex-Color-Sanitizing,
+  - Umschaltung zwischen echtem absolutem Zeitstempel und relativem Datum (`mail-show-real-date`)
+    sowie komprimierte Kopfzeilenanzeige (`mail-headers-collapsed`),
+  - Vollständige Einstellungs-, Migrations- und Backup/Restore-Parität.
+  Providerabhängige Lesestatus-Synchronisation und WebKitGTK-Laufzeitprüfung bleiben Linux/EDS-Abnahme.
 - [~] Die Mail-Kryptografieanzeige führt vor einer teuren Prüfung nur einen
   begrenzten MIME-Hüllen-Preflight aus. OpenPGP-/S/MIME-Prüfung und mögliche
   Entschlüsselung werden nur bei einem tatsächlich erkannten Protokollhinweis
@@ -597,8 +608,11 @@ werden.
   gespeichert, auch in Backup/Restore
   übernommen und durch responsive automatische Sidebar-Ausblendungen nicht
   überschrieben. Absender, Empfänger, Avatare, Datum, Anhangssymbol,
-  Vorschautext und app-eigene Labels der Mail-Zeile lassen sich ebenfalls
-  einzeln ein-/ausblenden und werden live sowie in Backup/Restore angewendet.
+  Vorschautext und konfigurierbare farbige Labels (`mail-labels`) der Mail-Zeile lassen sich ebenfalls
+  einzeln ein-/ausblenden und werden live sowie in Backup/Restore angewendet; Labels
+  werden mit benutzerfreundlichen Anzeigenamen in der Nachrichtenliste formatiert
+  und können interaktiv über `present_label_editor` mit Farbpunkten zugewiesen werden.
+  Dedizierte Einstellungsseiten verwalten Farben & Labels sowie Junk-Mail-Optionen (`junk-*`).
   Eine kompakte Evolution-Kopfzeile benennt die sichtbaren Spalten und bietet
   an Absender und Datum ziehbare Breiten-Griffe; beide Breiten bleiben mit dem
   Spaltenmenü persistent. Die originalnahen Messages-/Wide-Profile und eine
@@ -1158,6 +1172,12 @@ Die Statuswerte sind Quellen-/UI-Belege, keine Laufzeit- oder Providerabnahme:
   gespeichert, in Backup/Restore übernommen und beim RFC822-Versand als
   `Disposition-Notification-To` ausgegeben; SMTP-DSN, providerabhängige
   Zustellberichte und die native EDS/Camel-Anwendung bleiben Linux-only.
+- [~] `MAIL-LABELS-JUNK-SETTINGS` schließt die Upstream-Parität für Mail-Labels und Junk-Mail-Optionen (`e-mail-label-manager.c`, `e-mail-junk-options.c`):
+  Vollständige GSettings-Persistenz für `mail-labels` (Farbdefinitionen mit GTK4 `ColorDialogButton`, Mnemonic-Entfernung für die UI, $Label*-Tag-Zuordnung), dedizierte Einstellungsseiten für „Farben & Labels“ und „Junk-Mail-Optionen“ (8 `junk-*`-Schlüssel), Schnellauswahl-Modal für Labels (`present_label_editor`) mit 1-Klick-Toggle und Freitext-Labels sowie formatierte Label-Namen in der Nachrichtenliste.
+  Portabel belegt durch 1011/1011 Workspace-Tests; Linux Spam-Filter-Plugins (Bogofilter/SpamAssassin) und native Junk-Aktionen bleiben Linux-only.
+- [~] `COMPOSER-SETTINGS-PARITY` schließt die Upstream-Parität für Composer-Einstellungen und Header-Sichtbarkeit (`e-composer-header-table.c`, `e-msg-composer.c`, `e-composer-preferences.c`):
+  11 `composer-*`-GSettings-Schlüssel, dynamische Header-Zeilensichtbarkeit für Von/Reply-To/Cc/Bcc mit Live-GSettings-Sync und `win.composer-view-*`-Aktionen im Menü „Ansicht“, automatisches Einblenden bei nicht-leeren Entwurfswerten, Reply-To-Feld mit Autovervollständigung und Durchreichung in DraftMessage/OutgoingMessage/EML, Sicherheits-Bestätigungsdialoge für leeren Betreff und reine Bcc-Empfänger (`adw::AlertDialog`), Signatur-Formatierung für Top-Posting (`composer-top-signature`) und RFC-Trennlinie `--<br>` (`composer-signature-outline`), konfigurierbare Antwort- und Weiterleitungsstile (`quoted`, `inline`, `do-not-quote`, `attached`), Inline-Rechtschreibprüfung über WebKitGTK sowie Einstellungs-Gruppen in `PreferencesDialog`.
+  Portabel belegt durch 1014/1014 Workspace-Tests; Linux WebKitGTK-Wörterbücher und Live-Versand über native Camel-Provider bleiben Linux-only.
 - [~] Synchronisationsstatus, Cancellation und begrenztes Retry/Backoff sind
   für den nativen Mail-Ladepfad vorhanden; Netzwerkwechsel, domänenweite
   Offline-/Online-Zustände, vollständige Wiederaufnahme und sauberes
@@ -1406,6 +1426,12 @@ Die Statuswerte sind Quellen-/UI-Belege, keine Laufzeit- oder Providerabnahme:
   1. Kontinuierliches Kalender-Zeitraster (`src/views/calendar_page.rs`, `src/style.css`): Ersetzt die abgerundeten Stundenkacheln durch ein unterbrechungsfreies 48-Slot-Zeitraster (`render_continuous_time_grid`, 30-Minuten-Intervalle) für Tag-, Woche- und Arbeitswoche mit linker Zeitspalte (`calendar-time-gutter`), sticky Tagesspalten-Headern mit Akzent auf Heute, Ganztags-Zeile, farblicher Trennung von Geschäfts- und Randzeiten, kompakten Terminchips (`calendar-grid-event`) mit 4px-Farbbalken, Drag-and-Drop und Doppelklick auf freie Slots; nahtloses Tabellenraster für den Monat (`calendar-month-grid`, `calendar-month-cell`).
   2. Benutzerdefinierte Kontoeinstellungen (`src/services/account_config_service.rs`, `src/dialogs/{account_setup_dialog,preferences_dialog}.rs`): Vollständige Erweiterung von `AccountProfile` um Signatur-Zuordnung (`signature_id`), automatischen Abruf und Intervall (`auto_check_enabled`, `check_interval_minutes`), Ordnerscan (`check_all_folders`), Expunge beim Beenden (`expunge_on_exit`), OpenPGP und S/MIME Verschlüsselungs-/Signatur-Optionen sowie Verfassen-Defaults (`prefer_html`, `default_cc`, `default_bcc`) mit vollständiger Rückwärtskompatibilität. `AccountSetupDialog` und `PreferencesDialog` bieten direkte Bearbeitung und Kennzeichnung aktiver Optionen.
   Portabel belegt durch 3 Account-Config-Tests, 1 kontinuierlichen Kalender-Slot-Test und 1006/1006 Workspace-Tests; Linux-Visuals und Hintergrund-Abruf-Daemon unter Linux offen.
+- [~] `GW-CAL-GRID-VIEW-PARITY` schließt die erweiterte Zeitraster- und Monatsansichtsparität (`GROUP-01`):
+  1. Dynamische Zeitintervalle (`calendar-time-divisions` `i`, 5/10/15/30/60 Minuten; 24 bis 288 Slots): Gestaffelte Zeilenhöhen (36px, 24px, 18px, 14px, 12px) und präzise Slot-Zuordnung für Termine in Tag-, Woche- und Arbeitswoche-Ansicht.
+  2. Optionale sekundäre Zeitzonenspalte (`calendar-second-zone` `s`, `calendar-second-zones` `as`): Feste Spalte neben der primären Zeitachse (`.calendar-time-gutter-secondary`) mit Header (`.secondary-tz-header`) und Live-Zeitzonenkonvertierung für Stundenmarkierungen (`.secondary-tz-label`).
+  3. Komprimierte Wochenendanzeige im Monatsraster (`calendar-compress-weekend` `b`, `.calendar-month-cell.weekend.compressed`): Platzsparende Kachelhöhe (55px) und kompaktes Padding für Samstage und Sonntage.
+  4. Wochenweises Monatsblättern (`calendar-month-scroll-by-week` `b`): 7-Tage-Navigationsschritt für vorherigen/nächsten Zeitraum in der Monatsansicht statt vollem Monatssprung.
+  Portabel belegt durch 4 Kalender-Raster- und Zeitzonentests sowie 1024/1024 Workspace-Tests; Linux EDS-Daemon-Kalenderabgleich und visuelle libadwaita-Prüfung offen.
 
 - [~] VTODO/VJOURNAL-Erstellung, VTODO-Status, Notizbearbeitung/-löschung,
   VTODO-Bearbeitung, Prioritäten, Fälligkeiten und Notizlöschung werden über
