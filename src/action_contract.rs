@@ -76,6 +76,7 @@ pub(crate) const ACTIONS: &[ActionSpec] = action_specs! {
         "win.switch-mail", "win.switch-memos", "win.switch-tasks",
         "win.filter-editor", "win.search-folder-editor", "win.mail-receive-all",
         "win.mail-send-all", "win.mail-send-receive", "win.mail-stop",
+        "win.preferences", "win.toggle-top-switcher",
         "win.work-offline", "win.work-online",
     ],
     ActiveMail => [
@@ -154,6 +155,7 @@ pub(crate) const PRIMARY_MENU_ACTIONS: &[MenuActionSpec] = menu_specs! {
         ("Notizen", "win.switch-memos"),
     ],
     View => [
+        ("Modul-Schaltflächen in Kopfleiste", "win.toggle-top-switcher"),
         ("Ordner-Seitenleiste ein-/ausblenden", "win.toggle-sidebar"),
         ("Vorschaufenster ein-/ausblenden", "win.toggle-preview"),
         ("Alle Nachrichtenkopfzeilen anzeigen", "win.toggle-all-headers"),

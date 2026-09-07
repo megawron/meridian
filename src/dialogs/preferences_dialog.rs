@@ -2638,6 +2638,7 @@ impl PreferencesDialog {
             .build();
         let row_switcher_location = adw::ComboRow::builder()
             .title("Position der Modul-Schaltflächen")
+            .subtitle("Wahlweise modern in der Fenster-Titelleiste oder klassisch am Fuß der linken Seitenleiste")
             .model(&gtk::StringList::new(&[
                 "Oben in der Kopfleiste (Libadwaita)",
                 "Unten links in der Seitenleiste (Klassisches Evolution)",
@@ -2649,12 +2650,31 @@ impl PreferencesDialog {
             } else {
                 0
             });
+            let settings_for_notify = settings.clone();
+            let updating = Rc::new(Cell::new(false));
+            let updating_for_notify = updating.clone();
             row_switcher_location.connect_selected_notify(move |row| {
-                settings.set_switcher_location(if row.selected() == 1 {
+                if updating_for_notify.get() {
+                    return;
+                }
+                settings_for_notify.set_switcher_location(if row.selected() == 1 {
                     "bottom-left"
                 } else {
                     "top"
                 });
+            });
+            let row_for_change = row_switcher_location.clone();
+            settings.connect_changed(Some("switcher-location"), move |s, _| {
+                let target = if s.string("switcher-location").as_str() == "bottom-left" {
+                    1
+                } else {
+                    0
+                };
+                if row_for_change.selected() != target {
+                    updating.set(true);
+                    row_for_change.set_selected(target);
+                    updating.set(false);
+                }
             });
         }
         group_navigation.add(&row_switcher_location);

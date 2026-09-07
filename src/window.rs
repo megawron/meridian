@@ -1835,17 +1835,42 @@ impl EvolutionWindow {
             .title("Evolution")
             .build();
 
+        let view_switcher_bar = adw::ViewSwitcherBar::builder()
+            .stack(&view_stack)
+            .build();
+
         let update_title_widget = {
             let view_switcher_title = view_switcher_title.clone();
+            let view_switcher_bar = view_switcher_bar.clone();
             move || {
                 let is_bottom = AppSettings::try_new()
                     .map(|s| s.switcher_location() == "bottom-left")
                     .unwrap_or(true);
                 view_switcher_title.set_view_switcher_enabled(!is_bottom);
+                if is_bottom {
+                    view_switcher_bar.set_reveal(false);
+                } else {
+                    view_switcher_bar.set_reveal(view_switcher_title.is_title_visible());
+                }
             }
         };
 
         update_title_widget();
+
+        {
+            let view_switcher_title = view_switcher_title.clone();
+            let view_switcher_bar = view_switcher_bar.clone();
+            view_switcher_title.connect_title_visible_notify(move |vst| {
+                let is_bottom = AppSettings::try_new()
+                    .map(|s| s.switcher_location() == "bottom-left")
+                    .unwrap_or(true);
+                if is_bottom {
+                    view_switcher_bar.set_reveal(false);
+                } else {
+                    view_switcher_bar.set_reveal(vst.is_title_visible());
+                }
+            });
+        }
 
         if let Some(settings) = AppSettings::try_new() {
             let update_cb = update_title_widget.clone();
@@ -1978,6 +2003,7 @@ impl EvolutionWindow {
 
         let toolbar_view = adw::ToolbarView::new();
         toolbar_view.add_top_bar(&header_bar);
+        toolbar_view.add_bottom_bar(&view_switcher_bar);
         toolbar_view.add_bottom_bar(&statusbar_box);
         toolbar_view.set_content(Some(&view_stack));
 
@@ -2161,6 +2187,44 @@ impl EvolutionWindow {
             move |_, _| win.present_contextual_new()
         ));
         self.add_action(&action_new);
+
+        let is_top = AppSettings::try_new()
+            .map(|s| s.switcher_location() == "top")
+            .unwrap_or(false);
+        let action_toggle_switcher =
+            gio::SimpleAction::new_stateful("toggle-top-switcher", None, &is_top.to_variant());
+        let settings_clone = AppSettings::try_new();
+        action_toggle_switcher.connect_activate(move |action, _| {
+            let current = action
+                .state()
+                .and_then(|state| state.get::<bool>())
+                .unwrap_or(false);
+            let next = !current;
+            action.set_state(&next.to_variant());
+            if let Some(s) = settings_clone.as_ref() {
+                s.set_switcher_location(if next { "top" } else { "bottom-left" });
+            }
+        });
+        if let Some(settings) = AppSettings::try_new() {
+            let action_for_settings = action_toggle_switcher.clone();
+            settings.connect_changed(Some("switcher-location"), move |settings, _| {
+                action_for_settings.set_state(
+                    &(settings.string("switcher-location").as_str() == "top").to_variant(),
+                );
+            });
+        }
+        self.add_action(&action_toggle_switcher);
+
+        let action_preferences = gio::SimpleAction::new("preferences", None);
+        action_preferences.connect_activate(glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            move |_, _| {
+                let dialog = crate::dialogs::PreferencesDialog::new();
+                dialog.present(Some(&win));
+            }
+        ));
+        self.add_action(&action_preferences);
 
         let action_sidebar = self.add_boolean_setting_action(
             "toggle-sidebar",
@@ -3610,6 +3674,49 @@ mod tests {
             let action = window.lookup_action(name).expect("shell action must exist");
             assert!(action.is_enabled(), "shell action was disabled: {name}");
         }
+    }
+
+    #[test]
+    fn switcher_location_action_toggles_and_syncs_setting() {
+        let _gtk_lock = GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(context) = gtk_test_main_context() else {
+            return;
+        };
+        let Some(settings) = AppSettings::try_new() else {
+            return;
+        };
+        let original_location = settings.switcher_location();
+
+        // Ensure clean starting state
+        settings.set_switcher_location("bottom-left");
+
+        let app = EvolutionApplication::new();
+        let window = EvolutionWindow::new(&app);
+
+        let action = window
+            .lookup_action("toggle-top-switcher")
+            .expect("missing toggle-top-switcher action");
+
+        let state: bool = action.state().unwrap().get().unwrap();
+        assert!(!state);
+
+        // Activate action -> should flip to top
+        action.activate(None);
+        drain_main_context(&context);
+        assert_eq!(settings.switcher_location(), "top");
+        let state: bool = action.state().unwrap().get().unwrap();
+        assert!(state);
+
+        // Activate action -> should flip back to bottom-left
+        action.activate(None);
+        drain_main_context(&context);
+        assert_eq!(settings.switcher_location(), "bottom-left");
+        let state: bool = action.state().unwrap().get().unwrap();
+        assert!(!state);
+
+        settings.set_switcher_location(&original_location);
     }
 
     fn wait_for_search_route_source_to_clear(
