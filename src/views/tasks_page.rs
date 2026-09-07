@@ -3911,11 +3911,13 @@ impl TasksPage {
 
         let toolbar = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
-            .spacing(12)
-            .margin_start(16)
-            .margin_end(16)
-            .margin_top(12)
-            .margin_bottom(12)
+            .spacing(4)
+            .margin_start(8)
+            .margin_end(8)
+            .margin_top(4)
+            .margin_bottom(4)
+            .hexpand(true)
+            .css_classes(vec!["unified-view-toolbar", "toolbar"])
             .build();
 
         let search_mode_model = gtk::StringList::new(&[
@@ -4231,17 +4233,11 @@ impl TasksPage {
             .task_preview_orientation
             .replace(Some(preview_orientation_selector.clone()));
 
-        toolbar.append(&search_mode_selector);
-        toolbar.append(&search_entry);
-        toolbar.append(&sort_selector);
-        toolbar.append(&direction_button);
-        toolbar.append(&source_selector);
-        toolbar.append(&refresh_source_button);
-        toolbar.append(&category_selector);
-        toolbar.append(&selection_status);
-        toolbar.append(&assign_selection_button);
-        toolbar.append(&forward_selection_button);
-        toolbar.append(&open_url_selection_button);
+        toolbar.append(&btn_add_task);
+        toolbar.append(&complete_selection_button);
+        toolbar.append(&incomplete_selection_button);
+        toolbar.append(&delete_selection_button);
+        toolbar.append(&purge_button);
         toolbar.append(&print_selection_button);
         toolbar.append(&print_list_button);
         toolbar.append(&print_list_preview_button);
@@ -4250,17 +4246,26 @@ impl TasksPage {
         toolbar.append(&paste_selection_button);
         toolbar.append(&select_all_tasks_button);
         toolbar.append(&bulk_edit_button);
-        toolbar.append(&complete_selection_button);
-        toolbar.append(&incomplete_selection_button);
-        toolbar.append(&delete_selection_button);
-        toolbar.append(&purge_button);
+        toolbar.append(&assign_selection_button);
+        toolbar.append(&forward_selection_button);
+        toolbar.append(&open_url_selection_button);
         toolbar.append(&export_selection_button);
+        toolbar.append(&selection_status);
+        toolbar.append(&search_mode_selector);
+        toolbar.append(&search_entry);
+        toolbar.append(&category_selector);
+        toolbar.append(&source_selector);
+        toolbar.append(&refresh_source_button);
+        toolbar.append(&sort_selector);
+        toolbar.append(&direction_button);
         toolbar.append(&preview_toggle);
         toolbar.append(&preview_orientation_selector);
-        toolbar.append(&btn_add_task);
 
-        content_box.append(&toolbar);
-        content_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+        let toolbar_scroll = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Automatic)
+            .vscrollbar_policy(gtk::PolicyType::Never)
+            .child(&toolbar)
+            .build();
 
         let task_store = gio::ListStore::new::<TaskItemObject>();
 
@@ -5543,7 +5548,16 @@ impl TasksPage {
             });
         }
         self.reload_task_category_metadata();
-        paned.set_parent(self);
+
+        let root_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .vexpand(true)
+            .hexpand(true)
+            .build();
+        root_box.append(&toolbar_scroll);
+        root_box.append(&paned);
+        root_box.set_parent(self);
+
         start_task_source_discovery(self, self.imp().task_source_filter.borrow().clone(), false);
     }
 

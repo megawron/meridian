@@ -907,6 +907,8 @@ mod imp {
         pub mini_calendar_2: RefCell<Option<gtk::Calendar>>,
         pub mini_calendar_3: RefCell<Option<gtk::Calendar>>,
         pub mini_calendar_4: RefCell<Option<gtk::Calendar>>,
+        pub mini_calendars: RefCell<Vec<gtk::Calendar>>,
+        pub mini_calendar_box: RefCell<Option<gtk::Box>>,
         pub syncing_mini_calendar: Cell<bool>,
         pub calendar_search_entry: RefCell<Option<gtk::SearchEntry>>,
         pub calendar_search_query: RefCell<String>,
@@ -980,6 +982,8 @@ mod imp {
                 mini_calendar_2: RefCell::new(None),
                 mini_calendar_3: RefCell::new(None),
                 mini_calendar_4: RefCell::new(None),
+                mini_calendars: RefCell::new(Vec::new()),
+                mini_calendar_box: RefCell::new(None),
                 syncing_mini_calendar: Cell::new(false),
                 calendar_search_entry: RefCell::new(None),
                 calendar_search_query: RefCell::new(String::new()),
@@ -2088,6 +2092,30 @@ impl CalendarPage {
         }
     }
 
+    fn create_mini_calendar(&self) -> gtk::Calendar {
+        let mini_cal = gtk::Calendar::new();
+        mini_cal.add_css_class("calendar-sidebar-minical");
+        let page_for_cal = self.downgrade();
+        mini_cal.connect_day_selected(move |calendar| {
+            let Some(page) = page_for_cal.upgrade() else {
+                return;
+            };
+            if page.imp().syncing_mini_calendar.get() {
+                return;
+            }
+            let date = calendar.date();
+            if let Some(selected_date) = NaiveDate::from_ymd_opt(
+                date.year(),
+                date.month() as u32,
+                date.day_of_month() as u32,
+            ) {
+                page.set_calendar_anchor(selected_date);
+                page.refresh_calendar_views();
+            }
+        });
+        mini_cal
+    }
+
     fn build_ui(&self) {
         let settings = AppSettings::try_new();
         self.imp().settings.replace(settings.clone());
@@ -2115,115 +2143,36 @@ impl CalendarPage {
             .margin_bottom(8)
             .build();
 
-        let mini_calendar = gtk::Calendar::new();
-        mini_calendar.add_css_class("calendar-sidebar-minical");
-        self.imp()
-            .mini_calendar
-            .replace(Some(mini_calendar.clone()));
-        let page_for_mini_calendar = self.downgrade();
-        mini_calendar.connect_day_selected(move |calendar| {
-            let Some(page) = page_for_mini_calendar.upgrade() else {
-                return;
-            };
-            if page.imp().syncing_mini_calendar.get() {
-                return;
-            }
-            let date = calendar.date();
-            if let Some(selected_date) = NaiveDate::from_ymd_opt(
-                date.year(),
-                date.month() as u32,
-                date.day_of_month() as u32,
-            ) {
-                page.set_calendar_anchor(selected_date);
-                page.refresh_calendar_views();
-            }
-        });
-
-        let mini_calendar_2 = gtk::Calendar::new();
-        mini_calendar_2.add_css_class("calendar-sidebar-minical");
-        mini_calendar_2.set_visible(false);
-        self.imp()
-            .mini_calendar_2
-            .replace(Some(mini_calendar_2.clone()));
-        let page_for_cal2 = self.downgrade();
-        mini_calendar_2.connect_day_selected(move |calendar| {
-            let Some(page) = page_for_cal2.upgrade() else {
-                return;
-            };
-            if page.imp().syncing_mini_calendar.get() {
-                return;
-            }
-            let date = calendar.date();
-            if let Some(selected_date) = NaiveDate::from_ymd_opt(
-                date.year(),
-                date.month() as u32,
-                date.day_of_month() as u32,
-            ) {
-                page.set_calendar_anchor(selected_date);
-                page.refresh_calendar_views();
-            }
-        });
-
-        let mini_calendar_3 = gtk::Calendar::new();
-        mini_calendar_3.add_css_class("calendar-sidebar-minical");
-        mini_calendar_3.set_visible(false);
-        self.imp()
-            .mini_calendar_3
-            .replace(Some(mini_calendar_3.clone()));
-        let page_for_cal3 = self.downgrade();
-        mini_calendar_3.connect_day_selected(move |calendar| {
-            let Some(page) = page_for_cal3.upgrade() else {
-                return;
-            };
-            if page.imp().syncing_mini_calendar.get() {
-                return;
-            }
-            let date = calendar.date();
-            if let Some(selected_date) = NaiveDate::from_ymd_opt(
-                date.year(),
-                date.month() as u32,
-                date.day_of_month() as u32,
-            ) {
-                page.set_calendar_anchor(selected_date);
-                page.refresh_calendar_views();
-            }
-        });
-
-        let mini_calendar_4 = gtk::Calendar::new();
-        mini_calendar_4.add_css_class("calendar-sidebar-minical");
-        mini_calendar_4.set_visible(false);
-        self.imp()
-            .mini_calendar_4
-            .replace(Some(mini_calendar_4.clone()));
-        let page_for_cal4 = self.downgrade();
-        mini_calendar_4.connect_day_selected(move |calendar| {
-            let Some(page) = page_for_cal4.upgrade() else {
-                return;
-            };
-            if page.imp().syncing_mini_calendar.get() {
-                return;
-            }
-            let date = calendar.date();
-            if let Some(selected_date) = NaiveDate::from_ymd_opt(
-                date.year(),
-                date.month() as u32,
-                date.day_of_month() as u32,
-            ) {
-                page.set_calendar_anchor(selected_date);
-                page.refresh_calendar_views();
-            }
-        });
-
         let mini_calendar_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(8)
             .halign(gtk::Align::Center)
             .hexpand(true)
             .build();
-        mini_calendar_box.append(&mini_calendar);
-        mini_calendar_box.append(&mini_calendar_2);
-        mini_calendar_box.append(&mini_calendar_3);
-        mini_calendar_box.append(&mini_calendar_4);
+        self.imp()
+            .mini_calendar_box
+            .replace(Some(mini_calendar_box.clone()));
+
+        let mut initial_cals = Vec::new();
+        for i in 0..4 {
+            let cal = self.create_mini_calendar();
+            cal.set_visible(i == 0);
+            mini_calendar_box.append(&cal);
+            initial_cals.push(cal);
+        }
+        self.imp()
+            .mini_calendar
+            .replace(Some(initial_cals[0].clone()));
+        self.imp()
+            .mini_calendar_2
+            .replace(Some(initial_cals[1].clone()));
+        self.imp()
+            .mini_calendar_3
+            .replace(Some(initial_cals[2].clone()));
+        self.imp()
+            .mini_calendar_4
+            .replace(Some(initial_cals[3].clone()));
+        *self.imp().mini_calendars.borrow_mut() = initial_cals;
 
         let mini_calendar_scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Automatic)
@@ -2234,25 +2183,17 @@ impl CalendarPage {
             .build();
         sidebar_box.append(&mini_calendar_scroll);
 
-        let cal2_clone = mini_calendar_2.clone();
-        let cal3_clone = mini_calendar_3.clone();
-        let cal4_clone = mini_calendar_4.clone();
-        let last_cal_w = std::rc::Rc::new(std::cell::Cell::new(-1i32));
+        let page_weak = self.downgrade();
+        let last_cal_count = std::rc::Rc::new(std::cell::Cell::new(1usize));
         mini_calendar_scroll.add_tick_callback(move |widget, _| {
             let w = widget.width();
-            if w > 0 && w != last_cal_w.get() {
-                last_cal_w.set(w);
-                let show_2 = w >= 440;
-                let show_3 = w >= 660;
-                let show_4 = w >= 880;
-                if cal2_clone.is_visible() != show_2 {
-                    cal2_clone.set_visible(show_2);
-                }
-                if cal3_clone.is_visible() != show_3 {
-                    cal3_clone.set_visible(show_3);
-                }
-                if cal4_clone.is_visible() != show_4 {
-                    cal4_clone.set_visible(show_4);
+            if w > 0 {
+                let target_count = (w / 220).max(1) as usize;
+                if target_count != last_cal_count.get() {
+                    last_cal_count.set(target_count);
+                    if let Some(page) = page_weak.upgrade() {
+                        page.ensure_mini_calendar_count(target_count);
+                    }
                 }
             }
             glib::ControlFlow::Continue
@@ -2509,11 +2450,12 @@ impl CalendarPage {
         let view_toolbar = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(4)
-            .margin_start(12)
-            .margin_end(12)
-            .margin_top(8)
-            .margin_bottom(8)
-            .halign(gtk::Align::Center)
+            .margin_start(8)
+            .margin_end(8)
+            .margin_top(4)
+            .margin_bottom(4)
+            .hexpand(true)
+            .css_classes(vec!["unified-view-toolbar", "toolbar"])
             .build();
 
         let prev_btn = gtk::Button::builder()
@@ -2667,11 +2609,6 @@ impl CalendarPage {
         view_toggle.append(&year_btn);
         view_toggle.append(&list_btn);
 
-        view_toolbar.append(&prev_btn);
-        view_toolbar.append(&today_btn);
-        view_toolbar.append(&next_btn);
-        view_toolbar.append(&date_label);
-        view_toolbar.append(&btn_availability);
         let show_tag_vpane_initial = settings
             .as_ref()
             .map(|s| s.calendar_show_tag_vpane())
@@ -2712,6 +2649,11 @@ impl CalendarPage {
         });
 
         view_toolbar.append(&btn_add_event);
+        view_toolbar.append(&prev_btn);
+        view_toolbar.append(&today_btn);
+        view_toolbar.append(&next_btn);
+        view_toolbar.append(&date_label);
+        view_toolbar.append(&btn_availability);
         view_toolbar.append(&calendar_search_entry);
         view_toolbar.append(&category_selector);
         view_toolbar.append(&view_toggle);
@@ -2719,8 +2661,11 @@ impl CalendarPage {
         view_toolbar.append(&btn_print_calendar);
         view_toolbar.append(&tag_vpane_toggle_btn);
 
-        content_box.append(&view_toolbar);
-        content_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+        let view_toolbar_scroll = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Automatic)
+            .vscrollbar_policy(gtk::PolicyType::Never)
+            .child(&view_toolbar)
+            .build();
 
         // View Stack for all portable calendar surfaces.
         let calendar_stack = adw::ViewStack::new();
@@ -3276,7 +3221,15 @@ impl CalendarPage {
             glib::Propagation::Proceed
         });
         self.add_controller(key_controller);
-        paned.set_parent(self);
+
+        let root_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .vexpand(true)
+            .hexpand(true)
+            .build();
+        root_box.append(&view_toolbar_scroll);
+        root_box.append(&paned);
+        root_box.set_parent(self);
     }
 
     fn select_calendar_view(&self, view: CalendarView) {
@@ -3941,79 +3894,75 @@ impl CalendarPage {
         self.sync_mini_calendar();
     }
 
+    pub(crate) fn ensure_mini_calendar_count(&self, target_count: usize) {
+        let Some(mini_calendar_box) = self.imp().mini_calendar_box.borrow().as_ref().cloned() else {
+            return;
+        };
+
+        let current_len = self.imp().mini_calendars.borrow().len();
+        if target_count > current_len {
+            let mut calendars = self.imp().mini_calendars.borrow_mut();
+            for _ in current_len..target_count {
+                let cal = self.create_mini_calendar();
+                cal.set_visible(true);
+                mini_calendar_box.append(&cal);
+                calendars.push(cal);
+            }
+        }
+
+        let mut visibility_changed = false;
+        let calendars = self.imp().mini_calendars.borrow();
+        for (idx, cal) in calendars.iter().enumerate() {
+            let visible = idx < target_count;
+            if cal.is_visible() != visible {
+                cal.set_visible(visible);
+                visibility_changed = true;
+            }
+        }
+        drop(calendars);
+
+        if visibility_changed || target_count > current_len {
+            self.sync_mini_calendar();
+        }
+    }
+
     fn sync_mini_calendar(&self) {
-        let Some(calendar) = self.imp().mini_calendar.borrow().as_ref().cloned() else {
+        let calendars = self.imp().mini_calendars.borrow().clone();
+        if calendars.is_empty() {
             return;
-        };
+        }
         let date = *self.imp().current_date.borrow();
-        let Ok(date_time) = glib::DateTime::new(
-            &glib::TimeZone::local(),
-            date.year(),
-            date.month() as i32,
-            date.day() as i32,
-            0,
-            0,
-            0.0,
-        ) else {
-            return;
-        };
+        let viewport = self.current_calendar_viewport();
         self.imp().syncing_mini_calendar.set(true);
-        calendar.select_day(&date_time);
 
-        if let Some(cal2) = self.imp().mini_calendar_2.borrow().as_ref() {
-            let (y2, m2) = if date.month() == 12 {
-                (date.year() + 1, 1)
+        for (i, cal) in calendars.iter().enumerate() {
+            let (y, m) = add_months(date.year(), date.month(), i);
+            let day_to_select = if date.year() == y && date.month() == m {
+                date.day() as i32
             } else {
-                (date.year(), date.month() + 1)
+                1
             };
-            if let Ok(dt2) = glib::DateTime::new(
+
+            if let Ok(dt) = glib::DateTime::new(
                 &glib::TimeZone::local(),
-                y2,
-                m2 as i32,
-                1,
+                y,
+                m as i32,
+                day_to_select,
                 0,
                 0,
                 0.0,
             ) {
-                cal2.select_day(&dt2);
+                cal.select_day(&dt);
             }
-        }
 
-        if let Some(cal3) = self.imp().mini_calendar_3.borrow().as_ref() {
-            let (y3, m3) = if date.month() >= 11 {
-                (date.year() + 1, (date.month() + 2 - 12) as u32)
-            } else {
-                (date.year(), date.month() + 2)
-            };
-            if let Ok(dt3) = glib::DateTime::new(
-                &glib::TimeZone::local(),
-                y3,
-                m3 as i32,
-                1,
-                0,
-                0,
-                0.0,
-            ) {
-                cal3.select_day(&dt3);
-            }
-        }
-
-        if let Some(cal4) = self.imp().mini_calendar_4.borrow().as_ref() {
-            let (y4, m4) = if date.month() >= 10 {
-                (date.year() + 1, (date.month() + 3 - 12) as u32)
-            } else {
-                (date.year(), date.month() + 3)
-            };
-            if let Ok(dt4) = glib::DateTime::new(
-                &glib::TimeZone::local(),
-                y4,
-                m4 as i32,
-                1,
-                0,
-                0,
-                0.0,
-            ) {
-                cal4.select_day(&dt4);
+            cal.clear_marks();
+            let days_count = days_in_month(y, m);
+            for day in 1..=days_count {
+                if let Some(d) = NaiveDate::from_ymd_opt(y, m, day) {
+                    if is_day_visible_in_viewport(&viewport, d) {
+                        cal.mark_day(day);
+                    }
+                }
             }
         }
 
@@ -4093,6 +4042,7 @@ impl CalendarPage {
         }
         self.update_calendar_navigation_controls();
         self.refresh_period_label();
+        self.sync_mini_calendar();
     }
 
     fn refresh_calendar_time_display(&self) {
@@ -5993,6 +5943,43 @@ fn configured_first_weekday() -> Weekday {
         .filter(|value| value == "sunday")
         .map(|_| Weekday::Sun)
         .unwrap_or(Weekday::Mon)
+}
+
+fn add_months(year: i32, month: u32, offset: usize) -> (i32, u32) {
+    let total_month = (month - 1) as usize + offset;
+    let new_year = year + (total_month / 12) as i32;
+    let new_month = (total_month % 12 + 1) as u32;
+    (new_year, new_month)
+}
+
+fn days_in_month(year: i32, month: u32) -> u32 {
+    let (next_y, next_m) = if month == 12 {
+        (year + 1, 1)
+    } else {
+        (year, month + 1)
+    };
+    NaiveDate::from_ymd_opt(next_y, next_m, 1)
+        .and_then(|d| d.pred_opt())
+        .map(|d| d.day())
+        .unwrap_or(30)
+}
+
+fn is_day_visible_in_viewport(viewport: &CalendarViewport, date: NaiveDate) -> bool {
+    match viewport.view {
+        CalendarView::Day => date == viewport.anchor_date,
+        CalendarView::Week => viewport.visible_range.contains(date),
+        CalendarView::WorkWeek => {
+            viewport.visible_range.contains(date)
+                && configured_workdays().contains(&date.weekday())
+        }
+        CalendarView::Month => {
+            date.year() == viewport.anchor_date.year()
+                && date.month() == viewport.anchor_date.month()
+        }
+        CalendarView::Agenda => viewport.visible_range.contains(date),
+        CalendarView::Year => date == viewport.anchor_date,
+        CalendarView::List => date == viewport.anchor_date,
+    }
 }
 
 fn configured_hide_cancelled_events() -> bool {
@@ -10070,6 +10057,33 @@ mod tests {
         assert_eq!(cal3.date().month(), 11);
         assert_eq!(cal4.date().month(), 12);
 
+        // Verify marked days in Week view (default week is 2026-09-07 to 2026-09-13)
+        page.select_calendar_view(CalendarView::Week);
+        assert!(cal1.day_is_marked(7));
+        assert!(cal1.day_is_marked(13));
+        assert!(!cal1.day_is_marked(6));
+        assert!(!cal1.day_is_marked(14));
+        assert!(!cal2.day_is_marked(7));
+
+        // Verify marked days in WorkWeek view (Mon-Fri 7..=11, Sat-Sun not marked)
+        page.select_calendar_view(CalendarView::WorkWeek);
+        assert!(cal1.day_is_marked(7));
+        assert!(cal1.day_is_marked(11));
+        assert!(!cal1.day_is_marked(12));
+        assert!(!cal1.day_is_marked(13));
+
+        // Verify marked days in Day view (only anchor day 7 marked)
+        page.select_calendar_view(CalendarView::Day);
+        assert!(cal1.day_is_marked(7));
+        assert!(!cal1.day_is_marked(8));
+
+        // Verify marked days in Month view (September days marked, October unmarked)
+        page.select_calendar_view(CalendarView::Month);
+        assert!(cal1.day_is_marked(1));
+        assert!(cal1.day_is_marked(15));
+        assert!(cal1.day_is_marked(30));
+        assert!(!cal2.day_is_marked(1));
+
         // Test October (crossing into January of next year, matching user's screenshot)
         let october_target = NaiveDate::from_ymd_opt(2026, 10, 15).unwrap();
         page.navigate_to_date(october_target);
@@ -10081,5 +10095,15 @@ mod tests {
         assert_eq!(cal3.date().month(), 12);
         assert_eq!(cal4.date().year(), 2027);
         assert_eq!(cal4.date().month(), 1);
+
+        // Verify limitless scaling beyond 4 months (e.g. 6 consecutive months)
+        page.ensure_mini_calendar_count(6);
+        assert_eq!(page.imp().mini_calendars.borrow().len(), 6);
+        let cal5 = page.imp().mini_calendars.borrow()[4].clone();
+        let cal6 = page.imp().mini_calendars.borrow()[5].clone();
+        assert_eq!(cal5.date().year(), 2027);
+        assert_eq!(cal5.date().month(), 2);
+        assert_eq!(cal6.date().year(), 2027);
+        assert_eq!(cal6.date().month(), 3);
     }
 }

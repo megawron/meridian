@@ -432,6 +432,39 @@
   color: @accent_fg_color;
 }
 
+/* ── Context Menu & Popovers inside Mail Sidebar ───────────────────────── */
+/* Ensure popover text is never white-on-white even when parent row is selected */
+.mail-sidebar popover,
+.mail-sidebar popover contents,
+.mail-sidebar popover label,
+.mail-sidebar popover modelbutton,
+.mail-sidebar popover modelbutton label,
+.mail-sidebar popover image,
+.mail-sidebar listview row:selected popover label,
+.mail-sidebar listview row:selected popover image,
+.mail-sidebar listview row:selected popover modelbutton,
+.mail-sidebar listview row:selected popover modelbutton label,
+.mail-sidebar listbox row:selected popover label,
+.mail-sidebar listbox row:selected popover image,
+.mail-sidebar listbox row:selected popover modelbutton,
+.mail-sidebar listbox row:selected popover modelbutton label,
+.mail-sidebar .mail-sidebar-row.is-selected popover label,
+.mail-sidebar .mail-sidebar-row.is-selected popover image,
+.mail-sidebar .mail-sidebar-row.is-selected popover modelbutton,
+.mail-sidebar .mail-sidebar-row.is-selected popover modelbutton label {
+  color: @popover_fg_color;
+}
+
+.mail-sidebar popover modelbutton:hover,
+.mail-sidebar popover modelbutton:hover label,
+.mail-sidebar popover modelbutton:focus,
+.mail-sidebar popover modelbutton:focus label,
+.mail-sidebar popover modelbutton:selected,
+.mail-sidebar popover modelbutton:selected label {
+  color: @accent_fg_color;
+  background-color: @accent_bg_color;
+}
+
 .mail-sidebar treeexpander {
   min-height: 24px;
   border-spacing: 0;
@@ -639,6 +672,35 @@ splitview > .sidebar,
   padding: 0;
 }
 
+.calendar-sidebar-minical > grid {
+  padding-left: 0;
+  padding-bottom: 0;
+}
+
+.calendar-sidebar-minical > grid > label {
+  margin-top: 0;
+  margin-right: 0;
+}
+
+.calendar-sidebar-minical label.day-number {
+  padding: 4px 0;
+  border-radius: 0;
+}
+
+.calendar-sidebar-minical label.day-number:checked {
+  background-color: alpha(@accent_color, 0.25);
+  color: @accent_color;
+  font-weight: bold;
+  border-radius: 0;
+}
+
+.calendar-sidebar-minical label.day-number:checked:selected {
+  background-color: @accent_bg_color;
+  color: @accent_fg_color;
+  font-weight: bold;
+  border-radius: 4px;
+}
+
 .evolution-sidebar-drawer .navigation-sidebar {
   background-color: transparent;
 }
@@ -681,21 +743,25 @@ splitview > .sidebar,
   padding: 6px 6px;
 }
 
-/* ── Unified Full-Width Mail Toolbar ───────────────────────────────────── */
-.unified-mail-toolbar {
+/* ── Unified Full-Width View Toolbar ───────────────────────────────────── */
+.unified-mail-toolbar,
+.unified-view-toolbar {
   padding: 4px 8px;
   background-color: @headerbar_bg_color;
   border-bottom: 1px solid alpha(@borders, 0.45);
 }
 
-.unified-mail-toolbar button {
+.unified-mail-toolbar button,
+.unified-view-toolbar button {
   min-width: 28px;
   min-height: 28px;
   padding: 4px;
 }
 
 .unified-mail-toolbar search-entry,
-.unified-mail-toolbar .search-entry {
+.unified-mail-toolbar .search-entry,
+.unified-view-toolbar search-entry,
+.unified-view-toolbar .search-entry {
   min-width: 220px;
 }
 

@@ -389,27 +389,6 @@ impl MemosPage {
             .memo_category_selector
             .replace(Some(category_selector.clone()));
         set_category_selector_for_filter(&category_selector, &initial_memo_category_filter);
-        search_entry.set_hexpand(true);
-        sidebar_box.append(&search_entry);
-
-        let mode_row = gtk::Box::builder()
-            .orientation(gtk::Orientation::Horizontal)
-            .spacing(4)
-            .margin_bottom(2)
-            .build();
-        search_mode_selector.set_hexpand(true);
-        mode_row.append(&search_mode_selector);
-        sidebar_box.append(&mode_row);
-
-        let sort_row = gtk::Box::builder()
-            .orientation(gtk::Orientation::Horizontal)
-            .spacing(4)
-            .margin_bottom(4)
-            .build();
-        sort_selector.set_hexpand(true);
-        sort_row.append(&sort_selector);
-        sort_row.append(&direction_button);
-        sidebar_box.append(&sort_row);
 
         let memo_list = gtk::ListBox::builder()
             .selection_mode(gtk::SelectionMode::Multiple)
@@ -1101,12 +1080,15 @@ impl MemosPage {
             .buffer()
             .set_text("Noch keine Notizdaten verfügbar.");
 
-        let memo_actions = gtk::Box::builder()
+        let memo_title_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(8)
+            .margin_bottom(4)
             .build();
-        memo_actions.append(&memo_title);
         memo_title.set_hexpand(true);
+        memo_title_box.append(&memo_title);
+        content_box.append(&memo_title_box);
+
         let save_memo_btn = gtk::Button::builder()
             .label("Speichern")
             .css_classes(vec!["suggested-action"])
@@ -1119,16 +1101,7 @@ impl MemosPage {
             .label("Exportieren")
             .icon_name("document-save-symbolic")
             .build();
-        memo_actions.append(&save_memo_btn);
-        memo_actions.append(&export_memo_btn);
-        memo_actions.append(&delete_memo_btn);
-        content_box.append(&memo_actions);
 
-        let memo_surface_actions = gtk::Box::builder()
-            .orientation(gtk::Orientation::Horizontal)
-            .spacing(6)
-            .homogeneous(false)
-            .build();
         let open_memo_btn = gtk::Button::builder()
             .icon_name("document-open-symbolic")
             .tooltip_text("Memo öffnen")
@@ -1179,19 +1152,6 @@ impl MemosPage {
             button.add_css_class("flat");
             set_accessible_label(button, label);
         }
-        for button in [
-            &open_memo_btn,
-            &forward_memo_btn,
-            &open_url_memo_btn,
-            &print_memo_btn,
-            &save_as_memo_btn,
-            &copy_memo_btn,
-            &cut_memo_btn,
-            &paste_memo_btn,
-            &select_all_memo_btn,
-        ] {
-            memo_surface_actions.append(button);
-        }
         self.imp().memo_surface_buttons.replace(Some(vec![
             save_memo_btn.clone(),
             export_memo_btn.clone(),
@@ -1206,12 +1166,6 @@ impl MemosPage {
             paste_memo_btn.clone(),
             select_all_memo_btn.clone(),
         ]));
-        content_box.append(&memo_surface_actions);
-
-        let preview_controls = gtk::Box::builder()
-            .orientation(gtk::Orientation::Horizontal)
-            .spacing(6)
-            .build();
         let preview_toggle = gtk::ToggleButton::with_label("Vorschau");
         preview_toggle.set_active(initial_memo_preview_state.visible);
         let preview_orientation_model = gtk::StringList::new(&["Klassisch", "Vertikal"]);
@@ -1222,9 +1176,65 @@ impl MemosPage {
             MemoPreviewOrientation::Vertical => 1,
         });
         preview_orientation_selector.set_tooltip_text(Some("Ausrichtung der Memo-Vorschau"));
-        preview_controls.append(&preview_toggle);
-        preview_controls.append(&preview_orientation_selector);
-        content_box.append(&preview_controls);
+
+        let btn_add_memo = gtk::Button::builder()
+            .label("Neue Notiz")
+            .icon_name("document-new-symbolic")
+            .css_classes(vec!["suggested-action"])
+            .tooltip_text("Neue Notiz erstellen (Ctrl+N)")
+            .build();
+
+        let memo_list_for_new = memo_list.clone();
+        let memo_records_for_new = Rc::clone(&memo_records);
+        let empty_state_for_new = empty_state.clone();
+        let page_weak_for_new = self.downgrade();
+        btn_add_memo.connect_clicked(move |_| {
+            if let Some(page) = page_weak_for_new.upgrade() {
+                page.open_memo_dialog(
+                    memo_list_for_new.clone(),
+                    Rc::clone(&memo_records_for_new),
+                    empty_state_for_new.clone(),
+                    None,
+                );
+            }
+        });
+
+        let memos_toolbar = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(4)
+            .margin_start(8)
+            .margin_end(8)
+            .margin_top(4)
+            .margin_bottom(4)
+            .hexpand(true)
+            .css_classes(vec!["unified-view-toolbar", "toolbar"])
+            .build();
+
+        memos_toolbar.append(&btn_add_memo);
+        memos_toolbar.append(&save_memo_btn);
+        memos_toolbar.append(&delete_memo_btn);
+        memos_toolbar.append(&export_memo_btn);
+        memos_toolbar.append(&print_memo_btn);
+        memos_toolbar.append(&forward_memo_btn);
+        memos_toolbar.append(&open_url_memo_btn);
+        memos_toolbar.append(&open_memo_btn);
+        memos_toolbar.append(&copy_memo_btn);
+        memos_toolbar.append(&cut_memo_btn);
+        memos_toolbar.append(&paste_memo_btn);
+        memos_toolbar.append(&select_all_memo_btn);
+        memos_toolbar.append(&search_mode_selector);
+        memos_toolbar.append(&search_entry);
+        memos_toolbar.append(&category_selector);
+        memos_toolbar.append(&sort_selector);
+        memos_toolbar.append(&direction_button);
+        memos_toolbar.append(&preview_toggle);
+        memos_toolbar.append(&preview_orientation_selector);
+
+        let memos_toolbar_scroll = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Automatic)
+            .vscrollbar_policy(gtk::PolicyType::Never)
+            .child(&memos_toolbar)
+            .build();
 
         let memo_preview_box = gtk::Box::builder()
             .orientation(match initial_memo_preview_state.orientation {
@@ -2433,7 +2443,14 @@ impl MemosPage {
                 }
             });
         }
-        paned.set_parent(self);
+        let root_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .vexpand(true)
+            .hexpand(true)
+            .build();
+        root_box.append(&memos_toolbar_scroll);
+        root_box.append(&paned);
+        root_box.set_parent(self);
     }
 
     fn open_memo_dialog(
