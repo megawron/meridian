@@ -133,6 +133,9 @@ const COMPOSER_OPERATION_ACTIONS: &[&str] = &[
     "view-reply-to",
     "view-cc",
     "view-bcc",
+    "insert-template",
+    "save-template",
+    "save-snippet",
 ];
 
 mod imp {
@@ -691,44 +694,10 @@ impl ComposeDialog {
             .tooltip_text("Composer schließen (Ctrl+W)")
             .css_classes(vec!["flat"])
             .build();
-        header_bar.pack_start(&btn_close);
-
-        let btn_send = gtk::Button::builder()
-            .label("Senden")
-            .icon_name("mail-send-symbolic")
-            .css_classes(vec!["suggested-action"])
-            .tooltip_text("E-Mail jetzt senden (Ctrl+Enter)")
-            .build();
-        header_bar.pack_end(&btn_send);
-
-        let btn_save_draft = gtk::Button::builder()
-            .icon_name("document-save-symbolic")
-            .tooltip_text("Entwurf speichern (Ctrl+S)")
-            .css_classes(vec!["flat"])
-            .build();
-        header_bar.pack_end(&btn_save_draft);
-
-        let btn_priority = gtk::ToggleButton::builder()
-            .icon_name("mail-mark-important-symbolic")
-            .tooltip_text("Nachricht als wichtig markieren")
-            .css_classes(vec!["flat"])
-            .build();
-        header_bar.pack_end(&btn_priority);
-
-        let request_read_receipt = AppSettings::try_new()
-            .map(|settings| settings.request_read_receipt())
-            .unwrap_or(false);
-        let btn_request_read_receipt = gtk::ToggleButton::builder()
-            .icon_name("mail-send-receive-symbolic")
-            .tooltip_text("Lesebestätigung für diese Nachricht anfordern")
-            .active(request_read_receipt)
-            .css_classes(vec!["flat"])
-            .build();
-        header_bar.pack_end(&btn_request_read_receipt);
 
         let btn_attach = gtk::Button::builder()
             .icon_name("mail-attachment-symbolic")
-            .tooltip_text("Anhang hinzufügen…")
+            .tooltip_text("Anhang hinzufügen… (Ctrl+M)")
             .css_classes(vec!["flat"])
             .build();
 
@@ -753,89 +722,63 @@ impl ComposeDialog {
         ));
         header_bar.pack_start(&btn_attach);
 
+        let menu_button = gtk::MenuButton::builder()
+            .icon_name("open-menu-symbolic")
+            .tooltip_text("Composer-Menü")
+            .css_classes(vec!["flat"])
+            .build();
+        header_bar.pack_end(&menu_button);
+
+        let btn_send_content = adw::ButtonContent::builder()
+            .icon_name("mail-send-symbolic")
+            .label("Senden")
+            .build();
+        let btn_send = gtk::Button::builder()
+            .child(&btn_send_content)
+            .css_classes(vec!["suggested-action"])
+            .tooltip_text("E-Mail jetzt senden (Ctrl+Enter)")
+            .build();
+        header_bar.pack_end(&btn_send);
+
+        let btn_save_draft = gtk::Button::builder()
+            .icon_name("document-save-symbolic")
+            .tooltip_text("Entwurf speichern (Ctrl+S)")
+            .css_classes(vec!["flat"])
+            .build();
+
+        let btn_priority = gtk::ToggleButton::builder()
+            .icon_name("mail-mark-important-symbolic")
+            .tooltip_text("Nachricht als wichtig markieren")
+            .css_classes(vec!["flat"])
+            .build();
+
+        let request_read_receipt = AppSettings::try_new()
+            .map(|settings| settings.request_read_receipt())
+            .unwrap_or(false);
+        let btn_request_read_receipt = gtk::ToggleButton::builder()
+            .icon_name("mail-send-receive-symbolic")
+            .tooltip_text("Lesebestätigung für diese Nachricht anfordern")
+            .active(request_read_receipt)
+            .css_classes(vec!["flat"])
+            .build();
+
         let btn_insert_template = gtk::Button::builder()
             .icon_name("document-open-symbolic")
             .tooltip_text("Vorlage oder Textbaustein einfügen")
             .css_classes(vec!["flat"])
             .build();
-        header_bar.pack_start(&btn_insert_template);
 
         let btn_save_template = gtk::Button::builder()
             .icon_name("document-save-as-symbolic")
             .tooltip_text("Aktuellen Inhalt als Vorlage speichern")
             .css_classes(vec!["flat"])
             .build();
-        header_bar.pack_start(&btn_save_template);
 
         let btn_save_snippet = gtk::Button::builder()
             .icon_name("insert-text-symbolic")
             .tooltip_text("Aktuellen Inhalt als Textbaustein speichern")
             .css_classes(vec!["flat"])
             .build();
-        header_bar.pack_start(&btn_save_snippet);
-
-        let btn_signature = gtk::MenuButton::builder()
-            .icon_name("mail-mark-unread-symbolic")
-            .tooltip_text("Signatur einfügen oder wechseln")
-            .css_classes(vec!["flat"])
-            .build();
-
-        let sig_store = SignatureStore::from_environment();
-        let signatures = sig_store.load();
-
-        let sig_popover = gtk::Popover::new();
-        let sig_box = gtk::Box::builder()
-            .orientation(gtk::Orientation::Vertical)
-            .spacing(4)
-            .margin_start(8)
-            .margin_end(8)
-            .margin_top(8)
-            .margin_bottom(8)
-            .build();
-
-        let lbl_sig = gtk::Label::builder()
-            .label("Signatur einfügen")
-            .css_classes(vec!["heading", "caption"])
-            .halign(gtk::Align::Start)
-            .build();
-        sig_box.append(&lbl_sig);
-
-        if signatures.is_empty() {
-            let lbl_empty = gtk::Label::builder()
-                .label("Keine Signaturen konfiguriert\n(in Einstellungen anlegen)")
-                .css_classes(vec!["dim-label", "caption"])
-                .build();
-            sig_box.append(&lbl_empty);
-        } else {
-            for sig in signatures {
-                let btn_sig_item = gtk::Button::builder()
-                    .label(&sig.name)
-                    .css_classes(vec!["flat"])
-                    .halign(gtk::Align::Fill)
-                    .build();
-                let sig_text = sig.text.clone();
-                let sig_format = sig.format.clone();
-                let dialog_weak = self.downgrade();
-                let popover_weak = sig_popover.downgrade();
-                btn_sig_item.connect_clicked(move |_| {
-                    if let Some(popover) = popover_weak.upgrade() {
-                        popover.popdown();
-                    }
-                    if let Some(dialog) = dialog_weak.upgrade() {
-                        let html = if sig_format.to_ascii_lowercase().contains("html") {
-                            crate::services::html_sanitizer::sanitize_html(sig_text.trim_end())
-                        } else {
-                            html_escape(sig_text.trim_end()).replace('\n', "<br>")
-                        };
-                        dialog.insert_html_fragment(&format!("<p><br></p><p>--<br>{}</p>", html));
-                    }
-                });
-                sig_box.append(&btn_sig_item);
-            }
-        }
-        sig_popover.set_child(Some(&sig_box));
-        btn_signature.set_popover(Some(&sig_popover));
-        header_bar.pack_start(&btn_signature);
 
         let sign_by_default = AppSettings::try_new()
             .map(|settings| settings.sign_new_messages())
@@ -846,14 +789,12 @@ impl ComposeDialog {
             .active(sign_by_default)
             .css_classes(vec!["flat"])
             .build();
-        header_bar.pack_start(&btn_sign);
 
         let btn_encrypt = gtk::ToggleButton::builder()
             .icon_name("changes-prevent-symbolic")
             .tooltip_text("Nachricht verschlüsseln (OpenPGP oder S/MIME)")
             .css_classes(vec!["flat"])
             .build();
-        header_bar.pack_start(&btn_encrypt);
 
         let composer_html = AppSettings::try_new()
             .map(|settings| settings.composer_html())
@@ -864,14 +805,6 @@ impl ComposeDialog {
             .active(!composer_html)
             .css_classes(vec!["flat"])
             .build();
-        header_bar.pack_start(&btn_plain_text);
-
-        let menu_button = gtk::MenuButton::builder()
-            .icon_name("open-menu-symbolic")
-            .tooltip_text("Composer-Menü")
-            .css_classes(vec!["flat"])
-            .build();
-        header_bar.pack_end(&menu_button);
 
         toolbar_view.add_top_bar(&header_bar);
 
@@ -1074,7 +1007,140 @@ impl ComposeDialog {
         form_grid.attach(&entry_subject, 1, 5, 1, 1);
 
         content_box.append(&form_grid);
+
+        let options_badges_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(6)
+            .margin_start(16)
+            .margin_end(16)
+            .margin_top(2)
+            .margin_bottom(6)
+            .visible(false)
+            .build();
+        content_box.append(&options_badges_box);
         content_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+
+        let update_options_badges = {
+            let badges_box = options_badges_box.clone();
+            let b_sign = btn_sign.clone();
+            let b_encrypt = btn_encrypt.clone();
+            let b_priority = btn_priority.clone();
+            let b_receipt = btn_request_read_receipt.clone();
+            let b_plain = btn_plain_text.clone();
+
+            std::rc::Rc::new(move || {
+                while let Some(child) = badges_box.first_child() {
+                    badges_box.remove(&child);
+                }
+
+                let mut count = 0;
+
+                let add_badge = |box_ref: &gtk::Box,
+                                 icon: &str,
+                                 label: &str,
+                                 tooltip: &str,
+                                 target_btn: &gtk::ToggleButton| {
+                    let pill_btn = gtk::Button::builder()
+                        .css_classes(vec!["flat", "pill", "caption"])
+                        .tooltip_text(tooltip)
+                        .build();
+                    let content = gtk::Box::builder()
+                        .orientation(gtk::Orientation::Horizontal)
+                        .spacing(6)
+                        .build();
+                    let img = gtk::Image::from_icon_name(icon);
+                    let lbl = gtk::Label::builder().label(label).build();
+                    let close_img = gtk::Image::from_icon_name("window-close-symbolic");
+                    close_img.set_pixel_size(12);
+                    content.append(&img);
+                    content.append(&lbl);
+                    content.append(&close_img);
+                    pill_btn.set_child(Some(&content));
+
+                    let target = target_btn.clone();
+                    pill_btn.connect_clicked(move |_| {
+                        target.set_active(false);
+                    });
+
+                    box_ref.append(&pill_btn);
+                };
+
+                if b_sign.is_active() {
+                    add_badge(
+                        &badges_box,
+                        "security-high-symbolic",
+                        "Signiert",
+                        "Signieren deaktivieren",
+                        &b_sign,
+                    );
+                    count += 1;
+                }
+                if b_encrypt.is_active() {
+                    add_badge(
+                        &badges_box,
+                        "changes-prevent-symbolic",
+                        "Verschlüsselt",
+                        "Verschlüsseln deaktivieren",
+                        &b_encrypt,
+                    );
+                    count += 1;
+                }
+                if b_priority.is_active() {
+                    add_badge(
+                        &badges_box,
+                        "mail-mark-important-symbolic",
+                        "Hohe Priorität",
+                        "Priorität normalisieren",
+                        &b_priority,
+                    );
+                    count += 1;
+                }
+                if b_receipt.is_active() {
+                    add_badge(
+                        &badges_box,
+                        "mail-send-receive-symbolic",
+                        "Lesebestätigung",
+                        "Lesebestätigung entfernen",
+                        &b_receipt,
+                    );
+                    count += 1;
+                }
+                if b_plain.is_active() {
+                    add_badge(
+                        &badges_box,
+                        "text-x-generic-symbolic",
+                        "Nur-Text",
+                        "Zu HTML wechseln",
+                        &b_plain,
+                    );
+                    count += 1;
+                }
+
+                badges_box.set_visible(count > 0);
+            })
+        };
+
+        {
+            let u = update_options_badges.clone();
+            btn_sign.connect_toggled(move |_| u());
+        }
+        {
+            let u = update_options_badges.clone();
+            btn_encrypt.connect_toggled(move |_| u());
+        }
+        {
+            let u = update_options_badges.clone();
+            btn_priority.connect_toggled(move |_| u());
+        }
+        {
+            let u = update_options_badges.clone();
+            btn_request_read_receipt.connect_toggled(move |_| u());
+        }
+        {
+            let u = update_options_badges.clone();
+            btn_plain_text.connect_toggled(move |_| u());
+        }
+        update_options_badges();
 
         // Rich WebKitGTK 6.0 WYSIWYG HTML Editor
         let html_editor = crate::views::HtmlEditor::new();
@@ -1314,9 +1380,10 @@ impl ComposeDialog {
         let dialog_weak_for_templates = self.downgrade();
         let entry_subject_for_templates = entry_subject.clone();
         let html_editor_for_templates = html_editor.clone();
-        btn_insert_template.connect_clicked(move |button| {
+        let menu_button_for_templates = menu_button.clone();
+        btn_insert_template.connect_clicked(move |_| {
             let popover = gtk::Popover::new();
-            popover.set_parent(button);
+            popover.set_parent(&menu_button_for_templates);
             popover.set_has_arrow(true);
 
             let list = gtk::ListBox::builder()
@@ -1487,9 +1554,10 @@ impl ComposeDialog {
         let dialog_weak_for_save_template = self.downgrade();
         let entry_subject_for_save_template = entry_subject.clone();
         let html_editor_for_save_template = html_editor.clone();
-        btn_save_template.connect_clicked(move |button| {
+        let menu_button_for_save_template = menu_button.clone();
+        btn_save_template.connect_clicked(move |_| {
             let popover = gtk::Popover::new();
-            popover.set_parent(button);
+            popover.set_parent(&menu_button_for_save_template);
             let container = gtk::Box::builder()
                 .orientation(gtk::Orientation::Vertical)
                 .spacing(8)
@@ -1564,9 +1632,10 @@ impl ComposeDialog {
 
         let dialog_weak_for_save_snippet = self.downgrade();
         let html_editor_for_save_snippet = html_editor.clone();
-        btn_save_snippet.connect_clicked(move |button| {
+        let menu_button_for_save_snippet = menu_button.clone();
+        btn_save_snippet.connect_clicked(move |_| {
             let popover = gtk::Popover::new();
-            popover.set_parent(button);
+            popover.set_parent(&menu_button_for_save_snippet);
             let container = gtk::Box::builder()
                 .orientation(gtk::Orientation::Vertical)
                 .spacing(8)
@@ -2335,6 +2404,9 @@ impl ComposeDialog {
             &btn_priority,
             &btn_sign,
             &btn_encrypt,
+            &btn_insert_template,
+            &btn_save_template,
+            &btn_save_snippet,
         );
 
         toolbar_view.set_content(Some(&content_box));
@@ -2355,6 +2427,9 @@ impl ComposeDialog {
         btn_priority: &gtk::ToggleButton,
         btn_sign: &gtk::ToggleButton,
         btn_encrypt: &gtk::ToggleButton,
+        btn_insert_template: &gtk::Button,
+        btn_save_template: &gtk::Button,
+        btn_save_snippet: &gtk::Button,
     ) {
         let group = gio::SimpleActionGroup::new();
 
@@ -2440,6 +2515,27 @@ impl ComposeDialog {
             }
         });
         group.add_action(&action_attach);
+
+        let action_insert_template = gio::SimpleAction::new("insert-template", None);
+        let btn_insert_for_action = btn_insert_template.clone();
+        action_insert_template.connect_activate(move |_, _| {
+            btn_insert_for_action.emit_clicked();
+        });
+        group.add_action(&action_insert_template);
+
+        let action_save_template = gio::SimpleAction::new("save-template", None);
+        let btn_save_template_for_action = btn_save_template.clone();
+        action_save_template.connect_activate(move |_, _| {
+            btn_save_template_for_action.emit_clicked();
+        });
+        group.add_action(&action_save_template);
+
+        let action_save_snippet = gio::SimpleAction::new("save-snippet", None);
+        let btn_save_snippet_for_action = btn_save_snippet.clone();
+        action_save_snippet.connect_activate(move |_, _| {
+            btn_save_snippet_for_action.emit_clicked();
+        });
+        group.add_action(&action_save_snippet);
 
         let action_plain_text = add_composer_toggle_action(&group, "plain-text", btn_plain_text);
         let action_request_read_receipt =
@@ -2595,6 +2691,37 @@ impl ComposeDialog {
         });
         group.add_action(&action_charset);
 
+        let sig_store = SignatureStore::from_environment();
+        let signatures = sig_store.load();
+        let sig_menu = gio::Menu::new();
+        if signatures.is_empty() {
+            let item = gio::MenuItem::new(
+                Some("Keine Signaturen konfiguriert"),
+                None,
+            );
+            sig_menu.append_item(&item);
+        } else {
+            for (idx, sig) in signatures.iter().enumerate() {
+                let action_name = format!("insert-signature-{idx}");
+                let sig_action = gio::SimpleAction::new(&action_name, None);
+                let dialog_weak = self.downgrade();
+                let sig_text = sig.text.clone();
+                let sig_format = sig.format.clone();
+                sig_action.connect_activate(move |_, _| {
+                    if let Some(dialog) = dialog_weak.upgrade() {
+                        let html = if sig_format.to_ascii_lowercase().contains("html") {
+                            crate::services::html_sanitizer::sanitize_html(sig_text.trim_end())
+                        } else {
+                            html_escape(sig_text.trim_end()).replace('\n', "<br>")
+                        };
+                        dialog.insert_html_fragment(&format!("<p><br></p><p>--<br>{}</p>", html));
+                    }
+                });
+                group.add_action(&sig_action);
+                sig_menu.append(Some(&sig.name), Some(&format!("compose.{action_name}")));
+            }
+        }
+
         self.insert_action_group("compose", Some(&group));
         self.imp().composer_action_group.replace(Some(group));
         if let Some(combo) = self.imp().combo_from.borrow().as_ref() {
@@ -2604,6 +2731,8 @@ impl ComposeDialog {
         let file_menu = gio::Menu::new();
         file_menu.append(Some("Senden"), Some("compose.send"));
         file_menu.append(Some("Entwurf speichern"), Some("compose.save-draft"));
+        file_menu.append(Some("Als Vorlage speichern…"), Some("compose.save-template"));
+        file_menu.append(Some("Als Textbaustein speichern…"), Some("compose.save-snippet"));
         file_menu.append(Some("Als EML speichern…"), Some("compose.save-as-eml"));
         file_menu.append(Some("Druckvorschau"), Some("compose.print-preview"));
         file_menu.append(Some("Drucken…"), Some("compose.print"));
@@ -2617,7 +2746,12 @@ impl ComposeDialog {
         view_menu.append(Some("Blindkopiefeld (Bcc)"), Some("compose.view-bcc"));
 
         let insert_menu = gio::Menu::new();
-        insert_menu.append(Some("Anlage…"), Some("compose.attach"));
+        insert_menu.append(Some("Anlage hinzufügen…"), Some("compose.attach"));
+        insert_menu.append(
+            Some("Vorlage oder Textbaustein einfügen…"),
+            Some("compose.insert-template"),
+        );
+        insert_menu.append_submenu(Some("Signatur einfügen"), &sig_menu);
 
         let options_menu = gio::Menu::new();
         options_menu.append(Some("HTML-/Nur-Text-Modus"), Some("compose.plain-text"));

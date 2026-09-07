@@ -189,6 +189,12 @@ mod imp {
             window.present();
             window.present_existing_reminders();
             tracing::debug!("Main window presented");
+
+            if std::env::args().any(|a| a == "--compose") {
+                let dialog = crate::dialogs::ComposeDialog::new();
+                dialog.set_transient_for(Some(&window));
+                dialog.present();
+            }
         }
 
         fn open(&self, files: &[gio::File], hint: &str) {
