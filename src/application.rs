@@ -163,7 +163,8 @@ mod imp {
 
             tracing::debug!("Application startup");
 
-            // Load custom CSS
+            // Load custom icons & CSS
+            app.setup_icons();
             app.setup_css();
             app.apply_style_settings();
 
@@ -220,6 +221,48 @@ impl EvolutionApplication {
             .property("resource-base-path", RESOURCE_PATH)
             .property("flags", gio::ApplicationFlags::HANDLES_OPEN)
             .build()
+    }
+
+    /// Register bundled symbolic icons with the display icon theme.
+    fn setup_icons(&self) {
+        let display = gdk::Display::default().expect("Could not get default display");
+        let icon_theme = gtk::IconTheme::for_display(&display);
+
+        // Ensure application icons directory exists in app data
+        let app_icons_dir = crate::services::app_data_dir().join("icons");
+        let scalable_dir = app_icons_dir.join("hicolor/scalable/actions");
+        let _ = std::fs::create_dir_all(&scalable_dir);
+
+        let icons: &[(&str, &str)] = &[
+            (
+                "mail-inbox-symbolic.svg",
+                include_str!("../data/icons/hicolor/scalable/actions/mail-inbox-symbolic.svg"),
+            ),
+            (
+                "mail-outbox-symbolic.svg",
+                include_str!("../data/icons/hicolor/scalable/actions/mail-outbox-symbolic.svg"),
+            ),
+            (
+                "mail-drafts-symbolic.svg",
+                include_str!("../data/icons/hicolor/scalable/actions/mail-drafts-symbolic.svg"),
+            ),
+            (
+                "mail-sync-symbolic.svg",
+                include_str!("../data/icons/hicolor/scalable/actions/mail-sync-symbolic.svg"),
+            ),
+        ];
+
+        for (filename, content) in icons {
+            let _ = std::fs::write(scalable_dir.join(filename), content);
+        }
+
+        icon_theme.add_search_path(&app_icons_dir);
+        let local_data = std::path::Path::new("data/icons");
+        if local_data.exists() {
+            icon_theme.add_search_path(local_data);
+        }
+
+        tracing::debug!("Application icons registered");
     }
 
     /// Load the application-wide CSS stylesheet.

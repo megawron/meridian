@@ -79,6 +79,7 @@ mod imp {
         pub(super) task_preview_toggle: RefCell<Option<gtk::ToggleButton>>,
         pub(super) task_preview_orientation: RefCell<Option<gtk::DropDown>>,
         pub(super) task_preview_paned: RefCell<Option<gtk::Paned>>,
+        pub(super) outer_paned: RefCell<Option<gtk::Paned>>,
         pub(super) task_preview_box: RefCell<Option<gtk::Box>>,
         pub(super) task_preview_content: RefCell<Option<gtk::TextView>>,
         pub(super) task_preview_find_bar: RefCell<Option<gtk::Box>>,
@@ -3580,6 +3581,18 @@ impl TasksPage {
         }
     }
 
+    pub fn outer_paned(&self) -> Option<gtk::Paned> {
+        self.imp().outer_paned.borrow().clone()
+    }
+
+    pub fn set_sidebar_position(&self, pos: i32) {
+        if let Some(paned) = self.imp().outer_paned.borrow().as_ref() {
+            if (paned.position() - pos).abs() > 1 {
+                paned.set_position(pos);
+            }
+        }
+    }
+
     pub(crate) fn focus_search(&self) {
         if let Some(entry) = self.imp().search_entry.borrow().as_ref() {
             entry.grab_focus();
@@ -3714,11 +3727,12 @@ impl TasksPage {
                 .task_sort_descending
                 .set(settings.task_sort_descending());
         }
-        let split = adw::NavigationSplitView::builder()
-            .min_sidebar_width(240.0)
-            .max_sidebar_width(240.0)
-            .sidebar_width_fraction(0.0)
+        let paned = gtk::Paned::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .vexpand(true)
+            .hexpand(true)
             .build();
+        self.imp().outer_paned.replace(Some(paned.clone()));
 
         // ── Sidebar (Categories) ────────────────────────────────────────
 
@@ -3736,6 +3750,7 @@ impl TasksPage {
             .css_classes(vec!["title-4"])
             .halign(gtk::Align::Start)
             .hexpand(true)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
             .margin_top(4)
             .margin_bottom(4)
             .build();
@@ -3831,6 +3846,7 @@ impl TasksPage {
             .label("Ansichten")
             .css_classes(vec!["title-5"])
             .halign(gtk::Align::Start)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
             .margin_top(8)
             .margin_bottom(2)
             .build();
@@ -3842,7 +3858,7 @@ impl TasksPage {
             .build();
 
         for (_, icon, label) in TASK_FILTER_OPTIONS {
-            let row = adw::ActionRow::builder().title(label).build();
+            let row = adw::ActionRow::builder().title(label).title_lines(1).build();
             let img = gtk::Image::from_icon_name(icon);
             row.add_prefix(&img);
             cat_list.append(&row);
@@ -3866,6 +3882,7 @@ impl TasksPage {
             .label("Aufgaben")
             .halign(gtk::Align::Start)
             .hexpand(true)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
             .build();
         drawer_header.append(&drawer_icon);
         drawer_header.append(&drawer_title);
@@ -3881,13 +3898,9 @@ impl TasksPage {
             &sidebar_outer_box,
         ));
 
-        let sidebar_page = adw::NavigationPage::builder()
-            .title("Aufgaben")
-            .child(&sidebar_outer_box)
-            .css_classes(vec!["evolution-sidebar-drawer"])
-            .build();
-
-        split.set_sidebar(Some(&sidebar_page));
+        paned.set_start_child(Some(&sidebar_outer_box));
+        paned.set_resize_start_child(false);
+        paned.set_shrink_start_child(false);
 
         // ── Main Content (Task List) ────────────────────────────────────
 
@@ -3972,11 +3985,9 @@ impl TasksPage {
             .task_source_selector
             .replace(Some(source_selector.clone()));
         let source_selector_for_sidebar = source_selector.clone();
-        let split_for_source_sidebar = split.clone();
         task_source_list.connect_row_selected(move |_, row| {
             if let Some(row) = row {
                 source_selector_for_sidebar.set_selected(row.index() as u32);
-                split_for_source_sidebar.set_show_content(true);
             }
         });
         let category_model = gtk::StringList::new(&["Alle Kategorien"]);
@@ -5049,7 +5060,6 @@ impl TasksPage {
         let task_store_for_category = task_store.clone();
         let empty_tasks_for_category = empty_tasks.clone();
         let category_model_for_selector = category_model.clone();
-        let split_for_category_selection = split.clone();
         category_selector.connect_selected_notify(move |selector| {
             let Some(page) = page_weak_for_category.upgrade() else {
                 return;
@@ -5077,14 +5087,12 @@ impl TasksPage {
                 &task_store_for_category,
                 &empty_tasks_for_category,
             );
-            split_for_category_selection.set_show_content(true);
         });
 
         let page_weak_for_categories = self.downgrade();
         let task_list_for_categories = task_list.clone();
         let task_store_for_categories = task_store.clone();
         let empty_tasks_for_categories = empty_tasks.clone();
-        let split_for_category_sidebar = split.clone();
         cat_list.connect_row_selected(move |_, row| {
             let Some(row) = row else {
                 return;
@@ -5103,7 +5111,6 @@ impl TasksPage {
                 &task_store_for_categories,
                 &empty_tasks_for_categories,
             );
-            split_for_category_sidebar.set_show_content(true);
         });
         let initial_filter_index = task_filter_index(self.imp().task_filter.get());
         if let Some(row) = cat_list.row_at_index(initial_filter_index) {
@@ -5482,7 +5489,7 @@ impl TasksPage {
             .build();
         let preview_paned = gtk::Paned::builder()
             .orientation(preview_orientation.paned_orientation())
-            .wide_handle(true)
+            .wide_handle(false)
             .vexpand(true)
             .build();
         preview_paned.set_start_child(Some(&task_scroll));
@@ -5516,31 +5523,27 @@ impl TasksPage {
         });
         content_box.append(&preview_paned);
 
-        let content_page = adw::NavigationPage::builder()
-            .title("Aufgaben-Übersicht")
-            .child(&content_box)
-            .build();
+        content_box.set_vexpand(true);
+        content_box.set_hexpand(true);
+        paned.set_end_child(Some(&content_box));
+        paned.set_resize_end_child(true);
+        paned.set_shrink_end_child(true);
 
-        split.set_content(Some(&content_page));
+        let sidebar_position = AppSettings::try_new()
+            .map(|settings| settings.mail_sidebar_position())
+            .unwrap_or(260)
+            .clamp(80, 1500);
+        paned.set_position(sidebar_position);
+        if let Some(settings) = AppSettings::try_new() {
+            paned.connect_position_notify(move |paned| {
+                let position = paned.position();
+                if (80..=1500).contains(&position) && settings.mail_sidebar_position() != position {
+                    settings.set_mail_sidebar_position(position);
+                }
+            });
+        }
         self.reload_task_category_metadata();
-        let split_for_navigation = split.clone();
-        let key_controller = gtk::EventControllerKey::new();
-        key_controller.connect_key_pressed(move |_, key, _, modifiers| {
-            let is_back = key == gtk::gdk::Key::Escape
-                || (key == gtk::gdk::Key::Left
-                    && modifiers.contains(gtk::gdk::ModifierType::ALT_MASK));
-            if is_back
-                && split_for_navigation.is_collapsed()
-                && split_for_navigation.shows_content()
-            {
-                split_for_navigation.set_show_content(false);
-                glib::Propagation::Stop
-            } else {
-                glib::Propagation::Proceed
-            }
-        });
-        split.add_controller(key_controller);
-        split.set_parent(self);
+        paned.set_parent(self);
         start_task_source_discovery(self, self.imp().task_source_filter.borrow().clone(), false);
     }
 
@@ -9520,7 +9523,10 @@ fn start_task_source_discovery(
             .unwrap_or_default();
         for (index, name) in names.iter().enumerate() {
             let escaped = glib::markup_escape_text(name);
-            let row = adw::ActionRow::builder().title(escaped.as_str()).build();
+            let row = adw::ActionRow::builder()
+                .title(escaped.as_str())
+                .title_lines(1)
+                .build();
             let image = gtk::Image::from_icon_name(if index == 0 {
                 "view-list-symbolic"
             } else {

@@ -96,6 +96,7 @@ mod imp {
         pub new_contact_button: RefCell<Option<gtk::Button>>,
         pub contact_list: RefCell<Option<gtk::ListBox>>,
         pub search_entry: RefCell<Option<gtk::SearchEntry>>,
+        pub outer_paned: RefCell<Option<gtk::Paned>>,
     }
 
     #[glib::object_subclass]
@@ -158,6 +159,18 @@ impl ContactsPage {
         }
     }
 
+    pub fn outer_paned(&self) -> Option<gtk::Paned> {
+        self.imp().outer_paned.borrow().clone()
+    }
+
+    pub fn set_sidebar_position(&self, pos: i32) {
+        if let Some(paned) = self.imp().outer_paned.borrow().as_ref() {
+            if (paned.position() - pos).abs() > 1 {
+                paned.set_position(pos);
+            }
+        }
+    }
+
     pub(crate) fn focus_search(&self) {
         if let Some(entry) = self.imp().search_entry.borrow().as_ref() {
             entry.grab_focus();
@@ -187,11 +200,12 @@ impl ContactsPage {
     }
 
     fn build_ui(&self) {
-        let split = adw::NavigationSplitView::builder()
-            .min_sidebar_width(240.0)
-            .max_sidebar_width(240.0)
-            .sidebar_width_fraction(0.0)
+        let paned = gtk::Paned::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .vexpand(true)
+            .hexpand(true)
             .build();
+        self.imp().outer_paned.replace(Some(paned.clone()));
 
         // ── Contact List (Sidebar) ──────────────────────────────────────
 
@@ -377,6 +391,7 @@ impl ContactsPage {
                 let escaped = glib::markup_escape_text(name);
                 let row = adw::ActionRow::builder()
                     .title(escaped.as_str())
+                    .title_lines(1)
                     .use_markup(true)
                     .build();
                 let image = gtk::Image::from_icon_name(if index == 0 {
@@ -1025,6 +1040,7 @@ impl ContactsPage {
             .label("Kontakte")
             .halign(gtk::Align::Start)
             .hexpand(true)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
             .build();
         drawer_header.append(&drawer_icon);
         drawer_header.append(&drawer_title);
@@ -1040,13 +1056,9 @@ impl ContactsPage {
             &sidebar_outer_box,
         ));
 
-        let sidebar_page = adw::NavigationPage::builder()
-            .title("Kontakte")
-            .child(&sidebar_outer_box)
-            .css_classes(vec!["evolution-sidebar-drawer"])
-            .build();
-
-        split.set_sidebar(Some(&sidebar_page));
+        paned.set_start_child(Some(&sidebar_outer_box));
+        paned.set_resize_start_child(false);
+        paned.set_shrink_start_child(false);
 
         // ── Contact Detail (Content) ────────────────────────────────────
 
@@ -1058,10 +1070,10 @@ impl ContactsPage {
         let header_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .spacing(8)
-            .margin_start(20)
-            .margin_end(20)
-            .margin_top(20)
-            .margin_bottom(16)
+            .margin_start(12)
+            .margin_end(12)
+            .margin_top(12)
+            .margin_bottom(12)
             .halign(gtk::Align::Center)
             .build();
 
@@ -2329,7 +2341,6 @@ impl ContactsPage {
         // the surrounding actions retain Evolution's 0/1/n selection model.
         // Selection changes rather than row-selected are used because GTK
         // emits row-selected for individual transitions within a multi-select.
-        let split_for_selection = split.clone();
         let selected_contact_for_selection = Rc::clone(&selected_contact);
         let stored_contacts_for_selection = Rc::clone(&stored_contacts);
         let page_weak_for_selection = self.downgrade();
@@ -2356,7 +2367,6 @@ impl ContactsPage {
                 list,
                 &stored_contacts_for_selection,
                 &selected_contact_for_selection,
-                &split_for_selection,
                 &detail_avatar_for_selection,
                 &detail_name_for_selection,
                 &detail_title_for_selection,
@@ -2379,7 +2389,6 @@ impl ContactsPage {
             &contact_list,
             &stored_contacts,
             &selected_contact,
-            &split,
             &detail_avatar,
             &detail_name,
             &detail_title,
@@ -2404,7 +2413,6 @@ impl ContactsPage {
         if let Some((cancel, receiver)) = EBookService::new().start_change_monitor() {
             *self.imp().ebook_monitor_cancel.borrow_mut() = Some(cancel);
             let contact_list_for_monitor = contact_list.clone();
-            let split_for_monitor = split.clone();
             let stored_contacts_for_monitor = Rc::clone(&stored_contacts);
             let empty_state_for_monitor = empty_state.clone();
             let selected_contact_for_monitor = Rc::clone(&selected_contact);
@@ -2526,7 +2534,6 @@ impl ContactsPage {
                         &contact_list_for_monitor,
                         &stored_contacts_for_monitor,
                         &selected_contact_for_monitor,
-                        &split_for_monitor,
                         &detail_avatar_for_monitor,
                         &detail_name_for_monitor,
                         &detail_title_for_monitor,
@@ -2560,29 +2567,25 @@ impl ContactsPage {
             });
         }
 
-        let content_page = adw::NavigationPage::builder()
-            .title("Kontakt-Details")
-            .child(&detail_box)
-            .build();
+        detail_box.set_vexpand(true);
+        detail_box.set_hexpand(true);
+        paned.set_end_child(Some(&detail_box));
+        paned.set_resize_end_child(true);
+        paned.set_shrink_end_child(true);
 
-        split.set_content(Some(&content_page));
-        let split_for_navigation = split.clone();
-        let key_controller = gtk::EventControllerKey::new();
-        key_controller.connect_key_pressed(move |_, key, _, modifiers| {
-            let is_back = key == gtk::gdk::Key::Escape
-                || (key == gtk::gdk::Key::Left
-                    && modifiers.contains(gtk::gdk::ModifierType::ALT_MASK));
-            if is_back
-                && split_for_navigation.is_collapsed()
-                && split_for_navigation.shows_content()
-            {
-                split_for_navigation.set_show_content(false);
-                glib::Propagation::Stop
-            } else {
-                glib::Propagation::Proceed
-            }
-        });
-        split.add_controller(key_controller);
+        let sidebar_position = AppSettings::try_new()
+            .map(|settings| settings.mail_sidebar_position())
+            .unwrap_or(260)
+            .clamp(80, 1500);
+        paned.set_position(sidebar_position);
+        if let Some(settings) = AppSettings::try_new() {
+            paned.connect_position_notify(move |paned| {
+                let position = paned.position();
+                if (80..=1500).contains(&position) && settings.mail_sidebar_position() != position {
+                    settings.set_mail_sidebar_position(position);
+                }
+            });
+        }
 
         if let Some(settings) = AppSettings::try_new() {
             detail_box.set_visible(settings.contact_preview_visible());
@@ -2629,7 +2632,7 @@ impl ContactsPage {
             });
         }
 
-        split.set_parent(self);
+        paned.set_parent(self);
     }
 
     fn show_toast(&self, message: &str) {
@@ -4157,7 +4160,6 @@ fn sync_contact_selection(
     contact_list: &gtk::ListBox,
     stored_contacts: &Rc<RefCell<Vec<EBookContactRecord>>>,
     selected_contact: &Rc<RefCell<Option<EBookContactRecord>>>,
-    split: &adw::NavigationSplitView,
     detail_avatar: &adw::Avatar,
     detail_name: &gtk::Label,
     detail_title: &gtk::Label,
@@ -4187,7 +4189,6 @@ fn sync_contact_selection(
                 detail_extra,
                 email_row,
             );
-            split.set_show_content(false);
             apply_contact_selection_action_state(
                 ContactSelectionActionState {
                     selection_count: 0,
@@ -4227,7 +4228,6 @@ fn sync_contact_selection(
                 detail_extra,
                 email_row,
             );
-            split.set_show_content(false);
         }
         [record] => {
             *selected_contact.borrow_mut() = Some(record.clone());
@@ -4245,7 +4245,6 @@ fn sync_contact_selection(
                 detail_extra,
                 email_row,
             );
-            split.set_show_content(true);
         }
         records => {
             *selected_contact.borrow_mut() = None;
@@ -4267,7 +4266,6 @@ fn sync_contact_selection(
             } else {
                 "Mehrfachauswahl: Drucken und Export schreiben die geprüften vCards. Löschen ist für schreibgeschützte Quellen deaktiviert."
             });
-            split.set_show_content(true);
         }
     }
     apply_contact_selection_action_state(

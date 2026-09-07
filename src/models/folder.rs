@@ -10,6 +10,8 @@ mod imp {
     use super::*;
     use std::cell::RefCell;
 
+    use std::sync::LazyLock;
+
     #[derive(Debug, Default)]
     pub struct FolderObject {
         pub id: RefCell<String>,
@@ -30,7 +32,14 @@ mod imp {
         type ParentType = glib::Object;
     }
 
-    impl ObjectImpl for FolderObject {}
+    impl ObjectImpl for FolderObject {
+        fn signals() -> &'static [glib::subclass::Signal] {
+            static SIGNALS: LazyLock<Vec<glib::subclass::Signal>> = LazyLock::new(|| {
+                vec![glib::subclass::Signal::builder("counts-changed").build()]
+            });
+            SIGNALS.as_ref()
+        }
+    }
 }
 
 glib::wrapper! {
@@ -90,8 +99,21 @@ impl FolderObject {
     }
 
     pub fn set_counts(&self, unread_count: u32, total_count: u32) {
-        *self.imp().unread_count.borrow_mut() = unread_count;
-        *self.imp().total_count.borrow_mut() = total_count;
+        let changed = {
+            let mut unread = self.imp().unread_count.borrow_mut();
+            let mut total = self.imp().total_count.borrow_mut();
+            if *unread != unread_count || *total != total_count {
+                *unread = unread_count;
+                *total = total_count;
+                true
+            } else {
+                false
+            }
+        };
+        if changed {
+            use glib::prelude::ObjectExt;
+            self.emit_by_name::<()>("counts-changed", &[]);
+        }
     }
 
     pub fn source_uid(&self) -> Option<String> {

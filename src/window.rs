@@ -1655,11 +1655,16 @@ impl EvolutionWindow {
             &tasks_bin,
             Some("tasks"),
             "Aufgaben",
-            "tasks-due-symbolic",
+            "task-due-symbolic",
         );
 
         let memos_bin = Self::lazy_module_bin("Notizen");
-        view_stack.add_titled_with_icon(&memos_bin, Some("memos"), "Notizen", "note-symbolic");
+        view_stack.add_titled_with_icon(
+            &memos_bin,
+            Some("memos"),
+            "Notizen",
+            "accessories-text-editor-symbolic",
+        );
 
         let ensure_module_loaded: Rc<dyn Fn(&str)> = {
             let calendar_bin = calendar_bin.clone();
@@ -1703,6 +1708,37 @@ impl EvolutionWindow {
             })
         };
 
+        let sync_sidebar_position: Rc<dyn Fn(i32)> = {
+            let mail_page = mail_page.clone();
+            let calendar_bin = calendar_bin.clone();
+            let contacts_bin = contacts_bin.clone();
+            let tasks_bin = tasks_bin.clone();
+            let memos_bin = memos_bin.clone();
+            Rc::new(move |pos: i32| {
+                mail_page.set_sidebar_position(pos);
+                if let Some(child) = calendar_bin.child() {
+                    if let Ok(page) = child.downcast::<CalendarPage>() {
+                        page.set_sidebar_position(pos);
+                    }
+                }
+                if let Some(child) = contacts_bin.child() {
+                    if let Ok(page) = child.downcast::<ContactsPage>() {
+                        page.set_sidebar_position(pos);
+                    }
+                }
+                if let Some(child) = tasks_bin.child() {
+                    if let Ok(page) = child.downcast::<TasksPage>() {
+                        page.set_sidebar_position(pos);
+                    }
+                }
+                if let Some(child) = memos_bin.child() {
+                    if let Ok(page) = child.downcast::<MemosPage>() {
+                        page.set_sidebar_position(pos);
+                    }
+                }
+            })
+        };
+
         let active_view = AppSettings::try_new()
             .map(|settings| settings.active_view())
             .filter(|view| {
@@ -1719,12 +1755,24 @@ impl EvolutionWindow {
         // immediately instead of leaving its placeholder visible.
         ensure_module_loaded(&active_view);
 
+        if let Some(settings) = AppSettings::try_new() {
+            let pos = settings.mail_sidebar_position();
+            sync_sidebar_position(pos);
+
+            let sync_sidebar_position_for_settings = Rc::clone(&sync_sidebar_position);
+            settings.connect_changed(Some("mail-sidebar-position"), move |settings, _| {
+                let pos = settings.int("mail-sidebar-position").clamp(80, 1500);
+                sync_sidebar_position_for_settings(pos);
+            });
+        }
+
         // Module construction must not depend on GSettings being installed.
         // A direct `cargo run` has historically shown the permanent placeholder
         // for contacts/tasks/memos because the persistence layer is optional in
         // development builds.  Keep persistence optional, but always replace
         // the placeholder when the user navigates to a module.
         let ensure_module_loaded_for_signal = Rc::clone(&ensure_module_loaded);
+        let sync_sidebar_position_for_signal = Rc::clone(&sync_sidebar_position);
         let settings_for_view = AppSettings::try_new();
         let window_for_search_route = self.downgrade();
         view_stack.connect_visible_child_name_notify(move |stack| {
@@ -1735,6 +1783,8 @@ impl EvolutionWindow {
                 ensure_module_loaded_for_signal(view_name.as_str());
                 if let Some(settings) = settings_for_view.as_ref() {
                     settings.set_active_view(view_name.as_str());
+                    let pos = settings.mail_sidebar_position();
+                    sync_sidebar_position_for_signal(pos);
                 }
             } else if let Some(window) = window_for_search_route.upgrade() {
                 window.invalidate_search_route_for_visible_page(None);
@@ -4018,5 +4068,96 @@ mod tests {
             "let action_search_advanced = gio::SimpleAction::new(\"search-advanced\", None);"
         ));
         assert!(source.contains("mail_page.present_advanced_search_dialog()"));
+    }
+
+    #[test]
+    fn sidebar_position_syncs_across_views_and_persists() {
+        let _gtk_lock = GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = gtk_test_main_context() else {
+            return;
+        };
+        let app = EvolutionApplication::new();
+        let window = EvolutionWindow::new(&app);
+
+        let stack = window
+            .imp()
+            .view_stack
+            .borrow()
+            .as_ref()
+            .cloned()
+            .expect("view stack present");
+
+        let mail_page = stack
+            .child_by_name("mail")
+            .and_downcast::<MailPage>()
+            .expect("mail page");
+
+        let initial_pos = mail_page.outer_paned().position();
+        assert!(initial_pos >= 100 && initial_pos <= 500);
+
+        // Switch to contacts
+        window.set_active_view("contacts");
+        let contacts_bin = stack
+            .child_by_name("contacts")
+            .and_downcast::<adw::Bin>()
+            .expect("contacts bin");
+        let contacts_page = contacts_bin
+            .child()
+            .and_downcast::<ContactsPage>()
+            .expect("contacts page");
+        let contacts_paned = contacts_page.outer_paned().expect("contacts paned");
+        assert_eq!(contacts_paned.position(), initial_pos);
+
+        // Resize sidebar in contacts page
+        contacts_paned.set_position(330);
+        if let Some(settings) = AppSettings::try_new() {
+            settings.set_mail_sidebar_position(330);
+            assert_eq!(settings.mail_sidebar_position(), 330);
+        }
+
+        // Switch to calendar
+        window.set_active_view("calendar");
+        let calendar_bin = stack
+            .child_by_name("calendar")
+            .and_downcast::<adw::Bin>()
+            .expect("calendar bin");
+        let calendar_page = calendar_bin
+            .child()
+            .and_downcast::<CalendarPage>()
+            .expect("calendar page");
+        let calendar_paned = calendar_page.outer_paned().expect("calendar paned");
+        assert_eq!(calendar_paned.position(), 330);
+
+        // Switch to tasks
+        window.set_active_view("tasks");
+        let tasks_bin = stack
+            .child_by_name("tasks")
+            .and_downcast::<adw::Bin>()
+            .expect("tasks bin");
+        let tasks_page = tasks_bin
+            .child()
+            .and_downcast::<TasksPage>()
+            .expect("tasks page");
+        let tasks_paned = tasks_page.outer_paned().expect("tasks paned");
+        assert_eq!(tasks_paned.position(), 330);
+
+        // Switch to memos
+        window.set_active_view("memos");
+        let memos_bin = stack
+            .child_by_name("memos")
+            .and_downcast::<adw::Bin>()
+            .expect("memos bin");
+        let memos_page = memos_bin
+            .child()
+            .and_downcast::<MemosPage>()
+            .expect("memos page");
+        let memos_paned = memos_page.outer_paned().expect("memos paned");
+        assert_eq!(memos_paned.position(), 330);
+
+        // Switch back to mail
+        window.set_active_view("mail");
+        assert_eq!(mail_page.outer_paned().position(), 330);
     }
 }

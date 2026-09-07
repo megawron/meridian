@@ -60,6 +60,7 @@ mod imp {
         pub search_entry: RefCell<Option<gtk::SearchEntry>>,
         pub memo_preview_label: RefCell<Option<gtk::Label>>,
         pub memo_preview_box: RefCell<Option<gtk::Box>>,
+        pub outer_paned: RefCell<Option<gtk::Paned>>,
         pub memo_surface_buttons: RefCell<Option<Vec<gtk::Button>>>,
     }
 
@@ -187,6 +188,18 @@ impl MemosPage {
         }
     }
 
+    pub fn outer_paned(&self) -> Option<gtk::Paned> {
+        self.imp().outer_paned.borrow().clone()
+    }
+
+    pub fn set_sidebar_position(&self, pos: i32) {
+        if let Some(paned) = self.imp().outer_paned.borrow().as_ref() {
+            if (paned.position() - pos).abs() > 1 {
+                paned.set_position(pos);
+            }
+        }
+    }
+
     pub(crate) fn focus_search(&self) {
         if let Some(entry) = self.imp().search_entry.borrow().as_ref() {
             entry.grab_focus();
@@ -241,11 +254,12 @@ impl MemosPage {
     }
 
     fn build_ui(&self) {
-        let split = adw::NavigationSplitView::builder()
-            .min_sidebar_width(240.0)
-            .max_sidebar_width(240.0)
-            .sidebar_width_fraction(0.0)
+        let paned = gtk::Paned::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .vexpand(true)
+            .hexpand(true)
             .build();
+        self.imp().outer_paned.replace(Some(paned.clone()));
 
         let settings = AppSettings::try_new();
         let initial_memo_search_mode = settings
@@ -378,12 +392,20 @@ impl MemosPage {
         search_entry.set_hexpand(true);
         sidebar_box.append(&search_entry);
 
+        let mode_row = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(4)
+            .margin_bottom(2)
+            .build();
+        search_mode_selector.set_hexpand(true);
+        mode_row.append(&search_mode_selector);
+        sidebar_box.append(&mode_row);
+
         let sort_row = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
-            .spacing(6)
+            .spacing(4)
             .margin_bottom(4)
             .build();
-        sort_row.append(&search_mode_selector);
         sort_selector.set_hexpand(true);
         sort_row.append(&sort_selector);
         sort_row.append(&direction_button);
@@ -398,6 +420,7 @@ impl MemosPage {
             .label("Notizlisten")
             .css_classes(vec!["title-5"])
             .halign(gtk::Align::Start)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
             .margin_top(8)
             .margin_bottom(2)
             .build();
@@ -461,7 +484,8 @@ impl MemosPage {
         let empty_state = gtk::Label::builder()
             .label("Keine synchronisierten Notizen geladen")
             .css_classes(vec!["dim-label"])
-            .wrap(true)
+            .wrap(false)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
             .margin_start(12)
             .margin_end(12)
             .margin_top(12)
@@ -681,7 +705,10 @@ impl MemosPage {
                 .unwrap_or_default();
             for (index, name) in names.iter().enumerate() {
                 let escaped = glib::markup_escape_text(name);
-                let row = adw::ActionRow::builder().title(escaped.as_str()).build();
+                let row = adw::ActionRow::builder()
+                    .title(escaped.as_str())
+                    .title_lines(1)
+                    .build();
                 let image = gtk::Image::from_icon_name(if index == 0 {
                     "view-list-symbolic"
                 } else {
@@ -988,9 +1015,17 @@ impl MemosPage {
             });
         }
 
-        let new_memo_btn = gtk::Button::builder()
+        let new_memo_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        new_memo_box.set_halign(gtk::Align::Center);
+        let new_memo_icon = gtk::Image::from_icon_name("list-add-symbolic");
+        let new_memo_label = gtk::Label::builder()
             .label("Neue Notiz")
-            .icon_name("list-add-symbolic")
+            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .build();
+        new_memo_box.append(&new_memo_icon);
+        new_memo_box.append(&new_memo_label);
+        let new_memo_btn = gtk::Button::builder()
+            .child(&new_memo_box)
             .css_classes(vec!["suggested-action"])
             .margin_top(8)
             .build();
@@ -1010,11 +1045,12 @@ impl MemosPage {
             .spacing(8)
             .css_classes(vec!["sidebar-drawer-header"])
             .build();
-        let drawer_icon = gtk::Image::from_icon_name("accessory-text-editor-symbolic");
+        let drawer_icon = gtk::Image::from_icon_name("accessories-text-editor-symbolic");
         let drawer_title = gtk::Label::builder()
             .label("Notizen")
             .halign(gtk::Align::Start)
             .hexpand(true)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
             .build();
         drawer_header.append(&drawer_icon);
         drawer_header.append(&drawer_title);
@@ -1030,23 +1066,19 @@ impl MemosPage {
             &sidebar_outer_box,
         ));
 
-        let sidebar_page = adw::NavigationPage::builder()
-            .title("Notizen")
-            .child(&sidebar_outer_box)
-            .css_classes(vec!["evolution-sidebar-drawer"])
-            .build();
-
-        split.set_sidebar(Some(&sidebar_page));
+        paned.set_start_child(Some(&sidebar_outer_box));
+        paned.set_resize_start_child(false);
+        paned.set_shrink_start_child(false);
 
         // ── Main Content (Memo Detail View) ──────────────────────────────
 
         let content_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
-            .margin_start(24)
-            .margin_end(24)
-            .margin_top(24)
-            .margin_bottom(24)
-            .spacing(16)
+            .margin_start(12)
+            .margin_end(12)
+            .margin_top(12)
+            .margin_bottom(12)
+            .spacing(12)
             .build();
 
         let memo_title = gtk::Entry::builder()
@@ -2040,7 +2072,6 @@ impl MemosPage {
         let memo_records_for_selection = Rc::clone(&memo_records);
         let selected_memo_for_selection = Rc::clone(&selected_memo);
         let memo_mutation_generation_for_selection = Rc::clone(&memo_mutation_generation);
-        let split_for_selection = split.clone();
         let memo_alarm_editor_for_selection = memo_alarm_editor.clone();
         memo_list.connect_row_selected(glib::clone!(
             #[weak]
@@ -2054,8 +2085,6 @@ impl MemosPage {
             #[strong]
             selected_memo_for_selection,
             #[strong]
-            split_for_selection,
-            #[strong]
             memo_mutation_generation_for_selection,
             #[strong]
             memo_alarm_editor_for_selection,
@@ -2065,7 +2094,6 @@ impl MemosPage {
                 let Some(row) = row else {
                     *selected_memo_for_selection.borrow_mut() = None;
                     memo_alarm_editor_for_selection.set_component(None, "");
-                    split_for_selection.set_show_content(false);
                     return;
                 };
                 let (source_uid, uid) = unsafe {
@@ -2093,7 +2121,6 @@ impl MemosPage {
                 memo_meta.set_label(&format!("VJOURNAL · {}", memo.updated));
                 memo_text.buffer().set_text(&memo.description);
                 memo_alarm_editor_for_selection.set_component(Some(&memo.component), &memo.summary);
-                split_for_selection.set_show_content(true);
             }
         ));
 
@@ -2387,32 +2414,26 @@ impl MemosPage {
             &select_all_memo_btn,
         );
 
-        let content_page = adw::NavigationPage::builder()
-            .title("Notiz-Details")
-            .child(&content_box)
-            .build();
+        content_box.set_vexpand(true);
+        content_box.set_hexpand(true);
+        paned.set_end_child(Some(&content_box));
+        paned.set_resize_end_child(true);
+        paned.set_shrink_end_child(true);
 
-        split.set_content(Some(&content_page));
-        let split_for_navigation = split.clone();
-        let memo_list_for_navigation = memo_list.clone();
-        let key_controller = gtk::EventControllerKey::new();
-        key_controller.connect_key_pressed(move |_, key, _, modifiers| {
-            let is_back = key == gtk::gdk::Key::Escape
-                || (key == gtk::gdk::Key::Left
-                    && modifiers.contains(gtk::gdk::ModifierType::ALT_MASK));
-            if is_back
-                && split_for_navigation.is_collapsed()
-                && split_for_navigation.shows_content()
-            {
-                split_for_navigation.set_show_content(false);
-                memo_list_for_navigation.unselect_all();
-                glib::Propagation::Stop
-            } else {
-                glib::Propagation::Proceed
-            }
-        });
-        split.add_controller(key_controller);
-        split.set_parent(self);
+        let sidebar_position = AppSettings::try_new()
+            .map(|settings| settings.mail_sidebar_position())
+            .unwrap_or(260)
+            .clamp(80, 1500);
+        paned.set_position(sidebar_position);
+        if let Some(settings) = AppSettings::try_new() {
+            paned.connect_position_notify(move |paned| {
+                let position = paned.position();
+                if (80..=1500).contains(&position) && settings.mail_sidebar_position() != position {
+                    settings.set_mail_sidebar_position(position);
+                }
+            });
+        }
+        paned.set_parent(self);
     }
 
     fn open_memo_dialog(
@@ -2474,11 +2495,11 @@ impl MemosPage {
 
         let content_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
-            .spacing(16)
-            .margin_start(20)
-            .margin_end(20)
-            .margin_top(16)
-            .margin_bottom(20)
+            .spacing(12)
+            .margin_start(12)
+            .margin_end(12)
+            .margin_top(12)
+            .margin_bottom(12)
             .build();
 
         let source_model = gtk::StringList::new(&["Notizlisten werden geladen…"]);
@@ -3171,6 +3192,8 @@ fn append_memo_row(memo_list: &gtk::ListBox, memo: &MemoRecord) {
     let action_row = adw::ActionRow::builder()
         .title(title.as_str())
         .subtitle(subtitle.as_str())
+        .title_lines(1)
+        .subtitle_lines(1)
         .use_markup(true)
         .build();
     if let Some(color) = CalendarCategoryStore::default().color_for_component(&memo.component) {

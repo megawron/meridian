@@ -38,8 +38,8 @@ fn module_icon_widget(name: &str) -> gtk::Image {
         "mail" => ("evolution-mail", "mail-unread-symbolic"),
         "contacts" => ("x-office-address-book", "contact-new-symbolic"),
         "calendar" => ("x-office-calendar", "x-office-calendar-symbolic"),
-        "tasks" => ("evolution-tasks", "checkbox-checked-symbolic"),
-        "memos" => ("evolution-memos", "accessory-text-editor-symbolic"),
+        "tasks" => ("task-due", "checkbox-checked-symbolic"),
+        "memos" => ("accessories-text-editor", "accessories-text-editor-symbolic"),
         _ => ("evolution-mail", "mail-unread-symbolic"),
     };
 
@@ -59,10 +59,10 @@ pub fn build_sidebar_module_switcher(
     let switcher_box = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
         .spacing(4)
-        .margin_start(6)
-        .margin_end(6)
-        .margin_top(6)
-        .margin_bottom(6)
+        .margin_start(0)
+        .margin_end(0)
+        .margin_top(0)
+        .margin_bottom(0)
         .css_classes(vec!["evolution-module-switcher"])
         .build();
 
@@ -75,35 +75,39 @@ pub fn build_sidebar_module_switcher(
 
     let modules = [
         ("mail", "Mail"),
-        ("contacts", "Contacts"),
-        ("calendar", "Calendar"),
-        ("tasks", "Tasks"),
-        ("memos", "Memos"),
+        ("contacts", "Kontakte"),
+        ("calendar", "Kalender"),
+        ("tasks", "Aufgaben"),
+        ("memos", "Notizen"),
     ];
 
     let mut buttons_vec = Vec::new();
+    let mut labels_vec = Vec::new();
 
     for (name, label) in modules {
         let is_active = name == active_view;
+        let lbl = gtk::Label::builder()
+            .label(label)
+            .halign(gtk::Align::Start)
+            .hexpand(true)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .build();
+        labels_vec.push(lbl.clone());
+
+        let bx = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        bx.set_margin_start(4);
+        bx.set_margin_end(4);
+        bx.append(&module_icon_widget(name));
+        bx.append(&lbl);
+
         let btn = gtk::Button::builder()
-            .child(&{
-                let bx = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-                bx.set_margin_start(4);
-                bx.set_margin_end(4);
-                bx.append(&module_icon_widget(name));
-                let lbl = gtk::Label::builder()
-                    .label(label)
-                    .halign(gtk::Align::Start)
-                    .hexpand(true)
-                    .build();
-                bx.append(&lbl);
-                bx
-            })
+            .child(&bx)
             .halign(gtk::Align::Fill)
+            .tooltip_text(label)
             .css_classes(if is_active {
                 vec!["suggested-action"]
             } else {
-                vec!["flat"]
+                Vec::new()
             })
             .build();
 
@@ -123,31 +127,38 @@ pub fn build_sidebar_module_switcher(
         Ok(arr) => arr,
         Err(_) => unreachable!(),
     };
+    let labels: [gtk::Label; 5] = match labels_vec.try_into() {
+        Ok(arr) => arr,
+        Err(_) => unreachable!(),
+    };
 
     let current_mode = std::rc::Rc::new(std::cell::Cell::new(0u8));
 
     let apply_layout = {
         let grid = grid.clone();
         let buttons = buttons.clone();
+        let labels = labels.clone();
         let current_mode = std::rc::Rc::clone(&current_mode);
         move |width: i32| {
             if width <= 0 {
                 return;
             }
             // Layout modes:
-            // 4: 5 vertical full-width rows (width < 200)
-            // 1: 1 top full-width + 2x2 grid (200 <= width < 340)
-            // 2: 1 top full-width + 1x4 row (340 <= width < 480)
-            // 3: 1x5 horizontal row (width >= 480)
-            let new_mode = if width < 200 {
+            // 4: 5 vertical full-width rows (width < 180)
+            // 1: 1 top full-width + 2x2 grid (180 <= width < 540)
+            // 3: 1x5 horizontal row (width >= 540)
+            let new_mode = if width < 180 {
                 4
-            } else if width < 340 {
+            } else if width < 540 {
                 1
-            } else if width < 480 {
-                2
             } else {
                 3
             };
+
+            // All button labels remain visible across modes to prevent text truncation
+            for lbl in &labels {
+                lbl.set_visible(true);
+            }
 
             if current_mode.get() == new_mode {
                 return;
@@ -190,10 +201,16 @@ pub fn build_sidebar_module_switcher(
     // Initial default layout: 1 top + 2x2 grid (standard ~240px sidebar)
     apply_layout(240);
 
-    let apply_layout_for_notify = apply_layout.clone();
-    switcher_box.connect_notify_local(Some("width"), move |widget, _| {
+    let last_w = std::rc::Rc::new(std::cell::Cell::new(-1i32));
+    let apply_layout_for_tick = apply_layout.clone();
+    let last_w_clone = std::rc::Rc::clone(&last_w);
+    switcher_box.add_tick_callback(move |widget, _| {
         let w = widget.width();
-        apply_layout_for_notify(w);
+        if w > 0 && w != last_w_clone.get() {
+            last_w_clone.set(w);
+            apply_layout_for_tick(w);
+        }
+        glib::ControlFlow::Continue
     });
 
     switcher_box.append(&grid);
@@ -208,3 +225,55 @@ pub fn build_sidebar_module_switcher(
 
     switcher_box
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_build_sidebar_module_switcher() {
+        let _gtk_lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+        let anchor = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        let switcher = build_sidebar_module_switcher("mail", &anchor);
+        assert!(switcher.has_css_class("evolution-module-switcher"));
+        let grid = switcher.first_child().and_downcast::<gtk::Grid>().expect("Grid");
+        let mut count = 0;
+        let mut child = grid.first_child();
+        while let Some(c) = child {
+            count += 1;
+            child = c.next_sibling();
+        }
+        assert_eq!(count, 5, "Expected 5 buttons in switcher grid");
+    }
+
+    #[test]
+    fn test_sidebar_module_switcher_labels_remain_visible() {
+        let _gtk_lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+        let anchor = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        let switcher = build_sidebar_module_switcher("mail", &anchor);
+        let grid = switcher.first_child().and_downcast::<gtk::Grid>().expect("Grid");
+        let mut child = grid.first_child();
+        while let Some(c) = child {
+            if let Some(btn) = c.downcast_ref::<gtk::Button>() {
+                if let Some(bx) = btn.child().and_downcast::<gtk::Box>() {
+                    // Second child is the label
+                    if let Some(lbl_widget) = bx.last_child() {
+                        assert!(lbl_widget.is_visible(), "Module label should be visible");
+                    }
+                }
+            }
+            child = c.next_sibling();
+        }
+    }
+}
+

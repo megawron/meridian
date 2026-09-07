@@ -901,8 +901,12 @@ mod imp {
         pub memopad_count: RefCell<Option<gtk::Label>>,
         pub tag_vpaned: RefCell<Option<gtk::Paned>>,
         pub content_hpaned: RefCell<Option<gtk::Paned>>,
+        pub outer_paned: RefCell<Option<gtk::Paned>>,
         pub tag_vpane_toggle_btn: RefCell<Option<gtk::ToggleButton>>,
         pub mini_calendar: RefCell<Option<gtk::Calendar>>,
+        pub mini_calendar_2: RefCell<Option<gtk::Calendar>>,
+        pub mini_calendar_3: RefCell<Option<gtk::Calendar>>,
+        pub mini_calendar_4: RefCell<Option<gtk::Calendar>>,
         pub syncing_mini_calendar: Cell<bool>,
         pub calendar_search_entry: RefCell<Option<gtk::SearchEntry>>,
         pub calendar_search_query: RefCell<String>,
@@ -970,8 +974,12 @@ mod imp {
                 memopad_count: RefCell::new(None),
                 tag_vpaned: RefCell::new(None),
                 content_hpaned: RefCell::new(None),
+                outer_paned: RefCell::new(None),
                 tag_vpane_toggle_btn: RefCell::new(None),
                 mini_calendar: RefCell::new(None),
+                mini_calendar_2: RefCell::new(None),
+                mini_calendar_3: RefCell::new(None),
+                mini_calendar_4: RefCell::new(None),
                 syncing_mini_calendar: Cell::new(false),
                 calendar_search_entry: RefCell::new(None),
                 calendar_search_query: RefCell::new(String::new()),
@@ -1089,6 +1097,18 @@ impl CalendarPage {
     pub fn present_new_event(&self) {
         if let Some(button) = self.imp().new_event_button.borrow().as_ref() {
             button.activate();
+        }
+    }
+
+    pub fn outer_paned(&self) -> Option<gtk::Paned> {
+        self.imp().outer_paned.borrow().clone()
+    }
+
+    pub fn set_sidebar_position(&self, pos: i32) {
+        if let Some(paned) = self.imp().outer_paned.borrow().as_ref() {
+            if (paned.position() - pos).abs() > 1 {
+                paned.set_position(pos);
+            }
         }
     }
 
@@ -2077,13 +2097,12 @@ impl CalendarPage {
                 .replace(settings.calendar_hidden_sources().into_iter().collect());
         }
         // Keep the classic Evolution split on wide windows, while using the
-        // same adaptive navigation contract as the other groupware modules
-        // when the window becomes narrow.
-        let split = adw::NavigationSplitView::builder()
-            .min_sidebar_width(240.0)
-            .max_sidebar_width(240.0)
-            .sidebar_width_fraction(0.0)
+        let paned = gtk::Paned::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .vexpand(true)
+            .hexpand(true)
             .build();
+        self.imp().outer_paned.replace(Some(paned.clone()));
 
         // ── Sidebar (Calendar Picker + Task List) ───────────────────────
 
@@ -2097,6 +2116,7 @@ impl CalendarPage {
             .build();
 
         let mini_calendar = gtk::Calendar::new();
+        mini_calendar.add_css_class("calendar-sidebar-minical");
         self.imp()
             .mini_calendar
             .replace(Some(mini_calendar.clone()));
@@ -2118,12 +2138,131 @@ impl CalendarPage {
                 page.refresh_calendar_views();
             }
         });
-        sidebar_box.append(&mini_calendar);
+
+        let mini_calendar_2 = gtk::Calendar::new();
+        mini_calendar_2.add_css_class("calendar-sidebar-minical");
+        mini_calendar_2.set_visible(false);
+        self.imp()
+            .mini_calendar_2
+            .replace(Some(mini_calendar_2.clone()));
+        let page_for_cal2 = self.downgrade();
+        mini_calendar_2.connect_day_selected(move |calendar| {
+            let Some(page) = page_for_cal2.upgrade() else {
+                return;
+            };
+            if page.imp().syncing_mini_calendar.get() {
+                return;
+            }
+            let date = calendar.date();
+            if let Some(selected_date) = NaiveDate::from_ymd_opt(
+                date.year(),
+                date.month() as u32,
+                date.day_of_month() as u32,
+            ) {
+                page.set_calendar_anchor(selected_date);
+                page.refresh_calendar_views();
+            }
+        });
+
+        let mini_calendar_3 = gtk::Calendar::new();
+        mini_calendar_3.add_css_class("calendar-sidebar-minical");
+        mini_calendar_3.set_visible(false);
+        self.imp()
+            .mini_calendar_3
+            .replace(Some(mini_calendar_3.clone()));
+        let page_for_cal3 = self.downgrade();
+        mini_calendar_3.connect_day_selected(move |calendar| {
+            let Some(page) = page_for_cal3.upgrade() else {
+                return;
+            };
+            if page.imp().syncing_mini_calendar.get() {
+                return;
+            }
+            let date = calendar.date();
+            if let Some(selected_date) = NaiveDate::from_ymd_opt(
+                date.year(),
+                date.month() as u32,
+                date.day_of_month() as u32,
+            ) {
+                page.set_calendar_anchor(selected_date);
+                page.refresh_calendar_views();
+            }
+        });
+
+        let mini_calendar_4 = gtk::Calendar::new();
+        mini_calendar_4.add_css_class("calendar-sidebar-minical");
+        mini_calendar_4.set_visible(false);
+        self.imp()
+            .mini_calendar_4
+            .replace(Some(mini_calendar_4.clone()));
+        let page_for_cal4 = self.downgrade();
+        mini_calendar_4.connect_day_selected(move |calendar| {
+            let Some(page) = page_for_cal4.upgrade() else {
+                return;
+            };
+            if page.imp().syncing_mini_calendar.get() {
+                return;
+            }
+            let date = calendar.date();
+            if let Some(selected_date) = NaiveDate::from_ymd_opt(
+                date.year(),
+                date.month() as u32,
+                date.day_of_month() as u32,
+            ) {
+                page.set_calendar_anchor(selected_date);
+                page.refresh_calendar_views();
+            }
+        });
+
+        let mini_calendar_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(8)
+            .halign(gtk::Align::Center)
+            .hexpand(true)
+            .build();
+        mini_calendar_box.append(&mini_calendar);
+        mini_calendar_box.append(&mini_calendar_2);
+        mini_calendar_box.append(&mini_calendar_3);
+        mini_calendar_box.append(&mini_calendar_4);
+
+        let mini_calendar_scroll = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Automatic)
+            .vscrollbar_policy(gtk::PolicyType::Never)
+            .propagate_natural_width(false)
+            .min_content_width(40)
+            .child(&mini_calendar_box)
+            .build();
+        sidebar_box.append(&mini_calendar_scroll);
+
+        let cal2_clone = mini_calendar_2.clone();
+        let cal3_clone = mini_calendar_3.clone();
+        let cal4_clone = mini_calendar_4.clone();
+        let last_cal_w = std::rc::Rc::new(std::cell::Cell::new(-1i32));
+        mini_calendar_scroll.add_tick_callback(move |widget, _| {
+            let w = widget.width();
+            if w > 0 && w != last_cal_w.get() {
+                last_cal_w.set(w);
+                let show_2 = w >= 440;
+                let show_3 = w >= 660;
+                let show_4 = w >= 880;
+                if cal2_clone.is_visible() != show_2 {
+                    cal2_clone.set_visible(show_2);
+                }
+                if cal3_clone.is_visible() != show_3 {
+                    cal3_clone.set_visible(show_3);
+                }
+                if cal4_clone.is_visible() != show_4 {
+                    cal4_clone.set_visible(show_4);
+                }
+            }
+            glib::ControlFlow::Continue
+        });
 
         let source_header = gtk::Label::builder()
             .label("Meine Kalender")
             .css_classes(vec!["title-4"])
             .halign(gtk::Align::Start)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
             .margin_top(8)
             .build();
         sidebar_box.append(&source_header);
@@ -2141,7 +2280,8 @@ impl CalendarPage {
         let calendar_state = gtk::Label::builder()
             .label("Kalender werden nach der Synchronisation angezeigt")
             .css_classes(vec!["dim-label"])
-            .wrap(true)
+            .wrap(false)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
             .halign(gtk::Align::Start)
             .build();
         sidebar_box.append(&calendar_state);
@@ -2152,7 +2292,8 @@ impl CalendarPage {
         let local_item_state = gtk::Label::builder()
             .label("Keine lokalen .ics-Daten geladen")
             .css_classes(vec!["dim-label"])
-            .wrap(true)
+            .wrap(false)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
             .halign(gtk::Align::Start)
             .build();
         sidebar_box.append(&local_item_state);
@@ -2193,7 +2334,7 @@ impl CalendarPage {
         let calendar_search_entry = gtk::SearchEntry::builder()
             .placeholder_text("Termine durchsuchen…")
             .hexpand(true)
-            .width_chars(18)
+            .width_chars(6)
             .build();
         self.imp()
             .calendar_search_entry
@@ -2301,6 +2442,7 @@ impl CalendarPage {
             .label("Aufgaben")
             .css_classes(vec!["title-4"])
             .halign(gtk::Align::Start)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
             .margin_top(16)
             .build();
         sidebar_box.append(&tasks_label);
@@ -2315,7 +2457,8 @@ impl CalendarPage {
         let task_state = gtk::Label::builder()
             .label("Keine Aufgaben geladen")
             .css_classes(vec!["dim-label"])
-            .wrap(true)
+            .wrap(false)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
             .halign(gtk::Align::Start)
             .build();
         sidebar_box.append(&task_state);
@@ -2337,6 +2480,7 @@ impl CalendarPage {
             .label("Kalender")
             .halign(gtk::Align::Start)
             .hexpand(true)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
             .build();
         drawer_header.append(&drawer_icon);
         drawer_header.append(&drawer_title);
@@ -2352,12 +2496,9 @@ impl CalendarPage {
             &sidebar_outer_box,
         ));
 
-        let sidebar_page = adw::NavigationPage::builder()
-            .title("Kalender")
-            .child(&sidebar_outer_box)
-            .css_classes(vec!["evolution-sidebar-drawer"])
-            .build();
-        split.set_sidebar(Some(&sidebar_page));
+        paned.set_start_child(Some(&sidebar_outer_box));
+        paned.set_resize_start_child(false);
+        paned.set_shrink_start_child(true);
 
         // ── Calendar Content (View Switcher: Day/Week/Month) ────────────
 
@@ -2893,7 +3034,7 @@ impl CalendarPage {
         // --- Tag VPaned: Taskpad & Memopad (Upstream GW-CAL-SHELL parity) ---
         let tag_vpaned = gtk::Paned::builder()
             .orientation(gtk::Orientation::Vertical)
-            .wide_handle(true)
+            .wide_handle(false)
             .vexpand(true)
             .build();
         let tag_vpane_initial_pos = AppSettings::try_new()
@@ -3079,7 +3220,7 @@ impl CalendarPage {
         // Horizontal paned dividing calendar_stack (left) and tag_vpaned (right)
         let content_hpaned = gtk::Paned::builder()
             .orientation(gtk::Orientation::Horizontal)
-            .wide_handle(true)
+            .wide_handle(false)
             .vexpand(true)
             .hexpand(true)
             .build();
@@ -3100,13 +3241,27 @@ impl CalendarPage {
         content_box.append(&content_hpaned);
 
         self.refresh_calendar_views();
+        self.sync_mini_calendar();
 
-        let content_page = adw::NavigationPage::builder()
-            .title("Kalender")
-            .child(&content_box)
-            .build();
-        split.set_content(Some(&content_page));
-        let split_for_navigation = split.clone();
+        content_box.set_hexpand(true);
+        paned.set_end_child(Some(&content_box));
+        paned.set_resize_end_child(true);
+        paned.set_shrink_end_child(true);
+
+        let sidebar_position = AppSettings::try_new()
+            .map(|settings| settings.mail_sidebar_position())
+            .unwrap_or(260)
+            .clamp(80, 1500);
+        paned.set_position(sidebar_position);
+        if let Some(settings) = AppSettings::try_new() {
+            paned.connect_position_notify(move |paned| {
+                let position = paned.position();
+                if (80..=1500).contains(&position) && settings.mail_sidebar_position() != position {
+                    settings.set_mail_sidebar_position(position);
+                }
+            });
+        }
+
         let page_weak_for_keys = self.downgrade();
         let key_controller = gtk::EventControllerKey::new();
         key_controller.connect_key_pressed(move |_, key, _, modifiers| {
@@ -3118,21 +3273,10 @@ impl CalendarPage {
                     return glib::Propagation::Stop;
                 }
             }
-            let is_back = key == gtk::gdk::Key::Escape
-                || (key == gtk::gdk::Key::Left
-                    && modifiers.contains(gtk::gdk::ModifierType::ALT_MASK));
-            if is_back
-                && split_for_navigation.is_collapsed()
-                && split_for_navigation.shows_content()
-            {
-                split_for_navigation.set_show_content(false);
-                glib::Propagation::Stop
-            } else {
-                glib::Propagation::Proceed
-            }
+            glib::Propagation::Proceed
         });
-        split.add_controller(key_controller);
-        split.set_parent(self);
+        self.add_controller(key_controller);
+        paned.set_parent(self);
     }
 
     fn select_calendar_view(&self, view: CalendarView) {
@@ -3294,6 +3438,8 @@ impl CalendarPage {
                 let row = adw::ActionRow::builder()
                     .title(escaped_title.as_str())
                     .subtitle(escaped_subtitle.as_str())
+                    .title_lines(1)
+                    .subtitle_lines(1)
                     .use_markup(true)
                     .build();
 
@@ -3813,6 +3959,64 @@ impl CalendarPage {
         };
         self.imp().syncing_mini_calendar.set(true);
         calendar.select_day(&date_time);
+
+        if let Some(cal2) = self.imp().mini_calendar_2.borrow().as_ref() {
+            let (y2, m2) = if date.month() == 12 {
+                (date.year() + 1, 1)
+            } else {
+                (date.year(), date.month() + 1)
+            };
+            if let Ok(dt2) = glib::DateTime::new(
+                &glib::TimeZone::local(),
+                y2,
+                m2 as i32,
+                1,
+                0,
+                0,
+                0.0,
+            ) {
+                cal2.select_day(&dt2);
+            }
+        }
+
+        if let Some(cal3) = self.imp().mini_calendar_3.borrow().as_ref() {
+            let (y3, m3) = if date.month() >= 11 {
+                (date.year() + 1, (date.month() + 2 - 12) as u32)
+            } else {
+                (date.year(), date.month() + 2)
+            };
+            if let Ok(dt3) = glib::DateTime::new(
+                &glib::TimeZone::local(),
+                y3,
+                m3 as i32,
+                1,
+                0,
+                0,
+                0.0,
+            ) {
+                cal3.select_day(&dt3);
+            }
+        }
+
+        if let Some(cal4) = self.imp().mini_calendar_4.borrow().as_ref() {
+            let (y4, m4) = if date.month() >= 10 {
+                (date.year() + 1, (date.month() + 3 - 12) as u32)
+            } else {
+                (date.year(), date.month() + 3)
+            };
+            if let Ok(dt4) = glib::DateTime::new(
+                &glib::TimeZone::local(),
+                y4,
+                m4 as i32,
+                1,
+                0,
+                0,
+                0.0,
+            ) {
+                cal4.select_day(&dt4);
+            }
+        }
+
         self.imp().syncing_mini_calendar.set(false);
     }
 
@@ -3825,6 +4029,7 @@ impl CalendarPage {
         if *self.imp().current_view.borrow() == CalendarView::Year {
             self.imp().view_state.borrow_mut().select_civil_day(date);
         }
+        self.sync_mini_calendar();
     }
 
     pub fn navigate_to_date(&self, date: NaiveDate) {
@@ -6260,6 +6465,8 @@ fn append_calendar_task_row(page: &CalendarPage, task_list: &gtk::ListBox, task:
     let row = adw::ActionRow::builder()
         .title(&title)
         .subtitle(&calendar_task_subtitle(&task))
+        .title_lines(1)
+        .subtitle_lines(1)
         .build();
     if task.completed {
         row.add_css_class("dim-label");
@@ -6294,6 +6501,8 @@ fn append_taskpad_row(page: &CalendarPage, task_list: &gtk::ListBox, task: TaskR
     let row = adw::ActionRow::builder()
         .title(&title)
         .subtitle(&calendar_task_subtitle(&task))
+        .title_lines(1)
+        .subtitle_lines(1)
         .activatable(true)
         .build();
     if task.completed {
@@ -6357,6 +6566,8 @@ fn append_memopad_row(page: &CalendarPage, memo_list: &gtk::ListBox, memo: MemoR
     let row = adw::ActionRow::builder()
         .title(&title)
         .subtitle(&subtitle)
+        .title_lines(1)
+        .subtitle_lines(1)
         .activatable(true)
         .build();
 
@@ -9835,5 +10046,40 @@ mod tests {
         );
         state_week_scroll.navigate_step(-1, Weekday::Mon, true);
         assert_eq!(state_week_scroll.anchor_date, anchor);
+    }
+
+    #[test]
+    fn calendar_sidebar_mini_calendars_sync_consecutive_months() {
+        let _gtk_lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+        let page = CalendarPage::new();
+        let target = NaiveDate::from_ymd_opt(2026, 9, 7).unwrap();
+        page.navigate_to_date(target);
+
+        let cal1 = page.imp().mini_calendar.borrow().clone().unwrap();
+        let cal2 = page.imp().mini_calendar_2.borrow().clone().unwrap();
+        let cal3 = page.imp().mini_calendar_3.borrow().clone().unwrap();
+        let cal4 = page.imp().mini_calendar_4.borrow().clone().unwrap();
+
+        assert_eq!(cal1.date().month(), 9);
+        assert_eq!(cal2.date().month(), 10);
+        assert_eq!(cal3.date().month(), 11);
+        assert_eq!(cal4.date().month(), 12);
+
+        // Test October (crossing into January of next year, matching user's screenshot)
+        let october_target = NaiveDate::from_ymd_opt(2026, 10, 15).unwrap();
+        page.navigate_to_date(october_target);
+        assert_eq!(cal1.date().year(), 2026);
+        assert_eq!(cal1.date().month(), 10);
+        assert_eq!(cal2.date().year(), 2026);
+        assert_eq!(cal2.date().month(), 11);
+        assert_eq!(cal3.date().year(), 2026);
+        assert_eq!(cal3.date().month(), 12);
+        assert_eq!(cal4.date().year(), 2027);
+        assert_eq!(cal4.date().month(), 1);
     }
 }
