@@ -216,10 +216,15 @@ glib::wrapper! {
 impl EvolutionApplication {
     /// Create a new application instance.
     pub fn new() -> Self {
+        Self::with_flags(gio::ApplicationFlags::HANDLES_OPEN)
+    }
+
+    /// Create a new application instance with custom flags (e.g. NON_UNIQUE).
+    pub fn with_flags(flags: gio::ApplicationFlags) -> Self {
         glib::Object::builder()
             .property("application-id", APP_ID)
             .property("resource-base-path", RESOURCE_PATH)
-            .property("flags", gio::ApplicationFlags::HANDLES_OPEN)
+            .property("flags", flags)
             .build()
     }
 

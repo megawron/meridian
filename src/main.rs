@@ -39,6 +39,17 @@ fn main() -> ExitCode {
     tracing::info!("Starting Evolution GTK4 v{}", env!("CARGO_PKG_VERSION"));
 
     // Create and run the AdwApplication
-    let app = EvolutionApplication::new();
-    app.run()
+    let non_unique = std::env::args().any(|a| a == "--non-unique");
+    let flags = if non_unique {
+        gio::ApplicationFlags::HANDLES_OPEN | gio::ApplicationFlags::NON_UNIQUE
+    } else {
+        gio::ApplicationFlags::HANDLES_OPEN
+    };
+    let app = EvolutionApplication::with_flags(flags);
+    if non_unique {
+        let filtered: Vec<String> = std::env::args().filter(|a| a != "--non-unique").collect();
+        app.run_with_args(&filtered)
+    } else {
+        app.run()
+    }
 }
