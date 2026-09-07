@@ -40,6 +40,7 @@ use crate::services::recurrence_service::{
 use crate::services::reminder_service::{ReminderComponentKind, ReminderIdentity};
 use crate::services::settings_service::AppSettings;
 use crate::views::accessibility::set_accessible_label;
+use crate::views::set_button_icon_with_fallback;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CalendarView {
@@ -2199,18 +2200,10 @@ impl CalendarPage {
             glib::ControlFlow::Continue
         });
 
-        let source_header = gtk::Label::builder()
-            .label("Meine Kalender")
-            .css_classes(vec!["title-4"])
-            .halign(gtk::Align::Start)
-            .ellipsize(gtk::pango::EllipsizeMode::End)
-            .margin_top(8)
-            .build();
-        sidebar_box.append(&source_header);
-
         let source_list = gtk::ListBox::builder()
             .selection_mode(gtk::SelectionMode::None)
             .css_classes(vec!["boxed-list"])
+            .margin_top(8)
             .build();
 
         sidebar_box.append(&source_list);
@@ -2379,31 +2372,6 @@ impl CalendarPage {
 
         self.reload_calendar_sources();
 
-        let tasks_label = gtk::Label::builder()
-            .label("Aufgaben")
-            .css_classes(vec!["title-4"])
-            .halign(gtk::Align::Start)
-            .ellipsize(gtk::pango::EllipsizeMode::End)
-            .margin_top(16)
-            .build();
-        sidebar_box.append(&tasks_label);
-
-        let task_list = gtk::ListBox::builder()
-            .selection_mode(gtk::SelectionMode::None)
-            .css_classes(vec!["boxed-list"])
-            .build();
-        sidebar_box.append(&task_list);
-        self.imp().task_list.replace(Some(task_list));
-
-        let task_state = gtk::Label::builder()
-            .label("Keine Aufgaben geladen")
-            .css_classes(vec!["dim-label"])
-            .wrap(false)
-            .ellipsize(gtk::pango::EllipsizeMode::End)
-            .halign(gtk::Align::Start)
-            .build();
-        sidebar_box.append(&task_state);
-        self.imp().task_state.replace(Some(task_state));
 
         let sidebar_scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
@@ -2462,6 +2430,7 @@ impl CalendarPage {
             .icon_name("go-previous-symbolic")
             .css_classes(vec!["flat"])
             .tooltip_text("Vorheriger Zeitraum")
+            .valign(gtk::Align::Center)
             .build();
         set_accessible_label(&prev_btn, "Vorherigen Kalenderzeitraum anzeigen");
 
@@ -2469,6 +2438,7 @@ impl CalendarPage {
             .label("Heute")
             .css_classes(vec!["flat"])
             .tooltip_text("Zu heute wechseln")
+            .valign(gtk::Align::Center)
             .build();
         set_accessible_label(&today_btn, "Zum heutigen Datum wechseln");
 
@@ -2476,6 +2446,7 @@ impl CalendarPage {
             .icon_name("go-next-symbolic")
             .css_classes(vec!["flat"])
             .tooltip_text("Nächster Zeitraum")
+            .valign(gtk::Align::Center)
             .build();
         set_accessible_label(&next_btn, "Nächsten Kalenderzeitraum anzeigen");
         self.imp()
@@ -2492,25 +2463,28 @@ impl CalendarPage {
             .label("")
             .css_classes(vec!["title-3"])
             .hexpand(true)
+            .valign(gtk::Align::Center)
             .build();
         self.imp()
             .month_date_label
             .replace(Some(date_label.clone()));
 
         let btn_add_event = gtk::Button::builder()
-            .label("Neuer Termin")
-            .icon_name("list-add-symbolic")
-            .css_classes(vec!["suggested-action"])
-            .margin_end(8)
+            .icon_name("appointment-new-symbolic")
+            .tooltip_text("Neuer Termin (Strg+N)")
+            .css_classes(vec!["flat"])
+            .valign(gtk::Align::Center)
             .build();
+        set_button_icon_with_fallback(&btn_add_event, "appointment-new-symbolic", "list-add-symbolic");
+        set_accessible_label(&btn_add_event, "Neuen Termin erstellen");
 
         let btn_availability = gtk::Button::builder()
-            .label("Freie Zeiten")
             .icon_name("appointment-soon-symbolic")
+            .tooltip_text("Freie Zeiten anzeigen (Verfügbarkeit)")
             .css_classes(vec!["flat"])
-            .tooltip_text("Freie Zeitblöcke im lokalen Kalender anzeigen")
-            .margin_end(8)
+            .valign(gtk::Align::Center)
             .build();
+        set_accessible_label(&btn_availability, "Freie Zeiten anzeigen");
 
         btn_availability.connect_clicked(glib::clone!(
             #[weak(rename_to = page)]
@@ -2617,6 +2591,8 @@ impl CalendarPage {
             .icon_name("sidebar-show-symbolic")
             .tooltip_text("Aufgaben- und Notizenleiste ein-/ausblenden")
             .active(show_tag_vpane_initial)
+            .css_classes(vec!["flat"])
+            .valign(gtk::Align::Center)
             .build();
         self.imp()
             .tag_vpane_toggle_btn
@@ -2626,6 +2602,7 @@ impl CalendarPage {
             .icon_name("document-save-symbolic")
             .tooltip_text("Kalender exportieren (iCalendar, CSV, RDF)")
             .css_classes(vec!["flat"])
+            .valign(gtk::Align::Center)
             .build();
         set_accessible_label(&btn_export_calendar, "Kalender exportieren");
         let page_weak_for_export = self.downgrade();
@@ -2639,6 +2616,7 @@ impl CalendarPage {
             .icon_name("document-print-symbolic")
             .tooltip_text("Kalenderansicht drucken (Strg+P)")
             .css_classes(vec!["flat"])
+            .valign(gtk::Align::Center)
             .build();
         set_accessible_label(&btn_print_calendar, "Kalender drucken");
         let page_weak_for_print = self.downgrade();
@@ -2647,6 +2625,10 @@ impl CalendarPage {
                 page.print_visible_agenda();
             }
         });
+
+        calendar_search_entry.set_valign(gtk::Align::Center);
+        category_selector.set_valign(gtk::Align::Center);
+        view_toggle.set_valign(gtk::Align::Center);
 
         view_toolbar.append(&btn_add_event);
         view_toolbar.append(&prev_btn);
@@ -2664,6 +2646,7 @@ impl CalendarPage {
         let view_toolbar_scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Automatic)
             .vscrollbar_policy(gtk::PolicyType::Never)
+            .propagate_natural_width(true)
             .child(&view_toolbar)
             .build();
 
@@ -3964,6 +3947,7 @@ impl CalendarPage {
                     }
                 }
             }
+            update_mini_calendar_classes(cal, y, m, &viewport);
         }
 
         self.imp().syncing_mini_calendar.set(false);
@@ -5979,6 +5963,70 @@ fn is_day_visible_in_viewport(viewport: &CalendarViewport, date: NaiveDate) -> b
         CalendarView::Agenda => viewport.visible_range.contains(date),
         CalendarView::Year => date == viewport.anchor_date,
         CalendarView::List => date == viewport.anchor_date,
+    }
+}
+
+fn update_mini_calendar_classes(
+    cal: &gtk::Calendar,
+    y: i32,
+    m: u32,
+    viewport: &CalendarViewport,
+) {
+    let days_count = days_in_month(y, m);
+    let mut range_starts = HashSet::new();
+    let mut range_ends = HashSet::new();
+    let first_weekday = configured_first_weekday();
+    let last_weekday = first_weekday.pred();
+
+    for day in 1..=days_count {
+        if let Some(d) = NaiveDate::from_ymd_opt(y, m, day) {
+            if is_day_visible_in_viewport(viewport, d) {
+                let prev_visible = d
+                    .pred_opt()
+                    .map(|p| p.month() == m && is_day_visible_in_viewport(viewport, p))
+                    .unwrap_or(false);
+                let next_visible = d
+                    .succ_opt()
+                    .map(|n| n.month() == m && is_day_visible_in_viewport(viewport, n))
+                    .unwrap_or(false);
+                let is_first_day_of_grid_row = d.weekday() == first_weekday;
+                let is_last_day_of_grid_row = d.weekday() == last_weekday;
+
+                if !prev_visible || is_first_day_of_grid_row {
+                    range_starts.insert(day);
+                }
+                if !next_visible || is_last_day_of_grid_row {
+                    range_ends.insert(day);
+                }
+            }
+        }
+    }
+
+    let mut child = cal.first_child();
+    while let Some(w) = child {
+        if w.css_name() == "grid" {
+            let mut cell = w.first_child();
+            while let Some(lbl) = cell {
+                if lbl.has_css_class("day-number") && !lbl.has_css_class("other-month") {
+                    lbl.remove_css_class("range-start");
+                    lbl.remove_css_class("range-end");
+                    if let Ok(label) = lbl.clone().downcast::<gtk::Label>() {
+                        let text = label.text();
+                        if let Ok(day_num) = text.parse::<u32>() {
+                            if range_starts.contains(&day_num) {
+                                lbl.add_css_class("range-start");
+                            }
+                            if range_ends.contains(&day_num) {
+                                lbl.add_css_class("range-end");
+                            }
+                        }
+                    }
+                }
+                cell = lbl.next_sibling();
+            }
+            break;
+        }
+        child = w.next_sibling();
     }
 }
 

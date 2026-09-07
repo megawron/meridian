@@ -694,11 +694,43 @@ splitview > .sidebar,
   border-radius: 0;
 }
 
+.calendar-sidebar-minical label.day-number.range-start {
+  border-top-left-radius: 8px;
+  border-bottom-left-radius: 8px;
+}
+
+.calendar-sidebar-minical label.day-number.range-end {
+  border-top-right-radius: 8px;
+  border-bottom-right-radius: 8px;
+}
+
 .calendar-sidebar-minical label.day-number:checked:selected {
+  background-color: alpha(@accent_color, 0.25);
+  background-image: radial-gradient(circle closest-side, @accent_bg_color 92%, transparent 94%);
+  color: @accent_fg_color;
+  font-weight: bold;
+}
+
+.calendar-sidebar-minical label.day-number.range-start:checked:selected {
+  border-top-left-radius: 8px;
+  border-bottom-left-radius: 8px;
+}
+
+.calendar-sidebar-minical label.day-number.range-end:checked:selected {
+  border-top-right-radius: 8px;
+  border-bottom-right-radius: 8px;
+}
+
+.calendar-sidebar-minical label.day-number.range-start.range-end:checked:selected {
+  background: @accent_bg_color;
+  border-radius: 8px;
+}
+
+.calendar-sidebar-minical label.day-number:selected:not(:checked) {
   background-color: @accent_bg_color;
   color: @accent_fg_color;
   font-weight: bold;
-  border-radius: 4px;
+  border-radius: 8px;
 }
 
 .evolution-sidebar-drawer .navigation-sidebar {
@@ -746,6 +778,7 @@ splitview > .sidebar,
 /* ── Unified Full-Width View Toolbar ───────────────────────────────────── */
 .unified-mail-toolbar,
 .unified-view-toolbar {
+  min-height: 44px;
   padding: 4px 8px;
   background-color: @headerbar_bg_color;
   border-bottom: 1px solid alpha(@borders, 0.45);
@@ -755,7 +788,20 @@ splitview > .sidebar,
 .unified-view-toolbar button {
   min-width: 28px;
   min-height: 28px;
-  padding: 4px;
+  padding: 4px 6px;
+  margin-top: 2px;
+  margin-bottom: 2px;
+}
+
+.unified-mail-toolbar dropdown,
+.unified-view-toolbar dropdown,
+.unified-mail-toolbar search-entry,
+.unified-mail-toolbar .search-entry,
+.unified-view-toolbar search-entry,
+.unified-view-toolbar .search-entry {
+  min-height: 32px;
+  margin-top: 2px;
+  margin-bottom: 2px;
 }
 
 .unified-mail-toolbar search-entry,
@@ -763,6 +809,12 @@ splitview > .sidebar,
 .unified-view-toolbar search-entry,
 .unified-view-toolbar .search-entry {
   min-width: 220px;
+}
+
+.unified-mail-toolbar separator,
+.unified-view-toolbar separator {
+  margin-top: 4px;
+  margin-bottom: 4px;
 }
 
 /* ── iTIP Meeting Invitation Banner ────────────────────────────────────────── */
