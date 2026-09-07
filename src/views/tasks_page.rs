@@ -41,6 +41,7 @@ use crate::services::recurrence_service::{
 use crate::services::reminder_service::{Alarm, parse_alarms, replace_component_alarms};
 use crate::services::settings_service::{AppSettings, normalized_task_category_filter};
 use crate::views::accessibility::set_accessible_label;
+use crate::views::set_button_icon_with_fallback;
 use adw::prelude::*;
 use adw::subclass::prelude::*;
 
@@ -3952,7 +3953,8 @@ impl TasksPage {
         });
 
         let direction_button = gtk::Button::builder()
-            .css_classes(vec!["flat", "circular"])
+            .css_classes(vec!["flat"])
+            .valign(gtk::Align::Center)
             .build();
         let set_direction_button = |button: &gtk::Button, descending: bool| {
             button.set_icon_name(if descending {
@@ -4004,20 +4006,26 @@ impl TasksPage {
             .replace(Some(category_selector.clone()));
 
         let btn_add_task = gtk::Button::builder()
-            .label("Neue Aufgabe")
             .icon_name("list-add-symbolic")
-            .css_classes(vec!["suggested-action"])
+            .tooltip_text("Neue Aufgabe (Strg+N)")
+            .css_classes(vec!["flat"])
+            .valign(gtk::Align::Center)
             .build();
+        set_button_icon_with_fallback(&btn_add_task, "list-add-symbolic", "document-new-symbolic");
+        set_accessible_label(&btn_add_task, "Neue Aufgabe erstellen");
         self.imp()
             .new_task_button
             .replace(Some(btn_add_task.clone()));
         let selection_status = gtk::Label::builder()
             .label("Keine Auswahl")
             .css_classes(vec!["dim-label"])
+            .valign(gtk::Align::Center)
             .build();
         let forward_selection_button = gtk::Button::builder()
             .icon_name("mail-forward-symbolic")
             .tooltip_text("Ausgewählte Aufgabe als iCalendar weiterleiten")
+            .css_classes(vec!["flat"])
+            .valign(gtk::Align::Center)
             .sensitive(false)
             .build();
         set_accessible_label(
@@ -4027,12 +4035,16 @@ impl TasksPage {
         let assign_selection_button = gtk::Button::builder()
             .icon_name("avatar-default-symbolic")
             .tooltip_text("Ausgewählte Aufgabe zuweisen")
+            .css_classes(vec!["flat"])
+            .valign(gtk::Align::Center)
             .sensitive(false)
             .build();
         set_accessible_label(&assign_selection_button, "Ausgewählte Aufgabe zuweisen");
         let open_url_selection_button = gtk::Button::builder()
             .icon_name("external-link-symbolic")
             .tooltip_text("URL der ausgewählten Aufgabe öffnen")
+            .css_classes(vec!["flat"])
+            .valign(gtk::Align::Center)
             .sensitive(false)
             .build();
         set_accessible_label(
@@ -4042,28 +4054,33 @@ impl TasksPage {
         let print_selection_button = gtk::Button::builder()
             .icon_name("document-print-symbolic")
             .tooltip_text("Ausgewählte Aufgabe drucken")
+            .css_classes(vec!["flat"])
+            .valign(gtk::Align::Center)
             .sensitive(false)
             .build();
         set_accessible_label(&print_selection_button, "Ausgewählte Aufgabe drucken");
         let print_list_button = gtk::Button::builder()
-            .label("Liste drucken")
             .icon_name("document-print-symbolic")
             .tooltip_text("Sichtbare Aufgabenliste drucken (Strg+P)")
+            .css_classes(vec!["flat"])
+            .valign(gtk::Align::Center)
             .build();
         set_accessible_label(&print_list_button, "Sichtbare Aufgabenliste drucken");
         let print_list_preview_button = gtk::Button::builder()
-            .label("Druckvorschau")
             .icon_name("document-print-preview-symbolic")
             .tooltip_text("Druckvorschau der sichtbaren Aufgabenliste vorbereiten")
+            .css_classes(vec!["flat"])
+            .valign(gtk::Align::Center)
             .build();
         set_accessible_label(
             &print_list_preview_button,
             "Druckvorschau der sichtbaren Aufgabenliste vorbereiten",
         );
         let refresh_source_button = gtk::Button::builder()
-            .label("Aktualisieren")
             .icon_name("view-refresh-symbolic")
             .tooltip_text("Ausgewählte Aufgabenliste beim Anbieter aktualisieren")
+            .css_classes(vec!["flat"])
+            .valign(gtk::Align::Center)
             .sensitive(false)
             .build();
         set_accessible_label(
@@ -4073,6 +4090,8 @@ impl TasksPage {
         let copy_selection_button = gtk::Button::builder()
             .icon_name("edit-copy-symbolic")
             .tooltip_text("Ausgewählte Aufgaben in die Zwischenablage kopieren")
+            .css_classes(vec!["flat"])
+            .valign(gtk::Align::Center)
             .sensitive(false)
             .build();
         set_accessible_label(
@@ -4082,12 +4101,16 @@ impl TasksPage {
         let cut_selection_button = gtk::Button::builder()
             .icon_name("edit-cut-symbolic")
             .tooltip_text("Ausgewählte Aufgaben ausschneiden")
+            .css_classes(vec!["flat"])
+            .valign(gtk::Align::Center)
             .sensitive(false)
             .build();
         set_accessible_label(&cut_selection_button, "Ausgewählte Aufgaben ausschneiden");
         let paste_selection_button = gtk::Button::builder()
             .icon_name("edit-paste-symbolic")
             .tooltip_text("Aufgaben aus der Zwischenablage einfügen")
+            .css_classes(vec!["flat"])
+            .valign(gtk::Align::Center)
             .sensitive(false)
             .build();
         set_accessible_label(
@@ -4097,15 +4120,18 @@ impl TasksPage {
         let select_all_tasks_button = gtk::Button::builder()
             .icon_name("edit-select-all-symbolic")
             .tooltip_text("Alle sichtbaren Aufgaben auswählen")
+            .css_classes(vec!["flat"])
+            .valign(gtk::Align::Center)
             .build();
         set_accessible_label(
             &select_all_tasks_button,
             "Alle sichtbaren Aufgaben auswählen",
         );
         let bulk_edit_button = gtk::Button::builder()
-            .label("Stapel bearbeiten")
             .icon_name("document-edit-symbolic")
             .tooltip_text("Ausgewählte Aufgaben gemeinsam bearbeiten")
+            .css_classes(vec!["flat"])
+            .valign(gtk::Align::Center)
             .sensitive(false)
             .build();
         set_accessible_label(
@@ -4113,9 +4139,10 @@ impl TasksPage {
             "Ausgewählte Aufgaben gemeinsam bearbeiten",
         );
         let complete_selection_button = gtk::Button::builder()
-            .label("Erledigt")
             .icon_name("emblem-ok-symbolic")
             .tooltip_text("Ausgewählte Aufgaben als erledigt markieren")
+            .css_classes(vec!["flat"])
+            .valign(gtk::Align::Center)
             .sensitive(false)
             .build();
         set_accessible_label(
@@ -4123,9 +4150,10 @@ impl TasksPage {
             "Ausgewählte Aufgaben als erledigt markieren",
         );
         let incomplete_selection_button = gtk::Button::builder()
-            .label("Offen")
             .icon_name("view-refresh-symbolic")
             .tooltip_text("Ausgewählte Aufgaben als offen markieren")
+            .css_classes(vec!["flat"])
+            .valign(gtk::Align::Center)
             .sensitive(false)
             .build();
         set_accessible_label(
@@ -4133,25 +4161,26 @@ impl TasksPage {
             "Ausgewählte Aufgaben als offen markieren",
         );
         let delete_selection_button = gtk::Button::builder()
-            .label("Auswahl löschen")
             .icon_name("user-trash-symbolic")
-            .tooltip_text("Ausgewählte Aufgaben löschen")
-            .css_classes(vec!["destructive-action"])
+            .tooltip_text("Ausgewählte Aufgaben löschen (Entf)")
+            .css_classes(vec!["flat"])
+            .valign(gtk::Align::Center)
             .sensitive(false)
             .build();
         set_accessible_label(&delete_selection_button, "Ausgewählte Aufgaben löschen");
         let purge_button = gtk::Button::builder()
-            .label("Erledigte löschen")
             .icon_name("edit-clear-all-symbolic")
             .tooltip_text("Alle erledigten Aufgaben dauerhaft löschen (Strg+E)")
-            .css_classes(vec!["destructive-action"])
+            .css_classes(vec!["flat"])
+            .valign(gtk::Align::Center)
             .sensitive(false)
             .build();
         set_accessible_label(&purge_button, "Alle erledigten Aufgaben dauerhaft löschen");
         let export_selection_button = gtk::Button::builder()
-            .label("Auswahl exportieren")
             .icon_name("document-save-symbolic")
             .tooltip_text("Ausgewählte Aufgaben gemeinsam als iCalendar exportieren")
+            .css_classes(vec!["flat"])
+            .valign(gtk::Align::Center)
             .sensitive(false)
             .build();
         set_accessible_label(
@@ -4165,6 +4194,8 @@ impl TasksPage {
             .icon_name("view-dual-symbolic")
             .tooltip_text("Aufgabenvorschau ein-/ausblenden (Strg+M)")
             .active(preview_visible)
+            .css_classes(vec!["flat"])
+            .valign(gtk::Align::Center)
             .build();
         set_accessible_label(&preview_toggle, "Aufgabenvorschau ein- oder ausblenden");
         let preview_orientation_model =
@@ -4233,37 +4264,73 @@ impl TasksPage {
             .task_preview_orientation
             .replace(Some(preview_orientation_selector.clone()));
 
-        toolbar.append(&btn_add_task);
-        toolbar.append(&complete_selection_button);
-        toolbar.append(&incomplete_selection_button);
-        toolbar.append(&delete_selection_button);
-        toolbar.append(&purge_button);
-        toolbar.append(&print_selection_button);
-        toolbar.append(&print_list_button);
-        toolbar.append(&print_list_preview_button);
-        toolbar.append(&copy_selection_button);
-        toolbar.append(&cut_selection_button);
-        toolbar.append(&paste_selection_button);
-        toolbar.append(&select_all_tasks_button);
-        toolbar.append(&bulk_edit_button);
-        toolbar.append(&assign_selection_button);
-        toolbar.append(&forward_selection_button);
-        toolbar.append(&open_url_selection_button);
-        toolbar.append(&export_selection_button);
-        toolbar.append(&selection_status);
-        toolbar.append(&search_mode_selector);
-        toolbar.append(&search_entry);
-        toolbar.append(&category_selector);
-        toolbar.append(&source_selector);
-        toolbar.append(&refresh_source_button);
-        toolbar.append(&sort_selector);
-        toolbar.append(&direction_button);
-        toolbar.append(&preview_toggle);
-        toolbar.append(&preview_orientation_selector);
+        let left_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(2)
+            .halign(gtk::Align::Start)
+            .build();
+        left_box.append(&btn_add_task);
+        left_box.append(&refresh_source_button);
+        left_box.append(&gtk::Separator::new(gtk::Orientation::Vertical));
+        left_box.append(&complete_selection_button);
+        left_box.append(&incomplete_selection_button);
+        left_box.append(&delete_selection_button);
+        left_box.append(&purge_button);
+        left_box.append(&gtk::Separator::new(gtk::Orientation::Vertical));
+        left_box.append(&copy_selection_button);
+        left_box.append(&cut_selection_button);
+        left_box.append(&paste_selection_button);
+        left_box.append(&select_all_tasks_button);
+        left_box.append(&bulk_edit_button);
+        left_box.append(&gtk::Separator::new(gtk::Orientation::Vertical));
+        left_box.append(&assign_selection_button);
+        left_box.append(&forward_selection_button);
+        left_box.append(&open_url_selection_button);
+
+        search_mode_selector.set_valign(gtk::Align::Center);
+        search_entry.set_valign(gtk::Align::Center);
+        category_selector.set_valign(gtk::Align::Center);
+        source_selector.set_valign(gtk::Align::Center);
+
+        let center_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(4)
+            .hexpand(true)
+            .halign(gtk::Align::Fill)
+            .build();
+        center_box.append(&search_entry);
+        center_box.append(&search_mode_selector);
+        center_box.append(&category_selector);
+        center_box.append(&source_selector);
+        center_box.append(&selection_status);
+
+        sort_selector.set_valign(gtk::Align::Center);
+        preview_orientation_selector.set_valign(gtk::Align::Center);
+
+        let right_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(2)
+            .halign(gtk::Align::End)
+            .build();
+        right_box.append(&sort_selector);
+        right_box.append(&direction_button);
+        right_box.append(&gtk::Separator::new(gtk::Orientation::Vertical));
+        right_box.append(&print_selection_button);
+        right_box.append(&print_list_button);
+        right_box.append(&print_list_preview_button);
+        right_box.append(&export_selection_button);
+        right_box.append(&gtk::Separator::new(gtk::Orientation::Vertical));
+        right_box.append(&preview_toggle);
+        right_box.append(&preview_orientation_selector);
+
+        toolbar.append(&left_box);
+        toolbar.append(&center_box);
+        toolbar.append(&right_box);
 
         let toolbar_scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Automatic)
             .vscrollbar_policy(gtk::PolicyType::Never)
+            .propagate_natural_width(true)
             .child(&toolbar)
             .build();
 

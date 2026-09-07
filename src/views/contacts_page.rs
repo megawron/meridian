@@ -28,6 +28,7 @@ use crate::services::eds_service;
 use crate::services::settings_service::AppSettings;
 use crate::services::vcard_service::{VCardContact, VCardListMemberKind};
 use crate::views::accessibility::set_accessible_label;
+use crate::views::set_button_icon_with_fallback;
 
 const LOCAL_ADDRESS_BOOK_SOURCE_UID: &str = "local-addressbook";
 
@@ -238,9 +239,10 @@ impl ContactsPage {
         quick_mode.set_margin_end(4);
 
         let advanced_search_button = gtk::Button::builder()
-            .label("Erweiterte Suche…")
             .icon_name("system-search-symbolic")
+            .tooltip_text("Erweiterte Suche…")
             .css_classes(vec!["flat"])
+            .valign(gtk::Align::Center)
             .build();
 
         let book_model = gtk::StringList::new(&["Alle Kontakte"]);
@@ -864,10 +866,13 @@ impl ContactsPage {
             .build();
 
         let new_contact_btn = gtk::Button::builder()
-            .label("Neuer Kontakt")
             .icon_name("contact-new-symbolic")
-            .css_classes(vec!["suggested-action"])
+            .tooltip_text("Neuer Kontakt (Strg+N)")
+            .css_classes(vec!["flat"])
+            .valign(gtk::Align::Center)
             .build();
+        set_button_icon_with_fallback(&new_contact_btn, "contact-new-symbolic", "document-new-symbolic");
+        set_accessible_label(&new_contact_btn, "Neuen Kontakt erstellen");
 
         let contact_list_for_new = contact_list.clone();
         let stored_contacts_for_new = Rc::clone(&stored_contacts);
@@ -921,10 +926,13 @@ impl ContactsPage {
             .replace(Some(new_contact_btn.clone()));
 
         let new_list_btn = gtk::Button::builder()
-            .label("Neue Kontaktliste")
-            .icon_name("view-list-symbolic")
-            .css_classes(vec!["suggested-action"])
+            .icon_name("contact-group-symbolic")
+            .tooltip_text("Neue Kontaktliste")
+            .css_classes(vec!["flat"])
+            .valign(gtk::Align::Center)
             .build();
+        set_button_icon_with_fallback(&new_list_btn, "contact-group-symbolic", "view-list-symbolic");
+        set_accessible_label(&new_list_btn, "Neue Kontaktliste erstellen");
         let contact_list_for_new_list = contact_list.clone();
         let stored_contacts_for_new_list = Rc::clone(&stored_contacts);
         let empty_state_for_new_list = empty_state.clone();
@@ -975,9 +983,10 @@ impl ContactsPage {
         set_accessible_label(&new_list_btn, "Neue Kontaktliste erstellen");
 
         let print_list_btn = gtk::Button::builder()
-            .icon_name("document-print-symbolic")
+            .icon_name("document-print-preview-symbolic")
             .tooltip_text("Sichtbare Kontakte drucken")
             .css_classes(vec!["flat"])
+            .valign(gtk::Align::Center)
             .build();
         set_accessible_label(&print_list_btn, "Sichtbare Kontakte drucken");
         let contact_list_for_list_print = contact_list.clone();
@@ -1109,7 +1118,8 @@ impl ContactsPage {
         let email_btn = gtk::Button::builder()
             .icon_name("mail-message-new-symbolic")
             .tooltip_text("E-Mail senden")
-            .css_classes(vec!["circular", "suggested-action"])
+            .css_classes(vec!["flat"])
+            .valign(gtk::Align::Center)
             .build();
         set_accessible_label(&email_btn, "E-Mail an den Kontakt senden");
 
@@ -1145,8 +1155,9 @@ impl ContactsPage {
 
         let edit_btn = gtk::Button::builder()
             .icon_name("document-edit-symbolic")
-            .tooltip_text("Bearbeiten")
-            .css_classes(vec!["circular"])
+            .tooltip_text("Kontakt bearbeiten (Strg+E)")
+            .css_classes(vec!["flat"])
+            .valign(gtk::Align::Center)
             .build();
         set_accessible_label(&edit_btn, "Kontakt bearbeiten");
 
@@ -1212,7 +1223,8 @@ impl ContactsPage {
         let merge_btn = gtk::Button::builder()
             .icon_name("object-select-symbolic")
             .tooltip_text("Dubletten derselben Quelle zusammenführen")
-            .css_classes(vec!["circular"])
+            .css_classes(vec!["flat"])
+            .valign(gtk::Align::Center)
             .sensitive(false)
             .build();
         set_accessible_label(&merge_btn, "Dubletten des Kontakts zusammenführen");
@@ -1419,15 +1431,17 @@ impl ContactsPage {
 
         let delete_btn = gtk::Button::builder()
             .icon_name("user-trash-symbolic")
-            .tooltip_text("Löschen")
-            .css_classes(vec!["circular", "destructive-action"])
+            .tooltip_text("Kontakt löschen (Entf)")
+            .css_classes(vec!["flat"])
+            .valign(gtk::Align::Center)
             .build();
         set_accessible_label(&delete_btn, "Kontakt löschen");
 
         let export_btn = gtk::Button::builder()
             .icon_name("document-save-symbolic")
             .tooltip_text("Ausgewählte Kontakte exportieren (vCard, CSV, LDIF)")
-            .css_classes(vec!["circular"])
+            .css_classes(vec!["flat"])
+            .valign(gtk::Align::Center)
             .build();
         set_accessible_label(&export_btn, "Ausgewählte Kontakte exportieren");
         let contact_list_for_export = contact_list.clone();
@@ -1527,8 +1541,9 @@ impl ContactsPage {
 
         let print_btn = gtk::Button::builder()
             .icon_name("document-print-symbolic")
-            .tooltip_text("Ausgewählte Kontakte drucken")
-            .css_classes(vec!["circular"])
+            .tooltip_text("Ausgewählte Kontakte drucken (Strg+P)")
+            .css_classes(vec!["flat"])
+            .valign(gtk::Align::Center)
             .build();
         set_accessible_label(&print_btn, "Ausgewählte Kontakte drucken");
         let contact_list_for_print = contact_list.clone();
@@ -1570,7 +1585,8 @@ impl ContactsPage {
         let call_btn = gtk::Button::builder()
             .icon_name("call-start-symbolic")
             .tooltip_text("Telefonnummer anrufen")
-            .css_classes(vec!["circular"])
+            .css_classes(vec!["flat"])
+            .valign(gtk::Align::Center)
             .build();
         set_accessible_label(&call_btn, "Telefonnummer anrufen");
         let selected_contact_for_call = Rc::clone(&selected_contact);
@@ -1605,7 +1621,8 @@ impl ContactsPage {
         let map_btn = gtk::Button::builder()
             .icon_name("mark-location-symbolic")
             .tooltip_text(map_tooltip)
-            .css_classes(vec!["circular"])
+            .css_classes(vec!["flat"])
+            .valign(gtk::Align::Center)
             .build();
         set_accessible_label(&map_btn, map_tooltip);
         let selected_contact_for_map = Rc::clone(&selected_contact);
@@ -1654,7 +1671,8 @@ impl ContactsPage {
         let web_btn = gtk::Button::builder()
             .icon_name("web-browser-symbolic")
             .tooltip_text("Website im Browser öffnen")
-            .css_classes(vec!["circular"])
+            .css_classes(vec!["flat"])
+            .valign(gtk::Align::Center)
             .build();
         set_accessible_label(&web_btn, "Website im Browser öffnen");
         let selected_contact_for_web = Rc::clone(&selected_contact);
@@ -1689,14 +1707,16 @@ impl ContactsPage {
         let copy_to_book_btn = gtk::Button::builder()
             .icon_name("edit-copy-symbolic")
             .tooltip_text("In Adressbuch kopieren…")
-            .css_classes(vec!["circular"])
+            .css_classes(vec!["flat"])
+            .valign(gtk::Align::Center)
             .build();
         set_accessible_label(&copy_to_book_btn, "In Adressbuch kopieren");
 
         let move_to_book_btn = gtk::Button::builder()
             .icon_name("folder-move-symbolic")
             .tooltip_text("In Adressbuch verschieben…")
-            .css_classes(vec!["circular"])
+            .css_classes(vec!["flat"])
+            .valign(gtk::Align::Center)
             .build();
         set_accessible_label(&move_to_book_btn, "In Adressbuch verschieben");
 
@@ -2248,27 +2268,59 @@ impl ContactsPage {
         });
         contact_list.add_controller(list_key_controller);
 
-        contacts_toolbar.append(&new_contact_btn);
-        contacts_toolbar.append(&new_list_btn);
-        contacts_toolbar.append(&edit_btn);
-        contacts_toolbar.append(&delete_btn);
-        contacts_toolbar.append(&email_btn);
-        contacts_toolbar.append(&call_btn);
-        contacts_toolbar.append(&map_btn);
-        contacts_toolbar.append(&web_btn);
-        contacts_toolbar.append(&export_btn);
-        contacts_toolbar.append(&print_btn);
-        contacts_toolbar.append(&print_list_btn);
-        contacts_toolbar.append(&copy_to_book_btn);
-        contacts_toolbar.append(&move_to_book_btn);
-        contacts_toolbar.append(&merge_btn);
-        contacts_toolbar.append(&quick_mode);
-        contacts_toolbar.append(&search_entry);
-        contacts_toolbar.append(&advanced_search_button);
+        let left_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(2)
+            .halign(gtk::Align::Start)
+            .build();
+        left_box.append(&new_contact_btn);
+        left_box.append(&new_list_btn);
+        left_box.append(&gtk::Separator::new(gtk::Orientation::Vertical));
+        left_box.append(&edit_btn);
+        left_box.append(&delete_btn);
+        left_box.append(&gtk::Separator::new(gtk::Orientation::Vertical));
+        left_box.append(&email_btn);
+        left_box.append(&call_btn);
+        left_box.append(&map_btn);
+        left_box.append(&web_btn);
+        left_box.append(&gtk::Separator::new(gtk::Orientation::Vertical));
+        left_box.append(&copy_to_book_btn);
+        left_box.append(&move_to_book_btn);
+        left_box.append(&merge_btn);
+
+        quick_mode.set_valign(gtk::Align::Center);
+        search_entry.set_valign(gtk::Align::Center);
+        advanced_search_button.set_valign(gtk::Align::Center);
+
+        let center_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(4)
+            .hexpand(true)
+            .halign(gtk::Align::Fill)
+            .build();
+        center_box.append(&search_entry);
+        center_box.append(&quick_mode);
+        center_box.append(&advanced_search_button);
+
+        let right_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(2)
+            .halign(gtk::Align::End)
+            .build();
+        right_box.append(&gtk::Separator::new(gtk::Orientation::Vertical));
+        right_box.append(&print_btn);
+        right_box.append(&print_list_btn);
+        right_box.append(&gtk::Separator::new(gtk::Orientation::Vertical));
+        right_box.append(&export_btn);
+
+        contacts_toolbar.append(&left_box);
+        contacts_toolbar.append(&center_box);
+        contacts_toolbar.append(&right_box);
 
         let contacts_toolbar_scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Automatic)
             .vscrollbar_policy(gtk::PolicyType::Never)
+            .propagate_natural_width(true)
             .child(&contacts_toolbar)
             .build();
 

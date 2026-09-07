@@ -34,6 +34,7 @@ use crate::services::memo_surface_service::{
 use crate::services::reminder_service::{Alarm, replace_component_alarms};
 use crate::services::settings_service::{AppSettings, normalize_memo_source_filter_value};
 use crate::views::accessibility::set_accessible_label;
+use crate::views::set_button_icon_with_fallback;
 
 mod imp {
     use super::*;
@@ -349,7 +350,8 @@ impl MemosPage {
         });
 
         let direction_button = gtk::Button::builder()
-            .css_classes(vec!["flat", "circular"])
+            .css_classes(vec!["flat"])
+            .valign(gtk::Align::Center)
             .build();
         let set_direction_button = |button: &gtk::Button, descending: bool| {
             button.set_icon_name(if descending {
@@ -1090,17 +1092,26 @@ impl MemosPage {
         content_box.append(&memo_title_box);
 
         let save_memo_btn = gtk::Button::builder()
-            .label("Speichern")
-            .css_classes(vec!["suggested-action"])
-            .build();
-        let delete_memo_btn = gtk::Button::builder()
-            .label("Löschen")
-            .css_classes(vec!["destructive-action"])
-            .build();
-        let export_memo_btn = gtk::Button::builder()
-            .label("Exportieren")
             .icon_name("document-save-symbolic")
+            .tooltip_text("Notiz speichern (Strg+S)")
+            .css_classes(vec!["flat"])
+            .valign(gtk::Align::Center)
             .build();
+        set_accessible_label(&save_memo_btn, "Notiz speichern");
+        let delete_memo_btn = gtk::Button::builder()
+            .icon_name("user-trash-symbolic")
+            .tooltip_text("Notiz löschen (Entf)")
+            .css_classes(vec!["flat"])
+            .valign(gtk::Align::Center)
+            .build();
+        set_accessible_label(&delete_memo_btn, "Notiz löschen");
+        let export_memo_btn = gtk::Button::builder()
+            .icon_name("document-save-as-symbolic")
+            .tooltip_text("Notiz exportieren")
+            .css_classes(vec!["flat"])
+            .valign(gtk::Align::Center)
+            .build();
+        set_accessible_label(&export_memo_btn, "Notiz exportieren");
 
         let open_memo_btn = gtk::Button::builder()
             .icon_name("document-open-symbolic")
@@ -1150,6 +1161,7 @@ impl MemosPage {
             (&select_all_memo_btn, "Alle Memos auswählen"),
         ] {
             button.add_css_class("flat");
+            button.set_valign(gtk::Align::Center);
             set_accessible_label(button, label);
         }
         self.imp().memo_surface_buttons.replace(Some(vec![
@@ -1166,8 +1178,14 @@ impl MemosPage {
             paste_memo_btn.clone(),
             select_all_memo_btn.clone(),
         ]));
-        let preview_toggle = gtk::ToggleButton::with_label("Vorschau");
-        preview_toggle.set_active(initial_memo_preview_state.visible);
+        let preview_toggle = gtk::ToggleButton::builder()
+            .icon_name("view-dual-symbolic")
+            .tooltip_text("Notizenvorschau ein-/ausblenden")
+            .active(initial_memo_preview_state.visible)
+            .css_classes(vec!["flat"])
+            .valign(gtk::Align::Center)
+            .build();
+        set_accessible_label(&preview_toggle, "Notizenvorschau ein- oder ausblenden");
         let preview_orientation_model = gtk::StringList::new(&["Klassisch", "Vertikal"]);
         let preview_orientation_selector =
             gtk::DropDown::new(Some(preview_orientation_model), None::<&gtk::Expression>);
@@ -1176,13 +1194,16 @@ impl MemosPage {
             MemoPreviewOrientation::Vertical => 1,
         });
         preview_orientation_selector.set_tooltip_text(Some("Ausrichtung der Memo-Vorschau"));
+        preview_orientation_selector.set_valign(gtk::Align::Center);
 
         let btn_add_memo = gtk::Button::builder()
-            .label("Neue Notiz")
             .icon_name("document-new-symbolic")
-            .css_classes(vec!["suggested-action"])
-            .tooltip_text("Neue Notiz erstellen (Ctrl+N)")
+            .tooltip_text("Neue Notiz erstellen (Strg+N)")
+            .css_classes(vec!["flat"])
+            .valign(gtk::Align::Center)
             .build();
+        set_button_icon_with_fallback(&btn_add_memo, "document-new-symbolic", "list-add-symbolic");
+        set_accessible_label(&btn_add_memo, "Neue Notiz erstellen");
 
         let memo_list_for_new = memo_list.clone();
         let memo_records_for_new = Rc::clone(&memo_records);
@@ -1210,29 +1231,63 @@ impl MemosPage {
             .css_classes(vec!["unified-view-toolbar", "toolbar"])
             .build();
 
-        memos_toolbar.append(&btn_add_memo);
-        memos_toolbar.append(&save_memo_btn);
-        memos_toolbar.append(&delete_memo_btn);
-        memos_toolbar.append(&export_memo_btn);
-        memos_toolbar.append(&print_memo_btn);
-        memos_toolbar.append(&forward_memo_btn);
-        memos_toolbar.append(&open_url_memo_btn);
-        memos_toolbar.append(&open_memo_btn);
-        memos_toolbar.append(&copy_memo_btn);
-        memos_toolbar.append(&cut_memo_btn);
-        memos_toolbar.append(&paste_memo_btn);
-        memos_toolbar.append(&select_all_memo_btn);
-        memos_toolbar.append(&search_mode_selector);
-        memos_toolbar.append(&search_entry);
-        memos_toolbar.append(&category_selector);
-        memos_toolbar.append(&sort_selector);
-        memos_toolbar.append(&direction_button);
-        memos_toolbar.append(&preview_toggle);
-        memos_toolbar.append(&preview_orientation_selector);
+        let left_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(2)
+            .halign(gtk::Align::Start)
+            .build();
+        left_box.append(&btn_add_memo);
+        left_box.append(&save_memo_btn);
+        left_box.append(&gtk::Separator::new(gtk::Orientation::Vertical));
+        left_box.append(&delete_memo_btn);
+        left_box.append(&gtk::Separator::new(gtk::Orientation::Vertical));
+        left_box.append(&copy_memo_btn);
+        left_box.append(&cut_memo_btn);
+        left_box.append(&paste_memo_btn);
+        left_box.append(&select_all_memo_btn);
+        left_box.append(&gtk::Separator::new(gtk::Orientation::Vertical));
+        left_box.append(&open_memo_btn);
+        left_box.append(&forward_memo_btn);
+        left_box.append(&open_url_memo_btn);
+
+        search_mode_selector.set_valign(gtk::Align::Center);
+        search_entry.set_valign(gtk::Align::Center);
+        category_selector.set_valign(gtk::Align::Center);
+
+        let center_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(4)
+            .hexpand(true)
+            .halign(gtk::Align::Fill)
+            .build();
+        center_box.append(&search_entry);
+        center_box.append(&search_mode_selector);
+        center_box.append(&category_selector);
+
+        sort_selector.set_valign(gtk::Align::Center);
+
+        let right_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(2)
+            .halign(gtk::Align::End)
+            .build();
+        right_box.append(&sort_selector);
+        right_box.append(&direction_button);
+        right_box.append(&gtk::Separator::new(gtk::Orientation::Vertical));
+        right_box.append(&print_memo_btn);
+        right_box.append(&export_memo_btn);
+        right_box.append(&gtk::Separator::new(gtk::Orientation::Vertical));
+        right_box.append(&preview_toggle);
+        right_box.append(&preview_orientation_selector);
+
+        memos_toolbar.append(&left_box);
+        memos_toolbar.append(&center_box);
+        memos_toolbar.append(&right_box);
 
         let memos_toolbar_scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Automatic)
             .vscrollbar_policy(gtk::PolicyType::Never)
+            .propagate_natural_width(true)
             .child(&memos_toolbar)
             .build();
 

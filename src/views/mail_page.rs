@@ -948,7 +948,7 @@ fn mail_row_attachment_info(
     Some(("mail-attachment-symbolic", "Anhang"))
 }
 
-fn themed_icon_name<W: IsA<gtk::Widget>>(widget: &W, preferred: &str, fallback: &str) -> String {
+pub(crate) fn themed_icon_name<W: IsA<gtk::Widget>>(widget: &W, preferred: &str, fallback: &str) -> String {
     let theme = gtk::IconTheme::for_display(&widget.display());
     if theme.has_icon(preferred) {
         preferred.to_string()
@@ -971,7 +971,7 @@ fn set_image_icon_with_fallback(image: &gtk::Image, preferred: &str, fallback: &
     image.set_icon_name(Some(&themed_icon_name(image, preferred, fallback)));
 }
 
-fn set_button_icon_with_fallback(button: &gtk::Button, preferred: &str, fallback: &str) {
+pub(crate) fn set_button_icon_with_fallback(button: &gtk::Button, preferred: &str, fallback: &str) {
     button.set_icon_name(&themed_icon_name(button, preferred, fallback));
 }
 
@@ -11305,6 +11305,7 @@ impl MailPage {
                 .tooltip_text(tooltip)
                 .action_name(action_name)
                 .css_classes(vec!["flat"])
+                .valign(gtk::Align::Center)
                 .build();
             let fallback = match icon_name {
                 "mail-message-new-symbolic" => "document-new-symbolic",
