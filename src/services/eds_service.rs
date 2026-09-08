@@ -385,6 +385,31 @@ pub async fn list_mail_sources() -> Result<Vec<EdsSource>, EdsServiceError> {
     Ok(sources)
 }
 
+fn resolve_source_name_from_disk(uid: &str) -> Option<String> {
+    let mut candidate_paths = Vec::new();
+    candidate_paths.push(glib::user_config_dir().join("evolution/sources").join(format!("{uid}.source")));
+    candidate_paths.push(std::path::PathBuf::from("/usr/share/evolution-data-server/sources").join(format!("{uid}.source")));
+
+    for path in candidate_paths {
+        if path.exists() {
+            let kf = KeyFile::new();
+            if kf.load_from_file(&path, KeyFileFlags::NONE).is_ok() {
+                if let Ok(dn) = kf.locale_string("Data Source", "DisplayName", None) {
+                    if !dn.trim().is_empty() {
+                        return Some(dn.to_string());
+                    }
+                }
+                if let Ok(dn) = kf.string("Data Source", "DisplayName") {
+                    if !dn.trim().is_empty() {
+                        return Some(dn.to_string());
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
 /// List EDS sources for one product area through the shared SourceManager
 /// object model.  Account mutation and ECal/EBook client streams intentionally
 /// remain separate adapter layers.
@@ -393,13 +418,18 @@ pub async fn list_sources(kind: EdsSourceKind) -> Result<Vec<EdsSource>, EdsServ
     let mut display_name_by_uid: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
     for (path, interfaces) in &managed_objects {
-        let uid = path
-            .as_str()
-            .rsplit('/')
-            .next()
-            .unwrap_or_default()
-            .to_string();
         if let Some(source_props) = interfaces.get("org.gnome.evolution.dataserver.Source") {
+            let real_uid = source_props
+                .get("UID")
+                .and_then(value_to_string)
+                .filter(|s| !s.trim().is_empty());
+            let path_leaf = path
+                .as_str()
+                .rsplit('/')
+                .next()
+                .unwrap_or_default()
+                .to_string();
+
             let mut name = source_props
                 .get("DisplayName")
                 .and_then(value_to_string)
@@ -408,14 +438,21 @@ pub async fn list_sources(kind: EdsSourceKind) -> Result<Vec<EdsSource>, EdsServ
                 if let Some(data) = source_props.get("Data").and_then(value_to_string) {
                     let kf = KeyFile::new();
                     if kf.load_from_data(&data, KeyFileFlags::NONE).is_ok() {
-                        if let Ok(dn) = kf.string("Data Source", "DisplayName") {
+                        if let Ok(dn) = kf.locale_string("Data Source", "DisplayName", None) {
+                            name = dn.to_string();
+                        } else if let Ok(dn) = kf.string("Data Source", "DisplayName") {
                             name = dn.to_string();
                         }
                     }
                 }
             }
             if !name.is_empty() {
-                display_name_by_uid.insert(uid, name);
+                if let Some(uid) = real_uid {
+                    display_name_by_uid.insert(uid, name.clone());
+                }
+                if !path_leaf.is_empty() {
+                    display_name_by_uid.insert(path_leaf, name);
+                }
             }
         }
     }
@@ -438,8 +475,12 @@ pub async fn list_sources(kind: EdsSourceKind) -> Result<Vec<EdsSource>, EdsServ
                     Some("Auf diesem Computer".to_string())
                 } else if p == "contacts-stub" {
                     Some("Kontakte".to_string())
+                } else if let Some(dn) = display_name_by_uid.get(&p) {
+                    Some(dn.clone())
+                } else if let Some(dn) = resolve_source_name_from_disk(&p) {
+                    Some(dn)
                 } else {
-                    display_name_by_uid.get(&p).cloned().or(Some(p))
+                    Some(p)
                 }
             });
             sources.push(EdsSource {
