@@ -179,6 +179,7 @@ mod imp {
             let app = self.obj();
 
             tracing::debug!("Application activate");
+            crate::services::account_config_service::ensure_profiles_synced_to_eds();
             app.setup_reminder_scheduler();
 
             // GTK4-rs/libadwaita is the single production frontend.  EDS and
@@ -202,10 +203,22 @@ mod imp {
             }
 
             if std::env::args().any(|a| a == "--account-setup") {
-                let mut profile = crate::services::account_config_service::AccountProfile::default();
-                profile.display_name = "Max Mustermann".to_string();
-                profile.email = "max@example.com".to_string();
-                let dialog = crate::dialogs::AccountSetupDialog::new_for_edit(&profile);
+                let configured = crate::services::account_config_service::AccountConfigStore::default().load();
+                let dialog = if let Some(profile) = configured.first() {
+                    crate::dialogs::AccountSetupDialog::new_for_edit(profile)
+                } else {
+                    let mut profile = crate::services::account_config_service::AccountProfile::default();
+                    profile.protocol = crate::services::account_config_service::AccountProtocol::Exchange;
+                    profile.display_name = "Corporate Exchange".to_string();
+                    profile.email = "admin@example.com".to_string();
+                    profile.username = r"CORPDOM\user".to_string();
+                    profile.imap_host = "https://mail.example.com/EWS/Exchange.asmx".to_string();
+                    profile.oab_url = "https://mail.example.com/OAB/".to_string();
+                    crate::dialogs::AccountSetupDialog::new_for_edit(&profile)
+                };
+                if std::env::args().any(|a| a == "--receiving") {
+                    dialog.select_page("receiving");
+                }
                 dialog.set_transient_for(Some(&window));
                 dialog.present();
             }
