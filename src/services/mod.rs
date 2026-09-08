@@ -27,6 +27,7 @@ pub mod ical_import_service;
 pub mod ical_time_service;
 pub mod inline_content_service;
 pub mod itip_service;
+pub mod log_buffer;
 pub mod mail_composer_service;
 pub mod mail_filter_service;
 pub mod mail_metadata_service;

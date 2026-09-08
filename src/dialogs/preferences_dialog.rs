@@ -2995,6 +2995,21 @@ impl PreferencesDialog {
         }
         group_app_layout.add(&row_mail_statusbar);
 
+        let row_debug_console = adw::SwitchRow::builder()
+            .title("Entwickler-Protokollkonsole aktivieren")
+            .subtitle(
+                "Ermöglicht das Aufklappen einer Live-Log-Konsole über die Statusleiste zur Fehlerdiagnose",
+            )
+            .active(false)
+            .build();
+        if let Some(settings) = settings.clone() {
+            row_debug_console.set_active(settings.debug_console_enabled());
+            row_debug_console.connect_active_notify(move |row| {
+                settings.set_debug_console_enabled(row.is_active());
+            });
+        }
+        group_app_layout.add(&row_debug_console);
+
         let row_mail_sidebar = adw::SwitchRow::builder()
             .title("Ordner-Seitenleiste anzeigen")
             .subtitle(

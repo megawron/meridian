@@ -1676,6 +1676,14 @@ impl AppSettings {
         self.set_boolean("mail-show-statusbar", value);
     }
 
+    pub fn debug_console_enabled(&self) -> bool {
+        self.settings.boolean("debug-console-enabled")
+    }
+
+    pub fn set_debug_console_enabled(&self, value: bool) {
+        self.set_boolean("debug-console-enabled", value);
+    }
+
     /// Select the folder shown when the mail view is opened.
     pub fn mail_default_folder(&self) -> String {
         match self.settings.string("mail-default-folder").as_str() {

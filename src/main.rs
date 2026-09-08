@@ -34,6 +34,7 @@ fn main() -> ExitCode {
                 .unwrap_or_else(|_| "evolution_gtk4=debug,warn".into()),
         )
         .with_target(true)
+        .with_writer(|| services::log_buffer::LogBufferWriter)
         .init();
 
     tracing::info!("Starting Evolution GTK4 v{}", env!("CARGO_PKG_VERSION"));

@@ -55,6 +55,7 @@ mod imp {
         pub status_label: RefCell<Option<gtk::Label>>,
         pub status_progress: RefCell<Option<gtk::ProgressBar>>,
         pub online_toggle: RefCell<Option<gtk::Button>>,
+        pub debug_revealer: RefCell<Option<gtk::Revealer>>,
         pub(crate) transport_service: MailTransportService,
         pub transport_generation: Cell<u64>,
         pub transport_queued_items: Cell<usize>,
@@ -95,6 +96,10 @@ mod imp {
 
             window.setup_layout();
             window.setup_actions();
+
+            if std::env::var("EVOLUTION_OPEN_DEBUG_CONSOLE").is_ok() {
+                window.set_debug_console_open(true);
+            }
 
             tracing::debug!("Main window constructed");
         }
@@ -692,7 +697,7 @@ impl EvolutionWindow {
         let window = self.downgrade();
         dialog.connect_close_request(move |_| {
             if let Some(window) = window.upgrade() {
-                window.refresh_mail_page();
+                window.reload_mail_accounts();
             }
             glib::Propagation::Proceed
         });
@@ -775,6 +780,12 @@ impl EvolutionWindow {
         }
     }
 
+    pub(crate) fn reload_mail_accounts(&self) {
+        if let Some(mail_page) = self.mail_page() {
+            mail_page.reload_mail_accounts();
+        }
+    }
+
     pub(crate) fn update_mail_status(&self, status_text: &str) {
         if let Some(label) = self.imp().status_label.borrow().as_ref() {
             let status_text = status_text.trim();
@@ -790,6 +801,25 @@ impl EvolutionWindow {
             } else {
                 label.set_label(&format!("Evolution GTK4  ·  {status_text}"));
             }
+        }
+    }
+
+    /// Public helper for any view/component to publish a status update to the window statusbar.
+    pub fn set_status(&self, status_text: &str) {
+        self.update_mail_status(status_text);
+    }
+
+    /// Toggle the developer protocol console drawer.
+    pub fn toggle_debug_console(&self) {
+        if let Some(revealer) = self.imp().debug_revealer.borrow().as_ref() {
+            revealer.set_reveal_child(!revealer.reveals_child());
+        }
+    }
+
+    /// Explicitly open or close the developer protocol console drawer.
+    pub fn set_debug_console_open(&self, open: bool) {
+        if let Some(revealer) = self.imp().debug_revealer.borrow().as_ref() {
+            revealer.set_reveal_child(open);
         }
     }
 
@@ -1952,9 +1982,59 @@ impl EvolutionWindow {
             online_toggle.set_sensitive(false);
         }
 
+        let date_label = gtk::Label::builder()
+            .label(&format_current_status_date())
+            .css_classes(vec!["caption", "dim-label"])
+            .halign(gtk::Align::End)
+            .build();
+        let date_label_weak = date_label.downgrade();
+        glib::timeout_add_seconds_local(60, move || {
+            if let Some(lbl) = date_label_weak.upgrade() {
+                lbl.set_label(&format_current_status_date());
+                glib::ControlFlow::Continue
+            } else {
+                glib::ControlFlow::Break
+            }
+        });
+
+        let debug_toggle = gtk::Button::builder()
+            .icon_name("utilities-terminal-symbolic")
+            .tooltip_text("Entwickler-Protokollkonsole anzeigen / verbergen")
+            .css_classes(vec!["flat", "circular"])
+            .visible(false)
+            .build();
+
+        let debug_revealer = gtk::Revealer::builder()
+            .transition_type(gtk::RevealerTransitionType::SlideUp)
+            .transition_duration(250)
+            .reveal_child(false)
+            .build();
+        let debug_panel = build_debug_console_panel(&debug_revealer);
+        debug_revealer.set_child(Some(&debug_panel));
+
+        let debug_revealer_for_toggle = debug_revealer.clone();
+        debug_toggle.connect_clicked(move |_| {
+            debug_revealer_for_toggle.set_reveal_child(!debug_revealer_for_toggle.reveals_child());
+        });
+
+        if let Some(settings) = AppSettings::try_new() {
+            let enabled = settings.debug_console_enabled();
+            debug_toggle.set_visible(enabled);
+            debug_revealer.set_reveal_child(enabled);
+            let debug_toggle_for_setting = debug_toggle.clone();
+            let debug_revealer_for_setting = debug_revealer.clone();
+            settings.connect_changed(Some("debug-console-enabled"), move |settings, _| {
+                let enabled = settings.boolean("debug-console-enabled");
+                debug_toggle_for_setting.set_visible(enabled);
+                debug_revealer_for_setting.set_reveal_child(enabled);
+            });
+        }
+
         statusbar_box.append(&online_toggle);
         statusbar_box.append(&status_label);
         statusbar_box.append(&status_progress);
+        statusbar_box.append(&date_label);
+        statusbar_box.append(&debug_toggle);
 
         self.imp().status_label.replace(Some(status_label.clone()));
         self.imp()
@@ -1963,6 +2043,9 @@ impl EvolutionWindow {
         self.imp()
             .online_toggle
             .replace(Some(online_toggle.clone()));
+        self.imp()
+            .debug_revealer
+            .replace(Some(debug_revealer.clone()));
         let initial_transport_snapshot = self.imp().transport_service.set_mode(
             if AppSettings::try_new().is_some_and(|settings| settings.offline_mode()) {
                 MailTransportMode::Offline
@@ -1989,10 +2072,18 @@ impl EvolutionWindow {
             .transport_status_source
             .replace(Some(transport_status_source));
 
+        let main_content_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .vexpand(true)
+            .hexpand(true)
+            .build();
+        main_content_box.append(&view_stack);
+        main_content_box.append(&debug_revealer);
+
         let toolbar_view = adw::ToolbarView::new();
         toolbar_view.add_top_bar(&header_bar);
         toolbar_view.add_bottom_bar(&statusbar_box);
-        toolbar_view.set_content(Some(&view_stack));
+        toolbar_view.set_content(Some(&main_content_box));
 
         let toast_overlay = &self.imp().toast_overlay;
         toast_overlay.set_hexpand(true);
@@ -2212,6 +2303,15 @@ impl EvolutionWindow {
             }
         ));
         self.add_action(&action_preferences);
+
+        let action_toggle_debug = gio::SimpleAction::new("toggle-debug-console", None);
+        let win_weak_debug = self.downgrade();
+        action_toggle_debug.connect_activate(move |_, _| {
+            if let Some(win) = win_weak_debug.upgrade() {
+                win.toggle_debug_console();
+            }
+        });
+        self.add_action(&action_toggle_debug);
 
         let action_sidebar = self.add_boolean_setting_action(
             "toggle-sidebar",
@@ -3582,6 +3682,228 @@ impl EvolutionWindow {
             });
         }
     }
+}
+
+pub(crate) fn format_current_status_date() -> String {
+    use chrono::{Datelike, Local, Weekday};
+    let now = Local::now();
+    let weekday = match now.weekday() {
+        Weekday::Mon => "Montag",
+        Weekday::Tue => "Dienstag",
+        Weekday::Wed => "Mittwoch",
+        Weekday::Thu => "Donnerstag",
+        Weekday::Fri => "Freitag",
+        Weekday::Sat => "Samstag",
+        Weekday::Sun => "Sonntag",
+    };
+    let month = match now.month() {
+        1 => "Januar",
+        2 => "Februar",
+        3 => "März",
+        4 => "April",
+        5 => "Mai",
+        6 => "Juni",
+        7 => "Juli",
+        8 => "August",
+        9 => "September",
+        10 => "Oktober",
+        11 => "November",
+        12 => "Dezember",
+        _ => "",
+    };
+    format!("{}, {}. {} {}", weekday, now.day(), month, now.year())
+}
+
+fn build_debug_console_panel(revealer: &gtk::Revealer) -> gtk::Widget {
+    let container = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .css_classes(vec!["debug-console-panel"])
+        .build();
+
+    let header = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(8)
+        .margin_start(12)
+        .margin_end(12)
+        .margin_top(6)
+        .margin_bottom(6)
+        .css_classes(vec!["debug-console-header"])
+        .build();
+
+    let title_icon = gtk::Image::from_icon_name("utilities-terminal-symbolic");
+    let title_label = gtk::Label::builder()
+        .label("Protokollkonsole")
+        .css_classes(vec!["heading"])
+        .halign(gtk::Align::Start)
+        .build();
+
+    let search_entry = gtk::SearchEntry::builder()
+        .placeholder_text("Protokolle filtern…")
+        .hexpand(true)
+        .margin_start(16)
+        .margin_end(16)
+        .build();
+
+    let pause_button = gtk::ToggleButton::builder()
+        .icon_name("media-playback-pause-symbolic")
+        .tooltip_text("Live-Aktualisierung anhalten (Pause)")
+        .css_classes(vec!["flat"])
+        .build();
+
+    let copy_button = gtk::Button::builder()
+        .icon_name("edit-copy-symbolic")
+        .tooltip_text("Protokoll in die Zwischenablage kopieren")
+        .css_classes(vec!["flat"])
+        .build();
+
+    let clear_button = gtk::Button::builder()
+        .icon_name("edit-clear-symbolic")
+        .tooltip_text("Protokoll leeren")
+        .css_classes(vec!["flat"])
+        .build();
+
+    let close_button = gtk::Button::builder()
+        .icon_name("window-close-symbolic")
+        .tooltip_text("Protokollkonsole schließen")
+        .css_classes(vec!["flat"])
+        .build();
+
+    header.append(&title_icon);
+    header.append(&title_label);
+    header.append(&search_entry);
+    header.append(&pause_button);
+    header.append(&copy_button);
+    header.append(&clear_button);
+    header.append(&close_button);
+
+    let text_view = gtk::TextView::builder()
+        .editable(false)
+        .cursor_visible(false)
+        .monospace(true)
+        .wrap_mode(gtk::WrapMode::WordChar)
+        .css_classes(vec!["monospace", "terminal-text"])
+        .margin_start(8)
+        .margin_end(8)
+        .margin_top(6)
+        .margin_bottom(6)
+        .build();
+
+    let scrolled = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Automatic)
+        .vscrollbar_policy(gtk::PolicyType::Automatic)
+        .min_content_height(180)
+        .max_content_height(260)
+        .vexpand(false)
+        .child(&text_view)
+        .build();
+
+    let sep = gtk::Separator::new(gtk::Orientation::Horizontal);
+    container.append(&sep);
+    container.append(&header);
+    container.append(&scrolled);
+
+    let revealer_for_close = revealer.clone();
+    close_button.connect_clicked(move |_| {
+        revealer_for_close.set_reveal_child(false);
+    });
+
+    let buffer = text_view.buffer();
+    let search_filter = std::rc::Rc::new(std::cell::RefCell::new(String::new()));
+    let search_for_entry = std::rc::Rc::clone(&search_filter);
+    let buffer_for_entry = buffer.clone();
+    let text_view_for_entry = text_view.clone();
+
+    let refresh_logs = std::rc::Rc::new(
+        move |buf: &gtk::TextBuffer, tv: &gtk::TextView, filter: &str| {
+            let logs = crate::services::log_buffer::recent_logs();
+            let filter_lower = filter.trim().to_lowercase();
+            let filtered_text: String = logs
+                .iter()
+                .filter(|line| filter_lower.is_empty() || line.to_lowercase().contains(&filter_lower))
+                .cloned()
+                .collect::<Vec<_>>()
+                .join("\n");
+            buf.set_text(&filtered_text);
+
+            let mark = buf.create_mark(None, &buf.end_iter(), false);
+            tv.scroll_to_mark(&mark, 0.0, true, 0.0, 1.0);
+        },
+    );
+
+    let refresh_for_search = std::rc::Rc::clone(&refresh_logs);
+    search_entry.connect_search_changed(move |entry| {
+        let text = entry.text().to_string();
+        *search_for_entry.borrow_mut() = text.clone();
+        refresh_for_search(&buffer_for_entry, &text_view_for_entry, &text);
+    });
+
+    let buffer_for_clear = buffer.clone();
+    clear_button.connect_clicked(move |_| {
+        crate::services::log_buffer::clear_logs();
+        buffer_for_clear.set_text("");
+    });
+
+    let buffer_for_copy = buffer.clone();
+    copy_button.connect_clicked(move |btn| {
+        let text = buffer_for_copy.text(
+            &buffer_for_copy.start_iter(),
+            &buffer_for_copy.end_iter(),
+            false,
+        );
+        btn.clipboard().set_text(&text);
+    });
+
+    let revealer_for_notify = revealer.clone();
+    let buffer_for_notify = buffer.clone();
+    let text_view_for_notify = text_view.clone();
+    let search_for_notify = std::rc::Rc::clone(&search_filter);
+    let refresh_for_notify = std::rc::Rc::clone(&refresh_logs);
+    revealer.connect_reveal_child_notify(move |r| {
+        if r.reveals_child() {
+            let filter = search_for_notify.borrow().clone();
+            refresh_for_notify(&buffer_for_notify, &text_view_for_notify, &filter);
+        }
+    });
+
+    let is_paused = std::rc::Rc::new(std::cell::Cell::new(false));
+    let is_paused_for_btn = std::rc::Rc::clone(&is_paused);
+    let refresh_for_pause = std::rc::Rc::clone(&refresh_logs);
+    let buffer_for_pause = buffer.clone();
+    let text_view_for_pause = text_view.clone();
+    let search_for_pause = std::rc::Rc::clone(&search_filter);
+
+    pause_button.connect_toggled(move |btn| {
+        let paused = btn.is_active();
+        is_paused_for_btn.set(paused);
+        if paused {
+            btn.set_icon_name("media-playback-start-symbolic");
+            btn.set_tooltip_text(Some("Live-Aktualisierung fortsetzen"));
+        } else {
+            btn.set_icon_name("media-playback-pause-symbolic");
+            btn.set_tooltip_text(Some("Live-Aktualisierung anhalten (Pause)"));
+            let filter = search_for_pause.borrow().clone();
+            refresh_for_pause(&buffer_for_pause, &text_view_for_pause, &filter);
+        }
+    });
+
+    let revealer_for_timer = revealer.clone();
+    let buffer_for_timer = buffer.clone();
+    let text_view_for_timer = text_view.clone();
+    let search_for_timer = std::rc::Rc::clone(&search_filter);
+    let refresh_for_timer = std::rc::Rc::clone(&refresh_logs);
+    let is_paused_for_timer = std::rc::Rc::clone(&is_paused);
+    glib::timeout_add_seconds_local(1, move || {
+        if !is_paused_for_timer.get()
+            && revealer_for_timer.reveals_child()
+            && revealer_for_timer.is_visible()
+        {
+            let filter = search_for_timer.borrow().clone();
+            refresh_for_timer(&buffer_for_timer, &text_view_for_timer, &filter);
+        }
+        glib::ControlFlow::Continue
+    });
+
+    container.upcast()
 }
 
 #[cfg(test)]
