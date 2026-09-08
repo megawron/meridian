@@ -1999,6 +1999,29 @@ struct FolderDragPayload {
     display_name: String,
 }
 
+fn create_folder_drag_chip(name: &str, icon_name: Option<&str>) -> gtk::Box {
+    let chip = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(8)
+        .css_classes(["folder-drag-chip"])
+        .build();
+
+    let icon = gtk::Image::builder()
+        .icon_name(icon_name.unwrap_or("folder-symbolic"))
+        .pixel_size(16)
+        .build();
+
+    let label = gtk::Label::builder()
+        .label(name)
+        .ellipsize(gtk::pango::EllipsizeMode::End)
+        .max_width_chars(32)
+        .build();
+
+    chip.append(&icon);
+    chip.append(&label);
+    chip
+}
+
 fn folder_default_sort_bucket(folder_id: &str, label: &str) -> u32 {
     let clean_id = folder_id.trim().to_lowercase();
     let clean_label = label.trim().to_lowercase();
@@ -6013,6 +6036,12 @@ impl MailPage {
         drag_source.set_actions(gtk::gdk::DragAction::MOVE);
         let fid = folder_id.to_string();
         let display_name = Self::local_folder_display_label(folder_id);
+        let display_name_for_drag = display_name.clone();
+        drag_source.connect_drag_begin(move |_, drag| {
+            let chip = create_folder_drag_chip(&display_name_for_drag, Some("folder-symbolic"));
+            let drag_icon = gtk::DragIcon::for_drag(drag);
+            drag_icon.set_child(Some(&chip));
+        });
         drag_source.connect_prepare(move |_, _, _| {
             let payload = FolderDragPayload {
                 folder_id: fid.clone(),
@@ -9706,6 +9735,21 @@ impl MailPage {
             let drag_source = gtk::DragSource::new();
             drag_source.set_actions(gtk::gdk::DragAction::MOVE);
             let list_item_for_drag = list_item.downgrade();
+            let list_item_for_drag_begin = list_item.downgrade();
+            drag_source.connect_drag_begin(move |_, drag| {
+                let Some(list_item) = list_item_for_drag_begin.upgrade() else {
+                    return;
+                };
+                let Some(tree_row) = list_item.item().and_downcast::<gtk::TreeListRow>() else {
+                    return;
+                };
+                let Some(folder) = tree_row.item().and_downcast::<FolderObject>() else {
+                    return;
+                };
+                let chip = create_folder_drag_chip(&folder.name(), Some(&folder.icon_name()));
+                let drag_icon = gtk::DragIcon::for_drag(drag);
+                drag_icon.set_child(Some(&chip));
+            });
             drag_source.connect_prepare(move |_, _, _| {
                 let Some(list_item) = list_item_for_drag.upgrade() else {
                     return None;
@@ -10922,7 +10966,119 @@ impl MailPage {
                 });
             let counts = source_counts.entry(folder.source_uid.clone()).or_default();
             counts.0 = counts.0.saturating_add(folder.unread_count);
-            counts.1 = counts.1.saturating_add(folder.total_count);
+        }
+
+        // Ensure all configured account profiles are represented in source_roots,
+        // so newly added or synchronizing accounts always appear in the sidebar
+        for profile in AccountConfigStore::default().load() {
+            if !profile.enabled {
+                continue;
+            }
+            let eds_uid = crate::services::account_config_service::eds_source_uid_for_email(&profile.email);
+            let profile_uid = profile.id.clone();
+            let is_present = source_roots.contains_key(&profile_uid)
+                || source_roots.contains_key(&eds_uid)
+                || source_roots.values().any(|r| {
+                    r.name() == profile.display_name || r.name() == profile.email
+                });
+            if !is_present {
+                let source_root_id = Self::dynamic_folder_key(&profile_uid, "");
+                let display_name = if !profile.display_name.is_empty() {
+                    profile.display_name.clone()
+                } else {
+                    profile.email.clone()
+                };
+                source_roots.insert(
+                    profile_uid.clone(),
+                    FolderObject::new_backend(
+                        &source_root_id,
+                        &display_name,
+                        "",
+                        0,
+                        0,
+                        &profile_uid,
+                        "",
+                        None,
+                        true,
+                    ),
+                );
+            }
+        }
+
+        // Ensure all discovered/cached EDS mail sources (such as GNOME Online Accounts / Google accounts)
+        // are represented in source_roots, so they appear immediately in the sidebar on startup.
+        let eds_cache = crate::services::eds_source_cache_service::EdsSourceCache::new();
+        for eds_source in eds_cache.load_with_status(crate::services::eds_service::EdsSourceKind::Mail).sources {
+            if !eds_source.enabled {
+                continue;
+            }
+            if eds_source.uid == "vfolder" || eds_source.uid == "rss" {
+                continue;
+            }
+            let is_present = source_roots.contains_key(&eds_source.uid)
+                || source_roots.values().any(|r| {
+                    r.name() == eds_source.display_name
+                        || eds_source.parent_name.as_deref().is_some_and(|p| r.name() == p)
+                });
+            if !is_present {
+                let source_root_id = Self::dynamic_folder_key(&eds_source.uid, "");
+                let display_name = Self::localize_source_name(&eds_source.display_name);
+                source_roots.insert(
+                    eds_source.uid.clone(),
+                    FolderObject::new_backend(
+                        &source_root_id,
+                        &display_name,
+                        "",
+                        0,
+                        0,
+                        &eds_source.uid,
+                        "",
+                        None,
+                        true,
+                    ),
+                );
+            }
+        }
+
+        if let Some(source_store) = self
+            .imp()
+            .source_selection
+            .borrow()
+            .as_ref()
+            .and_then(|s| s.model())
+            .and_downcast::<gio::ListStore>()
+        {
+            for i in 0..source_store.n_items() {
+                if let Some(source_obj) = source_store.item(i).and_downcast::<EdsSourceObject>() {
+                    if !source_obj.enabled() {
+                        continue;
+                    }
+                    let s_uid = source_obj.uid();
+                    let d_name = source_obj.display_name();
+                    if s_uid == "vfolder" || s_uid == "rss" {
+                        continue;
+                    }
+                    let is_present = source_roots.contains_key(&s_uid)
+                        || source_roots.values().any(|r| r.name() == d_name);
+                    if !is_present {
+                        let source_root_id = Self::dynamic_folder_key(&s_uid, "");
+                        source_roots.insert(
+                            s_uid.clone(),
+                            FolderObject::new_backend(
+                                &source_root_id,
+                                &d_name,
+                                "",
+                                0,
+                                0,
+                                &s_uid,
+                                "",
+                                None,
+                                true,
+                            ),
+                        );
+                    }
+                }
+            }
         }
 
         let mut roots = source_roots.values().cloned().collect::<Vec<_>>();
@@ -15690,6 +15846,70 @@ impl MailPage {
                         &attachment_bar,
                         Some(&itip_banner_clone),
                     );
+
+                    if msg.is_preview_only() {
+                        if let Some(location) = msg.backend_location() {
+                            let (body_sender, body_receiver) = async_channel::bounded(1);
+                            let msg_id = msg.id();
+                            let folder_id = msg.folder_id();
+                            let unread = msg.is_unread();
+                            let selection_for_body = selection_for_async_crypto.clone();
+                            let viewer_for_body = mail_viewer.clone();
+                            let attachment_bar_for_body = attachment_bar.clone();
+                            let itip_banner_for_body = itip_banner_clone.clone();
+                            let page_for_body = page_for_read.clone();
+                            let req_gen = crypto_request_generation;
+
+                            std::thread::spawn(move || {
+                                let res = crate::services::camel_mail_service::load_raw_message(
+                                    &location,
+                                    &std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                                );
+                                let _ = body_sender.send_blocking((msg_id, folder_id, unread, res));
+                            });
+
+                            glib::spawn_future_local(async move {
+                                let Ok((msg_id, folder_id, unread, res)) = body_receiver.recv().await else {
+                                    return;
+                                };
+                                let Some(page) = page_for_body.upgrade() else {
+                                    return;
+                                };
+                                let Some(current) = selected_mail_message(&selection_for_body) else {
+                                    return;
+                                };
+                                if current.id() != msg_id {
+                                    return;
+                                }
+                                if page.imp().crypto_request_generation.get() != req_gen {
+                                    return;
+                                }
+
+                                match res {
+                                    Ok(raw) => {
+                                        if let Some(parsed) = parse_rfc822_bytes(&msg_id, &folder_id, &raw, unread) {
+                                            let searchable = prepare_searchable_body_text(&parsed.html_body);
+                                            current.replace_rendered_content(
+                                                parsed.html_body,
+                                                parsed.preview_snippet,
+                                                parsed.attachments,
+                                                Some(searchable),
+                                            );
+                                            Self::render_message_content(
+                                                &current,
+                                                &viewer_for_body,
+                                                &attachment_bar_for_body,
+                                                Some(&itip_banner_for_body),
+                                            );
+                                        }
+                                    }
+                                    Err(err) => {
+                                        tracing::debug!(%err, "Background raw message load completed with notice");
+                                    }
+                                }
+                            });
+                        }
+                    }
                 } else {
                     itip_banner_clone.set_invitation(None, &[]);
                     lbl_crypto.set_label("");
@@ -16156,6 +16376,48 @@ impl MailPage {
         self.add_controller(space_controller);
     }
 
+    fn apply_initial_cached_state(&self) {
+        let Some(cached) = camel_mail_service::load_mail_load_cache() else {
+            return;
+        };
+        if cached.folders.is_empty() && cached.messages.is_empty() {
+            return;
+        }
+
+        tracing::info!(
+            folders = cached.folders.len(),
+            messages = cached.messages.len(),
+            "Applying initial cached mail state for instant startup"
+        );
+
+        if let Some(folder_list) = self.imp().folder_list.borrow().as_ref() {
+            self.imp().mail_folder_summaries.replace(cached.folders.clone());
+            self.rebuild_camel_folder_rows_with_force(folder_list, &cached.folders, true);
+            self.update_camel_folder_counts(folder_list, &cached.folders, None);
+        }
+        if let Some(section) = self.imp().folder_section.borrow().as_ref() {
+            section.set_visible(true);
+        }
+
+        if let Some(store) = self.imp().message_store.borrow().as_ref() {
+            let mut objects = Vec::with_capacity(cached.messages.len());
+            for record in &cached.messages {
+                let object = record.clone().into_object();
+                objects.push(object.upcast::<glib::Object>());
+            }
+            if !objects.is_empty() {
+                store.splice(0, store.n_items(), &objects);
+            }
+        }
+
+        if let Some(state) = self.imp().message_state.borrow().as_ref() {
+            state.set_label(&format!(
+                "{} Nachricht(en) aus Zwischenspeicher geladen · Aktualisiere …",
+                cached.messages.len()
+            ));
+        }
+    }
+
     fn load_initial_data(&self, source_store: &gio::ListStore, source_state: &gtk::Label) {
         let startup_started = Instant::now();
         tracing::debug!("MailPage initial data setup started");
@@ -16164,6 +16426,9 @@ impl MailPage {
             selection.replace(initial_folder.clone());
         }
         self.select_folder_row(&initial_folder);
+
+        // Immediately populate sidebar and messages from local cache for zero startup lag.
+        self.apply_initial_cached_state();
 
         // Let GTK present the already-built shell before the first backend
         // result can schedule model work. EDS/Camel runs in a worker, but the
@@ -16192,6 +16457,7 @@ impl MailPage {
         let offline_mode = AppSettings::try_new()
             .map(|settings| settings.offline_mode())
             .unwrap_or(false);
+        crate::services::account_config_service::ensure_profiles_synced_to_eds();
         let configured_accounts = AccountConfigStore::default().load();
         let preferred_account_id = AppSettings::try_new()
             .map(|settings| settings.default_account_id())
@@ -16226,6 +16492,7 @@ impl MailPage {
                 }
             });
         }
+        let page_for_discovery = self.downgrade();
         glib::spawn_future_local(async move {
             let Ok(discovery) = discovery_receiver.recv().await else {
                 source_state_for_load.set_label("Kontenerkennung wurde abgebrochen.");
@@ -16246,6 +16513,13 @@ impl MailPage {
                     source,
                     source_origin,
                 ));
+            }
+
+            if let Some(page) = page_for_discovery.upgrade() {
+                if let Some(folder_list) = page.imp().folder_list.borrow().as_ref() {
+                    let remote_folders = page.imp().mail_folder_summaries.borrow().clone();
+                    page.rebuild_camel_folder_rows_with_force(folder_list, &remote_folders, true);
+                }
             }
 
             if let (Some(selection), Some(preferred_account_id)) = (
@@ -16978,6 +17252,46 @@ impl MailPage {
             .unwrap_or_else(MailLoadRequest::initial);
         request.offset = 0;
         self.start_mail_load(request, true);
+    }
+
+    pub fn reload_mail_accounts(&self) {
+        crate::services::account_config_service::ensure_profiles_synced_to_eds();
+        if let Some(source_store) = self
+            .imp()
+            .source_selection
+            .borrow()
+            .as_ref()
+            .and_then(|s| s.model())
+            .and_downcast::<gio::ListStore>()
+        {
+            source_store.remove_all();
+            let configured_accounts = AccountConfigStore::default().load();
+            for profile in &configured_accounts {
+                source_store.append(&EdsSourceObject::from_account_profile(profile));
+            }
+            let (tx, rx) = async_channel::bounded::<eds_service::EdsSourceDiscovery>(1);
+            std::thread::spawn(move || {
+                let discovery = eds_service::discover_sources_blocking(EdsSourceKind::Mail);
+                let _ = tx.send_blocking(discovery);
+            });
+            let source_store_copy = source_store.clone();
+            glib::spawn_future_local(async move {
+                if let Ok(discovery) = rx.recv().await {
+                    let source_origin = match discovery.origin {
+                        EdsSourceOrigin::Live => "Konten",
+                        EdsSourceOrigin::Cache => "Offline-Cache",
+                        EdsSourceOrigin::Empty => "Keine Konten verfügbar",
+                    };
+                    for source in &discovery.sources {
+                        source_store_copy.append(&EdsSourceObject::from_source_with_origin(
+                            source,
+                            source_origin,
+                        ));
+                    }
+                }
+            });
+        }
+        self.refresh_mail();
     }
 
     pub fn load_more_mail(&self) {

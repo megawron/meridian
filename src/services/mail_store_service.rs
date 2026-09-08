@@ -115,6 +115,8 @@ pub struct ParsedMail {
     pub follow_up: MailFollowUpMetadata,
     pub labels: Vec<String>,
     pub attachments: Vec<AttachmentInfo>,
+    #[serde(default)]
+    pub is_preview_only: bool,
 }
 
 impl ParsedMail {
@@ -149,6 +151,7 @@ impl ParsedMail {
             labels,
             backend_location,
             attachments,
+            is_preview_only,
             ..
         } = self;
 
@@ -183,6 +186,7 @@ impl ParsedMail {
         );
         object.set_raw_headers(raw_headers);
         object.set_raw_mime(raw_mime);
+        object.set_preview_only(is_preview_only);
         object
     }
 }
@@ -2351,6 +2355,7 @@ pub(crate) fn parse_rfc822_bytes(
         follow_up: MailFollowUpMetadata::default(),
         labels: Vec::new(),
         attachments: extracted.attachments,
+        is_preview_only: headers.get("x-evolution-preview-only").is_some(),
     })
 }
 
@@ -4899,7 +4904,24 @@ mod tests {
             follow_up: MailFollowUpMetadata::default(),
             labels: Vec::new(),
             attachments: Vec::new(),
+            is_preview_only: false,
         }
+    }
+
+    #[test]
+    fn test_parse_rfc822_preview_only_header() {
+        let raw = b"From: user@example.com\r\nSubject: Test Preview\r\nX-Evolution-Preview-Only: 1\r\n\r\nPreview snippet text";
+        let parsed = parse_rfc822_bytes("msg-preview", "inbox", raw, true).expect("should parse");
+        assert!(parsed.is_preview_only);
+        assert_eq!(parsed.preview_snippet, "Preview snippet text");
+        let obj = parsed.into_object();
+        assert!(obj.is_preview_only());
+
+        let normal = b"From: user@example.com\r\nSubject: Test Normal\r\n\r\nFull body content";
+        let parsed_normal = parse_rfc822_bytes("msg-normal", "inbox", normal, true).expect("should parse");
+        assert!(!parsed_normal.is_preview_only);
+        let obj_normal = parsed_normal.into_object();
+        assert!(!obj_normal.is_preview_only());
     }
 
     #[test]

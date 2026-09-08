@@ -121,6 +121,7 @@ mod imp {
         /// retains this only for messages with a detected crypto envelope.
         pub(crate) raw_mime: RefCell<Option<Arc<[u8]>>>,
         pub attachments: RefCell<Vec<AttachmentInfo>>,
+        pub is_preview_only: RefCell<bool>,
     }
 
     #[glib::object_subclass]
@@ -321,6 +322,7 @@ impl MailMessageObject {
         self.imp().searchable_body_text.take();
         *self.imp().preview_snippet.borrow_mut() = preview_snippet;
         *self.imp().attachments.borrow_mut() = attachments;
+        *self.imp().is_preview_only.borrow_mut() = false;
         if let Some(searchable_body_text) = searchable_body_text {
             self.set_searchable_body_text(searchable_body_text);
         }
@@ -458,6 +460,14 @@ impl MailMessageObject {
 
     pub fn attachment_count(&self) -> usize {
         self.imp().attachments.borrow().len()
+    }
+
+    pub fn is_preview_only(&self) -> bool {
+        *self.imp().is_preview_only.borrow()
+    }
+
+    pub fn set_preview_only(&self, is_preview_only: bool) {
+        *self.imp().is_preview_only.borrow_mut() = is_preview_only;
     }
 }
 

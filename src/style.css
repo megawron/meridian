@@ -348,6 +348,21 @@
   border-radius: 4px;
 }
 
+.folder-drag-chip {
+  background-color: @card_bg_color;
+  color: @card_fg_color;
+  padding: 6px 12px;
+  border-radius: 8px;
+  border: 1px solid alpha(@window_fg_color, 0.15);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+  font-weight: 500;
+  font-size: 0.95rem;
+}
+
+.folder-drag-chip image {
+  color: @accent_bg_color;
+}
+
 .mail-sidebar .mail-sidebar-row label {
   font-size: 1rem;
   color: @window_fg_color;

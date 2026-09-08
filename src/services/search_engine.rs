@@ -3050,6 +3050,7 @@ mod tests {
             follow_up: crate::services::mail_metadata_service::MailFollowUpMetadata::default(),
             labels: labels.iter().map(|label| (*label).to_string()).collect(),
             attachments,
+            is_preview_only: false,
         }
     }
 
@@ -3295,6 +3296,7 @@ mod tests {
             follow_up: crate::services::mail_metadata_service::MailFollowUpMetadata::default(),
             labels: Vec::new(),
             attachments: Vec::new(),
+            is_preview_only: false,
         }];
 
         let results = GlobalSearchEngine::query_local_mail("project", &messages);

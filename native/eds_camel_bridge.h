@@ -333,6 +333,11 @@ void evolution_eds_camel_watcher_free(
 
 void evolution_eds_camel_free_error(char *error_message);
 
+int evolution_eds_camel_store_password(
+    const char *source_uid,
+    const char *password,
+    char **out_error);
+
 #ifdef __cplusplus
 }
 #endif

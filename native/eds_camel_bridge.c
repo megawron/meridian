@@ -152,17 +152,30 @@ eds_camel_session_get_password (CamelSession *base_session,
         }
     }
 
-    /* 2. Fallback to EDS CredentialsProvider */
+    /* 2. Fallback to EDS CredentialsProvider (check source and ancestors) */
     if ((!password || !*password) && session->credentials_provider) {
-        if (e_source_credentials_provider_lookup_sync (
-                session->credentials_provider, source, NULL,
-                &credentials, &local_error) && credentials) {
-            const gchar *stored = e_named_parameters_get (
-                credentials, E_SOURCE_CREDENTIAL_PASSWORD);
-            if (stored && *stored)
-                password = g_strdup (stored);
-            e_named_parameters_free (credentials);
-            credentials = NULL;
+        ESource *curr = g_object_ref (source);
+        while (curr) {
+            if (e_source_credentials_provider_lookup_sync (
+                    session->credentials_provider, curr, NULL,
+                    &credentials, NULL) && credentials) {
+                const gchar *stored = e_named_parameters_get (
+                    credentials, E_SOURCE_CREDENTIAL_PASSWORD);
+                if (stored && *stored) {
+                    password = g_strdup (stored);
+                    e_named_parameters_free (credentials);
+                    g_object_unref (curr);
+                    break;
+                }
+                e_named_parameters_free (credentials);
+                credentials = NULL;
+            }
+            const gchar *parent_uid = e_source_get_parent (curr);
+            ESource *parent = (parent_uid && *parent_uid)
+                ? e_source_registry_ref_source (session->registry, parent_uid)
+                : NULL;
+            g_object_unref (curr);
+            curr = parent;
         }
     }
 
@@ -492,8 +505,30 @@ eds_camel_session_ref_ancestor_with_extension (EdsCamelSession *session,
 
     current = g_object_ref (source);
     while (current) {
-        if (e_source_has_extension (current, extension_name))
-            return current;
+        if (e_source_has_extension (current, extension_name)) {
+            if (g_str_equal (extension_name, "Ews Backend")) {
+                ESourceExtension *ext = e_source_get_extension (current, "Ews Backend");
+                gchar *hurl = NULL;
+                g_object_get (ext, "hosturl", &hurl, NULL);
+                if (hurl && *hurl) {
+                    g_free (hurl);
+                    return current;
+                }
+                g_free (hurl);
+            } else if (g_str_equal (extension_name, "Authentication")) {
+                ESourceExtension *ext = e_source_get_extension (current, "Authentication");
+                const gchar *host = e_source_authentication_get_host (E_SOURCE_AUTHENTICATION (ext));
+                if (host && *host)
+                    return current;
+            } else if (g_str_equal (extension_name, "GNOME Online Accounts")) {
+                ESourceExtension *ext = e_source_get_extension (current, "GNOME Online Accounts");
+                const gchar *acc_id = e_source_goa_get_account_id (E_SOURCE_GOA (ext));
+                if (acc_id && *acc_id)
+                    return current;
+            } else {
+                return current;
+            }
+        }
 
         const gchar *parent_uid = e_source_get_parent (current);
         ESource *parent = parent_uid && *parent_uid
@@ -856,6 +891,85 @@ append_message (LoadContext *context,
     return TRUE;
 }
 
+static gboolean
+append_message_from_info (LoadContext *context,
+                          const gchar *source_uid,
+                          CamelFolderInfo *folder_info,
+                          const gchar *message_uid,
+                          CamelMessageInfo *message_info)
+{
+    GString *rfc822;
+    const gchar *subject, *from, *to, *cc, *preview;
+    gint64 date_sent;
+    GDateTime *dt;
+    gchar *date_str = NULL;
+    guint32 flags;
+    EvolutionEdsCamelMessage *record;
+
+    if (!message_info)
+        return FALSE;
+
+    subject = camel_message_info_get_subject (message_info);
+    from = camel_message_info_get_from (message_info);
+    to = camel_message_info_get_to (message_info);
+    cc = camel_message_info_get_cc (message_info);
+    preview = camel_message_info_get_preview (message_info);
+    date_sent = camel_message_info_get_date_sent (message_info);
+
+    rfc822 = g_string_sized_new (512);
+    g_string_append_printf (rfc822, "Message-ID: <%s@eds>\r\n", message_uid);
+    g_string_append (rfc822, "X-Evolution-Preview-Only: 1\r\n");
+    if (from && *from)
+        g_string_append_printf (rfc822, "From: %s\r\n", from);
+    if (to && *to)
+        g_string_append_printf (rfc822, "To: %s\r\n", to);
+    if (cc && *cc)
+        g_string_append_printf (rfc822, "Cc: %s\r\n", cc);
+    if (subject && *subject)
+        g_string_append_printf (rfc822, "Subject: %s\r\n", subject);
+
+    if (date_sent > 0) {
+        dt = g_date_time_new_from_unix_utc (date_sent);
+        if (dt) {
+            date_str = g_date_time_format (dt, "%a, %d %b %Y %H:%M:%S +0000");
+            g_date_time_unref (dt);
+        }
+    }
+    if (date_str) {
+        g_string_append_printf (rfc822, "Date: %s\r\n", date_str);
+        g_free (date_str);
+    }
+
+    g_string_append (rfc822, "MIME-Version: 1.0\r\n");
+    g_string_append (rfc822, "Content-Type: text/plain; charset=utf-8\r\n");
+    g_string_append (rfc822, "\r\n");
+    if (preview && *preview)
+        g_string_append (rfc822, preview);
+
+    ensure_capacity (context);
+    record = &context->messages[context->count++];
+    record->source_uid = g_strdup (source_uid);
+    record->folder_name = g_strdup (folder_info->full_name ?: "");
+    record->folder_id = g_strdup (folder_id_from_flags (folder_info->flags));
+    record->message_uid = g_strdup (message_uid);
+    record->raw_message_len = rfc822->len;
+    record->raw_message = (guchar *) g_string_free (rfc822, FALSE);
+    record->is_unread = 1;
+    record->is_flagged = 0;
+    record->follow_up_status = EVOLUTION_FOLLOW_UP_NONE;
+    record->follow_up = NULL;
+    record->completed_on = NULL;
+    record->due_by = NULL;
+
+    flags = camel_message_info_get_flags (message_info);
+    record->is_unread = (flags & CAMEL_MESSAGE_SEEN) == 0;
+    record->is_flagged = (flags & CAMEL_MESSAGE_FLAGGED) != 0;
+    read_follow_up_tags (message_info, record);
+
+    context->messages_loaded++;
+    return TRUE;
+}
+
 static void
 load_folder (LoadContext *context,
              CamelStore *store,
@@ -940,22 +1054,20 @@ load_folder (LoadContext *context,
 
                         message_info = camel_folder_get_message_info (
                             folder, message_uid);
-                        message = camel_folder_get_message_sync (
-                            folder, message_uid, cancellable, &error);
-                        if (!message) {
-                            remember_error (context, current->full_name, error);
-                            g_clear_error (&error);
-                            if (message_info)
-                                g_object_unref (message_info);
-                            continue;
+                        message = camel_folder_get_message_cached (
+                            folder, message_uid, cancellable);
+                        if (message) {
+                            if (append_message (
+                                    context, source_uid, current, message_uid,
+                                    message_info, message, cancellable))
+                                loaded++;
+                            g_object_unref (message);
+                        } else if (message_info) {
+                            if (append_message_from_info (
+                                    context, source_uid, current, message_uid,
+                                    message_info))
+                                loaded++;
                         }
-
-                        if (append_message (
-                                context, source_uid, current, message_uid,
-                                message_info, message, cancellable))
-                            loaded++;
-
-                        g_object_unref (message);
                         if (message_info)
                             g_object_unref (message_info);
                     }
@@ -998,16 +1110,57 @@ configure_ews_service_credentials_and_settings (EdsCamelSession *session,
         if (settings) {
             GParamSpec *pspec_hosturl = g_object_class_find_property (
                 G_OBJECT_GET_CLASS (settings), "hosturl");
+            GParamSpec *pspec_oaburl = g_object_class_find_property (
+                G_OBJECT_GET_CLASS (settings), "oaburl");
             GParamSpec *pspec_host = g_object_class_find_property (
                 G_OBJECT_GET_CLASS (settings), "host");
+            GParamSpec *pspec_email = g_object_class_find_property (
+                G_OBJECT_GET_CLASS (settings), "email");
+
+            ESource *ews_source =
+                eds_camel_session_ref_ancestor_with_extension (
+                    session, source, "Ews Backend");
+            if (!ews_source && e_source_has_extension (source, "Ews Backend"))
+                ews_source = g_object_ref (source);
+
+            if (ews_source) {
+                ESourceExtension *ews_ext = e_source_get_extension (ews_source, "Ews Backend");
+                if (ews_ext) {
+                    gchar *ext_hurl = NULL;
+                    gchar *ext_oab = NULL;
+                    gchar *ext_email = NULL;
+                    GParamSpec *hpspec = g_object_class_find_property (G_OBJECT_GET_CLASS (ews_ext), "hosturl");
+                    if (hpspec)
+                        g_object_get (ews_ext, "hosturl", &ext_hurl, NULL);
+                    GParamSpec *oab_spec = g_object_class_find_property (G_OBJECT_GET_CLASS (ews_ext), "oaburl");
+                    if (oab_spec)
+                        g_object_get (ews_ext, "oaburl", &ext_oab, NULL);
+                    GParamSpec *mail_spec = g_object_class_find_property (G_OBJECT_GET_CLASS (ews_ext), "email");
+                    if (mail_spec)
+                        g_object_get (ews_ext, "email", &ext_email, NULL);
+
+                    if (ext_hurl && *ext_hurl && pspec_hosturl) {
+                        g_object_set (settings, "hosturl", ext_hurl, NULL);
+                        g_printerr ("[EDS] Explicitly set hosturl from Ews Backend: %s\n", ext_hurl);
+                    }
+                    if (ext_oab && *ext_oab && pspec_oaburl)
+                        g_object_set (settings, "oaburl", ext_oab, NULL);
+                    if (ext_email && *ext_email && pspec_email)
+                        g_object_set (settings, "email", ext_email, NULL);
+
+                    g_free (ext_hurl);
+                    g_free (ext_oab);
+                    g_free (ext_email);
+                }
+                g_object_unref (ews_source);
+            }
 
             gchar *current_url = NULL;
             if (pspec_hosturl)
                 g_object_get (settings, "hosturl", &current_url, NULL);
-            if ((!current_url || !*current_url) && pspec_host)
-                g_object_get (settings, "host", &current_url, NULL);
 
-            if (!current_url || !*current_url) {
+            if (!current_url || !*current_url || !g_str_has_prefix (current_url, "http")) {
+                g_clear_pointer (&current_url, g_free);
                 ESource *goa_source =
                     eds_camel_session_ref_ancestor_with_extension (
                         session, source, "GNOME Online Accounts");
@@ -1039,7 +1192,7 @@ configure_ews_service_credentials_and_settings (EdsCamelSession *session,
                                                 g_object_set (settings, "hosturl", ews_url, NULL);
                                             if (pspec_host)
                                                 g_object_set (settings, "host", host, NULL);
-                                            g_free (ews_url);
+                                            current_url = ews_url;
                                         }
                                         g_variant_unref (var);
                                     }
@@ -1051,6 +1204,31 @@ configure_ews_service_credentials_and_settings (EdsCamelSession *session,
                         }
                     }
                     g_object_unref (goa_source);
+                }
+            }
+
+            if (!current_url || !*current_url || !g_str_has_prefix (current_url, "http")) {
+                g_clear_pointer (&current_url, g_free);
+                ESource *auth_source =
+                    eds_camel_session_ref_ancestor_with_extension (
+                        session, source, "Authentication");
+                if (auth_source) {
+                    ESourceExtension *auth_ext = e_source_get_extension (auth_source, "Authentication");
+                    if (auth_ext) {
+                        const gchar *host = e_source_authentication_get_host (E_SOURCE_AUTHENTICATION (auth_ext));
+                        if (host && *host) {
+                            gchar *ews_url = g_str_has_prefix (host, "http")
+                                ? g_strdup (host)
+                                : g_strdup_printf ("https://%s/EWS/Exchange.asmx", host);
+                            if (pspec_hosturl)
+                                g_object_set (settings, "hosturl", ews_url, NULL);
+                            if (pspec_host)
+                                g_object_set (settings, "host", host, NULL);
+                            g_printerr ("[EDS] Configured EWS hosturl from Authentication host: %s\n", ews_url);
+                            current_url = ews_url;
+                        }
+                    }
+                    g_object_unref (auth_source);
                 }
             }
             g_free (current_url);
@@ -1082,18 +1260,38 @@ configure_ews_service_credentials_and_settings (EdsCamelSession *session,
                         dup_user = e_source_goa_dup_address (E_SOURCE_GOA (goa));
                         user = dup_user;
                     }
-                    if (user && *user) {
+                    gchar *col_identity = NULL;
+                    gchar *ews_email = NULL;
+                    if ((!user || !*user) && auth_source && e_source_has_extension (auth_source, "Collection")) {
+                        ESourceExtension *col = e_source_get_extension (auth_source, "Collection");
+                        if (g_object_class_find_property (G_OBJECT_GET_CLASS (col), "identity")) {
+                            g_object_get (col, "identity", &col_identity, NULL);
+                            if (col_identity && *col_identity)
+                                user = col_identity;
+                        }
+                    }
+                    if ((!user || !*user) && auth_source && e_source_has_extension (auth_source, "Ews Backend")) {
+                        ESourceExtension *ews = e_source_get_extension (auth_source, "Ews Backend");
+                        if (g_object_class_find_property (G_OBJECT_GET_CLASS (ews), "email")) {
+                            g_object_get (ews, "email", &ews_email, NULL);
+                            if (ews_email && *ews_email)
+                                user = ews_email;
+                        }
+                    }
+                    if (user && *user && (!curr_user || !*curr_user)) {
                         g_object_set (settings, "user", user, "email", user, NULL);
                         g_printerr ("[EDS] Configured CamelSettings user/email = '%s'\n", user);
                     }
                     if (!method || !*method || g_str_equal (method, "none"))
                         method = "NTLM";
 
-                    if (method && *method) {
+                    if (method && *method && (!curr_auth || !*curr_auth)) {
                         g_object_set (settings, "auth-mechanism", method, NULL);
                         g_printerr ("[EDS] Configured CamelSettings auth-mechanism = '%s'\n", method);
                     }
                     g_free (dup_user);
+                    g_free (col_identity);
+                    g_free (ews_email);
                 }
                 g_clear_object (&goa_source);
                 g_clear_object (&auth_source);
@@ -1159,6 +1357,34 @@ open_store_for_source (EdsCamelSession *session,
     }
 
     configure_ews_service_credentials_and_settings (session, source, service, backend_name, source_uid);
+
+    if (!camel_service_get_password (service) && session->registry) {
+        ESourceCredentialsProvider *provider = session->credentials_provider
+            ? g_object_ref (session->credentials_provider)
+            : e_source_credentials_provider_new (session->registry);
+        if (provider) {
+            ENamedParameters *credentials = NULL;
+            if (!e_source_credentials_provider_lookup_sync (provider, source, NULL, &credentials, NULL) || !credentials) {
+                const gchar *parent_uid = e_source_get_parent (source);
+                if (parent_uid && *parent_uid) {
+                    ESource *parent = e_source_registry_ref_source (session->registry, parent_uid);
+                    if (parent) {
+                        e_source_credentials_provider_lookup_sync (provider, parent, NULL, &credentials, NULL);
+                        g_object_unref (parent);
+                    }
+                }
+            }
+            if (credentials) {
+                const gchar *pwd = e_named_parameters_get (credentials, E_SOURCE_CREDENTIAL_PASSWORD);
+                if (pwd && *pwd) {
+                    camel_service_set_password (service, pwd);
+                    g_printerr ("[EDS] Loaded password from CredentialsProvider for %s\n", source_uid);
+                }
+                e_named_parameters_free (credentials);
+            }
+            g_object_unref (provider);
+        }
+    }
 
     if (CAMEL_IS_OFFLINE_STORE (service)) {
         if (!camel_offline_store_get_online (CAMEL_OFFLINE_STORE (service))) {
@@ -4361,6 +4587,35 @@ evolution_eds_camel_send_message (
         goto finish;
 
     configure_ews_service_credentials_and_settings (session, transport_source, transport_service, backend_name, transport_uid);
+
+    if (!camel_service_get_password (transport_service) && session->registry) {
+        ESourceCredentialsProvider *provider = session->credentials_provider
+            ? g_object_ref (session->credentials_provider)
+            : e_source_credentials_provider_new (session->registry);
+        if (provider) {
+            ENamedParameters *credentials = NULL;
+            if (!e_source_credentials_provider_lookup_sync (provider, transport_source, NULL, &credentials, NULL) || !credentials) {
+                const gchar *parent_uid = e_source_get_parent (transport_source);
+                if (parent_uid && *parent_uid) {
+                    ESource *parent = e_source_registry_ref_source (session->registry, parent_uid);
+                    if (parent) {
+                        e_source_credentials_provider_lookup_sync (provider, parent, NULL, &credentials, NULL);
+                        g_object_unref (parent);
+                    }
+                }
+            }
+            if (credentials) {
+                const gchar *pwd = e_named_parameters_get (credentials, E_SOURCE_CREDENTIAL_PASSWORD);
+                if (pwd && *pwd) {
+                    camel_service_set_password (transport_service, pwd);
+                    g_printerr ("[EDS] Loaded transport password from CredentialsProvider for %s\n", transport_uid);
+                }
+                e_named_parameters_free (credentials);
+            }
+            g_object_unref (provider);
+        }
+    }
+
     if (camel_service_get_connection_status (transport_service) != CAMEL_SERVICE_CONNECTED) {
         if (!camel_service_connect_sync (
                 transport_service, cancellable, &error))
@@ -4487,3 +4742,64 @@ evolution_eds_camel_free_error (char *error_message)
 {
     g_free (error_message);
 }
+
+int
+evolution_eds_camel_store_password (const char *source_uid,
+                                    const char *password,
+                                    char **out_error)
+{
+    if (!source_uid || !*source_uid || !password) {
+        if (out_error)
+            *out_error = g_strdup ("Ungültige Quell-UID oder leeres Passwort");
+        return 0;
+    }
+
+    GError *err = NULL;
+    ESourceRegistry *registry = eds_camel_ref_registry (&err);
+    if (!registry) {
+        if (out_error)
+            *out_error = g_strdup (err ? err->message : "Verbindung zum EDS Source Registry fehlgeschlagen");
+        if (err)
+            g_clear_error (&err);
+        return 0;
+    }
+
+    EdsCamelSession *session = eds_camel_ref_session (registry);
+    ESourceCredentialsProvider *provider = session && session->credentials_provider
+        ? g_object_ref (session->credentials_provider)
+        : e_source_credentials_provider_new (registry);
+
+    ESource *source = e_source_registry_ref_source (registry, source_uid);
+    if (!source) {
+        if (out_error)
+            *out_error = g_strdup_printf ("Quelle '%s' nicht in EDS gefunden", source_uid);
+        g_clear_object (&provider);
+        g_clear_object (&session);
+        g_clear_object (&registry);
+        return 0;
+    }
+
+    ENamedParameters *credentials = e_named_parameters_new ();
+    e_named_parameters_set (credentials, E_SOURCE_CREDENTIAL_PASSWORD, password);
+
+    gboolean ok = e_source_credentials_provider_store_sync (
+        provider, source, credentials, TRUE, NULL, &err);
+
+    e_named_parameters_free (credentials);
+    g_clear_object (&source);
+    g_clear_object (&provider);
+    g_clear_object (&session);
+    g_clear_object (&registry);
+
+    if (!ok) {
+        if (out_error)
+            *out_error = g_strdup (err ? err->message : "Passwort konnte nicht im Schlüsselbund hinterlegt werden");
+        if (err)
+            g_clear_error (&err);
+        return 0;
+    }
+
+    g_printerr ("[EDS] Password successfully stored via credentials provider for %s\n", source_uid);
+    return 1;
+}
+

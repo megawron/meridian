@@ -1118,6 +1118,49 @@ mod ffi {
         pub(super) fn evolution_eds_camel_watcher_free(watcher: *mut c_void);
 
         pub(super) fn evolution_eds_camel_free_error(error_message: *mut c_char);
+
+        pub(super) fn evolution_eds_camel_store_password(
+            source_uid: *const c_char,
+            password: *const c_char,
+            out_error: *mut *mut c_char,
+        ) -> i32;
+    }
+}
+
+pub fn store_source_password(source_uid: &str, password: &str) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        use std::ffi::CString;
+        let source_uid_c = CString::new(source_uid)
+            .map_err(|_| "Quell-UID enthält ungültige Nullbytes".to_string())?;
+        let password_c = CString::new(password)
+            .map_err(|_| "Passwort enthält ungültige Nullbytes".to_string())?;
+        let mut out_error: *mut std::os::raw::c_char = std::ptr::null_mut();
+
+        let ok = unsafe {
+            ffi::evolution_eds_camel_store_password(
+                source_uid_c.as_ptr(),
+                password_c.as_ptr(),
+                &mut out_error,
+            ) != 0
+        };
+
+        if !ok {
+            let msg = if !out_error.is_null() {
+                let err_str = unsafe { std::ffi::CStr::from_ptr(out_error).to_string_lossy().into_owned() };
+                unsafe { ffi::evolution_eds_camel_free_error(out_error) };
+                err_str
+            } else {
+                "Passwort konnte nicht im Schlüsselbund hinterlegt werden".to_string()
+            };
+            return Err(msg);
+        }
+        Ok(())
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (source_uid, password);
+        Ok(())
     }
 }
 
@@ -2358,6 +2401,7 @@ mod tests {
             follow_up: MailFollowUpMetadata::default(),
             labels: Vec::new(),
             attachments: Vec::new(),
+            is_preview_only: false,
         }
     }
 

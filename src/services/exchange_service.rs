@@ -245,6 +245,7 @@ impl ExchangeMailMessage {
                     content: attachment.content.into(),
                 })
                 .collect(),
+            is_preview_only: false,
         }
     }
 }
