@@ -231,7 +231,7 @@ mod imp {
 
         fn dispose(&self) {
             if let Some(source) = self.autosave_source.borrow_mut().take() {
-                source.remove();
+                let _ = unsafe { glib::ffi::g_source_remove(source.as_raw()) };
             }
             if let Some(cancel) = self.operation_cancel.borrow_mut().take() {
                 let _ = cancel.request_cancel();
@@ -3778,7 +3778,7 @@ impl ComposeDialog {
 
     fn start_local_autosave(&self) {
         if let Some(source) = self.imp().autosave_source.borrow_mut().take() {
-            source.remove();
+            let _ = unsafe { glib::ffi::g_source_remove(source.as_raw()) };
         }
         let interval = AppSettings::try_new()
             .map(|settings| settings.draft_autosave_interval_seconds())
@@ -5253,14 +5253,14 @@ fn setup_recipient_autocompletion(
 
         if fragment.chars().count() < min_len {
             if let Some(source_id) = debounce_source.borrow_mut().take() {
-                source_id.remove();
+                let _ = unsafe { glib::ffi::g_source_remove(source_id.as_raw()) };
             }
             popover_for_changed.popdown();
             return;
         }
 
         if let Some(source_id) = debounce_source.borrow_mut().take() {
-            source_id.remove();
+            let _ = unsafe { glib::ffi::g_source_remove(source_id.as_raw()) };
         }
 
         let generation_id = generation.get() + 1;
@@ -5273,10 +5273,12 @@ fn setup_recipient_autocompletion(
         let generation_clone = Rc::clone(&generation);
         let combo_from_source = combo_from_clone.clone();
         let dialog_weak_source = dialog_weak_for_changed.clone();
+        let debounce_source_timer = Rc::clone(&debounce_source);
 
         let source_id = glib::timeout_add_local(
             std::time::Duration::from_millis(333),
             move || {
+                debounce_source_timer.borrow_mut().take();
                 if generation_clone.get() != generation_id {
                     return glib::ControlFlow::Break;
                 }
