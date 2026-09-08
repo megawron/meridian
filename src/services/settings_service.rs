@@ -477,25 +477,37 @@ pub fn normalize_hex_color(color: &str) -> String {
     }
 }
 
+thread_local! {
+    static SHARED_SETTINGS: std::cell::RefCell<Option<gio::Settings>> = const { std::cell::RefCell::new(None) };
+}
+
 impl AppSettings {
     /// Open the application schema if it is available in the current process.
     pub fn try_new() -> Option<Self> {
-        let installed_source = gio::SettingsSchemaSource::default();
-        let schema = installed_source
-            .as_ref()
-            .and_then(|source| source.lookup(crate::APP_ID, true))
-            .or_else(|| {
-                let directory = option_env!("EVOLUTION_GTK4_SCHEMA_DIR")?;
-                let source = gio::SettingsSchemaSource::from_directory(
-                    directory,
-                    installed_source.as_ref(),
-                    true,
-                )
-                .ok()?;
-                source.lookup(crate::APP_ID, true)
-            })?;
-        Some(Self {
-            settings: gio::Settings::new_full(&schema, None::<&gio::SettingsBackend>, None),
+        SHARED_SETTINGS.with(|cell| {
+            let mut borrow = cell.borrow_mut();
+            if let Some(s) = borrow.as_ref() {
+                return Some(Self {
+                    settings: s.clone(),
+                });
+            }
+            let installed_source = gio::SettingsSchemaSource::default();
+            let schema = installed_source
+                .as_ref()
+                .and_then(|source| source.lookup(crate::APP_ID, true))
+                .or_else(|| {
+                    let directory = option_env!("EVOLUTION_GTK4_SCHEMA_DIR")?;
+                    let source = gio::SettingsSchemaSource::from_directory(
+                        directory,
+                        installed_source.as_ref(),
+                        true,
+                    )
+                    .ok()?;
+                    source.lookup(crate::APP_ID, true)
+                })?;
+            let s = gio::Settings::new_full(&schema, None::<&gio::SettingsBackend>, None);
+            *borrow = Some(s.clone());
+            Some(Self { settings: s })
         })
     }
 

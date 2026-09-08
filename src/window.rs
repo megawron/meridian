@@ -48,6 +48,8 @@ mod imp {
 
     #[derive(Default)]
     pub struct EvolutionWindow {
+        pub settings: RefCell<Option<AppSettings>>,
+        pub header_bar: RefCell<Option<adw::HeaderBar>>,
         pub view_stack: RefCell<Option<adw::ViewStack>>,
         pub toast_overlay: adw::ToastOverlay,
         pub status_label: RefCell<Option<gtk::Label>>,
@@ -77,9 +79,11 @@ mod imp {
         fn constructed(&self) {
             self.parent_constructed();
             let window = self.obj();
+            let settings = AppSettings::try_new();
+            self.settings.replace(settings.clone());
 
             window.set_title(Some("Evolution"));
-            if let Some(settings) = AppSettings::try_new() {
+            if let Some(settings) = settings.as_ref() {
                 window.set_default_size(settings.window_width(), settings.window_height());
                 if settings.is_maximized() {
                     window.maximize();
@@ -1792,6 +1796,7 @@ impl EvolutionWindow {
         });
 
         let header_bar = adw::HeaderBar::new();
+        self.imp().header_bar.replace(Some(header_bar.clone()));
 
         let sidebar_visible = AppSettings::try_new()
             .map(|settings| settings.mail_show_sidebar())
@@ -1834,49 +1839,28 @@ impl EvolutionWindow {
             .title("Evolution")
             .build();
 
-        let view_switcher_title = adw::ViewSwitcherTitle::builder()
+        let view_switcher = adw::ViewSwitcher::builder()
             .stack(&view_stack)
-            .title("Evolution")
-            .build();
-
-        let view_switcher_bar = adw::ViewSwitcherBar::builder()
-            .stack(&view_stack)
+            .policy(adw::ViewSwitcherPolicy::Wide)
             .build();
 
         let update_title_widget = {
             let header_bar = header_bar.clone();
             let window_title = window_title.clone();
-            let view_switcher_title = view_switcher_title.clone();
-            let view_switcher_bar = view_switcher_bar.clone();
+            let view_switcher = view_switcher.clone();
             move || {
-                let is_bottom = AppSettings::try_new()
-                    .map(|s| s.switcher_location() == "bottom-left")
-                    .unwrap_or(true);
-                if is_bottom {
-                    header_bar.set_title_widget(Some(&window_title));
-                    view_switcher_bar.set_reveal(false);
+                let is_top = AppSettings::try_new()
+                    .map(|s| s.switcher_location() == "top")
+                    .unwrap_or(false);
+                if is_top {
+                    header_bar.set_title_widget(Some(&view_switcher));
                 } else {
-                    header_bar.set_title_widget(Some(&view_switcher_title));
-                    view_switcher_bar.set_reveal(view_switcher_title.is_title_visible());
+                    header_bar.set_title_widget(Some(&window_title));
                 }
             }
         };
 
         update_title_widget();
-
-        {
-            let view_switcher_bar = view_switcher_bar.clone();
-            view_switcher_title.connect_title_visible_notify(move |vst| {
-                let is_bottom = AppSettings::try_new()
-                    .map(|s| s.switcher_location() == "bottom-left")
-                    .unwrap_or(true);
-                if is_bottom {
-                    view_switcher_bar.set_reveal(false);
-                } else {
-                    view_switcher_bar.set_reveal(vst.is_title_visible());
-                }
-            });
-        }
 
         if let Some(settings) = AppSettings::try_new() {
             let update_cb = update_title_widget.clone();
@@ -2007,7 +1991,6 @@ impl EvolutionWindow {
 
         let toolbar_view = adw::ToolbarView::new();
         toolbar_view.add_top_bar(&header_bar);
-        toolbar_view.add_bottom_bar(&view_switcher_bar);
         toolbar_view.add_bottom_bar(&statusbar_box);
         toolbar_view.set_content(Some(&view_stack));
 
@@ -3612,7 +3595,7 @@ mod tests {
         page
     }
 
-    fn drain_main_context(context: &glib::MainContext) {
+    pub(crate) fn drain_main_context(context: &glib::MainContext) {
         for _ in 0..32 {
             if !context.pending() {
                 break;
@@ -3699,6 +3682,9 @@ mod tests {
         let app = EvolutionApplication::new();
         let window = EvolutionWindow::new(&app);
 
+        let header_bar = window.imp().header_bar.borrow().as_ref().unwrap().clone();
+        assert!(header_bar.title_widget().unwrap().downcast_ref::<adw::WindowTitle>().is_some());
+
         let action = window
             .lookup_action("toggle-top-switcher")
             .expect("missing toggle-top-switcher action");
@@ -3712,6 +3698,7 @@ mod tests {
         assert_eq!(settings.switcher_location(), "top");
         let state: bool = action.state().unwrap().get().unwrap();
         assert!(state);
+        assert!(header_bar.title_widget().unwrap().downcast_ref::<adw::ViewSwitcher>().is_some());
 
         // Activate action -> should flip back to bottom-left
         action.activate(None);
@@ -3719,6 +3706,7 @@ mod tests {
         assert_eq!(settings.switcher_location(), "bottom-left");
         let state: bool = action.state().unwrap().get().unwrap();
         assert!(!state);
+        assert!(header_bar.title_widget().unwrap().downcast_ref::<adw::WindowTitle>().is_some());
 
         settings.set_switcher_location(&original_location);
     }

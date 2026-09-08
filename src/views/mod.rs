@@ -217,11 +217,19 @@ pub fn build_sidebar_module_switcher(
     switcher_box.append(&grid);
 
     if let Some(settings) = crate::services::AppSettings::try_new() {
-        let switcher_clone = switcher_box.clone();
-        switcher_clone.set_visible(settings.switcher_location() == "bottom-left");
-        settings.connect_changed(Some("switcher-location"), move |s, _| {
-            switcher_clone.set_visible(s.string("switcher-location") == "bottom-left");
-        });
+        let is_bottom = settings.switcher_location() != "top";
+        switcher_box.set_visible(is_bottom);
+        settings.connect_changed(
+            Some("switcher-location"),
+            glib::clone!(
+                #[weak]
+                switcher_box,
+                move |s, _| {
+                    let loc = s.string("switcher-location");
+                    switcher_box.set_visible(loc.as_str() != "top");
+                }
+            ),
+        );
     }
 
     switcher_box
@@ -275,6 +283,45 @@ mod tests {
             }
             child = c.next_sibling();
         }
+    }
+
+    fn drain_main_context(context: &gtk::glib::MainContext) {
+        for _ in 0..32 {
+            if !context.pending() {
+                break;
+            }
+            context.iteration(false);
+        }
+    }
+
+    #[test]
+    fn test_sidebar_module_switcher_visibility_tracks_setting() {
+        let _gtk_lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+        let Some(settings) = crate::services::AppSettings::try_new() else {
+            return;
+        };
+        let original = settings.switcher_location();
+
+        settings.set_switcher_location("bottom-left");
+        drain_main_context(&context);
+        let anchor = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        let switcher = build_sidebar_module_switcher("mail", &anchor);
+        assert!(switcher.is_visible());
+
+        settings.set_switcher_location("top");
+        drain_main_context(&context);
+        assert!(!switcher.is_visible());
+
+        settings.set_switcher_location("bottom-left");
+        drain_main_context(&context);
+        assert!(switcher.is_visible());
+
+        settings.set_switcher_location(&original);
     }
 }
 
