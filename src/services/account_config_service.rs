@@ -51,6 +51,8 @@ pub struct AccountProfile {
     pub protocol: AccountProtocol,
     pub imap_host: String,
     pub smtp_host: String,
+    #[serde(default)]
+    pub oab_url: String,
     pub tls_mode: String,
     #[serde(default)]
     pub username: String,
@@ -120,6 +122,7 @@ impl Default for AccountProfile {
             protocol: AccountProtocol::ImapSmtp,
             imap_host: String::new(),
             smtp_host: String::new(),
+            oab_url: String::new(),
             tls_mode: "tls".to_string(),
             username: String::new(),
             imap_port: default_imap_port(),
@@ -346,6 +349,440 @@ impl AccountConfigStore {
     }
 }
 
+/// Generate the standard Evolution Data Server (EDS) .source configuration files
+/// for an AccountProfile and notify the EDS SourceManager via D-Bus.
+///
+/// Compute the standard SHA1-based EDS source UID from an email address.
+pub fn eds_source_uid_for_email(email: &str) -> String {
+    let raw_email = email.trim().to_lowercase();
+    gtk::glib::compute_checksum_for_string(gtk::glib::ChecksumType::Sha1, &raw_email)
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| raw_email.replace(|c: char| !c.is_ascii_alphanumeric(), "_"))
+}
+
+/// Safely update an existing .source keyfile or create it from default template,
+/// preserving any custom/extra keys (such as GalUid, WebDAV, etc.) created by EDS.
+/// Returns true if the file was newly created or modified.
+fn write_or_update_source_file(
+    path: &std::path::Path,
+    default_ini: &str,
+    updates: &[(&str, &str, &str)],
+) -> bool {
+    let kf = gtk::glib::KeyFile::new();
+    let loaded = if path.exists() {
+        kf.load_from_file(path, gtk::glib::KeyFileFlags::NONE).is_ok()
+    } else {
+        false
+    };
+    if !loaded {
+        let _ = kf.load_from_data(default_ini, gtk::glib::KeyFileFlags::NONE);
+        for &(group, key, val) in updates {
+            kf.set_string(group, key, val);
+        }
+        let data = kf.to_data();
+        let _ = fs::write(path, data.as_str());
+        return true;
+    }
+
+    let mut any_key_changed = false;
+    for &(group, key, val) in updates {
+        match kf.string(group, key) {
+            Ok(existing_val) if existing_val.as_str() == val => {}
+            _ => {
+                any_key_changed = true;
+                kf.set_string(group, key, val);
+            }
+        }
+    }
+    if !any_key_changed {
+        return false;
+    }
+
+    let data = kf.to_data();
+    let _ = fs::write(path, data.as_str());
+    true
+}
+
+/// Sanitize an Exchange Offline Address Book (OAB) URL.
+///
+/// In Microsoft Exchange, a valid OAB download URL requires the specific OAB GUID
+/// subfolder (e.g. `https://server/OAB/6b268f77-508b-4fc4-8fe4-c7fc01f46ad0/`).
+/// If only `https://server/OAB/` or an empty string is provided, `evolution-ews`
+/// will attempt to download `/OAB/oab.xml` which fails with HTTP 403/404 because
+/// directory listing is disabled on IIS. Leaving `Oaburl` empty is the standard
+/// configuration in Evolution: EWS queries the Global Address List (GAL) live directly
+/// over EWS SOAP requests (`ResolveNames`/`FindPeople`) without error.
+pub fn sanitize_oab_url(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    let lower = trimmed.to_lowercase();
+    if let Some(pos) = lower.rfind("/oab") {
+        let remainder = trimmed[pos + 4..].trim_matches('/');
+        // If there's no GUID or subpath after /OAB/ (empty or just slashes), it's invalid
+        if remainder.is_empty() {
+            return String::new();
+        }
+    }
+    trimmed.to_string()
+}
+
+/// Returns the authoritative mail source UID recognized by EDS and Camel.
+pub fn sync_profile_to_eds(
+    profile: &AccountProfile,
+    password: Option<&str>,
+) -> Result<String, String> {
+    if matches!(profile.protocol, AccountProtocol::Goa) {
+        return Ok(profile.id.clone());
+    }
+
+    let parent_uid = eds_source_uid_for_email(&profile.email);
+    let mail_uid = format!("{}-mail", parent_uid);
+    let identity_uid = format!("{}-identity", parent_uid);
+    let transport_uid = format!("{}-transport", parent_uid);
+
+    let sources_dir = gtk::glib::user_config_dir().join("evolution").join("sources");
+    if let Err(err) = fs::create_dir_all(&sources_dir) {
+        return Err(format!("Verzeichnis {} konnte nicht erstellt werden: {}", sources_dir.display(), err));
+    }
+    let mut files_changed = false;
+
+    match profile.protocol {
+        AccountProtocol::Exchange => {
+            let host_url = if profile.imap_host.trim().is_empty() {
+                format!("https://{}/EWS/Exchange.asmx", profile.email.split('@').nth(1).unwrap_or("localhost"))
+            } else if profile.imap_host.starts_with("http://") || profile.imap_host.starts_with("https://") {
+                profile.imap_host.trim().to_string()
+            } else {
+                format!("https://{}/EWS/Exchange.asmx", profile.imap_host.trim())
+            };
+
+            let auth_host = host_url
+                .split("://")
+                .nth(1)
+                .unwrap_or(&host_url)
+                .split('/')
+                .next()
+                .unwrap_or(&host_url)
+                .split(':')
+                .next()
+                .unwrap_or(&host_url);
+
+            let auth_method = match profile.auth_method.trim() {
+                "Basic" | "basic" => "plain/password",
+                _ => "ntlm/password",
+            };
+
+            let oab_url = sanitize_oab_url(&profile.oab_url);
+
+            let username = if profile.username.trim().is_empty() {
+                &profile.email
+            } else {
+                profile.username.trim()
+            };
+
+            let parent_ini = format!(
+                "[Data Source]\nDisplayName={display_name}\nEnabled={enabled}\nParent=\n\n\
+                 [Authentication]\nHost={auth_host}\nMethod={auth_method}\nPort=443\nUser={username}\nRememberPassword=true\n\n\
+                 [Security]\nMethod=none\n\n\
+                 [Collection]\nBackendName=ews\nIdentity={username}\nMailEnabled=true\nCalendarEnabled=true\nContactsEnabled=true\n\n\
+                 [Ews Backend]\nEmail={email}\nHosturl={host_url}\nOaburl={oab_url}\nCheckAll={check_all}\nFilterInbox=true\nListenNotifications=true\nTimeout=30\n",
+                display_name = profile.display_name,
+                enabled = profile.enabled,
+                auth_host = auth_host,
+                auth_method = auth_method,
+                username = username,
+                email = profile.email,
+                host_url = host_url,
+                oab_url = oab_url,
+                check_all = profile.check_all_folders,
+            );
+
+            let mail_ini = format!(
+                "[Data Source]\nDisplayName={display_name}\nEnabled={enabled}\nParent={parent_uid}\n\n\
+                 [Mail Account]\nBackendName=ews\nIdentityUid={identity_uid}\nNeedsInitialSetup=false\n\n\
+                 [Refresh]\nEnabled=true\nIntervalMinutes={interval}\n",
+                display_name = profile.display_name,
+                enabled = profile.enabled,
+                parent_uid = parent_uid,
+                identity_uid = identity_uid,
+                interval = profile.check_interval_minutes.max(1),
+            );
+
+            let identity_ini = format!(
+                "[Data Source]\nDisplayName={display_name}\nEnabled={enabled}\nParent={parent_uid}\n\n\
+                 [Mail Identity]\nAddress={email}\nName={display_name}\nOrganization={org}\nReplyTo={reply_to}\nSignatureUid=none\n\n\
+                 [Mail Submission]\nTransportUid={transport_uid}\nRepliesToOriginFolder=false\nUseSentFolder=true\n\n\
+                 [Mail Composition]\n",
+                display_name = profile.display_name,
+                enabled = profile.enabled,
+                parent_uid = parent_uid,
+                email = profile.email,
+                org = profile.organization,
+                reply_to = profile.reply_to,
+                transport_uid = transport_uid,
+            );
+
+            let transport_ini = format!(
+                "[Data Source]\nDisplayName={display_name}\nEnabled={enabled}\nParent={parent_uid}\n\n\
+                 [Mail Transport]\nBackendName=ews\n",
+                display_name = profile.display_name,
+                enabled = profile.enabled,
+                parent_uid = parent_uid,
+            );
+
+            let parent_path = sources_dir.join(format!("{}.source", parent_uid));
+            let mail_path = sources_dir.join(format!("{}.source", mail_uid));
+            let identity_path = sources_dir.join(format!("{}.source", identity_uid));
+            let transport_path = sources_dir.join(format!("{}.source", transport_uid));
+
+            let enabled_str = if profile.enabled { "true" } else { "false" };
+            let check_all_str = if profile.check_all_folders { "true" } else { "false" };
+            let interval_str = profile.check_interval_minutes.max(1).to_string();
+
+            files_changed |= write_or_update_source_file(
+                &parent_path,
+                &parent_ini,
+                &[
+                    ("Data Source", "DisplayName", &profile.display_name),
+                    ("Data Source", "Enabled", enabled_str),
+                    ("Authentication", "Host", auth_host),
+                    ("Authentication", "Method", auth_method),
+                    ("Authentication", "User", username),
+                    ("Authentication", "RememberPassword", "true"),
+                    ("Collection", "BackendName", "ews"),
+                    ("Collection", "Identity", username),
+                    ("Ews Backend", "Email", &profile.email),
+                    ("Ews Backend", "Hosturl", &host_url),
+                    ("Ews Backend", "Oaburl", &oab_url),
+                    ("Ews Backend", "CheckAll", check_all_str),
+                ],
+            );
+            files_changed |= write_or_update_source_file(
+                &mail_path,
+                &mail_ini,
+                &[
+                    ("Data Source", "DisplayName", &profile.display_name),
+                    ("Data Source", "Enabled", enabled_str),
+                    ("Mail Account", "BackendName", "ews"),
+                    ("Mail Account", "IdentityUid", &identity_uid),
+                    ("Refresh", "IntervalMinutes", &interval_str),
+                ],
+            );
+            files_changed |= write_or_update_source_file(
+                &identity_path,
+                &identity_ini,
+                &[
+                    ("Data Source", "DisplayName", &profile.display_name),
+                    ("Data Source", "Enabled", enabled_str),
+                    ("Mail Identity", "Address", &profile.email),
+                    ("Mail Identity", "Name", &profile.display_name),
+                    ("Mail Identity", "Organization", &profile.organization),
+                    ("Mail Identity", "ReplyTo", &profile.reply_to),
+                    ("Mail Submission", "TransportUid", &transport_uid),
+                ],
+            );
+            files_changed |= write_or_update_source_file(
+                &transport_path,
+                &transport_ini,
+                &[
+                    ("Data Source", "DisplayName", &profile.display_name),
+                    ("Data Source", "Enabled", enabled_str),
+                    ("Mail Transport", "BackendName", "ews"),
+                ],
+            );
+        }
+        AccountProtocol::ImapSmtp | AccountProtocol::Pop3 => {
+            let is_pop = profile.protocol == AccountProtocol::Pop3;
+            let backend = if is_pop { "pop3" } else { "imapx" };
+            let auth_method = if profile.auth_method.trim().is_empty() {
+                "password"
+            } else {
+                profile.auth_method.trim()
+            };
+            let username = if profile.username.trim().is_empty() {
+                &profile.email
+            } else {
+                profile.username.trim()
+            };
+            let sec_method = match profile.tls_mode.as_str() {
+                "starttls" => "starttls",
+                "none" => "none",
+                _ => "ssl",
+            };
+
+            let parent_ini = format!(
+                "[Data Source]\nDisplayName={display_name}\nEnabled={enabled}\nParent=\n\n\
+                 [Authentication]\nHost={imap_host}\nMethod={auth_method}\nPort={imap_port}\nProxyUid=system-proxy\nRememberPassword=true\nUser={username}\nCredentialName=\nIsExternal=false\n\n\
+                 [Security]\nMethod={sec_method}\n",
+                display_name = profile.display_name,
+                enabled = profile.enabled,
+                imap_host = profile.imap_host,
+                auth_method = auth_method,
+                imap_port = profile.imap_port,
+                username = username,
+                sec_method = sec_method,
+            );
+
+            let mail_ini = format!(
+                "[Data Source]\nDisplayName={display_name}\nEnabled={enabled}\nParent={parent_uid}\n\n\
+                 [Mail Account]\nBackendName={backend}\nIdentityUid={identity_uid}\nNeedsInitialSetup=false\n\n\
+                 [Refresh]\nEnabled=true\nIntervalMinutes={interval}\n",
+                display_name = profile.display_name,
+                enabled = profile.enabled,
+                parent_uid = parent_uid,
+                backend = backend,
+                identity_uid = identity_uid,
+                interval = profile.check_interval_minutes.max(1),
+            );
+
+            let identity_ini = format!(
+                "[Data Source]\nDisplayName={display_name}\nEnabled={enabled}\nParent={parent_uid}\n\n\
+                 [Mail Identity]\nAddress={email}\nName={display_name}\nOrganization={org}\nReplyTo={reply_to}\nSignatureUid=none\n\n\
+                 [Mail Submission]\nTransportUid={transport_uid}\nRepliesToOriginFolder=false\nUseSentFolder=true\n\n\
+                 [Mail Composition]\n",
+                display_name = profile.display_name,
+                enabled = profile.enabled,
+                parent_uid = parent_uid,
+                email = profile.email,
+                org = profile.organization,
+                reply_to = profile.reply_to,
+                transport_uid = transport_uid,
+            );
+
+            let transport_ini = format!(
+                "[Data Source]\nDisplayName={display_name}\nEnabled={enabled}\nParent={parent_uid}\n\n\
+                 [Mail Transport]\nBackendName=smtp\n\n\
+                 [Authentication]\nHost={smtp_host}\nMethod={auth_method}\nPort={smtp_port}\nUser={username}\n\n\
+                 [Security]\nMethod={sec_method}\n",
+                display_name = profile.display_name,
+                enabled = profile.enabled,
+                parent_uid = parent_uid,
+                smtp_host = profile.smtp_host,
+                auth_method = auth_method,
+                smtp_port = profile.smtp_port,
+                username = username,
+                sec_method = sec_method,
+            );
+
+            let parent_path = sources_dir.join(format!("{}.source", parent_uid));
+            let mail_path = sources_dir.join(format!("{}.source", mail_uid));
+            let identity_path = sources_dir.join(format!("{}.source", identity_uid));
+            let transport_path = sources_dir.join(format!("{}.source", transport_uid));
+
+            let enabled_str = if profile.enabled { "true" } else { "false" };
+            let interval_str = profile.check_interval_minutes.max(1).to_string();
+            let port_str = profile.imap_port.to_string();
+            let smtp_port_str = profile.smtp_port.to_string();
+
+            files_changed |= write_or_update_source_file(
+                &parent_path,
+                &parent_ini,
+                &[
+                    ("Data Source", "DisplayName", &profile.display_name),
+                    ("Data Source", "Enabled", enabled_str),
+                    ("Authentication", "Host", &profile.imap_host),
+                    ("Authentication", "Method", auth_method),
+                    ("Authentication", "Port", &port_str),
+                    ("Authentication", "User", username),
+                    ("Authentication", "RememberPassword", "true"),
+                    ("Security", "Method", sec_method),
+                ],
+            );
+            files_changed |= write_or_update_source_file(
+                &mail_path,
+                &mail_ini,
+                &[
+                    ("Data Source", "DisplayName", &profile.display_name),
+                    ("Data Source", "Enabled", enabled_str),
+                    ("Mail Account", "BackendName", backend),
+                    ("Mail Account", "IdentityUid", &identity_uid),
+                    ("Refresh", "IntervalMinutes", &interval_str),
+                ],
+            );
+            files_changed |= write_or_update_source_file(
+                &identity_path,
+                &identity_ini,
+                &[
+                    ("Data Source", "DisplayName", &profile.display_name),
+                    ("Data Source", "Enabled", enabled_str),
+                    ("Mail Identity", "Address", &profile.email),
+                    ("Mail Identity", "Name", &profile.display_name),
+                    ("Mail Identity", "Organization", &profile.organization),
+                    ("Mail Identity", "ReplyTo", &profile.reply_to),
+                    ("Mail Submission", "TransportUid", &transport_uid),
+                ],
+            );
+            files_changed |= write_or_update_source_file(
+                &transport_path,
+                &transport_ini,
+                &[
+                    ("Data Source", "DisplayName", &profile.display_name),
+                    ("Data Source", "Enabled", enabled_str),
+                    ("Mail Transport", "BackendName", "smtp"),
+                    ("Authentication", "Host", &profile.smtp_host),
+                    ("Authentication", "Method", auth_method),
+                    ("Authentication", "Port", &smtp_port_str),
+                    ("Authentication", "User", username),
+                    ("Security", "Method", sec_method),
+                ],
+            );
+        }
+        AccountProtocol::Goa => {}
+    }
+
+    // Trigger EDS SourceManager reload via D-Bus only if sources actually changed
+    if files_changed {
+        #[cfg(target_os = "linux")]
+        {
+            if let Ok(bus) = gtk::gio::bus_get_sync(gtk::gio::BusType::Session, gtk::gio::Cancellable::NONE) {
+                let _ = bus.call_sync(
+                    Some("org.gnome.evolution.dataserver.Sources5"),
+                    "/org/gnome/evolution/dataserver/SourceManager",
+                    "org.gnome.evolution.dataserver.SourceManager",
+                    "Reload",
+                    None,
+                    None,
+                    gtk::gio::DBusCallFlags::NONE,
+                    2000,
+                    gtk::gio::Cancellable::NONE,
+                );
+            }
+        }
+    }
+
+    // Store credentials in Secret Service if password provided
+    if let Some(pw) = password {
+        if !pw.is_empty() {
+            let _ = crate::services::camel_mail_service::store_source_password(&parent_uid, pw);
+            let _ = crate::services::camel_mail_service::store_source_password(&mail_uid, pw);
+        }
+    }
+
+    if files_changed {
+        tracing::info!(email = %profile.email, parent_uid = %parent_uid, "EDS sources written and reloaded");
+    } else {
+        tracing::debug!(email = %profile.email, parent_uid = %parent_uid, "EDS sources already up to date");
+    }
+    Ok(mail_uid)
+}
+
+/// Ensure all accounts in the local store have corresponding EDS sources.
+pub fn ensure_profiles_synced_to_eds() {
+    std::thread::spawn(|| {
+        let store = AccountConfigStore::default();
+        let accounts = store.load();
+        for account in &accounts {
+            if matches!(account.protocol, AccountProtocol::Goa) {
+                continue;
+            }
+            let _ = sync_profile_to_eds(account, None);
+        }
+    });
+}
+
+
 /// Repair an app-owned default only when the profile just mutated owns that
 /// exact ID. External EDS/GOA defaults are opaque here and must remain intact.
 pub fn reconciled_local_default_account(
@@ -538,6 +975,86 @@ mod tests {
         assert_eq!(
             reconciled_local_default_account("disabled", "disabled", &[]),
             ""
+        );
+    }
+
+    #[test]
+    fn test_write_or_update_source_file_preserves_custom_keys() {
+        let root = temporary_directory("source-file-preservation");
+        let path = root.join("test.source");
+
+        let existing = "[Data Source]\nDisplayName=Old Name\n\n[Ews Backend]\nGalUid=custom-gal-123\nHosturl=https://old.host/ews\n";
+        fs::write(&path, existing).expect("should write initial source");
+
+        write_or_update_source_file(
+            &path,
+            "",
+            &[
+                ("Data Source", "DisplayName", "New Name"),
+                ("Authentication", "User", "domain\\user"),
+                ("Ews Backend", "Hosturl", "https://new.host/ews"),
+            ],
+        );
+
+        let updated = fs::read_to_string(&path).expect("should read updated source");
+        assert!(updated.contains("DisplayName=New Name"));
+        assert!(updated.contains("GalUid=custom-gal-123"), "GalUid must be preserved");
+        assert!(updated.contains("Hosturl=https://new.host/ews"));
+
+        // Verify KeyFile reads back the unescaped domain user correctly
+        let kf = gtk::glib::KeyFile::new();
+        kf.load_from_file(&path, gtk::glib::KeyFileFlags::NONE).expect("should parse keyfile");
+        assert_eq!(kf.string("Authentication", "User").unwrap().as_str(), "domain\\user");
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn test_write_or_update_source_file_detects_changes() {
+        let root = temporary_directory("source-file-change-detection");
+        let path = root.join("test.source");
+
+        // Initial creation should return true
+        let changed = write_or_update_source_file(
+            &path,
+            "[Data Source]\nDisplayName=Test\n",
+            &[("Data Source", "DisplayName", "Initial")],
+        );
+        assert!(changed, "First creation must report changed = true");
+
+        // Subsequent update with the same parameters should return false
+        let changed_again = write_or_update_source_file(
+            &path,
+            "[Data Source]\nDisplayName=Test\n",
+            &[("Data Source", "DisplayName", "Initial")],
+        );
+        assert!(!changed_again, "No modification must report changed = false");
+
+        // Subsequent update with changed parameter should return true
+        let changed_modified = write_or_update_source_file(
+            &path,
+            "[Data Source]\nDisplayName=Test\n",
+            &[("Data Source", "DisplayName", "Modified")],
+        );
+        assert!(changed_modified, "Modification must report changed = true");
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn test_sanitize_oab_url() {
+        assert_eq!(sanitize_oab_url(""), "");
+        assert_eq!(sanitize_oab_url("   "), "");
+        assert_eq!(sanitize_oab_url("https://mail.example.com/OAB/"), "");
+        assert_eq!(sanitize_oab_url("https://mail.example.com/OAB"), "");
+        assert_eq!(sanitize_oab_url("https://mail.example.com/oab//"), "");
+        assert_eq!(
+            sanitize_oab_url("https://mail.example.com/OAB/6b268f77-508b-4fc4-8fe4-c7fc01f46ad0/"),
+            "https://mail.example.com/OAB/6b268f77-508b-4fc4-8fe4-c7fc01f46ad0/"
+        );
+        assert_eq!(
+            sanitize_oab_url("https://mail.example.com/OAB/6b268f77-508b-4fc4-8fe4-c7fc01f46ad0"),
+            "https://mail.example.com/OAB/6b268f77-508b-4fc4-8fe4-c7fc01f46ad0"
         );
     }
 
