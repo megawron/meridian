@@ -176,6 +176,49 @@ impl HtmlEditor {
         self.evaluate_or_queue(script);
     }
 
+    /// Replace an existing signature in the DOM or insert a new one.
+    /// If `signature_html` is empty, any existing signature element is removed.
+    pub fn replace_or_insert_signature(&self, signature_html: &str, top_signature: bool) {
+        let trimmed = signature_html.trim();
+        let is_empty = trimmed.is_empty();
+        let safe_html = if is_empty {
+            String::new()
+        } else {
+            crate::services::html_sanitizer::sanitize_html(trimmed)
+        };
+        let Ok(encoded) = serde_json::to_string(&safe_html) else {
+            return;
+        };
+        let script = format!(
+            r#"(function() {{
+    const el = document.getElementById('_evolution_signature_') || document.querySelector('.evolution-signature');
+    const isEmpty = {is_empty};
+    if (isEmpty) {{
+        if (el) {{
+            el.remove();
+        }}
+        return;
+    }}
+    const temp = document.createElement('div');
+    temp.innerHTML = {encoded};
+    const newSig = temp.firstElementChild || temp;
+    if (el) {{
+        el.replaceWith(newSig);
+    }} else {{
+        if ({top_signature}) {{
+            document.body.prepend(newSig);
+        }} else {{
+            const br = document.createElement('p');
+            br.innerHTML = '<br>';
+            document.body.appendChild(br);
+            document.body.appendChild(newSig);
+        }}
+    }}
+}})();"#
+        );
+        self.evaluate_or_queue(script);
+    }
+
     pub fn plain_text_mode(&self) -> bool {
         self.imp().plain_text_mode.get()
     }
@@ -287,13 +330,13 @@ impl HtmlEditor {
         dropdown_format.set_valign(gtk::Align::Center);
 
         let btn_list = gtk::Button::builder()
-            .icon_name("format-list-bulleted-symbolic")
+            .icon_name("view-list-bullet-symbolic")
             .tooltip_text("Aufzählung")
             .css_classes(vec!["flat"])
             .build();
 
         let btn_ordered_list = gtk::Button::builder()
-            .icon_name("format-list-numbered-symbolic")
+            .icon_name("view-list-ordered-symbolic")
             .tooltip_text("Nummerierte Liste")
             .css_classes(vec!["flat"])
             .build();

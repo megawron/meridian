@@ -51,12 +51,20 @@ struct RecipientSuggestion {
     address: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SignatureChoice {
+    pub id: Option<String>,
+    pub name: String,
+    pub html: String,
+}
+
 #[derive(Debug, Clone, Default)]
 struct ComposeIdentity {
     source_uid: String,
     label: String,
     from: String,
     reply_to: String,
+    signature_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -153,6 +161,9 @@ mod imp {
         pub entry_bcc: RefCell<Option<gtk::Entry>>,
         pub entry_subject: RefCell<Option<gtk::Entry>>,
         pub combo_from: RefCell<Option<gtk::DropDown>>,
+        pub combo_signature: RefCell<Option<gtk::DropDown>>,
+        pub signature_choices: RefCell<Vec<SignatureChoice>>,
+        pub suppress_signature_change: Cell<bool>,
         pub row_from_widgets: RefCell<Vec<gtk::Widget>>,
         pub row_reply_to_widgets: RefCell<Vec<gtk::Widget>>,
         pub row_cc_widgets: RefCell<Vec<gtk::Widget>>,
@@ -872,7 +883,7 @@ impl ComposeDialog {
             .map(|settings| settings.composer_show_bcc())
             .unwrap_or(false);
 
-        // From
+        // From & Signature
         let lbl_from = gtk::Label::builder()
             .label("Von:")
             .css_classes(vec!["dim-label"])
@@ -882,7 +893,28 @@ impl ComposeDialog {
         let source_model = gtk::StringList::new(&["Absender werden geladen…"]);
         let combo_from = gtk::DropDown::new(Some(source_model.clone()), None::<&gtk::Expression>);
         combo_from.set_hexpand(true);
-        combo_from.set_visible(show_from);
+
+        let sig_choices = load_signature_choices();
+        let sig_names: Vec<&str> = sig_choices.iter().map(|c| c.name.as_str()).collect();
+        let sig_model = gtk::StringList::new(&sig_names);
+        let combo_signature = gtk::DropDown::new(Some(sig_model), None::<&gtk::Expression>);
+        combo_signature.set_valign(gtk::Align::Center);
+
+        let lbl_signature = gtk::Label::builder()
+            .label("Signatur:")
+            .css_classes(vec!["dim-label"])
+            .valign(gtk::Align::Center)
+            .build();
+
+        let from_row_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(12)
+            .hexpand(true)
+            .visible(show_from)
+            .build();
+        from_row_box.append(&combo_from);
+        from_row_box.append(&lbl_signature);
+        from_row_box.append(&combo_signature);
 
         // Reply-To
         let btn_reply_to = gtk::Button::builder()
@@ -994,7 +1026,7 @@ impl ComposeDialog {
             .build();
 
         form_grid.attach(&lbl_from, 0, 0, 1, 1);
-        form_grid.attach(&combo_from, 1, 0, 1, 1);
+        form_grid.attach(&from_row_box, 1, 0, 1, 1);
         form_grid.attach(&btn_reply_to, 0, 1, 1, 1);
         form_grid.attach(&reply_to_field_widget, 1, 1, 1, 1);
         form_grid.attach(&btn_to, 0, 2, 1, 1);
@@ -1198,9 +1230,13 @@ impl ComposeDialog {
             .entry_subject
             .replace(Some(entry_subject.clone()));
         self.imp().combo_from.replace(Some(combo_from.clone()));
+        self.imp()
+            .combo_signature
+            .replace(Some(combo_signature.clone()));
+        self.imp().signature_choices.replace(sig_choices);
         self.imp().row_from_widgets.replace(vec![
             lbl_from.clone().upcast(),
-            combo_from.clone().upcast(),
+            from_row_box.clone().upcast(),
         ]);
         self.imp().row_reply_to_widgets.replace(vec![
             btn_reply_to.clone().upcast(),
@@ -1248,6 +1284,7 @@ impl ComposeDialog {
             entry_bcc.clone().upcast(),
             entry_subject.clone().upcast(),
             combo_from.clone().upcast(),
+            combo_signature.clone().upcast(),
             html_editor.clone().upcast(),
             btn_plain_text.clone().upcast(),
             btn_request_read_receipt.clone().upcast(),
@@ -1300,6 +1337,34 @@ impl ComposeDialog {
                 }
             }
             dialog.update_sender_dependent_controls(combo.selected());
+            dialog.sync_signature_for_selected_account();
+            dialog.mark_changed();
+        });
+
+        let dialog_for_signature = self.downgrade();
+        combo_signature.connect_selected_notify(move |combo| {
+            let Some(dialog) = dialog_for_signature.upgrade() else {
+                return;
+            };
+            if dialog.imp().suppress_signature_change.get() {
+                return;
+            }
+            let idx = combo.selected() as usize;
+            let choices = dialog.imp().signature_choices.borrow();
+            let Some(choice) = choices.get(idx) else {
+                return;
+            };
+            let top_signature = dialog
+                .imp()
+                .settings
+                .borrow()
+                .as_ref()
+                .map(|s| s.composer_top_signature())
+                .unwrap_or(false);
+            let markup = format_signature_markup(&choice.html);
+            if let Some(editor) = dialog.imp().html_editor.borrow().as_ref() {
+                editor.replace_or_insert_signature(&markup, top_signature);
+            }
             dialog.mark_changed();
         });
 
@@ -2061,10 +2126,18 @@ impl ComposeDialog {
                                 source.display_name, source.backend_name, cache_suffix
                             )
                         };
+                    let local_profiles = AccountConfigStore::default().load();
+                    let matched_sig = local_profiles
+                        .iter()
+                        .find(|p| {
+                            p.id == source.uid || p.email.eq_ignore_ascii_case(&source.display_name)
+                        })
+                        .and_then(|p| p.signature_id.clone());
                     ComposeIdentity {
                         source_uid: source.uid.clone(),
                         from: source.display_name.clone(),
                         label,
+                        signature_id: matched_sig,
                         ..ComposeIdentity::default()
                     }
                 })
@@ -2113,6 +2186,7 @@ impl ComposeDialog {
                     }
                 }
                 dialog.update_sender_dependent_controls(combo_from_for_load.selected());
+                dialog.sync_signature_for_selected_account();
             }
             if names.is_empty() {
                 let message = if discovery.origin == EdsSourceOrigin::Empty {
@@ -2707,8 +2781,18 @@ impl ComposeDialog {
                 let dialog_weak = self.downgrade();
                 let sig_text = sig.text.clone();
                 let sig_format = sig.format.clone();
+                let sig_id = sig.id.clone();
                 sig_action.connect_activate(move |_, _| {
                     if let Some(dialog) = dialog_weak.upgrade() {
+                        if let Some(combo_sig) = dialog.imp().combo_signature.borrow().as_ref() {
+                            let choices = dialog.imp().signature_choices.borrow();
+                            if let Some(pos) =
+                                choices.iter().position(|c| c.id.as_deref() == Some(&sig_id))
+                            {
+                                combo_sig.set_selected(pos as u32);
+                                return;
+                            }
+                        }
                         let html = if sig_format.to_ascii_lowercase().contains("html") {
                             crate::services::html_sanitizer::sanitize_html(sig_text.trim_end())
                         } else {
@@ -3590,13 +3674,98 @@ impl ComposeDialog {
         });
     }
 
-    fn apply_default_signature(&self) {
-        let signature = signature_body_html();
-        if signature.is_empty() {
+    pub(crate) fn sync_signature_for_selected_account(&self) {
+        let Some(combo_from) = self.imp().combo_from.borrow().as_ref().cloned() else {
             return;
+        };
+        let Some(combo_sig) = self.imp().combo_signature.borrow().as_ref().cloned() else {
+            return;
+        };
+        let identity = self.selected_identity(combo_from.selected());
+        let choices = self.imp().signature_choices.borrow();
+        let target_idx = if let Some(sig_id) = identity
+            .signature_id
+            .as_deref()
+            .filter(|s| !s.trim().is_empty())
+        {
+            if sig_id == "default" {
+                choices
+                    .iter()
+                    .position(|c| c.id.as_deref() == Some("default"))
+                    .unwrap_or(0)
+            } else {
+                choices
+                    .iter()
+                    .position(|c| c.id.as_deref() == Some(sig_id))
+                    .unwrap_or(0)
+            }
+        } else if let Some(active_id) = SignatureStore::default().active_id() {
+            choices
+                .iter()
+                .position(|c| c.id.as_deref() == Some(&active_id))
+                .unwrap_or(0)
+        } else if choices.iter().any(|c| c.id.as_deref() == Some("default")) {
+            choices
+                .iter()
+                .position(|c| c.id.as_deref() == Some("default"))
+                .unwrap_or(0)
+        } else {
+            0
+        };
+        if combo_sig.selected() != target_idx as u32 {
+            combo_sig.set_selected(target_idx as u32);
         }
-        if let Some(editor) = self.imp().html_editor.borrow().as_ref() {
-            editor.set_html(&signature);
+    }
+
+    fn apply_default_signature(&self) {
+        let Some(combo_sig) = self.imp().combo_signature.borrow().as_ref().cloned() else {
+            return;
+        };
+        let choices = self.imp().signature_choices.borrow();
+        let append_sig = AppSettings::try_new()
+            .map(|s| s.append_signature())
+            .unwrap_or(true);
+        let active_id = SignatureStore::default().active_id();
+
+        let default_idx = if append_sig {
+            if let Some(active_id) = active_id {
+                choices
+                    .iter()
+                    .position(|c| c.id.as_deref() == Some(&active_id))
+                    .unwrap_or(0)
+            } else if choices.iter().any(|c| c.id.as_deref() == Some("default")) {
+                choices
+                    .iter()
+                    .position(|c| c.id.as_deref() == Some("default"))
+                    .unwrap_or(0)
+            } else if choices.len() > 1 {
+                1
+            } else {
+                0
+            }
+        } else {
+            0
+        };
+
+        self.imp().suppress_signature_change.set(true);
+        combo_sig.set_selected(default_idx as u32);
+        self.imp().suppress_signature_change.set(false);
+
+        if let Some(choice) = choices.get(default_idx) {
+            if !choice.html.is_empty() {
+                let signature = format_signature_markup(&choice.html);
+                let top_signature = AppSettings::try_new()
+                    .map(|s| s.composer_top_signature())
+                    .unwrap_or(false);
+                let initial_html = if top_signature {
+                    format!("{signature}<p><br></p>")
+                } else {
+                    format!("<p><br></p>{signature}")
+                };
+                if let Some(editor) = self.imp().html_editor.borrow().as_ref() {
+                    editor.set_html(&initial_html);
+                }
+            }
         }
     }
 
@@ -4182,11 +4351,13 @@ fn compose_identities_for_profile(profile: AccountProfile) -> Vec<ComposeIdentit
     let primary_address = profile.email.trim().to_string();
     let primary_label = format!("{} <{}> · lokales Profil", display_name, primary_address);
     let primary_from = format!("{} <{}>", display_name, primary_address);
+    let signature_id = profile.signature_id;
     let mut identities = vec![ComposeIdentity {
         source_uid: source_uid.clone(),
         label: primary_label,
         from: primary_from,
         reply_to: reply_to.clone(),
+        signature_id: signature_id.clone(),
     }];
     identities.extend(
         profile
@@ -4202,6 +4373,7 @@ fn compose_identities_for_profile(profile: AccountProfile) -> Vec<ComposeIdentit
                 ),
                 from: format!("{} <{}>", display_name, alias),
                 reply_to: reply_to.clone(),
+                signature_id: signature_id.clone(),
             }),
     );
     identities
@@ -4424,13 +4596,57 @@ fn signature_delimiter_html() -> &'static str {
     }
 }
 
+fn load_signature_choices() -> Vec<SignatureChoice> {
+    let mut choices = vec![SignatureChoice {
+        id: None,
+        name: "Keine".to_string(),
+        html: String::new(),
+    }];
+
+    let store_signatures = SignatureStore::default().load();
+    for sig in store_signatures {
+        let html = if sig.format.to_ascii_lowercase().contains("html") {
+            sanitize_html(sig.text.trim_end())
+        } else {
+            html_escape(sig.text.trim_end()).replace('\n', "<br>")
+        };
+        choices.push(SignatureChoice {
+            id: Some(sig.id),
+            name: sig.name,
+            html,
+        });
+    }
+
+    if let Some(settings) = AppSettings::try_new() {
+        let sig_text = settings.signature_text();
+        if !sig_text.trim().is_empty()
+            && !choices.iter().any(|c| c.id.as_deref() == Some("default"))
+        {
+            choices.push(SignatureChoice {
+                id: Some("default".to_string()),
+                name: "Allgemeine Standardsignatur".to_string(),
+                html: html_escape(sig_text.trim_end()).replace('\n', "<br>"),
+            });
+        }
+    }
+
+    choices
+}
+
+fn format_signature_markup(inner_html: &str) -> String {
+    if inner_html.trim().is_empty() {
+        return String::new();
+    }
+    let delimiter = signature_delimiter_html();
+    format!("<div id=\"_evolution_signature_\" class=\"evolution-signature\"><p>{delimiter}{inner_html}</p></div>")
+}
+
 fn signature_body_html() -> String {
     let signature = default_signature_html();
     if signature.is_empty() {
         String::new()
     } else {
-        let delimiter = signature_delimiter_html();
-        format!("<p><br></p><p>{delimiter}{signature}</p>")
+        format!("<p><br></p>{}", format_signature_markup(&signature))
     }
 }
 
@@ -4439,8 +4655,7 @@ fn signature_prefix_html() -> String {
     if signature.is_empty() {
         "<p><br></p>".to_string()
     } else {
-        let delimiter = signature_delimiter_html();
-        format!("<p>{delimiter}{signature}</p><p><br></p>")
+        format!("{}<p><br></p>", format_signature_markup(&signature))
     }
 }
 
@@ -5949,5 +6164,37 @@ mod tests {
             smime_options: None,
         };
         assert_eq!(outgoing.reply_to, "custom-reply@example.com");
+    }
+
+    #[test]
+    fn format_signature_markup_wraps_in_evolution_signature_container() {
+        let markup = format_signature_markup("Best regards<br>Alice");
+        assert!(markup.contains("id=\"_evolution_signature_\""));
+        assert!(markup.contains("class=\"evolution-signature\""));
+        assert!(markup.contains("Best regards<br>Alice"));
+        assert_eq!(format_signature_markup("   "), "");
+    }
+
+    #[test]
+    fn compose_identities_for_profile_carries_signature_id() {
+        let profile = AccountProfile {
+            id: "work-account".to_string(),
+            display_name: "Alice Worker".to_string(),
+            email: "alice@work.com".to_string(),
+            signature_id: Some("work-sig-123".to_string()),
+            ..AccountProfile::default()
+        };
+        let identities = compose_identities_for_profile(profile);
+        assert!(!identities.is_empty());
+        assert_eq!(identities[0].signature_id.as_deref(), Some("work-sig-123"));
+    }
+
+    #[test]
+    fn signature_choices_always_include_none_as_first_choice() {
+        let choices = load_signature_choices();
+        assert!(!choices.is_empty());
+        assert_eq!(choices[0].name, "Keine");
+        assert_eq!(choices[0].id, None);
+        assert!(choices[0].html.is_empty());
     }
 }
