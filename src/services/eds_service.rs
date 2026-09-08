@@ -39,6 +39,9 @@ pub struct EdsSource {
     pub backend_name: String,
     /// Whether this source is enabled
     pub enabled: bool,
+    /// Parent account or group name (e.g. "Auf diesem Computer", "Kontakte", "user@example.com")
+    #[serde(default)]
+    pub parent_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -191,7 +194,7 @@ fn extract_source(
         std::collections::HashMap<String, zbus::zvariant::OwnedValue>,
     >,
     kind: EdsSourceKind,
-) -> Option<(String, String, String, bool)> {
+) -> Option<(String, String, String, bool, Option<String>)> {
     let uid = source_props
         .get("UID")
         .and_then(value_to_string)
@@ -213,12 +216,18 @@ fn extract_source(
         .and_then(value_to_bool)
         .unwrap_or(true);
 
+    let property_parent = source_props
+        .get("Parent")
+        .and_then(value_to_string)
+        .filter(|s| !s.trim().is_empty());
+
     let Some(data) = source_props.get("Data").and_then(value_to_string) else {
         return kind.matches_interfaces(interfaces).then_some((
             uid,
             property_display_name,
             property_backend_name,
             property_enabled,
+            property_parent,
         ));
     };
 
@@ -228,8 +237,11 @@ fn extract_source(
         property_display_name,
         property_backend_name,
         property_enabled,
+        property_parent,
     )
-    .map(|(display_name, backend_name, enabled)| (uid, display_name, backend_name, enabled))
+    .map(|(display_name, backend_name, enabled, parent)| {
+        (uid, display_name, backend_name, enabled, parent)
+    })
 }
 
 fn parse_source_data(
@@ -238,7 +250,8 @@ fn parse_source_data(
     fallback_display_name: String,
     fallback_backend_name: String,
     fallback_enabled: bool,
-) -> Option<(String, String, bool)> {
+    fallback_parent: Option<String>,
+) -> Option<(String, String, bool, Option<String>)> {
     let key_file = KeyFile::new();
     key_file.load_from_data(data, KeyFileFlags::NONE).ok()?;
 
@@ -266,8 +279,14 @@ fn parse_source_data(
     let enabled = key_file
         .boolean("Data Source", "Enabled")
         .unwrap_or(fallback_enabled);
+    let parent = key_file
+        .string("Data Source", "Parent")
+        .ok()
+        .map(|value| value.to_string())
+        .filter(|value| !value.trim().is_empty())
+        .or(fallback_parent);
 
-    Some((display_name, backend_name, enabled))
+    Some((display_name, backend_name, enabled, parent))
 }
 
 fn sort_sources(sources: &mut [EdsSource]) {
@@ -371,6 +390,36 @@ pub async fn list_mail_sources() -> Result<Vec<EdsSource>, EdsServiceError> {
 /// remain separate adapter layers.
 pub async fn list_sources(kind: EdsSourceKind) -> Result<Vec<EdsSource>, EdsServiceError> {
     let managed_objects = get_eds_managed_objects().await?;
+    let mut display_name_by_uid: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    for (path, interfaces) in &managed_objects {
+        let uid = path
+            .as_str()
+            .rsplit('/')
+            .next()
+            .unwrap_or_default()
+            .to_string();
+        if let Some(source_props) = interfaces.get("org.gnome.evolution.dataserver.Source") {
+            let mut name = source_props
+                .get("DisplayName")
+                .and_then(value_to_string)
+                .unwrap_or_default();
+            if name.is_empty() {
+                if let Some(data) = source_props.get("Data").and_then(value_to_string) {
+                    let kf = KeyFile::new();
+                    if kf.load_from_data(&data, KeyFileFlags::NONE).is_ok() {
+                        if let Ok(dn) = kf.string("Data Source", "DisplayName") {
+                            name = dn.to_string();
+                        }
+                    }
+                }
+            }
+            if !name.is_empty() {
+                display_name_by_uid.insert(uid, name);
+            }
+        }
+    }
+
     let mut sources = Vec::new();
 
     for (path, interfaces) in &managed_objects {
@@ -378,17 +427,27 @@ pub async fn list_sources(kind: EdsSourceKind) -> Result<Vec<EdsSource>, EdsServ
             continue;
         };
 
-        let Some((uid, display_name, backend_name, enabled)) =
+        let Some((uid, display_name, backend_name, enabled, parent)) =
             extract_source(path, source_props, interfaces, kind)
         else {
             continue;
         };
         if !display_name.trim().is_empty() {
+            let parent_name = parent.and_then(|p| {
+                if p == "local-stub" {
+                    Some("Auf diesem Computer".to_string())
+                } else if p == "contacts-stub" {
+                    Some("Kontakte".to_string())
+                } else {
+                    display_name_by_uid.get(&p).cloned().or(Some(p))
+                }
+            });
             sources.push(EdsSource {
                 uid,
                 display_name,
                 backend_name,
                 enabled,
+                parent_name,
             });
         }
     }
@@ -447,6 +506,7 @@ async fn get_goa_mail_accounts() -> Result<Vec<EdsSource>, EdsServiceError> {
                     display_name: format!("{} ({})", identity, provider_name),
                     backend_name: provider_type,
                     enabled: true,
+                    parent_name: Some(identity),
                 });
             }
         }
@@ -503,6 +563,7 @@ async fn get_goa_calendar_accounts() -> Result<Vec<EdsSource>, EdsServiceError> 
                     display_name: format!("{} ({})", identity, provider_name),
                     backend_name: provider_type,
                     enabled: true,
+                    parent_name: Some(identity),
                 });
             }
         }
@@ -694,6 +755,7 @@ mod tests {
             display_name: "Test Account".to_string(),
             backend_name: "imapx".to_string(),
             enabled: true,
+            parent_name: None,
         };
         assert_eq!(source.uid, "test-uid-123");
         assert!(source.enabled);
@@ -713,18 +775,21 @@ mod tests {
                 display_name: "Work".to_string(),
                 backend_name: "imapx".to_string(),
                 enabled: true,
+                parent_name: None,
             },
             EdsSource {
                 uid: "b".to_string(),
                 display_name: "private".to_string(),
                 backend_name: "local".to_string(),
                 enabled: true,
+                parent_name: None,
             },
             EdsSource {
                 uid: "a".to_string(),
                 display_name: "Private".to_string(),
                 backend_name: "local".to_string(),
                 enabled: false,
+                parent_name: None,
             },
         ];
 
@@ -750,8 +815,9 @@ mod tests {
                 "fallback".to_string(),
                 "unknown".to_string(),
                 false,
+                None,
             ),
-            Some(("Domain Account".to_string(), "imapx".to_string(), true))
+            Some(("Domain Account".to_string(), "imapx".to_string(), true, None))
         );
         assert_eq!(
             parse_source_data(
@@ -760,6 +826,7 @@ mod tests {
                 "fallback".to_string(),
                 "unknown".to_string(),
                 false,
+                None,
             ),
             None
         );

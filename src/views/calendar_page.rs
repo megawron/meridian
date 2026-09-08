@@ -917,6 +917,7 @@ mod imp {
         pub calendar_category_model: RefCell<Option<gtk::StringList>>,
         pub calendar_category_selector: RefCell<Option<gtk::DropDown>>,
         pub hidden_calendar_sources: RefCell<HashSet<String>>,
+        pub collapsed_calendar_groups: RefCell<HashSet<String>>,
         pub calendar_source_list: RefCell<Option<gtk::ListBox>>,
         pub calendar_source_state_label: RefCell<Option<gtk::Label>>,
         pub calendar_source_selector: RefCell<crate::models::source_selector::SourceSelector>,
@@ -992,6 +993,7 @@ mod imp {
                 calendar_category_model: RefCell::new(None),
                 calendar_category_selector: RefCell::new(None),
                 hidden_calendar_sources: RefCell::new(HashSet::new()),
+                collapsed_calendar_groups: RefCell::new(HashSet::new()),
                 calendar_source_list: RefCell::new(None),
                 calendar_source_state_label: RefCell::new(None),
                 calendar_source_selector: RefCell::new(
@@ -2201,9 +2203,9 @@ impl CalendarPage {
         });
 
         let source_list = gtk::ListBox::builder()
-            .selection_mode(gtk::SelectionMode::None)
-            .css_classes(vec!["boxed-list"])
-            .margin_top(8)
+            .selection_mode(gtk::SelectionMode::Single)
+            .css_classes(vec!["navigation-sidebar"])
+            .margin_top(4)
             .build();
 
         sidebar_box.append(&source_list);
@@ -3321,6 +3323,10 @@ impl CalendarPage {
             let mut items = Vec::new();
             for source in sources {
                 let color = calendar_source_color(&source.uid, &source.display_name);
+                let group = source
+                    .parent_name
+                    .clone()
+                    .unwrap_or_else(|| "Auf diesem Computer".to_string());
                 items.push(
                     crate::models::source_selector::SourceSelectorItem::new(
                         &source.uid,
@@ -3329,7 +3335,8 @@ impl CalendarPage {
                         source.enabled,
                         source.enabled,
                     )
-                    .with_color(color),
+                    .with_color(color)
+                    .with_group(group),
                 );
             }
             if CalendarStoreService::new().is_writable() {
@@ -3342,7 +3349,8 @@ impl CalendarPage {
                         true,
                         true,
                     )
-                    .with_color(color),
+                    .with_color(color)
+                    .with_group("Auf diesem Computer"),
                 );
             }
 
@@ -3364,191 +3372,221 @@ impl CalendarPage {
             }
 
             let selector = page.imp().calendar_source_selector.borrow().clone();
+            let collapsed_groups = page.imp().collapsed_calendar_groups.borrow().clone();
             let mut displayed_sources = 0usize;
 
-            for item in selector.visible_sources() {
-                let source_uid = item.uid.clone();
-                let escaped_title = glib::markup_escape_text(&item.display_name);
-                let subtitle = if item.enabled { "aktiv" } else { "deaktiviert" };
-                let escaped_subtitle = glib::markup_escape_text(subtitle);
-                let row = adw::ActionRow::builder()
-                    .title(escaped_title.as_str())
-                    .subtitle(escaped_subtitle.as_str())
-                    .title_lines(1)
-                    .subtitle_lines(1)
-                    .use_markup(true)
+            for group in selector.ordered_groups() {
+                if group.is_hidden {
+                    continue;
+                }
+                let group_sources: Vec<_> = selector
+                    .visible_sources()
+                    .into_iter()
+                    .filter(|s| s.group_name == group.name)
+                    .collect();
+
+                if group_sources.is_empty() && !group.is_custom {
+                    continue;
+                }
+
+                let is_collapsed = collapsed_groups.contains(&group.name);
+
+                // Group header row
+                let group_box = gtk::Box::builder()
+                    .orientation(gtk::Orientation::Horizontal)
+                    .spacing(6)
                     .build();
 
-                let check = gtk::CheckButton::builder()
-                    .active(item.enabled && selector.is_selected(&source_uid))
-                    .sensitive(item.enabled)
-                    .valign(gtk::Align::Center)
-                    .tooltip_text("Kalender in den Ansichten ein-/ausblenden")
+                let arrow_icon = if is_collapsed {
+                    "pan-end-symbolic"
+                } else {
+                    "pan-down-symbolic"
+                };
+                let arrow = gtk::Image::from_icon_name(arrow_icon);
+                arrow.add_css_class("dim-label");
+                group_box.append(&arrow);
+
+                let group_label = gtk::Label::builder()
+                    .label(&group.name)
+                    .halign(gtk::Align::Start)
+                    .hexpand(true)
+                    .ellipsize(pango::EllipsizeMode::End)
+                    .build();
+                group_box.append(&group_label);
+
+                let group_row = gtk::ListBoxRow::builder()
+                    .child(&group_box)
+                    .activatable(true)
+                    .selectable(false)
+                    .css_classes(vec!["calendar-sidebar-group-row"])
+                    .tooltip_text(if is_collapsed {
+                        "Gruppe aufklappen"
+                    } else {
+                        "Gruppe einklappen"
+                    })
                     .build();
 
-                let page_weak_for_toggle = page.downgrade();
-                let source_uid_for_toggle = source_uid.clone();
-                check.connect_toggled(move |check| {
-                    let Some(page) = page_weak_for_toggle.upgrade() else {
+                let page_weak_for_group = page.downgrade();
+                let group_name_for_toggle = group.name.clone();
+                let group_gesture = gtk::GestureClick::new();
+                group_gesture.connect_released(move |_, _, _, _| {
+                    let Some(page) = page_weak_for_group.upgrade() else {
                         return;
                     };
-                    {
-                        let mut sel = page.imp().calendar_source_selector.borrow_mut();
-                        sel.set_selected(&source_uid_for_toggle, check.is_active());
-                        if let Some(settings) = AppSettings::try_new() {
-                            sel.save_to_settings(&settings);
-                        }
-                        *page.imp().hidden_calendar_sources.borrow_mut() =
-                            sel.hidden_uids().into_iter().collect();
+                    let mut collapsed = page.imp().collapsed_calendar_groups.borrow_mut();
+                    if collapsed.contains(&group_name_for_toggle) {
+                        collapsed.remove(&group_name_for_toggle);
+                    } else {
+                        collapsed.insert(group_name_for_toggle.clone());
                     }
-                    page.refresh_task_sidebar();
-                    page.refresh_task_and_memo_panes();
-                    page.refresh_calendar_views();
-                    page.refresh_event_list_visibility();
+                    drop(collapsed);
+                    page.reload_calendar_sources();
                 });
+                group_row.add_controller(group_gesture);
+                source_list.append(&group_row);
 
-                if let Some(color) = &item.color {
-                    let color_dot = gtk::Label::new(None);
-                    color_dot.set_markup(&format!("<span foreground=\"{color}\">●</span>"));
-                    color_dot.set_margin_start(4);
-                    color_dot.set_margin_end(2);
-                    row.add_prefix(&color_dot);
-                }
-                row.add_prefix(&check);
-
-                let is_primary = selector.is_primary(&source_uid);
-                if is_primary {
-                    row.add_suffix(&crate::models::source_selector::create_primary_indicator());
+                if is_collapsed {
+                    continue;
                 }
 
-                let page_weak_for_menu = page.downgrade();
-                let source_uid_for_menu = source_uid.clone();
-                let display_name_for_menu = item.display_name.clone();
-                let color_for_menu = item.color.clone().unwrap_or_else(|| "#3584e4".to_string());
-                let menu_btn = crate::models::source_selector::create_source_row_menu_full(
-                    is_primary,
-                    "Kalender",
-                    {
-                        let page_weak = page_weak_for_menu.clone();
-                        let uid = source_uid_for_menu.clone();
-                        move || {
-                            if let Some(page) = page_weak.upgrade() {
-                                page.select_exclusive_calendar_source(&uid);
-                            }
-                        }
-                    },
-                    {
-                        let page_weak = page_weak_for_menu.clone();
-                        move || {
-                            if let Some(page) = page_weak.upgrade() {
-                                page.select_all_calendar_sources();
-                            }
-                        }
-                    },
-                    {
-                        let page_weak = page_weak_for_menu.clone();
-                        let uid = source_uid_for_menu.clone();
-                        move || {
-                            if let Some(page) = page_weak.upgrade() {
-                                page.set_default_calendar_source(&uid);
-                            }
-                        }
-                    },
-                    Some({
-                        let page_weak = page_weak_for_menu.clone();
-                        let uid = source_uid_for_menu.clone();
-                        let name = display_name_for_menu.clone();
-                        let col = color_for_menu.clone();
-                        move || {
-                            if let Some(page) = page_weak.upgrade() {
-                                let root_window = page.root().and_downcast::<gtk::Window>();
-                                let dialog = crate::dialogs::SourcePropertiesDialog::new(
-                                    &uid,
-                                    &name,
-                                    "Kalender",
-                                    &col,
-                                    true,
-                                    is_primary,
-                                );
-                                if let Some(parent) = root_window.as_ref() {
-                                    dialog.set_transient_for(Some(parent));
-                                }
-                                let page_weak_save = page.downgrade();
-                                dialog.set_on_save(move |update| {
-                                    if let Some(page) = page_weak_save.upgrade() {
-                                        {
-                                            let mut sel =
-                                                page.imp().calendar_source_selector.borrow_mut();
-                                            sel.update_source_metadata(
-                                                &update.source_uid,
-                                                &update.display_name,
-                                                Some(&update.color),
-                                                update.is_default,
-                                            );
-                                            if let Some(settings) = AppSettings::try_new() {
-                                                sel.save_to_settings(&settings);
-                                                if update.is_default {
-                                                    settings.set_default_calendar_source_uid(
-                                                        &update.source_uid,
-                                                    );
-                                                }
-                                            }
-                                        }
-                                        page.reload_calendar_sources();
-                                        page.refresh_task_sidebar();
-                                        page.refresh_task_and_memo_panes();
-                                        page.refresh_calendar_views();
-                                        page.refresh_event_list_visibility();
-                                    }
-                                });
-                                dialog.present();
-                            }
-                        }
-                    }),
-                    Some({
-                        let page_weak = page_weak_for_menu.clone();
-                        move || {
-                            if let Some(page) = page_weak.upgrade() {
-                                let root_window = page.root().and_downcast::<gtk::Window>();
-                                let current_sel =
-                                    page.imp().calendar_source_selector.borrow().clone();
-                                let page_weak_save = page.downgrade();
-                                let dialog = crate::dialogs::ManageGroupsDialog::new(
-                                    root_window.as_ref(),
-                                    "Kalender",
-                                    &current_sel,
-                                    move |updated_selector| {
-                                        if let Some(page) = page_weak_save.upgrade() {
-                                            {
-                                                let mut sel = page
-                                                    .imp()
-                                                    .calendar_source_selector
-                                                    .borrow_mut();
-                                                *sel = updated_selector;
-                                                sel.deselect_sources_in_hidden_groups();
-                                                if let Some(settings) = AppSettings::try_new() {
-                                                    sel.save_to_settings(&settings);
-                                                }
-                                                *page.imp().hidden_calendar_sources.borrow_mut() =
-                                                    sel.hidden_uids().into_iter().collect();
-                                            }
-                                            page.reload_calendar_sources();
-                                            page.refresh_task_sidebar();
-                                            page.refresh_task_and_memo_panes();
-                                            page.refresh_calendar_views();
-                                            page.refresh_event_list_visibility();
-                                        }
-                                    },
-                                );
-                                dialog.present();
-                            }
-                        }
-                    }),
-                );
-                row.add_suffix(&menu_btn);
+                for item in group_sources {
+                    let source_uid = item.uid.clone();
+                    let is_primary = selector.is_primary(&source_uid);
+                    let color_hex = item.color.clone().unwrap_or_else(|| "#3584e4".to_string());
 
-                source_list.append(&row);
-                displayed_sources += 1;
+                    let child_box = gtk::Box::builder()
+                        .orientation(gtk::Orientation::Horizontal)
+                        .spacing(6)
+                        .margin_start(16)
+                        .build();
+
+                    // 1. Color chip
+                    let color_chip = gtk::DrawingArea::builder()
+                        .content_width(14)
+                        .content_height(14)
+                        .valign(gtk::Align::Center)
+                        .halign(gtk::Align::Center)
+                        .css_classes(vec!["calendar-color-chip"])
+                        .build();
+                    let rgba = gtk::gdk::RGBA::parse(&color_hex)
+                        .unwrap_or_else(|_| gtk::gdk::RGBA::new(0.2, 0.5, 0.9, 1.0));
+                    color_chip.set_draw_func(move |_, cr, width, height| {
+                        cr.set_source_rgba(
+                            rgba.red() as f64,
+                            rgba.green() as f64,
+                            rgba.blue() as f64,
+                            rgba.alpha() as f64,
+                        );
+                        let r = 3.0;
+                        let w = width as f64;
+                        let h = height as f64;
+                        cr.new_sub_path();
+                        cr.arc(w - r, r, r, -std::f64::consts::FRAC_PI_2, 0.0);
+                        cr.arc(w - r, h - r, r, 0.0, std::f64::consts::FRAC_PI_2);
+                        cr.arc(r, h - r, r, std::f64::consts::FRAC_PI_2, std::f64::consts::PI);
+                        cr.arc(r, r, r, std::f64::consts::PI, 3.0 * std::f64::consts::FRAC_PI_2);
+                        cr.close_path();
+                        let _ = cr.fill();
+                    });
+                    child_box.append(&color_chip);
+
+                    // 2. Checkbox
+                    let check = gtk::CheckButton::builder()
+                        .active(item.enabled && selector.is_selected(&source_uid))
+                        .sensitive(item.enabled)
+                        .valign(gtk::Align::Center)
+                        .tooltip_text("Kalender in den Ansichten ein-/ausblenden")
+                        .build();
+
+                    let page_weak_for_toggle = page.downgrade();
+                    let source_uid_for_toggle = source_uid.clone();
+                    check.connect_toggled(move |check| {
+                        let Some(page) = page_weak_for_toggle.upgrade() else {
+                            return;
+                        };
+                        {
+                            let mut sel = page.imp().calendar_source_selector.borrow_mut();
+                            sel.set_selected(&source_uid_for_toggle, check.is_active());
+                            if let Some(settings) = AppSettings::try_new() {
+                                sel.save_to_settings(&settings);
+                            }
+                            *page.imp().hidden_calendar_sources.borrow_mut() =
+                                sel.hidden_uids().into_iter().collect();
+                        }
+                        page.refresh_task_sidebar();
+                        page.refresh_task_and_memo_panes();
+                        page.refresh_calendar_views();
+                        page.refresh_event_list_visibility();
+                    });
+                    child_box.append(&check);
+
+                    // 3. Label
+                    let label = gtk::Label::builder()
+                        .label(&item.display_name)
+                        .halign(gtk::Align::Start)
+                        .hexpand(true)
+                        .ellipsize(pango::EllipsizeMode::End)
+                        .build();
+                    child_box.append(&label);
+
+                    // 4. Primary indicator
+                    if is_primary {
+                        let primary_ind =
+                            crate::models::source_selector::create_primary_indicator();
+                        primary_ind.set_valign(gtk::Align::Center);
+                        child_box.append(&primary_ind);
+                    }
+
+                    // 5. Remote sync icon
+                    if item.backend_name != "local" && source_uid != "local-calendar" {
+                        let sync_icon =
+                            gtk::Image::from_icon_name("media-playlist-repeat-symbolic");
+                        sync_icon.add_css_class("dim-label");
+                        sync_icon.set_tooltip_text(Some("Synchronisierter Kalender"));
+                        sync_icon.set_valign(gtk::Align::Center);
+                        child_box.append(&sync_icon);
+                    }
+
+                    let row = gtk::ListBoxRow::builder()
+                        .child(&child_box)
+                        .activatable(true)
+                        .selectable(true)
+                        .css_classes(vec!["calendar-sidebar-child-row"])
+                        .build();
+
+                    let page_weak_for_menu = page.downgrade();
+                    let source_uid_for_menu = source_uid.clone();
+                    let display_name_for_menu = item.display_name.clone();
+                    let color_for_menu = color_hex.clone();
+                    let is_writable = item.writable;
+                    let source_list_weak = source_list.downgrade();
+
+                    let right_click = gtk::GestureClick::builder()
+                        .button(gdk::BUTTON_SECONDARY)
+                        .build();
+                    right_click.connect_pressed(move |gesture, _, x, y| {
+                        gesture.set_state(gtk::EventSequenceState::Claimed);
+                        let (Some(page), Some(list)) =
+                            (page_weak_for_menu.upgrade(), source_list_weak.upgrade())
+                        else {
+                            return;
+                        };
+                        page.present_calendar_source_context_menu(
+                            &list,
+                            x,
+                            y,
+                            &source_uid_for_menu,
+                            &display_name_for_menu,
+                            &color_for_menu,
+                            is_writable,
+                            is_primary,
+                        );
+                    });
+                    row.add_controller(right_click);
+
+                    source_list.append(&row);
+                    displayed_sources += 1;
+                }
             }
 
             if let Some(state_lbl) = calendar_state {
@@ -3564,6 +3602,152 @@ impl CalendarPage {
                 }
             }
         });
+    }
+
+    pub(crate) fn present_calendar_source_context_menu(
+        &self,
+        parent: &impl IsA<gtk::Widget>,
+        x: f64,
+        y: f64,
+        source_uid: &str,
+        display_name: &str,
+        color: &str,
+        is_writable: bool,
+        is_primary: bool,
+    ) {
+        let page_weak = self.downgrade();
+        let uid_excl = source_uid.to_string();
+        let on_exclusive = {
+            let page_weak = page_weak.clone();
+            let uid = uid_excl;
+            move || {
+                if let Some(page) = page_weak.upgrade() {
+                    page.select_exclusive_calendar_source(&uid);
+                }
+            }
+        };
+
+        let on_select_all = {
+            let page_weak = page_weak.clone();
+            move || {
+                if let Some(page) = page_weak.upgrade() {
+                    page.select_all_calendar_sources();
+                }
+            }
+        };
+
+        let uid_def = source_uid.to_string();
+        let on_set_default = {
+            let page_weak = page_weak.clone();
+            let uid = uid_def;
+            move || {
+                if let Some(page) = page_weak.upgrade() {
+                    page.set_default_calendar_source(&uid);
+                }
+            }
+        };
+
+        let uid_props = source_uid.to_string();
+        let name_props = display_name.to_string();
+        let col_props = color.to_string();
+        let on_properties = Some({
+            let page_weak = page_weak.clone();
+            move || {
+                if let Some(page) = page_weak.upgrade() {
+                    let root_window = page.root().and_downcast::<gtk::Window>();
+                    let dialog = crate::dialogs::SourcePropertiesDialog::new(
+                        &uid_props,
+                        &name_props,
+                        "Kalender",
+                        &col_props,
+                        is_writable,
+                        is_primary,
+                    );
+                    if let Some(parent) = root_window.as_ref() {
+                        dialog.set_transient_for(Some(parent));
+                    }
+                    let page_weak_save = page.downgrade();
+                    dialog.set_on_save(move |update| {
+                        if let Some(page) = page_weak_save.upgrade() {
+                            {
+                                let mut sel = page.imp().calendar_source_selector.borrow_mut();
+                                sel.update_source_metadata(
+                                    &update.source_uid,
+                                    &update.display_name,
+                                    Some(&update.color),
+                                    update.is_default,
+                                );
+                                if let Some(settings) = AppSettings::try_new() {
+                                    sel.save_to_settings(&settings);
+                                    if update.is_default {
+                                        settings
+                                            .set_default_calendar_source_uid(&update.source_uid);
+                                    }
+                                }
+                            }
+                            page.reload_calendar_sources();
+                            page.refresh_task_sidebar();
+                            page.refresh_task_and_memo_panes();
+                            page.refresh_calendar_views();
+                            page.refresh_event_list_visibility();
+                        }
+                    });
+                    dialog.present();
+                }
+            }
+        });
+
+        let on_manage_groups = Some({
+            let page_weak = page_weak.clone();
+            move || {
+                if let Some(page) = page_weak.upgrade() {
+                    let root_window = page.root().and_downcast::<gtk::Window>();
+                    let current_sel = page.imp().calendar_source_selector.borrow().clone();
+                    let page_weak_save = page.downgrade();
+                    let dialog = crate::dialogs::ManageGroupsDialog::new(
+                        root_window.as_ref(),
+                        "Kalender",
+                        &current_sel,
+                        move |updated_selector| {
+                            if let Some(page) = page_weak_save.upgrade() {
+                                {
+                                    let mut sel = page.imp().calendar_source_selector.borrow_mut();
+                                    *sel = updated_selector;
+                                    sel.deselect_sources_in_hidden_groups();
+                                    if let Some(settings) = AppSettings::try_new() {
+                                        sel.save_to_settings(&settings);
+                                    }
+                                    *page.imp().hidden_calendar_sources.borrow_mut() =
+                                        sel.hidden_uids().into_iter().collect();
+                                }
+                                page.reload_calendar_sources();
+                                page.refresh_task_sidebar();
+                                page.refresh_task_and_memo_panes();
+                                page.refresh_calendar_views();
+                                page.refresh_event_list_visibility();
+                            }
+                        },
+                    );
+                    dialog.present();
+                }
+            }
+        });
+
+        let popover = crate::models::source_selector::create_source_context_popover(
+            is_primary,
+            "Kalender",
+            on_exclusive,
+            on_select_all,
+            on_set_default,
+            on_properties,
+            on_manage_groups,
+        );
+        popover.set_parent(parent);
+        popover.set_pointing_to(Some(&gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
+        popover.connect_closed(|p| {
+            p.unparent();
+        });
+        popover.popup();
     }
 
     pub(crate) fn select_exclusive_calendar_source(&self, uid: &str) {
@@ -3918,12 +4102,22 @@ impl CalendarPage {
         let viewport = self.current_calendar_viewport();
         self.imp().syncing_mini_calendar.set(true);
 
+        let is_month_view = *self.imp().current_view.borrow() == CalendarView::Month;
+        let today = chrono::Local::now().date_naive();
+
         for (i, cal) in calendars.iter().enumerate() {
+            if is_month_view {
+                cal.add_css_class("in-month-view");
+            } else {
+                cal.remove_css_class("in-month-view");
+            }
             let (y, m) = add_months(date.year(), date.month(), i);
             let day_to_select = if date.year() == y && date.month() == m {
                 date.day() as i32
+            } else if today.year() == y && today.month() == m {
+                today.day() as i32
             } else {
-                1
+                date.day().min(days_in_month(y, m)) as i32
             };
 
             if let Ok(dt) = glib::DateTime::new(
@@ -8455,6 +8649,31 @@ mod tests {
     #[test]
     fn month_event_date_rejects_unparseable_backend_values() {
         assert_eq!(event_start_date(&event_with_start("not-a-date")), None);
+    }
+
+    #[test]
+    fn shift_month_anchors_to_first_of_month() {
+        let d = NaiveDate::from_ymd_opt(2026, 3, 15).unwrap();
+        assert_eq!(
+            shift_month(d, 1),
+            NaiveDate::from_ymd_opt(2026, 4, 1).unwrap()
+        );
+        assert_eq!(
+            shift_month(d, -1),
+            NaiveDate::from_ymd_opt(2026, 2, 1).unwrap()
+        );
+
+        // Year boundary wrapping
+        let dec = NaiveDate::from_ymd_opt(2026, 12, 10).unwrap();
+        assert_eq!(
+            shift_month(dec, 1),
+            NaiveDate::from_ymd_opt(2027, 1, 1).unwrap()
+        );
+        let jan = NaiveDate::from_ymd_opt(2026, 1, 10).unwrap();
+        assert_eq!(
+            shift_month(jan, -1),
+            NaiveDate::from_ymd_opt(2025, 12, 1).unwrap()
+        );
     }
 
     #[test]

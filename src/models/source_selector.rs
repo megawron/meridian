@@ -680,7 +680,7 @@ pub fn create_primary_indicator() -> gtk::Image {
         .build()
 }
 
-pub fn create_source_row_menu_full<FExcl, FAll, FDefault, FProps, FGroups>(
+pub fn create_source_context_popover<FExcl, FAll, FDefault, FProps, FGroups>(
     is_primary: bool,
     domain_label: &str,
     on_exclusive: FExcl,
@@ -688,7 +688,7 @@ pub fn create_source_row_menu_full<FExcl, FAll, FDefault, FProps, FGroups>(
     on_set_default: FDefault,
     on_properties: Option<FProps>,
     on_manage_groups: Option<FGroups>,
-) -> gtk::MenuButton
+) -> gtk::Popover
 where
     FExcl: Fn() + 'static,
     FAll: Fn() + 'static,
@@ -781,6 +781,35 @@ where
         });
         popover_box.append(&btn_groups);
     }
+
+    popover
+}
+
+pub fn create_source_row_menu_full<FExcl, FAll, FDefault, FProps, FGroups>(
+    is_primary: bool,
+    domain_label: &str,
+    on_exclusive: FExcl,
+    on_select_all: FAll,
+    on_set_default: FDefault,
+    on_properties: Option<FProps>,
+    on_manage_groups: Option<FGroups>,
+) -> gtk::MenuButton
+where
+    FExcl: Fn() + 'static,
+    FAll: Fn() + 'static,
+    FDefault: Fn() + 'static,
+    FProps: Fn() + 'static,
+    FGroups: Fn() + 'static,
+{
+    let popover = create_source_context_popover(
+        is_primary,
+        domain_label,
+        on_exclusive,
+        on_select_all,
+        on_set_default,
+        on_properties,
+        on_manage_groups,
+    );
 
     gtk::MenuButton::builder()
         .icon_name("view-more-symbolic")

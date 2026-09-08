@@ -357,12 +357,14 @@ mod tests {
             display_name: "Mail".to_string(),
             backend_name: "imapx".to_string(),
             enabled: true,
+            parent_name: None,
         };
         let calendar = EdsSource {
             uid: "calendar-1".to_string(),
             display_name: "Kalender".to_string(),
             backend_name: "caldav".to_string(),
             enabled: true,
+            parent_name: None,
         };
 
         cache
@@ -412,6 +414,7 @@ mod tests {
                     display_name: "Mail".to_string(),
                     backend_name: "imapx".to_string(),
                     enabled: true,
+                    parent_name: None,
                 }],
             )
             .expect("sources should save");

@@ -711,6 +711,7 @@ fn eds_sources_from_keyfile(
                     display_name: display_name.clone(),
                     backend_name,
                     enabled,
+                    parent_name: None,
                 },
             )
         })
