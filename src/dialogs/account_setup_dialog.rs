@@ -39,7 +39,7 @@ mod imp {
             use std::sync::OnceLock;
             static PROPERTIES: OnceLock<Vec<glib::ParamSpec>> = OnceLock::new();
             PROPERTIES
-                .get_or_init(|| vec![glib::ParamSpecString::builder("edit-profile-json").build()])
+                .get_or_init(|| vec![glib::ParamSpecString::builder("edit-profile-json").construct().build()])
         }
 
         fn set_property(&self, _id: usize, value: &glib::Value, pspec: &glib::ParamSpec) {
@@ -78,7 +78,7 @@ impl AccountSetupDialog {
         glib::Object::builder()
             .property("title", "Neues Konto einrichten")
             .property("modal", true)
-            .property("default-width", 700)
+            .property("default-width", 840)
             .property("default-height", 660)
             .build()
     }
@@ -88,7 +88,7 @@ impl AccountSetupDialog {
         glib::Object::builder()
             .property("title", "Kontoeinstellungen")
             .property("modal", true)
-            .property("default-width", 700)
+            .property("default-width", 840)
             .property("default-height", 660)
             .property("edit-profile-json", encoded)
             .build()
@@ -139,25 +139,34 @@ impl AccountSetupDialog {
             "Neues Konto einrichten".to_string()
         };
 
+        let window_title = adw::WindowTitle::builder()
+            .title(&window_title_str)
+            .build();
+        header_bar.set_title_widget(Some(&window_title));
+        toolbar_view.add_top_bar(&header_bar);
+
         let view_switcher = adw::ViewSwitcher::builder()
             .stack(&view_stack)
             .policy(adw::ViewSwitcherPolicy::Wide)
             .build();
-        header_bar.set_title_widget(Some(&view_switcher));
-        toolbar_view.add_top_bar(&header_bar);
+
+        let sub_toolbar = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .halign(gtk::Align::Center)
+            .margin_top(6)
+            .margin_bottom(6)
+            .build();
+        sub_toolbar.append(&view_switcher);
+        toolbar_view.add_top_bar(&sub_toolbar);
 
         let view_switcher_bar = adw::ViewSwitcherBar::builder()
             .stack(&view_stack)
             .build();
         toolbar_view.add_bottom_bar(&view_switcher_bar);
 
-        let window_title = adw::WindowTitle::builder()
-            .title(&window_title_str)
-            .build();
-
         let bp_narrow =
             adw::Breakpoint::new(adw::BreakpointCondition::parse("max-width: 580sp").unwrap());
-        bp_narrow.add_setter(&header_bar, "title-widget", Some(&window_title.to_value()));
+        bp_narrow.add_setter(&sub_toolbar, "visible", Some(&false.to_value()));
         bp_narrow.add_setter(&view_switcher_bar, "reveal", Some(&true.to_value()));
         self.add_breakpoint(bp_narrow);
 

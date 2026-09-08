@@ -202,7 +202,10 @@ mod imp {
             }
 
             if std::env::args().any(|a| a == "--account-setup") {
-                let dialog = crate::dialogs::AccountSetupDialog::new();
+                let mut profile = crate::services::account_config_service::AccountProfile::default();
+                profile.display_name = "Max Mustermann".to_string();
+                profile.email = "max@example.com".to_string();
+                let dialog = crate::dialogs::AccountSetupDialog::new_for_edit(&profile);
                 dialog.set_transient_for(Some(&window));
                 dialog.present();
             }
