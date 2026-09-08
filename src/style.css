@@ -705,42 +705,68 @@ splitview > .sidebar,
 }
 
 .calendar-sidebar-minical label.day-number:checked:selected {
-  background-color: @accent_bg_color;
-  background-image: none;
-  color: @accent_fg_color;
-  font-weight: bold;
-}
-
-.calendar-sidebar-minical label.day-number.range-start:checked:selected {
-  border-top-left-radius: 8px;
-  border-bottom-left-radius: 8px;
-  border-top-right-radius: 0;
-  border-bottom-right-radius: 0;
-}
-
-.calendar-sidebar-minical label.day-number.range-end:checked:selected {
-  border-top-left-radius: 0;
-  border-bottom-left-radius: 0;
-  border-top-right-radius: 8px;
-  border-bottom-right-radius: 8px;
-}
-
-.calendar-sidebar-minical label.day-number.range-start.range-end:checked:selected {
-  background: @accent_bg_color;
-  border-radius: 8px;
-}
-
-.calendar-sidebar-minical.in-month-view label.day-number:checked:selected {
   background-color: alpha(@accent_color, 0.25);
   background-image: none;
   color: @accent_color;
   font-weight: bold;
 }
 
+.calendar-sidebar-minical label.day-number.range-start:checked:selected {
+  border-top-left-radius: 8px;
+  border-bottom-left-radius: 8px;
+}
+
+.calendar-sidebar-minical label.day-number.range-end:checked:selected {
+  border-top-right-radius: 8px;
+  border-bottom-right-radius: 8px;
+}
+
+.calendar-sidebar-minical label.day-number.range-start.range-end:checked:selected,
 .calendar-sidebar-minical label.day-number:selected:not(:checked) {
   background-color: @accent_bg_color;
+  background-image: none;
   color: @accent_fg_color;
   font-weight: bold;
+  border-radius: 8px;
+}
+
+/* Always clearly highlight today in the mini-calendar */
+.calendar-sidebar-minical label.day-number.today:not(.other-month) {
+  font-weight: 800;
+  color: @accent_color;
+  box-shadow: inset 0 0 0 2px @accent_color;
+  border-radius: 8px;
+}
+
+/* When today is in the active display horizon / week / month (checked):
+   Keep the continuous bluish background across the whole cell and overlay
+   the rounded rectangle badge (like before, radius 8px) with white text */
+.calendar-sidebar-minical label.day-number.today:not(.other-month):checked,
+.calendar-sidebar-minical label.day-number.today:not(.other-month):checked:selected {
+  background-color: alpha(@accent_color, 0.25);
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 28' preserveAspectRatio='none'><rect width='32' height='28' rx='8' ry='8' fill='%233584e4'/></svg>");
+  background-size: 100% 100%;
+  background-repeat: no-repeat;
+  color: @accent_fg_color;
+  font-weight: 800;
+  box-shadow: none;
+  border-radius: 0;
+}
+
+.calendar-sidebar-minical label.day-number.today.range-start:not(.other-month):checked {
+  border-top-left-radius: 8px;
+  border-bottom-left-radius: 8px;
+}
+
+.calendar-sidebar-minical label.day-number.today.range-end:not(.other-month):checked {
+  border-top-right-radius: 8px;
+  border-bottom-right-radius: 8px;
+}
+
+.calendar-sidebar-minical label.day-number.today.range-start.range-end:not(.other-month):checked {
+  background-color: @accent_bg_color;
+  background-image: none;
+  color: @accent_fg_color;
   border-radius: 8px;
 }
 

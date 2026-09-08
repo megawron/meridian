@@ -411,20 +411,35 @@ impl ItipBanner {
     }
 
     fn setup_calendar_sources(&self) {
-        let mut sources = vec![("local-calendar".to_string(), "Persönlicher Kalender".to_string())];
-        if let Ok(discovery) = ECalService::new().discover_source_capabilities(ECalComponentType::Event) {
-            for source in discovery.sources {
-                if source.writable && source.source_uid != "local-calendar" {
-                    sources.push((source.source_uid, source.display_name));
-                }
-            }
-        }
-
+        let sources = vec![("local-calendar".to_string(), "Persönlicher Kalender".to_string())];
         let names: Vec<&str> = sources.iter().map(|(_, name)| name.as_str()).collect();
         let model = gtk::StringList::new(&names);
         self.calendar_dropdown.set_model(Some(&model));
         self.calendar_dropdown.set_selected(0);
         *self.calendar_sources.borrow_mut() = sources;
+
+        let dropdown = self.calendar_dropdown.clone();
+        let sources_store = Rc::clone(&self.calendar_sources);
+        let (tx, rx) = async_channel::bounded(1);
+        std::thread::spawn(move || {
+            if let Ok(discovery) = ECalService::new().discover_source_capabilities(ECalComponentType::Event) {
+                let _ = tx.send_blocking(discovery);
+            }
+        });
+        glib::spawn_future_local(async move {
+            if let Ok(discovery) = rx.recv().await {
+                let mut sources = vec![("local-calendar".to_string(), "Persönlicher Kalender".to_string())];
+                for source in discovery.sources {
+                    if source.writable && source.source_uid != "local-calendar" {
+                        sources.push((source.source_uid, source.display_name));
+                    }
+                }
+                let names: Vec<&str> = sources.iter().map(|(_, name)| name.as_str()).collect();
+                let model = gtk::StringList::new(&names);
+                dropdown.set_model(Some(&model));
+                *sources_store.borrow_mut() = sources;
+            }
+        });
     }
 
     fn selected_source_uid(&self) -> String {

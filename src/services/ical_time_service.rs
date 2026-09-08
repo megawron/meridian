@@ -29,6 +29,75 @@ pub(crate) fn property_local_datetime(
     local_datetime_from_property(&property, &value, all_day)
 }
 
+/// Parse an RFC 5545 duration string such as "PT1H", "PT30M", "P1D", "PT1H30M".
+pub(crate) fn parse_ical_duration(value: &str) -> Option<chrono::Duration> {
+    let value = value.trim();
+    let (is_negative, rest) = if let Some(stripped) = value.strip_prefix('-') {
+        (true, stripped)
+    } else if let Some(stripped) = value.strip_prefix('+') {
+        (false, stripped)
+    } else {
+        (false, value)
+    };
+    let rest = rest.strip_prefix('P')?;
+    let mut days = 0i64;
+    let mut hours = 0i64;
+    let mut minutes = 0i64;
+    let mut seconds = 0i64;
+
+    let (date_part, time_part) = if let Some((d, t)) = rest.split_once('T') {
+        (d, Some(t))
+    } else {
+        (rest, None)
+    };
+
+    let mut current_num = String::new();
+    for ch in date_part.chars() {
+        if ch.is_ascii_digit() {
+            current_num.push(ch);
+        } else if ch == 'W' {
+            let weeks = current_num.parse::<i64>().ok()?;
+            days += weeks * 7;
+            current_num.clear();
+        } else if ch == 'D' {
+            let d = current_num.parse::<i64>().ok()?;
+            days += d;
+            current_num.clear();
+        }
+    }
+
+    if let Some(time_part) = time_part {
+        current_num.clear();
+        for ch in time_part.chars() {
+            if ch.is_ascii_digit() {
+                current_num.push(ch);
+            } else if ch == 'H' {
+                let h = current_num.parse::<i64>().ok()?;
+                hours += h;
+                current_num.clear();
+            } else if ch == 'M' {
+                let m = current_num.parse::<i64>().ok()?;
+                minutes += m;
+                current_num.clear();
+            } else if ch == 'S' {
+                let s = current_num.parse::<i64>().ok()?;
+                seconds += s;
+                current_num.clear();
+            }
+        }
+    }
+
+    let total_seconds = days * 86400 + hours * 3600 + minutes * 60 + seconds;
+    let duration = chrono::Duration::seconds(if is_negative { -total_seconds } else { total_seconds });
+    Some(duration)
+}
+
+/// Return the duration specified by DURATION property in an iCalendar component.
+pub(crate) fn property_local_duration(component: &str) -> Option<chrono::Duration> {
+    let (_, value) = property_line(component, "DURATION")?;
+    parse_ical_duration(&value)
+}
+
 /// Convert an iCalendar date-time property to a Unix timestamp.  This is used
 /// for absolute VALARM triggers where the original TZID parameter must be
 /// honored instead of first going through a display string.
@@ -273,5 +342,16 @@ mod tests {
     fn named_timezone_values_are_accepted() {
         let component = "DTSTART;TZID=Europe/Berlin:20260810T120000\r\n";
         assert!(property_local_datetime(component, "DTSTART", false).is_some());
+    }
+
+    #[test]
+    fn ical_duration_parsing() {
+        assert_eq!(parse_ical_duration("PT1H").unwrap(), chrono::Duration::hours(1));
+        assert_eq!(parse_ical_duration("PT30M").unwrap(), chrono::Duration::minutes(30));
+        assert_eq!(parse_ical_duration("PT1H30M").unwrap(), chrono::Duration::minutes(90));
+        assert_eq!(parse_ical_duration("P1D").unwrap(), chrono::Duration::days(1));
+        assert_eq!(parse_ical_duration("P1DT2H").unwrap(), chrono::Duration::hours(26));
+        let comp = "BEGIN:VEVENT\r\nDURATION:PT2H\r\nEND:VEVENT\r\n";
+        assert_eq!(property_local_duration(comp).unwrap(), chrono::Duration::hours(2));
     }
 }

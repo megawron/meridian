@@ -30,6 +30,7 @@ use crate::services::ecal_service::{
 use crate::services::eds_service;
 use crate::services::ical_time_service::{
     property_local_date, property_local_dates, property_local_datetime, property_local_display,
+    property_local_duration,
 };
 #[cfg(test)]
 use crate::services::recurrence_service::recurrence_matches_without_count;
@@ -1378,16 +1379,29 @@ impl CalendarPage {
         self.imp().view_state.borrow_mut().load_generation = generation;
         self.imp().calendar_load_error.replace(None);
         if self.imp().calendar_snapshot_index.borrow().is_none() {
-            let local_service = CalendarStoreService::new();
-            let local_snapshot = local_service.load_snapshot();
-            if !local_snapshot.events.is_empty()
-                || !local_snapshot.tasks.is_empty()
-                || !local_snapshot.memos.is_empty()
-            {
-                let snapshot_index = Arc::new(CalendarSnapshotIndex::new(Arc::new(local_snapshot)));
-                self.imp()
-                    .calendar_snapshot_index
-                    .replace(Some(snapshot_index));
+            if let Some(cached_snapshot) = crate::services::ecal_service::load_calendar_load_cache() {
+                if !cached_snapshot.events.is_empty()
+                    || !cached_snapshot.tasks.is_empty()
+                    || !cached_snapshot.memos.is_empty()
+                {
+                    let snapshot_index = Arc::new(CalendarSnapshotIndex::new(Arc::new(cached_snapshot)));
+                    self.imp()
+                        .calendar_snapshot_index
+                        .replace(Some(snapshot_index));
+                }
+            }
+            if self.imp().calendar_snapshot_index.borrow().is_none() {
+                let local_service = CalendarStoreService::new();
+                let local_snapshot = local_service.load_snapshot();
+                if !local_snapshot.events.is_empty()
+                    || !local_snapshot.tasks.is_empty()
+                    || !local_snapshot.memos.is_empty()
+                {
+                    let snapshot_index = Arc::new(CalendarSnapshotIndex::new(Arc::new(local_snapshot)));
+                    self.imp()
+                        .calendar_snapshot_index
+                        .replace(Some(snapshot_index));
+                }
             }
         }
         self.set_calendar_loading_status(true, "Kalender werden geladen …");
@@ -1562,29 +1576,29 @@ impl CalendarPage {
             return;
         }
         self.set_calendar_loading_status(false, "");
+        let origin_str = match origin {
+            CalendarDataOrigin::Eds => "verbundenen Kalendern",
+            CalendarDataOrigin::Graph => "verbundenen Kalendern",
+            CalendarDataOrigin::Local => "lokalem Kalenderbestand",
+        };
+        let status_msg = if count == 0 {
+            format!("Keine Termine aus {origin_str} gefunden")
+        } else {
+            format!("{count} Termin(e) aus {origin_str} geladen.")
+        };
+        if let Some(win) = self.root().and_downcast::<crate::window::EvolutionWindow>() {
+            win.set_status(&status_msg);
+        }
+
         if count == 0 {
             event_list.set_visible(false);
             if let Some(state_label) = state_label {
-                match origin {
-                    CalendarDataOrigin::Eds => {
-                        state_label.set_label("Keine Termine aus verbundenen Kalendern gefunden")
-                    }
-                    CalendarDataOrigin::Graph => {
-                        state_label.set_label("Keine Termine aus verbundenen Kalendern gefunden")
-                    }
-                    CalendarDataOrigin::Local => state_label
-                        .set_label("Keine Termine aus dem lokalen Kalenderbestand gefunden"),
-                }
+                state_label.set_label(&status_msg);
             }
         } else {
             event_list.set_visible(false);
             if let Some(state_label) = state_label {
-                let origin = match origin {
-                    CalendarDataOrigin::Eds => "verbundenen Kalendern",
-                    CalendarDataOrigin::Graph => "verbundenen Kalendern",
-                    CalendarDataOrigin::Local => "lokalem Kalenderbestand",
-                };
-                state_label.set_label(&format!("{count} Termin(e) aus {origin} geladen."));
+                state_label.set_label(&status_msg);
             }
             let events = snapshot_index.snapshot.events.clone();
             event_records.borrow_mut().extend(events.clone());
@@ -1828,6 +1842,7 @@ impl CalendarPage {
             && self.imp().calendar_revision.get() == revision
     }
 
+    #[allow(dead_code)]
     fn report_calendar_monitor_failure(&self, error: &str) {
         self.invalidate_calendar_mutation();
         self.cancel_calendar_snapshot_load();
@@ -2231,8 +2246,8 @@ impl CalendarPage {
             .wrap(false)
             .ellipsize(gtk::pango::EllipsizeMode::End)
             .halign(gtk::Align::Start)
+            .visible(false)
             .build();
-        sidebar_box.append(&local_item_state);
         self.imp()
             .calendar_data_state
             .replace(Some(local_item_state.clone()));
@@ -2324,11 +2339,7 @@ impl CalendarPage {
                     let event = match receiver.recv().await {
                         Ok(event) => event,
                         Err(error) => {
-                            if let Some(page) = page_for_monitor.upgrade()
-                                && page.calendar_monitor_is_current(monitor_generation)
-                            {
-                                page.report_calendar_monitor_failure(&error.to_string());
-                            }
+                            tracing::debug!(%error, "ECal signal monitor channel closed");
                             break;
                         }
                     };
@@ -2364,7 +2375,6 @@ impl CalendarPage {
                         }
                         ECalSyncEvent::Error(error) => {
                             tracing::warn!(%error, "ECal signal monitor stopped");
-                            page.report_calendar_monitor_failure(&error);
                             break;
                         }
                     }
@@ -3367,6 +3377,12 @@ impl CalendarPage {
                     selector.hidden_uids().into_iter().collect();
             }
 
+            if page.imp().calendar_load_error.borrow().is_some()
+                || page.imp().calendar_snapshot_index.borrow().is_none()
+            {
+                page.start_calendar_snapshot_load();
+            }
+
             while let Some(child) = source_list.first_child() {
                 source_list.remove(&child);
             }
@@ -4126,12 +4142,11 @@ impl CalendarPage {
                 cal.remove_css_class("in-month-view");
             }
             let (y, m) = add_months(date.year(), date.month(), i);
-            let day_to_select = if date.year() == y && date.month() == m {
+            let has_selected_date = date.year() == y && date.month() == m;
+            let day_to_select = if has_selected_date {
                 date.day() as i32
-            } else if today.year() == y && today.month() == m {
-                today.day() as i32
             } else {
-                date.day().min(days_in_month(y, m)) as i32
+                1
             };
 
             if let Ok(dt) = glib::DateTime::new(
@@ -4155,7 +4170,7 @@ impl CalendarPage {
                     }
                 }
             }
-            update_mini_calendar_classes(cal, y, m, &viewport);
+            update_mini_calendar_classes(cal, y, m, &viewport, has_selected_date);
         }
 
         self.imp().syncing_mini_calendar.set(false);
@@ -4748,32 +4763,166 @@ impl CalendarPage {
                 });
                 cell.add_controller(click_gesture);
 
-                grid.attach(&cell, day_index as i32 + day_column_offset, row, 1, 1);
                 slot_cells[day_index].push(cell);
             }
         }
 
-        // ── Place Timed Events ──
+        // ── Place Timed Events with Full Duration & Overlap Layout ──
         for (day_index, day) in days.iter().enumerate() {
             let mut events = events_by_date.get(day).cloned().unwrap_or_default();
-            events.sort_by_key(event_start_datetime);
+            let mut timed_events: Vec<CalendarEventRecord> = events
+                .into_iter()
+                .filter(|e| !e.all_day)
+                .collect();
+            timed_events.sort_by_key(|e| event_start_datetime(e));
 
-            for event in events {
-                if event.all_day {
-                    continue;
-                }
-                let slot = event_start_datetime(&event)
-                    .filter(|start| start.date() == *day)
-                    .map(|start| {
-                        let mins = start.time().hour() * 60 + start.time().minute();
-                        (mins / interval_minutes as u32) as usize
-                    })
-                    .unwrap_or_else(|| (16 * 60 / interval_minutes as u32) as usize)
-                    .min(slot_count.saturating_sub(1));
-
-                let chip = calendar_grid_event_chip(self, &event, false, *day);
-                slot_cells[day_index][slot].append(&chip);
+            struct RawTimedEvent {
+                event: CalendarEventRecord,
+                start_slot: usize,
+                end_slot: usize,
+                row_span: usize,
             }
+
+            let mut raw_events = Vec::new();
+            for event in timed_events {
+                let start_dt = event_start_datetime(&event);
+                let end_dt = event_end_datetime(&event);
+
+                let start_min = match start_dt {
+                    Some(dt) if dt.date() < *day => 0,
+                    Some(dt) if dt.date() == *day => dt.time().hour() * 60 + dt.time().minute(),
+                    _ => 9 * 60,
+                };
+
+                let end_min = match end_dt {
+                    Some(dt) if dt.date() > *day => 1440,
+                    Some(dt) if dt.date() == *day => {
+                        let m = dt.time().hour() * 60 + dt.time().minute();
+                        if m <= start_min {
+                            (start_min + interval_minutes as u32).min(1440)
+                        } else {
+                            m
+                        }
+                    }
+                    _ => (start_min + interval_minutes as u32).min(1440),
+                };
+
+                let start_slot = ((start_min / interval_minutes as u32) as usize)
+                    .min(slot_count.saturating_sub(1));
+                let end_slot = (((end_min + interval_minutes as u32 - 1) / interval_minutes as u32) as usize)
+                    .max(start_slot + 1)
+                    .min(slot_count);
+                let row_span = (end_slot - start_slot).max(1);
+
+                raw_events.push(RawTimedEvent {
+                    event,
+                    start_slot,
+                    end_slot,
+                    row_span,
+                });
+            }
+
+            // Cluster overlapping events together
+            let mut clusters: Vec<Vec<RawTimedEvent>> = Vec::new();
+            let mut current_cluster: Vec<RawTimedEvent> = Vec::new();
+            let mut cluster_end = 0;
+
+            for item in raw_events {
+                if current_cluster.is_empty() || item.start_slot < cluster_end {
+                    cluster_end = cluster_end.max(item.end_slot);
+                    current_cluster.push(item);
+                } else {
+                    clusters.push(std::mem::take(&mut current_cluster));
+                    cluster_end = item.end_slot;
+                    current_cluster.push(item);
+                }
+            }
+            if !current_cluster.is_empty() {
+                clusters.push(current_cluster);
+            }
+
+            struct PlacedChip {
+                event: CalendarEventRecord,
+                start_slot: usize,
+                row_span: usize,
+                col_idx: usize,
+                total_cols: usize,
+            }
+
+            let mut placed_chips: Vec<PlacedChip> = Vec::new();
+            let mut max_day_cols = 1;
+
+            for cluster in clusters {
+                let mut col_ends: Vec<usize> = Vec::new();
+                let mut cluster_placed = Vec::new();
+
+                for item in cluster {
+                    let mut col_idx = None;
+                    for (idx, end) in col_ends.iter_mut().enumerate() {
+                        if *end <= item.start_slot {
+                            *end = item.end_slot;
+                            col_idx = Some(idx);
+                            break;
+                        }
+                    }
+                    let c = col_idx.unwrap_or_else(|| {
+                        let idx = col_ends.len();
+                        col_ends.push(item.end_slot);
+                        idx
+                    });
+                    cluster_placed.push((item.event, item.start_slot, item.row_span, c));
+                }
+
+                let total_cols = col_ends.len().max(1);
+                if total_cols > max_day_cols {
+                    max_day_cols = total_cols;
+                }
+
+                for (event, start_slot, row_span, col_idx) in cluster_placed {
+                    placed_chips.push(PlacedChip {
+                        event,
+                        start_slot,
+                        row_span,
+                        col_idx,
+                        total_cols,
+                    });
+                }
+            }
+
+            let day_grid = gtk::Grid::builder()
+                .column_spacing(2)
+                .row_spacing(0)
+                .hexpand(true)
+                .build();
+
+            for slot in 0..slot_count {
+                let cell = &slot_cells[day_index][slot];
+                day_grid.attach(cell, 0, slot as i32, max_day_cols as i32, 1);
+            }
+
+            for chip_info in placed_chips {
+                let col_span = if chip_info.total_cols == 1 {
+                    max_day_cols as i32
+                } else {
+                    1
+                };
+                let chip = calendar_grid_event_chip(self, &chip_info.event, false, *day);
+                day_grid.attach(
+                    &chip,
+                    chip_info.col_idx as i32,
+                    chip_info.start_slot as i32,
+                    col_span,
+                    chip_info.row_span as i32,
+                );
+            }
+
+            grid.attach(
+                &day_grid,
+                day_index as i32 + day_column_offset,
+                2,
+                1,
+                slot_count as i32,
+            );
         }
 
         view.append(&grid);
@@ -6179,7 +6328,9 @@ fn update_mini_calendar_classes(
     y: i32,
     m: u32,
     viewport: &CalendarViewport,
+    has_selected_date: bool,
 ) {
+    let today = chrono::Local::now().date_naive();
     let days_count = days_in_month(y, m);
     let mut range_starts = HashSet::new();
     let mut range_ends = HashSet::new();
@@ -6210,17 +6361,29 @@ fn update_mini_calendar_classes(
         if w.css_name() == "grid" {
             let mut cell = w.first_child();
             while let Some(lbl) = cell {
-                if lbl.has_css_class("day-number") && !lbl.has_css_class("other-month") {
-                    lbl.remove_css_class("range-start");
-                    lbl.remove_css_class("range-end");
-                    if let Ok(label) = lbl.clone().downcast::<gtk::Label>() {
-                        let text = label.text();
-                        if let Ok(day_num) = text.parse::<u32>() {
-                            if range_starts.contains(&day_num) {
-                                lbl.add_css_class("range-start");
-                            }
-                            if range_ends.contains(&day_num) {
-                                lbl.add_css_class("range-end");
+                if lbl.has_css_class("day-number") {
+                    if !has_selected_date {
+                        lbl.unset_state_flags(gtk::StateFlags::SELECTED | gtk::StateFlags::CHECKED);
+                    }
+                    if lbl.has_css_class("other-month") {
+                        lbl.remove_css_class("today");
+                    } else {
+                        lbl.remove_css_class("range-start");
+                        lbl.remove_css_class("range-end");
+                        if let Ok(label) = lbl.clone().downcast::<gtk::Label>() {
+                            let text = label.text();
+                            if let Ok(day_num) = text.parse::<u32>() {
+                                if range_starts.contains(&day_num) {
+                                    lbl.add_css_class("range-start");
+                                }
+                                if range_ends.contains(&day_num) {
+                                    lbl.add_css_class("range-end");
+                                }
+                                if day_num == today.day() && y == today.year() && m == today.month() {
+                                    lbl.add_css_class("today");
+                                } else {
+                                    lbl.remove_css_class("today");
+                                }
                             }
                         }
                     }
@@ -6939,8 +7102,9 @@ fn calendar_grid_event_chip(
     let color = event_color_for_record(event);
     let chip_button = gtk::Button::builder()
         .halign(gtk::Align::Fill)
-        .valign(gtk::Align::Start)
+        .valign(if is_all_day { gtk::Align::Start } else { gtk::Align::Fill })
         .hexpand(true)
+        .vexpand(!is_all_day)
         .css_classes(if is_all_day {
             vec!["flat", "calendar-grid-event", "all-day-chip"]
         } else {
@@ -6963,7 +7127,7 @@ fn calendar_grid_event_chip(
 
     let label = gtk::Label::builder()
         .halign(gtk::Align::Fill)
-        .valign(gtk::Align::Center)
+        .valign(if is_all_day { gtk::Align::Center } else { gtk::Align::Start })
         .xalign(0.0)
         .ellipsize(gtk::pango::EllipsizeMode::End)
         .use_markup(true)
@@ -7070,6 +7234,17 @@ fn event_time_text(event: &CalendarEventRecord) -> String {
     if event.all_day || event.start.len() <= 10 {
         return "Ganztägig".to_string();
     }
+    let start_dt = event_start_datetime(event);
+    let end_dt = event_end_datetime(event);
+    if let (Some(start), Some(end)) = (start_dt, end_dt) {
+        let start_str = format_clock_minutes(start.time().hour() * 60 + start.time().minute());
+        let end_str = format_clock_minutes(end.time().hour() * 60 + end.time().minute());
+        if start != end {
+            return format!("{start_str}–{end_str}");
+        } else {
+            return start_str;
+        }
+    }
     let start = event
         .start
         .get(11..16)
@@ -7165,6 +7340,11 @@ fn event_start_datetime(event: &CalendarEventRecord) -> Option<NaiveDateTime> {
 
 fn event_end_datetime(event: &CalendarEventRecord) -> Option<NaiveDateTime> {
     property_local_datetime(&event.component, "DTEND", event.all_day)
+        .or_else(|| {
+            let start = event_start_datetime(event)?;
+            let duration = property_local_duration(&event.component)?;
+            Some(start + duration)
+        })
         .or_else(|| displayed_event_datetime(&event.end))
 }
 
