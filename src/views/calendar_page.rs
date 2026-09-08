@@ -5975,9 +5975,6 @@ fn update_mini_calendar_classes(
     let days_count = days_in_month(y, m);
     let mut range_starts = HashSet::new();
     let mut range_ends = HashSet::new();
-    let first_weekday = configured_first_weekday();
-    let last_weekday = first_weekday.pred();
-
     for day in 1..=days_count {
         if let Some(d) = NaiveDate::from_ymd_opt(y, m, day) {
             if is_day_visible_in_viewport(viewport, d) {
@@ -5989,13 +5986,11 @@ fn update_mini_calendar_classes(
                     .succ_opt()
                     .map(|n| n.month() == m && is_day_visible_in_viewport(viewport, n))
                     .unwrap_or(false);
-                let is_first_day_of_grid_row = d.weekday() == first_weekday;
-                let is_last_day_of_grid_row = d.weekday() == last_weekday;
 
-                if !prev_visible || is_first_day_of_grid_row {
+                if !prev_visible {
                     range_starts.insert(day);
                 }
-                if !next_visible || is_last_day_of_grid_row {
+                if !next_visible {
                     range_ends.insert(day);
                 }
             }

@@ -705,8 +705,8 @@ splitview > .sidebar,
 }
 
 .calendar-sidebar-minical label.day-number:checked:selected {
-  background-color: alpha(@accent_color, 0.25);
-  background-image: radial-gradient(circle closest-side, @accent_bg_color 92%, transparent 94%);
+  background-color: @accent_bg_color;
+  background-image: none;
   color: @accent_fg_color;
   font-weight: bold;
 }
@@ -714,9 +714,13 @@ splitview > .sidebar,
 .calendar-sidebar-minical label.day-number.range-start:checked:selected {
   border-top-left-radius: 8px;
   border-bottom-left-radius: 8px;
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
 }
 
 .calendar-sidebar-minical label.day-number.range-end:checked:selected {
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
   border-top-right-radius: 8px;
   border-bottom-right-radius: 8px;
 }
