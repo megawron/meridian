@@ -519,12 +519,12 @@ impl PreferencesDialog {
             .build();
 
         let page_backup = adw::PreferencesPage::builder()
-            .title("Import &amp; Backup")
+            .title("Import und Backup")
             .icon_name("drive-harddisk-symbolic")
             .build();
 
         let group_accounts = adw::PreferencesGroup::builder()
-            .title("E-Mail-Konten &amp; Server-Einstellungen")
+            .title("E-Mail-Konten und Server-Einstellungen")
             .description("Verwaltete Konten und Online-Dienste")
             .build();
 
@@ -679,7 +679,7 @@ impl PreferencesDialog {
 
         // Filter Rules Section
         let group_filters = adw::PreferencesGroup::builder()
-            .title("Mail-Filter &amp; Sortierung")
+            .title("Mail-Filter und Sortierung")
             .description(
                 "Automatische Regeln für eingehende Mails und manuelle Ausführung im lokalen Bestand",
             )
@@ -1353,7 +1353,7 @@ impl PreferencesDialog {
         page_contacts.add(&group_default_address_book);
 
         let group_contacts_display = adw::PreferencesGroup::builder()
-            .title("Darstellung &amp; Karten")
+            .title("Darstellung und Karten")
             .description("Adressformatierung, Anzeigereihenfolge und Kartendienste")
             .build();
 
@@ -1569,7 +1569,7 @@ impl PreferencesDialog {
         add_contact_editor_toggle(
             &group_contacts_editor,
             &settings,
-            "Beruf &amp; Organisation",
+            "Beruf und Organisation",
             "Position, Abteilung und Firma",
             AppSettings::contact_editor_show_job,
             AppSettings::set_contact_editor_show_job,
@@ -1609,7 +1609,7 @@ impl PreferencesDialog {
         page_contacts.add(&group_contacts_editor);
 
         let group_backup = adw::PreferencesGroup::builder()
-            .title("Daten &amp; Sicherung")
+            .title("Daten und Sicherung")
             .description(
                 "App-eigene Zustände sichern, diagnostizieren, migrieren oder löschen; externe Profile bleiben unberührt",
             )
@@ -2507,7 +2507,7 @@ impl PreferencesDialog {
         group_signature_options.add(&row_signature_outline);
 
         let group_signature_editor = adw::PreferencesGroup::builder()
-            .title("Signaturtext &amp; Inhalt")
+            .title("Signaturtext und Inhalt")
             .description("Der Inhalt der Signatur, der beim Erstellen neuer E-Mails automatisch eingefügt wird")
             .build();
 
@@ -2530,7 +2530,7 @@ impl PreferencesDialog {
         group_signature_editor.add(&signature_frame);
 
         let group_reply = adw::PreferencesGroup::builder()
-            .title("Antworten &amp; Weiterleiten")
+            .title("Antworten und Weiterleiten")
             .description("Verhalten für den übernommenen Originaltext und Antwortstile")
             .build();
         let row_quote_original = adw::SwitchRow::builder()
@@ -2631,7 +2631,7 @@ impl PreferencesDialog {
             .build();
 
         let group_navigation = adw::PreferencesGroup::builder()
-            .title("Navigation &amp; Modul-Schaltflächen")
+            .title("Navigation und Modul-Schaltflächen")
             .description(
                 "Positionierung der Schaltflächen für Mail, Kalender, Kontakte, Aufgaben und Memos",
             )
@@ -2681,27 +2681,27 @@ impl PreferencesDialog {
         page_appearance.add(&group_navigation);
 
         let group_mail_reading = adw::PreferencesGroup::builder()
-            .title("Nachrichtenanzeige &amp; Lesen")
+            .title("Nachrichtenanzeige und Lesen")
             .description("Optionen für das Öffnen, Lesen und Markieren von E-Mails")
             .build();
 
         let group_mail_behavior = adw::PreferencesGroup::builder()
-            .title("Navigation &amp; Standardordner")
+            .title("Navigation und Standardordner")
             .description("Tastatur-Navigation und Startverhalten beim Öffnen")
             .build();
 
         let group_mail_html = adw::PreferencesGroup::builder()
-            .title("HTML-Nachrichten &amp; Datenschutz")
+            .title("HTML-Nachrichten und Datenschutz")
             .description("Sicherheit und Darstellungsoptionen für formatierte E-Mails")
             .build();
 
         let group_mail_fonts = adw::PreferencesGroup::builder()
-            .title("Schriften &amp; Typografie")
+            .title("Schriften und Typografie")
             .description("Schriftfamilie und Textgröße für Nachrichten und E-Mail-Editor")
             .build();
 
         let group_app_layout = adw::PreferencesGroup::builder()
-            .title("Fenster &amp; Layout")
+            .title("Fenster und Layout")
             .description("Bedienelemente, Statusanzeigen und visuelle Dichte der Benutzeroberfläche")
             .build();
 
@@ -3066,7 +3066,7 @@ impl PreferencesDialog {
         page_appearance.add(&group_app_layout);
 
         let group_citations = adw::PreferencesGroup::builder()
-            .title("Zitate &amp; Hervorhebung")
+            .title("Zitate und Hervorhebung")
             .description("Farben und Formatierung für verschachtelte Zitatebenen in E-Mails")
             .build();
 
@@ -3720,7 +3720,7 @@ impl PreferencesDialog {
         }
 
         let group_calendar_time = adw::PreferencesGroup::builder()
-            .title("Arbeitszeit &amp; Erinnerungen")
+            .title("Arbeitszeit und Erinnerungen")
             .description("Zeiten werden als Minuten nach Mitternacht gespeichert; 0 Minuten deaktiviert Erinnerungen")
             .build();
         let row_workday_start = adw::SpinRow::with_range(0.0, 1_439.0, 15.0);
@@ -3750,7 +3750,7 @@ impl PreferencesDialog {
         group_calendar_time.add(&row_workday_end);
 
         let group_calendar_reminders = adw::PreferencesGroup::builder()
-            .title("Erinnerungen &amp; Termine")
+            .title("Erinnerungen und Termine")
             .description("Standard-Erinnerungen für Termine und Benachrichtigungen")
             .build();
 
@@ -3811,16 +3811,16 @@ impl PreferencesDialog {
         group_calendar_reminders.add(&row_default_reminder_units);
 
         let row_use_ba_reminder = adw::SwitchRow::builder()
-            .title("Geburtstags- &amp; Jahrestagserinnerungen")
+            .title("Geburtstags- und Jahrestagserinnerungen")
             .subtitle("Erinnerungen für Kontakte mit Geburts- oder Jahrestag")
             .build();
         let row_ba_reminder_interval = adw::SpinRow::with_range(1.0, 10_080.0, 1.0);
-        row_ba_reminder_interval.set_title("Intervall für Geburtstage &amp; Jahrestage");
+        row_ba_reminder_interval.set_title("Intervall für Geburtstage und Jahrestage");
         row_ba_reminder_interval.set_digits(0);
         row_ba_reminder_interval.set_snap_to_ticks(true);
 
         let row_ba_reminder_units = adw::ComboRow::builder()
-            .title("Einheit für Geburtstage &amp; Jahrestage")
+            .title("Einheit für Geburtstage und Jahrestage")
             .model(&gtk::StringList::new(&["Minuten", "Stunden", "Tage"]))
             .build();
 
@@ -4106,7 +4106,7 @@ impl PreferencesDialog {
         group_task_memo_lists.add(&row_memo_sort_direction);
 
         let group_crypto = adw::PreferencesGroup::builder()
-            .title("Verschlüsselung &amp; Signaturen")
+            .title("Verschlüsselung und Signaturen")
             .description("OpenPGP- und S/MIME-Konfiguration")
             .build();
 
@@ -4287,23 +4287,23 @@ impl PreferencesDialog {
         page_mail_html.add(&group_mail_html);
         page_mail_html.add(&group_mail_fonts);
         page_mail_html.add(&group_citations);
-        let page_mail_labels = adw::PreferencesPage::builder().title("Farben &amp; Labels").build();
+        let page_mail_labels = adw::PreferencesPage::builder().title("Farben und Labels").build();
         page_mail_labels.add(&group_mail_labels);
         let page_mail_headers = adw::PreferencesPage::builder().title("Kopfzeilen").build();
         page_mail_headers.add(&group_mail_normal_headers);
-        let page_mail_junk = adw::PreferencesPage::builder().title("Junk &amp; Spam").build();
+        let page_mail_junk = adw::PreferencesPage::builder().title("Junk und Spam").build();
         page_mail_junk.add(&group_mail_junk);
         let page_mail_layout = adw::PreferencesPage::builder()
-            .title("Listenansicht &amp; Layout")
+            .title("Listenansicht und Layout")
             .build();
         page_mail_layout.add(&group_mail_list);
         page_mail_layout.add(&group_mail_columns);
 
         mail_sub_stack.add_titled(&page_mail_general, Some("general"), "Allgemein");
         mail_sub_stack.add_titled(&page_mail_html, Some("html"), "HTML-Mails");
-        mail_sub_stack.add_titled(&page_mail_labels, Some("labels"), "Farben & Labels");
+        mail_sub_stack.add_titled(&page_mail_labels, Some("labels"), "Farben und Labels");
         mail_sub_stack.add_titled(&page_mail_headers, Some("headers"), "Kopfzeilen");
-        mail_sub_stack.add_titled(&page_mail_junk, Some("junk"), "Junk & Spam");
+        mail_sub_stack.add_titled(&page_mail_junk, Some("junk"), "Junk und Spam");
         mail_sub_stack.add_titled(
             &page_mail_layout,
             Some("layout"),
@@ -4378,14 +4378,14 @@ impl PreferencesDialog {
         page_calendar_general.add(&group_calendar_reminders);
 
         let page_calendar_display = adw::PreferencesPage::builder()
-            .title("Display &amp; Formats")
+            .title("Display und Formate")
             .build();
         page_calendar_display.add(&group_default_ecal_sources);
         page_calendar_display.add(&group_categories);
         page_calendar_display.add(&group_task_memo_lists);
 
         calendar_sub_stack.add_titled(&page_calendar_general, Some("general"), "General");
-        calendar_sub_stack.add_titled(&page_calendar_display, Some("display"), "Display & Formats");
+        calendar_sub_stack.add_titled(&page_calendar_display, Some("display"), "Display und Formate");
 
         let calendar_detail_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
@@ -4411,7 +4411,7 @@ impl PreferencesDialog {
             ("Calendar and Tasks", "x-office-calendar-symbolic"),
             ("Certificates", "security-high-symbolic"),
             ("Appearance", "display-brightness-symbolic"),
-            ("Import &amp; Backup", "drive-harddisk-symbolic"),
+            ("Import und Backup", "drive-harddisk-symbolic"),
         ] {
             let row = adw::ActionRow::builder()
                 .title(title)
@@ -5473,7 +5473,7 @@ fn build_mail_labels_group(
     settings: Option<AppSettings>,
 ) -> adw::PreferencesGroup {
     let group = adw::PreferencesGroup::builder()
-        .title("Farben &amp; Labels")
+        .title("Farben und Labels")
         .description("Farbetiketten zur Kennzeichnung und schnellen Filterung von Nachrichten")
         .build();
 
@@ -6494,6 +6494,6 @@ mod tests {
         assert!(source.contains("mail_citation_color_3"));
         assert!(source.contains("mail_citation_color_4"));
         assert!(source.contains("mail_citation_color_5"));
-        assert!(source.contains("Zitate &amp; Hervorhebung"));
+        assert!(source.contains("Zitate und Hervorhebung"));
     }
 }
