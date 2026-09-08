@@ -2680,8 +2680,29 @@ impl PreferencesDialog {
         group_navigation.add(&row_switcher_location);
         page_appearance.add(&group_navigation);
 
-        let group_reading = adw::PreferencesGroup::builder()
-            .title("Leseansicht &amp; Datenschutz")
+        let group_mail_reading = adw::PreferencesGroup::builder()
+            .title("Nachrichtenanzeige &amp; Lesen")
+            .description("Optionen für das Öffnen, Lesen und Markieren von E-Mails")
+            .build();
+
+        let group_mail_behavior = adw::PreferencesGroup::builder()
+            .title("Navigation &amp; Standardordner")
+            .description("Tastatur-Navigation und Startverhalten beim Öffnen")
+            .build();
+
+        let group_mail_html = adw::PreferencesGroup::builder()
+            .title("HTML-Nachrichten &amp; Datenschutz")
+            .description("Sicherheit und Darstellungsoptionen für formatierte E-Mails")
+            .build();
+
+        let group_mail_fonts = adw::PreferencesGroup::builder()
+            .title("Schriften &amp; Typografie")
+            .description("Schriftfamilie und Textgröße für Nachrichten und E-Mail-Editor")
+            .build();
+
+        let group_app_layout = adw::PreferencesGroup::builder()
+            .title("Fenster &amp; Layout")
+            .description("Bedienelemente, Statusanzeigen und visuelle Dichte der Benutzeroberfläche")
             .build();
 
         let row_image_policy = adw::ComboRow::builder()
@@ -2710,7 +2731,7 @@ impl PreferencesDialog {
                 settings.set_auto_load_remote_images(row.selected() == 2);
             });
         }
-        group_reading.add(&row_image_policy);
+        group_mail_html.add(&row_image_policy);
 
         let row_html_rendering = adw::SwitchRow::builder()
             .title("HTML-Nachrichten rendern")
@@ -2723,7 +2744,7 @@ impl PreferencesDialog {
                 settings.set_render_html(row.is_active());
             });
         }
-        group_reading.add(&row_html_rendering);
+        group_mail_html.add(&row_html_rendering);
 
         let row_mail_font_family = adw::EntryRow::builder()
             .title("Schriftfamilie für Mail und Composer")
@@ -2735,7 +2756,7 @@ impl PreferencesDialog {
                 settings.set_mail_font_family(&row.text());
             });
         }
-        group_reading.add(&row_mail_font_family);
+        group_mail_fonts.add(&row_mail_font_family);
 
         let row_mail_font_size = adw::SpinRow::with_range(8.0, 48.0, 1.0);
         row_mail_font_size.set_title("Schriftgröße für Mail und Composer");
@@ -2748,7 +2769,7 @@ impl PreferencesDialog {
                 settings.set_mail_font_size(row.value().round() as u32);
             });
         }
-        group_reading.add(&row_mail_font_size);
+        group_mail_fonts.add(&row_mail_font_size);
 
         let row_mark_read = adw::SwitchRow::builder()
             .title("Nachrichten beim Auswählen als gelesen markieren")
@@ -2762,7 +2783,7 @@ impl PreferencesDialog {
                 settings.set_mark_read_on_selection(row.is_active());
             });
         }
-        group_reading.add(&row_mark_read);
+        group_mail_reading.add(&row_mark_read);
 
         let timeout_options = gtk::DropDown::from_strings(&[
             "Sofort",
@@ -2800,7 +2821,7 @@ impl PreferencesDialog {
                 settings.set_mark_read_timeout(ms as i32);
             });
         }
-        group_reading.add(&row_mark_read_timeout);
+        group_mail_reading.add(&row_mark_read_timeout);
 
         let row_caret_mode = adw::SwitchRow::builder()
             .title("Caret-Navigation (F7)")
@@ -2813,7 +2834,7 @@ impl PreferencesDialog {
                 settings.set_mail_caret_mode(row.is_active());
             });
         }
-        group_reading.add(&row_caret_mode);
+        group_mail_behavior.add(&row_caret_mode);
 
         let row_magic_spacebar = adw::SwitchRow::builder()
             .title("Magische Leertaste")
@@ -2826,7 +2847,7 @@ impl PreferencesDialog {
                 settings.set_mail_magic_spacebar(row.is_active());
             });
         }
-        group_reading.add(&row_magic_spacebar);
+        group_mail_behavior.add(&row_magic_spacebar);
 
         let row_show_real_date = adw::SwitchRow::builder()
             .title("Vollständiges Datum anzeigen")
@@ -2839,7 +2860,7 @@ impl PreferencesDialog {
                 settings.set_mail_show_real_date(row.is_active());
             });
         }
-        group_reading.add(&row_show_real_date);
+        group_mail_reading.add(&row_show_real_date);
 
         let row_headers_collapsed = adw::SwitchRow::builder()
             .title("Kopfzeilen standardmäßig einklappen")
@@ -2852,7 +2873,7 @@ impl PreferencesDialog {
                 settings.set_mail_headers_collapsed(row.is_active());
             });
         }
-        group_reading.add(&row_headers_collapsed);
+        group_mail_reading.add(&row_headers_collapsed);
 
         let row_message_preview = adw::SwitchRow::builder()
             .title("Mail-Vorschaufenster anzeigen")
@@ -2865,12 +2886,12 @@ impl PreferencesDialog {
                 settings.set_show_message_preview(row.is_active());
             });
         }
-        group_reading.add(&row_message_preview);
+        group_mail_reading.add(&row_message_preview);
 
         let row_mail_security_details = adw::SwitchRow::builder()
             .title("Sicherheitsstatus für normale E-Mails anzeigen")
             .subtitle(
-                "Zeigt OpenPGP-/S/MIME-Status und Details; Warnungen sowie gültige oder fehlgeschlagene Prüfungen bleiben sichtbar",
+                "Zeigt die S/MIME- und PGP-Verschlüsselungsdetails auch für unverschlüsselte Nachrichten an",
             )
             .active(false)
             .build();
@@ -2880,7 +2901,7 @@ impl PreferencesDialog {
                 settings.set_mail_show_security_details(row.is_active());
             });
         }
-        group_reading.add(&row_mail_security_details);
+        group_mail_reading.add(&row_mail_security_details);
 
         let row_mail_default_folder = adw::ComboRow::builder()
             .title("Startordner")
@@ -2917,7 +2938,7 @@ impl PreferencesDialog {
                 });
             });
         }
-        group_reading.add(&row_mail_default_folder);
+        group_mail_behavior.add(&row_mail_default_folder);
 
         let row_mail_layout = adw::ComboRow::builder()
             .title("Mail-Arbeitsweise")
@@ -2942,7 +2963,7 @@ impl PreferencesDialog {
                 });
             });
         }
-        group_reading.add(&row_mail_layout);
+        group_app_layout.add(&row_mail_layout);
 
         let row_mail_toolbar = adw::SwitchRow::builder()
             .title("Klassische Mail-Werkzeugleiste anzeigen")
@@ -2957,7 +2978,7 @@ impl PreferencesDialog {
                 settings.set_mail_show_toolbar(row.is_active());
             });
         }
-        group_reading.add(&row_mail_toolbar);
+        group_app_layout.add(&row_mail_toolbar);
 
         let row_mail_statusbar = adw::SwitchRow::builder()
             .title("Statusinformationen unten anzeigen")
@@ -2972,7 +2993,7 @@ impl PreferencesDialog {
                 settings.set_mail_show_statusbar(row.is_active());
             });
         }
-        group_reading.add(&row_mail_statusbar);
+        group_app_layout.add(&row_mail_statusbar);
 
         let row_mail_sidebar = adw::SwitchRow::builder()
             .title("Ordner-Seitenleiste anzeigen")
@@ -2987,7 +3008,7 @@ impl PreferencesDialog {
                 settings.set_mail_show_sidebar(row.is_active());
             });
         }
-        group_reading.add(&row_mail_sidebar);
+        group_app_layout.add(&row_mail_sidebar);
 
         let row_mail_density = adw::ComboRow::builder()
             .title("Dichte der Nachrichtenliste")
@@ -3012,7 +3033,7 @@ impl PreferencesDialog {
                 });
             });
         }
-        group_reading.add(&row_mail_density);
+        group_app_layout.add(&row_mail_density);
 
         let row_dark_mail = adw::SwitchRow::builder()
             .title("Dark-Mode für E-Mails erzwingen")
@@ -3025,7 +3046,7 @@ impl PreferencesDialog {
                 settings.set_force_dark_mode(row.is_active());
             });
         }
-        group_reading.add(&row_dark_mail);
+        group_mail_html.add(&row_dark_mail);
 
         let row_confirm_destructive = adw::SwitchRow::builder()
             .title("Vor destruktiven Aktionen bestätigen")
@@ -3040,8 +3061,9 @@ impl PreferencesDialog {
                 settings.set_confirm_destructive_actions(row.is_active());
             });
         }
-        group_reading.add(&row_confirm_destructive);
-        page_appearance.add(&group_reading);
+        group_mail_reading.add(&row_confirm_destructive);
+        
+        page_appearance.add(&group_app_layout);
 
         let group_citations = adw::PreferencesGroup::builder()
             .title("Zitate &amp; Hervorhebung")
@@ -3140,7 +3162,6 @@ impl PreferencesDialog {
             }
             group_citations.add(&color_row);
         }
-        page_appearance.add(&group_citations);
 
         let group_theme = adw::PreferencesGroup::builder()
             .title("Farbschema")
@@ -4257,11 +4278,15 @@ impl PreferencesDialog {
         let group_mail_junk = build_mail_junk_group(settings.clone());
 
         let page_mail_general = adw::PreferencesPage::builder().title("Allgemein").build();
-        page_mail_general.add(&group_reading);
+        page_mail_general.add(&group_mail_reading);
+        page_mail_general.add(&group_mail_behavior);
+
         let page_mail_html = adw::PreferencesPage::builder()
             .title("HTML-Mails")
             .build();
-        page_mail_html.add(&group_theme);
+        page_mail_html.add(&group_mail_html);
+        page_mail_html.add(&group_mail_fonts);
+        page_mail_html.add(&group_citations);
         let page_mail_labels = adw::PreferencesPage::builder().title("Farben &amp; Labels").build();
         page_mail_labels.add(&group_mail_labels);
         let page_mail_headers = adw::PreferencesPage::builder().title("Kopfzeilen").build();
@@ -4284,6 +4309,9 @@ impl PreferencesDialog {
             Some("layout"),
             "Listenansicht",
         );
+        if let Ok(sub) = std::env::var("EVOLUTION_PREF_SUBPAGE") {
+            mail_sub_stack.set_visible_child_name(&sub);
+        }
 
         let mail_detail_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
@@ -4447,8 +4475,24 @@ impl PreferencesDialog {
             stack.set_visible_child_name(name);
         });
 
-        // Select Mail Preferences (index 2) by default
-        if let Some(row) = sidebar_list.row_at_index(2) {
+        // Select default preferences page (Mail Preferences by default, or overridden via env)
+        let default_idx = if let Ok(page_name) = std::env::var("EVOLUTION_PREF_PAGE") {
+            match page_name.as_str() {
+                "accounts" => 0,
+                "contacts" => 1,
+                "mail" => 2,
+                "composer" => 3,
+                "network" => 4,
+                "calendar" => 5,
+                "certificates" => 6,
+                "appearance" => 7,
+                "backup" => 8,
+                _ => 2,
+            }
+        } else {
+            2
+        };
+        if let Some(row) = sidebar_list.row_at_index(default_idx) {
             sidebar_list.select_row(Some(&row));
         }
 

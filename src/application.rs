@@ -195,6 +195,17 @@ mod imp {
                 dialog.set_transient_for(Some(&window));
                 dialog.present();
             }
+
+            if std::env::args().any(|a| a == "--preferences") {
+                let dialog = crate::dialogs::PreferencesDialog::new();
+                dialog.present(Some(&window));
+            }
+
+            if std::env::args().any(|a| a == "--account-setup") {
+                let dialog = crate::dialogs::AccountSetupDialog::new();
+                dialog.set_transient_for(Some(&window));
+                dialog.present();
+            }
         }
 
         fn open(&self, files: &[gio::File], hint: &str) {

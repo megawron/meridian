@@ -48,11 +48,13 @@ fn main() -> ExitCode {
     let app = EvolutionApplication::with_flags(flags);
     if non_unique {
         let filtered: Vec<String> = std::env::args()
-            .filter(|a| a != "--non-unique" && a != "--compose")
+            .filter(|a| a != "--non-unique" && a != "--compose" && a != "--preferences" && a != "--account-setup")
             .collect();
         app.run_with_args(&filtered)
     } else {
-        let filtered: Vec<String> = std::env::args().filter(|a| a != "--compose").collect();
+        let filtered: Vec<String> = std::env::args()
+            .filter(|a| a != "--compose" && a != "--preferences" && a != "--account-setup")
+            .collect();
         app.run_with_args(&filtered)
     }
 }
