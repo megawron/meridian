@@ -767,13 +767,6 @@ splitview > .sidebar,
   border-radius: 6px;
 }
 
-.calendar-color-chip {
-  min-width: 14px;
-  min-height: 14px;
-  border-radius: 3px;
-  border: 1px solid alpha(black, 0.2);
-}
-
 /* ── Sidebar Drawer Header Bar ─────────────────────────────────────────── */
 .sidebar-drawer-header {
   min-height: 28px;

@@ -3375,6 +3375,42 @@ impl CalendarPage {
             let collapsed_groups = page.imp().collapsed_calendar_groups.borrow().clone();
             let mut displayed_sources = 0usize;
 
+            // Generate and install dynamic CSS rules for calendar colors on checkboxes
+            let mut unique_colors = std::collections::HashSet::new();
+            for s in selector.visible_sources() {
+                if let Some(ref c) = s.color {
+                    unique_colors.insert(c.clone());
+                }
+            }
+            unique_colors.insert("#3584e4".to_string());
+
+            let mut css_rules = String::new();
+            for hex in unique_colors {
+                let clean: String = hex
+                    .chars()
+                    .filter(|c| c.is_ascii_alphanumeric())
+                    .collect::<String>()
+                    .to_ascii_lowercase();
+                css_rules.push_str(&format!(
+                    "checkbutton.cal-check-{clean} {{ \
+                         --accent-bg-color: {hex}; \
+                         --accent-color: {hex}; \
+                     }} \
+                     checkbutton.cal-check-{clean} check:not(:checked) {{ \
+                         box-shadow: inset 0 0 0 2px {hex}; \
+                     }}\n"
+                ));
+            }
+            if let Some(display) = gtk::gdk::Display::default() {
+                let provider = gtk::CssProvider::new();
+                provider.load_from_string(&css_rules);
+                gtk::style_context_add_provider_for_display(
+                    &display,
+                    &provider,
+                    gtk::STYLE_PROVIDER_PRIORITY_APPLICATION + 50,
+                );
+            }
+
             for group in selector.ordered_groups() {
                 if group.is_hidden {
                     continue;
@@ -3456,46 +3492,24 @@ impl CalendarPage {
 
                     let child_box = gtk::Box::builder()
                         .orientation(gtk::Orientation::Horizontal)
-                        .spacing(6)
+                        .spacing(8)
                         .margin_start(16)
                         .build();
 
-                    // 1. Color chip
-                    let color_chip = gtk::DrawingArea::builder()
-                        .content_width(14)
-                        .content_height(14)
-                        .valign(gtk::Align::Center)
-                        .halign(gtk::Align::Center)
-                        .css_classes(vec!["calendar-color-chip"])
-                        .build();
-                    let rgba = gtk::gdk::RGBA::parse(&color_hex)
-                        .unwrap_or_else(|_| gtk::gdk::RGBA::new(0.2, 0.5, 0.9, 1.0));
-                    color_chip.set_draw_func(move |_, cr, width, height| {
-                        cr.set_source_rgba(
-                            rgba.red() as f64,
-                            rgba.green() as f64,
-                            rgba.blue() as f64,
-                            rgba.alpha() as f64,
-                        );
-                        let r = 3.0;
-                        let w = width as f64;
-                        let h = height as f64;
-                        cr.new_sub_path();
-                        cr.arc(w - r, r, r, -std::f64::consts::FRAC_PI_2, 0.0);
-                        cr.arc(w - r, h - r, r, 0.0, std::f64::consts::FRAC_PI_2);
-                        cr.arc(r, h - r, r, std::f64::consts::FRAC_PI_2, std::f64::consts::PI);
-                        cr.arc(r, r, r, std::f64::consts::PI, 3.0 * std::f64::consts::FRAC_PI_2);
-                        cr.close_path();
-                        let _ = cr.fill();
-                    });
-                    child_box.append(&color_chip);
+                    // Checkbox styled in the calendar's color
+                    let clean_color: String = color_hex
+                        .chars()
+                        .filter(|c| c.is_ascii_alphanumeric())
+                        .collect::<String>()
+                        .to_ascii_lowercase();
+                    let color_class = format!("cal-check-{}", clean_color);
 
-                    // 2. Checkbox
                     let check = gtk::CheckButton::builder()
                         .active(item.enabled && selector.is_selected(&source_uid))
                         .sensitive(item.enabled)
                         .valign(gtk::Align::Center)
                         .tooltip_text("Kalender in den Ansichten ein-/ausblenden")
+                        .css_classes(vec![color_class.as_str()])
                         .build();
 
                     let page_weak_for_toggle = page.downgrade();
