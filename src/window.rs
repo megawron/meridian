@@ -1830,6 +1830,10 @@ impl EvolutionWindow {
             .build();
         header_bar.pack_start(&transport_button);
 
+        let window_title = adw::WindowTitle::builder()
+            .title("Evolution")
+            .build();
+
         let view_switcher_title = adw::ViewSwitcherTitle::builder()
             .stack(&view_stack)
             .title("Evolution")
@@ -1840,16 +1844,19 @@ impl EvolutionWindow {
             .build();
 
         let update_title_widget = {
+            let header_bar = header_bar.clone();
+            let window_title = window_title.clone();
             let view_switcher_title = view_switcher_title.clone();
             let view_switcher_bar = view_switcher_bar.clone();
             move || {
                 let is_bottom = AppSettings::try_new()
                     .map(|s| s.switcher_location() == "bottom-left")
                     .unwrap_or(true);
-                view_switcher_title.set_view_switcher_enabled(!is_bottom);
                 if is_bottom {
+                    header_bar.set_title_widget(Some(&window_title));
                     view_switcher_bar.set_reveal(false);
                 } else {
+                    header_bar.set_title_widget(Some(&view_switcher_title));
                     view_switcher_bar.set_reveal(view_switcher_title.is_title_visible());
                 }
             }
@@ -1858,7 +1865,6 @@ impl EvolutionWindow {
         update_title_widget();
 
         {
-            let view_switcher_title = view_switcher_title.clone();
             let view_switcher_bar = view_switcher_bar.clone();
             view_switcher_title.connect_title_visible_notify(move |vst| {
                 let is_bottom = AppSettings::try_new()
@@ -1878,8 +1884,6 @@ impl EvolutionWindow {
                 update_cb();
             });
         }
-
-        header_bar.set_title_widget(Some(&view_switcher_title));
 
         let menu_model = Self::build_primary_menu();
         let menu_button = gtk::MenuButton::builder()
