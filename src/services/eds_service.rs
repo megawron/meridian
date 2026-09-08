@@ -317,8 +317,20 @@ async fn get_eds_managed_objects() -> Result<
         .build()
         .await?;
 
-    let managed_objects = proxy.get_managed_objects().await?;
-    Ok(managed_objects)
+    let mut last_err = None;
+    for attempt in 0..4 {
+        if attempt > 0 {
+            glib::timeout_future(Duration::from_millis(250)).await;
+        }
+        match proxy.get_managed_objects().await {
+            Ok(objs) => return Ok(objs),
+            Err(err) => {
+                tracing::debug!(%err, attempt, "EDS SourceManager query failed, retrying...");
+                last_err = Some(err);
+            }
+        }
+    }
+    Err(EdsServiceError::DBusFdo(last_err.unwrap()))
 }
 
 /// List all mail sources registered in the Evolution Data Server.
@@ -346,7 +358,7 @@ pub async fn list_mail_sources() -> Result<Vec<EdsSource>, EdsServiceError> {
     let (mut sources, registry_error) = match list_sources(EdsSourceKind::Mail).await {
         Ok(sources) => (sources, None),
         Err(error) => {
-            tracing::debug!(%error, "EDS source registry is unavailable");
+            tracing::warn!(%error, "EDS source registry is unavailable, falling back to GNOME Online Accounts");
             (Vec::new(), Some(error))
         }
     };
@@ -376,9 +388,14 @@ pub async fn list_mail_sources() -> Result<Vec<EdsSource>, EdsServiceError> {
             return Err(error);
         }
         tracing::info!("No configured mail sources found in EDS or GOA");
+    } else if registry_error.is_some() {
+        tracing::info!(
+            "Found {} mail sources via D-Bus (GOA fallback only, EDS was unavailable)",
+            sources.len()
+        );
     } else {
         tracing::info!(
-            "Found {} mail sources via D-Bus (EDS; GOA fallback only)",
+            "Found {} mail sources via D-Bus (EDS)",
             sources.len()
         );
     }
@@ -923,24 +940,17 @@ mod tests {
 
     #[tokio::test]
     async fn live_eds_source_discovery_smoke() {
-        if let Ok(sources) = list_sources(EdsSourceKind::Calendar).await {
-            println!("Live EDS Calendar sources count: {}", sources.len());
-            for s in &sources {
-                println!("  [Cal] uid={}, name={}, backend={}", s.uid, s.display_name, s.backend_name);
-            }
+        let cal_discovery = discover_sources(EdsSourceKind::Calendar).await;
+        println!("Live EDS Calendar sources discovery: count={}, origin={:?}, err={:?}", cal_discovery.sources.len(), cal_discovery.origin, cal_discovery.error);
+        for s in &cal_discovery.sources {
+            println!("  [Cal] uid={}, name={}, backend={}, parent={:?}", s.uid, s.display_name, s.backend_name, s.parent_name);
         }
-        if let Ok(sources) = list_sources(EdsSourceKind::AddressBook).await {
-            println!("Live EDS AddressBook sources count: {}", sources.len());
-            for s in &sources {
-                println!("  [Book] uid={}, name={}, backend={}", s.uid, s.display_name, s.backend_name);
-            }
-        }
-        if let Ok(sources) = list_sources(EdsSourceKind::Mail).await {
-            println!("Live EDS Mail sources count: {}", sources.len());
-            for s in &sources {
-                println!("  [Mail] uid={}, name={}, backend={}", s.uid, s.display_name, s.backend_name);
-            }
-        }
+
+        let book_discovery = discover_sources(EdsSourceKind::AddressBook).await;
+        println!("Live EDS AddressBook sources discovery: count={}, origin={:?}", book_discovery.sources.len(), book_discovery.origin);
+
+        let mail_discovery = discover_sources(EdsSourceKind::Mail).await;
+        println!("Live EDS Mail sources discovery: count={}, origin={:?}", mail_discovery.sources.len(), mail_discovery.origin);
     }
 
     #[tokio::test]

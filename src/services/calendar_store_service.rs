@@ -12,13 +12,15 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
+use serde::{Deserialize, Serialize};
+
 use super::ical_time_service::{property_local_display, property_local_timestamp};
 use super::reminder_service::{Alarm, parse_alarms, replace_component_alarms};
 
 static ATOMIC_WRITE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 static CALENDAR_MUTATION_LOCK: Mutex<()> = Mutex::new(());
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CalendarEventRecord {
     pub uid: String,
     pub source_uid: String,
@@ -32,7 +34,7 @@ pub struct CalendarEventRecord {
     pub all_day: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TaskRecord {
     pub uid: String,
     pub source_uid: String,
@@ -44,7 +46,7 @@ pub struct TaskRecord {
     pub completed: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MemoRecord {
     pub uid: String,
     pub source_uid: String,
@@ -393,7 +395,7 @@ impl MemoEditorDraft {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CalendarSnapshot {
     pub events: Vec<CalendarEventRecord>,
     pub tasks: Vec<TaskRecord>,

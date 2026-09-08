@@ -1430,6 +1430,29 @@ impl Drop for ECalWatcher {
     }
 }
 
+pub(crate) fn calendar_cache_path() -> std::path::PathBuf {
+    crate::services::app_cache_dir().join("calendar_load_cache.json")
+}
+
+pub(crate) fn save_calendar_load_cache(snapshot: &CalendarSnapshot) {
+    if snapshot.events.is_empty() && snapshot.tasks.is_empty() && snapshot.memos.is_empty() {
+        return;
+    }
+    let path = calendar_cache_path();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(json) = serde_json::to_string(snapshot) {
+        let _ = std::fs::write(path, json);
+    }
+}
+
+pub(crate) fn load_calendar_load_cache() -> Option<CalendarSnapshot> {
+    let path = calendar_cache_path();
+    let content = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str(&content).ok()
+}
+
 pub(crate) fn load_snapshot_prefer_eds() -> CalendarLoadResult {
     let ecal = ECalService::new();
     match ecal.load_snapshot() {
@@ -1442,6 +1465,9 @@ pub(crate) fn load_snapshot_prefer_eds() -> CalendarLoadResult {
                 snapshot.memos.extend(local.memos);
                 #[cfg(all(target_os = "linux", eds_ecal_bridge))]
                 sort_snapshot(&mut snapshot);
+            }
+            if !snapshot.events.is_empty() || !snapshot.tasks.is_empty() || !snapshot.memos.is_empty() {
+                save_calendar_load_cache(&snapshot);
             }
             if snapshot.events.is_empty() && snapshot.tasks.is_empty() && snapshot.memos.is_empty()
             {
@@ -1458,6 +1484,18 @@ pub(crate) fn load_snapshot_prefer_eds() -> CalendarLoadResult {
         Err(error) => {
             if let Some(graph) = load_snapshot_from_graph() {
                 return graph;
+            }
+            if let Some(cached_snapshot) = load_calendar_load_cache() {
+                if !cached_snapshot.events.is_empty()
+                    || !cached_snapshot.tasks.is_empty()
+                    || !cached_snapshot.memos.is_empty()
+                {
+                    return CalendarLoadResult {
+                        snapshot: cached_snapshot,
+                        origin: CalendarDataOrigin::Local,
+                        warning: Some(error.to_string()),
+                    };
+                }
             }
             let snapshot =
                 super::calendar_store_service::CalendarStoreService::new().load_snapshot();

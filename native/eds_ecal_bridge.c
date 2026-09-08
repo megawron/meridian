@@ -77,6 +77,14 @@ append_component (ECalLoadContext *context,
     return TRUE;
 }
 
+static gboolean
+ecal_cancel_timeout_cb (gpointer data)
+{
+    GCancellable *c = (GCancellable *) data;
+    g_cancellable_cancel (c);
+    return G_SOURCE_REMOVE;
+}
+
 static void
 load_source (ECalLoadContext *context,
              ESource *source,
@@ -87,11 +95,43 @@ load_source (ECalLoadContext *context,
     GSList *link;
     GError *error = NULL;
     const gchar *display_name;
+    const gchar *extension_name = NULL;
+    gchar *query = NULL;
+
+    if (source_type == EVOLUTION_EDS_ECAL_EVENTS)
+        extension_name = E_SOURCE_EXTENSION_CALENDAR;
+    else if (source_type == EVOLUTION_EDS_ECAL_TASKS)
+        extension_name = E_SOURCE_EXTENSION_TASK_LIST;
+    else if (source_type == EVOLUTION_EDS_ECAL_MEMOS)
+        extension_name = E_SOURCE_EXTENSION_MEMO_LIST;
+
+    if (!extension_name || !e_source_has_extension (source, extension_name))
+        return;
+
+    {
+        ESourceExtension *ext = e_source_get_extension (source, extension_name);
+        if (!E_IS_SOURCE_BACKEND (ext))
+            return;
+        const gchar *backend_name = e_source_backend_get_backend_name (E_SOURCE_BACKEND (ext));
+        if (!backend_name || !*backend_name)
+            return;
+    }
 
     context->configured_sources++;
     display_name = e_source_get_display_name (source);
+
+    guint connect_timeout_ms = (source_type == EVOLUTION_EDS_ECAL_EVENTS) ? 1500 : 300;
+    guint32 wait_seconds = (source_type == EVOLUTION_EDS_ECAL_EVENTS) ? 1 : 0;
+
+    GCancellable *cancellable = g_cancellable_new ();
+    guint timer_id = g_timeout_add (connect_timeout_ms, ecal_cancel_timeout_cb, cancellable);
+
     client = E_CAL_CLIENT (e_cal_client_connect_sync (
-        source, (ECalClientSourceType) source_type, 3, NULL, &error));
+        source, (ECalClientSourceType) source_type, wait_seconds, cancellable, &error));
+
+    g_source_remove (timer_id);
+    g_object_unref (cancellable);
+
     if (!client) {
         context->failed_sources++;
         remember_error (context, display_name, error);
@@ -99,8 +139,36 @@ load_source (ECalLoadContext *context,
         return;
     }
 
-    if (!e_cal_client_get_object_list_as_comps_sync (
-            client, "#t", &components, NULL, &error)) {
+    if (source_type == EVOLUTION_EDS_ECAL_EVENTS) {
+        GDateTime *now = g_date_time_new_now_utc ();
+        GDateTime *start = g_date_time_add_months (now, -6);
+        GDateTime *end = g_date_time_add_months (now, 12);
+        gchar *start_iso = g_date_time_format (start, "%Y%m%dT000000Z");
+        gchar *end_iso = g_date_time_format (end, "%Y%m%dT235959Z");
+        query = g_strdup_printf (
+            "(occur-in-time-range? (make-time \"%s\") (make-time \"%s\"))",
+            start_iso, end_iso);
+        g_free (start_iso);
+        g_free (end_iso);
+        g_date_time_unref (start);
+        g_date_time_unref (end);
+        g_date_time_unref (now);
+    } else {
+        query = g_strdup ("#t");
+    }
+
+    guint query_timeout_ms = (source_type == EVOLUTION_EDS_ECAL_EVENTS) ? 2000 : 500;
+    cancellable = g_cancellable_new ();
+    timer_id = g_timeout_add (query_timeout_ms, ecal_cancel_timeout_cb, cancellable);
+
+    gboolean query_ok = e_cal_client_get_object_list_as_comps_sync (
+        client, query, &components, cancellable, &error);
+
+    g_source_remove (timer_id);
+    g_object_unref (cancellable);
+    g_free (query);
+
+    if (!query_ok) {
         context->failed_sources++;
         remember_error (context, display_name, error);
         g_clear_error (&error);
@@ -116,6 +184,33 @@ load_source (ECalLoadContext *context,
     }
     g_slist_free (components);
     g_object_unref (client);
+}
+
+static ESourceRegistry *
+ecal_get_source_registry_with_retry (GCancellable *cancellable, GError **error)
+{
+    ESourceRegistry *registry = NULL;
+    GError *local_error = NULL;
+
+    for (int retry = 0; retry < 5; retry++) {
+        if (cancellable && g_cancellable_is_cancelled (cancellable)) {
+            g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_CANCELLED, "Operation cancelled");
+            return NULL;
+        }
+        local_error = NULL;
+        registry = e_source_registry_new_sync (cancellable, &local_error);
+        if (registry)
+            return registry;
+
+        if (retry < 4) {
+            g_clear_error (&local_error);
+            g_usleep (200000); /* 200 ms */
+        }
+    }
+
+    if (local_error)
+        g_propagate_error (error, local_error);
+    return NULL;
 }
 
 int
@@ -162,7 +257,7 @@ evolution_eds_ecal_load_components (
         return 0;
     }
 
-    registry = e_source_registry_new_sync (NULL, &error);
+    registry = ecal_get_source_registry_with_retry (NULL, &error);
     if (!registry) {
         if (out_error && error)
             *out_error = g_strdup (error->message);
@@ -343,7 +438,7 @@ evolution_eds_ecal_apply_operation (
         return return_operation_error (&error, out_error);
     }
 
-    registry = e_source_registry_new_sync (NULL, &error);
+    registry = ecal_get_source_registry_with_retry (NULL, &error);
     if (!registry)
         goto finish;
 
@@ -521,7 +616,7 @@ evolution_eds_ecal_list_source_capabilities (
             *out_error = g_strdup ("Unbekannter ECal-Quellentyp");
         return 0;
     }
-    registry = e_source_registry_new_sync (NULL, &error);
+    registry = ecal_get_source_registry_with_retry (NULL, &error);
     if (!registry)
         goto finish;
 
@@ -607,7 +702,7 @@ evolution_eds_ecal_refresh_source (
         return 0;
     }
 
-    registry = e_source_registry_new_sync (NULL, &error);
+    registry = ecal_get_source_registry_with_retry (NULL, &error);
     if (!registry)
         goto finish;
     source = e_source_registry_ref_source (registry, source_uid);
@@ -751,7 +846,7 @@ evolution_eds_ecal_rename_source (
             "ECal-Umbenennung benötigt einen Namen");
         goto finish;
     }
-    registry = e_source_registry_new_sync (NULL, &error);
+    registry = ecal_get_source_registry_with_retry (NULL, &error);
     if (!registry)
         goto finish;
     if (!resolve_source_for_management (
@@ -809,7 +904,7 @@ evolution_eds_ecal_delete_source (
             "ECal-Löschen benötigt eine Quell-UID");
         goto finish;
     }
-    registry = e_source_registry_new_sync (NULL, &error);
+    registry = ecal_get_source_registry_with_retry (NULL, &error);
     if (!registry)
         goto finish;
     if (!resolve_source_for_management (
@@ -919,7 +1014,7 @@ evolution_eds_ecal_copy_source (
             "Quelle und Ziel der ECal-Quellenkopie müssen verschieden sein");
         goto finish;
     }
-    registry = e_source_registry_new_sync (NULL, &error);
+    registry = ecal_get_source_registry_with_retry (NULL, &error);
     if (!registry)
         goto finish;
     if (!resolve_source_for_management (
@@ -1106,7 +1201,7 @@ evolution_eds_ecal_create_local_source (
             "Unbekannter ECal-Quellentyp");
         goto finish;
     }
-    registry = e_source_registry_new_sync (NULL, &error);
+    registry = ecal_get_source_registry_with_retry (NULL, &error);
     if (!registry)
         goto finish;
     parent_source = e_source_registry_ref_source (registry, "local-stub");
@@ -1308,7 +1403,7 @@ evolution_eds_ecal_get_local_source_properties (
             *out_error = g_strdup ("Lokale ECal-Eigenschaften benötigen eine Quell-UID");
         return 0;
     }
-    registry = e_source_registry_new_sync (NULL, &error);
+    registry = ecal_get_source_registry_with_retry (NULL, &error);
     if (!registry)
         goto finish;
     resolved = resolve_local_source_for_properties (
@@ -1429,7 +1524,7 @@ evolution_eds_ecal_update_local_source_properties (
             goto finish;
         }
     }
-    registry = e_source_registry_new_sync (NULL, &error);
+    registry = ecal_get_source_registry_with_retry (NULL, &error);
     if (!registry)
         goto finish;
     resolved = resolve_local_source_for_properties (
@@ -1927,7 +2022,7 @@ evolution_eds_ecal_watcher_new (
     g_source_attach (watcher->wakeup_source, watcher->context);
 
     g_main_context_push_thread_default (watcher->context);
-    watcher->registry = e_source_registry_new_sync (NULL, &error);
+    watcher->registry = ecal_get_source_registry_with_retry (NULL, &error);
     g_main_context_pop_thread_default (watcher->context);
     if (!watcher->registry) {
         if (out_error && error)
