@@ -376,12 +376,6 @@ impl SourceSelector {
                 known.push(cg.clone());
             }
         }
-        // 3. Groups in groups_order
-        for og in &self.groups_order {
-            if !known.contains(og) {
-                known.push(og.clone());
-            }
-        }
         if known.is_empty() {
             known.push("Auf diesem Computer".to_string());
         }
@@ -403,8 +397,7 @@ impl SourceSelector {
             .into_iter()
             .map(|name| {
                 let source_count = self.sources.iter().filter(|s| s.group_name == name).count();
-                let is_custom = self.custom_groups.contains(&name)
-                    || (source_count == 0 && name != "Auf diesem Computer");
+                let is_custom = self.custom_groups.contains(&name);
                 let is_hidden = self.hidden_groups.contains(&name);
                 SourceGroup {
                     name,
@@ -553,9 +546,7 @@ impl SourceSelector {
         self.hidden_groups = hidden_groups.into_iter().collect();
 
         let groups_order = self.domain.read_groups_order(settings);
-        if !groups_order.is_empty() {
-            self.groups_order = groups_order;
-        }
+        self.groups_order = groups_order;
 
         self.selected_uids.clear();
         for source in &self.sources {
@@ -595,8 +586,12 @@ impl SourceSelector {
         }
         let hidden_groups: Vec<String> = self.hidden_groups.iter().cloned().collect();
         self.domain.write_hidden_groups(settings, &hidden_groups);
-        let groups: Vec<String> = self.ordered_groups().into_iter().map(|g| g.name).collect();
-        self.domain.write_groups_order(settings, &groups);
+        if self.groups_order.is_empty() {
+            self.domain.write_groups_order(settings, &[]);
+        } else {
+            let groups: Vec<String> = self.ordered_groups().into_iter().map(|g| g.name).collect();
+            self.domain.write_groups_order(settings, &groups);
+        }
     }
 
     pub fn update_sources(&mut self, mut new_sources: Vec<SourceSelectorItem>) {
@@ -1080,7 +1075,8 @@ pub(crate) mod tests {
 
     #[test]
     fn settings_roundtrip_sync() {
-        if let Some(settings) = AppSettings::try_new() {
+        let backend = gio::memory_settings_backend_new();
+        if let Some(settings) = AppSettings::try_new_with_backend(&backend) {
             let mut selector = SourceSelector::new(SourceDomain::Calendar);
             selector.update_sources(sample_sources());
 
