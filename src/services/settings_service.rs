@@ -1713,6 +1713,14 @@ impl AppSettings {
         self.set_boolean("mail-show-toolbar", value);
     }
 
+    pub fn mail_show_mark_read_actions(&self) -> bool {
+        self.settings.boolean("mail-show-mark-read-actions")
+    }
+
+    pub fn set_mail_show_mark_read_actions(&self, value: bool) {
+        self.set_boolean("mail-show-mark-read-actions", value);
+    }
+
     pub fn mail_show_sidebar(&self) -> bool {
         self.settings.boolean("mail-show-sidebar")
     }
@@ -2912,6 +2920,9 @@ impl AppSettings {
             "mail-default-folder" => self.set_mail_default_folder(value),
             "mail-layout" => self.set_mail_layout(value),
             "mail-show-toolbar" => self.set_mail_show_toolbar(parse_migrated_bool(key, value)?),
+            "mail-show-mark-read-actions" => {
+                self.set_mail_show_mark_read_actions(parse_migrated_bool(key, value)?);
+            }
             "mail-show-sidebar" => self.set_mail_show_sidebar(parse_migrated_bool(key, value)?),
             "mail-sidebar-position" => {
                 self.set_mail_sidebar_position(parse_migrated_i32_in_range(key, value, 0, 2_000)?);

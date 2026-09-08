@@ -1,6 +1,8 @@
 # Build artifacts
 /target/
 /builddir/
+gschemas.compiled
+data/gschemas.compiled
 
 # Cargo
 **/*.rs.bk

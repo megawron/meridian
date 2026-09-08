@@ -393,6 +393,10 @@
       <default>true</default>
       <summary>Show the classic Evolution mail toolbar</summary>
     </key>
+    <key name="mail-show-mark-read-actions" type="b">
+      <default>false</default>
+      <summary>Gelesen/Ungelesen-Aktionen in der Mail-Werkzeugleiste anzeigen</summary>
+    </key>
     <key name="mail-show-statusbar" type="b">
       <default>true</default>
       <summary>Show mail and connection status information at the bottom</summary>

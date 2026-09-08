@@ -3404,6 +3404,9 @@ mod imp {
         pub search_field_selector: RefCell<Option<gtk::DropDown>>,
         pub search_scope_selector: RefCell<Option<gtk::DropDown>>,
         pub quick_filter: RefCell<Option<gtk::DropDown>>,
+        pub search_options_button: RefCell<Option<gtk::MenuButton>>,
+        pub mark_read_button: RefCell<Option<gtk::Button>>,
+        pub mark_unread_button: RefCell<Option<gtk::Button>>,
         pub message_state: RefCell<Option<gtk::Label>>,
         pub message_status_area: RefCell<Option<gtk::Box>>,
         pub graph_local_search_warning: RefCell<Option<gtk::Label>>,
@@ -11282,20 +11285,17 @@ impl MailPage {
     fn build_unified_mail_toolbar(
         &self,
         search_entry: &gtk::SearchEntry,
-        search_field_selector: &gtk::DropDown,
-        search_scope_selector: &gtk::DropDown,
-        quick_filter: &gtk::DropDown,
+        search_options_button: &gtk::MenuButton,
         columns_button: &gtk::MenuButton,
         save_search_button: &gtk::Button,
-        syntax_help_button: &gtk::MenuButton,
     ) -> gtk::Box {
         let toolbar = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(4)
-            .margin_start(8)
-            .margin_end(8)
-            .margin_top(4)
-            .margin_bottom(4)
+            .margin_start(6)
+            .margin_end(6)
+            .margin_top(2)
+            .margin_bottom(2)
             .css_classes(vec!["unified-mail-toolbar", "toolbar"])
             .build();
 
@@ -11531,12 +11531,25 @@ impl MailPage {
             "win.toggle-flag",
         );
         let undo_btn = make_button("edit-undo-symbolic", "Rückgängig (Ctrl+Z)", "win.undo");
+
+        let show_mark_read = AppSettings::try_new()
+            .map(|s| s.mail_show_mark_read_actions())
+            .unwrap_or(false);
+        mark_read_btn.set_visible(show_mark_read);
+        mark_unread_btn.set_visible(show_mark_read);
+        self.imp()
+            .mark_read_button
+            .replace(Some(mark_read_btn.clone()));
+        self.imp()
+            .mark_unread_button
+            .replace(Some(mark_unread_btn.clone()));
+
         left_box.append(&mark_read_btn);
         left_box.append(&mark_unread_btn);
         left_box.append(&flag_btn);
         left_box.append(&undo_btn);
 
-        // Center group: Search & Scope & Filters
+        // Center group: Search, Options & Columns
         let center_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(4)
@@ -11544,12 +11557,9 @@ impl MailPage {
             .halign(gtk::Align::Fill)
             .build();
         center_box.append(search_entry);
-        center_box.append(search_field_selector);
-        center_box.append(search_scope_selector);
-        center_box.append(quick_filter);
-        center_box.append(columns_button);
+        center_box.append(search_options_button);
         center_box.append(save_search_button);
-        center_box.append(syntax_help_button);
+        center_box.append(columns_button);
 
         // Right group: Mail-Specific Actions (Reply, Reply All, Forward, Prev, Next, Print, Export)
         let right_box = gtk::Box::builder()
@@ -14296,6 +14306,28 @@ impl MailPage {
                 settings_for_date_width.set_mail_date_column_width(scale.value() as i32);
             });
             columns_popover_box.append(&date_width_scale);
+
+            let mark_read_toggle = gtk::CheckButton::builder()
+                .label("Gelesen/Ungelesen in Werkzeugleiste")
+                .active(settings.mail_show_mark_read_actions())
+                .margin_top(4)
+                .build();
+            let page_weak_toggle = self.downgrade();
+            let settings_for_toggle = settings.clone();
+            mark_read_toggle.connect_toggled(move |btn| {
+                let active = btn.is_active();
+                settings_for_toggle.set_mail_show_mark_read_actions(active);
+                if let Some(page) = page_weak_toggle.upgrade() {
+                    if let Some(b) = page.imp().mark_read_button.borrow().as_ref() {
+                        b.set_visible(active);
+                    }
+                    if let Some(b) = page.imp().mark_unread_button.borrow().as_ref() {
+                        b.set_visible(active);
+                    }
+                }
+            });
+            columns_popover_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+            columns_popover_box.append(&mark_read_toggle);
         } else {
             columns_popover_box.append(
                 &gtk::Label::builder()
@@ -14318,23 +14350,66 @@ impl MailPage {
             "view-list-symbolic",
             "open-menu-symbolic",
         ));
-        let syntax_popover_box = gtk::Box::builder()
+
+        let search_options_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
-            .spacing(4)
-            .margin_start(10)
-            .margin_end(10)
-            .margin_top(8)
-            .margin_bottom(8)
-            .width_request(300)
+            .spacing(8)
+            .margin_start(12)
+            .margin_end(12)
+            .margin_top(10)
+            .margin_bottom(10)
+            .width_request(320)
             .build();
-        syntax_popover_box.append(
-            &gtk::Label::builder()
-                .label("Suchsyntax-Operatoren")
-                .halign(gtk::Align::Start)
-                .css_classes(vec!["heading"])
-                .margin_bottom(4)
-                .build(),
-        );
+
+        let search_options_header = gtk::Label::builder()
+            .label("Suchoptionen & Filter")
+            .css_classes(vec!["heading"])
+            .halign(gtk::Align::Start)
+            .build();
+        search_options_box.append(&search_options_header);
+
+        let search_grid = gtk::Grid::builder()
+            .row_spacing(8)
+            .column_spacing(12)
+            .build();
+
+        let lbl_field = gtk::Label::builder()
+            .label("Suchfeld:")
+            .halign(gtk::Align::Start)
+            .css_classes(vec!["dim-label"])
+            .build();
+        search_grid.attach(&lbl_field, 0, 0, 1, 1);
+        search_field_selector.set_hexpand(true);
+        search_grid.attach(&search_field_selector, 1, 0, 1, 1);
+
+        let lbl_scope = gtk::Label::builder()
+            .label("Suchbereich:")
+            .halign(gtk::Align::Start)
+            .css_classes(vec!["dim-label"])
+            .build();
+        search_grid.attach(&lbl_scope, 0, 1, 1, 1);
+        search_scope_selector.set_hexpand(true);
+        search_grid.attach(&search_scope_selector, 1, 1, 1, 1);
+
+        let lbl_filter = gtk::Label::builder()
+            .label("Filter:")
+            .halign(gtk::Align::Start)
+            .css_classes(vec!["dim-label"])
+            .build();
+        search_grid.attach(&lbl_filter, 0, 2, 1, 1);
+        quick_filter.set_hexpand(true);
+        search_grid.attach(&quick_filter, 1, 2, 1, 1);
+
+        search_options_box.append(&search_grid);
+        search_options_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+
+        let syntax_header = gtk::Label::builder()
+            .label("Suchsyntax-Operatoren")
+            .halign(gtk::Align::Start)
+            .css_classes(vec!["title-5"])
+            .build();
+        search_options_box.append(&syntax_header);
+
         let syntax_items = [
             ("from:", "Absender (z.B. from:alice)"),
             ("to:", "Empfänger (z.B. to:bob)"),
@@ -14379,27 +14454,47 @@ impl MailPage {
             });
             row.append(&btn_token);
             row.append(&lbl_desc);
-            syntax_popover_box.append(&row);
+            search_options_box.append(&row);
         }
-        let syntax_popover = gtk::Popover::builder().child(&syntax_popover_box).build();
-        let syntax_help_button = gtk::MenuButton::builder()
-            .icon_name("help-about-symbolic")
-            .tooltip_text("Suchsyntax-Operatoren anzeigen")
-            .popover(&syntax_popover)
-            .css_classes(vec!["flat", "circular"])
+
+        let search_options_popover = gtk::Popover::builder().child(&search_options_box).build();
+        let search_options_button = gtk::MenuButton::builder()
+            .icon_name("preferences-system-search-symbolic")
+            .tooltip_text("Suchoptionen und Filter")
+            .popover(&search_options_popover)
+            .css_classes(vec!["flat", "search-options-button"])
+            .valign(gtk::Align::Center)
             .build();
-        set_accessible_label(&syntax_help_button, "Suchsyntax-Hilfe");
+        set_accessible_label(&search_options_button, "Suchoptionen und Filter");
+        self.imp()
+            .search_options_button
+            .replace(Some(search_options_button.clone()));
+
+        // Active indicator on search_options_button when scope or filter is non-default
+        let btn_weak = search_options_button.downgrade();
+        let scope_clone = search_scope_selector.clone();
+        let filter_clone = quick_filter.clone();
+        let update_indicator = Rc::new(move || {
+            if let Some(btn) = btn_weak.upgrade() {
+                if scope_clone.selected() != 0 || filter_clone.selected() != 0 {
+                    btn.add_css_class("has-active-filters");
+                } else {
+                    btn.remove_css_class("has-active-filters");
+                }
+            }
+        });
+        let ind_scope = Rc::clone(&update_indicator);
+        search_scope_selector.connect_selected_notify(move |_| ind_scope());
+        let ind_filter = Rc::clone(&update_indicator);
+        quick_filter.connect_selected_notify(move |_| ind_filter());
 
         self.imp().search_entry.replace(Some(search_entry.clone()));
 
         let unified_toolbar = self.build_unified_mail_toolbar(
             &search_entry,
-            &search_field_selector,
-            &search_scope_selector,
-            &quick_filter,
+            &search_options_button,
             &columns_button,
             &save_search_button,
-            &syntax_help_button,
         );
         let unified_toolbar_scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Automatic)

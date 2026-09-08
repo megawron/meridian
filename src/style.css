@@ -815,8 +815,8 @@ splitview > .sidebar,
 /* ── Unified Full-Width View Toolbar ───────────────────────────────────── */
 .unified-mail-toolbar,
 .unified-view-toolbar {
-  min-height: 44px;
-  padding: 4px 8px;
+  min-height: 34px;
+  padding: 2px 6px;
   background-color: @headerbar_bg_color;
   border-bottom: 1px solid alpha(@borders, 0.45);
 }
@@ -825,9 +825,9 @@ splitview > .sidebar,
 .unified-view-toolbar button {
   min-width: 28px;
   min-height: 28px;
-  padding: 4px 6px;
-  margin-top: 2px;
-  margin-bottom: 2px;
+  padding: 2px 4px;
+  margin-top: 1px;
+  margin-bottom: 1px;
 }
 
 .unified-mail-toolbar dropdown,
@@ -836,9 +836,16 @@ splitview > .sidebar,
 .unified-mail-toolbar .search-entry,
 .unified-view-toolbar search-entry,
 .unified-view-toolbar .search-entry {
-  min-height: 32px;
-  margin-top: 2px;
-  margin-bottom: 2px;
+  min-height: 28px;
+  margin-top: 1px;
+  margin-bottom: 1px;
+}
+
+.unified-mail-toolbar search-entry text,
+.unified-mail-toolbar .search-entry text {
+  min-height: 22px;
+  padding-top: 1px;
+  padding-bottom: 1px;
 }
 
 .unified-mail-toolbar search-entry,
@@ -850,8 +857,12 @@ splitview > .sidebar,
 
 .unified-mail-toolbar separator,
 .unified-view-toolbar separator {
-  margin-top: 4px;
-  margin-bottom: 4px;
+  margin-top: 3px;
+  margin-bottom: 3px;
+}
+
+.search-options-button.has-active-filters {
+  color: @accent_color;
 }
 
 /* ── iTIP Meeting Invitation Banner ────────────────────────────────────────── */
