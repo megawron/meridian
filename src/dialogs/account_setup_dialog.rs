@@ -189,7 +189,13 @@ impl AccountSetupDialog {
                 AccountProtocol::Exchange => "Microsoft Exchange (EWS)",
                 AccountProtocol::ImapSmtp => "IMAP / SMTP",
                 AccountProtocol::Pop3 => "POP3 / SMTP",
-                AccountProtocol::Goa => "GNOME-Onlinekonto",
+                AccountProtocol::Goa => {
+                    if cfg!(target_os = "macos") {
+                        "macOS Internetaccounts"
+                    } else {
+                        "GNOME-Onlinekonto"
+                    }
+                }
             };
             (name, email, badge.to_string(), "Konto aktiv".to_string())
         } else {
@@ -478,14 +484,24 @@ impl AccountSetupDialog {
             .description("Wähle den Anbieter oder das Protokoll deines E-Mail-Dienstes")
             .build();
 
-        let combo_type = adw::ComboRow::builder()
-            .title("Protokoll / Dienst")
-            .model(&gtk::StringList::new(&[
+        let protocol_labels = if cfg!(target_os = "macos") {
+            [
+                "IMAP & SMTP (Standard)",
+                "Microsoft Exchange (EWS / M365)",
+                "macOS Internetaccounts (Kalender, Erinnerungen & Kontakte)",
+                "POP3 (Lokale E-Mails)",
+            ]
+        } else {
+            [
                 "IMAP & SMTP (Standard)",
                 "Microsoft Exchange (EWS / M365)",
                 "GNOME-Onlinekonto",
                 "POP3 (Lokale E-Mails)",
-            ]))
+            ]
+        };
+        let combo_type = adw::ComboRow::builder()
+            .title("Protokoll / Dienst")
+            .model(&gtk::StringList::new(&protocol_labels))
             .build();
         if let Some(profile) = edit_profile.as_ref() {
             combo_type.set_selected(match profile.protocol {
@@ -496,6 +512,28 @@ impl AccountSetupDialog {
             });
         }
         group_type.add(&combo_type);
+        #[cfg(target_os = "macos")]
+        {
+            let internet_accounts = adw::ActionRow::builder()
+                .title("macOS Internetaccounts verwalten…")
+                .subtitle(
+                    "Kalender, Erinnerungen und Kontakte werden als native Systemquellen verwendet. Mail benötigt eine eigene Anmeldung in dieser App.",
+                )
+                .activatable(true)
+                .build();
+            let open_button = gtk::Button::builder()
+                .label("Systemeinstellungen öffnen")
+                .valign(gtk::Align::Center)
+                .build();
+            open_button.connect_clicked(|_| {
+                crate::services::MacosIntegrationService::new().open_internet_accounts();
+            });
+            internet_accounts.connect_activated(|_| {
+                crate::services::MacosIntegrationService::new().open_internet_accounts();
+            });
+            internet_accounts.add_suffix(&open_button);
+            group_type.add(&internet_accounts);
+        }
         page_identity.add(&group_type);
 
         // 1b. User Information
@@ -598,6 +636,7 @@ impl AccountSetupDialog {
         combo_type.connect_selected_notify(move |combo| {
             let badge = match combo.selected() {
                 1 => "Microsoft Exchange (EWS)",
+                2 if cfg!(target_os = "macos") => "macOS Internetaccounts",
                 2 => "GNOME-Onlinekonto",
                 3 => "POP3 / SMTP",
                 _ => "IMAP / SMTP",
@@ -1108,7 +1147,11 @@ impl AccountSetupDialog {
                 row_smtp_port.set_visible(has_manual_smtp);
                 row_smtp_auth_info.set_visible(has_manual_smtp);
 
-                if is_goa {
+                if is_goa && cfg!(target_os = "macos") {
+                    group_smtp.set_description(Some(
+                        "macOS Internetaccounts stellt Kalender, Erinnerungen und Kontakte als Systemquellen bereit. E-Mail benötigt eine eigene Anmeldung in dieser App.",
+                    ));
+                } else if is_goa {
                     group_smtp.set_description(Some(
                         "Der E-Mail-Versand wird automatisch über das GNOME-Onlinekonto verwaltet.",
                     ));
@@ -1139,6 +1182,10 @@ impl AccountSetupDialog {
                 if is_exchange {
                     row_username.set_tooltip_text(Some(
                         "z. B. DOMÄNE\\Benutzername oder E-Mail-Adresse",
+                    ));
+                } else if is_goa && cfg!(target_os = "macos") {
+                    row_username.set_tooltip_text(Some(
+                        "macOS Internetaccounts übergibt keine allgemeinen Mail-Zugangsdaten; für E-Mail bitte ein eigenes Konto hinzufügen",
                     ));
                 } else if is_goa {
                     row_username.set_tooltip_text(Some(
@@ -1243,6 +1290,19 @@ impl AccountSetupDialog {
             #[strong]
             row_default_bcc,
             move |_| {
+                #[cfg(target_os = "macos")]
+                if combo_type.selected() == 2 {
+                    switch_to_page("identity");
+                    if let Some(parent) = dialog.transient_for() {
+                        if let Ok(window) = parent.downcast::<crate::window::EvolutionWindow>() {
+                            window.add_toast(&adw::Toast::new(
+                                "macOS Internetaccounts verwaltet nur native Kalender-, Erinnerungs- und Kontaktquellen. Für E-Mail bitte IMAP, Exchange oder POP3 einrichten.",
+                            ));
+                        }
+                    }
+                    return;
+                }
+
                 let mut email = row_email.text().trim().to_string();
                 let mut display_name = row_fullname.text().trim().to_string();
                 let username = row_username.text().trim().to_string();

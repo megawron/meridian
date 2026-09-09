@@ -1519,8 +1519,22 @@ pub(crate) fn load_snapshot_prefer_eds() -> CalendarLoadResult {
                     };
                 }
             }
-            let snapshot =
-                super::calendar_store_service::CalendarStoreService::new().load_snapshot();
+            let local_service = super::calendar_store_service::CalendarStoreService::new();
+            let mut snapshot = local_service.load_snapshot();
+            #[cfg(all(target_os = "macos", macos_bridge))]
+            {
+                if snapshot.events.is_empty()
+                    && snapshot.tasks.is_empty()
+                    && snapshot.memos.is_empty()
+                    && local_service.is_writable()
+                {
+                    let macos = super::macos_integration_service::MacosIntegrationService::new();
+                    let _ = macos.sync_apple_calendar_to_store(&local_service);
+                    let _ = macos.sync_apple_reminders_to_store(&local_service);
+                    snapshot = local_service.load_snapshot();
+                }
+            }
+
             CalendarLoadResult {
                 snapshot,
                 origin: CalendarDataOrigin::Local,

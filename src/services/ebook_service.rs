@@ -627,6 +627,13 @@ pub(crate) fn load_contacts_prefer_eds() -> EBookLoadResult {
                 return graph;
             }
             let local_service = ContactStoreService::new();
+            #[cfg(all(target_os = "macos", macos_bridge))]
+            {
+                if local_service.is_writable() && local_service.load_contacts().is_empty() {
+                    let macos = super::macos_integration_service::MacosIntegrationService::new();
+                    let _ = macos.sync_apple_contacts_to_store(&local_service);
+                }
+            }
             let local_source_uid = if local_service.is_writable() {
                 "local-addressbook"
             } else {

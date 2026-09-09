@@ -121,6 +121,9 @@ accessibility helpers, and view-local GTK state.
   Display cache refresh status explicitly and retain the visible snapshot while
   reloading. Selected-message MIME decoding and searchable text preparation also
   run off GTK and carry cancellation plus complete message identity.
+- The non-Linux text-editor fallback tracks an inserted composer signature with
+  TextBuffer marks. Replacing/removing it preserves the surrounding draft, and
+  loading a different draft clears those marks.
 - Use services for data access; do not embed EDS/Camel/ECal/EBook lifecycle or
   GTK types in service code.
 - Run every potentially blocking service mutation off the GTK main thread.

@@ -4168,7 +4168,6 @@ impl CalendarPage {
         self.imp().syncing_mini_calendar.set(true);
 
         let is_month_view = *self.imp().current_view.borrow() == CalendarView::Month;
-        let today = chrono::Local::now().date_naive();
 
         for (i, cal) in calendars.iter().enumerate() {
             if is_month_view {
@@ -4807,7 +4806,7 @@ impl CalendarPage {
 
         // ── Place Timed Events with Full Duration & Overlap Layout ──
         for (day_index, day) in days.iter().enumerate() {
-            let mut events = events_by_date.get(day).cloned().unwrap_or_default();
+            let events = events_by_date.get(day).cloned().unwrap_or_default();
             let mut timed_events: Vec<CalendarEventRecord> =
                 events.into_iter().filter(|e| !e.all_day).collect();
             timed_events.sort_by_key(|e| event_start_datetime(e));

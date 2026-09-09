@@ -49,10 +49,14 @@ pub mod signature_store_service;
 pub mod snippet_store_service;
 pub mod template_store_service;
 pub mod vcard_service;
+pub mod macos_integration_service;
 
 pub use calendar_store_service::CalendarStoreService;
 pub use contact_store_service::ContactStoreService;
 pub use mail_store_service::MailStoreService;
+pub use macos_integration_service::{
+    MacosIntegrationService, MacosPermissionKind, MacosPermissionStatus, MacosSyncSummary,
+};
 pub use settings_service::AppSettings;
 
 fn non_empty_env_path(name: &str) -> Option<std::path::PathBuf> {

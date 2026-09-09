@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>org.gnome.Evolution4</string>
+    <key>CFBundleName</key>
+    <string>Evolution</string>
+    <key>CFBundleDisplayName</key>
+    <string>Evolution GTK4</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleSignature</key>
+    <string>????</string>
+    <key>CFBundleVersion</key>
+    <string>0.1.0</string>
+    <key>CFBundleShortVersionString</key>
+    <string>0.1.0</string>
+    <key>NSPrincipalClass</key>
+    <string>NSApplication</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSSupportsAutomaticGraphicsSwitching</key>
+    <true/>
+    <key>NSCalendarsUsageDescription</key>
+    <string>Evolution benötigt Zugriff auf Ihre Kalender, um Termine und Ereignisse synchronisieren und anzeigen zu können.</string>
+    <key>NSCalendarsFullAccessUsageDescription</key>
+    <string>Evolution benötigt vollen Zugriff auf Ihre Kalender, um Termine zu synchronisieren und zu verwalten.</string>
+    <key>NSRemindersUsageDescription</key>
+    <string>Evolution benötigt Zugriff auf Ihre Erinnerungen, um Aufgaben zu synchronisieren und anzuzeigen.</string>
+    <key>NSRemindersFullAccessUsageDescription</key>
+    <string>Evolution benötigt vollen Zugriff auf Ihre Erinnerungen, um Aufgaben zu verwalten und zu synchronisieren.</string>
+    <key>NSContactsUsageDescription</key>
+    <string>Evolution benötigt Zugriff auf Ihre Kontakte, um Ihr Adressbuch anzuzeigen und E-Mail-Empfänger automatisch zu vervollständigen.</string>
+</dict>
+</plist>

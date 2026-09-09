@@ -308,11 +308,24 @@ impl EvolutionApplication {
         let provider = gtk::CssProvider::new();
         provider.load_from_string(include_str!("style.css"));
 
-        gtk::style_context_add_provider_for_display(
-            &gdk::Display::default().expect("Could not get default display"),
-            &provider,
-            gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
-        );
+        if let Some(display) = gdk::Display::default() {
+            gtk::style_context_add_provider_for_display(
+                &display,
+                &provider,
+                gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+            );
+
+            #[cfg(target_os = "macos")]
+            {
+                let theme = gtk::IconTheme::for_display(&display);
+                for path in &["/opt/homebrew/share/icons", "/usr/local/share/icons"] {
+                    let p = std::path::Path::new(path);
+                    if p.exists() {
+                        theme.add_search_path(p);
+                    }
+                }
+            }
+        }
 
         tracing::debug!("Custom CSS loaded");
     }

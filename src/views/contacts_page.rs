@@ -85,7 +85,7 @@ impl ContactPageSearchState {
 mod imp {
     use super::*;
 
-    #[derive(Debug, Default)]
+    #[derive(Default)]
     pub struct ContactsPage {
         pub ebook_monitor_cancel: RefCell<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>>,
         pub contact_search_cancel: RefCell<Option<Arc<AtomicBool>>>,
@@ -98,6 +98,7 @@ mod imp {
         pub contact_list: RefCell<Option<gtk::ListBox>>,
         pub search_entry: RefCell<Option<gtk::SearchEntry>>,
         pub outer_paned: RefCell<Option<gtk::Paned>>,
+        pub reload_fn: RefCell<Option<Rc<dyn Fn()>>>,
     }
 
     #[glib::object_subclass]
@@ -149,6 +150,12 @@ glib::wrapper! {
 impl ContactsPage {
     pub fn new() -> Self {
         glib::Object::builder().build()
+    }
+
+    pub fn reload_contacts(&self) {
+        if let Some(reload) = self.imp().reload_fn.borrow().as_ref() {
+            reload();
+        }
     }
 
     /// Trigger the same contact editor as the page-local toolbar button.  The
@@ -595,6 +602,31 @@ impl ContactsPage {
             self.downgrade(),
             Rc::clone(&search_state),
         );
+
+        let contact_list_for_reload = contact_list.clone();
+        let stored_contacts_for_reload = Rc::clone(&stored_contacts);
+        let empty_state_for_reload = empty_state.clone();
+        let selected_contact_for_reload = Rc::clone(&selected_contact);
+        let category_model_for_reload = category_model.clone();
+        let category_selector_for_reload = category_selector.clone();
+        let selected_category_for_reload = Rc::clone(&selected_category);
+        let refresh_generation_for_reload = Rc::clone(&refresh_generation);
+        let search_state_for_reload = Rc::clone(&search_state);
+        let page_weak_for_reload = self.downgrade();
+        self.imp().reload_fn.replace(Some(Rc::new(move || {
+            refresh_contacts(
+                contact_list_for_reload.clone(),
+                Rc::clone(&stored_contacts_for_reload),
+                empty_state_for_reload.clone(),
+                Rc::clone(&selected_contact_for_reload),
+                category_model_for_reload.clone(),
+                category_selector_for_reload.clone(),
+                Rc::clone(&selected_category_for_reload),
+                Rc::clone(&refresh_generation_for_reload),
+                page_weak_for_reload.clone(),
+                Rc::clone(&search_state_for_reload),
+            );
+        })));
 
         let search_state_for_search = Rc::clone(&search_state);
         let stored_contacts_for_search = Rc::clone(&stored_contacts);
@@ -1103,12 +1135,6 @@ impl ContactsPage {
         header_box.append(&detail_name);
         header_box.append(&detail_title);
 
-        let actions_box = gtk::Box::builder()
-            .orientation(gtk::Orientation::Horizontal)
-            .spacing(8)
-            .halign(gtk::Align::Center)
-            .margin_bottom(12)
-            .build();
 
         let email_row1 = adw::ActionRow::builder()
             .title("Keine E-Mail-Adresse")

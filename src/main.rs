@@ -26,7 +26,32 @@ pub const APP_ID: &str = "org.gnome.Evolution4";
 /// Resource base path for GResource lookups.
 pub const RESOURCE_PATH: &str = "/org/gnome/Evolution4";
 
+#[cfg(target_os = "macos")]
+fn setup_platform_environment() {
+    let mut xdg_dirs = std::env::var("XDG_DATA_DIRS").unwrap_or_default();
+    let brew_shares = ["/opt/homebrew/share", "/usr/local/share"];
+    for share in &brew_shares {
+        if std::path::Path::new(share).exists() && !xdg_dirs.contains(share) {
+            if !xdg_dirs.is_empty() {
+                xdg_dirs = format!("{share}:{xdg_dirs}");
+            } else {
+                xdg_dirs = share.to_string();
+            }
+        }
+    }
+    if !xdg_dirs.is_empty() {
+        unsafe {
+            std::env::set_var("XDG_DATA_DIRS", &xdg_dirs);
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn setup_platform_environment() {}
+
 fn main() -> ExitCode {
+    setup_platform_environment();
+
     // Initialize structured logging with tracing
     tracing_subscriber::fmt()
         .with_env_filter(

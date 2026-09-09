@@ -3374,6 +3374,62 @@ impl EvolutionWindow {
         ));
         self.add_action(&action_import);
 
+        let action_macos_sync = gio::SimpleAction::new("macos-sync", None);
+        action_macos_sync.connect_activate(glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            move |_, _| {
+                let cal_store = crate::services::CalendarStoreService::new();
+                let contact_store = crate::services::ContactStoreService::new();
+                let srv = crate::services::MacosIntegrationService::new();
+                let summary = srv.sync_all(&cal_store, &contact_store);
+                if summary.errors.is_empty() {
+                    win.add_toast(&adw::Toast::new(&format!(
+                        "macOS Synchronisation: {} Termine, {} Aufgaben, {} Kontakte synchronisiert",
+                        summary.calendar_events, summary.tasks_reminders, summary.contacts
+                    )));
+                } else {
+                    win.add_toast(&adw::Toast::new(&format!(
+                        "macOS Synchronisation ({} Termine, {} Kontakte). {}",
+                        summary.calendar_events, summary.contacts, summary.errors.join("; ")
+                    )));
+                }
+                if let Some(cal_page) = win.calendar_page() {
+                    cal_page.reload_calendar_data();
+                }
+                if let Some(contact_page) = win.contacts_page() {
+                    contact_page.reload_contacts();
+                }
+            }
+        ));
+        self.add_action(&action_macos_sync);
+
+        #[cfg(all(target_os = "macos", macos_bridge))]
+        {
+            glib::idle_add_local_once(glib::clone!(
+                #[weak(rename_to = win)]
+                self,
+                move || {
+                    let cal_store = crate::services::CalendarStoreService::new();
+                    let contact_store = crate::services::ContactStoreService::new();
+                    let cal_snapshot = cal_store.load_snapshot();
+                    let contacts = contact_store.load_contacts();
+                    if cal_snapshot.events.is_empty() && cal_snapshot.tasks.is_empty() && contacts.is_empty() {
+                        let srv = crate::services::MacosIntegrationService::new();
+                        let summary = srv.sync_all(&cal_store, &contact_store);
+                        if summary.calendar_events > 0 || summary.tasks_reminders > 0 || summary.contacts > 0 {
+                            if let Some(cal_page) = win.calendar_page() {
+                                cal_page.reload_calendar_data();
+                            }
+                            if let Some(contact_page) = win.contacts_page() {
+                                contact_page.reload_contacts();
+                            }
+                        }
+                    }
+                }
+            ));
+        }
+
         let action_purge_calendar = gio::SimpleAction::new("purge-calendar", None);
         action_purge_calendar.connect_activate(glib::clone!(
             #[weak(rename_to = win)]
@@ -3853,7 +3909,6 @@ fn build_debug_console_panel(revealer: &gtk::Revealer) -> gtk::Widget {
         btn.clipboard().set_text(&text);
     });
 
-    let revealer_for_notify = revealer.clone();
     let buffer_for_notify = buffer.clone();
     let text_view_for_notify = text_view.clone();
     let search_for_notify = std::rc::Rc::clone(&search_filter);

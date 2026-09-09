@@ -9,10 +9,16 @@ fn main() {
     println!("cargo:rustc-check-cfg=cfg(eds_camel_bridge)");
     println!("cargo:rustc-check-cfg=cfg(eds_ecal_bridge)");
     println!("cargo:rustc-check-cfg=cfg(eds_ebook_bridge)");
+    println!("cargo:rustc-check-cfg=cfg(macos_bridge)");
 
     let manifest_dir = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap());
     let out_dir = PathBuf::from(env::var_os("OUT_DIR").unwrap());
     prepare_settings_schema(&manifest_dir, &out_dir);
+
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
+        compile_macos_bridge(&manifest_dir, &out_dir);
+        return;
+    }
 
     if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("linux") {
         return;
@@ -303,4 +309,63 @@ fn version_at_least(version: &str, major: u32, minor: u32) -> bool {
         .unwrap_or(minor);
 
     (parsed_major, parsed_minor) >= (major, minor)
+}
+
+fn compile_macos_bridge(manifest_dir: &std::path::Path, out_dir: &std::path::Path) {
+    let bridge = manifest_dir.join("../native/macos_bridge.m");
+    let object = out_dir.join("macos_bridge.o");
+    let archive = out_dir.join("libevolution_macos_bridge.a");
+    let compiler = env::var_os("CC").unwrap_or_else(|| "clang".into());
+    let archiver = env::var_os("AR").unwrap_or_else(|| "ar".into());
+
+    let mut compile = Command::new(&compiler);
+    compile
+        .arg("-fobjc-arc")
+        .arg("-c")
+        .arg(&bridge)
+        .arg("-o")
+        .arg(&object)
+        .arg("-I")
+        .arg(manifest_dir.join("../native"));
+
+    let compile_status = compile
+        .status()
+        .expect("could not execute compiler for macOS bridge");
+    assert!(
+        compile_status.success(),
+        "the macOS bridge failed to compile"
+    );
+
+    let archive_status = Command::new(&archiver)
+        .arg("crus")
+        .arg(&archive)
+        .arg(&object)
+        .status()
+        .expect("could not execute ar for macOS bridge");
+    assert!(
+        archive_status.success(),
+        "the macOS bridge failed to create static archive"
+    );
+
+    println!("cargo:rustc-link-search=native={}", out_dir.display());
+    println!("cargo:rustc-link-lib=static=evolution_macos_bridge");
+    println!("cargo:rustc-link-lib=framework=Foundation");
+    println!("cargo:rustc-link-lib=framework=EventKit");
+    println!("cargo:rustc-link-lib=framework=Contacts");
+    println!("cargo:rustc-link-lib=framework=AppKit");
+
+    let plist_path = manifest_dir.join("../data/Info.plist");
+    if plist_path.exists() {
+        println!(
+            "cargo:rustc-link-arg=-Wl,-sectcreate,__TEXT,__info_plist,{}",
+            plist_path.display()
+        );
+    }
+    println!("cargo:rustc-cfg=macos_bridge");
+    println!("cargo:rerun-if-changed={}", bridge.display());
+    println!(
+        "cargo:rerun-if-changed={}",
+        manifest_dir.join("../native/macos_bridge.h").display()
+    );
+    println!("cargo:rerun-if-changed={}", plist_path.display());
 }

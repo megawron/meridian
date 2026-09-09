@@ -77,7 +77,7 @@ pub(crate) const ACTIONS: &[ActionSpec] = action_specs! {
         "win.filter-editor", "win.search-folder-editor", "win.mail-receive-all",
         "win.mail-send-all", "win.mail-send-receive", "win.mail-stop",
         "win.preferences", "win.toggle-top-switcher",
-        "win.work-offline", "win.work-online",
+        "win.work-offline", "win.work-online", "win.macos-sync",
     ],
     ActiveMail => [
         "win.apply-filters", "win.mail-density-compact",
@@ -241,6 +241,7 @@ pub(crate) const PRIMARY_MENU_ACTIONS: &[MenuActionSpec] = menu_specs! {
         ("Filterregeln bearbeiten...", "win.filter-editor"),
         ("Suchordner verwalten...", "win.search-folder-editor"),
         ("Kontoeinstellungen...", "win.account-setup"),
+        ("Mit macOS synchronisieren…", "win.macos-sync"),
     ],
     Help => [
         ("Tastenkombinationen", "win.show-help-overlay"),

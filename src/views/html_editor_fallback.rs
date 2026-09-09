@@ -20,6 +20,7 @@ mod imp {
         pub text_view: RefCell<Option<gtk::TextView>>,
         pub format_toolbar: RefCell<Option<gtk::Box>>,
         pub plain_text_mode: Cell<bool>,
+        pub signature_marks: RefCell<Option<(gtk::TextMark, gtk::TextMark)>>,
     }
 
     #[glib::object_subclass]
@@ -107,15 +108,67 @@ impl HtmlEditor {
     }
 
     pub fn set_html(&self, html: &str) {
+        self.clear_signature_marks();
         if let Some(text_view) = self.imp().text_view.borrow().as_ref() {
             text_view.buffer().set_text(&html_to_fallback_text(html));
         }
     }
 
     pub fn set_text(&self, text: &str) {
+        self.clear_signature_marks();
         if let Some(text_view) = self.imp().text_view.borrow().as_ref() {
             text_view.buffer().set_text(text);
         }
+    }
+
+    fn clear_signature_marks(&self) {
+        if let Some((start, end)) = self.imp().signature_marks.borrow_mut().take()
+            && let Some(text_view) = self.imp().text_view.borrow().as_ref()
+        {
+            let buffer = text_view.buffer();
+            buffer.delete_mark(&start);
+            buffer.delete_mark(&end);
+        }
+    }
+
+    /// Track the inserted signature independently from the draft. Text marks
+    /// move with edits before/after it, so changing accounts preserves the body.
+    pub fn replace_or_insert_signature(&self, html: &str, top_signature: bool) {
+        let Some(text_view) = self.imp().text_view.borrow().as_ref().cloned() else {
+            return;
+        };
+        let buffer = text_view.buffer();
+        buffer.begin_user_action();
+        if let Some((start, end)) = self.imp().signature_marks.borrow_mut().take() {
+            buffer.delete(
+                &mut buffer.iter_at_mark(&start),
+                &mut buffer.iter_at_mark(&end),
+            );
+            buffer.delete_mark(&start);
+            buffer.delete_mark(&end);
+        }
+        let signature = html_to_fallback_text(html);
+        if !signature.is_empty() {
+            let text = if buffer.char_count() == 0 {
+                signature
+            } else if top_signature {
+                format!("{signature}\n")
+            } else {
+                format!("\n{signature}")
+            };
+            let mut position = if top_signature {
+                buffer.start_iter()
+            } else {
+                buffer.end_iter()
+            };
+            let offset = position.offset();
+            buffer.insert(&mut position, &text);
+            // Exclude body text subsequently inserted exactly at the boundaries.
+            let start = buffer.create_mark(None, &buffer.iter_at_offset(offset), false);
+            let end = buffer.create_mark(None, &position, true);
+            self.imp().signature_marks.replace(Some((start, end)));
+        }
+        buffer.end_user_action();
     }
 
     pub fn insert_html(&self, html: &str) {
@@ -279,5 +332,34 @@ fn editor_error(message: &str) -> glib::Error {
 impl Default for HtmlEditor {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn signature_replacement_and_removal_preserve_edited_body() {
+        let _lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let Some(_context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+        let editor = HtmlEditor::new();
+        editor.set_text("Draft body");
+        editor.replace_or_insert_signature("<p>Alice</p>", false);
+        let text_view = editor.imp().text_view.borrow().as_ref().unwrap().clone();
+        let buffer = text_view.buffer();
+        buffer.insert(&mut buffer.start_iter(), "Edited: ");
+        editor.replace_or_insert_signature("<p>Bob</p>", false);
+        assert_eq!(buffer_text(&text_view), "Edited: Draft body\nBob");
+        editor.replace_or_insert_signature("", false);
+        assert_eq!(buffer_text(&text_view), "Edited: Draft body");
+        editor.replace_or_insert_signature("<p>Alice</p>", true);
+        buffer.insert(&mut buffer.end_iter(), "!");
+        editor.replace_or_insert_signature("<p>Bob</p>", true);
+        assert_eq!(buffer_text(&text_view), "Bob\nEdited: Draft body!");
     }
 }

@@ -499,6 +499,250 @@ impl PreferencesDialog {
         }
     }
 
+    #[cfg(target_os = "macos")]
+    fn build_macos_group(&self) -> adw::PreferencesGroup {
+        let macos_service = crate::services::MacosIntegrationService::new();
+        let group = adw::PreferencesGroup::builder()
+            .title("macOS Internetaccounts")
+            .description(
+                "Native Kalender-, Erinnerungs- und Kontaktquellen aus macOS. In Evolution sind sie derzeit schreibgeschützt.",
+            )
+            .build();
+
+        // 1. Calendar
+        let row_cal = adw::ActionRow::builder()
+            .title("Apple Kalender (EventKit)")
+            .subtitle(
+                macos_service
+                    .check_permission(crate::services::MacosPermissionKind::Calendar)
+                    .display_label(),
+            )
+            .build();
+        let btn_cal = gtk::Button::builder()
+            .label("Berechtigung anfordern")
+            .valign(gtk::Align::Center)
+            .css_classes(vec!["suggested-action"])
+            .build();
+        let row_cal_clone = row_cal.clone();
+        let dialog_cal = self.downgrade();
+        btn_cal.connect_clicked(move |_| {
+            let srv = crate::services::MacosIntegrationService::new();
+            let row = row_cal_clone.clone();
+            let dlg = dialog_cal.clone();
+            let srv_cb = srv.clone();
+            srv.request_permission(
+                crate::services::MacosPermissionKind::Calendar,
+                move |granted| {
+                    let status =
+                        srv_cb.check_permission(crate::services::MacosPermissionKind::Calendar);
+                    row.set_subtitle(status.display_label());
+                    if let Some(dialog) = dlg.upgrade() {
+                        let msg = if granted {
+                            format!("Kalender-Berechtigung aktualisiert: {}", status.display_label())
+                        } else {
+                            "Kalenderzugriff wurde verweigert. Bitte in den macOS Systemeinstellungen aktivieren.".to_string()
+                        };
+                        dialog.show_toast(&msg);
+                    }
+                },
+            );
+        });
+        row_cal.add_suffix(&btn_cal);
+        group.add(&row_cal);
+
+        // 2. Contacts
+        let row_contacts = adw::ActionRow::builder()
+            .title("Apple Kontakte (Contacts.framework)")
+            .subtitle(
+                macos_service
+                    .check_permission(crate::services::MacosPermissionKind::Contacts)
+                    .display_label(),
+            )
+            .build();
+        let btn_contacts = gtk::Button::builder()
+            .label("Berechtigung anfordern")
+            .valign(gtk::Align::Center)
+            .css_classes(vec!["suggested-action"])
+            .build();
+        let row_contacts_clone = row_contacts.clone();
+        let dialog_contacts = self.downgrade();
+        btn_contacts.connect_clicked(move |_| {
+            let srv = crate::services::MacosIntegrationService::new();
+            let row = row_contacts_clone.clone();
+            let dlg = dialog_contacts.clone();
+            let srv_cb = srv.clone();
+            srv.request_permission(
+                crate::services::MacosPermissionKind::Contacts,
+                move |granted| {
+                    let status =
+                        srv_cb.check_permission(crate::services::MacosPermissionKind::Contacts);
+                    row.set_subtitle(status.display_label());
+                    if let Some(dialog) = dlg.upgrade() {
+                        let msg = if granted {
+                            format!("Kontakt-Berechtigung aktualisiert: {}", status.display_label())
+                        } else {
+                            "Kontaktzugriff wurde verweigert. Bitte in den macOS Systemeinstellungen aktivieren.".to_string()
+                        };
+                        dialog.show_toast(&msg);
+                    }
+                },
+            );
+        });
+        row_contacts.add_suffix(&btn_contacts);
+        group.add(&row_contacts);
+
+        // 3. Reminders
+        let row_reminders = adw::ActionRow::builder()
+            .title("Apple Erinnerungen (EventKit)")
+            .subtitle(
+                macos_service
+                    .check_permission(crate::services::MacosPermissionKind::Reminders)
+                    .display_label(),
+            )
+            .build();
+        let btn_reminders = gtk::Button::builder()
+            .label("Berechtigung anfordern")
+            .valign(gtk::Align::Center)
+            .css_classes(vec!["suggested-action"])
+            .build();
+        let row_reminders_clone = row_reminders.clone();
+        let dialog_reminders = self.downgrade();
+        btn_reminders.connect_clicked(move |_| {
+            let srv = crate::services::MacosIntegrationService::new();
+            let row = row_reminders_clone.clone();
+            let dlg = dialog_reminders.clone();
+            let srv_cb = srv.clone();
+            srv.request_permission(
+                crate::services::MacosPermissionKind::Reminders,
+                move |granted| {
+                    let status =
+                        srv_cb.check_permission(crate::services::MacosPermissionKind::Reminders);
+                    row.set_subtitle(status.display_label());
+                    if let Some(dialog) = dlg.upgrade() {
+                        let msg = if granted {
+                            format!("Erinnerungs-Berechtigung aktualisiert: {}", status.display_label())
+                        } else {
+                            "Erinnerungszugriff wurde verweigert. Bitte in den macOS Systemeinstellungen aktivieren.".to_string()
+                        };
+                        dialog.show_toast(&msg);
+                    }
+                },
+            );
+        });
+        row_reminders.add_suffix(&btn_reminders);
+        group.add(&row_reminders);
+
+        // 4. Native system-source refresh. This only reads the public EventKit
+        // and Contacts containers; it never imports copies into app-owned stores.
+        let row_sources = adw::ActionRow::builder()
+            .title("Native Systemquellen")
+            .subtitle("Systemquellen werden geladen…")
+            .build();
+        let sources_spinner = gtk::Spinner::builder().visible(false).build();
+        let btn_sources = gtk::Button::builder()
+            .label("Aktualisieren")
+            .icon_name("emblem-synchronizing-symbolic")
+            .valign(gtk::Align::Center)
+            .css_classes(vec!["suggested-action"])
+            .build();
+        row_sources.add_suffix(&sources_spinner);
+        row_sources.add_suffix(&btn_sources);
+        let dialog_sources = self.downgrade();
+        let refresh_sources: Rc<dyn Fn()> = {
+            let row_sources = row_sources.clone();
+            let sources_spinner = sources_spinner.clone();
+            let btn_sources = btn_sources.clone();
+            Rc::new(move || {
+                row_sources.set_subtitle("Native Systemquellen werden geladen…");
+                sources_spinner.set_visible(true);
+                sources_spinner.start();
+                btn_sources.set_sensitive(false);
+                crate::services::MacosIntegrationService::invalidate_system_snapshot();
+
+                let (sender, receiver) = async_channel::bounded(1);
+                std::thread::spawn(move || {
+                    let result = crate::services::MacosIntegrationService::new().system_sources();
+                    let _ = sender.send_blocking(result);
+                });
+
+                let row_sources = row_sources.clone();
+                let sources_spinner = sources_spinner.clone();
+                let btn_sources = btn_sources.clone();
+                let dialog_sources = dialog_sources.clone();
+                glib::spawn_future_local(async move {
+                    let Ok(result) = receiver.recv().await else {
+                        return;
+                    };
+                    sources_spinner.stop();
+                    sources_spinner.set_visible(false);
+                    btn_sources.set_sensitive(true);
+                    match result {
+                        Ok(snapshot) => {
+                            let mut entries = snapshot
+                                .sources
+                                .iter()
+                                .take(6)
+                                .map(|source| {
+                                    format!(
+                                        "{} · {} · {} · in Evolution schreibgeschützt",
+                                        source.name,
+                                        source.kind.display_name(),
+                                        source.account_name,
+                                    )
+                                })
+                                .collect::<Vec<_>>();
+                            if snapshot.sources.len() > entries.len() {
+                                entries.push(format!("+{} weitere", snapshot.sources.len() - entries.len()));
+                            }
+                            let subtitle = if entries.is_empty() {
+                                "Keine zugänglichen nativen Systemquellen gefunden".to_string()
+                            } else {
+                                entries.join("  |  ")
+                            };
+                            row_sources.set_subtitle(&subtitle);
+                            if !snapshot.errors.is_empty() {
+                                if let Some(dialog) = dialog_sources.upgrade() {
+                                    dialog.show_toast(&format!(
+                                        "Einige macOS Systemquellen konnten nicht geladen werden: {}",
+                                        snapshot.errors.join("; ")
+                                    ));
+                                }
+                            }
+                        }
+                        Err(error) => {
+                            row_sources.set_subtitle("Systemquellen konnten nicht geladen werden");
+                            if let Some(dialog) = dialog_sources.upgrade() {
+                                dialog.show_toast(&format!(
+                                    "macOS Systemquellen konnten nicht geladen werden: {error}"
+                                ));
+                            }
+                        }
+                    }
+                });
+            })
+        };
+        let refresh_sources_for_button = Rc::clone(&refresh_sources);
+        btn_sources.connect_clicked(move |_| refresh_sources_for_button());
+        refresh_sources();
+        group.add(&row_sources);
+
+        // 5. Open the public Internet Accounts settings; credentials stay in
+        // macOS and are never copied into an Evolution profile.
+        let row_sys = adw::ActionRow::builder()
+            .title("macOS Internetaccounts verwalten…")
+            .subtitle("Kalender, Erinnerungen und Kontakte in den Systemeinstellungen verwalten. E-Mail benötigt eine eigene Anmeldung in dieser App.")
+            .activatable(true)
+            .build();
+        let icon_sys = gtk::Image::from_icon_name("emblem-system-symbolic");
+        row_sys.add_prefix(&icon_sys);
+        row_sys.connect_activated(|_| {
+            crate::services::MacosIntegrationService::new().open_internet_accounts();
+        });
+        group.add(&row_sys);
+
+        group
+    }
+
     fn build_ui(&self) {
         let settings = AppSettings::try_new();
 
@@ -2226,6 +2470,12 @@ impl PreferencesDialog {
         ));
         group_backup.add(&row_import_mail);
         page_backup.add(&group_backup);
+
+        #[cfg(target_os = "macos")]
+        {
+            let group_macos = self.build_macos_group();
+            page_backup.add(&group_macos);
+        }
 
         let group_composer = adw::PreferencesGroup::builder()
             .title("Composer")

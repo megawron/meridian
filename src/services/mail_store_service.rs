@@ -298,10 +298,56 @@ impl MailStoreService {
         let metadata_path =
             metadata_path_override.unwrap_or_else(|| app_data_directory.join("mail-state.json"));
 
-        Self {
+        let store = Self {
             mail_dir,
             metadata: MailMetadataStore::new(metadata_path),
             writable,
+        };
+        if store.writable && store.mail_dir.starts_with(&app_data_directory) {
+            store.ensure_default_local_store();
+        }
+        store
+    }
+
+    /// Ensure standard local mail folders and an initial welcome message exist if the store is empty.
+    pub fn ensure_default_local_store(&self) {
+        if !self.writable {
+            return;
+        }
+        let inbox_dir = self.mail_dir.join("inbox");
+        let drafts_dir = self.mail_dir.join("drafts");
+        let sent_dir = self.mail_dir.join("sent");
+        let trash_dir = self.mail_dir.join("trash");
+        let archive_dir = self.mail_dir.join("archive");
+        let _ = fs::create_dir_all(&inbox_dir);
+        let _ = fs::create_dir_all(&drafts_dir);
+        let _ = fs::create_dir_all(&sent_dir);
+        let _ = fs::create_dir_all(&trash_dir);
+        let _ = fs::create_dir_all(&archive_dir);
+
+        let welcome_file = inbox_dir.join("welcome.eml");
+        let mut paths = Vec::new();
+        collect_mail_files(&self.mail_dir, &mut paths);
+        if paths.is_empty() && !welcome_file.exists() {
+            let welcome_content = "From: Evolution <evolution@gnome.org>\r\n\
+To: Benutzer <user@local>\r\n\
+Subject: Willkommen bei Evolution\r\n\
+Date: Sun, 06 Sep 2026 12:00:00 +0200\r\n\
+Message-ID: <welcome-evolution-gtk4@gnome.org>\r\n\
+MIME-Version: 1.0\r\n\
+Content-Type: text/plain; charset=UTF-8\r\n\
+\r\n\
+Herzlich willkommen bei Evolution!\r\n\
+\r\n\
+Evolution ist dein moderner E-Mail-, Kalender- und Kontakt-Client auf macOS und Linux.\r\n\
+\r\n\
+Erste Schritte:\r\n\
+• Neues E-Mail-Konto einrichten: Klicke oben auf 'Konto einrichten' oder oeffne das Menue oben rechts, um dein IMAP-, POP3- oder Exchange/M365-Konto zu verbinden.\r\n\
+• macOS System-Integration: In den Einstellungen (Einstellungen -> macOS System-Integration) kannst du deine Apple Kalender, Erinnerungen und Kontakte nahtlos synchronisieren.\r\n\
+• Ordner & Suche: Alle Ordner unterstuetzen Volltextsuche, Filter und Schnellsortierung.\r\n\
+\r\n\
+Viel Freude mit Evolution!\r\n";
+            let _ = fs::write(&welcome_file, welcome_content);
         }
     }
 
