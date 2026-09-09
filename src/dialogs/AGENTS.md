@@ -45,6 +45,10 @@ and updates to the service/settings APIs.
   60-day default, runs outside GTK, supports cancellation, prevents duplicate
   starts, and reports removed/skipped/partial/error outcomes before triggering
   an authoritative calendar reload. Never present provider refresh as purge.
+- Account setup fills an empty email from an email-shaped username, derives a
+  missing display name from the email local part, and suggests an SMTP host
+  from the incoming host for IMAP/SMTP only. Explicit user values win; inferred
+  fields remain visible in the form and are not proof of provider connectivity.
 - Mail preferences expose Messages/Wide profiles and the complete normalized
   column order. Moving any column persists `custom`; applying a named profile
   restores that profile's deterministic order. The daily column popover also

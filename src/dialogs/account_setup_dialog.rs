@@ -1243,7 +1243,15 @@ impl AccountSetupDialog {
             #[strong]
             row_default_bcc,
             move |_| {
-                let email = row_email.text().trim().to_string();
+                let mut email = row_email.text().trim().to_string();
+                let mut display_name = row_fullname.text().trim().to_string();
+                let username = row_username.text().trim().to_string();
+
+                if email.is_empty() && username.contains('@') {
+                    email = username.clone();
+                    row_email.set_text(&email);
+                }
+
                 if email.is_empty() {
                     switch_to_page("identity");
                     row_email.grab_focus();
@@ -1264,14 +1272,27 @@ impl AccountSetupDialog {
                     3 => AccountProtocol::Pop3,
                     _ => AccountProtocol::ImapSmtp,
                 };
-                let display_name = {
-                    let name = row_fullname.text().trim().to_string();
-                    if name.is_empty() {
-                        email.clone()
+
+                if display_name.is_empty() {
+                    display_name = if let Some((user, _)) = email.split_once('@') {
+                        user.to_string()
                     } else {
-                        name
-                    }
-                };
+                        email.clone()
+                    };
+                    row_fullname.set_text(&display_name);
+                }
+
+                let mut smtp_host = row_smtp_host.text().trim().to_string();
+                let imap_host = row_imap_host.text().trim().to_string();
+                if smtp_host.is_empty() && !imap_host.is_empty() && protocol == AccountProtocol::ImapSmtp {
+                    smtp_host = if let Some(rest) = imap_host.strip_prefix("imap.") {
+                        format!("smtp.{rest}")
+                    } else {
+                        imap_host.clone()
+                    };
+                    row_smtp_host.set_text(&smtp_host);
+                }
+
                 let aliases = row_aliases
                     .text()
                     .split(',')
