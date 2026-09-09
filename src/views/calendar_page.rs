@@ -1075,6 +1075,8 @@ glib::wrapper! {
 }
 
 struct CalendarSnapshotLoad {
+    /// Cached/local preview keeps the request open for its authoritative result.
+    preview: bool,
     generation: u64,
     cancellation: Arc<AtomicBool>,
     result: Result<
@@ -1378,32 +1380,7 @@ impl CalendarPage {
         self.bump_calendar_revision();
         self.imp().view_state.borrow_mut().load_generation = generation;
         self.imp().calendar_load_error.replace(None);
-        if self.imp().calendar_snapshot_index.borrow().is_none() {
-            if let Some(cached_snapshot) = crate::services::ecal_service::load_calendar_load_cache() {
-                if !cached_snapshot.events.is_empty()
-                    || !cached_snapshot.tasks.is_empty()
-                    || !cached_snapshot.memos.is_empty()
-                {
-                    let snapshot_index = Arc::new(CalendarSnapshotIndex::new(Arc::new(cached_snapshot)));
-                    self.imp()
-                        .calendar_snapshot_index
-                        .replace(Some(snapshot_index));
-                }
-            }
-            if self.imp().calendar_snapshot_index.borrow().is_none() {
-                let local_service = CalendarStoreService::new();
-                let local_snapshot = local_service.load_snapshot();
-                if !local_snapshot.events.is_empty()
-                    || !local_snapshot.tasks.is_empty()
-                    || !local_snapshot.memos.is_empty()
-                {
-                    let snapshot_index = Arc::new(CalendarSnapshotIndex::new(Arc::new(local_snapshot)));
-                    self.imp()
-                        .calendar_snapshot_index
-                        .replace(Some(snapshot_index));
-                }
-            }
-        }
+        let needs_preview = self.imp().calendar_snapshot_index.borrow().is_none();
         self.set_calendar_loading_status(true, "Kalender werden geladen …");
         self.imp().calendar_list_projection_count.set(None);
         self.refresh_task_sidebar();
@@ -1424,6 +1401,38 @@ impl CalendarPage {
                 if cancellation.load(Ordering::Acquire) {
                     return;
                 }
+                let started = std::time::Instant::now();
+                // Disk I/O, JSON/ICS parsing and index construction can be large.
+                // Publish the cache before connecting to any provider, off GTK.
+                if needs_preview {
+                    let preview = std::panic::catch_unwind(|| {
+                        let snapshot = crate::services::ecal_service::load_calendar_load_cache()
+                            .unwrap_or_else(|| CalendarStoreService::new().load_snapshot());
+                        Arc::new(CalendarSnapshotIndex::new(Arc::new(snapshot)))
+                    });
+                    if let Ok(snapshot_index) = preview {
+                        tracing::debug!(
+                            elapsed_ms = started.elapsed().as_millis() as u64,
+                            events = snapshot_index.snapshot.events.len(),
+                            "Calendar preview prepared"
+                        );
+                        if cancellation.load(Ordering::Acquire)
+                            || sender
+                                .send_blocking(CalendarSnapshotLoad {
+                                    preview: true,
+                                    generation,
+                                    cancellation: Arc::clone(&cancellation),
+                                    result: Ok((snapshot_index, CalendarDataOrigin::Local, None)),
+                                })
+                                .is_err()
+                        {
+                            return;
+                        }
+                    }
+                }
+                if cancellation.load(Ordering::Acquire) {
+                    return;
+                }
                 let result = std::panic::catch_unwind(|| {
                     let crate::services::ecal_service::CalendarLoadResult {
                         snapshot,
@@ -1437,7 +1446,13 @@ impl CalendarPage {
                 if cancellation.load(Ordering::Acquire) {
                     return;
                 }
+                tracing::debug!(
+                    elapsed_ms = started.elapsed().as_millis() as u64,
+                    success = result.is_ok(),
+                    "Calendar provider snapshot prepared"
+                );
                 let load = CalendarSnapshotLoad {
+                    preview: false,
                     generation,
                     cancellation,
                     result,
@@ -1449,26 +1464,23 @@ impl CalendarPage {
         });
         let cancellation_for_receiver = Arc::clone(&cancellation);
         glib::spawn_future_local(async move {
-            match receiver.recv().await {
-                Ok(load) => {
-                    if let Some(page) = page.upgrade() {
-                        page.apply_calendar_snapshot_load(load);
-                    }
+            while let Ok(load) = receiver.recv().await {
+                let complete = !load.preview;
+                let Some(page) = page.upgrade() else {
+                    cancellation_for_receiver.store(true, Ordering::Release);
+                    return;
+                };
+                page.apply_calendar_snapshot_load(load);
+                if complete {
+                    return;
                 }
-                Err(error) => {
-                    tracing::debug!(%error, "Calendar snapshot channel closed");
-                    if let Some(page) = page.upgrade()
-                        && page
-                            .finish_calendar_snapshot_load(generation, &cancellation_for_receiver)
-                    {
-                        page.set_calendar_load_error("Kalender konnten nicht geladen werden");
-                        page.set_calendar_loading_status(
-                            false,
-                            "Kalender konnten nicht geladen werden",
-                        );
-                        page.refresh_calendar_views();
-                    }
-                }
+            }
+            if let Some(page) = page.upgrade()
+                && page.finish_calendar_snapshot_load(generation, &cancellation_for_receiver)
+            {
+                page.set_calendar_load_error("Kalender konnten nicht geladen werden");
+                page.set_calendar_loading_status(false, "Kalender konnten nicht geladen werden");
+                page.refresh_calendar_views();
             }
         });
     }
@@ -1490,6 +1502,7 @@ impl CalendarPage {
 
     fn apply_calendar_snapshot_load(&self, load: CalendarSnapshotLoad) {
         let CalendarSnapshotLoad {
+            preview,
             generation,
             cancellation,
             result,
@@ -1552,10 +1565,14 @@ impl CalendarPage {
             return;
         };
 
-        if let Some(warning) = warning {
+        if let Some(warning) = warning.as_deref() {
             tracing::warn!(%warning, "Calendar data loaded with a backend warning");
+            self.set_calendar_load_error(warning);
         }
 
+        // A provider result invalidates any unfinished cache row/projection work.
+        self.cancel_calendar_projection();
+        self.bump_calendar_revision();
         self.imp()
             .calendar_snapshot_index
             .replace(Some(Arc::clone(&snapshot_index)));
@@ -1572,19 +1589,33 @@ impl CalendarPage {
             load_generation: generation,
             model_revision: self.imp().calendar_revision.get(),
         };
-        if !self.finish_calendar_snapshot_load(generation, &cancellation) {
+        if !preview && !self.finish_calendar_snapshot_load(generation, &cancellation) {
             return;
         }
-        self.set_calendar_loading_status(false, "");
+        self.set_calendar_loading_status(
+            preview,
+            if preview {
+                "Gespeicherter Kalenderstand wird angezeigt · Aktualisierung läuft …"
+            } else {
+                ""
+            },
+        );
         let origin_str = match origin {
             CalendarDataOrigin::Eds => "verbundenen Kalendern",
             CalendarDataOrigin::Graph => "verbundenen Kalendern",
             CalendarDataOrigin::Local => "lokalem Kalenderbestand",
         };
-        let status_msg = if count == 0 {
+        let status_msg = if preview {
+            format!("{count} gespeicherte Termin(e) · Aktualisierung läuft …")
+        } else if count == 0 {
             format!("Keine Termine aus {origin_str} gefunden")
         } else {
             format!("{count} Termin(e) aus {origin_str} geladen.")
+        };
+        let status_msg = if let Some(warning) = warning {
+            format!("{status_msg} · Aktualisierung unvollständig: {warning}")
+        } else {
+            status_msg
         };
         if let Some(win) = self.root().and_downcast::<crate::window::EvolutionWindow>() {
             win.set_status(&status_msg);
@@ -2384,7 +2415,6 @@ impl CalendarPage {
 
         self.reload_calendar_sources();
 
-
         let sidebar_scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
             .child(&sidebar_box)
@@ -2487,7 +2517,11 @@ impl CalendarPage {
             .css_classes(vec!["flat"])
             .valign(gtk::Align::Center)
             .build();
-        set_button_icon_with_fallback(&btn_add_event, "appointment-new-symbolic", "list-add-symbolic");
+        set_button_icon_with_fallback(
+            &btn_add_event,
+            "appointment-new-symbolic",
+            "list-add-symbolic",
+        );
         set_accessible_label(&btn_add_event, "Neuen Termin erstellen");
 
         let btn_availability = gtk::Button::builder()
@@ -3169,7 +3203,7 @@ impl CalendarPage {
         content_hpaned.set_resize_start_child(true);
         content_hpaned.set_resize_end_child(false);
         content_hpaned.set_shrink_start_child(true);
-        content_hpaned.set_shrink_end_child(false);
+        content_hpaned.set_shrink_end_child(true);
         tag_vpaned.set_width_request(260);
 
         self.imp()
@@ -4092,7 +4126,8 @@ impl CalendarPage {
     }
 
     pub(crate) fn ensure_mini_calendar_count(&self, target_count: usize) {
-        let Some(mini_calendar_box) = self.imp().mini_calendar_box.borrow().as_ref().cloned() else {
+        let Some(mini_calendar_box) = self.imp().mini_calendar_box.borrow().as_ref().cloned()
+        else {
             return;
         };
 
@@ -4453,7 +4488,11 @@ impl CalendarPage {
             return;
         };
         let date = self.current_calendar_viewport().visible_range.start;
-        let heading = format!("{} · Arbeitszeit: {}", format_date(date), configured_workday_text());
+        let heading = format!(
+            "{} · Arbeitszeit: {}",
+            format_date(date),
+            configured_workday_text()
+        );
         self.render_continuous_time_grid(&view, &[date], &heading);
     }
 
@@ -4470,7 +4509,9 @@ impl CalendarPage {
             "Wochenansicht{week_number} · Arbeitszeit: {}",
             configured_workday_text()
         );
-        let days: Vec<NaiveDate> = (0..7).map(|i| week_start + chrono::Duration::days(i)).collect();
+        let days: Vec<NaiveDate> = (0..7)
+            .map(|i| week_start + chrono::Duration::days(i))
+            .collect();
         self.render_continuous_time_grid(&view, &days, &heading);
     }
 
@@ -4496,12 +4537,7 @@ impl CalendarPage {
         self.render_continuous_time_grid(&view, &days, &heading);
     }
 
-    fn render_continuous_time_grid(
-        &self,
-        view: &gtk::Box,
-        days: &[NaiveDate],
-        heading_text: &str,
-    ) {
+    fn render_continuous_time_grid(&self, view: &gtk::Box, days: &[NaiveDate], heading_text: &str) {
         clear_box(view);
         if self.append_calendar_state_to_box(view) {
             return;
@@ -4517,9 +4553,7 @@ impl CalendarPage {
         let today = Local::now().date_naive();
         let (workday_start, workday_end) = configured_workday_range();
         let visible_range = if let (Some(first), Some(last)) = (days.first(), days.last()) {
-            let end = last
-                .succ_opt()
-                .unwrap_or_else(|| *last + Duration::days(1));
+            let end = last.succ_opt().unwrap_or_else(|| *last + Duration::days(1));
             CalendarDateRange::new(*first, end)
         } else {
             return;
@@ -4616,7 +4650,10 @@ impl CalendarPage {
         if has_second_zone {
             let sec_allday_box = gtk::Box::builder()
                 .orientation(gtk::Orientation::Vertical)
-                .css_classes(vec!["calendar-allday-label", "calendar-time-gutter-secondary"])
+                .css_classes(vec![
+                    "calendar-allday-label",
+                    "calendar-time-gutter-secondary",
+                ])
                 .width_request(58)
                 .build();
             grid.attach(&sec_allday_box, 1, 1, 1, 1);
@@ -4750,7 +4787,8 @@ impl CalendarPage {
                 let target_date = *day;
                 click_gesture.connect_pressed(move |gesture, n_press, _x, _y| {
                     if n_press == 2 {
-                        if let (Some(_page), Some(widget)) = (page_weak.upgrade(), gesture.widget()) {
+                        if let (Some(_page), Some(widget)) = (page_weak.upgrade(), gesture.widget())
+                        {
                             let dialog = crate::dialogs::EventDialog::new_for_date(target_date);
                             if let Some(root) = widget.root() {
                                 if let Ok(win) = root.downcast::<gtk::Window>() {
@@ -4770,10 +4808,8 @@ impl CalendarPage {
         // ── Place Timed Events with Full Duration & Overlap Layout ──
         for (day_index, day) in days.iter().enumerate() {
             let mut events = events_by_date.get(day).cloned().unwrap_or_default();
-            let mut timed_events: Vec<CalendarEventRecord> = events
-                .into_iter()
-                .filter(|e| !e.all_day)
-                .collect();
+            let mut timed_events: Vec<CalendarEventRecord> =
+                events.into_iter().filter(|e| !e.all_day).collect();
             timed_events.sort_by_key(|e| event_start_datetime(e));
 
             struct RawTimedEvent {
@@ -4809,7 +4845,8 @@ impl CalendarPage {
 
                 let start_slot = ((start_min / interval_minutes as u32) as usize)
                     .min(slot_count.saturating_sub(1));
-                let end_slot = (((end_min + interval_minutes as u32 - 1) / interval_minutes as u32) as usize)
+                let end_slot = (((end_min + interval_minutes as u32 - 1) / interval_minutes as u32)
+                    as usize)
                     .max(start_slot + 1)
                     .min(slot_count);
                 let row_span = (end_slot - start_slot).max(1);
@@ -6310,8 +6347,7 @@ fn is_day_visible_in_viewport(viewport: &CalendarViewport, date: NaiveDate) -> b
         CalendarView::Day => date == viewport.anchor_date,
         CalendarView::Week => viewport.visible_range.contains(date),
         CalendarView::WorkWeek => {
-            viewport.visible_range.contains(date)
-                && configured_workdays().contains(&date.weekday())
+            viewport.visible_range.contains(date) && configured_workdays().contains(&date.weekday())
         }
         CalendarView::Month => {
             date.year() == viewport.anchor_date.year()
@@ -6379,7 +6415,8 @@ fn update_mini_calendar_classes(
                                 if range_ends.contains(&day_num) {
                                     lbl.add_css_class("range-end");
                                 }
-                                if day_num == today.day() && y == today.year() && m == today.month() {
+                                if day_num == today.day() && y == today.year() && m == today.month()
+                                {
                                     lbl.add_css_class("today");
                                 } else {
                                     lbl.remove_css_class("today");
@@ -7102,7 +7139,11 @@ fn calendar_grid_event_chip(
     let color = event_color_for_record(event);
     let chip_button = gtk::Button::builder()
         .halign(gtk::Align::Fill)
-        .valign(if is_all_day { gtk::Align::Start } else { gtk::Align::Fill })
+        .valign(if is_all_day {
+            gtk::Align::Start
+        } else {
+            gtk::Align::Fill
+        })
         .hexpand(true)
         .vexpand(!is_all_day)
         .css_classes(if is_all_day {
@@ -7127,7 +7168,11 @@ fn calendar_grid_event_chip(
 
     let label = gtk::Label::builder()
         .halign(gtk::Align::Fill)
-        .valign(if is_all_day { gtk::Align::Center } else { gtk::Align::Start })
+        .valign(if is_all_day {
+            gtk::Align::Center
+        } else {
+            gtk::Align::Start
+        })
         .xalign(0.0)
         .ellipsize(gtk::pango::EllipsizeMode::End)
         .use_markup(true)
@@ -9315,6 +9360,21 @@ mod tests {
     }
 
     #[test]
+    fn cached_preview_keeps_provider_result_open_and_rejects_late_previews() {
+        let mut gate = CalendarLoadGate::default();
+        let first = gate.begin();
+        assert!(gate.accepts(first)); // cache is provisional, no finish
+        assert!(gate.loading);
+        assert!(gate.finish(first)); // authoritative result closes both stages
+        assert!(!gate.accepts(first));
+        let second = gate.begin();
+        assert!(!gate.accepts(first));
+        assert!(gate.accepts(second));
+        assert!(gate.cancel(second));
+        assert!(!gate.accepts(second));
+    }
+
+    #[test]
     fn cancellation_clears_loading_and_rejects_late_result() {
         let mut gate = CalendarLoadGate::default();
         let generation = gate.begin();
@@ -10449,10 +10509,7 @@ mod tests {
             secondary_timezone_header_label("America/New_York"),
             "New York"
         );
-        assert_eq!(
-            secondary_timezone_header_label("Europe/Berlin"),
-            "Berlin"
-        );
+        assert_eq!(secondary_timezone_header_label("Europe/Berlin"), "Berlin");
         assert_eq!(secondary_timezone_header_label(""), "");
         assert_eq!(secondary_timezone_header_label("   "), "");
 

@@ -1435,22 +1435,46 @@ pub(crate) fn calendar_cache_path() -> std::path::PathBuf {
 }
 
 pub(crate) fn save_calendar_load_cache(snapshot: &CalendarSnapshot) {
-    if snapshot.events.is_empty() && snapshot.tasks.is_empty() && snapshot.memos.is_empty() {
-        return;
-    }
-    let path = calendar_cache_path();
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    if let Ok(json) = serde_json::to_string(snapshot) {
-        let _ = std::fs::write(path, json);
+    if let Err(error) = write_calendar_load_cache(&calendar_cache_path(), snapshot) {
+        tracing::warn!(%error, "Could not update calendar preview cache");
     }
 }
 
+fn write_calendar_load_cache(
+    path: &std::path::Path,
+    snapshot: &CalendarSnapshot,
+) -> std::io::Result<()> {
+    use std::io::Write;
+    let parent = path
+        .parent()
+        .ok_or_else(|| std::io::Error::other("Missing cache directory"))?;
+    std::fs::create_dir_all(parent)?;
+    // Concurrent readers see either complete snapshot. Empty successful loads
+    // must replace the old cache too, so deleted events cannot reappear at startup.
+    let temporary = parent.join(format!(".calendar-cache-{}.tmp", uuid::Uuid::new_v4()));
+    let result = (|| {
+        let file = std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&temporary)?;
+        let mut writer = std::io::BufWriter::new(file);
+        serde_json::to_writer(&mut writer, snapshot).map_err(std::io::Error::other)?;
+        writer.flush()?;
+        std::fs::rename(&temporary, path)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    result
+}
+
 pub(crate) fn load_calendar_load_cache() -> Option<CalendarSnapshot> {
-    let path = calendar_cache_path();
-    let content = std::fs::read_to_string(path).ok()?;
-    serde_json::from_str(&content).ok()
+    read_calendar_load_cache(&calendar_cache_path())
+}
+
+fn read_calendar_load_cache(path: &std::path::Path) -> Option<CalendarSnapshot> {
+    let file = std::fs::File::open(path).ok()?;
+    serde_json::from_reader(std::io::BufReader::new(file)).ok()
 }
 
 pub(crate) fn load_snapshot_prefer_eds() -> CalendarLoadResult {
@@ -1466,15 +1490,13 @@ pub(crate) fn load_snapshot_prefer_eds() -> CalendarLoadResult {
                 #[cfg(all(target_os = "linux", eds_ecal_bridge))]
                 sort_snapshot(&mut snapshot);
             }
-            if !snapshot.events.is_empty() || !snapshot.tasks.is_empty() || !snapshot.memos.is_empty() {
-                save_calendar_load_cache(&snapshot);
-            }
             if snapshot.events.is_empty() && snapshot.tasks.is_empty() && snapshot.memos.is_empty()
             {
                 if let Some(graph) = load_snapshot_from_graph() {
                     return graph;
                 }
             }
+            save_calendar_load_cache(&snapshot);
             CalendarLoadResult {
                 snapshot,
                 origin: CalendarDataOrigin::Eds,
@@ -1538,6 +1560,7 @@ fn load_snapshot_from_graph() -> Option<CalendarLoadResult> {
         snapshot.memos.extend(local.memos);
     }
     super::calendar_store_service::sort_snapshot(&mut snapshot);
+    save_calendar_load_cache(&snapshot);
     Some(CalendarLoadResult {
         snapshot,
         origin: CalendarDataOrigin::Graph,
@@ -2010,7 +2033,12 @@ fn load_snapshot_native() -> Result<CalendarSnapshot, ECalServiceError> {
     /* A registry failure affects every ECal source type.  An empty source
      * type, on the other hand, is a valid and common state and is represented
      * by a successful native call with zero components. */
-    if native_successes == 0 {
+    if native_successes == 0
+        || (!warnings.is_empty()
+            && snapshot.events.is_empty()
+            && snapshot.tasks.is_empty()
+            && snapshot.memos.is_empty())
+    {
         return Err(ECalServiceError::Backend(
             warnings
                 .first()
@@ -2122,4 +2150,60 @@ fn take_c_string(pointer: *mut std::ffi::c_char) -> Option<String> {
         ffi::evolution_eds_ecal_free_error(pointer);
     }
     value
+}
+
+#[cfg(test)]
+mod calendar_preview_cache_tests {
+    use super::*;
+
+    fn test_directory() -> std::path::PathBuf {
+        let directory =
+            std::env::temp_dir().join(format!("evolution-calendar-cache-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        directory
+    }
+
+    #[test]
+    fn empty_authoritative_snapshot_replaces_previous_cache() {
+        let directory = test_directory();
+        let path = directory.join("cache.json");
+        let mut previous = CalendarSnapshot::default();
+        super::super::calendar_store_service::parse_ical_component(
+            "BEGIN:VEVENT\r\nUID:deleted-event\r\nDTSTART:20260908T090000Z\r\nDTEND:20260908T100000Z\r\nSUMMARY:Previous cached event\r\nEND:VEVENT\r\n",
+            "calendar-source",
+            "Calendar",
+            &mut previous,
+        );
+        assert_eq!(previous.events.len(), 1);
+        write_calendar_load_cache(&path, &previous).unwrap();
+        assert_eq!(read_calendar_load_cache(&path).unwrap().events.len(), 1);
+        write_calendar_load_cache(&path, &CalendarSnapshot::default()).unwrap();
+        let snapshot = read_calendar_load_cache(&path).unwrap();
+        assert!(snapshot.events.is_empty());
+        assert!(snapshot.tasks.is_empty());
+        assert!(snapshot.memos.is_empty());
+        assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 1);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn missing_or_interrupted_cache_is_only_a_cache_miss() {
+        let directory = test_directory();
+        let path = directory.join("cache.json");
+        assert!(read_calendar_load_cache(&path).is_none());
+        std::fs::write(&path, b"{\"events\": [").unwrap();
+        assert!(read_calendar_load_cache(&path).is_none());
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn failed_cache_commit_cleans_temporary_file() {
+        let directory = test_directory();
+        let path = directory.join("cache.json");
+        std::fs::create_dir(&path).unwrap();
+        assert!(write_calendar_load_cache(&path, &CalendarSnapshot::default()).is_err());
+        assert!(path.is_dir());
+        assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 1);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 }
