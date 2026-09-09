@@ -1726,6 +1726,9 @@ evolution_eds_camel_load_messages_by_uid (
     GError *error = NULL;
     gboolean success = FALSE;
     size_t ii;
+    gsize cache_hits = 0;
+    gsize provider_fetches = 0;
+    gint64 started = g_get_monotonic_time ();
 
     if (out_messages)
         *out_messages = NULL;
@@ -1778,16 +1781,13 @@ evolution_eds_camel_load_messages_by_uid (
     if (!folder)
         goto finish;
 
-    if (!camel_folder_refresh_info_sync (folder, cancellable, &error)) {
-        remember_error (&context, folder_name, error);
-        g_clear_error (&error);
-    }
-
+    /* The caller already has an exact folder and UID (reader selection or
+     * folder-changed notification). As in EMailReader, retrieve that message
+     * directly: refreshing the summary and recursively listing the entire
+     * account here adds network round trips before every message display. */
     folder_info = camel_store_get_folder_info_sync (
-        store, NULL,
-        CAMEL_STORE_FOLDER_INFO_RECURSIVE |
-        CAMEL_STORE_FOLDER_INFO_NO_VIRTUAL |
-        CAMEL_STORE_FOLDER_INFO_REFRESH,
+        store, folder_name,
+        CAMEL_STORE_FOLDER_INFO_FAST | CAMEL_STORE_FOLDER_INFO_NO_VIRTUAL,
         cancellable, &error);
     if (folder_info)
         matching_folder = find_folder_info_by_name (folder_info, folder_name);
@@ -1814,8 +1814,15 @@ evolution_eds_camel_load_messages_by_uid (
         if (!message_info)
             continue;
 
-        message = camel_folder_get_message_sync (
-            folder, message_uids[ii], cancellable, &error);
+        message = camel_folder_get_message_cached (
+            folder, message_uids[ii], cancellable);
+        if (message) {
+            cache_hits++;
+        } else if (!load_cancelled (&context)) {
+            provider_fetches++;
+            message = camel_folder_get_message_sync (
+                folder, message_uids[ii], cancellable, &error);
+        }
         if (!message) {
             remember_error (&context, folder_name, error);
             g_clear_error (&error);
@@ -1862,6 +1869,12 @@ finish:
     g_clear_object (&session);
     g_clear_object (&source);
     g_clear_object (&registry);
+
+    g_debug ("Camel UID retrieval: elapsed_ms=%" G_GINT64_FORMAT
+             " requested=%" G_GSIZE_FORMAT " cache_hits=%" G_GSIZE_FORMAT
+             " provider_fetches=%" G_GSIZE_FORMAT,
+             (g_get_monotonic_time () - started) / 1000,
+             (gsize) message_uid_count, cache_hits, provider_fetches);
 
     return success ? 1 : 0;
 }

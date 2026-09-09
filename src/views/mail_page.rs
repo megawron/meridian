@@ -948,7 +948,11 @@ fn mail_row_attachment_info(
     Some(("mail-attachment-symbolic", "Anhang"))
 }
 
-pub(crate) fn themed_icon_name<W: IsA<gtk::Widget>>(widget: &W, preferred: &str, fallback: &str) -> String {
+pub(crate) fn themed_icon_name<W: IsA<gtk::Widget>>(
+    widget: &W,
+    preferred: &str,
+    fallback: &str,
+) -> String {
     let theme = gtk::IconTheme::for_display(&widget.display());
     if theme.has_icon(preferred) {
         preferred.to_string()
@@ -2026,9 +2030,8 @@ fn folder_default_sort_bucket(folder_id: &str, label: &str) -> u32 {
     let clean_id = folder_id.trim().to_lowercase();
     let clean_label = label.trim().to_lowercase();
 
-    let matches_pattern = |pattern: &str| -> bool {
-        clean_id.contains(pattern) || clean_label.contains(pattern)
-    };
+    let matches_pattern =
+        |pattern: &str| -> bool { clean_id.contains(pattern) || clean_label.contains(pattern) };
 
     // 0: Posteingang / Inbox
     if matches_pattern("inbox") || matches_pattern("posteingang") {
@@ -2104,11 +2107,7 @@ fn compare_folder_siblings(
                 let right_bucket = folder_default_sort_bucket(right_id, right_label);
                 left_bucket.cmp(&right_bucket)
             })
-            .then_with(|| {
-                left_label
-                    .to_lowercase()
-                    .cmp(&right_label.to_lowercase())
-            })
+            .then_with(|| left_label.to_lowercase().cmp(&right_label.to_lowercase()))
             .then_with(|| left_id.cmp(right_id)),
         (Some(_), None) => std::cmp::Ordering::Less,
         (None, Some(_)) => std::cmp::Ordering::Greater,
@@ -2117,11 +2116,7 @@ fn compare_folder_siblings(
             let right_bucket = folder_default_sort_bucket(right_id, right_label);
             left_bucket
                 .cmp(&right_bucket)
-                .then_with(|| {
-                    left_label
-                        .to_lowercase()
-                        .cmp(&right_label.to_lowercase())
-                })
+                .then_with(|| left_label.to_lowercase().cmp(&right_label.to_lowercase()))
                 .then_with(|| left_id.cmp(right_id))
         }
     }
@@ -2526,6 +2521,38 @@ type SearchableBodyTextCache = HashMap<MailMessageIdentity, Arc<str>>;
 /// it must never turn a message's HTML into plaintext on demand.
 fn prepare_searchable_body_text(html_body: &str) -> Arc<str> {
     html_to_plain_text(html_body).to_ascii_lowercase().into()
+}
+
+/// GTK-free hydration of one selected preview. Cancellation is checked around
+/// the CPU work as well as by the provider, so a superseded request is dropped
+/// without publishing an incomplete body or search index.
+fn prepare_loaded_message_body(
+    id: &str,
+    folder_id: &str,
+    raw: &[u8],
+    unread: bool,
+    cancelled: &AtomicBool,
+) -> Result<(ParsedMail, Arc<str>), String> {
+    let started = Instant::now();
+    if cancelled.load(Ordering::Relaxed) {
+        return Err("Nachrichtenladen wurde abgebrochen".to_string());
+    }
+    let parsed = parse_rfc822_bytes(id, folder_id, raw, unread)
+        .ok_or_else(|| "Nachricht konnte nicht gelesen werden".to_string())?;
+    if cancelled.load(Ordering::Relaxed) {
+        return Err("Nachrichtenladen wurde abgebrochen".to_string());
+    }
+    let searchable = prepare_searchable_body_text(&parsed.html_body);
+    if cancelled.load(Ordering::Relaxed) {
+        return Err("Nachrichtenladen wurde abgebrochen".to_string());
+    }
+    tracing::debug!(
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        bytes = raw.len(),
+        attachments = parsed.attachments.len(),
+        "Prepared selected message body"
+    );
+    Ok((parsed, searchable))
 }
 
 fn parsed_mail_identity(message: &ParsedMail) -> MailMessageIdentity {
@@ -3394,6 +3421,8 @@ mod imp {
         pub crypto_status_chip: RefCell<Option<gtk::Box>>,
         pub crypto_status_routine: Cell<bool>,
         pub crypto_request_generation: Cell<u64>,
+        pub mail_backend_load_pending: Cell<bool>,
+        pub message_body_cancellation: RefCell<Option<Arc<AtomicBool>>>,
         pub all_headers_revealer: RefCell<Option<gtk::Revealer>>,
         pub all_headers_grid: RefCell<Option<gtk::Grid>>,
         pub normal_headers_grid: RefCell<Option<gtk::Grid>>,
@@ -3672,6 +3701,9 @@ mod imp {
             if let Some(cancelled) = self.all_headers_cancellation.borrow().as_ref() {
                 cancelled.store(true, Ordering::Relaxed);
             }
+            if let Some(cancelled) = self.message_body_cancellation.borrow_mut().take() {
+                cancelled.store(true, Ordering::Relaxed);
+            }
             let source_windows = std::mem::take(&mut *self.message_source_windows.borrow_mut());
             for state in source_windows.into_values() {
                 state.cancellation.store(true, Ordering::Relaxed);
@@ -3747,7 +3779,6 @@ impl MailPage {
             paned.set_position(pos);
         }
     }
-
 
     pub fn select_previous_message(&self) -> bool {
         let Some(selection) = self.imp().message_selection.borrow().as_ref().cloned() else {
@@ -4150,10 +4181,8 @@ impl MailPage {
                             MailLayout::Classic => (100..=1200).contains(&pos),
                         };
                         if valid {
-                            settings_for_position.set_mail_preview_position(
-                                current_layout.setting_value(),
-                                pos,
-                            );
+                            settings_for_position
+                                .set_mail_preview_position(current_layout.setting_value(), pos);
                         }
                     }
                 });
@@ -5982,7 +6011,13 @@ impl MailPage {
             }
             let order = self.folder_sort_order();
             list.sort_by(|left, right| {
-                compare_local_folder_siblings(&left.id, &left.label, &right.id, &right.label, &order)
+                compare_local_folder_siblings(
+                    &left.id,
+                    &left.label,
+                    &right.id,
+                    &right.label,
+                    &order,
+                )
             });
             list
         };
@@ -5999,7 +6034,10 @@ impl MailPage {
         }
 
         let dragged_item = items.remove(dragged_idx);
-        let new_target_idx = items.iter().position(|it| it.id == target_id).unwrap_or(items.len());
+        let new_target_idx = items
+            .iter()
+            .position(|it| it.id == target_id)
+            .unwrap_or(items.len());
         let insert_idx = if is_before {
             new_target_idx
         } else {
@@ -6054,7 +6092,9 @@ impl MailPage {
                 return None;
             };
             let content_string = format!("evolution-folder:{json}");
-            Some(gtk::gdk::ContentProvider::for_value(&content_string.to_value()))
+            Some(gtk::gdk::ContentProvider::for_value(
+                &content_string.to_value(),
+            ))
         });
         container.add_controller(drag_source);
 
@@ -8120,14 +8160,13 @@ impl MailPage {
                     page.set_batch_label(&tag_for_toggle, active)
                         .map(|count| format!("{count} Nachricht(en) aktualisiert"))
                 } else {
-                    page.set_selected_label(&tag_for_toggle, active)
-                        .map(|_| {
-                            if active {
-                                "Label hinzugefügt".to_string()
-                            } else {
-                                "Label entfernt".to_string()
-                            }
-                        })
+                    page.set_selected_label(&tag_for_toggle, active).map(|_| {
+                        if active {
+                            "Label hinzugefügt".to_string()
+                        } else {
+                            "Label entfernt".to_string()
+                        }
+                    })
                 };
                 match result {
                     Ok(msg) => page.show_toast(&msg),
@@ -9774,7 +9813,9 @@ impl MailPage {
                     return None;
                 };
                 let content_string = format!("evolution-folder:{json}");
-                Some(gtk::gdk::ContentProvider::for_value(&content_string.to_value()))
+                Some(gtk::gdk::ContentProvider::for_value(
+                    &content_string.to_value(),
+                ))
             });
             row.add_controller(drag_source);
 
@@ -9950,9 +9991,11 @@ impl MailPage {
                 let badge_weak = badge.downgrade();
                 let folder_weak = folder.downgrade();
                 let handler_id = folder.connect_local("counts-changed", false, move |_| {
-                    let (Some(label), Some(badge), Some(folder)) =
-                        (label_weak.upgrade(), badge_weak.upgrade(), folder_weak.upgrade())
-                    else {
+                    let (Some(label), Some(badge), Some(folder)) = (
+                        label_weak.upgrade(),
+                        badge_weak.upgrade(),
+                        folder_weak.upgrade(),
+                    ) else {
                         return None;
                     };
                     let count = folder.unread_count();
@@ -10866,7 +10909,10 @@ impl MailPage {
         let mut expanded_ids = HashSet::new();
         if let Some(dynamic_selection) = self.imp().dynamic_folder_selection.borrow().as_ref() {
             for index in 0..dynamic_selection.n_items() {
-                if let Some(row) = dynamic_selection.item(index).and_downcast::<gtk::TreeListRow>() {
+                if let Some(row) = dynamic_selection
+                    .item(index)
+                    .and_downcast::<gtk::TreeListRow>()
+                {
                     if row.is_expanded() {
                         if let Some(folder) = row.item().and_downcast::<FolderObject>() {
                             expanded_ids.insert(folder.id());
@@ -10974,13 +11020,14 @@ impl MailPage {
             if !profile.enabled {
                 continue;
             }
-            let eds_uid = crate::services::account_config_service::eds_source_uid_for_email(&profile.email);
+            let eds_uid =
+                crate::services::account_config_service::eds_source_uid_for_email(&profile.email);
             let profile_uid = profile.id.clone();
             let is_present = source_roots.contains_key(&profile_uid)
                 || source_roots.contains_key(&eds_uid)
-                || source_roots.values().any(|r| {
-                    r.name() == profile.display_name || r.name() == profile.email
-                });
+                || source_roots
+                    .values()
+                    .any(|r| r.name() == profile.display_name || r.name() == profile.email);
             if !is_present {
                 let source_root_id = Self::dynamic_folder_key(&profile_uid, "");
                 let display_name = if !profile.display_name.is_empty() {
@@ -11008,7 +11055,10 @@ impl MailPage {
         // Ensure all discovered/cached EDS mail sources (such as GNOME Online Accounts / Google accounts)
         // are represented in source_roots, so they appear immediately in the sidebar on startup.
         let eds_cache = crate::services::eds_source_cache_service::EdsSourceCache::new();
-        for eds_source in eds_cache.load_with_status(crate::services::eds_service::EdsSourceKind::Mail).sources {
+        for eds_source in eds_cache
+            .load_with_status(crate::services::eds_service::EdsSourceKind::Mail)
+            .sources
+        {
             if !eds_source.enabled {
                 continue;
             }
@@ -11018,7 +11068,10 @@ impl MailPage {
             let is_present = source_roots.contains_key(&eds_source.uid)
                 || source_roots.values().any(|r| {
                     r.name() == eds_source.display_name
-                        || eds_source.parent_name.as_deref().is_some_and(|p| r.name() == p)
+                        || eds_source
+                            .parent_name
+                            .as_deref()
+                            .is_some_and(|p| r.name() == p)
                 });
             if !is_present {
                 let source_root_id = Self::dynamic_folder_key(&eds_source.uid, "");
@@ -11129,7 +11182,10 @@ impl MailPage {
         }
         if let Some(dynamic_selection) = self.imp().dynamic_folder_selection.borrow().as_ref() {
             for index in 0..dynamic_selection.n_items() {
-                if let Some(row) = dynamic_selection.item(index).and_downcast::<gtk::TreeListRow>() {
+                if let Some(row) = dynamic_selection
+                    .item(index)
+                    .and_downcast::<gtk::TreeListRow>()
+                {
                     let is_account_root = row.depth() == 0;
                     let should_expand = is_account_root
                         || row
@@ -11168,7 +11224,10 @@ impl MailPage {
         let clean = folder_id.trim().to_ascii_lowercase();
         if clean.contains("inbox") || clean.contains("posteingang") {
             "mail-inbox-symbolic"
-        } else if clean.contains("sent") || clean.contains("gesendet") || clean.contains("gesendete") {
+        } else if clean.contains("sent")
+            || clean.contains("gesendet")
+            || clean.contains("gesendete")
+        {
             "mail-send-symbolic"
         } else if clean.contains("draft") || clean.contains("entwurf") || clean.contains("entwürfe")
         {
@@ -11348,7 +11407,10 @@ impl MailPage {
             if matching_row.is_some() {
                 dynamic_selection.set_selected(gtk::INVALID_LIST_POSITION);
                 for index in 0..dynamic_selection.n_items() {
-                    if let Some(row) = dynamic_selection.item(index).and_downcast::<gtk::TreeListRow>() {
+                    if let Some(row) = dynamic_selection
+                        .item(index)
+                        .and_downcast::<gtk::TreeListRow>()
+                    {
                         if row.depth() == 0 && !row.is_expanded() {
                             row.set_expanded(true);
                         }
@@ -11419,9 +11481,10 @@ impl MailPage {
                     };
                     let is_match = if current == *selection {
                         true
-                    } else if let (Some(sel_src), Some(cur_src)) =
-                        (selection.source_uid.as_deref(), current.source_uid.as_deref())
-                    {
+                    } else if let (Some(sel_src), Some(cur_src)) = (
+                        selection.source_uid.as_deref(),
+                        current.source_uid.as_deref(),
+                    ) {
                         sel_src == cur_src
                             && selection.folder_name.as_deref() == current.folder_name.as_deref()
                     } else {
@@ -15653,6 +15716,9 @@ impl MailPage {
                     .map(|page| page.begin_crypto_request())
                     .unwrap_or_default();
                 if let Some(page) = page_for_read.upgrade() {
+                    if let Some(cancelled) = page.imp().message_body_cancellation.borrow_mut().take() {
+                        cancelled.store(true, Ordering::Relaxed);
+                    }
                     page.reset_displayed_message_search_for_selection();
                 }
                 if let Some(source) = page_for_read.upgrade().and_then(|p| p.imp().mark_read_timeout_source.borrow_mut().take()) {
@@ -15853,6 +15919,12 @@ impl MailPage {
                             let msg_id = msg.id();
                             let folder_id = msg.folder_id();
                             let unread = msg.is_unread();
+                            let identity = msg.message_identity();
+                            let cancellation = Arc::new(AtomicBool::new(false));
+                            if let Some(page) = page_for_read.upgrade() {
+                                page.imp().message_body_cancellation.replace(Some(cancellation.clone()));
+                            }
+                            let cancellation_for_worker = cancellation.clone();
                             let selection_for_body = selection_for_async_crypto.clone();
                             let viewer_for_body = mail_viewer.clone();
                             let attachment_bar_for_body = attachment_bar.clone();
@@ -15860,16 +15932,22 @@ impl MailPage {
                             let page_for_body = page_for_read.clone();
                             let req_gen = crypto_request_generation;
 
+                            // MIME decoding, attachment extraction and the body index
+                            // all belong to the worker, including for cache hits.
                             std::thread::spawn(move || {
-                                let res = crate::services::camel_mail_service::load_raw_message(
+                                let result = camel_mail_service::load_raw_message(
                                     &location,
-                                    &std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-                                );
-                                let _ = body_sender.send_blocking((msg_id, folder_id, unread, res));
+                                    &cancellation_for_worker,
+                                ).and_then(|raw| {
+                                    prepare_loaded_message_body(
+                                        &msg_id, &folder_id, &raw, unread, &cancellation_for_worker,
+                                    )
+                                });
+                                let _ = body_sender.send_blocking((identity, result));
                             });
 
                             glib::spawn_future_local(async move {
-                                let Ok((msg_id, folder_id, unread, res)) = body_receiver.recv().await else {
+                                let Ok((identity, result)) = body_receiver.recv().await else {
                                     return;
                                 };
                                 let Some(page) = page_for_body.upgrade() else {
@@ -15878,30 +15956,35 @@ impl MailPage {
                                 let Some(current) = selected_mail_message(&selection_for_body) else {
                                     return;
                                 };
-                                if current.id() != msg_id {
+                                if cancellation.load(Ordering::Relaxed) || !crypto_result_is_current(
+                                    page.imp().crypto_request_generation.get(),
+                                    req_gen,
+                                    &current.message_identity(),
+                                    &identity,
+                                ) {
                                     return;
                                 }
-                                if page.imp().crypto_request_generation.get() != req_gen {
-                                    return;
-                                }
+                                page.imp().message_body_cancellation.borrow_mut().take();
 
-                                match res {
-                                    Ok(raw) => {
-                                        if let Some(parsed) = parse_rfc822_bytes(&msg_id, &folder_id, &raw, unread) {
-                                            let searchable = prepare_searchable_body_text(&parsed.html_body);
-                                            current.replace_rendered_content(
-                                                parsed.html_body,
-                                                parsed.preview_snippet,
-                                                parsed.attachments,
-                                                Some(searchable),
-                                            );
-                                            Self::render_message_content(
-                                                &current,
-                                                &viewer_for_body,
-                                                &attachment_bar_for_body,
-                                                Some(&itip_banner_for_body),
-                                            );
-                                        }
+                                match result {
+                                    Ok((parsed, searchable)) => {
+                                        current.set_raw_headers(parsed.raw_headers);
+                                        current.set_raw_mime(parsed.raw_mime);
+                                        current.replace_rendered_content(
+                                            parsed.html_body,
+                                            parsed.preview_snippet,
+                                            parsed.attachments,
+                                            Some(searchable),
+                                        );
+                                        page.invalidate_message_filters();
+                                        page.refresh_normal_headers_for_message(Some(&current));
+                                        page.refresh_all_headers_for_message(Some(&current));
+                                        Self::render_message_content(
+                                            &current,
+                                            &viewer_for_body,
+                                            &attachment_bar_for_body,
+                                            Some(&itip_banner_for_body),
+                                        );
                                     }
                                     Err(err) => {
                                         tracing::debug!(%err, "Background raw message load completed with notice");
@@ -16336,7 +16419,6 @@ impl MailPage {
             });
         }
 
-
         imp.outer_paned.set_vexpand(true);
         imp.outer_paned.set_hexpand(true);
         imp.root_box.set_orientation(gtk::Orientation::Vertical);
@@ -16376,48 +16458,6 @@ impl MailPage {
         self.add_controller(space_controller);
     }
 
-    fn apply_initial_cached_state(&self) {
-        let Some(cached) = camel_mail_service::load_mail_load_cache() else {
-            return;
-        };
-        if cached.folders.is_empty() && cached.messages.is_empty() {
-            return;
-        }
-
-        tracing::info!(
-            folders = cached.folders.len(),
-            messages = cached.messages.len(),
-            "Applying initial cached mail state for instant startup"
-        );
-
-        if let Some(folder_list) = self.imp().folder_list.borrow().as_ref() {
-            self.imp().mail_folder_summaries.replace(cached.folders.clone());
-            self.rebuild_camel_folder_rows_with_force(folder_list, &cached.folders, true);
-            self.update_camel_folder_counts(folder_list, &cached.folders, None);
-        }
-        if let Some(section) = self.imp().folder_section.borrow().as_ref() {
-            section.set_visible(true);
-        }
-
-        if let Some(store) = self.imp().message_store.borrow().as_ref() {
-            let mut objects = Vec::with_capacity(cached.messages.len());
-            for record in &cached.messages {
-                let object = record.clone().into_object();
-                objects.push(object.upcast::<glib::Object>());
-            }
-            if !objects.is_empty() {
-                store.splice(0, store.n_items(), &objects);
-            }
-        }
-
-        if let Some(state) = self.imp().message_state.borrow().as_ref() {
-            state.set_label(&format!(
-                "{} Nachricht(en) aus Zwischenspeicher geladen · Aktualisiere …",
-                cached.messages.len()
-            ));
-        }
-    }
-
     fn load_initial_data(&self, source_store: &gio::ListStore, source_state: &gtk::Label) {
         let startup_started = Instant::now();
         tracing::debug!("MailPage initial data setup started");
@@ -16426,9 +16466,6 @@ impl MailPage {
             selection.replace(initial_folder.clone());
         }
         self.select_folder_row(&initial_folder);
-
-        // Immediately populate sidebar and messages from local cache for zero startup lag.
-        self.apply_initial_cached_state();
 
         // Let GTK present the already-built shell before the first backend
         // result can schedule model work. EDS/Camel runs in a worker, but the
@@ -17336,6 +17373,7 @@ impl MailPage {
         if let Some(cancelled) = self.imp().mail_search_cancellation.borrow_mut().take() {
             cancelled.store(true, Ordering::Relaxed);
         }
+        self.imp().mail_backend_load_pending.set(false);
         if let Some(cancelled) = self.imp().mail_load_cancellation.borrow().as_ref() {
             cancelled.store(true, Ordering::Relaxed);
         }
@@ -17398,6 +17436,7 @@ impl MailPage {
         self.imp().mail_incremental_loading.set(false);
         self.cancel_pending_mail_apply();
 
+        let load_startup_cache = self.imp().load_generation.get() == 0;
         let generation = self.imp().load_generation.get().wrapping_add(1);
         self.imp().load_generation.set(generation);
         // A replacing request represents the user's current target before its
@@ -17408,6 +17447,7 @@ impl MailPage {
             self.imp().active_request.replace(Some(request.clone()));
         }
         self.imp().mail_loading.set(true);
+        self.imp().mail_backend_load_pending.set(true);
         if let Some(button) = self.imp().refresh_button.borrow().as_ref() {
             button.set_sensitive(false);
         }
@@ -17433,6 +17473,18 @@ impl MailPage {
         let worker_input = MailLoadWorkerInput::from_main_thread(request.clone());
         std::thread::spawn(move || {
             let started = Instant::now();
+            if load_startup_cache && !worker_input.offline_mode {
+                if let Some(mut cached) = camel_mail_service::load_mail_load_cache() {
+                    if !cached.folders.is_empty() || !cached.messages.is_empty() {
+                        cached.warning =
+                            Some("Zwischengespeicherte Nachrichten · Aktualisiere …".to_string());
+                        let cached_result = prepared_camel_result(cached, &cancellation);
+                        if !cancellation.load(Ordering::Relaxed) {
+                            let _ = sender.send_blocking((cached_result, true));
+                        }
+                    }
+                }
+            }
             let result = load_mail_backend(
                 worker_input,
                 &cancellation,
@@ -17443,7 +17495,7 @@ impl MailPage {
                 "Mail load worker completed"
             );
             drop(progress_sender_for_worker);
-            if let Err(error) = sender.send_blocking(result) {
+            if let Err(error) = sender.send_blocking((result, false)) {
                 tracing::debug!(%error, "Mail result was dropped before delivery");
             }
         });
@@ -17462,16 +17514,37 @@ impl MailPage {
 
         let page = self.downgrade();
         glib::spawn_future_local(async move {
-            let result = receiver.recv().await.unwrap_or_else(|_| {
-                MailPageLoadResult::Error("Mail-Ladevorgang wurde abgebrochen.".to_string())
-            });
-            let Some(page) = page.upgrade() else {
-                return;
-            };
-            if !generation_is_current(page.imp().load_generation.get(), generation) {
-                return;
+            while let Ok((result, from_cache)) = receiver.recv().await {
+                let Some(page) = page.upgrade() else {
+                    return;
+                };
+                if !generation_is_current(page.imp().load_generation.get(), generation) {
+                    return;
+                }
+                // Both snapshots use the bounded model/thread builder. A live
+                // result supersedes any partially applied startup snapshot.
+                page.cancel_pending_mail_apply();
+                if !from_cache {
+                    page.imp().mail_backend_load_pending.set(false);
+                }
+                page.apply_mail_load(request.clone(), result, replace);
+                if !from_cache {
+                    return;
+                }
             }
-            page.apply_mail_load(request, result, replace);
+            if let Some(page) = page.upgrade() {
+                if generation_is_current(page.imp().load_generation.get(), generation) {
+                    page.imp().mail_backend_load_pending.set(false);
+                    page.cancel_pending_mail_apply();
+                    page.apply_mail_load(
+                        request,
+                        MailPageLoadResult::Error(
+                            "Mail-Ladevorgang wurde abgebrochen.".to_string(),
+                        ),
+                        replace,
+                    );
+                }
+            }
         });
     }
 
@@ -17706,6 +17779,7 @@ impl MailPage {
         {
             return;
         }
+        self.imp().mail_backend_load_pending.set(false);
         if let Some(cancelled) = self.imp().mail_load_cancellation.borrow().as_ref() {
             cancelled.store(true, Ordering::Relaxed);
         }
@@ -18693,12 +18767,13 @@ impl MailPage {
         }
 
         self.update_drawer_header();
-        self.imp().mail_loading.set(false);
+        let backend_pending = self.imp().mail_backend_load_pending.get();
+        self.imp().mail_loading.set(backend_pending);
         if let Some(button) = self.imp().refresh_button.borrow().as_ref() {
-            button.set_sensitive(true);
+            button.set_sensitive(!backend_pending);
         }
         if let Some(button) = self.imp().load_more_button.borrow().as_ref() {
-            button.set_sensitive(true);
+            button.set_sensitive(!backend_pending);
         }
 
         let mut graph_search_has_more = None;
@@ -18721,6 +18796,7 @@ impl MailPage {
         }
 
         if completion.replace
+            && !backend_pending
             && !self.imp().graph_backend_active.get()
             && !AppSettings::try_new()
                 .map(|settings| settings.offline_mode())
@@ -18746,8 +18822,10 @@ impl MailPage {
         if self.imp().mail_change_pending.replace(false) && !self.imp().mail_loading.get() {
             self.refresh_mail();
         }
-        if let Some(pending_search) = completion.pending_search.as_deref() {
-            self.handle_search_changed(pending_search);
+        if !backend_pending {
+            if let Some(pending_search) = completion.pending_search.as_deref() {
+                self.handle_search_changed(pending_search);
+            }
         }
         let stored_messages = self
             .imp()
@@ -19997,8 +20075,8 @@ mod tests {
         let gate = "generation_is_current(page.imp().load_generation.get(),generation)";
         assert_eq!(
             start_source.matches(gate).count(),
-            2,
-            "the current-generation gate must protect both progress and result delivery"
+            3,
+            "the generation gate must protect progress, staged results and worker failure"
         );
         assert!(
             start_source.contains(
@@ -20008,9 +20086,16 @@ mod tests {
         );
         assert!(
             start_source.contains(
-                "if!generation_is_current(page.imp().load_generation.get(),generation){return;}page.apply_mail_load(request,result,replace);"
+                "if!generation_is_current(page.imp().load_generation.get(),generation){return;}"
             ),
             "stale results must be rejected before the GTK model apply"
+        );
+        assert!(start_source.contains("whileletOk((result,from_cache))=receiver.recv().await"));
+        assert!(
+            start_source.find("if!generation_is_current").unwrap()
+                < start_source
+                    .find("page.apply_mail_load(request.clone(),result,replace)")
+                    .unwrap()
         );
     }
 
@@ -20664,6 +20749,37 @@ mod tests {
 
         let batch_update = compact_rust(rust_function_body(source, "update_batch_action_bar"));
         assert!(batch_update.contains("self.update_undelete_action();"));
+    }
+
+    #[test]
+    fn loaded_message_body_prepares_mime_and_search_index_without_gtk() {
+        let raw = b"From: Sender <sender@example.test>\r\nSubject: Example\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=mail\r\n\r\n--mail\r\nContent-Type: text/html; charset=utf-8\r\n\r\n<p>SEARCHABLE Body</p>\r\n--mail\r\nContent-Type: text/plain; name=note.txt\r\nContent-Disposition: attachment; filename=note.txt\r\nContent-Transfer-Encoding: base64\r\n\r\nbm90ZQ==\r\n--mail--\r\n";
+        let (message, searchable) =
+            prepare_loaded_message_body("selected", "inbox", raw, true, &AtomicBool::new(false))
+                .unwrap();
+        assert_eq!(message.id, "selected");
+        assert_eq!(message.folder_id, "inbox");
+        assert!(message.is_unread);
+        assert!(!message.is_preview_only);
+        assert!(searchable.contains("searchable body"));
+        assert!(!searchable.contains("sender@example.test"));
+        assert_eq!(message.attachments.len(), 1);
+        assert_eq!(message.attachments[0].content.as_ref(), b"note");
+        assert!(message.raw_headers.is_some());
+    }
+
+    #[test]
+    fn cancelled_message_body_never_publishes_partial_content() {
+        assert!(
+            prepare_loaded_message_body(
+                "selected",
+                "inbox",
+                b"Subject: obsolete\r\n\r\nBody",
+                false,
+                &AtomicBool::new(true),
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -22702,16 +22818,25 @@ mod tests {
     #[test]
     fn test_folder_selection_title_and_icon() {
         let inbox = FolderSelection::from_folder_id("inbox");
-        assert_eq!(inbox.title_and_icon(), ("Posteingang", "mail-inbox-symbolic"));
+        assert_eq!(
+            inbox.title_and_icon(),
+            ("Posteingang", "mail-inbox-symbolic")
+        );
 
         let sent = FolderSelection::from_folder_id("sent");
         assert_eq!(sent.title_and_icon(), ("Gesendet", "mail-send-symbolic"));
 
         let drafts = FolderSelection::from_folder_id("drafts");
-        assert_eq!(drafts.title_and_icon(), ("Entwürfe", "mail-drafts-symbolic"));
+        assert_eq!(
+            drafts.title_and_icon(),
+            ("Entwürfe", "mail-drafts-symbolic")
+        );
 
         let trash = FolderSelection::from_folder_id("trash");
-        assert_eq!(trash.title_and_icon(), ("Papierkorb", "user-trash-symbolic"));
+        assert_eq!(
+            trash.title_and_icon(),
+            ("Papierkorb", "user-trash-symbolic")
+        );
 
         let archive = FolderSelection::from_folder_id("archive");
         assert_eq!(archive.title_and_icon(), ("Archiv", "folder-symbolic"));
@@ -22720,34 +22845,54 @@ mod tests {
         assert_eq!(spam.title_and_icon(), ("Junk", "mail-mark-junk-symbolic"));
 
         let outbox = FolderSelection::from_folder_id("outbox");
-        assert_eq!(outbox.title_and_icon(), ("Postausgang", "mail-outbox-symbolic"));
+        assert_eq!(
+            outbox.title_and_icon(),
+            ("Postausgang", "mail-outbox-symbolic")
+        );
 
         let custom_inbox = FolderSelection {
             folder_id: "remote-inbox".to_string(),
             source_uid: Some("account-1".to_string()),
             folder_name: Some("INBOX".to_string()),
         };
-        assert_eq!(custom_inbox.title_and_icon(), ("INBOX", "mail-inbox-symbolic"));
+        assert_eq!(
+            custom_inbox.title_and_icon(),
+            ("INBOX", "mail-inbox-symbolic")
+        );
     }
 
     #[test]
     fn test_format_drawer_folder_status() {
         let inbox = FolderSelection::from_folder_id("inbox");
-        assert_eq!(MailPage::format_drawer_folder_status(&inbox, 3, 102), "3 unread, 102 total");
-        assert_eq!(MailPage::format_drawer_folder_status(&inbox, 0, 102), "102 total");
+        assert_eq!(
+            MailPage::format_drawer_folder_status(&inbox, 3, 102),
+            "3 unread, 102 total"
+        );
+        assert_eq!(
+            MailPage::format_drawer_folder_status(&inbox, 0, 102),
+            "102 total"
+        );
         assert_eq!(MailPage::format_drawer_folder_status(&inbox, 0, 0), "");
 
         let sent = FolderSelection::from_folder_id("sent");
-        assert_eq!(MailPage::format_drawer_folder_status(&sent, 0, 55), "55 sent");
+        assert_eq!(
+            MailPage::format_drawer_folder_status(&sent, 0, 55),
+            "55 sent"
+        );
 
         let drafts = FolderSelection::from_folder_id("drafts");
-        assert_eq!(MailPage::format_drawer_folder_status(&drafts, 0, 4), "4 drafts");
+        assert_eq!(
+            MailPage::format_drawer_folder_status(&drafts, 0, 4),
+            "4 drafts"
+        );
 
         let trash = FolderSelection::from_folder_id("trash");
-        assert_eq!(MailPage::format_drawer_folder_status(&trash, 0, 12), "12 deleted");
+        assert_eq!(
+            MailPage::format_drawer_folder_status(&trash, 0, 12),
+            "12 deleted"
+        );
 
         let spam = FolderSelection::from_folder_id("spam");
         assert_eq!(MailPage::format_drawer_folder_status(&spam, 0, 8), "8 junk");
     }
 }
-

@@ -336,9 +336,19 @@ pub(crate) fn save_mail_load_cache(load: &CamelMailLoad) {
 
 #[allow(dead_code)]
 pub(crate) fn load_mail_load_cache() -> Option<CamelMailLoad> {
+    let started = std::time::Instant::now();
     let path = mail_cache_path();
     let content = std::fs::read_to_string(path).ok()?;
-    serde_json::from_str(&content).ok()
+    let cached: CamelMailLoad = serde_json::from_str(&content).ok()?;
+    tracing::debug!(
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        messages = cached.messages.len(),
+        folders = cached.folders.len(),
+        bytes = content.len(),
+        origin = "cache",
+        "Prepared startup mail cache"
+    );
+    Some(cached)
 }
 
 /// Portable Exchange fallback.  It deliberately returns the same plain
@@ -1147,7 +1157,11 @@ pub fn store_source_password(source_uid: &str, password: &str) -> Result<(), Str
 
         if !ok {
             let msg = if !out_error.is_null() {
-                let err_str = unsafe { std::ffi::CStr::from_ptr(out_error).to_string_lossy().into_owned() };
+                let err_str = unsafe {
+                    std::ffi::CStr::from_ptr(out_error)
+                        .to_string_lossy()
+                        .into_owned()
+                };
                 unsafe { ffi::evolution_eds_camel_free_error(out_error) };
                 err_str
             } else {
@@ -2036,6 +2050,9 @@ fn load_raw_message_native(
     let _native_lock = CAMEL_NATIVE_LOCK
         .lock()
         .unwrap_or_else(|poison| poison.into_inner());
+    // Selection may have changed while waiting for another Camel operation.
+    // Do not make the obsolete request connect or touch the provider.
+    cancellation_error(cancelled, "Nachrichtenquelle laden")?;
     let success = unsafe {
         ffi::evolution_eds_camel_load_messages_by_uid(
             source_uid.as_ptr(),
