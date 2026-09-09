@@ -217,6 +217,12 @@ fn main() {
     println!("cargo:rerun-if-changed={}", ecal_bridge.display());
     println!(
         "cargo:rerun-if-changed={}",
+        manifest_dir
+            .join("../native/eds_ecal_snapshot_cache.h")
+            .display()
+    );
+    println!(
+        "cargo:rerun-if-changed={}",
         manifest_dir.join("../native/eds_ecal_bridge.h").display()
     );
     println!("cargo:rerun-if-changed={}", ebook_bridge.display());

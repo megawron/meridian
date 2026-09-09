@@ -9,6 +9,7 @@
 #include <gio/gio.h>
 #include <glib.h>
 #include <string.h>
+#include "eds_ecal_snapshot_cache.h"
 
 typedef struct {
     EvolutionEdsECalComponent *components;
@@ -85,6 +86,33 @@ ecal_cancel_timeout_cb (gpointer data)
     return G_SOURCE_REMOVE;
 }
 
+/* A timeout source owns a cancellable reference until it is destroyed.  This
+ * avoids handing an already-removed source ID to g_source_remove() when the
+ * synchronous EDS call iterates a main context and the timeout fires first. */
+static GSource *
+ecal_start_cancellation_timer (GCancellable *cancellable,
+                               guint timeout_milliseconds)
+{
+    GSource *source;
+
+    source = g_timeout_source_new (timeout_milliseconds);
+    g_source_set_callback (
+        source, ecal_cancel_timeout_cb, g_object_ref (cancellable),
+        (GDestroyNotify) g_object_unref);
+    g_source_attach (source, g_main_context_get_thread_default ());
+    return source;
+}
+
+static void
+ecal_stop_cancellation_timer (GSource *source)
+{
+    if (!source)
+        return;
+
+    g_source_destroy (source);
+    g_source_unref (source);
+}
+
 static void
 load_source (ECalLoadContext *context,
              ESource *source,
@@ -123,14 +151,24 @@ load_source (ECalLoadContext *context,
     guint connect_timeout_ms = (source_type == EVOLUTION_EDS_ECAL_EVENTS) ? 1500 : 300;
     guint32 wait_seconds = (source_type == EVOLUTION_EDS_ECAL_EVENTS) ? 1 : 0;
 
-    GCancellable *cancellable = g_cancellable_new ();
-    guint timer_id = g_timeout_add (connect_timeout_ms, ecal_cancel_timeout_cb, cancellable);
+    /* Match Evolution's range model: a cached client is immediately useful
+     * for locally synchronized data and must not be held behind an online
+     * connection wait.  Only a cache miss gets the existing bounded open. */
+    client = ecal_ref_cached_snapshot_client (source, source_type);
+    if (!client) {
+        GCancellable *cancellable = g_cancellable_new ();
+        GSource *timer = ecal_start_cancellation_timer (
+            cancellable, connect_timeout_ms);
 
-    client = E_CAL_CLIENT (e_cal_client_connect_sync (
-        source, (ECalClientSourceType) source_type, wait_seconds, cancellable, &error));
+        client = E_CAL_CLIENT (e_cal_client_connect_sync (
+            source, (ECalClientSourceType) source_type, wait_seconds,
+            cancellable, &error));
 
-    g_source_remove (timer_id);
-    g_object_unref (cancellable);
+        ecal_stop_cancellation_timer (timer);
+        g_object_unref (cancellable);
+        if (client)
+            client = ecal_cache_snapshot_client (source, source_type, client);
+    }
 
     if (!client) {
         context->failed_sources++;
@@ -158,13 +196,14 @@ load_source (ECalLoadContext *context,
     }
 
     guint query_timeout_ms = (source_type == EVOLUTION_EDS_ECAL_EVENTS) ? 2000 : 500;
-    cancellable = g_cancellable_new ();
-    timer_id = g_timeout_add (query_timeout_ms, ecal_cancel_timeout_cb, cancellable);
+    GCancellable *cancellable = g_cancellable_new ();
+    GSource *timer = ecal_start_cancellation_timer (
+        cancellable, query_timeout_ms);
 
     gboolean query_ok = e_cal_client_get_object_list_as_comps_sync (
         client, query, &components, cancellable, &error);
 
-    g_source_remove (timer_id);
+    ecal_stop_cancellation_timer (timer);
     g_object_unref (cancellable);
     g_free (query);
 
@@ -172,6 +211,7 @@ load_source (ECalLoadContext *context,
         context->failed_sources++;
         remember_error (context, display_name, error);
         g_clear_error (&error);
+        ecal_evict_snapshot_client (source, source_type, client);
         g_object_unref (client);
         return;
     }
@@ -267,6 +307,7 @@ evolution_eds_ecal_load_components (
     credentials_provider = e_source_credentials_provider_new (registry);
 
     sources = e_source_registry_list_enabled (registry, extension_name);
+    ecal_prune_snapshot_clients (sources, source_type);
     for (link = sources; link != NULL; link = link->next)
         load_source (&context, E_SOURCE (link->data), source_type);
 
