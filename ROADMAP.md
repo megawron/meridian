@@ -23,6 +23,13 @@ Vollständige Architektur-Spezifikation, Feature-Mapping und Entwicklungs-Roadma
 > ohne Hauptthread-Blockade erfolgreich abgenommen. Details siehe
 > `ROADMAP_LINUX.md`.
 
+> **Performance-Arbeitsstand 2026-09-08:** Mail- und Kalender-Caches werden
+> außerhalb des GTK-Hauptthreads vorbereitet und vor Provider-Antworten angezeigt.
+> Einzelne Mailtexte nutzen zuerst den Camel-Cache; MIME-Aufbereitung läuft im
+> Worker. Kalenderverbindungen werden wiederverwendet. Dies ist noch kein Beleg
+> für identische Ladezeiten zum Original; aktueller Umfang und Messanleitung:
+> [`docs/PERFORMANCE_LOADING.md`](docs/PERFORMANCE_LOADING.md).
+
 ---
 
 ## 1. Architektur & Tech-Stack

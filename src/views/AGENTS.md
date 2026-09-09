@@ -113,6 +113,14 @@ accessibility helpers, and view-local GTK state.
   authoritative subscribed bit; run list/mutation work off GTK, serialize it,
   and refresh only after Camel confirms the requested state. Graph and local
   mail have no subscription fallback, and no synthetic checkbox UI is allowed.
+- Mail and calendar startup caches are provisional worker results: disk reads,
+  parsing and indexing stay off GTK, and cache/provider results share the same
+  load generation. Publishing a cache preview must not finish the provider job.
+  Apply cached mail through the bounded normal model/thread pipeline; replacing
+  a calendar preview invalidates pending rows/projections by model revision.
+  Display cache refresh status explicitly and retain the visible snapshot while
+  reloading. Selected-message MIME decoding and searchable text preparation also
+  run off GTK and carry cancellation plus complete message identity.
 - Use services for data access; do not embed EDS/Camel/ECal/EBook lifecycle or
   GTK types in service code.
 - Run every potentially blocking service mutation off the GTK main thread.

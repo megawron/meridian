@@ -98,6 +98,10 @@ When the user requests a durable behavior change, record it here or in the relev
   is read-only reference material; do not create or maintain parallel product
   feature branches unless the user explicitly changes this policy.
 
+- Publish changes in small commits grouped by purpose. Keep macOS integration
+  and development-fallback changes separate from Linux/performance work unless
+  the user explicitly includes them in a later publication request.
+
 ## Roadmap Workflow
 
 - `ROADMAP.md` is the canonical product scope and evidence-backed status.
@@ -125,6 +129,19 @@ When the user requests a durable behavior change, record it here or in the relev
   visibly open until their direct evidence exists; do not convert these rests
   into `DONE` or completion percentages.
 
+## Native Helper Verification
+
+- `native/eds_ecal_snapshot_cache.h` owns reusable ECal snapshot-client lifetime,
+  source-configuration invalidation and backend-death tokens. Signal closures
+  must never retain a raw cache-entry pointer across concurrent eviction.
+- Run `sh native/tests/run_ecal_snapshot_cache_test.sh` for the GLib/GObject
+  lifetime regressions; it does not substitute for a Linux EDS bridge build.
+
+- `native/eds_camel_folder_copy.h` is a standalone traversal prototype, not wired
+  into the live Camel bridge. `sh native/tests/run_folder_copy_test.sh` checks its
+  copy-only ordering, cancellation and partial failures with call doubles;
+  move behavior and production integration remain unverified.
+
 ## Child DOX Index
 
 - `src/AGENTS.md` owns the Rust application source and indexes its UI, service,
@@ -139,5 +156,8 @@ When the user requests a durable behavior change, record it here or in the relev
 - `docs/UPSTREAM_SETTINGS_PARITY_AUDIT.md` owns the upstream-to-GTK4 settings
   key inventory, preference/live/backup/migration evidence, and atomic
   settings package cuts.
+- `docs/PERFORMANCE_LOADING.md` owns mail/calendar loading bottlenecks,
+  upstream implementation references, portable evidence and the Linux latency
+  measurement procedure for `PERF-CACHED-LOAD`.
 - Other root-owned files include `README.md`, `LICENSE`, `banner.jpg`,
   `video-thumbnail.jpg`, and root-level project documentation.

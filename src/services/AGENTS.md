@@ -21,6 +21,12 @@ settings persistence.
   processes with a crash-released sibling-file lock. Preserve atomic data-file
   replacement, and fail without overwriting when the existing target cannot
   be read.
+- Optimize mail/calendar loading using original Evolution's cached-data-first
+  behavior: opening one known mail UID must not refresh the entire account or
+  folder before reading its body. Calendar preview-cache writes are buffered
+  and atomic, include successful Graph loads, and replace stale content after
+  a successful empty result. Empty native results with source errors are failures,
+  not evidence that previously cached events were deleted.
 - Do not depend on GTK widgets or libadwaita types.
 - Expose cancellation, warnings, conflicts, and backend-unavailable states so
   views can present honest status instead of hanging.

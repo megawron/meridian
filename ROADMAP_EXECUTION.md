@@ -5,6 +5,16 @@ Die vollständige Produktspezifikation und der belegte Ist-Stand bleiben in
 [ROADMAP.md](ROADMAP.md). Ausschließlich auf Linux prüfbare Arbeiten stehen in
 [ROADMAP_LINUX.md](ROADMAP_LINUX.md).
 
+## Aktuelle Nutzerpriorität: `PERF-CACHED-LOAD` (2026-09-08)
+
+Mail-/Kalender-Ladelatenz gegenüber dem benachbarten Original reduzieren.
+Arbeitsstand auf `e933f74` mit getrennt veröffentlichten Änderungen: Cache-Aufbereitung
+und Mail-MIME-Verarbeitung außerhalb GTK, generationengesicherte Vorschau vor
+Provider-Antwort und exakter Camel-UID-Abruf ohne Konto-/Ordner-Refresh.
+Native Kalender-Verbindungswiederverwendung folgt dem Upstream-Cache-Prinzip.
+Portable Tests und Linux-Abnahme sind getrennt zu bewerten; Messanleitung und
+Belege: `docs/PERFORMANCE_LOADING.md`. Linux-/Kontolatenzen bleiben offen.
+
 ## 1. Dokumentrollen
 
 - `ROADMAP.md` beantwortet: Welche Evolution-Funktionen und Einstellungen

@@ -22,6 +22,21 @@ Status:
   oder ein Teil des Abnahmekriteriums fehlt
 - `[ ]` = noch offen
 
+## Offene Performance-Abnahme `PERF-CACHED-LOAD`
+
+- `[~]` Vorbereitet auf `e933f74` mit den Performance-Commits dieser Serie:
+  Mail-/Kalender-Cache im Worker, exakte Camel-UID-Abrufe ohne Ordner-/Konto-Refresh,
+  wiederverwendete ECal-Clients. Vorbereiteter Commit `e043652` enthält die vier Performance-Commits.
+  Vor Abnahme den tatsächlich getesteten Commit protokollieren; dieser Stand ist nicht als Linux-getestet markiert.
+- `[ ]` Unter Linux mit EDS und demselben Konto wie im Original Release-Build
+  erstellen; Warm-/Kaltstart, Mailwechsel und Kalender-Reload nach
+  `docs/PERFORMANCE_LOADING.md` prüfen. Zeit bis sichtbare Liste/Termine und bis
+  vollständige Aktualisierung getrennt erfassen (mindestens fünf Läufe, Median).
+- `[ ]` Offline-Caches, schneller Ordner-/Nachrichtenwechsel, Quellenänderung,
+  EDS-Neustart und Entfernen des letzten Termins prüfen. Keine alten Worker dürfen
+  neue Auswahl überschreiben; Fehler müssen sichtbar bleiben. Logs, Bibliotheks-
+  versionen und Kontoart ohne Nachrichtentexte/Geheimnisse als Beleg speichern.
+
 ## LLM-Ausführung und P0-Handoffs
 
 Ein Agent auf macOS darf diese Punkte vorbereiten, aber nicht als bestanden
