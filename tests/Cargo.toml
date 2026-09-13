@@ -1,0 +1,24 @@
+[package]
+name = "evolution-gtk4-tests"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Comprehensive 4-tier requirement-driven E2E test suite for Evolution GTK4 Preferences & Settings"
+build = "build.rs"
+
+[[test]]
+name = "preferences_e2e_tests"
+path = "preferences_e2e_tests.rs"
+
+[dependencies]
+gtk.workspace = true
+adw.workspace = true
+glib.workspace = true
+gio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+
+[build-dependencies]
