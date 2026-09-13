@@ -36,6 +36,7 @@ use crate::services::mail_store_service::{
 };
 use crate::services::migration_service;
 use crate::services::settings_service::{
+    normalize_composer_forward_style, normalize_composer_reply_style,
     MailLabelDefinition, ReminderDurationUnit, validate_mail_normal_header_name,
 };
 use crate::services::signature_store_service::SignatureStore;
@@ -921,6 +922,12 @@ impl PreferencesDialog {
         self.refresh_local_profile_rows();
         page_accounts.add(&group_profiles);
 
+        #[cfg(target_os = "macos")]
+        {
+            let group_macos = self.build_macos_group();
+            page_accounts.add(&group_macos);
+        }
+
         // Filter Rules Section
         let group_filters = adw::PreferencesGroup::builder()
             .title("Mail-Filter und Sortierung")
@@ -1310,6 +1317,7 @@ impl PreferencesDialog {
             });
             group_filters.add(&row);
         }
+        page_accounts.add(&group_filters);
 
         let group_sync = adw::PreferencesGroup::builder()
             .title("Synchronisation")
@@ -1406,12 +1414,9 @@ impl PreferencesDialog {
         group_sync.add(&row_local_mail);
         page_network.add(&group_sync);
 
-        let group_local_sources = adw::PreferencesGroup::builder()
-            .title("Lokale Importquellen")
-            .description(
-                "Externe EML/Maildir/mbox-, iCalendar- und vCard-Dateien bleiben \
-                 schreibgeschützt; app-eigene lokale Quellen können bearbeitet werden",
-            )
+        let group_calendar_local = adw::PreferencesGroup::builder()
+            .title("Lokale Kalenderquellen und Import")
+            .description("Lokaler iCalendar-Speicherordner und Import externer Kalenderdateien")
             .build();
         let row_local_calendar = directory_picker_row(
             self,
@@ -1424,7 +1429,12 @@ impl PreferencesDialog {
             settings.clone(),
             |settings, path| settings.set_local_calendar_directory(path),
         );
-        group_local_sources.add(&row_local_calendar);
+        group_calendar_local.add(&row_local_calendar);
+
+        let group_contacts_local = adw::PreferencesGroup::builder()
+            .title("Lokale Kontakte und Import")
+            .description("Lokaler vCard-Speicherordner und Import externer Adressdaten")
+            .build();
         let row_local_contacts = directory_picker_row(
             self,
             "Lokaler Kontaktordner",
@@ -1436,7 +1446,7 @@ impl PreferencesDialog {
             settings.clone(),
             |settings, path| settings.set_local_contact_directory(path),
         );
-        group_local_sources.add(&row_local_contacts);
+        group_contacts_local.add(&row_local_contacts);
 
         let row_import_calendar = adw::ActionRow::builder()
             .title("iCalendar-Dateien importieren")
@@ -1509,7 +1519,7 @@ impl PreferencesDialog {
                 );
             }
         ));
-        group_local_sources.add(&row_import_calendar);
+        group_calendar_local.add(&row_import_calendar);
 
         let row_import_contacts = adw::ActionRow::builder()
             .title("vCard-Dateien importieren")
@@ -1577,8 +1587,8 @@ impl PreferencesDialog {
                 });
             }
         ));
-        group_local_sources.add(&row_import_contacts);
-        page_contacts.add(&group_local_sources);
+        group_contacts_local.add(&row_import_contacts);
+        page_contacts.add(&group_contacts_local);
 
         let group_default_address_book = adw::PreferencesGroup::builder()
             .title("Standardadressbuch")
@@ -1708,6 +1718,14 @@ impl PreferencesDialog {
         row_completion_min_query_length.set_digits(0);
         row_completion_min_query_length.set_snap_to_ticks(true);
 
+        let row_completion_book_sources = adw::EntryRow::builder()
+            .title("Adressbuch-Quellen für Autovervollständigung")
+            .show_apply_button(true)
+            .build();
+        row_completion_book_sources.set_tooltip_text(Some(
+            "Kommagetrennte Liste von Adressbuch-UIDs (z. B. local-addressbook) oder leer lassen für alle aktivierten Bücher",
+        ));
+
         if let Some(settings_ref) = settings.clone() {
             row_completion_show_address.set_active(settings_ref.contact_completion_show_address());
             let s_comp_addr = settings_ref.clone();
@@ -1721,10 +1739,31 @@ impl PreferencesDialog {
             row_completion_min_query_length.connect_value_notify(move |row| {
                 s_comp_len.set_contact_completion_minimum_query_length(row.value().round() as u32);
             });
+
+            row_completion_book_sources
+                .set_text(&settings_ref.contact_completion_book_sources());
+            let s_sources = settings_ref.clone();
+            row_completion_book_sources.connect_apply(move |entry| {
+                s_sources.set_contact_completion_book_sources(entry.text().as_str());
+            });
+            let row_weak = row_completion_book_sources.downgrade();
+            settings_ref.connect_changed(
+                Some("contact-completion-book-sources"),
+                move |s, _| {
+                    let Some(row) = row_weak.upgrade() else {
+                        return;
+                    };
+                    let current = s.string("contact-completion-book-sources");
+                    if row.text().as_str() != current.as_str() {
+                        row.set_text(&current);
+                    }
+                },
+            );
         }
 
         group_contacts_autocomplete.add(&row_completion_show_address);
         group_contacts_autocomplete.add(&row_completion_min_query_length);
+        group_contacts_autocomplete.add(&row_completion_book_sources);
         page_contacts.add(&group_contacts_autocomplete);
 
         let group_contacts_editor = adw::PreferencesGroup::builder()
@@ -1737,6 +1776,7 @@ impl PreferencesDialog {
             settings: &Option<AppSettings>,
             title: &str,
             subtitle: &str,
+            key: &'static str,
             getter: fn(&AppSettings) -> bool,
             setter: fn(&AppSettings, bool),
         ) {
@@ -1748,7 +1788,16 @@ impl PreferencesDialog {
                 row.set_active(getter(&s));
                 let s_clone = s.clone();
                 row.connect_active_notify(move |r| {
-                    setter(&s_clone, r.is_active());
+                    if getter(&s_clone) != r.is_active() {
+                        setter(&s_clone, r.is_active());
+                    }
+                });
+                let row_clone = row.clone();
+                s.connect_changed(Some(key), move |settings, _| {
+                    let val = settings.boolean(key);
+                    if row_clone.is_active() != val {
+                        row_clone.set_active(val);
+                    }
                 });
             }
             group.add(&row);
@@ -1759,6 +1808,7 @@ impl PreferencesDialog {
             &settings,
             "Telefonnummern",
             "Telefon- und Mobilnummern",
+            "contact-editor-show-phone",
             AppSettings::contact_editor_show_phone,
             AppSettings::set_contact_editor_show_phone,
         );
@@ -1767,6 +1817,7 @@ impl PreferencesDialog {
             &settings,
             "SIP- / VoIP-Adressen",
             "Internettelefonie-Konten",
+            "contact-editor-show-sip",
             AppSettings::contact_editor_show_sip,
             AppSettings::set_contact_editor_show_sip,
         );
@@ -1775,6 +1826,7 @@ impl PreferencesDialog {
             &settings,
             "Instant Messaging",
             "Chat- und Messenger-Kennungen",
+            "contact-editor-show-im",
             AppSettings::contact_editor_show_im,
             AppSettings::set_contact_editor_show_im,
         );
@@ -1783,6 +1835,7 @@ impl PreferencesDialog {
             &settings,
             "Privatadresse",
             "Wohnsitz und private Anschrift",
+            "contact-editor-show-home-address",
             AppSettings::contact_editor_show_home_address,
             AppSettings::set_contact_editor_show_home_address,
         );
@@ -1791,6 +1844,7 @@ impl PreferencesDialog {
             &settings,
             "Geschäftsadresse",
             "Büro- und Firmenanschrift",
+            "contact-editor-show-work-address",
             AppSettings::contact_editor_show_work_address,
             AppSettings::set_contact_editor_show_work_address,
         );
@@ -1799,6 +1853,7 @@ impl PreferencesDialog {
             &settings,
             "Weitere Adressen",
             "Sonstige postalische Adressen",
+            "contact-editor-show-other-address",
             AppSettings::contact_editor_show_other_address,
             AppSettings::set_contact_editor_show_other_address,
         );
@@ -1807,6 +1862,7 @@ impl PreferencesDialog {
             &settings,
             "Websites",
             "Homepages und Weblinks",
+            "contact-editor-show-web",
             AppSettings::contact_editor_show_web,
             AppSettings::set_contact_editor_show_web,
         );
@@ -1815,6 +1871,7 @@ impl PreferencesDialog {
             &settings,
             "Beruf und Organisation",
             "Position, Abteilung und Firma",
+            "contact-editor-show-job",
             AppSettings::contact_editor_show_job,
             AppSettings::set_contact_editor_show_job,
         );
@@ -1823,6 +1880,7 @@ impl PreferencesDialog {
             &settings,
             "Geburts- und Jahrestage",
             "Persönliche Termine und Jubiläen",
+            "contact-editor-show-dates",
             AppSettings::contact_editor_show_dates,
             AppSettings::set_contact_editor_show_dates,
         );
@@ -1831,6 +1889,7 @@ impl PreferencesDialog {
             &settings,
             "Zusatzangaben",
             "Zeitzone, Geokoordinaten und Rollen",
+            "contact-editor-show-misc",
             AppSettings::contact_editor_show_misc,
             AppSettings::set_contact_editor_show_misc,
         );
@@ -1839,6 +1898,7 @@ impl PreferencesDialog {
             &settings,
             "Notizen",
             "Freitext-Notizen zum Kontakt",
+            "contact-editor-show-notes",
             AppSettings::contact_editor_show_notes,
             AppSettings::set_contact_editor_show_notes,
         );
@@ -1847,6 +1907,7 @@ impl PreferencesDialog {
             &settings,
             "Zertifikate",
             "S/MIME- und Verschlüsselungszertifikate",
+            "contact-editor-show-certs",
             AppSettings::contact_editor_show_certs,
             AppSettings::set_contact_editor_show_certs,
         );
@@ -2471,12 +2532,6 @@ impl PreferencesDialog {
         group_backup.add(&row_import_mail);
         page_backup.add(&group_backup);
 
-        #[cfg(target_os = "macos")]
-        {
-            let group_macos = self.build_macos_group();
-            page_backup.add(&group_macos);
-        }
-
         let group_composer = adw::PreferencesGroup::builder()
             .title("Composer")
             .description("Format, Signatur und Vorlagen für neue Nachrichten")
@@ -2515,9 +2570,27 @@ impl PreferencesDialog {
             .active(true)
             .build();
         if let Some(settings) = settings.clone() {
+            let updating = std::rc::Rc::new(std::cell::Cell::new(false));
+            let updating_notify = updating.clone();
+            let settings_notify = settings.clone();
+
             row_composer_inline_spelling.set_active(settings.composer_inline_spelling());
             row_composer_inline_spelling.connect_active_notify(move |row| {
-                settings.set_composer_inline_spelling(row.is_active());
+                if updating_notify.get() {
+                    return;
+                }
+                settings_notify.set_composer_inline_spelling(row.is_active());
+            });
+
+            let row_for_change = row_composer_inline_spelling.clone();
+            let updating_change = updating.clone();
+            settings.connect_changed(Some("composer-inline-spelling"), move |s, _| {
+                let target = s.boolean("composer-inline-spelling");
+                if row_for_change.is_active() != target {
+                    updating_change.set(true);
+                    row_for_change.set_active(target);
+                    updating_change.set(false);
+                }
             });
         }
         group_composer.add(&row_composer_inline_spelling);
@@ -2535,22 +2608,123 @@ impl PreferencesDialog {
             ]))
             .build();
         if let Some(settings) = settings.clone() {
-            row_spellcheck_languages.set_selected(match settings.spellcheck_languages().as_str() {
-                "de-DE" => 1,
-                "en-US" => 2,
-                "de-DE,en-US" => 3,
-                _ => 0,
-            });
+            let updating = std::rc::Rc::new(std::cell::Cell::new(false));
+            let updating_notify = updating.clone();
+            let settings_notify = settings.clone();
+
+            let parse_lang_selection = |lang_str: &str| -> u32 {
+                match lang_str {
+                    "de-DE" | "de_DE" => 1,
+                    "en-US" | "en_US" => 2,
+                    "de-DE,en-US" | "de_DE,en_US" => 3,
+                    _ => 0,
+                }
+            };
+
+            row_spellcheck_languages.set_selected(parse_lang_selection(&settings.spellcheck_languages()));
             row_spellcheck_languages.connect_selected_notify(move |row| {
-                settings.set_spellcheck_languages(match row.selected() {
+                if updating_notify.get() {
+                    return;
+                }
+                settings_notify.set_spellcheck_languages(match row.selected() {
                     1 => "de-DE",
                     2 => "en-US",
                     3 => "de-DE,en-US",
                     _ => "",
                 });
             });
+
+            let row_for_change = row_spellcheck_languages.clone();
+            let updating_change = updating.clone();
+            settings.connect_changed(Some("spellcheck-languages"), move |s, _| {
+                let target = parse_lang_selection(&s.string("spellcheck-languages"));
+                if row_for_change.selected() != target {
+                    updating_change.set(true);
+                    row_for_change.set_selected(target);
+                    updating_change.set(false);
+                }
+            });
         }
         group_composer.add(&row_spellcheck_languages);
+
+        let row_composer_charset = adw::ComboRow::builder()
+            .title("Standard-Zeichensatz")
+            .subtitle("Standard-Zeichenkodierung für neu verfasste E-Mails")
+            .model(&gtk::StringList::new(&[
+                "UTF-8 (Empfohlen)",
+                "ISO-8859-1 (Latin-1)",
+                "ISO-8859-15 (Latin-9)",
+                "Windows-1252 (Westeuropäisch)",
+                "US-ASCII (Klartext)",
+            ]))
+            .build();
+        if let Some(settings) = settings.clone() {
+            let initial_idx = match settings.composer_charset().as_str() {
+                "ISO-8859-1" => 1,
+                "ISO-8859-15" => 2,
+                "Windows-1252" => 3,
+                "US-ASCII" => 4,
+                _ => 0,
+            };
+            row_composer_charset.set_selected(initial_idx);
+            let settings_for_charset = settings.clone();
+            row_composer_charset.connect_selected_notify(move |row| {
+                let charset = match row.selected() {
+                    1 => "ISO-8859-1",
+                    2 => "ISO-8859-15",
+                    3 => "Windows-1252",
+                    4 => "US-ASCII",
+                    _ => "UTF-8",
+                };
+                settings_for_charset.set_composer_charset(charset);
+            });
+            let row_weak = row_composer_charset.downgrade();
+            settings.connect_changed(Some("composer-charset"), move |s, _| {
+                let Some(row) = row_weak.upgrade() else { return; };
+                let target = match s.string("composer-charset").as_str() {
+                    "ISO-8859-1" => 1,
+                    "ISO-8859-15" => 2,
+                    "Windows-1252" => 3,
+                    "US-ASCII" => 4,
+                    _ => 0,
+                };
+                if row.selected() != target {
+                    row.set_selected(target);
+                }
+            });
+        }
+        group_composer.add(&row_composer_charset);
+
+        let row_composer_draft_autosave = adw::SpinRow::with_range(0.0, 3_600.0, 5.0);
+        row_composer_draft_autosave.set_title("Entwürfe automatisch speichern");
+        row_composer_draft_autosave.set_subtitle("Sekunden; 0 deaktiviert das lokale Autosave");
+        row_composer_draft_autosave.set_digits(0);
+        row_composer_draft_autosave.set_snap_to_ticks(true);
+        if let Some(settings) = settings.clone() {
+            let updating = std::rc::Rc::new(std::cell::Cell::new(false));
+            let updating_notify = updating.clone();
+            let settings_notify = settings.clone();
+
+            row_composer_draft_autosave.set_value(settings.draft_autosave_interval_seconds() as f64);
+            row_composer_draft_autosave.connect_value_notify(move |row| {
+                if updating_notify.get() {
+                    return;
+                }
+                settings_notify.set_draft_autosave_interval_seconds(row.value().round() as u32);
+            });
+
+            let row_for_change = row_composer_draft_autosave.clone();
+            let updating_change = updating.clone();
+            settings.connect_changed(Some("draft-autosave-interval"), move |s, _| {
+                let target = s.int("draft-autosave-interval").clamp(0, 3_600) as f64;
+                if (row_for_change.value() - target).abs() > 0.001 {
+                    updating_change.set(true);
+                    row_for_change.set_value(target);
+                    updating_change.set(false);
+                }
+            });
+        }
+        group_composer.add(&row_composer_draft_autosave);
 
         let row_append_signature = adw::SwitchRow::builder()
             .title("Signatur automatisch einfügen")
@@ -2832,19 +3006,43 @@ impl PreferencesDialog {
             ]))
             .build();
         if let Some(settings) = settings.clone() {
+            let updating = std::rc::Rc::new(std::cell::Cell::new(false));
+            let updating_notify = updating.clone();
+            let settings_notify = settings.clone();
+
             row_reply_style.set_selected(match settings.composer_reply_style().as_str() {
                 "inline" => 1,
-                "attached" => 2,
+                "attach" | "attached" => 2,
                 "do-not-quote" => 3,
                 _ => 0,
             });
             row_reply_style.connect_selected_notify(move |row| {
-                settings.set_composer_reply_style(match row.selected() {
+                if updating_notify.get() {
+                    return;
+                }
+                settings_notify.set_composer_reply_style(match row.selected() {
                     1 => "inline",
-                    2 => "attached",
+                    2 => "attach",
                     3 => "do-not-quote",
                     _ => "quoted",
                 });
+            });
+
+            let row_for_change = row_reply_style.clone();
+            let updating_change = updating.clone();
+            settings.connect_changed(Some("composer-reply-style"), move |s, _| {
+                let raw = s.string("composer-reply-style");
+                let target = match normalize_composer_reply_style(&raw) {
+                    Some("inline") => 1,
+                    Some("attach") | Some("attached") => 2,
+                    Some("do-not-quote") => 3,
+                    _ => 0,
+                };
+                if row_for_change.selected() != target {
+                    updating_change.set(true);
+                    row_for_change.set_selected(target);
+                    updating_change.set(false);
+                }
             });
         }
         group_reply.add(&row_reply_style);
@@ -2859,17 +3057,40 @@ impl PreferencesDialog {
             ]))
             .build();
         if let Some(settings) = settings.clone() {
+            let updating = std::rc::Rc::new(std::cell::Cell::new(false));
+            let updating_notify = updating.clone();
+            let settings_notify = settings.clone();
+
             row_forward_style.set_selected(match settings.composer_forward_style().as_str() {
                 "inline" => 1,
                 "quoted" => 2,
                 _ => 0,
             });
             row_forward_style.connect_selected_notify(move |row| {
-                settings.set_composer_forward_style(match row.selected() {
+                if updating_notify.get() {
+                    return;
+                }
+                settings_notify.set_composer_forward_style(match row.selected() {
                     1 => "inline",
                     2 => "quoted",
                     _ => "attached",
                 });
+            });
+
+            let row_for_change = row_forward_style.clone();
+            let updating_change = updating.clone();
+            settings.connect_changed(Some("composer-forward-style"), move |s, _| {
+                let raw = s.string("composer-forward-style");
+                let target = match normalize_composer_forward_style(&raw) {
+                    Some("inline") => 1,
+                    Some("quoted") => 2,
+                    _ => 0,
+                };
+                if row_for_change.selected() != target {
+                    updating_change.set(true);
+                    row_for_change.set_selected(target);
+                    updating_change.set(false);
+                }
             });
         }
         group_reply.add(&row_forward_style);
@@ -2951,8 +3172,12 @@ impl PreferencesDialog {
             .build();
 
         let group_app_layout = adw::PreferencesGroup::builder()
-            .title("Fenster und Layout")
-            .description("Bedienelemente, Statusanzeigen und visuelle Dichte der Benutzeroberfläche")
+            .title("Fenster und Bedienung")
+            .description("Globale Sicherheitsabfragen, Statusleiste und Entwickleroptionen")
+            .build();
+        let group_mail_window_layout = adw::PreferencesGroup::builder()
+            .title("Fenster und Anordnung")
+            .description("Anordnung der Mailansichten, Seitenleiste, Werkzeugleiste und Zeilendichte")
             .build();
 
         let row_image_policy = adw::ComboRow::builder()
@@ -3073,6 +3298,28 @@ impl PreferencesDialog {
         }
         group_mail_reading.add(&row_mark_read_timeout);
 
+        let row_mail_show_mark_read_actions = adw::SwitchRow::builder()
+            .title("Gelesen-Aktionen in Werkzeugleiste anzeigen")
+            .subtitle("Schaltflächen zum Markieren als gelesen oder ungelesen in der Mail-Werkzeugleiste einblenden")
+            .active(false)
+            .build();
+        if let Some(settings) = settings.clone() {
+            row_mail_show_mark_read_actions.set_active(settings.mail_show_mark_read_actions());
+            let settings_for_actions = settings.clone();
+            row_mail_show_mark_read_actions.connect_active_notify(move |row| {
+                settings_for_actions.set_mail_show_mark_read_actions(row.is_active());
+            });
+            let row_weak = row_mail_show_mark_read_actions.downgrade();
+            settings.connect_changed(Some("mail-show-mark-read-actions"), move |s, _| {
+                let Some(row) = row_weak.upgrade() else { return; };
+                let active = s.boolean("mail-show-mark-read-actions");
+                if row.is_active() != active {
+                    row.set_active(active);
+                }
+            });
+        }
+        group_mail_reading.add(&row_mail_show_mark_read_actions);
+
         let row_caret_mode = adw::SwitchRow::builder()
             .title("Caret-Navigation (F7)")
             .subtitle("Ermöglicht das Bewegen eines sichtbaren Textcursors in der Nachrichtenvorschau")
@@ -3153,6 +3400,28 @@ impl PreferencesDialog {
         }
         group_mail_reading.add(&row_mail_security_details);
 
+        let row_mail_show_deleted = adw::SwitchRow::builder()
+            .title("Gelöschte Nachrichten anzeigen")
+            .subtitle("Gelöschte Nachrichten bis zum endgültigen Bereinigen durchgestrichen in der Liste anzeigen")
+            .active(false)
+            .build();
+        if let Some(settings) = settings.clone() {
+            row_mail_show_deleted.set_active(settings.mail_show_deleted());
+            let settings_for_deleted = settings.clone();
+            row_mail_show_deleted.connect_active_notify(move |row| {
+                settings_for_deleted.set_mail_show_deleted(row.is_active());
+            });
+            let row_weak = row_mail_show_deleted.downgrade();
+            settings.connect_changed(Some("mail-show-deleted"), move |s, _| {
+                let Some(row) = row_weak.upgrade() else { return; };
+                let active = s.boolean("mail-show-deleted");
+                if row.is_active() != active {
+                    row.set_active(active);
+                }
+            });
+        }
+        group_mail_reading.add(&row_mail_show_deleted);
+
         let row_mail_default_folder = adw::ComboRow::builder()
             .title("Startordner")
             .subtitle("Ordner, der beim Öffnen der Mailansicht zuerst ausgewählt wird")
@@ -3213,7 +3482,7 @@ impl PreferencesDialog {
                 });
             });
         }
-        group_app_layout.add(&row_mail_layout);
+        group_mail_window_layout.add(&row_mail_layout);
 
         let row_mail_toolbar = adw::SwitchRow::builder()
             .title("Klassische Mail-Werkzeugleiste anzeigen")
@@ -3228,7 +3497,7 @@ impl PreferencesDialog {
                 settings.set_mail_show_toolbar(row.is_active());
             });
         }
-        group_app_layout.add(&row_mail_toolbar);
+        group_mail_window_layout.add(&row_mail_toolbar);
 
         let row_mail_statusbar = adw::SwitchRow::builder()
             .title("Statusinformationen unten anzeigen")
@@ -3273,7 +3542,7 @@ impl PreferencesDialog {
                 settings.set_mail_show_sidebar(row.is_active());
             });
         }
-        group_app_layout.add(&row_mail_sidebar);
+        group_mail_window_layout.add(&row_mail_sidebar);
 
         let row_mail_density = adw::ComboRow::builder()
             .title("Dichte der Nachrichtenliste")
@@ -3298,7 +3567,7 @@ impl PreferencesDialog {
                 });
             });
         }
-        group_app_layout.add(&row_mail_density);
+        group_mail_window_layout.add(&row_mail_density);
 
         let row_dark_mail = adw::SwitchRow::builder()
             .title("Dark-Mode für E-Mails erzwingen")
@@ -3313,6 +3582,10 @@ impl PreferencesDialog {
         }
         group_mail_html.add(&row_dark_mail);
 
+        let group_confirmations = adw::PreferencesGroup::builder()
+            .title("Sicherheitsabfragen und Bestätigungen")
+            .description("Verhalten bei potenziell destruktiven oder unumkehrbaren Benutzeraktionen")
+            .build();
         let row_confirm_destructive = adw::SwitchRow::builder()
             .title("Vor destruktiven Aktionen bestätigen")
             .subtitle(
@@ -3322,12 +3595,22 @@ impl PreferencesDialog {
             .build();
         if let Some(settings) = settings.clone() {
             row_confirm_destructive.set_active(settings.confirm_destructive_actions());
+            let settings_for_confirm = settings.clone();
             row_confirm_destructive.connect_active_notify(move |row| {
-                settings.set_confirm_destructive_actions(row.is_active());
+                settings_for_confirm.set_confirm_destructive_actions(row.is_active());
+            });
+            let row_weak = row_confirm_destructive.downgrade();
+            settings.connect_changed(Some("confirm-destructive-actions"), move |s, _| {
+                let Some(row) = row_weak.upgrade() else { return; };
+                let active = s.boolean("confirm-destructive-actions");
+                if row.is_active() != active {
+                    row.set_active(active);
+                }
             });
         }
-        group_mail_reading.add(&row_confirm_destructive);
-        
+        group_confirmations.add(&row_confirm_destructive);
+        page_appearance.add(&group_confirmations);
+
         page_appearance.add(&group_app_layout);
 
         let group_citations = adw::PreferencesGroup::builder()
@@ -3437,24 +3720,41 @@ impl PreferencesDialog {
             .model(&gtk::StringList::new(&["System", "Hell", "Dunkel"]))
             .build();
         if let Some(settings) = settings.clone() {
+            let updating = std::rc::Rc::new(std::cell::Cell::new(false));
+            let updating_notify = updating.clone();
+            let settings_notify = settings.clone();
+
             row_color_scheme.set_selected(match settings.color_scheme().as_str() {
                 "light" => 1,
                 "dark" => 2,
                 _ => 0,
             });
             row_color_scheme.connect_selected_notify(move |row| {
+                if updating_notify.get() {
+                    return;
+                }
                 let scheme = match row.selected() {
                     1 => "light",
                     2 => "dark",
                     _ => "system",
                 };
-                settings.set_color_scheme(scheme);
-                let color_scheme = match scheme {
-                    "light" => adw::ColorScheme::ForceLight,
-                    "dark" => adw::ColorScheme::ForceDark,
-                    _ => adw::ColorScheme::Default,
+                settings_notify.set_color_scheme(scheme);
+                adw::StyleManager::default().set_color_scheme(AppSettings::parse_adw_color_scheme(scheme));
+            });
+
+            let row_for_change = row_color_scheme.clone();
+            let updating_change = updating.clone();
+            settings.connect_changed(Some("color-scheme"), move |s, _| {
+                let target = match s.string("color-scheme").as_str() {
+                    "light" => 1,
+                    "dark" => 2,
+                    _ => 0,
                 };
-                adw::StyleManager::default().set_color_scheme(color_scheme);
+                if row_for_change.selected() != target {
+                    updating_change.set(true);
+                    row_for_change.set_selected(target);
+                    updating_change.set(false);
+                }
             });
         }
         group_theme.add(&row_color_scheme);
@@ -3706,6 +4006,32 @@ impl PreferencesDialog {
             });
         }
         group_mail_columns.add(&row_mail_show_location);
+
+        let group_mail_headers_mode = adw::PreferencesGroup::builder()
+            .title("Kopfzeilen-Darstellung")
+            .description("Umschalten zwischen Standard-Kopfzeilen und vollständigen RFC822-Headern")
+            .build();
+        let row_show_all_headers = adw::SwitchRow::builder()
+            .title("Alle Kopfzeilen anzeigen")
+            .subtitle("Vollständigen RFC822-Kopfzeilenblock in der E-Mail-Vorschau anzeigen")
+            .active(false)
+            .build();
+        if let Some(settings) = settings.clone() {
+            row_show_all_headers.set_active(settings.mail_show_all_headers());
+            let settings_for_headers = settings.clone();
+            row_show_all_headers.connect_active_notify(move |row| {
+                settings_for_headers.set_mail_show_all_headers(row.is_active());
+            });
+            let row_weak = row_show_all_headers.downgrade();
+            settings.connect_changed(Some("mail-show-all-headers"), move |s, _| {
+                let Some(row) = row_weak.upgrade() else { return; };
+                let active = s.boolean("mail-show-all-headers");
+                if row.is_active() != active {
+                    row.set_active(active);
+                }
+            });
+        }
+        group_mail_headers_mode.add(&row_show_all_headers);
 
         let group_mail_normal_headers = adw::PreferencesGroup::builder()
             .title("Normale Nachrichtenkopfzeilen")
@@ -4124,6 +4450,39 @@ impl PreferencesDialog {
                     _ => ReminderDurationUnit::Minutes,
                 };
                 settings_for_units.set_ba_reminder_units(unit);
+            });
+
+            let row_use_ba_ref = row_use_ba_reminder.clone();
+            let row_interval_sens = row_ba_reminder_interval.clone();
+            let row_units_sens = row_ba_reminder_units.clone();
+            settings.connect_changed(Some("use-ba-reminder"), move |s, _| {
+                let active = s.boolean("use-ba-reminder");
+                if row_use_ba_ref.is_active() != active {
+                    row_use_ba_ref.set_active(active);
+                }
+                row_interval_sens.set_sensitive(active);
+                row_units_sens.set_sensitive(active);
+            });
+
+            let row_interval_changed = row_ba_reminder_interval.clone();
+            settings.connect_changed(Some("ba-reminder-interval"), move |s, _| {
+                let val = s.int("ba-reminder-interval") as f64;
+                if (row_interval_changed.value() - val).abs() > f64::EPSILON {
+                    row_interval_changed.set_value(val);
+                }
+            });
+
+            let row_units_changed = row_ba_reminder_units.clone();
+            settings.connect_changed(Some("ba-reminder-units"), move |s, _| {
+                let unit = ReminderDurationUnit::from_str(&s.string("ba-reminder-units"));
+                let target_index = match unit {
+                    ReminderDurationUnit::Minutes => 0,
+                    ReminderDurationUnit::Hours => 1,
+                    ReminderDurationUnit::Days => 2,
+                };
+                if row_units_changed.selected() != target_index {
+                    row_units_changed.set_selected(target_index);
+                }
             });
         }
         group_calendar_reminders.add(&row_use_ba_reminder);
@@ -4555,12 +4914,14 @@ impl PreferencesDialog {
         let page_mail_labels = adw::PreferencesPage::builder().title("Farben und Labels").build();
         page_mail_labels.add(&group_mail_labels);
         let page_mail_headers = adw::PreferencesPage::builder().title("Kopfzeilen").build();
+        page_mail_headers.add(&group_mail_headers_mode);
         page_mail_headers.add(&group_mail_normal_headers);
         let page_mail_junk = adw::PreferencesPage::builder().title("Junk und Spam").build();
         page_mail_junk.add(&group_mail_junk);
         let page_mail_layout = adw::PreferencesPage::builder()
             .title("Listenansicht und Layout")
             .build();
+        page_mail_layout.add(&group_mail_window_layout);
         page_mail_layout.add(&group_mail_list);
         page_mail_layout.add(&group_mail_columns);
 
@@ -4646,6 +5007,7 @@ impl PreferencesDialog {
             .title("Display und Formate")
             .build();
         page_calendar_display.add(&group_default_ecal_sources);
+        page_calendar_display.add(&group_calendar_local);
         page_calendar_display.add(&group_categories);
         page_calendar_display.add(&group_task_memo_lists);
 
@@ -5020,6 +5382,21 @@ fn build_mail_normal_headers_editor(settings: Option<AppSettings>) -> gtk::Box {
         entry_for_reset.set_text("");
         set_mail_header_validation_message(&validation_for_reset, None);
     });
+
+    if let Some(s) = settings.as_ref() {
+        let state_changed = Rc::clone(&state);
+        let list_changed = list.clone();
+        let settings_changed = settings.clone();
+        s.connect_changed(Some("mail-normal-headers"), move |_, _| {
+            if let Some(app_settings) = settings_changed.as_ref() {
+                let current = app_settings.mail_normal_headers();
+                if *state_changed.borrow() != current {
+                    state_changed.replace(current);
+                    rebuild_mail_normal_headers_list(&list_changed, &state_changed, &settings_changed);
+                }
+            }
+        });
+    }
 
     editor
 }
@@ -5816,6 +6193,24 @@ fn build_mail_labels_group(
         }
     });
 
+    if let Some(s) = settings.as_ref() {
+        let state_changed = Rc::clone(&state);
+        let list_changed = list.clone();
+        let settings_changed = settings.clone();
+        let parent_weak = parent.downgrade();
+        s.connect_changed(Some("mail-labels"), move |_, _| {
+            if let Some(app_settings) = settings_changed.as_ref() {
+                let current = app_settings.mail_labels();
+                if *state_changed.borrow() != current {
+                    state_changed.replace(current);
+                    if let Some(p) = parent_weak.upgrade() {
+                        rebuild_mail_labels_list(&list_changed, &state_changed, &settings_changed, &p);
+                    }
+                }
+            }
+        });
+    }
+
     group.add(&list);
     group.add(&action_box);
     group
@@ -6205,11 +6600,39 @@ fn present_edit_label_dialog(
     window.present();
 }
 
+/// Check whether an executable program exists on the system PATH or standard binary directories.
+pub fn detect_program_path(name: &str) -> Option<std::path::PathBuf> {
+    if let Some(path) = glib::find_program_in_path(name) {
+        if path.is_file() {
+            return Some(path);
+        }
+    }
+    if let Some(path_var) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&path_var) {
+            let candidate = dir.join(name);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    for fallback_dir in &["/usr/bin", "/usr/local/bin", "/opt/homebrew/bin", "/bin"] {
+        let candidate = std::path::Path::new(fallback_dir).join(name);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
 fn build_mail_junk_group(settings: Option<AppSettings>) -> adw::PreferencesGroup {
     let group = adw::PreferencesGroup::builder()
         .title("Junk-Mail-Optionen")
         .description("Automatische Erkennung und Behandlung unerwünschter Werbe- und Spam-E-Mails")
         .build();
+
+    let bogo_path = detect_program_path("bogofilter");
+    let spam_path = detect_program_path("spamassassin");
+    let any_available = bogo_path.is_some() || spam_path.is_some();
 
     let row_check_incoming = adw::SwitchRow::builder()
         .title("Eingehende E-Mails automatisch auf Junk untersuchen")
@@ -6218,9 +6641,6 @@ fn build_mail_junk_group(settings: Option<AppSettings>) -> adw::PreferencesGroup
         .build();
     if let Some(s) = settings.clone() {
         row_check_incoming.set_active(s.junk_check_incoming());
-        row_check_incoming.connect_active_notify(move |row| {
-            s.set_junk_check_incoming(row.is_active());
-        });
     }
     group.add(&row_check_incoming);
 
@@ -6231,9 +6651,6 @@ fn build_mail_junk_group(settings: Option<AppSettings>) -> adw::PreferencesGroup
         .build();
     if let Some(s) = settings.clone() {
         row_lookup_ab.set_active(s.junk_lookup_addressbook());
-        row_lookup_ab.connect_active_notify(move |row| {
-            s.set_junk_lookup_addressbook(row.is_active());
-        });
     }
     group.add(&row_lookup_ab);
 
@@ -6244,10 +6661,8 @@ fn build_mail_junk_group(settings: Option<AppSettings>) -> adw::PreferencesGroup
         .build();
     if let Some(s) = settings.clone() {
         row_lookup_ab_local.set_active(s.junk_lookup_addressbook_local_only());
-        row_lookup_ab_local.connect_active_notify(move |row| {
-            s.set_junk_lookup_addressbook_local_only(row.is_active());
-        });
     }
+    row_lookup_ab_local.set_sensitive(row_lookup_ab.is_active());
     group.add(&row_lookup_ab_local);
 
     let row_empty_on_exit = adw::SwitchRow::builder()
@@ -6257,9 +6672,6 @@ fn build_mail_junk_group(settings: Option<AppSettings>) -> adw::PreferencesGroup
         .build();
     if let Some(s) = settings.clone() {
         row_empty_on_exit.set_active(s.junk_empty_on_exit());
-        row_empty_on_exit.connect_active_notify(move |row| {
-            s.set_junk_empty_on_exit(row.is_active());
-        });
     }
     group.add(&row_empty_on_exit);
 
@@ -6286,6 +6698,7 @@ fn build_mail_junk_group(settings: Option<AppSettings>) -> adw::PreferencesGroup
             _ => 0,
         };
         row_empty_days.set_selected(idx);
+        let s_days = s.clone();
         row_empty_days.connect_selected_notify(move |row| {
             let days = match row.selected() {
                 1 => 1,
@@ -6294,9 +6707,10 @@ fn build_mail_junk_group(settings: Option<AppSettings>) -> adw::PreferencesGroup
                 4 => 30,
                 _ => 0,
             };
-            s.set_junk_empty_on_exit_days(days);
+            s_days.set_junk_empty_on_exit_days(days);
         });
     }
+    row_empty_days.set_sensitive(row_empty_on_exit.is_active());
     group.add(&row_empty_days);
 
     let row_plugin = adw::ComboRow::builder()
@@ -6304,6 +6718,24 @@ fn build_mail_junk_group(settings: Option<AppSettings>) -> adw::PreferencesGroup
         .subtitle("Wählt das primäre Spam-Prüfprogramm für lokale und entfernte Filter")
         .model(&gtk::StringList::new(&["Bogofilter", "SpamAssassin"]))
         .build();
+
+    let update_plugin_subtitle = {
+        let row_plugin = row_plugin.clone();
+        let bogo_path = bogo_path.clone();
+        let spam_path = spam_path.clone();
+        move |selected_idx: u32| {
+            let (name, path) = if selected_idx == 1 {
+                ("SpamAssassin", &spam_path)
+            } else {
+                ("Bogofilter", &bogo_path)
+            };
+            match path {
+                Some(p) => row_plugin.set_subtitle(&format!("{name} verfügbar: {}", p.display())),
+                None => row_plugin.set_subtitle(&format!("Nicht im PATH gefunden: Bitte '{name}' auf dem System installieren")),
+            }
+        }
+    };
+
     if let Some(s) = settings.clone() {
         let selected = if s.junk_default_plugin().eq_ignore_ascii_case("SpamAssassin") {
             1
@@ -6311,16 +6743,63 @@ fn build_mail_junk_group(settings: Option<AppSettings>) -> adw::PreferencesGroup
             0
         };
         row_plugin.set_selected(selected);
+        if any_available {
+            update_plugin_subtitle(selected);
+        }
+        let s_plugin = s.clone();
+        let update_sub = update_plugin_subtitle.clone();
         row_plugin.connect_selected_notify(move |row| {
             let plugin = if row.selected() == 1 {
                 "SpamAssassin"
             } else {
                 "Bogofilter"
             };
-            s.set_junk_default_plugin(plugin);
+            s_plugin.set_junk_default_plugin(plugin);
+            update_sub(row.selected());
         });
     }
+
+    if !any_available {
+        row_plugin.set_sensitive(false);
+        row_plugin.set_subtitle("Weder 'bogofilter' noch 'spamassassin' wurde im Systempfad ($PATH) gefunden. Lokale Spam-Prüfung deaktiviert.");
+        let info_row = adw::ActionRow::builder()
+            .title("Kein Spam-Filterprogramm installiert")
+            .subtitle("Weder 'bogofilter' noch 'spamassassin' ist im Systempfad verfügbar. Eingehende E-Mails können nur anhand von Server-Kopfzeilen bewertet werden.")
+            .build();
+        info_row.add_prefix(&gtk::Image::from_icon_name("dialog-information-symbolic"));
+        group.add(&info_row);
+    } else {
+        row_plugin.set_sensitive(row_check_incoming.is_active());
+    }
     group.add(&row_plugin);
+
+    if let Some(s) = settings.clone() {
+        let row_plugin_ref = row_plugin.clone();
+        let s_check = s.clone();
+        row_check_incoming.connect_active_notify(move |row| {
+            s_check.set_junk_check_incoming(row.is_active());
+            row_plugin_ref.set_sensitive(row.is_active() && any_available);
+        });
+
+        let row_lookup_ab_local_ref = row_lookup_ab_local.clone();
+        let s_lookup = s.clone();
+        row_lookup_ab.connect_active_notify(move |row| {
+            s_lookup.set_junk_lookup_addressbook(row.is_active());
+            row_lookup_ab_local_ref.set_sensitive(row.is_active());
+        });
+
+        let s_lookup_local = s.clone();
+        row_lookup_ab_local.connect_active_notify(move |row| {
+            s_lookup_local.set_junk_lookup_addressbook_local_only(row.is_active());
+        });
+
+        let row_empty_days_ref = row_empty_days.clone();
+        let s_empty = s.clone();
+        row_empty_on_exit.connect_active_notify(move |row| {
+            s_empty.set_junk_empty_on_exit(row.is_active());
+            row_empty_days_ref.set_sensitive(row.is_active());
+        });
+    }
 
     let expander_custom_header = adw::ExpanderRow::builder()
         .title("Benutzerdefinierte Spam-Kopfzeilen")
@@ -6410,6 +6889,9 @@ impl Default for PreferencesDialog {
 
 #[cfg(test)]
 mod tests {
+    use gtk::prelude::*;
+    use adw::prelude::*;
+    use crate::services::settings_service::AppSettings;
     use super::{
         ManualFilterRunSnapshot, ManualFilterSnapshotError, default_mail_normal_headers_for_editor,
         manual_filter_result_toast, validate_new_mail_normal_header,
@@ -6761,4 +7243,538 @@ mod tests {
         assert!(source.contains("mail_citation_color_5"));
         assert!(source.contains("Zitate und Hervorhebung"));
     }
+
+    #[test]
+    fn preferences_dialog_wires_all_five_previously_missing_settings() {
+        let source = include_str!("preferences_dialog.rs");
+
+        // 1. composer-charset in Composer General
+        assert!(source.contains("composer_charset"));
+        assert!(source.contains("set_composer_charset"));
+        assert!(source.contains("row_composer_charset"));
+
+        // 2. contact-completion-book-sources in Contacts Autocomplete
+        assert!(source.contains("contact_completion_book_sources"));
+        assert!(source.contains("set_contact_completion_book_sources"));
+        assert!(source.contains("row_completion_book_sources"));
+
+        // 3. mail-show-all-headers in Mail Headers
+        assert!(source.contains("mail_show_all_headers"));
+        assert!(source.contains("set_mail_show_all_headers"));
+        assert!(source.contains("row_show_all_headers"));
+
+        // 4. mail-show-deleted in Mail Reading
+        assert!(source.contains("mail_show_deleted"));
+        assert!(source.contains("set_mail_show_deleted"));
+        assert!(source.contains("row_mail_show_deleted"));
+
+        // 5. mail-show-mark-read-actions in Mail Reading
+        assert!(source.contains("mail_show_mark_read_actions"));
+        assert!(source.contains("set_mail_show_mark_read_actions"));
+        assert!(source.contains("row_mail_show_mark_read_actions"));
+    }
+
+    #[test]
+    fn confirm_destructive_actions_is_not_in_mail_reading() {
+        let full_source = include_str!("preferences_dialog.rs");
+        let tests_pos = full_source
+            .find("#[cfg(test)]")
+            .or_else(|| full_source.find("mod tests"))
+            .unwrap_or(full_source.len());
+        let source = &full_source[..tests_pos];
+        assert!(!source.contains("group_mail_reading.add(&row_confirm_destructive)"));
+        assert!(source.contains("page_appearance.add(&group_confirmations)"));
+    }
+
+    #[test]
+    fn preferences_dialog_structural_reorganizations_are_wired() {
+        let full_source = include_str!("preferences_dialog.rs");
+        let tests_pos = full_source
+            .find("#[cfg(test)]")
+            .or_else(|| full_source.find("mod tests"))
+            .unwrap_or(full_source.len());
+        let source = &full_source[..tests_pos];
+
+        // Filter group reconnected
+        assert!(source.contains("page_accounts.add(&group_filters)"));
+
+        // macOS group on page_accounts instead of page_backup
+        assert!(source.contains("page_accounts.add(&group_macos)"));
+        assert!(!source.contains("page_backup.add(&group_macos)"));
+
+        // Local sources domain split
+        assert!(source.contains("page_contacts.add(&group_contacts_local)"));
+        assert!(source.contains("page_calendar_display.add(&group_calendar_local)"));
+        assert!(!source.contains("group_local_sources"));
+
+        // Mail layout controls rehomed to page_mail_layout
+        assert!(source.contains("page_mail_layout.add(&group_mail_window_layout)"));
+        assert!(source.contains("group_mail_window_layout.add(&row_mail_layout)"));
+        assert!(source.contains("group_mail_window_layout.add(&row_mail_sidebar)"));
+        assert!(source.contains("group_mail_window_layout.add(&row_mail_toolbar)"));
+        assert!(source.contains("group_mail_window_layout.add(&row_mail_density)"));
+    }
+
+    #[test]
+    fn test_detect_program_path_finds_standard_binary_and_rejects_missing() {
+        use super::detect_program_path;
+        assert!(detect_program_path("sh").is_some());
+        assert!(detect_program_path("non_existent_binary_xyz_404_not_found").is_none());
+    }
+
+    #[test]
+    fn test_mail_junk_group_subordinate_wiring_present_in_source() {
+        let full_source = include_str!("preferences_dialog.rs");
+        let tests_pos = full_source
+            .find("#[cfg(test)]")
+            .or_else(|| full_source.find("mod tests"))
+            .unwrap_or(full_source.len());
+        let source = &full_source[..tests_pos];
+
+        assert!(source.contains("detect_program_path"));
+        assert!(source.contains("row_lookup_ab_local.set_sensitive"));
+        assert!(source.contains("row_empty_days.set_sensitive"));
+        assert!(source.contains("row_plugin.set_sensitive"));
+    }
+
+    #[test]
+    fn test_detect_program_path_adversarial_boundaries_and_traversal() {
+        use super::detect_program_path;
+
+        // 1. Existing standard commands
+        let sh_path = detect_program_path("sh");
+        assert!(sh_path.is_some(), "detect_program_path should find 'sh'");
+        assert!(sh_path.unwrap().is_file());
+
+        let ls_path = detect_program_path("ls");
+        assert!(ls_path.is_some(), "detect_program_path should find 'ls'");
+        assert!(ls_path.unwrap().is_file());
+
+        // 2. Completely fictitious binary names
+        assert_eq!(detect_program_path("fictitious_binary_xyz_404"), None);
+        assert_eq!(detect_program_path("bogofilter_nonexistent_binary_variant"), None);
+        assert_eq!(detect_program_path("spamassassin_fake_daemon_12345"), None);
+
+        // 3. Empty and whitespace binary names
+        assert_eq!(detect_program_path(""), None);
+
+        // 4. Malicious path traversal injection in binary names
+        // bogofilter doesn't exist on standard macOS test machines
+        let traversal_bogofilter = detect_program_path("../../bin/bogofilter");
+        println!("detect_program_path(../../bin/bogofilter) = {:?}", traversal_bogofilter);
+
+        // Check path traversal behavior with known files
+        let traversal_sh = detect_program_path("../../bin/sh");
+        println!("detect_program_path(../../bin/sh) = {:?}", traversal_sh);
+
+        let passwd_test = detect_program_path("../../etc/passwd");
+        println!("detect_program_path(../../etc/passwd) = {:?}", passwd_test);
+    }
+
+    fn find_combo_by_title(root: &gtk::Widget, target: &str) -> Option<adw::ComboRow> {
+        use gtk::prelude::Cast;
+        if let Ok(combo) = root.clone().downcast::<adw::ComboRow>() {
+            if combo.title() == target {
+                return Some(combo);
+            }
+        }
+        let mut child = root.first_child();
+        while let Some(c) = child {
+            if let Some(found) = find_combo_by_title(&c, target) {
+                return Some(found);
+            }
+            child = c.next_sibling();
+        }
+        None
+    }
+
+    fn find_spin_by_title(root: &gtk::Widget, target: &str) -> Option<adw::SpinRow> {
+        use gtk::prelude::Cast;
+        if let Ok(spin) = root.clone().downcast::<adw::SpinRow>() {
+            if spin.title() == target {
+                return Some(spin);
+            }
+        }
+        let mut child = root.first_child();
+        while let Some(c) = child {
+            if let Some(found) = find_spin_by_title(&c, target) {
+                return Some(found);
+            }
+            child = c.next_sibling();
+        }
+        None
+    }
+
+    fn find_switch_by_title(root: &gtk::Widget, target: &str) -> Option<adw::SwitchRow> {
+        use gtk::prelude::Cast;
+        if let Ok(sw) = root.clone().downcast::<adw::SwitchRow>() {
+            if sw.title() == target {
+                return Some(sw);
+            }
+        }
+        let mut child = root.first_child();
+        while let Some(c) = child {
+            if let Some(found) = find_switch_by_title(&c, target) {
+                return Some(found);
+            }
+            child = c.next_sibling();
+        }
+        None
+    }
+
+    #[test]
+    fn test_preferences_dialog_instantiation_and_theme_composer_groups() {
+        use adw::prelude::*;
+        use gtk::prelude::*;
+        use crate::services::AppSettings;
+
+        let _lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let Some(context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+        let Some(settings) = AppSettings::try_new() else {
+            return;
+        };
+
+        // 1. Instantiation verification
+        let dialog = super::PreferencesDialog::new();
+        while context.iteration(false) {}
+
+        // Newly constructed Libadwaita dialogs are hidden until presented
+        assert!(
+            !dialog.is_visible(),
+            "PreferencesDialog must not be visible immediately upon creation"
+        );
+        assert_eq!(
+            dialog.content_width(),
+            980,
+            "PreferencesDialog must have configured content width of 980"
+        );
+        assert_eq!(
+            dialog.content_height(),
+            720,
+            "PreferencesDialog must have configured content height of 720"
+        );
+        assert!(
+            dialog.child().is_some(),
+            "PreferencesDialog must have a child widget container"
+        );
+
+        let widget = dialog.upcast_ref::<gtk::Widget>();
+
+        // 2. Theme Preferences Group & Row verification (Feature 17)
+        let row_theme = find_combo_by_title(widget, "Farbschema der Anwendung")
+            .expect("Farbschema der Anwendung ComboRow must exist in Appearance page");
+
+        let theme_model = row_theme
+            .model()
+            .expect("Theme combo row must have a model");
+        assert_eq!(
+            theme_model.n_items(),
+            3,
+            "Theme combo row must contain 3 options (System, Hell, Dunkel)"
+        );
+
+        let initial_scheme = settings.color_scheme();
+        let expected_theme_idx = match initial_scheme.as_str() {
+            "light" => 1,
+            "dark" => 2,
+            _ => 0,
+        };
+        assert_eq!(
+            row_theme.selected(),
+            expected_theme_idx,
+            "Initial theme combo selection must match active AppSettings color_scheme"
+        );
+
+        // GSettings -> UI reactivity
+        settings.set_color_scheme("dark");
+        while context.iteration(false) {}
+        assert_eq!(
+            row_theme.selected(),
+            2,
+            "Setting color_scheme to 'dark' must update combo to index 2"
+        );
+
+        settings.set_color_scheme("light");
+        while context.iteration(false) {}
+        assert_eq!(
+            row_theme.selected(),
+            1,
+            "Setting color_scheme to 'light' must update combo to index 1"
+        );
+
+        // UI -> GSettings reactivity
+        row_theme.set_selected(0);
+        while context.iteration(false) {}
+        assert_eq!(
+            settings.color_scheme(),
+            "system",
+            "Selecting index 0 in UI must set color_scheme to 'system'"
+        );
+        assert_eq!(
+            adw::StyleManager::default().color_scheme(),
+            adw::ColorScheme::Default,
+            "AdwStyleManager color scheme must synchronize with theme selection"
+        );
+
+        // Restore initial scheme
+        settings.set_color_scheme(&initial_scheme);
+        while context.iteration(false) {}
+
+        // 3. Composer Preferences Group & Rows verification (Features 18 & 19)
+        let row_html = find_switch_by_title(widget, "HTML beim Verfassen verwenden")
+            .expect("HTML switch row must exist in Composer General preferences group");
+        let row_autosave = find_spin_by_title(widget, "Entwürfe automatisch speichern")
+            .expect("Draft autosave spin row must exist in Composer General preferences group");
+
+        assert_eq!(
+            row_html.is_active(),
+            settings.composer_html(),
+            "Composer HTML switch active state must match settings.composer_html()"
+        );
+        assert_eq!(
+            row_autosave.value().round() as u32,
+            settings.draft_autosave_interval_seconds(),
+            "Composer draft autosave value must match settings.draft_autosave_interval_seconds()"
+        );
+
+        let autosave_adj = row_autosave.adjustment();
+        assert_eq!(autosave_adj.lower(), 0.0, "Autosave minimum bound must be 0s");
+        assert_eq!(autosave_adj.upper(), 3600.0, "Autosave maximum bound must be 3600s");
+
+        // UI -> Settings reactivity for Composer HTML switch
+        let initial_html = settings.composer_html();
+        row_html.set_active(!initial_html);
+        while context.iteration(false) {}
+        assert_eq!(
+            settings.composer_html(),
+            !initial_html,
+            "Toggling Composer HTML switch in UI must update settings.composer_html()"
+        );
+
+        // Restore initial HTML setting
+        row_html.set_active(initial_html);
+        while context.iteration(false) {}
+        assert_eq!(settings.composer_html(), initial_html);
+    }
+
+    #[test]
+    fn test_feature_19_preferences_dialog_reply_and_forward_and_autosave_sync() {
+        use adw::prelude::*;
+        use gtk::prelude::WidgetExt;
+        use crate::services::AppSettings;
+
+        let _lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let Some(context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+        let Some(settings) = AppSettings::try_new() else {
+            return;
+        };
+
+        // Reset settings
+        settings.set_composer_reply_style("quoted");
+        settings.set_composer_forward_style("attached");
+        settings.set_draft_autosave_interval_seconds(30);
+        while context.iteration(false) {}
+
+        let dialog = super::PreferencesDialog::new();
+        while context.iteration(false) {}
+
+        let widget = dialog.upcast_ref::<gtk::Widget>();
+
+        // 1. Locate the widgets
+        let row_reply = find_combo_by_title(widget, "Standard-Antwortstil")
+            .expect("Standard-Antwortstil ComboRow must exist in PreferencesDialog");
+        let row_forward = find_combo_by_title(widget, "Standard-Weiterleitungsstil")
+            .expect("Standard-Weiterleitungsstil ComboRow must exist in PreferencesDialog");
+        let row_autosave = find_spin_by_title(widget, "Entwürfe automatisch speichern")
+            .expect("Entwürfe automatisch speichern SpinRow must exist in PreferencesDialog");
+
+        // 2. Test initial values
+        assert_eq!(row_reply.selected(), 0, "Default reply style 'quoted' should select index 0");
+        assert_eq!(row_forward.selected(), 0, "Default forward style 'attached' should select index 0");
+        assert_eq!(row_autosave.value().round() as u32, 30, "Default autosave interval should be 30");
+
+        // 3. Test Reply Style GSettings -> UI sync
+        settings.set_composer_reply_style("inline");
+        while context.iteration(false) {}
+        assert_eq!(row_reply.selected(), 1, "Setting reply style to 'inline' must update UI to index 1");
+
+        settings.set_composer_reply_style("attach");
+        while context.iteration(false) {}
+        assert_eq!(row_reply.selected(), 2, "Setting reply style to 'attach' must update UI to index 2");
+
+        settings.set_composer_reply_style("attached");
+        while context.iteration(false) {}
+        assert_eq!(row_reply.selected(), 2, "Setting reply style to 'attached' must update UI to index 2");
+
+        settings.set_composer_reply_style("do-not-quote");
+        while context.iteration(false) {}
+        assert_eq!(row_reply.selected(), 3, "Setting reply style to 'do-not-quote' must update UI to index 3");
+
+        settings.set_composer_reply_style("none");
+        while context.iteration(false) {}
+        assert_eq!(row_reply.selected(), 3, "Setting reply style to 'none' must update UI to index 3");
+
+        settings.set_composer_reply_style("quoted");
+        while context.iteration(false) {}
+        assert_eq!(row_reply.selected(), 0, "Setting reply style to 'quoted' must update UI to index 0");
+
+        // 4. Test Reply Style UI -> GSettings sync
+        row_reply.set_selected(1);
+        while context.iteration(false) {}
+        assert_eq!(settings.composer_reply_style(), "inline");
+
+        row_reply.set_selected(2);
+        while context.iteration(false) {}
+        assert_eq!(settings.composer_reply_style(), "attach");
+
+        row_reply.set_selected(3);
+        while context.iteration(false) {}
+        assert_eq!(settings.composer_reply_style(), "do-not-quote");
+
+        row_reply.set_selected(0);
+        while context.iteration(false) {}
+        assert_eq!(settings.composer_reply_style(), "quoted");
+
+        // 5. Test Forward Style GSettings -> UI sync
+        settings.set_composer_forward_style("inline");
+        while context.iteration(false) {}
+        assert_eq!(row_forward.selected(), 1, "Setting forward style to 'inline' must update UI to index 1");
+
+        settings.set_composer_forward_style("quoted");
+        while context.iteration(false) {}
+        assert_eq!(row_forward.selected(), 2, "Setting forward style to 'quoted' must update UI to index 2");
+
+        settings.set_composer_forward_style("attached");
+        while context.iteration(false) {}
+        assert_eq!(row_forward.selected(), 0, "Setting forward style to 'attached' must update UI to index 0");
+
+        // 6. Test Forward Style UI -> GSettings sync
+        row_forward.set_selected(1);
+        while context.iteration(false) {}
+        assert_eq!(settings.composer_forward_style(), "inline");
+
+        row_forward.set_selected(2);
+        while context.iteration(false) {}
+        assert_eq!(settings.composer_forward_style(), "quoted");
+
+        row_forward.set_selected(0);
+        while context.iteration(false) {}
+        assert_eq!(settings.composer_forward_style(), "attached");
+
+        // 7. Test Autosave Interval GSettings -> UI sync
+        settings.set_draft_autosave_interval_seconds(0);
+        while context.iteration(false) {}
+        assert_eq!(row_autosave.value().round() as u32, 0);
+
+        settings.set_draft_autosave_interval_seconds(60);
+        while context.iteration(false) {}
+        assert_eq!(row_autosave.value().round() as u32, 60);
+
+        settings.set_draft_autosave_interval_seconds(3600);
+        while context.iteration(false) {}
+        assert_eq!(row_autosave.value().round() as u32, 3600);
+
+        // 8. Test Autosave Interval UI -> GSettings sync
+        row_autosave.set_value(45.0);
+        while context.iteration(false) {}
+        assert_eq!(settings.draft_autosave_interval_seconds(), 45);
+
+        // 9. Test Direct GSettings Boundary Injection into Autosave SpinRow
+        let raw_settings = gio::Settings::new("org.gnome.Evolution4");
+        let _ = raw_settings.set_int("draft-autosave-interval", -10);
+        while context.iteration(false) {}
+        assert_eq!(row_autosave.value().round() as u32, 0, "Negative interval must clamp spinrow to 0");
+
+        let _ = raw_settings.set_int("draft-autosave-interval", 5000);
+        while context.iteration(false) {}
+        assert_eq!(row_autosave.value().round() as u32, 3600, "Large interval must clamp spinrow to 3600");
+
+        // 10. Adversarial Stress: Raw GSettings injection of "none" while dialog is open
+        let _ = raw_settings.set_string("composer-reply-style", "none");
+        while context.iteration(false) {}
+        assert_eq!(
+            row_reply.selected(),
+            3,
+            "Setting raw 'none' in GSettings must normalize to index 3 ('Nicht zitieren')"
+        );
+
+        // 11. Adversarial Stress: Raw GSettings injection of "ATTACH" (uppercase)
+        let _ = raw_settings.set_string("composer-reply-style", "ATTACH");
+        while context.iteration(false) {}
+        assert_eq!(
+            row_reply.selected(),
+            2,
+            "Setting raw 'ATTACH' in GSettings must normalize to index 2 ('Als Anhang')"
+        );
+
+        // 12. Adversarial Stress: Raw GSettings injection of "Inline" (titlecase)
+        let _ = raw_settings.set_string("composer-reply-style", "Inline");
+        while context.iteration(false) {}
+        assert_eq!(
+            row_reply.selected(),
+            1,
+            "Setting raw 'Inline' in GSettings must normalize to index 1 ('Eingebettet')"
+        );
+
+        // 13. Adversarial Stress: Raw GSettings injection of whitespace
+        let _ = raw_settings.set_string("composer-reply-style", "  do-not-quote  ");
+        while context.iteration(false) {}
+        assert_eq!(
+            row_reply.selected(),
+            3,
+            "Setting raw '  do-not-quote  ' in GSettings must normalize to index 3"
+        );
+
+        // 14. Adversarial Stress: Raw GSettings injection of "Inline" for forward style
+        let _ = raw_settings.set_string("composer-forward-style", "Inline");
+        while context.iteration(false) {}
+        assert_eq!(
+            row_forward.selected(),
+            1,
+            "Setting raw 'Inline' forward style in GSettings must normalize to index 1 ('Eingebettet')"
+        );
+
+        // 15. Adversarial Stress: Raw GSettings injection of "QUOTED" for forward style
+        let _ = raw_settings.set_string("composer-forward-style", "QUOTED");
+        while context.iteration(false) {}
+        assert_eq!(
+            row_forward.selected(),
+            2,
+            "Setting raw 'QUOTED' forward style in GSettings must normalize to index 2 ('Zitiert')"
+        );
+
+        // 16. Adversarial Stress: Raw GSettings injection of "attach" for forward style
+        let _ = raw_settings.set_string("composer-forward-style", "attach");
+        while context.iteration(false) {}
+        assert_eq!(
+            row_forward.selected(),
+            0,
+            "Setting raw 'attach' forward style in GSettings must normalize to index 0 ('Als Anhang')"
+        );
+
+        // 17. Adversarial Stress: Raw GSettings injection of whitespace for forward style
+        let _ = raw_settings.set_string("composer-forward-style", "  inline  ");
+        while context.iteration(false) {}
+        assert_eq!(
+            row_forward.selected(),
+            1,
+            "Setting raw '  inline  ' forward style in GSettings must normalize to index 1"
+        );
+
+        // Reset
+        settings.set_composer_reply_style("quoted");
+        settings.set_composer_forward_style("attached");
+        settings.set_draft_autosave_interval_seconds(30);
+        while context.iteration(false) {}
+    }
 }
+
+
