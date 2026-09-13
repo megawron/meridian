@@ -21,10 +21,14 @@ mod imp {
     #[derive(Debug, Default)]
     pub struct HtmlEditor {
         pub web_view: RefCell<Option<webkit6::WebView>>,
+        pub web_context: RefCell<Option<webkit6::WebContext>>,
         pub format_toolbar: RefCell<Option<gtk::Box>>,
         pub plain_text_mode: Cell<bool>,
         pub web_view_ready: Cell<bool>,
         pub pending_scripts: RefCell<Vec<String>>,
+        pub spell_checking_enabled: Cell<bool>,
+        pub spell_checking_languages: RefCell<Vec<String>>,
+        pub spelling_handler_ids: RefCell<Vec<glib::SignalHandlerId>>,
     }
 
     #[glib::object_subclass]
@@ -45,6 +49,11 @@ mod imp {
         }
 
         fn dispose(&self) {
+            if let Some(settings) = AppSettings::try_new() {
+                for id in self.spelling_handler_ids.borrow_mut().drain(..) {
+                    settings.disconnect(id);
+                }
+            }
             if let Some(child) = self.obj().first_child() {
                 child.unparent();
             }
@@ -217,6 +226,41 @@ impl HtmlEditor {
 }})();"#
         );
         self.evaluate_or_queue(script);
+    }
+
+    pub fn spell_checking_enabled(&self) -> bool {
+        self.imp().spell_checking_enabled.get()
+    }
+
+    pub fn set_spell_checking_enabled(&self, enabled: bool) {
+        self.imp().spell_checking_enabled.set(enabled);
+        if let Some(web_context) = self.imp().web_context.borrow().as_ref() {
+            web_context.set_spell_checking_enabled(enabled);
+        }
+    }
+
+    pub fn spell_checking_languages(&self) -> Vec<String> {
+        self.imp().spell_checking_languages.borrow().clone()
+    }
+
+    pub fn set_spell_checking_languages(&self, languages: &[&str]) {
+        self.imp()
+            .spell_checking_languages
+            .replace(languages.iter().map(|s| s.to_string()).collect());
+        if let Some(web_context) = self.imp().web_context.borrow().as_ref() {
+            web_context.set_spell_checking_languages(languages);
+        }
+    }
+
+    pub fn apply_spellcheck_settings(&self, settings: &AppSettings) {
+        self.set_spell_checking_enabled(settings.composer_inline_spelling());
+        let raw = settings.spellcheck_languages();
+        let languages: Vec<&str> = raw
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .collect();
+        self.set_spell_checking_languages(&languages);
     }
 
     pub fn plain_text_mode(&self) -> bool {
@@ -439,16 +483,48 @@ impl HtmlEditor {
             .map(|settings| settings.composer_inline_spelling())
             .unwrap_or(true);
         web_context.set_spell_checking_enabled(inline_spelling);
+        self.imp().spell_checking_enabled.set(inline_spelling);
+
+        let initial_languages = AppSettings::try_new()
+            .map(|settings| {
+                settings
+                    .spellcheck_languages()
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|language| !language.is_empty())
+                    .map(|s| s.to_string())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let initial_lang_refs: Vec<&str> = initial_languages.iter().map(String::as_str).collect();
+        web_context.set_spell_checking_languages(&initial_lang_refs);
+        self.imp().spell_checking_languages.replace(initial_languages);
+
+        self.imp().web_context.replace(Some(web_context.clone()));
+
         if let Some(settings) = AppSettings::try_new() {
-            let language_setting = settings.spellcheck_languages();
-            let languages = language_setting
-                .split(',')
-                .filter(|language| !language.is_empty())
-                .collect::<Vec<_>>();
-            if !languages.is_empty() {
-                web_context.set_spell_checking_languages(&languages);
-            }
+            let editor_weak = self.downgrade();
+            let id_spelling = settings.connect_changed(Some("composer-inline-spelling"), move |s, _| {
+                if let Some(editor) = editor_weak.upgrade() {
+                    editor.set_spell_checking_enabled(s.boolean("composer-inline-spelling"));
+                }
+            });
+            let editor_weak = self.downgrade();
+            let id_languages = settings.connect_changed(Some("spellcheck-languages"), move |s, _| {
+                if let Some(editor) = editor_weak.upgrade() {
+                    let raw = s.string("spellcheck-languages");
+                    let langs: Vec<&str> = raw
+                        .split(',')
+                        .map(str::trim)
+                        .filter(|l| !l.is_empty())
+                        .collect();
+                    editor.set_spell_checking_languages(&langs);
+                }
+            });
+            self.imp().spelling_handler_ids.borrow_mut().push(id_spelling);
+            self.imp().spelling_handler_ids.borrow_mut().push(id_languages);
         }
+
         let web_view = webkit6::WebView::builder()
             .web_context(&web_context)
             .vexpand(true)

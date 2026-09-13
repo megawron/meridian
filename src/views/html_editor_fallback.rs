@@ -12,6 +12,8 @@ use adw::subclass::prelude::*;
 use gtk::glib;
 use std::cell::{Cell, RefCell};
 
+use crate::services::settings_service::AppSettings;
+
 mod imp {
     use super::*;
 
@@ -21,6 +23,9 @@ mod imp {
         pub format_toolbar: RefCell<Option<gtk::Box>>,
         pub plain_text_mode: Cell<bool>,
         pub signature_marks: RefCell<Option<(gtk::TextMark, gtk::TextMark)>>,
+        pub spell_checking_enabled: Cell<bool>,
+        pub spell_checking_languages: RefCell<Vec<String>>,
+        pub spelling_handler_ids: RefCell<Vec<glib::SignalHandlerId>>,
     }
 
     #[glib::object_subclass]
@@ -41,6 +46,11 @@ mod imp {
         }
 
         fn dispose(&self) {
+            if let Some(settings) = AppSettings::try_new() {
+                for id in self.spelling_handler_ids.borrow_mut().drain(..) {
+                    settings.disconnect(id);
+                }
+            }
             if let Some(child) = self.obj().first_child() {
                 child.unparent();
             }
@@ -193,6 +203,35 @@ impl HtmlEditor {
         }
     }
 
+    pub fn spell_checking_enabled(&self) -> bool {
+        self.imp().spell_checking_enabled.get()
+    }
+
+    pub fn set_spell_checking_enabled(&self, enabled: bool) {
+        self.imp().spell_checking_enabled.set(enabled);
+    }
+
+    pub fn spell_checking_languages(&self) -> Vec<String> {
+        self.imp().spell_checking_languages.borrow().clone()
+    }
+
+    pub fn set_spell_checking_languages(&self, languages: &[&str]) {
+        self.imp()
+            .spell_checking_languages
+            .replace(languages.iter().map(|s| s.to_string()).collect());
+    }
+
+    pub fn apply_spellcheck_settings(&self, settings: &AppSettings) {
+        self.set_spell_checking_enabled(settings.composer_inline_spelling());
+        let raw = settings.spellcheck_languages();
+        let languages: Vec<&str> = raw
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .collect();
+        self.set_spell_checking_languages(&languages);
+    }
+
     fn build_ui(&self) {
         let vbox = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
@@ -262,6 +301,47 @@ impl HtmlEditor {
                 .hexpand(true)
                 .build(),
         );
+        let inline_spelling = AppSettings::try_new()
+            .map(|settings| settings.composer_inline_spelling())
+            .unwrap_or(true);
+        self.imp().spell_checking_enabled.set(inline_spelling);
+
+        let initial_languages = AppSettings::try_new()
+            .map(|settings| {
+                settings
+                    .spellcheck_languages()
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        self.imp().spell_checking_languages.replace(initial_languages);
+
+        if let Some(settings) = AppSettings::try_new() {
+            let editor_weak = self.downgrade();
+            let id_spelling = settings.connect_changed(Some("composer-inline-spelling"), move |s, _| {
+                if let Some(editor) = editor_weak.upgrade() {
+                    editor.set_spell_checking_enabled(s.boolean("composer-inline-spelling"));
+                }
+            });
+            let editor_weak = self.downgrade();
+            let id_languages = settings.connect_changed(Some("spellcheck-languages"), move |s, _| {
+                if let Some(editor) = editor_weak.upgrade() {
+                    let raw = s.string("spellcheck-languages");
+                    let langs: Vec<&str> = raw
+                        .split(',')
+                        .map(str::trim)
+                        .filter(|l| !l.is_empty())
+                        .collect();
+                    editor.set_spell_checking_languages(&langs);
+                }
+            });
+            self.imp().spelling_handler_ids.borrow_mut().push(id_spelling);
+            self.imp().spelling_handler_ids.borrow_mut().push(id_languages);
+        }
+
         vbox.set_parent(self);
     }
 }
@@ -362,4 +442,295 @@ mod tests {
         editor.replace_or_insert_signature("<p>Bob</p>", true);
         assert_eq!(buffer_text(&text_view), "Bob\nEdited: Draft body!");
     }
+
+    #[test]
+    fn spellcheck_reactivity_and_getters_work_in_fallback() {
+        let _lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let Some(_context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+        let editor = HtmlEditor::new();
+        let Some(settings) = AppSettings::try_new() else {
+            return;
+        };
+
+        // Direct getter/setter
+        editor.set_spell_checking_enabled(false);
+        assert!(!editor.spell_checking_enabled());
+        editor.set_spell_checking_enabled(true);
+        assert!(editor.spell_checking_enabled());
+
+        editor.set_spell_checking_languages(&["de-DE", "en-US"]);
+        assert_eq!(editor.spell_checking_languages(), vec!["de-DE".to_string(), "en-US".to_string()]);
+        editor.set_spell_checking_languages(&[]);
+        assert!(editor.spell_checking_languages().is_empty());
+
+        // Reactivity via GSettings connect_changed
+        settings.set_composer_inline_spelling(false);
+        let context = glib::MainContext::default();
+        while context.iteration(false) {}
+        assert!(!editor.spell_checking_enabled());
+
+        settings.set_composer_inline_spelling(true);
+        while context.iteration(false) {}
+        assert!(editor.spell_checking_enabled());
+
+        settings.set_spellcheck_languages("en_US,de_DE");
+        while context.iteration(false) {}
+        assert_eq!(editor.spell_checking_languages(), vec!["en_US".to_string(), "de_DE".to_string()]);
+
+        settings.set_spellcheck_languages("");
+        while context.iteration(false) {}
+        assert!(editor.spell_checking_languages().is_empty());
+    }
+
+    #[test]
+    fn stress_test_scenario_1_color_scheme_rapid_mutation_and_style_manager() {
+        let _lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let Some(_context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+        let Some(settings) = AppSettings::try_new() else {
+            return;
+        };
+
+        let initial_scheme = settings.color_scheme();
+
+        // 50 cycles alternating between valid and invalid/adversarial strings
+        let test_cases = [
+            ("light", adw::ColorScheme::ForceLight),
+            ("dark", adw::ColorScheme::ForceDark),
+            ("system", adw::ColorScheme::Default),
+            ("invalid_scheme", adw::ColorScheme::Default),
+            ("", adw::ColorScheme::Default),
+            ("LIGHT", adw::ColorScheme::Default),
+            ("DARK", adw::ColorScheme::Default),
+            ("dark ", adw::ColorScheme::Default),
+            (" system ", adw::ColorScheme::Default),
+            ("system\0null_byte", adw::ColorScheme::Default),
+            ("force-dark", adw::ColorScheme::Default),
+            ("'; DROP TABLE settings;--", adw::ColorScheme::Default),
+            ("🎨☀️🌙", adw::ColorScheme::Default),
+            ("auto", adw::ColorScheme::Default),
+            ("default", adw::ColorScheme::Default),
+        ];
+
+        let style_manager = adw::StyleManager::default();
+        let context = glib::MainContext::default();
+
+        for cycle in 0..50 {
+            let (input, expected_scheme) = test_cases[cycle % test_cases.len()];
+
+            // 1. Verify parser mapping
+            let parsed = AppSettings::parse_adw_color_scheme(input);
+            assert_eq!(parsed, expected_scheme, "Cycle {cycle} failed parser for input {input}");
+
+            // 2. Directly verify AdwStyleManager rapid state transition without panic or leak
+            style_manager.set_color_scheme(parsed);
+            assert_eq!(style_manager.color_scheme(), parsed);
+
+            // 3. Verify AppSettings setter persistence & sanitization
+            settings.set_color_scheme(input);
+            while context.iteration(false) {}
+
+            let expected_persisted = match input {
+                "light" | "dark" => input,
+                _ => "system",
+            };
+            assert_eq!(settings.color_scheme(), expected_persisted);
+            assert_eq!(settings.adw_color_scheme(), expected_scheme);
+        }
+
+        // Restore initial scheme
+        settings.set_color_scheme(&initial_scheme);
+        style_manager.set_color_scheme(AppSettings::parse_adw_color_scheme(&initial_scheme));
+        while context.iteration(false) {}
+    }
+
+    #[test]
+    fn stress_test_scenario_2_rapid_toggling_inline_spelling_multi_editor_lifecycle() {
+        let _lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let Some(_context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+        let Some(settings) = AppSettings::try_new() else {
+            return;
+        };
+
+        let initial_spelling = settings.composer_inline_spelling();
+        let context = glib::MainContext::default();
+
+        // 1. Instantiate 5 active editors simultaneously
+        let mut editors: Vec<HtmlEditor> = (0..5).map(|_| HtmlEditor::new()).collect();
+
+        // Also instantiate a ComposeDialog and verify its html_editor getter
+        let compose_dialog = crate::dialogs::ComposeDialog::new();
+        let dialog_editor = compose_dialog.html_editor().expect("ComposeDialog must expose its HtmlEditor");
+
+        // 2. Rapid toggling across 50 cycles with all active editors
+        for cycle in 0..50 {
+            let target = (cycle % 2) == 0;
+            settings.set_composer_inline_spelling(target);
+            while context.iteration(false) {}
+
+            for (idx, ed) in editors.iter().enumerate() {
+                assert_eq!(
+                    ed.spell_checking_enabled(),
+                    target,
+                    "Active editor {idx} desynced on cycle {cycle}"
+                );
+            }
+            assert_eq!(
+                dialog_editor.spell_checking_enabled(),
+                target,
+                "ComposeDialog editor desynced on cycle {cycle}"
+            );
+        }
+
+        // 3. Drop/dispose 3 of the 5 editors to create dead weak references in the GSettings listener closures
+        let dead_editor_1 = editors.remove(0);
+        let dead_editor_2 = editors.remove(0);
+        let dead_editor_3 = editors.remove(0);
+
+        // Explicitly trigger dispose on dead_editor_1 and dead_editor_2
+        unsafe {
+            dead_editor_1.run_dispose();
+            dead_editor_2.run_dispose();
+        }
+        drop(dead_editor_1);
+        drop(dead_editor_2);
+        drop(dead_editor_3); // dropped without manual run_dispose - weak pointer must safely resolve to None
+
+        // 4. Continue rapid toggling for another 50 cycles with dead weak references
+        for cycle in 50..100 {
+            let target = (cycle % 2) == 0;
+            settings.set_composer_inline_spelling(target);
+            while context.iteration(false) {}
+
+            // Surviving editors must continue functioning without issue
+            for (idx, ed) in editors.iter().enumerate() {
+                assert_eq!(
+                    ed.spell_checking_enabled(),
+                    target,
+                    "Surviving editor {idx} desynced on cycle {cycle} after sibling disposal"
+                );
+            }
+            assert_eq!(
+                dialog_editor.spell_checking_enabled(),
+                target,
+                "ComposeDialog editor desynced on cycle {cycle} after sibling disposal"
+            );
+        }
+
+        // 5. Clean up remaining editors
+        for ed in editors.drain(..) {
+            unsafe {
+                ed.run_dispose();
+            }
+        }
+        unsafe {
+            compose_dialog.run_dispose();
+        }
+
+        // Restore initial spelling
+        settings.set_composer_inline_spelling(initial_spelling);
+        while context.iteration(false) {}
+    }
+
+    #[test]
+    fn stress_test_scenario_3_rapid_mutation_spellcheck_languages_and_sanitization() {
+        let _lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let Some(_context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+        let Some(settings) = AppSettings::try_new() else {
+            return;
+        };
+
+        let initial_languages = settings.spellcheck_languages();
+        let editor = HtmlEditor::new();
+        let context = glib::MainContext::default();
+
+        let adversarial_cases = [
+            // Standard POSIX with underscores (Feature 18 fix)
+            ("en_US", vec!["en_US"]),
+            ("de_DE", vec!["de_DE"]),
+            ("en_US,de_DE", vec!["en_US", "de_DE"]),
+            ("de_DE,en_US,fr_FR", vec!["de_DE", "en_US", "fr_FR"]),
+            // Hyphenated codes
+            ("en-US", vec!["en-US"]),
+            ("de-DE,en-US", vec!["de-DE", "en-US"]),
+            // Mixed underscores and hyphens
+            ("en_US,de-DE,pt_BR,es-ES", vec!["en_US", "de-DE", "pt_BR", "es-ES"]),
+            // Padding and extraneous whitespace
+            ("  en_US  ,  de_DE  ", vec!["en_US", "de_DE"]),
+            ("   en_US   ", vec!["en_US"]),
+            // Duplicate removal
+            ("en_US,de_DE,en_US,de_DE", vec!["en_US", "de_DE"]),
+            ("en_US,en_US,en_US", vec!["en_US"]),
+            // Empty / whitespace / comma-only
+            ("", vec![]),
+            ("   ", vec![]),
+            (",", vec![]),
+            (",,,,", vec![]),
+            ("  ,  ,  ", vec![]),
+            // Stripping invalid punctuation and special characters
+            ("en!US", vec![]),
+            ("de.DE", vec![]),
+            ("fr/FR", vec![]),
+            ("ru#RU,en_US", vec!["en_US"]),
+            ("es$ES,it%IT,de_DE", vec!["de_DE"]),
+            ("en@US, de_DE , fr;FR", vec!["de_DE"]),
+            // Length boundary: 35 chars is allowed, 36 is rejected
+            ("abcdefghijklmnopqrstuvwxyz123456789", vec!["abcdefghijklmnopqrstuvwxyz123456789"]),
+            ("abcdefghijklmnopqrstuvwxyz1234567890", vec![]),
+            // Unicode / emojis rejected
+            ("🇬🇧,🇩🇪", vec![]),
+            ("日本語,en_US", vec!["en_US"]),
+        ];
+
+        // 50 cycles of rapid mutation
+        for cycle in 0..50 {
+            let (input, expected) = &adversarial_cases[cycle % adversarial_cases.len()];
+
+            settings.set_spellcheck_languages(input);
+            while context.iteration(false) {}
+
+            let actual = editor.spell_checking_languages();
+            let expected_vec: Vec<String> = expected.iter().map(|s| s.to_string()).collect();
+            assert_eq!(
+                actual, expected_vec,
+                "Cycle {cycle} failed for input {input:?}"
+            );
+
+            // Also test apply_spellcheck_settings directly
+            let manual_editor = HtmlEditor::new();
+            manual_editor.apply_spellcheck_settings(&settings);
+            assert_eq!(
+                manual_editor.spell_checking_languages(),
+                expected_vec,
+                "Manual apply failed on cycle {cycle} for input {input:?}"
+            );
+            unsafe {
+                manual_editor.run_dispose();
+            }
+        }
+
+        unsafe {
+            editor.run_dispose();
+        }
+
+        // Restore initial languages
+        settings.set_spellcheck_languages(&initial_languages);
+        while context.iteration(false) {}
+    }
 }
+

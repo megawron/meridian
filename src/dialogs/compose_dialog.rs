@@ -195,6 +195,7 @@ mod imp {
         pub close_prompt_open: Cell<bool>,
         pub close_after_save: Cell<bool>,
         pub autosave_source: RefCell<Option<glib::SourceId>>,
+        pub autosave_setting_handler: RefCell<Option<glib::SignalHandlerId>>,
         pub autosave_in_progress: Cell<bool>,
         pub autosave_error_shown: Cell<bool>,
         pub(super) operation: Cell<ComposeOperation>,
@@ -230,6 +231,13 @@ mod imp {
         }
 
         fn dispose(&self) {
+            if let Some(handler_id) = self.autosave_setting_handler.borrow_mut().take() {
+                if let Some(settings) = self.settings.borrow().as_ref() {
+                    settings.disconnect(handler_id);
+                } else if let Some(settings) = AppSettings::try_new() {
+                    settings.disconnect(handler_id);
+                }
+            }
             if let Some(source) = self.autosave_source.borrow_mut().take() {
                 let _ = unsafe { glib::ffi::g_source_remove(source.as_raw()) };
             }
@@ -263,6 +271,10 @@ impl ComposeDialog {
         dialog.apply_default_signature();
         dialog.mark_saved();
         dialog
+    }
+
+    pub fn html_editor(&self) -> Option<crate::views::HtmlEditor> {
+        self.imp().html_editor.borrow().clone()
     }
 
     /// Open a new message with the supplied address already in the To field.
@@ -357,7 +369,7 @@ impl ComposeDialog {
             recipient_cc,
             date,
             original_html,
-            default_quote_style(),
+            default_forward_style(),
         )
     }
 
@@ -1311,11 +1323,14 @@ impl ComposeDialog {
             self.imp().settings.replace(Some(settings.clone()));
             self.imp().charset.replace(settings.composer_charset());
             let dialog_weak_for_autosave = self.downgrade();
-            settings.connect_changed(Some("draft-autosave-interval"), move |_, _| {
+            let handler_id = settings.connect_changed(Some("draft-autosave-interval"), move |_, _| {
                 if let Some(dialog) = dialog_weak_for_autosave.upgrade() {
                     dialog.start_local_autosave();
                 }
             });
+            if let Some(old_id) = self.imp().autosave_setting_handler.replace(Some(handler_id)) {
+                settings.disconnect(old_id);
+            }
         }
 
         let dialog_for_default_account = self.downgrade();
@@ -6199,4 +6214,248 @@ mod tests {
         assert_eq!(choices[0].id, None);
         assert!(choices[0].html.is_empty());
     }
+
+    #[test]
+    fn test_compose_dialog_html_editor_and_style_defaults() {
+        let _lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let Some(_context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+        let Some(settings) = AppSettings::try_new() else {
+            return;
+        };
+
+        let dialog = ComposeDialog::new();
+        assert!(dialog.html_editor().is_some());
+
+        // Test forward style defaults
+        settings.set_composer_forward_style("inline");
+        assert_eq!(default_forward_style(), "inline");
+        settings.set_composer_forward_style("quoted");
+        assert_eq!(default_forward_style(), "prefix");
+        settings.set_composer_forward_style("attached");
+        assert_eq!(default_forward_style(), "attached");
+
+        // Test quote style defaults
+        settings.set_quote_original(true);
+        settings.set_composer_reply_style("do-not-quote");
+        assert_eq!(default_quote_style(), "none");
+        settings.set_composer_reply_style("inline");
+        assert_eq!(default_quote_style(), "inline");
+        settings.set_composer_reply_style("quoted");
+        settings.set_quote_style("prefix");
+        assert_eq!(default_quote_style(), "prefix");
+        settings.set_quote_style("blockquote");
+        assert_eq!(default_quote_style(), "blockquote");
+
+        // Reset
+        settings.set_composer_reply_style("quoted");
+        settings.set_composer_forward_style("attached");
+    }
+
+    #[test]
+    fn test_feature_19_compose_dialog_autosave_timer_lifecycle_and_boundaries() {
+        let _lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let Some(context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+        let Some(settings) = AppSettings::try_new() else {
+            return;
+        };
+
+        // Reset to canonical baseline
+        settings.set_draft_autosave_interval_seconds(30);
+        while context.iteration(false) {}
+
+        let dialog = ComposeDialog::new();
+        while context.iteration(false) {}
+
+        // Initial check: 30s interval should have an active timer
+        assert!(
+            dialog.imp().autosave_source.borrow().is_some(),
+            "ComposeDialog should start with an active autosave timer when interval is 30"
+        );
+
+        // Boundary 1: 0 (disabled) - should cancel timer and set source to None
+        settings.set_draft_autosave_interval_seconds(0);
+        while context.iteration(false) {}
+        assert!(
+            dialog.imp().autosave_source.borrow().is_none(),
+            "Interval 0 should cancel autosave timer and leave autosave_source as None"
+        );
+
+        // Boundary 2: 1 second - should re-arm timer with new source
+        settings.set_draft_autosave_interval_seconds(1);
+        while context.iteration(false) {}
+        let source_1 = dialog.imp().autosave_source.borrow().as_ref().map(|s| s.as_raw());
+        assert!(
+            source_1.is_some(),
+            "Interval 1 should schedule a new autosave timer"
+        );
+
+        // Boundary 3: 3600 seconds - should replace timer with a new source
+        settings.set_draft_autosave_interval_seconds(3600);
+        while context.iteration(false) {}
+        let source_3600 = dialog.imp().autosave_source.borrow().as_ref().map(|s| s.as_raw());
+        assert!(
+            source_3600.is_some(),
+            "Interval 3600 should schedule a new autosave timer"
+        );
+        assert_ne!(
+            source_1, source_3600,
+            "Timer source ID must be replaced when interval changes"
+        );
+
+        // Boundary 4: Negative interval via direct GSettings injection
+        let raw_settings = gio::Settings::new("org.gnome.Evolution4");
+        let _ = raw_settings.set_int("draft-autosave-interval", -20);
+        while context.iteration(false) {}
+        assert!(
+            dialog.imp().autosave_source.borrow().is_none(),
+            "Negative interval (-20) clamped to 0 must cancel autosave timer"
+        );
+
+        // Boundary 5: High out-of-range interval via direct GSettings injection
+        let _ = raw_settings.set_int("draft-autosave-interval", 50000);
+        while context.iteration(false) {}
+        assert!(
+            dialog.imp().autosave_source.borrow().is_some(),
+            "High interval clamped to 3600 must maintain an active autosave timer"
+        );
+
+        // Rapid mutation stress: 60 transitions between zero, positive, negative
+        let intervals = [0, 1, 30, 0, 3600, -5, 10, 0, 15, 60, -100, 30];
+        for _ in 0..5 {
+            for &int_val in &intervals {
+                let _ = raw_settings.set_int("draft-autosave-interval", int_val);
+                while context.iteration(false) {}
+                if int_val <= 0 {
+                    assert!(
+                        dialog.imp().autosave_source.borrow().is_none(),
+                        "Interval {int_val} must result in no active timer"
+                    );
+                } else {
+                    assert!(
+                        dialog.imp().autosave_source.borrow().is_some(),
+                        "Interval {int_val} must result in an active timer"
+                    );
+                }
+            }
+        }
+
+        // Test forward style permutations on default_forward_style
+        settings.set_composer_forward_style(" INLINE ");
+        assert_eq!(default_forward_style(), "inline");
+        settings.set_composer_forward_style(" Quoted ");
+        assert_eq!(default_forward_style(), "prefix");
+        settings.set_composer_forward_style(" Attached ");
+        assert_eq!(default_forward_style(), "attached");
+        settings.set_composer_forward_style("attach");
+        assert_eq!(default_forward_style(), "attached");
+
+        // Clean disposal test
+        assert!(
+            dialog.imp().autosave_setting_handler.borrow().is_some(),
+            "Active compose dialog must have an attached autosave setting handler"
+        );
+        unsafe {
+            dialog.run_dispose();
+        }
+        assert!(
+            dialog.imp().autosave_setting_handler.borrow().is_none(),
+            "Disposing dialog must take and clear autosave_setting_handler"
+        );
+        assert!(
+            dialog.imp().autosave_source.borrow().is_none(),
+            "Disposing dialog must cleanly cancel and take autosave_source"
+        );
+
+        // Idempotency stress test: calling run_dispose multiple times must not panic, double-free, or raise GLib assertions
+        for cycle in 1..=5 {
+            unsafe {
+                dialog.run_dispose();
+            }
+            assert!(
+                dialog.imp().autosave_setting_handler.borrow().is_none(),
+                "Repeated dispose cycle {cycle} must preserve None autosave_setting_handler"
+            );
+            assert!(
+                dialog.imp().autosave_source.borrow().is_none(),
+                "Repeated dispose cycle {cycle} must preserve None autosave_source"
+            );
+        }
+
+        // Reset settings - must NOT re-arm autosave_source on disposed dialog
+        settings.set_draft_autosave_interval_seconds(30);
+        settings.set_composer_forward_style("attached");
+        settings.set_composer_reply_style("quoted");
+        while context.iteration(false) {}
+        assert!(
+            dialog.imp().autosave_source.borrow().is_none(),
+            "Mutating draft-autosave-interval after disposal must not re-arm timer (signal handler disconnected)"
+        );
+
+        // Multiple rapid setting mutations across disposed dialog must remain zero-timer
+        for &val in &[0, 10, 30, 60, 0, 300, 3600, -10] {
+            let _ = raw_settings.set_int("draft-autosave-interval", val);
+            while context.iteration(false) {}
+            assert!(
+                dialog.imp().autosave_source.borrow().is_none(),
+                "Post-dispose interval mutation to {val} must never re-arm autosave timer"
+            );
+        }
+
+        // Concurrent dialogs stress test: one disposed, one active
+        let dialog_active = ComposeDialog::new();
+        while context.iteration(false) {}
+        assert!(
+            dialog_active.imp().autosave_setting_handler.borrow().is_some(),
+            "Active second dialog must have its own autosave handler"
+        );
+        assert!(
+            dialog_active.imp().autosave_source.borrow().is_some(),
+            "Active second dialog must have an active timer"
+        );
+        // Mutate setting: disposed dialog must stay None, active dialog must update
+        let _ = raw_settings.set_int("draft-autosave-interval", 45);
+        while context.iteration(false) {}
+        assert!(
+            dialog.imp().autosave_source.borrow().is_none(),
+            "Disposed dialog must remain disarmed during concurrent dialog activity"
+        );
+        assert!(
+            dialog_active.imp().autosave_source.borrow().is_some(),
+            "Active second dialog must adaptively reschedule its timer"
+        );
+        // Repeated disposal of second dialog
+        for _ in 0..3 {
+            unsafe {
+                dialog_active.run_dispose();
+            }
+        }
+        assert!(
+            dialog_active.imp().autosave_setting_handler.borrow().is_none(),
+            "Disposed second dialog must clear autosave_setting_handler"
+        );
+        assert!(
+            dialog_active.imp().autosave_source.borrow().is_none(),
+            "Disposed second dialog must clear autosave_source"
+        );
+
+        // Dropped dialog without manual run_dispose
+        {
+            let dialog_scoped = ComposeDialog::new();
+            while context.iteration(false) {}
+            assert!(dialog_scoped.imp().autosave_setting_handler.borrow().is_some());
+            // drop dialog_scoped at end of block
+        }
+        while context.iteration(false) {}
+        let _ = raw_settings.set_int("draft-autosave-interval", 30);
+        while context.iteration(false) {}
+    }
 }
+
