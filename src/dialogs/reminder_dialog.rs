@@ -230,6 +230,7 @@ impl ReminderDialog {
                 crate::services::reminder_service::ReminderComponentKind::Event => "Termin",
                 crate::services::reminder_service::ReminderComponentKind::Task => "Aufgabe",
                 crate::services::reminder_service::ReminderComponentKind::Memo => "Notiz",
+                crate::services::reminder_service::ReminderComponentKind::Contact => "Kontakt",
             })
             .unwrap_or("Reminder");
         let due_label = chrono::DateTime::from_timestamp(delivery.candidate.due_at, 0)

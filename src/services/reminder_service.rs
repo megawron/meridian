@@ -8,7 +8,7 @@
 // calendars can use the same API once the native Linux watcher is connected;
 // the portable fallback currently consumes the local CalendarSnapshot.
 
-use chrono::{Duration, Local, LocalResult, NaiveDate, NaiveDateTime, TimeZone};
+use chrono::{Datelike, Duration, Local, LocalResult, NaiveDate, NaiveDateTime, TimeZone};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
@@ -75,21 +75,45 @@ pub(crate) fn calendar_store_for_worker(
     CalendarStoreService::with_writable_calendar_dir(super::app_data_dir().join("ical"))
 }
 
+/// Helper to construct a contact store for reminder workers without reading GSettings off-thread.
+pub(crate) fn contact_store_for_worker(
+    local_contact_directory: Option<String>,
+) -> super::contact_store_service::ContactStoreService {
+    if let Some(path) = std::env::var_os("EVOLUTION_GTK4_VCARD_DIR") {
+        return super::contact_store_service::ContactStoreService::with_contact_dir(path);
+    }
+    if let Some(path) = local_contact_directory
+        .filter(|path| !path.trim().is_empty())
+        .map(PathBuf::from)
+    {
+        return if super::is_app_owned_store_path(&path) {
+            super::contact_store_service::ContactStoreService::with_writable_contact_dir(path)
+        } else {
+            super::contact_store_service::ContactStoreService::with_contact_dir(path)
+        };
+    }
+    super::contact_store_service::ContactStoreService::with_writable_contact_dir(
+        super::app_data_dir().join("vcards"),
+    )
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ReminderKind {
     Event,
     Task,
     Memo,
+    Contact,
 }
 
 /// The component kind is kept separately from `ReminderKind` so the URI
-/// contract can distinguish the three Evolution component types even when a
+/// contract can distinguish the Evolution component types even when a
 /// caller only needs the notification category.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ReminderComponentKind {
     Event,
     Task,
     Memo,
+    Contact,
 }
 
 impl ReminderComponentKind {
@@ -98,6 +122,7 @@ impl ReminderComponentKind {
             Self::Event => "calendar",
             Self::Task => "task",
             Self::Memo => "memo",
+            Self::Contact => "contact",
         }
     }
 
@@ -106,6 +131,7 @@ impl ReminderComponentKind {
             "calendar" => Some(Self::Event),
             "task" => Some(Self::Task),
             "memo" => Some(Self::Memo),
+            "contact" => Some(Self::Contact),
             _ => None,
         }
     }
@@ -117,6 +143,7 @@ impl From<ReminderComponentKind> for ReminderKind {
             ReminderComponentKind::Event => Self::Event,
             ReminderComponentKind::Task => Self::Task,
             ReminderComponentKind::Memo => Self::Memo,
+            ReminderComponentKind::Contact => Self::Contact,
         }
     }
 }
@@ -1298,6 +1325,9 @@ pub fn component_presence(
     snapshot: &CalendarSnapshot,
     identity: &ReminderIdentity,
 ) -> ReminderComponentPresence {
+    if identity.kind == ReminderComponentKind::Contact {
+        return ReminderComponentPresence::Found;
+    }
     let found = match identity.kind {
         ReminderComponentKind::Event => snapshot.events.iter().any(|event| {
             event.source_uid == identity.source_uid && event.uid == identity.component_uid
@@ -1308,6 +1338,7 @@ pub fn component_presence(
         ReminderComponentKind::Memo => snapshot.memos.iter().any(|memo| {
             memo.source_uid == identity.source_uid && memo.uid == identity.component_uid
         }),
+        ReminderComponentKind::Contact => true,
     };
     let source_exists = match identity.kind {
         ReminderComponentKind::Event => snapshot
@@ -1322,6 +1353,7 @@ pub fn component_presence(
             .memos
             .iter()
             .any(|memo| memo.source_uid == identity.source_uid),
+        ReminderComponentKind::Contact => true,
     };
     if found {
         ReminderComponentPresence::Found
@@ -2041,6 +2073,140 @@ pub fn candidates_from_snapshot(snapshot: &CalendarSnapshot, now: i64) -> Vec<Re
             .then_with(|| left.key.cmp(&right.key))
     });
     candidates.dedup_by(|left, right| left.key == right.key);
+    candidates
+}
+
+/// Parse flexible vCard date representations into (original_year, month, day).
+pub(crate) fn parse_contact_date(value: &str) -> Option<(Option<i32>, u32, u32)> {
+    let s = value.trim();
+    if s.is_empty() {
+        return None;
+    }
+    // Formats: "--MM-DD" or "--MMDD" (without year)
+    if let Some(rest) = s.strip_prefix("--") {
+        let clean = rest.replace('-', "");
+        if clean.len() == 4 && clean.bytes().all(|b| b.is_ascii_digit()) {
+            let month = clean[..2].parse::<u32>().ok()?;
+            let day = clean[2..].parse::<u32>().ok()?;
+            if (1..=12).contains(&month) && (1..=31).contains(&day) {
+                return Some((None, month, day));
+            }
+        }
+    }
+    // Formats: "YYYY-MM-DD" or "YYYY-MM-DDTHH:MM:SS"
+    if s.len() >= 10
+        && s.as_bytes()[4] == b'-'
+        && s.as_bytes()[7] == b'-'
+        && s.as_bytes()[..4].iter().all(|b| b.is_ascii_digit())
+        && s.as_bytes()[5..7].iter().all(|b| b.is_ascii_digit())
+        && s.as_bytes()[8..10].iter().all(|b| b.is_ascii_digit())
+    {
+        let year = s[..4].parse::<i32>().ok()?;
+        let month = s[5..7].parse::<u32>().ok()?;
+        let day = s[8..10].parse::<u32>().ok()?;
+        if (1..=12).contains(&month) && (1..=31).contains(&day) {
+            return Some((Some(year), month, day));
+        }
+    }
+    // Formats: "YYYYMMDD" or "YYYYMMDDTHHMMSS"
+    if s.len() >= 8 && s.as_bytes()[..8].iter().all(|b| b.is_ascii_digit()) {
+        let year = s[..4].parse::<i32>().ok()?;
+        let month = s[4..6].parse::<u32>().ok()?;
+        let day = s[6..8].parse::<u32>().ok()?;
+        if (1..=12).contains(&month) && (1..=31).contains(&day) {
+            return Some((Some(year), month, day));
+        }
+    }
+    None
+}
+
+/// Extract birthday and anniversary reminder candidates from contact records.
+pub fn contact_birthday_candidates(
+    contacts: &[super::contact_store_service::LocalContactRecord],
+    now: i64,
+    offset_seconds: i64,
+) -> Vec<ReminderCandidate> {
+    let now_date = match Local.timestamp_opt(now, 0) {
+        LocalResult::Single(dt) => dt.date_naive(),
+        _ => return Vec::new(),
+    };
+    let current_year = now_date.year();
+    let mut candidates = Vec::new();
+
+    for record in contacts {
+        if record.id.trim().is_empty() {
+            continue;
+        }
+        let name = if !record.contact.fn_name.trim().is_empty() {
+            record.contact.fn_name.trim()
+        } else {
+            "Kontakt"
+        };
+
+        let dates_to_check = [
+            ("Geburtstag", &record.contact.birthday, "bday"),
+            ("Jahrestag", &record.contact.anniversary, "anni"),
+        ];
+
+        for (label, date_str, kind_prefix) in dates_to_check {
+            let Some((orig_year, month, day)) = parse_contact_date(date_str) else {
+                continue;
+            };
+
+            // Evaluate occurrences in [current_year - 1, current_year, current_year + 1]
+            for year in [current_year - 1, current_year, current_year + 1] {
+                let occurrence_date = NaiveDate::from_ymd_opt(year, month, day)
+                    .or_else(|| {
+                        // Leap year fallback: Feb 29 -> Feb 28
+                        if month == 2 && day == 29 {
+                            NaiveDate::from_ymd_opt(year, 2, 28)
+                        } else {
+                            None
+                        }
+                    });
+                let Some(occ_date) = occurrence_date else {
+                    continue;
+                };
+
+                let occ_datetime = occ_date.and_hms_opt(DEFAULT_ALL_DAY_HOUR, 0, 0);
+                let Some(occ_dt) = occ_datetime else { continue; };
+                let occ_timestamp = match Local.from_local_datetime(&occ_dt) {
+                    LocalResult::Single(dt) => dt.timestamp(),
+                    LocalResult::Ambiguous(dt1, _) => dt1.timestamp(),
+                    LocalResult::None => continue,
+                };
+
+                let due_at = occ_timestamp.saturating_sub(offset_seconds);
+                let Ok(identity) = ReminderIdentity::new(
+                    ReminderComponentKind::Contact,
+                    "contacts",
+                    &record.id,
+                ) else {
+                    continue;
+                };
+
+                let occurrence_id = format!(
+                    "{}-{:04}{:02}{:02}",
+                    kind_prefix,
+                    occ_date.year(),
+                    occ_date.month(),
+                    occ_date.day()
+                );
+                let title = match orig_year {
+                    Some(y) if year > y => format!("{name}: {}. {label}", year - y),
+                    _ => format!("{name}: {label}"),
+                };
+
+                candidates.push(ReminderCandidate {
+                    key: reminder_key(&identity, &occurrence_id, 0, 0, due_at),
+                    title,
+                    due_at,
+                    kind: ReminderKind::Contact,
+                });
+            }
+        }
+    }
+
     candidates
 }
 
@@ -3266,4 +3432,633 @@ mod tests {
             std::process::id()
         ))
     }
+
+    #[test]
+    fn test_parse_contact_date() {
+        assert_eq!(parse_contact_date("1990-05-15"), Some((Some(1990), 5, 15)));
+        assert_eq!(
+            parse_contact_date("1990-05-15T09:30:00"),
+            Some((Some(1990), 5, 15))
+        );
+        assert_eq!(parse_contact_date("19900515"), Some((Some(1990), 5, 15)));
+        assert_eq!(parse_contact_date("--05-15"), Some((None, 5, 15)));
+        assert_eq!(parse_contact_date("--0515"), Some((None, 5, 15)));
+        assert_eq!(parse_contact_date(""), None);
+        assert_eq!(parse_contact_date("not-a-date"), None);
+        assert_eq!(parse_contact_date("1990-13-01"), None);
+        assert_eq!(parse_contact_date("1990-00-10"), None);
+        assert_eq!(parse_contact_date("1990-05-32"), None);
+    }
+
+    #[test]
+    fn test_birthday_candidate() {
+        use crate::services::contact_store_service::LocalContactRecord;
+        use crate::services::vcard_service::VCardContact;
+
+        let vcard_str = "BEGIN:VCARD\r\nVERSION:4.0\r\nFN:Alice Smith\r\nBDAY:1990-06-15\r\nANNIVERSARY:2015-10-20\r\nEND:VCARD\r\n";
+        let contact = VCardContact::parse_vcard_string(vcard_str).expect("parse contact");
+        let record = LocalContactRecord {
+            id: "contact-alice-1".to_string(),
+            contact,
+            vcard: vcard_str.to_string(),
+        };
+
+        // Reference now: 2026-06-01 12:00:00 UTC
+        let now_dt = chrono::NaiveDate::from_ymd_opt(2026, 6, 1)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
+        let now = chrono::Local
+            .from_local_datetime(&now_dt)
+            .unwrap()
+            .timestamp();
+        let offset = 900; // 15 minutes before
+
+        let candidates = contact_birthday_candidates(&[record], now, offset);
+        assert!(!candidates.is_empty());
+
+        // Find birthday candidate for 2026
+        let bday_2026 = candidates.iter().find(|c| c.key.contains("bday-20260615"));
+        assert!(bday_2026.is_some(), "should find 2026 birthday candidate");
+        let bday = bday_2026.unwrap();
+        assert_eq!(bday.title, "Alice Smith: 36. Geburtstag");
+        assert_eq!(bday.kind, ReminderKind::Contact);
+
+        // Check offset applied: due_at should be 9:00 - 900s (8:45) local time on 2026-06-15
+        let expected_bday_dt = chrono::NaiveDate::from_ymd_opt(2026, 6, 15)
+            .unwrap()
+            .and_hms_opt(DEFAULT_ALL_DAY_HOUR, 0, 0)
+            .unwrap();
+        let expected_ts = chrono::Local
+            .from_local_datetime(&expected_bday_dt)
+            .unwrap()
+            .timestamp()
+            - offset;
+        assert_eq!(bday.due_at, expected_ts);
+
+        // Find anniversary candidate for 2026
+        let anni_2026 = candidates.iter().find(|c| c.key.contains("anni-20261020"));
+        assert!(anni_2026.is_some(), "should find 2026 anniversary candidate");
+        let anni = anni_2026.unwrap();
+        assert_eq!(anni.title, "Alice Smith: 11. Jahrestag");
+
+        // Leap year birthday: Feb 29 contact evaluated in non-leap year (e.g. 2025 or 2026)
+        let leap_vcard = "BEGIN:VCARD\r\nVERSION:4.0\r\nFN:Leap Baby\r\nBDAY:2004-02-29\r\nEND:VCARD\r\n";
+        let leap_contact = VCardContact::parse_vcard_string(leap_vcard).unwrap();
+        let leap_record = LocalContactRecord {
+            id: "contact-leap-1".to_string(),
+            contact: leap_contact,
+            vcard: leap_vcard.to_string(),
+        };
+        let leap_candidates = contact_birthday_candidates(&[leap_record], now, 0);
+        // Non-leap year 2026 should fall back to Feb 28
+        let leap_2026 = leap_candidates.iter().find(|c| c.key.contains("20260228"));
+        assert!(leap_2026.is_some(), "leap day should fall back to Feb 28 in non-leap year");
+
+        // Test unnamed contact fallback
+        let mut noname_contact = VCardContact::parse_vcard_string(vcard_str).unwrap();
+        noname_contact.fn_name = "   ".to_string();
+        let noname_record = LocalContactRecord {
+            id: "contact-noname-1".to_string(),
+            contact: noname_contact,
+            vcard: vcard_str.to_string(),
+        };
+        let noname_candidates = contact_birthday_candidates(&[noname_record], now, 0);
+        let noname_candidate = noname_candidates.iter().find(|c| c.key.contains("20260615"));
+        assert!(noname_candidate.is_some());
+        assert!(noname_candidate.unwrap().title.starts_with("Kontakt:"));
+    }
+
+    #[test]
+    fn test_adversarial_contact_date_parsing_resilience() {
+        // 1. Valid standard ISO representations
+        assert_eq!(parse_contact_date("1990-05-15"), Some((Some(1990), 5, 15)));
+        assert_eq!(
+            parse_contact_date("1990-05-15T09:30:00"),
+            Some((Some(1990), 5, 15))
+        );
+        assert_eq!(
+            parse_contact_date("1990-05-15T09:30:00Z"),
+            Some((Some(1990), 5, 15))
+        );
+        assert_eq!(
+            parse_contact_date("1990-05-15T09:30:00+02:00"),
+            Some((Some(1990), 5, 15))
+        );
+
+        // 2. Valid compact YYYYMMDD
+        assert_eq!(parse_contact_date("19900515"), Some((Some(1990), 5, 15)));
+        assert_eq!(
+            parse_contact_date("19900515T120000"),
+            Some((Some(1990), 5, 15))
+        );
+
+        // 3. Valid yearless representations
+        assert_eq!(parse_contact_date("--05-15"), Some((None, 5, 15)));
+        assert_eq!(parse_contact_date("--0515"), Some((None, 5, 15)));
+
+        // 4. Leap year dates
+        assert_eq!(parse_contact_date("2000-02-29"), Some((Some(2000), 2, 29)));
+        assert_eq!(parse_contact_date("--02-29"), Some((None, 2, 29)));
+
+        // 5. Whitespace resilience
+        assert_eq!(
+            parse_contact_date("  1990-05-15  "),
+            Some((Some(1990), 5, 15))
+        );
+        assert_eq!(parse_contact_date(" --05-15 "), Some((None, 5, 15)));
+        assert_eq!(parse_contact_date(""), None);
+        assert_eq!(parse_contact_date("   "), None);
+        assert_eq!(parse_contact_date("\t\n\r"), None);
+
+        // 6. Out-of-range month / day values
+        assert_eq!(parse_contact_date("1990-13-01"), None);
+        assert_eq!(parse_contact_date("1990-00-10"), None);
+        assert_eq!(parse_contact_date("1990-05-32"), None);
+        assert_eq!(parse_contact_date("1990-05-00"), None);
+        assert_eq!(parse_contact_date("--13-01"), None);
+        assert_eq!(parse_contact_date("--00-10"), None);
+        assert_eq!(parse_contact_date("--05-32"), None);
+        assert_eq!(parse_contact_date("--05-00"), None);
+
+        // 7. Structural malformations & invalid text
+        assert_eq!(parse_contact_date("not-a-date"), None);
+        assert_eq!(parse_contact_date("1990/05/15"), None);
+        assert_eq!(parse_contact_date("1990-5-15"), None);
+        assert_eq!(parse_contact_date("1990-05-5"), None);
+        assert_eq!(parse_contact_date("1990051"), None);
+        assert_eq!(parse_contact_date("--"), None);
+        assert_eq!(parse_contact_date("---"), None);
+        assert_eq!(parse_contact_date("--12"), None);
+        assert_eq!(parse_contact_date("--12345"), None);
+
+        // 8. UTF-8 Multi-byte and Emoji Resilience (Zero Panics, graceful None fallback)
+        // 8a. Yearless emojis and currency symbols
+        assert_eq!(parse_contact_date("--🎉"), None);
+        assert_eq!(parse_contact_date("--🎂"), None);
+        assert_eq!(parse_contact_date("--€1"), None);
+        assert_eq!(parse_contact_date("--1€"), None);
+        assert_eq!(parse_contact_date("--\u{FFFD}"), None);
+        assert_eq!(parse_contact_date("--\u{00A0}"), None);
+        assert_eq!(parse_contact_date("--月-日"), None);
+        assert_eq!(parse_contact_date("--🎉-15"), None);
+        assert_eq!(parse_contact_date("--05-🎉"), None);
+
+        // 8b. ISO emojis and malformed structures
+        assert_eq!(parse_contact_date("2020-05-🎉"), None);
+        assert_eq!(parse_contact_date("2020-05-€"), None);
+        assert_eq!(parse_contact_date("2020-🎉-15"), None);
+        assert_eq!(parse_contact_date("🎉-05-15"), None);
+        assert_eq!(parse_contact_date("🎉"), None);
+        // Valid ISO date prefix followed by time separator and emoji safely extracts date without panic
+        assert_eq!(
+            parse_contact_date("2020-05-15T🎉"),
+            Some((Some(2020), 5, 15))
+        );
+
+        // 8c. Compact emojis
+        assert_eq!(parse_contact_date("2020🎉15"), None);
+        assert_eq!(parse_contact_date("🎉0515"), None);
+        assert_eq!(parse_contact_date("202005🎉"), None);
+        assert_eq!(parse_contact_date("🎉-🎉-🎉"), None);
+
+        // 8d. Overflow, boundary, and malformed dates
+        assert_eq!(parse_contact_date("99999-99-99"), None);
+        assert_eq!(parse_contact_date("-0001-01-01"), None);
+        assert_eq!(parse_contact_date(""), None);
+        assert_eq!(parse_contact_date("  "), None);
+        assert_eq!(parse_contact_date("--"), None);
+        assert_eq!(parse_contact_date("--00-00"), None);
+        assert_eq!(parse_contact_date("--13-01"), None);
+        assert_eq!(parse_contact_date("2020-00-15"), None);
+        assert_eq!(parse_contact_date("2020-13-15"), None);
+        assert_eq!(parse_contact_date("2020-05-00"), None);
+        assert_eq!(parse_contact_date("2020-05-32"), None);
+        assert_eq!(parse_contact_date("20200015"), None);
+        assert_eq!(parse_contact_date("20201315"), None);
+        assert_eq!(parse_contact_date("20200500"), None);
+        assert_eq!(parse_contact_date("20200532"), None);
+
+        // 8e. Multi-byte combining accents, BiDi overrides, RTL, and null bytes
+        assert_eq!(parse_contact_date("2020-05-1e\u{0301}"), None);
+        assert_eq!(parse_contact_date("\u{200F}2020-05-15"), None);
+        assert_eq!(parse_contact_date("\u{202E}2020-05-15"), None);
+        assert_eq!(parse_contact_date("2020\0-05-15"), None);
+        assert_eq!(parse_contact_date("2020-05-15\0"), Some((Some(2020), 5, 15)));
+        assert_eq!(parse_contact_date("٢٠٢٠-٠٥-١٥"), None);
+        assert_eq!(parse_contact_date("２０２０-０５-１５"), None);
+
+        // 8f. Empirical Stress & Fuzz Generator: 1,000 adversarial payloads
+        let mut rng_state: u64 = 0xDEADBEEFCAFEBABE;
+        let adversarial_tokens = [
+            "", "-", "--", "---", " ", "\t", "\n", "\0",
+            "🎉", "🎂", "€", "$", "¥", "£",
+            "\u{FFFD}", "\u{0301}", "\u{200F}", "\u{202E}", "日", "月", "年",
+            "2020", "2026", "9999", "0000", "-001", "12345",
+            "01", "05", "12", "13", "00", "31", "32", "99",
+        ];
+        for _ in 0..1000 {
+            // Simple deterministic LCG pseudo-random string generator
+            rng_state = rng_state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            let token_count = ((rng_state >> 32) % 6 + 1) as usize;
+            let mut payload = String::new();
+            for i in 0..token_count {
+                let idx = ((rng_state.wrapping_shr((i * 8) as u32)) % (adversarial_tokens.len() as u64)) as usize;
+                payload.push_str(adversarial_tokens[idx]);
+            }
+            // CRITICAL INVARIANT: parse_contact_date MUST NEVER panic on any payload
+            let res = parse_contact_date(&payload);
+            if let Some((year_opt, month, day)) = res {
+                assert!((1..=12).contains(&month), "month {month} must be in 1..=12 for payload {payload:?}");
+                assert!((1..=31).contains(&day), "day {day} must be in 1..=31 for payload {payload:?}");
+                if let Some(y) = year_opt {
+                    assert!(y >= 0, "year {y} must be non-negative for payload {payload:?}");
+                }
+            }
+        }
+
+        // 8g. Contact birthday candidate generation with None fallback
+        use crate::services::contact_store_service::LocalContactRecord;
+        use crate::services::vcard_service::VCardContact;
+        let malformed_payloads = [
+            "--🎉", "--🎂", "--€1", "--1€", "--\u{FFFD}",
+            "2020-05-🎉", "2020-🎉-15", "🎉-05-15",
+            "2020🎉15", "🎉0515", "99999-99-99", "-0001-01-01",
+            "", "  ", "--", "--00-00", "--13-01",
+        ];
+        for (i, bad_date) in malformed_payloads.iter().enumerate() {
+            let vcard = format!("BEGIN:VCARD\r\nVERSION:4.0\r\nFN:Bad Date {i}\r\nBDAY:{bad_date}\r\nANNIVERSARY:{bad_date}\r\nEND:VCARD\r\n");
+            let contact = VCardContact::parse_vcard_string(&vcard).unwrap();
+            let record = LocalContactRecord {
+                id: format!("contact-bad-{i}"),
+                contact,
+                vcard,
+            };
+            // Candidate evaluation must handle None gracefully without panic and produce 0 candidates
+            let cands = contact_birthday_candidates(&[record], 1772452800, 0);
+            assert!(
+                cands.is_empty(),
+                "malformed date {bad_date:?} must yield zero candidates and never panic"
+            );
+        }
+    }
+
+    #[test]
+    fn test_adversarial_contact_birthday_leap_year_and_candidate_generation() {
+        use crate::services::contact_store_service::LocalContactRecord;
+        use crate::services::vcard_service::VCardContact;
+
+        // Reference now: 2026-06-01 12:00:00 (non-leap year)
+        let now_2026_dt = chrono::NaiveDate::from_ymd_opt(2026, 6, 1)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
+        let now_2026 = chrono::Local
+            .from_local_datetime(&now_2026_dt)
+            .unwrap()
+            .timestamp();
+
+        // Reference now: 2028-06-01 12:00:00 (leap year)
+        let now_2028_dt = chrono::NaiveDate::from_ymd_opt(2028, 6, 1)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
+        let now_2028 = chrono::Local
+            .from_local_datetime(&now_2028_dt)
+            .unwrap()
+            .timestamp();
+
+        // 1. Leap year birth date: 2004-02-29
+        let leap_vcard = "BEGIN:VCARD\r\nVERSION:4.0\r\nFN:Leap Baby\r\nBDAY:2004-02-29\r\nEND:VCARD\r\n";
+        let leap_contact = VCardContact::parse_vcard_string(leap_vcard).unwrap();
+        let leap_record = LocalContactRecord {
+            id: "contact-leap-1".to_string(),
+            contact: leap_contact,
+            vcard: leap_vcard.to_string(),
+        };
+
+        // In non-leap year 2026: must safely fall back to Feb 28 without panicking
+        let cands_2026 = contact_birthday_candidates(&[leap_record.clone()], now_2026, 0);
+        let cand_2026 = cands_2026
+            .iter()
+            .find(|c| c.key.contains("20260228"))
+            .expect("should find Feb 28 fallback candidate in non-leap year");
+        assert_eq!(cand_2026.title, "Leap Baby: 22. Geburtstag");
+        assert!(
+            !cands_2026.iter().any(|c| c.key.contains("20260229")),
+            "must never generate Feb 29 candidate in non-leap year"
+        );
+
+        // In leap year 2028: must generate candidate on Feb 29
+        let cands_2028 = contact_birthday_candidates(&[leap_record.clone()], now_2028, 0);
+        let cand_2028 = cands_2028
+            .iter()
+            .find(|c| c.key.contains("20280229"))
+            .expect("should find Feb 29 candidate in leap year");
+        assert_eq!(cand_2028.title, "Leap Baby: 24. Geburtstag");
+
+        // 2. Yearless leap day: --02-29
+        let yearless_vcard = "BEGIN:VCARD\r\nVERSION:4.0\r\nFN:Yearless Baby\r\nBDAY:--02-29\r\nEND:VCARD\r\n";
+        let yearless_contact = VCardContact::parse_vcard_string(yearless_vcard).unwrap();
+        let yearless_record = LocalContactRecord {
+            id: "contact-yearless-1".to_string(),
+            contact: yearless_contact,
+            vcard: yearless_vcard.to_string(),
+        };
+
+        // In non-leap year 2026: falls back to Feb 28 without year prefix
+        let yearless_cands_2026 =
+            contact_birthday_candidates(&[yearless_record.clone()], now_2026, 0);
+        let yearless_2026 = yearless_cands_2026
+            .iter()
+            .find(|c| c.key.contains("20260228"))
+            .expect("should fall back to Feb 28 for yearless leap day");
+        assert_eq!(yearless_2026.title, "Yearless Baby: Geburtstag");
+
+        // In leap year 2028: generates Feb 29 without year prefix
+        let yearless_cands_2028 = contact_birthday_candidates(&[yearless_record], now_2028, 0);
+        let yearless_2028 = yearless_cands_2028
+            .iter()
+            .find(|c| c.key.contains("20280229"))
+            .expect("should evaluate to Feb 29 in leap year for yearless leap day");
+        assert_eq!(yearless_2028.title, "Yearless Baby: Geburtstag");
+
+        // 3. Invalid Feb 30 and April 31: safely omitted without panic
+        let invalid_vcard = "BEGIN:VCARD\r\nVERSION:4.0\r\nFN:Invalid Dates\r\nBDAY:2000-02-30\r\nANNIVERSARY:2010-04-31\r\nEND:VCARD\r\n";
+        let invalid_contact = VCardContact::parse_vcard_string(invalid_vcard).unwrap();
+        let invalid_record = LocalContactRecord {
+            id: "contact-invalid-1".to_string(),
+            contact: invalid_contact,
+            vcard: invalid_vcard.to_string(),
+        };
+        let invalid_cands = contact_birthday_candidates(&[invalid_record], now_2026, 0);
+        assert!(
+            invalid_cands.is_empty(),
+            "invalid calendar dates must yield zero candidates"
+        );
+
+        // 4. Future birth date & same-year birth date
+        let future_vcard = "BEGIN:VCARD\r\nVERSION:4.0\r\nFN:Future Person\r\nBDAY:2030-05-15\r\nEND:VCARD\r\n";
+        let future_contact = VCardContact::parse_vcard_string(future_vcard).unwrap();
+        let future_record = LocalContactRecord {
+            id: "contact-future-1".to_string(),
+            contact: future_contact,
+            vcard: future_vcard.to_string(),
+        };
+        let future_cands = contact_birthday_candidates(&[future_record], now_2026, 0);
+        let future_2026 = future_cands
+            .iter()
+            .find(|c| c.key.contains("20260515"))
+            .unwrap();
+        assert_eq!(
+            future_2026.title, "Future Person: Geburtstag",
+            "future birth year must not cause negative underflow"
+        );
+
+        // 5. Empty record ID is safely skipped
+        let mut empty_id_record = leap_record;
+        empty_id_record.id = "   ".to_string();
+        let empty_id_cands = contact_birthday_candidates(&[empty_id_record], now_2026, 0);
+        assert!(
+            empty_id_cands.is_empty(),
+            "records with empty ID must be skipped"
+        );
+    }
+
+    #[test]
+    fn test_adversarial_contact_reminder_lead_time_calculations() {
+        use crate::services::contact_store_service::LocalContactRecord;
+        use crate::services::settings_service::ReminderDurationUnit;
+        use crate::services::vcard_service::VCardContact;
+
+        // 1. Unit conversions
+        assert_eq!(ReminderDurationUnit::Minutes.to_seconds(15), 900);
+        assert_eq!(ReminderDurationUnit::Minutes.to_minutes(15), 15);
+
+        assert_eq!(ReminderDurationUnit::Hours.to_seconds(2), 7200);
+        assert_eq!(ReminderDurationUnit::Hours.to_minutes(2), 120);
+
+        assert_eq!(ReminderDurationUnit::Days.to_seconds(3), 259200);
+        assert_eq!(ReminderDurationUnit::Days.to_minutes(3), 4320);
+
+        // Zero intervals
+        assert_eq!(ReminderDurationUnit::Minutes.to_seconds(0), 0);
+        assert_eq!(ReminderDurationUnit::Hours.to_seconds(0), 0);
+        assert_eq!(ReminderDurationUnit::Days.to_seconds(0), 0);
+
+        // Unit string parsing variations
+        assert_eq!(
+            ReminderDurationUnit::from_str("minutes"),
+            ReminderDurationUnit::Minutes
+        );
+        assert_eq!(
+            ReminderDurationUnit::from_str("Minutes"),
+            ReminderDurationUnit::Minutes
+        );
+        assert_eq!(
+            ReminderDurationUnit::from_str("hours"),
+            ReminderDurationUnit::Hours
+        );
+        assert_eq!(
+            ReminderDurationUnit::from_str("HOURS"),
+            ReminderDurationUnit::Hours
+        );
+        assert_eq!(
+            ReminderDurationUnit::from_str("hour"),
+            ReminderDurationUnit::Hours
+        );
+        assert_eq!(
+            ReminderDurationUnit::from_str("1"),
+            ReminderDurationUnit::Hours
+        );
+        assert_eq!(
+            ReminderDurationUnit::from_str("days"),
+            ReminderDurationUnit::Days
+        );
+        assert_eq!(
+            ReminderDurationUnit::from_str("DAYS"),
+            ReminderDurationUnit::Days
+        );
+        assert_eq!(
+            ReminderDurationUnit::from_str("day"),
+            ReminderDurationUnit::Days
+        );
+        assert_eq!(
+            ReminderDurationUnit::from_str("2"),
+            ReminderDurationUnit::Days
+        );
+        assert_eq!(
+            ReminderDurationUnit::from_str("invalid"),
+            ReminderDurationUnit::Minutes
+        );
+
+        // 2. Candidate generation with different lead-time offsets
+        let vcard_str = "BEGIN:VCARD\r\nVERSION:4.0\r\nFN:Offset Test\r\nBDAY:1995-07-20\r\nEND:VCARD\r\n";
+        let contact = VCardContact::parse_vcard_string(vcard_str).unwrap();
+        let record = LocalContactRecord {
+            id: "contact-offset-1".to_string(),
+            contact,
+            vcard: vcard_str.to_string(),
+        };
+
+        let now_dt = chrono::NaiveDate::from_ymd_opt(2026, 7, 1)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
+        let now = chrono::Local
+            .from_local_datetime(&now_dt)
+            .unwrap()
+            .timestamp();
+
+        let bday_dt = chrono::NaiveDate::from_ymd_opt(2026, 7, 20)
+            .unwrap()
+            .and_hms_opt(DEFAULT_ALL_DAY_HOUR, 0, 0)
+            .unwrap();
+        let bday_base_ts = chrono::Local
+            .from_local_datetime(&bday_dt)
+            .unwrap()
+            .timestamp();
+
+        // 15 minutes lead time (900 seconds)
+        let cands_15m = contact_birthday_candidates(&[record.clone()], now, 900);
+        let cand_15m = cands_15m
+            .iter()
+            .find(|c| c.key.contains("20260720"))
+            .unwrap();
+        assert_eq!(cand_15m.due_at, bday_base_ts - 900);
+
+        // 2 hours lead time (7200 seconds)
+        let cands_2h = contact_birthday_candidates(&[record.clone()], now, 7200);
+        let cand_2h = cands_2h.iter().find(|c| c.key.contains("20260720")).unwrap();
+        assert_eq!(cand_2h.due_at, bday_base_ts - 7200);
+
+        // 1 day lead time (86400 seconds)
+        let cands_1d = contact_birthday_candidates(&[record], now, 86400);
+        let cand_1d = cands_1d.iter().find(|c| c.key.contains("20260720")).unwrap();
+        assert_eq!(cand_1d.due_at, bday_base_ts - 86400);
+    }
+
+    #[test]
+    fn test_adversarial_contact_reminder_store_snooze_dismiss_lifecycle() {
+        use crate::services::contact_store_service::LocalContactRecord;
+        use crate::services::vcard_service::VCardContact;
+
+        let temp_dir = std::env::temp_dir().join(format!(
+            "evo_test_reminders_{}_{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
+        let reminder_file = temp_dir.join("reminders.json");
+        let mut store = ReminderStore::with_path(&reminder_file).expect("create test ReminderStore");
+
+        let vcard_str = "BEGIN:VCARD\r\nVERSION:4.0\r\nFN:Store Test\r\nBDAY:1992-09-15\r\nEND:VCARD\r\n";
+        let contact = VCardContact::parse_vcard_string(vcard_str).unwrap();
+        let record = LocalContactRecord {
+            id: "contact-store-1".to_string(),
+            contact,
+            vcard: vcard_str.to_string(),
+        };
+
+        let now_dt = chrono::NaiveDate::from_ymd_opt(2026, 9, 1)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
+        let now = chrono::Local
+            .from_local_datetime(&now_dt)
+            .unwrap()
+            .timestamp();
+
+        let candidates = contact_birthday_candidates(&[record], now, 0);
+        let cand = candidates
+            .iter()
+            .find(|c| c.key.contains("20260915"))
+            .unwrap()
+            .clone();
+
+        // Verify contact reminder identity contract
+        let identity = cand.identity().expect("contact candidate must have valid identity");
+        assert_eq!(identity.kind, ReminderComponentKind::Contact);
+        assert_eq!(identity.source_uid, "contacts");
+        assert_eq!(identity.component_uid, "contact-store-1");
+        assert_eq!(
+            cand.deep_link().unwrap(),
+            "contact:///?source-uid=contacts&comp-uid=contact-store-1"
+        );
+
+        let due_at = cand.due_at;
+
+        // 1. Before due_at: not due
+        let before_due = store.due_reminders(&[cand.clone()], due_at - 100);
+        assert!(before_due.is_empty(), "must not be due before due_at");
+
+        // 2. At due_at: due
+        let at_due = store.due_reminders(&[cand.clone()], due_at);
+        assert_eq!(at_due.len(), 1);
+        assert_eq!(at_due[0].key, cand.key);
+
+        // 3. Claim due reminder
+        let deliveries = store
+            .claim_due_reminders(&[cand.clone()], due_at)
+            .expect("claim due reminders");
+        assert_eq!(deliveries.len(), 1);
+        let delivery = &deliveries[0];
+        assert_eq!(delivery.candidate.key, cand.key);
+        let claim_token = delivery.claim_token.clone();
+        assert!(!claim_token.is_empty());
+
+        // 4. Snooze reminder until due_at + 3600
+        let snooze_until = due_at + 3600;
+        let snooze_result = store
+            .snooze_if_current_at(&cand.key, &claim_token, snooze_until, due_at)
+            .expect("snooze contact reminder");
+        assert!(snooze_result, "snooze should succeed with valid claim");
+
+        // While snoozed: not due
+        let while_snoozed = store.due_reminders(&[cand.clone()], due_at + 1800);
+        assert!(while_snoozed.is_empty(), "must not be due while snoozed");
+
+        // When snooze expires: due again
+        let after_snooze = store.due_reminders(&[cand.clone()], snooze_until + 1);
+        assert_eq!(
+            after_snooze.len(),
+            1,
+            "must be due again once snooze expires"
+        );
+
+        // 5. Reclaim after snooze
+        let re_deliveries = store
+            .claim_due_reminders(&[cand.clone()], snooze_until + 1)
+            .expect("reclaim due reminders");
+        assert_eq!(re_deliveries.len(), 1);
+        let re_token = re_deliveries[0].claim_token.clone();
+
+        // 6. Dismiss reminder
+        let dismiss_result = store
+            .dismiss_if_current_at(&cand.key, &re_token, snooze_until + 1)
+            .expect("dismiss contact reminder");
+        assert!(dismiss_result, "dismiss should succeed with valid claim");
+
+        // After dismissal: never due again
+        let after_dismiss = store.due_reminders(&[cand.clone()], snooze_until + 10000);
+        assert!(
+            after_dismiss.is_empty(),
+            "must not be due after being dismissed"
+        );
+
+        // 7. Security / adversarial rejection
+        let invalid_token_snooze = store
+            .snooze_if_current_at(&cand.key, "fake-token", snooze_until + 20000, due_at)
+            .expect("invalid token check");
+        assert!(!invalid_token_snooze, "must reject invalid claim token");
+
+        let invalid_key_dismiss = store
+            .dismiss_if_current_at("not-a-valid-reminder-key", &claim_token, due_at)
+            .expect("invalid key check");
+        assert!(!invalid_key_dismiss, "must reject invalid reminder key");
+
+        // Cleanup tempdir
+        let _ = std::fs::remove_dir_all(temp_dir);
+    }
 }
+
+
