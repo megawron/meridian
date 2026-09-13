@@ -317,6 +317,7 @@ pub(crate) fn normalize_composer_reply_style(value: &str) -> Option<&'static str
         "quoted" => Some("quoted"),
         "inline" => Some("inline"),
         "attach" | "attached" => Some("attach"),
+        "do-not-quote" | "none" => Some("do-not-quote"),
         _ => None,
     }
 }
@@ -786,6 +787,16 @@ impl AppSettings {
 
     pub fn set_ba_reminder_units(&self, unit: ReminderDurationUnit) {
         self.set_string("ba-reminder-units", unit.as_str());
+    }
+
+    pub fn ba_reminder_total_minutes(&self) -> u32 {
+        self.ba_reminder_units()
+            .to_minutes(self.ba_reminder_interval())
+    }
+
+    pub fn ba_reminder_offset_seconds(&self) -> i64 {
+        self.ba_reminder_units()
+            .to_seconds(self.ba_reminder_interval()) as i64
     }
 
     pub fn hide_completed_tasks(&self) -> bool {
@@ -1793,15 +1804,32 @@ impl AppSettings {
         }
     }
 
-    pub fn connect_changed<F>(&self, key: Option<&str>, callback: F)
+    pub fn connect_changed<F>(&self, key: Option<&str>, callback: F) -> glib::SignalHandlerId
     where
         F: Fn(&gio::Settings, &str) + 'static,
     {
-        self.settings.connect_changed(key, callback);
+        self.settings.connect_changed(key, callback)
+    }
+
+    pub fn disconnect(&self, id: glib::SignalHandlerId) {
+        use glib::object::ObjectExt;
+        self.settings.disconnect(id);
     }
 
     pub fn color_scheme(&self) -> String {
         self.settings.string("color-scheme").to_string()
+    }
+
+    pub fn adw_color_scheme(&self) -> adw::ColorScheme {
+        Self::parse_adw_color_scheme(&self.color_scheme())
+    }
+
+    pub fn parse_adw_color_scheme(scheme: &str) -> adw::ColorScheme {
+        match scheme {
+            "light" => adw::ColorScheme::ForceLight,
+            "dark" => adw::ColorScheme::ForceDark,
+            _ => adw::ColorScheme::Default,
+        }
     }
 
     pub fn set_color_scheme(&self, value: &str) {
@@ -3348,6 +3376,7 @@ impl AppSettings {
             "hide-cancelled-events",
             "notifications-enabled",
             "confirm-destructive-actions",
+            "debug-console-enabled",
             "calendar-show-week-numbers",
             "calendar-time-divisions",
             "calendar-compress-weekend",
@@ -3368,12 +3397,6 @@ impl AppSettings {
             "memo-groups-order",
             "addressbook-hidden-groups",
             "addressbook-groups-order",
-            "sidebar-width",
-            "show-menubar",
-            "show-toolbar",
-            "show-sidebar",
-            "show-statusbar",
-            "toolbar-style",
             "date-format",
             "time-format",
             "calendar-time-zone",
@@ -3392,6 +3415,7 @@ impl AppSettings {
             "show-message-preview",
             "mail-show-security-details",
             "mail-show-all-headers",
+            "mail-show-mark-read-actions",
             "mail-normal-headers",
             "mail-show-statusbar",
             "mail-default-folder",
@@ -3414,15 +3438,9 @@ impl AppSettings {
             "mail-show-follow-up-due",
             "mail-show-location",
             "mail-sender-column-width",
-            "mail-subject-column-width",
             "mail-date-column-width",
-            "mail-size-column-width",
-            "mail-follow-up-due-column-width",
-            "mail-location-column-width",
-            "mail-sort-column",
             "mail-list-view-profile",
             "mail-list-column-order",
-            "mail-list-wide-column-order",
             "color-scheme",
             "sign-new-messages",
             "default-pgp-key",
@@ -3626,7 +3644,7 @@ fn sanitize_spellcheck_languages(value: &str) -> String {
             && language.len() <= 35
             && language
                 .chars()
-                .all(|character| character.is_ascii_alphanumeric() || character == '-')
+                .all(|character| character.is_ascii_alphanumeric() || character == '-' || character == '_')
     }) {
         if !languages.contains(&language) {
             languages.push(language);
@@ -5163,4 +5181,358 @@ mod tests {
         assert!(!reset.mail_headers_collapsed());
         assert!(reset.mail_show_real_date());
     }
+
+    #[test]
+    fn reset_to_defaults_keys_have_perfect_schema_parity() {
+        let schema = settings_schema();
+
+        // 1. None of the 12 legacy keys may exist in org.gnome.Evolution4 schema
+        const LEGACY_KEYS: &[&str] = &[
+            "sidebar-width",
+            "show-menubar",
+            "show-toolbar",
+            "show-sidebar",
+            "show-statusbar",
+            "toolbar-style",
+            "mail-subject-column-width",
+            "mail-size-column-width",
+            "mail-follow-up-due-column-width",
+            "mail-location-column-width",
+            "mail-sort-column",
+            "mail-list-wide-column-order",
+        ];
+
+        for &legacy in LEGACY_KEYS {
+            assert!(
+                !schema.has_key(legacy),
+                "Legacy key '{legacy}' must NOT exist in schema"
+            );
+        }
+
+        // 2. The previously missing schema keys must exist in schema
+        assert!(
+            schema.has_key("debug-console-enabled"),
+            "debug-console-enabled must exist in schema"
+        );
+        assert!(
+            schema.has_key("mail-show-mark-read-actions"),
+            "mail-show-mark-read-actions must exist in schema"
+        );
+    }
+
+    #[test]
+    fn reset_to_defaults_resets_mutated_values_cleanly() {
+        let backend = gio::memory_settings_backend_new();
+        let settings = settings_with_backend(&backend);
+
+        // Mutate diverse settings across distinct domains and types
+        settings.set_mail_show_statusbar(false);
+        settings.set_offline_mode(true);
+        settings.set_mail_sync_interval_seconds(600);
+        settings.set_color_scheme("dark");
+        settings.set_debug_console_enabled(true);
+        settings.set_mail_show_mark_read_actions(true);
+        settings.set_calendar_week_start("sunday");
+        settings.set_mark_read_timeout(3000);
+        settings.set_composer_html(false);
+
+        // Verify mutations were applied
+        assert_eq!(settings.mail_show_statusbar(), false);
+        assert_eq!(settings.offline_mode(), true);
+        assert_eq!(settings.mail_sync_interval_seconds(), 600);
+        assert_eq!(settings.color_scheme(), "dark");
+        assert_eq!(settings.debug_console_enabled(), true);
+        assert_eq!(settings.mail_show_mark_read_actions(), true);
+        assert_eq!(settings.calendar_week_start(), "sunday");
+        assert_eq!(settings.mark_read_timeout(), 3000);
+        assert_eq!(settings.composer_html(), false);
+
+        // Reset all settings to defaults
+        settings.reset_to_defaults();
+
+        // Verify that values reverted to canonical schema defaults
+        assert_eq!(settings.mail_show_statusbar(), true);
+        assert_eq!(settings.offline_mode(), false);
+        assert_eq!(settings.mail_sync_interval_seconds(), 300);
+        assert_eq!(settings.color_scheme(), "system");
+        assert_eq!(settings.debug_console_enabled(), false);
+        assert_eq!(settings.mail_show_mark_read_actions(), false);
+        assert_eq!(settings.calendar_week_start(), "monday");
+        assert_eq!(settings.mark_read_timeout(), 1500);
+        assert_eq!(settings.composer_html(), true);
+    }
+
+    #[test]
+    fn test_color_scheme_parsing_and_mapping() {
+        assert_eq!(AppSettings::parse_adw_color_scheme("light"), adw::ColorScheme::ForceLight);
+        assert_eq!(AppSettings::parse_adw_color_scheme("dark"), adw::ColorScheme::ForceDark);
+        assert_eq!(AppSettings::parse_adw_color_scheme("system"), adw::ColorScheme::Default);
+        assert_eq!(AppSettings::parse_adw_color_scheme("unknown-value"), adw::ColorScheme::Default);
+
+        let backend = gio::memory_settings_backend_new();
+        let settings = settings_with_backend(&backend);
+        settings.set_color_scheme("light");
+        assert_eq!(settings.adw_color_scheme(), adw::ColorScheme::ForceLight);
+        settings.set_color_scheme("dark");
+        assert_eq!(settings.adw_color_scheme(), adw::ColorScheme::ForceDark);
+        settings.set_color_scheme("system");
+        assert_eq!(settings.adw_color_scheme(), adw::ColorScheme::Default);
+    }
+
+    #[test]
+    fn test_spellcheck_languages_sanitization_accepts_underscores() {
+        assert_eq!(
+            sanitize_spellcheck_languages("en_US,de_DE"),
+            "en_US,de_DE"
+        );
+        assert_eq!(
+            sanitize_spellcheck_languages("en_US,de_DE,en_US"),
+            "en_US,de_DE"
+        );
+        assert_eq!(
+            sanitize_spellcheck_languages(""),
+            ""
+        );
+        assert_eq!(
+            sanitize_spellcheck_languages(" invalid!tag , fr_FR "),
+            "fr_FR"
+        );
+    }
+
+    #[test]
+    fn test_composer_reply_style_normalization_and_persistence() {
+        assert_eq!(normalize_composer_reply_style("quoted"), Some("quoted"));
+        assert_eq!(normalize_composer_reply_style("inline"), Some("inline"));
+        assert_eq!(normalize_composer_reply_style("attach"), Some("attach"));
+        assert_eq!(normalize_composer_reply_style("attached"), Some("attach"));
+        assert_eq!(normalize_composer_reply_style("do-not-quote"), Some("do-not-quote"));
+        assert_eq!(normalize_composer_reply_style("none"), Some("do-not-quote"));
+        assert_eq!(normalize_composer_reply_style("invalid"), None);
+
+        let backend = gio::memory_settings_backend_new();
+        let settings = settings_with_backend(&backend);
+        settings.set_composer_reply_style("do-not-quote");
+        assert_eq!(settings.composer_reply_style(), "do-not-quote");
+        settings.set_composer_reply_style("none");
+        assert_eq!(settings.composer_reply_style(), "do-not-quote");
+        settings.set_composer_reply_style("attach");
+        assert_eq!(settings.composer_reply_style(), "attach");
+        settings.set_composer_reply_style("attached");
+        assert_eq!(settings.composer_reply_style(), "attach");
+        settings.set_composer_reply_style("quoted");
+        assert_eq!(settings.composer_reply_style(), "quoted");
+    }
+
+    #[test]
+    fn test_feature_19_reply_and_forward_style_permutations_and_boundary_stress() {
+        let backend = gio::memory_settings_backend_new();
+        let settings = settings_with_backend(&backend);
+
+        // 1. Reply style permutations: casing and whitespace
+        let reply_quoted_variants = ["quoted", "QUOTED", "Quoted", " quoted ", "\tquoted\n", "  QUOTED  "];
+        for v in reply_quoted_variants {
+            assert_eq!(normalize_composer_reply_style(v), Some("quoted"), "Failed for {v}");
+            settings.set_composer_reply_style(v);
+            assert_eq!(settings.composer_reply_style(), "quoted", "Failed persistence for {v}");
+        }
+
+        let reply_inline_variants = ["inline", "INLINE", "Inline", " inline ", "\tinline\n", "  INLINE  "];
+        for v in reply_inline_variants {
+            assert_eq!(normalize_composer_reply_style(v), Some("inline"), "Failed for {v}");
+            settings.set_composer_reply_style(v);
+            assert_eq!(settings.composer_reply_style(), "inline", "Failed persistence for {v}");
+        }
+
+        let reply_attach_variants = [
+            "attach", "ATTACH", "Attach", " attach ", "\tattach\n",
+            "attached", "ATTACHED", "Attached", " attached ", "\tattached\n"
+        ];
+        for v in reply_attach_variants {
+            assert_eq!(normalize_composer_reply_style(v), Some("attach"), "Failed for {v}");
+            settings.set_composer_reply_style(v);
+            assert_eq!(settings.composer_reply_style(), "attach", "Failed persistence for {v}");
+        }
+
+        let reply_do_not_quote_variants = [
+            "do-not-quote", "DO-NOT-QUOTE", "Do-Not-Quote", " do-not-quote ", "\tdo-not-quote\n",
+            "none", "NONE", "None", " none ", "\tnone\n"
+        ];
+        for v in reply_do_not_quote_variants {
+            assert_eq!(normalize_composer_reply_style(v), Some("do-not-quote"), "Failed for {v}");
+            settings.set_composer_reply_style(v);
+            assert_eq!(settings.composer_reply_style(), "do-not-quote", "Failed persistence for {v}");
+        }
+
+        // Invalid reply styles fallback safely to quoted
+        let invalid_reply_variants = ["", "   ", "xyz", "attachment", "quote", "default", "other"];
+        for v in invalid_reply_variants {
+            assert_eq!(normalize_composer_reply_style(v), None, "Expected None for invalid {v}");
+            settings.set_composer_reply_style(v);
+            assert_eq!(settings.composer_reply_style(), "quoted", "Expected default fallback to quoted for {v}");
+        }
+
+        // 2. Forward style permutations: casing and whitespace
+        let forward_attached_variants = [
+            "attached", "ATTACHED", "Attached", " attached ", "\tattached\n",
+            "attach", "ATTACH", "Attach", " attach ", "\tattach\n"
+        ];
+        for v in forward_attached_variants {
+            assert_eq!(normalize_composer_forward_style(v), Some("attached"), "Failed for {v}");
+            settings.set_composer_forward_style(v);
+            assert_eq!(settings.composer_forward_style(), "attached", "Failed persistence for {v}");
+        }
+
+        let forward_inline_variants = ["inline", "INLINE", "Inline", " inline ", "\tinline\n", "  INLINE  "];
+        for v in forward_inline_variants {
+            assert_eq!(normalize_composer_forward_style(v), Some("inline"), "Failed for {v}");
+            settings.set_composer_forward_style(v);
+            assert_eq!(settings.composer_forward_style(), "inline", "Failed persistence for {v}");
+        }
+
+        let forward_quoted_variants = ["quoted", "QUOTED", "Quoted", " quoted ", "\tquoted\n", "  QUOTED  "];
+        for v in forward_quoted_variants {
+            assert_eq!(normalize_composer_forward_style(v), Some("quoted"), "Failed for {v}");
+            settings.set_composer_forward_style(v);
+            assert_eq!(settings.composer_forward_style(), "quoted", "Failed persistence for {v}");
+        }
+
+        // Invalid forward styles fallback safely to attached
+        let invalid_forward_variants = ["", "   ", "xyz", "none", "do-not-quote", "default", "prefix"];
+        for v in invalid_forward_variants {
+            assert_eq!(normalize_composer_forward_style(v), None, "Expected None for invalid {v}");
+            settings.set_composer_forward_style(v);
+            assert_eq!(settings.composer_forward_style(), "attached", "Expected default fallback to attached for {v}");
+        }
+
+        // 3. Draft autosave interval boundary stress (0, 1, 30, 3600, negative, overflow)
+        settings.set_draft_autosave_interval_seconds(0);
+        assert_eq!(settings.draft_autosave_interval_seconds(), 0);
+
+        settings.set_draft_autosave_interval_seconds(1);
+        assert_eq!(settings.draft_autosave_interval_seconds(), 1);
+
+        settings.set_draft_autosave_interval_seconds(30);
+        assert_eq!(settings.draft_autosave_interval_seconds(), 30);
+
+        settings.set_draft_autosave_interval_seconds(3600);
+        assert_eq!(settings.draft_autosave_interval_seconds(), 3600);
+
+        // Clamping on high values via setter
+        settings.set_draft_autosave_interval_seconds(3601);
+        assert_eq!(settings.draft_autosave_interval_seconds(), 3600);
+        settings.set_draft_autosave_interval_seconds(10000);
+        assert_eq!(settings.draft_autosave_interval_seconds(), 3600);
+        settings.set_draft_autosave_interval_seconds(u32::MAX);
+        assert_eq!(settings.draft_autosave_interval_seconds(), 3600);
+
+        // Direct GSettings negative value injection
+        let backend = gio::memory_settings_backend_new();
+        let mem_settings = settings_with_backend(&backend);
+        mem_settings.set_int("draft-autosave-interval", -1);
+        assert_eq!(mem_settings.draft_autosave_interval_seconds(), 0, "Negative interval must clamp to 0 (disabled)");
+
+        mem_settings.set_int("draft-autosave-interval", -500);
+        assert_eq!(mem_settings.draft_autosave_interval_seconds(), 0, "Negative interval must clamp to 0 (disabled)");
+
+        mem_settings.set_int("draft-autosave-interval", i32::MIN);
+        assert_eq!(mem_settings.draft_autosave_interval_seconds(), 0, "i32::MIN must clamp to 0 (disabled)");
+
+        mem_settings.set_int("draft-autosave-interval", 999999);
+        assert_eq!(mem_settings.draft_autosave_interval_seconds(), 3600, "Large interval must clamp to 3600");
+
+        // Clean reset
+        settings.set_composer_reply_style("quoted");
+        settings.set_composer_forward_style("attached");
+        settings.set_draft_autosave_interval_seconds(30);
+    }
+
+    #[test]
+    fn test_adversarial_stress_color_scheme_and_spellcheck_languages() {
+        let backend = gio::memory_settings_backend_new();
+        let settings = settings_with_backend(&backend);
+
+        // 1. Color scheme 50-cycle rapid mutation across valid and invalid inputs
+        let scheme_cases = [
+            ("light", adw::ColorScheme::ForceLight, "light"),
+            ("dark", adw::ColorScheme::ForceDark, "dark"),
+            ("system", adw::ColorScheme::Default, "system"),
+            ("LIGHT", adw::ColorScheme::Default, "system"),
+            ("DARK", adw::ColorScheme::Default, "system"),
+            ("", adw::ColorScheme::Default, "system"),
+            ("   ", adw::ColorScheme::Default, "system"),
+            ("invalid_scheme", adw::ColorScheme::Default, "system"),
+            ("system\0null", adw::ColorScheme::Default, "system"),
+            ("force-dark", adw::ColorScheme::Default, "system"),
+            ("'; DROP TABLE--", adw::ColorScheme::Default, "system"),
+            ("☀️🌙", adw::ColorScheme::Default, "system"),
+        ];
+
+        let initial_scheme = settings.color_scheme();
+        for cycle in 0..50 {
+            let (input, expected_adw, expected_persisted) = scheme_cases[cycle % scheme_cases.len()];
+            assert_eq!(
+                AppSettings::parse_adw_color_scheme(input),
+                expected_adw,
+                "Cycle {cycle} parse mismatch for {input:?}"
+            );
+            settings.set_color_scheme(input);
+            assert_eq!(
+                settings.color_scheme(),
+                expected_persisted,
+                "Cycle {cycle} persistence mismatch for {input:?}"
+            );
+            assert_eq!(
+                settings.adw_color_scheme(),
+                expected_adw,
+                "Cycle {cycle} adw scheme mismatch for {input:?}"
+            );
+        }
+        settings.set_color_scheme(&initial_scheme);
+
+        // 2. Spellcheck languages adversarial sanitization & mutation across 50 cycles
+        let lang_cases = [
+            ("en_US", "en_US"),
+            ("de_DE", "de_DE"),
+            ("en_US,de_DE", "en_US,de_DE"),
+            ("de_DE,en_US,fr_FR", "de_DE,en_US,fr_FR"),
+            ("en-US", "en-US"),
+            ("de-DE,en-US", "de-DE,en-US"),
+            ("  en_US  ,  de_DE  ", "en_US,de_DE"),
+            ("en_US,de_DE,en_US,de_DE", "en_US,de_DE"),
+            ("en_US,en_US,en_US", "en_US"),
+            ("", ""),
+            ("   ", ""),
+            (",", ""),
+            (",,,,", ""),
+            ("  ,  ,  ", ""),
+            ("en!US", ""),
+            ("de.DE", ""),
+            ("fr/FR", ""),
+            ("ru#RU,en_US", "en_US"),
+            ("es$ES,it%IT,de_DE", "de_DE"),
+            ("en@US, de_DE , fr;FR", "de_DE"),
+            ("abcdefghijklmnopqrstuvwxyz123456789", "abcdefghijklmnopqrstuvwxyz123456789"),
+            ("abcdefghijklmnopqrstuvwxyz1234567890", ""),
+            ("🇬🇧,🇩🇪", ""),
+            ("日本語,en_US", "en_US"),
+        ];
+
+        let initial_langs = settings.spellcheck_languages();
+        for cycle in 0..50 {
+            let (input, expected_sanitized) = lang_cases[cycle % lang_cases.len()];
+            assert_eq!(
+                sanitize_spellcheck_languages(input),
+                expected_sanitized,
+                "Cycle {cycle} sanitization mismatch for {input:?}"
+            );
+            settings.set_spellcheck_languages(input);
+            assert_eq!(
+                settings.spellcheck_languages(),
+                expected_sanitized,
+                "Cycle {cycle} persistence mismatch for {input:?}"
+            );
+        }
+        settings.set_spellcheck_languages(&initial_langs);
+    }
 }
+
