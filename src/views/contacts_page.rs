@@ -2651,15 +2651,26 @@ impl ContactsPage {
         paned.set_shrink_end_child(true);
 
         let sidebar_position = AppSettings::try_new()
-            .map(|settings| settings.mail_sidebar_position())
-            .unwrap_or(260)
+            .map(|settings| settings.contact_hpane_position())
+            .unwrap_or(200)
             .clamp(80, 1500);
         paned.set_position(sidebar_position);
         if let Some(settings) = AppSettings::try_new() {
+            let settings_for_notify = settings.clone();
             paned.connect_position_notify(move |paned| {
                 let position = paned.position();
-                if (80..=1500).contains(&position) && settings.mail_sidebar_position() != position {
-                    settings.set_mail_sidebar_position(position);
+                if (80..=1500).contains(&position) && settings_for_notify.contact_hpane_position() != position {
+                    settings_for_notify.set_contact_hpane_position(position);
+                }
+            });
+
+            let paned_weak = paned.downgrade();
+            settings.connect_changed(Some("contact-hpane-position"), move |settings, _| {
+                if let Some(paned) = paned_weak.upgrade() {
+                    let pos = settings.int("contact-hpane-position").clamp(80, 1500);
+                    if (paned.position() - pos).abs() > 1 {
+                        paned.set_position(pos);
+                    }
                 }
             });
         }
@@ -5962,5 +5973,142 @@ mod tests {
             true,
         );
         assert!(formatted.contains("Adresse: Straße 1, Berlin\n         Weg 2, Hamburg"));
+    }
+
+    #[test]
+    fn test_contacts_paned_divider() {
+        let _lock = crate::window::GTK_TEST_MUTEX.lock().unwrap_or_else(|p| p.into_inner());
+        let Some(context) = crate::window::gtk_test_main_context() else { return; };
+
+        let page = super::ContactsPage::new();
+        let paned = page.outer_paned().expect("outer paned exists");
+
+        if let Some(settings) = crate::services::settings_service::AppSettings::try_new() {
+            settings.set_contact_hpane_position(320);
+            settings.set_mail_sidebar_position(210);
+
+            // Re-sync with position
+            paned.set_position(320);
+            while context.iteration(false) {}
+            assert_eq!(settings.contact_hpane_position(), 320);
+
+            // Moving paned must write contact_hpane_position, NOT mail_sidebar_position
+            paned.set_position(440);
+            while context.iteration(false) {}
+            assert_eq!(settings.contact_hpane_position(), 440);
+            assert_eq!(settings.mail_sidebar_position(), 210);
+
+            // External change to contact_hpane_position updates paned
+            settings.set_contact_hpane_position(280);
+            while context.iteration(false) {}
+            assert_eq!(paned.position(), 280);
+        } else {
+            assert!(paned.position() >= 80 && paned.position() <= 1500);
+        }
+    }
+
+    #[test]
+    fn test_adversarial_contacts_paned_divider_stress() {
+        let _lock = crate::window::GTK_TEST_MUTEX.lock().unwrap_or_else(|p| p.into_inner());
+        let Some(context) = crate::window::gtk_test_main_context() else { return; };
+
+        let page = super::ContactsPage::new();
+        let paned = page.outer_paned().expect("outer paned exists");
+
+        let Some(settings) = crate::services::settings_service::AppSettings::try_new() else {
+            return;
+        };
+
+        // 1. Boundary & Clamping Stress
+        settings.set_contact_hpane_position(300);
+        paned.set_position(300);
+        while context.iteration(false) {}
+        assert_eq!(settings.contact_hpane_position(), 300);
+
+        // Paned dragging out-of-bounds: < 80 (e.g. 50) must not overwrite settings
+        paned.set_position(50);
+        while context.iteration(false) {}
+        assert_eq!(
+            settings.contact_hpane_position(),
+            300,
+            "Paned position < 80 must not be written to GSettings"
+        );
+
+        // Paned dragging out-of-bounds: > 1500 (e.g. 2000) must not overwrite settings
+        paned.set_position(2000);
+        while context.iteration(false) {}
+        assert_eq!(
+            settings.contact_hpane_position(),
+            300,
+            "Paned position > 1500 must not be written to GSettings"
+        );
+
+        // Valid boundaries: exactly 80 and exactly 1500
+        paned.set_position(80);
+        while context.iteration(false) {}
+        assert_eq!(settings.contact_hpane_position(), 80);
+
+        paned.set_position(1500);
+        while context.iteration(false) {}
+        assert_eq!(settings.contact_hpane_position(), 1500);
+
+        // External setting change with large value (e.g. 2500) clamps UI paned to 1500
+        settings.set_contact_hpane_position(2500);
+        while context.iteration(false) {}
+        assert_eq!(
+            paned.position(),
+            1500,
+            "UI paned must clamp large external GSettings to 1500"
+        );
+
+        // External setting change below min (e.g. 40 -> settings clamps to 80)
+        settings.set_contact_hpane_position(40);
+        while context.iteration(false) {}
+        assert_eq!(
+            paned.position(),
+            80,
+            "UI paned must clamp small external GSettings to 80"
+        );
+
+        // 2. Window View Switching & Mail Sidebar Isolation
+        let app = crate::application::EvolutionApplication::new();
+        let window = crate::window::EvolutionWindow::new(&app);
+
+        settings.set_contact_hpane_position(380);
+        settings.set_mail_sidebar_position(210);
+        while context.iteration(false) {}
+
+        // Switching between all views
+        for view in &["contacts", "mail", "calendar", "tasks", "memos", "contacts"] {
+            window.set_active_view(view);
+            while context.iteration(false) {}
+            assert_eq!(
+                settings.contact_hpane_position(),
+                380,
+                "Switching to view {view} must not modify contact_hpane_position"
+            );
+        }
+
+        // Altering mail-sidebar-position while in mail view
+        window.set_active_view("mail");
+        while context.iteration(false) {}
+        settings.set_mail_sidebar_position(490);
+        while context.iteration(false) {}
+        assert_eq!(
+            settings.contact_hpane_position(),
+            380,
+            "Altering mail_sidebar_position must not touch contact_hpane_position"
+        );
+
+        // Switching back to contacts view: contact paned remains intact
+        window.set_active_view("contacts");
+        while context.iteration(false) {}
+        assert_eq!(settings.contact_hpane_position(), 380);
+
+        // External change updates contacts paned dynamically
+        settings.set_contact_hpane_position(420);
+        while context.iteration(false) {}
+        assert_eq!(settings.contact_hpane_position(), 420);
+        assert_eq!(settings.mail_sidebar_position(), 490);
     }
 }

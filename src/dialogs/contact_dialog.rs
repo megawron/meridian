@@ -272,6 +272,11 @@ impl ContactDialog {
         let row_phone_home = adw::EntryRow::builder().title("Telefon (Privat)").build();
         group_contact.add(&row_phone_home);
 
+        let row_sip = adw::EntryRow::builder()
+            .title("SIP- / VoIP-Adresse")
+            .build();
+        group_contact.add(&row_sip);
+
         content_box.append(&group_contact);
 
         // Group 3: Address & Notes
@@ -281,6 +286,16 @@ impl ContactDialog {
 
         let row_address = adw::EntryRow::builder().title("Postadresse").build();
         group_extra.add(&row_address);
+
+        let row_address_work = adw::EntryRow::builder()
+            .title("Geschäftsadresse")
+            .build();
+        group_extra.add(&row_address_work);
+
+        let row_address_other = adw::EntryRow::builder()
+            .title("Weitere Adresse")
+            .build();
+        group_extra.add(&row_address_other);
 
         let row_note = adw::EntryRow::builder().title("Notiz").build();
         group_extra.add(&row_note);
@@ -335,6 +350,11 @@ impl ContactDialog {
             .build();
         row_photo.set_input_purpose(gtk::InputPurpose::Url);
         group_extra.add(&row_photo);
+
+        let row_certs = adw::EntryRow::builder()
+            .title("S/MIME-Zertifikat")
+            .build();
+        group_extra.add(&row_certs);
 
         // Evolution-specific address-book properties. They are kept in the
         // vCard even when a provider does not expose them as first-class
@@ -488,6 +508,36 @@ impl ContactDialog {
                         .first()
                         .is_some_and(|value| parse_vcard_bool(value)),
                 );
+                if let Some(sip) = contact
+                    .impps
+                    .iter()
+                    .find(|i| i.to_ascii_lowercase().starts_with("sip:"))
+                    .cloned()
+                {
+                    row_sip.set_text(
+                        sip.strip_prefix("sip:")
+                            .or_else(|| sip.strip_prefix("SIP:"))
+                            .unwrap_or(&sip),
+                    );
+                }
+                if let Some(work_addr) = contact.addresses.get(1) {
+                    row_address_work.set_text(&work_addr.replace(';', ", "));
+                }
+                if let Some(other_addr) = contact.addresses.get(2) {
+                    row_address_other.set_text(&other_addr.replace(';', ", "));
+                }
+                if let Some(cert) = contact
+                    .unknown_properties
+                    .iter()
+                    .find(|p| {
+                        p.property.eq_ignore_ascii_case("KEY")
+                            || p.property.eq_ignore_ascii_case("USERCERTIFICATE")
+                            || p.property.eq_ignore_ascii_case("X-EVOLUTION-CERT")
+                    })
+                    .map(|p| &p.value)
+                {
+                    row_certs.set_text(cert);
+                }
             }
             if let Some(email) = vcard_property(vcard, "EMAIL", 1) {
                 row_email2.set_text(&email);
@@ -495,10 +545,174 @@ impl ContactDialog {
             if let Some(address) = vcard_property(vcard, "ADR", 0) {
                 row_address.set_text(&address.replace(';', ", "));
             }
+            if let Some(work_addr) = vcard_property(vcard, "ADR;TYPE=WORK", 0) {
+                row_address_work.set_text(&work_addr.replace(';', ", "));
+            } else if let Some(work_addr) = vcard_property(vcard, "ADR", 1) {
+                if row_address_work.text().trim().is_empty() {
+                    row_address_work.set_text(&work_addr.replace(';', ", "));
+                }
+            }
+            if let Some(other_addr) = vcard_property(vcard, "ADR;TYPE=OTHER", 0) {
+                row_address_other.set_text(&other_addr.replace(';', ", "));
+            } else if let Some(other_addr) = vcard_property(vcard, "ADR", 2) {
+                if row_address_other.text().trim().is_empty() {
+                    row_address_other.set_text(&other_addr.replace(';', ", "));
+                }
+            }
+            if let Some(cert) = vcard_property(vcard, "KEY", 0).or_else(|| vcard_property(vcard, "USERCERTIFICATE", 0)) {
+                if row_certs.text().trim().is_empty() {
+                    row_certs.set_text(&cert);
+                }
+            }
         }
 
         content_box.append(&group_extra);
         content_box.append(&group_evolution);
+
+        let update_section_visibility: Rc<dyn Fn(&AppSettings)> = {
+            let row_phone = row_phone.clone();
+            let row_phone_work = row_phone_work.clone();
+            let row_phone_home = row_phone_home.clone();
+            let row_sip = row_sip.clone();
+            let row_impp = row_impp.clone();
+            let row_address = row_address.clone();
+            let row_address_work = row_address_work.clone();
+            let row_address_other = row_address_other.clone();
+            let row_url = row_url.clone();
+            let row_evolution_blog_url = row_evolution_blog_url.clone();
+            let row_evolution_video_url = row_evolution_video_url.clone();
+            let row_org = row_org.clone();
+            let row_title = row_title.clone();
+            let row_role = row_role.clone();
+            let row_evolution_manager = row_evolution_manager.clone();
+            let row_evolution_assistant = row_evolution_assistant.clone();
+            let row_birthday = row_birthday.clone();
+            let row_anniversary = row_anniversary.clone();
+            let row_nickname = row_nickname.clone();
+            let row_gender = row_gender.clone();
+            let row_timezone = row_timezone.clone();
+            let row_geo = row_geo.clone();
+            let row_related = row_related.clone();
+            let row_categories = row_categories.clone();
+            let row_photo = row_photo.clone();
+            let row_evolution_spouse = row_evolution_spouse.clone();
+            let row_note = row_note.clone();
+            let row_certs = row_certs.clone();
+
+            Rc::new(move |settings: &AppSettings| {
+                // 1. Phone
+                let has_phone = !row_phone.text().trim().is_empty()
+                    || !row_phone_work.text().trim().is_empty()
+                    || !row_phone_home.text().trim().is_empty();
+                let show_phone = settings.contact_editor_show_phone() || has_phone;
+                row_phone.set_visible(show_phone);
+                row_phone_work.set_visible(show_phone);
+                row_phone_home.set_visible(show_phone);
+
+                // 2. SIP
+                let has_sip = !row_sip.text().trim().is_empty();
+                row_sip.set_visible(settings.contact_editor_show_sip() || has_sip);
+
+                // 3. IM
+                let has_im = !row_impp.text().trim().is_empty();
+                row_impp.set_visible(settings.contact_editor_show_im() || has_im);
+
+                // 4. Home Address
+                let has_home = !row_address.text().trim().is_empty();
+                row_address.set_visible(settings.contact_editor_show_home_address() || has_home);
+
+                // 5. Work Address
+                let has_work = !row_address_work.text().trim().is_empty();
+                row_address_work.set_visible(settings.contact_editor_show_work_address() || has_work);
+
+                // 6. Other Address
+                let has_other = !row_address_other.text().trim().is_empty();
+                row_address_other.set_visible(settings.contact_editor_show_other_address() || has_other);
+
+                // 7. Web
+                let has_web = !row_url.text().trim().is_empty()
+                    || !row_evolution_blog_url.text().trim().is_empty()
+                    || !row_evolution_video_url.text().trim().is_empty();
+                let show_web = settings.contact_editor_show_web() || has_web;
+                row_url.set_visible(show_web);
+                row_evolution_blog_url.set_visible(show_web);
+                row_evolution_video_url.set_visible(show_web);
+
+                // 8. Job
+                let has_job = !row_org.text().trim().is_empty()
+                    || !row_title.text().trim().is_empty()
+                    || !row_role.text().trim().is_empty()
+                    || !row_evolution_manager.text().trim().is_empty()
+                    || !row_evolution_assistant.text().trim().is_empty();
+                let show_job = settings.contact_editor_show_job() || has_job;
+                row_org.set_visible(show_job);
+                row_title.set_visible(show_job);
+                row_role.set_visible(show_job);
+                row_evolution_manager.set_visible(show_job);
+                row_evolution_assistant.set_visible(show_job);
+
+                // 9. Dates
+                let has_dates = !row_birthday.text().trim().is_empty()
+                    || !row_anniversary.text().trim().is_empty();
+                let show_dates = settings.contact_editor_show_dates() || has_dates;
+                row_birthday.set_visible(show_dates);
+                row_anniversary.set_visible(show_dates);
+
+                // 10. Misc
+                let has_misc = !row_nickname.text().trim().is_empty()
+                    || !row_gender.text().trim().is_empty()
+                    || !row_timezone.text().trim().is_empty()
+                    || !row_geo.text().trim().is_empty()
+                    || !row_related.text().trim().is_empty()
+                    || !row_categories.text().trim().is_empty()
+                    || !row_photo.text().trim().is_empty()
+                    || !row_evolution_spouse.text().trim().is_empty();
+                let show_misc = settings.contact_editor_show_misc() || has_misc;
+                row_nickname.set_visible(show_misc);
+                row_gender.set_visible(show_misc);
+                row_timezone.set_visible(show_misc);
+                row_geo.set_visible(show_misc);
+                row_related.set_visible(show_misc);
+                row_categories.set_visible(show_misc);
+                row_photo.set_visible(show_misc);
+                row_evolution_spouse.set_visible(show_misc);
+
+                // 11. Notes
+                let has_notes = !row_note.text().trim().is_empty();
+                row_note.set_visible(settings.contact_editor_show_notes() || has_notes);
+
+                // 12. Certs
+                let has_certs = !row_certs.text().trim().is_empty();
+                row_certs.set_visible(settings.contact_editor_show_certs() || has_certs);
+            })
+        };
+
+        if let Some(settings) = AppSettings::try_new() {
+            update_section_visibility(&settings);
+
+            const SECTION_KEYS: &[&str] = &[
+                "contact-editor-show-phone",
+                "contact-editor-show-sip",
+                "contact-editor-show-im",
+                "contact-editor-show-home-address",
+                "contact-editor-show-work-address",
+                "contact-editor-show-other-address",
+                "contact-editor-show-web",
+                "contact-editor-show-job",
+                "contact-editor-show-dates",
+                "contact-editor-show-misc",
+                "contact-editor-show-notes",
+                "contact-editor-show-certs",
+            ];
+            for key in SECTION_KEYS {
+                let updater = Rc::clone(&update_section_visibility);
+                settings.connect_changed(Some(key), move |_, _| {
+                    if let Some(settings) = AppSettings::try_new() {
+                        updater(&settings);
+                    }
+                });
+            }
+        }
 
         content_scroll.set_child(Some(&content_box));
         toolbar_view.set_content(Some(&content_scroll));
@@ -592,6 +806,10 @@ impl ContactDialog {
                 impps: row_impp.text().to_string(),
                 related: row_related.text().to_string(),
                 photo: row_photo.text().to_string(),
+                sip: row_sip.text().to_string(),
+                address_work: row_address_work.text().to_string(),
+                address_other: row_address_other.text().to_string(),
+                certs: row_certs.text().to_string(),
                 evolution_file_as: row_evolution_file_as.text().to_string(),
                 evolution_manager: row_evolution_manager.text().to_string(),
                 evolution_assistant: row_evolution_assistant.text().to_string(),
@@ -1467,6 +1685,10 @@ struct ContactVCardFields {
     impps: String,
     related: String,
     photo: String,
+    sip: String,
+    address_work: String,
+    address_other: String,
+    certs: String,
     evolution_file_as: String,
     evolution_manager: String,
     evolution_assistant: String,
@@ -1650,6 +1872,33 @@ fn build_vcard_with_fields(
     append_comma_separated_vcard_values(&mut lines, "IMPP", &fields.impps);
     append_comma_separated_vcard_values(&mut lines, "RELATED", &fields.related);
     append_photo_value(&mut lines, &fields.photo);
+    if !fields.sip.trim().is_empty() {
+        let sip_val = fields.sip.trim();
+        let sip_uri = if sip_val.to_ascii_lowercase().starts_with("sip:") {
+            sip_val.to_string()
+        } else {
+            format!("sip:{sip_val}")
+        };
+        lines.push(format!("IMPP;TYPE=SIP:{}", escape_vcard_text(&sip_uri)));
+    }
+    if !fields.address_work.trim().is_empty() {
+        lines.push(format!(
+            "ADR;TYPE=WORK:;;{};;;;",
+            escape_vcard_text(fields.address_work.trim())
+        ));
+    }
+    if !fields.address_other.trim().is_empty() {
+        lines.push(format!(
+            "ADR;TYPE=OTHER:;;{};;;;",
+            escape_vcard_text(fields.address_other.trim())
+        ));
+    }
+    if !fields.certs.trim().is_empty() {
+        lines.push(format!(
+            "KEY;TYPE=X509:{}",
+            escape_vcard_text(fields.certs.trim())
+        ));
+    }
     append_optional_vcard_value(&mut lines, "X-EVOLUTION-FILE-AS", &fields.evolution_file_as);
     append_optional_vcard_value(&mut lines, "X-EVOLUTION-MANAGER", &fields.evolution_manager);
     append_optional_vcard_value(
@@ -2111,5 +2360,327 @@ mod tests {
             &records,
             &mut std::collections::HashSet::new()
         ));
+    }
+
+    fn find_entry_by_title(root: &gtk::Widget, target: &str) -> Option<adw::EntryRow> {
+        let mut queue = vec![root.clone()];
+        while let Some(w) = queue.pop() {
+            if let Ok(row) = w.clone().downcast::<adw::EntryRow>() {
+                if row.title().contains(target) {
+                    return Some(row);
+                }
+            }
+            let mut child = w.first_child();
+            while let Some(c) = child {
+                child = c.next_sibling();
+                queue.push(c);
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn test_contact_dialog_section_visibility() {
+        let _lock = crate::window::GTK_TEST_MUTEX.lock().unwrap_or_else(|p| p.into_inner());
+        let Some(context) = crate::window::gtk_test_main_context() else { return; };
+
+        let Some(settings) = AppSettings::try_new() else {
+            let dialog = ContactDialog::new();
+            let widget = dialog.upcast_ref::<gtk::Widget>();
+            let row_phone = find_entry_by_title(widget, "Telefon (Mobil)").expect("phone row exists");
+            assert!(row_phone.is_visible());
+            return;
+        };
+
+        // 1. When settings are false, unpopulated rows become hidden
+        settings.set_contact_editor_show_phone(false);
+        settings.set_contact_editor_show_sip(false);
+        settings.set_contact_editor_show_im(false);
+        settings.set_contact_editor_show_home_address(false);
+        settings.set_contact_editor_show_work_address(false);
+        settings.set_contact_editor_show_other_address(false);
+        settings.set_contact_editor_show_web(false);
+        settings.set_contact_editor_show_job(false);
+        settings.set_contact_editor_show_dates(false);
+        settings.set_contact_editor_show_misc(false);
+        settings.set_contact_editor_show_notes(false);
+        settings.set_contact_editor_show_certs(false);
+
+        let dialog = ContactDialog::new();
+        while context.iteration(false) {}
+        let widget = dialog.upcast_ref::<gtk::Widget>();
+
+        let row_phone = find_entry_by_title(widget, "Telefon (Mobil)").expect("phone row exists");
+        assert!(!row_phone.is_visible(), "Empty phone row must be hidden when show-phone is false");
+
+        let row_sip = find_entry_by_title(widget, "SIP- / VoIP-Adresse").expect("sip row exists");
+        assert!(!row_sip.is_visible(), "Empty SIP row must be hidden when show-sip is false");
+
+        let row_note = find_entry_by_title(widget, "Notiz").expect("note row exists");
+        assert!(!row_note.is_visible(), "Empty note row must be hidden when show-notes is false");
+
+        let row_certs = find_entry_by_title(widget, "S/MIME-Zertifikat").expect("certs row exists");
+        assert!(!row_certs.is_visible(), "Empty certs row must be hidden when show-certs is false");
+
+        // 2. Dynamic update: re-enabling via GSettings updates row visibility
+        settings.set_contact_editor_show_phone(true);
+        settings.set_contact_editor_show_sip(true);
+        settings.set_contact_editor_show_notes(true);
+        while context.iteration(false) {}
+
+        assert!(row_phone.is_visible(), "Phone row should become visible dynamically");
+        assert!(row_sip.is_visible(), "SIP row should become visible dynamically");
+        assert!(row_note.is_visible(), "Note row should become visible dynamically");
+
+        // 3. Non-lossy display: populated data must ALWAYS remain visible even if preference is false
+        settings.set_contact_editor_show_phone(false);
+        settings.set_contact_editor_show_notes(false);
+        settings.set_contact_editor_show_sip(false);
+        settings.set_contact_editor_show_certs(false);
+
+        let mut contact = VCardContact::new("Ada Lovelace", "ada@example.test", "", "");
+        contact.tel = "+44 1234 56789".to_string();
+        contact.note = "Pioneer of computing".to_string();
+        contact.impps = vec!["sip:ada@sip.example.test".to_string()];
+        let record = EBookContactRecord {
+            source_uid: "local-addressbook".to_string(),
+            source_display_name: "Lokal".to_string(),
+            uid: "ada-1".to_string(),
+            vcard: contact.to_vcard_string(),
+            contact,
+        };
+
+        let edit_dialog = ContactDialog::new_for_edit(&record);
+        while context.iteration(false) {}
+        let edit_widget = edit_dialog.upcast_ref::<gtk::Widget>();
+
+        let edit_phone = find_entry_by_title(edit_widget, "Telefon (Mobil)").expect("edit phone row");
+        let edit_note = find_entry_by_title(edit_widget, "Notiz").expect("edit note row");
+        let edit_sip = find_entry_by_title(edit_widget, "SIP- / VoIP-Adresse").expect("edit sip row");
+
+        assert!(edit_phone.is_visible(), "Populated phone row must remain visible to prevent data loss");
+        assert!(edit_note.is_visible(), "Populated note row must remain visible to prevent data loss");
+        assert!(edit_sip.is_visible(), "Populated SIP row must remain visible to prevent data loss");
+
+        // Reset settings back to true
+        settings.set_contact_editor_show_phone(true);
+        settings.set_contact_editor_show_sip(true);
+        settings.set_contact_editor_show_im(true);
+        settings.set_contact_editor_show_home_address(true);
+        settings.set_contact_editor_show_work_address(true);
+        settings.set_contact_editor_show_other_address(true);
+        settings.set_contact_editor_show_web(true);
+        settings.set_contact_editor_show_job(true);
+        settings.set_contact_editor_show_dates(true);
+        settings.set_contact_editor_show_misc(true);
+        settings.set_contact_editor_show_notes(true);
+        settings.set_contact_editor_show_certs(true);
+    }
+
+    #[test]
+    fn test_adversarial_contact_dialog_all_12_sections_non_lossy_and_dynamic() {
+        let _lock = crate::window::GTK_TEST_MUTEX.lock().unwrap_or_else(|p| p.into_inner());
+        let Some(context) = crate::window::gtk_test_main_context() else { return; };
+
+        let Some(settings) = AppSettings::try_new() else { return; };
+
+        let set_all_toggles = |val: bool| {
+            settings.set_contact_editor_show_phone(val);
+            settings.set_contact_editor_show_sip(val);
+            settings.set_contact_editor_show_im(val);
+            settings.set_contact_editor_show_home_address(val);
+            settings.set_contact_editor_show_work_address(val);
+            settings.set_contact_editor_show_other_address(val);
+            settings.set_contact_editor_show_web(val);
+            settings.set_contact_editor_show_job(val);
+            settings.set_contact_editor_show_dates(val);
+            settings.set_contact_editor_show_misc(val);
+            settings.set_contact_editor_show_notes(val);
+            settings.set_contact_editor_show_certs(val);
+        };
+
+        // --- TEST PART 1: ALL 12 TOGGLES FALSE -> EMPTY CONTACT HIDES ALL 12 SECTIONS ---
+        set_all_toggles(false);
+
+        let empty_dialog = ContactDialog::new();
+        while context.iteration(false) {}
+        let empty_widget = empty_dialog.upcast_ref::<gtk::Widget>();
+
+        let row_phone = find_entry_by_title(empty_widget, "Telefon (Mobil)").expect("row_phone");
+        let row_phone_work = find_entry_by_title(empty_widget, "Telefon (Arbeit)").expect("row_phone_work");
+        let row_phone_home = find_entry_by_title(empty_widget, "Telefon (Privat)").expect("row_phone_home");
+        let row_sip = find_entry_by_title(empty_widget, "SIP- / VoIP-Adresse").expect("row_sip");
+        let row_impp = find_entry_by_title(empty_widget, "Instant Messaging (IMPP)").expect("row_impp");
+        let row_address = find_entry_by_title(empty_widget, "Postadresse").expect("row_address");
+        let row_address_work = find_entry_by_title(empty_widget, "Geschäftsadresse").expect("row_address_work");
+        let row_address_other = find_entry_by_title(empty_widget, "Weitere Adresse").expect("row_address_other");
+        let row_url = find_entry_by_title(empty_widget, "Webseite").expect("row_url");
+        let row_org = find_entry_by_title(empty_widget, "Firma / Organisation").expect("row_org");
+        let row_birthday = find_entry_by_title(empty_widget, "Geburtstag (YYYY-MM-DD)").expect("row_birthday");
+        let row_anniversary = find_entry_by_title(empty_widget, "Jahrestag (YYYY-MM-DD)").expect("row_anniversary");
+        let row_nickname = find_entry_by_title(empty_widget, "Spitzname").expect("row_nickname");
+        let row_note = find_entry_by_title(empty_widget, "Notiz").expect("row_note");
+        let row_certs = find_entry_by_title(empty_widget, "S/MIME-Zertifikat").expect("row_certs");
+
+        assert!(!row_phone.is_visible(), "Empty phone row must be hidden");
+        assert!(!row_phone_work.is_visible(), "Empty work phone row must be hidden");
+        assert!(!row_phone_home.is_visible(), "Empty home phone row must be hidden");
+        assert!(!row_sip.is_visible(), "Empty SIP row must be hidden");
+        assert!(!row_impp.is_visible(), "Empty IMPP row must be hidden");
+        assert!(!row_address.is_visible(), "Empty home address row must be hidden");
+        assert!(!row_address_work.is_visible(), "Empty work address row must be hidden");
+        assert!(!row_address_other.is_visible(), "Empty other address row must be hidden");
+        assert!(!row_url.is_visible(), "Empty url row must be hidden");
+        assert!(!row_org.is_visible(), "Empty org row must be hidden");
+        assert!(!row_birthday.is_visible(), "Empty birthday row must be hidden");
+        assert!(!row_anniversary.is_visible(), "Empty anniversary row must be hidden");
+        assert!(!row_nickname.is_visible(), "Empty nickname row must be hidden");
+        assert!(!row_note.is_visible(), "Empty note row must be hidden");
+        assert!(!row_certs.is_visible(), "Empty certs row must be hidden");
+
+        let row_name = find_entry_by_title(empty_widget, "Vollständiger Name").expect("row_name");
+        let row_email1 = find_entry_by_title(empty_widget, "E-Mail (Privat)").expect("row_email1");
+        assert!(row_name.is_visible(), "Name row must always be visible");
+        assert!(row_email1.is_visible(), "Email row must always be visible");
+
+        // --- TEST PART 2: DYNAMIC LIVE TOGGLING WHILE DIALOG IS OPEN ---
+        settings.set_contact_editor_show_phone(true);
+        while context.iteration(false) {}
+        assert!(row_phone.is_visible(), "Phone should become visible dynamically");
+
+        settings.set_contact_editor_show_sip(true);
+        while context.iteration(false) {}
+        assert!(row_sip.is_visible(), "SIP should become visible dynamically");
+
+        settings.set_contact_editor_show_im(true);
+        while context.iteration(false) {}
+        assert!(row_impp.is_visible(), "IMPP should become visible dynamically");
+
+        settings.set_contact_editor_show_home_address(true);
+        while context.iteration(false) {}
+        assert!(row_address.is_visible(), "Home address should become visible dynamically");
+
+        settings.set_contact_editor_show_work_address(true);
+        while context.iteration(false) {}
+        assert!(row_address_work.is_visible(), "Work address should become visible dynamically");
+
+        settings.set_contact_editor_show_other_address(true);
+        while context.iteration(false) {}
+        assert!(row_address_other.is_visible(), "Other address should become visible dynamically");
+
+        settings.set_contact_editor_show_web(true);
+        while context.iteration(false) {}
+        assert!(row_url.is_visible(), "Web should become visible dynamically");
+
+        settings.set_contact_editor_show_job(true);
+        while context.iteration(false) {}
+        assert!(row_org.is_visible(), "Job should become visible dynamically");
+
+        settings.set_contact_editor_show_dates(true);
+        while context.iteration(false) {}
+        assert!(row_birthday.is_visible(), "Dates should become visible dynamically");
+
+        settings.set_contact_editor_show_misc(true);
+        while context.iteration(false) {}
+        assert!(row_nickname.is_visible(), "Misc should become visible dynamically");
+
+        settings.set_contact_editor_show_notes(true);
+        while context.iteration(false) {}
+        assert!(row_note.is_visible(), "Notes should become visible dynamically");
+
+        settings.set_contact_editor_show_certs(true);
+        while context.iteration(false) {}
+        assert!(row_certs.is_visible(), "Certs should become visible dynamically");
+
+        // --- TEST PART 3: CRITICAL NON-LOSSY INVARIANT ---
+        set_all_toggles(false);
+
+        let mut populated = VCardContact::new("Grace Hopper", "grace@navy.mil", "", "");
+        populated.tel = "+1-555-0100".to_string();
+        populated.impps = vec![
+            "sip:grace@voip.navy.mil".to_string(),
+            "xmpp:grace@chat.navy.mil".to_string(),
+        ];
+        populated.addresses = vec![
+            "100 Navy Pier, Arlington".to_string(),
+            "Pentagon Room 2B, Washington DC".to_string(),
+            "PO Box 99, Annapolis".to_string(),
+        ];
+        populated.urls = vec!["https://en.wikipedia.org/wiki/Grace_Hopper".to_string()];
+        populated.org = "United States Navy".to_string();
+        populated.title = "Rear Admiral".to_string();
+        populated.role = "Computer Scientist".to_string();
+        populated.birthday = "1906-12-09".to_string();
+        populated.anniversary = "1930-06-15".to_string();
+        populated.nickname = "Amazing Grace".to_string();
+        populated.note = "First compiler developer".to_string();
+        populated.unknown_properties.push(crate::services::vcard_service::VCardProperty {
+            property: "KEY".to_string(),
+            value: "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA".to_string(),
+            raw_value: "KEY:MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA".to_string(),
+        });
+
+        let full_record = EBookContactRecord {
+            source_uid: "local-addressbook".to_string(),
+            source_display_name: "Lokal".to_string(),
+            uid: "grace-hopper-1".to_string(),
+            vcard: populated.to_vcard_string(),
+            contact: populated,
+        };
+
+        let edit_dialog = ContactDialog::new_for_edit(&full_record);
+        while context.iteration(false) {}
+        let edit_widget = edit_dialog.upcast_ref::<gtk::Widget>();
+
+        let e_phone = find_entry_by_title(edit_widget, "Telefon (Mobil)").expect("e_phone");
+        let e_sip = find_entry_by_title(edit_widget, "SIP- / VoIP-Adresse").expect("e_sip");
+        let e_impp = find_entry_by_title(edit_widget, "Instant Messaging (IMPP)").expect("e_impp");
+        let e_address = find_entry_by_title(edit_widget, "Postadresse").expect("e_address");
+        let e_address_work = find_entry_by_title(edit_widget, "Geschäftsadresse").expect("e_address_work");
+        let e_address_other = find_entry_by_title(edit_widget, "Weitere Adresse").expect("e_address_other");
+        let e_url = find_entry_by_title(edit_widget, "Webseite").expect("e_url");
+        let e_org = find_entry_by_title(edit_widget, "Firma / Organisation").expect("e_org");
+        let e_birthday = find_entry_by_title(edit_widget, "Geburtstag (YYYY-MM-DD)").expect("e_birthday");
+        let e_anniversary = find_entry_by_title(edit_widget, "Jahrestag (YYYY-MM-DD)").expect("e_anniversary");
+        let e_nickname = find_entry_by_title(edit_widget, "Spitzname").expect("e_nickname");
+        let e_note = find_entry_by_title(edit_widget, "Notiz").expect("e_note");
+        let e_certs = find_entry_by_title(edit_widget, "S/MIME-Zertifikat").expect("e_certs");
+
+        assert!(e_phone.is_visible(), "Populated phone MUST remain visible despite toggle=false");
+        assert!(e_sip.is_visible(), "Populated SIP MUST remain visible despite toggle=false");
+        assert!(e_impp.is_visible(), "Populated IMPP MUST remain visible despite toggle=false");
+        assert!(e_address.is_visible(), "Populated home address MUST remain visible despite toggle=false");
+        assert!(e_address_work.is_visible(), "Populated work address MUST remain visible despite toggle=false");
+        assert!(e_address_other.is_visible(), "Populated other address MUST remain visible despite toggle=false");
+        assert!(e_url.is_visible(), "Populated URL MUST remain visible despite toggle=false");
+        assert!(e_org.is_visible(), "Populated Job MUST remain visible despite toggle=false");
+        assert!(e_birthday.is_visible(), "Populated Birthday MUST remain visible despite toggle=false");
+        assert!(e_anniversary.is_visible(), "Populated Anniversary MUST remain visible despite toggle=false");
+        assert!(e_nickname.is_visible(), "Populated Misc MUST remain visible despite toggle=false");
+        assert!(e_note.is_visible(), "Populated Note MUST remain visible despite toggle=false");
+        assert!(e_certs.is_visible(), "Populated Certs MUST remain visible despite toggle=false");
+
+        // --- TEST PART 4: DYNAMIC RETENTION OF TYPED TEXT ---
+        set_all_toggles(true);
+        let live_dialog = ContactDialog::new();
+        while context.iteration(false) {}
+        let live_widget = live_dialog.upcast_ref::<gtk::Widget>();
+
+        let live_sip = find_entry_by_title(live_widget, "SIP- / VoIP-Adresse").expect("live_sip");
+        let live_notes = find_entry_by_title(live_widget, "Notiz").expect("live_notes");
+        let live_impp = find_entry_by_title(live_widget, "Instant Messaging (IMPP)").expect("live_impp");
+
+        live_sip.set_text("sip:incoming@test.local");
+        live_notes.set_text("Don't hide me!");
+        assert_eq!(live_impp.text().as_str(), "");
+
+        set_all_toggles(false);
+        while context.iteration(false) {}
+
+        assert!(live_sip.is_visible(), "SIP row with entered text MUST remain visible after toggle=false");
+        assert!(live_notes.is_visible(), "Notes row with entered text MUST remain visible after toggle=false");
+        assert!(!live_impp.is_visible(), "Empty IMPP row MUST become hidden after toggle=false");
+
+        set_all_toggles(true);
     }
 }
