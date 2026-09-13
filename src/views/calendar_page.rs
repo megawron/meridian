@@ -2144,6 +2144,10 @@ impl CalendarPage {
     fn create_mini_calendar(&self) -> gtk::Calendar {
         let mini_cal = gtk::Calendar::new();
         mini_cal.add_css_class("calendar-sidebar-minical");
+        let show_week_numbers = AppSettings::try_new()
+            .map(|settings| settings.calendar_show_week_numbers())
+            .unwrap_or(false);
+        mini_cal.set_show_week_numbers(show_week_numbers);
         let page_for_cal = self.downgrade();
         mini_cal.connect_day_selected(move |calendar| {
             let Some(page) = page_for_cal.upgrade() else {
@@ -2946,12 +2950,22 @@ impl CalendarPage {
                 "calendar-month-scroll-by-week",
                 "calendar-second-zone",
                 "hide-cancelled-events",
+                "default-calendar-source",
             ] {
                 let page_weak = self.downgrade();
-                settings.connect_changed(Some(key), move |_, _| {
+                settings.connect_changed(Some(key), move |_, key_name| {
                     if let Some(page) = page_weak.upgrade() {
                         page.refresh_calendar_views();
                         page.refresh_event_list_visibility();
+                        if key_name == "default-calendar-source" {
+                            if let Some(settings) = AppSettings::try_new() {
+                                page.imp()
+                                    .calendar_source_selector
+                                    .borrow_mut()
+                                    .load_from_settings(&settings);
+                                page.reload_calendar_sources();
+                            }
+                        }
                     }
                 });
             }
@@ -4168,8 +4182,12 @@ impl CalendarPage {
         self.imp().syncing_mini_calendar.set(true);
 
         let is_month_view = *self.imp().current_view.borrow() == CalendarView::Month;
+        let show_week_numbers = AppSettings::try_new()
+            .map(|settings| settings.calendar_show_week_numbers())
+            .unwrap_or(false);
 
         for (i, cal) in calendars.iter().enumerate() {
+            cal.set_show_week_numbers(show_week_numbers);
             if is_month_view {
                 cal.add_css_class("in-month-view");
             } else {
@@ -4551,6 +4569,7 @@ impl CalendarPage {
 
         let today = Local::now().date_naive();
         let (workday_start, workday_end) = configured_workday_range();
+        let workdays = configured_workdays();
         let visible_range = if let (Some(first), Some(last)) = (days.first(), days.last()) {
             let end = last.succ_opt().unwrap_or_else(|| *last + Duration::days(1));
             CalendarDateRange::new(*first, end)
@@ -4685,7 +4704,6 @@ impl CalendarPage {
             let minute = (slot * interval_minutes as usize) as u32;
             let is_hour = slot % slots_per_hour == 0;
             let is_half_hour = interval_minutes < 60 && (minute % 60 == 30);
-            let is_workday = minute >= workday_start && minute < workday_end;
 
             if is_hour {
                 let gutter_label = gtk::Label::builder()
@@ -4764,7 +4782,9 @@ impl CalendarPage {
                 } else {
                     cell_classes.push("calendar-fine-slot-cell");
                 }
-                if is_workday {
+                let is_workday_cell =
+                    is_workday_cell(minute, workday_start, workday_end, day.weekday(), &workdays);
+                if is_workday_cell {
                     cell_classes.push("calendar-workday-cell");
                 } else {
                     cell_classes.push("calendar-offhours-cell");
@@ -6454,13 +6474,13 @@ fn configured_time_divisions() -> i32 {
 fn configured_compress_weekend() -> bool {
     AppSettings::try_new()
         .map(|settings| settings.calendar_compress_weekend())
-        .unwrap_or(false)
+        .unwrap_or(true)
 }
 
 fn configured_month_scroll_by_week() -> bool {
     AppSettings::try_new()
         .map(|settings| settings.calendar_month_scroll_by_week())
-        .unwrap_or(false)
+        .unwrap_or(true)
 }
 
 fn configured_second_zone() -> String {
@@ -6558,6 +6578,19 @@ fn workweek_display_dates(basis_range: CalendarDateRange, workdays: &[Weekday]) 
         .dates()
         .filter(|date| workdays.contains(&date.weekday()))
         .collect()
+}
+
+/// Qualify whether a specific time slot minute on a given weekday constitutes a workday cell.
+#[inline]
+pub(crate) fn is_workday_cell(
+    minute: u32,
+    workday_start: u32,
+    workday_end: u32,
+    day_weekday: Weekday,
+    workdays: &[Weekday],
+) -> bool {
+    let is_workday_time = minute >= workday_start && minute < workday_end;
+    is_workday_time && workdays.contains(&day_weekday)
 }
 
 fn configured_weekday_names() -> [&'static str; 7] {
@@ -10618,4 +10651,377 @@ mod tests {
         assert_eq!(cal6.date().year(), 2027);
         assert_eq!(cal6.date().month(), 3);
     }
+
+    #[test]
+    fn workday_cell_qualification_requires_both_working_hours_and_configured_weekday() {
+        let workdays = [
+            Weekday::Mon,
+            Weekday::Tue,
+            Weekday::Wed,
+            Weekday::Thu,
+            Weekday::Fri,
+        ];
+        let (workday_start, workday_end) = (540, 1020); // 09:00 to 17:00
+
+        let monday = NaiveDate::from_ymd_opt(2026, 8, 10).unwrap();
+        let sunday = NaiveDate::from_ymd_opt(2026, 8, 9).unwrap();
+
+        // Monday 10:00 (600m) -> Workday cell
+        assert!(is_workday_cell(600, workday_start, workday_end, monday.weekday(), &workdays));
+
+        // Monday 08:00 (480m) -> Offhours
+        assert!(!is_workday_cell(480, workday_start, workday_end, monday.weekday(), &workdays));
+
+        // Sunday 10:00 (600m) -> Offhours (not a configured workday)
+        assert!(!is_workday_cell(600, workday_start, workday_end, sunday.weekday(), &workdays));
+    }
+
+    #[test]
+    fn time_divisions_normalization_covers_all_supported_steps() {
+        assert_eq!(normalize_calendar_time_divisions(5), 5);
+        assert_eq!(normalize_calendar_time_divisions(10), 10);
+        assert_eq!(normalize_calendar_time_divisions(15), 15);
+        assert_eq!(normalize_calendar_time_divisions(30), 30);
+        assert_eq!(normalize_calendar_time_divisions(60), 60);
+        assert_eq!(normalize_calendar_time_divisions(45), 30); // fallback
+        assert_eq!(normalize_calendar_time_divisions(0), 30);  // fallback
+        assert_eq!(normalize_calendar_time_divisions(-10), 30); // fallback
+    }
+
+    #[test]
+    fn configured_weekday_names_order_switches_between_monday_and_sunday() {
+        let _lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+
+        let Some(settings) = AppSettings::try_new() else {
+            let names = configured_weekday_names();
+            assert!(names[0] == "Mo" || names[0] == "So");
+            return;
+        };
+
+        let previous = settings.calendar_week_start();
+
+        // 1. Basic Monday vs Sunday switching
+        settings.set_calendar_week_start("monday");
+        assert_eq!(configured_first_weekday(), Weekday::Mon);
+        assert_eq!(configured_weekday_names()[0], "Mo");
+        assert_eq!(
+            configured_weekday_names(),
+            ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"]
+        );
+
+        settings.set_calendar_week_start("sunday");
+        assert_eq!(configured_first_weekday(), Weekday::Sun);
+        assert_eq!(configured_weekday_names()[0], "So");
+        assert_eq!(
+            configured_weekday_names(),
+            ["So", "Mo", "Di", "Mi", "Do", "Fr", "Sa"]
+        );
+
+        // 2. Adversarial rapid stress cycling (50 iterations)
+        for i in 0..50 {
+            if i % 2 == 0 {
+                settings.set_calendar_week_start("monday");
+                assert_eq!(configured_first_weekday(), Weekday::Mon);
+                assert_eq!(configured_weekday_names()[0], "Mo");
+            } else {
+                settings.set_calendar_week_start("sunday");
+                assert_eq!(configured_first_weekday(), Weekday::Sun);
+                assert_eq!(configured_weekday_names()[0], "So");
+            }
+        }
+
+        // 3. Fallback resilience on non-standard/unrecognized values
+        for invalid in ["saturday", "tuesday", "", "SUNDAY", "unknown_day"] {
+            settings.set_calendar_week_start(invalid);
+            assert_eq!(
+                configured_first_weekday(),
+                Weekday::Mon,
+                "Invalid week-start '{invalid}' must safely default to Monday"
+            );
+            assert_eq!(
+                configured_weekday_names()[0],
+                "Mo",
+                "Invalid week-start '{invalid}' must safely default to 'Mo'"
+            );
+        }
+
+        settings.set_calendar_week_start(&previous);
+    }
+
+    #[test]
+    fn custom_workdays_filter_workweek_dates_accurately() {
+        let week_range = CalendarDateRange::from_days(
+            NaiveDate::from_ymd_opt(2026, 8, 10).unwrap(), // Monday
+            7,
+        );
+        // Custom 4-day workweek: Mon, Tue, Wed, Thu
+        let four_day_workdays = [Weekday::Mon, Weekday::Tue, Weekday::Wed, Weekday::Thu];
+        let dates = workweek_display_dates(week_range, &four_day_workdays);
+        assert_eq!(dates.len(), 4);
+        assert_eq!(dates[0], NaiveDate::from_ymd_opt(2026, 8, 10).unwrap());
+        assert_eq!(dates[3], NaiveDate::from_ymd_opt(2026, 8, 13).unwrap());
+
+        // Shift work: Wednesday to Sunday
+        let shift_workdays = [
+            Weekday::Wed,
+            Weekday::Thu,
+            Weekday::Fri,
+            Weekday::Sat,
+            Weekday::Sun,
+        ];
+        let shift_dates = workweek_display_dates(week_range, &shift_workdays);
+        assert_eq!(shift_dates.len(), 5);
+        assert_eq!(shift_dates[0], NaiveDate::from_ymd_opt(2026, 8, 12).unwrap());
+        assert_eq!(shift_dates[4], NaiveDate::from_ymd_opt(2026, 8, 16).unwrap());
+    }
+
+    #[test]
+    fn test_adversarial_workday_cell_qualification_exhaustive() {
+        let workdays = [
+            Weekday::Mon,
+            Weekday::Tue,
+            Weekday::Wed,
+            Weekday::Thu,
+            Weekday::Fri,
+        ];
+        let (workday_start, workday_end) = (540, 1020); // 09:00 to 17:00
+
+        let sunday = NaiveDate::from_ymd_opt(2026, 8, 9).unwrap();
+        let saturday = NaiveDate::from_ymd_opt(2026, 8, 15).unwrap();
+        let monday = NaiveDate::from_ymd_opt(2026, 8, 10).unwrap();
+
+        // 1. Unconfigured workdays: Sunday & Saturday MUST be offhours for EVERY minute (0..1440)
+        for minute in 0..1440 {
+            assert!(
+                !is_workday_cell(minute, workday_start, workday_end, sunday.weekday(), &workdays),
+                "Sunday at minute {minute} must NEVER receive workday cell qualification"
+            );
+
+            assert!(
+                !is_workday_cell(minute, workday_start, workday_end, saturday.weekday(), &workdays),
+                "Saturday at minute {minute} must NEVER receive workday cell qualification"
+            );
+        }
+
+        // 2. Configured workday: Monday exhaustive minute-by-minute evaluation
+        // Single-minute precision across all 1440 minutes of the day
+        for minute in 0..1440 {
+            let expected = minute >= workday_start && minute < workday_end;
+            let actual = is_workday_cell(minute, workday_start, workday_end, monday.weekday(), &workdays);
+            assert_eq!(
+                actual, expected,
+                "Monday at minute {minute} (expected {expected}, got {actual})"
+            );
+        }
+
+        // 3. Exact boundary minute stress checks
+        // Midnight at 0
+        assert!(!is_workday_cell(0, workday_start, workday_end, monday.weekday(), &workdays));
+        // Exactly 1 minute before start: 539 (08:59) -> offhours
+        assert!(!is_workday_cell(539, workday_start, workday_end, monday.weekday(), &workdays));
+        // Exactly at start: 540 (09:00) -> workday
+        assert!(is_workday_cell(540, workday_start, workday_end, monday.weekday(), &workdays));
+        // Exactly 1 minute after start: 541 (09:01) -> workday
+        assert!(is_workday_cell(541, workday_start, workday_end, monday.weekday(), &workdays));
+        // Exactly 1 minute before end: 1019 (16:59) -> workday
+        assert!(is_workday_cell(1019, workday_start, workday_end, monday.weekday(), &workdays));
+        // Exactly at end: 1020 (17:00) -> offhours (half-open boundary [start, end))
+        assert!(!is_workday_cell(1020, workday_start, workday_end, monday.weekday(), &workdays));
+        // Exactly 1 minute after end: 1021 (17:01) -> offhours
+        assert!(!is_workday_cell(1021, workday_start, workday_end, monday.weekday(), &workdays));
+        // Last minute of 24-hr day: 1439 (23:59) -> offhours
+        assert!(!is_workday_cell(1439, workday_start, workday_end, monday.weekday(), &workdays));
+        // Boundary at 1440 (24:00) -> offhours
+        assert!(!is_workday_cell(1440, workday_start, workday_end, monday.weekday(), &workdays));
+        // Out-of-bounds minute -> offhours
+        assert!(!is_workday_cell(u32::MAX, workday_start, workday_end, monday.weekday(), &workdays));
+
+        // 4. Midnight transitions: shifts aligned with 00:00 or 24:00
+        // Early morning shift: 00:00 to 08:00 (0..480)
+        assert!(is_workday_cell(0, 0, 480, monday.weekday(), &workdays));
+        assert!(is_workday_cell(479, 0, 480, monday.weekday(), &workdays));
+        assert!(!is_workday_cell(480, 0, 480, monday.weekday(), &workdays));
+
+        // Late evening shift: 20:00 to 24:00 (1200..1440)
+        assert!(!is_workday_cell(1199, 1200, 1440, monday.weekday(), &workdays));
+        assert!(is_workday_cell(1200, 1200, 1440, monday.weekday(), &workdays));
+        assert!(is_workday_cell(1439, 1200, 1440, monday.weekday(), &workdays));
+        assert!(!is_workday_cell(1440, 1200, 1440, monday.weekday(), &workdays));
+
+        // 5. Inverted and degenerate workday ranges
+        // Degenerate start == end: empty interval, no cell qualifies
+        for minute in [0, 540, 600, 1020, 1439] {
+            assert!(!is_workday_cell(minute, 540, 540, monday.weekday(), &workdays));
+        }
+        // Inverted start > end: e.g. 1020..540
+        for minute in [0, 540, 600, 1020, 1439] {
+            assert!(!is_workday_cell(minute, 1020, 540, monday.weekday(), &workdays));
+        }
+        // Normalized range safety: normalized_workday_range guarantees start < end
+        let (norm_start, norm_end) = normalized_workday_range(1020, 540);
+        assert!(norm_start < norm_end);
+        assert!(norm_end >= norm_start + 30);
+    }
+
+    #[test]
+    fn test_adversarial_custom_workday_configurations() {
+        let week_range = CalendarDateRange::from_days(
+            NaiveDate::from_ymd_opt(2026, 8, 10).unwrap(), // Monday
+            7,
+        );
+
+        // Scenario 1: Shift work Wednesday through Sunday (Wed, Thu, Fri, Sat, Sun)
+        let shift_workdays = [
+            Weekday::Wed,
+            Weekday::Thu,
+            Weekday::Fri,
+            Weekday::Sat,
+            Weekday::Sun,
+        ];
+        let (shift_start, shift_end) = (480, 960); // 08:00 to 16:00
+
+        let monday = NaiveDate::from_ymd_opt(2026, 8, 10).unwrap();
+        let tuesday = NaiveDate::from_ymd_opt(2026, 8, 11).unwrap();
+        let wednesday = NaiveDate::from_ymd_opt(2026, 8, 12).unwrap();
+        let saturday = NaiveDate::from_ymd_opt(2026, 8, 15).unwrap();
+        let sunday = NaiveDate::from_ymd_opt(2026, 8, 16).unwrap();
+
+        let shift_daytime = 600; // 10:00 AM (inside 08:00-16:00)
+
+        // Monday & Tuesday are off-days in this shift schedule
+        assert!(!is_workday_cell(shift_daytime, shift_start, shift_end, monday.weekday(), &shift_workdays));
+        assert!(!is_workday_cell(shift_daytime, shift_start, shift_end, tuesday.weekday(), &shift_workdays));
+
+        // Wednesday, Saturday, Sunday are working days
+        assert!(is_workday_cell(shift_daytime, shift_start, shift_end, wednesday.weekday(), &shift_workdays));
+        assert!(is_workday_cell(shift_daytime, shift_start, shift_end, saturday.weekday(), &shift_workdays));
+        assert!(is_workday_cell(shift_daytime, shift_start, shift_end, sunday.weekday(), &shift_workdays));
+
+        let shift_dates = workweek_display_dates(week_range, &shift_workdays);
+        assert_eq!(shift_dates.len(), 5);
+        assert_eq!(shift_dates[0], wednesday);
+        assert_eq!(shift_dates[4], sunday);
+
+        // Scenario 2: Weekend-only work (Saturday & Sunday)
+        let weekend_workdays = [Weekday::Sat, Weekday::Sun];
+        assert!(is_workday_cell(shift_daytime, shift_start, shift_end, saturday.weekday(), &weekend_workdays));
+        assert!(is_workday_cell(shift_daytime, shift_start, shift_end, sunday.weekday(), &weekend_workdays));
+        assert!(!is_workday_cell(shift_daytime, shift_start, shift_end, monday.weekday(), &weekend_workdays));
+        assert!(!is_workday_cell(shift_daytime, shift_start, shift_end, wednesday.weekday(), &weekend_workdays));
+
+        let weekend_dates = workweek_display_dates(week_range, &weekend_workdays);
+        assert_eq!(weekend_dates.len(), 2);
+        assert_eq!(weekend_dates[0], saturday);
+        assert_eq!(weekend_dates[1], sunday);
+
+        // Scenario 3: Zero workdays configured (empty slice)
+        let empty_workdays: [Weekday; 0] = [];
+        for d in [
+            Weekday::Mon,
+            Weekday::Tue,
+            Weekday::Wed,
+            Weekday::Thu,
+            Weekday::Fri,
+            Weekday::Sat,
+            Weekday::Sun,
+        ] {
+            for m in [0, 480, 600, 960, 1439] {
+                assert!(
+                    !is_workday_cell(m, shift_start, shift_end, d, &empty_workdays),
+                    "Empty workdays must never qualify day {d:?} at minute {m}"
+                );
+            }
+        }
+        let empty_dates = workweek_display_dates(week_range, &empty_workdays);
+        assert!(empty_dates.is_empty());
+
+        // Scenario 4: All 7 days configured as workdays
+        let full_workdays = [
+            Weekday::Mon,
+            Weekday::Tue,
+            Weekday::Wed,
+            Weekday::Thu,
+            Weekday::Fri,
+            Weekday::Sat,
+            Weekday::Sun,
+        ];
+        for d in &full_workdays {
+            assert!(is_workday_cell(shift_daytime, shift_start, shift_end, *d, &full_workdays));
+            assert!(!is_workday_cell(0, shift_start, shift_end, *d, &full_workdays));
+        }
+        let full_dates = workweek_display_dates(week_range, &full_workdays);
+        assert_eq!(full_dates.len(), 7);
+
+        // Scenario 5: Split-shift workdays (e.g. Mon, Wed, Fri - MWF)
+        let mwf_workdays = [Weekday::Mon, Weekday::Wed, Weekday::Fri];
+        let thursday = NaiveDate::from_ymd_opt(2026, 8, 13).unwrap();
+        // Working days inside shift
+        assert!(is_workday_cell(shift_daytime, shift_start, shift_end, monday.weekday(), &mwf_workdays));
+        assert!(is_workday_cell(shift_daytime, shift_start, shift_end, wednesday.weekday(), &mwf_workdays));
+        // Off-days inside shift
+        assert!(!is_workday_cell(shift_daytime, shift_start, shift_end, tuesday.weekday(), &mwf_workdays));
+        assert!(!is_workday_cell(shift_daytime, shift_start, shift_end, thursday.weekday(), &mwf_workdays));
+        assert!(!is_workday_cell(shift_daytime, shift_start, shift_end, saturday.weekday(), &mwf_workdays));
+        assert!(!is_workday_cell(shift_daytime, shift_start, shift_end, sunday.weekday(), &mwf_workdays));
+        // Working days outside shift
+        assert!(!is_workday_cell(400, shift_start, shift_end, monday.weekday(), &mwf_workdays));
+        assert!(!is_workday_cell(1100, shift_start, shift_end, monday.weekday(), &mwf_workdays));
+
+        let mwf_dates = workweek_display_dates(week_range, &mwf_workdays);
+        assert_eq!(mwf_dates.len(), 3);
+        assert_eq!(mwf_dates[0], monday);
+        assert_eq!(mwf_dates[1], wednesday);
+        assert_eq!(mwf_dates[2], NaiveDate::from_ymd_opt(2026, 8, 14).unwrap()); // Friday
+
+        // Scenario 6: Duplicate entries in workdays slice (resilience against duplicates)
+        let dup_workdays = [
+            Weekday::Mon,
+            Weekday::Mon,
+            Weekday::Wed,
+            Weekday::Wed,
+            Weekday::Fri,
+        ];
+        assert!(is_workday_cell(shift_daytime, shift_start, shift_end, monday.weekday(), &dup_workdays));
+        assert!(is_workday_cell(shift_daytime, shift_start, shift_end, wednesday.weekday(), &dup_workdays));
+        assert!(!is_workday_cell(shift_daytime, shift_start, shift_end, tuesday.weekday(), &dup_workdays));
+    }
+
+    #[test]
+    fn test_adversarial_mini_calendar_week_numbers_reactivity() {
+        let _gtk_lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+
+        // 1. Direct GTK Calendar week numbers property reactivity
+        let mini_cal = gtk::Calendar::new();
+        mini_cal.set_show_week_numbers(false);
+        assert!(!mini_cal.shows_week_numbers());
+
+        mini_cal.set_show_week_numbers(true);
+        assert!(mini_cal.shows_week_numbers());
+
+        mini_cal.set_show_week_numbers(false);
+        assert!(!mini_cal.shows_week_numbers());
+
+        // 2. CalendarPage mini calendars synchronization
+        let page = CalendarPage::new();
+        page.ensure_mini_calendar_count(4);
+        let calendars = page.imp().mini_calendars.borrow().clone();
+        assert!(!calendars.is_empty());
+
+        // Verify all mini calendars synchronize week numbers uniformly
+        let expected_show = AppSettings::try_new()
+            .map(|s| s.calendar_show_week_numbers())
+            .unwrap_or(false);
+        page.sync_mini_calendar();
+        for cal in &calendars {
+            assert_eq!(cal.shows_week_numbers(), expected_show);
+        }
+    }
 }
+
