@@ -701,8 +701,9 @@ Viel Freude mit Evolution!\r\n";
         self.metadata.set_deleted_many(ids, true)
     }
 
-    /// Mark all messages in the local junk/spam folder as deleted in the app sidecar.
-    pub fn empty_local_junk(&self) -> std::io::Result<usize> {
+    /// Mark messages in the local junk/spam folder as deleted in the app sidecar,
+    /// optionally filtered by minimum age in days (0 means all messages).
+    pub fn empty_local_junk_with_retention(&self, min_age_days: i32) -> std::io::Result<usize> {
         let cancelled = AtomicBool::new(false);
         let overrides = self.metadata.load_folder_overrides();
         let already_deleted = self.metadata.load_deleted();
@@ -710,31 +711,68 @@ Viel Freude mit Evolution!\r\n";
         let messages = self.load_raw_local_records_cancelable(&cancelled);
         let mut ids = Vec::new();
 
-        for message in messages {
+        let cutoff_date = if min_age_days > 0 {
+            Utc::now() - chrono::Duration::days(min_age_days as i64)
+        } else {
+            Utc::now() + chrono::Duration::days(1)
+        };
+
+        let message_matches_age = |date_str: &str| -> bool {
+            if min_age_days <= 0 {
+                return true;
+            }
+            if date_str.is_empty() {
+                return true;
+            }
+            if let Ok(dt) = chrono::DateTime::parse_from_rfc2822(date_str) {
+                dt.with_timezone(&Utc) <= cutoff_date
+            } else if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(date_str) {
+                dt.with_timezone(&Utc) <= cutoff_date
+            } else {
+                // Unparseable dates in junk folder are treated as eligible for purge
+                true
+            }
+        };
+
+        let message_dates: HashMap<&str, &str> = messages
+            .iter()
+            .map(|m| (m.id.as_str(), m.date_str.as_str()))
+            .collect();
+
+        for message in &messages {
             let folder_id = overrides
                 .get(&message.id)
                 .map(String::as_str)
                 .unwrap_or(message.folder_id.as_str());
             if (folder_id == "junk" || folder_id == "spam" || folder_id.starts_with("junk/"))
                 && !already_deleted.contains(&message.id)
+                && message_matches_age(&message.date_str)
             {
-                ids.push(message.id);
+                ids.push(message.id.clone());
             }
         }
 
-        for (message_id, folder_ids) in copies {
+        for (message_id, folder_ids) in &copies {
             for folder_id in folder_ids {
                 if folder_id != "junk" && folder_id != "spam" && !folder_id.starts_with("junk/") {
                     continue;
                 }
-                let copy_id = local_copy_id(&message_id, &folder_id);
+                let copy_id = local_copy_id(message_id, folder_id);
                 if !already_deleted.contains(&copy_id) {
-                    ids.push(copy_id);
+                    let date_str = message_dates.get(message_id.as_str()).copied().unwrap_or("");
+                    if message_matches_age(date_str) {
+                        ids.push(copy_id);
+                    }
                 }
             }
         }
 
         self.metadata.set_deleted_many(ids, true)
+    }
+
+    /// Mark all messages in the local junk/spam folder as deleted in the app sidecar.
+    pub fn empty_local_junk(&self) -> std::io::Result<usize> {
+        self.empty_local_junk_with_retention(0)
     }
 
     /// Read all discoverable local messages in a deterministic order.
@@ -4642,6 +4680,269 @@ mod tests {
         assert!(deleted.contains(&local_copy_id(&inbox_id, "trash")));
         assert!(mail_dir.join("Trash/deleted.eml").is_file());
         assert_eq!(store.load_local_records().len(), 1);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn empty_local_junk_with_retention_zero_clears_all_junk() {
+        let root = temporary_directory("empty-local-junk-zero");
+        let mail_dir = root.join("mail");
+        fs::create_dir_all(mail_dir.join("Junk")).expect("junk folder should be created");
+        fs::write(
+            mail_dir.join("Junk/spam1.eml"),
+            "From: Spammer <spam@example.org>\nSubject: Buy Now\nDate: Mon, 01 Jan 2024 10:00:00 +0000\n\nSpam\n",
+        )
+        .expect("junk mail should be written");
+        fs::write(
+            mail_dir.join("inbox.eml"),
+            "From: Sender <sender@example.org>\nSubject: Inbox\n\nBody\n",
+        )
+        .expect("inbox mail should be written");
+
+        let store =
+            MailStoreService::with_mail_dir_and_state_path(&mail_dir, root.join("state.json"));
+        assert_eq!(store.empty_local_junk().expect("junk should empty"), 1);
+
+        let deleted = MailMetadataStore::new(store.metadata_path()).load_deleted();
+        assert!(deleted.iter().any(|id| id.contains("spam1.eml")));
+        assert_eq!(deleted.len(), 1);
+
+        let remaining = store.load_local_records();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].folder_id, "inbox");
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn empty_local_junk_with_retention_days_respects_age_threshold() {
+        let root = temporary_directory("empty-local-junk-retention");
+        let mail_dir = root.join("mail");
+        fs::create_dir_all(mail_dir.join("Junk")).expect("junk folder should be created");
+
+        let now = Utc::now();
+        let fresh_date = now.to_rfc2822();
+        let old_date = (now - chrono::Duration::days(10)).to_rfc2822();
+        let corrupt_date = "invalid-date-string";
+
+        fs::write(
+            mail_dir.join("Junk/fresh.eml"),
+            format!("From: Spammer <spam@example.org>\nSubject: Fresh Spam\nDate: {fresh_date}\n\nSpam\n"),
+        )
+        .expect("fresh mail should be written");
+        fs::write(
+            mail_dir.join("Junk/old.eml"),
+            format!("From: Spammer <spam@example.org>\nSubject: Old Spam\nDate: {old_date}\n\nSpam\n"),
+        )
+        .expect("old mail should be written");
+        fs::write(
+            mail_dir.join("Junk/corrupt.eml"),
+            format!("From: Spammer <spam@example.org>\nSubject: Corrupt Spam\nDate: {corrupt_date}\n\nSpam\n"),
+        )
+        .expect("corrupt mail should be written");
+
+        let store =
+            MailStoreService::with_mail_dir_and_state_path(&mail_dir, root.join("state.json"));
+
+        // Purge with min_age_days = 7.
+        // Old (10 days old) and Corrupt should be purged.
+        // Fresh should remain.
+        let purged = store.empty_local_junk_with_retention(7).expect("retention purge should succeed");
+        assert_eq!(purged, 2);
+
+        let deleted = MailMetadataStore::new(store.metadata_path()).load_deleted();
+        assert!(deleted.iter().any(|id| id.contains("old.eml")));
+        assert!(deleted.iter().any(|id| id.contains("corrupt.eml")));
+        assert!(!deleted.iter().any(|id| id.contains("fresh.eml")));
+
+        let remaining = store.load_local_records();
+        assert_eq!(remaining.len(), 1);
+        assert!(remaining[0].id.contains("fresh.eml"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn empty_local_junk_adversarial_stress_test() {
+        let root = temporary_directory("empty-local-junk-adversarial");
+        let mail_dir = root.join("mail");
+        fs::create_dir_all(mail_dir.join("Junk")).expect("junk dir");
+        fs::create_dir_all(mail_dir.join("Inbox")).expect("inbox dir");
+        fs::create_dir_all(mail_dir.join("Sent")).expect("sent dir");
+        fs::create_dir_all(mail_dir.join("Drafts")).expect("drafts dir");
+        fs::create_dir_all(mail_dir.join("Archive")).expect("archive dir");
+        fs::create_dir_all(mail_dir.join("Custom")).expect("custom dir");
+        fs::create_dir_all(mail_dir.join("Junk/subfolder")).expect("junk subfolder");
+        fs::create_dir_all(mail_dir.join("junk/subfolder2")).expect("junk lowercase subfolder");
+
+        let now = Utc::now();
+        // 7 days cutoff reference:
+        // older than 7 days by 2 seconds:
+        let date_older_2s = (now - chrono::Duration::days(7) - chrono::Duration::seconds(2)).to_rfc2822();
+        // younger than 7 days by 2 seconds:
+        let date_younger_2s = (now - chrono::Duration::days(7) + chrono::Duration::seconds(2)).to_rfc2822();
+        // future date:
+        let date_future = (now + chrono::Duration::days(5)).to_rfc2822();
+        // very old RFC3339 date:
+        let date_old_rfc3339 = "2020-01-01T00:00:00Z";
+        // corrupt date:
+        let date_corrupt = "CORRUPT_NOT_A_DATE_STRING";
+
+        // Write junk files
+        fs::write(
+            mail_dir.join("Junk/junk_older.eml"),
+            format!("From: spam@example.com\nSubject: Older\nDate: {date_older_2s}\n\nBody\n"),
+        ).unwrap();
+        fs::write(
+            mail_dir.join("Junk/junk_younger.eml"),
+            format!("From: spam@example.com\nSubject: Younger\nDate: {date_younger_2s}\n\nBody\n"),
+        ).unwrap();
+        fs::write(
+            mail_dir.join("Junk/junk_future.eml"),
+            format!("From: spam@example.com\nSubject: Future\nDate: {date_future}\n\nBody\n"),
+        ).unwrap();
+        fs::write(
+            mail_dir.join("Junk/junk_old_rfc3339.eml"),
+            format!("From: spam@example.com\nSubject: RFC3339\nDate: {date_old_rfc3339}\n\nBody\n"),
+        ).unwrap();
+        fs::write(
+            mail_dir.join("Junk/junk_corrupt.eml"),
+            format!("From: spam@example.com\nSubject: Corrupt\nDate: {date_corrupt}\n\nBody\n"),
+        ).unwrap();
+        fs::write(
+            mail_dir.join("Junk/junk_nodate.eml"),
+            "From: spam@example.com\nSubject: No Date\n\nBody\n",
+        ).unwrap();
+
+        // Write non-junk files (IMMUNITY TEST: should NEVER be purged)
+        fs::write(
+            mail_dir.join("Inbox/inbox_old.eml"),
+            "From: user@example.com\nSubject: Inbox Old\nDate: Mon, 01 Jan 2020 00:00:00 +0000\n\nBody\n",
+        ).unwrap();
+        fs::write(
+            mail_dir.join("Inbox/inbox_corrupt.eml"),
+            "From: user@example.com\nSubject: Inbox Corrupt\nDate: CORRUPT\n\nBody\n",
+        ).unwrap();
+        fs::write(
+            mail_dir.join("Inbox/inbox_nodate.eml"),
+            "From: user@example.com\nSubject: Inbox NoDate\n\nBody\n",
+        ).unwrap();
+        fs::write(
+            mail_dir.join("Sent/sent_old.eml"),
+            "From: user@example.com\nSubject: Sent Old\nDate: Mon, 01 Jan 2020 00:00:00 +0000\n\nBody\n",
+        ).unwrap();
+        fs::write(
+            mail_dir.join("Drafts/drafts_old.eml"),
+            "From: user@example.com\nSubject: Drafts Old\nDate: Mon, 01 Jan 2020 00:00:00 +0000\n\nBody\n",
+        ).unwrap();
+        fs::write(
+            mail_dir.join("Archive/archive_old.eml"),
+            "From: user@example.com\nSubject: Archive Old\nDate: Mon, 01 Jan 2020 00:00:00 +0000\n\nBody\n",
+        ).unwrap();
+        fs::write(
+            mail_dir.join("Custom/custom_old.eml"),
+            "From: user@example.com\nSubject: Custom Old\nDate: Mon, 01 Jan 2020 00:00:00 +0000\n\nBody\n",
+        ).unwrap();
+
+        // Write junk subfolder files on disk
+        fs::write(
+            mail_dir.join("Junk/subfolder/junk_sub.eml"),
+            format!("From: spam@example.com\nSubject: Subfolder Junk\nDate: {date_older_2s}\n\nBody\n"),
+        ).unwrap();
+        fs::write(
+            mail_dir.join("junk/subfolder2/junk_sub2.eml"),
+            format!("From: spam@example.com\nSubject: Subfolder Junk 2\nDate: {date_older_2s}\n\nBody\n"),
+        ).unwrap();
+
+        // Setup store
+        let store = MailStoreService::with_mail_dir_and_state_path(&mail_dir, root.join("state.json"));
+        let metadata = MailMetadataStore::new(store.metadata_path());
+
+        // Setup copies:
+        // Copy inbox_old to junk
+        let all_records = store.load_local_records();
+        let inbox_old_msg = all_records.iter().find(|m| m.id.contains("inbox_old.eml")).unwrap();
+        metadata.set_copy(&inbox_old_msg.id, "junk", true).unwrap();
+
+        // Copy junk_older to inbox
+        let junk_older_msg = all_records.iter().find(|m| m.id.contains("junk_older.eml")).unwrap();
+        metadata.set_copy(&junk_older_msg.id, "inbox", true).unwrap();
+
+        // Also test folder overrides on a junk message
+        fs::write(
+            mail_dir.join("Junk/override_sub.eml"),
+            format!("From: spam@example.com\nSubject: Override Junk\nDate: {date_older_2s}\n\nBody\n"),
+        ).unwrap();
+        let all_records = store.load_local_records();
+        let override_msg = all_records.iter().find(|m| m.id.contains("override_sub.eml")).unwrap();
+        metadata.set_folder_override(&override_msg.id, Some("junk/subfolder")).unwrap();
+
+        // Run retention purge with min_age_days = 7
+        let purged = store.empty_local_junk_with_retention(7).expect("purge with 7 days should succeed");
+        println!("Purged count with min_age_days = 7: {purged}");
+
+        let deleted = metadata.load_deleted();
+
+        // Check non-junk immunity: NONE of the non-junk messages should EVER be in deleted!
+        assert!(!deleted.iter().any(|id| id.contains("inbox_old.eml") && !id.contains("::copy::")), "inbox_old base must be immune");
+        assert!(!deleted.iter().any(|id| id.contains("inbox_corrupt.eml")), "inbox_corrupt must be immune");
+        assert!(!deleted.iter().any(|id| id.contains("inbox_nodate.eml")), "inbox_nodate must be immune");
+        assert!(!deleted.iter().any(|id| id.contains("sent_old.eml")), "sent_old must be immune");
+        assert!(!deleted.iter().any(|id| id.contains("drafts_old.eml")), "drafts_old must be immune");
+        assert!(!deleted.iter().any(|id| id.contains("archive_old.eml")), "archive_old must be immune");
+        assert!(!deleted.iter().any(|id| id.contains("custom_old.eml")), "custom_old must be immune");
+
+        // Check age boundary in Junk:
+        // older (7d + 2s old) -> purged
+        assert!(deleted.iter().any(|id| id.contains("junk_older.eml")), "junk_older should be purged");
+        // younger (7d - 2s old) -> NOT purged
+        assert!(!deleted.iter().any(|id| id.contains("junk_younger.eml")), "junk_younger should NOT be purged");
+        // future date -> NOT purged
+        assert!(!deleted.iter().any(|id| id.contains("junk_future.eml")), "junk_future should NOT be purged");
+        // old RFC3339 -> purged
+        assert!(deleted.iter().any(|id| id.contains("junk_old_rfc3339.eml")), "junk_old_rfc3339 should be purged");
+        // corrupt date in junk -> purged
+        assert!(deleted.iter().any(|id| id.contains("junk_corrupt.eml")), "junk_corrupt should be purged");
+        // missing date in junk -> purged
+        assert!(deleted.iter().any(|id| id.contains("junk_nodate.eml")), "junk_nodate should be purged");
+
+        // Check copy behaviors:
+        // Copy of inbox_old into junk: should be purged (it's in junk and old)
+        let inbox_junk_copy_id = format!("{}::copy::junk", inbox_old_msg.id);
+        assert!(deleted.contains(&inbox_junk_copy_id), "junk copy of inbox_old should be purged");
+        // Original inbox_old remains NOT deleted:
+        assert!(!deleted.contains(&inbox_old_msg.id), "original inbox_old must remain intact");
+
+        // Copy of junk_older into inbox: should NOT be purged (it's in inbox)
+        let junk_inbox_copy_id = format!("{}::copy::inbox", junk_older_msg.id);
+        assert!(!deleted.contains(&junk_inbox_copy_id), "inbox copy of junk_older must NOT be purged");
+        // Original junk_older IS purged:
+        assert!(deleted.contains(&junk_older_msg.id), "original junk_older in junk must be purged");
+
+        // Check folder override with "junk/subfolder":
+        assert!(deleted.iter().any(|id| id.contains("override_sub.eml")), "junk message with override 'junk/subfolder' should be purged");
+
+        // Check filesystem subfolder behavior:
+        let sub1_purged = deleted.iter().any(|id| id.contains("junk_sub.eml"));
+        let sub2_purged = deleted.iter().any(|id| id.contains("junk_sub2.eml"));
+        println!("Subfolder 1 (Junk/subfolder) purged: {sub1_purged}");
+        println!("Subfolder 2 (junk/subfolder2) purged: {sub2_purged}");
+
+        // Now test empty_local_junk_with_retention(0): all remaining junk should be purged
+        let purged_zero = store.empty_local_junk_with_retention(0).expect("purge with 0 days should succeed");
+        println!("Purged count with min_age_days = 0: {purged_zero}");
+        let deleted_after_zero = metadata.load_deleted();
+
+        // Even younger and future junk messages should now be purged
+        assert!(deleted_after_zero.iter().any(|id| id.contains("junk_younger.eml")), "junk_younger should be purged with min_age_days=0");
+        assert!(deleted_after_zero.iter().any(|id| id.contains("junk_future.eml")), "junk_future should be purged with min_age_days=0");
+
+        // Non-junk immunity check again after min_age_days=0
+        assert!(!deleted_after_zero.iter().any(|id| id.contains("inbox_old.eml") && !id.contains("::copy::")), "inbox_old base must remain immune");
+        assert!(!deleted_after_zero.iter().any(|id| id.contains("sent_old.eml")), "sent_old must remain immune");
+        assert!(!deleted_after_zero.iter().any(|id| id.contains("drafts_old.eml")), "drafts_old must remain immune");
+        assert!(!deleted_after_zero.iter().any(|id| id.contains("archive_old.eml")), "archive_old must remain immune");
 
         let _ = fs::remove_dir_all(root);
     }

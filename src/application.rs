@@ -331,15 +331,17 @@ impl EvolutionApplication {
     }
 
     fn apply_style_settings(&self) {
-        let scheme = AppSettings::try_new()
-            .map(|settings| settings.color_scheme())
-            .unwrap_or_else(|| "system".to_string());
-        let color_scheme = match scheme.as_str() {
-            "light" => adw::ColorScheme::ForceLight,
-            "dark" => adw::ColorScheme::ForceDark,
-            _ => adw::ColorScheme::Default,
-        };
-        adw::StyleManager::default().set_color_scheme(color_scheme);
+        if let Some(settings) = AppSettings::try_new() {
+            adw::StyleManager::default().set_color_scheme(settings.adw_color_scheme());
+
+            settings.connect_changed(Some("color-scheme"), move |s, _| {
+                let scheme = s.string("color-scheme");
+                let color_scheme = AppSettings::parse_adw_color_scheme(scheme.as_str());
+                adw::StyleManager::default().set_color_scheme(color_scheme);
+            });
+        } else {
+            adw::StyleManager::default().set_color_scheme(adw::ColorScheme::Default);
+        }
     }
 
     /// Register application-wide actions.
@@ -351,6 +353,9 @@ impl EvolutionApplication {
             self,
             move |_, _| {
                 tracing::info!("Quit action triggered");
+                for window in app.windows() {
+                    window.close();
+                }
                 app.quit();
             }
         ));
@@ -656,8 +661,16 @@ impl EvolutionApplication {
         if self.imp().reminder_check_in_progress.replace(true) {
             return;
         }
+        let settings = AppSettings::try_new();
         let local_calendar_directory =
-            AppSettings::try_new().map(|settings| settings.local_calendar_directory());
+            settings.as_ref().map(|settings| settings.local_calendar_directory());
+        let local_contact_directory =
+            settings.as_ref().map(|settings| settings.local_contact_directory());
+        let use_ba_reminder = settings.as_ref().is_some_and(|s| s.use_ba_reminder());
+        let ba_reminder_offset_seconds = settings
+            .as_ref()
+            .map(|s| s.ba_reminder_offset_seconds())
+            .unwrap_or(900);
         let (sender, receiver) = async_channel::bounded(1);
         std::thread::spawn(move || {
             // Calendar files and reminder state can be large and are not part
@@ -668,7 +681,20 @@ impl EvolutionApplication {
             let now = scheduler.now();
             let snapshot = reminder_service::calendar_store_for_worker(local_calendar_directory)
                 .load_snapshot();
-            let candidates = reminder_service::candidates_from_snapshot(&snapshot, now);
+            let mut candidates = reminder_service::candidates_from_snapshot(&snapshot, now);
+            if use_ba_reminder {
+                let contact_store =
+                    reminder_service::contact_store_for_worker(local_contact_directory);
+                let contacts = contact_store.load_contacts();
+                let ba_candidates = reminder_service::contact_birthday_candidates(
+                    &contacts,
+                    now,
+                    ba_reminder_offset_seconds,
+                );
+                candidates.extend(ba_candidates);
+                candidates.sort_by(|l, r| l.due_at.cmp(&r.due_at).then_with(|| l.key.cmp(&r.key)));
+                candidates.dedup_by(|l, r| l.key == r.key);
+            }
             let result = ReminderStore::new()
                 .and_then(|mut store| scheduler.claim_due_reminders(&mut store, &candidates));
             if let Err(error) = sender.send_blocking(result) {
@@ -706,6 +732,7 @@ impl EvolutionApplication {
                     ReminderKind::Event => "Kalendertermin ist fällig",
                     ReminderKind::Task => "Aufgabe ist fällig",
                     ReminderKind::Memo => "Notiz ist fällig",
+                    ReminderKind::Contact => "Geburtstag oder Jahrestag",
                 };
                 notification.set_body(Some(body));
                 let target = target.to_variant();

@@ -120,6 +120,7 @@ mod imp {
             if let Some(mail_page) = window.mail_page() {
                 mail_page.shutdown_print();
             }
+            window.execute_exit_purge_and_expunge();
             if let Some(settings) = AppSettings::try_new() {
                 settings.set_window_width(window.default_width());
                 settings.set_window_height(window.default_height());
@@ -467,6 +468,7 @@ impl EvolutionWindow {
             ReminderComponentKind::Event => "calendar",
             ReminderComponentKind::Task => "tasks",
             ReminderComponentKind::Memo => "memos",
+            ReminderComponentKind::Contact => "contacts",
         };
         let generation = self.imp().component_open_generation.get().wrapping_add(1);
         self.imp().component_open_generation.set(generation);
@@ -496,6 +498,9 @@ impl EvolutionWindow {
                     page.open_search_result(&identity.source_uid, &identity.component_uid)
                 }),
                 ReminderComponentKind::Memo => window.memos_page().is_some_and(|page| {
+                    page.select_search_result(&identity.source_uid, &identity.component_uid)
+                }),
+                ReminderComponentKind::Contact => window.contacts_page().is_some_and(|page| {
                     page.select_search_result(&identity.source_uid, &identity.component_uid)
                 }),
             };
@@ -952,12 +957,38 @@ impl EvolutionWindow {
         self.watch_mail_transport(operation, action);
     }
 
-    fn drain_transport_queue(&self) {
+    pub(crate) fn drain_transport_queue(&self) {
         let Some(operation) = self.imp().transport_service.start_queued_if_online() else {
             return;
         };
         self.update_transport_presentation(&self.imp().transport_service.snapshot());
         self.watch_mail_transport(operation, MailTransportAction::SendAll);
+    }
+
+    /// Execute configured exit maintenance tasks: junk purge and folder expunge.
+    pub(crate) fn execute_exit_purge_and_expunge(&self) {
+        let settings = AppSettings::try_new();
+        let should_empty_junk = settings.as_ref().is_some_and(|s| s.junk_empty_on_exit());
+        let junk_days = settings.as_ref().map(|s| s.junk_empty_on_exit_days()).unwrap_or(0);
+
+        let accounts = crate::services::account_config_service::AccountConfigStore::from_environment().load();
+        let should_expunge_trash = accounts.iter().any(|p| p.enabled && p.expunge_on_exit);
+
+        if should_empty_junk || should_expunge_trash {
+            let store = crate::services::mail_store_service::MailStoreService::new();
+            if should_empty_junk {
+                match store.empty_local_junk_with_retention(junk_days) {
+                    Ok(count) => tracing::info!("Exit junk purge completed: {count} messages purged"),
+                    Err(err) => tracing::warn!("Exit junk purge failed: {err}"),
+                }
+            }
+            if should_expunge_trash {
+                match store.empty_local_trash() {
+                    Ok(count) => tracing::info!("Exit folder expunge completed: {count} messages purged"),
+                    Err(err) => tracing::warn!("Exit folder expunge failed: {err}"),
+                }
+            }
+        }
     }
 
     fn watch_mail_transport(&self, operation: MailTransportOperation, action: MailTransportAction) {
@@ -1745,18 +1776,12 @@ impl EvolutionWindow {
         let sync_sidebar_position: Rc<dyn Fn(i32)> = {
             let mail_page = mail_page.clone();
             let calendar_bin = calendar_bin.clone();
-            let contacts_bin = contacts_bin.clone();
             let tasks_bin = tasks_bin.clone();
             let memos_bin = memos_bin.clone();
             Rc::new(move |pos: i32| {
                 mail_page.set_sidebar_position(pos);
                 if let Some(child) = calendar_bin.child() {
                     if let Ok(page) = child.downcast::<CalendarPage>() {
-                        page.set_sidebar_position(pos);
-                    }
-                }
-                if let Some(child) = contacts_bin.child() {
-                    if let Ok(page) = child.downcast::<ContactsPage>() {
                         page.set_sidebar_position(pos);
                     }
                 }
@@ -2218,7 +2243,14 @@ impl EvolutionWindow {
             action.connect_activate(glib::clone!(
                 #[weak(rename_to = window)]
                 self,
-                move |_, _| window.start_mail_transport(transport_action)
+                move |_, _| {
+                    if transport_action == MailTransportAction::ReceiveAll
+                        && AppSettings::try_new().map(|s| s.flush_outbox()).unwrap_or(false)
+                    {
+                        window.drain_transport_queue();
+                    }
+                    window.start_mail_transport(transport_action);
+                }
             ));
             self.add_action(&action);
         }
@@ -3187,6 +3219,7 @@ impl EvolutionWindow {
             ("open-event", ReminderComponentKind::Event),
             ("open-task", ReminderComponentKind::Task),
             ("open-memo", ReminderComponentKind::Memo),
+            ("open-contact", ReminderComponentKind::Contact),
         ] {
             let action = gio::SimpleAction::new(name, Some(glib::VariantTy::STRING));
             action.connect_activate(glib::clone!(
@@ -4573,26 +4606,6 @@ mod tests {
         let initial_pos = mail_page.outer_paned().position();
         assert!(initial_pos >= 100 && initial_pos <= 500);
 
-        // Switch to contacts
-        window.set_active_view("contacts");
-        let contacts_bin = stack
-            .child_by_name("contacts")
-            .and_downcast::<adw::Bin>()
-            .expect("contacts bin");
-        let contacts_page = contacts_bin
-            .child()
-            .and_downcast::<ContactsPage>()
-            .expect("contacts page");
-        let contacts_paned = contacts_page.outer_paned().expect("contacts paned");
-        assert_eq!(contacts_paned.position(), initial_pos);
-
-        // Resize sidebar in contacts page
-        contacts_paned.set_position(330);
-        if let Some(settings) = AppSettings::try_new() {
-            settings.set_mail_sidebar_position(330);
-            assert_eq!(settings.mail_sidebar_position(), 330);
-        }
-
         // Switch to calendar
         window.set_active_view("calendar");
         let calendar_bin = stack
@@ -4604,7 +4617,14 @@ mod tests {
             .and_downcast::<CalendarPage>()
             .expect("calendar page");
         let calendar_paned = calendar_page.outer_paned().expect("calendar paned");
-        assert_eq!(calendar_paned.position(), 330);
+        assert_eq!(calendar_paned.position(), initial_pos);
+
+        // Resize sidebar in calendar page
+        calendar_paned.set_position(330);
+        if let Some(settings) = AppSettings::try_new() {
+            settings.set_mail_sidebar_position(330);
+            assert_eq!(settings.mail_sidebar_position(), 330);
+        }
 
         // Switch to tasks
         window.set_active_view("tasks");
@@ -4632,8 +4652,79 @@ mod tests {
         let memos_paned = memos_page.outer_paned().expect("memos paned");
         assert_eq!(memos_paned.position(), 330);
 
+        // Switch to contacts - contacts divider is decoupled from mail_sidebar_position
+        window.set_active_view("contacts");
+        let contacts_bin = stack
+            .child_by_name("contacts")
+            .and_downcast::<adw::Bin>()
+            .expect("contacts bin");
+        let contacts_page = contacts_bin
+            .child()
+            .and_downcast::<ContactsPage>()
+            .expect("contacts page");
+        let contacts_paned = contacts_page.outer_paned().expect("contacts paned");
+        // Contacts paned maintains independent position
+        if let Some(settings) = AppSettings::try_new() {
+            assert_eq!(contacts_paned.position(), settings.contact_hpane_position());
+        }
+
         // Switch back to mail
         window.set_active_view("mail");
         assert_eq!(mail_page.outer_paned().position(), 330);
     }
+
+    #[test]
+    fn execute_exit_purge_and_expunge_runs_when_configured() {
+        let _gtk_lock = GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = gtk_test_main_context() else {
+            return;
+        };
+        let app = EvolutionApplication::new();
+        let window = EvolutionWindow::new(&app);
+
+        // Verify execute_exit_purge_and_expunge executes safely
+        window.execute_exit_purge_and_expunge();
+    }
+
+    #[test]
+    fn stress_test_window_drain_transport_queue_and_actions() {
+        let _gtk_lock = GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(context) = gtk_test_main_context() else {
+            return;
+        };
+        let app = EvolutionApplication::new();
+        let window = EvolutionWindow::new(&app);
+        let Some(settings) = AppSettings::try_new() else {
+            return;
+        };
+
+        // Test rapid repeated invocations of drain_transport_queue
+        for _ in 0..50 {
+            window.drain_transport_queue();
+        }
+        while context.iteration(false) {}
+
+        // Test ReceiveAll action activation with flush-outbox true and false
+        settings.set_flush_outbox(true);
+        gio::prelude::ActionGroupExt::activate_action(&window, "mail-receive-all", None);
+        while context.iteration(false) {}
+
+        settings.set_flush_outbox(false);
+        gio::prelude::ActionGroupExt::activate_action(&window, "mail-receive-all", None);
+        while context.iteration(false) {}
+
+        // Test exit purge repeatedly
+        for _ in 0..10 {
+            window.execute_exit_purge_and_expunge();
+        }
+
+        // Reset
+        settings.set_flush_outbox(true);
+        while context.iteration(false) {}
+    }
 }
+

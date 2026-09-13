@@ -1657,11 +1657,11 @@ fn normal_header_display_name(name: &str) -> &str {
 fn default_normal_header_configuration() -> Vec<(String, bool)> {
     [
         ("From", true),
-        ("Reply-To", false),
+        ("Reply-To", true),
         ("To", true),
         ("Cc", true),
         ("Bcc", true),
-        ("Subject", false),
+        ("Subject", true),
         ("Date", true),
         ("Newsgroups", true),
         ("Face", true),
@@ -4130,6 +4130,21 @@ impl MailPage {
             let page_weak_for_sync_limit = self.downgrade();
             settings.connect_changed(Some("mail-sync-message-limit"), move |_, _| {
                 if let Some(page) = page_weak_for_sync_limit.upgrade() {
+                    page.restart_mail_polling();
+                    page.refresh_mail();
+                }
+            });
+            let page_weak_for_flush_outbox = self.downgrade();
+            settings.connect_changed(Some("flush-outbox"), move |settings, _| {
+                if let Some(page) = page_weak_for_flush_outbox.upgrade() {
+                    if settings.boolean("flush-outbox") {
+                        page.flush_outbox_if_needed();
+                    }
+                }
+            });
+            let page_weak_for_labels = self.downgrade();
+            settings.connect_changed(Some("mail-labels"), move |_, _| {
+                if let Some(page) = page_weak_for_labels.upgrade() {
                     page.refresh_mail();
                 }
             });
@@ -4468,6 +4483,27 @@ impl MailPage {
     /// selection lookup here makes buttons and keyboard actions share exactly
     /// the same message context.
     pub fn reply_selected(&self) -> bool {
+        let style = AppSettings::try_new()
+            .map(|s| s.composer_reply_style())
+            .unwrap_or_else(|| "quoted".to_string());
+        if style == "attach" || style == "attached" {
+            let Some(message) = self.selected_message() else {
+                return false;
+            };
+            let sender = sender_header(&message);
+            let filename = export_filename(&message.subject());
+            let reply_to = message.reply_to();
+            let subject = message.subject();
+            return self.prepare_original_attachment(&message, move |raw| {
+                crate::dialogs::ComposeDialog::reply_to_attached_message(
+                    &sender,
+                    &reply_to,
+                    &subject,
+                    &filename,
+                    raw,
+                )
+            });
+        }
         let Some(message) = self.selected_message() else {
             return false;
         };
@@ -4482,6 +4518,31 @@ impl MailPage {
     }
 
     pub fn reply_all_selected(&self) -> bool {
+        let style = AppSettings::try_new()
+            .map(|s| s.composer_reply_style())
+            .unwrap_or_else(|| "quoted".to_string());
+        if style == "attach" || style == "attached" {
+            let Some(message) = self.selected_message() else {
+                return false;
+            };
+            let sender = sender_header(&message);
+            let filename = export_filename(&message.subject());
+            let reply_to = message.reply_to();
+            let recipient_to = message.recipient_to();
+            let recipient_cc = message.recipient_cc();
+            let subject = message.subject();
+            return self.prepare_original_attachment(&message, move |raw| {
+                crate::dialogs::ComposeDialog::reply_all_attached_message(
+                    &sender,
+                    &reply_to,
+                    &recipient_to,
+                    &recipient_cc,
+                    &subject,
+                    &filename,
+                    raw,
+                )
+            });
+        }
         let Some(message) = self.selected_message() else {
             return false;
         };
@@ -4688,18 +4749,14 @@ impl MailPage {
     }
 
     pub fn forward_selected(&self) -> bool {
-        let Some(message) = self.selected_message() else {
-            return false;
-        };
-        let dialog = crate::dialogs::ComposeDialog::forward_message(
-            &message.subject(),
-            &sender_header(&message),
-            &message.recipient_to(),
-            &message.recipient_cc(),
-            &message.date_str(),
-            &message.html_body(),
-        );
-        self.present_composer(dialog)
+        let style = AppSettings::try_new()
+            .map(|s| s.composer_forward_style())
+            .unwrap_or_else(|| "attached".to_string());
+        match style.as_str() {
+            "inline" => self.forward_inline_selected(),
+            "quoted" => self.forward_quoted_selected(),
+            _ => self.forward_attached_selected(),
+        }
     }
 
     pub fn forward_inline_selected(&self) -> bool {
@@ -8441,6 +8498,9 @@ impl MailPage {
             match result {
                 Ok(Ok(report)) => {
                     page.refresh_mail();
+                    if AppSettings::try_new().map(|s| s.flush_outbox()).unwrap_or(false) {
+                        page.flush_outbox_if_needed();
+                    }
                     if report.matched_messages == 0 {
                         page.show_toast("Keine passenden Nachrichten für aktive Filterregeln");
                     } else {
@@ -16718,6 +16778,21 @@ impl MailPage {
         self.imp().thread_selection_syncing.set(false);
     }
 
+    pub(crate) fn flush_outbox_if_needed(&self) {
+        let Some(settings) = AppSettings::try_new() else {
+            return;
+        };
+        if settings.offline_mode() || !settings.flush_outbox() {
+            return;
+        }
+        if let Some(window) = self.root().and_downcast::<crate::window::EvolutionWindow>() {
+            window.drain_transport_queue();
+        } else {
+            let _ = crate::services::mail_transport_service::MailTransportService::shared()
+                .start_queued_if_online();
+        }
+    }
+
     fn setup_mail_polling(&self) {
         let Some(settings) = AppSettings::try_new() else {
             return;
@@ -16737,6 +16812,9 @@ impl MailPage {
             };
             if !page.imp().mail_loading.get() {
                 page.refresh_mail();
+            }
+            if AppSettings::try_new().map(|s| s.flush_outbox()).unwrap_or(false) {
+                page.flush_outbox_if_needed();
             }
             glib::ControlFlow::Continue
         });
@@ -17288,7 +17366,9 @@ impl MailPage {
             .clone()
             .unwrap_or_else(MailLoadRequest::initial);
         request.offset = 0;
+        request.max_messages_per_folder = configured_mail_page_limit();
         self.start_mail_load(request, true);
+        self.flush_outbox_if_needed();
     }
 
     pub fn reload_mail_accounts(&self) {
@@ -22895,4 +22975,304 @@ mod tests {
         let spam = FolderSelection::from_folder_id("spam");
         assert_eq!(MailPage::format_drawer_folder_status(&spam, 0, 8), "8 junk");
     }
+
+    #[test]
+    fn test_default_normal_header_configuration_matches_schema() {
+        let headers = default_normal_header_configuration();
+        assert!(headers.iter().any(|(name, enabled)| name == "Reply-To" && *enabled));
+        assert!(headers.iter().any(|(name, enabled)| name == "Subject" && *enabled));
+        assert!(headers.iter().any(|(name, enabled)| name == "From" && *enabled));
+        assert!(headers.iter().any(|(name, enabled)| name == "x-evolution-mailer" && !*enabled));
+    }
+
+    #[test]
+    fn test_flush_outbox_if_needed_runs_safely() {
+        let _gtk_lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+        let page = MailPage::new();
+        page.flush_outbox_if_needed();
+    }
+
+    #[test]
+    fn stress_test_scenario_1_rapid_toggle_flush_outbox() {
+        let _gtk_lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+        let page = MailPage::new();
+        let Some(settings) = AppSettings::try_new() else {
+            return;
+        };
+
+        // Phase 1A: Transport is Offline
+        settings.set_offline_mode(true);
+        for i in 0..50 {
+            settings.set_flush_outbox(i % 2 == 0);
+            while context.iteration(false) {}
+            page.flush_outbox_if_needed();
+        }
+
+        // Phase 1B: Transport is Idle (Online, queue empty)
+        settings.set_offline_mode(false);
+        for i in 0..50 {
+            settings.set_flush_outbox(i % 2 == 0);
+            while context.iteration(false) {}
+            page.flush_outbox_if_needed();
+        }
+
+        // Phase 1C: Transport is in Sending state
+        let transport = crate::services::mail_transport_service::MailTransportService::shared();
+        let _ = transport.enqueue_message(
+            "stress-msg-toggle-1",
+            "test-source",
+            b"Subject: Stress Toggle Test\r\n\r\nTest payload",
+        );
+        let _op = transport.start(crate::services::mail_transport_service::MailTransportAction::SendAll);
+        for i in 0..50 {
+            settings.set_flush_outbox(i % 2 == 0);
+            while context.iteration(false) {}
+            page.flush_outbox_if_needed();
+        }
+        while context.iteration(false) {}
+
+        // Reset to canonical defaults
+        settings.set_offline_mode(false);
+        settings.set_flush_outbox(true);
+        while context.iteration(false) {}
+    }
+
+    #[test]
+    fn stress_test_scenario_2_rapid_mutation_polling_interval() {
+        let _gtk_lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+        let page = MailPage::new();
+        let Some(settings) = AppSettings::try_new() else {
+            return;
+        };
+
+        // Ensure we are online
+        settings.set_offline_mode(false);
+        while context.iteration(false) {}
+
+        let test_intervals = [0, 10, 300, 86400, 0, 15, 60, 0, 300];
+        for _cycle in 0..5 {
+            for &interval in &test_intervals {
+                settings.set_mail_sync_interval_seconds(interval);
+                while context.iteration(false) {}
+
+                if interval == 0 {
+                    assert!(
+                        page.imp().mail_sync_source.borrow().is_none(),
+                        "Interval 0 must cancel polling timer and leave mail_sync_source as None"
+                    );
+                } else {
+                    assert!(
+                        page.imp().mail_sync_source.borrow().is_some(),
+                        "Interval {interval} must schedule exactly one active timer source"
+                    );
+                }
+            }
+        }
+
+        // Test transitions to and from offline mode
+        settings.set_offline_mode(true);
+        while context.iteration(false) {}
+        assert!(
+            page.imp().mail_sync_source.borrow().is_none(),
+            "Offline mode must remove polling timer source"
+        );
+
+        settings.set_offline_mode(false);
+        while context.iteration(false) {}
+        assert!(
+            page.imp().mail_sync_source.borrow().is_some(),
+            "Returning online must restore polling timer source"
+        );
+
+        // Reset to canonical default (300s)
+        settings.set_mail_sync_interval_seconds(300);
+        while context.iteration(false) {}
+    }
+
+    #[test]
+    fn stress_test_scenario_3_rapid_mutation_message_limit() {
+        let _gtk_lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+        let page = MailPage::new();
+        let Some(settings) = AppSettings::try_new() else {
+            return;
+        };
+
+        let test_limits = [25, 50, 100, 250, 500, 1000, 0, 1, 10, 24, 1001, 5000, 10000];
+        for _cycle in 0..4 {
+            for &limit in &test_limits {
+                settings.set_mail_sync_message_limit(limit);
+                while context.iteration(false) {}
+
+                let configured = configured_mail_page_limit();
+                assert!(
+                    (25..=1000).contains(&configured),
+                    "Configured mail limit {configured} must be clamped to [25, 1000]"
+                );
+
+                let req = page.imp().active_request.borrow().clone();
+                if let Some(r) = req {
+                    assert_eq!(
+                        r.max_messages_per_folder, configured,
+                        "Active request must immediately reflect updated limit {configured}"
+                    );
+                }
+            }
+        }
+
+        // Process any pending worker responses
+        for _ in 0..20 {
+            context.iteration(false);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        while context.iteration(false) {}
+
+        // Reset to default
+        settings.set_mail_sync_message_limit(100);
+        while context.iteration(false) {}
+    }
+
+    #[test]
+    fn stress_test_scenario_4_headless_and_mock_fallback_flush_outbox() {
+        let _gtk_lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+        let Some(settings) = AppSettings::try_new() else {
+            return;
+        };
+
+        // Part 1: Headless (unparented) MailPage
+        let headless_page = MailPage::new();
+        assert!(
+            headless_page.root().is_none(),
+            "Fresh MailPage must have no root widget in headless mode"
+        );
+
+        // Verify headless execution under all combinations of settings
+        settings.set_offline_mode(true);
+        settings.set_flush_outbox(false);
+        headless_page.flush_outbox_if_needed();
+
+        settings.set_offline_mode(true);
+        settings.set_flush_outbox(true);
+        headless_page.flush_outbox_if_needed();
+
+        settings.set_offline_mode(false);
+        settings.set_flush_outbox(false);
+        headless_page.flush_outbox_if_needed();
+
+        settings.set_offline_mode(false);
+        settings.set_flush_outbox(true);
+        headless_page.flush_outbox_if_needed();
+
+        // Part 2: Headless queue drain with queued item
+        let transport = crate::services::mail_transport_service::MailTransportService::shared();
+        let _ = transport.enqueue_message(
+            "stress-msg-headless-1",
+            "test-source",
+            b"Subject: Headless Flush Test\r\n\r\nBody",
+        );
+        headless_page.flush_outbox_if_needed();
+        while context.iteration(false) {}
+
+        // Part 3: Multiple rapid consecutive calls (simulating polling + filter triggers)
+        for _ in 0..20 {
+            headless_page.flush_outbox_if_needed();
+        }
+        while context.iteration(false) {}
+
+        // Part 4: Window-parented execution
+        let app = crate::application::EvolutionApplication::new();
+        let window = crate::window::EvolutionWindow::new(&app);
+        window.drain_transport_queue();
+
+        for _ in 0..20 {
+            window.drain_transport_queue();
+        }
+        while context.iteration(false) {}
+
+        // Reset settings
+        settings.set_offline_mode(false);
+        settings.set_flush_outbox(true);
+        while context.iteration(false) {}
+    }
+
+    #[test]
+    fn test_feature_19_mail_page_forward_and_reply_selected_dispatch() {
+        let _gtk_lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+        let page = MailPage::new();
+        let Some(settings) = AppSettings::try_new() else {
+            return;
+        };
+
+        // 1. Forward selected without selection under all forward style permutations
+        let forward_styles = [
+            "attached", "ATTACHED", "Attached", " attached ",
+            "attach", "ATTACH",
+            "inline", "INLINE", "Inline", " inline ",
+            "quoted", "QUOTED", "Quoted", " quoted ",
+            "invalid", "", "xyz",
+        ];
+        for style in forward_styles {
+            settings.set_composer_forward_style(style);
+            while context.iteration(false) {}
+            // Without selection, each forward variant must safely return false
+            assert!(!page.forward_selected(), "forward_selected must return false when no message is selected ({style})");
+            assert!(!page.forward_inline_selected(), "forward_inline_selected must return false ({style})");
+            assert!(!page.forward_quoted_selected(), "forward_quoted_selected must return false ({style})");
+            assert!(!page.forward_attached_selected(), "forward_attached_selected must return false ({style})");
+        }
+
+        // 2. Reply selected without selection under all reply style permutations
+        let reply_styles = [
+            "quoted", "QUOTED", "Quoted", " quoted ",
+            "inline", "INLINE", "Inline", " inline ",
+            "attach", "ATTACH", "Attach", " attach ",
+            "attached", "ATTACHED", "Attached", " attached ",
+            "do-not-quote", "DO-NOT-QUOTE", "Do-Not-Quote", " do-not-quote ",
+            "none", "NONE", "None", " none ",
+            "invalid", "", "xyz",
+        ];
+        for style in reply_styles {
+            settings.set_composer_reply_style(style);
+            while context.iteration(false) {}
+            // Without selection, each reply variant must safely return false
+            assert!(!page.reply_selected(), "reply_selected must return false when no message is selected ({style})");
+            assert!(!page.reply_all_selected(), "reply_all_selected must return false when no message is selected ({style})");
+        }
+
+        // Reset settings
+        settings.set_composer_reply_style("quoted");
+        settings.set_composer_forward_style("attached");
+        while context.iteration(false) {}
+    }
 }
+
+
