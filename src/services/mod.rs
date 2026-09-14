@@ -51,11 +51,16 @@ pub mod template_store_service;
 pub mod vcard_service;
 pub mod macos_integration_service;
 pub mod autodiscover_service;
+pub mod certificate_service;
 pub mod credential_service;
 pub mod portable_mail_engine;
 
 pub use autodiscover_service::{
     AutodiscoverService, DiscoveredAccountConfig, DiscoveryTier, ServerConfig, TlsMode,
+};
+pub use certificate_service::{
+    CertCategory, CertExportFormat, CertFormat, CertType, CertificateRecord, CertificateService,
+    CertificateStore, KeyUsageFlags, OpenPgpKeyRecord, TrustLevel, X509Parser,
 };
 pub use calendar_store_service::CalendarStoreService;
 pub use contact_store_service::ContactStoreService;

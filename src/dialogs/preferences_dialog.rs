@@ -4789,16 +4789,22 @@ impl PreferencesDialog {
         }
         group_crypto.add(&row_pgp_key);
 
-        let row_smime_signer = smime_file_row(
-            "S/MIME-Signaturzertifikat",
-            "PEM- oder DER-Zertifikat für ausgehende Signaturen",
-            settings
-                .as_ref()
-                .map(|settings| settings.smime_signer_certificate())
-                .unwrap_or_default(),
-            settings.clone(),
-            AppSettings::set_smime_signer_certificate,
-        );
+        let signer_model = gtk::StringList::new(&["Nicht festgelegt"]);
+        let signer_certs: Rc<RefCell<Vec<crate::services::certificate_service::CertificateRecord>>> =
+            Rc::new(RefCell::new(Vec::new()));
+        let row_smime_signer = adw::ComboRow::builder()
+            .title("S/MIME-Signaturzertifikat")
+            .subtitle("PEM- oder DER-Zertifikat für ausgehende Signaturen (aus Speicher oder Datei)")
+            .model(&signer_model)
+            .build();
+
+        let btn_choose_signer = gtk::Button::builder()
+            .icon_name("document-open-symbolic")
+            .tooltip_text("Aus externer Datei wählen…")
+            .css_classes(vec!["flat"])
+            .valign(gtk::Align::Center)
+            .build();
+        row_smime_signer.add_suffix(&btn_choose_signer);
         group_crypto.add(&row_smime_signer);
 
         let row_smime_private_key = smime_file_row(
@@ -4825,17 +4831,270 @@ impl PreferencesDialog {
         );
         group_crypto.add(&row_smime_recipients);
 
-        let row_smime_ca = smime_file_row(
-            "S/MIME-Vertrauensspeicher (optional)",
-            "CA-Bundle für die Vertrauensprüfung; ohne Angabe wird nur die Signaturmathematik geprüft",
-            settings
-                .as_ref()
-                .map(|settings| settings.smime_ca_file())
-                .unwrap_or_default(),
-            settings.clone(),
-            AppSettings::set_smime_ca_file,
-        );
+        let ca_model = gtk::StringList::new(&["System-Vertrauensspeicher (Standard)"]);
+        let ca_certs: Rc<RefCell<Vec<crate::services::certificate_service::CertificateRecord>>> =
+            Rc::new(RefCell::new(Vec::new()));
+        let row_smime_ca = adw::ComboRow::builder()
+            .title("S/MIME-Vertrauensspeicher (optional)")
+            .subtitle("CA-Bundle für die Vertrauensprüfung; ohne Angabe wird der System-Truststore verwendet")
+            .model(&ca_model)
+            .build();
+
+        let btn_choose_ca = gtk::Button::builder()
+            .icon_name("document-open-symbolic")
+            .tooltip_text("Aus externer Datei wählen…")
+            .css_classes(vec!["flat"])
+            .valign(gtk::Align::Center)
+            .build();
+        row_smime_ca.add_suffix(&btn_choose_ca);
         group_crypto.add(&row_smime_ca);
+
+        let updating_signer_selection = Rc::new(RefCell::new(false));
+        if let Some(settings) = settings.clone() {
+            let signer_certs_sel = Rc::clone(&signer_certs);
+            let settings_sel = settings.clone();
+            let updating = Rc::clone(&updating_signer_selection);
+            row_smime_signer.connect_selected_notify(move |row| {
+                if *updating.borrow() {
+                    return;
+                }
+                let idx = row.selected();
+                if idx == 0 {
+                    settings_sel.set_smime_signer_certificate("");
+                } else if let Some(cert) = signer_certs_sel.borrow().get(idx as usize - 1) {
+                    let cert_path = cert
+                        .cert_path
+                        .as_ref()
+                        .map(|p| p.to_string_lossy().to_string())
+                        .unwrap_or_else(|| cert.id.clone());
+                    settings_sel.set_smime_signer_certificate(&cert_path);
+                    if cert.has_private_key {
+                        if let Some(key_path) = &cert.private_key_path {
+                            let key_str = key_path.to_string_lossy().to_string();
+                            settings_sel.set_smime_private_key(&key_str);
+                        }
+                    }
+                }
+            });
+        }
+
+        let updating_ca_selection = Rc::new(RefCell::new(false));
+        if let Some(settings) = settings.clone() {
+            let ca_certs_sel = Rc::clone(&ca_certs);
+            let settings_sel = settings.clone();
+            let updating = Rc::clone(&updating_ca_selection);
+            row_smime_ca.connect_selected_notify(move |row| {
+                if *updating.borrow() {
+                    return;
+                }
+                let idx = row.selected();
+                if idx == 0 {
+                    settings_sel.set_smime_ca_file("");
+                } else if let Some(ca) = ca_certs_sel.borrow().get(idx as usize - 1) {
+                    let ca_path = ca
+                        .cert_path
+                        .as_ref()
+                        .map(|p| p.to_string_lossy().to_string())
+                        .unwrap_or_else(|| ca.id.clone());
+                    settings_sel.set_smime_ca_file(&ca_path);
+                }
+            });
+        }
+
+        let settings_for_signer_file = settings.clone();
+        let row_smime_signer_for_file = row_smime_signer.downgrade();
+        let signer_model_for_file = signer_model.clone();
+        btn_choose_signer.connect_clicked(move |button| {
+            let Some(root) = button.root().and_downcast::<gtk::Window>() else { return; };
+            let file_dialog = gtk::FileDialog::builder()
+                .title("S/MIME-Signaturzertifikat auswählen")
+                .modal(true)
+                .build();
+            let settings = settings_for_signer_file.clone();
+            let row_weak = row_smime_signer_for_file.clone();
+            let model = signer_model_for_file.clone();
+            file_dialog.open(Some(&root), None::<&gio::Cancellable>, move |result| {
+                let Ok(file) = result else { return; };
+                let Some(path) = file.path() else { return };
+                let path_str = path.to_string_lossy().into_owned();
+                if let Some(settings) = settings.as_ref() {
+                    settings.set_smime_signer_certificate(&path_str);
+                }
+                let label = format!("Datei: {path_str}");
+                model.append(&label);
+                if let Some(row) = row_weak.upgrade() {
+                    row.set_selected(model.n_items() - 1);
+                }
+            });
+        });
+
+        let settings_for_ca_file = settings.clone();
+        let row_smime_ca_for_file = row_smime_ca.downgrade();
+        let ca_model_for_file = ca_model.clone();
+        btn_choose_ca.connect_clicked(move |button| {
+            let Some(root) = button.root().and_downcast::<gtk::Window>() else { return; };
+            let file_dialog = gtk::FileDialog::builder()
+                .title("S/MIME-Vertrauensspeicher (CA) auswählen")
+                .modal(true)
+                .build();
+            let settings = settings_for_ca_file.clone();
+            let row_weak = row_smime_ca_for_file.clone();
+            let model = ca_model_for_file.clone();
+            file_dialog.open(Some(&root), None::<&gio::Cancellable>, move |result| {
+                let Ok(file) = result else { return; };
+                let Some(path) = file.path() else { return };
+                let path_str = path.to_string_lossy().into_owned();
+                if let Some(settings) = settings.as_ref() {
+                    settings.set_smime_ca_file(&path_str);
+                }
+                let label = format!("Datei: {path_str}");
+                model.append(&label);
+                if let Some(row) = row_weak.upgrade() {
+                    row.set_selected(model.n_items() - 1);
+                }
+            });
+        });
+
+        let refresh_smime_selectors = {
+            let signer_model = signer_model.clone();
+            let ca_model = ca_model.clone();
+            let signer_certs = Rc::clone(&signer_certs);
+            let ca_certs = Rc::clone(&ca_certs);
+            let row_smime_signer_weak = row_smime_signer.downgrade();
+            let row_smime_ca_weak = row_smime_ca.downgrade();
+            let updating_signer = Rc::clone(&updating_signer_selection);
+            let updating_ca = Rc::clone(&updating_ca_selection);
+            let settings = settings.clone();
+
+            Rc::new(move || {
+                // 1. Reload personal certs
+                let personal = crate::services::certificate_service::CertificateService::list_certificates(
+                    crate::services::certificate_service::CertCategory::Personal,
+                );
+                let mut signer_labels = vec!["Nicht festgelegt".to_string()];
+                for cert in &personal {
+                    let label = if !cert.subject_email.is_empty() {
+                        format!("{} <{}>", cert.subject_cn, cert.subject_email)
+                    } else {
+                        cert.display_name.clone()
+                    };
+                    signer_labels.push(label);
+                }
+
+                let current_signer = settings.as_ref().map(|s| s.smime_signer_certificate()).unwrap_or_default();
+                let mut selected_signer_idx = 0u32;
+                if !current_signer.is_empty() {
+                    let mut matched = false;
+                    for (i, cert) in personal.iter().enumerate() {
+                        let path = cert.cert_path.as_ref().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
+                        if current_signer == path || current_signer == cert.id || current_signer == cert.raw_pem {
+                            selected_signer_idx = i as u32 + 1;
+                            matched = true;
+                            break;
+                        }
+                    }
+                    if !matched {
+                        signer_labels.push(format!("Datei: {current_signer}"));
+                        selected_signer_idx = (signer_labels.len() - 1) as u32;
+                    }
+                }
+
+                *signer_certs.borrow_mut() = personal;
+                let signer_refs: Vec<&str> = signer_labels.iter().map(|s| s.as_str()).collect();
+                signer_model.splice(0, signer_model.n_items(), &signer_refs);
+
+                *updating_signer.borrow_mut() = true;
+                if let Some(row) = row_smime_signer_weak.upgrade() {
+                    row.set_selected(selected_signer_idx);
+                }
+                *updating_signer.borrow_mut() = false;
+
+                // 2. Reload CA certs
+                let authorities = crate::services::certificate_service::CertificateService::list_certificates(
+                    crate::services::certificate_service::CertCategory::Authority,
+                );
+                let mut ca_labels = vec!["System-Vertrauensspeicher (Standard)".to_string()];
+                for ca in &authorities {
+                    let label = if !ca.issuer_org.is_empty() {
+                        format!("{} ({})", ca.subject_cn, ca.issuer_org)
+                    } else {
+                        ca.display_name.clone()
+                    };
+                    ca_labels.push(label);
+                }
+
+                let current_ca = settings.as_ref().map(|s| s.smime_ca_file()).unwrap_or_default();
+                let mut selected_ca_idx = 0u32;
+                if !current_ca.is_empty() {
+                    let mut matched = false;
+                    for (i, ca) in authorities.iter().enumerate() {
+                        let path = ca.cert_path.as_ref().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
+                        if current_ca == path || current_ca == ca.id {
+                            selected_ca_idx = i as u32 + 1;
+                            matched = true;
+                            break;
+                        }
+                    }
+                    if !matched {
+                        ca_labels.push(format!("Datei: {current_ca}"));
+                        selected_ca_idx = (ca_labels.len() - 1) as u32;
+                    }
+                }
+
+                *ca_certs.borrow_mut() = authorities;
+                let ca_refs: Vec<&str> = ca_labels.iter().map(|s| s.as_str()).collect();
+                ca_model.splice(0, ca_model.n_items(), &ca_refs);
+
+                *updating_ca.borrow_mut() = true;
+                if let Some(row) = row_smime_ca_weak.upgrade() {
+                    row.set_selected(selected_ca_idx);
+                }
+                *updating_ca.borrow_mut() = false;
+            })
+        };
+
+        refresh_smime_selectors();
+
+        // ── Certificate Manager Entry Point ──────────────────────────────────
+        let group_cert_management = adw::PreferencesGroup::builder()
+            .title("Zertifikatsverwaltung")
+            .description("S/MIME- und OpenPGP-Zertifikate sowie Zertifizierungsstellen (CA) verwalten")
+            .build();
+
+        let row_cert_manager = adw::ActionRow::builder()
+            .title("Zertifikate und Vertrauensstellungen verwalten…")
+            .subtitle("Eigene Zertifikate, Kontakte und Zertifizierungsstellen anzeigen, importieren und exportieren")
+            .activatable(true)
+            .build();
+        let cert_mgr_icon = gtk::Image::from_icon_name("security-high-symbolic");
+        row_cert_manager.add_prefix(&cert_mgr_icon);
+
+        let btn_cert_manager = gtk::Button::builder()
+            .label("Zertifikate verwalten…")
+            .icon_name("credentials-symbolic")
+            .css_classes(vec!["suggested-action"])
+            .valign(gtk::Align::Center)
+            .build();
+        row_cert_manager.add_suffix(&btn_cert_manager);
+        group_cert_management.add(&row_cert_manager);
+
+        let self_weak_for_mgr = self.downgrade();
+        let refresh_on_close = Rc::clone(&refresh_smime_selectors);
+        let open_cert_manager = move || {
+            let Some(pref_dialog) = self_weak_for_mgr.upgrade() else { return; };
+            let root_win = pref_dialog.root().and_downcast::<gtk::Window>();
+            let mgr_dialog = crate::dialogs::CertificateManagerDialog::new(root_win.as_ref());
+            let refresh_cb = Rc::clone(&refresh_on_close);
+            mgr_dialog.connect_close_request(move |_| {
+                refresh_cb();
+                glib::Propagation::Proceed
+            });
+            mgr_dialog.present();
+        };
+
+        let open_mgr_clone = open_cert_manager.clone();
+        btn_cert_manager.connect_clicked(move |_| open_mgr_clone());
+        row_cert_manager.connect_activated(move |_| open_cert_manager());
 
         // GnuPG's machine-readable listing is loaded off the GTK main thread;
         // signing remains unavailable until the user has an actual key in the
@@ -4881,6 +5140,7 @@ impl PreferencesDialog {
         let page_certificates = adw::PreferencesPage::builder()
             .title("Certificates")
             .build();
+        page_certificates.add(&group_cert_management);
         page_certificates.add(&group_crypto);
 
         // ── Construct 2-Column Sidebar + Top Horizontal Sub-Tabs Layout ──────
@@ -7776,5 +8036,7 @@ mod tests {
         while context.iteration(false) {}
     }
 }
+
+
 
 

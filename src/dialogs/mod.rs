@@ -13,6 +13,7 @@ pub mod account_setup_dialog;
 pub mod advanced_search_dialog;
 pub mod availability_dialog;
 pub mod calendar_purge_dialog;
+pub mod certificate_manager_dialog;
 pub mod compose_dialog;
 pub mod contact_dialog;
 pub mod contact_search_dialog;
@@ -39,6 +40,10 @@ pub use account_setup_dialog::AccountSetupDialog;
 pub use advanced_search_dialog::AdvancedSearchDialog;
 pub use availability_dialog::AvailabilityDialog;
 pub use calendar_purge_dialog::CalendarPurgeDialog;
+pub use certificate_manager_dialog::{
+    CertificateDetailsDialog, CertificateManagerDialog, CertificateTrustDialog,
+    PassphrasePromptDialog,
+};
 pub use compose_dialog::ComposeDialog;
 pub use contact_dialog::ContactDialog;
 pub use contact_search_dialog::ContactSearchDialog;
