@@ -50,7 +50,11 @@ pub mod snippet_store_service;
 pub mod template_store_service;
 pub mod vcard_service;
 pub mod macos_integration_service;
+pub mod autodiscover_service;
 
+pub use autodiscover_service::{
+    AutodiscoverService, DiscoveredAccountConfig, DiscoveryTier, ServerConfig, TlsMode,
+};
 pub use calendar_store_service::CalendarStoreService;
 pub use contact_store_service::ContactStoreService;
 pub use mail_store_service::MailStoreService;

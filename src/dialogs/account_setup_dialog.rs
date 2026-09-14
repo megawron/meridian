@@ -28,6 +28,10 @@ mod imp {
         pub sidebar_list: RefCell<Option<gtk::ListBox>>,
         pub view_stack: RefCell<Option<adw::ViewStack>>,
         pub split_view: RefCell<Option<adw::NavigationSplitView>>,
+        pub discovery_generation: std::cell::Cell<u64>,
+        pub discovery_cancellation: RefCell<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>>,
+        pub debounce_source: RefCell<Option<glib::SourceId>>,
+        pub last_discovered_email: RefCell<String>,
     }
 
     #[glib::object_subclass]
@@ -65,7 +69,17 @@ mod imp {
     }
 
     impl WidgetImpl for AccountSetupDialog {}
-    impl WindowImpl for AccountSetupDialog {}
+    impl WindowImpl for AccountSetupDialog {
+        fn close_request(&self) -> glib::Propagation {
+            if let Some(cancellation) = self.discovery_cancellation.borrow().as_ref() {
+                cancellation.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+            if let Some(source) = self.debounce_source.borrow_mut().take() {
+                source.remove();
+            }
+            self.parent_close_request()
+        }
+    }
     impl AdwWindowImpl for AccountSetupDialog {}
 }
 
@@ -74,6 +88,36 @@ glib::wrapper! {
         @extends adw::Window, gtk::Window, gtk::Widget,
         @implements gtk::Accessible, gtk::Buildable, gtk::ConstraintTarget,
                     gtk::Native, gtk::Root, gtk::ShortcutManager;
+}
+
+/// Validates whether an email string is syntactically complete and eligible for autodiscovery.
+pub(crate) fn is_discovery_candidate(value: &str) -> Option<(&str, &str)> {
+    let trimmed = value.trim();
+    if trimmed.chars().filter(|&c| c == '@').count() != 1 {
+        return None;
+    }
+    let (local, domain) = trimmed.split_once('@')?;
+    let local = local.trim();
+    let domain = domain.trim();
+
+    if local.is_empty()
+        || domain.is_empty()
+        || trimmed.chars().any(char::is_whitespace)
+        || !domain.contains('.')
+        || domain.starts_with('.')
+        || domain.ends_with('.')
+        || domain.contains("..")
+    {
+        return None;
+    }
+
+    // TLD must have at least 2 characters (e.g. .de, .com, .org)
+    let tld = domain.rsplit('.').next()?;
+    if tld.len() < 2 {
+        return None;
+    }
+
+    Some((local, domain))
 }
 
 impl AccountSetupDialog {
@@ -546,7 +590,38 @@ impl AccountSetupDialog {
         group_user.add(&row_fullname);
 
         let row_email = adw::EntryRow::builder().title("E-Mail-Adresse").build();
+
+        // ── Autodiscover Status Indicator & Spinner ───────────────────────────
+        let discovery_spinner = gtk::Spinner::builder()
+            .spinning(false)
+            .visible(false)
+            .valign(gtk::Align::Center)
+            .tooltip_text("Servereinstellungen werden ermittelt…")
+            .build();
+        row_email.add_suffix(&discovery_spinner);
         group_user.add(&row_email);
+
+        let row_discovery_status = adw::ActionRow::builder()
+            .title("Servereinstellungen")
+            .subtitle("Geben Sie Ihre E-Mail-Adresse ein, um Einstellungen automatisch zu ermitteln")
+            .visible(false)
+            .build();
+        let icon_discovery = gtk::Image::builder()
+            .icon_name("network-server-symbolic")
+            .pixel_size(16)
+            .valign(gtk::Align::Center)
+            .build();
+        row_discovery_status.add_prefix(&icon_discovery);
+
+        let btn_redetect = gtk::Button::builder()
+            .icon_name("view-refresh-symbolic")
+            .valign(gtk::Align::Center)
+            .has_frame(false)
+            .tooltip_text("Servereinstellungen erneut ermitteln")
+            .visible(false)
+            .build();
+        row_discovery_status.add_suffix(&btn_redetect);
+        group_user.add(&row_discovery_status);
 
         // 1c. Optional Information (ExpanderRow to keep UI calm and non-overwhelming)
         let expander_optional = adw::ExpanderRow::builder()
@@ -624,13 +699,6 @@ impl AccountSetupDialog {
             }
         });
 
-        let lbl_email_clone = lbl_email.clone();
-        row_email.connect_changed(move |entry| {
-            let t = entry.text();
-            if !t.is_empty() {
-                lbl_email_clone.set_label(&t);
-            }
-        });
 
         let lbl_badge_clone = lbl_badge.clone();
         combo_type.connect_selected_notify(move |combo| {
@@ -1205,6 +1273,268 @@ impl AccountSetupDialog {
         // Set initial sidebar selection
         sidebar_list.select_row(Some(&row_nav_identity));
 
+        // ─────────────────────────────────────────────────────────────────────
+        // ── AUTODISCOVER SERVICE & DEBOUNCING WIRING ─────────────────────────
+        // ─────────────────────────────────────────────────────────────────────
+        if let Some(ref profile) = edit_profile {
+            self.imp().last_discovered_email.replace(profile.email.clone());
+        }
+
+        let run_discovery = {
+            let dialog_weak = self.downgrade();
+            let row_imap_host = row_imap_host.clone();
+            let row_imap_port = row_imap_port.clone();
+            let row_smtp_host = row_smtp_host.clone();
+            let row_smtp_port = row_smtp_port.clone();
+            let row_security = row_security.clone();
+            let row_username = row_username.clone();
+            let row_fullname = row_fullname.clone();
+            let combo_type = combo_type.clone();
+            let discovery_spinner = discovery_spinner.clone();
+            let row_discovery_status = row_discovery_status.clone();
+            let icon_discovery = icon_discovery.clone();
+            let btn_redetect = btn_redetect.clone();
+            let lbl_status = lbl_status.clone();
+            let avatar = avatar.clone();
+            let lbl_name = lbl_name.clone();
+
+            move |email: String, generation: u64| {
+                let Some(dialog) = dialog_weak.upgrade() else { return; };
+                if dialog.imp().discovery_generation.get() != generation {
+                    return;
+                }
+
+                let domain = email.split_once('@').map(|(_, d)| d).unwrap_or("").to_string();
+                dialog.imp().last_discovered_email.replace(email.clone());
+
+                // UI feedback: in progress
+                discovery_spinner.set_visible(true);
+                discovery_spinner.start();
+                row_discovery_status.set_visible(true);
+                row_discovery_status.set_title("Suche Servereinstellungen…");
+                row_discovery_status.set_subtitle(&format!("Einstellungen für „{domain}“ werden gesucht…"));
+                icon_discovery.set_icon_name(Some("network-transmit-receive-symbolic"));
+                icon_discovery.remove_css_class("accent");
+                btn_redetect.set_visible(false);
+                lbl_status.set_label(&format!("Ermittle Einstellungen für {domain}…"));
+
+                // Setup cancellation
+                let cancellation = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                dialog.imp().discovery_cancellation.replace(Some(cancellation.clone()));
+
+                let (tx, rx) = async_channel::bounded::<(u64, Result<crate::services::autodiscover_service::DiscoveredAccountConfig, String>)>(1);
+                let email_for_worker = email.clone();
+                let cancellation_for_worker = cancellation.clone();
+
+                std::thread::spawn(move || {
+                    if cancellation_for_worker.load(std::sync::atomic::Ordering::Relaxed) {
+                        return;
+                    }
+                    let result = crate::services::autodiscover_service::AutodiscoverService::discover_cancelable(
+                        &email_for_worker,
+                        &cancellation_for_worker,
+                    );
+                    if cancellation_for_worker.load(std::sync::atomic::Ordering::Relaxed) {
+                        return;
+                    }
+                    let _ = tx.send_blocking((generation, result));
+                });
+
+                let dialog_weak_inner = dialog.downgrade();
+                let row_imap_host_clone = row_imap_host.clone();
+                let row_imap_port_clone = row_imap_port.clone();
+                let row_smtp_host_clone = row_smtp_host.clone();
+                let row_smtp_port_clone = row_smtp_port.clone();
+                let row_security_clone = row_security.clone();
+                let row_username_clone = row_username.clone();
+                let row_fullname_clone = row_fullname.clone();
+                let combo_type_clone = combo_type.clone();
+                let discovery_spinner_clone = discovery_spinner.clone();
+                let row_discovery_status_clone = row_discovery_status.clone();
+                let icon_discovery_clone = icon_discovery.clone();
+                let btn_redetect_clone = btn_redetect.clone();
+                let lbl_status_clone = lbl_status.clone();
+                let avatar_clone = avatar.clone();
+                let lbl_name_clone = lbl_name.clone();
+
+                glib::spawn_future_local(async move {
+                    if let Ok((res_gen, result)) = rx.recv().await {
+                        let Some(dialog) = dialog_weak_inner.upgrade() else { return; };
+                        if dialog.imp().discovery_generation.get() != res_gen {
+                            return; // Obsolete generation dropped
+                        }
+
+                        discovery_spinner_clone.stop();
+                        discovery_spinner_clone.set_visible(false);
+                        btn_redetect_clone.set_visible(true);
+
+                        match result {
+                            Ok(config) => {
+                                // Auto-fill incoming server
+                                row_imap_host_clone.set_text(config.imap_host());
+                                row_imap_port_clone.set_text(&config.imap_port().to_string());
+                                row_security_clone.set_selected(config.incoming_tls_mode().row_security_index());
+
+                                // Auto-fill outgoing server
+                                row_smtp_host_clone.set_text(config.smtp_host());
+                                row_smtp_port_clone.set_text(&config.smtp_port().to_string());
+
+                                // Auto-fill username with template substitution
+                                row_username_clone.set_text(&config.resolved_username());
+
+                                // Suggest display name if empty
+                                if row_fullname_clone.text().trim().is_empty() && !config.display_name.is_empty() {
+                                    row_fullname_clone.set_text(&config.display_name);
+                                    lbl_name_clone.set_label(&config.display_name);
+                                    avatar_clone.set_text(Some(&config.display_name));
+                                }
+
+                                // Ensure standard IMAP/SMTP protocol selected
+                                if combo_type_clone.selected() != 0 {
+                                    combo_type_clone.set_selected(0);
+                                }
+
+                                // Status feedback
+                                row_discovery_status_clone.set_visible(true);
+                                row_discovery_status_clone.set_title("Servereinstellungen gefunden");
+                                row_discovery_status_clone.set_subtitle(&format!(
+                                    "✓ Konfiguration für {} automatisch übernommen (IMAP: {}:{}, SMTP: {}:{})",
+                                    config.display_name,
+                                    config.imap_host(),
+                                    config.imap_port(),
+                                    config.smtp_host(),
+                                    config.smtp_port()
+                                ));
+                                icon_discovery_clone.set_icon_name(Some("emblem-ok-symbolic"));
+                                icon_discovery_clone.add_css_class("accent");
+                                lbl_status_clone.set_label("Servereinstellungen ermittelt");
+                            }
+                            Err(_err) => {
+                                // Graceful fallback to heuristic defaults for empty fields
+                                if row_imap_host_clone.text().trim().is_empty() {
+                                    row_imap_host_clone.set_text(&format!("imap.{domain}"));
+                                    row_imap_port_clone.set_text("993");
+                                    row_security_clone.set_selected(0);
+                                }
+                                if row_smtp_host_clone.text().trim().is_empty() {
+                                    row_smtp_host_clone.set_text(&format!("smtp.{domain}"));
+                                    row_smtp_port_clone.set_text("587");
+                                }
+                                if row_username_clone.text().trim().is_empty() {
+                                    row_username_clone.set_text(&email);
+                                }
+
+                                row_discovery_status_clone.set_visible(true);
+                                row_discovery_status_clone.set_title("Standardwerte vorgeschlagen");
+                                row_discovery_status_clone.set_subtitle(&format!(
+                                    "Servereinstellungen für „{domain}“ konnten nicht automatisch ermittelt werden. Standardwerte wurden vorgeschlagen — bitte manuell prüfen."
+                                ));
+                                icon_discovery_clone.set_icon_name(Some("dialog-information-symbolic"));
+                                icon_discovery_clone.remove_css_class("accent");
+                                lbl_status_clone.set_label("Manuelle Konfiguration erforderlich");
+
+                                if let Some(parent) = dialog.transient_for() {
+                                    if let Ok(window) = parent.downcast::<crate::window::EvolutionWindow>() {
+                                        window.add_toast(&adw::Toast::new(
+                                            &format!("Servereinstellungen für {domain} nicht ermittelt — Standardwerte vorgeschlagen"),
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                });
+            }
+        };
+
+        // Wire redetect button
+        {
+            let run_discovery = run_discovery.clone();
+            let row_email_clone = row_email.clone();
+            let dialog_weak = self.downgrade();
+            btn_redetect.connect_clicked(move |_| {
+                let Some(dialog) = dialog_weak.upgrade() else { return; };
+                let text = row_email_clone.text().trim().to_string();
+                if let Some((_user, _domain)) = is_discovery_candidate(&text) {
+                    let generation_id = dialog.imp().discovery_generation.get().wrapping_add(1);
+                    dialog.imp().discovery_generation.set(generation_id);
+                    run_discovery(text, generation_id);
+                }
+            });
+        }
+
+        // Wire row_email changed signal with debouncing
+        let lbl_email_clone = lbl_email.clone();
+        let dialog_weak = self.downgrade();
+        let run_discovery_clone = run_discovery.clone();
+        let discovery_spinner_clone = discovery_spinner.clone();
+        let row_discovery_status_clone = row_discovery_status.clone();
+        row_email.connect_changed(move |entry| {
+            let t = entry.text();
+            if !t.is_empty() {
+                lbl_email_clone.set_label(&t);
+            }
+
+            let Some(dialog) = dialog_weak.upgrade() else { return; };
+            let raw = t.trim().to_string();
+
+            // Cancel any active debounce source
+            if let Some(source) = dialog.imp().debounce_source.borrow_mut().take() {
+                source.remove();
+            }
+
+            // If empty or invalid, cancel active query and reset status
+            let Some((_user, _domain)) = is_discovery_candidate(&raw) else {
+                if let Some(cancellation) = dialog.imp().discovery_cancellation.borrow().as_ref() {
+                    cancellation.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+                discovery_spinner_clone.stop();
+                discovery_spinner_clone.set_visible(false);
+                row_discovery_status_clone.set_visible(false);
+                return;
+            };
+
+            // Avoid redundant query if already discovered for this email
+            if *dialog.imp().last_discovered_email.borrow() == raw {
+                return;
+            }
+
+            // Cancel previous background worker
+            if let Some(cancellation) = dialog.imp().discovery_cancellation.borrow().as_ref() {
+                cancellation.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+
+            let generation_id = dialog.imp().discovery_generation.get().wrapping_add(1);
+            dialog.imp().discovery_generation.set(generation_id);
+
+            let run_discovery = run_discovery_clone.clone();
+            let dialog_weak_timer = dialog.downgrade();
+            let source = glib::timeout_add_local_once(std::time::Duration::from_millis(350), move || {
+                let Some(dialog) = dialog_weak_timer.upgrade() else { return; };
+                dialog.imp().debounce_source.borrow_mut().take();
+                run_discovery(raw, generation_id);
+            });
+            dialog.imp().debounce_source.replace(Some(source));
+        });
+
+        // Wire entry activate (Enter key) for immediate non-debounced discovery
+        let dialog_weak = self.downgrade();
+        let run_discovery_clone2 = run_discovery.clone();
+        row_email.connect_entry_activated(move |entry| {
+            let Some(dialog) = dialog_weak.upgrade() else { return; };
+            let raw = entry.text().trim().to_string();
+            if let Some((_user, _domain)) = is_discovery_candidate(&raw) {
+                if *dialog.imp().last_discovered_email.borrow() != raw {
+                    if let Some(source) = dialog.imp().debounce_source.borrow_mut().take() {
+                        source.remove();
+                    }
+                    let generation_id = dialog.imp().discovery_generation.get().wrapping_add(1);
+                    dialog.imp().discovery_generation.set(generation_id);
+                    run_discovery_clone2(raw, generation_id);
+                }
+            }
+        });
+
         let edit_id = edit_profile.as_ref().map(|profile| profile.id.clone());
         let edit_enabled = edit_profile
             .as_ref()
@@ -1595,5 +1925,41 @@ mod tests {
         assert_eq!(decoded.oab_url, "https://mail.example.com/OAB/");
         assert_eq!(decoded.pgp_key_id, "0x9876FEDC");
         assert!(decoded.pgp_always_sign);
+    }
+
+    #[test]
+    fn test_is_discovery_candidate_matrix() {
+        // Valid candidate cases
+        assert!(is_discovery_candidate("user@gmail.com").is_some());
+        assert!(is_discovery_candidate("john.doe@sub.company.co.uk").is_some());
+        assert!(is_discovery_candidate("test@posteo.de").is_some());
+        assert!(is_discovery_candidate("alice@gmx.net").is_some());
+
+        // Incomplete / intermediate typing states (must NOT trigger)
+        assert!(is_discovery_candidate("").is_none());
+        assert!(is_discovery_candidate("user").is_none());
+        assert!(is_discovery_candidate("user@").is_none());
+        assert!(is_discovery_candidate("user@g").is_none());
+        assert!(is_discovery_candidate("user@gmail.").is_none());
+        assert!(is_discovery_candidate("user@.com").is_none());
+        assert!(is_discovery_candidate("user@domain.c").is_none()); // TLD too short
+
+        // Malformed cases
+        assert!(is_discovery_candidate("user@domain with spaces.com").is_none());
+        assert!(is_discovery_candidate("user@@domain.com").is_none());
+        assert!(is_discovery_candidate("user@domain..com").is_none());
+    }
+
+    #[test]
+    fn test_account_setup_dialog_autofill_contract_strings() {
+        let source = include_str!("account_setup_dialog.rs");
+        assert!(source.contains("discovery_spinner"));
+        assert!(source.contains("row_discovery_status"));
+        assert!(source.contains("is_discovery_candidate"));
+        assert!(source.contains("timeout_add_local_once"));
+        assert!(source.contains("connect_entry_activated"));
+        assert!(source.contains("btn_redetect"));
+        assert!(source.contains("discovery_generation"));
+        assert!(source.contains("discovery_cancellation"));
     }
 }
