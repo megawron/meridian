@@ -7,6 +7,7 @@
 #import <EventKit/EventKit.h>
 #import <Contacts/Contacts.h>
 #import <AppKit/AppKit.h>
+#import <Security/Security.h>
 
 #include "macos_bridge.h"
 #include <stdlib.h>
@@ -826,3 +827,111 @@ void macos_free_string(char *ptr) {
         free(ptr);
     }
 }
+
+static NSString * const kEvolutionDefaultKeychainService = @"org.gnome.Evolution4";
+
+int
+macos_keychain_set_password(const char *service, const char *account, const char *password)
+{
+    if (!account || !password) {
+        return -1;
+    }
+
+    @autoreleasepool {
+        NSString *serviceStr = (service && strlen(service) > 0) ? [NSString stringWithUTF8String:service] : kEvolutionDefaultKeychainService;
+        NSString *accountStr = [NSString stringWithUTF8String:account];
+        NSData *passwordData = [[NSString stringWithUTF8String:password] dataUsingEncoding:NSUTF8StringEncoding];
+
+        if (!serviceStr || !accountStr || !passwordData) {
+            return -1;
+        }
+
+        NSDictionary *query = @{
+            (__bridge id)kSecClass: (__bridge id)kSecClassGenericPassword,
+            (__bridge id)kSecAttrService: serviceStr,
+            (__bridge id)kSecAttrAccount: accountStr,
+        };
+
+        NSDictionary *attributesToUpdate = @{
+            (__bridge id)kSecValueData: passwordData,
+        };
+
+        OSStatus status = SecItemUpdate((__bridge CFDictionaryRef)query, (__bridge CFDictionaryRef)attributesToUpdate);
+        if (status == errSecItemNotFound) {
+            NSMutableDictionary *attributesToAdd = [query mutableCopy];
+            attributesToAdd[(__bridge id)kSecValueData] = passwordData;
+            status = SecItemAdd((__bridge CFDictionaryRef)attributesToAdd, NULL);
+        }
+
+        return (status == errSecSuccess) ? 0 : (int)status;
+    }
+}
+
+char *
+macos_keychain_get_password(const char *service, const char *account)
+{
+    if (!account) {
+        return NULL;
+    }
+
+    @autoreleasepool {
+        NSString *serviceStr = (service && strlen(service) > 0) ? [NSString stringWithUTF8String:service] : kEvolutionDefaultKeychainService;
+        NSString *accountStr = [NSString stringWithUTF8String:account];
+
+        if (!serviceStr || !accountStr) {
+            return NULL;
+        }
+
+        NSDictionary *query = @{
+            (__bridge id)kSecClass: (__bridge id)kSecClassGenericPassword,
+            (__bridge id)kSecAttrService: serviceStr,
+            (__bridge id)kSecAttrAccount: accountStr,
+            (__bridge id)kSecReturnData: (__bridge id)kCFBooleanTrue,
+            (__bridge id)kSecMatchLimit: (__bridge id)kSecMatchLimitOne,
+        };
+
+        CFTypeRef result = NULL;
+        OSStatus status = SecItemCopyMatching((__bridge CFDictionaryRef)query, &result);
+        if (status != errSecSuccess || !result) {
+            return NULL;
+        }
+
+        NSData *data = (__bridge_transfer NSData *)result;
+        NSString *pwStr = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+        if (!pwStr) {
+            return NULL;
+        }
+
+        return strdup(pwStr.UTF8String);
+    }
+}
+
+int
+macos_keychain_delete_password(const char *service, const char *account)
+{
+    if (!account) {
+        return -1;
+    }
+
+    @autoreleasepool {
+        NSString *serviceStr = (service && strlen(service) > 0) ? [NSString stringWithUTF8String:service] : kEvolutionDefaultKeychainService;
+        NSString *accountStr = [NSString stringWithUTF8String:account];
+
+        if (!serviceStr || !accountStr) {
+            return -1;
+        }
+
+        NSDictionary *query = @{
+            (__bridge id)kSecClass: (__bridge id)kSecClassGenericPassword,
+            (__bridge id)kSecAttrService: serviceStr,
+            (__bridge id)kSecAttrAccount: accountStr,
+        };
+
+        OSStatus status = SecItemDelete((__bridge CFDictionaryRef)query);
+        if (status == errSecSuccess || status == errSecItemNotFound) {
+            return 0;
+        }
+        return (int)status;
+    }
+}
+

@@ -51,6 +51,7 @@ pub mod template_store_service;
 pub mod vcard_service;
 pub mod macos_integration_service;
 pub mod autodiscover_service;
+pub mod credential_service;
 
 pub use autodiscover_service::{
     AutodiscoverService, DiscoveredAccountConfig, DiscoveryTier, ServerConfig, TlsMode,
@@ -61,6 +62,7 @@ pub use mail_store_service::MailStoreService;
 pub use macos_integration_service::{
     MacosIntegrationService, MacosPermissionKind, MacosPermissionStatus, MacosSyncSummary,
 };
+pub use credential_service::CredentialService;
 pub use settings_service::AppSettings;
 
 fn non_empty_env_path(name: &str) -> Option<std::path::PathBuf> {

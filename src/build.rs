@@ -353,6 +353,7 @@ fn compile_macos_bridge(manifest_dir: &std::path::Path, out_dir: &std::path::Pat
     println!("cargo:rustc-link-lib=framework=EventKit");
     println!("cargo:rustc-link-lib=framework=Contacts");
     println!("cargo:rustc-link-lib=framework=AppKit");
+    println!("cargo:rustc-link-lib=framework=Security");
 
     let plist_path = manifest_dir.join("../data/Info.plist");
     if plist_path.exists() {

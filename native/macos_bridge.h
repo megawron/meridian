@@ -61,6 +61,12 @@ void macos_open_privacy_settings(const char *pane);
 // Free memory allocated by macos bridge
 void macos_free_string(char *ptr);
 
+// Keychain Services (Security.framework)
+// Default service identifier: "org.gnome.Evolution4"
+int macos_keychain_set_password(const char *service, const char *account, const char *password);
+char *macos_keychain_get_password(const char *service, const char *account);
+int macos_keychain_delete_password(const char *service, const char *account);
+
 #ifdef __cplusplus
 }
 #endif

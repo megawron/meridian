@@ -303,11 +303,22 @@ impl AccountConfigStore {
     pub fn delete(&self, id: &str) -> io::Result<bool> {
         let mut accounts = self.load();
         let original_len = accounts.len();
+        let removed_account = accounts.iter().find(|account| account.id == id).cloned();
         accounts.retain(|account| account.id != id);
         if accounts.len() == original_len {
             return Ok(false);
         }
         self.save(&accounts)?;
+        if let Some(acc) = removed_account {
+            let parent_uid = eds_source_uid_for_email(&acc.email);
+            let mail_uid = format!("{}-mail", parent_uid);
+            let transport_uid = format!("{}-transport", parent_uid);
+            let _ = crate::services::credential_service::CredentialService::remove_password(&acc.id);
+            let _ = crate::services::credential_service::CredentialService::remove_password(&mail_uid);
+            let _ = crate::services::credential_service::CredentialService::remove_password(&transport_uid);
+            let _ = crate::services::credential_service::CredentialService::remove_password(&parent_uid);
+            let _ = crate::services::credential_service::CredentialService::remove_password(&acc.email);
+        }
         Ok(true)
     }
 
@@ -752,11 +763,19 @@ pub fn sync_profile_to_eds(
         }
     }
 
-    // Store credentials in Secret Service if password provided
+    // Store credentials in Keychain / Secret Service if password provided
     if let Some(pw) = password {
         if !pw.is_empty() {
-            let _ = crate::services::camel_mail_service::store_source_password(&parent_uid, pw);
-            let _ = crate::services::camel_mail_service::store_source_password(&mail_uid, pw);
+            // Persist under profile ID for portable mail engine (IMAP & SMTP lookup)
+            let _ = crate::services::credential_service::CredentialService::set_password(&profile.id, pw);
+            // Persist for incoming account UID
+            let _ = crate::services::credential_service::CredentialService::set_password(&mail_uid, pw);
+            // Persist for outgoing transport UID
+            let _ = crate::services::credential_service::CredentialService::set_password(&transport_uid, pw);
+            // Persist for parent collection UID
+            let _ = crate::services::credential_service::CredentialService::set_password(&parent_uid, pw);
+            // Persist for email address directly as fallback
+            let _ = crate::services::credential_service::CredentialService::set_password(&profile.email, pw);
         }
     }
 
@@ -1095,5 +1114,45 @@ mod tests {
         let _ = fs::remove_dir_all(&path);
         fs::create_dir_all(&path).expect("temporary directory should be created");
         path
+    }
+
+    #[test]
+    fn test_sync_profile_to_eds_persists_credentials_in_keychain() {
+        let profile = test_profile("test-pwd-sync-acc", "Sync Test Account", true);
+        let test_pass = "S3cur3-P@ssword-2026!";
+
+        // Sync with password
+        let res = sync_profile_to_eds(&profile, Some(test_pass));
+        assert!(res.is_ok(), "sync_profile_to_eds failed: {:?}", res.err());
+
+        // On macOS, verify CredentialService contains the password under profile.id
+        if cfg!(target_os = "macos") {
+            let fetched = crate::services::credential_service::CredentialService::fetch_password(&profile.id);
+            assert!(fetched.is_ok(), "fetch_password returned error: {:?}", fetched.err());
+            assert_eq!(fetched.unwrap(), Some(test_pass.to_string()));
+
+            // Also verify mail_uid and transport_uid
+            let parent_uid = eds_source_uid_for_email(&profile.email);
+            let mail_uid = format!("{}-mail", parent_uid);
+            let transport_uid = format!("{}-transport", parent_uid);
+            assert_eq!(
+                crate::services::credential_service::CredentialService::fetch_password(&mail_uid).unwrap(),
+                Some(test_pass.to_string())
+            );
+            assert_eq!(
+                crate::services::credential_service::CredentialService::fetch_password(&transport_uid).unwrap(),
+                Some(test_pass.to_string())
+            );
+
+            // Delete account and verify credentials removed
+            let store = AccountConfigStore::default();
+            let _ = store.upsert(profile.clone());
+            let del_res = store.delete(&profile.id);
+            assert!(del_res.is_ok());
+            assert_eq!(
+                crate::services::credential_service::CredentialService::fetch_password(&profile.id).unwrap(),
+                None
+            );
+        }
     }
 }

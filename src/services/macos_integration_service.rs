@@ -205,8 +205,22 @@ mod ffi {
         pub fn macos_export_contacts_vcf() -> *mut c_char;
         pub fn macos_open_privacy_settings(pane: *const c_char);
         pub fn macos_free_string(ptr: *mut c_char);
+        pub fn macos_keychain_set_password(
+            service: *const c_char,
+            account: *const c_char,
+            password: *const c_char,
+        ) -> c_int;
+        pub fn macos_keychain_get_password(
+            service: *const c_char,
+            account: *const c_char,
+        ) -> *mut c_char;
+        pub fn macos_keychain_delete_password(
+            service: *const c_char,
+            account: *const c_char,
+        ) -> c_int;
     }
 }
+
 
 #[derive(Debug, Clone, Default)]
 pub struct MacosSyncSummary {
@@ -514,7 +528,106 @@ impl MacosIntegrationService {
         #[cfg(not(all(target_os = "macos", macos_bridge)))]
         { Err("macOS-Internetaccounts sind auf diesem System nicht verfügbar".into()) }
     }
+
+    pub const KEYCHAIN_SERVICE_EVOLUTION: &str = "org.gnome.Evolution4";
+
+    pub fn keychain_set_password(&self, account: &str, password: &str) -> Result<(), String> {
+        self.keychain_set_password_for_service(Self::KEYCHAIN_SERVICE_EVOLUTION, account, password)
+    }
+
+    pub fn keychain_set_password_for_service(
+        &self,
+        service: &str,
+        account: &str,
+        password: &str,
+    ) -> Result<(), String> {
+        #[cfg(all(target_os = "macos", macos_bridge))]
+        {
+            let c_service = CString::new(service).map_err(|e| e.to_string())?;
+            let c_account = CString::new(account).map_err(|e| e.to_string())?;
+            let c_password = CString::new(password).map_err(|e| e.to_string())?;
+            let rc = unsafe {
+                ffi::macos_keychain_set_password(
+                    c_service.as_ptr(),
+                    c_account.as_ptr(),
+                    c_password.as_ptr(),
+                )
+            };
+            if rc == 0 {
+                Ok(())
+            } else {
+                Err(format!("macOS Keychain error: {rc}"))
+            }
+        }
+        #[cfg(not(all(target_os = "macos", macos_bridge)))]
+        {
+            let _ = (service, account, password);
+            Err("macOS Keychain is not available on this platform".into())
+        }
+    }
+
+    pub fn keychain_get_password(&self, account: &str) -> Result<Option<String>, String> {
+        self.keychain_get_password_for_service(Self::KEYCHAIN_SERVICE_EVOLUTION, account)
+    }
+
+    pub fn keychain_get_password_for_service(
+        &self,
+        service: &str,
+        account: &str,
+    ) -> Result<Option<String>, String> {
+        #[cfg(all(target_os = "macos", macos_bridge))]
+        {
+            let c_service = CString::new(service).map_err(|e| e.to_string())?;
+            let c_account = CString::new(account).map_err(|e| e.to_string())?;
+            let ptr = unsafe {
+                ffi::macos_keychain_get_password(c_service.as_ptr(), c_account.as_ptr())
+            };
+            if ptr.is_null() {
+                return Ok(None);
+            }
+            let c_str = unsafe { CStr::from_ptr(ptr) };
+            let utf8_res = c_str.to_str().map(str::to_owned).map_err(|e| e.to_string());
+            unsafe { ffi::macos_free_string(ptr) };
+            let result = utf8_res?;
+            Ok(Some(result))
+        }
+        #[cfg(not(all(target_os = "macos", macos_bridge)))]
+        {
+            let _ = (service, account);
+            Err("macOS Keychain is not available on this platform".into())
+        }
+    }
+
+    pub fn keychain_delete_password(&self, account: &str) -> Result<(), String> {
+        self.keychain_delete_password_for_service(Self::KEYCHAIN_SERVICE_EVOLUTION, account)
+    }
+
+    pub fn keychain_delete_password_for_service(
+        &self,
+        service: &str,
+        account: &str,
+    ) -> Result<(), String> {
+        #[cfg(all(target_os = "macos", macos_bridge))]
+        {
+            let c_service = CString::new(service).map_err(|e| e.to_string())?;
+            let c_account = CString::new(account).map_err(|e| e.to_string())?;
+            let rc = unsafe {
+                ffi::macos_keychain_delete_password(c_service.as_ptr(), c_account.as_ptr())
+            };
+            if rc == 0 {
+                Ok(())
+            } else {
+                Err(format!("macOS Keychain error: {rc}"))
+            }
+        }
+        #[cfg(not(all(target_os = "macos", macos_bridge)))]
+        {
+            let _ = (service, account);
+            Err("macOS Keychain is not available on this platform".into())
+        }
+    }
 }
+
 
 fn permission_status(kind: MacosPermissionKind, raw: i32) -> MacosPermissionStatus {
     match raw {
@@ -579,4 +692,35 @@ mod tests {
         assert_eq!(records[0].source_uid, contacts.source_uid());
         assert_eq!(records[0].uid, "contact-1");
     }
+
+    #[test]
+    fn keychain_service_identifier_is_org_gnome_evolution4() {
+        assert_eq!(MacosIntegrationService::KEYCHAIN_SERVICE_EVOLUTION, "org.gnome.Evolution4");
+    }
+
+    #[test]
+    fn keychain_crud_operations_test() {
+        let service = MacosIntegrationService::new();
+        if cfg!(all(target_os = "macos", macos_bridge)) {
+            let test_account = "test-worker-m3-account-keychain";
+            let test_pass = "WorkerM3SecretP@ss!";
+            assert!(service.keychain_set_password(test_account, test_pass).is_ok());
+            let fetched = service.keychain_get_password(test_account);
+            assert!(fetched.is_ok());
+            assert_eq!(fetched.unwrap(), Some(test_pass.to_string()));
+
+            // Update
+            let updated_pass = "WorkerM3UpdatedP@ss!";
+            assert!(service.keychain_set_password(test_account, updated_pass).is_ok());
+            assert_eq!(service.keychain_get_password(test_account).unwrap(), Some(updated_pass.to_string()));
+
+            // Delete
+            assert!(service.keychain_delete_password(test_account).is_ok());
+            assert_eq!(service.keychain_get_password(test_account).unwrap(), None);
+        } else {
+            let res = service.keychain_get_password("any-account");
+            assert!(res.is_err() || res.is_ok());
+        }
+    }
 }
+
