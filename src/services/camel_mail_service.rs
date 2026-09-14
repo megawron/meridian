@@ -1171,7 +1171,11 @@ pub fn store_source_password(source_uid: &str, password: &str) -> Result<(), Str
         }
         Ok(())
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
+    {
+        crate::services::credential_service::CredentialService::set_password(source_uid, password)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         let _ = (source_uid, password);
         Ok(())
@@ -1297,17 +1301,32 @@ pub(crate) fn load_messages_page_with_progress_and_cancellation(
 
     #[cfg(not(eds_camel_bridge))]
     {
-        let _ = (
-            source_uid,
-            folder_name,
-            message_offset,
-            max_messages_per_folder,
-            cancelled,
-            progress_sender,
-        );
-        Err("native EDS/Camel adapter is not available in this build".to_string())
+        #[cfg(target_os = "macos")]
+        {
+            crate::services::portable_mail_engine::load_messages_page(
+                source_uid,
+                folder_name,
+                message_offset,
+                max_messages_per_folder,
+                cancelled,
+                progress_sender,
+            )
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = (
+                source_uid,
+                folder_name,
+                message_offset,
+                max_messages_per_folder,
+                cancelled,
+                progress_sender,
+            );
+            Err("native EDS/Camel adapter is not available in this build".to_string())
+        }
     }
 }
+
 
 #[cfg(eds_camel_bridge)]
 fn load_messages_native(
@@ -1593,10 +1612,18 @@ pub(crate) fn load_subscription_folders_with_cancellation(
 
     #[cfg(not(eds_camel_bridge))]
     {
-        let _ = cancelled;
-        Err("native EDS/Camel adapter is not available in this build".to_string())
+        #[cfg(target_os = "macos")]
+        {
+            crate::services::portable_mail_engine::load_subscription_folders(source_uid, cancelled)
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = cancelled;
+            Err("native EDS/Camel adapter is not available in this build".to_string())
+        }
     }
 }
+
 
 /// Confirm one exact Camel folder subscription mutation.  The bridge only
 /// returns success after it re-reads the subscription list and observes the
@@ -1671,10 +1698,23 @@ pub(crate) fn set_folder_subscription_with_cancellation(
 
     #[cfg(not(eds_camel_bridge))]
     {
-        let _ = (subscribed, cancelled);
-        Err("native EDS/Camel adapter is not available in this build".to_string())
+        #[cfg(target_os = "macos")]
+        {
+            crate::services::portable_mail_engine::set_folder_subscription(
+                source_uid,
+                folder_name,
+                subscribed,
+                cancelled,
+            )
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = (subscribed, cancelled);
+            Err("native EDS/Camel adapter is not available in this build".to_string())
+        }
     }
 }
+
 
 /// Get exact provider-derived Folder-menu availability.  This deliberately
 /// has no Graph or local fallback because those backends cannot establish the
@@ -1766,10 +1806,22 @@ pub(crate) fn folder_mutation_capabilities_with_cancellation(
 
     #[cfg(not(eds_camel_bridge))]
     {
-        let _ = cancelled;
-        Err("native EDS/Camel adapter is not available in this build".to_string())
+        #[cfg(target_os = "macos")]
+        {
+            let _ = cancelled;
+            crate::services::portable_mail_engine::folder_mutation_capabilities(
+                source_uid,
+                folder_name,
+            )
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = cancelled;
+            Err("native EDS/Camel adapter is not available in this build".to_string())
+        }
     }
 }
+
 
 /// Execute a confirmed direct Camel folder operation.  Success means the C
 /// bridge refreshed the hierarchy and verified the provider's resulting
@@ -1863,10 +1915,24 @@ pub(crate) fn apply_folder_mutation_with_cancellation(
 
     #[cfg(not(eds_camel_bridge))]
     {
-        let _ = (kind, target_name, cancelled);
-        Err("native EDS/Camel adapter is not available in this build".to_string())
+        #[cfg(target_os = "macos")]
+        {
+            crate::services::portable_mail_engine::apply_folder_mutation(
+                kind,
+                source_uid,
+                folder_name,
+                target_name,
+                cancelled,
+            )
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = (kind, target_name, cancelled);
+            Err("native EDS/Camel adapter is not available in this build".to_string())
+        }
     }
 }
+
 
 #[cfg(any(eds_camel_bridge, test))]
 fn follow_up_state_from_native(
@@ -2016,10 +2082,18 @@ pub(crate) fn load_raw_message(
 
     #[cfg(not(eds_camel_bridge))]
     {
-        let _ = (location, cancelled);
-        Err("native EDS/Camel adapter is not available in this build".to_string())
+        #[cfg(target_os = "macos")]
+        {
+            crate::services::portable_mail_engine::load_raw_message(location, cancelled)
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = (location, cancelled);
+            Err("native EDS/Camel adapter is not available in this build".to_string())
+        }
     }
 }
+
 
 #[cfg(eds_camel_bridge)]
 fn load_raw_message_native(
@@ -3171,10 +3245,19 @@ fn apply_operation_with_cancellation(
 
     #[cfg(not(eds_camel_bridge))]
     {
-        let _ = (operation, cancelled);
-        Err("native EDS/Camel adapter is not available in this build".to_string())
+        #[cfg(target_os = "macos")]
+        {
+            crate::services::portable_mail_engine::apply_operation(&operation, cancelled)
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = (operation, cancelled);
+            Err("native EDS/Camel adapter is not available in this build".to_string())
+        }
     }
 }
+
 
 /// Set Evolution's three-state follow-up status for one folder-scoped Camel
 /// message.  The native bridge writes `follow-up`, `completed-on`, and the
@@ -3453,10 +3536,23 @@ pub(crate) fn send_message_with_cancellation(
 
     #[cfg(not(eds_camel_bridge))]
     {
-        let _ = (source_uid, raw_message, cancelled);
-        Err("native EDS/Camel adapter is not available in this build".to_string())
+        #[cfg(target_os = "macos")]
+        {
+            crate::services::portable_mail_engine::send_message(
+                source_uid,
+                raw_message,
+                cancelled.as_ref(),
+            )
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = (source_uid, raw_message, cancelled);
+            Err("native EDS/Camel adapter is not available in this build".to_string())
+        }
     }
 }
+
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)]
@@ -3525,7 +3621,7 @@ pub(crate) fn save_message(
 }
 
 pub(crate) const fn native_adapter_available() -> bool {
-    cfg!(eds_camel_bridge)
+    cfg!(any(eds_camel_bridge, target_os = "macos"))
 }
 
 #[cfg(eds_camel_bridge)]

@@ -52,6 +52,7 @@ pub mod vcard_service;
 pub mod macos_integration_service;
 pub mod autodiscover_service;
 pub mod credential_service;
+pub mod portable_mail_engine;
 
 pub use autodiscover_service::{
     AutodiscoverService, DiscoveredAccountConfig, DiscoveryTier, ServerConfig, TlsMode,
