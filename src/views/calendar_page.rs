@@ -14736,17 +14736,12 @@ mod tests {
 
     #[test]
     fn test_calendar_checkbox_sync_and_hidden_sources() {
-        if !gtk::is_initialized() {
-            if gtk::init().is_err() {
-                return;
-            }
-        }
-        if gdk::Display::default().is_none() {
+        let _gtk_lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = crate::window::gtk_test_main_context() else {
             return;
-        }
-        if !adw::is_initialized() {
-            adw::init().ok();
-        }
+        };
 
         let page = CalendarPage::new();
         let check_cal1 = gtk::CheckButton::builder().active(true).build();
@@ -14771,17 +14766,12 @@ mod tests {
 
     #[test]
     fn test_calendar_toolbar_size_and_visibility() {
-        if !gtk::is_initialized() {
-            if gtk::init().is_err() {
-                return;
-            }
-        }
-        if gdk::Display::default().is_none() {
+        let _gtk_lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = crate::window::gtk_test_main_context() else {
             return;
-        }
-        if !adw::is_initialized() {
-            adw::init().ok();
-        }
+        };
 
         let page = CalendarPage::new();
         let toolbar = page.imp().toolbar.borrow().as_ref().cloned().expect("toolbar exists");

@@ -47,12 +47,40 @@ pub fn get_test_schema() -> gio::SettingsSchema {
         .expect("the application settings schema org.gnome.Evolution4 must be available in tests")
 }
 
+thread_local! {
+    static THREAD_CONTEXT: glib::MainContext = {
+        let ctx = glib::MainContext::new();
+        unsafe {
+            use glib::translate::ToGlibPtr;
+            glib::ffi::g_main_context_push_thread_default(ctx.to_glib_none().0);
+        }
+        ctx
+    };
+}
+
+pub fn get_thread_context() -> glib::MainContext {
+    THREAD_CONTEXT.with(|ctx| ctx.clone())
+}
+
 /// Create an isolated, in-memory Settings instance for test execution.
 /// Each call produces a fresh, independent memory backend with default schema values.
 pub fn create_test_settings() -> gio::Settings {
+    let _ctx = get_thread_context();
     let schema = get_test_schema();
     let backend = gio::memory_settings_backend_new();
     gio::Settings::new_full(&schema, Some(&backend), None)
+}
+
+/// Process-global lock to serialize tests that register GSettings changed signal handlers
+/// and pump the process-global default GLib MainContext.
+pub static SETTINGS_SIGNAL_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Flush pending settings changes to the backend and process any queued signal dispatches
+/// on the thread-local GLib main context.
+pub fn sync_settings_and_pump_events() {
+    gio::Settings::sync();
+    let context = get_thread_context();
+    while context.iteration(false) {}
 }
 
 /// Export all known schema keys and their current values to a JSON map.

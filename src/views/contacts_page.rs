@@ -7428,17 +7428,12 @@ mod tests {
 
     #[test]
     fn test_contact_cards_flow_lifecycle() {
-        if !gtk::is_initialized() {
-            if gtk::init().is_err() {
-                return;
-            }
-        }
-        if gdk::Display::default().is_none() {
+        let _gtk_lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = crate::window::gtk_test_main_context() else {
             return;
-        }
-        if !adw::is_initialized() {
-            adw::init().ok();
-        }
+        };
 
         let flow = gtk::FlowBox::new();
         let mut contact =
@@ -7474,17 +7469,12 @@ mod tests {
 
     #[test]
     fn test_contact_card_selection_idempotency_and_sync() {
-        if !gtk::is_initialized() {
-            if gtk::init().is_err() {
-                return;
-            }
-        }
-        if gdk::Display::default().is_none() {
+        let _gtk_lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = crate::window::gtk_test_main_context() else {
             return;
-        }
-        if !adw::is_initialized() {
-            adw::init().ok();
-        }
+        };
 
         use gtk::prelude::FlowBoxChildExt;
         let flow = gtk::FlowBox::new();
@@ -7575,17 +7565,12 @@ mod tests {
 
     #[test]
     fn test_contact_card_multiple_phones_and_dimensions() {
-        if !gtk::is_initialized() {
-            if gtk::init().is_err() {
-                return;
-            }
-        }
-        if gdk::Display::default().is_none() {
+        let _gtk_lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = crate::window::gtk_test_main_context() else {
             return;
-        }
-        if !adw::is_initialized() {
-            adw::init().ok();
-        }
+        };
 
         use crate::services::vcard_service::VCardProperty;
         let flow = gtk::FlowBox::new();
@@ -7620,17 +7605,12 @@ mod tests {
 
     #[test]
     fn test_contact_cards_flow_grid_properties() {
-        if !gtk::is_initialized() {
-            if gtk::init().is_err() {
-                return;
-            }
-        }
-        if gdk::Display::default().is_none() {
+        let _gtk_lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = crate::window::gtk_test_main_context() else {
             return;
-        }
-        if !adw::is_initialized() {
-            adw::init().ok();
-        }
+        };
 
         use glib::subclass::prelude::ObjectSubclassIsExt;
         let page = ContactsPage::new();
@@ -7643,17 +7623,12 @@ mod tests {
 
     #[test]
     fn test_contacts_drawer_total_and_methods() {
-        if !gtk::is_initialized() {
-            if gtk::init().is_err() {
-                return;
-            }
-        }
-        if gdk::Display::default().is_none() {
+        let _gtk_lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = crate::window::gtk_test_main_context() else {
             return;
-        }
-        if !adw::is_initialized() {
-            adw::init().ok();
-        }
+        };
 
         use glib::subclass::prelude::ObjectSubclassIsExt;
         let page = ContactsPage::new();
@@ -7673,17 +7648,12 @@ mod tests {
 
     #[test]
     fn test_contacts_reload_address_books_and_account_discovery() {
-        if !gtk::is_initialized() {
-            if gtk::init().is_err() {
-                return;
-            }
-        }
-        if gdk::Display::default().is_none() {
+        let _gtk_lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = crate::window::gtk_test_main_context() else {
             return;
-        }
-        if !adw::is_initialized() {
-            adw::init().ok();
-        }
+        };
 
         use glib::subclass::prelude::ObjectSubclassIsExt;
         let page = ContactsPage::new();

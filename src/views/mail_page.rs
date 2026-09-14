@@ -22908,7 +22908,6 @@ mod tests {
             "win.mail-prev",
             "win.mail-next",
             "win.delete",
-            "win.export",
             "win.mail-print",
         ] {
             assert!(toolbar.contains(action), "missing state-bound {action}");
@@ -22921,7 +22920,7 @@ mod tests {
         assert!(toolbar.contains("sidebar-show-right-symbolic"), "missing preview toggle");
         assert!(!toolbar.contains("edit-find-symbolic"), "search icon should not be in unified mail toolbar");
         let detail_view = compact_rust(rust_function_body(source, "build_detail_view"));
-        for action in ["win.reply", "win.reply-all", "win.forward"] {
+        for action in ["win.reply", "win.reply-all", "win.forward", "win.export"] {
             assert!(detail_view.contains(action), "detail_view missing {action}");
         }
     }
@@ -25528,19 +25527,12 @@ mod tests {
 
     #[test]
     fn test_dynamic_folder_expanded_persistence() {
-        if !gtk::is_initialized() {
-            if gtk::init().is_err() {
-                eprintln!("skipping GTK integration test: no display is available");
-                return;
-            }
-        }
-        if gdk::Display::default().is_none() {
-            eprintln!("skipping GTK integration test: no display is available");
+        let _gtk_lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = crate::window::gtk_test_main_context() else {
             return;
-        }
-        if !adw::is_initialized() {
-            adw::init().ok();
-        }
+        };
 
         let page = glib::Object::builder::<MailPage>().build();
         page.imp().dynamic_folder_expanded.borrow_mut().clear();

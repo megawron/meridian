@@ -27,7 +27,7 @@
 // 5. Cross-Subsystem Signal Storm & Serialization Stress:
 //    - rapid concurrent mutation across disparate categories with listener dispatch integrity
 
-use super::common::{create_test_settings, export_settings_to_json, restore_settings_from_json};
+use super::common::{self, create_test_settings, export_settings_to_json, restore_settings_from_json};
 use chrono::{Datelike, Duration, NaiveDate, Utc, Weekday};
 use gtk::gio::prelude::*;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -39,6 +39,7 @@ use std::sync::Arc;
 
 #[test]
 fn tier5_mail_flush_outbox_offline_coexistence_and_rapid_toggle() {
+    let _signal_lock = common::SETTINGS_SIGNAL_MUTEX.lock().unwrap();
     let settings = create_test_settings();
 
     // Default: flush-outbox is true, offline-mode is false
@@ -58,7 +59,7 @@ fn tier5_mail_flush_outbox_offline_coexistence_and_rapid_toggle() {
         settings.set_boolean("flush-outbox", target).unwrap();
         assert_eq!(settings.boolean("flush-outbox"), target);
     }
-    gtk::gio::Settings::sync();
+    common::sync_settings_and_pump_events();
     assert_eq!(toggle_count.load(Ordering::SeqCst), 20);
 
     // Coexistence with offline-mode:
@@ -77,6 +78,7 @@ fn tier5_mail_flush_outbox_offline_coexistence_and_rapid_toggle() {
 
 #[test]
 fn tier5_mail_sync_interval_timer_zero_cancellation_and_extreme_restarts() {
+    let _signal_lock = common::SETTINGS_SIGNAL_MUTEX.lock().unwrap();
     let settings = create_test_settings();
 
     let change_count = Arc::new(AtomicU32::new(0));
@@ -95,7 +97,7 @@ fn tier5_mail_sync_interval_timer_zero_cancellation_and_extreme_restarts() {
         settings.set_int("mail-sync-interval", interval).unwrap();
         assert_eq!(settings.int("mail-sync-interval"), interval);
     }
-    gtk::gio::Settings::sync();
+    common::sync_settings_and_pump_events();
     // Total changes: 1 (initial 0) + 5 (loop) = 6
     assert_eq!(change_count.load(Ordering::SeqCst), 6);
 
@@ -155,6 +157,7 @@ fn tier5_mail_junk_exit_purge_and_retention_days_boundaries() {
 
 #[test]
 fn tier5_composer_spellcheck_dynamic_languages_whitespace_and_deduplication() {
+    let _signal_lock = common::SETTINGS_SIGNAL_MUTEX.lock().unwrap();
     let settings = create_test_settings();
 
     // Test sanitization predicate matching AppSettings::sanitize_spellcheck_languages:
@@ -200,16 +203,17 @@ fn tier5_composer_spellcheck_dynamic_languages_whitespace_and_deduplication() {
     });
 
     settings.set_boolean("composer-inline-spelling", false).unwrap();
-    gtk::gio::Settings::sync();
+    common::sync_settings_and_pump_events();
     assert!(!spelling_toggled.load(Ordering::SeqCst));
 
     settings.set_boolean("composer-inline-spelling", true).unwrap();
-    gtk::gio::Settings::sync();
+    common::sync_settings_and_pump_events();
     assert!(spelling_toggled.load(Ordering::SeqCst));
 }
 
 #[test]
 fn tier5_composer_draft_autosave_timer_rearming_and_zero_cancel() {
+    let _signal_lock = common::SETTINGS_SIGNAL_MUTEX.lock().unwrap();
     let settings = create_test_settings();
 
     // Verify initial default
@@ -225,24 +229,24 @@ fn tier5_composer_draft_autosave_timer_rearming_and_zero_cancel() {
 
     // Step 1: Interval = 0 explicitly disarms autosave
     settings.set_int("draft-autosave-interval", 0).unwrap();
-    gtk::gio::Settings::sync();
+    common::sync_settings_and_pump_events();
     assert_eq!(last_interval.load(Ordering::SeqCst), 0);
 
     // Step 2: Re-arming sequence: 10s -> 60s -> 3600s (1 hr) -> 0s (cancel)
     let sequence = [10, 60, 3_600, 0];
     for &sec in &sequence {
         settings.set_int("draft-autosave-interval", sec).unwrap();
-        gtk::gio::Settings::sync();
+        common::sync_settings_and_pump_events();
         assert_eq!(last_interval.load(Ordering::SeqCst), sec as u32);
     }
 
     // Step 3: Out-of-bounds boundary values clamp safely
     settings.set_int("draft-autosave-interval", -25).unwrap();
-    gtk::gio::Settings::sync();
+    common::sync_settings_and_pump_events();
     assert_eq!(last_interval.load(Ordering::SeqCst), 0);
 
     settings.set_int("draft-autosave-interval", 50_000).unwrap();
-    gtk::gio::Settings::sync();
+    common::sync_settings_and_pump_events();
     assert_eq!(last_interval.load(Ordering::SeqCst), 3_600);
 }
 
@@ -623,6 +627,7 @@ fn tier5_contacts_editor_12_section_visibility_non_lossy_guarantee() {
 
 #[test]
 fn tier5_adversarial_signal_storm_and_serialization_integrity() {
+    let _signal_lock = common::SETTINGS_SIGNAL_MUTEX.lock().unwrap();
     let settings = create_test_settings();
 
     // Set up listeners on disparate categories
@@ -662,7 +667,7 @@ fn tier5_adversarial_signal_storm_and_serialization_integrity() {
         settings.set_int("calendar-time-divisions", div).unwrap();
         settings.set_string("color-scheme", scheme).unwrap();
     }
-    gtk::gio::Settings::sync();
+    common::sync_settings_and_pump_events();
 
     assert_eq!(mail_events.load(Ordering::SeqCst), 25);
     assert_eq!(comp_events.load(Ordering::SeqCst), 25);

@@ -9,7 +9,7 @@
 // - Multi-subsystem dynamic change notification stress test
 
 use super::common::{
-    LEGACY_KEYS_MUST_NOT_EXIST, create_test_settings, export_settings_to_json, get_test_schema,
+    self, LEGACY_KEYS_MUST_NOT_EXIST, create_test_settings, export_settings_to_json, get_test_schema,
     restore_settings_from_json,
 };
 use gtk::gio::prelude::*;
@@ -190,6 +190,7 @@ fn tier4_workload_backup_and_restore_settings_serialization_roundtrip() {
 
 #[test]
 fn tier4_workload_dynamic_signal_dispatch_multi_listener() {
+    let _signal_lock = common::SETTINGS_SIGNAL_MUTEX.lock().unwrap();
     let settings = create_test_settings();
     let counter_theme = Rc::new(RefCell::new(0));
     let counter_layout = Rc::new(RefCell::new(0));
@@ -216,9 +217,7 @@ fn tier4_workload_dynamic_signal_dispatch_multi_listener() {
     settings.set_string("mail-layout", "modern").unwrap();
     settings.set_boolean("offline-mode", true).unwrap();
     // Flush pending changes and deliver changed notifications
-    gio::Settings::sync();
-    let context = gtk::glib::MainContext::default();
-    while context.iteration(false) {}
+    common::sync_settings_and_pump_events();
 
     // Verify listeners received notifications
     assert_eq!(*counter_theme.borrow(), 2);

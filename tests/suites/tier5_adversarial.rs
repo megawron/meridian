@@ -9,7 +9,8 @@
 // - GSettings factory reset integrity and non-existent key defense.
 
 use super::common::{
-    create_test_settings, export_settings_to_json, get_test_schema, LEGACY_KEYS_MUST_NOT_EXIST,
+    self, create_test_settings, export_settings_to_json, get_test_schema,
+    LEGACY_KEYS_MUST_NOT_EXIST,
 };
 use gtk::gio::prelude::*;
 use gtk::glib;
@@ -346,6 +347,7 @@ fn tier5_adversarial_corrupted_json_backup_recovery() {
 
 #[test]
 fn tier5_adversarial_signal_handler_disconnection_and_leak_prevention() {
+    let _signal_lock = common::SETTINGS_SIGNAL_MUTEX.lock().unwrap();
     let settings = create_test_settings();
     let fire_count = Rc::new(RefCell::new(0));
 
@@ -357,9 +359,7 @@ fn tier5_adversarial_signal_handler_disconnection_and_leak_prevention() {
 
     // Mutate setting -> verify handler fired
     settings.set_string("color-scheme", "dark").unwrap();
-    gio::Settings::sync();
-    let context = glib::MainContext::default();
-    while context.iteration(false) {}
+    common::sync_settings_and_pump_events();
     assert_eq!(*fire_count.borrow(), 1);
 
     // Disconnect handler explicitly via GLib object API
@@ -368,8 +368,7 @@ fn tier5_adversarial_signal_handler_disconnection_and_leak_prevention() {
 
     // Mutate again -> handler MUST NOT fire after disconnect
     settings.set_string("color-scheme", "light").unwrap();
-    gio::Settings::sync();
-    while context.iteration(false) {}
+    common::sync_settings_and_pump_events();
     assert_eq!(
         *fire_count.borrow(),
         1,
@@ -382,6 +381,7 @@ fn tier5_adversarial_signal_handler_disconnection_and_leak_prevention() {
 
 #[test]
 fn tier5_adversarial_simulated_dialog_open_close_handler_accumulation() {
+    let _signal_lock = common::SETTINGS_SIGNAL_MUTEX.lock().unwrap();
     let settings = create_test_settings();
     let total_invocations = Rc::new(RefCell::new(0));
 
@@ -397,9 +397,7 @@ fn tier5_adversarial_simulated_dialog_open_close_handler_accumulation() {
 
     // Fire one change
     settings.set_boolean("mail-show-deleted", true).unwrap();
-    gio::Settings::sync();
-    let context = glib::MainContext::default();
-    while context.iteration(false) {}
+    common::sync_settings_and_pump_events();
 
     // Verify all 5 accumulated handlers fired
     assert_eq!(
@@ -428,8 +426,7 @@ fn tier5_adversarial_simulated_dialog_open_close_handler_accumulation() {
 
     // Fire change
     settings.set_boolean("mail-show-all-headers", true).unwrap();
-    gio::Settings::sync();
-    while context.iteration(false) {}
+    common::sync_settings_and_pump_events();
 
     assert_eq!(
         *clean_invocations.borrow(),
@@ -444,6 +441,7 @@ fn tier5_adversarial_simulated_dialog_open_close_handler_accumulation() {
 
 #[test]
 fn tier5_adversarial_rapid_settings_mutation_storm() {
+    let _signal_lock = common::SETTINGS_SIGNAL_MUTEX.lock().unwrap();
     let settings = create_test_settings();
     let dispatch_counter = Rc::new(RefCell::new(0));
 
@@ -459,9 +457,7 @@ fn tier5_adversarial_rapid_settings_mutation_storm() {
             .expect("rapid mutation must succeed");
     }
 
-    gio::Settings::sync();
-    let context = glib::MainContext::default();
-    while context.iteration(false) {}
+    common::sync_settings_and_pump_events();
 
     // Verify last value was applied accurately
     assert_eq!(settings.int("mail-sync-interval"), 160);
@@ -484,15 +480,15 @@ fn tier5_adversarial_rapid_settings_mutation_storm() {
 // =========================================================================
 
 #[test]
-fn tier5_adversarial_factory_reset_all_193_schema_keys_integrity() {
+fn tier5_adversarial_factory_reset_all_198_schema_keys_integrity() {
     let schema = get_test_schema();
     let settings = create_test_settings();
 
     let all_keys = schema.list_keys();
     assert_eq!(
         all_keys.len(),
-        193,
-        "Canonical schema must define exactly 193 configuration keys"
+        198,
+        "Canonical schema must define exactly 198 configuration keys"
     );
 
     // Capture initial default snapshot
@@ -531,7 +527,7 @@ fn tier5_adversarial_factory_reset_all_193_schema_keys_integrity() {
     // Verify exact parity between pre-mutation defaults and post-reset state
     assert_eq!(
         initial_json, post_reset_json,
-        "Full factory reset must restore exact initial defaults across all 193 keys"
+        "Full factory reset must restore exact initial defaults across all 198 keys"
     );
 }
 
