@@ -13,6 +13,7 @@
 use adw::prelude::*;
 use adw::subclass::prelude::*;
 use chrono::Utc;
+use gtk::gdk;
 use gtk::glib;
 use gtk::glib::prelude::{StaticVariantType, ToVariant};
 use std::cell::{Cell, RefCell};
@@ -2500,6 +2501,7 @@ impl ComposeDialog {
 
         toolbar_view.set_content(Some(&content_box));
         self.set_content(Some(&toolbar_view));
+        self.install_file_drop_target();
 
         self.start_local_autosave();
     }
@@ -4214,6 +4216,12 @@ impl ComposeDialog {
     }
 
     fn add_attachment_path(&self, path: &Path) {
+        let Ok(metadata) = std::fs::metadata(path) else {
+            return;
+        };
+        if !metadata.is_file() {
+            return;
+        }
         let Some(filename) = path.file_name().and_then(|name| name.to_str()) else {
             return;
         };
@@ -4221,13 +4229,42 @@ impl ComposeDialog {
             path: path.to_string_lossy().into_owned(),
             filename: filename.to_string(),
             mime_type: mime_type_for_path(path),
-            size: std::fs::metadata(path)
-                .map(|metadata| metadata.len())
-                .unwrap_or(0),
+            size: metadata.len(),
             content_id: None,
             embedded_content_base64: String::new(),
         };
         self.add_attachment(attachment);
+    }
+
+    fn install_file_drop_target(&self) {
+        let drop_target = gtk::DropTarget::new(glib::Type::INVALID, gdk::DragAction::COPY);
+        drop_target.set_types(&[gdk::FileList::static_type(), gio::File::static_type()]);
+        let dialog_weak = self.downgrade();
+        drop_target.connect_drop(move |_, value, _, _| {
+            let Some(dialog) = dialog_weak.upgrade() else {
+                return false;
+            };
+            let mut any_added = false;
+            if let Ok(file_list) = value.get::<gdk::FileList>() {
+                for file in file_list.files() {
+                    if let Some(path) = file.path() {
+                        if path.is_file() {
+                            dialog.add_attachment_path(&path);
+                            any_added = true;
+                        }
+                    }
+                }
+            } else if let Ok(file) = value.get::<gio::File>() {
+                if let Some(path) = file.path() {
+                    if path.is_file() {
+                        dialog.add_attachment_path(&path);
+                        any_added = true;
+                    }
+                }
+            }
+            any_added
+        });
+        self.add_controller(drop_target);
     }
 
     fn add_attachment(&self, attachment: DraftAttachment) {
@@ -6456,6 +6493,34 @@ mod tests {
         while context.iteration(false) {}
         let _ = raw_settings.set_int("draft-autosave-interval", 30);
         while context.iteration(false) {}
+    }
+
+    #[test]
+    fn add_attachment_path_rejects_directory_and_accepts_file() {
+        let temp_dir = std::env::temp_dir().join(format!("evolution-composer-test-{}", uuid::Uuid::new_v4()));
+        let _ = std::fs::create_dir_all(&temp_dir);
+        let file_path = temp_dir.join("document.pdf");
+        std::fs::write(&file_path, b"%PDF-1.4 test content").expect("write test file");
+
+        let meta_file = std::fs::metadata(&file_path).expect("file metadata");
+        assert!(meta_file.is_file());
+        assert_eq!(mime_type_for_path(&file_path), "application/pdf");
+        assert_eq!(meta_file.len(), 21);
+
+        let meta_dir = std::fs::metadata(&temp_dir).expect("dir metadata");
+        assert!(!meta_dir.is_file());
+
+        let _ = std::fs::remove_file(&file_path);
+        let _ = std::fs::remove_dir(&temp_dir);
+    }
+
+    #[test]
+    fn mime_type_for_various_file_extensions() {
+        assert_eq!(mime_type_for_path(Path::new("photo.jpg")), "image/jpeg");
+        assert_eq!(mime_type_for_path(Path::new("photo.png")), "image/png");
+        assert_eq!(mime_type_for_path(Path::new("archive.zip")), "application/zip");
+        assert_eq!(mime_type_for_path(Path::new("notes.txt")), "text/plain");
+        assert_eq!(mime_type_for_path(Path::new("page.html")), "text/html");
     }
 }
 

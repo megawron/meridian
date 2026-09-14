@@ -4685,7 +4685,7 @@ impl CalendarPage {
                 .hexpand(true)
                 .valign(gtk::Align::Fill)
                 .build();
-            install_day_drop_target(&all_day_cell, self, *day);
+            install_time_slot_drop_target(&all_day_cell, self, *day, None);
 
             let day_events = events_by_date.get(day).cloned().unwrap_or_default();
             for event in day_events.iter().filter(|e| e.all_day) {
@@ -4799,7 +4799,7 @@ impl CalendarPage {
                     .css_classes(cell_classes)
                     .build();
 
-                install_day_drop_target(&cell, self, *day);
+                install_time_slot_drop_target(&cell, self, *day, Some(minute));
 
                 let click_gesture = gtk::GestureClick::new();
                 let page_weak = self.downgrade();
@@ -4963,6 +4963,8 @@ impl CalendarPage {
                     1
                 };
                 let chip = calendar_grid_event_chip(self, &chip_info.event, false, *day);
+                let chip_minute = (chip_info.start_slot * interval_minutes as usize) as u32;
+                install_time_slot_drop_target(&chip, self, *day, Some(chip_minute));
                 day_grid.attach(
                     &chip,
                     chip_info.col_idx as i32,
@@ -5778,20 +5780,30 @@ impl CalendarPage {
     }
 
     fn move_event_by_days(&self, event: CalendarEventRecord, delta_days: i64) {
-        if delta_days == 0 {
+        self.move_event_by_delta(event, delta_days, 0);
+    }
+
+    fn move_event_by_delta(
+        &self,
+        event: CalendarEventRecord,
+        delta_days: i64,
+        delta_minutes: i64,
+    ) {
+        if delta_days == 0 && delta_minutes == 0 {
             return;
         }
         if let Some(error) = event_mutation_error(&event) {
             show_toast_for_widget(self, error);
             return;
         }
-        let updated_component = match shift_event_component(&event.component, delta_days) {
-            Ok(component) => component,
-            Err(error) => {
-                show_toast_for_widget(self, &error);
-                return;
-            }
-        };
+        let updated_component =
+            match shift_event_component_full(&event.component, delta_days, delta_minutes) {
+                Ok(component) => component,
+                Err(error) => {
+                    show_toast_for_widget(self, &error);
+                    return;
+                }
+            };
         let mutation_token =
             self.begin_calendar_mutation(CalendarEventIdentity::from_event(&event));
         let source_uid = event.source_uid.clone();
@@ -6030,6 +6042,15 @@ fn install_day_drop_target<W: IsA<gtk::Widget>>(
     page: &CalendarPage,
     target_date: NaiveDate,
 ) {
+    install_time_slot_drop_target(widget, page, target_date, None);
+}
+
+fn install_time_slot_drop_target<W: IsA<gtk::Widget>>(
+    widget: &W,
+    page: &CalendarPage,
+    target_date: NaiveDate,
+    target_minute: Option<u32>,
+) {
     let drop_target = gtk::DropTarget::new(glib::Type::STRING, gdk::DragAction::MOVE);
     let page_weak = page.downgrade();
     drop_target.connect_drop(move |_, value, _, _| {
@@ -6066,13 +6087,35 @@ fn install_day_drop_target<W: IsA<gtk::Widget>>(
             show_toast_for_widget(&page, "Der Termin besitzt kein gültiges Startdatum");
             return false;
         };
-        page.move_event_by_days(event, (target_date - start_date).num_days());
+        let delta_days = (target_date - start_date).num_days();
+        let delta_minutes = if let Some(target_min) = target_minute {
+            if event.all_day {
+                0
+            } else {
+                let start_dt = event_start_datetime(&event);
+                let current_minute = start_dt
+                    .map(|dt| dt.time().hour() * 60 + dt.time().minute())
+                    .unwrap_or(0);
+                target_min as i64 - current_minute as i64
+            }
+        } else {
+            0
+        };
+        page.move_event_by_delta(event, delta_days, delta_minutes);
         true
     });
     widget.add_controller(drop_target);
 }
 
 fn shift_event_component(raw: &str, delta_days: i64) -> Result<String, String> {
+    shift_event_component_full(raw, delta_days, 0)
+}
+
+fn shift_event_component_full(
+    raw: &str,
+    delta_days: i64,
+    delta_minutes: i64,
+) -> Result<String, String> {
     if raw.trim().is_empty() {
         return Err("Der Termin enthält keine iCalendar-Daten".to_string());
     }
@@ -6088,7 +6131,9 @@ fn shift_event_component(raw: &str, delta_days: i64) -> Result<String, String> {
         let Some(value) = ical_property(&updated, property_name) else {
             continue;
         };
-        let Some(shifted) = shift_ical_datetime_value(&value, delta_days) else {
+        let Some(shifted) =
+            shift_ical_datetime_value_full(&value, delta_days, delta_minutes)
+        else {
             return Err(format!(
                 "{property_name} konnte beim Verschieben nicht ausgewertet werden"
             ));
@@ -6098,9 +6143,9 @@ fn shift_event_component(raw: &str, delta_days: i64) -> Result<String, String> {
         updated = update_ical_property(&updated, &property_prefix, Some(&shifted));
     }
     for property_name in ["RDATE", "EXDATE"] {
-        updated = shift_ical_date_list_property(&updated, property_name, delta_days)?;
+        updated = shift_ical_date_list_property_full(&updated, property_name, delta_days, delta_minutes)?;
     }
-    updated = shift_rrule(&updated, delta_days)?;
+    updated = shift_rrule_full(&updated, delta_days, delta_minutes)?;
     Ok(updated)
 }
 
@@ -6108,6 +6153,15 @@ fn shift_ical_date_list_property(
     raw: &str,
     property_name: &str,
     delta_days: i64,
+) -> Result<String, String> {
+    shift_ical_date_list_property_full(raw, property_name, delta_days, 0)
+}
+
+fn shift_ical_date_list_property_full(
+    raw: &str,
+    property_name: &str,
+    delta_days: i64,
+    delta_minutes: i64,
 ) -> Result<String, String> {
     let target = property_name.to_ascii_uppercase();
     let mut lines = Vec::new();
@@ -6128,7 +6182,7 @@ fn shift_ical_date_list_property(
             let shifted_values = value
                 .split(',')
                 .map(|value| {
-                    shift_ical_datetime_value(value, delta_days).ok_or_else(|| {
+                    shift_ical_datetime_value_full(value, delta_days, delta_minutes).ok_or_else(|| {
                         format!("{property_name} konnte beim Verschieben nicht ausgewertet werden")
                     })
                 })
@@ -6156,6 +6210,14 @@ fn shift_ical_date_list_property(
 }
 
 fn shift_rrule(raw: &str, delta_days: i64) -> Result<String, String> {
+    shift_rrule_full(raw, delta_days, 0)
+}
+
+fn shift_rrule_full(
+    raw: &str,
+    delta_days: i64,
+    delta_minutes: i64,
+) -> Result<String, String> {
     let Some(rule) = ical_property(raw, "RRULE") else {
         return Ok(raw.to_string());
     };
@@ -6183,7 +6245,7 @@ fn shift_rrule(raw: &str, delta_days: i64) -> Result<String, String> {
                 return Ok(part.to_string());
             };
             if key.eq_ignore_ascii_case("UNTIL") {
-                let shifted = shift_ical_datetime_value(value, delta_days).ok_or_else(|| {
+                let shifted = shift_ical_datetime_value_full(value, delta_days, delta_minutes).ok_or_else(|| {
                     "RRULE-UNTIL konnte beim Verschieben nicht ausgewertet werden".to_string()
                 })?;
                 changed = true;
@@ -6268,6 +6330,14 @@ fn ical_property_prefix(raw: &str, target: &str) -> Option<String> {
 }
 
 fn shift_ical_datetime_value(value: &str, delta_days: i64) -> Option<String> {
+    shift_ical_datetime_value_full(value, delta_days, 0)
+}
+
+fn shift_ical_datetime_value_full(
+    value: &str,
+    delta_days: i64,
+    delta_minutes: i64,
+) -> Option<String> {
     let value = value.trim();
     if value.len() == 8 {
         let date = NaiveDate::parse_from_str(value, "%Y%m%d").ok()?;
@@ -6285,9 +6355,10 @@ fn shift_ical_datetime_value(value: &str, delta_days: i64) -> Option<String> {
     }
     let datetime = NaiveDateTime::parse_from_str(&value[..15], "%Y%m%dT%H%M%S").ok()?;
     let suffix = &value[15..];
+    let shift = Duration::days(delta_days) + Duration::minutes(delta_minutes);
     Some(format!(
         "{}{}",
-        (datetime + Duration::days(delta_days)).format("%Y%m%dT%H%M%S"),
+        (datetime + shift).format("%Y%m%dT%H%M%S"),
         suffix
     ))
 }
@@ -10176,6 +10247,40 @@ mod tests {
         let shifted = shift_event_component(raw, 1).expect("mixed-zone list should move");
         assert!(shifted.contains("RDATE;TZID=Europe/Berlin:20260818T120000"));
         assert!(shifted.contains("RDATE;TZID=America/New_York:20260825T120000"));
+    }
+
+    #[test]
+    fn shifting_timed_event_updates_start_and_end_with_minutes() {
+        let raw = concat!(
+            "BEGIN:VEVENT\r\n",
+            "UID:event-1\r\n",
+            "DTSTART;TZID=Europe/Berlin:20260810T100000\r\n",
+            "DTEND;TZID=Europe/Berlin:20260810T110000\r\n",
+            "END:VEVENT\r\n"
+        );
+        // Move from 10:00 to 14:30 on same day (+270 minutes, 0 days)
+        let shifted = shift_event_component_full(raw, 0, 270).expect("event should shift minutes");
+        assert!(shifted.contains("DTSTART;TZID=Europe/Berlin:20260810T143000"));
+        assert!(shifted.contains("DTEND;TZID=Europe/Berlin:20260810T153000"));
+
+        // Move to next day at 09:00 (+1 day, -60 minutes from original 10:00)
+        let shifted_next_day =
+            shift_event_component_full(raw, 1, -60).expect("event should shift day and minutes");
+        assert!(shifted_next_day.contains("DTSTART;TZID=Europe/Berlin:20260811T090000"));
+        assert!(shifted_next_day.contains("DTEND;TZID=Europe/Berlin:20260811T100000"));
+    }
+
+    #[test]
+    fn shifting_all_day_event_ignores_delta_minutes() {
+        let raw = concat!(
+            "BEGIN:VEVENT\r\nUID:event-allday\r\n",
+            "DTSTART;VALUE=DATE:20260810\r\n",
+            "DTEND;VALUE=DATE:20260811\r\nEND:VEVENT\r\n"
+        );
+        // Dragging all-day event should only shift days even if minutes are supplied
+        let shifted = shift_event_component_full(raw, 2, 120).expect("all day event should shift");
+        assert!(shifted.contains("DTSTART;VALUE=DATE:20260812"));
+        assert!(shifted.contains("DTEND;VALUE=DATE:20260813"));
     }
 
     #[test]
