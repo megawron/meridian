@@ -106,6 +106,8 @@ mod imp {
         pub is_unread: RefCell<bool>,
         pub is_flagged: RefCell<bool>,
         pub is_important: RefCell<bool>,
+        pub is_replied: RefCell<bool>,
+        pub is_forwarded: RefCell<bool>,
         /// Local sidecar deletion is intentionally independent from a folder:
         /// a visible deleted row remains in its original logical folder.
         pub is_deleted: RefCell<bool>,
@@ -350,6 +352,22 @@ impl MailMessageObject {
 
     pub fn set_important(&self, important: bool) {
         *self.imp().is_important.borrow_mut() = important;
+    }
+
+    pub fn is_replied(&self) -> bool {
+        *self.imp().is_replied.borrow()
+    }
+
+    pub fn set_replied(&self, replied: bool) {
+        *self.imp().is_replied.borrow_mut() = replied;
+    }
+
+    pub fn is_forwarded(&self) -> bool {
+        *self.imp().is_forwarded.borrow()
+    }
+
+    pub fn set_forwarded(&self, forwarded: bool) {
+        *self.imp().is_forwarded.borrow_mut() = forwarded;
     }
 
     pub(crate) fn is_deleted(&self) -> bool {
@@ -608,5 +626,47 @@ mod tests {
         assert_ne!(local, camel);
         assert_eq!(local, local.clone());
         assert_eq!(camel, camel.clone());
+    }
+
+    #[test]
+    fn message_replied_and_forwarded_flags_roundtrip() {
+        let message = MailMessageObject::new(
+            "msg-1",
+            "inbox",
+            "Sender",
+            "sender@example.com",
+            "to@example.com",
+            "",
+            "",
+            "",
+            "Subject",
+            None,
+            Vec::new(),
+            Vec::new(),
+            "thread-1",
+            1,
+            0,
+            "2026-09-10",
+            100,
+            "snippet",
+            "<p>snippet</p>",
+            false,
+            false,
+            false,
+            crate::services::mail_metadata_service::MailFollowUpState::None,
+            crate::services::mail_metadata_service::MailFollowUpMetadata::default(),
+            Vec::new(),
+            None,
+            Vec::new(),
+        );
+
+        assert!(!message.is_replied());
+        assert!(!message.is_forwarded());
+
+        message.set_replied(true);
+        assert!(message.is_replied());
+
+        message.set_forwarded(true);
+        assert!(message.is_forwarded());
     }
 }

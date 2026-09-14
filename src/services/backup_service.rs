@@ -212,6 +212,8 @@ struct BackupSettings {
     mail_show_location: bool,
     #[serde(default = "default_mail_sender_column_width")]
     mail_sender_column_width: i32,
+    #[serde(default = "default_mail_recipient_column_width")]
+    mail_recipient_column_width: i32,
     #[serde(default = "default_mail_date_column_width")]
     mail_date_column_width: i32,
     #[serde(default = "default_mail_list_view_profile")]
@@ -792,6 +794,10 @@ fn default_mail_sender_column_width() -> i32 {
     180
 }
 
+fn default_mail_recipient_column_width() -> i32 {
+    180
+}
+
 fn default_mail_date_column_width() -> i32 {
     130
 }
@@ -951,6 +957,7 @@ impl BackupSettings {
             mail_show_follow_up_due: settings.mail_show_follow_up_due(),
             mail_show_location: settings.mail_show_location(),
             mail_sender_column_width: settings.mail_sender_column_width(),
+            mail_recipient_column_width: settings.mail_recipient_column_width(),
             mail_date_column_width: settings.mail_date_column_width(),
             mail_list_view_profile: settings.mail_list_view_profile(),
             mail_list_column_order: settings.mail_list_column_order().join(","),
@@ -1139,6 +1146,7 @@ impl BackupSettings {
         settings.set_mail_show_follow_up_due(self.mail_show_follow_up_due);
         settings.set_mail_show_location(self.mail_show_location);
         settings.set_mail_sender_column_width(self.mail_sender_column_width);
+        settings.set_mail_recipient_column_width(self.mail_recipient_column_width);
         settings.set_mail_date_column_width(self.mail_date_column_width);
         if self.mail_list_view_profile == "custom" {
             let order = crate::services::settings_service::normalize_mail_list_column_order(
@@ -1433,6 +1441,12 @@ impl BackupSettings {
         validate_i32_setting(
             "mail_sender_column_width",
             self.mail_sender_column_width,
+            80,
+            360,
+        )?;
+        validate_i32_setting(
+            "mail_recipient_column_width",
+            self.mail_recipient_column_width,
             80,
             360,
         )?;
@@ -2007,6 +2021,7 @@ const BACKUP_SETTINGS_FIELDS: &[&str] = &[
     "mail_show_follow_up_due",
     "mail_show_location",
     "mail_sender_column_width",
+    "mail_recipient_column_width",
     "mail_date_column_width",
     "mail_list_view_profile",
     "mail_list_column_order",
@@ -2998,9 +3013,10 @@ mod tests {
                 "mail_show_follow_up_due": true,
                 "mail_show_location": true,
                 "mail_sender_column_width": 245,
+                "mail_recipient_column_width": 210,
                 "mail_date_column_width": 175,
                 "mail_list_view_profile": "custom",
-                "mail_list_column_order": "subject,sender,date,status,attachment,flagged,follow-up,important,avatar,preview,size,follow-up-due,location,messages"
+                "mail_list_column_order": "subject,sender,recipient,date,status,attachment,flagged,follow-up,important,avatar,preview,size,follow-up-due,location,messages"
             },
             "files": []
         }))
@@ -3020,12 +3036,13 @@ mod tests {
         assert!(settings.mail_show_follow_up_due);
         assert!(settings.mail_show_location);
         assert_eq!(settings.mail_sender_column_width, 245);
+        assert_eq!(settings.mail_recipient_column_width, 210);
         assert_eq!(settings.mail_date_column_width, 175);
         assert_eq!(settings.mail_list_view_profile, "custom");
         assert!(
             settings
                 .mail_list_column_order
-                .starts_with("subject,sender,date")
+                .starts_with("subject,sender,recipient,date")
         );
         validate_bundle(&bundle).expect("current fixture should validate");
 
@@ -3045,10 +3062,12 @@ mod tests {
         let source = AppSettings::try_new_with_backend(&source_backend)
             .expect("the application settings schema should be available in tests");
         source.set_mail_sender_column_width(245);
+        source.set_mail_recipient_column_width(210);
         source.set_mail_date_column_width(175);
         source.set_mail_list_column_order(&[
             "subject".to_string(),
             "sender".to_string(),
+            "recipient".to_string(),
             "date".to_string(),
         ]);
 
@@ -3066,11 +3085,12 @@ mod tests {
         snapshot.apply_to(&target);
 
         assert_eq!(target.mail_sender_column_width(), 245);
+        assert_eq!(target.mail_recipient_column_width(), 210);
         assert_eq!(target.mail_date_column_width(), 175);
         assert_eq!(target.mail_list_view_profile(), "custom");
         assert_eq!(
-            &target.mail_list_column_order()[..3],
-            &["subject", "sender", "date"]
+            &target.mail_list_column_order()[..4],
+            &["subject", "sender", "recipient", "date"]
         );
     }
 
@@ -3145,6 +3165,7 @@ mod tests {
             serde_json::json!({"mail_sync_message_limit": "100"}),
             serde_json::json!({"mail_sync_message_limit": 24}),
             serde_json::json!({"mail_sender_column_width": 79}),
+            serde_json::json!({"mail_recipient_column_width": 79}),
             serde_json::json!({"mail_date_column_width": 59}),
             serde_json::json!({"mail_list_view_profile": "invalid"}),
             serde_json::json!({"mail_list_column_order": "date,date"}),

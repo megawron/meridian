@@ -156,8 +156,12 @@ impl MailViewer {
 
     fn build_ui(&self) {
         tracing::debug!("MailViewer construction started");
+        self.set_overflow(gtk::Overflow::Hidden);
+        self.set_hexpand(true);
         let box_container = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
+            .overflow(gtk::Overflow::Hidden)
+            .hexpand(true)
             .build();
 
         // ── 1. Privacy Banner for Remote Images ────────────────────────────
@@ -213,8 +217,9 @@ impl MailViewer {
             .buffer()
             .set_text("Keine Nachricht ausgewählt.");
         let fallback_scroll = gtk::ScrolledWindow::builder()
-            .hscrollbar_policy(gtk::PolicyType::Automatic)
+            .hscrollbar_policy(gtk::PolicyType::Never)
             .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .min_content_width(0)
             .child(&fallback_view)
             .hexpand(true)
             .vexpand(true)
@@ -1410,6 +1415,8 @@ impl MailViewer {
         // so trusted inline `data:`, `cid:` and `blob:` images remain visible.
         settings.set_auto_load_images(true);
         settings.set_enable_developer_extras(false);
+        settings.set_enable_page_cache(true);
+        settings.set_enable_smooth_scrolling(true);
 
         let webview = webkit6::WebView::builder()
             .web_context(&web_context)
@@ -1421,6 +1428,7 @@ impl MailViewer {
         let webview_scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Automatic)
             .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .min_content_width(0)
             .child(&webview)
             .hexpand(true)
             .vexpand(true)
@@ -1435,12 +1443,14 @@ impl MailViewer {
                 return;
             }
             match event {
-                webkit6::LoadEvent::Started | webkit6::LoadEvent::Redirected => {
+                webkit6::LoadEvent::Started
+                | webkit6::LoadEvent::Redirected
+                | webkit6::LoadEvent::Committed => {
                     viewer.imp().webview_ready.set(false);
                     webview.set_opacity(0.0);
                     viewer.show_renderer_loading();
                 }
-                webkit6::LoadEvent::Finished | webkit6::LoadEvent::Committed => {
+                webkit6::LoadEvent::Finished => {
                     viewer.imp().webview_ready.set(true);
                     webview.set_opacity(1.0);
                     viewer.show_renderer_ready();
@@ -2111,6 +2121,14 @@ fn compose_sanitized_mail_document(
     background-color: #1e1e1e;
     color: #eeeeec;
   }
+  html, body {
+    width: 100% !important;
+    max-width: 100% !important;
+    min-width: 0 !important;
+    overflow-x: auto !important;
+    box-sizing: border-box !important;
+    -webkit-text-size-adjust: 100%;
+  }
   body {
     font-family: __FONT_FAMILY__;
     font-size: __FONT_SIZE__px;
@@ -2129,6 +2147,14 @@ fn compose_sanitized_mail_document(
     background-color: #ffffff;
     color: #2e3436;
   }
+  html, body {
+    width: 100% !important;
+    max-width: 100% !important;
+    min-width: 0 !important;
+    overflow-x: auto !important;
+    box-sizing: border-box !important;
+    -webkit-text-size-adjust: 100%;
+  }
   body {
     font-family: __FONT_FAMILY__;
     font-size: __FONT_SIZE__px;
@@ -2145,15 +2171,86 @@ fn compose_sanitized_mail_document(
         .replace("__FONT_FAMILY__", &mail_font_family)
         .replace("__FONT_SIZE__", &mail_font_size.to_string());
     let citation_css = blockquote_citation_css(citation_highlighting, citation_colors);
+    let preheader_suppression_css = r#"
+  .preheader, .preview-text, .email-preheader, .mso-hide,
+  *[class*="preheader" i], *[id*="preheader" i],
+  *[class*="preview-text" i], *[id*="preview-text" i],
+  div[style*="display:none" i], span[style*="display:none" i],
+  div[style*="display: none" i], span[style*="display: none" i],
+  div[style*="font-size:0" i], span[style*="font-size:0" i],
+  div[style*="font-size: 0" i], span[style*="font-size: 0" i],
+  div[style*="font-size:1px" i], span[style*="font-size:1px" i],
+  div[style*="font-size: 1px" i], span[style*="font-size: 1px" i],
+  div[style*="max-height:0" i], span[style*="max-height:0" i],
+  div[style*="max-height: 0" i], span[style*="max-height: 0" i],
+  div[style*="opacity:0" i], span[style*="opacity:0" i],
+  div[style*="opacity: 0" i], span[style*="opacity: 0" i] {
+    display: none !important;
+    visibility: hidden !important;
+    opacity: 0 !important;
+    height: 0 !important;
+    max-height: 0 !important;
+    width: 0 !important;
+    max-width: 0 !important;
+    line-height: 0 !important;
+    font-size: 0 !important;
+    overflow: hidden !important;
+    mso-hide: all !important;
+  }
+"#;
+    let responsive_containers_css = r#"
+  * { box-sizing: border-box !important; }
+  table, div, p, span, a, td, th {
+    max-width: 100% !important;
+    min-width: 0 !important;
+    overflow-wrap: break-word !important;
+    word-break: break-word !important;
+  }
+  img, video, iframe, canvas, svg {
+    max-width: 100% !important;
+    height: auto !important;
+  }
+  table {
+    border-collapse: collapse;
+    table-layout: auto !important;
+  }
+  body > table, body > div, body > center, body > article, body > main,
+  center > table, table[align="center"] {
+    width: 100% !important;
+    max-width: 100% !important;
+    min-width: 0 !important;
+    margin-left: auto !important;
+    margin-right: auto !important;
+  }
+  @media screen and (max-width: 640px) {
+    td[class*="col" i], td[class*="column" i], td[class*="stack" i],
+    th[class*="col" i], th[class*="column" i] {
+      display: block !important;
+      width: 100% !important;
+      max-width: 100% !important;
+      min-width: 0 !important;
+      box-sizing: border-box !important;
+    }
+  }
+  pre, code {
+    white-space: pre-wrap !important;
+    word-wrap: break-word !important;
+    font-family: inherit;
+    font-size: inherit;
+    margin: 0;
+  }
+  a {
+    color: #3584e4;
+    text-decoration: underline;
+  }
+"#;
+    let remote_images_css = if remote_images_allowed {
+        ""
+    } else {
+        " img[src^=\"http://\"], img[src^=\"https://\"], img[src^=\"//\"], img[xlink\\:href^=\"http://\"], img[xlink\\:href^=\"https://\"], img[xlink\\:href^=\"//\"] { display: none !important; }"
+    };
     let style_tag = format!(
-        "<style>{} pre {{ white-space: pre-wrap; word-wrap: break-word; font-family: inherit; font-size: inherit; margin: 0; }} {} a {{ color: #3584e4; text-decoration: underline; }} table {{ max-width: 100%; border-collapse: collapse; }} img {{ max-width: 100%; height: auto; }} body > table, body > div, body > center, body > article, body > main {{ max-width: 100%; }}{}</style>",
-        body_css,
-        citation_css,
-        if remote_images_allowed {
-            ""
-        } else {
-            " img[src^=\"http://\"], img[src^=\"https://\"], img[src^=\"//\"], img[xlink\\:href^=\"http://\"], img[xlink\\:href^=\"https://\"], img[xlink\\:href^=\"//\"] { display: none !important; }"
-        }
+        "<style>{body_css}{preheader_suppression_css}{responsive_containers_css} {citation_css}{remote_images_css}</style>"
     );
 
     // WebKit's image preference is the first line of defense. Keep the
@@ -2167,7 +2264,7 @@ fn compose_sanitized_mail_document(
         "data: cid: blob:"
     };
     let security_tag = format!(
-        "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; base-uri 'none'; form-action 'none'; script-src 'none'; style-src 'unsafe-inline'; img-src {image_sources}; font-src data:; connect-src 'none'; media-src 'none'; frame-src 'none'; object-src 'none'; worker-src 'none'\">"
+        "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\"><meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; base-uri 'none'; form-action 'none'; script-src 'none'; style-src 'unsafe-inline'; img-src {image_sources}; font-src data:; connect-src 'none'; media-src 'none'; frame-src 'none'; object-src 'none'; worker-src 'none'\">"
     );
 
     let lower = sanitized.to_ascii_lowercase();
@@ -2901,6 +2998,68 @@ mod tests {
         assert!(doc.contains("blockquote { border-left: 3px solid #729fcf;"));
         assert!(doc.contains("blockquote blockquote { border-left: 3px solid #ad7fa8; }"));
         assert!(!doc.contains("red; color: blue"));
+    }
+
+    #[test]
+    fn mail_composed_document_contains_viewport_and_responsive_css() {
+        let colors = test_citation_colors();
+        let doc = compose_sanitized_mail_document(
+            r#"<html><head></head><body><table width="800"><tr><td>Inhalt</td></tr></table></body></html>"#,
+            true,
+            false,
+            false,
+            "sans-serif",
+            14,
+            false,
+            &colors,
+        );
+        assert!(doc.contains("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">"));
+        assert!(doc.contains("overflow-x: auto !important"));
+        assert!(doc.contains("max-width: 100% !important"));
+        assert!(doc.contains("min-width: 0 !important"));
+        assert!(doc.contains("word-break: break-word !important"));
+        assert!(doc.contains("table-layout: auto !important"));
+    }
+
+    #[test]
+    fn mail_composed_document_contains_preheader_suppression_rules() {
+        let colors = test_citation_colors();
+        let doc = compose_sanitized_mail_document(
+            r#"<html><body><div class="preheader" style="display:none;font-size:1px;max-height:0px;">Strava</div><p>Hallo</p></body></html>"#,
+            true,
+            false,
+            false,
+            "sans-serif",
+            14,
+            false,
+            &colors,
+        );
+        assert!(doc.contains(".preheader, .preview-text"));
+        assert!(doc.contains("div[style*=\"display:none\" i]"));
+        assert!(doc.contains("div[style*=\"font-size:1px\" i]"));
+        assert!(doc.contains("div[style*=\"max-height:0\" i]"));
+        assert!(doc.contains("display: none !important"));
+        assert!(doc.contains("visibility: hidden !important"));
+        assert!(doc.contains("mso-hide: all !important"));
+    }
+
+    #[test]
+    fn mail_composed_document_contains_responsive_container_and_media_queries() {
+        let colors = test_citation_colors();
+        let doc = compose_sanitized_mail_document(
+            r#"<html><body><div class="container"><table class="row"><tr><td class="col">Spalte</td></tr></table></div></body></html>"#,
+            true,
+            false,
+            false,
+            "sans-serif",
+            14,
+            false,
+            &colors,
+        );
+        assert!(doc.contains("body > table, body > div, body > center"));
+        assert!(doc.contains("min-width: 0 !important"));
+        assert!(doc.contains("@media screen and (max-width: 640px)"));
+        assert!(doc.contains("td[class*=\"col\" i]"));
     }
 }
 

@@ -77,7 +77,9 @@ accessibility helpers, and view-local GTK state.
 - Keep the mail table Evolution-compact: attachment and status indicators
   lead the row, header and row cells share fixed column widths, and clicking a
   sortable header exposes the active direction there instead of requiring a
-  second sort control. The first visible row is zebra-shaded. Singleton
+  second sort control. Mail rows share a uniform neutral background per GNOME HIG;
+  unread messages are highlighted with a subtle accent tint background, bold typography,
+  and an accent status icon. Singleton
   messages have no permanent expander; real conversations use one aligned
   count cell rather than shifting every following column. Account roots have
   no decorative icon, indentation is shallow but visible, and unread badges

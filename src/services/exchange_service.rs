@@ -219,6 +219,8 @@ impl ExchangeMailMessage {
             is_unread: !self.is_read,
             is_flagged: self.is_flagged,
             is_important: self.is_important,
+            is_replied: false,
+            is_forwarded: false,
             follow_up_state: self.follow_up_state,
             follow_up: MailFollowUpMetadata {
                 state: self.follow_up_state,

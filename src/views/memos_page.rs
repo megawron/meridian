@@ -10,9 +10,9 @@
 use adw::prelude::*;
 use adw::subclass::prelude::*;
 use chrono::Utc;
-use gtk::{gio, glib};
+use gtk::{gdk, gio, glib};
 use std::cell::{Cell, RefCell};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use crate::dialogs::event_dialog::AlarmEditor;
@@ -34,18 +34,20 @@ use crate::services::memo_surface_service::{
 use crate::services::reminder_service::{Alarm, replace_component_alarms};
 use crate::services::settings_service::{AppSettings, normalize_memo_source_filter_value};
 use crate::views::accessibility::set_accessible_label;
+use crate::views::calendar_page::calendar_source_color;
 use crate::views::set_button_icon_with_fallback;
 
 mod imp {
     use super::*;
 
-    #[derive(Debug, Default)]
+    #[derive(Debug)]
     pub struct MemosPage {
         pub ecal_monitor_cancel: RefCell<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>>,
         pub memo_category_filter: RefCell<Option<String>>,
         pub memo_category_model: RefCell<Option<gtk::StringList>>,
         pub memo_category_selector: RefCell<Option<gtk::DropDown>>,
         pub memo_source_filter: RefCell<Option<String>>,
+        pub collapsed_memo_groups: RefCell<HashSet<String>>,
         pub memo_available_sources: RefCell<HashSet<String>>,
         pub memo_unavailable_sources: RefCell<HashSet<String>>,
         pub memo_writable_sources: RefCell<HashSet<String>>,
@@ -62,7 +64,65 @@ mod imp {
         pub memo_preview_label: RefCell<Option<gtk::Label>>,
         pub memo_preview_box: RefCell<Option<gtk::Box>>,
         pub outer_paned: RefCell<Option<gtk::Paned>>,
+        pub memo_preview_paned: RefCell<Option<gtk::Paned>>,
+        pub memo_preview_position_restoring: Cell<bool>,
+        pub memo_detail_stack: RefCell<Option<gtk::Stack>>,
         pub memo_surface_buttons: RefCell<Option<Vec<gtk::Button>>>,
+        pub memo_source_list: RefCell<Option<gtk::ListBox>>,
+        pub memo_source_selector: RefCell<crate::models::source_selector::SourceSelector>,
+        pub hidden_memo_sources: RefCell<HashSet<String>>,
+        pub memo_color_css_provider: RefCell<Option<gtk::CssProvider>>,
+        pub memo_search_bar: RefCell<Option<gtk::SearchBar>>,
+        pub search_toggle_btn: RefCell<Option<gtk::ToggleButton>>,
+        pub toolbar: RefCell<Option<gtk::Widget>>,
+        pub memo_sidebar_toggle: RefCell<Option<gtk::ToggleButton>>,
+        pub memo_preview_toggle: RefCell<Option<gtk::ToggleButton>>,
+    }
+
+    impl Default for MemosPage {
+        fn default() -> Self {
+            Self {
+                ecal_monitor_cancel: RefCell::new(None),
+                memo_category_filter: RefCell::new(None),
+                memo_category_model: RefCell::new(None),
+                memo_category_selector: RefCell::new(None),
+                memo_source_filter: RefCell::new(None),
+                collapsed_memo_groups: RefCell::new(HashSet::new()),
+                memo_available_sources: RefCell::new(HashSet::new()),
+                memo_unavailable_sources: RefCell::new(HashSet::new()),
+                memo_writable_sources: RefCell::new(HashSet::new()),
+                memo_search_mode: Cell::new(MemoSearchMode::default()),
+                memo_search_query: RefCell::new(String::new()),
+                memo_selection: RefCell::new(MemoSelection::default()),
+                memo_refresh_generation: Cell::new(0),
+                memo_preview_state: RefCell::new(MemoPreviewState::default()),
+                memo_list: RefCell::new(None),
+                memo_records: RefCell::new(None),
+                memo_empty_state: RefCell::new(None),
+                new_memo_button: RefCell::new(None),
+                search_entry: RefCell::new(None),
+                memo_preview_label: RefCell::new(None),
+                memo_preview_box: RefCell::new(None),
+                outer_paned: RefCell::new(None),
+                memo_preview_paned: RefCell::new(None),
+                memo_preview_position_restoring: Cell::new(false),
+                memo_detail_stack: RefCell::new(None),
+                memo_surface_buttons: RefCell::new(None),
+                memo_source_list: RefCell::new(None),
+                memo_source_selector: RefCell::new(
+                    crate::models::source_selector::SourceSelector::new(
+                        crate::models::source_selector::SourceDomain::Memos,
+                    ),
+                ),
+                hidden_memo_sources: RefCell::new(HashSet::new()),
+                memo_color_css_provider: RefCell::new(None),
+                memo_search_bar: RefCell::new(None),
+                search_toggle_btn: RefCell::new(None),
+                toolbar: RefCell::new(None),
+                memo_sidebar_toggle: RefCell::new(None),
+                memo_preview_toggle: RefCell::new(None),
+            }
+        }
     }
 
     #[glib::object_subclass]
@@ -79,6 +139,8 @@ mod imp {
     impl ObjectImpl for MemosPage {
         fn constructed(&self) {
             self.parent_constructed();
+            self.obj().set_vexpand(true);
+            self.obj().set_hexpand(true);
             self.obj().build_ui();
         }
 
@@ -182,6 +244,20 @@ impl MemosPage {
         glib::Object::builder().build()
     }
 
+    fn select_sidebar_source_row(list: &gtk::ListBox, target_index: usize) {
+        let mut child = list.first_child();
+        while let Some(widget) = child {
+            if let Some(row) = widget.downcast_ref::<gtk::ListBoxRow>() {
+                let idx = unsafe { row.data::<usize>("source-index").map(|v| *v.as_ref()) };
+                if idx == Some(target_index) {
+                    list.select_row(Some(row));
+                    return;
+                }
+            }
+            child = widget.next_sibling();
+        }
+    }
+
     /// Trigger the page-local memo editor from the shared Evolution toolbar.
     pub fn present_new_memo(&self) {
         if let Some(button) = self.imp().new_memo_button.borrow().as_ref() {
@@ -193,6 +269,44 @@ impl MemosPage {
         self.imp().outer_paned.borrow().clone()
     }
 
+    pub fn memo_preview_paned(&self) -> Option<gtk::Paned> {
+        self.imp().memo_preview_paned.borrow().clone()
+    }
+
+    pub fn memo_detail_stack(&self) -> Option<gtk::Stack> {
+        self.imp().memo_detail_stack.borrow().clone()
+    }
+}
+
+fn memo_paned_orientation(orientation: MemoPreviewOrientation) -> gtk::Orientation {
+    match orientation {
+        MemoPreviewOrientation::Classic => gtk::Orientation::Vertical,
+        MemoPreviewOrientation::Vertical => gtk::Orientation::Horizontal,
+    }
+}
+
+fn apply_memo_preview_paned_layout(page: &MemosPage, orientation: MemoPreviewOrientation) {
+    let Some(paned) = page.imp().memo_preview_paned.borrow().as_ref().cloned() else {
+        return;
+    };
+    let position = AppSettings::try_new()
+        .map(|settings| settings.memo_preview_position(orientation.setting_value()))
+        .unwrap_or_else(|| orientation.default_position());
+    page.imp().memo_preview_position_restoring.set(true);
+    paned.set_orientation(memo_paned_orientation(orientation));
+    paned.set_position(position);
+    page.imp().memo_preview_position_restoring.set(false);
+}
+
+impl MemosPage {
+    pub fn sidebar_toggle(&self) -> Option<gtk::ToggleButton> {
+        self.imp().memo_sidebar_toggle.borrow().clone()
+    }
+
+    pub fn preview_toggle(&self) -> Option<gtk::ToggleButton> {
+        self.imp().memo_preview_toggle.borrow().clone()
+    }
+
     pub fn set_sidebar_position(&self, pos: i32) {
         if let Some(paned) = self.imp().outer_paned.borrow().as_ref() {
             if (paned.position() - pos).abs() > 1 {
@@ -202,17 +316,618 @@ impl MemosPage {
     }
 
     pub(crate) fn focus_search(&self) {
+        if let Some(bar) = self.imp().memo_search_bar.borrow().as_ref() {
+            bar.set_search_mode(true);
+        }
         if let Some(entry) = self.imp().search_entry.borrow().as_ref() {
             entry.grab_focus();
             entry.select_region(0, -1);
         }
     }
 
+    pub(crate) fn is_search_active(&self) -> bool {
+        self.imp()
+            .memo_search_bar
+            .borrow()
+            .as_ref()
+            .map(|b| b.is_search_mode())
+            .unwrap_or(false)
+    }
+
+    pub(crate) fn close_search(&self) {
+        if let Some(bar) = self.imp().memo_search_bar.borrow().as_ref() {
+            bar.set_search_mode(false);
+        }
+    }
+
     pub(crate) fn set_search_query(&self, query: &str) {
+        if let Some(bar) = self.imp().memo_search_bar.borrow().as_ref() {
+            bar.set_search_mode(true);
+        }
         if let Some(entry) = self.imp().search_entry.borrow().as_ref() {
             entry.set_text(query);
             entry.grab_focus();
         }
+    }
+
+    pub(crate) fn refresh_hidden_memo_sources(&self) {
+        if let Some(settings) = AppSettings::try_new() {
+            let hidden = settings.memo_hidden_sources().into_iter().collect::<HashSet<_>>();
+            *self.imp().hidden_memo_sources.borrow_mut() = hidden;
+            self.imp().memo_source_selector.borrow_mut().load_from_settings(&settings);
+        }
+    }
+
+    pub(crate) fn refresh_active_memo_list(&self) {
+        let (Some(memo_list), Some(memo_records), Some(empty_state)) = (
+            self.imp().memo_list.borrow().as_ref().cloned(),
+            self.imp().memo_records.borrow().as_ref().cloned(),
+            self.imp().memo_empty_state.borrow().as_ref().cloned(),
+        ) else {
+            return;
+        };
+        refresh_memo_category_model(self, &memo_list);
+        refresh_memo_filter_view(self, &memo_list, &memo_records, &empty_state);
+    }
+
+    pub(crate) fn select_exclusive_memo_source(&self, uid: &str) {
+        {
+            let mut sel = self.imp().memo_source_selector.borrow_mut();
+            sel.select_exclusive(uid);
+            if let Some(settings) = AppSettings::try_new() {
+                sel.save_to_settings(&settings);
+            }
+            *self.imp().hidden_memo_sources.borrow_mut() =
+                sel.hidden_uids().into_iter().collect();
+        }
+        self.render_memo_sidebar();
+        self.refresh_active_memo_list();
+    }
+
+    pub(crate) fn select_all_memo_sources(&self) {
+        {
+            let mut sel = self.imp().memo_source_selector.borrow_mut();
+            sel.select_all();
+            if let Some(settings) = AppSettings::try_new() {
+                sel.save_to_settings(&settings);
+            }
+            *self.imp().hidden_memo_sources.borrow_mut() =
+                sel.hidden_uids().into_iter().collect();
+        }
+        self.render_memo_sidebar();
+        self.refresh_active_memo_list();
+    }
+
+    pub(crate) fn set_default_memo_source(&self, uid: &str) {
+        {
+            let mut sel = self.imp().memo_source_selector.borrow_mut();
+            sel.set_primary(uid);
+            if let Some(settings) = AppSettings::try_new() {
+                sel.save_to_settings(&settings);
+                settings.set_default_memo_source_uid(uid);
+            }
+        }
+        self.render_memo_sidebar();
+    }
+
+    pub(crate) fn present_memo_source_context_menu(
+        &self,
+        parent: &impl IsA<gtk::Widget>,
+        x: f64,
+        y: f64,
+        source_uid: &str,
+        display_name: &str,
+        color: &str,
+        is_writable: bool,
+        is_primary: bool,
+    ) {
+        let page_weak = self.downgrade();
+        let uid_excl = source_uid.to_string();
+        let on_exclusive = {
+            let page_weak = page_weak.clone();
+            let uid = uid_excl;
+            move || {
+                if let Some(page) = page_weak.upgrade() {
+                    page.select_exclusive_memo_source(&uid);
+                }
+            }
+        };
+
+        let on_select_all = {
+            let page_weak = page_weak.clone();
+            move || {
+                if let Some(page) = page_weak.upgrade() {
+                    page.select_all_memo_sources();
+                }
+            }
+        };
+
+        let uid_def = source_uid.to_string();
+        let on_set_default = {
+            let page_weak = page_weak.clone();
+            let uid = uid_def;
+            move || {
+                if let Some(page) = page_weak.upgrade() {
+                    page.set_default_memo_source(&uid);
+                }
+            }
+        };
+
+        let uid_props = source_uid.to_string();
+        let name_props = display_name.to_string();
+        let col_props = color.to_string();
+        let on_properties = Some({
+            let page_weak = page_weak.clone();
+            move || {
+                if let Some(page) = page_weak.upgrade() {
+                    let root_window = page.root().and_downcast::<gtk::Window>();
+                    let dialog = crate::dialogs::SourcePropertiesDialog::new(
+                        &uid_props,
+                        &name_props,
+                        "Notizbuch",
+                        &col_props,
+                        is_writable,
+                        is_primary,
+                    );
+                    if let Some(parent) = root_window.as_ref() {
+                        dialog.set_transient_for(Some(parent));
+                    }
+                    let page_weak_save = page.downgrade();
+                    dialog.set_on_save(move |update| {
+                        if let Some(page) = page_weak_save.upgrade() {
+                            {
+                                let mut sel = page.imp().memo_source_selector.borrow_mut();
+                                sel.update_source_metadata(
+                                    &update.source_uid,
+                                    &update.display_name,
+                                    Some(&update.color),
+                                    update.is_default,
+                                );
+                                if let Some(settings) = AppSettings::try_new() {
+                                    sel.save_to_settings(&settings);
+                                    if update.is_default {
+                                        settings.set_default_memo_source_uid(&update.source_uid);
+                                    }
+                                }
+                            }
+                            page.render_memo_sidebar();
+                        }
+                    });
+                    dialog.present();
+                }
+            }
+        });
+
+        let on_manage_groups = Some({
+            let page_weak = page_weak.clone();
+            move || {
+                if let Some(page) = page_weak.upgrade() {
+                    let root_window = page.root().and_downcast::<gtk::Window>();
+                    let current_sel = page.imp().memo_source_selector.borrow().clone();
+                    let page_weak_save = page.downgrade();
+                    let dialog = crate::dialogs::ManageGroupsDialog::new(
+                        root_window.as_ref(),
+                        "Notizbuch",
+                        &current_sel,
+                        move |updated_selector| {
+                            if let Some(page) = page_weak_save.upgrade() {
+                                {
+                                    let mut sel = page.imp().memo_source_selector.borrow_mut();
+                                    *sel = updated_selector;
+                                    sel.deselect_sources_in_hidden_groups();
+                                    if let Some(settings) = AppSettings::try_new() {
+                                        sel.save_to_settings(&settings);
+                                    }
+                                    *page.imp().hidden_memo_sources.borrow_mut() =
+                                        sel.hidden_uids().into_iter().collect();
+                                }
+                                page.render_memo_sidebar();
+                            }
+                        },
+                    );
+                    dialog.present();
+                }
+            }
+        });
+
+        let popover = crate::models::source_selector::create_source_context_popover(
+            is_primary,
+            "Notizbuch",
+            on_exclusive,
+            on_select_all,
+            on_set_default,
+            on_properties,
+            on_manage_groups,
+        );
+        popover.set_parent(parent);
+        popover.set_pointing_to(Some(&gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
+        popover.present();
+    }
+
+    pub(crate) fn render_memo_sidebar(&self) {
+        let Some(source_list) = self.imp().memo_source_list.borrow().as_ref().cloned() else {
+            return;
+        };
+        while let Some(child) = source_list.first_child() {
+            source_list.remove(&child);
+        }
+
+        let selector = self.imp().memo_source_selector.borrow().clone();
+        let collapsed_groups = self.imp().collapsed_memo_groups.borrow().clone();
+
+        // Generate and install dynamic CSS rules for memo source colors on checkboxes
+        let mut unique_colors = std::collections::HashSet::new();
+        for s in selector.visible_sources() {
+            if let Some(ref c) = s.color {
+                unique_colors.insert(c.clone());
+            }
+        }
+        unique_colors.insert("#3584e4".to_string());
+
+        let mut css_rules = String::new();
+        for hex in unique_colors {
+            let clean: String = hex
+                .chars()
+                .filter(|c| c.is_ascii_alphanumeric())
+                .collect::<String>()
+                .to_ascii_lowercase();
+            css_rules.push_str(&format!(
+                "checkbutton.cal-check-{clean} {{ \
+                     --accent-bg-color: {hex}; \
+                     --accent-color: {hex}; \
+                 }} \
+                 checkbutton.cal-check-{clean} check:not(:checked) {{ \
+                     box-shadow: inset 0 0 0 2px {hex}; \
+                 }}\n"
+            ));
+        }
+        if let Some(display) = gtk::gdk::Display::default() {
+            let mut prov_slot = self.imp().memo_color_css_provider.borrow_mut();
+            if let Some(ref provider) = *prov_slot {
+                provider.load_from_string(&css_rules);
+            } else {
+                let provider = gtk::CssProvider::new();
+                provider.load_from_string(&css_rules);
+                gtk::style_context_add_provider_for_display(
+                    &display,
+                    &provider,
+                    gtk::STYLE_PROVIDER_PRIORITY_APPLICATION + 50,
+                );
+                *prov_slot = Some(provider);
+            }
+        }
+
+        for group in selector.ordered_groups() {
+            if group.is_hidden {
+                continue;
+            }
+            let group_sources: Vec<_> = selector
+                .visible_sources()
+                .into_iter()
+                .filter(|s| s.group_name == group.name)
+                .collect();
+
+            if group_sources.is_empty() && !group.is_custom {
+                continue;
+            }
+
+            let is_collapsed = collapsed_groups.contains(&group.name);
+
+            // Group header row
+            let group_box = gtk::Box::builder()
+                .orientation(gtk::Orientation::Horizontal)
+                .spacing(6)
+                .margin_start(0)
+                .margin_end(6)
+                .valign(gtk::Align::Center)
+                .css_classes(vec![
+                    "calendar-sidebar-row",
+                    "calendar-sidebar-group-row",
+                    "sidebar-account-row",
+                ])
+                .build();
+
+            let arrow_icon = if is_collapsed {
+                "pan-end-symbolic"
+            } else {
+                "pan-down-symbolic"
+            };
+            let arrow = gtk::Image::builder()
+                .icon_name(arrow_icon)
+                .pixel_size(16)
+                .valign(gtk::Align::Center)
+                .build();
+            group_box.append(&arrow);
+
+            let group_label = gtk::Label::builder()
+                .label(&group.name)
+                .halign(gtk::Align::Start)
+                .hexpand(true)
+                .ellipsize(pango::EllipsizeMode::End)
+                .css_classes(vec!["account-heading"])
+                .build();
+            group_box.append(&group_label);
+
+            let group_row = gtk::ListBoxRow::builder()
+                .child(&group_box)
+                .activatable(true)
+                .selectable(false)
+                .css_classes(vec![
+                    "calendar-sidebar-group-row",
+                    "account-root-row",
+                    "sidebar-account-row",
+                ])
+                .tooltip_text(if is_collapsed {
+                    "Gruppe aufklappen"
+                } else {
+                    "Gruppe einklappen"
+                })
+                .build();
+
+            let page_weak_for_group = self.downgrade();
+            let group_name_for_toggle = group.name.clone();
+            let group_gesture = gtk::GestureClick::new();
+            group_gesture.connect_released(move |_, _, _, _| {
+                let Some(page) = page_weak_for_group.upgrade() else {
+                    return;
+                };
+                let mut collapsed = page.imp().collapsed_memo_groups.borrow_mut();
+                if collapsed.contains(&group_name_for_toggle) {
+                    collapsed.remove(&group_name_for_toggle);
+                } else {
+                    collapsed.insert(group_name_for_toggle.clone());
+                }
+                drop(collapsed);
+                page.render_memo_sidebar();
+            });
+            group_row.add_controller(group_gesture);
+            source_list.append(&group_row);
+
+            if is_collapsed {
+                continue;
+            }
+
+            for item in group_sources {
+                let source_uid = item.uid.clone();
+                let is_primary = selector.is_primary(&source_uid);
+                let color_hex = item.color.clone().unwrap_or_else(|| "#3584e4".to_string());
+
+                let child_box = gtk::Box::builder()
+                    .orientation(gtk::Orientation::Horizontal)
+                    .spacing(6)
+                    .margin_start(12)
+                    .margin_end(6)
+                    .css_classes(vec!["calendar-sidebar-row", "calendar-sidebar-child-row"])
+                    .build();
+
+                let clean_color: String = color_hex
+                    .chars()
+                    .filter(|c| c.is_ascii_alphanumeric())
+                    .collect::<String>()
+                    .to_ascii_lowercase();
+                let color_class = format!("cal-check-{}", clean_color);
+
+                let check = gtk::CheckButton::builder()
+                    .active(item.enabled && selector.is_selected(&source_uid))
+                    .sensitive(item.enabled)
+                    .valign(gtk::Align::Center)
+                    .tooltip_text("Notizliste in den Ansichten ein-/ausblenden")
+                    .css_classes(vec![color_class.as_str()])
+                    .build();
+
+                let page_weak_for_toggle = self.downgrade();
+                let source_uid_for_toggle = source_uid.clone();
+                check.connect_toggled(move |check| {
+                    let Some(page) = page_weak_for_toggle.upgrade() else {
+                        return;
+                    };
+                    {
+                        let mut sel = page.imp().memo_source_selector.borrow_mut();
+                        sel.set_selected(&source_uid_for_toggle, check.is_active());
+                        if let Some(settings) = AppSettings::try_new() {
+                            sel.save_to_settings(&settings);
+                        }
+                        *page.imp().hidden_memo_sources.borrow_mut() =
+                            sel.hidden_uids().into_iter().collect();
+                    }
+                    page.refresh_active_memo_list();
+                });
+                child_box.append(&check);
+
+                let label = gtk::Label::builder()
+                    .label(&item.display_name)
+                    .halign(gtk::Align::Start)
+                    .hexpand(true)
+                    .ellipsize(pango::EllipsizeMode::End)
+                    .build();
+                child_box.append(&label);
+
+                if is_primary {
+                    let primary_ind =
+                        crate::models::source_selector::create_primary_indicator();
+                    primary_ind.set_valign(gtk::Align::Center);
+                    child_box.append(&primary_ind);
+                }
+
+                if item.backend_name != "local" && source_uid != "local-calendar" {
+                    let sync_icon =
+                        gtk::Image::from_icon_name("media-playlist-repeat-symbolic");
+                    sync_icon.add_css_class("dim-label");
+                    sync_icon.set_tooltip_text(Some("Synchronisierte Notizliste"));
+                    sync_icon.set_valign(gtk::Align::Center);
+                    child_box.append(&sync_icon);
+                }
+
+                let row = gtk::ListBoxRow::builder()
+                    .child(&child_box)
+                    .activatable(true)
+                    .selectable(true)
+                    .css_classes(vec!["calendar-sidebar-child-row"])
+                    .build();
+
+                let page_weak_for_menu = self.downgrade();
+                let source_uid_for_menu = source_uid.clone();
+                let display_name_for_menu = item.display_name.clone();
+                let color_for_menu = color_hex.clone();
+                let is_writable = item.writable;
+                let source_list_weak = source_list.downgrade();
+
+                let right_click = gtk::GestureClick::builder()
+                    .button(gdk::BUTTON_SECONDARY)
+                    .build();
+                right_click.connect_pressed(move |gesture, _, x, y| {
+                    gesture.set_state(gtk::EventSequenceState::Claimed);
+                    let (Some(page), Some(list)) =
+                        (page_weak_for_menu.upgrade(), source_list_weak.upgrade())
+                    else {
+                        return;
+                    };
+                    page.present_memo_source_context_menu(
+                        &list,
+                        x,
+                        y,
+                        &source_uid_for_menu,
+                        &display_name_for_menu,
+                        &color_for_menu,
+                        is_writable,
+                        is_primary,
+                    );
+                });
+                row.add_controller(right_click);
+
+                source_list.append(&row);
+            }
+        }
+
+        self.refresh_active_memo_list();
+    }
+
+    pub(crate) fn apply_memo_sources(&self, sources: Vec<MemoSourceProjection>) {
+        let mut items = Vec::new();
+        let mut available_sources = HashSet::new();
+        let mut unavailable_sources = HashSet::new();
+        let mut writable_sources = HashSet::new();
+        for source in sources {
+            let color = calendar_source_color(&source.uid, &source.display_name);
+            let parent_name = crate::services::eds_service::resolve_source_parent_name(&source.uid);
+            let group = if parent_name.trim().is_empty() {
+                "Auf diesem Computer".to_string()
+            } else {
+                parent_name
+            };
+            if source.available {
+                available_sources.insert(source.uid.clone());
+            } else {
+                unavailable_sources.insert(source.uid.clone());
+            }
+            if source.writable {
+                writable_sources.insert(source.uid.clone());
+            }
+            items.push(
+                crate::models::source_selector::SourceSelectorItem::new(
+                    &source.uid,
+                    &source.display_name,
+                    "memo",
+                    source.available,
+                    source.writable,
+                )
+                .with_color(color)
+                .with_group(group),
+            );
+        }
+        for collection in crate::services::eds_service::load_configured_account_collections() {
+            if !collection.calendar_enabled {
+                continue;
+            }
+            let account_name = collection.display_name.clone();
+            let already_represented = items.iter().any(|item| {
+                item.group_name == account_name
+                    || item.uid == collection.uid
+                    || item.uid == format!("account-memos-{}", collection.uid)
+            });
+            if !already_represented {
+                let memo_uid = format!("account-memos-{}", collection.uid);
+                let color = calendar_source_color(&collection.uid, &account_name);
+                available_sources.insert(memo_uid.clone());
+                writable_sources.insert(memo_uid.clone());
+                items.push(
+                    crate::models::source_selector::SourceSelectorItem::new(
+                        &memo_uid,
+                        "Notizen",
+                        "memo",
+                        true,
+                        true,
+                    )
+                    .with_color(color)
+                    .with_group(account_name),
+                );
+            }
+        }
+
+        if CalendarStoreService::new().is_writable() && !items.iter().any(|i| i.uid == "local-calendar") {
+            let color = calendar_source_color("local-calendar", "Lokale Notizliste");
+            available_sources.insert("local-calendar".to_string());
+            writable_sources.insert("local-calendar".to_string());
+            items.push(
+                crate::models::source_selector::SourceSelectorItem::new(
+                    "local-calendar",
+                    "Lokale Notizliste",
+                    "local",
+                    true,
+                    true,
+                )
+                .with_color(color)
+                .with_group("Auf diesem Computer"),
+            );
+        }
+
+        self.imp().memo_available_sources.replace(available_sources);
+        self.imp().memo_unavailable_sources.replace(unavailable_sources);
+        self.imp().memo_writable_sources.replace(writable_sources);
+
+        {
+            let mut selector = self.imp().memo_source_selector.borrow_mut();
+            selector.update_sources(items);
+            if let Some(settings) = AppSettings::try_new() {
+                selector.load_from_settings(&settings);
+            }
+            *self.imp().hidden_memo_sources.borrow_mut() =
+                selector.hidden_uids().into_iter().collect();
+        }
+
+        self.render_memo_sidebar();
+    }
+
+    pub(crate) fn reload_memo_sources(&self) {
+        let page_weak = self.downgrade();
+        let (source_sender, source_receiver) = async_channel::bounded(1);
+        std::thread::spawn(move || {
+            let discovery =
+                ECalService::new().discover_source_capabilities(ECalComponentType::Memo);
+            if let Err(error) = source_sender.send_blocking(discovery) {
+                tracing::debug!(%error, "Memo source discovery was dropped");
+            }
+        });
+        glib::spawn_future_local(async move {
+            let Ok(discovery) = source_receiver.recv().await else {
+                return;
+            };
+            let (sources, warning) = match discovery {
+                Ok(discovery) => (
+                    project_memo_source_capabilities(discovery.sources),
+                    discovery.warning,
+                ),
+                Err(error) => (Vec::new(), Some(error.to_string())),
+            };
+            if let Some(warning) = warning {
+                tracing::warn!(%warning, "Could not reach EDS memo lists");
+            }
+
+            let Some(page) = page_weak.upgrade() else {
+                return;
+            };
+            page.apply_memo_sources(sources);
+        });
     }
 
     pub(crate) fn select_search_result(&self, source_uid: &str, uid: &str) -> bool {
@@ -317,11 +1032,12 @@ impl MemosPage {
 
         let sidebar_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
-            .spacing(8)
-            .margin_start(8)
-            .margin_end(8)
-            .margin_top(8)
-            .margin_bottom(8)
+            .spacing(4)
+            .margin_start(0)
+            .margin_end(0)
+            .margin_top(4)
+            .margin_bottom(4)
+            .css_classes(vec!["calendar-sidebar"])
             .build();
 
         let search_entry = gtk::SearchEntry::builder()
@@ -392,31 +1108,19 @@ impl MemosPage {
             .replace(Some(category_selector.clone()));
         set_category_selector_for_filter(&category_selector, &initial_memo_category_filter);
 
+        let memo_source_list = gtk::ListBox::builder()
+            .selection_mode(gtk::SelectionMode::None)
+            .css_classes(vec!["navigation-sidebar", "calendar-sidebar-list"])
+            .build();
+        self.imp()
+            .memo_source_list
+            .replace(Some(memo_source_list.clone()));
+        sidebar_box.append(&memo_source_list);
+
         let memo_list = gtk::ListBox::builder()
             .selection_mode(gtk::SelectionMode::Multiple)
-            .css_classes(vec!["navigation-sidebar"])
+            .css_classes(vec!["navigation-sidebar", "memo-list"])
             .build();
-
-        let source_header = gtk::Label::builder()
-            .label("Notizlisten")
-            .css_classes(vec!["title-5"])
-            .halign(gtk::Align::Start)
-            .ellipsize(gtk::pango::EllipsizeMode::End)
-            .margin_top(8)
-            .margin_bottom(2)
-            .build();
-        sidebar_box.append(&source_header);
-        let memo_source_list = gtk::ListBox::builder()
-            .selection_mode(gtk::SelectionMode::Single)
-            .css_classes(vec!["navigation-sidebar"])
-            .build();
-        sidebar_box.append(&memo_source_list);
-        let source_selector_for_sidebar = source_selector.clone();
-        memo_source_list.connect_row_selected(move |_, row| {
-            if let Some(row) = row {
-                source_selector_for_sidebar.set_selected(row.index() as u32);
-            }
-        });
 
         let memo_sort_for_list = Rc::clone(&memo_sort);
         let memo_sort_descending_for_list = Rc::clone(&memo_sort_descending);
@@ -482,9 +1186,6 @@ impl MemosPage {
         self.imp()
             .memo_search_query
             .replace(search_entry.text().to_string());
-        sidebar_box.append(&empty_state);
-
-        sidebar_box.append(&memo_list);
 
         let page_weak_for_search_mode = self.downgrade();
         let memo_list_for_search_mode = memo_list.clone();
@@ -531,44 +1232,6 @@ impl MemosPage {
             }
         ));
 
-        let memo_source_filter_for_selector = Rc::clone(&memo_source_filter);
-        let source_uids_for_selector = Rc::clone(&source_uids);
-        let memo_source_list_for_selector = memo_source_list.clone();
-        let memo_list_for_source = memo_list.clone();
-        let memo_records_for_source = Rc::clone(&memo_records);
-        let page_weak_for_source = self.downgrade();
-        let empty_state_for_source = empty_state.clone();
-        source_selector.connect_selected_notify(move |selector| {
-            let source_filter = if selector.selected() == 0 {
-                None
-            } else {
-                source_uids_for_selector
-                    .borrow()
-                    .get(selector.selected() as usize - 1)
-                    .cloned()
-            };
-            memo_source_filter_for_selector.replace(source_filter.clone());
-            if let Some(page) = page_weak_for_source.upgrade() {
-                page.imp().memo_source_filter.replace(source_filter.clone());
-            }
-            if let Some(settings) = AppSettings::try_new() {
-                settings.set_memo_source_filter(source_filter.as_deref().unwrap_or_default());
-            }
-            if let Some(row) =
-                memo_source_list_for_selector.row_at_index(selector.selected() as i32)
-            {
-                memo_source_list_for_selector.select_row(Some(&row));
-            }
-            if let Some(page) = page_weak_for_source.upgrade() {
-                refresh_memo_category_model(&page, &memo_list_for_source);
-                refresh_memo_filter_view(
-                    &page,
-                    &memo_list_for_source,
-                    &memo_records_for_source,
-                    &empty_state_for_source,
-                );
-            }
-        });
 
         let page_weak_for_category = self.downgrade();
         let category_model_for_selector = category_model.clone();
@@ -600,251 +1263,9 @@ impl MemosPage {
             );
         });
 
-        let source_model_for_load = source_model.clone();
-        let source_uids_for_load = Rc::clone(&source_uids);
-        let source_selector_for_load = source_selector.clone();
-        let memo_source_list_for_load = memo_source_list.clone();
-        let page_weak_for_source_load = self.downgrade();
-        let memo_list_for_source_load_actions = memo_list.clone();
-        let memo_records_for_source_load_actions = Rc::clone(&memo_records);
-        let empty_state_for_source_load_actions = empty_state.clone();
-        let (source_sender, source_receiver) = async_channel::bounded(1);
-        std::thread::spawn(move || {
-            let discovery =
-                ECalService::new().discover_source_capabilities(ECalComponentType::Memo);
-            if let Err(error) = source_sender.send_blocking(discovery) {
-                tracing::debug!(%error, "Memo source discovery was dropped");
-            }
-        });
-        glib::spawn_future_local(async move {
-            let Ok(discovery) = source_receiver.recv().await else {
-                return;
-            };
-            let (sources, warning) = match discovery {
-                Ok(discovery) => (
-                    project_memo_source_capabilities(discovery.sources),
-                    discovery.warning,
-                ),
-                Err(error) => (Vec::new(), Some(error.to_string())),
-            };
-            if let Some(warning) = warning {
-                tracing::warn!(%warning, "Could not reach EDS memo lists");
-            }
-
-            let mut names = vec!["Alle Notizlisten".to_string()];
-            let mut uids = Vec::new();
-            let mut available_sources = HashSet::new();
-            let mut unavailable_sources = HashSet::new();
-            let mut writable_sources = HashSet::new();
-            for source in sources {
-                names.push(memo_source_projection_label(&source));
-                if source.available {
-                    available_sources.insert(source.uid.clone());
-                } else {
-                    unavailable_sources.insert(source.uid.clone());
-                }
-                if source.writable {
-                    writable_sources.insert(source.uid.clone());
-                }
-                uids.push(source.uid);
-            }
-            if let Some(initial_source_filter) = initial_source_filter.as_deref()
-                && !uids.iter().any(|uid| uid == initial_source_filter)
-            {
-                names.push(format!("Nicht verfügbare Quelle · {initial_source_filter}"));
-                uids.push(initial_source_filter.to_string());
-                unavailable_sources.insert(initial_source_filter.to_string());
-            }
-            if CalendarStoreService::new().is_writable() {
-                names.push("Lokale Notizliste".to_string());
-                uids.push("local-calendar".to_string());
-                available_sources.insert("local-calendar".to_string());
-                writable_sources.insert("local-calendar".to_string());
-            }
-
-            let name_refs = names.iter().map(String::as_str).collect::<Vec<_>>();
-            source_model_for_load.splice(0, source_model_for_load.n_items(), &name_refs);
-            source_uids_for_load.replace(uids.clone());
-            if let Some(page) = page_weak_for_source_load.upgrade() {
-                page.imp().memo_available_sources.replace(available_sources);
-                page.imp()
-                    .memo_unavailable_sources
-                    .replace(unavailable_sources);
-                page.imp().memo_writable_sources.replace(writable_sources);
-                refresh_memo_filter_view(
-                    &page,
-                    &memo_list_for_source_load_actions,
-                    &memo_records_for_source_load_actions,
-                    &empty_state_for_source_load_actions,
-                );
-            }
-            while let Some(child) = memo_source_list_for_load.first_child() {
-                memo_source_list_for_load.remove(&child);
-            }
-            let default_memo_uid = AppSettings::try_new()
-                .map(|s| s.default_memo_source_uid())
-                .unwrap_or_default();
-            for (index, name) in names.iter().enumerate() {
-                let escaped = glib::markup_escape_text(name);
-                let row = adw::ActionRow::builder()
-                    .title(escaped.as_str())
-                    .title_lines(1)
-                    .build();
-                let image = gtk::Image::from_icon_name(if index == 0 {
-                    "view-list-symbolic"
-                } else {
-                    "view-list-details-symbolic"
-                });
-                row.add_prefix(&image);
-
-                if index > 0 && index - 1 < uids.len() {
-                    let source_uid = uids[index - 1].clone();
-                    let is_primary = (!default_memo_uid.is_empty()
-                        && default_memo_uid == source_uid)
-                        || (default_memo_uid.is_empty() && source_uid == "local-calendar");
-                    if is_primary {
-                        row.add_suffix(&crate::models::source_selector::create_primary_indicator());
-                    }
-
-                    let source_selector = source_selector_for_load.clone();
-                    let source_list = memo_source_list_for_load.clone();
-                    let target_index = index as u32;
-                    let source_uid_for_menu = source_uid.clone();
-                    let name_for_menu = name.clone();
-                    let row_weak_for_menu = row.downgrade();
-                    let uids_for_groups = uids.clone();
-                    let names_for_groups = names.clone();
-                    let menu_btn = crate::models::source_selector::create_source_row_menu_full(
-                        is_primary,
-                        "Notizbuch",
-                        {
-                            let source_selector = source_selector.clone();
-                            let source_list = source_list.clone();
-                            move || {
-                                source_selector.set_selected(target_index);
-                                if let Some(row) = source_list.row_at_index(target_index as i32) {
-                                    source_list.select_row(Some(&row));
-                                }
-                            }
-                        },
-                        {
-                            let source_selector = source_selector.clone();
-                            let source_list = source_list.clone();
-                            move || {
-                                source_selector.set_selected(0);
-                                if let Some(row) = source_list.row_at_index(0) {
-                                    source_list.select_row(Some(&row));
-                                }
-                            }
-                        },
-                        {
-                            let uid = source_uid.clone();
-                            move || {
-                                if let Some(settings) = AppSettings::try_new() {
-                                    settings.set_default_memo_source_uid(&uid);
-                                }
-                            }
-                        },
-                        Some({
-                            let uid = source_uid_for_menu.clone();
-                            let name = name_for_menu.clone();
-                            let row_weak = row_weak_for_menu.clone();
-                            move || {
-                                let root_window = row_weak
-                                    .upgrade()
-                                    .and_then(|r| r.root())
-                                    .and_downcast::<gtk::Window>();
-                                let dialog = crate::dialogs::SourcePropertiesDialog::new(
-                                    &uid,
-                                    &name,
-                                    "Notizbuch",
-                                    "#3584e4",
-                                    true,
-                                    is_primary,
-                                );
-                                if let Some(parent) = root_window.as_ref() {
-                                    dialog.set_transient_for(Some(parent));
-                                }
-                                let row_weak_save = row_weak.clone();
-                                dialog.set_on_save(move |update| {
-                                    if let Some(row) = row_weak_save.upgrade() {
-                                        row.set_title(&glib::markup_escape_text(
-                                            &update.display_name,
-                                        ));
-                                    }
-                                    if update.is_default {
-                                        if let Some(settings) = AppSettings::try_new() {
-                                            settings.set_default_memo_source_uid(
-                                                &update.source_uid,
-                                            );
-                                        }
-                                    }
-                                });
-                                dialog.present();
-                            }
-                        }),
-                        Some({
-                            let row_weak = row_weak_for_menu.clone();
-                            let uids = uids_for_groups.clone();
-                            let names = names_for_groups.clone();
-                            move || {
-                                let root_window = row_weak
-                                    .upgrade()
-                                    .and_then(|r| r.root())
-                                    .and_downcast::<gtk::Window>();
-                                let mut selector =
-                                    crate::models::source_selector::SourceSelector::new(
-                                        crate::models::source_selector::SourceDomain::Memos,
-                                    );
-                                let items: Vec<
-                                    crate::models::source_selector::SourceSelectorItem,
-                                > = uids
-                                    .iter()
-                                    .skip(1)
-                                    .zip(names.iter().skip(1))
-                                    .map(|(uid, name)| {
-                                        crate::models::source_selector::SourceSelectorItem::new(
-                                            uid,
-                                            name,
-                                            "memos",
-                                            true,
-                                            uid == "local-calendar",
-                                        )
-                                    })
-                                    .collect();
-                                selector.update_sources(items);
-                                if let Some(settings) = AppSettings::try_new() {
-                                    selector.load_from_settings(&settings);
-                                }
-                                let dialog = crate::dialogs::ManageGroupsDialog::new(
-                                    root_window.as_ref(),
-                                    "Notizbuch",
-                                    &selector,
-                                    move |updated_selector| {
-                                        if let Some(settings) = AppSettings::try_new() {
-                                            updated_selector.save_to_settings(&settings);
-                                        }
-                                    },
-                                );
-                                dialog.present();
-                            }
-                        }),
-                    );
-                    row.add_suffix(&menu_btn);
-                }
-
-                memo_source_list_for_load.append(&row);
-            }
-            let selected = initial_source_filter
-                .as_deref()
-                .and_then(|uid| uids.iter().position(|candidate| candidate == uid))
-                .map(|index| index as u32 + 1)
-                .unwrap_or(0);
-            source_selector_for_load.set_selected(selected);
-            if let Some(row) = memo_source_list_for_load.row_at_index(selected as i32) {
-                memo_source_list_for_load.select_row(Some(&row));
-            }
-        });
+        self.refresh_hidden_memo_sources();
+        self.apply_memo_sources(Vec::new());
+        self.reload_memo_sources();
 
         if let Some(settings) = AppSettings::try_new() {
             let memo_sort_for_settings = Rc::clone(&memo_sort);
@@ -888,69 +1309,41 @@ impl MemosPage {
                 memo_list_for_direction_settings.invalidate_sort();
             });
 
-            let memo_source_filter_for_settings = Rc::clone(&memo_source_filter);
-            let source_uids_for_settings = Rc::clone(&source_uids);
-            let source_model_for_settings = source_model.clone();
-            let source_selector_for_settings = source_selector.clone();
-            let memo_list_for_source_settings = memo_list.clone();
-            let page_weak_for_source_settings = self.downgrade();
-            settings.connect_changed(Some("memo-source-filter"), move |settings, _| {
-                let raw_value = settings.string("memo-source-filter");
-                let value = match normalize_memo_source_filter_value(&raw_value) {
-                    Ok(value) => value,
-                    Err(error) => {
-                        tracing::warn!(%error, "Ignoring invalid live memo source filter");
-                        String::new()
-                    }
-                };
-                memo_source_filter_for_settings
-                    .replace((!value.is_empty()).then_some(value.clone()));
-                if let Some(page) = page_weak_for_source_settings.upgrade() {
-                    page.imp()
-                        .memo_source_filter
-                        .replace((!value.is_empty()).then_some(value.clone()));
+            let page_weak_hidden = self.downgrade();
+            settings.connect_changed(Some("memo-hidden-sources"), move |_, _| {
+                if let Some(page) = page_weak_hidden.upgrade() {
+                    page.refresh_hidden_memo_sources();
+                    page.refresh_active_memo_list();
                 }
-                let mut selected = if value.is_empty() {
-                    Some(0)
-                } else {
-                    source_uids_for_settings
-                        .borrow()
-                        .iter()
-                        .position(|uid| uid == &value)
-                        .map(|index| index as u32 + 1)
-                };
-                if selected.is_none() && !value.is_empty() {
-                    let index = {
-                        let mut uids = source_uids_for_settings.borrow_mut();
-                        let index = uids.len() as u32 + 1;
-                        uids.push(value.clone());
-                        index
-                    };
-                    source_model_for_settings.append(&format!("Nicht verfügbare Quelle · {value}"));
-                    selected = Some(index);
-                    if let Some(page) = page_weak_for_source_settings.upgrade() {
-                        page.imp()
-                            .memo_unavailable_sources
-                            .borrow_mut()
-                            .insert(value.clone());
+            });
+
+            let page_weak_default = self.downgrade();
+            settings.connect_changed(Some("default-memo-source"), move |_, _| {
+                if let Some(page) = page_weak_default.upgrade() {
+                    if let Some(settings) = AppSettings::try_new() {
+                        page.imp().memo_source_selector.borrow_mut().load_from_settings(&settings);
                     }
+                    page.render_memo_sidebar();
                 }
-                source_selector_for_settings.set_selected(selected.unwrap_or(0));
-                if let Some(page) = page_weak_for_source_settings.upgrade() {
-                    let Some(memo_records) = page.imp().memo_records.borrow().as_ref().cloned()
-                    else {
-                        return;
-                    };
-                    let Some(empty_state) = page.imp().memo_empty_state.borrow().as_ref().cloned()
-                    else {
-                        return;
-                    };
-                    refresh_memo_filter_view(
-                        &page,
-                        &memo_list_for_source_settings,
-                        &memo_records,
-                        &empty_state,
-                    );
+            });
+
+            let page_weak_groups = self.downgrade();
+            settings.connect_changed(Some("memo-groups-order"), move |_, _| {
+                if let Some(page) = page_weak_groups.upgrade() {
+                    if let Some(settings) = AppSettings::try_new() {
+                        page.imp().memo_source_selector.borrow_mut().load_from_settings(&settings);
+                    }
+                    page.render_memo_sidebar();
+                }
+            });
+
+            let page_weak_hidden_groups = self.downgrade();
+            settings.connect_changed(Some("memo-hidden-groups"), move |_, _| {
+                if let Some(page) = page_weak_hidden_groups.upgrade() {
+                    if let Some(settings) = AppSettings::try_new() {
+                        page.imp().memo_source_selector.borrow_mut().load_from_settings(&settings);
+                    }
+                    page.render_memo_sidebar();
                 }
             });
 
@@ -996,27 +1389,11 @@ impl MemosPage {
             });
         }
 
-        let new_memo_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-        new_memo_box.set_halign(gtk::Align::Center);
-        let new_memo_icon = gtk::Image::from_icon_name("list-add-symbolic");
-        let new_memo_label = gtk::Label::builder()
-            .label("Neue Notiz")
-            .ellipsize(gtk::pango::EllipsizeMode::End)
-            .build();
-        new_memo_box.append(&new_memo_icon);
-        new_memo_box.append(&new_memo_label);
-        let new_memo_btn = gtk::Button::builder()
-            .child(&new_memo_box)
-            .css_classes(vec!["suggested-action"])
-            .margin_top(8)
-            .build();
-        self.imp()
-            .new_memo_button
-            .replace(Some(new_memo_btn.clone()));
-        sidebar_box.append(&new_memo_btn);
 
         let sidebar_scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
+            .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .min_content_height(40)
             .child(&sidebar_box)
             .vexpand(true)
             .build();
@@ -1149,21 +1526,94 @@ impl MemosPage {
             .icon_name("edit-select-all-symbolic")
             .tooltip_text("Alle Memos auswählen")
             .build();
-        for (button, label) in [
-            (&open_memo_btn, "Memo öffnen"),
-            (&forward_memo_btn, "Memo weiterleiten"),
-            (&open_url_memo_btn, "Memo-URL öffnen"),
-            (&print_memo_btn, "Memo drucken"),
-            (&save_as_memo_btn, "Memo speichern unter"),
-            (&copy_memo_btn, "Memo kopieren"),
-            (&cut_memo_btn, "Memo ausschneiden"),
-            (&paste_memo_btn, "Memo einfügen"),
-            (&select_all_memo_btn, "Alle Memos auswählen"),
-        ] {
-            button.add_css_class("flat");
-            button.set_valign(gtk::Align::Center);
-            set_accessible_label(button, label);
-        }
+        let preview_orientation_model = gtk::StringList::new(&["Klassisch", "Vertikal"]);
+        let preview_orientation_selector =
+            gtk::DropDown::new(Some(preview_orientation_model), None::<&gtk::Expression>);
+        preview_orientation_selector.set_selected(match initial_memo_preview_state.orientation {
+            MemoPreviewOrientation::Classic => 0,
+            MemoPreviewOrientation::Vertical => 1,
+        });
+        preview_orientation_selector.set_tooltip_text(Some("Ausrichtung der Memo-Vorschau"));
+        preview_orientation_selector.set_valign(gtk::Align::Center);
+
+        let more_popover = gtk::Popover::builder().build();
+        let more_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(2)
+            .margin_start(4)
+            .margin_end(4)
+            .margin_top(4)
+            .margin_bottom(4)
+            .build();
+
+        let configure_menu_button =
+            |btn: &gtk::Button, icon: &str, label: &str, popover: &gtk::Popover| {
+                let row_box = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+                let img = gtk::Image::from_icon_name(icon);
+                let lbl = gtk::Label::builder()
+                    .label(label)
+                    .halign(gtk::Align::Start)
+                    .hexpand(true)
+                    .build();
+                row_box.append(&img);
+                row_box.append(&lbl);
+                btn.set_child(Some(&row_box));
+                btn.add_css_class("flat");
+                btn.set_halign(gtk::Align::Fill);
+                let p = popover.clone();
+                btn.connect_clicked(move |_| {
+                    p.popdown();
+                });
+            };
+
+        configure_menu_button(&open_memo_btn, "document-open-symbolic", "Öffnen", &more_popover);
+        configure_menu_button(&forward_memo_btn, "mail-forward-symbolic", "Weiterleiten", &more_popover);
+        configure_menu_button(&open_url_memo_btn, "external-link-symbolic", "URL öffnen", &more_popover);
+        configure_menu_button(&export_memo_btn, "document-save-as-symbolic", "Exportieren…", &more_popover);
+        configure_menu_button(&save_as_memo_btn, "document-save-as-symbolic", "Speichern unter…", &more_popover);
+        configure_menu_button(&cut_memo_btn, "edit-cut-symbolic", "Ausschneiden", &more_popover);
+        configure_menu_button(&copy_memo_btn, "edit-copy-symbolic", "Kopieren", &more_popover);
+        configure_menu_button(&paste_memo_btn, "edit-paste-symbolic", "Einfügen", &more_popover);
+        configure_menu_button(&select_all_memo_btn, "edit-select-all-symbolic", "Alle auswählen", &more_popover);
+
+        more_box.append(&open_memo_btn);
+        more_box.append(&forward_memo_btn);
+        more_box.append(&open_url_memo_btn);
+        more_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+        more_box.append(&export_memo_btn);
+        more_box.append(&save_as_memo_btn);
+        more_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+        more_box.append(&cut_memo_btn);
+        more_box.append(&copy_memo_btn);
+        more_box.append(&paste_memo_btn);
+        more_box.append(&select_all_memo_btn);
+        more_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+
+        let orient_box = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        orient_box.set_margin_start(6);
+        orient_box.set_margin_end(6);
+        orient_box.set_margin_top(4);
+        orient_box.set_margin_bottom(4);
+        let orient_label = gtk::Label::builder()
+            .label("Vorschau")
+            .halign(gtk::Align::Start)
+            .hexpand(true)
+            .build();
+        orient_box.append(&orient_label);
+        orient_box.append(&preview_orientation_selector);
+        more_box.append(&orient_box);
+
+        more_popover.set_child(Some(&more_box));
+
+        let more_button = gtk::MenuButton::builder()
+            .icon_name("view-more-symbolic")
+            .popover(&more_popover)
+            .tooltip_text("Weitere Aktionen")
+            .css_classes(vec!["flat"])
+            .valign(gtk::Align::Center)
+            .build();
+        set_accessible_label(&more_button, "Weitere Aktionen");
+
         self.imp().memo_surface_buttons.replace(Some(vec![
             save_memo_btn.clone(),
             export_memo_btn.clone(),
@@ -1178,23 +1628,100 @@ impl MemosPage {
             paste_memo_btn.clone(),
             select_all_memo_btn.clone(),
         ]));
+
+        let search_toggle_btn = gtk::ToggleButton::builder()
+            .icon_name("edit-find-symbolic")
+            .tooltip_text("Notizen durchsuchen (Strg+F)")
+            .css_classes(vec!["flat"])
+            .valign(gtk::Align::Center)
+            .build();
+        set_accessible_label(&search_toggle_btn, "Notizen durchsuchen");
+        self.imp().search_toggle_btn.replace(Some(search_toggle_btn.clone()));
+
+        let memo_search_bar = gtk::SearchBar::builder()
+            .search_mode_enabled(false)
+            .key_capture_widget(self)
+            .build();
+        memo_search_bar.connect_entry(&search_entry);
+        self.imp().memo_search_bar.replace(Some(memo_search_bar.clone()));
+
+        memo_search_bar
+            .bind_property("search-mode-enabled", &search_toggle_btn, "active")
+            .bidirectional()
+            .sync_create()
+            .build();
+
+        let search_content_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(8)
+            .margin_start(12)
+            .margin_end(12)
+            .margin_top(4)
+            .margin_bottom(4)
+            .halign(gtk::Align::Center)
+            .valign(gtk::Align::Center)
+            .build();
+
+        search_entry.set_width_chars(32);
+        search_entry.set_hexpand(false);
+        search_entry.set_valign(gtk::Align::Center);
+        search_mode_selector.set_valign(gtk::Align::Center);
+        category_selector.set_valign(gtk::Align::Center);
+
+        search_content_box.append(&search_entry);
+        search_content_box.append(&search_mode_selector);
+        search_content_box.append(&category_selector);
+        memo_search_bar.set_child(Some(&search_content_box));
+
+        let entry_for_search_mode = search_entry.clone();
+        memo_search_bar.connect_notify_local(Some("search-mode-enabled"), move |bar, _| {
+            if !bar.is_search_mode() && !entry_for_search_mode.text().is_empty() {
+                entry_for_search_mode.set_text("");
+            }
+        });
+
         let preview_toggle = gtk::ToggleButton::builder()
-            .icon_name("view-dual-symbolic")
-            .tooltip_text("Notizenvorschau ein-/ausblenden")
+            .icon_name("sidebar-show-right-symbolic")
+            .tooltip_text("Notizenvorschau ein-/ausblenden (Strg+M)")
             .active(initial_memo_preview_state.visible)
             .css_classes(vec!["flat"])
             .valign(gtk::Align::Center)
             .build();
         set_accessible_label(&preview_toggle, "Notizenvorschau ein- oder ausblenden");
-        let preview_orientation_model = gtk::StringList::new(&["Klassisch", "Vertikal"]);
-        let preview_orientation_selector =
-            gtk::DropDown::new(Some(preview_orientation_model), None::<&gtk::Expression>);
-        preview_orientation_selector.set_selected(match initial_memo_preview_state.orientation {
-            MemoPreviewOrientation::Classic => 0,
-            MemoPreviewOrientation::Vertical => 1,
+        self.imp().memo_preview_toggle.replace(Some(preview_toggle.clone()));
+
+        let sidebar_visible = AppSettings::try_new()
+            .map(|s| s.mail_show_sidebar())
+            .unwrap_or(true);
+        sidebar_outer_box.set_visible(sidebar_visible);
+        let sidebar_toggle = gtk::ToggleButton::builder()
+            .icon_name("sidebar-show-symbolic")
+            .tooltip_text("Seitenleiste ein-/ausblenden (F9)")
+            .active(sidebar_visible)
+            .css_classes(vec!["flat"])
+            .valign(gtk::Align::Center)
+            .build();
+        set_accessible_label(&sidebar_toggle, "Seitenleiste ein- oder ausblenden");
+
+        let sidebar_for_toggle = sidebar_outer_box.clone();
+        sidebar_toggle.connect_toggled(move |toggle| {
+            let is_active = toggle.is_active();
+            sidebar_for_toggle.set_visible(is_active);
+            if let Some(settings) = AppSettings::try_new() {
+                settings.set_mail_show_sidebar(is_active);
+            }
         });
-        preview_orientation_selector.set_tooltip_text(Some("Ausrichtung der Memo-Vorschau"));
-        preview_orientation_selector.set_valign(gtk::Align::Center);
+
+        if let Some(settings) = AppSettings::try_new() {
+            let sidebar_toggle_for_settings = sidebar_toggle.clone();
+            settings.connect_changed(Some("mail-show-sidebar"), move |settings, _| {
+                let active = settings.boolean("mail-show-sidebar");
+                if sidebar_toggle_for_settings.is_active() != active {
+                    sidebar_toggle_for_settings.set_active(active);
+                }
+            });
+        }
+        self.imp().memo_sidebar_toggle.replace(Some(sidebar_toggle.clone()));
 
         let btn_add_memo = gtk::Button::builder()
             .icon_name("document-new-symbolic")
@@ -1204,6 +1731,7 @@ impl MemosPage {
             .build();
         set_button_icon_with_fallback(&btn_add_memo, "document-new-symbolic", "list-add-symbolic");
         set_accessible_label(&btn_add_memo, "Neue Notiz erstellen");
+        self.imp().new_memo_button.replace(Some(btn_add_memo.clone()));
 
         let memo_list_for_new = memo_list.clone();
         let memo_records_for_new = Rc::clone(&memo_records);
@@ -1236,52 +1764,90 @@ impl MemosPage {
             .spacing(2)
             .halign(gtk::Align::Start)
             .build();
+        left_box.append(&sidebar_toggle);
+        left_box.append(&gtk::Separator::new(gtk::Orientation::Vertical));
         left_box.append(&btn_add_memo);
         left_box.append(&save_memo_btn);
         left_box.append(&gtk::Separator::new(gtk::Orientation::Vertical));
         left_box.append(&delete_memo_btn);
         left_box.append(&gtk::Separator::new(gtk::Orientation::Vertical));
-        left_box.append(&copy_memo_btn);
-        left_box.append(&cut_memo_btn);
-        left_box.append(&paste_memo_btn);
-        left_box.append(&select_all_memo_btn);
-        left_box.append(&gtk::Separator::new(gtk::Orientation::Vertical));
-        left_box.append(&open_memo_btn);
-        left_box.append(&forward_memo_btn);
-        left_box.append(&open_url_memo_btn);
+        left_box.append(&print_memo_btn);
 
-        search_mode_selector.set_valign(gtk::Align::Center);
-        search_entry.set_valign(gtk::Align::Center);
-        category_selector.set_valign(gtk::Align::Center);
-
-        let center_box = gtk::Box::builder()
-            .orientation(gtk::Orientation::Horizontal)
-            .spacing(4)
+        let spacer = gtk::Box::builder()
             .hexpand(true)
-            .halign(gtk::Align::Fill)
             .build();
-        center_box.append(&search_entry);
-        center_box.append(&search_mode_selector);
-        center_box.append(&category_selector);
-
-        sort_selector.set_valign(gtk::Align::Center);
 
         let right_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(2)
             .halign(gtk::Align::End)
             .build();
-        right_box.append(&sort_selector);
-        right_box.append(&direction_button);
+
+        let sort_group = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(2)
+            .css_classes(vec!["linked"])
+            .build();
+        sort_selector.set_valign(gtk::Align::Center);
+        direction_button.set_valign(gtk::Align::Center);
+        sort_group.append(&sort_selector);
+        sort_group.append(&direction_button);
+        right_box.append(&sort_group);
+
+        let layout_group = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .css_classes(vec!["linked"])
+            .valign(gtk::Align::Center)
+            .build();
+
+        let layout_vertical_btn = gtk::ToggleButton::builder()
+            .icon_name("sidebar-show-right-symbolic")
+            .tooltip_text("Dreispalten-Ansicht (Vorschau rechts)")
+            .active(
+                initial_memo_preview_state.visible
+                    && initial_memo_preview_state.orientation == MemoPreviewOrientation::Vertical,
+            )
+            .css_classes(vec!["flat"])
+            .valign(gtk::Align::Center)
+            .build();
+        set_accessible_label(&layout_vertical_btn, "Dreispalten-Ansicht (Vorschau rechts)");
+
+        let layout_classic_btn = gtk::ToggleButton::builder()
+            .icon_name("pan-down-symbolic")
+            .tooltip_text("Klassische Ansicht (Vorschau unten)")
+            .group(&layout_vertical_btn)
+            .active(
+                initial_memo_preview_state.visible
+                    && initial_memo_preview_state.orientation == MemoPreviewOrientation::Classic,
+            )
+            .css_classes(vec!["flat"])
+            .valign(gtk::Align::Center)
+            .build();
+        set_accessible_label(&layout_classic_btn, "Klassische Ansicht (Vorschau unten)");
+
+        let layout_list_only_btn = gtk::ToggleButton::builder()
+            .icon_name("view-list-symbolic")
+            .tooltip_text("Nur Liste (Vorschau ausblenden)")
+            .group(&layout_vertical_btn)
+            .active(!initial_memo_preview_state.visible)
+            .css_classes(vec!["flat"])
+            .valign(gtk::Align::Center)
+            .build();
+        set_accessible_label(&layout_list_only_btn, "Nur Liste (Vorschau ausblenden)");
+
+        layout_group.append(&layout_vertical_btn);
+        layout_group.append(&layout_classic_btn);
+        layout_group.append(&layout_list_only_btn);
+
         right_box.append(&gtk::Separator::new(gtk::Orientation::Vertical));
-        right_box.append(&print_memo_btn);
-        right_box.append(&export_memo_btn);
+        right_box.append(&search_toggle_btn);
         right_box.append(&gtk::Separator::new(gtk::Orientation::Vertical));
-        right_box.append(&preview_toggle);
-        right_box.append(&preview_orientation_selector);
+        right_box.append(&more_button);
+        right_box.append(&gtk::Separator::new(gtk::Orientation::Vertical));
+        right_box.append(&layout_group);
 
         memos_toolbar.append(&left_box);
-        memos_toolbar.append(&center_box);
+        memos_toolbar.append(&spacer);
         memos_toolbar.append(&right_box);
 
         let memos_toolbar_scroll = gtk::ScrolledWindow::builder()
@@ -1290,15 +1856,15 @@ impl MemosPage {
             .propagate_natural_width(true)
             .child(&memos_toolbar)
             .build();
+        memos_toolbar_scroll.set_visible(
+            AppSettings::try_new()
+                .map(|settings| settings.mail_show_toolbar())
+                .unwrap_or(true),
+        );
+        self.imp()
+            .toolbar
+            .replace(Some(memos_toolbar_scroll.clone().upcast()));
 
-        let memo_preview_box = gtk::Box::builder()
-            .orientation(match initial_memo_preview_state.orientation {
-                MemoPreviewOrientation::Classic => gtk::Orientation::Vertical,
-                MemoPreviewOrientation::Vertical => gtk::Orientation::Horizontal,
-            })
-            .spacing(6)
-            .css_classes(vec!["card", "memo-preview"])
-            .build();
         let memo_preview_label = gtk::Label::builder()
             .label("Keine eindeutige Memo-Auswahl")
             .use_markup(true)
@@ -1310,27 +1876,340 @@ impl MemosPage {
             .margin_end(12)
             .margin_top(8)
             .margin_bottom(8)
+            .visible(false)
             .build();
-        memo_preview_box.append(&memo_preview_label);
-        memo_preview_box.set_visible(initial_memo_preview_state.visible);
         self.imp()
             .memo_preview_label
             .replace(Some(memo_preview_label.clone()));
+        content_box.append(&memo_preview_label);
+
+        let memo_categories = adw::EntryRow::builder()
+            .title("Kategorien (Komma getrennt)")
+            .build();
+        memo_categories.set_tooltip_text(Some("z. B. Arbeit, Privat"));
+        content_box.append(&memo_categories);
+        let memo_alarm_editor = AlarmEditor::new(None, "");
+        content_box.append(memo_alarm_editor.widget());
+        content_box.append(&memo_meta);
+        content_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+        content_box.append(&memo_text);
+
+        // Panel 2: Memos List Container with Quick Add
+        let memo_list_container = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .vexpand(true)
+            .hexpand(true)
+            .css_classes(vec!["memo-list-pane"])
+            .build();
+
+        let quick_add_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(8)
+            .margin_start(8)
+            .margin_end(8)
+            .margin_top(6)
+            .margin_bottom(6)
+            .css_classes(vec!["memo-quick-add-box", "task-quick-add-box"])
+            .build();
+        let quick_add_icon = gtk::Image::builder()
+            .icon_name("list-add-symbolic")
+            .pixel_size(16)
+            .css_classes(vec!["dim-label"])
+            .valign(gtk::Align::Center)
+            .build();
+        let quick_add_entry = gtk::Entry::builder()
+            .placeholder_text("Neue Notiz hinzufügen… (Eingabetaste drücken)")
+            .hexpand(true)
+            .css_classes(vec!["memo-quick-add-entry", "task-quick-add-entry"])
+            .build();
+        set_accessible_label(&quick_add_entry, "Neue Notiz schnell hinzufügen");
+        quick_add_box.append(&quick_add_icon);
+        quick_add_box.append(&quick_add_entry);
+        memo_list_container.append(&quick_add_box);
+        memo_list_container.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+
+        let memo_list_scroll = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .vexpand(true)
+            .hexpand(true)
+            .min_content_width(220)
+            .build();
+
+        let memo_list_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .vexpand(true)
+            .hexpand(true)
+            .build();
+        memo_list_box.append(&empty_state);
+        memo_list_box.append(&memo_list);
+        memo_list_scroll.set_child(Some(&memo_list_box));
+        memo_list_container.append(&memo_list_scroll);
+
+        let page_weak_for_quick_add = self.downgrade();
+        let memo_records_for_quick_add = Rc::clone(&memo_records);
+        let memo_list_for_quick_add = memo_list.clone();
+        let empty_state_for_quick_add = empty_state.clone();
+        let memo_text_for_quick_add = memo_text.clone();
+        quick_add_entry.connect_activate(move |entry| {
+            let text = entry.text().trim().to_string();
+            if text.is_empty() {
+                return;
+            }
+            let Some(page) = page_weak_for_quick_add.upgrade() else {
+                return;
+            };
+
+            let preferred = AppSettings::try_new()
+                .map(|settings| settings.default_memo_source_uid())
+                .filter(|uid| !uid.trim().is_empty());
+
+            let target_source = if let Some(filtered) = page.imp().memo_source_filter.borrow().clone() {
+                if memo_source_is_writable_for_page(&page, &filtered) {
+                    filtered
+                } else {
+                    preferred.unwrap_or_else(|| "local-calendar".to_string())
+                }
+            } else {
+                preferred.unwrap_or_else(|| "local-calendar".to_string())
+            };
+
+            let component = match build_memo_component(&text, "", "", &[]) {
+                Ok(c) => c,
+                Err(err) => {
+                    show_toast_for_widget(entry, &err);
+                    return;
+                }
+            };
+
+            entry.set_text("");
+            entry.set_sensitive(false);
+
+            let entry_for_done = entry.clone();
+            let page_for_done = page.downgrade();
+            let text_for_toast = text.clone();
+            let target_source_for_thread = target_source.clone();
+            let target_source_for_save = target_source.clone();
+            let memo_list_for_done = memo_list_for_quick_add.clone();
+            let memo_records_for_done = Rc::clone(&memo_records_for_quick_add);
+            let empty_state_for_done = empty_state_for_quick_add.clone();
+            let memo_text_for_done = memo_text_for_quick_add.clone();
+            let (tx, rx) = async_channel::bounded(1);
+
+            std::thread::spawn(move || {
+                let res = ECalService::new().create_component(
+                    &target_source_for_thread,
+                    ECalComponentType::Memo,
+                    &component,
+                );
+                let _ = tx.send_blocking(res);
+            });
+
+            glib::spawn_future_local(async move {
+                entry_for_done.set_sensitive(true);
+                match rx.recv().await {
+                    Ok(Ok(result)) => {
+                        if let Some(page) = page_for_done.upgrade() {
+                            let created_component = match confirmed_memo_component(result.component) {
+                                Ok((c, _)) => c,
+                                Err(_) => {
+                                    build_memo_component(&text_for_toast, "", "", &[]).unwrap_or_default()
+                                }
+                            };
+                            let uid = result.uid;
+                            let new_memo = MemoRecord {
+                                uid: uid.clone(),
+                                source_uid: target_source_for_save.clone(),
+                                source_display_name: target_source_for_save.clone(),
+                                component: created_component,
+                                summary: text_for_toast.clone(),
+                                description: String::new(),
+                                updated: Utc::now().format("%Y%m%dT%H%M%SZ").to_string(),
+                            };
+                            upsert_memo_row(
+                                &memo_list_for_done,
+                                Rc::clone(&memo_records_for_done),
+                                new_memo,
+                            );
+                            empty_state_for_done.set_visible(false);
+                            refresh_memo_category_model(&page, &memo_list_for_done);
+                            refresh_memo_filter_view(
+                                &page,
+                                &memo_list_for_done,
+                                &memo_records_for_done,
+                                &empty_state_for_done,
+                            );
+                            select_memo_row(&memo_list_for_done, &target_source_for_save, &uid);
+                            memo_text_for_done.grab_focus();
+                            show_toast_for_widget(
+                                &entry_for_done,
+                                &format!("Notiz »{}« hinzugefügt", text_for_toast),
+                            );
+                        }
+                    }
+                    Ok(Err(err)) => {
+                        show_toast_for_widget(
+                            &entry_for_done,
+                            &format!("Fehler beim Erstellen der Notiz: {err}"),
+                        );
+                        entry_for_done.grab_focus();
+                    }
+                    Err(_) => {
+                        entry_for_done.grab_focus();
+                    }
+                }
+            });
+        });
+
+        // Panel 3: Memo Preview / Detail View
+        let memo_preview_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .vexpand(true)
+            .hexpand(true)
+            .css_classes(vec!["memo-preview-pane"])
+            .build();
+        memo_preview_box.set_size_request(260, -1);
+        let preview_box = memo_preview_box.clone();
+
+        let memo_detail_stack = gtk::Stack::builder()
+            .vexpand(true)
+            .hexpand(true)
+            .transition_type(gtk::StackTransitionType::Crossfade)
+            .build();
+
+        let memo_empty_page = adw::StatusPage::builder()
+            .icon_name("accessories-text-editor-symbolic")
+            .title("Keine Notiz ausgewählt")
+            .description("Wählen Sie eine Notiz aus der Liste oder erstellen Sie eine neue.")
+            .vexpand(true)
+            .hexpand(true)
+            .build();
+        memo_detail_stack.add_named(&memo_empty_page, Some("empty"));
+
+        let content_scroll = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .vexpand(true)
+            .hexpand(true)
+            .child(&content_box)
+            .build();
+        memo_detail_stack.add_named(&content_scroll, Some("content"));
+        memo_detail_stack.set_visible_child_name("empty");
+        self.imp()
+            .memo_detail_stack
+            .replace(Some(memo_detail_stack.clone()));
+
+        preview_box.append(&memo_detail_stack);
+        preview_box.set_visible(initial_memo_preview_state.visible);
         self.imp()
             .memo_preview_box
-            .replace(Some(memo_preview_box.clone()));
-        content_box.append(&memo_preview_box);
+            .replace(Some(preview_box.clone()));
+
+        // Inner Paned: Separates Memo List and Preview/Editor
+        let memo_preview_paned = gtk::Paned::builder()
+            .orientation(memo_paned_orientation(initial_memo_preview_state.orientation))
+            .wide_handle(false)
+            .vexpand(true)
+            .hexpand(true)
+            .build();
+        memo_preview_paned.set_start_child(Some(&memo_list_container));
+        memo_preview_paned.set_end_child(Some(&preview_box));
+        memo_preview_paned.set_resize_start_child(true);
+        memo_preview_paned.set_resize_end_child(true);
+        memo_preview_paned.set_shrink_start_child(false);
+        memo_preview_paned.set_shrink_end_child(false);
+
+        let initial_preview_pos = AppSettings::try_new()
+            .map(|settings| {
+                settings.memo_preview_position(initial_memo_preview_state.orientation.setting_value())
+            })
+            .unwrap_or_else(|| initial_memo_preview_state.orientation.default_position());
+        memo_preview_paned.set_position(initial_preview_pos);
+        self.imp()
+            .memo_preview_paned
+            .replace(Some(memo_preview_paned.clone()));
+
+        let page_weak_for_paned_pos = self.downgrade();
+        memo_preview_paned.connect_position_notify(move |paned| {
+            let Some(page) = page_weak_for_paned_pos.upgrade() else {
+                return;
+            };
+            if page.imp().memo_preview_position_restoring.get() {
+                return;
+            }
+            let orientation = if paned.orientation() == gtk::Orientation::Horizontal {
+                MemoPreviewOrientation::Vertical
+            } else {
+                MemoPreviewOrientation::Classic
+            };
+            if let Some(settings) = AppSettings::try_new() {
+                settings.set_memo_preview_position(orientation.setting_value(), paned.position());
+            }
+        });
+
+        let prev_orient_selector_for_vert = preview_orientation_selector.clone();
+        let prev_toggle_for_vert = preview_toggle.clone();
+        layout_vertical_btn.connect_toggled(move |btn| {
+            if btn.is_active() {
+                prev_orient_selector_for_vert.set_selected(MemoPreviewOrientation::Vertical.index());
+                if !prev_toggle_for_vert.is_active() {
+                    prev_toggle_for_vert.set_active(true);
+                }
+            }
+        });
+
+        let prev_orient_selector_for_classic = preview_orientation_selector.clone();
+        let prev_toggle_for_classic = preview_toggle.clone();
+        layout_classic_btn.connect_toggled(move |btn| {
+            if btn.is_active() {
+                prev_orient_selector_for_classic.set_selected(MemoPreviewOrientation::Classic.index());
+                if !prev_toggle_for_classic.is_active() {
+                    prev_toggle_for_classic.set_active(true);
+                }
+            }
+        });
+
+        let prev_toggle_for_list = preview_toggle.clone();
+        layout_list_only_btn.connect_toggled(move |btn| {
+            if btn.is_active() && prev_toggle_for_list.is_active() {
+                prev_toggle_for_list.set_active(false);
+            }
+        });
 
         if let Some(settings) = AppSettings::try_new() {
             let preview_toggle_for_settings = preview_toggle.clone();
-            let memo_preview_box_for_settings = memo_preview_box.clone();
+            let preview_box_for_settings = preview_box.clone();
+            let layout_vertical_btn_for_settings = layout_vertical_btn.clone();
+            let layout_classic_btn_for_settings = layout_classic_btn.clone();
+            let layout_list_only_btn_for_settings = layout_list_only_btn.clone();
             let page_weak_for_preview_settings = self.downgrade();
             let memo_list_for_preview_settings = memo_list.clone();
             let memo_records_for_preview_settings = Rc::clone(&memo_records);
             settings.connect_changed(Some("memo-preview-visible"), move |settings, _| {
                 let visible = settings.boolean("memo-preview-visible");
-                preview_toggle_for_settings.set_active(visible);
-                memo_preview_box_for_settings.set_visible(visible);
+                if preview_toggle_for_settings.is_active() != visible {
+                    preview_toggle_for_settings.set_active(visible);
+                }
+                preview_box_for_settings.set_visible(visible);
+                if visible {
+                    let orient = AppSettings::try_new()
+                        .map(|s| MemoPreviewOrientation::from_setting(&s.memo_preview_orientation()))
+                        .unwrap_or_default();
+                    match orient {
+                        MemoPreviewOrientation::Vertical => {
+                            if !layout_vertical_btn_for_settings.is_active() {
+                                layout_vertical_btn_for_settings.set_active(true);
+                            }
+                        }
+                        MemoPreviewOrientation::Classic => {
+                            if !layout_classic_btn_for_settings.is_active() {
+                                layout_classic_btn_for_settings.set_active(true);
+                            }
+                        }
+                    }
+                } else if !layout_list_only_btn_for_settings.is_active() {
+                    layout_list_only_btn_for_settings.set_active(true);
+                }
                 if let Some(page) = page_weak_for_preview_settings.upgrade() {
                     page.imp()
                         .memo_preview_state
@@ -1345,7 +2224,8 @@ impl MemosPage {
             });
 
             let preview_orientation_selector_for_settings = preview_orientation_selector.clone();
-            let memo_preview_box_for_orientation_settings = memo_preview_box.clone();
+            let layout_vertical_btn_for_orient = layout_vertical_btn.clone();
+            let layout_classic_btn_for_orient = layout_classic_btn.clone();
             let page_weak_for_orientation_settings = self.downgrade();
             let memo_list_for_orientation_settings = memo_list.clone();
             let memo_records_for_orientation_settings = Rc::clone(&memo_records);
@@ -1353,19 +2233,28 @@ impl MemosPage {
                 let orientation = MemoPreviewOrientation::from_setting(
                     &settings.string("memo-preview-orientation"),
                 );
-                preview_orientation_selector_for_settings.set_selected(match orientation {
-                    MemoPreviewOrientation::Classic => 0,
-                    MemoPreviewOrientation::Vertical => 1,
-                });
-                memo_preview_box_for_orientation_settings.set_orientation(match orientation {
-                    MemoPreviewOrientation::Classic => gtk::Orientation::Vertical,
-                    MemoPreviewOrientation::Vertical => gtk::Orientation::Horizontal,
-                });
+                preview_orientation_selector_for_settings.set_selected(orientation.index());
+                let is_visible = settings.boolean("memo-preview-visible");
+                if is_visible {
+                    match orientation {
+                        MemoPreviewOrientation::Vertical => {
+                            if !layout_vertical_btn_for_orient.is_active() {
+                                layout_vertical_btn_for_orient.set_active(true);
+                            }
+                        }
+                        MemoPreviewOrientation::Classic => {
+                            if !layout_classic_btn_for_orient.is_active() {
+                                layout_classic_btn_for_orient.set_active(true);
+                            }
+                        }
+                    }
+                }
                 if let Some(page) = page_weak_for_orientation_settings.upgrade() {
                     page.imp()
                         .memo_preview_state
                         .borrow_mut()
                         .set_orientation(orientation);
+                    apply_memo_preview_paned_layout(&page, orientation);
                     refresh_memo_preview(
                         &page,
                         &memo_list_for_orientation_settings,
@@ -1373,34 +2262,16 @@ impl MemosPage {
                     );
                 }
             });
+
+            let page_weak_for_toolbar = self.downgrade();
+            settings.connect_changed(Some("mail-show-toolbar"), move |settings, _| {
+                if let Some(page) = page_weak_for_toolbar.upgrade() {
+                    if let Some(toolbar) = page.imp().toolbar.borrow().as_ref() {
+                        toolbar.set_visible(settings.boolean("mail-show-toolbar"));
+                    }
+                }
+            });
         }
-
-        let memo_categories = adw::EntryRow::builder()
-            .title("Kategorien (Komma getrennt)")
-            .build();
-        memo_categories.set_tooltip_text(Some("z. B. Arbeit, Privat"));
-        content_box.append(&memo_categories);
-        let memo_alarm_editor = AlarmEditor::new(None, "");
-        content_box.append(memo_alarm_editor.widget());
-        content_box.append(&memo_meta);
-        content_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
-        content_box.append(&memo_text);
-
-        let page_weak = self.downgrade();
-        let memo_list_for_dialog = memo_list.clone();
-        let memo_records_for_dialog = Rc::clone(&memo_records);
-        let empty_state_for_dialog = empty_state.clone();
-        new_memo_btn.connect_clicked(move |_| {
-            let Some(page) = page_weak.upgrade() else {
-                return;
-            };
-            page.open_memo_dialog(
-                memo_list_for_dialog.clone(),
-                Rc::clone(&memo_records_for_dialog),
-                empty_state_for_dialog.clone(),
-                None,
-            );
-        });
 
         let save_memo_btn_for_context = save_memo_btn.clone();
         let export_memo_btn_for_context = export_memo_btn.clone();
@@ -1413,6 +2284,7 @@ impl MemosPage {
         let memo_alarm_editor_for_save = memo_alarm_editor.clone();
         let memo_list_for_save = memo_list.clone();
         let empty_state_for_save = empty_state.clone();
+        let memo_meta_for_save = memo_meta.clone();
         save_memo_btn.connect_clicked(move |_| {
             let Some(page) = page_weak_for_save.upgrade() else {
                 return;
@@ -1471,21 +2343,65 @@ impl MemosPage {
                     return;
                 }
             };
-            let staged = MemoRecord {
-                uid: memo.uid,
-                source_uid: memo.source_uid,
-                source_display_name: memo.source_display_name,
-                component,
-                summary: title,
-                description,
-                updated: memo.updated,
-            };
-            page.open_memo_dialog(
-                memo_list_for_save.clone(),
-                Rc::clone(&memo_records_for_save),
-                empty_state_for_save.clone(),
-                Some(staged),
+            let modified = Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
+            let component = crate::services::calendar_store_service::update_ical_property(
+                &component,
+                "LAST-MODIFIED",
+                Some(&modified),
             );
+
+            let (tx, rx) = async_channel::bounded(1);
+            let source_uid = memo.source_uid.clone();
+            let memo_uid = memo.uid.clone();
+            let component_for_save = component.clone();
+            std::thread::spawn(move || {
+                let res = ECalService::new().modify_component(
+                    &source_uid,
+                    ECalComponentType::Memo,
+                    &memo_uid,
+                    &component_for_save,
+                );
+                let _ = tx.send_blocking(res);
+            });
+
+            let page_weak_for_save_done = page.downgrade();
+            let memo_title_for_toast = memo_title_for_save.clone();
+            let memo_list_for_save_done = memo_list_for_save.clone();
+            let memo_records_for_save_done = Rc::clone(&memo_records_for_save);
+            let memo_meta_for_save_done = memo_meta_for_save.clone();
+            glib::spawn_future_local(async move {
+                match rx.recv().await {
+                    Ok(Ok(result)) => {
+                        let final_comp = result.component.unwrap_or(component);
+                        let updated_memo = MemoRecord {
+                            uid: memo.uid.clone(),
+                            source_uid: memo.source_uid.clone(),
+                            source_display_name: memo.source_display_name.clone(),
+                            component: final_comp,
+                            summary: title,
+                            description,
+                            updated: modified.clone(),
+                        };
+                        upsert_memo_row(
+                            &memo_list_for_save_done,
+                            Rc::clone(&memo_records_for_save_done),
+                            updated_memo,
+                        );
+                        memo_meta_for_save_done.set_label(&format!("VJOURNAL · {modified}"));
+                        if let Some(page) = page_weak_for_save_done.upgrade() {
+                            refresh_memo_category_model(&page, &memo_list_for_save_done);
+                        }
+                        show_toast_for_widget(&memo_title_for_toast, "Notiz gespeichert");
+                    }
+                    Ok(Err(err)) => {
+                        show_toast_for_widget(
+                            &memo_title_for_toast,
+                            &format!("Fehler beim Speichern: {err}"),
+                        );
+                    }
+                    Err(_) => {}
+                }
+            });
         });
 
         let memo_list_for_export = memo_list.clone();
@@ -2103,22 +3019,42 @@ impl MemosPage {
         let paste_for_key = paste_memo_btn.clone();
         let delete_for_key = delete_memo_btn.clone();
         let select_all_for_key = select_all_memo_btn.clone();
+        let sidebar_toggle_for_key = sidebar_toggle.clone();
+        let preview_toggle_for_key = preview_toggle.clone();
+        let save_memo_btn_for_key = save_memo_btn.clone();
+        let btn_add_memo_for_key = btn_add_memo.clone();
         memo_key_controller.connect_key_pressed(move |_, key, _, modifiers| {
+            if key == gtk::gdk::Key::F9 {
+                sidebar_toggle_for_key.set_active(!sidebar_toggle_for_key.is_active());
+                return glib::Propagation::Stop;
+            }
             let control = modifiers.contains(gtk::gdk::ModifierType::CONTROL_MASK)
                 || modifiers.contains(gtk::gdk::ModifierType::META_MASK);
-            if control && key == gtk::gdk::Key::A {
+            if control && (key == gtk::gdk::Key::m || key == gtk::gdk::Key::M) {
+                preview_toggle_for_key.set_active(!preview_toggle_for_key.is_active());
+                return glib::Propagation::Stop;
+            }
+            if control && (key == gtk::gdk::Key::s || key == gtk::gdk::Key::S) {
+                save_memo_btn_for_key.activate();
+                return glib::Propagation::Stop;
+            }
+            if control && (key == gtk::gdk::Key::n || key == gtk::gdk::Key::N) {
+                btn_add_memo_for_key.activate();
+                return glib::Propagation::Stop;
+            }
+            if control && (key == gtk::gdk::Key::a || key == gtk::gdk::Key::A) {
                 select_all_for_key.activate();
                 return glib::Propagation::Stop;
             }
-            if control && key == gtk::gdk::Key::C {
+            if control && (key == gtk::gdk::Key::c || key == gtk::gdk::Key::C) {
                 copy_for_key.activate();
                 return glib::Propagation::Stop;
             }
-            if control && key == gtk::gdk::Key::X {
+            if control && (key == gtk::gdk::Key::x || key == gtk::gdk::Key::X) {
                 cut_for_key.activate();
                 return glib::Propagation::Stop;
             }
-            if control && key == gtk::gdk::Key::V {
+            if control && (key == gtk::gdk::Key::v || key == gtk::gdk::Key::V) {
                 paste_for_key.activate();
                 return glib::Propagation::Stop;
             }
@@ -2134,10 +3070,52 @@ impl MemosPage {
         });
         memo_list.add_controller(memo_key_controller);
 
+        let page_key_controller = gtk::EventControllerKey::new();
+        let preview_toggle_for_page = preview_toggle.clone();
+        let sidebar_toggle_for_page = sidebar_toggle.clone();
+        let save_memo_btn_for_page = save_memo_btn.clone();
+        let btn_add_memo_for_page = btn_add_memo.clone();
+        page_key_controller.connect_key_pressed(move |_, key, _, modifiers| {
+            if key == gtk::gdk::Key::F9 {
+                sidebar_toggle_for_page.set_active(!sidebar_toggle_for_page.is_active());
+                return glib::Propagation::Stop;
+            }
+            let control = modifiers.contains(gtk::gdk::ModifierType::CONTROL_MASK)
+                || modifiers.contains(gtk::gdk::ModifierType::META_MASK);
+            if control && (key == gtk::gdk::Key::m || key == gtk::gdk::Key::M) {
+                preview_toggle_for_page.set_active(!preview_toggle_for_page.is_active());
+                return glib::Propagation::Stop;
+            }
+            if control && (key == gtk::gdk::Key::s || key == gtk::gdk::Key::S) {
+                save_memo_btn_for_page.activate();
+                return glib::Propagation::Stop;
+            }
+            if control && (key == gtk::gdk::Key::n || key == gtk::gdk::Key::N) {
+                btn_add_memo_for_page.activate();
+                return glib::Propagation::Stop;
+            }
+            glib::Propagation::Proceed
+        });
+        self.add_controller(page_key_controller);
+
+        let memo_text_key_controller = gtk::EventControllerKey::new();
+        let save_memo_btn_for_text = save_memo_btn.clone();
+        memo_text_key_controller.connect_key_pressed(move |_, key, _, modifiers| {
+            let control = modifiers.contains(gtk::gdk::ModifierType::CONTROL_MASK)
+                || modifiers.contains(gtk::gdk::ModifierType::META_MASK);
+            if control && (key == gtk::gdk::Key::s || key == gtk::gdk::Key::S) {
+                save_memo_btn_for_text.activate();
+                return glib::Propagation::Stop;
+            }
+            glib::Propagation::Proceed
+        });
+        memo_text.add_controller(memo_text_key_controller);
+
         let memo_records_for_selection = Rc::clone(&memo_records);
         let selected_memo_for_selection = Rc::clone(&selected_memo);
         let memo_mutation_generation_for_selection = Rc::clone(&memo_mutation_generation);
         let memo_alarm_editor_for_selection = memo_alarm_editor.clone();
+        let memo_detail_stack_for_selection = memo_detail_stack.clone();
         memo_list.connect_row_selected(glib::clone!(
             #[weak]
             memo_title,
@@ -2153,12 +3131,15 @@ impl MemosPage {
             memo_mutation_generation_for_selection,
             #[strong]
             memo_alarm_editor_for_selection,
+            #[strong]
+            memo_detail_stack_for_selection,
             move |_, row| {
                 memo_mutation_generation_for_selection
                     .set(memo_mutation_generation_for_selection.get().wrapping_add(1));
                 let Some(row) = row else {
                     *selected_memo_for_selection.borrow_mut() = None;
                     memo_alarm_editor_for_selection.set_component(None, "");
+                    memo_detail_stack_for_selection.set_visible_child_name("empty");
                     return;
                 };
                 let (source_uid, uid) = unsafe {
@@ -2178,6 +3159,7 @@ impl MemosPage {
                     .find(|memo| memo.source_uid == source_uid && memo.uid == uid)
                     .cloned()
                 else {
+                    memo_detail_stack_for_selection.set_visible_child_name("empty");
                     return;
                 };
                 *selected_memo_for_selection.borrow_mut() = Some(memo.clone());
@@ -2186,6 +3168,7 @@ impl MemosPage {
                 memo_meta.set_label(&format!("VJOURNAL · {}", memo.updated));
                 memo_text.buffer().set_text(&memo.description);
                 memo_alarm_editor_for_selection.set_component(Some(&memo.component), &memo.summary);
+                memo_detail_stack_for_selection.set_visible_child_name("content");
             }
         ));
 
@@ -2254,7 +3237,6 @@ impl MemosPage {
         let page_weak_for_preview_orientation = self.downgrade();
         let memo_list_for_preview_orientation = memo_list.clone();
         let memo_records_for_preview_orientation = Rc::clone(&memo_records);
-        let memo_preview_box_for_orientation = memo_preview_box.clone();
         preview_orientation_selector.connect_selected_notify(move |selector| {
             let Some(page) = page_weak_for_preview_orientation.upgrade() else {
                 return;
@@ -2268,10 +3250,7 @@ impl MemosPage {
                 .memo_preview_state
                 .borrow_mut()
                 .set_orientation(orientation);
-            memo_preview_box_for_orientation.set_orientation(match orientation {
-                MemoPreviewOrientation::Classic => gtk::Orientation::Vertical,
-                MemoPreviewOrientation::Vertical => gtk::Orientation::Horizontal,
-            });
+            apply_memo_preview_paned_layout(&page, orientation);
             if let Some(settings) = AppSettings::try_new() {
                 settings.set_memo_preview_orientation(orientation.setting_value());
             }
@@ -2412,6 +3391,11 @@ impl MemosPage {
                                         .buffer()
                                         .set_text("Noch keine Notizdaten verfügbar.");
                                     memo_alarm_editor_for_monitor.set_component(None, "");
+                                    if let Some(page) = page_weak_for_monitor.upgrade() {
+                                        if let Some(stack) = page.imp().memo_detail_stack.borrow().as_ref() {
+                                            stack.set_visible_child_name("empty");
+                                        }
+                                    }
                                 }
                             }
                             ECalChangeKind::Added | ECalChangeKind::Modified => {
@@ -2479,11 +3463,9 @@ impl MemosPage {
             &select_all_memo_btn,
         );
 
-        content_box.set_vexpand(true);
-        content_box.set_hexpand(true);
-        paned.set_end_child(Some(&content_box));
+        paned.set_end_child(Some(&memo_preview_paned));
         paned.set_resize_end_child(true);
-        paned.set_shrink_end_child(true);
+        paned.set_shrink_end_child(false);
 
         let sidebar_position = AppSettings::try_new()
             .map(|settings| settings.mail_sidebar_position())
@@ -2504,6 +3486,7 @@ impl MemosPage {
             .hexpand(true)
             .build();
         root_box.append(&memos_toolbar_scroll);
+        root_box.append(&memo_search_bar);
         root_box.append(&paned);
         root_box.set_parent(self);
     }
@@ -3400,6 +4383,7 @@ fn apply_memo_list_filter(
         category_filter,
         query,
         MemoSearchMode::Any,
+        HashSet::new(),
     );
 }
 
@@ -3409,11 +4393,15 @@ fn apply_memo_list_filter_with_mode(
     category_filter: Option<String>,
     query: String,
     search_mode: MemoSearchMode,
+    hidden_sources: HashSet<String>,
 ) {
     memo_list.set_filter_func(move |row| {
         let Some(memo) = memo_record_from_row(row) else {
             return false;
         };
+        if hidden_sources.contains(&memo.source_uid) {
+            return false;
+        }
         memo_matches_filter_with_mode(
             &memo,
             source_filter.as_deref(),
@@ -3506,6 +4494,7 @@ fn refresh_memo_filter_view(
     let category_filter = page.imp().memo_category_filter.borrow().clone();
     let query = page.imp().memo_search_query.borrow().clone();
     let search_mode = page.imp().memo_search_mode.get();
+    let hidden_sources = page.imp().hidden_memo_sources.borrow().clone();
     let category = category_filter
         .as_deref()
         .map(MemoCategoryFilter::from_setting)
@@ -3517,6 +4506,7 @@ fn refresh_memo_filter_view(
         category_filter.clone(),
         query.clone(),
         search_mode,
+        hidden_sources.clone(),
     );
 
     match filter {
@@ -3525,7 +4515,10 @@ fn refresh_memo_filter_view(
             empty_state.set_visible(true);
         }
         Ok(filter) => {
-            let has_records = filter.filter(&memo_records.borrow()).first().is_some();
+            let has_records = filter
+                .filter(&memo_records.borrow())
+                .into_iter()
+                .any(|memo| !hidden_sources.contains(&memo.source_uid));
             empty_state.set_label(
                 if query.is_empty() && source_filter.is_none() && category_filter.is_none() {
                     "Keine synchronisierten Notizen geladen"
@@ -3774,6 +4767,13 @@ fn update_memo_surface_widgets(
     select_all_button
         .set_sensitive(action_state.can_select_all && memo_list.first_child().is_some());
     refresh_memo_preview(page, memo_list, memo_records);
+    if let Some(stack) = page.imp().memo_detail_stack.borrow().as_ref() {
+        if selected.len() == 1 {
+            stack.set_visible_child_name("content");
+        } else {
+            stack.set_visible_child_name("empty");
+        }
+    }
 }
 
 fn update_memo_surface_widgets_from_page(
@@ -4722,6 +5722,21 @@ mod tests {
             confirmed_memo_uid(None, "", "component").expect("component UID is usable"),
             "component"
         );
+    }
+
+    #[test]
+    fn test_memos_toolbar_and_toggles() {
+        let source = include_str!("memos_page.rs");
+        assert!(source.contains("\"unified-view-toolbar\""));
+        assert!(source.contains("sidebar-show-symbolic"));
+        assert!(source.contains("sidebar-show-right-symbolic"));
+        assert!(source.contains("pan-down-symbolic"));
+        assert!(source.contains("view-list-symbolic"));
+        assert!(source.contains("Seitenleiste ein-/ausblenden (F9)"));
+        assert!(source.contains("Notizenvorschau ein-/ausblenden (Strg+M)"));
+        assert!(source.contains("Dreispalten-Ansicht"));
+        assert!(source.contains("Klassische Ansicht"));
+        assert!(source.contains("Nur Liste"));
     }
 }
 

@@ -146,13 +146,17 @@ impl EBookService {
         source_uid: &str,
         vcard: &str,
     ) -> Result<EBookMutationResult, EBookMutationError> {
-        if source_uid == "local-addressbook" {
-            return self.apply_local_operation(1, vcard, None);
+        let result = if source_uid == "local-addressbook" || source_uid.starts_with("account-contacts-") {
+            self.apply_local_operation(1, vcard, None)
+        } else if let Some(result) = self.apply_graph_operation(source_uid, 1, vcard, None) {
+            result
+        } else {
+            self.apply_operation(source_uid, 1, vcard, None)
+        };
+        if result.is_ok() {
+            invalidate_contacts_cache();
         }
-        if let Some(result) = self.apply_graph_operation(source_uid, 1, vcard, None) {
-            return result;
-        }
-        self.apply_operation(source_uid, 1, vcard, None)
+        result
     }
 
     pub(crate) fn modify_contact(
@@ -161,13 +165,17 @@ impl EBookService {
         contact_uid: &str,
         vcard: &str,
     ) -> Result<EBookMutationResult, EBookMutationError> {
-        if source_uid == "local-addressbook" {
-            return self.apply_local_operation(2, vcard, Some(contact_uid));
+        let result = if source_uid == "local-addressbook" || source_uid.starts_with("account-contacts-") {
+            self.apply_local_operation(2, vcard, Some(contact_uid))
+        } else if let Some(result) = self.apply_graph_operation(source_uid, 2, vcard, Some(contact_uid)) {
+            result
+        } else {
+            self.apply_operation(source_uid, 2, vcard, Some(contact_uid))
+        };
+        if result.is_ok() {
+            invalidate_contacts_cache();
         }
-        if let Some(result) = self.apply_graph_operation(source_uid, 2, vcard, Some(contact_uid)) {
-            return result;
-        }
-        self.apply_operation(source_uid, 2, vcard, Some(contact_uid))
+        result
     }
 
     pub(crate) fn remove_contact(
@@ -175,13 +183,17 @@ impl EBookService {
         source_uid: &str,
         contact_uid: &str,
     ) -> Result<EBookMutationResult, EBookMutationError> {
-        if source_uid == "local-addressbook" {
-            return self.apply_local_operation(3, "", Some(contact_uid));
+        let result = if source_uid == "local-addressbook" || source_uid.starts_with("account-contacts-") {
+            self.apply_local_operation(3, "", Some(contact_uid))
+        } else if let Some(result) = self.apply_graph_operation(source_uid, 3, "", Some(contact_uid)) {
+            result
+        } else {
+            self.apply_operation(source_uid, 3, "", Some(contact_uid))
+        };
+        if result.is_ok() {
+            invalidate_contacts_cache();
         }
-        if let Some(result) = self.apply_graph_operation(source_uid, 3, "", Some(contact_uid)) {
-            return result;
-        }
-        self.apply_operation(source_uid, 3, "", Some(contact_uid))
+        result
     }
 
     /// Merge duplicate records into `primary` and then remove the duplicate
@@ -221,7 +233,7 @@ impl EBookService {
         let merged_vcard = VCardContact::merge_vcards(&primary.vcard, &duplicate_vcards)
             .map_err(EBookMutationError::Backend)?;
 
-        if primary.source_uid == "local-addressbook" {
+        if primary.source_uid == "local-addressbook" || primary.source_uid.starts_with("account-contacts-") {
             let duplicate_uids = duplicates
                 .iter()
                 .map(|duplicate| duplicate.uid.clone())
@@ -596,7 +608,37 @@ impl Drop for EBookWatcher {
     }
 }
 
+static CONTACTS_CACHE: std::sync::RwLock<Option<(std::time::Instant, EBookLoadResult)>> =
+    std::sync::RwLock::new(None);
+
+pub(crate) fn invalidate_contacts_cache() {
+    if let Ok(mut guard) = CONTACTS_CACHE.write() {
+        *guard = None;
+    }
+}
+
 pub(crate) fn load_contacts_prefer_eds() -> EBookLoadResult {
+    load_contacts_prefer_eds_cached(true)
+}
+
+pub(crate) fn load_contacts_prefer_eds_cached(use_cache: bool) -> EBookLoadResult {
+    if use_cache {
+        if let Ok(guard) = CONTACTS_CACHE.read() {
+            if let Some((instant, cached)) = guard.as_ref() {
+                if instant.elapsed() < std::time::Duration::from_secs(60) {
+                    return cached.clone();
+                }
+            }
+        }
+    }
+    let res = load_contacts_prefer_eds_fresh();
+    if let Ok(mut guard) = CONTACTS_CACHE.write() {
+        *guard = Some((std::time::Instant::now(), res.clone()));
+    }
+    res
+}
+
+fn load_contacts_prefer_eds_fresh() -> EBookLoadResult {
     match EBookService::new().load_contacts() {
         Ok((mut contacts, warning)) => {
             let local_service = ContactStoreService::new();

@@ -148,8 +148,8 @@ load_source (ECalLoadContext *context,
     context->configured_sources++;
     display_name = e_source_get_display_name (source);
 
-    guint connect_timeout_ms = (source_type == EVOLUTION_EDS_ECAL_EVENTS) ? 1500 : 300;
-    guint32 wait_seconds = (source_type == EVOLUTION_EDS_ECAL_EVENTS) ? 1 : 0;
+    guint connect_timeout_ms = 8000;
+    guint32 wait_seconds = 3;
 
     /* Match Evolution's range model: a cached client is immediately useful
      * for locally synchronized data and must not be held behind an online
@@ -195,7 +195,7 @@ load_source (ECalLoadContext *context,
         query = g_strdup ("#t");
     }
 
-    guint query_timeout_ms = (source_type == EVOLUTION_EDS_ECAL_EVENTS) ? 2000 : 500;
+    guint query_timeout_ms = 8000;
     GCancellable *cancellable = g_cancellable_new ();
     GSource *timer = ecal_start_cancellation_timer (
         cancellable, query_timeout_ms);
@@ -672,7 +672,7 @@ evolution_eds_ecal_list_source_capabilities (
         if (!e_source_has_extension (source, extension_name))
             continue;
         client = E_CAL_CLIENT (e_cal_client_connect_sync (
-            source, (ECalClientSourceType) source_type, 15, NULL, &error));
+            source, (ECalClientSourceType) source_type, 1, NULL, &error));
         if (!client && !first_error && error) {
             first_error = g_strdup_printf (
                 "%s: %s", display_name && *display_name ? display_name : "ECal-Quelle",

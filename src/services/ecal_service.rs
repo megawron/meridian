@@ -556,7 +556,7 @@ impl ECalService {
         component_type: ECalComponentType,
         component: &str,
     ) -> Result<ECalMutationResult, ECalMutationError> {
-        if source_uid == "local-calendar" {
+        if source_uid == "local-calendar" || source_uid.starts_with("account-tasks-") {
             return self.apply_local_operation(component_type, 1, component, None);
         }
         if let Some(result) =
@@ -574,7 +574,7 @@ impl ECalService {
         component_uid: &str,
         component: &str,
     ) -> Result<ECalMutationResult, ECalMutationError> {
-        if source_uid == "local-calendar" {
+        if source_uid == "local-calendar" || source_uid.starts_with("account-tasks-") {
             return self.apply_local_operation(component_type, 2, component, Some(component_uid));
         }
         if let Some(result) = self.apply_graph_operation(
@@ -601,7 +601,7 @@ impl ECalService {
         component_type: ECalComponentType,
         component_uid: &str,
     ) -> Result<ECalMutationResult, ECalMutationError> {
-        if source_uid == "local-calendar" {
+        if source_uid == "local-calendar" || source_uid.starts_with("account-tasks-") {
             return self.apply_local_operation(component_type, 3, "", Some(component_uid));
         }
         if let Some(result) =

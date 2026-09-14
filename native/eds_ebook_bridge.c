@@ -78,40 +78,76 @@ append_contact (EBookLoadContext *context,
     return TRUE;
 }
 
-static void
-load_source (EBookLoadContext *context,
-             ESource *source)
+typedef struct {
+    ESource *source;
+    EvolutionEdsEBookContact *contacts;
+    size_t count;
+    size_t capacity;
+    gboolean success;
+    gchar *error;
+} SourceLoadResult;
+
+static gpointer
+load_source_worker (gpointer data)
 {
+    SourceLoadResult *res = (SourceLoadResult *) data;
     EBookClient *client = NULL;
     GSList *contacts = NULL;
     GSList *link;
     GError *error = NULL;
     const gchar *display_name;
 
-    context->configured_sources++;
-    display_name = e_source_get_display_name (source);
-    client = E_BOOK_CLIENT (e_book_client_connect_sync (source, 15, NULL, &error));
+    display_name = e_source_get_display_name (res->source);
+    /* Connect with an 8-second timeout so remote EWS/Exchange address books have time to authenticate */
+    client = E_BOOK_CLIENT (e_book_client_connect_sync (res->source, 8, NULL, &error));
     if (!client) {
-        context->failed_sources++;
-        remember_error (context, display_name, error);
-        g_clear_error (&error);
-        return;
+        res->success = FALSE;
+        if (error) {
+            res->error = g_strdup_printf ("%s: %s", display_name ? display_name : "", error->message);
+            g_clear_error (&error);
+        }
+        return NULL;
     }
 
-    if (!e_book_client_get_contacts_sync (
-            client, "#t", &contacts, NULL, &error)) {
-        context->failed_sources++;
-        remember_error (context, display_name, error);
-        g_clear_error (&error);
+    if (!e_book_client_get_contacts_sync (client, "#t", &contacts, NULL, &error)) {
+        res->success = FALSE;
+        if (error) {
+            res->error = g_strdup_printf ("%s: %s", display_name ? display_name : "", error->message);
+            g_clear_error (&error);
+        }
         g_clear_object (&client);
-        return;
+        return NULL;
     }
 
-    context->successful_sources++;
-    for (link = contacts; link != NULL; link = link->next)
-        append_contact (context, source, E_CONTACT (link->data));
+    res->success = TRUE;
+    for (link = contacts; link != NULL; link = link->next) {
+        EContact *contact = E_CONTACT (link->data);
+        if (!contact) continue;
+        gchar *vcard = e_vcard_to_string (E_VCARD (contact));
+        if (!vcard || !*vcard) {
+            g_free (vcard);
+            continue;
+        }
+        if (res->count == res->capacity) {
+            size_t next_cap = res->capacity == 0 ? 32 : res->capacity * 2;
+            EvolutionEdsEBookContact *next = g_realloc_n (res->contacts, next_cap, sizeof (*next));
+            if (!next) {
+                g_free (vcard);
+                continue;
+            }
+            res->contacts = next;
+            res->capacity = next_cap;
+        }
+        EvolutionEdsEBookContact *slot = &res->contacts[res->count++];
+        const gchar *uid = e_contact_get_const (contact, E_CONTACT_UID);
+        slot->source_uid = g_strdup (e_source_get_uid (res->source));
+        slot->source_display_name = g_strdup (display_name ? display_name : "");
+        slot->contact_uid = g_strdup (uid ? uid : "");
+        slot->vcard = vcard;
+    }
     g_slist_free_full (contacts, g_object_unref);
     g_clear_object (&client);
+    return NULL;
 }
 
 int
@@ -152,8 +188,43 @@ evolution_eds_ebook_load_contacts (
 
     sources = e_source_registry_list_enabled (
         registry, E_SOURCE_EXTENSION_ADDRESS_BOOK);
-    for (link = sources; link != NULL; link = link->next)
-        load_source (&context, E_SOURCE (link->data));
+    guint n_sources = g_list_length (sources);
+    if (n_sources > 0) {
+        GThread **threads = g_new0 (GThread *, n_sources);
+        SourceLoadResult *results = g_new0 (SourceLoadResult, n_sources);
+        guint i = 0;
+        for (link = sources; link != NULL; link = link->next, i++) {
+            results[i].source = E_SOURCE (link->data);
+            context.configured_sources++;
+            threads[i] = g_thread_new ("ebook-load-src", load_source_worker, &results[i]);
+        }
+        for (i = 0; i < n_sources; i++) {
+            g_thread_join (threads[i]);
+            if (results[i].success) {
+                context.successful_sources++;
+                if (results[i].count > 0) {
+                    size_t new_total = context.count + results[i].count;
+                    if (new_total > context.capacity) {
+                        context.capacity = new_total + 64;
+                        context.contacts = g_realloc_n (context.contacts, context.capacity, sizeof (*context.contacts));
+                    }
+                    memcpy (&context.contacts[context.count], results[i].contacts, results[i].count * sizeof (EvolutionEdsEBookContact));
+                    context.count = new_total;
+                    g_free (results[i].contacts);
+                }
+            } else {
+                context.failed_sources++;
+                if (!context.first_error && results[i].error) {
+                    context.first_error = results[i].error;
+                    results[i].error = NULL;
+                } else {
+                    g_free (results[i].error);
+                }
+            }
+        }
+        g_free (threads);
+        g_free (results);
+    }
 
     if (out_contacts) {
         *out_contacts = context.contacts;

@@ -31,11 +31,12 @@ fn normalized_mail_sort_field(value: &str) -> &str {
     }
 }
 
-pub(crate) const MAIL_LIST_COLUMN_IDS: [&str; 14] = [
+pub(crate) const MAIL_LIST_COLUMN_IDS: [&str; 15] = [
     "status",
     "attachment",
     "flagged",
     "sender",
+    "recipient",
     "subject",
     "date",
     "follow-up",
@@ -48,7 +49,7 @@ pub(crate) const MAIL_LIST_COLUMN_IDS: [&str; 14] = [
     "messages",
 ];
 
-const MAIL_LIST_WIDE_COLUMN_IDS: [&str; 14] = [
+const MAIL_LIST_WIDE_COLUMN_IDS: [&str; 15] = [
     "status",
     "flagged",
     "messages",
@@ -62,6 +63,7 @@ const MAIL_LIST_WIDE_COLUMN_IDS: [&str; 14] = [
     "follow-up-due",
     "location",
     "sender",
+    "recipient",
     "subject",
 ];
 
@@ -497,14 +499,24 @@ impl AppSettings {
                 .as_ref()
                 .and_then(|source| source.lookup(crate::APP_ID, true))
                 .or_else(|| {
-                    let directory = option_env!("EVOLUTION_GTK4_SCHEMA_DIR")?;
-                    let source = gio::SettingsSchemaSource::from_directory(
-                        directory,
-                        installed_source.as_ref(),
-                        true,
-                    )
-                    .ok()?;
-                    source.lookup(crate::APP_ID, true)
+                    let candidates = [
+                        std::env::var("GSETTINGS_SCHEMA_DIR").ok(),
+                        option_env!("EVOLUTION_GTK4_SCHEMA_DIR").map(|s| s.to_string()),
+                        Some("data".to_string()),
+                        Some("../data".to_string()),
+                    ];
+                    for dir in candidates.into_iter().flatten() {
+                        if let Ok(source) = gio::SettingsSchemaSource::from_directory(
+                            &dir,
+                            installed_source.as_ref(),
+                            true,
+                        ) {
+                            if let Some(schema) = source.lookup(crate::APP_ID, true) {
+                                return Some(schema);
+                            }
+                        }
+                    }
+                    None
                 })?;
             let s = gio::Settings::new_full(&schema, None::<&gio::SettingsBackend>, None);
             *borrow = Some(s.clone());
@@ -519,14 +531,24 @@ impl AppSettings {
             .as_ref()
             .and_then(|source| source.lookup(crate::APP_ID, true))
             .or_else(|| {
-                let directory = option_env!("EVOLUTION_GTK4_SCHEMA_DIR")?;
-                let source = gio::SettingsSchemaSource::from_directory(
-                    directory,
-                    installed_source.as_ref(),
-                    true,
-                )
-                .ok()?;
-                source.lookup(crate::APP_ID, true)
+                let candidates = [
+                    std::env::var("GSETTINGS_SCHEMA_DIR").ok(),
+                    option_env!("EVOLUTION_GTK4_SCHEMA_DIR").map(|s| s.to_string()),
+                    Some("data".to_string()),
+                    Some("../data".to_string()),
+                ];
+                for dir in candidates.into_iter().flatten() {
+                    if let Ok(source) = gio::SettingsSchemaSource::from_directory(
+                        &dir,
+                        installed_source.as_ref(),
+                        true,
+                    ) {
+                        if let Some(schema) = source.lookup(crate::APP_ID, true) {
+                            return Some(schema);
+                        }
+                    }
+                }
+                None
             })?;
         Some(Self {
             settings: gio::Settings::new_full(&schema, Some(backend), None),
@@ -671,6 +693,35 @@ impl AppSettings {
         };
         if let Err(error) = self.settings.set_string("calendar-view", value) {
             tracing::warn!(%error, "Could not persist calendar view");
+        }
+    }
+
+    pub fn calendar_click_action(&self) -> String {
+        let has_key = self
+            .settings
+            .settings_schema()
+            .map(|s| s.has_key("calendar-click-action"))
+            .unwrap_or(false);
+        if has_key {
+            let value = self.settings.string("calendar-click-action").to_string();
+            if value == "create" {
+                return "create".to_string();
+            }
+        }
+        "select".to_string()
+    }
+
+    pub fn set_calendar_click_action(&self, value: &str) {
+        let has_key = self
+            .settings
+            .settings_schema()
+            .map(|s| s.has_key("calendar-click-action"))
+            .unwrap_or(false);
+        if has_key {
+            let value = if value == "create" { "create" } else { "select" };
+            if let Err(error) = self.settings.set_string("calendar-click-action", value) {
+                tracing::warn!(%error, "Could not persist calendar click action");
+            }
         }
     }
 
@@ -2093,6 +2144,29 @@ impl AppSettings {
         }
     }
 
+    pub fn mail_expanded_folders(&self) -> Vec<String> {
+        self.settings
+            .strv("mail-expanded-folders")
+            .into_iter()
+            .map(|s| {
+                s.replace("__NUL__", "\0")
+                    .replace("::", "\0")
+                    .to_string()
+            })
+            .collect()
+    }
+
+    pub fn set_mail_expanded_folders(&self, folders: &[String]) {
+        let sanitized: Vec<String> = folders
+            .iter()
+            .map(|s| s.replace('\0', "__NUL__"))
+            .collect();
+        let refs: Vec<&str> = sanitized.iter().map(String::as_str).collect();
+        if let Err(error) = self.settings.set_strv("mail-expanded-folders", &*refs) {
+            tracing::warn!(%error, "Could not persist mail-expanded-folders");
+        }
+    }
+
     pub fn mail_show_deleted(&self) -> bool {
         self.settings.boolean("mail-show-deleted")
     }
@@ -2189,6 +2263,15 @@ impl AppSettings {
         self.set_int("mail-sender-column-width", value.clamp(80, 360));
     }
 
+    pub fn mail_recipient_column_width(&self) -> i32 {
+        let val = self.settings.int("mail-recipient-column-width");
+        if val <= 0 { 180 } else { val.clamp(80, 360) }
+    }
+
+    pub fn set_mail_recipient_column_width(&self, value: i32) {
+        self.set_int("mail-recipient-column-width", value.clamp(80, 360));
+    }
+
     pub fn mail_date_column_width(&self) -> i32 {
         let val = self.settings.int("mail-date-column-width");
         if val <= 0 { 130 } else { val.clamp(60, 300) }
@@ -2201,6 +2284,11 @@ impl AppSettings {
     pub fn mail_list_view_profile(&self) -> String {
         normalized_mail_list_view_profile(&self.settings.string("mail-list-view-profile"))
             .to_string()
+    }
+
+    pub fn set_mail_list_view_profile(&self, profile: &str) {
+        let profile = normalized_mail_list_view_profile(profile);
+        self.set_string("mail-list-view-profile", profile);
     }
 
     pub fn mail_list_column_order(&self) -> Vec<String> {
@@ -2376,6 +2464,24 @@ impl AppSettings {
                 .to_string()
         });
         self.set_string("memo-preview-orientation", &value);
+    }
+
+    pub fn memo_preview_position(&self, orientation: &str) -> i32 {
+        let key = if orientation == "vertical" {
+            "memo-hpane-position"
+        } else {
+            "memo-vpane-position"
+        };
+        self.settings.int(key).clamp(80, 4_096)
+    }
+
+    pub fn set_memo_preview_position(&self, orientation: &str, value: i32) {
+        let key = if orientation == "vertical" {
+            "memo-hpane-position"
+        } else {
+            "memo-vpane-position"
+        };
+        self.set_int(key, value.clamp(80, 4_096));
     }
 
     pub fn task_preview_visible(&self) -> bool {
@@ -3010,6 +3116,10 @@ impl AppSettings {
                 let value = parse_migrated_i32_in_range(key, value, 80, 360)?;
                 self.set_mail_sender_column_width(value);
             }
+            "mail-recipient-column-width" => {
+                let value = parse_migrated_i32_in_range(key, value, 80, 360)?;
+                self.set_mail_recipient_column_width(value);
+            }
             "mail-date-column-width" => {
                 let value = parse_migrated_i32_in_range(key, value, 60, 300)?;
                 self.set_mail_date_column_width(value);
@@ -3085,6 +3195,12 @@ impl AppSettings {
                 let value = normalize_mail_folder_sort_order(value)?;
                 self.set_mail_folder_sort_order(&value);
             }
+            "mail-expanded-folders" => {
+                let parsed: Result<Vec<String>, _> = serde_json::from_str(value);
+                if let Ok(folders) = parsed {
+                    self.set_mail_expanded_folders(&folders);
+                }
+            }
             "mail-show-deleted" => self.set_mail_show_deleted(parse_migrated_bool(key, value)?),
             "task-filter" => self.set_task_filter(value),
             "task-category-filter" => self.set_task_category_filter(value),
@@ -3132,6 +3248,14 @@ impl AppSettings {
                 let value = normalize_memo_preview_orientation_value(value)?;
                 self.set_string("memo-preview-orientation", &value);
             }
+            "memo-hpane-position" => self.set_memo_preview_position(
+                "vertical",
+                parse_migrated_i32_in_range(key, value, 80, 4_096)?,
+            ),
+            "memo-vpane-position" => self.set_memo_preview_position(
+                "classic",
+                parse_migrated_i32_in_range(key, value, 80, 4_096)?,
+            ),
             "contact-completion-minimum-query-length" => {
                 let val = parse_migrated_u32_in_range(key, value, 1, 100)?;
                 self.set_contact_completion_minimum_query_length(val);
@@ -3438,6 +3562,7 @@ impl AppSettings {
             "mail-show-follow-up-due",
             "mail-show-location",
             "mail-sender-column-width",
+            "mail-recipient-column-width",
             "mail-date-column-width",
             "mail-list-view-profile",
             "mail-list-column-order",
@@ -3463,6 +3588,7 @@ impl AppSettings {
             "mail-sort-descending",
             "mail-threading",
             "mail-folder-sort-order",
+            "mail-expanded-folders",
             "mail-show-deleted",
             "task-filter",
             "task-category-filter",
@@ -3481,6 +3607,8 @@ impl AppSettings {
             "memo-category-filter",
             "memo-preview-visible",
             "memo-preview-orientation",
+            "memo-hpane-position",
+            "memo-vpane-position",
             "contact-completion-minimum-query-length",
             "contact-completion-show-address",
             "contact-completion-book-sources",
@@ -3827,12 +3955,13 @@ mod tests {
     fn mail_list_profiles_and_corrupt_orders_normalize_without_losing_columns() {
         let messages = mail_list_profile_column_order("messages");
         assert_eq!(
-            &messages[..6],
+            &messages[..7],
             &[
                 "status",
                 "attachment",
                 "flagged",
                 "sender",
+                "recipient",
                 "subject",
                 "date"
             ]
@@ -3858,6 +3987,7 @@ mod tests {
         let settings = settings_with_backend(&backend);
         settings.apply_mail_list_view_profile("wide");
         settings.set_mail_sender_column_width(245);
+        settings.set_mail_recipient_column_width(210);
         settings.set_mail_date_column_width(175);
         assert_eq!(settings.mail_list_view_profile(), "wide");
         assert_eq!(
@@ -3865,6 +3995,7 @@ mod tests {
             mail_list_profile_column_order("wide")
         );
         assert_eq!(settings.mail_sender_column_width(), 245);
+        assert_eq!(settings.mail_recipient_column_width(), 210);
         assert_eq!(settings.mail_date_column_width(), 175);
 
         settings
@@ -3875,6 +4006,10 @@ mod tests {
             &settings.mail_list_column_order()[..3],
             &["subject", "date", "status"]
         );
+        settings
+            .apply_migrated_setting("mail-recipient-column-width", "205")
+            .unwrap();
+        assert_eq!(settings.mail_recipient_column_width(), 205);
         settings
             .apply_migrated_setting("mail-date-column-width", "190")
             .unwrap();
@@ -5533,6 +5668,20 @@ mod tests {
             );
         }
         settings.set_spellcheck_languages(&initial_langs);
+    }
+
+    #[test]
+    fn test_mail_expanded_folders_nul_byte_safe() {
+        let backend = gio::memory_settings_backend_new();
+        let settings = settings_with_backend(&backend);
+        let test_folders = vec![
+            "account-1".to_string(),
+            "account-1\0INBOX".to_string(),
+            "account-1\0Projects/2026".to_string(),
+        ];
+        settings.set_mail_expanded_folders(&test_folders);
+        let loaded = settings.mail_expanded_folders();
+        assert_eq!(loaded, test_folders);
     }
 }
 

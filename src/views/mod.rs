@@ -3,7 +3,7 @@
 // Views module — contains all major page views of the application.
 
 pub(crate) mod accessibility;
-mod calendar_page;
+pub(crate) mod calendar_page;
 mod contacts_page;
 #[cfg(target_os = "linux")]
 mod html_editor;
@@ -39,9 +39,9 @@ use gtk::prelude::*;
 fn module_icon_widget(name: &str) -> gtk::Image {
     let (icon_name, fallback_name) = match name {
         "mail" => ("evolution-mail", "mail-unread-symbolic"),
-        "contacts" => ("x-office-address-book", "contact-new-symbolic"),
+        "contacts" => ("x-office-address-book", "x-office-address-book-symbolic"),
         "calendar" => ("x-office-calendar", "x-office-calendar-symbolic"),
-        "tasks" => ("task-due", "checkbox-checked-symbolic"),
+        "tasks" => ("evolution-tasks", "evolution-tasks-symbolic"),
         "memos" => ("accessories-text-editor", "accessories-text-editor-symbolic"),
         _ => ("evolution-mail", "mail-unread-symbolic"),
     };
@@ -66,6 +66,8 @@ pub fn build_sidebar_module_switcher(
         .margin_end(0)
         .margin_top(0)
         .margin_bottom(0)
+        .valign(gtk::Align::End)
+        .vexpand(false)
         .css_classes(vec!["evolution-module-switcher"])
         .build();
 
@@ -324,6 +326,36 @@ mod tests {
         assert!(switcher.is_visible());
 
         settings.set_switcher_location(&original);
+    }
+
+    #[test]
+    fn test_sidebar_module_switcher_anchors_to_bottom() {
+        let _gtk_lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+        let anchor = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        let switcher = build_sidebar_module_switcher("mail", &anchor);
+        assert_eq!(switcher.valign(), gtk::Align::End);
+        assert!(!switcher.vexpands());
+    }
+
+    #[test]
+    fn test_contacts_module_icon_name() {
+        let _gtk_lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+        let img = module_icon_widget("contacts");
+        let icon_name = img.icon_name().map(|g| g.to_string()).unwrap_or_default();
+        assert!(
+            icon_name == "x-office-address-book" || icon_name == "x-office-address-book-symbolic",
+            "Expected address book icon for contacts module, got: {icon_name}"
+        );
     }
 }
 

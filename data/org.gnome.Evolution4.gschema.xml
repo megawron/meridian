@@ -81,6 +81,14 @@
       <default>15</default>
       <summary>Default event reminder in minutes before the event</summary>
     </key>
+    <key name="calendar-click-action" type="s">
+      <choices>
+        <choice value='select'/>
+        <choice value='create'/>
+      </choices>
+      <default>'select'</default>
+      <summary>Action when clicking a free calendar time slot ('select' to highlight and show draft, 'create' to directly open event editor)</summary>
+    </key>
     <key name="use-default-reminder" type="b">
       <default>false</default>
       <summary>Whether to set a default reminder for appointments</summary>
@@ -478,6 +486,11 @@
       <range min="80" max="360"/>
       <summary>Width of the sender column in the mail list</summary>
     </key>
+    <key name="mail-recipient-column-width" type="i">
+      <default>180</default>
+      <range min="80" max="360"/>
+      <summary>Width of the recipient column in the mail list</summary>
+    </key>
     <key name="mail-date-column-width" type="i">
       <default>130</default>
       <range min="60" max="300"/>
@@ -493,7 +506,7 @@
       <summary>Active mail list column profile</summary>
     </key>
     <key name="mail-list-column-order" type="s">
-      <default>'status,attachment,flagged,sender,subject,date,follow-up,important,avatar,preview,size,follow-up-due,location,messages'</default>
+      <default>'status,attachment,flagged,sender,recipient,subject,date,follow-up,important,avatar,preview,size,follow-up-due,location,messages'</default>
       <summary>Stable ordered mail list column identifiers</summary>
     </key>
     <key name="color-scheme" type="s">
@@ -594,6 +607,11 @@
       <summary>Portable custom folder sibling sort order</summary>
       <description>JSON map of stable local or loaded remote folder identifiers to their explicit sibling order.</description>
     </key>
+    <key name="mail-expanded-folders" type="as">
+      <default>[]</default>
+      <summary>Expanded mail folder and account identifiers</summary>
+      <description>List of mail account and folder identifiers that are currently expanded in the folder tree.</description>
+    </key>
     <key name="mail-show-deleted" type="b">
       <default>false</default>
       <summary>Show locally deleted messages with a line through them</summary>
@@ -688,6 +706,16 @@
         <choice value='classic'/>
         <choice value='vertical'/>
       </choices>
+    </key>
+    <key name="memo-hpane-position" type="i">
+      <default>360</default>
+      <range min="80" max="4096"/>
+      <summary>Horizontal memo preview divider position</summary>
+    </key>
+    <key name="memo-vpane-position" type="i">
+      <default>360</default>
+      <range min="80" max="4096"/>
+      <summary>Vertical memo preview divider position</summary>
     </key>
     <key name="task-preview-visible" type="b">
       <default>true</default>

@@ -8,6 +8,7 @@
 #undef __CAMEL_H_INSIDE__
 #include <gio/gio.h>
 #include <glib.h>
+#include <dlfcn.h>
 
 /* Keep the bridge's C dependency surface small.  EDS marks its public
  * headers as include-through-libedataserver.h, so define the same umbrella
@@ -873,6 +874,8 @@ append_message (LoadContext *context,
     record->raw_message_len = data_size;
     record->is_unread = 1;
     record->is_flagged = 0;
+    record->is_replied = 0;
+    record->is_forwarded = 0;
     record->follow_up_status = EVOLUTION_FOLLOW_UP_NONE;
     record->follow_up = NULL;
     record->completed_on = NULL;
@@ -883,6 +886,8 @@ append_message (LoadContext *context,
 
         record->is_unread = (flags & CAMEL_MESSAGE_SEEN) == 0;
         record->is_flagged = (flags & CAMEL_MESSAGE_FLAGGED) != 0;
+        record->is_replied = (flags & (CAMEL_MESSAGE_ANSWERED | CAMEL_MESSAGE_ANSWERED_ALL)) != 0;
+        record->is_forwarded = (flags & CAMEL_MESSAGE_FORWARDED) != 0;
         read_follow_up_tags (message_info, record);
     }
 
@@ -956,6 +961,8 @@ append_message_from_info (LoadContext *context,
     record->raw_message = (guchar *) g_string_free (rfc822, FALSE);
     record->is_unread = 1;
     record->is_flagged = 0;
+    record->is_replied = 0;
+    record->is_forwarded = 0;
     record->follow_up_status = EVOLUTION_FOLLOW_UP_NONE;
     record->follow_up = NULL;
     record->completed_on = NULL;
@@ -964,10 +971,30 @@ append_message_from_info (LoadContext *context,
     flags = camel_message_info_get_flags (message_info);
     record->is_unread = (flags & CAMEL_MESSAGE_SEEN) == 0;
     record->is_flagged = (flags & CAMEL_MESSAGE_FLAGGED) != 0;
+    record->is_replied = (flags & (CAMEL_MESSAGE_ANSWERED | CAMEL_MESSAGE_ANSWERED_ALL)) != 0;
+    record->is_forwarded = (flags & CAMEL_MESSAGE_FORWARDED) != 0;
     read_follow_up_tags (message_info, record);
 
     context->messages_loaded++;
     return TRUE;
+}
+
+typedef struct {
+    const gchar *uid;
+    gint64 date;
+} MessageSortEntry;
+
+static gint
+compare_message_sort_entries_desc (gconstpointer a, gconstpointer b)
+{
+    const MessageSortEntry *ea = (const MessageSortEntry *) a;
+    const MessageSortEntry *eb = (const MessageSortEntry *) b;
+
+    if (ea->date > eb->date)
+        return -1;
+    if (ea->date < eb->date)
+        return 1;
+    return 0;
 }
 
 static void
@@ -994,23 +1021,31 @@ load_folder (LoadContext *context,
 
         if (is_mail_folder (current)) {
             context->folders_seen++;
-            emit_progress (
-                context, EVOLUTION_EDS_CAMEL_SYNC_LOADING_MESSAGES,
-                source_uid, source_display_name, current->full_name);
         }
 
         gboolean should_load_messages = FALSE;
         if (is_mail_folder (current) && (current->flags & CAMEL_FOLDER_NOSELECT) == 0) {
             if (folder_name && current->full_name) {
-                should_load_messages = g_str_equal (current->full_name, folder_name);
+                should_load_messages = (g_ascii_strcasecmp (current->full_name, folder_name) == 0);
             } else if (!folder_name) {
-                should_load_messages = ((current->flags & CAMEL_FOLDER_TYPE_MASK) == CAMEL_FOLDER_TYPE_INBOX) ||
-                    (current->full_name && (g_ascii_strcasecmp (current->full_name, "INBOX") == 0 ||
-                                            g_ascii_strcasecmp (current->full_name, "Inbox") == 0));
+                gboolean is_foreign = current->full_name && g_str_has_prefix (current->full_name, "Foreign Folders");
+                if (!is_foreign) {
+                    should_load_messages = ((current->flags & CAMEL_FOLDER_TYPE_MASK) == CAMEL_FOLDER_TYPE_INBOX) ||
+                        (current->full_name && (g_ascii_strcasecmp (current->full_name, "INBOX") == 0 ||
+                                                g_ascii_strcasecmp (current->full_name, "Inbox") == 0 ||
+                                                g_ascii_strcasecmp (current->full_name, "Posteingang") == 0 ||
+                                                g_str_has_suffix (current->full_name, "/Posteingang") ||
+                                                g_str_has_suffix (current->full_name, "/INBOX") ||
+                                                g_str_has_suffix (current->full_name, "/Inbox")));
+                }
             }
         }
 
         if (should_load_messages) {
+            emit_progress (
+                context, EVOLUTION_EDS_CAMEL_SYNC_LOADING_MESSAGES,
+                source_uid, source_display_name, current->full_name);
+
             folder = camel_store_get_folder_sync (
                 store, current->full_name, CAMEL_STORE_FOLDER_NONE,
                 cancellable, &error);
@@ -1029,26 +1064,36 @@ load_folder (LoadContext *context,
                 #else
                 uids = camel_folder_get_uids (folder);
                 #endif
-                if (uids) {
-                    gsize start = uids->len;
-                    gsize skipped = 0;
-                    gsize loaded = 0;
-
-                    while (start > 0 &&
-                           skipped < (gsize) context->message_offset) {
-                        start--;
-                        skipped++;
+                if (uids && uids->len > 0) {
+                    MessageSortEntry *sort_entries = g_new0 (MessageSortEntry, uids->len);
+                    for (guint i = 0; i < uids->len; i++) {
+                        const gchar *message_uid = g_ptr_array_index (uids, i);
+                        sort_entries[i].uid = message_uid;
+                        if (message_uid) {
+                            CamelMessageInfo *mi = camel_folder_get_message_info (folder, message_uid);
+                            if (mi) {
+                                gint64 date = camel_message_info_get_date_sent (mi);
+                                if (date <= 0)
+                                    date = camel_message_info_get_date_received (mi);
+                                sort_entries[i].date = date;
+                                g_object_unref (mi);
+                            }
+                        }
                     }
 
-                    while (start > 0 &&
+                    qsort (sort_entries, uids->len, sizeof (MessageSortEntry), compare_message_sort_entries_desc);
+
+                    gsize index = (gsize) context->message_offset;
+                    gsize loaded = 0;
+
+                    while (index < (gsize) uids->len &&
                            !load_cancelled (context) &&
                            loaded < (gsize) context->max_messages_per_folder) {
-                        const gchar *message_uid;
+                        const gchar *message_uid = sort_entries[index].uid;
                         CamelMessageInfo *message_info;
                         CamelMimeMessage *message;
 
-                        start--;
-                        message_uid = g_ptr_array_index (uids, start);
+                        index++;
                         if (!message_uid)
                             continue;
 
@@ -1071,6 +1116,8 @@ load_folder (LoadContext *context,
                         if (message_info)
                             g_object_unref (message_info);
                     }
+
+                    g_free (sort_entries);
 
                     #if EDS_BRIDGE_HAS_DUP_UIDS
                     g_ptr_array_unref (uids);
@@ -1116,6 +1163,12 @@ configure_ews_service_credentials_and_settings (EdsCamelSession *session,
                 G_OBJECT_GET_CLASS (settings), "host");
             GParamSpec *pspec_email = g_object_class_find_property (
                 G_OBJECT_GET_CLASS (settings), "email");
+            GParamSpec *pspec_user = g_object_class_find_property (
+                G_OBJECT_GET_CLASS (settings), "user");
+            GParamSpec *pspec_use_imp = g_object_class_find_property (
+                G_OBJECT_GET_CLASS (settings), "use-impersonation");
+            GParamSpec *pspec_imp_user = g_object_class_find_property (
+                G_OBJECT_GET_CLASS (settings), "impersonate-user");
 
             ESource *ews_source =
                 eds_camel_session_ref_ancestor_with_extension (
@@ -1129,6 +1182,9 @@ configure_ews_service_credentials_and_settings (EdsCamelSession *session,
                     gchar *ext_hurl = NULL;
                     gchar *ext_oab = NULL;
                     gchar *ext_email = NULL;
+                    gboolean ext_use_imp = FALSE;
+                    gchar *ext_imp_user = NULL;
+
                     GParamSpec *hpspec = g_object_class_find_property (G_OBJECT_GET_CLASS (ews_ext), "hosturl");
                     if (hpspec)
                         g_object_get (ews_ext, "hosturl", &ext_hurl, NULL);
@@ -1139,6 +1195,13 @@ configure_ews_service_credentials_and_settings (EdsCamelSession *session,
                     if (mail_spec)
                         g_object_get (ews_ext, "email", &ext_email, NULL);
 
+                    GParamSpec *use_imp_spec = g_object_class_find_property (G_OBJECT_GET_CLASS (ews_ext), "use-impersonation");
+                    if (use_imp_spec)
+                        g_object_get (ews_ext, "use-impersonation", &ext_use_imp, NULL);
+                    GParamSpec *imp_user_spec = g_object_class_find_property (G_OBJECT_GET_CLASS (ews_ext), "impersonate-user");
+                    if (imp_user_spec)
+                        g_object_get (ews_ext, "impersonate-user", &ext_imp_user, NULL);
+
                     if (ext_hurl && *ext_hurl && pspec_hosturl) {
                         g_object_set (settings, "hosturl", ext_hurl, NULL);
                         g_printerr ("[EDS] Explicitly set hosturl from Ews Backend: %s\n", ext_hurl);
@@ -1148,9 +1211,26 @@ configure_ews_service_credentials_and_settings (EdsCamelSession *session,
                     if (ext_email && *ext_email && pspec_email)
                         g_object_set (settings, "email", ext_email, NULL);
 
+                    if (pspec_use_imp)
+                        g_object_set (settings, "use-impersonation", ext_use_imp, NULL);
+                    if (pspec_imp_user) {
+                        if (ext_imp_user && *ext_imp_user) {
+                            g_object_set (settings, "impersonate-user", ext_imp_user, NULL);
+                        } else if (ext_use_imp && ext_email && *ext_email) {
+                            g_object_set (settings, "impersonate-user", ext_email, NULL);
+                        }
+                    }
+
+                    g_printerr ("[EDS] EWS settings configured: hosturl=%s email=%s use_impersonation=%d impersonate_user=%s\n",
+                                ext_hurl ? ext_hurl : "(none)",
+                                ext_email ? ext_email : "(none)",
+                                ext_use_imp,
+                                ext_imp_user ? ext_imp_user : "");
+
                     g_free (ext_hurl);
                     g_free (ext_oab);
                     g_free (ext_email);
+                    g_free (ext_imp_user);
                 }
                 g_object_unref (ews_source);
             }
@@ -1304,6 +1384,127 @@ configure_ews_service_credentials_and_settings (EdsCamelSession *session,
     }
 }
 
+static gchar *
+bridge_json_extract_string (const gchar *block, const gchar *key)
+{
+    gchar *pattern = g_strdup_printf ("\"%s\"", key);
+    const gchar *p = strstr (block, pattern);
+    g_free (pattern);
+    if (!p)
+        return NULL;
+    const gchar *colon = strchr (p, ':');
+    if (!colon)
+        return NULL;
+    const gchar *q1 = strchr (colon, '"');
+    if (!q1)
+        return NULL;
+    q1++;
+    const gchar *q2 = strchr (q1, '"');
+    if (!q2)
+        return NULL;
+    return g_strndup (q1, q2 - q1);
+}
+
+static gboolean
+bridge_json_extract_bool (const gchar *block, const gchar *key)
+{
+    gchar *pat_true1 = g_strdup_printf ("\"%s\": true", key);
+    gchar *pat_true2 = g_strdup_printf ("\"%s\":true", key);
+    gboolean val = (strstr (block, pat_true1) != NULL || strstr (block, pat_true2) != NULL);
+    g_free (pat_true1);
+    g_free (pat_true2);
+    return val;
+}
+
+static gboolean
+is_source_foreign_or_shared (ESource *source)
+{
+    if (!source)
+        return FALSE;
+
+    const gchar *source_uid = e_source_get_uid (source);
+    const gchar *display_name = e_source_get_display_name (source);
+
+    /* 1. Check if the source has [Exchange Web Services Folder] extension with foreign=TRUE */
+    if (e_source_has_extension (source, "Exchange Web Services Folder")) {
+        ESourceExtension *ews_ext = e_source_get_extension (source, "Exchange Web Services Folder");
+        if (ews_ext && g_object_class_find_property (G_OBJECT_GET_CLASS (ews_ext), "foreign")) {
+            gboolean is_foreign = FALSE;
+            g_object_get (ews_ext, "foreign", &is_foreign, NULL);
+            if (is_foreign)
+                return TRUE;
+        }
+    }
+
+    /* 2. Check accounts.json for is_shared_mailbox */
+    gchar *accounts_path = g_build_filename (g_get_user_data_dir (), "evolution-gtk4", "accounts.json", NULL);
+    if (g_file_test (accounts_path, G_FILE_TEST_EXISTS)) {
+        gchar *json = NULL;
+        if (g_file_get_contents (accounts_path, &json, NULL, NULL) && json) {
+            const gchar *accounts_start = strstr (json, "\"accounts\"");
+            const gchar *p = accounts_start ? accounts_start : json;
+            while ((p = strchr (p, '{')) != NULL) {
+                if (p == json) {
+                    p++;
+                    continue;
+                }
+                const gchar *block_start = p;
+                const gchar *block_end = strchr (block_start, '}');
+                if (!block_end)
+                    break;
+                gchar *block = g_strndup (block_start, block_end - block_start + 1);
+                p = block_end + 1;
+
+                gboolean is_shared = bridge_json_extract_bool (block, "is_shared_mailbox") ||
+                                     bridge_json_extract_bool (block, "open_mailbox_other_user");
+                if (is_shared) {
+                    gchar *email = bridge_json_extract_string (block, "email");
+                    gchar *dname = bridge_json_extract_string (block, "display_name");
+                    gchar *id = bridge_json_extract_string (block, "id");
+
+                    gboolean match = FALSE;
+                    if (email && *email) {
+                        GChecksum *ck = g_checksum_new (G_CHECKSUM_SHA1);
+                        g_checksum_update (ck, (const guchar *) email, strlen (email));
+                        const gchar *digest = g_checksum_get_string (ck);
+                        if (source_uid && digest && g_ascii_strcasecmp (source_uid, digest) == 0)
+                            match = TRUE;
+                        if (display_name && g_ascii_strcasecmp (display_name, email) == 0)
+                            match = TRUE;
+                        g_checksum_free (ck);
+                    }
+                    if (!match && dname && *dname && display_name) {
+                        if (g_ascii_strcasecmp (display_name, dname) == 0)
+                            match = TRUE;
+                    }
+                    if (!match && id && *id && source_uid) {
+                        const gchar *stripped_id = g_str_has_prefix (id, "eds:") ? id + 4 : id;
+                        if (g_ascii_strcasecmp (source_uid, stripped_id) == 0 ||
+                            g_ascii_strcasecmp (source_uid, id) == 0)
+                            match = TRUE;
+                    }
+
+                    g_free (email);
+                    g_free (dname);
+                    g_free (id);
+
+                    if (match) {
+                        g_free (block);
+                        g_free (json);
+                        g_free (accounts_path);
+                        return TRUE;
+                    }
+                }
+                g_free (block);
+            }
+            g_free (json);
+        }
+        g_free (accounts_path);
+    }
+
+    return FALSE;
+}
+
 static CamelStore *
 open_store_for_source (EdsCamelSession *session,
                        ESource *source,
@@ -1319,6 +1520,15 @@ open_store_for_source (EdsCamelSession *session,
         g_set_error_literal (
             error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
             "Invalid session or source for Camel store");
+        return NULL;
+    }
+
+    if (is_source_foreign_or_shared (source)) {
+        g_printerr ("[EDS] Skipping separate store for foreign/shared source '%s'\n",
+                    e_source_get_uid (source));
+        g_set_error_literal (
+            error, G_IO_ERROR, G_IO_ERROR_NOT_SUPPORTED,
+            "Shared mailboxes are accessed via delegate folders under their parent Exchange account");
         return NULL;
     }
 
@@ -1421,6 +1631,173 @@ open_store_for_source (EdsCamelSession *session,
     return CAMEL_STORE (service);
 }
 
+typedef struct _BridgeEEwsConnection BridgeEEwsConnection;
+typedef struct {
+    gchar *id;
+    gchar *change_key;
+    gboolean is_distinguished_id;
+} BridgeEwsFolderId;
+
+typedef struct {
+    CamelOfflineStore parent;
+    void *priv;
+    void *summary;
+    gchar *storage_path;
+} BridgeEwsStoreLayout;
+
+static void
+ensure_foreign_folders_for_ews_store (CamelStore *store,
+                                      GCancellable *cancellable)
+{
+    if (!store || !CAMEL_IS_STORE (store))
+        return;
+
+    const gchar *type_name = G_OBJECT_TYPE_NAME (store);
+    if (!type_name || !g_str_has_prefix (type_name, "CamelEwsStore"))
+        return;
+
+    static void *h_ews = NULL;
+    static void *h_priv = NULL;
+    static gboolean probed = FALSE;
+
+    if (!probed) {
+        probed = TRUE;
+        h_ews = dlopen ("/usr/lib64/evolution-ews/libevolution-ews.so", RTLD_LAZY | RTLD_GLOBAL);
+        if (!h_ews)
+            h_ews = dlopen ("libevolution-ews.so", RTLD_LAZY | RTLD_GLOBAL);
+        h_priv = dlopen ("/usr/lib64/evolution-ews/libcamelews-priv.so", RTLD_LAZY | RTLD_GLOBAL);
+        if (!h_priv)
+            h_priv = dlopen ("libcamelews-priv.so", RTLD_LAZY | RTLD_GLOBAL);
+    }
+
+    if (!h_ews || !h_priv)
+        return;
+
+    BridgeEEwsConnection *(*fn_ref_cnc)(CamelStore *) = dlsym (h_priv, "camel_ews_store_ref_connection");
+    gboolean (*fn_get_folder_info)(BridgeEEwsConnection *, gint, const gchar *, const void *, void **, GCancellable *, GError **) =
+        dlsym (h_ews, "e_ews_connection_get_folder_info_sync");
+    const BridgeEwsFolderId *(*fn_get_id)(void *) = dlsym (h_ews, "e_ews_folder_get_id");
+    guint32 (*fn_get_total_count)(void *) = dlsym (h_ews, "e_ews_folder_get_total_count");
+    gboolean (*fn_has_folder)(void *, const gchar *) = dlsym (h_priv, "camel_ews_store_summary_has_folder");
+    void (*fn_new_folder)(void *, const gchar *, const gchar *, const gchar *, const gchar *, gint, guint32, guint32, gboolean, gboolean) =
+        dlsym (h_priv, "camel_ews_store_summary_new_folder");
+    void (*fn_ensure_virtual_folders)(CamelStore *) = dlsym (h_priv, "camel_ews_store_ensure_virtual_folders");
+    void (*fn_set_foreign_subfolders)(void *, const gchar *, gboolean) = dlsym (h_priv, "camel_ews_store_summary_set_foreign_subfolders");
+    gboolean (*fn_summary_save)(void *, GError **) = dlsym (h_priv, "camel_ews_store_summary_save");
+    void (*fn_update_foreign_subfolders)(CamelStore *, const gchar *) = dlsym (h_priv, "camel_ews_store_update_foreign_subfolders");
+
+    if (!fn_ref_cnc || !fn_get_folder_info || !fn_get_id || !fn_has_folder || !fn_new_folder || !fn_ensure_virtual_folders)
+        return;
+
+    BridgeEwsStoreLayout *ews_store = (BridgeEwsStoreLayout *) store;
+    void *summary = ews_store->summary;
+    if (!summary)
+        return;
+
+    fn_ensure_virtual_folders (store);
+
+    gchar *accounts_path = g_build_filename (g_get_user_data_dir (), "evolution-gtk4", "accounts.json", NULL);
+    if (!g_file_test (accounts_path, G_FILE_TEST_EXISTS)) {
+        g_free (accounts_path);
+        return;
+    }
+
+    gchar *json = NULL;
+    if (!g_file_get_contents (accounts_path, &json, NULL, NULL) || !json) {
+        g_free (accounts_path);
+        return;
+    }
+    g_free (accounts_path);
+
+    const gchar *accounts_start = strstr (json, "\"accounts\"");
+    const gchar *p = accounts_start ? accounts_start : json;
+    while ((p = strchr (p, '{')) != NULL) {
+        if (p == json) {
+            p++;
+            continue;
+        }
+        const gchar *block_start = p;
+        const gchar *block_end = strchr (block_start, '}');
+        if (!block_end)
+            break;
+        gchar *block = g_strndup (block_start, block_end - block_start + 1);
+        p = block_end + 1;
+
+        gboolean is_shared = bridge_json_extract_bool (block, "is_shared_mailbox") ||
+                             bridge_json_extract_bool (block, "open_mailbox_other_user");
+        gchar *email = bridge_json_extract_string (block, "email");
+        gchar *display_name = bridge_json_extract_string (block, "display_name");
+        g_free (block);
+
+        if (is_shared && email && *email) {
+            gchar *foreign_mailbox_id = g_strdup_printf ("ForeignMailbox::%s", email);
+            BridgeEEwsConnection *cnc = fn_ref_cnc (store);
+            if (cnc) {
+                gchar *mailbox = g_strdup_printf ("Postfach — %s", email);
+
+                if (!fn_has_folder (summary, foreign_mailbox_id)) {
+                    fn_new_folder (summary, foreign_mailbox_id, "ForeignRoot", NULL, mailbox, 1 /* MAILBOX */,
+                                   CAMEL_FOLDER_SYSTEM | CAMEL_FOLDER_NOSELECT, 0, FALSE, FALSE);
+                }
+
+                static const struct {
+                    const gchar *dist_id;
+                    const gchar *folder_name;
+                    guint32 flags;
+                } dist_folders[] = {
+                    { "inbox", "Posteingang", CAMEL_FOLDER_TYPE_INBOX | CAMEL_FOLDER_SUBSCRIBED },
+                    { "sentitems", "Gesendete Elemente", CAMEL_FOLDER_TYPE_SENT | CAMEL_FOLDER_SUBSCRIBED },
+                    { "drafts", "Entwürfe", CAMEL_FOLDER_TYPE_DRAFTS | CAMEL_FOLDER_SUBSCRIBED },
+                    { "deleteditems", "Gelöschte Elemente", CAMEL_FOLDER_TYPE_TRASH | CAMEL_FOLDER_SUBSCRIBED },
+                    { "junkemail", "Junk-E-Mail", CAMEL_FOLDER_TYPE_JUNK | CAMEL_FOLDER_SUBSCRIBED },
+                };
+
+                gboolean any_added = FALSE;
+                for (gsize i = 0; i < G_N_ELEMENTS (dist_folders); i++) {
+                    BridgeEwsFolderId fid;
+                    fid.id = (gchar *) dist_folders[i].dist_id;
+                    fid.change_key = NULL;
+                    fid.is_distinguished_id = TRUE;
+
+                    void *folder = NULL;
+                    GError *sub_err = NULL;
+                    if (fn_get_folder_info (cnc, G_PRIORITY_DEFAULT, email, &fid, &folder, cancellable, &sub_err) && folder) {
+                        const BridgeEwsFolderId *res_fid = fn_get_id (folder);
+                        if (res_fid && res_fid->id) {
+                            if (!fn_has_folder (summary, res_fid->id)) {
+                                guint32 total_cnt = fn_get_total_count ? fn_get_total_count (folder) : 0;
+                                fn_new_folder (summary, res_fid->id, foreign_mailbox_id, res_fid->change_key,
+                                               dist_folders[i].folder_name, 1 /* MAILBOX */,
+                                               dist_folders[i].flags, total_cnt, TRUE, FALSE);
+                                any_added = TRUE;
+                            }
+                            if (fn_set_foreign_subfolders)
+                                fn_set_foreign_subfolders (summary, res_fid->id, TRUE);
+                            if (fn_update_foreign_subfolders)
+                                fn_update_foreign_subfolders (store, res_fid->id);
+                        }
+                        g_object_unref (folder);
+                    } else {
+                        g_clear_error (&sub_err);
+                    }
+                }
+
+                if (any_added) {
+                    fn_ensure_virtual_folders (store);
+                    if (fn_summary_save)
+                        fn_summary_save (summary, NULL);
+                }
+                g_free (mailbox);
+                g_object_unref (cnc);
+            }
+            g_free (foreign_mailbox_id);
+        }
+        g_free (display_name);
+        g_free (email);
+    }
+    g_free (json);
+}
+
 static gboolean
 load_source (LoadContext *context,
              EdsCamelSession *session,
@@ -1436,10 +1813,15 @@ load_source (LoadContext *context,
     GError *error = NULL;
     gboolean success = FALSE;
 
+    if (!context || !session || !source)
+        return FALSE;
+
+    backend = (ESourceBackend *) e_source_get_extension (
+        source, E_SOURCE_EXTENSION_MAIL_ACCOUNT);
+    backend_name = backend
+        ? e_source_backend_get_backend_name (backend)
+        : NULL;
     source_uid = e_source_get_uid (source);
-    backend = E_SOURCE_BACKEND (
-        e_source_get_extension (source, E_SOURCE_EXTENSION_MAIL_ACCOUNT));
-    backend_name = backend ? e_source_backend_get_backend_name (backend) : NULL;
 
     if (!source_uid || !backend_name || !*backend_name)
         return FALSE;
@@ -1453,6 +1835,14 @@ load_source (LoadContext *context,
         g_str_equal (backend_name, "vfolder") ||
         g_str_equal (backend_name, "rss"))
         return FALSE;
+
+    /* Shared mailboxes and foreign folder sources are accessed via delegate folders
+     * under their parent Exchange store. Opening an independent Camel store for them
+     * with primary user credentials would incorrectly duplicate the user's primary mailbox. */
+    if (is_source_foreign_or_shared (source)) {
+        g_printerr ("[EDS] Skipping separate store for foreign/shared mailbox source '%s'\n", source_uid);
+        return FALSE;
+    }
 
     if (load_cancelled (context))
         return FALSE;
@@ -1474,10 +1864,11 @@ load_source (LoadContext *context,
         return FALSE;
     }
 
+    ensure_foreign_folders_for_ews_store (store, cancellable);
+
     folder_info = camel_store_get_folder_info_sync (
         store, NULL,
         CAMEL_STORE_FOLDER_INFO_RECURSIVE |
-        CAMEL_STORE_FOLDER_INFO_NO_VIRTUAL |
         CAMEL_STORE_FOLDER_INFO_REFRESH,
         cancellable, &error);
     if (!folder_info) {
@@ -1787,7 +2178,7 @@ evolution_eds_camel_load_messages_by_uid (
      * account here adds network round trips before every message display. */
     folder_info = camel_store_get_folder_info_sync (
         store, folder_name,
-        CAMEL_STORE_FOLDER_INFO_FAST | CAMEL_STORE_FOLDER_INFO_NO_VIRTUAL,
+        CAMEL_STORE_FOLDER_INFO_FAST,
         cancellable, &error);
     if (folder_info)
         matching_folder = find_folder_info_by_name (folder_info, folder_name);
@@ -3090,6 +3481,8 @@ evolution_eds_camel_watcher_new (const char *source_uid,
             continue;
         if (!watcher_backend_is_remote (source))
             continue;
+        if (is_source_foreign_or_shared (source))
+            continue;
 
         configured_sources++;
         store = open_store_for_source (
@@ -3105,7 +3498,6 @@ evolution_eds_camel_watcher_new (const char *source_uid,
         folder_info = camel_store_get_folder_info_sync (
             store, NULL,
             CAMEL_STORE_FOLDER_INFO_RECURSIVE |
-            CAMEL_STORE_FOLDER_INFO_NO_VIRTUAL |
             CAMEL_STORE_FOLDER_INFO_REFRESH,
             cancellable, &error);
         if (!folder_info) {

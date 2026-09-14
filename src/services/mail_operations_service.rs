@@ -2196,6 +2196,8 @@ mod tests {
                 is_unread: false,
                 is_flagged: true,
                 is_important: false,
+                is_replied: false,
+                is_forwarded: false,
             })
         );
 
@@ -2570,6 +2572,8 @@ mod tests {
                 is_unread: false,
                 is_flagged: true,
                 is_important: false,
+                is_replied: false,
+                is_forwarded: false,
             })
         );
 
@@ -2587,6 +2591,8 @@ mod tests {
                 is_unread: true,
                 is_flagged: false,
                 is_important: false,
+                is_replied: false,
+                is_forwarded: false,
             })
         );
 
@@ -2674,6 +2680,8 @@ mod tests {
                 is_unread: true,
                 is_flagged: false,
                 is_important: false,
+                is_replied: false,
+                is_forwarded: false,
             })
         );
 

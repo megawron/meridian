@@ -25,8 +25,12 @@ pub(crate) enum MenuPath {
     Edit,
     ViewSwitch,
     View,
+    ViewLayout,
+    ViewColumns,
+    ViewThreads,
     ViewDensity,
-    ViewAfterDensity,
+    ViewZoom,
+    ViewDetails,
     MessageGoto,
     MessageForward,
     MessageBeforeForward,
@@ -77,6 +81,7 @@ pub(crate) const ACTIONS: &[ActionSpec] = action_specs! {
         "win.filter-editor", "win.search-folder-editor", "win.mail-receive-all",
         "win.mail-send-all", "win.mail-send-receive", "win.mail-stop",
         "win.preferences", "win.toggle-top-switcher",
+        "win.toggle-toolbar", "win.toggle-statusbar", "win.toggle-debug-console",
         "win.work-offline", "win.work-online", "win.macos-sync",
     ],
     ActiveMail => [
@@ -114,7 +119,7 @@ pub(crate) const ACTIONS: &[ActionSpec] = action_specs! {
         "win.folder-edit-sort-order", "win.folder-properties", "win.folder-subscriptions",
         "win.mark-all-read", "win.refresh-folder", "win.rename-folder",
     ],
-    ActiveCalendar => ["win.purge-calendar"],
+    ActiveCalendar => ["win.purge-calendar", "win.export-calendar"],
 };
 
 macro_rules! menu_specs {
@@ -135,6 +140,7 @@ pub(crate) const PRIMARY_MENU_ACTIONS: &[MenuActionSpec] = menu_specs! {
         ("Offline arbeiten", "win.work-offline"), ("Online arbeiten", "win.work-online"),
         ("Daten importieren…", "win.import"),
         ("Ausgewählte E-Mail exportieren", "win.export"),
+        ("Kalender exportieren…", "win.export-calendar"),
         ("Ausgewählte E-Mail drucken…", "win.mail-print"),
         ("Druckvorschau der ausgewählten E-Mail…", "win.mail-print-preview"),
     ],
@@ -155,28 +161,26 @@ pub(crate) const PRIMARY_MENU_ACTIONS: &[MenuActionSpec] = menu_specs! {
         ("Notizen", "win.switch-memos"),
     ],
     View => [
-        ("Modul-Schaltflächen in Kopfleiste", "win.toggle-top-switcher"),
         ("Ordner-Seitenleiste ein-/ausblenden", "win.toggle-sidebar"),
         ("Vorschaufenster ein-/ausblenden", "win.toggle-preview"),
-        ("Alle Nachrichtenkopfzeilen anzeigen", "win.toggle-all-headers"),
-        ("Nachrichtenquelle anzeigen", "win.view-message-source"),
-        ("Klassische Evolution-Mail-Anordnung", "win.use-classic-mail-layout"),
-        ("Moderne Mail-Anordnung", "win.use-modern-mail-layout"),
-        ("Klassische Mail-Werkzeugleiste ein-/ausblenden", "win.toggle-mail-toolbar"),
-        ("Statusinformationen unten ein-/ausblenden", "win.toggle-mail-statusbar"),
-        ("Unterhaltungen gruppieren/auflösen", "win.toggle-mail-threading"),
-        ("Gelöschte Nachrichten anzeigen", "win.toggle-mail-show-deleted"),
-        ("Vorschautext in Nachrichtenzeilen ein-/ausblenden", "win.toggle-mail-preview-text"),
+    ],
+    ViewLayout => [
+        ("Klassische Mail-Anordnung", "win.use-classic-mail-layout"),
+        ("Werkzeugleiste ein-/ausblenden", "win.toggle-toolbar"),
+        ("Modul-Schaltflächen in Kopfleiste", "win.toggle-top-switcher"),
+        ("Statusleiste ein-/ausblenden", "win.toggle-statusbar"),
+    ],
+    ViewColumns => [
         ("Avatare in Nachrichtenzeilen ein-/ausblenden", "win.toggle-mail-avatar"),
         ("Absender in Nachrichtenzeilen ein-/ausblenden", "win.toggle-mail-sender"),
         ("Empfänger in Nachrichtenzeilen ein-/ausblenden", "win.toggle-mail-recipient"),
         ("Datum in Nachrichtenzeilen ein-/ausblenden", "win.toggle-mail-date"),
         ("Anhangssymbole in Nachrichtenzeilen ein-/ausblenden", "win.toggle-mail-attachment"),
+        ("Vorschautext in Nachrichtenzeilen ein-/ausblenden", "win.toggle-mail-preview-text"),
         ("Labels in Nachrichtenzeilen ein-/ausblenden", "win.toggle-mail-labels"),
     ],
-    ViewAfterDensity => [
-        ("Schrift vergrößern", "win.zoom-in"), ("Schrift verkleinern", "win.zoom-out"),
-        ("Normale Schriftgröße", "win.zoom-reset"),
+    ViewThreads => [
+        ("Unterhaltungen gruppieren/auflösen", "win.toggle-mail-threading"),
         ("Alle Unterhaltungen aufklappen", "win.expand-all-threads"),
         ("Alle Unterhaltungen einklappen", "win.collapse-all-threads"),
     ],
@@ -184,6 +188,17 @@ pub(crate) const PRIMARY_MENU_ACTIONS: &[MenuActionSpec] = menu_specs! {
         ("Kompakt", "win.mail-density-compact"),
         ("Standard", "win.mail-density-normal"),
         ("Geräumig", "win.mail-density-spacious"),
+    ],
+    ViewZoom => [
+        ("Schrift vergrößern", "win.zoom-in"),
+        ("Schrift verkleinern", "win.zoom-out"),
+        ("Normale Schriftgröße", "win.zoom-reset"),
+    ],
+    ViewDetails => [
+        ("Alle Nachrichtenkopfzeilen anzeigen", "win.toggle-all-headers"),
+        ("Nachrichtenquelle anzeigen", "win.view-message-source"),
+        ("Gelöschte Nachrichten anzeigen", "win.toggle-mail-show-deleted"),
+        ("Entwickler-Protokollkonsole ein-/ausblenden", "win.toggle-debug-console"),
     ],
     MessageGoto => [
         ("Nächste Nachricht", "win.mail-next"),
@@ -244,6 +259,7 @@ pub(crate) const PRIMARY_MENU_ACTIONS: &[MenuActionSpec] = menu_specs! {
         ("Mit macOS synchronisieren…", "win.macos-sync"),
     ],
     Help => [
+        ("Entwickler-Protokollkonsole", "win.toggle-debug-console"),
         ("Tastenkombinationen", "win.show-help-overlay"),
         ("Über Evolution", "app.about"),
     ],
@@ -280,6 +296,16 @@ pub(crate) const SHORTCUTS: &[ShortcutSpec] = &[
         group: ShortcutGroup::General,
         title: "Sidebar ein-/ausblenden",
         action: "win.toggle-sidebar",
+    },
+    ShortcutSpec {
+        group: ShortcutGroup::General,
+        title: "Statusleiste ein-/ausblenden",
+        action: "win.toggle-statusbar",
+    },
+    ShortcutSpec {
+        group: ShortcutGroup::General,
+        title: "Entwickler-Protokollkonsole ein-/ausblenden",
+        action: "win.toggle-debug-console",
     },
     ShortcutSpec {
         group: ShortcutGroup::General,
@@ -527,5 +553,23 @@ mod tests {
         assert!(menu_actions(MenuPath::Edit).any(|item| {
             item.action == "win.search-advanced" && item.label == "Erweiterte Suche…"
         }));
+    }
+
+    #[test]
+    fn view_menu_is_compact_and_structured_without_overflow() {
+        // The top-level View path should contain only primary items, not a flat 26-item wall
+        let top_level_count = menu_actions(MenuPath::View).count();
+        assert!(
+            top_level_count <= 4,
+            "Top-level View menu is too large ({top_level_count} items); should use submenus"
+        );
+
+        // Submenus must partition the remaining view actions
+        assert!(menu_actions(MenuPath::ViewLayout).any(|i| i.action == "win.use-classic-mail-layout"));
+        assert!(menu_actions(MenuPath::ViewColumns).any(|i| i.action == "win.toggle-mail-sender"));
+        assert!(menu_actions(MenuPath::ViewThreads).any(|i| i.action == "win.toggle-mail-threading"));
+        assert!(menu_actions(MenuPath::ViewDensity).any(|i| i.action == "win.mail-density-compact"));
+        assert!(menu_actions(MenuPath::ViewZoom).any(|i| i.action == "win.zoom-in"));
+        assert!(menu_actions(MenuPath::ViewDetails).any(|i| i.action == "win.toggle-all-headers"));
     }
 }

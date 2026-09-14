@@ -26,9 +26,60 @@
   background-color: alpha(@accent_bg_color, 0.15);
 }
 
-/* Unread messages get bold subject */
-.message-list row.unread .heading {
-  font-weight: 700;
+/* All mail rows share a clean, uniform background per GNOME HIG.
+ * Unread messages are distinguished by a subtle accent tint background
+ * and bold typography, while read messages stay neutral. */
+.message-list .unread {
+  background-color: alpha(@accent_bg_color, 0.06);
+}
+
+.message-list row:hover .unread,
+.message-list .unread:hover,
+.message-list .unread .message-line:hover {
+  background-color: alpha(@accent_bg_color, 0.10);
+}
+
+.message-list row:selected .unread {
+  background-color: transparent;
+}
+
+.message-list .mail-status-icon {
+  -gtk-icon-size: 14px;
+}
+
+.message-list .mail-status-icon.unread-dot {
+  color: @accent_color;
+  -gtk-icon-size: 8px;
+  min-width: 8px;
+  min-height: 8px;
+  opacity: 1;
+}
+
+.message-list .mail-status-icon.accent,
+.message-list .unread .mail-status-icon.accent {
+  color: @accent_color;
+  opacity: 1;
+}
+
+.message-list .mail-status-icon.status-replied {
+  color: #e66100;
+  opacity: 1.0;
+  -gtk-icon-size: 14px;
+}
+
+.message-list .mail-status-icon.status-forwarded {
+  color: #1c71d8;
+  opacity: 1.0;
+  -gtk-icon-size: 14px;
+}
+
+.message-list .mail-status-icon.dim-label {
+  opacity: 0.55;
+}
+
+.mail-status-header-icon {
+  -gtk-icon-size: 8px;
+  opacity: 0.55;
 }
 
 /* Evolution's default mail table is deliberately a dense, single-line
@@ -41,16 +92,6 @@
 
 .message-list .message-line:hover {
   background-color: alpha(@window_fg_color, 0.045);
-}
-
-/* Evolution's table alternates rows.  The first visible row starts shaded so
- * dense one-line records remain easy to track across all real columns. */
-.message-list .mail-row-even {
-  background-color: alpha(@window_fg_color, 0.055);
-}
-
-.message-list row:selected .mail-row-even {
-  background-color: alpha(@accent_bg_color, 0.13);
 }
 
 .message-list .batch-selected {
@@ -69,6 +110,18 @@
 .message-list checkbutton {
   min-width: 24px;
   min-height: 22px;
+  padding: 0;
+  margin: 0;
+}
+
+.message-list button.mail-star,
+.message-list button.mail-follow-up,
+.message-list button.mail-important,
+.message-list button.circular {
+  min-width: 24px;
+  max-width: 24px;
+  min-height: 24px;
+  max-height: 24px;
   padding: 0;
   margin: 0;
 }
@@ -120,13 +173,20 @@
 .message-list .mail-date-label {
   padding-left: 6px;
   padding-right: 6px;
+  opacity: 0.75;
+}
+
+.message-list .unread .mail-date-label {
+  opacity: 1.0;
+  font-weight: 600;
 }
 
 .message-list .unread-heading,
 .message-list .heading.unread-heading,
 .message-list .body.unread-heading,
 .message-list label.unread-heading {
-  font-weight: 700;
+  font-weight: 600;
+  opacity: 1.0;
 }
 
 .message-list separator {
@@ -136,7 +196,7 @@
 
 .mail-column-header {
   min-height: 26px;
-  padding: 0;
+  padding: 0 2px;
   margin: 0;
   border-top: 1px solid alpha(@borders, 0.7);
   border-bottom: 1px solid alpha(@borders, 0.85);
@@ -144,25 +204,82 @@
 }
 
 .mail-column-header-cell {
-  padding: 2px 6px;
-  border-right: 1px solid alpha(@borders, 0.6);
+  padding: 2px 4px;
+  border-right: 1px solid alpha(@borders, 0.35);
   min-height: 24px;
   background-color: transparent;
   transition: background-color 120ms ease;
+  cursor: pointer;
 }
 
 .mail-column-header-cell:hover {
   background-color: alpha(@window_fg_color, 0.08);
 }
 
+.mail-column-header-cell.column-dragging {
+  opacity: 0.55;
+  background-color: alpha(@accent_color, 0.15);
+  cursor: grabbing;
+}
+
+.mail-column-header-cell.drop-target-left {
+  box-shadow: inset 3px 0 0 0 @accent_color;
+  background-color: alpha(@accent_color, 0.08);
+}
+
+.mail-column-header-cell.drop-target-right {
+  box-shadow: inset -3px 0 0 0 @accent_color;
+  background-color: alpha(@accent_color, 0.08);
+}
+
 .mail-column-header-cell.icon-cell {
   padding: 2px 0;
   min-width: 24px;
+  max-width: 24px;
+  border-right: none;
 }
 
-.mail-column-header-cell.date-cell {
+.mail-column-header-cell.date-cell,
+.mail-column-header-cell.sender-cell,
+.mail-column-header-cell.recipient-cell,
+.mail-column-header-cell.subject-cell {
   border-right: none;
-  padding: 2px 6px;
+  padding: 2px 4px;
+}
+
+.mail-column-separator {
+  min-width: 6px;
+  max-width: 6px;
+  cursor: col-resize;
+  background-color: transparent;
+  background-image: linear-gradient(to right, transparent 2px, alpha(@borders, 0.45) 2px, alpha(@borders, 0.45) 3px, transparent 3px);
+  transition: background-color 120ms ease, background-image 120ms ease;
+}
+
+.mail-column-separator:hover,
+.mail-column-separator:active {
+  background-color: transparent;
+  background-image: linear-gradient(to right, transparent 2px, @accent_color 2px, @accent_color 3px, transparent 3px);
+}
+
+.mail-column-row-separator {
+  min-width: 6px;
+  max-width: 6px;
+  background-color: transparent;
+}
+
+.mail-thread-expander {
+  min-width: 18px;
+  min-height: 18px;
+  padding: 0;
+  margin: 0 4px 0 0;
+  border-radius: 9999px;
+  color: alpha(@window_fg_color, 0.75);
+}
+
+.mail-thread-expander:hover {
+  background-color: alpha(@window_fg_color, 0.12);
+  color: @window_fg_color;
 }
 
 .mail-column-header label {
@@ -233,6 +350,17 @@
   padding: 0 3px;
 }
 
+.mail-preview-reply-actions {
+  margin-left: 8px;
+  margin-top: 2px;
+}
+
+.mail-preview-reply-actions button {
+  min-width: 28px;
+  min-height: 28px;
+  padding: 2px 6px;
+}
+
 .mail-pane-status {
   min-height: 24px;
   padding: 0 4px;
@@ -251,9 +379,14 @@
 }
 
 .mail-search-bar dropdown {
-  min-width: 96px;
-  min-height: 24px;
-  font-size: 0.88rem;
+  min-width: 80px;
+  min-height: 26px;
+}
+
+.mail-search-bar dropdown > button.combo {
+  min-height: 26px;
+  padding: 1px 6px;
+  font-size: 0.85rem;
 }
 
 .mail-search-bar button,
@@ -376,10 +509,22 @@
 
 .mail-sidebar .account-heading,
 .mail-sidebar .mail-sidebar-row.account-root-row label,
-.mail-sidebar label.account-heading {
+.mail-sidebar label.account-heading,
+.mail-sidebar .sidebar-section-header,
+.mail-sidebar label.sidebar-section-header {
   font-weight: 700;
-  color: @window_fg_color;
+  color: #000000;
   font-size: 1.05rem;
+}
+
+@media (prefers-color-scheme: dark) {
+  .mail-sidebar .account-heading,
+  .mail-sidebar .mail-sidebar-row.account-root-row label,
+  .mail-sidebar label.account-heading,
+  .mail-sidebar .sidebar-section-header,
+  .mail-sidebar label.sidebar-section-header {
+    color: #ffffff;
+  }
 }
 
 .mail-sidebar label.unread-heading,
@@ -403,6 +548,12 @@
   padding: 1px 4px;
   margin: 0;
   border-radius: 4px;
+}
+
+.mail-sidebar .mail-sidebar-row {
+  min-height: 24px;
+  padding: 1px 2px;
+  margin: 0;
 }
 
 .mail-sidebar .navigation-sidebar row:hover,
@@ -495,6 +646,30 @@
   margin-right: 2px;
   padding: 0;
   color: alpha(@window_fg_color, 0.7);
+  transition: color 150ms ease-in-out;
+}
+
+.mail-sidebar listview row:hover treeexpander > expander,
+.mail-sidebar listview row:hover treeexpander > image,
+.mail-sidebar .navigation-sidebar row:hover treeexpander > expander,
+.mail-sidebar .navigation-sidebar row:hover treeexpander > image {
+  color: alpha(@window_fg_color, 0.95);
+}
+
+.mail-sidebar treeexpander.account-root-expander,
+.mail-sidebar treeexpander.account-root-expander > expander,
+.mail-sidebar treeexpander.account-root-expander > image {
+  color: #000000;
+  opacity: 1;
+}
+
+@media (prefers-color-scheme: dark) {
+  .mail-sidebar treeexpander.account-root-expander,
+  .mail-sidebar treeexpander.account-root-expander > expander,
+  .mail-sidebar treeexpander.account-root-expander > image {
+    color: #ffffff;
+    opacity: 1;
+  }
 }
 
 .mail-sidebar .caption {
@@ -519,47 +694,231 @@
   color: @accent_fg_color;
 }
 
-.mail-sidebar .mail-sidebar-row.account-root-row {
+/* ── Universal Sidebar Account Rows (Mail, Calendar, Contacts, Tasks, Memos) ── */
+.sidebar-account-row,
+.account-root-row,
+.mail-sidebar .mail-sidebar-row.account-root-row,
+.calendar-sidebar-group-row {
   background-color: transparent;
-  color: @window_fg_color;
+  color: #000000;
+  border-radius: 4px;
+  padding: 1px 2px;
+  margin: 0;
 }
 
-.mail-sidebar .mail-sidebar-row.account-root-row label {
-  color: @window_fg_color;
+.sidebar-account-row:hover,
+.account-root-row:hover,
+.calendar-sidebar-group-row:hover {
+  background-color: alpha(@window_fg_color, 0.05);
+}
+
+.sidebar-account-row label,
+.account-root-row label,
+.account-heading,
+label.account-heading,
+.mail-sidebar .mail-sidebar-row.account-root-row label,
+.calendar-sidebar-group-row label {
+  color: #000000;
   font-weight: 700;
   font-size: 1.05rem;
 }
 
-/* ── Compact Desktop Menus & Popovers ──────────────────────────────────── */
+.sidebar-account-row image,
+.account-root-row image,
+.mail-sidebar .mail-sidebar-row.account-root-row image,
+.mail-sidebar treeexpander.account-root-expander > expander,
+.mail-sidebar treeexpander.account-root-expander > image,
+.calendar-sidebar-group-row image {
+  min-width: 16px;
+  min-height: 16px;
+  color: #000000;
+}
+
+@media (prefers-color-scheme: dark) {
+  .sidebar-account-row,
+  .account-root-row,
+  .mail-sidebar .mail-sidebar-row.account-root-row,
+  .calendar-sidebar-group-row,
+  .sidebar-account-row label,
+  .account-root-row label,
+  .account-heading,
+  label.account-heading,
+  .mail-sidebar .mail-sidebar-row.account-root-row label,
+  .calendar-sidebar-group-row label,
+  .sidebar-account-row image,
+  .account-root-row image,
+  .mail-sidebar .mail-sidebar-row.account-root-row image,
+  .mail-sidebar treeexpander.account-root-expander > expander,
+  .mail-sidebar treeexpander.account-root-expander > image,
+  .calendar-sidebar-group-row image {
+    color: #ffffff;
+  }
+}
+
+/* ── Compact Desktop Menus, Dropdowns & Popovers (Libadwaita HIG) ────── */
+/* Global DropDown Styling */
+dropdown {
+  min-height: 26px;
+}
+
+dropdown > button.combo {
+  min-height: 26px;
+  padding: 1px 8px;
+  font-size: 1rem;
+  font-weight: 500;
+  border-radius: 6px;
+  transition: all 120ms ease;
+}
+
+dropdown > button.combo arrow {
+  -gtk-icon-size: 14px;
+  min-width: 14px;
+  min-height: 14px;
+  opacity: 0.7;
+  margin-left: 4px;
+}
+
+dropdown > button.combo:hover arrow {
+  opacity: 1;
+}
+
+/* Dropdown Popovers (geöffneter Zustand) */
+dropdown popover {
+  padding: 3px;
+}
+
+dropdown popover contents {
+  padding: 3px;
+  border-radius: 8px;
+  box-shadow: 0 4px 14px alpha(@borders, 0.35);
+}
+
+dropdown popover scrolledwindow {
+  min-height: 30px;
+  max-height: 360px;
+}
+
+dropdown popover listview {
+  background-color: transparent;
+  padding: 1px 0;
+}
+
+dropdown popover listview row {
+  min-height: 24px;
+  padding: 2px 8px;
+  margin: 0px 2px;
+  border-radius: 5px;
+  font-size: 1rem;
+  color: @popover_fg_color;
+  transition: background-color 100ms ease;
+}
+
+dropdown popover listview row:hover {
+  background-color: alpha(@window_fg_color, 0.08);
+}
+
+dropdown popover listview row:selected {
+  background-color: @accent_bg_color;
+  color: @accent_fg_color;
+  font-weight: 500;
+}
+
+dropdown popover listview row:selected:hover {
+  background-color: @accent_bg_color;
+  color: @accent_fg_color;
+}
+
+dropdown popover listview row image.checkmark,
+dropdown popover listview row check {
+  margin-right: 6px;
+  min-width: 14px;
+  min-height: 14px;
+  -gtk-icon-size: 14px;
+}
+
+/* Popover Menus (GtkPopoverMenu / MenuButtons) */
 popover.menu {
-  padding: 4px;
+  padding: 3px;
 }
 
 popover.menu contents {
-  padding: 2px 0;
+  padding: 2px;
+  border-radius: 8px;
 }
 
 popover.menu modelbutton {
-  min-height: 28px;
-  padding: 4px 10px;
-  margin: 1px 2px;
+  min-height: 24px;
+  padding: 2px 8px;
+  margin: 0px 2px;
+  border-radius: 5px;
+  font-size: 1rem;
 }
 
 popover.menu modelbutton label {
-  min-height: 20px;
-  padding: 1px 0;
+  min-height: 16px;
+  padding: 0;
+}
+
+popover.menu modelbutton arrow {
+  min-width: 14px;
+  min-height: 14px;
+  -gtk-icon-size: 14px;
+  opacity: 0.7;
 }
 
 popover.menu accelerator,
 popover.menu label.accelerator,
 popover.menu .accelerator {
-  min-height: 20px;
-  padding: 1px 0;
+  min-height: 16px;
+  padding: 0;
   margin-left: 12px;
-  opacity: 0.7;
+  font-size: 0.88rem;
+  opacity: 0.65;
 }
 
 popover.menu separator {
+  margin: 2px 2px;
+}
+
+/* View Options Popover */
+.view-options-popover,
+.mail-columns-popover {
+  padding: 4px;
+}
+
+.view-options-popover .view-options-heading,
+.mail-columns-popover .view-options-heading {
+  font-size: 0.76rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: alpha(@window_fg_color, 0.55);
+  margin-top: 2px;
+  margin-bottom: 2px;
+}
+
+.view-options-popover .linked button,
+.mail-columns-popover .linked button {
+  min-height: 28px;
+  padding: 3px 12px;
+  font-size: 0.9rem;
+  font-weight: 500;
+}
+
+.view-options-popover checkbutton,
+.mail-columns-popover checkbutton {
+  min-height: 24px;
+  padding: 2px 0;
+  margin: 0;
+}
+
+.view-options-popover checkbutton label,
+.mail-columns-popover checkbutton label {
+  font-size: 0.92rem;
+}
+
+.view-options-popover separator,
+.mail-columns-popover separator {
   margin: 4px 0;
 }
 
@@ -602,9 +961,28 @@ popover.menu separator {
   background-color: alpha(@window_fg_color, 0.12);
 }
 
-/* ── Contact Detail ────────────────────────────────────────────────────── */
+/* ── Contact Detail & List ─────────────────────────────────────────────── */
 .contact-header {
   padding: 32px 24px 16px 24px;
+}
+
+.contact-list-view {
+  background-color: transparent;
+}
+
+.contact-list-view > row {
+  border-radius: 8px;
+  margin: 1px 0;
+  transition: background-color 150ms ease;
+}
+
+.contact-list-view > row:hover {
+  background-color: alpha(@window_fg_color, 0.04);
+}
+
+.contact-list-view > row:selected {
+  background-color: @accent_bg_color;
+  color: @accent_fg_color;
 }
 
 /* ── General Polish ────────────────────────────────────────────────────── */
@@ -709,6 +1087,12 @@ splitview > .sidebar,
   border-radius: 0;
 }
 
+.calendar-sidebar-minical label.day-number.other-month:checked {
+  opacity: 1;
+  color: @accent_color;
+  background-color: alpha(@accent_color, 0.25);
+}
+
 .calendar-sidebar-minical label.day-number.range-start {
   border-top-left-radius: 8px;
   border-bottom-left-radius: 8px;
@@ -789,23 +1173,150 @@ splitview > .sidebar,
   background-color: transparent;
 }
 
-/* ── Minimalist Calendar Sidebar Tree ──────────────────────────────────── */
-.calendar-sidebar-group-row {
-  min-height: 28px;
-  padding: 4px 6px 2px 4px;
+/* ── Calendar & Tasks Sidebar (Matching Mail Sidebar Density & Parity) ── */
+.calendar-sidebar,
+.tasks-sidebar {
+  padding: 2px;
+}
+
+.calendar-sidebar .navigation-sidebar,
+.tasks-sidebar .navigation-sidebar,
+.calendar-sidebar listview,
+.tasks-sidebar listview,
+.calendar-sidebar listbox,
+.tasks-sidebar listbox {
+  padding: 0;
+  margin: 0;
   background-color: transparent;
-  border-radius: 6px;
-  font-weight: 600;
+}
+
+.calendar-sidebar .navigation-sidebar row,
+.tasks-sidebar .navigation-sidebar row,
+.calendar-sidebar listview row,
+.tasks-sidebar listview row,
+.calendar-sidebar listbox row,
+.tasks-sidebar listbox row,
+.calendar-sidebar-group-row,
+.calendar-sidebar-child-row {
+  min-height: 24px;
+  padding: 1px 4px;
+  margin: 0;
+  border-radius: 4px;
+}
+
+.calendar-sidebar .calendar-sidebar-row,
+.tasks-sidebar .calendar-sidebar-row {
+  min-height: 24px;
+  padding: 1px 2px;
+  margin: 0;
+}
+
+.calendar-sidebar-group-row {
+  background-color: transparent;
+  border-radius: 4px;
 }
 
 .calendar-sidebar-group-row:hover {
   background-color: alpha(@window_fg_color, 0.05);
 }
 
+.calendar-sidebar-group-row label,
+.calendar-sidebar .account-heading,
+.calendar-sidebar label.account-heading,
+.tasks-sidebar .account-heading,
+.tasks-sidebar label.account-heading {
+  font-weight: 700;
+  font-size: 1.05rem;
+  color: #000000;
+}
+
+.calendar-sidebar-group-row image {
+  color: #000000;
+}
+
+@media (prefers-color-scheme: dark) {
+  .calendar-sidebar-group-row label,
+  .calendar-sidebar .account-heading,
+  .calendar-sidebar label.account-heading,
+  .tasks-sidebar .account-heading,
+  .tasks-sidebar label.account-heading,
+  .calendar-sidebar-group-row image {
+    color: #ffffff;
+  }
+}
+
 .calendar-sidebar-child-row {
-  min-height: 28px;
-  padding: 2px 4px 2px 8px;
-  border-radius: 6px;
+  border-radius: 4px;
+}
+
+.calendar-sidebar-child-row label {
+  font-size: 1rem;
+  color: @window_fg_color;
+}
+
+.calendar-sidebar-child-row image {
+  min-width: 16px;
+  min-height: 16px;
+  color: @window_fg_color;
+}
+
+/* Compact checkbuttons in calendar sidebar (crisp 18px colored checkpoints without increasing 24px row height) */
+.calendar-sidebar-child-row checkbutton {
+  min-height: 18px;
+  min-width: 18px;
+  padding: 0;
+  margin: 0;
+}
+
+.calendar-sidebar-child-row checkbutton check {
+  min-height: 14px;
+  min-width: 14px;
+  padding: 2px;
+  margin: 0;
+  border-radius: 4px;
+  -gtk-icon-size: 14px;
+}
+
+.calendar-sidebar .navigation-sidebar row:hover,
+.tasks-sidebar .navigation-sidebar row:hover,
+.calendar-sidebar listbox row:hover,
+.tasks-sidebar listbox row:hover {
+  background-color: alpha(@window_fg_color, 0.05);
+}
+
+.calendar-sidebar .navigation-sidebar row:selected,
+.tasks-sidebar .navigation-sidebar row:selected,
+.calendar-sidebar listbox row:selected,
+.tasks-sidebar listbox row:selected,
+.calendar-sidebar-child-row:selected {
+  background-color: @accent_bg_color;
+  color: @accent_fg_color;
+}
+
+.calendar-sidebar .navigation-sidebar row:selected label,
+.tasks-sidebar .navigation-sidebar row:selected label,
+.calendar-sidebar .navigation-sidebar row:selected image,
+.tasks-sidebar .navigation-sidebar row:selected image,
+.calendar-sidebar listbox row:selected label,
+.tasks-sidebar listbox row:selected label,
+.calendar-sidebar listbox row:selected image,
+.tasks-sidebar listbox row:selected image,
+.calendar-sidebar-child-row:selected label,
+.calendar-sidebar-child-row:selected image {
+  color: @accent_fg_color;
+}
+
+.calendar-sidebar .navigation-sidebar row:selected image.dim-label,
+.tasks-sidebar .navigation-sidebar row:selected image.dim-label,
+.calendar-sidebar listbox row:selected image.dim-label,
+.tasks-sidebar listbox row:selected image.dim-label,
+.calendar-sidebar-child-row:selected image.dim-label {
+  color: @accent_fg_color;
+  opacity: 1;
+}
+
+.calendar-sidebar-child-row:selected checkbutton check:not(:checked) {
+  background-color: @card_bg_color;
 }
 
 /* ── Sidebar Drawer Header Bar ─────────────────────────────────────────── */
@@ -843,25 +1354,31 @@ splitview > .sidebar,
 
 .evolution-module-switcher button {
   min-width: 0;
-  padding: 6px 6px;
+  min-height: 28px;
+  padding: 4px 6px;
 }
 
 /* ── Unified Full-Width View Toolbar ───────────────────────────────────── */
 .unified-mail-toolbar,
 .unified-view-toolbar {
-  min-height: 34px;
-  padding: 2px 6px;
+  min-height: 36px;
+  padding: 3px 8px;
   background-color: @headerbar_bg_color;
   border-bottom: 1px solid alpha(@borders, 0.45);
 }
 
 .unified-mail-toolbar button,
 .unified-view-toolbar button {
-  min-width: 28px;
-  min-height: 28px;
-  padding: 2px 4px;
+  min-width: 30px;
+  min-height: 30px;
+  padding: 3px 6px;
   margin-top: 1px;
   margin-bottom: 1px;
+}
+
+.unified-mail-toolbar .linked button {
+  padding-left: 8px;
+  padding-right: 8px;
 }
 
 .unified-mail-toolbar dropdown,
@@ -870,9 +1387,15 @@ splitview > .sidebar,
 .unified-mail-toolbar .search-entry,
 .unified-view-toolbar search-entry,
 .unified-view-toolbar .search-entry {
-  min-height: 28px;
+  min-height: 30px;
   margin-top: 1px;
   margin-bottom: 1px;
+}
+
+.unified-mail-toolbar dropdown > button.combo,
+.unified-view-toolbar dropdown > button.combo {
+  min-height: 26px;
+  padding: 1px 8px;
 }
 
 .unified-mail-toolbar search-entry text,
@@ -891,8 +1414,27 @@ splitview > .sidebar,
 
 .unified-mail-toolbar separator,
 .unified-view-toolbar separator {
-  margin-top: 3px;
-  margin-bottom: 3px;
+  margin-top: 4px;
+  margin-bottom: 4px;
+  margin-left: 2px;
+  margin-right: 2px;
+}
+
+searchbar {
+  background-color: @headerbar_bg_color;
+  border-bottom: 1px solid alpha(@borders, 0.45);
+}
+
+.calendar-title-date {
+  font-weight: 600;
+  font-size: 1.15rem;
+  margin-left: 6px;
+  margin-right: 6px;
+}
+
+.calendar-nav-group.linked button {
+  padding-left: 8px;
+  padding-right: 8px;
 }
 
 .search-options-button.has-active-filters {
@@ -968,6 +1510,23 @@ splitview > .sidebar,
   color: @accent_color;
 }
 
+.calendar-month-header {
+  border-top: 1px solid alpha(@borders, 0.45);
+  border-left: 1px solid alpha(@borders, 0.45);
+  border-bottom: 2px solid alpha(@borders, 0.7);
+  background-color: alpha(@window_fg_color, 0.035);
+  min-height: 24px;
+  max-height: 28px;
+}
+
+.calendar-month-header-cell {
+  padding: 3px 2px;
+  border-right: 1px solid alpha(@borders, 0.4);
+  font-size: 0.80rem;
+  font-weight: 600;
+  color: alpha(@window_fg_color, 0.8);
+}
+
 .calendar-allday-row {
   border-bottom: 2px solid alpha(@borders, 0.65);
   background-color: alpha(@window_fg_color, 0.02);
@@ -975,34 +1534,52 @@ splitview > .sidebar,
 }
 
 .calendar-allday-label {
-  padding: 4px 6px;
-  font-size: 0.75rem;
+  padding: 2px 2px;
+  font-size: 0.68rem;
   font-weight: 600;
   color: alpha(@window_fg_color, 0.65);
   border-right: 1px solid alpha(@borders, 0.4);
 }
 
 .calendar-allday-cell {
-  padding: 2px 4px;
+  padding: 2px 0;
   border-right: 1px solid alpha(@borders, 0.4);
 }
 
+.calendar-header-grid {
+  border-bottom: 2px solid alpha(@borders, 0.6);
+  background-color: @view_bg_color;
+}
+
+.calendar-timezone-header {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: alpha(@window_fg_color, 0.7);
+  padding: 2px 4px;
+}
+
 .calendar-time-gutter {
-  min-width: 54px;
+  min-width: 52px;
   border-right: 1px solid alpha(@borders, 0.5);
   background-color: alpha(@window_fg_color, 0.02);
 }
 
 .calendar-time-gutter-label {
-  font-size: 0.75rem;
-  font-weight: 500;
-  color: alpha(@window_fg_color, 0.65);
-  padding-right: 6px;
+  font-size: 0.95rem;
+  color: alpha(@window_fg_color, 0.88);
+  padding-right: 4px;
+  padding-left: 2px;
+  padding-top: 0;
+  margin-top: 0;
+}
+
+.calendar-current-time-line {
+  background-color: #e01b24;
+  min-height: 2px;
 }
 
 .calendar-grid-cell {
   border-right: 1px solid alpha(@borders, 0.35);
-  min-height: 22px;
   transition: background-color 100ms ease;
 }
 
@@ -1026,33 +1603,175 @@ splitview > .sidebar,
   background-color: alpha(@window_fg_color, 0.025);
 }
 
-/* Event chip in time grid */
+/* Selected slot / time range highlight (unified continuous selection box) */
+.calendar-grid-cell.calendar-slot-selected {
+  background-color: alpha(@accent_color, 0.18);
+  box-shadow: inset 1.5px 0 0 @accent_color, inset -1.5px 0 0 @accent_color;
+  border-bottom-color: transparent !important;
+  border-radius: 0;
+}
+
+.calendar-grid-cell.calendar-slot-selected.calendar-slot-selected-top {
+  box-shadow: inset 0 1.5px 0 0 @accent_color, inset 1.5px 0 0 0 @accent_color, inset -1.5px 0 0 0 @accent_color;
+  border-top-left-radius: 6px;
+  border-top-right-radius: 6px;
+}
+
+.calendar-grid-cell.calendar-slot-selected.calendar-slot-selected-bottom {
+  box-shadow: inset 0 -1.5px 0 0 @accent_color, inset 1.5px 0 0 0 @accent_color, inset -1.5px 0 0 0 @accent_color;
+  border-bottom-left-radius: 6px;
+  border-bottom-right-radius: 6px;
+}
+
+.calendar-grid-cell.calendar-slot-selected.calendar-slot-selected-top.calendar-slot-selected-bottom {
+  box-shadow: inset 0 0 0 1.5px @accent_color;
+  border-radius: 6px;
+}
+
+.calendar-month-cell.calendar-slot-selected {
+  background-color: alpha(@accent_color, 0.18);
+  box-shadow: inset 0 0 0 1.5px @accent_color;
+  border-radius: 6px;
+}
+
+/* Event chip in time grid - GNOME Libadwaita & Amie borderless solid style with right gap */
 .calendar-grid-event {
-  margin: 1px 2px;
-  padding: 2px 6px;
-  border-radius: 4px;
-  border-left: 4px solid @accent_color;
-  background-color: alpha(@accent_color, 0.14);
-  color: @window_fg_color;
-  font-size: 0.8rem;
-  transition: filter 120ms ease, background-color 120ms ease;
+  margin: 1px 0;
+  padding: 2px 4px;
+  border-radius: 6px;
+  border: none;
+  outline: none;
+  background-color: @accent_bg_color;
+  color: @accent_fg_color;
+  font-size: 0.78rem;
+  transition: background-color 100ms ease;
 }
 
 .calendar-grid-event:hover {
-  filter: brightness(1.08);
-  background-color: alpha(@accent_color, 0.22);
+  border: none;
+  outline: none;
 }
 
-.calendar-grid-event.all-day-chip {
-  margin: 1px 2px;
-  padding: 1px 6px;
-  border-radius: 3px;
-  font-size: 0.75rem;
+.calendar-grid-event:active {
+  border: none;
+  outline: none;
 }
+
+.calendar-grid-event.all-day-chip,
+button.calendar-grid-event.all-day-chip {
+  margin: 1px 1px;
+  padding: 0 3px;
+  border-radius: 4px;
+  border: none;
+  outline: none;
+  font-size: 0.84rem;
+  min-height: 19px;
+  line-height: 1.15;
+}
+
+.calendar-grid-event.all-day-chip:hover,
+button.calendar-grid-event.all-day-chip:hover {
+  border: none;
+  outline: none;
+}
+
+.calendar-grid-event.month-bar-chip,
+button.calendar-grid-event.month-bar-chip {
+  margin: 1px 1px;
+  padding: 0 4px;
+  border-radius: 3px;
+  border: none;
+  outline: none;
+  font-size: 0.85rem;
+  min-height: 16px;
+  line-height: 1.15;
+}
+
+.calendar-grid-event.month-bar-chip:hover,
+button.calendar-grid-event.month-bar-chip:hover {
+  border: none;
+  outline: none;
+}
+
+/* Month view overflow indicator dots */
+.month-dots-container {
+  padding-top: 1px;
+  padding-bottom: 2px;
+}
+
+.month-overflow-dot {
+  min-width: 6px;
+  min-height: 6px;
+  border-radius: 9999px;
+  background-color: alpha(@window_fg_color, 0.45);
+  margin: 1px 0;
+  transition: transform 120ms ease-in-out, background-color 120ms ease-in-out;
+}
+
+.month-overflow-dot:hover {
+  background-color: @accent_color;
+  transform: scale(1.35);
+}
+
+/* Event details popover (Evolution & Lookout / GNOME HIG style) */
+.calendar-details-popover {
+  min-width: 320px;
+  padding: 2px;
+}
+
+.calendar-details-header {
+  padding-bottom: 6px;
+  border-bottom: 1px solid alpha(@borders, 0.5);
+  margin-bottom: 6px;
+}
+
+.calendar-details-note-box {
+  background-color: alpha(@window_fg_color, 0.04);
+  border-radius: 6px;
+  border: 1px solid alpha(@borders, 0.35);
+  padding: 8px 10px;
+}
+
+.calendar-badge-pill {
+  padding: 2px 8px;
+  border-radius: 9999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  background-color: alpha(@accent_color, 0.14);
+  color: @accent_color;
+}
+
+.calendar-badge-pill.warning-pill {
+  background-color: alpha(@warning_color, 0.18);
+  color: @warning_color;
+}
+
+.calendar-badge-pill.destructive-pill {
+  background-color: alpha(@destructive_color, 0.18);
+  color: @destructive_color;
+}
+
+.calendar-badge-pill.success-pill {
+  background-color: alpha(@success_color, 0.18);
+  color: @success_color;
+}
+
+.calendar-badge-pill.neutral-pill {
+  background-color: alpha(@window_fg_color, 0.08);
+  color: alpha(@window_fg_color, 0.8);
+}
+
+.calendar-attendee-chip {
+  padding: 3px 8px;
+  border-radius: 6px;
+  background-color: alpha(@window_fg_color, 0.05);
+  font-size: 0.78rem;
+}
+
 
 /* Month view continuous grid */
 .calendar-month-grid {
-  border-top: 1px solid alpha(@borders, 0.45);
+  border-top: none;
   border-left: 1px solid alpha(@borders, 0.45);
   background-color: @view_bg_color;
 }
@@ -1130,6 +1849,7 @@ splitview > .sidebar,
 .debug-console-header {
   background-color: alpha(@window_bg_color, 0.75);
   border-bottom: 1px solid alpha(@borders, 0.5);
+  min-height: 32px;
 }
 
 .terminal-text {
@@ -1137,4 +1857,560 @@ splitview > .sidebar,
   font-size: 11px;
   background-color: alpha(@window_fg_color, 0.04);
   color: @view_fg_color;
+}
+
+/* Alphabet Sorting Pane (Physical Register Tabs) */
+.contacts-alphabet-pane {
+  background-color: transparent;
+  padding: 4px 0;
+  margin: 0;
+  width: 30px;
+  min-width: 30px;
+  max-width: 30px;
+}
+
+.contacts-alphabet-pane listbox,
+.contacts-alphabet-pane row,
+.contacts-alphabet-row {
+  background-color: transparent;
+  padding: 0;
+  margin: 1px 0;
+  border: none;
+  box-shadow: none;
+  min-height: 0;
+  width: 30px;
+  min-width: 30px;
+  max-width: 30px;
+}
+
+.contacts-alphabet-pane row:hover,
+.contacts-alphabet-pane row:selected,
+.contacts-alphabet-pane row:active,
+.contacts-alphabet-row:hover,
+.contacts-alphabet-row:selected,
+.contacts-alphabet-row:active {
+  background-color: transparent;
+}
+
+.contacts-alphabet-btn {
+  min-width: 24px;
+  max-width: 24px;
+  min-height: 20px;
+  max-height: 22px;
+  padding: 1px 2px 1px 4px;
+  margin: 0;
+  margin-right: 0;
+  font-weight: 700;
+  font-size: 11px;
+  border-top-left-radius: 6px;
+  border-bottom-left-radius: 6px;
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+  border: 1px solid alpha(@window_fg_color, 0.20);
+  border-right: none;
+  background-color: @card_bg_color;
+  color: @window_fg_color;
+  box-shadow: -1px 1px 2px alpha(black, 0.08);
+  transition: min-width 150ms ease,
+              max-width 150ms ease,
+              padding 150ms ease,
+              background-color 150ms ease,
+              box-shadow 150ms ease,
+              border-color 150ms ease;
+}
+
+.contacts-alphabet-btn:hover {
+  background-color: alpha(@window_fg_color, 0.14);
+  border-color: alpha(@window_fg_color, 0.38);
+  min-width: 28px;
+  max-width: 28px;
+  padding: 1px 2px 1px 6px;
+  box-shadow: -2px 1px 4px alpha(black, 0.14);
+}
+
+.contacts-alphabet-btn:active {
+  background-color: @accent_bg_color;
+  color: @accent_fg_color;
+  border-color: @accent_bg_color;
+}
+
+/* Contacts sidebar child rows - matching Mail folder rows strictly */
+.mail-sidebar .sidebar-child-row,
+.sidebar-child-row {
+  min-height: 24px;
+  max-height: 24px;
+  padding-top: 0;
+  padding-bottom: 0;
+  margin: 0;
+}
+
+.mail-sidebar .sidebar-child-row > box,
+.sidebar-child-row > box {
+  min-height: 22px;
+  max-height: 24px;
+  padding: 0;
+  margin: 0;
+}
+
+.mail-sidebar .sidebar-child-row menubutton,
+.sidebar-child-row menubutton {
+  min-width: 18px;
+  min-height: 18px;
+  max-width: 18px;
+  max-height: 18px;
+  padding: 0;
+  margin: 0;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.mail-sidebar .sidebar-child-row:hover menubutton,
+.mail-sidebar .sidebar-child-row:selected menubutton,
+.sidebar-child-row:hover menubutton,
+.sidebar-child-row:selected menubutton,
+.mail-sidebar .sidebar-child-row menubutton:focus,
+.sidebar-child-row menubutton:focus,
+.mail-sidebar .sidebar-child-row menubutton:active,
+.sidebar-child-row menubutton:active {
+  opacity: 1;
+}
+
+.mail-sidebar .sidebar-child-row menubutton > button,
+.sidebar-child-row menubutton > button,
+.mail-sidebar .sidebar-child-row menubutton > button.flat,
+.sidebar-child-row menubutton > button.flat {
+  min-width: 18px;
+  min-height: 18px;
+  max-width: 18px;
+  max-height: 18px;
+  padding: 0;
+  margin: 0;
+  border-radius: 9999px;
+  border: none;
+  background-color: transparent;
+}
+
+.mail-sidebar .sidebar-child-row menubutton > button:hover,
+.sidebar-child-row menubutton > button:hover {
+  background-color: alpha(@window_fg_color, 0.12);
+}
+
+.mail-sidebar .sidebar-child-row menubutton > button image,
+.sidebar-child-row menubutton > button image {
+  min-width: 14px;
+  min-height: 14px;
+  padding: 0;
+  margin: 0;
+}
+
+/* Contact Card View — Compact Business Cards (200x100px) */
+.contact-cards-flow {
+  background-color: transparent;
+}
+
+.contact-card-child {
+  background: transparent;
+  padding: 0;
+  margin: 0;
+  border-radius: 8px;
+}
+
+.contact-card-box {
+  background-color: @card_bg_color;
+  border-radius: 8px;
+  border: 1px solid alpha(@window_fg_color, 0.12);
+  padding: 6px 8px;
+  box-shadow: 0 1px 2px alpha(black, 0.05);
+  transition: box-shadow 150ms ease, border-color 150ms ease, transform 150ms ease;
+  min-width: 190px;
+  height: 100px;
+  min-height: 100px;
+  max-height: 100px;
+  overflow: hidden;
+}
+
+.contact-card-child:hover .contact-card-box {
+  border-color: alpha(@window_fg_color, 0.28);
+  box-shadow: 0 2px 6px alpha(black, 0.09);
+}
+
+.contact-card-child:selected .contact-card-box {
+  border-color: @accent_bg_color;
+  box-shadow: 0 0 0 2px @accent_bg_color, 0 2px 6px alpha(black, 0.12);
+}
+
+.contact-card-name {
+  font-weight: 700;
+  font-size: 0.98rem;
+  line-height: 1.2;
+}
+
+.contact-card-sub {
+  font-size: 0.82rem;
+  line-height: 1.2;
+  opacity: 0.8;
+}
+
+.contact-card-detail-text {
+  font-size: 0.88rem;
+  line-height: 1.25;
+}
+
+.card-separator {
+  margin: 3px 0 4px 0;
+  opacity: 0.35;
+}
+
+.contact-card-badge {
+  background-color: alpha(@window_fg_color, 0.08);
+  color: alpha(@window_fg_color, 0.85);
+  border-radius: 9999px;
+  padding: 2px 8px;
+  font-size: 0.75rem;
+  font-weight: 500;
+}
+
+/* Event Dialog — GNOME Evolution & Lookout Appointment Layout */
+.appointment-form-grid {
+  padding: 16px 18px;
+}
+
+.appointment-field-label {
+  font-weight: 500;
+  color: alpha(@window_fg_color, 0.85);
+  margin-end: 6px;
+}
+
+.appointment-color-badge {
+  min-width: 14px;
+  min-height: 14px;
+  border-radius: 9999px;
+  margin-end: 6px;
+  border: 1px solid alpha(black, 0.15);
+}
+
+.appointment-timeline-container {
+  background-color: @view_bg_color;
+  border-left: 1px solid alpha(@window_fg_color, 0.15);
+  min-width: 260px;
+  max-width: 260px;
+  width: 260px;
+}
+
+.appointment-timeline-hour-row {
+  min-height: 34px;
+  height: 34px;
+}
+
+/* ── Calendar Year View (GNOME Evolution & HIG parity) ───────────────── */
+.calendar-year-month-card {
+  background-color: @card_bg_color;
+  border-radius: 12px;
+  padding: 12px 14px;
+  box-shadow: 0 1px 3px alpha(black, 0.06);
+  border: 1px solid alpha(@borders, 0.4);
+}
+
+.calendar-year-month-header {
+  font-weight: 700;
+  font-size: 0.95rem;
+  padding: 4px 8px;
+  margin-bottom: 4px;
+  border-radius: 6px;
+  transition: background-color 150ms ease;
+}
+
+.calendar-year-month-header:hover {
+  background-color: alpha(@accent_color, 0.12);
+  color: @accent_color;
+}
+
+.calendar-year-day-btn {
+  min-width: 28px;
+  min-height: 28px;
+  padding: 0;
+  border-radius: 6px;
+  font-size: 0.8rem;
+  font-weight: 500;
+}
+
+.calendar-year-day-btn.calendar-year-has-events {
+  font-weight: 700;
+}
+
+.calendar-year-today {
+  background-color: @accent_bg_color !important;
+  color: @accent_fg_color !important;
+  font-weight: 700 !important;
+  border-radius: 9999px !important;
+}
+
+.calendar-year-selected {
+  outline: 2px solid @accent_color;
+  outline-offset: -1px;
+}
+
+.calendar-year-event-dot {
+  min-width: 4px;
+  min-height: 4px;
+  border-radius: 9999px;
+  background-color: @accent_color;
+  margin-top: 1px;
+}
+
+.calendar-year-today .calendar-year-event-dot {
+  background-color: @accent_fg_color;
+}
+
+.calendar-year-weekday-header {
+  font-size: 0.72rem;
+  font-weight: 600;
+  min-width: 28px;
+  padding: 2px 0;
+}
+
+.calendar-year-week-number {
+  font-size: 0.72rem;
+  color: alpha(@window_fg_color, 0.45);
+  font-weight: 500;
+  padding: 0 2px;
+}
+
+/* ── Calendar Year Navigation Strip ────────────────────────────────────── */
+.calendar-year-nav-strip {
+  padding: 6px 12px 10px 12px;
+}
+
+.calendar-year-nav-btn {
+  font-size: 1.05rem;
+  font-weight: 500;
+  color: alpha(@window_fg_color, 0.5);
+  border-radius: 8px;
+  padding: 4px 12px;
+  transition: all 150ms ease;
+}
+
+.calendar-year-nav-btn:hover {
+  color: @window_fg_color;
+  background-color: alpha(@window_fg_color, 0.07);
+}
+
+.calendar-year-nav-current {
+  font-size: 1.35rem;
+  font-weight: 800;
+  color: @window_fg_color;
+  border-radius: 8px;
+  padding: 4px 16px;
+}
+
+.calendar-year-nav-arrow {
+  border-radius: 9999px;
+  padding: 6px;
+  min-width: 32px;
+  min-height: 32px;
+}
+
+/* ── Calendar Year Day Details Panel (Right / Bottom) ───────────────────── */
+.calendar-year-details-panel {
+  background-color: @window_bg_color;
+  border-radius: 0;
+  border: none;
+  padding: 0;
+  margin: 0;
+}
+
+.calendar-year-details-panel.side-mode {
+  border-left: 1px solid alpha(@borders, 0.45);
+  min-width: 160px;
+  margin: 0;
+  padding: 0;
+}
+
+.calendar-year-details-panel.bottom-mode {
+  border-top: 1px solid alpha(@borders, 0.45);
+  min-height: 120px;
+  margin: 0;
+  padding: 0;
+}
+
+.calendar-year-details-header {
+  padding: 8px 12px;
+  border-bottom: 1px solid alpha(@borders, 0.35);
+  margin: 0;
+  background-color: @card_bg_color;
+}
+
+.calendar-year-details-title {
+  font-weight: 700;
+  font-size: 0.95rem;
+}
+
+.calendar-year-details-list {
+  background-color: transparent;
+}
+
+.calendar-year-event-row {
+  border-bottom: 1px solid alpha(@borders, 0.2);
+  transition: background-color 150ms ease;
+  padding: 0;
+}
+
+.calendar-year-event-row:hover {
+  background-color: alpha(@window_fg_color, 0.05);
+}
+
+.calendar-year-event-row:selected {
+  background-color: alpha(@accent_color, 0.12);
+}
+
+.calendar-year-event-title {
+  font-weight: 600;
+  font-size: 0.9rem;
+  line-height: 1.25;
+}
+
+.calendar-year-event-bar {
+  border-radius: 9999px;
+  min-width: 4px;
+  width: 4px;
+}
+
+/* ── Agenda View High Performance Styling ──────────────────────────────── */
+.calendar-agenda-date-header {
+  font-weight: 700;
+  font-size: 0.92rem;
+  color: @accent_color;
+  padding: 8px 10px 4px 10px;
+  border-bottom: 1px solid alpha(@borders, 0.3);
+}
+
+.calendar-agenda-date-header.first {
+  border-top: none;
+}
+
+.appointment-timeline-hour-label {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: alpha(@window_fg_color, 0.65);
+  padding: 2px 4px 0 6px;
+  min-width: 38px;
+}
+
+.appointment-timeline-event {
+  border-radius: 4px;
+  padding: 2px 6px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #ffffff;
+  background-color: @accent_bg_color;
+  box-shadow: 0 1px 2px alpha(black, 0.15);
+}
+
+.appointment-timeline-preview {
+  border-radius: 5px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  padding: 2px 6px;
+}
+
+.appointment-timeline-conflict {
+  outline: 1.5px solid #e01b24;
+  outline-offset: -1px;
+}
+
+/* ── Tasks Middle View (Libadwaita / GNOME HIG) ──────────────────────── */
+.task-boxed-list {
+  background-color: @card_bg_color;
+  border-radius: 12px;
+  box-shadow: 0 1px 2px alpha(black, 0.05);
+}
+
+.task-boxed-list row.task-row {
+  transition: background-color 150ms ease, opacity 150ms ease;
+  min-height: 48px;
+  padding: 4px 10px;
+}
+
+.task-boxed-list row.task-row-completed {
+  opacity: 0.65;
+}
+
+.task-boxed-list row.task-row-completed:hover {
+  opacity: 0.85;
+}
+
+.task-row-btn {
+  min-height: 28px;
+  min-width: 28px;
+  padding: 4px;
+  border-radius: 9999px;
+}
+
+.task-row-actions {
+  opacity: 0.85;
+  transition: opacity 150ms ease;
+}
+
+.task-row:hover .task-row-actions {
+  opacity: 1;
+}
+
+.task-empty-state-title {
+  font-size: 1.15rem;
+  font-weight: 700;
+  color: alpha(@window_fg_color, 0.75);
+}
+
+.task-empty-state-subtitle {
+  font-size: 0.9rem;
+  color: alpha(@window_fg_color, 0.5);
+}
+
+.task-quick-add-box,
+.memo-quick-add-box {
+  background-color: @card_bg_color;
+  border-radius: 10px;
+  padding: 4px 12px;
+  border: 1px solid alpha(@borders, 0.6);
+  transition: border-color 200ms ease, box-shadow 200ms ease;
+}
+
+.task-quick-add-box:focus-within,
+.memo-quick-add-box:focus-within {
+  border-color: @accent_color;
+  box-shadow: 0 0 0 1px @accent_color;
+}
+
+.task-quick-add-entry,
+.memo-quick-add-entry {
+  border: none;
+  background: transparent;
+  box-shadow: none;
+  font-size: 0.95rem;
+  padding: 4px 0;
+}
+
+.task-row-icon {
+  opacity: 0.8;
+  margin-end: 2px;
+}
+
+/* ── Account Setup Dialog & Type Dropdown ──────────────────────────────── */
+.account-type-combo {
+  min-height: 54px;
+}
+
+.account-type-combo popover,
+.account-type-combo popover.menu,
+.account-type-combo popover contents {
+  min-width: 360px;
+}
+
+.account-type-combo popover listview,
+.account-type-combo popover listview row {
+  min-width: 340px;
+}
+
+.account-type-combo popover label {
+  text-overflow: clip;
 }

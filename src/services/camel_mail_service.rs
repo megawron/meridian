@@ -656,6 +656,237 @@ fn normalized_camel_folder_id(folder_id: &str, folder_name: &str) -> String {
     .to_string()
 }
 
+/// Parse Evolution's native cache `folder-tree` (INI KeyFile) into CamelFolderSummary records.
+pub(crate) fn parse_folder_tree_content(
+    content: &str,
+    source_uid: &str,
+    source_display_name: &str,
+) -> Vec<CamelFolderSummary> {
+    struct RawEntry {
+        name: String,
+        parent_id: String,
+        total: u32,
+        unread: u32,
+    }
+
+    let mut entries = HashMap::<String, RawEntry>::new();
+    let mut current_sec = String::new();
+    let mut cur_name = String::new();
+    let mut cur_parent = String::new();
+    let mut cur_total = 0u32;
+    let mut cur_unread = 0u32;
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            if !current_sec.is_empty() && !cur_name.is_empty() {
+                entries.insert(
+                    current_sec.clone(),
+                    RawEntry {
+                        name: cur_name.clone(),
+                        parent_id: cur_parent.clone(),
+                        total: cur_total,
+                        unread: cur_unread,
+                    },
+                );
+            }
+            current_sec = trimmed[1..trimmed.len() - 1].to_string();
+            cur_name.clear();
+            cur_parent.clear();
+            cur_total = 0;
+            cur_unread = 0;
+            continue;
+        }
+        if current_sec.starts_with("##") {
+            continue;
+        }
+        if let Some((k, v)) = trimmed.split_once('=') {
+            let key = k.trim();
+            let val = v.trim();
+            match key {
+                "DisplayName" => cur_name = val.to_string(),
+                "ParentFolderId" => cur_parent = val.to_string(),
+                "Total" => cur_total = val.parse().unwrap_or(0),
+                "UnRead" => cur_unread = val.parse().unwrap_or(0),
+                _ => {}
+            }
+        }
+    }
+    if !current_sec.is_empty() && !cur_name.is_empty() && !current_sec.starts_with("##") {
+        entries.insert(
+            current_sec,
+            RawEntry {
+                name: cur_name,
+                parent_id: cur_parent,
+                total: cur_total,
+                unread: cur_unread,
+            },
+        );
+    }
+
+    fn build_path(
+        sec_id: &str,
+        entries: &HashMap<String, RawEntry>,
+        visited: &mut HashSet<String>,
+    ) -> String {
+        if !visited.insert(sec_id.to_string()) {
+            return String::new();
+        }
+        let Some(entry) = entries.get(sec_id) else {
+            return String::new();
+        };
+        if !entry.parent_id.is_empty() && entries.contains_key(&entry.parent_id) {
+            let parent_path = build_path(&entry.parent_id, entries, visited);
+            if !parent_path.is_empty() {
+                return format!("{parent_path}/{}", entry.name);
+            }
+        }
+        entry.name.clone()
+    }
+
+    let mut result = Vec::new();
+    for (sec_id, entry) in &entries {
+        let mut visited = HashSet::new();
+        let full_path = build_path(sec_id, &entries, &mut visited);
+        let folder_name = if full_path.is_empty() {
+            entry.name.clone()
+        } else {
+            full_path
+        };
+        let folder_id = normalized_camel_folder_id("", &entry.name);
+        result.push(CamelFolderSummary {
+            source_uid: source_uid.to_string(),
+            source_display_name: source_display_name.to_string(),
+            folder_id,
+            folder_name,
+            display_name: entry.name.clone(),
+            unread_count: entry.unread,
+            total_count: entry.total,
+            is_selectable: true,
+        });
+    }
+
+    result.sort_by(|a, b| a.folder_name.cmp(&b.folder_name));
+    result
+}
+
+/// Load Evolution's cached mail folders from disk for a given source_uid.
+/// If folder-tree exists in `~/.cache/evolution/mail/<source_uid>`, it parses that.
+/// If not, it inspects `folders/` subdirectories.
+/// If neither exists, it provides standard mailbox folders (Posteingang, Gesendet, etc.)
+/// so the account always presents a proper folder tree in the UI.
+pub(crate) fn load_evolution_cached_folders(
+    source_uid: &str,
+    source_display_name: &str,
+) -> Vec<CamelFolderSummary> {
+    let cache_dir = crate::services::non_empty_env_path("XDG_CACHE_HOME")
+        .unwrap_or_else(|| crate::services::home_dir().join(".cache"))
+        .join("evolution/mail")
+        .join(source_uid);
+
+    let tree_path = cache_dir.join("folder-tree");
+    if tree_path.exists() {
+        if let Ok(content) = std::fs::read_to_string(&tree_path) {
+            let parsed = parse_folder_tree_content(&content, source_uid, source_display_name);
+            if !parsed.is_empty() {
+                return parsed;
+            }
+        }
+    }
+
+    let folders_dir = cache_dir.join("folders");
+    if folders_dir.is_dir() {
+        if let Ok(entries) = std::fs::read_dir(&folders_dir) {
+            let mut result = Vec::new();
+            for entry in entries.flatten() {
+                if let Ok(file_type) = entry.file_type() {
+                    if file_type.is_dir() {
+                        let name = entry.file_name().to_string_lossy().to_string();
+                        let folder_id = normalized_camel_folder_id("", &name);
+                        result.push(CamelFolderSummary {
+                            source_uid: source_uid.to_string(),
+                            source_display_name: source_display_name.to_string(),
+                            folder_id,
+                            folder_name: name.clone(),
+                            display_name: name,
+                            unread_count: 0,
+                            total_count: 0,
+                            is_selectable: true,
+                        });
+                    }
+                }
+            }
+            if !result.is_empty() {
+                result.sort_by(|a, b| a.folder_name.cmp(&b.folder_name));
+                return result;
+            }
+        }
+    }
+
+    vec![
+        CamelFolderSummary {
+            source_uid: source_uid.to_string(),
+            source_display_name: source_display_name.to_string(),
+            folder_id: "inbox".to_string(),
+            folder_name: "Posteingang".to_string(),
+            display_name: "Posteingang".to_string(),
+            unread_count: 0,
+            total_count: 0,
+            is_selectable: true,
+        },
+        CamelFolderSummary {
+            source_uid: source_uid.to_string(),
+            source_display_name: source_display_name.to_string(),
+            folder_id: "drafts".to_string(),
+            folder_name: "Entwürfe".to_string(),
+            display_name: "Entwürfe".to_string(),
+            unread_count: 0,
+            total_count: 0,
+            is_selectable: true,
+        },
+        CamelFolderSummary {
+            source_uid: source_uid.to_string(),
+            source_display_name: source_display_name.to_string(),
+            folder_id: "sent".to_string(),
+            folder_name: "Gesendete Elemente".to_string(),
+            display_name: "Gesendete Elemente".to_string(),
+            unread_count: 0,
+            total_count: 0,
+            is_selectable: true,
+        },
+        CamelFolderSummary {
+            source_uid: source_uid.to_string(),
+            source_display_name: source_display_name.to_string(),
+            folder_id: "trash".to_string(),
+            folder_name: "Gelöschte Elemente".to_string(),
+            display_name: "Gelöschte Elemente".to_string(),
+            unread_count: 0,
+            total_count: 0,
+            is_selectable: true,
+        },
+        CamelFolderSummary {
+            source_uid: source_uid.to_string(),
+            source_display_name: source_display_name.to_string(),
+            folder_id: "junk".to_string(),
+            folder_name: "Junk-E-Mail".to_string(),
+            display_name: "Junk-E-Mail".to_string(),
+            unread_count: 0,
+            total_count: 0,
+            is_selectable: true,
+        },
+        CamelFolderSummary {
+            source_uid: source_uid.to_string(),
+            source_display_name: source_display_name.to_string(),
+            folder_id: "archive".to_string(),
+            folder_name: "Archiv".to_string(),
+            display_name: "Archiv".to_string(),
+            unread_count: 0,
+            total_count: 0,
+            is_selectable: true,
+        },
+    ]
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CamelSyncPhase {
     Discovering,
@@ -831,6 +1062,171 @@ impl CamelChangeNormalizer {
     }
 }
 
+pub(crate) fn shared_mailbox_container_prefixes(email: &str, display_name: &str) -> Vec<String> {
+    let mut prefixes = Vec::new();
+    let email = email.trim();
+    let dname = display_name.trim();
+
+    if !email.is_empty() {
+        prefixes.push(format!("Foreign Folders/Postfach — {email}"));
+        prefixes.push(format!("Foreign Folders/Postfach - {email}"));
+        prefixes.push(format!("Foreign Folders/Mailbox — {email}"));
+        prefixes.push(format!("Foreign Folders/Mailbox - {email}"));
+        prefixes.push(format!("Postfach — {email}"));
+        prefixes.push(format!("Postfach - {email}"));
+    }
+
+    if !dname.is_empty() && dname != email {
+        prefixes.push(format!("Foreign Folders/Postfach — {dname}"));
+        prefixes.push(format!("Foreign Folders/Postfach - {dname}"));
+        prefixes.push(format!("Foreign Folders/Mailbox — {dname}"));
+        prefixes.push(format!("Foreign Folders/Mailbox - {dname}"));
+        prefixes.push(format!("Postfach — {dname}"));
+        prefixes.push(format!("Postfach - {dname}"));
+    }
+
+    if let Some((local_part, _)) = email.split_once('@') {
+        if !local_part.is_empty() && local_part != dname && local_part != email {
+            prefixes.push(format!("Foreign Folders/Postfach — {local_part}"));
+            prefixes.push(format!("Foreign Folders/Postfach - {local_part}"));
+            prefixes.push(format!("Foreign Folders/Mailbox — {local_part}"));
+            prefixes.push(format!("Foreign Folders/Mailbox - {local_part}"));
+            prefixes.push(format!("Postfach — {local_part}"));
+            prefixes.push(format!("Postfach - {local_part}"));
+        }
+    }
+
+    prefixes
+}
+
+pub(crate) fn strip_shared_mailbox_prefix<'a>(
+    folder_name: &'a str,
+    email: &str,
+    display_name: &str,
+) -> Option<(&'a str, bool)> {
+    let prefixes = shared_mailbox_container_prefixes(email, display_name);
+    for prefix in &prefixes {
+        if folder_name == prefix.as_str() {
+            return Some(("", true));
+        }
+        if let Some(rest) = folder_name.strip_prefix(prefix.as_str()) {
+            if let Some(subpath) = rest.strip_prefix('/') {
+                return Some((subpath, false));
+            }
+        }
+    }
+    None
+}
+
+/// Resolves a shared mailbox / delegate mailbox source UID and folder name to its
+/// primary authenticated host account UID and the delegate folder path in Camel
+/// (`Foreign Folders/Postfach — <email_or_dname>/<folder_name>`).
+pub(crate) fn resolve_shared_mailbox_target(
+    source_uid: &str,
+    folder_name: &str,
+) -> (String, String) {
+    let profiles = crate::services::account_config_service::AccountConfigStore::default().load();
+    for profile in &profiles {
+        if !profile.is_shared_mailbox {
+            continue;
+        }
+        let eds_uid = crate::services::account_config_service::eds_source_uid_for_email(&profile.email);
+        let mail_uid = format!("{eds_uid}-mail");
+        if profile.id == source_uid
+            || profile.id.strip_prefix("eds:") == Some(source_uid)
+            || profile.email == source_uid
+            || eds_uid == source_uid
+            || mail_uid == source_uid
+        {
+            let parent_uid = profile.parent_account_id.as_deref().unwrap_or("").trim();
+            let parent_source_uid = if !parent_uid.is_empty() {
+                if let Some(parent_profile) = profiles.iter().find(|p| {
+                    p.id == parent_uid
+                        || p.id.strip_prefix("eds:") == Some(parent_uid)
+                        || p.email == parent_uid
+                }) {
+                    if let Some(real_eds) = parent_profile.id.strip_prefix("eds:") {
+                        real_eds.to_string()
+                    } else {
+                        crate::services::account_config_service::eds_source_uid_for_email(&parent_profile.email)
+                    }
+                } else {
+                    parent_uid.to_string()
+                }
+            } else {
+                profiles
+                    .iter()
+                    .find(|p| !p.is_shared_mailbox && p.protocol == crate::services::account_config_service::AccountProtocol::Exchange)
+                    .map(|p| {
+                        if let Some(real_eds) = p.id.strip_prefix("eds:") {
+                            real_eds.to_string()
+                        } else {
+                            crate::services::account_config_service::eds_source_uid_for_email(&p.email)
+                        }
+                    })
+                    .unwrap_or_else(|| source_uid.to_string())
+            };
+
+            let trimmed_folder = folder_name.trim();
+
+            let detected_prefix = if let Some(cached) = load_mail_load_cache() {
+                cached.folders.iter().find_map(|f| {
+                    for prefix in shared_mailbox_container_prefixes(&profile.email, &profile.display_name) {
+                        if f.folder_name.starts_with(&prefix) {
+                            return Some(format!("{prefix}/"));
+                        }
+                    }
+                    None
+                })
+            } else {
+                None
+            };
+            let mailbox_prefix = detected_prefix.unwrap_or_else(|| {
+                format!("Foreign Folders/Postfach — {}/", profile.email.trim())
+            });
+
+            let target_subfolder = if let Some((rel, is_container)) =
+                strip_shared_mailbox_prefix(trimmed_folder, &profile.email, &profile.display_name)
+            {
+                if is_container || rel.is_empty() {
+                    "Posteingang".to_string()
+                } else {
+                    rel.to_string()
+                }
+            } else if trimmed_folder.is_empty()
+                || trimmed_folder.eq_ignore_ascii_case("inbox")
+            {
+                "Posteingang".to_string()
+            } else if trimmed_folder.eq_ignore_ascii_case("sent")
+                || trimmed_folder.eq_ignore_ascii_case("sent items")
+                || trimmed_folder.eq_ignore_ascii_case("gesendet")
+            {
+                "Gesendete Elemente".to_string()
+            } else if trimmed_folder.eq_ignore_ascii_case("drafts")
+                || trimmed_folder.eq_ignore_ascii_case("draft")
+            {
+                "Entwürfe".to_string()
+            } else if trimmed_folder.eq_ignore_ascii_case("trash")
+                || trimmed_folder.eq_ignore_ascii_case("deleted items")
+                || trimmed_folder.eq_ignore_ascii_case("papierkorb")
+            {
+                "Gelöschte Elemente".to_string()
+            } else if trimmed_folder.eq_ignore_ascii_case("junk")
+                || trimmed_folder.eq_ignore_ascii_case("spam")
+            {
+                "Junk-E-Mail".to_string()
+            } else {
+                trimmed_folder.to_string()
+            };
+
+            let target_folder = format!("{mailbox_prefix}{target_subfolder}");
+            return (parent_source_uid, target_folder);
+        }
+    }
+
+    (source_uid.to_string(), folder_name.to_string())
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct CamelWatcherStatus {
     pub(crate) configured_sources: usize,
@@ -896,6 +1292,8 @@ mod ffi {
         pub(super) follow_up: *mut c_char,
         pub(super) completed_on: *mut c_char,
         pub(super) due_by: *mut c_char,
+        pub(super) is_replied: i32,
+        pub(super) is_forwarded: i32,
     }
 
     #[repr(C)]
@@ -1405,18 +1803,31 @@ fn load_messages_native(
     let mut successful_sources = 0usize;
     let mut failed_sources = 0usize;
     let mut error_message: *mut c_char = std::ptr::null_mut();
-    let source_uid = source_uid
+    let (resolved_source_uid, resolved_folder_name) = match (source_uid, folder_name) {
+        (Some(src), Some(fld)) => {
+            let (s, f) = resolve_shared_mailbox_target(src, fld);
+            (Some(s), Some(f))
+        }
+        (Some(src), None) => {
+            let (s, _) = resolve_shared_mailbox_target(src, "");
+            (Some(s), None)
+        }
+        _ => (source_uid.map(str::to_string), folder_name.map(str::to_string)),
+    };
+    let source_uid_c = resolved_source_uid
+        .as_deref()
         .map(CString::new)
         .transpose()
         .map_err(|_| "EDS source UID contains an invalid NUL byte".to_string())?;
-    let folder_name = folder_name
+    let folder_name_c = resolved_folder_name
+        .as_deref()
         .map(CString::new)
         .transpose()
         .map_err(|_| "EDS folder name contains an invalid NUL byte".to_string())?;
-    let source_uid_ptr = source_uid
+    let source_uid_ptr = source_uid_c
         .as_ref()
         .map_or(std::ptr::null(), |value| value.as_ptr());
-    let folder_name_ptr = folder_name
+    let folder_name_ptr = folder_name_c
         .as_ref()
         .map_or(std::ptr::null(), |value| value.as_ptr());
     let progress_context = progress_sender.map(|sender| ProgressContext { sender });
@@ -1477,17 +1888,67 @@ fn load_messages_native(
         return Err(warning.unwrap_or_else(|| "EDS/Camel mail loading failed".to_string()));
     }
 
+    let shared_profiles = crate::services::account_config_service::AccountConfigStore::default()
+        .load()
+        .into_iter()
+        .filter(|p| p.is_shared_mailbox)
+        .collect::<Vec<_>>();
+
     let mut folder_summaries = Vec::with_capacity(folder_count);
     if !folders.is_null() {
         let folders_slice = unsafe { slice::from_raw_parts(folders, folder_count) };
         for folder in folders_slice {
-            let folder_name = c_string(folder.folder_name);
+            let raw_folder_name = c_string(folder.folder_name);
+            let mut mapped_source_uid = c_string(folder.source_uid);
+            let mut mapped_source_display_name = c_string(folder.source_display_name);
+            let mut mapped_folder_name = raw_folder_name.clone();
+            let mut mapped_display_name = c_string(folder.display_name);
+            let mut skip_folder = false;
+
+            if raw_folder_name == "Foreign Folders" {
+                continue;
+            }
+
+            let mut matched_shared = false;
+            for profile in &shared_profiles {
+                if let Some((rel_path, is_container)) =
+                    strip_shared_mailbox_prefix(&raw_folder_name, &profile.email, &profile.display_name)
+                {
+                    matched_shared = true;
+                    if is_container || rel_path.is_empty() {
+                        skip_folder = true;
+                        break;
+                    }
+                    let dname = if !profile.display_name.trim().is_empty() {
+                        profile.display_name.trim()
+                    } else {
+                        profile.email.trim()
+                    };
+                    mapped_source_uid = profile.id.clone();
+                    mapped_source_display_name = dname.to_string();
+                    mapped_folder_name = rel_path.to_string();
+                    if mapped_display_name.is_empty() || mapped_display_name == raw_folder_name {
+                        mapped_display_name = rel_path.rsplit('/').next().unwrap_or(rel_path).to_string();
+                    }
+                    break;
+                }
+            }
+
+            if skip_folder {
+                continue;
+            }
+
+            if !matched_shared && raw_folder_name.starts_with("Foreign Folders") {
+                // Do not display foreign root/folders under the primary account
+                continue;
+            }
+
             folder_summaries.push(CamelFolderSummary {
-                source_uid: c_string(folder.source_uid),
-                source_display_name: c_string(folder.source_display_name),
-                folder_id: normalized_camel_folder_id(&c_string(folder.folder_id), &folder_name),
-                folder_name,
-                display_name: c_string(folder.display_name),
+                source_uid: mapped_source_uid,
+                source_display_name: mapped_source_display_name,
+                folder_id: normalized_camel_folder_id(&c_string(folder.folder_id), &mapped_folder_name),
+                folder_name: mapped_folder_name,
+                display_name: mapped_display_name,
                 unread_count: folder.unread_count,
                 total_count: folder.total_count,
                 is_selectable: folder.is_selectable != 0,
@@ -1500,7 +1961,38 @@ fn load_messages_native(
     if !records.is_null() {
         unsafe { ffi::evolution_eds_camel_free_messages(records, record_count) };
     }
-    let messages = messages?;
+    let mut messages = messages?;
+
+    for msg in &mut messages {
+        for profile in &shared_profiles {
+            if let Some((rel, is_container)) =
+                strip_shared_mailbox_prefix(&msg.folder_name, &profile.email, &profile.display_name)
+            {
+                let target_rel = if is_container || rel.is_empty() {
+                    "Posteingang".to_string()
+                } else {
+                    rel.to_string()
+                };
+                msg.folder_name = target_rel.clone();
+                msg.folder_id = normalized_camel_folder_id("", &target_rel);
+                if let Some(ref mut loc) = msg.backend_location {
+                    loc.source_uid = profile.id.clone();
+                    loc.folder_name = target_rel;
+                }
+                break;
+            } else if let (Some(orig_src), Some(orig_fld)) = (source_uid, folder_name) {
+                if orig_src == profile.id || orig_src == profile.email {
+                    msg.folder_name = orig_fld.to_string();
+                    msg.folder_id = normalized_camel_folder_id("", orig_fld);
+                    if let Some(ref mut loc) = msg.backend_location {
+                        loc.source_uid = orig_src.to_string();
+                        loc.folder_name = orig_fld.to_string();
+                    }
+                    break;
+                }
+            }
+        }
+    }
 
     Ok(CamelMailLoad {
         messages,
@@ -1636,8 +2128,10 @@ pub(crate) fn set_folder_subscription_with_cancellation(
     subscribed: bool,
     cancelled: Option<&AtomicBool>,
 ) -> Result<(), String> {
-    let source_uid = source_uid.trim();
-    let folder_name = folder_name.trim();
+    let (resolved_source_uid, resolved_folder_name) =
+        resolve_shared_mailbox_target(source_uid, folder_name);
+    let source_uid = resolved_source_uid.trim();
+    let folder_name = resolved_folder_name.trim();
     if source_uid.is_empty() || folder_name.is_empty() {
         return Err(
             "Camel-Abonnements benötigen eine genaue Quelle und einen Ordnernamen".to_string(),
@@ -1725,8 +2219,10 @@ pub(crate) fn folder_mutation_capabilities_with_cancellation(
     folder_name: &str,
     cancelled: Option<&AtomicBool>,
 ) -> Result<CamelFolderMutationCapabilities, String> {
-    let source_uid = source_uid.trim();
-    let folder_name = folder_name.trim();
+    let (resolved_source_uid, resolved_folder_name) =
+        resolve_shared_mailbox_target(source_uid, folder_name);
+    let source_uid = resolved_source_uid.trim();
+    let folder_name = resolved_folder_name.trim();
     if source_uid.is_empty() || folder_name.is_empty() {
         return Err(
             "Camel-Ordneraktionen benötigen eine genaue Quelle und einen Ordnernamen".to_string(),
@@ -1834,8 +2330,10 @@ pub(crate) fn apply_folder_mutation_with_cancellation(
     target_name: Option<&str>,
     cancelled: Option<&AtomicBool>,
 ) -> Result<(), String> {
-    let source_uid = source_uid.trim();
-    let folder_name = folder_name.trim();
+    let (resolved_source_uid, resolved_folder_name) =
+        resolve_shared_mailbox_target(source_uid, folder_name);
+    let source_uid = resolved_source_uid.trim();
+    let folder_name = resolved_folder_name.trim();
     let target_name = target_name.map(str::trim).filter(|name| !name.is_empty());
     if source_uid.is_empty() || folder_name.is_empty() {
         return Err(
@@ -2007,6 +2505,8 @@ fn parse_native_messages(
             record.is_unread != 0,
         ) {
             parsed.is_flagged = record.is_flagged != 0;
+            parsed.is_replied = record.is_replied != 0;
+            parsed.is_forwarded = record.is_forwarded != 0;
             parsed.folder_name = folder_name;
             parsed.follow_up = follow_up_metadata_from_native(
                 record.follow_up_status,
@@ -2046,7 +2546,25 @@ pub(crate) fn load_messages_for_uids(
 ) -> Result<Vec<ParsedMail>, String> {
     #[cfg(eds_camel_bridge)]
     {
-        return load_messages_for_uids_native(source_uid, folder_name, message_uids, cancelled);
+        let (resolved_source_uid, resolved_folder_name) =
+            resolve_shared_mailbox_target(source_uid, folder_name);
+        let mut messages = load_messages_for_uids_native(
+            &resolved_source_uid,
+            &resolved_folder_name,
+            message_uids,
+            cancelled,
+        )?;
+        if source_uid != resolved_source_uid {
+            for msg in &mut messages {
+                msg.folder_name = folder_name.to_string();
+                msg.folder_id = normalized_camel_folder_id("", folder_name);
+                if let Some(ref mut loc) = msg.backend_location {
+                    loc.source_uid = source_uid.to_string();
+                    loc.folder_name = folder_name.to_string();
+                }
+            }
+        }
+        return Ok(messages);
     }
 
     #[cfg(not(eds_camel_bridge))]
@@ -2111,9 +2629,11 @@ fn load_raw_message_native(
     }
 
     cancellation_error(cancelled, "Nachrichtenquelle laden")?;
-    let source_uid = CString::new(location.source_uid.as_str())
+    let (resolved_source_uid, resolved_folder_name) =
+        resolve_shared_mailbox_target(&location.source_uid, &location.folder_name);
+    let source_uid = CString::new(resolved_source_uid.as_str())
         .map_err(|_| "EDS source UID contains an invalid NUL byte".to_string())?;
-    let folder_name = CString::new(location.folder_name.as_str())
+    let folder_name = CString::new(resolved_folder_name.as_str())
         .map_err(|_| "EDS folder name contains an invalid NUL byte".to_string())?;
     let message_uid = CString::new(location.message_uid.as_str())
         .map_err(|_| "EDS message UID contains an invalid NUL byte".to_string())?;
@@ -2488,6 +3008,8 @@ mod tests {
             is_unread: false,
             is_flagged: false,
             is_important: false,
+            is_replied: false,
+            is_forwarded: false,
             follow_up_state: MailFollowUpState::None,
             follow_up: MailFollowUpMetadata::default(),
             labels: Vec::new(),
@@ -2756,6 +3278,55 @@ mod tests {
     }
 
     #[test]
+    fn parse_folder_tree_content_constructs_hierarchy_and_counts() {
+        let sample = r#"
+[##storepriv]
+Version=3
+
+[folder-root-id]
+DisplayName=Archiv
+Total=147
+UnRead=0
+ParentFolderId=account-root
+
+[folder-inbox-id]
+DisplayName=Posteingang
+Total=95
+UnRead=5
+ParentFolderId=account-root
+
+[folder-sync-id]
+DisplayName=Synchronisierungsprobleme
+Total=0
+UnRead=0
+ParentFolderId=account-root
+
+[folder-conflict-id]
+DisplayName=Konflikte
+Total=1
+UnRead=0
+ParentFolderId=folder-sync-id
+"#;
+        let folders = parse_folder_tree_content(sample, "ews-account-uid", "EDV EWS");
+        assert_eq!(folders.len(), 4);
+        let inbox = folders
+            .iter()
+            .find(|f| f.display_name == "Posteingang")
+            .unwrap();
+        assert_eq!(inbox.folder_name, "Posteingang");
+        assert_eq!(inbox.folder_id, "inbox");
+        assert_eq!(inbox.unread_count, 5);
+        assert_eq!(inbox.total_count, 95);
+
+        let conflict = folders
+            .iter()
+            .find(|f| f.display_name == "Konflikte")
+            .unwrap();
+        assert_eq!(conflict.folder_name, "Synchronisierungsprobleme/Konflikte");
+        assert_eq!(conflict.total_count, 1);
+    }
+
+    #[test]
     fn graph_search_adapter_keeps_search_cursor_outside_folder_cursors() {
         let source = include_str!("camel_mail_service.rs");
         let search_adapter = source
@@ -2986,6 +3557,64 @@ mod tests {
         assert_eq!(normalized_camel_folder_id("junk", "Spam"), "junk");
         assert_eq!(normalized_camel_folder_id("all", "Projects/2026"), "all");
     }
+
+    #[test]
+    fn test_shared_mailbox_prefix_stripping() {
+        let email = "shared@example.com";
+        let dname = "Shared Team";
+
+        // Container matches
+        assert_eq!(
+            strip_shared_mailbox_prefix("Foreign Folders/Postfach — shared@example.com", email, dname),
+            Some(("", true))
+        );
+        assert_eq!(
+            strip_shared_mailbox_prefix("Foreign Folders/Postfach — Shared Team", email, dname),
+            Some(("", true))
+        );
+
+        // Subfolders under email
+        assert_eq!(
+            strip_shared_mailbox_prefix("Foreign Folders/Postfach — shared@example.com/Posteingang", email, dname),
+            Some(("Posteingang", false))
+        );
+        assert_eq!(
+            strip_shared_mailbox_prefix("Foreign Folders/Postfach — shared@example.com/Posteingang/subfolder", email, dname),
+            Some(("Posteingang/subfolder", false))
+        );
+        assert_eq!(
+            strip_shared_mailbox_prefix("Foreign Folders/Postfach — shared@example.com/Gesendete Elemente", email, dname),
+            Some(("Gesendete Elemente", false))
+        );
+
+        // Subfolders under display name
+        assert_eq!(
+            strip_shared_mailbox_prefix("Foreign Folders/Postfach — Shared Team/Posteingang", email, dname),
+            Some(("Posteingang", false))
+        );
+
+        // English Mailbox variants
+        assert_eq!(
+            strip_shared_mailbox_prefix("Foreign Folders/Mailbox - shared@example.com/Inbox", email, dname),
+            Some(("Inbox", false))
+        );
+
+        // Hyphen instead of em-dash
+        assert_eq!(
+            strip_shared_mailbox_prefix("Foreign Folders/Postfach - shared@example.com/Posteingang", email, dname),
+            Some(("Posteingang", false))
+        );
+
+        // Unrelated folders
+        assert_eq!(
+            strip_shared_mailbox_prefix("Posteingang", email, dname),
+            None
+        );
+        assert_eq!(
+            strip_shared_mailbox_prefix("Foreign Folders/Postfach — other@example.com/Posteingang", email, dname),
+            None
+        );
+    }
 }
 
 #[allow(dead_code)]
@@ -3155,13 +3784,20 @@ fn apply_operation_with_cancellation(
             }
         };
 
-        let source_uid = CString::new(location.source_uid)
+        let (resolved_source_uid, resolved_folder_name) =
+            resolve_shared_mailbox_target(&location.source_uid, &location.folder_name);
+        let resolved_destination = destination.map(|dest| {
+            let (_, res_dest) = resolve_shared_mailbox_target(&location.source_uid, &dest);
+            res_dest
+        });
+
+        let source_uid = CString::new(resolved_source_uid)
             .map_err(|_| "EDS source UID contains an invalid NUL byte".to_string())?;
-        let folder_name = CString::new(location.folder_name)
+        let folder_name = CString::new(resolved_folder_name)
             .map_err(|_| "EDS folder name contains an invalid NUL byte".to_string())?;
         let message_uid = CString::new(location.message_uid)
             .map_err(|_| "EDS message UID contains an invalid NUL byte".to_string())?;
-        let destination = destination
+        let destination = resolved_destination
             .map(CString::new)
             .transpose()
             .map_err(|_| "EDS destination contains an invalid NUL byte".to_string())?;
@@ -3461,6 +4097,9 @@ pub(crate) fn send_message_with_cancellation(
     raw_message: &[u8],
     cancelled: Option<Arc<AtomicBool>>,
 ) -> Result<bool, String> {
+    let (resolved_source_uid, _) = resolve_shared_mailbox_target(source_uid, "");
+    let source_uid = resolved_source_uid.as_str();
+
     if cancelled
         .as_ref()
         .is_some_and(|cancelled| cancelled.load(Ordering::Acquire))

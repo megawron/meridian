@@ -206,6 +206,8 @@ mod imp {
 
     #[derive(Debug, Default)]
     pub struct PreferencesDialog {
+        pub managed_accounts_group: RefCell<Option<adw::PreferencesGroup>>,
+        pub managed_account_rows: RefCell<Vec<adw::PreferencesRow>>,
         pub local_profile_group: RefCell<Option<adw::PreferencesGroup>>,
         pub local_profile_rows: RefCell<Vec<adw::PreferencesRow>>,
     }
@@ -223,6 +225,11 @@ mod imp {
             self.obj().set_content_width(980);
             self.obj().set_content_height(720);
             self.obj().build_ui();
+            self.obj().connect_closed(|dialog| {
+                if let Some(window) = crate::window::find_evolution_window(dialog) {
+                    window.reload_accounts();
+                }
+            });
         }
     }
 
@@ -248,9 +255,10 @@ impl PreferencesDialog {
         let page = self.downgrade();
         dialog.connect_close_request(move |_| {
             if let Some(page) = page.upgrade() {
+                page.refresh_managed_account_rows();
                 page.refresh_local_profile_rows();
-                if let Some(window) = page.root().and_downcast::<crate::window::EvolutionWindow>() {
-                    window.refresh_mail_page();
+                if let Some(window) = crate::window::find_evolution_window(&page) {
+                    window.reload_accounts();
                 }
             }
             glib::Propagation::Proceed
@@ -299,6 +307,9 @@ impl PreferencesDialog {
         for (index, profile) in profiles.into_iter().enumerate() {
             let is_default = profile.enabled && profile.id == default_id;
             let mut extras = Vec::new();
+            if profile.is_shared_mailbox {
+                extras.push("Freigegebenes Postfach");
+            }
             if is_default {
                 extras.push("Standardkonto");
             }
@@ -328,6 +339,12 @@ impl PreferencesDialog {
                 .subtitle(&subtitle)
                 .activatable(true)
                 .build();
+            let icon_name = if profile.is_shared_mailbox {
+                "system-users-symbolic"
+            } else {
+                "avatar-default-symbolic"
+            };
+            row.add_prefix(&gtk::Image::from_icon_name(icon_name));
             let profile_for_edit = profile.clone();
             row.connect_activated(glib::clone!(
                 #[weak(rename_to = page)]
@@ -417,7 +434,11 @@ impl PreferencesDialog {
                     match result {
                         Ok(true) => {
                             page.reconcile_local_default(&profile_id);
+                            page.refresh_managed_account_rows();
                             page.refresh_local_profile_rows();
+                            if let Some(window) = crate::window::find_evolution_window(&page) {
+                                window.reload_accounts();
+                            }
                         }
                         Ok(false) => page.show_toast("Kontoprofil wurde nicht gefunden"),
                         Err(error) => page.show_toast(&format!(
@@ -479,8 +500,12 @@ impl PreferencesDialog {
                     move || match AccountConfigStore::default().delete(&profile_id) {
                         Ok(true) => {
                             page_for_action.reconcile_local_default(&profile_id);
+                            page_for_action.refresh_managed_account_rows();
                             page_for_action.refresh_local_profile_rows();
                             page_for_action.show_toast("Lokales Kontoprofil entfernt");
+                            if let Some(window) = crate::window::find_evolution_window(&page_for_action) {
+                                window.reload_accounts();
+                            }
                         }
                         Ok(false) => {
                             page_for_action.show_toast("Lokales Kontoprofil wurde nicht gefunden")
@@ -744,6 +769,484 @@ impl PreferencesDialog {
         group
     }
 
+    fn refresh_managed_account_rows(&self) {
+        let Some(group) = self.imp().managed_accounts_group.borrow().as_ref().cloned() else {
+            return;
+        };
+        for row in self.imp().managed_account_rows.borrow_mut().drain(..) {
+            group.remove(&row);
+        }
+
+        let eds_sources = EdsSourceCache::new().load(EdsSourceKind::Mail);
+        let profiles = AccountConfigStore::default().load();
+        let shared_profiles = profiles
+            .iter()
+            .filter(|p| p.is_shared_mailbox)
+            .cloned()
+            .collect::<Vec<_>>();
+
+        let mut visible_eds_sources = Vec::new();
+        for source in eds_sources {
+            let is_shared = shared_profiles.iter().any(|p| {
+                source.display_name == p.display_name
+                    || (!p.email.is_empty() && source.display_name.contains(&p.email))
+                    || source.uid == p.id
+                    || source.uid.contains(&crate::services::account_config_service::eds_source_uid_for_email(&p.email))
+            });
+            if !is_shared {
+                visible_eds_sources.push(source);
+            }
+        }
+
+        if visible_eds_sources.is_empty() && shared_profiles.is_empty() {
+            let no_accounts = adw::ActionRow::builder()
+                .title("Keine aktiven Konten gefunden")
+                .subtitle("Verwenden Sie „Neues Konto hinzufügen…“ oder „Freigegebenes Postfach öffnen…“")
+                .build();
+            let icon_no_accounts = gtk::Image::from_icon_name("dialog-information-symbolic");
+            no_accounts.add_prefix(&icon_no_accounts);
+            group.add(&no_accounts);
+            self.imp()
+                .managed_account_rows
+                .borrow_mut()
+                .push(no_accounts.upcast());
+            return;
+        }
+
+        // 1. Regular EDS mail sources
+        for source in visible_eds_sources {
+            let backend = if source.backend_name.trim().is_empty() {
+                "unbekannter Backendtyp"
+            } else {
+                source.backend_name.trim()
+            };
+            let state = if source.enabled {
+                "aktiv"
+            } else {
+                "deaktiviert"
+            };
+            let row = adw::ActionRow::builder()
+                .title(&source.display_name)
+                .subtitle(format!(
+                    "{backend} · {state} · EDS-Konto (Klicken für benutzerdefinierte Einstellungen)"
+                ))
+                .activatable(true)
+                .build();
+            let icon_mail = gtk::Image::from_icon_name("mail-read-symbolic");
+            row.add_prefix(&icon_mail);
+
+            let source_display_name = source.display_name.clone();
+            let source_uid = source.uid.clone();
+            let source_backend = source.backend_name.clone();
+            let page_weak = self.downgrade();
+            let open_eds_editor = move || {
+                let store = AccountConfigStore::default();
+                let profiles = store.load();
+                let matched_profile = profiles.into_iter().find(|p| {
+                    p.id == format!("eds:{}", source_uid)
+                        || p.display_name == source_display_name
+                        || (!p.email.is_empty() && source_display_name.contains(&p.email))
+                });
+                let profile_to_edit = matched_profile.unwrap_or_else(|| {
+                    let is_pop = source_backend.to_ascii_lowercase().contains("pop");
+                    let is_exchange = source_backend.to_ascii_lowercase().contains("ews")
+                        || source_backend.to_ascii_lowercase().contains("exchange");
+                    let is_goa = source_backend.to_ascii_lowercase().contains("goa");
+                    let protocol = if is_pop {
+                        AccountProtocol::Pop3
+                    } else if is_exchange {
+                        AccountProtocol::Exchange
+                    } else if is_goa {
+                        AccountProtocol::Goa
+                    } else {
+                        AccountProtocol::ImapSmtp
+                    };
+                    let email = if source_display_name.contains('@') {
+                        source_display_name.clone()
+                    } else {
+                        String::new()
+                    };
+                    AccountProfile {
+                        id: format!("eds:{}", source_uid),
+                        display_name: source_display_name.clone(),
+                        email,
+                        protocol,
+                        ..Default::default()
+                    }
+                });
+                if let Some(page) = page_weak.upgrade() {
+                    page.present_account_dialog(crate::dialogs::AccountSetupDialog::new_for_edit(
+                        &profile_to_edit,
+                    ));
+                }
+            };
+            let open_for_row = open_eds_editor.clone();
+            row.connect_activated(move |_| {
+                open_for_row();
+            });
+            let edit_btn = gtk::Button::builder()
+                .icon_name("document-edit-symbolic")
+                .tooltip_text("Benutzerdefinierte Einstellungen für dieses EDS-Konto anpassen")
+                .css_classes(vec!["flat"])
+                .valign(gtk::Align::Center)
+                .build();
+            edit_btn.connect_clicked(move |_| {
+                open_eds_editor();
+            });
+            row.add_suffix(&edit_btn);
+
+            group.add(&row);
+            self.imp()
+                .managed_account_rows
+                .borrow_mut()
+                .push(row.upcast());
+        }
+
+        // 2. Shared Mailboxes (Freigegebene Gruppenpostfächer)
+        for profile in shared_profiles {
+            let state = if profile.enabled {
+                "aktiv"
+            } else {
+                "deaktiviert"
+            };
+            let parent_info = if let Some(ref parent_id) = profile.parent_account_id {
+                let parent_name = profiles
+                    .iter()
+                    .find(|p| &p.id == parent_id || parent_id.contains(&p.email))
+                    .map(|p| p.display_name.as_str())
+                    .unwrap_or(parent_id);
+                format!(" · Über: {parent_name}")
+            } else {
+                String::new()
+            };
+            let row = adw::ActionRow::builder()
+                .title(&profile.display_name)
+                .subtitle(format!(
+                    "{} · Exchange (EWS) · Freigegebenes Postfach · {state}{parent_info}",
+                    profile.email
+                ))
+                .activatable(true)
+                .build();
+            let icon_shared = gtk::Image::from_icon_name("system-users-symbolic");
+            row.add_prefix(&icon_shared);
+
+            let profile_for_edit = profile.clone();
+            row.connect_activated(glib::clone!(
+                #[weak(rename_to = page)]
+                self,
+                move |_| {
+                    page.present_account_dialog(crate::dialogs::AccountSetupDialog::new_for_edit(
+                        &profile_for_edit,
+                    ));
+                }
+            ));
+
+            let edit_btn = gtk::Button::builder()
+                .icon_name("document-edit-symbolic")
+                .tooltip_text("Freigegebenes Postfach bearbeiten")
+                .css_classes(vec!["flat"])
+                .valign(gtk::Align::Center)
+                .build();
+            let profile_for_edit_btn = profile.clone();
+            edit_btn.connect_clicked(glib::clone!(
+                #[weak(rename_to = page)]
+                self,
+                move |_| {
+                    page.present_account_dialog(crate::dialogs::AccountSetupDialog::new_for_edit(
+                        &profile_for_edit_btn,
+                    ));
+                }
+            ));
+            row.add_suffix(&edit_btn);
+
+            let delete_button = gtk::Button::builder()
+                .icon_name("user-trash-symbolic")
+                .tooltip_text("Freigegebenes Postfach entfernen")
+                .css_classes(vec!["flat", "error"])
+                .valign(gtk::Align::Center)
+                .build();
+            row.add_suffix(&delete_button);
+            let page = self.downgrade();
+            let profile_id = profile.id.clone();
+            let profile_name = profile.display_name.clone();
+            delete_button.connect_clicked(move |_| {
+                let Some(page) = page.upgrade() else {
+                    return;
+                };
+                let page_for_action = page.clone();
+                let profile_id = profile_id.clone();
+                crate::dialogs::run_destructive_action(
+                    &page,
+                    &format!("Freigegebenes Postfach „{profile_name}“ entfernen?"),
+                    "Das freigegebene Postfach wird aus der Kontenliste und der Seitenleiste entfernt. Auf dem Exchange-Server bleibt das Postfach unberührt.",
+                    "Entfernen",
+                    move || match AccountConfigStore::default().delete(&profile_id) {
+                        Ok(true) => {
+                            page_for_action.reconcile_local_default(&profile_id);
+                            page_for_action.refresh_managed_account_rows();
+                            page_for_action.refresh_local_profile_rows();
+                            page_for_action.show_toast("Freigegebenes Postfach entfernt");
+                            if let Some(window) = crate::window::find_evolution_window(&page_for_action) {
+                                window.reload_accounts();
+                            }
+                        }
+                        Ok(false) => {
+                            page_for_action.show_toast("Postfach wurde nicht gefunden")
+                        }
+                        Err(error) => page_for_action.show_toast(&format!(
+                            "Postfach konnte nicht entfernt werden: {error}"
+                        )),
+                    },
+                );
+            });
+
+            group.add(&row);
+            self.imp()
+                .managed_account_rows
+                .borrow_mut()
+                .push(row.upcast());
+        }
+    }
+
+    fn prompt_open_shared_mailbox(&self) {
+        let root_window = self.root().and_then(|r| r.downcast::<gtk::Window>().ok());
+        let window = adw::Window::builder()
+            .title("Freigegebenes Postfach öffnen")
+            .modal(true)
+            .default_width(520)
+            .default_height(400)
+            .build();
+        if let Some(w) = root_window.as_ref() {
+            window.set_transient_for(Some(w));
+        }
+
+        let toolbar = adw::ToolbarView::new();
+        let header = adw::HeaderBar::new();
+
+        let cancel_btn = gtk::Button::builder().label("Abbrechen").build();
+        let add_btn = gtk::Button::builder()
+            .label("Hinzufügen")
+            .css_classes(vec!["suggested-action"])
+            .sensitive(false)
+            .build();
+        header.pack_start(&cancel_btn);
+        header.pack_end(&add_btn);
+        toolbar.add_top_bar(&header);
+
+        let content_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(16)
+            .margin_start(16)
+            .margin_end(16)
+            .margin_top(16)
+            .margin_bottom(16)
+            .build();
+
+        let group = adw::PreferencesGroup::builder()
+            .title("Postfach-Details")
+            .description(
+                "Öffnen Sie ein freigegebenes Exchange-Postfach (Gruppenpostfach wie z. B. team@example.com). Der Zugriff erfolgt autorisiert über Ihr primäres Exchange-Konto ohne separates Passwort.",
+            )
+            .build();
+
+        let profiles = AccountConfigStore::default().load();
+        let eds_sources = EdsSourceCache::new().load(EdsSourceKind::Mail);
+
+        #[derive(Clone)]
+        struct ParentCandidate {
+            id: String,
+            display: String,
+            username: String,
+            imap_host: String,
+            auth_method: String,
+            oab_url: String,
+        }
+
+        let mut candidates = Vec::<ParentCandidate>::new();
+        for p in &profiles {
+            if matches!(p.protocol, AccountProtocol::Exchange) && !p.is_shared_mailbox {
+                candidates.push(ParentCandidate {
+                    id: p.id.clone(),
+                    display: format!("{} ({})", p.display_name, p.email),
+                    username: p.username.clone(),
+                    imap_host: p.imap_host.clone(),
+                    auth_method: p.auth_method.clone(),
+                    oab_url: p.oab_url.clone(),
+                });
+            }
+        }
+        for s in &eds_sources {
+            let is_ews = s.backend_name.to_ascii_lowercase().contains("ews")
+                || s.backend_name.to_ascii_lowercase().contains("exchange");
+            if is_ews && !candidates.iter().any(|c| c.id == s.uid || c.display.contains(&s.display_name)) {
+                candidates.push(ParentCandidate {
+                    id: s.uid.clone(),
+                    display: format!("{} [Exchange]", s.display_name),
+                    username: s.display_name.clone(),
+                    imap_host: String::new(),
+                    auth_method: "NTLM".to_string(),
+                    oab_url: String::new(),
+                });
+            }
+        }
+
+        let combo_parent = if !candidates.is_empty() {
+            let labels: Vec<String> = candidates.iter().map(|c| c.display.clone()).collect();
+            let label_slices: Vec<&str> = labels.iter().map(|s| s.as_str()).collect();
+            let string_list = gtk::StringList::new(&label_slices);
+            let combo = adw::ComboRow::builder()
+                .title("Primäres Exchange-Konto")
+                .subtitle("Konto mit Zugriffs-/Stellvertreter-Berechtigung")
+                .model(&string_list)
+                .selected(0)
+                .build();
+            group.add(&combo);
+            Some(combo)
+        } else {
+            let row_no_ews = adw::ActionRow::builder()
+                .title("Kein primäres Exchange-Konto gefunden")
+                .subtitle("Bitte richten Sie zuerst Ihr primäres Exchange-Konto ein")
+                .build();
+            row_no_ews.add_prefix(&gtk::Image::from_icon_name("dialog-warning-symbolic"));
+            group.add(&row_no_ews);
+            None
+        };
+
+        let name_entry = adw::EntryRow::builder()
+            .title("Name des Postfachs")
+            .build();
+        group.add(&name_entry);
+
+        let email_entry = adw::EntryRow::builder()
+            .title("E-Mail-Adresse des Postfachs")
+            .build();
+        group.add(&email_entry);
+
+        let add_btn_clone = add_btn.clone();
+        let has_candidate_parents = !candidates.is_empty();
+        let update_sensitive = glib::clone!(
+            #[weak]
+            email_entry,
+            move || {
+                let email = email_entry.text().trim().to_string();
+                let valid = has_candidate_parents && email.contains('@') && email.len() > 3;
+                add_btn_clone.set_sensitive(valid);
+            }
+        );
+
+        email_entry.connect_text_notify(glib::clone!(
+            #[strong]
+            update_sensitive,
+            move |_| {
+                update_sensitive();
+            }
+        ));
+
+        let name_entry_for_email = name_entry.clone();
+        email_entry.connect_text_notify(move |entry| {
+            let current_name = name_entry_for_email.text();
+            let email = entry.text();
+            if current_name.is_empty() && email.contains('@') {
+                if let Some(user_part) = email.split('@').next() {
+                    name_entry_for_email.set_text(&user_part.to_uppercase());
+                }
+            }
+        });
+
+        content_box.append(&group);
+        toolbar.set_content(Some(&content_box));
+        window.set_content(Some(&toolbar));
+
+        let window_weak = window.downgrade();
+        cancel_btn.connect_clicked(move |_| {
+            if let Some(w) = window_weak.upgrade() {
+                w.close();
+            }
+        });
+
+        let page_weak = self.downgrade();
+        let window_weak = window.downgrade();
+        add_btn.connect_clicked(move |_| {
+            let email = email_entry.text().trim().to_lowercase();
+            if email.is_empty() || !email.contains('@') {
+                return;
+            }
+            let name = name_entry.text().trim().to_string();
+            let display_name = if name.is_empty() {
+                email.split('@').next().unwrap_or(&email).to_uppercase()
+            } else {
+                name
+            };
+
+            let selected_idx = combo_parent.as_ref().map(|c| c.selected() as usize).unwrap_or(0);
+            let parent = candidates.get(selected_idx);
+
+            // Inherit connection params from parent or existing Exchange profiles
+            let (username, imap_host, auth_method, oab_url) = if let Some(p) = parent {
+                let mut host = p.imap_host.clone();
+                let mut oab = p.oab_url.clone();
+                let mut auth = p.auth_method.clone();
+                let mut user = p.username.clone();
+                if host.is_empty() {
+                    if let Some(other_ex) = profiles.iter().find(|o| matches!(o.protocol, AccountProtocol::Exchange) && !o.imap_host.is_empty()) {
+                        host = other_ex.imap_host.clone();
+                        oab = other_ex.oab_url.clone();
+                        auth = other_ex.auth_method.clone();
+                        user = other_ex.username.clone();
+                    }
+                }
+                (user, host, auth, oab)
+            } else {
+                (String::new(), String::new(), "NTLM".to_string(), String::new())
+            };
+
+            let profile_id = format!("account:{}", email);
+            let profile = AccountProfile {
+                id: profile_id,
+                display_name: display_name.clone(),
+                email: email.clone(),
+                protocol: AccountProtocol::Exchange,
+                username,
+                imap_host,
+                auth_method,
+                oab_url,
+                is_shared_mailbox: true,
+                parent_account_id: parent.map(|p| p.id.clone()),
+                open_mailbox_other_user: true,
+                foreign_mailbox: email.clone(),
+                enabled: true,
+                check_interval_minutes: 5,
+                check_all_folders: true,
+                ..Default::default()
+            };
+
+            let store = AccountConfigStore::default();
+            if let Err(err) = store.upsert(profile.clone()) {
+                if let Some(page) = page_weak.upgrade() {
+                    page.show_toast(&format!("Fehler beim Speichern des Kontos: {err}"));
+                }
+                return;
+            }
+
+            let _ = crate::services::account_config_service::sync_profile_to_eds(&profile, None);
+
+            if let Some(w) = window_weak.upgrade() {
+                w.close();
+            }
+
+            if let Some(page) = page_weak.upgrade() {
+                page.refresh_managed_account_rows();
+                page.refresh_local_profile_rows();
+                page.show_toast(&format!("Freigegebenes Postfach „{display_name}“ hinzugefügt"));
+                if let Some(window) = crate::window::find_evolution_window(&page) {
+                    window.reload_accounts();
+                }
+            }
+        });
+
+        window.present();
+    }
+
     fn build_ui(&self) {
         let settings = AppSettings::try_new();
 
@@ -755,7 +1258,7 @@ impl PreferencesDialog {
 
         let page_contacts = adw::PreferencesPage::builder()
             .title("Contacts")
-            .icon_name("contact-new-symbolic")
+            .icon_name("x-office-address-book-symbolic")
             .build();
 
         let page_network = adw::PreferencesPage::builder()
@@ -790,6 +1293,23 @@ impl PreferencesDialog {
         ));
         group_accounts.add(&row_add_account);
 
+        let row_add_shared = adw::ActionRow::builder()
+            .title("Freigegebenes Postfach öffnen…")
+            .subtitle("Gemeinsames Postfach (Exchange EWS) ohne eigenes Passwort einbinden")
+            .activatable(true)
+            .build();
+        let icon_add_shared = gtk::Image::from_icon_name("system-users-symbolic");
+        row_add_shared.add_prefix(&icon_add_shared);
+
+        row_add_shared.connect_activated(glib::clone!(
+            #[weak(rename_to = page)]
+            self,
+            move |_| {
+                page.prompt_open_shared_mailbox();
+            }
+        ));
+        group_accounts.add(&row_add_shared);
+
         let row_oof = adw::ActionRow::builder()
             .title("Abwesenheitsnotiz (Auto-Responder)…")
             .subtitle("Automatische Antwort für Urlaub und Abwesenheiten einrichten")
@@ -812,101 +1332,10 @@ impl PreferencesDialog {
         ));
         group_accounts.add(&row_oof);
 
-        // Fetch live/cached EDS mail sources
-        let eds_sources = EdsSourceCache::new().load(EdsSourceKind::Mail);
-        if eds_sources.is_empty() {
-            let no_accounts = adw::ActionRow::builder()
-                .title("Keine aktiven Konten gefunden")
-                .subtitle("Verwenden Sie „Neues Konto hinzufügen…“, um ein Konto einzurichten")
-                .build();
-            let icon_no_accounts = gtk::Image::from_icon_name("dialog-information-symbolic");
-            no_accounts.add_prefix(&icon_no_accounts);
-            group_accounts.add(&no_accounts);
-        } else {
-            for source in eds_sources {
-                let backend = if source.backend_name.trim().is_empty() {
-                    "unbekannter Backendtyp"
-                } else {
-                    source.backend_name.trim()
-                };
-                let state = if source.enabled {
-                    "aktiv"
-                } else {
-                    "deaktiviert"
-                };
-                let row = adw::ActionRow::builder()
-                    .title(&source.display_name)
-                    .subtitle(format!(
-                        "{backend} · {state} · EDS-Konto (Klicken für benutzerdefinierte Einstellungen)"
-                    ))
-                    .activatable(true)
-                    .build();
-                let icon_mail = gtk::Image::from_icon_name("mail-read-symbolic");
-                row.add_prefix(&icon_mail);
-
-                let source_display_name = source.display_name.clone();
-                let source_uid = source.uid.clone();
-                let source_backend = source.backend_name.clone();
-                let page_weak = self.downgrade();
-                let open_eds_editor = move || {
-                    let store = AccountConfigStore::default();
-                    let profiles = store.load();
-                    let matched_profile = profiles.into_iter().find(|p| {
-                        p.id == format!("eds:{}", source_uid)
-                            || p.display_name == source_display_name
-                            || (!p.email.is_empty() && source_display_name.contains(&p.email))
-                    });
-                    let profile_to_edit = matched_profile.unwrap_or_else(|| {
-                        let is_pop = source_backend.to_ascii_lowercase().contains("pop");
-                        let is_exchange = source_backend.to_ascii_lowercase().contains("ews")
-                            || source_backend.to_ascii_lowercase().contains("exchange");
-                        let is_goa = source_backend.to_ascii_lowercase().contains("goa");
-                        let protocol = if is_pop {
-                            AccountProtocol::Pop3
-                        } else if is_exchange {
-                            AccountProtocol::Exchange
-                        } else if is_goa {
-                            AccountProtocol::Goa
-                        } else {
-                            AccountProtocol::ImapSmtp
-                        };
-                        let email = if source_display_name.contains('@') {
-                            source_display_name.clone()
-                        } else {
-                            String::new()
-                        };
-                        AccountProfile {
-                            id: format!("eds:{}", source_uid),
-                            display_name: source_display_name.clone(),
-                            email,
-                            protocol,
-                            ..Default::default()
-                        }
-                    });
-                    if let Some(page) = page_weak.upgrade() {
-                        page.present_account_dialog(crate::dialogs::AccountSetupDialog::new_for_edit(
-                            &profile_to_edit,
-                        ));
-                    }
-                };
-                let open_for_row = open_eds_editor.clone();
-                row.connect_activated(move |_| {
-                    open_for_row();
-                });
-                let edit_btn = gtk::Button::builder()
-                    .icon_name("document-edit-symbolic")
-                    .tooltip_text("Benutzerdefinierte Einstellungen für dieses EDS-Konto anpassen")
-                    .css_classes(vec!["flat"])
-                    .valign(gtk::Align::Center)
-                    .build();
-                edit_btn.connect_clicked(move |_| {
-                    open_eds_editor();
-                });
-                row.add_suffix(&edit_btn);
-
-                group_accounts.add(&row);
-            }
-        }
+        self.imp()
+            .managed_accounts_group
+            .replace(Some(group_accounts.clone()));
+        self.refresh_managed_account_rows();
 
         page_accounts.add(&group_accounts);
 
@@ -3484,6 +3913,56 @@ impl PreferencesDialog {
         }
         group_mail_window_layout.add(&row_mail_layout);
 
+        let row_task_layout = adw::ComboRow::builder()
+            .title("Aufgaben-Layout")
+            .subtitle(
+                "Dreispalten-Ansicht oder klassisch wie Evolution: Aufgabenliste über der Aufgabenvorschau (wird sofort angewendet)",
+            )
+            .model(&gtk::StringList::new(&[
+                "Dreispalten-Ansicht: Vorschau rechts neben der Liste",
+                "Klassisch: Liste über der Vorschau",
+            ]))
+            .build();
+        if let Some(settings) = settings.clone() {
+            row_task_layout.set_selected(match settings.task_preview_orientation().as_str() {
+                "classic" => 1,
+                _ => 0,
+            });
+            row_task_layout.connect_selected_notify(move |row| {
+                settings.set_task_preview_orientation(if row.selected() == 1 {
+                    "classic"
+                } else {
+                    "vertical"
+                });
+            });
+        }
+        group_app_layout.add(&row_task_layout);
+
+        let row_memo_layout = adw::ComboRow::builder()
+            .title("Notizen-Layout")
+            .subtitle(
+                "Dreispalten-Ansicht oder klassisch wie Evolution: Notizenliste über der Notizvorschau (wird sofort angewendet)",
+            )
+            .model(&gtk::StringList::new(&[
+                "Dreispalten-Ansicht: Vorschau rechts neben der Liste",
+                "Klassisch: Liste über der Vorschau",
+            ]))
+            .build();
+        if let Some(settings) = settings.clone() {
+            row_memo_layout.set_selected(match settings.memo_preview_orientation().as_str() {
+                "classic" => 1,
+                _ => 0,
+            });
+            row_memo_layout.connect_selected_notify(move |row| {
+                settings.set_memo_preview_orientation(if row.selected() == 1 {
+                    "classic"
+                } else {
+                    "vertical"
+                });
+            });
+        }
+        group_app_layout.add(&row_memo_layout);
+
         let row_mail_toolbar = adw::SwitchRow::builder()
             .title("Klassische Mail-Werkzeugleiste anzeigen")
             .subtitle(
@@ -4115,6 +4594,30 @@ impl PreferencesDialog {
             });
         }
         group_calendar_view.add(&row_time_divisions);
+
+        let row_calendar_click_action = adw::ComboRow::builder()
+            .title("Klick auf Zeitabschnitt")
+            .subtitle("Aktion beim Anklicken eines freien Bereichs im Kalenderraster")
+            .model(&gtk::StringList::new(&[
+                "Zeitabschnitt markieren & Entwurf anzeigen",
+                "Sofort neuen Termin-Editor öffnen",
+            ]))
+            .build();
+        if let Some(settings) = settings.clone() {
+            row_calendar_click_action.set_selected(if settings.calendar_click_action() == "create" {
+                1
+            } else {
+                0
+            });
+            row_calendar_click_action.connect_selected_notify(move |row| {
+                settings.set_calendar_click_action(if row.selected() == 1 {
+                    "create"
+                } else {
+                    "select"
+                });
+            });
+        }
+        group_calendar_view.add(&row_calendar_click_action);
 
         let row_week_start = adw::ComboRow::builder()
             .title("Wochenbeginn")
@@ -5291,7 +5794,7 @@ impl PreferencesDialog {
 
         for (title, icon_name) in [
             ("Mail Accounts", "avatar-default-symbolic"),
-            ("Contacts", "contact-new-symbolic"),
+            ("Contacts", "x-office-address-book-symbolic"),
             ("Mail Preferences", "mail-unread-symbolic"),
             ("Composer Preferences", "document-edit-symbolic"),
             ("Network Preferences", "network-wired-symbolic"),
@@ -5425,7 +5928,8 @@ fn mail_column_label(column: &str) -> &'static str {
         "status" => "Status",
         "attachment" => "Anhang",
         "flagged" => "Markierung",
-        "sender" => "Absender / Empfänger",
+        "sender" => "Absender",
+        "recipient" => "Empfänger",
         "subject" => "Betreff",
         "date" => "Datum",
         "follow-up" => "Nachverfolgung",
@@ -8034,6 +8538,17 @@ mod tests {
         settings.set_composer_forward_style("attached");
         settings.set_draft_autosave_interval_seconds(30);
         while context.iteration(false) {}
+    }
+
+    #[test]
+    fn test_shared_mailbox_preferences_and_action_rows() {
+        let source = include_str!("preferences_dialog.rs");
+        assert!(source.contains("\"Freigegebenes Postfach öffnen…\""));
+        assert!(source.contains("\"system-users-symbolic\""));
+        assert!(source.contains("prompt_open_shared_mailbox"));
+        assert!(source.contains("refresh_managed_account_rows"));
+        assert!(source.contains("is_shared_mailbox"));
+        assert!(source.contains("\"Freigegebenes Postfach\""));
     }
 }
 

@@ -150,7 +150,7 @@ const COMPOSER_OPERATION_ACTIONS: &[&str] = &[
 mod imp {
     use super::*;
 
-    #[derive(Debug, Default)]
+    #[derive(Default)]
     pub struct ComposeDialog {
         pub draft_id: RefCell<String>,
         pub persisted_draft: RefCell<Option<DraftMessage>>,
@@ -192,6 +192,7 @@ mod imp {
         pub saved_revision: Cell<u64>,
         pub suppress_dirty_tracking: Cell<bool>,
         pub suppress_setting_persistence: Cell<bool>,
+        pub suppress_from_notify: Cell<bool>,
         pub close_confirmed: Cell<bool>,
         pub close_prompt_open: Cell<bool>,
         pub close_after_save: Cell<bool>,
@@ -216,6 +217,17 @@ mod imp {
         pub print_state: Cell<MailPrintJobState>,
         pub print_message_key: RefCell<String>,
         pub settings: RefCell<Option<AppSettings>>,
+        pub on_send_success: RefCell<Option<Box<dyn Fn() + 'static>>>,
+    }
+
+    impl std::fmt::Debug for ComposeDialog {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("ComposeDialog")
+                .field("draft_id", &self.draft_id)
+                .field("operation", &self.operation)
+                .field("operation_id", &self.operation_id)
+                .finish_non_exhaustive()
+        }
     }
 
     #[glib::object_subclass]
@@ -1340,6 +1352,9 @@ impl ComposeDialog {
             let Some(dialog) = dialog_for_default_account.upgrade() else {
                 return;
             };
+            if dialog.imp().suppress_from_notify.get() {
+                return;
+            }
             let source_uid = dialog
                 .imp()
                 .source_uids
@@ -2095,6 +2110,9 @@ impl ComposeDialog {
                                                 "; ein neuerer Recovery-Entwurf wurde erhalten",
                                             );
                                         }
+                                        if let Some(callback) = dialog.imp().on_send_success.borrow().as_ref() {
+                                            callback();
+                                        }
                                         dialog.show_toast(&message);
                                         dialog.close();
                                     }
@@ -2164,19 +2182,23 @@ impl ComposeDialog {
                 .map(|identity| identity.label.clone())
                 .collect();
             let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
-            source_model_for_load.splice(0, source_model_for_load.n_items(), &name_refs);
             if let Some(dialog) = dialog_for_source_load.upgrade() {
+                dialog.imp().suppress_from_notify.set(true);
+                {
+                    let mut source_uids = dialog.imp().source_uids.borrow_mut();
+                    source_uids.clear();
+                    source_uids.extend(
+                        identities
+                            .iter()
+                            .map(|identity| identity.source_uid.clone()),
+                    );
+                }
+                dialog.imp().source_identities.replace(identities.clone());
+                source_model_for_load.splice(0, source_model_for_load.n_items(), &name_refs);
+
                 let requested_uid = dialog.imp().requested_source_uid.borrow().clone();
                 let requested_from = dialog.imp().requested_from.borrow().clone();
                 let preferred_uid = preferred_composer_account_id();
-                let mut source_uids = dialog.imp().source_uids.borrow_mut();
-                source_uids.clear();
-                source_uids.extend(
-                    identities
-                        .iter()
-                        .map(|identity| identity.source_uid.clone()),
-                );
-                dialog.imp().source_identities.replace(identities.clone());
                 let selected_uid = requested_uid
                     .filter(|uid| !uid.trim().is_empty())
                     .or(preferred_uid);
@@ -2201,10 +2223,18 @@ impl ComposeDialog {
                         combo_from_for_load.set_selected(index as u32);
                     }
                 }
+                if names.is_empty() {
+                    let message = if discovery.origin == EdsSourceOrigin::Empty {
+                        "Mailkonten sind nicht erreichbar"
+                    } else {
+                        "Kein aktives Mailkonto verfügbar"
+                    };
+                    source_model_for_load.splice(0, source_model_for_load.n_items(), &[message]);
+                }
+                dialog.imp().suppress_from_notify.set(false);
                 dialog.update_sender_dependent_controls(combo_from_for_load.selected());
                 dialog.sync_signature_for_selected_account();
-            }
-            if names.is_empty() {
+            } else if names.is_empty() {
                 let message = if discovery.origin == EdsSourceOrigin::Empty {
                     "Mailkonten sind nicht erreichbar"
                 } else {
@@ -3439,6 +3469,10 @@ impl ComposeDialog {
         if let Some(action) = self.composer_action("view-from") {
             action.set_state(&visible.to_variant());
         }
+    }
+
+    pub fn set_on_send_success<F: Fn() + 'static>(&self, callback: F) {
+        self.imp().on_send_success.replace(Some(Box::new(callback)));
     }
 
     fn composer_action(&self, name: &str) -> Option<gio::SimpleAction> {

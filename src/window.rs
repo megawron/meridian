@@ -37,6 +37,7 @@ use crate::services::reminder_service::{
     component_presence, parse_reminder_deep_link,
 };
 use crate::services::search_engine::SearchTarget;
+use crate::views::accessibility::set_accessible_label;
 use crate::views::{CalendarPage, ContactsPage, MailPage, MemosPage, TasksPage};
 use std::time::Instant;
 
@@ -50,12 +51,14 @@ mod imp {
     pub struct EvolutionWindow {
         pub settings: RefCell<Option<AppSettings>>,
         pub header_bar: RefCell<Option<adw::HeaderBar>>,
+        pub search_button: RefCell<Option<gtk::ToggleButton>>,
         pub view_stack: RefCell<Option<adw::ViewStack>>,
         pub toast_overlay: adw::ToastOverlay,
         pub status_label: RefCell<Option<gtk::Label>>,
         pub status_progress: RefCell<Option<gtk::ProgressBar>>,
         pub online_toggle: RefCell<Option<gtk::Button>>,
         pub debug_revealer: RefCell<Option<gtk::Revealer>>,
+        pub statusbar_box: RefCell<Option<gtk::Box>>,
         pub(crate) transport_service: MailTransportService,
         pub transport_generation: Cell<u64>,
         pub transport_queued_items: Cell<usize>,
@@ -348,6 +351,10 @@ impl EvolutionWindow {
         if let Some(settings) = AppSettings::try_new() {
             settings.set_active_view(view_name);
         }
+    }
+
+    pub fn search_button(&self) -> Option<gtk::ToggleButton> {
+        self.imp().search_button.borrow().clone()
     }
 
     pub(crate) fn present_reminders(&self, deliveries: Vec<ReminderDelivery>) {
@@ -785,11 +792,26 @@ impl EvolutionWindow {
         }
     }
 
-    pub(crate) fn reload_mail_accounts(&self) {
+    pub(crate) fn reload_accounts(&self) {
+        crate::services::eds_service::invalidate_account_collections_cache();
         if let Some(mail_page) = self.mail_page() {
             mail_page.reload_mail_accounts();
         }
+        if let Some(contacts_page) = self.contacts_page() {
+            contacts_page.reload_address_books();
+        }
+        if let Some(calendar_page) = self.calendar_page() {
+            calendar_page.reload_calendar_sources();
+        }
+        if let Some(memos_page) = self.memos_page() {
+            memos_page.reload_memo_sources();
+        }
     }
+
+    pub(crate) fn reload_mail_accounts(&self) {
+        self.reload_accounts();
+    }
+
 
     pub(crate) fn update_mail_status(&self, status_text: &str) {
         if let Some(label) = self.imp().status_label.borrow().as_ref() {
@@ -813,19 +835,92 @@ impl EvolutionWindow {
     pub fn set_status(&self, status_text: &str) {
         self.update_mail_status(status_text);
     }
+}
+
+/// Find the active EvolutionWindow from any widget or dialog.
+pub fn find_evolution_window(widget: &impl gtk::prelude::IsA<gtk::Widget>) -> Option<EvolutionWindow> {
+    if let Ok(win) = widget.clone().upcast::<gtk::Widget>().downcast::<EvolutionWindow>() {
+        return Some(win);
+    }
+    if let Some(root) = widget.root() {
+        if let Ok(win) = root.downcast::<EvolutionWindow>() {
+            return Some(win);
+        }
+    }
+    let mut current_window = widget
+        .clone()
+        .upcast::<gtk::Widget>()
+        .downcast::<gtk::Window>()
+        .ok()
+        .or_else(|| widget.root().and_then(|r| r.downcast::<gtk::Window>().ok()));
+    while let Some(win) = current_window {
+        if let Ok(evo_win) = win.clone().downcast::<EvolutionWindow>() {
+            return Some(evo_win);
+        }
+        current_window = win.transient_for();
+    }
+    let toplevels = gtk::Window::toplevels();
+    for i in 0..toplevels.n_items() {
+        if let Some(toplevel) = toplevels.item(i) {
+            if let Ok(evo_win) = toplevel.downcast::<EvolutionWindow>() {
+                return Some(evo_win);
+            }
+        }
+    }
+    None
+}
+
+impl EvolutionWindow {
 
     /// Toggle the developer protocol console drawer.
     pub fn toggle_debug_console(&self) {
         if let Some(revealer) = self.imp().debug_revealer.borrow().as_ref() {
-            revealer.set_reveal_child(!revealer.reveals_child());
+            let new_state = !revealer.reveals_child();
+            if new_state {
+                revealer.set_visible(true);
+            }
+            revealer.set_reveal_child(new_state);
+            if let Some(settings) = AppSettings::try_new() {
+                settings.set_debug_console_enabled(new_state);
+            }
         }
     }
 
     /// Explicitly open or close the developer protocol console drawer.
     pub fn set_debug_console_open(&self, open: bool) {
         if let Some(revealer) = self.imp().debug_revealer.borrow().as_ref() {
+            if open {
+                revealer.set_visible(true);
+            }
             revealer.set_reveal_child(open);
+            if let Some(settings) = AppSettings::try_new() {
+                settings.set_debug_console_enabled(open);
+            }
         }
+    }
+
+    /// Explicitly set the visibility of the main window statusbar.
+    pub fn set_statusbar_visible(&self, visible: bool) {
+        if let Some(sb) = self.imp().statusbar_box.borrow().as_ref() {
+            sb.set_visible(visible);
+        }
+        if let Some(settings) = AppSettings::try_new() {
+            settings.set_mail_show_statusbar(visible);
+        }
+    }
+
+    /// Check if the main window statusbar is currently visible.
+    pub fn statusbar_is_visible(&self) -> bool {
+        self.imp()
+            .statusbar_box
+            .borrow()
+            .as_ref()
+            .map(|sb| sb.is_visible())
+            .unwrap_or_else(|| {
+                AppSettings::try_new()
+                    .map(|s| s.mail_show_statusbar())
+                    .unwrap_or(true)
+            })
     }
 
     fn update_transport_action_sensitivity(&self, snapshot: &MailTransportSnapshot) {
@@ -1247,6 +1342,11 @@ impl EvolutionWindow {
     }
 
     fn focus_active_search(&self) {
+        if let Some(btn) = self.imp().search_button.borrow().as_ref() {
+            if !btn.is_active() {
+                btn.set_active(true);
+            }
+        }
         let view_name = self
             .imp()
             .view_stack
@@ -1261,6 +1361,69 @@ impl EvolutionWindow {
             Some("memos") => self.memos_page().map(|page| page.focus_search()),
             _ => self.mail_page().map(|page| page.focus_search()),
         };
+    }
+
+    fn close_active_search(&self) {
+        if let Some(btn) = self.imp().search_button.borrow().as_ref() {
+            if btn.is_active() {
+                btn.set_active(false);
+            }
+        }
+        let view_name = self
+            .imp()
+            .view_stack
+            .borrow()
+            .as_ref()
+            .and_then(|view_stack| view_stack.visible_child_name())
+            .map(|name| name.to_string());
+        match view_name.as_deref() {
+            Some("calendar") => {
+                if let Some(page) = self.calendar_page() {
+                    page.close_search();
+                }
+            }
+            Some("contacts") => {}
+            Some("tasks") => {
+                if let Some(page) = self.tasks_page() {
+                    page.close_search();
+                }
+            }
+            Some("memos") => {
+                if let Some(page) = self.memos_page() {
+                    page.close_search();
+                }
+            }
+            _ => {
+                if let Some(page) = self.mail_page() {
+                    page.close_search();
+                }
+            }
+        };
+    }
+
+    pub fn toggle_active_search(&self) {
+        if self.is_active_search_open() {
+            self.close_active_search();
+        } else {
+            self.focus_active_search();
+        }
+    }
+
+    fn is_active_search_open(&self) -> bool {
+        let view_name = self
+            .imp()
+            .view_stack
+            .borrow()
+            .as_ref()
+            .and_then(|view_stack| view_stack.visible_child_name())
+            .map(|name| name.to_string());
+        match view_name.as_deref() {
+            Some("calendar") => self.calendar_page().map(|p| p.is_search_active()).unwrap_or(false),
+            Some("contacts") => false,
+            Some("tasks") => self.tasks_page().map(|p| p.is_search_active()).unwrap_or(false),
+            Some("memos") => self.memos_page().map(|p| p.is_search_active()).unwrap_or(false),
+            _ => self.mail_page().map(|p| p.is_search_active()).unwrap_or(false),
+        }
     }
 
     /// Add a checkable window action backed by a persistent GSettings boolean.
@@ -1281,25 +1444,44 @@ impl EvolutionWindow {
         Write: Fn(&AppSettings, bool) + 'static,
     {
         let settings = AppSettings::try_new();
-        let initial = settings.as_ref().map(&read).unwrap_or(false);
+        let read_rc = std::rc::Rc::new(read);
+        let initial = settings.as_ref().map(|s| read_rc(s)).unwrap_or(false);
         let action = gio::SimpleAction::new_stateful(name, None, &initial.to_variant());
+        let settings_for_change = settings.clone();
+        let write_rc = std::rc::Rc::new(write);
+        let write_for_change = write_rc.clone();
+        let write_for_activate = write_rc.clone();
+        action.connect_change_state(move |action, new_state| {
+            if let Some(state) = new_state {
+                action.set_state(state);
+                if let Some(val) = state.get::<bool>() {
+                    if let Some(settings) = settings_for_change.as_ref() {
+                        write_for_change(settings, val);
+                    }
+                }
+            }
+        });
+
+        let action_for_activate = action.clone();
         let settings_for_activate = settings.clone();
-        action.connect_activate(move |action, _| {
-            let current = action
+        action.connect_activate(move |_, _| {
+            let current = action_for_activate
                 .state()
                 .and_then(|state| state.get::<bool>())
                 .unwrap_or(false);
             let next = !current;
-            action.set_state(&next.to_variant());
+            action_for_activate.set_state(&next.to_variant());
             if let Some(settings) = settings_for_activate.as_ref() {
-                write(settings, next);
+                write_for_activate(settings, next);
             }
         });
 
-        if let Some(settings) = settings {
+        if let Some(app_settings) = settings {
             let action_for_settings = action.clone();
-            settings.connect_changed(Some(key), move |settings, _| {
-                action_for_settings.set_state(&settings.boolean(key).to_variant());
+            let read_for_settings = read_rc.clone();
+            let app_settings_for_signal = app_settings.clone();
+            app_settings.connect_changed(Some(key), move |_, _| {
+                action_for_settings.set_state(&read_for_settings(&app_settings_for_signal).to_variant());
             });
         }
         self.add_action(&action);
@@ -1323,24 +1505,46 @@ impl EvolutionWindow {
         Write: Fn(&AppSettings, &str) + 'static,
     {
         let settings = AppSettings::try_new();
+        let read_rc = std::rc::Rc::new(read);
         let initial = settings
             .as_ref()
-            .is_some_and(|settings| read(settings) == value);
+            .is_some_and(|settings| read_rc(settings) == value);
         let action = gio::SimpleAction::new_stateful(name, None, &initial.to_variant());
+
+        let value_for_change = value.to_string();
+        let settings_for_change = settings.clone();
+        let write_rc = std::rc::Rc::new(write);
+        let write_for_change = write_rc.clone();
+        let write_for_activate = write_rc.clone();
+
+        action.connect_change_state(move |action, new_state| {
+            if let Some(state) = new_state {
+                if state.get::<bool>() == Some(true) {
+                    action.set_state(&true.to_variant());
+                    if let Some(settings) = settings_for_change.as_ref() {
+                        write_for_change(settings, &value_for_change);
+                    }
+                }
+            }
+        });
+
         let value_for_activate = value.to_string();
         let settings_for_activate = settings.clone();
         action.connect_activate(move |action, _| {
             if let Some(settings) = settings_for_activate.as_ref() {
-                write(settings, &value_for_activate);
+                write_for_activate(settings, &value_for_activate);
             }
             action.set_state(&true.to_variant());
         });
 
-        if let Some(settings) = settings {
+        if let Some(app_settings) = settings {
             let action_for_settings = action.clone();
-            settings.connect_changed(Some(key), move |settings, _| {
+            let read_for_settings = read_rc.clone();
+            let value_for_settings = value.to_string();
+            let app_settings_for_signal = app_settings.clone();
+            app_settings.connect_changed(Some(key), move |_, _| {
                 action_for_settings
-                    .set_state(&(settings.string(key).as_str() == value).to_variant());
+                    .set_state(&(read_for_settings(&app_settings_for_signal) == value_for_settings).to_variant());
             });
         }
         self.add_action(&action);
@@ -1383,11 +1587,7 @@ impl EvolutionWindow {
         });
         button.set_tooltip_text(Some(tooltip));
         button.set_action_name(Some(action_name));
-        if view_name == "mail" {
-            button.add_css_class("suggested-action");
-        } else {
-            button.remove_css_class("suggested-action");
-        }
+        button.add_css_class("suggested-action");
     }
 
     fn set_mail_actions_enabled(&self, enabled: bool) {
@@ -1419,6 +1619,12 @@ impl EvolutionWindow {
     fn set_calendar_actions_enabled(&self, enabled: bool) {
         if let Some(action) = self
             .lookup_action("purge-calendar")
+            .and_then(|action| action.downcast::<gio::SimpleAction>().ok())
+        {
+            action.set_enabled(enabled);
+        }
+        if let Some(action) = self
+            .lookup_action("export-calendar")
             .and_then(|action| action.downcast::<gio::SimpleAction>().ok())
         {
             action.set_enabled(enabled);
@@ -1687,6 +1893,10 @@ impl EvolutionWindow {
         let setup_started = std::time::Instant::now();
         tracing::debug!("Main window layout setup started");
         let view_stack = adw::ViewStack::new();
+        view_stack.set_vexpand(true);
+        view_stack.set_hexpand(true);
+        view_stack.set_valign(gtk::Align::Fill);
+        view_stack.set_halign(gtk::Align::Fill);
 
         let mail_page = MailPage::new();
         view_stack.add_titled_with_icon(&mail_page, Some("mail"), "Mail", "mail-unread-symbolic");
@@ -1712,7 +1922,7 @@ impl EvolutionWindow {
             &contacts_bin,
             Some("contacts"),
             "Kontakte",
-            "contact-new-symbolic",
+            "x-office-address-book-symbolic",
         );
 
         let tasks_bin = Self::lazy_module_bin("Aufgaben");
@@ -1720,7 +1930,7 @@ impl EvolutionWindow {
             &tasks_bin,
             Some("tasks"),
             "Aufgaben",
-            "task-due-symbolic",
+            "evolution-tasks-symbolic",
         );
 
         let memos_bin = Self::lazy_module_bin("Notizen");
@@ -1853,42 +2063,68 @@ impl EvolutionWindow {
         let header_bar = adw::HeaderBar::new();
         self.imp().header_bar.replace(Some(header_bar.clone()));
 
-        let sidebar_visible = AppSettings::try_new()
-            .map(|settings| settings.mail_show_sidebar())
-            .unwrap_or(true);
-        let sidebar_button = gtk::ToggleButton::builder()
-            .icon_name("sidebar-show-symbolic")
-            .tooltip_text("Sidebar ein-/ausblenden (F9)")
-            .active(sidebar_visible)
+        let search_button = gtk::ToggleButton::builder()
+            .icon_name("edit-find-symbolic")
+            .tooltip_text("Suchen (Strg+F)")
+            .css_classes(vec!["flat"])
             .build();
-        sidebar_button.set_visible(active_view == "mail");
+        set_accessible_label(&search_button, "Suchen");
+        self.imp().search_button.replace(Some(search_button.clone()));
 
-        sidebar_button.connect_clicked(glib::clone!(
-            #[weak]
-            mail_page,
-            move |btn| {
-                mail_page.set_sidebar_visible(btn.is_active());
-                if let Some(settings) = AppSettings::try_new() {
-                    settings.set_mail_show_sidebar(btn.is_active());
+        let win_for_search = self.downgrade();
+        search_button.connect_toggled(move |btn| {
+            if let Some(win) = win_for_search.upgrade() {
+                let is_active = btn.is_active();
+                let current_search_active = win.is_active_search_open();
+                if is_active != current_search_active {
+                    if is_active {
+                        win.focus_active_search();
+                    } else {
+                        win.close_active_search();
+                    }
                 }
             }
-        ));
+        });
 
-        if let Some(settings) = AppSettings::try_new() {
-            let sidebar_button_for_settings = sidebar_button.clone();
-            settings.connect_changed(Some("mail-show-sidebar"), move |settings, _| {
-                sidebar_button_for_settings.set_active(settings.boolean("mail-show-sidebar"));
+        let search_btn_for_mail = search_button.clone();
+        if let Some(bar) = mail_page.search_bar() {
+            bar.connect_notify_local(Some("search-mode-enabled"), move |bar, _| {
+                let active = bar.is_search_mode();
+                if search_btn_for_mail.is_active() != active {
+                    search_btn_for_mail.set_active(active);
+                }
             });
         }
 
-        header_bar.pack_start(&sidebar_button);
+        let win_for_stack = self.downgrade();
+        let search_btn_for_stack = search_button.clone();
+        view_stack.connect_visible_child_name_notify(move |_| {
+            if let Some(win) = win_for_stack.upgrade() {
+                let is_open = win.is_active_search_open();
+                if search_btn_for_stack.is_active() != is_open {
+                    search_btn_for_stack.set_active(is_open);
+                }
+            }
+        });
 
-        let transport_button = gtk::MenuButton::builder()
-            .icon_name("mail-send-receive-symbolic")
-            .menu_model(&Self::build_transport_menu())
-            .tooltip_text("Senden und Empfangen (F12)")
+        header_bar.pack_start(&search_button);
+
+        let compose_button = gtk::Button::builder()
+            .icon_name("mail-message-new-symbolic")
+            .tooltip_text("Neue E-Mail (Ctrl+N)")
+            .action_name("app.compose")
+            .css_classes(vec!["suggested-action"])
             .build();
-        header_bar.pack_start(&transport_button);
+
+        Self::configure_primary_action(&compose_button, &active_view);
+        let primary_action_for_view = compose_button.clone();
+        view_stack.connect_visible_child_name_notify(move |stack| {
+            if let Some(view_name) = stack.visible_child_name() {
+                Self::configure_primary_action(&primary_action_for_view, view_name.as_str());
+            }
+        });
+
+        header_bar.pack_start(&compose_button);
 
         let window_title = adw::WindowTitle::builder()
             .title("Evolution")
@@ -1933,25 +2169,6 @@ impl EvolutionWindow {
             .build();
 
         header_bar.pack_end(&menu_button);
-
-        let compose_button = gtk::Button::builder()
-            .icon_name("mail-message-new-symbolic")
-            .tooltip_text("Neue E-Mail (Ctrl+N)")
-            .action_name("app.compose")
-            .css_classes(vec!["suggested-action"])
-            .build();
-
-        Self::configure_primary_action(&compose_button, &active_view);
-        let primary_action_for_view = compose_button.clone();
-        let sidebar_button_for_view = sidebar_button.clone();
-        view_stack.connect_visible_child_name_notify(move |stack| {
-            if let Some(view_name) = stack.visible_child_name() {
-                Self::configure_primary_action(&primary_action_for_view, view_name.as_str());
-                sidebar_button_for_view.set_visible(view_name.as_str() == "mail");
-            }
-        });
-
-        header_bar.pack_end(&compose_button);
 
         let statusbar_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
@@ -2024,36 +2241,48 @@ impl EvolutionWindow {
 
         let debug_toggle = gtk::Button::builder()
             .icon_name("utilities-terminal-symbolic")
-            .tooltip_text("Entwickler-Protokollkonsole anzeigen / verbergen")
+            .tooltip_text("Entwickler-Protokollkonsole anzeigen / verbergen (Strg+F12)")
             .css_classes(vec!["flat", "circular"])
-            .visible(false)
+            .visible(true)
             .build();
 
         let debug_revealer = gtk::Revealer::builder()
             .transition_type(gtk::RevealerTransitionType::SlideUp)
             .transition_duration(250)
             .reveal_child(false)
+            .vexpand(false)
+            .valign(gtk::Align::End)
             .build();
         let debug_panel = build_debug_console_panel(&debug_revealer);
         debug_revealer.set_child(Some(&debug_panel));
 
-        let debug_revealer_for_toggle = debug_revealer.clone();
+        let window_for_debug_toggle = self.downgrade();
         debug_toggle.connect_clicked(move |_| {
-            debug_revealer_for_toggle.set_reveal_child(!debug_revealer_for_toggle.reveals_child());
+            if let Some(win) = window_for_debug_toggle.upgrade() {
+                win.toggle_debug_console();
+            }
         });
 
         if let Some(settings) = AppSettings::try_new() {
             let enabled = settings.debug_console_enabled();
-            debug_toggle.set_visible(enabled);
+            debug_revealer.set_visible(enabled);
             debug_revealer.set_reveal_child(enabled);
-            let debug_toggle_for_setting = debug_toggle.clone();
             let debug_revealer_for_setting = debug_revealer.clone();
             settings.connect_changed(Some("debug-console-enabled"), move |settings, _| {
                 let enabled = settings.boolean("debug-console-enabled");
-                debug_toggle_for_setting.set_visible(enabled);
+                if enabled {
+                    debug_revealer_for_setting.set_visible(true);
+                }
                 debug_revealer_for_setting.set_reveal_child(enabled);
             });
+        } else {
+            debug_revealer.set_visible(false);
         }
+        debug_revealer.connect_child_revealed_notify(move |revealer| {
+            if !revealer.reveals_child() && !revealer.is_child_revealed() {
+                revealer.set_visible(false);
+            }
+        });
 
         statusbar_box.append(&online_toggle);
         statusbar_box.append(&status_label);
@@ -2071,6 +2300,9 @@ impl EvolutionWindow {
         self.imp()
             .debug_revealer
             .replace(Some(debug_revealer.clone()));
+        self.imp()
+            .statusbar_box
+            .replace(Some(statusbar_box.clone()));
         let initial_transport_snapshot = self.imp().transport_service.set_mode(
             if AppSettings::try_new().is_some_and(|settings| settings.offline_mode()) {
                 MailTransportMode::Offline
@@ -2097,18 +2329,11 @@ impl EvolutionWindow {
             .transport_status_source
             .replace(Some(transport_status_source));
 
-        let main_content_box = gtk::Box::builder()
-            .orientation(gtk::Orientation::Vertical)
-            .vexpand(true)
-            .hexpand(true)
-            .build();
-        main_content_box.append(&view_stack);
-        main_content_box.append(&debug_revealer);
-
         let toolbar_view = adw::ToolbarView::new();
         toolbar_view.add_top_bar(&header_bar);
+        toolbar_view.add_bottom_bar(&debug_revealer);
         toolbar_view.add_bottom_bar(&statusbar_box);
-        toolbar_view.set_content(Some(&main_content_box));
+        toolbar_view.set_content(Some(&view_stack));
 
         let toast_overlay = &self.imp().toast_overlay;
         toast_overlay.set_hexpand(true);
@@ -2126,8 +2351,6 @@ impl EvolutionWindow {
 
         let bp_mobile =
             adw::Breakpoint::new(adw::BreakpointCondition::parse("max-width: 560sp").unwrap());
-        // Sidebar visibility is handled cleanly via the sidebar toggle button
-        bp_mobile.add_setter(&sidebar_button, "active", Some(&false.to_value()));
 
         self.add_breakpoint(bp_narrow);
         self.add_breakpoint(bp_mobile);
@@ -2159,7 +2382,11 @@ impl EvolutionWindow {
             .vexpand(true)
             .hexpand(true)
             .build();
-        adw::Bin::builder().child(&status).build()
+        adw::Bin::builder()
+            .vexpand(true)
+            .hexpand(true)
+            .child(&status)
+            .build()
     }
 
     fn build_primary_menu() -> gio::Menu {
@@ -2184,10 +2411,31 @@ impl EvolutionWindow {
         Self::append_contract_menu(&switch_menu, MenuPath::ViewSwitch);
         view_menu.append_submenu(Some("Bereich wechseln"), &switch_menu);
         Self::append_contract_menu(&view_menu, MenuPath::View);
+
+        let layout_menu = gio::Menu::new();
+        Self::append_contract_menu(&layout_menu, MenuPath::ViewLayout);
+        view_menu.append_submenu(Some("Anordnung"), &layout_menu);
+
+        let columns_menu = gio::Menu::new();
+        Self::append_contract_menu(&columns_menu, MenuPath::ViewColumns);
+        view_menu.append_submenu(Some("Sichtbare Spalten"), &columns_menu);
+
+        let threads_menu = gio::Menu::new();
+        Self::append_contract_menu(&threads_menu, MenuPath::ViewThreads);
+        view_menu.append_submenu(Some("Unterhaltungen"), &threads_menu);
+
         let density_menu = gio::Menu::new();
         Self::append_contract_menu(&density_menu, MenuPath::ViewDensity);
         view_menu.append_submenu(Some("Nachrichtendichte"), &density_menu);
-        Self::append_contract_menu(&view_menu, MenuPath::ViewAfterDensity);
+
+        let zoom_menu = gio::Menu::new();
+        Self::append_contract_menu(&zoom_menu, MenuPath::ViewZoom);
+        view_menu.append_submenu(Some("Textgröße"), &zoom_menu);
+
+        let details_menu = gio::Menu::new();
+        Self::append_contract_menu(&details_menu, MenuPath::ViewDetails);
+        view_menu.append_submenu(Some("Weitere Ansichten"), &details_menu);
+
         menu.append_submenu(Some("Ansicht"), &view_menu);
 
         // ─── 4. Nachricht (Message) ────────────────────────────────────────
@@ -2209,6 +2457,8 @@ impl EvolutionWindow {
 
         // ─── 6. Extras (Tools) ─────────────────────────────────────────────
         let tools_menu = gio::Menu::new();
+        let transport_menu = Self::build_transport_menu();
+        tools_menu.append_submenu(Some("Senden und Empfangen"), &transport_menu);
         Self::append_contract_menu(&tools_menu, MenuPath::Tools);
         menu.append_submenu(Some("Extras"), &tools_menu);
 
@@ -2447,21 +2697,31 @@ impl EvolutionWindow {
             );
         }
 
-        for (action_name, layout) in [
-            ("use-classic-mail-layout", "classic"),
-            ("use-modern-mail-layout", "modern"),
-        ] {
-            self.add_string_setting_action(
-                action_name,
-                "mail-layout",
-                layout,
-                AppSettings::mail_layout,
-                AppSettings::set_mail_layout,
-            );
-        }
+        self.add_boolean_setting_action(
+            "use-classic-mail-layout",
+            "mail-layout",
+            |settings| settings.mail_layout() == "classic",
+            |settings, is_classic| {
+                settings.set_mail_layout(if is_classic { "classic" } else { "modern" });
+            },
+        );
+        self.add_boolean_setting_action(
+            "use-modern-mail-layout",
+            "mail-layout",
+            |settings| settings.mail_layout() == "modern",
+            |settings, is_modern| {
+                settings.set_mail_layout(if is_modern { "modern" } else { "classic" });
+            },
+        );
 
         self.add_boolean_setting_action(
             "toggle-mail-toolbar",
+            "mail-show-toolbar",
+            AppSettings::mail_show_toolbar,
+            AppSettings::set_mail_show_toolbar,
+        );
+        self.add_boolean_setting_action(
+            "toggle-toolbar",
             "mail-show-toolbar",
             AppSettings::mail_show_toolbar,
             AppSettings::set_mail_show_toolbar,
@@ -2471,6 +2731,18 @@ impl EvolutionWindow {
             "mail-show-statusbar",
             AppSettings::mail_show_statusbar,
             AppSettings::set_mail_show_statusbar,
+        );
+        self.add_boolean_setting_action(
+            "toggle-statusbar",
+            "mail-show-statusbar",
+            AppSettings::mail_show_statusbar,
+            AppSettings::set_mail_show_statusbar,
+        );
+        self.add_boolean_setting_action(
+            "toggle-debug-console",
+            "debug-console-enabled",
+            AppSettings::debug_console_enabled,
+            AppSettings::set_debug_console_enabled,
         );
 
         let action_refresh_mail = gio::SimpleAction::new("refresh-mail", None);
@@ -3478,6 +3750,21 @@ impl EvolutionWindow {
         action_purge_calendar.set_enabled(false);
         self.add_action(&action_purge_calendar);
 
+        let action_export_calendar = gio::SimpleAction::new("export-calendar", None);
+        action_export_calendar.connect_activate(glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            move |_, _| {
+                if let Some(cal_page) = win.calendar_page() {
+                    cal_page.export_calendar_dialog();
+                } else {
+                    win.add_toast(&adw::Toast::new("Kalenderansicht ist nicht verfügbar"));
+                }
+            }
+        ));
+        action_export_calendar.set_enabled(false);
+        self.add_action(&action_export_calendar);
+
         let action_zoom_in = gio::SimpleAction::new("zoom-in", None);
         action_zoom_in.connect_activate(glib::clone!(
             #[weak(rename_to = win)]
@@ -3806,6 +4093,8 @@ pub(crate) fn format_current_status_date() -> String {
 fn build_debug_console_panel(revealer: &gtk::Revealer) -> gtk::Widget {
     let container = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
+        .vexpand(false)
+        .valign(gtk::Align::End)
         .css_classes(vec!["debug-console-panel"])
         .build();
 
@@ -3814,8 +4103,8 @@ fn build_debug_console_panel(revealer: &gtk::Revealer) -> gtk::Widget {
         .spacing(8)
         .margin_start(12)
         .margin_end(12)
-        .margin_top(6)
-        .margin_bottom(6)
+        .margin_top(4)
+        .margin_bottom(4)
         .css_classes(vec!["debug-console-header"])
         .build();
 
@@ -3851,6 +4140,12 @@ fn build_debug_console_panel(revealer: &gtk::Revealer) -> gtk::Widget {
         .css_classes(vec!["flat"])
         .build();
 
+    let collapse_button = gtk::Button::builder()
+        .icon_name("pan-down-symbolic")
+        .tooltip_text("Protokollkonsole herunterklappen")
+        .css_classes(vec!["flat"])
+        .build();
+
     let close_button = gtk::Button::builder()
         .icon_name("window-close-symbolic")
         .tooltip_text("Protokollkonsole schließen")
@@ -3863,6 +4158,7 @@ fn build_debug_console_panel(revealer: &gtk::Revealer) -> gtk::Widget {
     header.append(&pause_button);
     header.append(&copy_button);
     header.append(&clear_button);
+    header.append(&collapse_button);
     header.append(&close_button);
 
     let text_view = gtk::TextView::builder()
@@ -3873,16 +4169,18 @@ fn build_debug_console_panel(revealer: &gtk::Revealer) -> gtk::Widget {
         .css_classes(vec!["monospace", "terminal-text"])
         .margin_start(8)
         .margin_end(8)
-        .margin_top(6)
-        .margin_bottom(6)
+        .margin_top(4)
+        .margin_bottom(4)
         .build();
 
     let scrolled = gtk::ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Automatic)
         .vscrollbar_policy(gtk::PolicyType::Automatic)
-        .min_content_height(180)
-        .max_content_height(260)
+        .propagate_natural_height(true)
+        .min_content_height(120)
+        .max_content_height(180)
         .vexpand(false)
+        .valign(gtk::Align::End)
         .child(&text_view)
         .build();
 
@@ -3892,8 +4190,18 @@ fn build_debug_console_panel(revealer: &gtk::Revealer) -> gtk::Widget {
     container.append(&scrolled);
 
     let revealer_for_close = revealer.clone();
-    close_button.connect_clicked(move |_| {
+    let do_close = Rc::new(move || {
         revealer_for_close.set_reveal_child(false);
+        if let Some(settings) = AppSettings::try_new() {
+            settings.set_debug_console_enabled(false);
+        }
+    });
+    let do_close_cloned = Rc::clone(&do_close);
+    collapse_button.connect_clicked(move |_| {
+        do_close();
+    });
+    close_button.connect_clicked(move |_| {
+        do_close_cloned();
     });
 
     let buffer = text_view.buffer();
@@ -3906,16 +4214,20 @@ fn build_debug_console_panel(revealer: &gtk::Revealer) -> gtk::Widget {
         move |buf: &gtk::TextBuffer, tv: &gtk::TextView, filter: &str| {
             let logs = crate::services::log_buffer::recent_logs();
             let filter_lower = filter.trim().to_lowercase();
-            let filtered_text: String = logs
+            let mut filtered_text: String = logs
                 .iter()
                 .filter(|line| filter_lower.is_empty() || line.to_lowercase().contains(&filter_lower))
                 .cloned()
                 .collect::<Vec<_>>()
                 .join("\n");
+            if filtered_text.contains('\0') {
+                filtered_text = filtered_text.replace('\0', "");
+            }
             buf.set_text(&filtered_text);
 
             let mark = buf.create_mark(None, &buf.end_iter(), false);
             tv.scroll_to_mark(&mark, 0.0, true, 0.0, 1.0);
+            buf.delete_mark(&mark);
         },
     );
 
@@ -3923,7 +4235,9 @@ fn build_debug_console_panel(revealer: &gtk::Revealer) -> gtk::Widget {
     search_entry.connect_search_changed(move |entry| {
         let text = entry.text().to_string();
         *search_for_entry.borrow_mut() = text.clone();
-        refresh_for_search(&buffer_for_entry, &text_view_for_entry, &text);
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            refresh_for_search(&buffer_for_entry, &text_view_for_entry, &text);
+        }));
     });
 
     let buffer_for_clear = buffer.clone();
@@ -3939,7 +4253,12 @@ fn build_debug_console_panel(revealer: &gtk::Revealer) -> gtk::Widget {
             &buffer_for_copy.end_iter(),
             false,
         );
-        btn.clipboard().set_text(&text);
+        let clean_text = if text.contains('\0') {
+            text.replace('\0', "")
+        } else {
+            text.to_string()
+        };
+        btn.clipboard().set_text(&clean_text);
     });
 
     let buffer_for_notify = buffer.clone();
@@ -3949,7 +4268,9 @@ fn build_debug_console_panel(revealer: &gtk::Revealer) -> gtk::Widget {
     revealer.connect_reveal_child_notify(move |r| {
         if r.reveals_child() {
             let filter = search_for_notify.borrow().clone();
-            refresh_for_notify(&buffer_for_notify, &text_view_for_notify, &filter);
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                refresh_for_notify(&buffer_for_notify, &text_view_for_notify, &filter);
+            }));
         }
     });
 
@@ -3970,7 +4291,9 @@ fn build_debug_console_panel(revealer: &gtk::Revealer) -> gtk::Widget {
             btn.set_icon_name("media-playback-pause-symbolic");
             btn.set_tooltip_text(Some("Live-Aktualisierung anhalten (Pause)"));
             let filter = search_for_pause.borrow().clone();
-            refresh_for_pause(&buffer_for_pause, &text_view_for_pause, &filter);
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                refresh_for_pause(&buffer_for_pause, &text_view_for_pause, &filter);
+            }));
         }
     });
 
@@ -3986,7 +4309,9 @@ fn build_debug_console_panel(revealer: &gtk::Revealer) -> gtk::Widget {
             && revealer_for_timer.is_visible()
         {
             let filter = search_for_timer.borrow().clone();
-            refresh_for_timer(&buffer_for_timer, &text_view_for_timer, &filter);
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                refresh_for_timer(&buffer_for_timer, &text_view_for_timer, &filter);
+            }));
         }
         glib::ControlFlow::Continue
     });
@@ -4689,6 +5014,291 @@ mod tests {
     }
 
     #[test]
+    fn toolbar_view_content_is_view_stack_and_debug_revealer_is_bottom_bar() {
+        let _gtk_lock = GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = gtk_test_main_context() else {
+            return;
+        };
+        let app = EvolutionApplication::new();
+        let window = EvolutionWindow::new(&app);
+
+        let stack = window
+            .imp()
+            .view_stack
+            .borrow()
+            .as_ref()
+            .cloned()
+            .expect("view stack present");
+
+        // Ensure view stack is set to expand in both directions and fill
+        assert!(stack.vexpands());
+        assert!(stack.hexpands());
+        assert_eq!(stack.valign(), gtk::Align::Fill);
+        assert_eq!(stack.halign(), gtk::Align::Fill);
+
+        // Ensure debug revealer is present and does not vexpand
+        let revealer = window
+            .imp()
+            .debug_revealer
+            .borrow()
+            .clone()
+            .expect("debug revealer should exist");
+        assert!(!revealer.vexpands());
+
+        // Toggle debug console open and closed
+        window.set_debug_console_open(true);
+        assert!(revealer.reveals_child());
+        assert!(stack.vexpands());
+        drain_main_context(&_context);
+
+        window.toggle_debug_console();
+        drain_main_context(&_context);
+
+        window.set_debug_console_open(false);
+        assert!(!revealer.reveals_child());
+        assert!(stack.vexpands());
+        drain_main_context(&_context);
+    }
+
+    #[test]
+    fn debug_console_opens_safely_even_with_nul_bytes_in_log_buffer() {
+        let _gtk_lock = GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(context) = gtk_test_main_context() else {
+            return;
+        };
+
+        // Inject log entries containing interior nul bytes
+        crate::services::log_buffer::clear_logs();
+        crate::services::log_buffer::append_log_line("Test line with \0 interior null characters \0 in log");
+
+        let app = EvolutionApplication::new();
+        let window = EvolutionWindow::new(&app);
+
+        // Toggle console open - this exercises connect_reveal_child_notify, refresh_logs,
+        // TextBuffer::set_text, and scrolling without panic
+        window.set_debug_console_open(true);
+        drain_main_context(&context);
+
+        window.toggle_debug_console();
+        drain_main_context(&context);
+
+        window.set_debug_console_open(false);
+        drain_main_context(&context);
+
+        crate::services::log_buffer::clear_logs();
+    }
+
+    #[test]
+    fn toolbar_toggle_action_is_bidirectional_and_syncs_across_views() {
+        let _gtk_lock = GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = gtk_test_main_context() else {
+            return;
+        };
+        let app = EvolutionApplication::new();
+        let window = EvolutionWindow::new(&app);
+
+        let action = window
+            .lookup_action("toggle-toolbar")
+            .expect("toggle-toolbar action should be registered");
+
+        let initial_state = action
+            .state()
+            .and_then(|v| v.get::<bool>())
+            .expect("boolean state");
+
+        // Action must support change_state (which GtkPopoverMenu uses)
+        action.change_state(&(!initial_state).to_variant());
+        assert_eq!(
+            action.state().and_then(|v| v.get::<bool>()),
+            Some(!initial_state)
+        );
+
+        // And toggling again must restore the state (bidirectional)
+        action.change_state(&initial_state.to_variant());
+        assert_eq!(
+            action.state().and_then(|v| v.get::<bool>()),
+            Some(initial_state)
+        );
+
+        // Also test connect_activate
+        action.activate(None);
+        assert_eq!(
+            action.state().and_then(|v| v.get::<bool>()),
+            Some(!initial_state)
+        );
+        action.activate(None);
+        assert_eq!(
+            action.state().and_then(|v| v.get::<bool>()),
+            Some(initial_state)
+        );
+
+        // Verify all 5 views have toolbars and reflect settings
+        let stack = window
+            .imp()
+            .view_stack
+            .borrow()
+            .as_ref()
+            .cloned()
+            .expect("view stack present");
+
+        let mail_bin = stack.child_by_name("mail").and_downcast::<adw::Bin>().unwrap();
+        let mail_page = mail_bin.child().and_downcast::<MailPage>().unwrap();
+        assert!(mail_page.imp().classic_toolbar.borrow().is_some());
+
+        let contacts_bin = stack.child_by_name("contacts").and_downcast::<adw::Bin>().unwrap();
+        let contacts_page = contacts_bin.child().and_downcast::<ContactsPage>().unwrap();
+        assert!(contacts_page.imp().toolbar.borrow().is_some());
+
+        let calendar_bin = stack.child_by_name("calendar").and_downcast::<adw::Bin>().unwrap();
+        let calendar_page = calendar_bin.child().and_downcast::<CalendarPage>().unwrap();
+        assert!(calendar_page.imp().toolbar.borrow().is_some());
+
+        let tasks_bin = stack.child_by_name("tasks").and_downcast::<adw::Bin>().unwrap();
+        let tasks_page = tasks_bin.child().and_downcast::<TasksPage>().unwrap();
+        assert!(tasks_page.imp().toolbar.borrow().is_some());
+
+        let memos_bin = stack.child_by_name("memos").and_downcast::<adw::Bin>().unwrap();
+        let memos_page = memos_bin.child().and_downcast::<MemosPage>().unwrap();
+        assert!(memos_page.imp().toolbar.borrow().is_some());
+
+        // Toggle to false and verify visibility in all views
+        if let Some(settings) = AppSettings::try_new() {
+            settings.set_mail_show_toolbar(false);
+            assert_eq!(mail_page.imp().classic_toolbar.borrow().as_ref().map(|w| w.is_visible()), Some(false));
+            assert_eq!(contacts_page.imp().toolbar.borrow().as_ref().map(|w| w.is_visible()), Some(false));
+            assert_eq!(calendar_page.imp().toolbar.borrow().as_ref().map(|w| w.is_visible()), Some(false));
+            assert_eq!(tasks_page.imp().toolbar.borrow().as_ref().map(|w| w.is_visible()), Some(false));
+            assert_eq!(memos_page.imp().toolbar.borrow().as_ref().map(|w| w.is_visible()), Some(false));
+
+            // Toggle to true and verify visibility in all views
+            settings.set_mail_show_toolbar(true);
+            assert_eq!(mail_page.imp().classic_toolbar.borrow().as_ref().map(|w| w.is_visible()), Some(true));
+            assert_eq!(contacts_page.imp().toolbar.borrow().as_ref().map(|w| w.is_visible()), Some(true));
+            assert_eq!(calendar_page.imp().toolbar.borrow().as_ref().map(|w| w.is_visible()), Some(true));
+            assert_eq!(tasks_page.imp().toolbar.borrow().as_ref().map(|w| w.is_visible()), Some(true));
+            assert_eq!(memos_page.imp().toolbar.borrow().as_ref().map(|w| w.is_visible()), Some(true));
+        }
+    }
+
+    #[test]
+    fn statusbar_toggle_is_bidirectional_and_collapses_bottom_bar() {
+        let _gtk_lock = GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = gtk_test_main_context() else {
+            return;
+        };
+        let app = EvolutionApplication::new();
+        let window = EvolutionWindow::new(&app);
+
+        let action = window
+            .lookup_action("toggle-statusbar")
+            .expect("toggle-statusbar action should be registered");
+
+        let initial_state = action
+            .state()
+            .and_then(|v| v.get::<bool>())
+            .expect("boolean state");
+
+        // Statusbar box should be stored and match initial state
+        assert_eq!(window.statusbar_is_visible(), initial_state);
+
+        // When debug console is closed, debug_revealer must be invisible so toolbar view can collapse bottom bar
+        let debug_revealer = window
+            .imp()
+            .debug_revealer
+            .borrow()
+            .as_ref()
+            .cloned()
+            .expect("debug revealer exists");
+        assert!(!debug_revealer.is_visible(), "debug revealer should be invisible when console is closed");
+
+        // Action must support change_state (used by GtkPopoverMenu)
+        action.change_state(&(!initial_state).to_variant());
+        assert_eq!(
+            action.state().and_then(|v| v.get::<bool>()),
+            Some(!initial_state)
+        );
+        assert_eq!(window.statusbar_is_visible(), !initial_state);
+
+        // Toggling again must restore the state (bidirectional)
+        action.change_state(&initial_state.to_variant());
+        assert_eq!(
+            action.state().and_then(|v| v.get::<bool>()),
+            Some(initial_state)
+        );
+        assert_eq!(window.statusbar_is_visible(), initial_state);
+
+        // Also test connect_activate
+        action.activate(None);
+        assert_eq!(
+            action.state().and_then(|v| v.get::<bool>()),
+            Some(!initial_state)
+        );
+        assert_eq!(window.statusbar_is_visible(), !initial_state);
+
+        action.activate(None);
+        assert_eq!(
+            action.state().and_then(|v| v.get::<bool>()),
+            Some(initial_state)
+        );
+        assert_eq!(window.statusbar_is_visible(), initial_state);
+    }
+
+    #[test]
+    fn mail_layout_toggle_is_bidirectional_and_updates_settings() {
+        let _gtk_lock = GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = gtk_test_main_context() else {
+            return;
+        };
+        let app = EvolutionApplication::new();
+        let window = EvolutionWindow::new(&app);
+
+        let classic_action = window
+            .lookup_action("use-classic-mail-layout")
+            .expect("use-classic-mail-layout action should be registered");
+        let modern_action = window
+            .lookup_action("use-modern-mail-layout")
+            .expect("use-modern-mail-layout action should be registered");
+
+        let Some(settings) = AppSettings::try_new() else {
+            return;
+        };
+
+        // Switch to classic
+        classic_action.change_state(&true.to_variant());
+        assert_eq!(settings.mail_layout(), "classic");
+        assert_eq!(classic_action.state().and_then(|v| v.get::<bool>()), Some(true));
+        assert_eq!(modern_action.state().and_then(|v| v.get::<bool>()), Some(false));
+
+        // Switch to modern via classic toggle (setting false)
+        classic_action.change_state(&false.to_variant());
+        assert_eq!(settings.mail_layout(), "modern");
+        assert_eq!(classic_action.state().and_then(|v| v.get::<bool>()), Some(false));
+        assert_eq!(modern_action.state().and_then(|v| v.get::<bool>()), Some(true));
+
+        // Activate classic again via click (activate)
+        classic_action.activate(None);
+        assert_eq!(settings.mail_layout(), "classic");
+        assert_eq!(classic_action.state().and_then(|v| v.get::<bool>()), Some(true));
+        assert_eq!(modern_action.state().and_then(|v| v.get::<bool>()), Some(false));
+
+        // Modern action activation also works
+        modern_action.activate(None);
+        assert_eq!(settings.mail_layout(), "modern");
+        assert_eq!(classic_action.state().and_then(|v| v.get::<bool>()), Some(false));
+        assert_eq!(modern_action.state().and_then(|v| v.get::<bool>()), Some(true));
+    }
+
+    #[test]
     fn stress_test_window_drain_transport_queue_and_actions() {
         let _gtk_lock = GTK_TEST_MUTEX
             .lock()
@@ -4698,6 +5308,7 @@ mod tests {
         };
         let app = EvolutionApplication::new();
         let window = EvolutionWindow::new(&app);
+
         let Some(settings) = AppSettings::try_new() else {
             return;
         };
@@ -4725,6 +5336,74 @@ mod tests {
         // Reset
         settings.set_flush_outbox(true);
         while context.iteration(false) {}
+    }
+
+    #[test]
+    fn header_bar_has_search_button_and_no_transport_button() {
+        let _gtk_lock = GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = gtk_test_main_context() else {
+            return;
+        };
+        let app = EvolutionApplication::new();
+        let window = EvolutionWindow::new(&app);
+
+        let search_btn = window.search_button();
+        assert!(search_btn.is_some(), "search_button must be present on window");
+        let search_btn = search_btn.unwrap();
+        assert_eq!(search_btn.icon_name().as_deref(), Some("edit-find-symbolic"));
+        assert!(!search_btn.is_active());
+
+        // Toggle search
+        search_btn.set_active(true);
+        assert!(window.is_active_search_open());
+
+        search_btn.set_active(false);
+        assert!(!window.is_active_search_open());
+
+        // Ensure search_button is packed first (furthest to the left)
+        let header_bar = window.imp().header_bar.borrow().as_ref().unwrap().clone();
+        assert_eq!(
+            header_bar.first_child().and_then(|c| c.downcast::<gtk::ToggleButton>().ok()),
+            Some(search_btn.clone()),
+            "search_button must be the first child on the far left of header_bar"
+        );
+
+        // Ensure transport button (mail-send-receive-symbolic) and sidebar_button are not in headerbar
+        let mut has_transport = false;
+        let mut has_sidebar = false;
+        let mut child = header_bar.first_child();
+        while let Some(c) = child {
+            if let Some(menu_btn) = c.downcast_ref::<gtk::MenuButton>() {
+                if menu_btn.icon_name().as_deref() == Some("mail-send-receive-symbolic") {
+                    has_transport = true;
+                }
+            }
+            if let Some(toggle_btn) = c.downcast_ref::<gtk::ToggleButton>() {
+                if toggle_btn.icon_name().as_deref() == Some("sidebar-show-symbolic") {
+                    has_sidebar = true;
+                }
+            }
+            child = c.next_sibling();
+        }
+        assert!(!has_transport, "transport_button must not be in header_bar");
+        assert!(!has_sidebar, "sidebar_button must not be in header_bar");
+    }
+
+    #[test]
+    fn test_window_reload_accounts_and_find_evolution_window() {
+        let _gtk_lock = GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = gtk_test_main_context() else {
+            return;
+        };
+        let app = EvolutionApplication::new();
+        let window = EvolutionWindow::new(&app);
+        let found = find_evolution_window(&window);
+        assert!(found.is_some());
+        window.reload_accounts();
     }
 }
 

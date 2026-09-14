@@ -350,6 +350,27 @@ impl MemoPreviewOrientation {
     pub fn from_setting(value: &str) -> Self {
         Self::parse_setting(value).unwrap_or_default()
     }
+
+    pub fn index(self) -> u32 {
+        match self {
+            Self::Classic => 0,
+            Self::Vertical => 1,
+        }
+    }
+
+    pub fn from_index(index: u32) -> Self {
+        match index {
+            1 => Self::Vertical,
+            _ => Self::Classic,
+        }
+    }
+
+    pub fn default_position(self) -> i32 {
+        match self {
+            Self::Classic => 360,
+            Self::Vertical => 360,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

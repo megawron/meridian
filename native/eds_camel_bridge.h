@@ -25,6 +25,8 @@ typedef struct {
     char *follow_up;
     char *completed_on;
     char *due_by;
+    int is_replied;
+    int is_forwarded;
 } EvolutionEdsCamelMessage;
 
 typedef struct {

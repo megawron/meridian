@@ -111,6 +111,14 @@ pub struct AccountProfile {
     pub default_bcc: String,
     #[serde(default = "default_true")]
     pub prefer_html: bool,
+    #[serde(default)]
+    pub open_mailbox_other_user: bool,
+    #[serde(default)]
+    pub foreign_mailbox: String,
+    #[serde(default)]
+    pub is_shared_mailbox: bool,
+    #[serde(default)]
+    pub parent_account_id: Option<String>,
 }
 
 impl Default for AccountProfile {
@@ -151,6 +159,10 @@ impl Default for AccountProfile {
             default_cc: String::new(),
             default_bcc: String::new(),
             prefer_html: true,
+            open_mailbox_other_user: false,
+            foreign_mailbox: String::new(),
+            is_shared_mailbox: false,
+            parent_account_id: None,
         }
     }
 }
@@ -215,7 +227,7 @@ fn default_true() -> bool {
     true
 }
 
-fn is_plausible_address(value: &str) -> bool {
+pub fn is_plausible_address(value: &str) -> bool {
     let Some((local, domain)) = value.split_once('@') else {
         return false;
     };
@@ -439,13 +451,342 @@ pub fn sanitize_oab_url(raw: &str) -> String {
     trimmed.to_string()
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExchangeDiscoveryStatus {
+    Success {
+        ews_url: String,
+        oab_url: String,
+        message: String,
+    },
+    MissingCredentials,
+    AuthFailed(String),
+    ServerNotFound(String),
+    Error(String),
+}
+
+/// Helper function to extract content of an XML tag (case-insensitive and tolerant of namespaces and attributes)
+pub fn extract_xml_tag_value(xml: &str, tag_name: &str) -> Option<String> {
+    let lower_xml = xml.to_lowercase();
+    let lower_tag = tag_name.to_lowercase();
+
+    // Look for <tag or <prefix:tag
+    let mut search_idx = 0;
+    while let Some(rel_start) = lower_xml[search_idx..].find('<') {
+        let tag_start = search_idx + rel_start;
+        let rest = &lower_xml[tag_start + 1..];
+        let name_end = rest
+            .find(|c: char| c.is_whitespace() || c == '>' || c == '/')
+            .unwrap_or(rest.len());
+        let full_element_name = &rest[..name_end];
+        let local_name = full_element_name.rsplit(':').next().unwrap_or(full_element_name);
+
+        if local_name == lower_tag {
+            if let Some(close_bracket) = rest.find('>') {
+                let content_start = tag_start + 1 + close_bracket + 1;
+                // Find matching closing tag </tag> or </prefix:tag>
+                let close_tag_pattern = format!("</{}", full_element_name);
+                let close_tag_simple = format!("</{}", lower_tag);
+                if let Some(rel_end) = lower_xml[content_start..].find(&close_tag_pattern)
+                    .or_else(|| lower_xml[content_start..].find(&close_tag_simple))
+                {
+                    return Some(xml[content_start..content_start + rel_end].trim().to_string());
+                }
+            }
+        }
+        search_idx = tag_start + 1;
+    }
+    None
+}
+
+/// Normalizes user-entered Exchange host or URL to a clean hostname (with optional port).
+/// E.g. "https://mail.company.com/EWS/Exchange.asmx" -> "mail.company.com"
+/// E.g. "mail.company.com:444" -> "mail.company.com:444"
+pub fn normalize_exchange_host_url(input: &str) -> String {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    let without_scheme = trimmed
+        .strip_prefix("https://")
+        .or_else(|| trimmed.strip_prefix("http://"))
+        .unwrap_or(trimmed);
+    without_scheme
+        .split('/')
+        .next()
+        .unwrap_or(without_scheme)
+        .trim()
+        .to_string()
+}
+
+/// Resolves DNS SRV record for Exchange Autodiscover (`_autodiscover._tcp.<domain>`),
+/// mirroring GNOME Evolution's `autodiscover_srv_record_resolved_cb`.
+fn resolve_autodiscover_srv(domain: &str) -> Option<(String, u16)> {
+    use gtk::gio::prelude::*;
+    let resolver = gtk::gio::Resolver::default();
+    match resolver.lookup_service("autodiscover", "tcp", domain, gtk::gio::Cancellable::NONE) {
+        Ok(targets) => {
+            for mut target in targets {
+                let host = target.hostname().to_string();
+                let port = target.port();
+                if !host.is_empty() {
+                    return Some((host, port));
+                }
+            }
+            None
+        }
+        Err(_) => None,
+    }
+}
+
+/// Discover and validate Exchange Web Services (EWS) and Offline Address Book (OAB) endpoints.
+///
+/// Follows GNOME Evolution upstream (`evolution-ews`) connection & discovery logic:
+/// 1. If host is specified, queries POX Autodiscover on host and falls back to direct EWS probe.
+/// 2. If host is empty, performs full Autodiscover chain (DNS SRV, https, autodiscover subdomain, redirects).
+///    If all fail without host entered, returns Evolution's exact error message:
+///    "Abfrage des Autodiscover-Dienstes ist fehlgeschlagen: Die Rechneradresse darf nicht leer sein. Bitte geben Sie die Rechneradresse (Host-URL) Ihres Exchange-Servers ein."
+pub fn discover_and_validate_exchange_services(
+    email: &str,
+    input_host: &str,
+    username: &str,
+    password: &str,
+) -> ExchangeDiscoveryStatus {
+    let trimmed_user = username.trim();
+    let trimmed_pwd = password.trim();
+    if trimmed_user.is_empty() || trimmed_pwd.is_empty() {
+        return ExchangeDiscoveryStatus::MissingCredentials;
+    }
+
+    let email_trimmed = email.trim();
+    let host_base = normalize_exchange_host_url(input_host);
+    let email_domain = email_trimmed.split('@').nth(1).unwrap_or("localhost");
+
+    let client = match reqwest::blocking::Client::builder()
+        .danger_accept_invalid_certs(true)
+        .redirect(reqwest::redirect::Policy::limited(5))
+        .timeout(std::time::Duration::from_secs(6))
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => return ExchangeDiscoveryStatus::Error(format!("HTTP-Client-Fehler: {e}")),
+    };
+
+    // 1. Build Autodiscover candidate URLs in GNOME Evolution sequence
+    let mut autodiscover_urls = Vec::new();
+
+    if !host_base.is_empty() {
+        autodiscover_urls.push(format!("https://{host_base}/autodiscover/autodiscover.xml"));
+        autodiscover_urls.push(format!("https://autodiscover.{host_base}/autodiscover/autodiscover.xml"));
+        if host_base != email_domain {
+            autodiscover_urls.push(format!("https://autodiscover.{email_domain}/autodiscover/autodiscover.xml"));
+        }
+    } else {
+        // DNS SRV lookup: _autodiscover._tcp.<domain>
+        if let Some((srv_host, srv_port)) = resolve_autodiscover_srv(email_domain) {
+            let scheme = if srv_port == 443 { "https" } else { "http" };
+            autodiscover_urls.push(format!("{scheme}://{srv_host}:{srv_port}/autodiscover/autodiscover.xml"));
+        }
+        autodiscover_urls.push(format!("https://{email_domain}/autodiscover/autodiscover.xml"));
+        autodiscover_urls.push(format!("https://autodiscover.{email_domain}/autodiscover/autodiscover.xml"));
+        autodiscover_urls.push(format!("http://autodiscover.{email_domain}/autodiscover/autodiscover.xml"));
+        autodiscover_urls.push(format!("https://mail.{email_domain}/autodiscover/autodiscover.xml"));
+        autodiscover_urls.push(format!("https://exchange.{email_domain}/autodiscover/autodiscover.xml"));
+    }
+
+    let autodiscover_payload = format!(
+        r#"<?xml version="1.0" encoding="utf-8"?>
+<Autodiscover xmlns="http://schemas.microsoft.com/exchange/autodiscover/outlook/requestschema/2006">
+  <Request>
+    <EMailAddress>{email_trimmed}</EMailAddress>
+    <AcceptableResponseSchema>http://schemas.microsoft.com/exchange/autodiscover/outlook/responseschema/2006a</AcceptableResponseSchema>
+  </Request>
+</Autodiscover>"#
+    );
+
+    for auto_url in &autodiscover_urls {
+        if let Ok(resp) = client
+            .post(auto_url)
+            .header("Content-Type", "text/xml; charset=utf-8")
+            .basic_auth(trimmed_user, Some(trimmed_pwd))
+            .body(autodiscover_payload.clone())
+            .send()
+        {
+            let status = resp.status().as_u16();
+            if status == 200 {
+                if let Ok(body) = resp.text() {
+                    let ews_url = extract_xml_tag_value(&body, "EwsUrl")
+                        .or_else(|| extract_xml_tag_value(&body, "ASUrl"));
+                    let raw_oab = extract_xml_tag_value(&body, "OABUrl").unwrap_or_default();
+                    let oab_url = sanitize_oab_url(&raw_oab);
+
+                    if let Some(ews) = ews_url {
+                        let msg = if !oab_url.is_empty() {
+                            "✓ Exchange-Dienste (EWS & OAB) erfolgreich per Autodiscover ermittelt".to_string()
+                        } else {
+                            "✓ EWS-Dienst per Autodiscover ermittelt (OAB nicht vom Server bereitgestellt)".to_string()
+                        };
+                        return ExchangeDiscoveryStatus::Success {
+                            ews_url: ews,
+                            oab_url,
+                            message: msg,
+                        };
+                    }
+                }
+            } else if status == 401 {
+                return ExchangeDiscoveryStatus::AuthFailed(
+                    "Authentifizierung fehlgeschlagen (HTTP 401): Bitte Benutzername und Passwort überprüfen.".to_string(),
+                );
+            }
+        }
+    }
+
+    // 2. Fallback / Error Handling matching original Evolution
+    if input_host.trim().is_empty() {
+        return ExchangeDiscoveryStatus::ServerNotFound(
+            "Abfrage des Autodiscover-Dienstes ist fehlgeschlagen: Die Rechneradresse darf nicht leer sein. Bitte geben Sie die Rechneradresse (Host-URL) Ihres Exchange-Servers ein.".to_string(),
+        );
+    }
+
+    let fallback_ews_url = format!("https://{host_base}/EWS/Exchange.asmx");
+    match client
+        .get(&fallback_ews_url)
+        .basic_auth(trimmed_user, Some(trimmed_pwd))
+        .send()
+    {
+        Ok(resp) => {
+            let status = resp.status().as_u16();
+            if status == 200 {
+                ExchangeDiscoveryStatus::Success {
+                    ews_url: fallback_ews_url,
+                    oab_url: String::new(),
+                    message: "✓ EWS-Endpunkt aktiv und Authentifizierung erfolgreich. (OAB ist optional und bleibt leer)".to_string(),
+                }
+            } else if status == 401 {
+                ExchangeDiscoveryStatus::AuthFailed(
+                    "Authentifizierung fehlgeschlagen (HTTP 401): Bitte Benutzername und Passwort überprüfen.".to_string(),
+                )
+            } else if status == 403 {
+                ExchangeDiscoveryStatus::AuthFailed(
+                    "Zugriff verweigert (HTTP 403): Benutzer besitzt keine Berechtigung für diesen EWS-Dienst.".to_string(),
+                )
+            } else if status == 404 {
+                ExchangeDiscoveryStatus::ServerNotFound(format!(
+                    "EWS-Endpunkt nicht gefunden (HTTP 404 auf {fallback_ews_url}). Bitte Serveradresse prüfen."
+                ))
+            } else {
+                ExchangeDiscoveryStatus::Error(format!(
+                    "Server antwortete mit Fehler (HTTP {status}) auf {fallback_ews_url}."
+                ))
+            }
+        }
+        Err(err) => {
+            ExchangeDiscoveryStatus::ServerNotFound(format!(
+                "Server {host_base} nicht erreichbar: {err}"
+            ))
+        }
+    }
+}
+
+/// Queries the supported authentication mechanisms of an Exchange / EWS server.
+/// Connects to the EWS endpoint and inspects WWW-Authenticate response headers.
+pub fn query_exchange_auth_methods(host_or_url: &str) -> Result<Vec<String>, String> {
+    let trimmed = host_or_url.trim();
+    if trimmed.is_empty() {
+        return Err("Die Rechneradresse darf nicht leer sein.".to_string());
+    }
+
+    let ews_url = if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+        if trimmed.to_lowercase().ends_with(".asmx") {
+            trimmed.to_string()
+        } else {
+            let base = trimmed.trim_end_matches('/');
+            format!("{base}/EWS/Exchange.asmx")
+        }
+    } else {
+        let host = normalize_exchange_host_url(trimmed);
+        format!("https://{host}/EWS/Exchange.asmx")
+    };
+
+    let client = reqwest::blocking::Client::builder()
+        .danger_accept_invalid_certs(true)
+        .timeout(std::time::Duration::from_secs(6))
+        .build()
+        .map_err(|e| format!("HTTP-Client-Fehler: {e}"))?;
+
+    let resp = client.get(&ews_url).send().map_err(|e| {
+        format!("Server unter {ews_url} nicht erreichbar: {e}")
+    })?;
+
+    let mut detected = Vec::new();
+    let auth_headers = resp.headers().get_all(reqwest::header::WWW_AUTHENTICATE);
+    for h in auth_headers {
+        if let Ok(val) = h.to_str() {
+            let val_upper = val.to_uppercase();
+            if val_upper.contains("NTLM") && !detected.iter().any(|d: &String| d == "NTLM") {
+                detected.push("NTLM".to_string());
+            }
+            if (val_upper.contains("NEGOTIATE") || val_upper.contains("GSSAPI"))
+                && !detected.iter().any(|d: &String| d == "Kerberos")
+            {
+                detected.push("Kerberos".to_string());
+            }
+            if val_upper.contains("BEARER") && !detected.iter().any(|d: &String| d == "Bearer") {
+                detected.push("Bearer".to_string());
+            }
+            if val_upper.contains("BASIC") && !detected.iter().any(|d: &String| d == "Basic") {
+                detected.push("Basic".to_string());
+            }
+        }
+    }
+
+    if detected.is_empty() {
+        if resp.status().is_success() {
+            detected.push("Basic".to_string());
+        } else {
+            return Err(format!(
+                "Server antwortete mit HTTP {}, kündigte aber keine unterstützten Authentifizierungsarten im WWW-Authenticate-Header an.",
+                resp.status()
+            ));
+        }
+    }
+
+    let mut ordered = Vec::new();
+    if detected.iter().any(|d| d == "NTLM") {
+        ordered.push("NTLM / Windows-Authentifizierung".to_string());
+    }
+    if detected.iter().any(|d| d == "Kerberos") {
+        ordered.push("Kerberos / GSSAPI".to_string());
+    }
+    if detected.iter().any(|d| d == "Bearer") {
+        ordered.push("OAuth2 / Modern Auth (M365)".to_string());
+    }
+    if detected.iter().any(|d| d == "Basic") {
+        ordered.push("Standard-Passwort (Basic / Plain)".to_string());
+    }
+
+    Ok(ordered)
+}
+
 /// Returns the authoritative mail source UID recognized by EDS and Camel.
 pub fn sync_profile_to_eds(
     profile: &AccountProfile,
     password: Option<&str>,
 ) -> Result<String, String> {
-    if matches!(profile.protocol, AccountProtocol::Goa) {
-        return Ok(profile.id.clone());
+    if matches!(profile.protocol, AccountProtocol::Goa) || profile.id.starts_with("eds:") {
+        let mail_uid = profile
+            .id
+            .strip_prefix("eds:")
+            .unwrap_or(&profile.id)
+            .to_string();
+        let synthetic_uid = eds_source_uid_for_email(&profile.email);
+        if synthetic_uid != mail_uid {
+            let sources_dir = gtk::glib::user_config_dir().join("evolution").join("sources");
+            let _ = fs::remove_file(sources_dir.join(format!("{}.source", synthetic_uid)));
+            let _ = fs::remove_file(sources_dir.join(format!("{}-mail.source", synthetic_uid)));
+            let _ = fs::remove_file(sources_dir.join(format!("{}-identity.source", synthetic_uid)));
+            let _ = fs::remove_file(sources_dir.join(format!("{}-transport.source", synthetic_uid)));
+        }
+        return Ok(mail_uid);
     }
 
     let parent_uid = eds_source_uid_for_email(&profile.email);
@@ -454,6 +795,18 @@ pub fn sync_profile_to_eds(
     let transport_uid = format!("{}-transport", parent_uid);
 
     let sources_dir = gtk::glib::user_config_dir().join("evolution").join("sources");
+
+    if profile.is_shared_mailbox {
+        // Shared mailboxes operate through delegate access under their parent Exchange account.
+        // They must never create a separate EDS EWS source store, which would either duplicate
+        // the personal store or fail authentication with wrong credentials/URLs.
+        let _ = fs::remove_file(sources_dir.join(format!("{}.source", parent_uid)));
+        let _ = fs::remove_file(sources_dir.join(format!("{}.source", mail_uid)));
+        let _ = fs::remove_file(sources_dir.join(format!("{}.source", identity_uid)));
+        let _ = fs::remove_file(sources_dir.join(format!("{}.source", transport_uid)));
+        return Ok(profile.id.clone());
+    }
+
     if let Err(err) = fs::create_dir_all(&sources_dir) {
         return Err(format!("Verzeichnis {} konnte nicht erstellt werden: {}", sources_dir.display(), err));
     }
@@ -493,12 +846,30 @@ pub fn sync_profile_to_eds(
                 profile.username.trim()
             };
 
+            let is_diff_user = !username.is_empty()
+                && !profile.email.is_empty()
+                && username.to_lowercase() != profile.email.to_lowercase();
+            let use_impersonation = if !profile.is_shared_mailbox && (profile.open_mailbox_other_user || is_diff_user) {
+                "true"
+            } else {
+                "false"
+            };
+            let impersonate_user = if use_impersonation == "true" {
+                if !profile.foreign_mailbox.trim().is_empty() {
+                    profile.foreign_mailbox.trim()
+                } else {
+                    profile.email.trim()
+                }
+            } else {
+                ""
+            };
+
             let parent_ini = format!(
                 "[Data Source]\nDisplayName={display_name}\nEnabled={enabled}\nParent=\n\n\
                  [Authentication]\nHost={auth_host}\nMethod={auth_method}\nPort=443\nUser={username}\nRememberPassword=true\n\n\
                  [Security]\nMethod=none\n\n\
                  [Collection]\nBackendName=ews\nIdentity={username}\nMailEnabled=true\nCalendarEnabled=true\nContactsEnabled=true\n\n\
-                 [Ews Backend]\nEmail={email}\nHosturl={host_url}\nOaburl={oab_url}\nCheckAll={check_all}\nFilterInbox=true\nListenNotifications=true\nTimeout=30\n",
+                 [Ews Backend]\nEmail={email}\nHosturl={host_url}\nOaburl={oab_url}\nCheckAll={check_all}\nFilterInbox=true\nListenNotifications=true\nTimeout=30\nUseImpersonation={use_impersonation}\nImpersonateUser={impersonate_user}\n",
                 display_name = profile.display_name,
                 enabled = profile.enabled,
                 auth_host = auth_host,
@@ -508,17 +879,26 @@ pub fn sync_profile_to_eds(
                 host_url = host_url,
                 oab_url = oab_url,
                 check_all = profile.check_all_folders,
+                use_impersonation = use_impersonation,
+                impersonate_user = impersonate_user,
             );
+
+            let foreign_mail_block = if profile.is_shared_mailbox {
+                format!("\n[Exchange Web Services Folder]\nForeign=true\nForeignSubfolders=true\nForeignMail={}\n", profile.email)
+            } else {
+                String::new()
+            };
 
             let mail_ini = format!(
                 "[Data Source]\nDisplayName={display_name}\nEnabled={enabled}\nParent={parent_uid}\n\n\
                  [Mail Account]\nBackendName=ews\nIdentityUid={identity_uid}\nNeedsInitialSetup=false\n\n\
-                 [Refresh]\nEnabled=true\nIntervalMinutes={interval}\n",
+                 [Refresh]\nEnabled=true\nIntervalMinutes={interval}\n{foreign_mail_block}",
                 display_name = profile.display_name,
                 enabled = profile.enabled,
                 parent_uid = parent_uid,
                 identity_uid = identity_uid,
                 interval = profile.check_interval_minutes.max(1),
+                foreign_mail_block = foreign_mail_block,
             );
 
             let identity_ini = format!(
@@ -568,18 +948,26 @@ pub fn sync_profile_to_eds(
                     ("Ews Backend", "Hosturl", &host_url),
                     ("Ews Backend", "Oaburl", &oab_url),
                     ("Ews Backend", "CheckAll", check_all_str),
+                    ("Ews Backend", "UseImpersonation", use_impersonation),
+                    ("Ews Backend", "ImpersonateUser", impersonate_user),
                 ],
             );
+            let mut mail_updates = vec![
+                ("Data Source", "DisplayName", profile.display_name.as_str()),
+                ("Data Source", "Enabled", enabled_str),
+                ("Mail Account", "BackendName", "ews"),
+                ("Mail Account", "IdentityUid", identity_uid.as_str()),
+                ("Refresh", "IntervalMinutes", interval_str.as_str()),
+            ];
+            if profile.is_shared_mailbox {
+                mail_updates.push(("Exchange Web Services Folder", "Foreign", "true"));
+                mail_updates.push(("Exchange Web Services Folder", "ForeignSubfolders", "true"));
+                mail_updates.push(("Exchange Web Services Folder", "ForeignMail", profile.email.as_str()));
+            }
             files_changed |= write_or_update_source_file(
                 &mail_path,
                 &mail_ini,
-                &[
-                    ("Data Source", "DisplayName", &profile.display_name),
-                    ("Data Source", "Enabled", enabled_str),
-                    ("Mail Account", "BackendName", "ews"),
-                    ("Mail Account", "IdentityUid", &identity_uid),
-                    ("Refresh", "IntervalMinutes", &interval_str),
-                ],
+                &mail_updates,
             );
             files_changed |= write_or_update_source_file(
                 &identity_path,
@@ -793,7 +1181,7 @@ pub fn ensure_profiles_synced_to_eds() {
         let store = AccountConfigStore::default();
         let accounts = store.load();
         for account in &accounts {
-            if matches!(account.protocol, AccountProtocol::Goa) {
+            if matches!(account.protocol, AccountProtocol::Goa) || account.id.starts_with("eds:") {
                 continue;
             }
             let _ = sync_profile_to_eds(account, None);
@@ -1029,6 +1417,48 @@ mod tests {
     }
 
     #[test]
+    fn test_write_or_update_source_file_ews_impersonation() {
+        let root = temporary_directory("source-file-impersonation");
+        let path = root.join("test.source");
+
+        let existing = "[Data Source]\nDisplayName=Shared\n\n[Ews Backend]\nEmail=shared@example.com\nUseImpersonation=false\nImpersonateUser=\n";
+        fs::write(&path, existing).expect("should write initial source");
+
+        write_or_update_source_file(
+            &path,
+            "",
+            &[
+                ("Ews Backend", "UseImpersonation", "true"),
+                ("Ews Backend", "ImpersonateUser", "shared@example.com"),
+            ],
+        );
+
+        let kf = gtk::glib::KeyFile::new();
+        kf.load_from_file(&path, gtk::glib::KeyFileFlags::NONE).expect("should parse keyfile");
+        assert_eq!(kf.boolean("Ews Backend", "UseImpersonation").unwrap(), true);
+        assert_eq!(kf.string("Ews Backend", "ImpersonateUser").unwrap().as_str(), "shared@example.com");
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn test_account_profile_shared_mailbox_sync() {
+        let mut profile = AccountProfile::default();
+        profile.id = "account:edv@example.org".to_string();
+        profile.display_name = "EDV Team".to_string();
+        profile.email = "edv@example.org".to_string();
+        profile.protocol = AccountProtocol::Exchange;
+        profile.username = "DOMAIN\\user".to_string();
+        profile.is_shared_mailbox = true;
+        profile.parent_account_id = Some("account:user@example.org".to_string());
+
+        let serialized = serde_json::to_string(&profile).expect("serialize");
+        let deserialized: AccountProfile = serde_json::from_str(&serialized).expect("deserialize");
+        assert!(deserialized.is_shared_mailbox);
+        assert_eq!(deserialized.parent_account_id.as_deref(), Some("account:user@example.org"));
+    }
+
+    #[test]
     fn test_write_or_update_source_file_detects_changes() {
         let root = temporary_directory("source-file-change-detection");
         let path = root.join("test.source");
@@ -1075,6 +1505,82 @@ mod tests {
             sanitize_oab_url("https://mail.example.com/OAB/6b268f77-508b-4fc4-8fe4-c7fc01f46ad0"),
             "https://mail.example.com/OAB/6b268f77-508b-4fc4-8fe4-c7fc01f46ad0"
         );
+    }
+
+    #[test]
+    fn test_extract_xml_tag_value() {
+        let sample = r#"<?xml version="1.0"?>
+<Autodiscover>
+    <Response>
+        <User>
+            <DisplayName>Max Mustermann</DisplayName>
+        </User>
+        <Protocol>
+            <Type>EXPR</Type>
+            <EwsUrl>https://mail.company.com/EWS/Exchange.asmx</EwsUrl>
+            <OABUrl>https://mail.company.com/OAB/12345-guid/</OABUrl>
+        </Protocol>
+    </Response>
+</Autodiscover>"#;
+
+        assert_eq!(
+            extract_xml_tag_value(sample, "EwsUrl"),
+            Some("https://mail.company.com/EWS/Exchange.asmx".to_string())
+        );
+        assert_eq!(
+            extract_xml_tag_value(sample, "OABUrl"),
+            Some("https://mail.company.com/OAB/12345-guid/".to_string())
+        );
+        assert_eq!(
+            extract_xml_tag_value(sample, "DisplayName"),
+            Some("Max Mustermann".to_string())
+        );
+        assert_eq!(extract_xml_tag_value(sample, "NonExistent"), None);
+    }
+
+    #[test]
+    fn test_discover_exchange_requires_credentials() {
+        let res = discover_and_validate_exchange_services(
+            "user@example.com",
+            "mail.example.com",
+            "",
+            "",
+        );
+        assert_eq!(res, ExchangeDiscoveryStatus::MissingCredentials);
+
+        let res_no_pwd = discover_and_validate_exchange_services(
+            "user@example.com",
+            "mail.example.com",
+            "user",
+            "",
+        );
+        assert_eq!(res_no_pwd, ExchangeDiscoveryStatus::MissingCredentials);
+    }
+
+    #[test]
+    fn test_normalize_exchange_host_url() {
+        assert_eq!(normalize_exchange_host_url(""), "");
+        assert_eq!(normalize_exchange_host_url("   "), "");
+        assert_eq!(normalize_exchange_host_url("mail.company.com"), "mail.company.com");
+        assert_eq!(normalize_exchange_host_url("https://mail.company.com/EWS/Exchange.asmx"), "mail.company.com");
+        assert_eq!(normalize_exchange_host_url("http://mail.company.com:444/ews"), "mail.company.com:444");
+    }
+
+    #[test]
+    fn test_discover_exchange_empty_host_without_autodiscover() {
+        let res = discover_and_validate_exchange_services(
+            "user@invalid-domain-12345.xyz",
+            "",
+            "user",
+            "password",
+        );
+        match res {
+            ExchangeDiscoveryStatus::ServerNotFound(msg) => {
+                assert!(msg.contains("Autodiscover"));
+                assert!(msg.contains("Rechneradresse"));
+            }
+            other => panic!("Expected ServerNotFound, got {:?}", other),
+        }
     }
 
     fn profile_ids(profiles: &[AccountProfile]) -> Vec<&str> {

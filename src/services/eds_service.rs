@@ -21,6 +21,7 @@
 use glib::MainContext;
 use glib::{KeyFile, KeyFileFlags};
 use serde::{Deserialize, Serialize};
+use std::sync::RwLock;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use super::eds_source_cache_service::{
@@ -406,6 +407,17 @@ pub async fn list_mail_sources() -> Result<Vec<EdsSource>, EdsServiceError> {
 }
 
 fn resolve_source_name_from_disk(uid: &str) -> Option<String> {
+    for profile in crate::services::account_config_service::AccountConfigStore::default().load() {
+        if profile.id == uid {
+            let name = if !profile.display_name.trim().is_empty() {
+                profile.display_name
+            } else {
+                profile.email
+            };
+            return Some(name);
+        }
+    }
+
     let mut candidate_paths = Vec::new();
     candidate_paths.push(
         glib::user_config_dir()
@@ -431,10 +443,244 @@ fn resolve_source_name_from_disk(uid: &str) -> Option<String> {
                         return Some(dn.to_string());
                     }
                 }
+                if let Ok(identity) = kf.string("Collection", "Identity") {
+                    if !identity.trim().is_empty() {
+                        return Some(identity.to_string());
+                    }
+                }
             }
         }
     }
     None
+}
+
+/// Configured account collection (e.g. Google, EWS, IMAP/SMTP) that may contain
+/// calendar, task, memo, and mail resources.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EdsAccountCollection {
+    pub uid: String,
+    pub display_name: String,
+    pub backend_name: String,
+    pub enabled: bool,
+    pub calendar_enabled: bool,
+    pub contacts_enabled: bool,
+    pub mail_enabled: bool,
+}
+
+static COLLECTIONS_CACHE: RwLock<Option<(std::time::Instant, Vec<EdsAccountCollection>)>> =
+    RwLock::new(None);
+static PARENT_NAME_CACHE: RwLock<Option<(std::time::Instant, std::collections::HashMap<String, String>)>> =
+    RwLock::new(None);
+
+/// Invalidate cached collections and parent names so newly created or updated accounts are immediately visible.
+pub fn invalidate_account_collections_cache() {
+    if let Ok(mut guard) = COLLECTIONS_CACHE.write() {
+        *guard = None;
+    }
+    if let Ok(mut guard) = PARENT_NAME_CACHE.write() {
+        *guard = None;
+    }
+}
+
+/// Load all enabled account collections configured in Evolution Data Server,
+/// GNOME Online Accounts, or Evolution account configuration.
+pub fn load_configured_account_collections() -> Vec<EdsAccountCollection> {
+    if let Ok(guard) = COLLECTIONS_CACHE.read() {
+        if let Some((instant, collections)) = &*guard {
+            if instant.elapsed() < std::time::Duration::from_secs(4) {
+                return collections.clone();
+            }
+        }
+    }
+    let collections = load_configured_account_collections_uncached();
+    if let Ok(mut guard) = COLLECTIONS_CACHE.write() {
+        *guard = Some((std::time::Instant::now(), collections.clone()));
+    }
+    collections
+}
+
+fn load_configured_account_collections_uncached() -> Vec<EdsAccountCollection> {
+    let mut collections = Vec::new();
+    let dir = glib::user_config_dir().join("evolution/sources");
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("source") {
+                continue;
+            }
+            let kf = KeyFile::new();
+            if kf.load_from_file(&path, KeyFileFlags::NONE).is_err() {
+                continue;
+            }
+            if !kf.has_group("Collection") {
+                continue;
+            }
+            let enabled = kf.boolean("Data Source", "Enabled").unwrap_or(true);
+            if !enabled {
+                continue;
+            }
+            let uid = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or_default()
+                .to_string();
+            let display_name = kf
+                .locale_string("Data Source", "DisplayName", None)
+                .or_else(|_| kf.string("Data Source", "DisplayName"))
+                .or_else(|_| kf.string("Collection", "Identity"))
+                .ok()
+                .map(|s| s.to_string())
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or_else(|| uid.clone());
+            let backend_name = kf
+                .string("Collection", "BackendName")
+                .map(|s| s.to_string())
+                .unwrap_or_else(|_| "collection".to_string());
+            let calendar_enabled = kf.boolean("Collection", "CalendarEnabled").unwrap_or(true);
+            let contacts_enabled = kf.boolean("Collection", "ContactsEnabled").unwrap_or(true);
+            let mail_enabled = kf.boolean("Collection", "MailEnabled").unwrap_or(true);
+
+            collections.push(EdsAccountCollection {
+                uid,
+                display_name,
+                backend_name,
+                enabled,
+                calendar_enabled,
+                contacts_enabled,
+                mail_enabled,
+            });
+        }
+    }
+
+    // Also include enabled accounts from AccountConfigStore if not already present
+    for profile in crate::services::account_config_service::AccountConfigStore::default().load() {
+        if !profile.enabled {
+            continue;
+        }
+        let name = if !profile.display_name.trim().is_empty() {
+            profile.display_name.clone()
+        } else {
+            profile.email.clone()
+        };
+        if !collections.iter().any(|c| c.uid == profile.id || c.display_name == name || c.display_name == profile.email) {
+            collections.push(EdsAccountCollection {
+                uid: profile.id,
+                display_name: name,
+                backend_name: "account".to_string(),
+                enabled: true,
+                calendar_enabled: true,
+                contacts_enabled: true,
+                mail_enabled: true,
+            });
+        }
+    }
+
+    collections.sort_by(|left, right| {
+        left.display_name
+            .to_lowercase()
+            .cmp(&right.display_name.to_lowercase())
+            .then_with(|| left.uid.cmp(&right.uid))
+    });
+    collections
+}
+
+/// Resolve the parent account or group name for a source UID.
+pub fn resolve_source_parent_name(uid: &str) -> String {
+    if let Ok(guard) = PARENT_NAME_CACHE.read() {
+        if let Some((instant, map)) = &*guard {
+            if instant.elapsed() < std::time::Duration::from_secs(4) {
+                if let Some(name) = map.get(uid) {
+                    return name.clone();
+                }
+            }
+        }
+    }
+    let name = resolve_source_parent_name_uncached(uid);
+    if let Ok(mut guard) = PARENT_NAME_CACHE.write() {
+        if let Some((instant, map)) = guard.as_mut() {
+            if instant.elapsed() < std::time::Duration::from_secs(4) {
+                map.insert(uid.to_string(), name.clone());
+            } else {
+                let mut new_map = std::collections::HashMap::new();
+                new_map.insert(uid.to_string(), name.clone());
+                *guard = Some((std::time::Instant::now(), new_map));
+            }
+        } else {
+            let mut new_map = std::collections::HashMap::new();
+            new_map.insert(uid.to_string(), name.clone());
+            *guard = Some((std::time::Instant::now(), new_map));
+        }
+    }
+    name
+}
+
+fn resolve_source_parent_name_uncached(uid: &str) -> String {
+    let clean_uid = uid
+        .strip_prefix("account-tasks-")
+        .or_else(|| uid.strip_prefix("account-calendar-"))
+        .or_else(|| uid.strip_prefix("account-memos-"))
+        .or_else(|| uid.strip_prefix("col-tasks-"))
+        .or_else(|| uid.strip_prefix("col-memos-"))
+        .or_else(|| uid.strip_prefix("col-calendar-"))
+        .unwrap_or(uid);
+    if clean_uid.starts_with("local-") || clean_uid == "local" || clean_uid == "system-calendar" {
+        return "Auf diesem Computer".to_string();
+    }
+    // If clean_uid matches an account collection, immediately return its display name
+    for col in load_configured_account_collections() {
+        if col.uid == clean_uid {
+            return col.display_name;
+        }
+    }
+
+    let mut candidate_paths = Vec::new();
+    candidate_paths.push(glib::user_config_dir().join("evolution/sources").join(format!("{clean_uid}.source")));
+    candidate_paths.push(std::path::PathBuf::from("/usr/share/evolution-data-server/sources").join(format!("{clean_uid}.source")));
+
+    for path in candidate_paths {
+        if path.exists() {
+            let kf = KeyFile::new();
+            if kf.load_from_file(&path, KeyFileFlags::NONE).is_ok() {
+                if let Ok(parent) = kf.string("Data Source", "Parent") {
+                    let parent = parent.trim();
+                    if !parent.is_empty() {
+                        if parent == "local-stub" || parent == "local" {
+                            return "Auf diesem Computer".to_string();
+                        } else if parent == "contacts-stub" {
+                            return "Kontakte".to_string();
+                        } else if let Some(dn) = resolve_source_name_from_disk(parent) {
+                            return dn;
+                        } else {
+                            for col in load_configured_account_collections() {
+                                if col.uid == parent {
+                                    return col.display_name;
+                                }
+                            }
+                        }
+                    }
+                }
+                if let Ok(dn) = kf.locale_string("Data Source", "DisplayName", None) {
+                    if !dn.trim().is_empty() {
+                        return dn.to_string();
+                    }
+                }
+                if let Ok(dn) = kf.string("Data Source", "DisplayName") {
+                    if !dn.trim().is_empty() {
+                        return dn.to_string();
+                    }
+                }
+                if let Ok(identity) = kf.string("Collection", "Identity") {
+                    if !identity.trim().is_empty() {
+                        return identity.to_string();
+                    }
+                }
+            }
+        }
+    }
+    if let Some(dn) = resolve_source_name_from_disk(clean_uid) {
+        return dn;
+    }
+    "Auf diesem Computer".to_string()
 }
 
 /// List EDS sources for one product area through the shared SourceManager
@@ -673,13 +919,114 @@ pub async fn list_calendar_sources() -> Result<Vec<EdsSource>, EdsServiceError> 
     Ok(sources)
 }
 
-/// List all address book sources from EDS.
+/// Query GNOME Online Accounts (GOA) D-Bus interface `org.gnome.OnlineAccounts` for Contacts.
+async fn get_goa_contacts_accounts() -> Result<Vec<EdsSource>, EdsServiceError> {
+    let connection = zbus::Connection::session().await?;
+    let proxy = zbus::fdo::ObjectManagerProxy::builder(&connection)
+        .destination("org.gnome.OnlineAccounts")?
+        .path("/org/gnome/OnlineAccounts")?
+        .build()
+        .await?;
+
+    let managed_objects = match proxy.get_managed_objects().await {
+        Ok(objs) => objs,
+        Err(_) => return Ok(Vec::new()),
+    };
+
+    let mut goa_sources = Vec::new();
+
+    for (path, interfaces) in &managed_objects {
+        let has_contacts_interface = interfaces
+            .keys()
+            .any(|interface| interface.as_str() == "org.gnome.OnlineAccounts.Contacts");
+        if has_contacts_interface {
+            if let Some(account_props) = interfaces.get("org.gnome.OnlineAccounts.Account") {
+                let uid = path
+                    .as_str()
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or("goa")
+                    .to_string();
+                let identity = account_props
+                    .get("PresentationIdentity")
+                    .and_then(value_to_string)
+                    .or_else(|| account_props.get("Identity").and_then(value_to_string))
+                    .unwrap_or_else(|| "Onlinekonto".to_string());
+
+                let provider_name = account_props
+                    .get("ProviderName")
+                    .and_then(value_to_string)
+                    .unwrap_or_else(|| "Online-Adressbuch".to_string());
+
+                let provider_type = account_props
+                    .get("ProviderType")
+                    .and_then(value_to_string)
+                    .unwrap_or_else(|| "carddav".to_string());
+
+                goa_sources.push(EdsSource {
+                    uid: format!("goa-contacts-{}", uid),
+                    display_name: format!("{} ({})", identity, provider_name),
+                    backend_name: provider_type,
+                    enabled: true,
+                    parent_name: Some(identity),
+                });
+            }
+        }
+    }
+    Ok(goa_sources)
+}
+
+/// List all address book sources from EDS (including configured accounts & GOA).
 #[allow(dead_code)]
 #[cfg(not(target_os = "macos"))]
 pub async fn list_address_book_sources() -> Result<Vec<EdsSource>, EdsServiceError> {
-    tracing::debug!("Listing address book sources from EDS...");
-    let sources = list_sources(EdsSourceKind::AddressBook).await?;
-    tracing::info!("Found {} address book sources via D-Bus", sources.len());
+    tracing::debug!("Listing address book sources from EDS, configured accounts & GOA...");
+    let (mut sources, registry_error) = match list_sources(EdsSourceKind::AddressBook).await {
+        Ok(sources) => (sources, None),
+        Err(error) => (Vec::new(), Some(error)),
+    };
+
+    if sources.is_empty() {
+        if let Ok(goa_contacts) = get_goa_contacts_accounts().await {
+            for goa in goa_contacts {
+                if !sources
+                    .iter()
+                    .any(|s| s.uid == goa.uid || s.display_name == goa.display_name)
+                {
+                    sources.push(goa);
+                }
+            }
+        }
+    }
+
+    for collection in load_configured_account_collections() {
+        if !collection.contacts_enabled {
+            continue;
+        }
+        let account_name = collection.display_name.clone();
+        let already_represented = sources.iter().any(|s| {
+            s.parent_name.as_deref() == Some(&account_name)
+                || s.uid == collection.uid
+                || s.uid == format!("account-contacts-{}", collection.uid)
+        });
+        if !already_represented {
+            sources.push(EdsSource {
+                uid: format!("account-contacts-{}", collection.uid),
+                display_name: "Kontakte".to_string(),
+                backend_name: collection.backend_name.clone(),
+                enabled: collection.enabled,
+                parent_name: Some(account_name),
+            });
+        }
+    }
+
+    sort_sources(&mut sources);
+    if sources.is_empty() {
+        if let Some(error) = registry_error {
+            return Err(error);
+        }
+    }
+    tracing::info!("Found {} address book sources via D-Bus and config", sources.len());
     Ok(sources)
 }
 
@@ -1296,4 +1643,27 @@ mod tests {
             Err(e) => println!("Live Camel load error: {e}"),
         }
     }
+
+    #[tokio::test]
+    async fn address_book_sources_incorporate_configured_accounts() {
+        invalidate_account_collections_cache();
+        let sources = list_address_book_sources().await;
+        if let Ok(sources) = sources {
+            let collections = load_configured_account_collections();
+            for coll in collections {
+                if coll.contacts_enabled {
+                    assert!(
+                        sources.iter().any(|s| {
+                            s.parent_name.as_deref() == Some(&coll.display_name)
+                                || s.uid == coll.uid
+                                || s.uid == format!("account-contacts-{}", coll.uid)
+                        }),
+                        "Configured account collection {} should be represented in address book sources",
+                        coll.display_name
+                    );
+                }
+            }
+        }
+    }
 }
+

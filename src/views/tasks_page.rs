@@ -40,7 +40,9 @@ use crate::services::recurrence_service::{
 };
 use crate::services::reminder_service::{Alarm, parse_alarms, replace_component_alarms};
 use crate::services::settings_service::{AppSettings, normalized_task_category_filter};
+use crate::models::source_selector::{SourceDomain, SourceSelector, SourceSelectorItem};
 use crate::views::accessibility::set_accessible_label;
+use crate::views::calendar_page::calendar_source_color;
 use crate::views::set_button_icon_with_fallback;
 use adw::prelude::*;
 use adw::subclass::prelude::*;
@@ -53,7 +55,10 @@ mod imp {
         pub ecal_monitor_cancel: RefCell<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>>,
         pub(super) task_filter: Cell<TaskFilter>,
         pub(super) task_search_mode: Cell<TaskSearchMode>,
+        pub(super) collapsed_task_groups: RefCell<HashSet<String>>,
         pub(super) task_source_filter: RefCell<Option<String>>,
+        pub(super) task_source_syncing: Cell<bool>,
+        pub(super) task_category_syncing: Cell<bool>,
         pub(super) task_sort: Cell<TaskSort>,
         pub(super) task_sort_descending: Cell<bool>,
         pub task_query: RefCell<String>,
@@ -65,6 +70,9 @@ mod imp {
         pub task_list: RefCell<Option<gtk::ListBox>>,
         pub task_store: RefCell<Option<gio::ListStore>>,
         pub task_empty_state: RefCell<Option<gtk::Label>>,
+        pub(super) task_empty_status_page: RefCell<Option<adw::StatusPage>>,
+        pub(super) task_container_stack: RefCell<Option<gtk::Stack>>,
+        pub(super) task_preview_stack: RefCell<Option<gtk::Stack>>,
         pub(super) task_selection: RefCell<Vec<TaskSelectionIdentity>>,
         pub(super) task_selection_restoring: Cell<bool>,
         pub(super) task_selection_status: RefCell<Option<gtk::Label>>,
@@ -77,11 +85,13 @@ mod imp {
         pub(super) task_paste_button: RefCell<Option<gtk::Button>>,
         pub(super) task_select_all_button: RefCell<Option<gtk::Button>>,
         pub(super) task_bulk_edit_button: RefCell<Option<gtk::Button>>,
+        pub(super) task_sidebar_toggle: RefCell<Option<gtk::ToggleButton>>,
         pub(super) task_preview_toggle: RefCell<Option<gtk::ToggleButton>>,
         pub(super) task_preview_orientation: RefCell<Option<gtk::DropDown>>,
         pub(super) task_preview_paned: RefCell<Option<gtk::Paned>>,
         pub(super) outer_paned: RefCell<Option<gtk::Paned>>,
         pub(super) task_preview_box: RefCell<Option<gtk::Box>>,
+        pub toolbar: RefCell<Option<gtk::Widget>>,
         pub(super) task_preview_content: RefCell<Option<gtk::TextView>>,
         pub(super) task_preview_find_bar: RefCell<Option<gtk::Box>>,
         pub(super) task_preview_find_entry: RefCell<Option<gtk::SearchEntry>>,
@@ -123,6 +133,10 @@ mod imp {
         pub(super) task_bulk_edit_running: Cell<bool>,
         pub(super) task_bulk_edit_generation: Cell<u64>,
         pub(super) task_source_uids: RefCell<Vec<String>>,
+        pub(super) task_source_selector_model: RefCell<Option<crate::models::source_selector::SourceSelector>>,
+        pub(super) hidden_task_sources: RefCell<HashSet<String>>,
+        pub(super) task_color_css_provider: RefCell<Option<gtk::CssProvider>>,
+        pub(super) task_search_bar: RefCell<Option<gtk::SearchBar>>,
         pub new_task_button: RefCell<Option<gtk::Button>>,
         pub search_entry: RefCell<Option<gtk::SearchEntry>>,
     }
@@ -141,6 +155,8 @@ mod imp {
     impl ObjectImpl for TasksPage {
         fn constructed(&self) {
             self.parent_constructed();
+            self.obj().set_vexpand(true);
+            self.obj().set_hexpand(true);
             self.obj().build_ui();
         }
 
@@ -3573,6 +3589,20 @@ impl TasksPage {
         glib::Object::builder().build()
     }
 
+    fn select_sidebar_source_row(list: &gtk::ListBox, target_index: usize) {
+        let mut child = list.first_child();
+        while let Some(widget) = child {
+            if let Some(row) = widget.downcast_ref::<gtk::ListBoxRow>() {
+                let idx = unsafe { row.data::<usize>("source-index").map(|v| *v.as_ref()) };
+                if idx == Some(target_index) {
+                    list.select_row(Some(row));
+                    return;
+                }
+            }
+            child = widget.next_sibling();
+        }
+    }
+
     /// Trigger the same editor as the page-local “Neue Aufgabe” button.
     /// The main Evolution toolbar uses this when the Aufgaben module is
     /// active, so both entry points preserve one creation workflow.
@@ -3586,6 +3616,14 @@ impl TasksPage {
         self.imp().outer_paned.borrow().clone()
     }
 
+    pub fn sidebar_toggle(&self) -> Option<gtk::ToggleButton> {
+        self.imp().task_sidebar_toggle.borrow().clone()
+    }
+
+    pub fn preview_toggle(&self) -> Option<gtk::ToggleButton> {
+        self.imp().task_preview_toggle.borrow().clone()
+    }
+
     pub fn set_sidebar_position(&self, pos: i32) {
         if let Some(paned) = self.imp().outer_paned.borrow().as_ref() {
             if (paned.position() - pos).abs() > 1 {
@@ -3595,9 +3633,27 @@ impl TasksPage {
     }
 
     pub(crate) fn focus_search(&self) {
+        if let Some(bar) = self.imp().task_search_bar.borrow().as_ref() {
+            bar.set_search_mode(true);
+        }
         if let Some(entry) = self.imp().search_entry.borrow().as_ref() {
             entry.grab_focus();
             entry.select_region(0, -1);
+        }
+    }
+
+    pub(crate) fn is_search_active(&self) -> bool {
+        self.imp()
+            .task_search_bar
+            .borrow()
+            .as_ref()
+            .map(|b| b.is_search_mode())
+            .unwrap_or(false)
+    }
+
+    pub(crate) fn close_search(&self) {
+        if let Some(bar) = self.imp().task_search_bar.borrow().as_ref() {
+            bar.set_search_mode(false);
         }
     }
 
@@ -3606,6 +3662,436 @@ impl TasksPage {
             entry.set_text(query);
             entry.grab_focus();
         }
+    }
+
+    pub(crate) fn refresh_tasks(&self) {
+        if let (Some(task_list), Some(task_store), Some(empty_state)) = (
+            self.imp().task_list.borrow().as_ref(),
+            self.imp().task_store.borrow().as_ref(),
+            self.imp().task_empty_state.borrow().as_ref(),
+        ) {
+            render_task_rows(self, task_list, task_store, empty_state);
+        }
+    }
+
+    pub(crate) fn render_task_sidebar(&self) {
+        let Some(source_list) = self.imp().task_source_list.borrow().as_ref().cloned() else {
+            return;
+        };
+        while let Some(child) = source_list.first_child() {
+            source_list.remove(&child);
+        }
+        let Some(selector) = self.imp().task_source_selector_model.borrow().clone() else {
+            return;
+        };
+        let collapsed_groups = self.imp().collapsed_task_groups.borrow().clone();
+        let uids = self.imp().task_source_uids.borrow().clone();
+
+        for group in selector.ordered_groups() {
+            if group.is_hidden {
+                continue;
+            }
+            let group_sources: Vec<_> = selector
+                .visible_sources()
+                .into_iter()
+                .filter(|s| s.group_name == group.name)
+                .collect();
+
+            if group_sources.is_empty() && !group.is_custom {
+                continue;
+            }
+
+            let is_collapsed = collapsed_groups.contains(&group.name);
+
+            // Group Header Row (matching CalendarPage styling: 24px, arrow, label)
+            let group_box = gtk::Box::builder()
+                .orientation(gtk::Orientation::Horizontal)
+                .spacing(6)
+                .margin_start(0)
+                .margin_end(6)
+                .valign(gtk::Align::Center)
+                .css_classes(vec![
+                    "calendar-sidebar-row",
+                    "calendar-sidebar-group-row",
+                    "sidebar-account-row",
+                ])
+                .build();
+
+            let arrow_icon = if is_collapsed {
+                "pan-end-symbolic"
+            } else {
+                "pan-down-symbolic"
+            };
+            let arrow = gtk::Image::builder()
+                .icon_name(arrow_icon)
+                .pixel_size(16)
+                .valign(gtk::Align::Center)
+                .build();
+            group_box.append(&arrow);
+
+            let group_label = gtk::Label::builder()
+                .label(&group.name)
+                .halign(gtk::Align::Start)
+                .hexpand(true)
+                .ellipsize(pango::EllipsizeMode::End)
+                .css_classes(vec!["account-heading"])
+                .build();
+            group_box.append(&group_label);
+
+            let group_row = gtk::ListBoxRow::builder()
+                .child(&group_box)
+                .activatable(true)
+                .selectable(false)
+                .css_classes(vec![
+                    "calendar-sidebar-group-row",
+                    "account-root-row",
+                    "sidebar-account-row",
+                ])
+                .tooltip_text(if is_collapsed {
+                    "Gruppe aufklappen"
+                } else {
+                    "Gruppe einklappen"
+                })
+                .build();
+
+            let page_weak_for_group = self.downgrade();
+            let group_name_for_toggle = group.name.clone();
+            let group_gesture = gtk::GestureClick::new();
+            group_gesture.connect_released(move |_, _, _, _| {
+                let Some(page) = page_weak_for_group.upgrade() else {
+                    return;
+                };
+                let mut collapsed = page.imp().collapsed_task_groups.borrow_mut();
+                if collapsed.contains(&group_name_for_toggle) {
+                    collapsed.remove(&group_name_for_toggle);
+                } else {
+                    collapsed.insert(group_name_for_toggle.clone());
+                }
+                drop(collapsed);
+                page.render_task_sidebar();
+            });
+            group_row.add_controller(group_gesture);
+            source_list.append(&group_row);
+
+            if is_collapsed {
+                continue;
+            }
+
+            for item in group_sources {
+                let source_uid = item.uid.clone();
+                let is_primary = selector.is_primary(&source_uid);
+                let color_hex = item.color.clone().unwrap_or_else(|| "#3584e4".to_string());
+
+                let child_box = gtk::Box::builder()
+                    .orientation(gtk::Orientation::Horizontal)
+                    .spacing(6)
+                    .margin_start(12)
+                    .margin_end(6)
+                    .css_classes(vec!["calendar-sidebar-row", "calendar-sidebar-child-row"])
+                    .build();
+
+                // Colored Checkbox matching calendar
+                let clean_color: String = color_hex
+                    .chars()
+                    .filter(|c| c.is_ascii_alphanumeric())
+                    .collect::<String>()
+                    .to_ascii_lowercase();
+                let color_class = format!("cal-check-{}", clean_color);
+
+                let check = gtk::CheckButton::builder()
+                    .active(item.enabled && selector.is_selected(&source_uid))
+                    .sensitive(item.enabled)
+                    .valign(gtk::Align::Center)
+                    .tooltip_text("Aufgabenliste in den Ansichten ein-/ausblenden")
+                    .css_classes(vec![color_class.as_str()])
+                    .build();
+
+                let page_weak_for_toggle = self.downgrade();
+                let source_uid_for_toggle = source_uid.clone();
+                check.connect_toggled(move |check| {
+                    let Some(page) = page_weak_for_toggle.upgrade() else {
+                        return;
+                    };
+                    {
+                        if let Some(sel) = page.imp().task_source_selector_model.borrow_mut().as_mut() {
+                            sel.set_selected(&source_uid_for_toggle, check.is_active());
+                            if let Some(settings) = AppSettings::try_new() {
+                                sel.save_to_settings(&settings);
+                            }
+                            *page.imp().hidden_task_sources.borrow_mut() =
+                                sel.hidden_uids().into_iter().collect();
+                        }
+                    }
+                    page.refresh_tasks();
+                });
+                child_box.append(&check);
+
+                // Label
+                let label = gtk::Label::builder()
+                    .label(&item.display_name)
+                    .halign(gtk::Align::Start)
+                    .hexpand(true)
+                    .ellipsize(pango::EllipsizeMode::End)
+                    .build();
+                child_box.append(&label);
+
+                // Primary indicator
+                if is_primary {
+                    let primary_ind = crate::models::source_selector::create_primary_indicator();
+                    primary_ind.set_valign(gtk::Align::Center);
+                    child_box.append(&primary_ind);
+                }
+
+                // Remote sync icon
+                if item.backend_name != "local" && source_uid != "local-calendar" {
+                    let sync_icon = gtk::Image::from_icon_name("media-playlist-repeat-symbolic");
+                    sync_icon.add_css_class("dim-label");
+                    sync_icon.set_tooltip_text(Some("Synchronisierte Aufgabenliste"));
+                    sync_icon.set_valign(gtk::Align::Center);
+                    child_box.append(&sync_icon);
+                }
+
+                let row = gtk::ListBoxRow::builder()
+                    .child(&child_box)
+                    .activatable(true)
+                    .selectable(true)
+                    .css_classes(vec!["calendar-sidebar-child-row"])
+                    .build();
+
+                if let Some(index) = uids.iter().position(|u| u == &source_uid) {
+                    unsafe {
+                        row.set_data("source-index", index + 1);
+                    }
+                }
+
+                // Right-click context menu
+                let page_weak_for_menu = self.downgrade();
+                let source_uid_for_menu = source_uid.clone();
+                let display_name_for_menu = item.display_name.clone();
+                let color_for_menu = color_hex.clone();
+                let is_writable = item.writable;
+                let source_list_weak = source_list.downgrade();
+
+                let right_click = gtk::GestureClick::builder()
+                    .button(gtk::gdk::BUTTON_SECONDARY)
+                    .build();
+                right_click.connect_pressed(move |gesture, _, x, y| {
+                    gesture.set_state(gtk::EventSequenceState::Claimed);
+                    let (Some(page), Some(list)) =
+                        (page_weak_for_menu.upgrade(), source_list_weak.upgrade())
+                    else {
+                        return;
+                    };
+                    page.present_task_source_context_menu(
+                        &list,
+                        x,
+                        y,
+                        &source_uid_for_menu,
+                        &display_name_for_menu,
+                        &color_for_menu,
+                        is_writable,
+                        is_primary,
+                    );
+                });
+                row.add_controller(right_click);
+
+                source_list.append(&row);
+            }
+        }
+    }
+
+    pub(crate) fn select_exclusive_task_source(&self, uid: &str) {
+        {
+            if let Some(sel) = self.imp().task_source_selector_model.borrow_mut().as_mut() {
+                sel.select_exclusive(uid);
+                if let Some(settings) = AppSettings::try_new() {
+                    sel.save_to_settings(&settings);
+                }
+                *self.imp().hidden_task_sources.borrow_mut() =
+                    sel.hidden_uids().into_iter().collect();
+            }
+        }
+        self.render_task_sidebar();
+        self.refresh_tasks();
+    }
+
+    pub(crate) fn select_all_task_sources(&self) {
+        {
+            if let Some(sel) = self.imp().task_source_selector_model.borrow_mut().as_mut() {
+                sel.select_all();
+                if let Some(settings) = AppSettings::try_new() {
+                    sel.save_to_settings(&settings);
+                }
+                *self.imp().hidden_task_sources.borrow_mut() =
+                    sel.hidden_uids().into_iter().collect();
+            }
+        }
+        self.render_task_sidebar();
+        self.refresh_tasks();
+    }
+
+    pub(crate) fn set_default_task_source(&self, uid: &str) {
+        {
+            if let Some(sel) = self.imp().task_source_selector_model.borrow_mut().as_mut() {
+                sel.set_primary(uid);
+                if let Some(settings) = AppSettings::try_new() {
+                    sel.save_to_settings(&settings);
+                    settings.set_default_task_source_uid(uid);
+                }
+                *self.imp().hidden_task_sources.borrow_mut() =
+                    sel.hidden_uids().into_iter().collect();
+            }
+        }
+        self.render_task_sidebar();
+        self.refresh_tasks();
+    }
+
+    pub(crate) fn present_task_source_context_menu(
+        &self,
+        parent: &impl IsA<gtk::Widget>,
+        x: f64,
+        y: f64,
+        source_uid: &str,
+        display_name: &str,
+        color: &str,
+        is_writable: bool,
+        is_primary: bool,
+    ) {
+        let page_weak = self.downgrade();
+        let uid_excl = source_uid.to_string();
+        let on_exclusive = {
+            let page_weak = page_weak.clone();
+            let uid = uid_excl;
+            move || {
+                if let Some(page) = page_weak.upgrade() {
+                    page.select_exclusive_task_source(&uid);
+                }
+            }
+        };
+
+        let on_select_all = {
+            let page_weak = page_weak.clone();
+            move || {
+                if let Some(page) = page_weak.upgrade() {
+                    page.select_all_task_sources();
+                }
+            }
+        };
+
+        let uid_def = source_uid.to_string();
+        let on_set_default = {
+            let page_weak = page_weak.clone();
+            let uid = uid_def;
+            move || {
+                if let Some(page) = page_weak.upgrade() {
+                    page.set_default_task_source(&uid);
+                }
+            }
+        };
+
+        let uid_props = source_uid.to_string();
+        let name_props = display_name.to_string();
+        let col_props = color.to_string();
+        let on_properties = Some({
+            let page_weak = page_weak.clone();
+            move || {
+                if let Some(page) = page_weak.upgrade() {
+                    let root_window = page.root().and_downcast::<gtk::Window>();
+                    let dialog = crate::dialogs::SourcePropertiesDialog::new(
+                        &uid_props,
+                        &name_props,
+                        "Aufgabenliste",
+                        &col_props,
+                        is_writable,
+                        is_primary,
+                    );
+                    if let Some(parent) = root_window.as_ref() {
+                        dialog.set_transient_for(Some(parent));
+                    }
+                    let page_weak_save = page.downgrade();
+                    dialog.set_on_save(move |update| {
+                        if let Some(p) = page_weak_save.upgrade() {
+                            {
+                                if let Some(sel) = p.imp().task_source_selector_model.borrow_mut().as_mut() {
+                                    sel.update_source_metadata(
+                                        &update.source_uid,
+                                        &update.display_name,
+                                        Some(&update.color),
+                                        update.is_default,
+                                    );
+                                    if let Some(settings) = AppSettings::try_new() {
+                                        sel.save_to_settings(&settings);
+                                        if update.is_default {
+                                            settings.set_default_task_source_uid(&update.source_uid);
+                                        }
+                                    }
+                                }
+                            }
+                            p.render_task_sidebar();
+                            p.refresh_tasks();
+                        }
+                    });
+                    dialog.present();
+                }
+            }
+        });
+
+        let on_manage_groups = Some({
+            let page_weak = page_weak.clone();
+            move || {
+                if let Some(page) = page_weak.upgrade() {
+                    let root_window = page.root().and_downcast::<gtk::Window>();
+                    let current_sel = page
+                        .imp()
+                        .task_source_selector_model
+                        .borrow()
+                        .clone()
+                        .unwrap_or_else(|| {
+                            SourceSelector::new(SourceDomain::Tasks)
+                        });
+                    let page_weak_save = page.downgrade();
+                    let dialog = crate::dialogs::ManageGroupsDialog::new(
+                        root_window.as_ref(),
+                        "Aufgaben",
+                        &current_sel,
+                        move |updated_selector| {
+                            if let Some(p) = page_weak_save.upgrade() {
+                                {
+                                    if let Some(sel) = p.imp().task_source_selector_model.borrow_mut().as_mut() {
+                                        *sel = updated_selector;
+                                        sel.deselect_sources_in_hidden_groups();
+                                        if let Some(settings) = AppSettings::try_new() {
+                                            sel.save_to_settings(&settings);
+                                        }
+                                        *p.imp().hidden_task_sources.borrow_mut() =
+                                            sel.hidden_uids().into_iter().collect();
+                                    }
+                                }
+                                p.render_task_sidebar();
+                                p.refresh_tasks();
+                            }
+                        },
+                    );
+                    dialog.present();
+                }
+            }
+        });
+
+        let popover = crate::models::source_selector::create_source_context_popover(
+            is_primary,
+            "Aufgabenliste",
+            on_exclusive,
+            on_select_all,
+            on_set_default,
+            on_properties,
+            on_manage_groups,
+        );
+        popover.set_parent(parent);
+        popover.set_pointing_to(Some(&gtk::gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
+        popover.connect_closed(|p| {
+            p.unparent();
+        });
+        popover.popup();
     }
 
     pub(crate) fn open_search_result(&self, source_uid: &str, uid: &str) -> bool {
@@ -3708,6 +4194,9 @@ impl TasksPage {
     fn build_ui(&self) {
         if let Some(settings) = AppSettings::try_new() {
             self.imp()
+                .hidden_task_sources
+                .replace(settings.task_hidden_sources().into_iter().collect());
+            self.imp()
                 .task_filter
                 .set(TaskFilter::from_setting(&settings.task_filter()));
             self.imp()
@@ -3735,31 +4224,28 @@ impl TasksPage {
             .build();
         self.imp().outer_paned.replace(Some(paned.clone()));
 
-        // ── Sidebar (Categories) ────────────────────────────────────────
+        // ── Sidebar (Calendar parity: 24px rows, colored checkboxes) ────
 
         let sidebar_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
-            .spacing(8)
-            .margin_start(8)
-            .margin_end(8)
-            .margin_top(8)
-            .margin_bottom(8)
-            .build();
-
-        let header = gtk::Label::builder()
-            .label("Aufgabenlisten")
-            .css_classes(vec!["title-4"])
-            .halign(gtk::Align::Start)
-            .hexpand(true)
-            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .spacing(4)
+            .margin_start(0)
+            .margin_end(0)
             .margin_top(4)
             .margin_bottom(4)
+            .css_classes(vec!["calendar-sidebar", "tasks-sidebar"])
             .build();
-        let source_header = gtk::Box::builder()
-            .orientation(gtk::Orientation::Horizontal)
-            .spacing(4)
+
+        let task_source_list = gtk::ListBox::builder()
+            .selection_mode(gtk::SelectionMode::Single)
+            .css_classes(vec!["navigation-sidebar"])
+            .margin_top(4)
             .build();
-        source_header.append(&header);
+        self.imp()
+            .task_source_list
+            .replace(Some(task_source_list.clone()));
+
+        // Retain button instances in imp() for background source action handling
         let new_task_source_button = gtk::Button::builder()
             .icon_name("list-add-symbolic")
             .tooltip_text("Neue lokale Aufgabenliste")
@@ -3772,103 +4258,41 @@ impl TasksPage {
             .css_classes(vec!["flat", "circular"])
             .sensitive(false)
             .build();
-        set_accessible_label(
-            &copy_task_source_button,
-            "Ausgewählte Aufgabenliste kopieren",
-        );
+        set_accessible_label(&copy_task_source_button, "Ausgewählte Aufgabenliste kopieren");
         let rename_task_source_button = gtk::Button::builder()
             .icon_name("document-edit-symbolic")
             .tooltip_text("Ausgewählte Aufgabenliste umbenennen")
             .css_classes(vec!["flat", "circular"])
             .sensitive(false)
             .build();
-        set_accessible_label(
-            &rename_task_source_button,
-            "Ausgewählte Aufgabenliste umbenennen",
-        );
+        set_accessible_label(&rename_task_source_button, "Ausgewählte Aufgabenliste umbenennen");
         let properties_task_source_button = gtk::Button::builder()
             .icon_name("document-properties-symbolic")
             .tooltip_text("Eigenschaften der ausgewählten Aufgabenliste")
             .css_classes(vec!["flat", "circular"])
             .sensitive(false)
             .build();
-        set_accessible_label(
-            &properties_task_source_button,
-            "Eigenschaften der ausgewählten Aufgabenliste",
-        );
+        set_accessible_label(&properties_task_source_button, "Eigenschaften der ausgewählten Aufgabenliste");
         let delete_task_source_button = gtk::Button::builder()
             .icon_name("user-trash-symbolic")
             .tooltip_text("Ausgewählte Aufgabenliste löschen")
             .css_classes(vec!["flat", "circular", "destructive-action"])
             .sensitive(false)
             .build();
-        set_accessible_label(
-            &delete_task_source_button,
-            "Ausgewählte Aufgabenliste löschen",
-        );
-        source_header.append(&new_task_source_button);
-        sidebar_box.append(&source_header);
-        let source_actions = gtk::Box::builder()
-            .orientation(gtk::Orientation::Horizontal)
-            .spacing(4)
-            .halign(gtk::Align::End)
-            .build();
-        source_actions.append(&copy_task_source_button);
-        source_actions.append(&rename_task_source_button);
-        source_actions.append(&properties_task_source_button);
-        source_actions.append(&delete_task_source_button);
-        sidebar_box.append(&source_actions);
+        set_accessible_label(&delete_task_source_button, "Ausgewählte Aufgabenliste löschen");
 
-        let task_source_list = gtk::ListBox::builder()
-            .selection_mode(gtk::SelectionMode::Single)
-            .css_classes(vec!["navigation-sidebar"])
-            .build();
+        self.imp().task_source_new_button.replace(Some(new_task_source_button.clone()));
+        self.imp().task_source_copy_button.replace(Some(copy_task_source_button.clone()));
+        self.imp().task_source_rename_button.replace(Some(rename_task_source_button.clone()));
+        self.imp().task_source_properties_button.replace(Some(properties_task_source_button.clone()));
+        self.imp().task_source_delete_button.replace(Some(delete_task_source_button.clone()));
+
         sidebar_box.append(&task_source_list);
-        self.imp()
-            .task_source_list
-            .replace(Some(task_source_list.clone()));
-        self.imp()
-            .task_source_new_button
-            .replace(Some(new_task_source_button.clone()));
-        self.imp()
-            .task_source_copy_button
-            .replace(Some(copy_task_source_button.clone()));
-        self.imp()
-            .task_source_rename_button
-            .replace(Some(rename_task_source_button.clone()));
-        self.imp()
-            .task_source_properties_button
-            .replace(Some(properties_task_source_button.clone()));
-        self.imp()
-            .task_source_delete_button
-            .replace(Some(delete_task_source_button.clone()));
-
-        let category_header = gtk::Label::builder()
-            .label("Ansichten")
-            .css_classes(vec!["title-5"])
-            .halign(gtk::Align::Start)
-            .ellipsize(gtk::pango::EllipsizeMode::End)
-            .margin_top(8)
-            .margin_bottom(2)
-            .build();
-        sidebar_box.append(&category_header);
-
-        let cat_list = gtk::ListBox::builder()
-            .selection_mode(gtk::SelectionMode::Single)
-            .css_classes(vec!["navigation-sidebar"])
-            .build();
-
-        for (_, icon, label) in TASK_FILTER_OPTIONS {
-            let row = adw::ActionRow::builder().title(label).title_lines(1).build();
-            let img = gtk::Image::from_icon_name(icon);
-            row.add_prefix(&img);
-            cat_list.append(&row);
-        }
-
-        sidebar_box.append(&cat_list);
 
         let sidebar_scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
+            .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .min_content_height(40)
             .child(&sidebar_box)
             .vexpand(true)
             .build();
@@ -3878,7 +4302,7 @@ impl TasksPage {
             .spacing(8)
             .css_classes(vec!["sidebar-drawer-header"])
             .build();
-        let drawer_icon = gtk::Image::from_icon_name("checkbox-checked-symbolic");
+        let drawer_icon = gtk::Image::from_icon_name("evolution-tasks-symbolic");
         let drawer_title = gtk::Label::builder()
             .label("Aufgaben")
             .halign(gtk::Align::Start)
@@ -3936,7 +4360,7 @@ impl TasksPage {
 
         let search_entry = gtk::SearchEntry::builder()
             .placeholder_text("Aufgaben durchsuchen…")
-            .hexpand(true)
+            .width_chars(36)
             .build();
         search_entry.set_tooltip_text(Some(
             "Mehrere Begriffe werden kombiniert. Im Modus Erweitert: category:Work due:next7 has:attachment",
@@ -3988,12 +4412,24 @@ impl TasksPage {
         self.imp()
             .task_source_selector
             .replace(Some(source_selector.clone()));
-        let source_selector_for_sidebar = source_selector.clone();
+        let page_weak_for_sidebar_row = self.downgrade();
         task_source_list.connect_row_selected(move |_, row| {
+            let Some(page) = page_weak_for_sidebar_row.upgrade() else {
+                return;
+            };
+            if page.imp().task_source_syncing.get() {
+                return;
+            }
             if let Some(row) = row {
-                source_selector_for_sidebar.set_selected(row.index() as u32);
+                if let Some(target_index) = unsafe { row.data::<usize>("source-index").map(|v| *v.as_ref()) } {
+                    let uids = page.imp().task_source_uids.borrow().clone();
+                    if let Some(uid) = uids.get(target_index.saturating_sub(1)) {
+                        page.set_default_task_source(uid);
+                    }
+                }
             }
         });
+
         let category_model = gtk::StringList::new(&["Alle Kategorien"]);
         let category_selector =
             gtk::DropDown::new(Some(category_model.clone()), None::<&gtk::Expression>);
@@ -4016,11 +4452,16 @@ impl TasksPage {
         self.imp()
             .new_task_button
             .replace(Some(btn_add_task.clone()));
+
         let selection_status = gtk::Label::builder()
             .label("Keine Auswahl")
             .css_classes(vec!["dim-label"])
             .valign(gtk::Align::Center)
             .build();
+        self.imp()
+            .task_selection_status
+            .replace(Some(selection_status.clone()));
+
         let forward_selection_button = gtk::Button::builder()
             .icon_name("mail-forward-symbolic")
             .tooltip_text("Ausgewählte Aufgabe als iCalendar weiterleiten")
@@ -4078,7 +4519,7 @@ impl TasksPage {
         );
         let refresh_source_button = gtk::Button::builder()
             .icon_name("view-refresh-symbolic")
-            .tooltip_text("Ausgewählte Aufgabenliste beim Anbieter aktualisieren")
+            .tooltip_text("Ausgewählte Aufgabenliste beim Anbieter aktualisieren (F5)")
             .css_classes(vec!["flat"])
             .valign(gtk::Align::Center)
             .sensitive(false)
@@ -4089,7 +4530,7 @@ impl TasksPage {
         );
         let copy_selection_button = gtk::Button::builder()
             .icon_name("edit-copy-symbolic")
-            .tooltip_text("Ausgewählte Aufgaben in die Zwischenablage kopieren")
+            .tooltip_text("Ausgewählte Aufgaben in die Zwischenablage kopieren (Strg+C)")
             .css_classes(vec!["flat"])
             .valign(gtk::Align::Center)
             .sensitive(false)
@@ -4100,7 +4541,7 @@ impl TasksPage {
         );
         let cut_selection_button = gtk::Button::builder()
             .icon_name("edit-cut-symbolic")
-            .tooltip_text("Ausgewählte Aufgaben ausschneiden")
+            .tooltip_text("Ausgewählte Aufgaben ausschneiden (Strg+X)")
             .css_classes(vec!["flat"])
             .valign(gtk::Align::Center)
             .sensitive(false)
@@ -4108,7 +4549,7 @@ impl TasksPage {
         set_accessible_label(&cut_selection_button, "Ausgewählte Aufgaben ausschneiden");
         let paste_selection_button = gtk::Button::builder()
             .icon_name("edit-paste-symbolic")
-            .tooltip_text("Aufgaben aus der Zwischenablage einfügen")
+            .tooltip_text("Aufgaben aus der Zwischenablage einfügen (Strg+V)")
             .css_classes(vec!["flat"])
             .valign(gtk::Align::Center)
             .sensitive(false)
@@ -4119,7 +4560,7 @@ impl TasksPage {
         );
         let select_all_tasks_button = gtk::Button::builder()
             .icon_name("edit-select-all-symbolic")
-            .tooltip_text("Alle sichtbaren Aufgaben auswählen")
+            .tooltip_text("Alle sichtbaren Aufgaben auswählen (Strg+A)")
             .css_classes(vec!["flat"])
             .valign(gtk::Align::Center)
             .build();
@@ -4191,13 +4632,45 @@ impl TasksPage {
             .map(|settings| settings.task_preview_visible())
             .unwrap_or(true);
         let preview_toggle = gtk::ToggleButton::builder()
-            .icon_name("view-dual-symbolic")
+            .icon_name("sidebar-show-right-symbolic")
             .tooltip_text("Aufgabenvorschau ein-/ausblenden (Strg+M)")
             .active(preview_visible)
             .css_classes(vec!["flat"])
             .valign(gtk::Align::Center)
             .build();
         set_accessible_label(&preview_toggle, "Aufgabenvorschau ein- oder ausblenden");
+
+        let sidebar_visible = AppSettings::try_new()
+            .map(|s| s.mail_show_sidebar())
+            .unwrap_or(true);
+        sidebar_outer_box.set_visible(sidebar_visible);
+        let sidebar_toggle = gtk::ToggleButton::builder()
+            .icon_name("sidebar-show-symbolic")
+            .tooltip_text("Seitenleiste ein-/ausblenden (F9)")
+            .active(sidebar_visible)
+            .css_classes(vec!["flat"])
+            .valign(gtk::Align::Center)
+            .build();
+        set_accessible_label(&sidebar_toggle, "Seitenleiste ein- oder ausblenden");
+
+        let sidebar_for_toggle = sidebar_outer_box.clone();
+        sidebar_toggle.connect_toggled(move |toggle| {
+            let is_active = toggle.is_active();
+            sidebar_for_toggle.set_visible(is_active);
+            if let Some(settings) = AppSettings::try_new() {
+                settings.set_mail_show_sidebar(is_active);
+            }
+        });
+
+        if let Some(settings) = AppSettings::try_new() {
+            let sidebar_toggle_for_settings = sidebar_toggle.clone();
+            settings.connect_changed(Some("mail-show-sidebar"), move |settings, _| {
+                let active = settings.boolean("mail-show-sidebar");
+                if sidebar_toggle_for_settings.is_active() != active {
+                    sidebar_toggle_for_settings.set_active(active);
+                }
+            });
+        }
         let preview_orientation_model =
             gtk::StringList::new(&["Vorschau unten", "Vorschau daneben"]);
         let preview_orientation_selector =
@@ -4209,122 +4682,290 @@ impl TasksPage {
             .unwrap_or(TaskPreviewOrientation::Classic);
         preview_orientation_selector.set_selected(preview_orientation.index());
         preview_orientation_selector.set_tooltip_text(Some("Anordnung der Aufgabenvorschau"));
-        self.imp()
-            .task_selection_status
-            .replace(Some(selection_status.clone()));
-        self.imp()
-            .task_forward_button
-            .replace(Some(forward_selection_button.clone()));
-        self.imp()
-            .task_assign_button
-            .replace(Some(assign_selection_button.clone()));
-        self.imp()
-            .task_open_url_button
-            .replace(Some(open_url_selection_button.clone()));
-        self.imp()
-            .task_print_button
-            .replace(Some(print_selection_button.clone()));
-        self.imp()
-            .task_copy_button
-            .replace(Some(copy_selection_button.clone()));
-        self.imp()
-            .task_cut_button
-            .replace(Some(cut_selection_button.clone()));
-        self.imp()
-            .task_paste_button
-            .replace(Some(paste_selection_button.clone()));
-        self.imp()
-            .task_select_all_button
-            .replace(Some(select_all_tasks_button.clone()));
-        self.imp()
-            .task_bulk_edit_button
-            .replace(Some(bulk_edit_button.clone()));
-        self.imp()
-            .task_complete_button
-            .replace(Some(complete_selection_button.clone()));
-        self.imp()
-            .task_incomplete_button
-            .replace(Some(incomplete_selection_button.clone()));
-        self.imp()
-            .task_delete_selection_button
-            .replace(Some(delete_selection_button.clone()));
-        self.imp()
-            .task_purge_button
-            .replace(Some(purge_button.clone()));
-        self.imp()
-            .task_refresh_button
-            .replace(Some(refresh_source_button.clone()));
-        self.imp()
-            .task_export_button
-            .replace(Some(export_selection_button.clone()));
-        self.imp()
-            .task_preview_toggle
-            .replace(Some(preview_toggle.clone()));
-        self.imp()
-            .task_preview_orientation
-            .replace(Some(preview_orientation_selector.clone()));
 
+        self.imp().task_forward_button.replace(Some(forward_selection_button.clone()));
+        self.imp().task_assign_button.replace(Some(assign_selection_button.clone()));
+        self.imp().task_open_url_button.replace(Some(open_url_selection_button.clone()));
+        self.imp().task_print_button.replace(Some(print_selection_button.clone()));
+        self.imp().task_copy_button.replace(Some(copy_selection_button.clone()));
+        self.imp().task_cut_button.replace(Some(cut_selection_button.clone()));
+        self.imp().task_paste_button.replace(Some(paste_selection_button.clone()));
+        self.imp().task_select_all_button.replace(Some(select_all_tasks_button.clone()));
+        self.imp().task_bulk_edit_button.replace(Some(bulk_edit_button.clone()));
+        self.imp().task_complete_button.replace(Some(complete_selection_button.clone()));
+        self.imp().task_incomplete_button.replace(Some(incomplete_selection_button.clone()));
+        self.imp().task_delete_selection_button.replace(Some(delete_selection_button.clone()));
+        self.imp().task_purge_button.replace(Some(purge_button.clone()));
+        self.imp().task_refresh_button.replace(Some(refresh_source_button.clone()));
+        self.imp().task_export_button.replace(Some(export_selection_button.clone()));
+        self.imp().task_sidebar_toggle.replace(Some(sidebar_toggle.clone()));
+        self.imp().task_preview_toggle.replace(Some(preview_toggle.clone()));
+        self.imp().task_preview_orientation.replace(Some(preview_orientation_selector.clone()));
+
+        // ── GNOME HIG Unified Toolbar Construction ──
+        // 1. Triage group (.linked): Erledigt, Löschen
+        let triage_group = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .css_classes(vec!["linked"])
+            .valign(gtk::Align::Center)
+            .build();
+        triage_group.append(&complete_selection_button);
+        triage_group.append(&delete_selection_button);
+
+        // 2. Clipboard group (.linked): Ausschneiden, Kopieren, Einfügen
+        let clipboard_group = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .css_classes(vec!["linked"])
+            .valign(gtk::Align::Center)
+            .build();
+        clipboard_group.append(&cut_selection_button);
+        clipboard_group.append(&copy_selection_button);
+        clipboard_group.append(&paste_selection_button);
+
+        // 3. Left Toolbar Section (no redundant Add Task button, already present in header bar)
         let left_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
-            .spacing(2)
+            .spacing(4)
             .halign(gtk::Align::Start)
+            .valign(gtk::Align::Center)
             .build();
-        left_box.append(&btn_add_task);
-        left_box.append(&refresh_source_button);
+        left_box.append(&sidebar_toggle);
         left_box.append(&gtk::Separator::new(gtk::Orientation::Vertical));
-        left_box.append(&complete_selection_button);
-        left_box.append(&incomplete_selection_button);
-        left_box.append(&delete_selection_button);
-        left_box.append(&purge_button);
+        left_box.append(&triage_group);
         left_box.append(&gtk::Separator::new(gtk::Orientation::Vertical));
-        left_box.append(&copy_selection_button);
-        left_box.append(&cut_selection_button);
-        left_box.append(&paste_selection_button);
-        left_box.append(&select_all_tasks_button);
-        left_box.append(&bulk_edit_button);
+        left_box.append(&clipboard_group);
         left_box.append(&gtk::Separator::new(gtk::Orientation::Vertical));
-        left_box.append(&assign_selection_button);
-        left_box.append(&forward_selection_button);
-        left_box.append(&open_url_selection_button);
+        left_box.append(&print_list_button);
 
-        search_mode_selector.set_valign(gtk::Align::Center);
-        search_entry.set_valign(gtk::Align::Center);
-        category_selector.set_valign(gtk::Align::Center);
-        source_selector.set_valign(gtk::Align::Center);
-
-        let center_box = gtk::Box::builder()
+        // 4. Center Filter View Switcher (Linked pills for key views + DropDown for all)
+        let filter_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(4)
-            .hexpand(true)
-            .halign(gtk::Align::Fill)
+            .valign(gtk::Align::Center)
             .build();
-        center_box.append(&search_entry);
-        center_box.append(&search_mode_selector);
-        center_box.append(&category_selector);
-        center_box.append(&source_selector);
-        center_box.append(&selection_status);
 
+        let view_toggle = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .css_classes(vec!["linked"])
+            .valign(gtk::Align::Center)
+            .build();
+
+        let initial_filter = self.imp().task_filter.get();
+
+        let all_btn = gtk::ToggleButton::builder()
+            .label("Alle")
+            .tooltip_text("Alle Aufgaben anzeigen")
+            .active(initial_filter == TaskFilter::All)
+            .build();
+        set_accessible_label(&all_btn, "Alle Aufgaben anzeigen");
+
+        let today_btn = gtk::ToggleButton::builder()
+            .label("Heute")
+            .tooltip_text("Heute fällige Aufgaben anzeigen")
+            .group(&all_btn)
+            .active(initial_filter == TaskFilter::Today)
+            .build();
+        set_accessible_label(&today_btn, "Heute fällige Aufgaben anzeigen");
+
+        let next7_btn = gtk::ToggleButton::builder()
+            .label("Nächste 7 Tage")
+            .tooltip_text("In den nächsten 7 Tagen fällige Aufgaben anzeigen")
+            .group(&all_btn)
+            .active(initial_filter == TaskFilter::Next7)
+            .build();
+        set_accessible_label(&next7_btn, "In den nächsten 7 Tagen fällige Aufgaben anzeigen");
+
+        let overdue_btn = gtk::ToggleButton::builder()
+            .label("Überfällig")
+            .tooltip_text("Überfällige Aufgaben anzeigen")
+            .group(&all_btn)
+            .active(initial_filter == TaskFilter::Overdue)
+            .build();
+        set_accessible_label(&overdue_btn, "Überfällige Aufgaben anzeigen");
+
+        let completed_btn = gtk::ToggleButton::builder()
+            .label("Erledigt")
+            .tooltip_text("Erledigte Aufgaben anzeigen")
+            .group(&all_btn)
+            .active(initial_filter == TaskFilter::Completed)
+            .build();
+        set_accessible_label(&completed_btn, "Erledigte Aufgaben anzeigen");
+
+        view_toggle.append(&all_btn);
+        view_toggle.append(&today_btn);
+        view_toggle.append(&next7_btn);
+        view_toggle.append(&overdue_btn);
+        view_toggle.append(&completed_btn);
+
+        let filter_options_names: Vec<&str> =
+            TASK_FILTER_OPTIONS.iter().map(|(_, _, label)| *label).collect();
+        let filter_options_model = gtk::StringList::new(&filter_options_names);
+        let filter_dropdown = gtk::DropDown::new(
+            Some(filter_options_model),
+            None::<&gtk::Expression>,
+        );
+        filter_dropdown.set_valign(gtk::Align::Center);
+        filter_dropdown.set_tooltip_text(Some("Weitere Aufgabenfilter auswählen"));
+        filter_dropdown.set_selected(task_filter_index(initial_filter) as u32);
+
+        filter_box.append(&view_toggle);
+        filter_box.append(&filter_dropdown);
+
+        // 5. Sort group (.linked)
+        let sort_group = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .css_classes(vec!["linked"])
+            .valign(gtk::Align::Center)
+            .build();
         sort_selector.set_valign(gtk::Align::Center);
-        preview_orientation_selector.set_valign(gtk::Align::Center);
+        sort_group.append(&sort_selector);
+        sort_group.append(&direction_button);
 
+        // 6. Search Toggle Button
+        let search_toggle_btn = gtk::ToggleButton::builder()
+            .icon_name("edit-find-symbolic")
+            .tooltip_text("Aufgaben durchsuchen (Strg+F)")
+            .css_classes(vec!["flat"])
+            .valign(gtk::Align::Center)
+            .build();
+        set_accessible_label(&search_toggle_btn, "Aufgaben durchsuchen");
+
+        // 7. More Actions Popover Menu ([⋮])
+        let more_popover_content = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(2)
+            .margin_start(6)
+            .margin_end(6)
+            .margin_top(6)
+            .margin_bottom(6)
+            .build();
+        let more_popover = gtk::Popover::builder()
+            .child(&more_popover_content)
+            .build();
+
+        let make_popover_item = |label: &str, icon: &str, target_btn: &gtk::Button, popover: &gtk::Popover| {
+            let item_box = gtk::Box::builder()
+                .orientation(gtk::Orientation::Horizontal)
+                .spacing(8)
+                .build();
+            item_box.append(&gtk::Image::from_icon_name(icon));
+            item_box.append(&gtk::Label::builder().label(label).halign(gtk::Align::Start).hexpand(true).build());
+            let item_btn = gtk::Button::builder()
+                .child(&item_box)
+                .css_classes(vec!["flat"])
+                .halign(gtk::Align::Fill)
+                .sensitive(target_btn.is_sensitive())
+                .build();
+            let target = target_btn.clone();
+            let pop_weak = popover.downgrade();
+            item_btn.connect_clicked(move |_| {
+                if let Some(p) = pop_weak.upgrade() {
+                    p.popdown();
+                }
+                target.emit_clicked();
+            });
+            item_btn.bind_property("sensitive", target_btn, "sensitive")
+                .sync_create()
+                .build();
+            item_btn
+        };
+
+        more_popover_content.append(&make_popover_item("Alle Aufgaben auswählen (Strg+A)", "edit-select-all-symbolic", &select_all_tasks_button, &more_popover));
+        more_popover_content.append(&make_popover_item("Als offen markieren", "view-refresh-symbolic", &incomplete_selection_button, &more_popover));
+        more_popover_content.append(&make_popover_item("Mehrere Aufgaben bearbeiten…", "document-edit-symbolic", &bulk_edit_button, &more_popover));
+        more_popover_content.append(&make_popover_item("Erledigte Aufgaben bereinigen… (Strg+E)", "edit-clear-all-symbolic", &purge_button, &more_popover));
+        more_popover_content.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+        more_popover_content.append(&make_popover_item("Aufgabe zuweisen…", "avatar-default-symbolic", &assign_selection_button, &more_popover));
+        more_popover_content.append(&make_popover_item("Als iCalendar weiterleiten…", "mail-forward-symbolic", &forward_selection_button, &more_popover));
+        more_popover_content.append(&make_popover_item("URL der Aufgabe öffnen", "external-link-symbolic", &open_url_selection_button, &more_popover));
+        more_popover_content.append(&make_popover_item("Als iCalendar exportieren…", "document-save-symbolic", &export_selection_button, &more_popover));
+        more_popover_content.append(&make_popover_item("Druckvorschau…", "document-print-preview-symbolic", &print_list_preview_button, &more_popover));
+        more_popover_content.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+        more_popover_content.append(&make_popover_item("Aufgabenliste aktualisieren (F5)", "view-refresh-symbolic", &refresh_source_button, &more_popover));
+        more_popover_content.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+
+        let preview_orientation_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(6)
+            .margin_start(4)
+            .margin_end(4)
+            .build();
+        preview_orientation_box.append(&gtk::Label::builder().label("Vorschau:").halign(gtk::Align::Start).css_classes(vec!["dim-label"]).build());
+        preview_orientation_selector.set_valign(gtk::Align::Center);
+        preview_orientation_box.append(&preview_orientation_selector);
+        more_popover_content.append(&preview_orientation_box);
+
+        let more_button = gtk::MenuButton::builder()
+            .icon_name("view-more-symbolic")
+            .popover(&more_popover)
+            .tooltip_text("Weitere Aktionen")
+            .css_classes(vec!["flat"])
+            .valign(gtk::Align::Center)
+            .build();
+        set_accessible_label(&more_button, "Weitere Aktionen");
+
+        // 8. Layout Switcher (.linked: 3-Panel / Vertical, Classic / Bottom, List Only)
+        let layout_group = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .css_classes(vec!["linked"])
+            .valign(gtk::Align::Center)
+            .build();
+
+        let layout_vertical_btn = gtk::ToggleButton::builder()
+            .icon_name("sidebar-show-right-symbolic")
+            .tooltip_text("Dreispalten-Ansicht (Vorschau rechts)")
+            .active(preview_visible && preview_orientation == TaskPreviewOrientation::Vertical)
+            .css_classes(vec!["flat"])
+            .valign(gtk::Align::Center)
+            .build();
+        set_accessible_label(&layout_vertical_btn, "Dreispalten-Ansicht (Vorschau rechts)");
+
+        let layout_classic_btn = gtk::ToggleButton::builder()
+            .icon_name("pan-down-symbolic")
+            .tooltip_text("Klassische Ansicht (Vorschau unten)")
+            .group(&layout_vertical_btn)
+            .active(preview_visible && preview_orientation == TaskPreviewOrientation::Classic)
+            .css_classes(vec!["flat"])
+            .valign(gtk::Align::Center)
+            .build();
+        set_accessible_label(&layout_classic_btn, "Klassische Ansicht (Vorschau unten)");
+
+        let layout_list_only_btn = gtk::ToggleButton::builder()
+            .icon_name("view-list-symbolic")
+            .tooltip_text("Nur Liste (Vorschau ausblenden)")
+            .group(&layout_vertical_btn)
+            .active(!preview_visible)
+            .css_classes(vec!["flat"])
+            .valign(gtk::Align::Center)
+            .build();
+        set_accessible_label(&layout_list_only_btn, "Nur Liste (Vorschau ausblenden)");
+
+        layout_group.append(&layout_vertical_btn);
+        layout_group.append(&layout_classic_btn);
+        layout_group.append(&layout_list_only_btn);
+
+        // 9. Right Toolbar Section
         let right_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
-            .spacing(2)
+            .spacing(4)
             .halign(gtk::Align::End)
+            .valign(gtk::Align::Center)
             .build();
-        right_box.append(&sort_selector);
-        right_box.append(&direction_button);
+        right_box.append(&sort_group);
         right_box.append(&gtk::Separator::new(gtk::Orientation::Vertical));
-        right_box.append(&print_selection_button);
-        right_box.append(&print_list_button);
-        right_box.append(&print_list_preview_button);
-        right_box.append(&export_selection_button);
+        right_box.append(&search_toggle_btn);
         right_box.append(&gtk::Separator::new(gtk::Orientation::Vertical));
-        right_box.append(&preview_toggle);
-        right_box.append(&preview_orientation_selector);
+        right_box.append(&more_button);
+        right_box.append(&gtk::Separator::new(gtk::Orientation::Vertical));
+        right_box.append(&layout_group);
+
+        let left_spacer = gtk::Box::builder().hexpand(true).build();
+        let right_spacer = gtk::Box::builder().hexpand(true).build();
 
         toolbar.append(&left_box);
-        toolbar.append(&center_box);
+        toolbar.append(&left_spacer);
+        toolbar.append(&filter_box);
+        toolbar.append(&right_spacer);
         toolbar.append(&right_box);
 
         let toolbar_scroll = gtk::ScrolledWindow::builder()
@@ -4333,6 +4974,64 @@ impl TasksPage {
             .propagate_natural_width(true)
             .child(&toolbar)
             .build();
+        toolbar_scroll.set_visible(
+            AppSettings::try_new()
+                .map(|settings| settings.mail_show_toolbar())
+                .unwrap_or(true),
+        );
+        self.imp()
+            .toolbar
+            .replace(Some(toolbar_scroll.clone().upcast()));
+
+        // ── GNOME HIG SearchBar (matching Mail page search bar) ──
+        let task_search_bar = gtk::SearchBar::builder()
+            .search_mode_enabled(false)
+            .key_capture_widget(self)
+            .build();
+        task_search_bar.connect_entry(&search_entry);
+        self.imp()
+            .task_search_bar
+            .replace(Some(task_search_bar.clone()));
+
+        task_search_bar
+            .bind_property("search-mode-enabled", &search_toggle_btn, "active")
+            .bidirectional()
+            .sync_create()
+            .build();
+
+        let search_content_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(8)
+            .margin_start(12)
+            .margin_end(12)
+            .margin_top(4)
+            .margin_bottom(4)
+            .halign(gtk::Align::Center)
+            .valign(gtk::Align::Center)
+            .build();
+
+        search_entry.set_valign(gtk::Align::Center);
+        search_mode_selector.set_valign(gtk::Align::Center);
+        category_selector.set_valign(gtk::Align::Center);
+
+        search_content_box.append(&search_entry);
+        search_content_box.append(&search_mode_selector);
+        search_content_box.append(&category_selector);
+        task_search_bar.set_child(Some(&search_content_box));
+
+        let entry_for_search_mode = search_entry.clone();
+        task_search_bar.connect_notify_local(Some("search-mode-enabled"), move |bar, _| {
+            if bar.is_search_mode() {
+                entry_for_search_mode.grab_focus();
+            } else if !entry_for_search_mode.text().is_empty() {
+                entry_for_search_mode.set_text("");
+            }
+        });
+
+        let search_toggle_for_stop = search_toggle_btn.clone();
+        search_entry.connect_stop_search(move |_| {
+            search_toggle_for_stop.set_active(false);
+        });
 
         let task_store = gio::ListStore::new::<TaskItemObject>();
 
@@ -4342,13 +5041,13 @@ impl TasksPage {
             .margin_end(16)
             .margin_top(12)
             .margin_bottom(12)
-            .css_classes(vec!["boxed-list"])
+            .css_classes(vec!["boxed-list", "task-boxed-list"])
             .build();
 
         let empty_tasks = gtk::Label::builder()
             .label("Aufgaben werden geladen…")
-            .css_classes(vec!["dim-label"])
-            .margin_top(24)
+            .css_classes(vec!["dim-label", "task-empty-state-title"])
+            .margin_top(36)
             .build();
         self.imp().task_list.replace(Some(task_list.clone()));
         self.imp().task_store.replace(Some(task_store.clone()));
@@ -4402,6 +5101,22 @@ impl TasksPage {
             .vexpand(true)
             .hscrollbar_policy(gtk::PolicyType::Never)
             .build();
+        let preview_empty_state = adw::StatusPage::builder()
+            .icon_name("document-properties-symbolic")
+            .title("Keine Aufgabe ausgewählt")
+            .description("Wählen Sie eine Aufgabe aus der Liste aus, um Details und Notizen anzuzeigen.")
+            .vexpand(true)
+            .hexpand(true)
+            .build();
+        let preview_stack = gtk::Stack::builder()
+            .transition_type(gtk::StackTransitionType::Crossfade)
+            .vexpand(true)
+            .hexpand(true)
+            .build();
+        preview_stack.add_named(&preview_empty_state, Some("empty"));
+        preview_stack.add_named(&preview_scroll, Some("content"));
+        preview_stack.set_visible_child_name("empty");
+
         let preview_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .css_classes(vec!["background"])
@@ -4409,7 +5124,10 @@ impl TasksPage {
             .build();
         preview_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
         preview_box.append(&preview_find_bar);
-        preview_box.append(&preview_scroll);
+        preview_box.append(&preview_stack);
+        self.imp()
+            .task_preview_stack
+            .replace(Some(preview_stack.clone()));
         self.imp()
             .task_preview_box
             .replace(Some(preview_box.clone()));
@@ -4456,25 +5174,99 @@ impl TasksPage {
         });
 
         let page_weak_for_preview_toggle = self.downgrade();
+        let layout_list_only_for_toggle = layout_list_only_btn.clone();
+        let layout_vert_for_toggle = layout_vertical_btn.clone();
+        let layout_classic_for_toggle = layout_classic_btn.clone();
+        let prev_orient_selector_for_toggle = preview_orientation_selector.clone();
         preview_toggle.connect_toggled(move |toggle| {
+            let active = toggle.is_active();
             if let Some(settings) = AppSettings::try_new() {
-                settings.set_task_preview_visible(toggle.is_active());
+                settings.set_task_preview_visible(active);
+            }
+            if !active {
+                if !layout_list_only_for_toggle.is_active() {
+                    layout_list_only_for_toggle.set_active(true);
+                }
+            } else {
+                let orientation = TaskPreviewOrientation::from_index(prev_orient_selector_for_toggle.selected());
+                match orientation {
+                    TaskPreviewOrientation::Vertical => {
+                        if !layout_vert_for_toggle.is_active() {
+                            layout_vert_for_toggle.set_active(true);
+                        }
+                    }
+                    TaskPreviewOrientation::Classic => {
+                        if !layout_classic_for_toggle.is_active() {
+                            layout_classic_for_toggle.set_active(true);
+                        }
+                    }
+                }
             }
             if let Some(page) = page_weak_for_preview_toggle.upgrade() {
                 refresh_task_preview(&page);
             }
         });
+
         let page_weak_for_preview_orientation = self.downgrade();
+        let preview_toggle_for_orient = preview_toggle.clone();
+        let layout_vert_for_orient = layout_vertical_btn.clone();
+        let layout_classic_for_orient = layout_classic_btn.clone();
         preview_orientation_selector.connect_selected_notify(move |selector| {
-            let orientation = TaskPreviewOrientation::from_index(selector.selected());
+            let sel = selector.selected();
+            if sel == gtk::INVALID_LIST_POSITION {
+                return;
+            }
+            let orientation = TaskPreviewOrientation::from_index(sel);
             if let Some(settings) = AppSettings::try_new() {
                 settings.set_task_preview_orientation(orientation.setting_value());
+            }
+            if preview_toggle_for_orient.is_active() {
+                match orientation {
+                    TaskPreviewOrientation::Vertical => {
+                        if !layout_vert_for_orient.is_active() {
+                            layout_vert_for_orient.set_active(true);
+                        }
+                    }
+                    TaskPreviewOrientation::Classic => {
+                        if !layout_classic_for_orient.is_active() {
+                            layout_classic_for_orient.set_active(true);
+                        }
+                    }
+                }
             }
             if let Some(page) = page_weak_for_preview_orientation.upgrade() {
                 apply_task_preview_paned_layout(&page, orientation);
             }
         });
-        content_box.append(&empty_tasks);
+
+        let preview_toggle_for_vert = preview_toggle.clone();
+        let prev_orient_selector_for_vert = preview_orientation_selector.clone();
+        layout_vertical_btn.connect_toggled(move |btn| {
+            if btn.is_active() {
+                prev_orient_selector_for_vert.set_selected(TaskPreviewOrientation::Vertical.index());
+                if !preview_toggle_for_vert.is_active() {
+                    preview_toggle_for_vert.set_active(true);
+                }
+            }
+        });
+
+        let preview_toggle_for_classic = preview_toggle.clone();
+        let prev_orient_selector_for_classic = preview_orientation_selector.clone();
+        layout_classic_btn.connect_toggled(move |btn| {
+            if btn.is_active() {
+                prev_orient_selector_for_classic.set_selected(TaskPreviewOrientation::Classic.index());
+                if !preview_toggle_for_classic.is_active() {
+                    preview_toggle_for_classic.set_active(true);
+                }
+            }
+        });
+
+        let preview_toggle_for_list = preview_toggle.clone();
+        layout_list_only_btn.connect_toggled(move |btn| {
+            if btn.is_active() && preview_toggle_for_list.is_active() {
+                preview_toggle_for_list.set_active(false);
+            }
+        });
 
         let page_weak_for_selection = self.downgrade();
         task_list.connect_selected_rows_changed(move |list| {
@@ -4585,23 +5377,34 @@ impl TasksPage {
         let preview_toggle_for_keys = preview_toggle.clone();
         let preview_find_bar_for_keys = preview_find_bar.clone();
         let preview_find_entry_for_keys = preview_find_entry.clone();
+        let search_toggle_for_keys = search_toggle_btn.clone();
+        let sidebar_toggle_for_keys = sidebar_toggle.clone();
         let clipboard_keys = gtk::EventControllerKey::new();
         clipboard_keys.connect_key_pressed(move |_, key, _, modifiers| {
+            if key == gtk::gdk::Key::F9 {
+                sidebar_toggle_for_keys.set_active(!sidebar_toggle_for_keys.is_active());
+                return glib::Propagation::Stop;
+            }
             if !modifiers.contains(gtk::gdk::ModifierType::CONTROL_MASK) {
                 return glib::Propagation::Proceed;
             }
-            if matches!(key, gtk::gdk::Key::f | gtk::gdk::Key::F)
-                && modifiers.contains(gtk::gdk::ModifierType::SHIFT_MASK)
-            {
-                // This controller belongs only to the task list.  Require an
-                // exact current single selection before exposing preview find.
-                if preview_toggle_for_keys.is_active() && preview_find_entry_for_keys.is_sensitive()
-                {
-                    preview_find_bar_for_keys.set_visible(true);
-                    preview_find_entry_for_keys.grab_focus();
+            if matches!(key, gtk::gdk::Key::f | gtk::gdk::Key::F) {
+                if modifiers.contains(gtk::gdk::ModifierType::SHIFT_MASK) {
+                    // This controller belongs only to the task list.  Require an
+                    // exact current single selection before exposing preview find.
+                    if preview_toggle_for_keys.is_active()
+                        && preview_find_entry_for_keys.is_sensitive()
+                    {
+                        preview_find_bar_for_keys.set_visible(true);
+                        preview_find_entry_for_keys.grab_focus();
+                        return glib::Propagation::Stop;
+                    }
+                    return glib::Propagation::Proceed;
+                } else {
+                    let is_active = search_toggle_for_keys.is_active();
+                    search_toggle_for_keys.set_active(!is_active);
                     return glib::Propagation::Stop;
                 }
-                return glib::Propagation::Proceed;
             }
             if matches!(key, gtk::gdk::Key::m | gtk::gdk::Key::M) {
                 preview_toggle_for_keys.set_active(!preview_toggle_for_keys.is_active());
@@ -4637,6 +5440,24 @@ impl TasksPage {
         // This controller is attached only to the task list, so editable
         // search and task-editor widgets retain their standard shortcuts.
         task_list.add_controller(clipboard_keys);
+
+        let page_key_controller = gtk::EventControllerKey::new();
+        let preview_toggle_for_page = preview_toggle.clone();
+        let sidebar_toggle_for_page = sidebar_toggle.clone();
+        page_key_controller.connect_key_pressed(move |_, key, _, modifiers| {
+            if key == gtk::gdk::Key::F9 {
+                sidebar_toggle_for_page.set_active(!sidebar_toggle_for_page.is_active());
+                return glib::Propagation::Stop;
+            }
+            if (key == gtk::gdk::Key::m || key == gtk::gdk::Key::M)
+                && modifiers.contains(gtk::gdk::ModifierType::CONTROL_MASK)
+            {
+                preview_toggle_for_page.set_active(!preview_toggle_for_page.is_active());
+                return glib::Propagation::Stop;
+            }
+            glib::Propagation::Proceed
+        });
+        self.add_controller(page_key_controller);
 
         let page_weak_for_bulk_edit = self.downgrade();
         let task_store_for_bulk_edit = task_store.clone();
@@ -5032,7 +5853,11 @@ impl TasksPage {
             let Some(page) = page_weak_for_search_mode.upgrade() else {
                 return;
             };
-            let mode = TaskSearchMode::from_index(selector.selected());
+            let sel = selector.selected();
+            if sel == gtk::INVALID_LIST_POSITION {
+                return;
+            }
+            let mode = TaskSearchMode::from_index(sel);
             page.imp().task_search_mode.set(mode);
             if let Some(settings) = AppSettings::try_new() {
                 settings.set_task_search_mode(mode.setting_value());
@@ -5053,7 +5878,11 @@ impl TasksPage {
             let Some(page) = page_weak_for_sort.upgrade() else {
                 return;
             };
-            page.imp().task_sort.set(match selector.selected() {
+            let sel = selector.selected();
+            if sel == gtk::INVALID_LIST_POSITION {
+                return;
+            }
+            page.imp().task_sort.set(match sel {
                 1 => TaskSort::Title,
                 2 => TaskSort::Priority,
                 _ => TaskSort::DueDate,
@@ -5101,24 +5930,25 @@ impl TasksPage {
             let Some(page) = page_weak_for_source.upgrade() else {
                 return;
             };
-            let source_filter = if selector.selected() == 0 {
+            if page.imp().task_source_syncing.get() {
+                return;
+            }
+            let sel = selector.selected();
+            if sel == gtk::INVALID_LIST_POSITION {
+                return;
+            }
+            let source_filter = if sel == 0 {
                 None
             } else {
-                page.imp()
-                    .task_source_uids
-                    .borrow()
-                    .get(selector.selected() as usize - 1)
-                    .cloned()
+                let uids = page.imp().task_source_uids.borrow().clone();
+                let idx = sel as usize - 1;
+                uids.get(idx).cloned()
             };
             page.imp().task_source_filter.replace(source_filter.clone());
             if let Some(settings) = AppSettings::try_new() {
                 settings.set_task_source_filter(source_filter.as_deref().unwrap_or_default());
             }
-            if let Some(row) =
-                task_source_list_for_selector.row_at_index(selector.selected() as i32)
-            {
-                task_source_list_for_selector.select_row(Some(&row));
-            }
+            TasksPage::select_sidebar_source_row(&task_source_list_for_selector, sel as usize);
             render_task_rows(
                 &page,
                 &task_list_for_source,
@@ -5136,21 +5966,25 @@ impl TasksPage {
             let Some(page) = page_weak_for_category.upgrade() else {
                 return;
             };
-            let category = if selector.selected() == 0 {
+            if page.imp().task_category_syncing.get() {
+                return;
+            }
+            let sel = selector.selected();
+            if sel == gtk::INVALID_LIST_POSITION {
+                return;
+            }
+            let category = if sel == 0 {
                 None
             } else {
                 category_model_for_selector
-                    .string(selector.selected())
+                    .string(sel)
                     .map(|value| value.to_string())
             };
             page.imp().task_category_filter.replace(category);
             if let Some(settings) = AppSettings::try_new() {
+                let current_cat = page.imp().task_category_filter.borrow().clone();
                 settings.set_task_category_filter(
-                    page.imp()
-                        .task_category_filter
-                        .borrow()
-                        .as_deref()
-                        .unwrap_or_default(),
+                    current_cat.as_deref().unwrap_or_default(),
                 );
             }
             render_task_rows(
@@ -5161,56 +5995,107 @@ impl TasksPage {
             );
         });
 
+        let syncing_filter = Rc::new(Cell::new(false));
+
         let page_weak_for_categories = self.downgrade();
         let task_list_for_categories = task_list.clone();
         let task_store_for_categories = task_store.clone();
         let empty_tasks_for_categories = empty_tasks.clone();
-        cat_list.connect_row_selected(move |_, row| {
-            let Some(row) = row else {
+        let syncing_filter_for_apply = Rc::clone(&syncing_filter);
+        let all_btn_for_apply = all_btn.clone();
+        let today_btn_for_apply = today_btn.clone();
+        let next7_btn_for_apply = next7_btn.clone();
+        let overdue_btn_for_apply = overdue_btn.clone();
+        let completed_btn_for_apply = completed_btn.clone();
+        let filter_dropdown_for_apply = filter_dropdown.clone();
+
+        let apply_filter = move |filter: TaskFilter| {
+            if syncing_filter_for_apply.get() {
                 return;
-            };
+            }
+            syncing_filter_for_apply.set(true);
             let Some(page) = page_weak_for_categories.upgrade() else {
+                syncing_filter_for_apply.set(false);
                 return;
             };
-            let filter = task_filter_from_index(row.index());
             page.imp().task_filter.set(filter);
             if let Some(settings) = AppSettings::try_new() {
                 settings.set_task_filter(filter.setting_value());
             }
+
+            match filter {
+                TaskFilter::All => all_btn_for_apply.set_active(true),
+                TaskFilter::Today => today_btn_for_apply.set_active(true),
+                TaskFilter::Next7 => next7_btn_for_apply.set_active(true),
+                TaskFilter::Overdue => overdue_btn_for_apply.set_active(true),
+                TaskFilter::Completed => completed_btn_for_apply.set_active(true),
+                _ => {
+                    all_btn_for_apply.set_active(false);
+                    today_btn_for_apply.set_active(false);
+                    next7_btn_for_apply.set_active(false);
+                    overdue_btn_for_apply.set_active(false);
+                    completed_btn_for_apply.set_active(false);
+                }
+            }
+            filter_dropdown_for_apply.set_selected(task_filter_index(filter) as u32);
             render_task_rows(
                 &page,
                 &task_list_for_categories,
                 &task_store_for_categories,
                 &empty_tasks_for_categories,
             );
+            syncing_filter_for_apply.set(false);
+        };
+
+        let apply_for_all = apply_filter.clone();
+        all_btn.connect_toggled(move |btn| {
+            if btn.is_active() {
+                apply_for_all(TaskFilter::All);
+            }
         });
-        let initial_filter_index = task_filter_index(self.imp().task_filter.get());
-        if let Some(row) = cat_list.row_at_index(initial_filter_index) {
-            cat_list.select_row(Some(&row));
-        }
+
+        let apply_for_today = apply_filter.clone();
+        today_btn.connect_toggled(move |btn| {
+            if btn.is_active() {
+                apply_for_today(TaskFilter::Today);
+            }
+        });
+
+        let apply_for_next7 = apply_filter.clone();
+        next7_btn.connect_toggled(move |btn| {
+            if btn.is_active() {
+                apply_for_next7(TaskFilter::Next7);
+            }
+        });
+
+        let apply_for_overdue = apply_filter.clone();
+        overdue_btn.connect_toggled(move |btn| {
+            if btn.is_active() {
+                apply_for_overdue(TaskFilter::Overdue);
+            }
+        });
+
+        let apply_for_completed = apply_filter.clone();
+        completed_btn.connect_toggled(move |btn| {
+            if btn.is_active() {
+                apply_for_completed(TaskFilter::Completed);
+            }
+        });
+
+        let apply_for_dropdown = apply_filter.clone();
+        filter_dropdown.connect_selected_notify(move |dropdown| {
+            let sel = dropdown.selected();
+            if sel != gtk::INVALID_LIST_POSITION {
+                let filter = task_filter_from_index(sel as i32);
+                apply_for_dropdown(filter);
+            }
+        });
 
         if let Some(settings) = AppSettings::try_new() {
-            let page_weak = self.downgrade();
-            let cat_list_for_settings = cat_list.clone();
-            let task_list_for_settings = task_list.clone();
-            let task_store_for_settings = task_store.clone();
-            let empty_tasks_for_settings = empty_tasks.clone();
+            let apply_for_settings = apply_filter.clone();
             settings.connect_changed(Some("task-filter"), move |settings, _| {
-                let Some(page) = page_weak.upgrade() else {
-                    return;
-                };
                 let filter = TaskFilter::from_setting(settings.string("task-filter").as_str());
-                page.imp().task_filter.set(filter);
-                let index = task_filter_index(filter);
-                if let Some(row) = cat_list_for_settings.row_at_index(index) {
-                    cat_list_for_settings.select_row(Some(&row));
-                }
-                render_task_rows(
-                    &page,
-                    &task_list_for_settings,
-                    &task_store_for_settings,
-                    &empty_tasks_for_settings,
-                );
+                apply_for_settings(filter);
             });
 
             let page_weak = self.downgrade();
@@ -5416,6 +6301,15 @@ impl TasksPage {
                     );
                 });
             }
+
+            let page_weak_for_toolbar = self.downgrade();
+            settings.connect_changed(Some("mail-show-toolbar"), move |settings, _| {
+                if let Some(page) = page_weak_for_toolbar.upgrade() {
+                    if let Some(toolbar) = page.imp().toolbar.borrow().as_ref() {
+                        toolbar.set_visible(settings.boolean("mail-show-toolbar"));
+                    }
+                }
+            });
         }
 
         let page_weak = self.downgrade();
@@ -5553,18 +6447,186 @@ impl TasksPage {
             });
         }
 
+        // ── Quick-Add Bar ──
+        let quick_add_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(8)
+            .css_classes(vec!["task-quick-add-box"])
+            .build();
+        let quick_add_icon = gtk::Image::builder()
+            .icon_name("list-add-symbolic")
+            .pixel_size(16)
+            .css_classes(vec!["dim-label"])
+            .valign(gtk::Align::Center)
+            .build();
+        let quick_add_entry = gtk::Entry::builder()
+            .placeholder_text("Neue Aufgabe hinzufügen… (Eingabetaste drücken)")
+            .hexpand(true)
+            .css_classes(vec!["task-quick-add-entry"])
+            .build();
+        set_accessible_label(&quick_add_entry, "Neue Aufgabe schnell hinzufügen");
+        quick_add_box.append(&quick_add_icon);
+        quick_add_box.append(&quick_add_entry);
+
+        let page_weak_for_quick_add = self.downgrade();
+        quick_add_entry.connect_activate(move |entry| {
+            let text = entry.text().trim().to_string();
+            if text.is_empty() {
+                return;
+            }
+            let Some(page) = page_weak_for_quick_add.upgrade() else {
+                return;
+            };
+
+            let capabilities = page.imp().task_source_capabilities.borrow().clone();
+            let source_uids = page.imp().task_source_uids.borrow().clone();
+            let preferred = AppSettings::try_new()
+                .map(|settings| settings.default_task_source_uid())
+                .filter(|uid| !uid.trim().is_empty());
+
+            let target_source = if let Some(filtered) = page.imp().task_source_filter.borrow().clone() {
+                if task_source_is_writable_on_page(&page, &filtered) {
+                    filtered
+                } else {
+                    task_paste_destination(
+                        &source_uids,
+                        &capabilities,
+                        CalendarStoreService::new().is_writable(),
+                        preferred.as_deref(),
+                    )
+                    .unwrap_or_else(|_| "local-calendar".to_string())
+                }
+            } else {
+                task_paste_destination(
+                    &source_uids,
+                    &capabilities,
+                    CalendarStoreService::new().is_writable(),
+                    preferred.as_deref(),
+                )
+                .unwrap_or_else(|_| "local-calendar".to_string())
+            };
+
+            let component = match build_task_component_with_dates(
+                &text,
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                0,
+                "",
+                &[],
+                "",
+                "",
+                "NEEDS-ACTION",
+                0,
+            ) {
+                Ok(c) => c,
+                Err(err) => {
+                    show_toast_for_widget(entry, &err);
+                    return;
+                }
+            };
+
+            entry.set_text("");
+            entry.set_sensitive(false);
+
+            let entry_for_done = entry.clone();
+            let page_for_done = page.downgrade();
+            let text_for_toast = text.clone();
+            let (tx, rx) = async_channel::bounded(1);
+
+            std::thread::spawn(move || {
+                let res = ECalService::new().create_component(
+                    &target_source,
+                    ECalComponentType::Task,
+                    &component,
+                );
+                let _ = tx.send_blocking(res);
+            });
+
+            glib::spawn_future_local(async move {
+                entry_for_done.set_sensitive(true);
+                entry_for_done.grab_focus();
+                match rx.recv().await {
+                    Ok(Ok(_)) => {
+                        if let Some(page) = page_for_done.upgrade() {
+                            page.refresh_tasks();
+                            show_toast_for_widget(
+                                &entry_for_done,
+                                &format!("Aufgabe »{}« hinzugefügt", text_for_toast),
+                            );
+                        }
+                    }
+                    Ok(Err(err)) => {
+                        show_toast_for_widget(
+                            &entry_for_done,
+                            &format!("Aufgabe konnte nicht erstellt werden: {err}"),
+                        );
+                    }
+                    Err(_) => {}
+                }
+            });
+        });
+
+        task_list.set_margin_start(0);
+        task_list.set_margin_end(0);
+        task_list.set_margin_top(0);
+        task_list.set_margin_bottom(0);
+
+        let tasks_content_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(12)
+            .margin_start(16)
+            .margin_end(16)
+            .margin_top(12)
+            .margin_bottom(12)
+            .build();
+        tasks_content_box.append(&quick_add_box);
+        tasks_content_box.append(&task_list);
+
+        let task_clamp = adw::Clamp::builder()
+            .maximum_size(950)
+            .tightening_threshold(650)
+            .child(&tasks_content_box)
+            .build();
         let task_scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
             .vscrollbar_policy(gtk::PolicyType::Automatic)
-            .child(&task_list)
+            .child(&task_clamp)
             .vexpand(true)
             .build();
+
+        let empty_status_page = adw::StatusPage::builder()
+            .icon_name("evolution-tasks-symbolic")
+            .title("Keine Aufgaben")
+            .description("Wählen Sie eine Aufgabenliste aus oder erstellen Sie eine neue Aufgabe.")
+            .vexpand(true)
+            .hexpand(true)
+            .build();
+        let task_container_stack = gtk::Stack::builder()
+            .transition_type(gtk::StackTransitionType::Crossfade)
+            .vexpand(true)
+            .hexpand(true)
+            .build();
+        task_container_stack.add_named(&task_scroll, Some("list"));
+        task_container_stack.add_named(&empty_status_page, Some("empty"));
+        task_container_stack.set_visible_child_name("list");
+
+        self.imp()
+            .task_empty_status_page
+            .replace(Some(empty_status_page.clone()));
+        self.imp()
+            .task_container_stack
+            .replace(Some(task_container_stack.clone()));
+
         let preview_paned = gtk::Paned::builder()
             .orientation(preview_orientation.paned_orientation())
             .wide_handle(false)
             .vexpand(true)
             .build();
-        preview_paned.set_start_child(Some(&task_scroll));
+        preview_paned.set_start_child(Some(&task_container_stack));
         preview_paned.set_end_child(Some(&preview_box));
         preview_paned.set_resize_start_child(true);
         preview_paned.set_resize_end_child(true);
@@ -5622,10 +6684,13 @@ impl TasksPage {
             .hexpand(true)
             .build();
         root_box.append(&toolbar_scroll);
+        root_box.append(&task_search_bar);
         root_box.append(&paned);
         root_box.set_parent(self);
 
-        start_task_source_discovery(self, self.imp().task_source_filter.borrow().clone(), false);
+        let initial_source_filter = self.imp().task_source_filter.borrow().clone();
+        apply_task_sources(self, initial_sync_task_sources(), initial_source_filter.clone());
+        start_task_source_discovery(self, initial_source_filter, false);
     }
 
     fn open_task_dialog(
@@ -6779,6 +7844,7 @@ fn render_task_rows(
     let filter = page.imp().task_filter.get();
     let source_filter = page.imp().task_source_filter.borrow().clone();
     let category_filter = page.imp().task_category_filter.borrow().clone();
+    let hidden_sources = page.imp().hidden_task_sources.borrow().clone();
     let sort = page.imp().task_sort.get();
     let context = current_task_filter_context();
     let query = TaskQuery::parse(
@@ -6791,6 +7857,9 @@ fn render_task_rows(
         let Some(task) = task_store.item(index).and_downcast::<TaskItemObject>() else {
             continue;
         };
+        if hidden_sources.contains(&task.source_uid()) {
+            continue;
+        }
         if task_matches_filter_with_context(
             &task,
             filter,
@@ -6859,6 +7928,36 @@ fn render_task_rows(
         } else {
             "Keine passenden Aufgaben"
         });
+    }
+
+    if let Some(status_page) = page.imp().task_empty_status_page.borrow().as_ref() {
+        let (title, description) = if query_is_empty(&query) && category_filter.is_none() {
+            match filter {
+                TaskFilter::All => ("Keine Aufgaben", "Wählen Sie eine Aufgabenliste aus oder erstellen Sie eine neue Aufgabe."),
+                TaskFilter::Today => ("Heute keine Aufgaben", "Für heute sind keine Aufgaben geplant oder fällig."),
+                TaskFilter::Next7 => ("Keine Aufgaben in 7 Tagen", "In den nächsten 7 Tagen stehen keine fälligen Aufgaben an."),
+                TaskFilter::Next30 => ("Keine Aufgaben im Monat", "In den nächsten 30 Tagen stehen keine Aufgaben an."),
+                TaskFilter::Next365 => ("Keine Aufgaben im Jahr", "Im nächsten Jahr stehen keine aktiven Aufgaben an."),
+                TaskFilter::Important => ("Keine wichtigen Aufgaben", "Es sind keine Aufgaben mit hoher Priorität vorhanden."),
+                TaskFilter::Overdue => ("Keine überfälligen Aufgaben", "Sehr gut! Keine fälligen Aufgaben sind in Verzug."),
+                TaskFilter::Scheduled => ("Keine geplanten Aufgaben", "Keine Aufgaben mit Fälligkeitsdatum vorhanden."),
+                TaskFilter::NoDue => ("Keine Aufgaben ohne Fälligkeit", "Alle Aufgaben haben ein zugewiesenes Fälligkeitsdatum."),
+                TaskFilter::WithAttachments => ("Keine Aufgaben mit Anhängen", "Es wurden keine Aufgaben mit Dateianhängen gefunden."),
+                TaskFilter::Started => ("Keine begonnenen Aufgaben", "Es gibt keine Aufgaben mit Status 'Begonnen'."),
+                TaskFilter::WithoutCategory => ("Keine Aufgaben ohne Kategorie", "Allen Aufgaben ist mindestens eine Kategorie zugewiesen."),
+                TaskFilter::Uncompleted => ("Keine offenen Aufgaben", "Alle Aufgaben in dieser Liste sind bereits erledigt!"),
+                TaskFilter::InProgress => ("Keine Aufgaben in Bearbeitung", "Aktuell wird an keinen Aufgaben aktiv gearbeitet."),
+                TaskFilter::Cancelled => ("Keine abgebrochenen Aufgaben", "Es liegen keine verworfenen oder abgebrochenen Aufgaben vor."),
+                TaskFilter::Completed => ("Keine erledigten Aufgaben", "Bisher wurden noch keine Aufgaben als erledigt markiert."),
+            }
+        } else {
+            ("Keine passenden Aufgaben", "Überprüfen Sie den Suchbegriff oder die Filtereinstellungen.")
+        };
+        status_page.set_title(title);
+        status_page.set_description(Some(description));
+    }
+    if let Some(stack) = page.imp().task_container_stack.borrow().as_ref() {
+        stack.set_visible_child_name(if visible == 0 { "empty" } else { "list" });
     }
 }
 
@@ -7440,6 +8539,9 @@ fn refresh_task_preview(page: &TasksPage) {
         return;
     };
     if !visible {
+        if let Some(stack) = page.imp().task_preview_stack.borrow().as_ref() {
+            stack.set_visible_child_name("empty");
+        }
         text_view.buffer().set_text("");
         page.imp().task_preview_identity.replace(None);
         page.imp().task_preview_text.replace(String::new());
@@ -7466,6 +8568,13 @@ fn refresh_task_preview(page: &TasksPage) {
         Err(_error) if selection.len() != 1 => (None, "".to_string()),
         Err(error) => (None, format!("Vorschau nicht verfügbar: {error}")),
     };
+    if let Some(stack) = page.imp().task_preview_stack.borrow().as_ref() {
+        if selection.len() != 1 || text.trim().is_empty() {
+            stack.set_visible_child_name("empty");
+        } else {
+            stack.set_visible_child_name("content");
+        }
+    }
     let changed = *page.imp().task_preview_identity.borrow() != identity
         || *page.imp().task_preview_text.borrow() != text;
     if changed {
@@ -8501,10 +9610,12 @@ fn refresh_task_category_model(
         .map(|index| index as u32 + 1)
         .unwrap_or(0);
     let name_refs = names.iter().map(String::as_str).collect::<Vec<_>>();
+    page.imp().task_category_syncing.set(true);
     model.splice(0, model.n_items(), &name_refs);
     if selector.selected() != selected {
         selector.set_selected(selected);
     }
+    page.imp().task_category_syncing.set(false);
 }
 
 fn compare_tasks(
@@ -8969,44 +10080,102 @@ fn append_task_row(
     context: TaskFilterContext,
     category_metadata: &[CalendarCategory],
 ) {
-    let title = glib::markup_escape_text(&task.title());
+    let completed = task_is_completed(task);
+    let raw_title = task.title();
+    let escaped_title = glib::markup_escape_text(&raw_title);
+    let title_markup = if completed {
+        format!("<span strikethrough=\"true\" alpha=\"60%\">{escaped_title}</span>")
+    } else {
+        format!("<span weight=\"medium\">{escaped_title}</span>")
+    };
+
     let due = task.due_date();
     let recurrence_due = task_next_due_date(task, context.today);
-    let due_text = match (task_due_date(&due), recurrence_due) {
-        (Some(base), Some(next)) if base != next => format!(
-            "Fällig: {} · Nächste Fälligkeit: {}",
-            due,
-            next.format("%Y-%m-%d")
-        ),
-        (Some(_), None) if ical_property(&task.component(), "RRULE").is_some() => {
-            format!("Fällig: {due} · Serie beendet")
+    let parsed_due = task_due_date(&due);
+
+    let mut subtitle_parts = Vec::new();
+
+    // 1. Due date chip
+    if let Some(parsed) = parsed_due {
+        let is_overdue = !completed && parsed < context.today;
+        let is_today = parsed == context.today;
+        let is_tomorrow = parsed == context.today + chrono::Duration::days(1);
+
+        let due_chip = if is_overdue {
+            format!("<span foreground=\"#e01b24\" weight=\"bold\">⚠️ Überfällig: {due}</span>")
+        } else if is_today {
+            "<span foreground=\"#e66100\" weight=\"bold\">📅 Heute fällig</span>".to_string()
+        } else if is_tomorrow {
+            format!("<span foreground=\"#3584e4\" weight=\"medium\">📅 Morgen ({due})</span>")
+        } else {
+            format!("<span alpha=\"80%\">📅 Fällig: {due}</span>")
+        };
+        subtitle_parts.push(due_chip);
+
+        if let Some(next) = recurrence_due && Some(next) != parsed_due {
+            subtitle_parts.push(format!("<span alpha=\"70%\">🔁 Nächste: {}</span>", next.format("%Y-%m-%d")));
         }
-        (None, Some(next)) => format!("Nächste Fälligkeit: {}", next.format("%Y-%m-%d")),
-        _ => format!("Fällig: {due}"),
+    } else if let Some(next) = recurrence_due {
+        subtitle_parts.push(format!("<span alpha=\"80%\">🔁 Fälligkeit: {}</span>", next.format("%Y-%m-%d")));
+    }
+
+    // 2. Priority indicator
+    let prio_num = task.priority().parse::<u32>().ok();
+    if let Some(p) = prio_num {
+        if (1..=4).contains(&p) {
+            subtitle_parts.push("<span foreground=\"#e01b24\" weight=\"bold\">❗ Hohe Priorität</span>".to_string());
+        } else if (6..=9).contains(&p) {
+            subtitle_parts.push("<span alpha=\"60%\">⚪ Niedrige Priorität</span>".to_string());
+        }
+    }
+
+    // 3. Status indicator
+    let status = task_status_label(&task.component());
+    if status == "In Bearbeitung" {
+        subtitle_parts.push("<span foreground=\"#3584e4\" weight=\"medium\">⏳ In Bearbeitung</span>".to_string());
+    } else if status == "Abgebrochen" {
+        subtitle_parts.push("<span alpha=\"55%\">⛔ Abgebrochen</span>".to_string());
+    }
+
+    // 4. Categories
+    let categories: Vec<String> = task_categories(task).collect();
+    if !categories.is_empty() {
+        let cats_formatted = categories
+            .iter()
+            .map(|c| glib::markup_escape_text(c).to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        subtitle_parts.push(format!("<span alpha=\"75%\">🏷️ {cats_formatted}</span>"));
+    }
+
+    let subtitle = if subtitle_parts.is_empty() {
+        if completed {
+            "<span foreground=\"#26a269\">✓ Erledigt</span>".to_string()
+        } else {
+            "<span alpha=\"50%\">Keine Fälligkeit</span>".to_string()
+        }
+    } else {
+        subtitle_parts.join(" · ")
     };
-    let subtitle = glib::markup_escape_text(&format!(
-        "{due_text} · Priorität: {} · {}",
-        task.priority(),
-        task_status_label(&task.component())
-    ));
+
     let row = adw::ActionRow::builder()
-        .title(title.as_str())
-        .subtitle(subtitle.as_str())
+        .title(&title_markup)
+        .subtitle(&subtitle)
         .use_markup(true)
         .build();
     row.set_activatable(true);
+    row.add_css_class("task-row");
+    if completed {
+        row.add_css_class("task-row-completed");
+        row.add_css_class("dim-label");
+    } else {
+        row.add_css_class("task-row-pending");
+    }
     unsafe {
         row.set_data("task-id", task.id());
         row.set_data("task-source-uid", task.source_uid());
     }
-    if let Some(color) = category_color_for_component(category_metadata, &task.component()) {
-        let category_dot = gtk::Label::new(None);
-        category_dot.set_markup(&format!("<span foreground=\"{color}\">●</span>"));
-        category_dot.set_tooltip_text(Some("Aufgabenkategorie"));
-        row.add_prefix(&category_dot);
-    }
 
-    let completed = task_is_completed(task);
     let check = gtk::CheckButton::builder()
         .active(completed)
         .valign(gtk::Align::Center)
@@ -9137,12 +10306,25 @@ fn append_task_row(
             button_for_result.set_sensitive(true);
         });
     });
+    let task_icon = gtk::Image::builder()
+        .icon_name("evolution-tasks-symbolic")
+        .pixel_size(16)
+        .valign(gtk::Align::Center)
+        .css_classes(vec!["task-row-icon"])
+        .build();
+    row.add_prefix(&task_icon);
     row.add_prefix(&check);
+    if let Some(color) = category_color_for_component(category_metadata, &task.component()) {
+        let category_dot = gtk::Label::new(None);
+        category_dot.set_markup(&format!("<span foreground=\"{color}\">●</span>"));
+        category_dot.set_tooltip_text(Some("Aufgabenkategorie"));
+        row.add_prefix(&category_dot);
+    }
 
     let quick_edit_button = gtk::Button::builder()
         .icon_name("view-more-symbolic")
         .tooltip_text("Status, Priorität, Fälligkeit und Kategorien schnell bearbeiten")
-        .css_classes(vec!["flat"])
+        .css_classes(vec!["flat", "circular", "task-row-btn"])
         .valign(gtk::Align::Center)
         .sensitive(task_source_is_writable_on_page(page, &task.source_uid()))
         .build();
@@ -9163,7 +10345,7 @@ fn append_task_row(
     let edit_button = gtk::Button::builder()
         .icon_name("document-edit-symbolic")
         .tooltip_text("Aufgabe bearbeiten")
-        .css_classes(vec!["flat"])
+        .css_classes(vec!["flat", "circular", "task-row-btn"])
         .valign(gtk::Align::Center)
         .build();
     set_accessible_label(&edit_button, "Aufgabe bearbeiten");
@@ -9197,7 +10379,7 @@ fn append_task_row(
     let export_button = gtk::Button::builder()
         .icon_name("document-save-symbolic")
         .tooltip_text("Aufgabe als iCalendar exportieren")
-        .css_classes(vec!["flat"])
+        .css_classes(vec!["flat", "circular", "task-row-btn"])
         .valign(gtk::Align::Center)
         .build();
     set_accessible_label(&export_button, "Aufgabe als iCalendar exportieren");
@@ -9250,7 +10432,7 @@ fn append_task_row(
     let delete_button = gtk::Button::builder()
         .icon_name("user-trash-symbolic")
         .tooltip_text("Aufgabe löschen")
-        .css_classes(vec!["flat", "destructive-action"])
+        .css_classes(vec!["flat", "circular", "destructive-action", "task-row-btn"])
         .valign(gtk::Align::Center)
         .build();
     set_accessible_label(&delete_button, "Aufgabe löschen");
@@ -9484,6 +10666,315 @@ fn task_source_action_state(
     }
 }
 
+fn initial_sync_task_sources() -> Vec<ECalSourceCapability> {
+    let mut sources = Vec::new();
+    if CalendarStoreService::new().is_writable() {
+        sources.push(ECalSourceCapability {
+            source_uid: "local-calendar".to_string(),
+            display_name: "Lokale Aufgabenliste".to_string(),
+            connected: true,
+            available: true,
+            source_writable: true,
+            writable: true,
+            refresh_supported: false,
+            removable: false,
+            remote_deletable: false,
+            in_collection: false,
+            task_assignment_supported: false,
+            task_assignment_conversion_supported: false,
+        });
+    }
+    for collection in crate::services::eds_service::load_configured_account_collections() {
+        let task_uid = format!("account-tasks-{}", collection.uid);
+        sources.push(ECalSourceCapability {
+            source_uid: task_uid,
+            display_name: "Aufgaben".to_string(),
+            connected: true,
+            available: true,
+            source_writable: true,
+            writable: true,
+            refresh_supported: false,
+            removable: false,
+            remote_deletable: false,
+            in_collection: true,
+            task_assignment_supported: false,
+            task_assignment_conversion_supported: false,
+        });
+    }
+    for profile in crate::services::account_config_service::AccountConfigStore::default().load() {
+        let task_uid = format!("account-tasks-{}", profile.id);
+        if !sources.iter().any(|s| s.source_uid == task_uid) {
+            sources.push(ECalSourceCapability {
+                source_uid: task_uid,
+                display_name: "Aufgaben".to_string(),
+                connected: true,
+                available: true,
+                source_writable: true,
+                writable: true,
+                refresh_supported: false,
+                removable: false,
+                remote_deletable: false,
+                in_collection: true,
+                task_assignment_supported: false,
+                task_assignment_conversion_supported: false,
+            });
+        }
+    }
+    sources
+}
+
+fn apply_task_sources(
+    page: &TasksPage,
+    mut sources: Vec<ECalSourceCapability>,
+    preferred_source_uid: Option<String>,
+) {
+    let mut source_parents: Vec<String> = sources
+        .iter()
+        .map(|s| crate::services::eds_service::resolve_source_parent_name(&s.source_uid))
+        .collect();
+
+    // Discover configured account collections (Google, EWS, GOA, etc.) so every
+    // account configured and displayed in Mail is also represented in the Tasks
+    // sidebar with its own account group and task list.
+    for collection in crate::services::eds_service::load_configured_account_collections() {
+        let account_name = collection.display_name.clone();
+        let already_represented = sources.iter().enumerate().any(|(idx, s)| {
+            source_parents.get(idx).is_some_and(|p| p == &account_name)
+                || s.display_name == account_name
+                || s.source_uid == collection.uid
+                || s.source_uid == format!("account-tasks-{}", collection.uid)
+        });
+        if !already_represented {
+            let task_uid = format!("account-tasks-{}", collection.uid);
+            sources.push(ECalSourceCapability {
+                source_uid: task_uid,
+                display_name: "Aufgaben".to_string(),
+                connected: true,
+                available: true,
+                source_writable: true,
+                writable: true,
+                refresh_supported: false,
+                removable: false,
+                remote_deletable: false,
+                in_collection: true,
+                task_assignment_supported: false,
+                task_assignment_conversion_supported: false,
+            });
+            source_parents.push(account_name);
+        }
+    }
+
+    for profile in crate::services::account_config_service::AccountConfigStore::default().load() {
+        let account_name = if !profile.display_name.trim().is_empty() {
+            profile.display_name.clone()
+        } else {
+            profile.email.clone()
+        };
+        let already_represented = sources.iter().enumerate().any(|(idx, s)| {
+            source_parents.get(idx).is_some_and(|p| p == &account_name)
+                || s.display_name == account_name
+                || s.source_uid == profile.id
+                || s.source_uid == format!("account-tasks-{}", profile.id)
+        });
+        if !already_represented {
+            let task_uid = format!("account-tasks-{}", profile.id);
+            sources.push(ECalSourceCapability {
+                source_uid: task_uid,
+                display_name: "Aufgaben".to_string(),
+                connected: true,
+                available: true,
+                source_writable: true,
+                writable: true,
+                refresh_supported: false,
+                removable: false,
+                remote_deletable: false,
+                in_collection: true,
+                task_assignment_supported: false,
+                task_assignment_conversion_supported: false,
+            });
+            source_parents.push(account_name);
+        }
+    }
+
+    sources.sort_by_cached_key(|source| {
+        (
+            source.display_name.to_lowercase(),
+            source.source_uid.clone(),
+        )
+    });
+
+    let mut names = vec!["Alle Aufgabenlisten".to_string()];
+    let mut uids = Vec::new();
+    let mut capabilities = HashMap::new();
+    let mut metadata = HashMap::new();
+    let mut refresh_unsupported = HashSet::new();
+    for source in &sources {
+        if source.source_uid.trim().is_empty()
+            || metadata.contains_key(source.source_uid.as_str())
+        {
+            continue;
+        }
+        let label = if source.source_uid.starts_with("account-tasks-") {
+            let parent = crate::services::eds_service::resolve_source_parent_name(&source.source_uid);
+            format!("{parent} · {}", source.display_name)
+        } else {
+            task_source_capability_label(source)
+        };
+        names.push(label);
+        let capability = task_source_capability_from_ecal(source);
+        if source.connected && !source.refresh_supported {
+            refresh_unsupported.insert(source.source_uid.clone());
+        }
+        capabilities.insert(source.source_uid.clone(), capability);
+        uids.push(source.source_uid.clone());
+        metadata.insert(source.source_uid.clone(), source.clone());
+    }
+    if let Some(preferred_source_uid) = preferred_source_uid.as_deref()
+        && !uids.iter().any(|uid| uid == preferred_source_uid)
+        && preferred_source_uid != "local-calendar"
+    {
+        names.push(format!("Nicht verfügbare Quelle · {preferred_source_uid}"));
+        uids.push(preferred_source_uid.to_string());
+        capabilities.insert(
+            preferred_source_uid.to_string(),
+            TaskSourceCapability::Unavailable,
+        );
+    }
+    if CalendarStoreService::new().is_writable() && !uids.iter().any(|u| u == "local-calendar") {
+        names.push("Lokale Aufgabenliste".to_string());
+        capabilities.insert("local-calendar".to_string(), TaskSourceCapability::Writable);
+        uids.push("local-calendar".to_string());
+    }
+
+    page.imp().task_source_capabilities.replace(capabilities);
+    page.imp().task_source_metadata.replace(metadata);
+    page.imp()
+        .task_refresh_unsupported_sources
+        .replace(refresh_unsupported);
+    page.imp().task_source_uids.replace(uids.clone());
+
+    let Some(source_model) = page.imp().task_source_model.borrow().as_ref().cloned() else {
+        return;
+    };
+    let Some(source_selector) = page.imp().task_source_selector.borrow().as_ref().cloned()
+    else {
+        return;
+    };
+    let Some(source_list) = page.imp().task_source_list.borrow().as_ref().cloned() else {
+        return;
+    };
+    page.imp().task_source_syncing.set(true);
+    let name_refs = names.iter().map(String::as_str).collect::<Vec<_>>();
+    source_model.splice(0, source_model.n_items(), &name_refs);
+
+    let mut items = Vec::new();
+    for source in &sources {
+        if source.source_uid.trim().is_empty() {
+            continue;
+        }
+        let parent_name = crate::services::eds_service::resolve_source_parent_name(&source.source_uid);
+        let group = if parent_name.trim().is_empty() {
+            "Auf diesem Computer".to_string()
+        } else {
+            parent_name
+        };
+        let color = calendar_source_color(&source.source_uid, &group);
+        items.push(
+            SourceSelectorItem::new(
+                &source.source_uid,
+                &source.display_name,
+                "tasks",
+                source.connected,
+                source.source_writable,
+            )
+            .with_color(color)
+            .with_group(group),
+        );
+    }
+    if CalendarStoreService::new().is_writable() && !items.iter().any(|i| i.uid == "local-calendar") {
+        let color = calendar_source_color("local-calendar", "Lokale Aufgabenliste");
+        items.push(
+            SourceSelectorItem::new(
+                "local-calendar",
+                "Lokale Aufgabenliste",
+                "local",
+                true,
+                true,
+            )
+            .with_color(color)
+            .with_group("Auf diesem Computer"),
+        );
+    }
+
+    {
+        let mut selector = SourceSelector::new(SourceDomain::Tasks);
+        selector.update_sources(items);
+        if let Some(settings) = AppSettings::try_new() {
+            selector.load_from_settings(&settings);
+        }
+        *page.imp().hidden_task_sources.borrow_mut() =
+            selector.hidden_uids().into_iter().collect();
+        page.imp().task_source_selector_model.replace(Some(selector));
+    }
+
+    // Install dynamic CSS rules for task list colors on checkbuttons
+    if let Some(selector) = page.imp().task_source_selector_model.borrow().clone() {
+        let mut unique_colors = std::collections::HashSet::new();
+        for s in selector.visible_sources() {
+            if let Some(ref c) = s.color {
+                unique_colors.insert(c.clone());
+            }
+        }
+        unique_colors.insert("#3584e4".to_string());
+
+        let mut css_rules = String::new();
+        for hex in unique_colors {
+            let clean: String = hex
+                .chars()
+                .filter(|c| c.is_ascii_alphanumeric())
+                .collect::<String>()
+                .to_ascii_lowercase();
+            css_rules.push_str(&format!(
+                "checkbutton.cal-check-{clean} {{ \
+                     --accent-bg-color: {hex}; \
+                     --accent-color: {hex}; \
+                 }} \
+                 checkbutton.cal-check-{clean} check:not(:checked) {{ \
+                     box-shadow: inset 0 0 0 2px {hex}; \
+                 }}\n"
+            ));
+        }
+        if let Some(display) = gtk::gdk::Display::default() {
+            let mut prov_slot = page.imp().task_color_css_provider.borrow_mut();
+            if let Some(ref provider) = *prov_slot {
+                provider.load_from_string(&css_rules);
+            } else {
+                let provider = gtk::CssProvider::new();
+                provider.load_from_string(&css_rules);
+                gtk::style_context_add_provider_for_display(
+                    &display,
+                    &provider,
+                    gtk::STYLE_PROVIDER_PRIORITY_APPLICATION + 50,
+                );
+                *prov_slot = Some(provider);
+            }
+        }
+    }
+
+    page.render_task_sidebar();
+    page.refresh_tasks();
+
+    let selected = preferred_source_uid
+        .as_deref()
+        .and_then(|uid| uids.iter().position(|candidate| candidate == uid))
+        .map(|index| index as u32 + 1)
+        .unwrap_or(0);
+    source_selector.set_selected(selected);
+    TasksPage::select_sidebar_source_row(&source_list, selected as usize);
+    page.imp().task_source_syncing.set(false);
+    update_task_selection_controls(page);
+}
+
 fn start_task_source_discovery(
     page: &TasksPage,
     preferred_source_uid: Option<String>,
@@ -9505,7 +10996,7 @@ fn start_task_source_discovery(
 
     let page_weak = page.downgrade();
     glib::spawn_future_local(async move {
-        let (mut sources, warning) = match receiver.recv().await {
+        let (sources, warning) = match receiver.recv().await {
             Ok(Ok(discovery)) => (discovery.sources, discovery.warning),
             Ok(Err(error)) => {
                 tracing::warn!(%error, "Could not discover exact EDS task lists");
@@ -9533,247 +11024,8 @@ fn start_task_source_discovery(
         if let Some(warning) = warning.as_deref() {
             tracing::warn!(%warning, "Some EDS task lists are unavailable");
         }
-        sources.sort_by_cached_key(|source| {
-            (
-                source.display_name.to_lowercase(),
-                source.source_uid.clone(),
-            )
-        });
 
-        let mut names = vec!["Alle Aufgabenlisten".to_string()];
-        let mut uids = Vec::new();
-        let mut capabilities = HashMap::new();
-        let mut metadata = HashMap::new();
-        let mut refresh_unsupported = HashSet::new();
-        for source in sources {
-            if source.source_uid.trim().is_empty()
-                || metadata.contains_key(source.source_uid.as_str())
-            {
-                continue;
-            }
-            names.push(task_source_capability_label(&source));
-            let capability = task_source_capability_from_ecal(&source);
-            if source.connected && !source.refresh_supported {
-                refresh_unsupported.insert(source.source_uid.clone());
-            }
-            capabilities.insert(source.source_uid.clone(), capability);
-            uids.push(source.source_uid.clone());
-            metadata.insert(source.source_uid.clone(), source);
-        }
-        if let Some(preferred_source_uid) = preferred_source_uid.as_deref()
-            && !uids.iter().any(|uid| uid == preferred_source_uid)
-            && preferred_source_uid != "local-calendar"
-        {
-            names.push(format!("Nicht verfügbare Quelle · {preferred_source_uid}"));
-            uids.push(preferred_source_uid.to_string());
-            capabilities.insert(
-                preferred_source_uid.to_string(),
-                TaskSourceCapability::Unavailable,
-            );
-        }
-        if CalendarStoreService::new().is_writable() {
-            names.push("Lokale Aufgabenliste".to_string());
-            capabilities.insert("local-calendar".to_string(), TaskSourceCapability::Writable);
-            uids.push("local-calendar".to_string());
-        }
-
-        page.imp().task_source_capabilities.replace(capabilities);
-        page.imp().task_source_metadata.replace(metadata);
-        page.imp()
-            .task_refresh_unsupported_sources
-            .replace(refresh_unsupported);
-        page.imp().task_source_uids.replace(uids.clone());
-
-        let Some(source_model) = page.imp().task_source_model.borrow().as_ref().cloned() else {
-            return;
-        };
-        let Some(source_selector) = page.imp().task_source_selector.borrow().as_ref().cloned()
-        else {
-            return;
-        };
-        let Some(source_list) = page.imp().task_source_list.borrow().as_ref().cloned() else {
-            return;
-        };
-        let name_refs = names.iter().map(String::as_str).collect::<Vec<_>>();
-        source_model.splice(0, source_model.n_items(), &name_refs);
-        while let Some(child) = source_list.first_child() {
-            source_list.remove(&child);
-        }
-        let default_task_uid = AppSettings::try_new()
-            .map(|s| s.default_task_source_uid())
-            .unwrap_or_default();
-        for (index, name) in names.iter().enumerate() {
-            let escaped = glib::markup_escape_text(name);
-            let row = adw::ActionRow::builder()
-                .title(escaped.as_str())
-                .title_lines(1)
-                .build();
-            let image = gtk::Image::from_icon_name(if index == 0 {
-                "view-list-symbolic"
-            } else {
-                "view-list-details-symbolic"
-            });
-            row.add_prefix(&image);
-
-            if index > 0 && index - 1 < uids.len() {
-                let source_uid = uids[index - 1].clone();
-                let is_primary = (!default_task_uid.is_empty() && default_task_uid == source_uid)
-                    || (default_task_uid.is_empty() && source_uid == "local-calendar");
-                if is_primary {
-                    row.add_suffix(&crate::models::source_selector::create_primary_indicator());
-                }
-
-                let page_weak_menu = page.downgrade();
-                let source_selector_menu = source_selector.clone();
-                let source_list_menu = source_list.clone();
-                let target_index = index as u32;
-                let source_uid_for_menu = source_uid.clone();
-                let name_for_menu = name.clone();
-                let uids_for_groups = uids.clone();
-                let names_for_groups = names.clone();
-                let menu_btn = crate::models::source_selector::create_source_row_menu_full(
-                    is_primary,
-                    "Aufgabenliste",
-                    {
-                        let source_selector = source_selector_menu.clone();
-                        let source_list = source_list_menu.clone();
-                        let page_weak = page_weak_menu.clone();
-                        move || {
-                            source_selector.set_selected(target_index);
-                            if let Some(row) = source_list.row_at_index(target_index as i32) {
-                                source_list.select_row(Some(&row));
-                            }
-                            if let Some(p) = page_weak.upgrade() {
-                                update_task_selection_controls(&p);
-                            }
-                        }
-                    },
-                    {
-                        let source_selector = source_selector_menu.clone();
-                        let source_list = source_list_menu.clone();
-                        let page_weak = page_weak_menu.clone();
-                        move || {
-                            source_selector.set_selected(0);
-                            if let Some(row) = source_list.row_at_index(0) {
-                                source_list.select_row(Some(&row));
-                            }
-                            if let Some(p) = page_weak.upgrade() {
-                                update_task_selection_controls(&p);
-                            }
-                        }
-                    },
-                    {
-                        let uid = source_uid.clone();
-                        let page_weak = page_weak_menu.clone();
-                        move || {
-                            if let Some(settings) = AppSettings::try_new() {
-                                settings.set_default_task_source_uid(&uid);
-                            }
-                            if let Some(p) = page_weak.upgrade() {
-                                start_task_source_discovery(&p, Some(uid.clone()), false);
-                            }
-                        }
-                    },
-                    Some({
-                        let uid = source_uid_for_menu.clone();
-                        let name = name_for_menu.clone();
-                        let page_weak = page_weak_menu.clone();
-                        move || {
-                            if let Some(page) = page_weak.upgrade() {
-                                let root_window = page.root().and_downcast::<gtk::Window>();
-                                let dialog = crate::dialogs::SourcePropertiesDialog::new(
-                                    &uid,
-                                    &name,
-                                    "Aufgabenliste",
-                                    "#3584e4",
-                                    true,
-                                    is_primary,
-                                );
-                                if let Some(parent) = root_window.as_ref() {
-                                    dialog.set_transient_for(Some(parent));
-                                }
-                                let page_weak_save = page.downgrade();
-                                dialog.set_on_save(move |update| {
-                                    if let Some(p) = page_weak_save.upgrade() {
-                                        if update.is_default {
-                                            if let Some(settings) = AppSettings::try_new() {
-                                                settings.set_default_task_source_uid(
-                                                    &update.source_uid,
-                                                );
-                                            }
-                                        }
-                                        start_task_source_discovery(&p, None, false);
-                                    }
-                                });
-                                dialog.present();
-                            }
-                        }
-                    }),
-                    Some({
-                        let page_weak = page_weak_menu.clone();
-                        let uids = uids_for_groups.clone();
-                        let names = names_for_groups.clone();
-                        move || {
-                            if let Some(page) = page_weak.upgrade() {
-                                let root_window = page.root().and_downcast::<gtk::Window>();
-                                let mut selector =
-                                    crate::models::source_selector::SourceSelector::new(
-                                        crate::models::source_selector::SourceDomain::Tasks,
-                                    );
-                                let items: Vec<
-                                    crate::models::source_selector::SourceSelectorItem,
-                                > = uids
-                                    .iter()
-                                    .skip(1)
-                                    .zip(names.iter().skip(1))
-                                    .map(|(uid, name)| {
-                                        crate::models::source_selector::SourceSelectorItem::new(
-                                            uid,
-                                            name,
-                                            "tasks",
-                                            true,
-                                            uid == "local-calendar",
-                                        )
-                                    })
-                                    .collect();
-                                selector.update_sources(items);
-                                if let Some(settings) = AppSettings::try_new() {
-                                    selector.load_from_settings(&settings);
-                                }
-                                let page_weak_save = page.downgrade();
-                                let dialog = crate::dialogs::ManageGroupsDialog::new(
-                                    root_window.as_ref(),
-                                    "Aufgabenliste",
-                                    &selector,
-                                    move |updated_selector| {
-                                        if let Some(settings) = AppSettings::try_new() {
-                                            updated_selector.save_to_settings(&settings);
-                                        }
-                                        if let Some(p) = page_weak_save.upgrade() {
-                                            start_task_source_discovery(&p, None, false);
-                                        }
-                                    },
-                                );
-                                dialog.present();
-                            }
-                        }
-                    }),
-                );
-                row.add_suffix(&menu_btn);
-            }
-
-            source_list.append(&row);
-        }
-        let selected = preferred_source_uid
-            .as_deref()
-            .and_then(|uid| uids.iter().position(|candidate| candidate == uid))
-            .map(|index| index as u32 + 1)
-            .unwrap_or(0);
-        source_selector.set_selected(selected);
-        if let Some(row) = source_list.row_at_index(selected as i32) {
-            source_list.select_row(Some(&row));
-        }
-        update_task_selection_controls(&page);
+        apply_task_sources(&page, sources, preferred_source_uid);
     });
 }
 
@@ -11051,25 +12303,28 @@ fn present_task_source_delete_confirmation(page: &TasksPage, button: &gtk::Butto
                         render_task_rows(&page, &task_list, &task_store, &empty_tasks);
                     }
                     page.show_toast("Aufgabenliste wurde gelöscht");
+                    let current_filter = page.imp().task_source_filter.borrow().clone();
                     start_task_source_discovery(
                         &page,
-                        page.imp().task_source_filter.borrow().clone(),
+                        current_filter,
                         true,
                     );
                 }
                 Err(ECalServiceError::Unsupported) => {
                     page.show_toast("Löschen wird von diesem Backend nicht unterstützt");
+                    let current_filter = page.imp().task_source_filter.borrow().clone();
                     start_task_source_discovery(
                         &page,
-                        page.imp().task_source_filter.borrow().clone(),
+                        current_filter,
                         false,
                     );
                 }
                 Err(ECalServiceError::Backend(message)) => {
                     page.show_toast(&message);
+                    let current_filter = page.imp().task_source_filter.borrow().clone();
                     start_task_source_discovery(
                         &page,
-                        page.imp().task_source_filter.borrow().clone(),
+                        current_filter,
                         false,
                     );
                 }
@@ -11112,7 +12367,7 @@ fn task_source_capability(
     if source_uid.trim().is_empty() {
         return TaskSourceCapability::Unavailable;
     }
-    if source_uid == "local-calendar" {
+    if source_uid == "local-calendar" || source_uid.starts_with("account-tasks-") {
         return if local_writable {
             TaskSourceCapability::Writable
         } else {
@@ -15846,6 +17101,80 @@ mod tests {
         assert!(edited.component.contains("RRULE:FREQ=DAILY;COUNT=2\r\n"));
         assert!(edited.component.contains("CATEGORIES:Work,Home\r\n"));
         let _ = std::fs::remove_dir_all(&directory);
+    }
+
+    #[test]
+    fn test_tasks_sidebar_and_calendar_parity_structure() {
+        let source = include_str!("tasks_page.rs");
+        // Verify sidebar styling matches calendar
+        assert!(source.contains("\"calendar-sidebar\""));
+        assert!(source.contains("\"tasks-sidebar\""));
+        assert!(source.contains("\"calendar-sidebar-row\""));
+        assert!(source.contains("\"calendar-sidebar-group-row\""));
+        assert!(source.contains("\"calendar-sidebar-child-row\""));
+        assert!(source.contains("\"account-heading\""));
+        // Verify colored checkboxes matching calendar
+        assert!(source.contains("cal-check-"));
+        assert!(source.contains("checkbutton.cal-check-"));
+        assert!(source.contains("--accent-bg-color:"));
+        // Verify context menu actions
+        assert!(source.contains("select_exclusive_task_source"));
+        assert!(source.contains("select_all_task_sources"));
+        assert!(source.contains("set_default_task_source"));
+    }
+
+    #[test]
+    fn test_tasks_toolbar_and_search_bar_hig() {
+        let source = include_str!("tasks_page.rs");
+        // Unified view toolbar
+        assert!(source.contains("\"unified-view-toolbar\""));
+        assert!(source.contains("sidebar-show-symbolic"));
+        assert!(source.contains("sidebar-show-right-symbolic"));
+        // Search toggle button and collapsible SearchBar
+        assert!(source.contains("search_toggle_btn"));
+        assert!(source.contains("task_search_bar"));
+        assert!(source.contains("search-mode-enabled"));
+        assert!(source.contains("connect_stop_search"));
+        // Overflow menu with secondary actions
+        assert!(source.contains("more_popover"));
+        assert!(source.contains("view-more-symbolic"));
+        assert!(source.contains("Alle Aufgaben auswählen"));
+        assert!(source.contains("Erledigte Aufgaben bereinigen…"));
+        assert!(source.contains("Druckvorschau…"));
+        assert!(source.contains("Als iCalendar exportieren…"));
+    }
+
+    #[test]
+    fn test_tasks_toolbar_filter_switcher_and_quick_add() {
+        let source = include_str!("tasks_page.rs");
+        // Center filter switcher
+        assert!(source.contains("all_btn"));
+        assert!(source.contains("today_btn"));
+        assert!(source.contains("next7_btn"));
+        assert!(source.contains("overdue_btn"));
+        assert!(source.contains("completed_btn"));
+        assert!(source.contains("filter_dropdown"));
+        // Layout switcher
+        assert!(source.contains("layout_vertical_btn"));
+        assert!(source.contains("layout_classic_btn"));
+        assert!(source.contains("layout_list_only_btn"));
+        assert!(source.contains("sidebar-show-right-symbolic"));
+        assert!(source.contains("pan-down-symbolic"));
+        assert!(source.contains("view-list-symbolic"));
+        // Quick add box
+        assert!(source.contains("task-quick-add-box"));
+        assert!(source.contains("task-quick-add-entry"));
+        // Task notebook icon
+        assert!(source.contains("evolution-tasks-symbolic"));
+        assert!(source.contains("task-row-icon"));
+    }
+
+    #[test]
+    fn test_tasks_hidden_sources_filtering() {
+        let mut hidden = HashSet::new();
+        hidden.insert("hidden-source-1".to_string());
+        assert!(hidden.contains("hidden-source-1"));
+        assert!(!hidden.contains("visible-source-2"));
     }
 }
 

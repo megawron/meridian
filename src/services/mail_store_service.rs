@@ -110,6 +110,10 @@ pub struct ParsedMail {
     pub is_unread: bool,
     pub is_flagged: bool,
     pub is_important: bool,
+    #[serde(default)]
+    pub is_replied: bool,
+    #[serde(default)]
+    pub is_forwarded: bool,
     pub follow_up_state: MailFollowUpState,
     #[serde(default)]
     pub follow_up: MailFollowUpMetadata,
@@ -146,6 +150,8 @@ impl ParsedMail {
             is_unread,
             is_flagged,
             is_important,
+            is_replied,
+            is_forwarded,
             follow_up_state,
             follow_up,
             labels,
@@ -187,6 +193,8 @@ impl ParsedMail {
         object.set_raw_headers(raw_headers);
         object.set_raw_mime(raw_mime);
         object.set_preview_only(is_preview_only);
+        object.set_replied(is_replied);
+        object.set_forwarded(is_forwarded);
         object
     }
 }
@@ -877,6 +885,8 @@ Viel Freude mit Evolution!\r\n";
                     is_unread: message.is_unread,
                     is_flagged: message.is_flagged,
                     is_important: message.is_important,
+                    is_replied: message.is_replied,
+                    is_forwarded: message.is_forwarded,
                 };
                 if let Err(error) = self.metadata.update(&message.id, state) {
                     tracing::warn!(
@@ -1061,6 +1071,8 @@ Viel Freude mit Evolution!\r\n";
                         is_unread: message.is_unread,
                         is_flagged: message.is_flagged,
                         is_important: message.is_important,
+                        is_replied: message.is_replied,
+                        is_forwarded: message.is_forwarded,
                     },
                 )?;
             }
@@ -1126,6 +1138,8 @@ Viel Freude mit Evolution!\r\n";
                             is_unread: message.is_unread,
                             is_flagged: message.is_flagged,
                             is_important: message.is_important,
+                            is_replied: message.is_replied,
+                            is_forwarded: message.is_forwarded,
                         },
                     )?;
                 }
@@ -1251,19 +1265,15 @@ Viel Freude mit Evolution!\r\n";
         is_unread: bool,
         is_flagged: bool,
     ) -> std::io::Result<()> {
-        let is_important = self
-            .metadata
-            .load()
-            .get(id)
-            .copied()
-            .unwrap_or_default()
-            .is_important;
+        let current = self.metadata.load().get(id).copied().unwrap_or_default();
         self.metadata.update(
             id,
             MailMessageState {
                 is_unread,
                 is_flagged,
-                is_important,
+                is_important: current.is_important,
+                is_replied: current.is_replied,
+                is_forwarded: current.is_forwarded,
             },
         )
     }
@@ -1276,6 +1286,36 @@ Viel Freude mit Evolution!\r\n";
                 is_unread: current.is_unread,
                 is_flagged: current.is_flagged,
                 is_important,
+                is_replied: current.is_replied,
+                is_forwarded: current.is_forwarded,
+            },
+        )
+    }
+
+    pub fn persist_replied_state(&self, id: &str, is_replied: bool) -> std::io::Result<()> {
+        let current = self.metadata.load().get(id).copied().unwrap_or_default();
+        self.metadata.update(
+            id,
+            MailMessageState {
+                is_unread: current.is_unread,
+                is_flagged: current.is_flagged,
+                is_important: current.is_important,
+                is_replied,
+                is_forwarded: current.is_forwarded,
+            },
+        )
+    }
+
+    pub fn persist_forwarded_state(&self, id: &str, is_forwarded: bool) -> std::io::Result<()> {
+        let current = self.metadata.load().get(id).copied().unwrap_or_default();
+        self.metadata.update(
+            id,
+            MailMessageState {
+                is_unread: current.is_unread,
+                is_flagged: current.is_flagged,
+                is_important: current.is_important,
+                is_replied: current.is_replied,
+                is_forwarded,
             },
         )
     }
@@ -1466,6 +1506,8 @@ fn apply_client_state(
         message.is_unread = state.is_unread;
         message.is_flagged = state.is_flagged;
         message.is_important = state.is_important;
+        message.is_replied = state.is_replied || message.is_replied;
+        message.is_forwarded = state.is_forwarded || message.is_forwarded;
     }
 
     apply_local_filter_effects(filter_rules, message, sidecar)
@@ -1489,6 +1531,8 @@ fn apply_persisted_local_metadata(
         message.is_unread = state.is_unread;
         message.is_flagged = state.is_flagged;
         message.is_important = state.is_important;
+        message.is_replied = state.is_replied || message.is_replied;
+        message.is_forwarded = state.is_forwarded || message.is_forwarded;
     }
     if let Some(message_labels) = labels.get(&message.id) {
         message.labels = sorted_labels(message_labels);
@@ -2435,6 +2479,8 @@ pub(crate) fn parse_rfc822_bytes(
         is_unread: unread,
         is_flagged: false,
         is_important: false,
+        is_replied: false,
+        is_forwarded: false,
         follow_up_state: MailFollowUpState::None,
         follow_up: MailFollowUpMetadata::default(),
         labels: Vec::new(),
@@ -4109,6 +4155,8 @@ mod tests {
                 is_unread: false,
                 is_flagged: true,
                 is_important: true,
+                is_replied: false,
+                is_forwarded: false,
             })
         );
 
@@ -4143,6 +4191,8 @@ mod tests {
                 is_unread: false,
                 is_flagged: true,
                 is_important: false,
+                is_replied: false,
+                is_forwarded: false,
             })
         );
 
@@ -5245,6 +5295,8 @@ mod tests {
             raw_headers: None,
             raw_mime: None,
             is_unread: true,
+            is_replied: false,
+            is_forwarded: false,
             is_flagged: false,
             is_important: false,
             follow_up_state: MailFollowUpState::None,

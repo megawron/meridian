@@ -34,6 +34,8 @@ pub(crate) const ACCELERATOR_BINDINGS: &[(&str, &[&str])] = &[
     ("win.undelete", &["<Ctrl><Shift>D"]),
     ("win.apply-filters", &["<Ctrl>Y"]),
     ("win.toggle-sidebar", &["F9"]),
+    ("win.toggle-statusbar", &["F7"]),
+    ("win.toggle-debug-console", &["<Ctrl>F12", "<Ctrl><Shift>Y"]),
     ("win.new", &["<Ctrl>N"]),
     ("win.switch-mail", &["<Ctrl>1"]),
     ("win.switch-calendar", &["<Ctrl>2"]),
@@ -209,9 +211,9 @@ mod imp {
                 } else {
                     let mut profile = crate::services::account_config_service::AccountProfile::default();
                     profile.protocol = crate::services::account_config_service::AccountProtocol::Exchange;
-                    profile.display_name = "Corporate Exchange".to_string();
-                    profile.email = "admin@example.com".to_string();
-                    profile.username = r"CORPDOM\user".to_string();
+                    profile.display_name = "Exchange Account".to_string();
+                    profile.email = "user@example.com".to_string();
+                    profile.username = r"DOMAIN\user".to_string();
                     profile.imap_host = "https://mail.example.com/EWS/Exchange.asmx".to_string();
                     profile.oab_url = "https://mail.example.com/OAB/".to_string();
                     crate::dialogs::AccountSetupDialog::new_for_edit(&profile)
@@ -287,6 +289,14 @@ impl EvolutionApplication {
             (
                 "mail-sync-symbolic.svg",
                 include_str!("../data/icons/hicolor/scalable/actions/mail-sync-symbolic.svg"),
+            ),
+            (
+                "evolution-tasks-symbolic.svg",
+                include_str!("../data/icons/hicolor/scalable/actions/evolution-tasks-symbolic.svg"),
+            ),
+            (
+                "tasks-symbolic.svg",
+                include_str!("../data/icons/hicolor/scalable/actions/tasks-symbolic.svg"),
             ),
         ];
 

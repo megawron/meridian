@@ -29,6 +29,10 @@ pub struct MailMessageState {
     pub is_flagged: bool,
     #[serde(default)]
     pub is_important: bool,
+    #[serde(default)]
+    pub is_replied: bool,
+    #[serde(default)]
+    pub is_forwarded: bool,
 }
 
 /// The user-visible follow-up state used by Evolution and Outlook.
@@ -741,6 +745,8 @@ mod tests {
             is_unread: false,
             is_flagged: true,
             is_important: false,
+            is_replied: false,
+            is_forwarded: false,
         };
 
         store.update("message-1", state).expect("state should save");
@@ -816,6 +822,8 @@ mod tests {
                     is_unread: false,
                     is_flagged: true,
                     is_important: false,
+                    is_replied: false,
+                    is_forwarded: false,
                 },
             )
             .expect("flag state should save");
@@ -838,6 +846,8 @@ mod tests {
                 is_unread: false,
                 is_flagged: true,
                 is_important: false,
+                is_replied: false,
+                is_forwarded: false,
             })
         );
 
@@ -929,6 +939,8 @@ mod tests {
                             is_unread: index % 2 == 0,
                             is_flagged: index % 3 == 0,
                             is_important: index % 5 == 0,
+                            is_replied: false,
+                            is_forwarded: false,
                         },
                     )
                     .expect("concurrent sidecar update should save");
@@ -948,6 +960,8 @@ mod tests {
                     is_unread: index % 2 == 0,
                     is_flagged: index % 3 == 0,
                     is_important: index % 5 == 0,
+                    is_replied: false,
+                    is_forwarded: false,
                 })
             );
         }
@@ -992,6 +1006,8 @@ mod tests {
                     is_unread: true,
                     is_flagged: false,
                     is_important: false,
+                    is_replied: false,
+                    is_forwarded: false,
                 },
             )
             .expect("message state should save");
@@ -1011,6 +1027,8 @@ mod tests {
                 is_unread: true,
                 is_flagged: false,
                 is_important: false,
+                is_replied: false,
+                is_forwarded: false,
             })
         );
         reloaded

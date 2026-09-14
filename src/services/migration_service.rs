@@ -1117,6 +1117,8 @@ fn migration_value_type(key: &str) -> SettingValueType {
             | "draft-autosave-interval"
             | "task-hpane-position"
             | "task-vpane-position"
+            | "memo-hpane-position"
+            | "memo-vpane-position"
             | "contact-completion-minimum-query-length"
             | "contact-hpane-position"
             | "contact-vpane-position"
@@ -1271,6 +1273,8 @@ fn is_supported_migration_key(key: &str) -> bool {
             | "memo-category-filter"
             | "memo-preview-visible"
             | "memo-preview-orientation"
+            | "memo-hpane-position"
+            | "memo-vpane-position"
             | "offline-mode"
             | "contact-completion-minimum-query-length"
             | "contact-completion-show-address"
@@ -1360,7 +1364,10 @@ fn normalize_imported_setting_value(key: &str, value: &str) -> Result<String, &'
         "mail-sync-interval" => normalize_u32_setting(value, 0, 86_400),
         "mail-sync-message-limit" => normalize_u32_setting(value, 25, 1_000),
         "draft-autosave-interval" => normalize_u32_setting(value, 0, 3_600),
-        "task-hpane-position" | "task-vpane-position" => normalize_i32_setting(value, 80, 4_096),
+        "task-hpane-position"
+        | "task-vpane-position"
+        | "memo-hpane-position"
+        | "memo-vpane-position" => normalize_i32_setting(value, 80, 4_096),
         "contact-completion-minimum-query-length" => normalize_u32_setting(value, 1, 100),
         "contact-hpane-position" | "contact-vpane-position" => {
             normalize_i32_setting(value, 80, 4_096)
