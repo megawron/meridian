@@ -11,11 +11,18 @@ build = "build.rs"
 name = "preferences_e2e_tests"
 path = "preferences_e2e_tests.rs"
 
+[[test]]
+name = "test_advanced_features_e2e"
+path = "test_advanced_features_e2e.rs"
+
 [dependencies]
 gtk.workspace = true
 adw.workspace = true
 glib.workspace = true
 gio.workspace = true
+gdk.workspace = true
+tokio.workspace = true
+reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true

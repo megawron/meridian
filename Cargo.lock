@@ -414,12 +414,15 @@ name = "evolution-gtk4-tests"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "gdk4",
  "gio",
  "glib",
  "gtk4",
  "libadwaita",
+ "reqwest",
  "serde",
  "serde_json",
+ "tokio",
  "uuid",
 ]
 
