@@ -13,6 +13,7 @@ mod html_editor;
 pub mod itip_banner;
 mod mail_page;
 mod mail_viewer;
+mod mail_viewer_window;
 mod memos_page;
 mod tasks_page;
 
@@ -27,6 +28,7 @@ pub(crate) use mail_page::set_button_icon_with_fallback;
 #[cfg(target_os = "linux")]
 pub(crate) use mail_viewer::MailPrintDialogResult;
 pub use mail_viewer::MailViewer;
+pub use mail_viewer_window::MailViewerWindow;
 pub(crate) use mail_viewer::{MessageSearchResult, MessageSearchStatus};
 pub use memos_page::MemosPage;
 pub use tasks_page::TasksPage;

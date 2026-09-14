@@ -64,7 +64,9 @@ use crate::services::search_folder_service::{
     SavedSearch, SavedSearchFieldMode, SavedSearchScope, SearchFolderService,
 };
 use crate::views::accessibility::set_accessible_label;
-use crate::views::{ItipBanner, MailViewer, MessageSearchResult, MessageSearchStatus};
+use crate::views::{
+    ItipBanner, MailViewer, MailViewerWindow, MessageSearchResult, MessageSearchStatus,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum MessageFilter {
@@ -971,7 +973,7 @@ pub(crate) fn themed_icon_name<W: IsA<gtk::Widget>>(
     }
 }
 
-fn set_image_icon_with_fallback(image: &gtk::Image, preferred: &str, fallback: &str) {
+pub(crate) fn set_image_icon_with_fallback(image: &gtk::Image, preferred: &str, fallback: &str) {
     image.set_icon_name(Some(&themed_icon_name(image, preferred, fallback)));
 }
 
@@ -1159,7 +1161,7 @@ fn crypto_status_visible(show_routine_details: bool, routine_status: bool) -> bo
     show_routine_details || !routine_status
 }
 
-fn raw_mime_may_contain_crypto(raw_mime: &[u8]) -> bool {
+pub(crate) fn raw_mime_may_contain_crypto(raw_mime: &[u8]) -> bool {
     // MIME protocol declarations live in the envelope/header area. Limiting
     // this cheap preflight avoids copying multi-megabyte message bodies on the
     // GTK thread merely to discover that an ordinary mail is not encrypted.
@@ -1326,7 +1328,7 @@ fn search_query_needs_body(query: &MessageSearchQuery) -> bool {
     query.canonical_query().is_some_and(mail_query_needs_body)
 }
 
-fn message_is_junk(message: &MailMessageObject) -> bool {
+pub(crate) fn message_is_junk(message: &MailMessageObject) -> bool {
     let folder_id = message.folder_id().to_ascii_lowercase();
     folder_id == "junk"
         || folder_id == "spam"
@@ -1334,7 +1336,7 @@ fn message_is_junk(message: &MailMessageObject) -> bool {
         || message_folder_matches(message, "junk")
 }
 
-fn message_is_trash(message: &MailMessageObject) -> bool {
+pub(crate) fn message_is_trash(message: &MailMessageObject) -> bool {
     let folder_id = message.folder_id().to_ascii_lowercase();
     folder_id == "trash"
         || folder_id == "deleted"
@@ -1385,7 +1387,7 @@ fn message_folder_matches(message: &MailMessageObject, query: &str) -> bool {
         .is_some_and(|location| location.folder_name.to_ascii_lowercase().contains(&query))
 }
 
-fn sender_header(message: &MailMessageObject) -> String {
+pub(crate) fn sender_header(message: &MailMessageObject) -> String {
     let name = message.sender_name();
     let email = message.sender_email();
     if name.trim().is_empty() || name.trim().eq_ignore_ascii_case(email.trim()) {
@@ -1555,7 +1557,7 @@ fn export_message_from(message: &MailMessageObject) -> ExportMessage {
     }
 }
 
-fn print_snapshot_from(message: &MailMessageObject) -> MailPrintSnapshot {
+pub(crate) fn print_snapshot_from(message: &MailMessageObject) -> MailPrintSnapshot {
     let message_attachments = message.attachments();
     let attachments = message_attachments
         .iter()
@@ -1621,7 +1623,7 @@ fn all_headers_request_is_current(
     !cancelled && expected_generation == current_generation && visible && same_message
 }
 
-fn message_header_fields(message: &MailMessageObject) -> Vec<(String, String)> {
+pub(crate) fn message_header_fields(message: &MailMessageObject) -> Vec<(String, String)> {
     let headers = if let Some(headers) = message.raw_headers() {
         headers
     } else {
@@ -1654,7 +1656,7 @@ fn normal_header_display_name(name: &str) -> &str {
     }
 }
 
-fn default_normal_header_configuration() -> Vec<(String, bool)> {
+pub(crate) fn default_normal_header_configuration() -> Vec<(String, bool)> {
     [
         ("From", true),
         ("Reply-To", true),
@@ -1672,7 +1674,7 @@ fn default_normal_header_configuration() -> Vec<(String, bool)> {
     .collect()
 }
 
-fn configured_normal_header_fields(
+pub(crate) fn configured_normal_header_fields(
     fields: &[(String, String)],
     configuration: &[(String, bool)],
 ) -> Vec<(String, String)> {
@@ -1729,7 +1731,7 @@ fn configured_normal_header_fields(
     selected
 }
 
-fn replace_normal_header_rows(grid: &gtk::Grid, fields: &[(String, String)]) {
+pub(crate) fn replace_normal_header_rows(grid: &gtk::Grid, fields: &[(String, String)]) {
     while let Some(child) = grid.first_child() {
         grid.remove(&child);
     }
@@ -1783,7 +1785,7 @@ fn replace_normal_header_rows(grid: &gtk::Grid, fields: &[(String, String)]) {
     }
 }
 
-fn replace_formatted_header_rows(grid: &gtk::Grid, fields: &[(String, String)]) {
+pub(crate) fn replace_formatted_header_rows(grid: &gtk::Grid, fields: &[(String, String)]) {
     while let Some(child) = grid.first_child() {
         grid.remove(&child);
     }
@@ -1851,7 +1853,7 @@ fn update_displayed_message_search_status(
     find_next.set_sensitive(sensitive);
 }
 
-fn export_filename(subject: &str) -> String {
+pub(crate) fn export_filename(subject: &str) -> String {
     let sanitized = subject
         .chars()
         .map(|character| match character {
@@ -2238,7 +2240,7 @@ struct MessageSourceWindowState {
 
 type MessageSourceLoadResult = Result<(Arc<[u8]>, Option<String>), String>;
 
-fn message_source_window_key(message: &MailMessageObject) -> String {
+pub(crate) fn message_source_window_key(message: &MailMessageObject) -> String {
     if let Some(location) = message.backend_location() {
         format!(
             "backend\u{1f}{}\u{1f}{}\u{1f}{}",
@@ -2526,7 +2528,7 @@ fn prepare_searchable_body_text(html_body: &str) -> Arc<str> {
 /// GTK-free hydration of one selected preview. Cancellation is checked around
 /// the CPU work as well as by the provider, so a superseded request is dropped
 /// without publishing an incomplete body or search index.
-fn prepare_loaded_message_body(
+pub(crate) fn prepare_loaded_message_body(
     id: &str,
     folder_id: &str,
     raw: &[u8],
@@ -3429,6 +3431,7 @@ mod imp {
         pub all_headers_generation: Cell<u64>,
         pub all_headers_cancellation: RefCell<Option<Arc<AtomicBool>>>,
         pub(super) message_source_windows: RefCell<HashMap<String, MessageSourceWindowState>>,
+        pub(super) standalone_viewers: RefCell<HashMap<String, MailViewerWindow>>,
         pub mail_viewer: RefCell<Option<MailViewer>>,
         pub itip_banner: RefCell<Option<ItipBanner>>,
         pub print_status_area: RefCell<Option<gtk::Box>>,
@@ -3708,6 +3711,11 @@ mod imp {
             for state in source_windows.into_values() {
                 state.cancellation.store(true, Ordering::Relaxed);
                 state.window.close();
+            }
+            let viewers = std::mem::take(&mut *self.standalone_viewers.borrow_mut());
+            for viewer in viewers.into_values() {
+                viewer.cancel_loading();
+                viewer.close();
             }
             self.obj().shutdown_print();
             for cancellation in self.mail_operation_cancellations.borrow().values() {
@@ -5435,23 +5443,25 @@ impl MailPage {
         true
     }
 
-    pub(crate) fn present_message_source(&self) -> bool {
-        let Some(message) = self.selected_message() else {
-            return false;
-        };
-        let window_key = message_source_window_key(&message);
+    pub(crate) fn present_source_for_message(
+        &self,
+        message: &MailMessageObject,
+        parent: Option<&gtk::Window>,
+    ) -> bool {
+        let window_key = message_source_window_key(message);
         if let Some(state) = self.imp().message_source_windows.borrow().get(&window_key) {
             state.window.present();
             return true;
         }
-        let Some(parent) = self.root().and_downcast::<gtk::Window>() else {
+        let fallback_parent = self.root().and_downcast::<gtk::Window>();
+        let Some(parent_win) = parent.or(fallback_parent.as_ref()) else {
             self.show_toast("Kein Fenster für die Nachrichtenquelle verfügbar");
-            return true;
+            return false;
         };
 
         let subject = message.subject();
         let cancellation = Arc::new(AtomicBool::new(false));
-        let state = self.build_message_source_window(&parent, &subject, cancellation.clone());
+        let state = self.build_message_source_window(parent_win, &subject, cancellation.clone());
         let page = self.downgrade();
         let key_for_close = window_key.clone();
         let cancellation_for_close = cancellation.clone();
@@ -5481,7 +5491,7 @@ impl MailPage {
         }
 
         let location = message.backend_location();
-        let export = export_message_from(&message);
+        let export = export_message_from(message);
         let (sender, receiver) = async_channel::bounded(1);
         let cancellation_for_worker = cancellation.clone();
         std::thread::spawn(move || {
@@ -5529,6 +5539,49 @@ impl MailPage {
             page.apply_message_source_result(&window_key, &cancellation, result);
         });
         true
+    }
+
+    pub(crate) fn present_message_source(&self) -> bool {
+        let Some(message) = self.selected_message() else {
+            return false;
+        };
+        self.present_source_for_message(&message, None)
+    }
+
+    pub(crate) fn open_standalone_message_viewer(&self, message: &MailMessageObject) {
+        let key = message_source_window_key(message);
+        if let Some(existing) = self.imp().standalone_viewers.borrow().get(&key) {
+            existing.present();
+            return;
+        }
+
+        let app = self
+            .root()
+            .and_downcast::<gtk::Window>()
+            .and_then(|w| w.application());
+        let window = MailViewerWindow::new(app.as_ref(), message, Some(self));
+        let page_weak = self.downgrade();
+        let key_clone = key.clone();
+        window.connect_close_request(move |win| {
+            win.cancel_loading();
+            if let Some(page) = page_weak.upgrade() {
+                let mut viewers = page.imp().standalone_viewers.borrow_mut();
+                if viewers.get(&key_clone).is_some_and(|v| v == win) {
+                    viewers.remove(&key_clone);
+                }
+            }
+            glib::Propagation::Proceed
+        });
+
+        self.imp()
+            .standalone_viewers
+            .borrow_mut()
+            .insert(key, window.clone());
+        window.present();
+    }
+
+    pub(crate) fn open_message_in_standalone_window(&self, message: &MailMessageObject) {
+        self.open_standalone_message_viewer(message);
     }
 
     fn build_message_source_window(
@@ -6155,8 +6208,13 @@ impl MailPage {
         });
         container.add_controller(drag_source);
 
-        let drop_target = gtk::DropTarget::new(glib::Type::STRING, gtk::gdk::DragAction::MOVE);
-        drop_target.connect_enter(|_, _, _| gtk::gdk::DragAction::MOVE);
+        let drop_target = gtk::DropTarget::new(
+            glib::Type::STRING,
+            gtk::gdk::DragAction::MOVE | gtk::gdk::DragAction::COPY,
+        );
+        drop_target.connect_enter(|_, _, _| {
+            gtk::gdk::DragAction::MOVE | gtk::gdk::DragAction::COPY
+        });
 
         let container_motion = container.downgrade();
         drop_target.connect_motion(move |_, _, y| {
@@ -6172,7 +6230,7 @@ impl MailPage {
                 c.add_css_class("drop-after");
                 c.remove_css_class("drop-before");
             }
-            gtk::gdk::DragAction::MOVE
+            gtk::gdk::DragAction::MOVE | gtk::gdk::DragAction::COPY
         });
 
         let container_leave = container.downgrade();
@@ -6188,7 +6246,7 @@ impl MailPage {
         let target_fid = folder_id.to_string();
         let target_name = Self::local_folder_display_label(folder_id);
         let page_weak = self.downgrade();
-        drop_target.connect_drop(move |_, value, _, y| {
+        drop_target.connect_drop(move |target, value, _, y| {
             let (Some(c), Some(page)) = (container_drop.upgrade(), page_weak.upgrade()) else {
                 return false;
             };
@@ -6199,6 +6257,30 @@ impl MailPage {
             let Ok(payload_str) = value.get::<String>() else {
                 return false;
             };
+
+            // Handle dropped message
+            if let Some(msg_id) = payload_str.strip_prefix("evolution-message:") {
+                let drop_action = target
+                    .drop()
+                    .map(|d| d.actions())
+                    .unwrap_or(gtk::gdk::DragAction::MOVE);
+                let is_copy = drop_action.contains(gtk::gdk::DragAction::COPY)
+                    && !drop_action.contains(gtk::gdk::DragAction::MOVE);
+                let result = if is_copy {
+                    page.copy_message_by_id_to(msg_id, "local", &target_fid)
+                } else {
+                    page.move_message_by_id_to(msg_id, "local", &target_fid)
+                };
+                return match result {
+                    Ok(success) => success,
+                    Err(err) => {
+                        page.show_toast(&format!("Aktion nicht möglich: {err}"));
+                        false
+                    }
+                };
+            }
+
+            // Handle dropped folder reordering
             let Some(json) = payload_str.strip_prefix("evolution-folder:") else {
                 return false;
             };
@@ -6835,14 +6917,7 @@ impl MailPage {
         true
     }
 
-    /// Route destructive actions through the backend service.  Local imports
-    /// remain untouched; local deletion is represented by the app-owned
-    /// sidecar until a writable Camel backend is available.
-    pub fn delete_selected(&self) -> Result<bool, MailOperationError> {
-        let Some(message) = self.selected_message() else {
-            return Ok(false);
-        };
-
+    pub fn delete_message(&self, message: &MailMessageObject) -> Result<bool, MailOperationError> {
         let result = match message.backend_location() {
             Some(location) => {
                 self.execute_mail_command(MailCommand::delete(message.id(), location))
@@ -6850,6 +6925,16 @@ impl MailPage {
             None => self.execute_mail_command(MailCommand::delete_local(message.id())),
         };
         result.map(|()| true)
+    }
+
+    /// Route destructive actions through the backend service.  Local imports
+    /// remain untouched; local deletion is represented by the app-owned
+    /// sidecar until a writable Camel backend is available.
+    pub fn delete_selected(&self) -> Result<bool, MailOperationError> {
+        let Some(message) = self.selected_message() else {
+            return Ok(false);
+        };
+        self.delete_message(&message)
     }
 
     /// Increase zoom level in the message viewer.
@@ -7779,10 +7864,7 @@ impl MailPage {
         Ok(true)
     }
 
-    pub fn mark_selected_unread(&self) -> Result<bool, MailOperationError> {
-        let Some(message) = self.selected_message() else {
-            return Ok(false);
-        };
+    pub fn mark_message_unread(&self, message: &MailMessageObject) -> Result<bool, MailOperationError> {
         message.set_unread(true);
 
         let command = MailCommand::set_message_state(
@@ -7798,10 +7880,14 @@ impl MailPage {
         Ok(true)
     }
 
-    pub fn mark_selected_read(&self) -> Result<bool, MailOperationError> {
+    pub fn mark_selected_unread(&self) -> Result<bool, MailOperationError> {
         let Some(message) = self.selected_message() else {
             return Ok(false);
         };
+        self.mark_message_unread(&message)
+    }
+
+    pub fn mark_message_read(&self, message: &MailMessageObject) -> Result<bool, MailOperationError> {
         message.set_unread(false);
 
         let command = MailCommand::set_message_state(
@@ -7815,6 +7901,13 @@ impl MailPage {
         self.execute_mail_command(command)?;
         self.refresh_unread_counters();
         Ok(true)
+    }
+
+    pub fn mark_selected_read(&self) -> Result<bool, MailOperationError> {
+        let Some(message) = self.selected_message() else {
+            return Ok(false);
+        };
+        self.mark_message_read(&message)
     }
 
     pub fn toggle_selected_flagged(&self) -> Result<bool, MailOperationError> {
@@ -8443,25 +8536,26 @@ impl MailPage {
         Ok(true)
     }
 
-    pub fn mark_selected_junk(&self) -> Result<bool, MailOperationError> {
-        let Some(message) = self.selected_message() else {
-            return Ok(false);
-        };
+    pub fn mark_message_junk(&self, message: &MailMessageObject) -> Result<bool, MailOperationError> {
         let command = message
             .backend_location()
             .map(|location| {
-                MailCommand::set_junk(message.id(), location, message_is_junk(&message), true)
+                MailCommand::set_junk(message.id(), location, message_is_junk(message), true)
             })
             .unwrap_or_else(|| MailCommand::set_junk_local(message.id(), message.folder_id()));
         self.execute_mail_command(command)?;
         Ok(true)
     }
 
-    pub fn mark_selected_not_junk(&self) -> Result<bool, MailOperationError> {
+    pub fn mark_selected_junk(&self) -> Result<bool, MailOperationError> {
         let Some(message) = self.selected_message() else {
             return Ok(false);
         };
-        if !message_is_junk(&message) {
+        self.mark_message_junk(&message)
+    }
+
+    pub fn mark_message_not_junk(&self, message: &MailMessageObject) -> Result<bool, MailOperationError> {
+        if !message_is_junk(message) {
             return Ok(true);
         }
         let command = message
@@ -8470,6 +8564,13 @@ impl MailPage {
             .unwrap_or_else(|| MailCommand::clear_junk_local(message.id()));
         self.execute_mail_command(command)?;
         Ok(true)
+    }
+
+    pub fn mark_selected_not_junk(&self) -> Result<bool, MailOperationError> {
+        let Some(message) = self.selected_message() else {
+            return Ok(false);
+        };
+        self.mark_message_not_junk(&message)
     }
 
     pub fn apply_filters(&self) {
@@ -8520,15 +8621,34 @@ impl MailPage {
         });
     }
 
-    fn move_selected_to(
+    /// Lookup a MailMessageObject in the loaded message store or thread hierarchy.
+    pub(crate) fn find_message_by_id(&self, message_id: &str) -> Option<MailMessageObject> {
+        if let Some(store) = self.imp().message_store.borrow().as_ref() {
+            for index in 0..store.n_items() {
+                if let Some(msg) = store.item(index).and_downcast::<MailMessageObject>() {
+                    if msg.id() == message_id {
+                        return Some(msg);
+                    }
+                }
+            }
+        }
+        if let Some(members_map) = self.imp().thread_members.borrow().as_ref() {
+            for members in members_map.borrow().values() {
+                if let Some(msg) = members.iter().find(|m| m.id() == message_id) {
+                    return Some(msg.clone());
+                }
+            }
+        }
+        None
+    }
+
+    /// Move a specific message object to the specified destination source and folder.
+    pub(crate) fn move_message_to(
         &self,
+        message: &MailMessageObject,
         destination_source: &str,
         destination_folder: &str,
     ) -> Result<bool, MailOperationError> {
-        let Some(message) = self.selected_message() else {
-            return Ok(false);
-        };
-
         let command = if destination_source == "local" {
             if message.backend_location().is_some() {
                 return Err(MailOperationError::Unsupported {
@@ -8561,14 +8681,13 @@ impl MailPage {
         Ok(true)
     }
 
-    fn copy_selected_to(
+    /// Copy a specific message object to the specified destination source and folder.
+    pub(crate) fn copy_message_to(
         &self,
+        message: &MailMessageObject,
         destination_source: &str,
         destination_folder: &str,
     ) -> Result<bool, MailOperationError> {
-        let Some(message) = self.selected_message() else {
-            return Ok(false);
-        };
         let command = if destination_source == "local" {
             if message.backend_location().is_some() {
                 return Err(MailOperationError::Unsupported {
@@ -8612,6 +8731,74 @@ impl MailPage {
 
         self.execute_mail_command(command)?;
         Ok(true)
+    }
+
+    /// Move a message by ID to destination, updating unread counters and showing a toast.
+    pub(crate) fn move_message_by_id_to(
+        &self,
+        message_id: &str,
+        destination_source: &str,
+        destination_folder: &str,
+    ) -> Result<bool, MailOperationError> {
+        let Some(message) = self.find_message_by_id(message_id) else {
+            return Ok(false);
+        };
+        let res = self.move_message_to(&message, destination_source, destination_folder)?;
+        if res {
+            self.refresh_unread_counters();
+            let target_display = if destination_source == "local" {
+                Self::local_folder_display_label(destination_folder)
+            } else {
+                destination_folder.to_string()
+            };
+            self.show_toast(&format!("Nachricht nach „{}“ verschoben", target_display));
+        }
+        Ok(res)
+    }
+
+    /// Copy a message by ID to destination, updating unread counters and showing a toast.
+    pub(crate) fn copy_message_by_id_to(
+        &self,
+        message_id: &str,
+        destination_source: &str,
+        destination_folder: &str,
+    ) -> Result<bool, MailOperationError> {
+        let Some(message) = self.find_message_by_id(message_id) else {
+            return Ok(false);
+        };
+        let res = self.copy_message_to(&message, destination_source, destination_folder)?;
+        if res {
+            self.refresh_unread_counters();
+            let target_display = if destination_source == "local" {
+                Self::local_folder_display_label(destination_folder)
+            } else {
+                destination_folder.to_string()
+            };
+            self.show_toast(&format!("Nachricht nach „{}“ kopiert", target_display));
+        }
+        Ok(res)
+    }
+
+    fn move_selected_to(
+        &self,
+        destination_source: &str,
+        destination_folder: &str,
+    ) -> Result<bool, MailOperationError> {
+        let Some(message) = self.selected_message() else {
+            return Ok(false);
+        };
+        self.move_message_to(&message, destination_source, destination_folder)
+    }
+
+    fn copy_selected_to(
+        &self,
+        destination_source: &str,
+        destination_folder: &str,
+    ) -> Result<bool, MailOperationError> {
+        let Some(message) = self.selected_message() else {
+            return Ok(false);
+        };
+        self.copy_message_to(&message, destination_source, destination_folder)
     }
 
     fn execute_mail_command(&self, command: MailCommand) -> Result<(), MailOperationError> {
@@ -9879,8 +10066,13 @@ impl MailPage {
             });
             row.add_controller(drag_source);
 
-            let drop_target = gtk::DropTarget::new(glib::Type::STRING, gtk::gdk::DragAction::MOVE);
-            drop_target.connect_enter(|_, _, _| gtk::gdk::DragAction::MOVE);
+            let drop_target = gtk::DropTarget::new(
+                glib::Type::STRING,
+                gtk::gdk::DragAction::MOVE | gtk::gdk::DragAction::COPY,
+            );
+            drop_target.connect_enter(|_, _, _| {
+                gtk::gdk::DragAction::MOVE | gtk::gdk::DragAction::COPY
+            });
 
             let row_for_motion = row.downgrade();
             drop_target.connect_motion(move |_, _, y| {
@@ -9896,7 +10088,7 @@ impl MailPage {
                     row.add_css_class("drop-after");
                     row.remove_css_class("drop-before");
                 }
-                gtk::gdk::DragAction::MOVE
+                gtk::gdk::DragAction::MOVE | gtk::gdk::DragAction::COPY
             });
 
             let row_for_leave = row.downgrade();
@@ -9911,7 +10103,7 @@ impl MailPage {
             let row_for_drop_action = row.downgrade();
             let list_item_for_drop = list_item.downgrade();
             let page_for_drop = page_for_dynamic_folder_menu.clone();
-            drop_target.connect_drop(move |_, value, _, y| {
+            drop_target.connect_drop(move |target, value, _, y| {
                 let (Some(row), Some(list_item), Some(page)) = (
                     row_for_drop_action.upgrade(),
                     list_item_for_drop.upgrade(),
@@ -9926,17 +10118,53 @@ impl MailPage {
                 let Ok(payload_str) = value.get::<String>() else {
                     return false;
                 };
-                let Some(json) = payload_str.strip_prefix("evolution-folder:") else {
-                    return false;
-                };
-                let Ok(dragged) = serde_json::from_str::<FolderDragPayload>(json) else {
-                    return false;
-                };
 
                 let Some(tree_row) = list_item.item().and_downcast::<gtk::TreeListRow>() else {
                     return false;
                 };
                 let Some(target_folder) = tree_row.item().and_downcast::<FolderObject>() else {
+                    return false;
+                };
+
+                // Handle dropped message
+                if let Some(msg_id) = payload_str.strip_prefix("evolution-message:") {
+                    if !target_folder.selectable() {
+                        page.show_toast("In diesen Ordner können keine Nachrichten abgelegt werden");
+                        return false;
+                    }
+                    let target_source = target_folder
+                        .source_uid()
+                        .unwrap_or_else(|| "local".to_string());
+                    let target_folder_name = target_folder
+                        .folder_name()
+                        .unwrap_or_else(|| target_folder.id());
+
+                    let drop_action = target
+                        .drop()
+                        .map(|d| d.actions())
+                        .unwrap_or(gtk::gdk::DragAction::MOVE);
+                    let is_copy = drop_action.contains(gtk::gdk::DragAction::COPY)
+                        && !drop_action.contains(gtk::gdk::DragAction::MOVE);
+
+                    let result = if is_copy {
+                        page.copy_message_by_id_to(msg_id, &target_source, &target_folder_name)
+                    } else {
+                        page.move_message_by_id_to(msg_id, &target_source, &target_folder_name)
+                    };
+                    return match result {
+                        Ok(success) => success,
+                        Err(err) => {
+                            page.show_toast(&format!("Aktion nicht möglich: {err}"));
+                            false
+                        }
+                    };
+                }
+
+                // Handle dropped folder reordering
+                let Some(json) = payload_str.strip_prefix("evolution-folder:") else {
+                    return false;
+                };
+                let Ok(dragged) = serde_json::from_str::<FolderDragPayload>(json) else {
                     return false;
                 };
 
@@ -13544,7 +13772,7 @@ impl MailPage {
             outer.add_controller(right_click);
 
             let drag_source = gtk::DragSource::new();
-            drag_source.set_actions(gtk::gdk::DragAction::COPY);
+            drag_source.set_actions(gtk::gdk::DragAction::COPY | gtk::gdk::DragAction::MOVE);
             let list_item_for_drag = list_item.downgrade();
             drag_source.connect_prepare(move |_, _, _| {
                 let Some(list_item) = list_item_for_drag.upgrade() else {
@@ -13585,10 +13813,14 @@ impl MailPage {
                 let uri = gio_file.uri();
                 let uri_list_bytes = glib::Bytes::from(format!("{}\r\n", uri).as_bytes());
 
+                let provider_internal = gtk::gdk::ContentProvider::for_value(
+                    &format!("evolution-message:{}", message.id()).to_value(),
+                );
                 let provider_file = gtk::gdk::ContentProvider::for_value(&gio_file.to_value());
                 let provider_uri = gtk::gdk::ContentProvider::for_bytes("text/uri-list", &uri_list_bytes);
                 let provider_mime = gtk::gdk::ContentProvider::for_bytes("message/rfc822", &glib::Bytes::from(&raw_bytes));
                 Some(gtk::gdk::ContentProvider::new_union(&[
+                    provider_internal,
                     provider_file,
                     provider_uri,
                     provider_mime,
@@ -14112,6 +14344,39 @@ impl MailPage {
             .build();
         self.imp().mail_list_view.replace(Some(list_view.clone()));
         self.imp().mail_list_factory.replace(Some(factory.clone()));
+
+        let page_for_activate = self.downgrade();
+        list_view.connect_activate(move |list_view, position| {
+            let Some(page) = page_for_activate.upgrade() else { return; };
+            let Some(model) = list_view.model() else { return; };
+            let Some(item) = model.item(position) else { return; };
+            let message = if let Some(tree_row) = item.downcast_ref::<gtk::TreeListRow>() {
+                tree_row.item().and_downcast::<MailMessageObject>()
+            } else {
+                item.downcast::<MailMessageObject>().ok()
+            };
+            if let Some(msg) = message {
+                page.open_standalone_message_viewer(&msg);
+            }
+        });
+
+        let enter_controller = gtk::EventControllerKey::new();
+        let page_for_enter = self.downgrade();
+        enter_controller.connect_key_pressed(move |_, keyval, _, _| {
+            if matches!(
+                keyval,
+                gtk::gdk::Key::Return | gtk::gdk::Key::KP_Enter | gtk::gdk::Key::ISO_Enter
+            ) {
+                if let Some(page) = page_for_enter.upgrade() {
+                    if let Some(message) = page.selected_message() {
+                        page.open_standalone_message_viewer(&message);
+                        return glib::Propagation::Stop;
+                    }
+                }
+            }
+            glib::Propagation::Proceed
+        });
+        list_view.add_controller(enter_controller);
 
         let search_entry = gtk::SearchEntry::builder()
             .placeholder_text("Mails durchsuchen (from:, in:sent, on:2026-08-11, is:unread)…")
@@ -23272,6 +23537,105 @@ mod tests {
         settings.set_composer_reply_style("quoted");
         settings.set_composer_forward_style("attached");
         while context.iteration(false) {}
+    }
+
+    #[test]
+    fn test_mail_page_standalone_viewer_deduplication() {
+        let _gtk_lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+
+        let page = MailPage::new();
+        let msg = MailMessageObject::new(
+            "msg-viewer-dedup-1",
+            "inbox",
+            "Bob",
+            "bob@example.com",
+            "alice@example.com",
+            "",
+            "",
+            "",
+            "Subject Test",
+            None,
+            vec![],
+            vec![],
+            "thread-1",
+            1,
+            0,
+            "12:00",
+            1024,
+            "Snippet",
+            "Body",
+            false,
+            false,
+            false,
+            MailFollowUpState::None,
+            MailFollowUpMetadata::default(),
+            vec![],
+            None,
+            vec![],
+        );
+
+        page.open_standalone_message_viewer(&msg);
+        assert_eq!(page.imp().standalone_viewers.borrow().len(), 1);
+
+        // Opening same message again must deduplicate and not add another window
+        page.open_standalone_message_viewer(&msg);
+        assert_eq!(page.imp().standalone_viewers.borrow().len(), 1);
+    }
+
+    #[test]
+    fn test_mail_page_find_message_by_id() {
+        let _gtk_lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+
+        let page = MailPage::new();
+        assert!(page.find_message_by_id("").is_none());
+        assert!(page.find_message_by_id("non-existent").is_none());
+
+        let msg = MailMessageObject::new(
+            "msg-find-1",
+            "inbox",
+            "Charlie",
+            "charlie@example.com",
+            "alice@example.com",
+            "",
+            "",
+            "",
+            "Find Me",
+            None,
+            vec![],
+            vec![],
+            "thread-1",
+            1,
+            0,
+            "12:00",
+            1024,
+            "Snippet",
+            "Body",
+            false,
+            false,
+            false,
+            MailFollowUpState::None,
+            MailFollowUpMetadata::default(),
+            vec![],
+            None,
+            vec![],
+        );
+
+        let store = gio::ListStore::new::<MailMessageObject>();
+        store.append(&msg);
+        page.imp().message_store.replace(Some(store));
+        let found = page.find_message_by_id("msg-find-1");
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().id(), "msg-find-1");
     }
 }
 
