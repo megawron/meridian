@@ -159,5 +159,9 @@ When the user requests a durable behavior change, record it here or in the relev
 - `docs/PERFORMANCE_LOADING.md` owns mail/calendar loading bottlenecks,
   upstream implementation references, portable evidence and the Linux latency
   measurement procedure for `PERF-CACHED-LOAD`.
+- `docs/GNOME_CIRCLE_CHECKLIST.md` owns Circle audit checks, source provenance,
+  evidence statuses and the boundary between official criteria and project goals.
+  `docs/GNOME_CIRCLE_AUDIT_PROMPT.md` provides the reusable audit-only prompt;
+  these templates do not establish completed product or Linux acceptance.
 - Other root-owned files include `README.md`, `LICENSE`, `banner.jpg`,
   `video-thumbnail.jpg`, and root-level project documentation.
