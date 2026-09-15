@@ -3662,6 +3662,12 @@ impl MemosPage {
                     draw_memo_table_canvas(cr, layout, &selection, width as f64, height as f64, hovered, is_dark);
                 }
             });
+            let canvas_for_theme = memo_table_canvas.clone();
+            let header_for_theme = memo_table_header.clone();
+            adw::StyleManager::default().connect_dark_notify(move |_| {
+                canvas_for_theme.queue_draw();
+                header_for_theme.queue_draw();
+            });
         }
 
         // Canvas Primary Click Gesture

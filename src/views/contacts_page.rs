@@ -80,6 +80,438 @@ impl ContactPageSearchState {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub(crate) enum ContactTableColumn {
+    #[default]
+    Name,
+    Company,
+    Title,
+    Email,
+    Phone,
+    Categories,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct PreparedContactTableRow {
+    pub identity: ContactIdentity,
+    pub name: String,
+    pub company: String,
+    pub title: String,
+    pub email: String,
+    pub phone: String,
+    pub categories: Vec<String>,
+    pub selected: bool,
+    pub y: f64,
+    pub height: f64,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct PreparedContactTableLayout {
+    pub rows: Vec<PreparedContactTableRow>,
+    pub width: f64,
+    pub height: f64,
+    pub row_height: f64,
+    pub col_name_w: f64,
+    pub col_company_w: f64,
+    pub col_title_w: f64,
+    pub col_email_w: f64,
+    pub col_phone_w: f64,
+    pub col_categories_w: f64,
+}
+
+pub(crate) fn prepare_contact_table_layout(
+    contacts: &[EBookContactRecord],
+    visible_filter: Option<&HashSet<ContactIdentity>>,
+    selected_identities: &HashSet<ContactIdentity>,
+    sort_col: ContactTableColumn,
+    sort_desc: bool,
+    width: f64,
+) -> PreparedContactTableLayout {
+    let row_height = 32.0;
+    let mut filtered_contacts: Vec<&EBookContactRecord> = contacts
+        .iter()
+        .filter(|rec| {
+            if let Some(visible) = visible_filter {
+                if !visible.is_empty() {
+                    return visible.contains(&ContactIdentity::new(&rec.source_uid, &rec.uid));
+                }
+            }
+            true
+        })
+        .collect();
+
+    filtered_contacts.sort_by(|a, b| {
+        let ord = match sort_col {
+            ContactTableColumn::Name => a.contact.fn_name.cmp(&b.contact.fn_name),
+            ContactTableColumn::Company => a.contact.org.cmp(&b.contact.org),
+            ContactTableColumn::Title => a.contact.title.cmp(&b.contact.title),
+            ContactTableColumn::Email => a.contact.email.cmp(&b.contact.email),
+            ContactTableColumn::Phone => a.contact.tel.cmp(&b.contact.tel),
+            ContactTableColumn::Categories => {
+                let cat_a = a.contact.categories.join(", ");
+                let cat_b = b.contact.categories.join(", ");
+                cat_a.cmp(&cat_b)
+            }
+        };
+        if sort_desc {
+            ord.reverse()
+        } else {
+            ord
+        }
+    });
+
+    let mut rows = Vec::with_capacity(filtered_contacts.len());
+    for (i, rec) in filtered_contacts.iter().enumerate() {
+        let identity = ContactIdentity::new(&rec.source_uid, &rec.uid);
+        let selected = selected_identities.contains(&identity);
+        rows.push(PreparedContactTableRow {
+            identity,
+            name: rec.contact.fn_name.clone(),
+            company: rec.contact.org.clone(),
+            title: rec.contact.title.clone(),
+            email: rec.contact.email.clone(),
+            phone: rec.contact.tel.clone(),
+            categories: rec.contact.categories.clone(),
+            selected,
+            y: (i as f64) * row_height,
+            height: row_height,
+        });
+    }
+
+    let min_width = 800.0;
+    let available_w = width.max(min_width);
+    let col_name_w = (available_w * 0.22).max(150.0);
+    let col_company_w = (available_w * 0.16).max(120.0);
+    let col_title_w = (available_w * 0.14).max(100.0);
+    let col_email_w = (available_w * 0.20).max(140.0);
+    let col_phone_w = (available_w * 0.14).max(110.0);
+    let col_categories_w = (available_w - col_name_w - col_company_w - col_title_w - col_email_w - col_phone_w).max(100.0);
+
+    let height = (rows.len() as f64 * row_height).max(40.0);
+    PreparedContactTableLayout {
+        rows,
+        width: available_w,
+        height,
+        row_height,
+        col_name_w,
+        col_company_w,
+        col_title_w,
+        col_email_w,
+        col_phone_w,
+        col_categories_w,
+    }
+}
+
+pub(crate) fn hit_test_contact_table_header(
+    layout: &PreparedContactTableLayout,
+    x: f64,
+) -> Option<ContactTableColumn> {
+    if x < 0.0 || x > layout.width {
+        return None;
+    }
+    let mut cur = 0.0;
+    cur += layout.col_name_w;
+    if x <= cur {
+        return Some(ContactTableColumn::Name);
+    }
+    cur += layout.col_company_w;
+    if x <= cur {
+        return Some(ContactTableColumn::Company);
+    }
+    cur += layout.col_title_w;
+    if x <= cur {
+        return Some(ContactTableColumn::Title);
+    }
+    cur += layout.col_email_w;
+    if x <= cur {
+        return Some(ContactTableColumn::Email);
+    }
+    cur += layout.col_phone_w;
+    if x <= cur {
+        return Some(ContactTableColumn::Phone);
+    }
+    Some(ContactTableColumn::Categories)
+}
+
+pub(crate) fn hit_test_contact_table(
+    layout: &PreparedContactTableLayout,
+    y: f64,
+) -> Option<usize> {
+    if y < 0.0 || y > layout.height {
+        return None;
+    }
+    let idx = (y / layout.row_height) as usize;
+    if idx < layout.rows.len() {
+        Some(idx)
+    } else {
+        None
+    }
+}
+
+pub(crate) fn draw_contact_table_header(
+    cr: &gtk::cairo::Context,
+    layout: &PreparedContactTableLayout,
+    sort_col: ContactTableColumn,
+    sort_desc: bool,
+    hovered_col: Option<ContactTableColumn>,
+    is_dark: bool,
+) {
+    let w = layout.width;
+    let h = 28.0;
+
+    if is_dark {
+        cr.set_source_rgb(0.14, 0.14, 0.14);
+    } else {
+        cr.set_source_rgb(0.96, 0.96, 0.96);
+    }
+    let _ = cr.paint();
+
+    let columns = [
+        (ContactTableColumn::Name, "Name", layout.col_name_w),
+        (ContactTableColumn::Company, "Organisation", layout.col_company_w),
+        (ContactTableColumn::Title, "Position", layout.col_title_w),
+        (ContactTableColumn::Email, "E-Mail", layout.col_email_w),
+        (ContactTableColumn::Phone, "Telefon", layout.col_phone_w),
+        (ContactTableColumn::Categories, "Kategorien", layout.col_categories_w),
+    ];
+
+    let (text_r, text_g, text_b) = if is_dark { (0.80, 0.80, 0.80) } else { (0.35, 0.35, 0.35) };
+    let (div_r, div_g, div_b) = if is_dark { (1.0, 1.0, 1.0) } else { (0.0, 0.0, 0.0) };
+
+    let mut col_x = 0.0;
+    for (col, label, col_w) in columns {
+        if Some(col) == hovered_col {
+            if is_dark {
+                cr.set_source_rgba(1.0, 1.0, 1.0, 0.08);
+            } else {
+                cr.set_source_rgba(0.0, 0.0, 0.0, 0.05);
+            }
+            cr.rectangle(col_x, 0.0, col_w, h);
+            let _ = cr.fill();
+        }
+
+        let _ = cr.save();
+        cr.rectangle(col_x + 8.0, 0.0, (col_w - 16.0).max(10.0), h);
+        let _ = cr.clip();
+
+        cr.set_source_rgb(text_r, text_g, text_b);
+        cr.select_font_face("Sans", gtk::cairo::FontSlant::Normal, gtk::cairo::FontWeight::Bold);
+        cr.set_font_size(11.0);
+        cr.move_to(col_x + 8.0, 18.0);
+        let _ = cr.show_text(label);
+
+        if col == sort_col {
+            let arrow = if sort_desc { " ▼" } else { " ▲" };
+            let _ = cr.show_text(arrow);
+        }
+        let _ = cr.restore();
+
+        col_x += col_w;
+
+        cr.set_source_rgba(div_r, div_g, div_b, 0.12);
+        cr.set_line_width(1.0);
+        cr.move_to(col_x - 0.5, 4.0);
+        cr.line_to(col_x - 0.5, h - 4.0);
+        let _ = cr.stroke();
+    }
+
+    cr.set_source_rgba(div_r, div_g, div_b, 0.15);
+    cr.set_line_width(1.0);
+    cr.move_to(0.0, h - 0.5);
+    cr.line_to(w, h - 0.5);
+    let _ = cr.stroke();
+}
+
+pub(crate) fn draw_contact_table_canvas(
+    cr: &gtk::cairo::Context,
+    layout: &PreparedContactTableLayout,
+    width: f64,
+    height: f64,
+    hovered_row: Option<usize>,
+    is_dark: bool,
+) {
+    let (clip_y1, clip_y2) = match cr.clip_extents() {
+        Ok((_, y1, _, y2)) => (y1, y2),
+        Err(_) => (0.0, height),
+    };
+
+    let start_row = (clip_y1 / layout.row_height).floor().max(0.0) as usize;
+    let end_row = ((clip_y2 / layout.row_height).ceil() as usize).min(layout.rows.len());
+
+    if is_dark {
+        cr.set_source_rgb(0.12, 0.12, 0.12);
+    } else {
+        cr.set_source_rgb(1.0, 1.0, 1.0);
+    }
+    let _ = cr.paint();
+
+    let (r, g, b) = if is_dark { (0.92, 0.92, 0.92) } else { (0.12, 0.12, 0.12) };
+    let (dim_r, dim_g, dim_b) = if is_dark { (0.60, 0.60, 0.60) } else { (0.50, 0.50, 0.50) };
+    let (div_r, div_g, div_b) = if is_dark { (1.0, 1.0, 1.0) } else { (0.0, 0.0, 0.0) };
+
+    for row_idx in start_row..end_row {
+        let Some(row) = layout.rows.get(row_idx) else { break; };
+        let y = row.y;
+        let h = row.height;
+
+        if row.selected {
+            if is_dark {
+                cr.set_source_rgba(0.20, 0.38, 0.65, 0.55);
+            } else {
+                cr.set_source_rgba(0.22, 0.50, 0.88, 0.22);
+            }
+            cr.rectangle(0.0, y, width, h);
+            let _ = cr.fill();
+
+            cr.set_source_rgba(0.21, 0.51, 0.96, 1.0);
+            cr.rectangle(0.0, y, 3.0, h);
+            let _ = cr.fill();
+        } else if Some(row_idx) == hovered_row {
+            if is_dark {
+                cr.set_source_rgba(1.0, 1.0, 1.0, 0.05);
+            } else {
+                cr.set_source_rgba(0.0, 0.0, 0.0, 0.04);
+            }
+            cr.rectangle(0.0, y, width, h);
+            let _ = cr.fill();
+        }
+
+        cr.set_source_rgba(div_r, div_g, div_b, 0.06);
+        cr.set_line_width(1.0);
+        cr.move_to(0.0, y + h - 0.5);
+        cr.line_to(width, y + h - 0.5);
+        let _ = cr.stroke();
+
+        let mut col_x = 0.0;
+
+        // 1. Name Column (with avatar initials circle)
+        let name_w = layout.col_name_w;
+        let _ = cr.save();
+        cr.rectangle(col_x + 4.0, y, (name_w - 8.0).max(10.0), h);
+        let _ = cr.clip();
+
+        let avatar_cx = col_x + 16.0;
+        let avatar_cy = y + h / 2.0;
+        cr.set_source_rgba(0.21, 0.51, 0.96, 0.25);
+        cr.arc(avatar_cx, avatar_cy, 9.0, 0.0, std::f64::consts::TAU);
+        let _ = cr.fill();
+
+        let initials: String = row
+            .name
+            .split_whitespace()
+            .take(2)
+            .filter_map(|w| w.chars().next())
+            .collect();
+        cr.set_source_rgb(0.21, 0.51, 0.96);
+        cr.select_font_face("Sans", gtk::cairo::FontSlant::Normal, gtk::cairo::FontWeight::Bold);
+        cr.set_font_size(9.0);
+        cr.move_to(avatar_cx - 5.0, avatar_cy + 3.5);
+        let _ = cr.show_text(&initials);
+
+        cr.set_source_rgb(r, g, b);
+        cr.select_font_face("Sans", gtk::cairo::FontSlant::Normal, gtk::cairo::FontWeight::Bold);
+        cr.set_font_size(12.0);
+        cr.move_to(col_x + 32.0, y + h / 2.0 + 4.0);
+        let _ = cr.show_text(&row.name);
+        let _ = cr.restore();
+        col_x += name_w;
+
+        cr.set_source_rgba(div_r, div_g, div_b, 0.08);
+        cr.move_to(col_x - 0.5, y + 3.0);
+        cr.line_to(col_x - 0.5, y + h - 3.0);
+        let _ = cr.stroke();
+
+        // 2. Company Column
+        let comp_w = layout.col_company_w;
+        let _ = cr.save();
+        cr.rectangle(col_x + 6.0, y, (comp_w - 12.0).max(10.0), h);
+        let _ = cr.clip();
+        cr.set_source_rgb(dim_r, dim_g, dim_b);
+        cr.select_font_face("Sans", gtk::cairo::FontSlant::Normal, gtk::cairo::FontWeight::Normal);
+        cr.set_font_size(12.0);
+        cr.move_to(col_x + 6.0, y + h / 2.0 + 4.0);
+        let _ = cr.show_text(&row.company);
+        let _ = cr.restore();
+        col_x += comp_w;
+
+        cr.set_source_rgba(div_r, div_g, div_b, 0.08);
+        cr.move_to(col_x - 0.5, y + 3.0);
+        cr.line_to(col_x - 0.5, y + h - 3.0);
+        let _ = cr.stroke();
+
+        // 3. Title Column
+        let title_w = layout.col_title_w;
+        let _ = cr.save();
+        cr.rectangle(col_x + 6.0, y, (title_w - 12.0).max(10.0), h);
+        let _ = cr.clip();
+        cr.set_source_rgb(dim_r, dim_g, dim_b);
+        cr.select_font_face("Sans", gtk::cairo::FontSlant::Normal, gtk::cairo::FontWeight::Normal);
+        cr.set_font_size(12.0);
+        cr.move_to(col_x + 6.0, y + h / 2.0 + 4.0);
+        let _ = cr.show_text(&row.title);
+        let _ = cr.restore();
+        col_x += title_w;
+
+        cr.set_source_rgba(div_r, div_g, div_b, 0.08);
+        cr.move_to(col_x - 0.5, y + 3.0);
+        cr.line_to(col_x - 0.5, y + h - 3.0);
+        let _ = cr.stroke();
+
+        // 4. Email Column
+        let email_w = layout.col_email_w;
+        let _ = cr.save();
+        cr.rectangle(col_x + 6.0, y, (email_w - 12.0).max(10.0), h);
+        let _ = cr.clip();
+        if is_dark {
+            cr.set_source_rgb(0.45, 0.70, 1.0);
+        } else {
+            cr.set_source_rgb(0.15, 0.45, 0.85);
+        }
+        cr.select_font_face("Sans", gtk::cairo::FontSlant::Normal, gtk::cairo::FontWeight::Normal);
+        cr.set_font_size(12.0);
+        cr.move_to(col_x + 6.0, y + h / 2.0 + 4.0);
+        let _ = cr.show_text(&row.email);
+        let _ = cr.restore();
+        col_x += email_w;
+
+        cr.set_source_rgba(div_r, div_g, div_b, 0.08);
+        cr.move_to(col_x - 0.5, y + 3.0);
+        cr.line_to(col_x - 0.5, y + h - 3.0);
+        let _ = cr.stroke();
+
+        // 5. Phone Column
+        let phone_w = layout.col_phone_w;
+        let _ = cr.save();
+        cr.rectangle(col_x + 6.0, y, (phone_w - 12.0).max(10.0), h);
+        let _ = cr.clip();
+        cr.set_source_rgb(dim_r, dim_g, dim_b);
+        cr.select_font_face("Sans", gtk::cairo::FontSlant::Normal, gtk::cairo::FontWeight::Normal);
+        cr.set_font_size(12.0);
+        cr.move_to(col_x + 6.0, y + h / 2.0 + 4.0);
+        let _ = cr.show_text(&row.phone);
+        let _ = cr.restore();
+        col_x += phone_w;
+
+        cr.set_source_rgba(div_r, div_g, div_b, 0.08);
+        cr.move_to(col_x - 0.5, y + 3.0);
+        cr.line_to(col_x - 0.5, y + h - 3.0);
+        let _ = cr.stroke();
+
+        // 6. Categories Column
+        let cat_w = layout.col_categories_w;
+        let _ = cr.save();
+        cr.rectangle(col_x + 6.0, y, (cat_w - 12.0).max(10.0), h);
+        let _ = cr.clip();
+        let cat_str = row.categories.join(", ");
+        cr.set_source_rgb(dim_r, dim_g, dim_b);
+        cr.select_font_face("Sans", gtk::cairo::FontSlant::Normal, gtk::cairo::FontWeight::Normal);
+        cr.set_font_size(11.0);
+        cr.move_to(col_x + 6.0, y + h / 2.0 + 4.0);
+        let _ = cr.show_text(&cat_str);
+        let _ = cr.restore();
+    }
+}
+
 // ─── GObject Subclass ───────────────────────────────────────────────────────
 
 mod imp {
@@ -116,6 +548,16 @@ mod imp {
         pub new_list_button: RefCell<Option<gtk::Button>>,
         pub drawer_total: RefCell<Option<gtk::Label>>,
         pub contact_list: RefCell<Option<gtk::ListBox>>,
+        pub contact_table_header: RefCell<Option<gtk::DrawingArea>>,
+        pub contact_table_canvas: RefCell<Option<gtk::DrawingArea>>,
+        pub contact_table_layout: RefCell<Option<PreparedContactTableLayout>>,
+        pub contact_table_hovered_row: Cell<Option<usize>>,
+        pub contact_table_hovered_header: Cell<Option<ContactTableColumn>>,
+        pub contact_table_anchor_row: Cell<Option<usize>>,
+        pub contact_sort_col: Cell<ContactTableColumn>,
+        pub contact_sort_desc: Cell<bool>,
+        pub stored_contacts: RefCell<Option<Rc<RefCell<Vec<EBookContactRecord>>>>>,
+        pub search_state: RefCell<Option<Rc<ContactPageSearchState>>>,
         pub contact_cards_flow: RefCell<Option<gtk::FlowBox>>,
         pub cards_scroll: RefCell<Option<gtk::ScrolledWindow>>,
         pub view_stack: RefCell<Option<gtk::Stack>>,
@@ -129,6 +571,7 @@ mod imp {
         pub collapsed_addressbook_groups: RefCell<HashSet<String>>,
         pub is_syncing_selection: Cell<bool>,
         pub toolbar: RefCell<Option<gtk::Widget>>,
+        pub macos_banner: RefCell<Option<adw::Banner>>,
         pub reload_address_books_fn: RefCell<Option<ReloadAddressBooksCallback>>,
     }
 
@@ -180,9 +623,79 @@ glib::wrapper! {
         @implements gtk::Accessible, gtk::Buildable, gtk::ConstraintTarget;
 }
 
+pub(crate) fn current_contact_selected_identities(
+    contact_list: &gtk::ListBox,
+) -> HashSet<ContactIdentity> {
+    contact_list
+        .selected_rows()
+        .iter()
+        .filter_map(row_contact_identity)
+        .collect()
+}
+
 impl ContactsPage {
     pub fn new() -> Self {
         glib::Object::builder().build()
+    }
+
+    pub(crate) fn queue_contacts_table_draw(&self) {
+        if let Some(canvas) = self.imp().contact_table_canvas.borrow().as_ref() {
+            canvas.queue_draw();
+        }
+        if let Some(header) = self.imp().contact_table_header.borrow().as_ref() {
+            header.queue_draw();
+        }
+    }
+
+    pub(crate) fn update_contacts_table_layout(
+        &self,
+        stored_contacts: &[EBookContactRecord],
+        visible_filter: Option<&HashSet<ContactIdentity>>,
+        selected_identities: &HashSet<ContactIdentity>,
+    ) {
+        let sort_col = self.imp().contact_sort_col.get();
+        let sort_desc = self.imp().contact_sort_desc.get();
+        let w = self
+            .imp()
+            .contact_table_canvas
+            .borrow()
+            .as_ref()
+            .map(|c| c.width() as f64)
+            .unwrap_or(800.0)
+            .max(800.0);
+        let layout = prepare_contact_table_layout(
+            stored_contacts,
+            visible_filter,
+            selected_identities,
+            sort_col,
+            sort_desc,
+            w,
+        );
+        if let Some(canvas) = self.imp().contact_table_canvas.borrow().as_ref() {
+            canvas.set_content_height(layout.height as i32);
+            canvas.set_content_width(layout.width as i32);
+        }
+        if let Some(header) = self.imp().contact_table_header.borrow().as_ref() {
+            header.set_content_width(layout.width as i32);
+        }
+        self.imp().contact_table_layout.replace(Some(layout));
+        self.queue_contacts_table_draw();
+    }
+
+    pub(crate) fn refresh_table_canvas(&self) {
+        let stored_opt = self.imp().stored_contacts.borrow().clone();
+        let list_opt = self.imp().contact_list.borrow().clone();
+        let search_opt = self.imp().search_state.borrow().clone();
+        if let (Some(stored), Some(list), Some(search)) = (stored_opt, list_opt, search_opt) {
+            let vis = search.visible_identities.borrow();
+            let visible_filter = if vis.is_empty() && search.active_query().clauses.is_empty() {
+                None
+            } else {
+                Some(&*vis)
+            };
+            let selected = current_contact_selected_identities(&list);
+            self.update_contacts_table_layout(&stored.borrow(), visible_filter, &selected);
+        }
     }
 
     pub fn reload_contacts(&self) {
@@ -221,6 +734,30 @@ impl ContactsPage {
     pub fn reload_address_books(&self) {
         if let Some(reload_fn) = self.imp().reload_address_books_fn.borrow().as_ref() {
             (reload_fn.0)();
+        }
+    }
+
+    #[cfg(all(target_os = "macos", macos_bridge))]
+    pub fn update_macos_permission_banner(&self) {
+        let Some(banner) = self.imp().macos_banner.borrow().as_ref().cloned() else {
+            return;
+        };
+        let srv = crate::services::MacosIntegrationService::new();
+        let status = srv.check_permission(crate::services::MacosPermissionKind::Contacts);
+        match status {
+            crate::services::MacosPermissionStatus::NotDetermined => {
+                banner.set_title("Apple Kontakte verbinden: Möchten Sie Ihre macOS Kontakte in Evolution anzeigen?");
+                banner.set_button_label(Some("Apple Kontakte verbinden"));
+                banner.set_revealed(true);
+            }
+            crate::services::MacosPermissionStatus::Denied => {
+                banner.set_title("Zugriff auf Apple Kontakte nicht erlaubt. In den macOS Systemeinstellungen aktivieren.");
+                banner.set_button_label(Some("Systemeinstellungen öffnen"));
+                banner.set_revealed(true);
+            }
+            _ => {
+                banner.set_revealed(false);
+            }
         }
     }
 
@@ -1198,15 +1735,342 @@ impl ContactsPage {
             }
         ));
 
+        self.imp().stored_contacts.replace(Some(Rc::clone(&stored_contacts)));
+        self.imp().search_state.replace(Some(Rc::clone(&search_state)));
+
+        let contact_table_header = gtk::DrawingArea::builder()
+            .content_height(28)
+            .hexpand(true)
+            .css_classes(vec!["contacts-table-header"])
+            .build();
+        set_accessible_label(&contact_table_header, "Kontakttabellen-Kopfzeile");
+
+        let contact_table_canvas = gtk::DrawingArea::builder()
+            .content_height(100)
+            .hexpand(true)
+            .focusable(true)
+            .can_focus(true)
+            .focus_on_click(true)
+            .css_classes(vec!["contacts-table-canvas"])
+            .build();
+        set_accessible_label(&contact_table_canvas, "Kontaktliste Canvas");
+
+        self.imp().contact_table_header.replace(Some(contact_table_header.clone()));
+        self.imp().contact_table_canvas.replace(Some(contact_table_canvas.clone()));
+
+        contact_list.set_visible(false);
+
+        let contact_list_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .vexpand(true)
+            .hexpand(true)
+            .build();
+        contact_list_box.append(&contact_table_canvas);
+        contact_list_box.append(&contact_list);
+
         let list_scroll = gtk::ScrolledWindow::builder()
-            .hscrollbar_policy(gtk::PolicyType::Never)
+            .hscrollbar_policy(gtk::PolicyType::Automatic)
             .vscrollbar_policy(gtk::PolicyType::Automatic)
-            .child(&contact_list)
+            .child(&contact_list_box)
             .vexpand(true)
             .hexpand(true)
             .margin_end(32)
             .build();
         self.imp().list_scroll.replace(Some(list_scroll.clone()));
+
+        let header_for_hadj = contact_table_header.clone();
+        list_scroll.hadjustment().connect_value_changed(move |_| {
+            header_for_hadj.queue_draw();
+        });
+
+        // Header Draw Func
+        {
+            let page_weak = self.downgrade();
+            let list_scroll_clone = list_scroll.clone();
+            contact_table_header.set_draw_func(move |_, cr, _width, _height| {
+                let Some(page) = page_weak.upgrade() else { return; };
+                let layout_ref = page.imp().contact_table_layout.borrow();
+                let Some(layout) = layout_ref.as_ref() else { return; };
+                let sort_col = page.imp().contact_sort_col.get();
+                let sort_desc = page.imp().contact_sort_desc.get();
+                let hovered_col = page.imp().contact_table_hovered_header.get();
+                let is_dark = adw::StyleManager::default().is_dark();
+                let scroll_x = list_scroll_clone.hadjustment().value();
+                let _ = cr.save();
+                cr.translate(-scroll_x, 0.0);
+                draw_contact_table_header(cr, layout, sort_col, sort_desc, hovered_col, is_dark);
+                let _ = cr.restore();
+            });
+        }
+
+        // Header Click Gesture
+        {
+            let header_click = gtk::GestureClick::new();
+            let page_weak = self.downgrade();
+            let list_scroll_clone = list_scroll.clone();
+            header_click.connect_pressed(move |gesture, _n_press, x, _y| {
+                gesture.set_state(gtk::EventSequenceState::Claimed);
+                let Some(page) = page_weak.upgrade() else { return; };
+                let scroll_x = list_scroll_clone.hadjustment().value();
+                let layout_ref = page.imp().contact_table_layout.borrow();
+                let Some(layout) = layout_ref.as_ref() else { return; };
+                if let Some(col) = hit_test_contact_table_header(layout, x + scroll_x) {
+                    let cur_col = page.imp().contact_sort_col.get();
+                    let cur_desc = page.imp().contact_sort_desc.get();
+                    let new_desc = if cur_col == col { !cur_desc } else { false };
+                    page.imp().contact_sort_col.set(col);
+                    page.imp().contact_sort_desc.set(new_desc);
+                    drop(layout_ref);
+                    page.refresh_table_canvas();
+                }
+            });
+            contact_table_header.add_controller(header_click);
+        }
+
+        // Header Motion Controller
+        {
+            let header_motion = gtk::EventControllerMotion::new();
+            let page_weak = self.downgrade();
+            let list_scroll_clone = list_scroll.clone();
+            let header_clone = contact_table_header.clone();
+            header_motion.connect_motion(move |_, x, _y| {
+                let Some(page) = page_weak.upgrade() else { return; };
+                let scroll_x = list_scroll_clone.hadjustment().value();
+                let layout_ref = page.imp().contact_table_layout.borrow();
+                let col = layout_ref.as_ref().and_then(|l| hit_test_contact_table_header(l, x + scroll_x));
+                if page.imp().contact_table_hovered_header.get() != col {
+                    page.imp().contact_table_hovered_header.set(col);
+                    header_clone.queue_draw();
+                }
+            });
+            let page_weak_leave = self.downgrade();
+            let header_clone_leave = contact_table_header.clone();
+            header_motion.connect_leave(move |_| {
+                let Some(page) = page_weak_leave.upgrade() else { return; };
+                if page.imp().contact_table_hovered_header.get().is_some() {
+                    page.imp().contact_table_hovered_header.set(None);
+                    header_clone_leave.queue_draw();
+                }
+            });
+            contact_table_header.add_controller(header_motion);
+        }
+
+        // Canvas Draw Func
+        {
+            let page_weak = self.downgrade();
+            contact_table_canvas.set_draw_func(move |_, cr, width, height| {
+                let Some(page) = page_weak.upgrade() else { return; };
+                let layout_ref = page.imp().contact_table_layout.borrow();
+                let Some(layout) = layout_ref.as_ref() else { return; };
+                let hovered = page.imp().contact_table_hovered_row.get();
+                let is_dark = adw::StyleManager::default().is_dark();
+                draw_contact_table_canvas(cr, layout, width as f64, height as f64, hovered, is_dark);
+            });
+            let canvas_for_theme = contact_table_canvas.clone();
+            let header_for_theme = contact_table_header.clone();
+            adw::StyleManager::default().connect_dark_notify(move |_| {
+                canvas_for_theme.queue_draw();
+                header_for_theme.queue_draw();
+            });
+        }
+
+        // Canvas Click Gesture
+        {
+            let canvas_click = gtk::GestureClick::new();
+            let page_weak = self.downgrade();
+            let contact_list_clone = contact_list.clone();
+            let canvas_clone = contact_table_canvas.clone();
+            canvas_click.connect_pressed(move |gesture, n_press, _x, y| {
+                gesture.set_state(gtk::EventSequenceState::Claimed);
+                let Some(page) = page_weak.upgrade() else { return; };
+                let layout_ref = page.imp().contact_table_layout.borrow();
+                let Some(layout) = layout_ref.as_ref() else { return; };
+                let Some(row_idx) = hit_test_contact_table(layout, y) else { return; };
+                let Some(row) = layout.rows.get(row_idx) else { return; };
+
+                canvas_clone.grab_focus();
+
+                if n_press >= 2 {
+                    select_contact_row(&contact_list_clone, &row.identity.source_uid, &row.identity.uid);
+                    if let Some(selected_row) = contact_list_clone.selected_row() {
+                        selected_row.activate();
+                    }
+                    return;
+                }
+
+                let state = gesture.current_event_state();
+                let shift = state.contains(gdk::ModifierType::SHIFT_MASK);
+                let ctrl = state.contains(gdk::ModifierType::CONTROL_MASK)
+                    || state.contains(gdk::ModifierType::META_MASK);
+
+                if shift {
+                    let anchor = page.imp().contact_table_anchor_row.get().unwrap_or(row_idx);
+                    let start = anchor.min(row_idx);
+                    let end = anchor.max(row_idx);
+                    contact_list_clone.unselect_all();
+                    for i in start..=end {
+                        if let Some(r) = layout.rows.get(i) {
+                            select_contact_row_ext(&contact_list_clone, &r.identity.source_uid, &r.identity.uid, false, false);
+                        }
+                    }
+                } else if ctrl {
+                    select_contact_row_ext(&contact_list_clone, &row.identity.source_uid, &row.identity.uid, false, true);
+                    page.imp().contact_table_anchor_row.set(Some(row_idx));
+                } else {
+                    select_contact_row_ext(&contact_list_clone, &row.identity.source_uid, &row.identity.uid, true, false);
+                    page.imp().contact_table_anchor_row.set(Some(row_idx));
+                }
+            });
+            contact_table_canvas.add_controller(canvas_click);
+        }
+
+        // Canvas Motion Controller
+        {
+            let canvas_motion = gtk::EventControllerMotion::new();
+            let page_weak = self.downgrade();
+            let canvas_clone = contact_table_canvas.clone();
+            canvas_motion.connect_motion(move |_, _x, y| {
+                let Some(page) = page_weak.upgrade() else { return; };
+                let layout_ref = page.imp().contact_table_layout.borrow();
+                let row_idx = layout_ref.as_ref().and_then(|l| hit_test_contact_table(l, y));
+                if page.imp().contact_table_hovered_row.get() != row_idx {
+                    page.imp().contact_table_hovered_row.set(row_idx);
+                    canvas_clone.queue_draw();
+                }
+            });
+            let page_weak_leave = self.downgrade();
+            let canvas_clone_leave = contact_table_canvas.clone();
+            canvas_motion.connect_leave(move |_| {
+                let Some(page) = page_weak_leave.upgrade() else { return; };
+                if page.imp().contact_table_hovered_row.get().is_some() {
+                    page.imp().contact_table_hovered_row.set(None);
+                    canvas_clone_leave.queue_draw();
+                }
+            });
+            contact_table_canvas.add_controller(canvas_motion);
+        }
+
+        // Canvas Key Controller
+        {
+            let key_controller = gtk::EventControllerKey::new();
+            let page_weak = self.downgrade();
+            let contact_list_clone = contact_list.clone();
+            let list_scroll_clone = list_scroll.clone();
+            key_controller.connect_key_pressed(move |_, keyval, _keycode, state| {
+                let Some(page) = page_weak.upgrade() else { return glib::Propagation::Proceed; };
+                let layout_ref = page.imp().contact_table_layout.borrow();
+                let Some(layout) = layout_ref.as_ref() else { return glib::Propagation::Proceed; };
+                if layout.rows.is_empty() {
+                    return glib::Propagation::Proceed;
+                }
+
+                let shift = state.contains(gdk::ModifierType::SHIFT_MASK);
+                let current_anchor = page.imp().contact_table_anchor_row.get().unwrap_or(0).min(layout.rows.len() - 1);
+
+                let scroll_to_row = |idx: usize| {
+                    if let Some(row) = layout.rows.get(idx) {
+                        let vadj = list_scroll_clone.vadjustment();
+                        if row.y < vadj.value() {
+                            vadj.set_value(row.y);
+                        } else if row.y + row.height > vadj.value() + vadj.page_size() {
+                            vadj.set_value(row.y + row.height - vadj.page_size());
+                        }
+                    }
+                };
+
+                match keyval {
+                    gdk::Key::Up => {
+                        let next_idx = current_anchor.saturating_sub(1);
+                        if shift {
+                            let anchor = page.imp().contact_table_anchor_row.get().unwrap_or(0);
+                            let start = anchor.min(next_idx);
+                            let end = anchor.max(next_idx);
+                            contact_list_clone.unselect_all();
+                            for i in start..=end {
+                                if let Some(r) = layout.rows.get(i) {
+                                    select_contact_row_ext(&contact_list_clone, &r.identity.source_uid, &r.identity.uid, false, false);
+                                }
+                            }
+                        } else if let Some(row) = layout.rows.get(next_idx) {
+                            page.imp().contact_table_anchor_row.set(Some(next_idx));
+                            select_contact_row_ext(&contact_list_clone, &row.identity.source_uid, &row.identity.uid, true, false);
+                        }
+                        scroll_to_row(next_idx);
+                        glib::Propagation::Stop
+                    }
+                    gdk::Key::Down => {
+                        let next_idx = (current_anchor + 1).min(layout.rows.len() - 1);
+                        if shift {
+                            let anchor = page.imp().contact_table_anchor_row.get().unwrap_or(0);
+                            let start = anchor.min(next_idx);
+                            let end = anchor.max(next_idx);
+                            contact_list_clone.unselect_all();
+                            for i in start..=end {
+                                if let Some(r) = layout.rows.get(i) {
+                                    select_contact_row_ext(&contact_list_clone, &r.identity.source_uid, &r.identity.uid, false, false);
+                                }
+                            }
+                        } else if let Some(row) = layout.rows.get(next_idx) {
+                            page.imp().contact_table_anchor_row.set(Some(next_idx));
+                            select_contact_row_ext(&contact_list_clone, &row.identity.source_uid, &row.identity.uid, true, false);
+                        }
+                        scroll_to_row(next_idx);
+                        glib::Propagation::Stop
+                    }
+                    gdk::Key::Page_Up => {
+                        let next_idx = current_anchor.saturating_sub(10);
+                        page.imp().contact_table_anchor_row.set(Some(next_idx));
+                        if let Some(row) = layout.rows.get(next_idx) {
+                            select_contact_row_ext(&contact_list_clone, &row.identity.source_uid, &row.identity.uid, true, false);
+                        }
+                        scroll_to_row(next_idx);
+                        glib::Propagation::Stop
+                    }
+                    gdk::Key::Page_Down => {
+                        let next_idx = (current_anchor + 10).min(layout.rows.len() - 1);
+                        page.imp().contact_table_anchor_row.set(Some(next_idx));
+                        if let Some(row) = layout.rows.get(next_idx) {
+                            select_contact_row_ext(&contact_list_clone, &row.identity.source_uid, &row.identity.uid, true, false);
+                        }
+                        scroll_to_row(next_idx);
+                        glib::Propagation::Stop
+                    }
+                    gdk::Key::Home => {
+                        page.imp().contact_table_anchor_row.set(Some(0));
+                        if let Some(row) = layout.rows.first() {
+                            select_contact_row_ext(&contact_list_clone, &row.identity.source_uid, &row.identity.uid, true, false);
+                        }
+                        scroll_to_row(0);
+                        glib::Propagation::Stop
+                    }
+                    gdk::Key::End => {
+                        let last_idx = layout.rows.len().saturating_sub(1);
+                        page.imp().contact_table_anchor_row.set(Some(last_idx));
+                        if let Some(row) = layout.rows.get(last_idx) {
+                            select_contact_row_ext(&contact_list_clone, &row.identity.source_uid, &row.identity.uid, true, false);
+                        }
+                        scroll_to_row(last_idx);
+                        glib::Propagation::Stop
+                    }
+                    gdk::Key::Return | gdk::Key::KP_Enter => {
+                        if let Some(selected_row) = contact_list_clone.selected_row() {
+                            selected_row.activate();
+                        }
+                        glib::Propagation::Stop
+                    }
+                    _ => glib::Propagation::Proceed,
+                }
+            });
+            contact_table_canvas.add_controller(key_controller);
+        }
+
+        let contact_table_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .vexpand(true)
+            .hexpand(true)
+            .build();
+        contact_table_box.append(&contact_table_header);
+        contact_table_box.append(&list_scroll);
 
         let contact_cards_flow = gtk::FlowBox::builder()
             .orientation(gtk::Orientation::Horizontal)
@@ -1295,7 +2159,7 @@ impl ContactsPage {
             .hexpand(true)
             .build();
         view_stack.add_named(&cards_scroll, Some("cards"));
-        view_stack.add_named(&list_scroll, Some("list"));
+        view_stack.add_named(&contact_table_box, Some("list"));
         view_stack.set_visible_child_name("cards");
         self.imp().view_stack.replace(Some(view_stack.clone()));
 
@@ -3301,6 +4165,8 @@ impl ContactsPage {
             });
         }
 
+        list_container.set_size_request(280, -1);
+        detail_box.set_size_request(340, -1);
         detail_box.set_vexpand(true);
         detail_box.set_hexpand(true);
 
@@ -3312,25 +4178,35 @@ impl ContactsPage {
             .build();
         preview_paned.set_start_child(Some(&list_container));
         preview_paned.set_end_child(Some(&detail_box));
-        preview_paned.set_resize_start_child(true);
+        preview_paned.set_resize_start_child(false);
         preview_paned.set_resize_end_child(true);
-        preview_paned.set_shrink_end_child(true);
+        preview_paned.set_shrink_start_child(false);
+        preview_paned.set_shrink_end_child(false);
 
-        let hpane_pos = AppSettings::try_new()
-            .map(|s| s.contact_hpane_position())
-            .unwrap_or(650);
-        let hpane_pos = if hpane_pos < 500 { 650 } else { hpane_pos }.clamp(180, 1500);
-        preview_paned.set_position(hpane_pos);
-        preview_paned.connect_position_notify(move |paned| {
-            let pos = paned.position();
-            if (180..=1500).contains(&pos) {
-                if let Some(s) = AppSettings::try_new() {
-                    if s.contact_hpane_position() != pos {
-                        s.set_contact_hpane_position(pos);
+        let vpane_pos = AppSettings::try_new()
+            .map(|s| s.contact_vpane_position())
+            .unwrap_or(380)
+            .clamp(260, 900);
+        preview_paned.set_position(vpane_pos);
+        if let Some(settings) = AppSettings::try_new() {
+            let settings_for_notify = settings.clone();
+            preview_paned.connect_position_notify(move |paned| {
+                let pos = paned.position();
+                if (260..=900).contains(&pos) && settings_for_notify.contact_vpane_position() != pos {
+                    settings_for_notify.set_contact_vpane_position(pos);
+                }
+            });
+
+            let preview_weak = preview_paned.downgrade();
+            settings.connect_changed(Some("contact-vpane-position"), move |settings, _| {
+                if let Some(paned) = preview_weak.upgrade() {
+                    let pos = settings.int("contact-vpane-position").clamp(260, 900);
+                    if (paned.position() - pos).abs() > 1 {
+                        paned.set_position(pos);
                     }
                 }
-            }
-        });
+            });
+        }
         self.imp()
             .contact_preview_paned
             .replace(Some(preview_paned.clone()));
@@ -3344,8 +4220,10 @@ impl ContactsPage {
         content_box.append(&preview_paned);
 
         paned.set_end_child(Some(&content_box));
+        paned.set_resize_start_child(false);
         paned.set_resize_end_child(true);
-        paned.set_shrink_end_child(true);
+        paned.set_shrink_start_child(false);
+        paned.set_shrink_end_child(false);
 
         let sidebar_position = AppSettings::try_new()
             .map(|settings| settings.contact_hpane_position())
@@ -3433,14 +4311,124 @@ impl ContactsPage {
             });
         }
 
+        #[cfg(all(target_os = "macos", macos_bridge))]
+        let macos_banner = {
+            let banner = adw::Banner::builder()
+                .title("Apple Kontakte verbinden: Möchten Sie Ihre macOS Kontakte in Evolution anzeigen?")
+                .button_label("Apple Kontakte verbinden")
+                .revealed(false)
+                .build();
+            let page_weak = self.downgrade();
+            let banner_clone = banner.clone();
+            banner.connect_button_clicked(move |_| {
+                let Some(page) = page_weak.upgrade() else { return; };
+                let srv = crate::services::MacosIntegrationService::new();
+                let status = srv.check_permission(crate::services::MacosPermissionKind::Contacts);
+                match status {
+                    crate::services::MacosPermissionStatus::NotDetermined => {
+                        let page_weak_cb = page.downgrade();
+                        srv.request_permission(crate::services::MacosPermissionKind::Contacts, move |granted| {
+                            if let Some(page) = page_weak_cb.upgrade() {
+                                if granted {
+                                    let (sender, receiver) = async_channel::bounded(1);
+                                    std::thread::spawn(move || {
+                                        let contact_store = crate::services::ContactStoreService::new();
+                                        let macos = crate::services::MacosIntegrationService::new();
+                                        let _ = macos.sync_apple_contacts_to_store(&contact_store);
+                                        let _ = sender.send_blocking(());
+                                    });
+                                    let page_weak_sync = page.downgrade();
+                                    glib::spawn_future_local(async move {
+                                        if receiver.recv().await.is_ok() {
+                                            if let Some(page) = page_weak_sync.upgrade() {
+                                                page.reload_contacts();
+                                                page.reload_address_books();
+                                                page.show_toast("Apple Kontakte erfolgreich verbunden!");
+                                                page.update_macos_permission_banner();
+                                            }
+                                        }
+                                    });
+                                } else {
+                                    page.update_macos_permission_banner();
+                                }
+                            }
+                        });
+                    }
+                    crate::services::MacosPermissionStatus::Denied => {
+                        srv.open_privacy_settings(crate::services::MacosPermissionKind::Contacts);
+                    }
+                    _ => {
+                        banner_clone.set_revealed(false);
+                    }
+                }
+            });
+            self.imp().macos_banner.replace(Some(banner.clone()));
+            banner
+        };
+
         let root_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .vexpand(true)
             .hexpand(true)
             .build();
+        #[cfg(all(target_os = "macos", macos_bridge))]
+        root_box.append(&macos_banner);
         root_box.append(&contacts_toolbar_scroll);
         root_box.append(&paned);
         root_box.set_parent(self);
+
+        #[cfg(all(target_os = "macos", macos_bridge))]
+        {
+            self.update_macos_permission_banner();
+            let srv = crate::services::MacosIntegrationService::new();
+            let perm = srv.check_permission(crate::services::MacosPermissionKind::Contacts);
+            if perm == crate::services::MacosPermissionStatus::NotDetermined {
+                let page_weak = self.downgrade();
+                srv.request_permission(crate::services::MacosPermissionKind::Contacts, move |granted| {
+                    if let Some(page) = page_weak.upgrade() {
+                        if granted {
+                            let (sender, receiver) = async_channel::bounded(1);
+                            std::thread::spawn(move || {
+                                let contact_store = crate::services::ContactStoreService::new();
+                                let macos = crate::services::MacosIntegrationService::new();
+                                let _ = macos.sync_apple_contacts_to_store(&contact_store);
+                                let _ = sender.send_blocking(());
+                            });
+                            let page_weak_sync = page.downgrade();
+                            glib::spawn_future_local(async move {
+                                if receiver.recv().await.is_ok() {
+                                    if let Some(page) = page_weak_sync.upgrade() {
+                                        page.reload_contacts();
+                                        page.reload_address_books();
+                                        page.show_toast("Apple Kontakte erfolgreich verbunden!");
+                                        page.update_macos_permission_banner();
+                                    }
+                                }
+                            });
+                        } else {
+                            page.update_macos_permission_banner();
+                        }
+                    }
+                });
+            } else if perm == crate::services::MacosPermissionStatus::Authorized {
+                let (sender, receiver) = async_channel::bounded(1);
+                std::thread::spawn(move || {
+                    let contact_store = crate::services::ContactStoreService::new();
+                    let macos = crate::services::MacosIntegrationService::new();
+                    let _ = macos.sync_apple_contacts_to_store(&contact_store);
+                    let _ = sender.send_blocking(());
+                });
+                let page_weak_sync = self.downgrade();
+                glib::spawn_future_local(async move {
+                    if receiver.recv().await.is_ok() {
+                        if let Some(page) = page_weak_sync.upgrade() {
+                            page.reload_contacts();
+                            page.reload_address_books();
+                        }
+                    }
+                });
+            }
+        }
     }
 
     fn show_toast(&self, message: &str) {
@@ -3700,6 +4688,16 @@ fn contact_status_needs_visibility(contact_count: usize, warning: Option<&str>) 
 }
 
 fn select_contact_row(contact_list: &gtk::ListBox, source_uid: &str, uid: &str) -> bool {
+    select_contact_row_ext(contact_list, source_uid, uid, true, false)
+}
+
+fn select_contact_row_ext(
+    contact_list: &gtk::ListBox,
+    source_uid: &str,
+    uid: &str,
+    unselect_others: bool,
+    toggle: bool,
+) -> bool {
     let mut child = contact_list.first_child();
     while let Some(widget) = child {
         child = widget.next_sibling();
@@ -3714,8 +4712,16 @@ fn select_contact_row(contact_list: &gtk::ListBox, source_uid: &str, uid: &str) 
                     .is_some_and(|value| value.as_ref() == uid)
         };
         if matches {
-            if !row.is_selected() {
+            if unselect_others {
                 contact_list.unselect_all();
+                contact_list.select_row(Some(&row));
+            } else if toggle {
+                if row.is_selected() {
+                    contact_list.unselect_row(&row);
+                } else {
+                    contact_list.select_row(Some(&row));
+                }
+            } else {
                 contact_list.select_row(Some(&row));
             }
             return true;
@@ -5112,6 +6118,13 @@ fn sync_contact_selection(
             });
         }
     }
+    let selected_ids = current_contact_selected_identities(contact_list);
+    if let Some(layout) = page.imp().contact_table_layout.borrow_mut().as_mut() {
+        for row in layout.rows.iter_mut() {
+            row.selected = selected_ids.contains(&row.identity);
+        }
+    }
+    page.queue_contacts_table_draw();
     apply_contact_selection_action_state(
         state,
         email_button,
@@ -5132,6 +6145,12 @@ fn clear_contact_selection(page: &ContactsPage, contact_list: &gtk::ListBox) {
         flow.unselect_all();
     }
     page.imp().selected_identity.replace(None);
+    if let Some(layout) = page.imp().contact_table_layout.borrow_mut().as_mut() {
+        for row in layout.rows.iter_mut() {
+            row.selected = false;
+        }
+    }
+    page.queue_contacts_table_draw();
 }
 
 fn should_restore_contact_selection(
@@ -5249,6 +6268,18 @@ fn update_alphabet_pane(
                     }
                 }
             } else {
+                if let Some(scroll) = page.imp().list_scroll.borrow().as_ref() {
+                    if let Some(layout) = page.imp().contact_table_layout.borrow().as_ref() {
+                        let letter_upper: String = letter.to_uppercase().collect();
+                        if let Some(r) = layout.rows.iter().find(|r| {
+                            r.name.to_uppercase().starts_with(&letter_upper)
+                                || r.company.to_uppercase().starts_with(&letter_upper)
+                        }) {
+                            let vadj = scroll.vadjustment();
+                            vadj.set_value(r.y.clamp(vadj.lower(), (vadj.upper() - vadj.page_size()).max(vadj.lower())));
+                        }
+                    }
+                }
                 if target_row_clone.is_mapped() {
                     target_row_clone.grab_focus();
                     if let Some(scroll) = page.imp().list_scroll.borrow().as_ref() {
@@ -5288,6 +6319,7 @@ fn apply_contact_search_selection(
         flow.invalidate_filter();
     }
     update_alphabet_pane(page, contact_list, search_state);
+    page.refresh_table_canvas();
 
     let Some(current_identity) = selection_before_apply else {
         return;
@@ -6502,6 +7534,10 @@ mod tests {
     use gtk::prelude::FlowBoxChildExt;
     use std::cell::RefCell;
     use std::rc::Rc;
+    use super::{
+        hit_test_contact_table, hit_test_contact_table_header, prepare_contact_table_layout,
+        ContactTableColumn,
+    };
 
     fn record(source_uid: &str, uid: &str, contact: VCardContact) -> EBookContactRecord {
         EBookContactRecord {
@@ -7662,5 +8698,102 @@ mod tests {
             "reload_address_books_fn should be populated"
         );
         page.reload_address_books();
+    }
+
+    #[test]
+    fn test_contact_table_canvas_layout_and_hit_testing() {
+        let mut c1 = VCardContact::new("Ada Lovelace", "ada@example.test", "12345", "Countess");
+        c1.org = "Babbage Engines".to_string();
+        c1.categories = vec!["Science".to_string(), "Computing".to_string()];
+        let r1 = record("book-1", "id-ada", c1);
+
+        let mut c2 = VCardContact::new("Grace Hopper", "grace@navy.mil", "67890", "Admiral");
+        c2.org = "US Navy".to_string();
+        c2.categories = vec!["Military".to_string()];
+        let r2 = record("book-1", "id-grace", c2);
+
+        let mut c3 = VCardContact::new("Alan Turing", "alan@bletchley.uk", "11111", "Mathematician");
+        c3.org = "Bletchley Park".to_string();
+        c3.categories = vec!["Cryptanalysis".to_string()];
+        let r3 = record("book-2", "id-alan", c3);
+
+        let contacts = vec![r1, r2, r3];
+
+        // 1. Sort by Name Ascending
+        let mut selected = std::collections::HashSet::new();
+        selected.insert(ContactIdentity::new("book-1", "id-grace"));
+        let layout_name_asc = prepare_contact_table_layout(
+            &contacts,
+            None,
+            &selected,
+            ContactTableColumn::Name,
+            false,
+            1000.0,
+        );
+        assert_eq!(layout_name_asc.rows.len(), 3);
+        assert_eq!(layout_name_asc.rows[0].name, "Ada Lovelace");
+        assert_eq!(layout_name_asc.rows[1].name, "Alan Turing");
+        assert_eq!(layout_name_asc.rows[2].name, "Grace Hopper");
+        assert!(!layout_name_asc.rows[0].selected);
+        assert!(!layout_name_asc.rows[1].selected);
+        assert!(layout_name_asc.rows[2].selected);
+
+        // 2. Sort by Name Descending
+        let layout_name_desc = prepare_contact_table_layout(
+            &contacts,
+            None,
+            &selected,
+            ContactTableColumn::Name,
+            true,
+            1000.0,
+        );
+        assert_eq!(layout_name_desc.rows[0].name, "Grace Hopper");
+        assert_eq!(layout_name_desc.rows[1].name, "Alan Turing");
+        assert_eq!(layout_name_desc.rows[2].name, "Ada Lovelace");
+
+        // 3. Sort by Company Ascending
+        let layout_org_asc = prepare_contact_table_layout(
+            &contacts,
+            None,
+            &selected,
+            ContactTableColumn::Company,
+            false,
+            1000.0,
+        );
+        assert_eq!(layout_org_asc.rows[0].company, "Babbage Engines");
+        assert_eq!(layout_org_asc.rows[1].company, "Bletchley Park");
+        assert_eq!(layout_org_asc.rows[2].company, "US Navy");
+
+        // 4. Visible Filter
+        let mut visible = std::collections::HashSet::new();
+        visible.insert(ContactIdentity::new("book-1", "id-ada"));
+        visible.insert(ContactIdentity::new("book-2", "id-alan"));
+        let layout_filtered = prepare_contact_table_layout(
+            &contacts,
+            Some(&visible),
+            &selected,
+            ContactTableColumn::Name,
+            false,
+            1000.0,
+        );
+        assert_eq!(layout_filtered.rows.len(), 2);
+        assert_eq!(layout_filtered.rows[0].name, "Ada Lovelace");
+        assert_eq!(layout_filtered.rows[1].name, "Alan Turing");
+
+        // 5. Hit testing header
+        let col_at_10 = hit_test_contact_table_header(&layout_name_asc, 10.0);
+        assert_eq!(col_at_10, Some(ContactTableColumn::Name));
+
+        let comp_x = layout_name_asc.col_name_w + 10.0;
+        assert_eq!(
+            hit_test_contact_table_header(&layout_name_asc, comp_x),
+            Some(ContactTableColumn::Company)
+        );
+
+        // 6. Hit testing table rows
+        assert_eq!(hit_test_contact_table(&layout_name_asc, 5.0), Some(0));
+        assert_eq!(hit_test_contact_table(&layout_name_asc, 35.0), Some(1));
+        assert_eq!(hit_test_contact_table(&layout_name_asc, 68.0), Some(2));
+        assert_eq!(hit_test_contact_table(&layout_name_asc, 500.0), None);
     }
 }

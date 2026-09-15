@@ -17600,9 +17600,10 @@ impl MailPage {
         let thread_sel_for_draw = thread_selection.clone();
         mail_table_canvas.set_draw_func(move |_, cr, width, height| {
             let Some(page) = page_for_draw.upgrade() else { return; };
-            let is_dark = AppSettings::try_new()
-                .map(|s| s.force_dark_mode())
-                .unwrap_or(false);
+            let is_dark = adw::StyleManager::default().is_dark()
+                || AppSettings::try_new()
+                    .map(|s| s.force_dark_mode())
+                    .unwrap_or(false);
             let hovered = page.imp().mail_table_hovered_row.get();
             let sender_w = page.imp().mail_sender_width.get() as f64;
             let recip_w = page.imp().mail_recipient_width.get() as f64;
@@ -17833,6 +17834,10 @@ impl MailPage {
         let canvas_for_notify = mail_table_canvas.clone();
         thread_selection.connect_selected_item_notify(move |_| {
             canvas_for_notify.queue_draw();
+        });
+        let canvas_for_theme = mail_table_canvas.clone();
+        adw::StyleManager::default().connect_dark_notify(move |_| {
+            canvas_for_theme.queue_draw();
         });
 
         let mail_table_box = gtk::Box::builder()

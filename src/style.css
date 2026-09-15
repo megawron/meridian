@@ -533,18 +533,8 @@ textview {
 .mail-sidebar .sidebar-section-header,
 .mail-sidebar label.sidebar-section-header {
   font-weight: 700;
-  color: #000000;
+  color: @window_fg_color;
   font-size: 1.05rem;
-}
-
-@media (prefers-color-scheme: dark) {
-  .mail-sidebar .account-heading,
-  .mail-sidebar .mail-sidebar-row.account-root-row label,
-  .mail-sidebar label.account-heading,
-  .mail-sidebar .sidebar-section-header,
-  .mail-sidebar label.sidebar-section-header {
-    color: #ffffff;
-  }
 }
 
 .mail-sidebar label.unread-heading,
@@ -679,17 +669,8 @@ textview {
 .mail-sidebar treeexpander.account-root-expander,
 .mail-sidebar treeexpander.account-root-expander > expander,
 .mail-sidebar treeexpander.account-root-expander > image {
-  color: #000000;
+  color: @window_fg_color;
   opacity: 1;
-}
-
-@media (prefers-color-scheme: dark) {
-  .mail-sidebar treeexpander.account-root-expander,
-  .mail-sidebar treeexpander.account-root-expander > expander,
-  .mail-sidebar treeexpander.account-root-expander > image {
-    color: #ffffff;
-    opacity: 1;
-  }
 }
 
 .mail-sidebar .caption {
@@ -720,7 +701,7 @@ textview {
 .mail-sidebar .mail-sidebar-row.account-root-row,
 .calendar-sidebar-group-row {
   background-color: transparent;
-  color: #000000;
+  color: @window_fg_color;
   border-radius: 4px;
   padding: 1px 2px;
   margin: 0;
@@ -738,7 +719,7 @@ textview {
 label.account-heading,
 .mail-sidebar .mail-sidebar-row.account-root-row label,
 .calendar-sidebar-group-row label {
-  color: #000000;
+  color: @window_fg_color;
   font-weight: 700;
   font-size: 1.05rem;
 }
@@ -751,28 +732,7 @@ label.account-heading,
 .calendar-sidebar-group-row image {
   min-width: 16px;
   min-height: 16px;
-  color: #000000;
-}
-
-@media (prefers-color-scheme: dark) {
-  .sidebar-account-row,
-  .account-root-row,
-  .mail-sidebar .mail-sidebar-row.account-root-row,
-  .calendar-sidebar-group-row,
-  .sidebar-account-row label,
-  .account-root-row label,
-  .account-heading,
-  label.account-heading,
-  .mail-sidebar .mail-sidebar-row.account-root-row label,
-  .calendar-sidebar-group-row label,
-  .sidebar-account-row image,
-  .account-root-row image,
-  .mail-sidebar .mail-sidebar-row.account-root-row image,
-  .mail-sidebar treeexpander.account-root-expander > expander,
-  .mail-sidebar treeexpander.account-root-expander > image,
-  .calendar-sidebar-group-row image {
-    color: #ffffff;
-  }
+  color: @window_fg_color;
 }
 
 /* ── Compact Desktop Menus, Dropdowns & Popovers (Libadwaita HIG) ────── */
@@ -1247,22 +1207,11 @@ splitview > .sidebar,
 .tasks-sidebar label.account-heading {
   font-weight: 700;
   font-size: 1.05rem;
-  color: #000000;
+  color: @window_fg_color;
 }
 
 .calendar-sidebar-group-row image {
-  color: #000000;
-}
-
-@media (prefers-color-scheme: dark) {
-  .calendar-sidebar-group-row label,
-  .calendar-sidebar .account-heading,
-  .calendar-sidebar label.account-heading,
-  .tasks-sidebar .account-heading,
-  .tasks-sidebar label.account-heading,
-  .calendar-sidebar-group-row image {
-    color: #ffffff;
-  }
+  color: @window_fg_color;
 }
 
 .calendar-sidebar-child-row {
