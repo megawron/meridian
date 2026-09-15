@@ -44,6 +44,26 @@ fn setup_platform_environment() {
             std::env::set_var("XDG_DATA_DIRS", &xdg_dirs);
         }
     }
+
+    // GTK 4's default 'ngl' (New OpenGL) renderer on macOS Quartz backend suffers from
+    // damage-rect scissor clipping bugs with Libadwaita dialogs/sheets, leaving transparent holes.
+    // Default to 'cairo' on macOS for rock-solid, flicker-free rendering unless overridden.
+    if std::env::var("GSK_RENDERER").is_err() {
+        unsafe {
+            std::env::set_var("GSK_RENDERER", "cairo");
+        }
+    }
+
+    // If running inside a macOS .app bundle, locate bundled GSettings schemas
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(bundle_res) = exe.parent().and_then(|p| p.parent()).map(|p| p.join("Resources/schemas")) {
+            if bundle_res.is_dir() && std::env::var("GSETTINGS_SCHEMA_DIR").is_err() {
+                unsafe {
+                    std::env::set_var("GSETTINGS_SCHEMA_DIR", bundle_res);
+                }
+            }
+        }
+    }
 }
 
 #[cfg(not(target_os = "macos"))]

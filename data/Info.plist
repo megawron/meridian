@@ -4,6 +4,8 @@
 <dict>
     <key>CFBundleIdentifier</key>
     <string>org.gnome.Evolution4</string>
+    <key>CFBundleExecutable</key>
+    <string>evolution-gtk4</string>
     <key>CFBundleName</key>
     <string>Evolution</string>
     <key>CFBundleDisplayName</key>

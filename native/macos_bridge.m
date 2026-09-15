@@ -151,14 +151,20 @@ void macos_request_calendar_permission(macos_permission_callback_t callback, voi
         EKEventStore *store = [[EKEventStore alloc] init];
         if (@available(macOS 14.0, *)) {
             [store requestFullAccessToEventsWithCompletion:^(BOOL granted, NSError * _Nullable error) {
-                (void) error;
+                if (error) {
+                    NSLog(@"[macOS Bridge] Calendar requestFullAccess error: %@", error);
+                }
+                (void)store;
                 if (callback) {
                     callback(granted ? 1 : 0, user_data);
                 }
             }];
         } else {
             [store requestAccessToEntityType:EKEntityTypeEvent completion:^(BOOL granted, NSError * _Nullable error) {
-                (void) error;
+                if (error) {
+                    NSLog(@"[macOS Bridge] Calendar requestAccess error: %@", error);
+                }
+                (void)store;
                 if (callback) {
                     callback(granted ? 1 : 0, user_data);
                 }
@@ -172,14 +178,20 @@ void macos_request_reminders_permission(macos_permission_callback_t callback, vo
         EKEventStore *store = [[EKEventStore alloc] init];
         if (@available(macOS 14.0, *)) {
             [store requestFullAccessToRemindersWithCompletion:^(BOOL granted, NSError * _Nullable error) {
-                (void) error;
+                if (error) {
+                    NSLog(@"[macOS Bridge] Reminders requestFullAccess error: %@", error);
+                }
+                (void)store;
                 if (callback) {
                     callback(granted ? 1 : 0, user_data);
                 }
             }];
         } else {
             [store requestAccessToEntityType:EKEntityTypeReminder completion:^(BOOL granted, NSError * _Nullable error) {
-                (void) error;
+                if (error) {
+                    NSLog(@"[macOS Bridge] Reminders requestAccess error: %@", error);
+                }
+                (void)store;
                 if (callback) {
                     callback(granted ? 1 : 0, user_data);
                 }
@@ -192,7 +204,10 @@ void macos_request_contacts_permission(macos_permission_callback_t callback, voi
     @autoreleasepool {
         CNContactStore *store = [[CNContactStore alloc] init];
         [store requestAccessForEntityType:CNEntityTypeContacts completionHandler:^(BOOL granted, NSError * _Nullable error) {
-            (void) error;
+            if (error) {
+                NSLog(@"[macOS Bridge] Contacts requestAccess error: %@", error);
+            }
+            (void)store;
             if (callback) {
                 callback(granted ? 1 : 0, user_data);
             }
